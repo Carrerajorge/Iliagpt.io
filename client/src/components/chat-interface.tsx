@@ -4292,6 +4292,11 @@ IMPORTANTE:
 
         let fullContent = "";
         let sseError: Error | null = null;
+        
+        // Resolve immutable conversation ID for routing (freeze before stream starts)
+        // Use real chatId, not "pending-xxx" placeholder to ensure correct routing
+        const routingConversationId = chatId.startsWith('pending-') ? chatId : chatId;
+        let streamRequestId: string | null = null;
 
         try {
           // Helper function to robustly detect if a file is a document (not an image)
@@ -4446,12 +4451,14 @@ IMPORTANTE:
           let streamComplete = false;
           
           // Initialize routed streaming with conversation affinity
-          const streamRequestId = generateStreamRequestId();
-          const streamAssistantMsgId = startStreamingRun(chatId, streamRequestId, userMsgId);
-          console.log('[SSE] Started routed streaming:', { chatId, streamRequestId, streamAssistantMsgId });
+          streamRequestId = generateStreamRequestId();
+          const streamAssistantMsgId = startStreamingRun(routingConversationId, streamRequestId, userMsgId);
+          console.log('[SSE] Started routed streaming:', { routingConversationId, streamRequestId, streamAssistantMsgId });
 
           if (!reader) {
-            failStreamingRunWithContext(chatId, streamRequestId, 'NO_READER', 'No response body for SSE streaming');
+            if (streamRequestId) {
+              failStreamingRunWithContext(routingConversationId, streamRequestId, 'NO_READER', 'No response body for SSE streaming');
+            }
             throw new Error("No response body for SSE streaming");
           }
 
@@ -4542,8 +4549,8 @@ IMPORTANTE:
         } catch (err: any) {
           if (err.name === "AbortError") {
             // User cancelled - clean up routed stream and return
-            if (typeof streamRequestId !== 'undefined') {
-              useConversationStreamRouter.getState().abortRun(chatId, streamRequestId);
+            if (streamRequestId) {
+              useConversationStreamRouter.getState().abortRun(routingConversationId, streamRequestId);
             }
             if (isPptMode && pptStreaming.isStreaming) {
               pptStreaming.stopStreaming();
@@ -4561,8 +4568,8 @@ IMPORTANTE:
         // Handle completion
         if (sseError) {
           // Fail the routed stream
-          if (typeof streamRequestId !== 'undefined') {
-            failStreamingRunWithContext(chatId, streamRequestId, 'SSE_ERROR', sseError.message || 'Stream error');
+          if (streamRequestId) {
+            failStreamingRunWithContext(routingConversationId, streamRequestId, 'SSE_ERROR', sseError.message || 'Stream error');
           }
           throw sseError;
         }
@@ -4637,9 +4644,9 @@ IMPORTANTE:
         }
 
         // Complete the routed stream
-        if (typeof streamRequestId !== 'undefined') {
+        if (streamRequestId) {
           completeStreamingRun(streamRequestId, fullContent);
-          console.log('[SSE] Completed routed streaming:', { chatId, streamRequestId });
+          console.log('[SSE] Completed routed streaming:', { routingConversationId, streamRequestId });
         }
 
         streamingContentRef.current = "";
