@@ -74,7 +74,10 @@ export function useBackgroundStreamNotifications(
   }, []);
   
   useEffect(() => {
+    const currentKeys = new Set<string>();
+    
     runs.forEach((run, key) => {
+      currentKeys.add(key);
       const previousStatus = previousRunsRef.current.get(key);
       
       if (
@@ -113,6 +116,12 @@ export function useBackgroundStreamNotifications(
       }
       
       previousRunsRef.current.set(key, run.status);
+    });
+    
+    previousRunsRef.current.forEach((_, key) => {
+      if (!currentKeys.has(key)) {
+        previousRunsRef.current.delete(key);
+      }
     });
   }, [runs, activeChatId, chats, toast]);
 }
