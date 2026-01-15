@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { format, isToday, isYesterday, isThisWeek, isThisYear } from "date-fns";
+import { useConversationStreamRouter } from "@/stores/conversationStreamRouter";
+import { migrateStreamContextConversationId } from "@/lib/streamEventAdapter";
 
 export interface FigmaDiagram {
   diagramType: "flowchart" | "orgchart" | "sequence" | "mindmap" | "network";
@@ -515,6 +517,11 @@ export function useChats() {
                       
                       // Map pending ID to real ID
                       pendingToRealIdMap.set(pendingChat.id, realChatId);
+                      
+                      // Migrate streaming runs and badges from pending ID to real ID
+                      useConversationStreamRouter.getState().migrateConversationId(pendingChat.id, realChatId);
+                      // Also migrate stream context in the event adapter
+                      migrateStreamContextConversationId(pendingChat.id, realChatId);
                       
                       // Update chat ID in state
                       setChats(prev => prev.map(c => 

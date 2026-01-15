@@ -124,6 +124,8 @@ interface ConversationStreamState {
   isProcessing: (conversationId: string) => boolean;
   
   getProcessingConversationIds: () => string[];
+  
+  migrateConversationId: (oldId: string, newId: string) => void;
 }
 
 const MAX_PENDING_CHUNKS = 100;
@@ -442,6 +444,56 @@ export const useConversationStreamRouter = create<ConversationStreamState>((set,
     }
     
     return processingIds;
+  },
+  
+  migrateConversationId: (oldId: string, newId: string) => {
+    if (oldId === newId) return;
+    
+    set((state) => {
+      const newRuns = new Map(state.runs);
+      const newRunsByConv = new Map(state.runsByConversation);
+      const newBadges = new Map(state.pendingBadges);
+      
+      const oldRunKeys = state.runsByConversation.get(oldId);
+      if (oldRunKeys && oldRunKeys.size > 0) {
+        const migratedKeys = new Set<string>();
+        
+        oldRunKeys.forEach(oldKey => {
+          const run = state.runs.get(oldKey);
+          if (run) {
+            newRuns.delete(oldKey);
+            
+            const newKey = `${newId}::${run.requestId}`;
+            const migratedRun = { ...run, conversationId: newId };
+            newRuns.set(newKey, migratedRun);
+            migratedKeys.add(newKey);
+          }
+        });
+        
+        newRunsByConv.delete(oldId);
+        const existingNewRuns = newRunsByConv.get(newId) ?? new Set();
+        migratedKeys.forEach(k => existingNewRuns.add(k));
+        newRunsByConv.set(newId, existingNewRuns);
+        
+        console.log(`[StreamRouter] Migrated ${migratedKeys.size} runs from ${oldId} to ${newId}`);
+      }
+      
+      const oldBadgeCount = state.pendingBadges.get(oldId);
+      if (oldBadgeCount && oldBadgeCount > 0) {
+        newBadges.delete(oldId);
+        newBadges.set(newId, (newBadges.get(newId) ?? 0) + oldBadgeCount);
+        console.log(`[StreamRouter] Migrated ${oldBadgeCount} badges from ${oldId} to ${newId}`);
+      }
+      
+      const newActiveChatId = state.activeChatId === oldId ? newId : state.activeChatId;
+      
+      return {
+        runs: newRuns,
+        runsByConversation: newRunsByConv,
+        pendingBadges: newBadges,
+        activeChatId: newActiveChatId,
+      };
+    });
   },
 }));
 

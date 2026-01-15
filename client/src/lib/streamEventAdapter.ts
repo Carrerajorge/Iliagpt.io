@@ -22,6 +22,25 @@ interface LegacyStreamContext {
 
 const activeContexts = new Map<string, LegacyStreamContext & { seq: number; assistantMessageId: string }>();
 
+const conversationIdMigrationMap = new Map<string, string>();
+
+export function migrateStreamContextConversationId(oldId: string, newId: string): void {
+  if (oldId === newId) return;
+  
+  conversationIdMigrationMap.set(oldId, newId);
+  
+  activeContexts.forEach((ctx) => {
+    if (ctx.conversationId === oldId) {
+      ctx.conversationId = newId;
+      console.log(`[StreamEventAdapter] Migrated context for requestId ${ctx.requestId} from ${oldId} to ${newId}`);
+    }
+  });
+}
+
+export function resolveConversationId(id: string): string {
+  return conversationIdMigrationMap.get(id) ?? id;
+}
+
 export function generateRequestId(): string {
   return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
