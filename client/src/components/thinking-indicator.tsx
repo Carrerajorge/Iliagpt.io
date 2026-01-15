@@ -16,6 +16,7 @@ interface ThinkingIndicatorProps {
   className?: string;
   variant?: "minimal" | "detailed" | "inline" | "phase-narrator";
   isSearching?: boolean;
+  userQuery?: string;
 }
 
 const phaseSequence: ThinkingPhase[] = [
@@ -28,95 +29,103 @@ const phaseSequence: ThinkingPhase[] = [
   "finalizing"
 ];
 
-const phaseNarrations: Record<ThinkingPhase, string[]> = {
-  connecting: [
-    "Preparando respuesta",
-    "Iniciando"
-  ],
-  searching: [
-    "Analizando solicitud",
-    "Procesando consulta",
-    "Preparando información"
-  ],
-  analyzing: [
-    "Analizando contexto",
-    "Evaluando opciones",
-    "Procesando"
-  ],
-  processing: [
-    "Procesando",
-    "Organizando ideas",
-    "Preparando contenido"
-  ],
-  generating: [
-    "Preparando respuesta",
-    "Estructurando contenido"
-  ],
-  responding: [
-    "Generando respuesta",
-    "Escribiendo"
-  ],
-  finalizing: [
-    "Finalizando",
-    "Completando"
-  ]
-};
+function extractKeywords(query: string): string {
+  if (!query || query.length < 3) return "";
+  const words = query.trim().split(/\s+/).filter(w => w.length > 3);
+  if (words.length === 0) return query.slice(0, 30);
+  const keywords = words.slice(0, 3).join(" ");
+  return keywords.length > 40 ? keywords.slice(0, 37) + "…" : keywords;
+}
+
+function generateContextualNarration(phase: ThinkingPhase, userQuery?: string): string {
+  const keywords = userQuery ? extractKeywords(userQuery) : "";
+  const hasContext = keywords.length > 0;
+  
+  switch (phase) {
+    case "connecting":
+      return hasContext ? `Preparando: "${keywords}"` : "Preparando respuesta";
+    case "searching":
+      return hasContext ? `Buscando sobre ${keywords}` : "Analizando consulta";
+    case "analyzing":
+      return hasContext ? `Analizando: ${keywords}` : "Evaluando contexto";
+    case "processing":
+      return hasContext ? `Procesando: ${keywords}` : "Organizando información";
+    case "generating":
+      return hasContext ? `Generando respuesta sobre ${keywords}` : "Estructurando respuesta";
+    case "responding":
+      return "Escribiendo respuesta";
+    case "finalizing":
+      return "Finalizando";
+    default:
+      return "Procesando";
+  }
+}
 
 const phaseDurations: Record<ThinkingPhase, number> = {
-  connecting: 800,
-  searching: 3500,
-  analyzing: 2500,
-  processing: 2000,
-  generating: 1500,
-  responding: 2000,
-  finalizing: 1000
+  connecting: 600,
+  searching: 2800,
+  analyzing: 2200,
+  processing: 1800,
+  generating: 1400,
+  responding: 1600,
+  finalizing: 800
 };
 
 export const PhaseNarrator = memo(function PhaseNarrator({
   phase,
   message,
   className,
-  autoProgress = true
+  autoProgress = true,
+  userQuery
 }: {
   phase?: ThinkingPhase;
   message?: string;
   className?: string;
   autoProgress?: boolean;
+  userQuery?: string;
 }) {
   const [currentPhaseIndex, setCurrentPhaseIndex] = useState(0);
   const [currentNarration, setCurrentNarration] = useState("");
   const [isTransitioning, setIsTransitioning] = useState(false);
-  const narrationIndex = useRef(0);
   const phaseStartTime = useRef(Date.now());
   const animationFrame = useRef<number | null>(null);
+  const debounceTimer = useRef<NodeJS.Timeout | null>(null);
+  const lastNarration = useRef<string>("");
 
   const currentPhase = phase || phaseSequence[currentPhaseIndex];
-  const narrations = phaseNarrations[currentPhase] || phaseNarrations.searching;
+
+  const updateNarration = useCallback((newNarration: string, immediate = false) => {
+    if (newNarration === lastNarration.current) return;
+    
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    }
+
+    const doUpdate = () => {
+      setIsTransitioning(true);
+      setTimeout(() => {
+        setCurrentNarration(newNarration);
+        lastNarration.current = newNarration;
+        setIsTransitioning(false);
+      }, 80);
+    };
+
+    if (immediate) {
+      doUpdate();
+    } else {
+      debounceTimer.current = setTimeout(doUpdate, 150);
+    }
+  }, []);
 
   useEffect(() => {
     if (message) {
-      setIsTransitioning(true);
-      setTimeout(() => {
-        setCurrentNarration(message);
-        setIsTransitioning(false);
-      }, 100);
+      updateNarration(message, true);
       return;
     }
 
-    setCurrentNarration(narrations[0]);
-    narrationIndex.current = 0;
-
-    const narrationInterval = setInterval(() => {
-      narrationIndex.current = (narrationIndex.current + 1) % narrations.length;
-      setIsTransitioning(true);
-      setTimeout(() => {
-        setCurrentNarration(narrations[narrationIndex.current]);
-        setIsTransitioning(false);
-      }, 100);
-    }, 1800);
-
-    return () => clearInterval(narrationInterval);
-  }, [currentPhase, message, narrations]);
+    const narration = generateContextualNarration(currentPhase, userQuery);
+    updateNarration(narration, true);
+  }, [currentPhase, message, userQuery, updateNarration]);
 
   useEffect(() => {
     if (!autoProgress || phase) return;
@@ -147,84 +156,124 @@ export const PhaseNarrator = memo(function PhaseNarrator({
   useEffect(() => {
     setCurrentPhaseIndex(0);
     phaseStartTime.current = Date.now();
+    
+    return () => {
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+    };
   }, []);
 
   return (
-    <div className={cn("phase-narrator-wrapper", className)}>
-      <span 
-        className={cn(
-          "phase-narrator-text",
-          isTransitioning && "transitioning"
-        )}
-      >
-        {currentNarration}
-      </span>
+    <div className={cn("phase-narrator-v2", className)}>
+      <div className="phase-narrator-container">
+        <span 
+          className={cn(
+            "phase-narrator-text",
+            isTransitioning && "transitioning"
+          )}
+        >
+          {currentNarration}
+        </span>
+        <div className="phase-lightning-bar" />
+      </div>
 
       <style>{`
-        .phase-narrator-wrapper {
+        .phase-narrator-v2 {
           position: relative;
           display: inline-block;
+        }
+        
+        .phase-narrator-container {
+          position: relative;
+          overflow: hidden;
+          padding: 2px 0;
         }
         
         .phase-narrator-text {
           font-size: 0.875rem;
           font-weight: 500;
+          letter-spacing: -0.01em;
+          color: rgb(100, 100, 110);
           display: inline-block;
-          position: relative;
-          background: linear-gradient(
-            90deg,
-            rgb(120, 120, 120) 0%,
-            rgb(120, 120, 120) 35%,
-            rgb(0, 180, 255) 45%,
-            rgb(0, 220, 255) 50%,
-            rgb(0, 180, 255) 55%,
-            rgb(120, 120, 120) 65%,
-            rgb(120, 120, 120) 100%
-          );
-          background-size: 300% 100%;
-          -webkit-background-clip: text;
-          background-clip: text;
-          -webkit-text-fill-color: transparent;
-          animation: lightning-flash 1.5s linear infinite;
-          transition: opacity 0.1s ease-out, transform 0.1s ease-out;
+          transition: opacity 80ms ease-out, transform 80ms ease-out;
+        }
+        
+        .dark .phase-narrator-text {
+          color: rgb(160, 160, 175);
         }
         
         .phase-narrator-text.transitioning {
           opacity: 0;
-          transform: translateY(-3px);
+          transform: translateY(-2px);
         }
         
-        @keyframes lightning-flash {
+        .phase-lightning-bar {
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          height: 2px;
+          background: linear-gradient(
+            90deg,
+            transparent 0%,
+            transparent 20%,
+            rgb(30, 64, 175) 35%,
+            rgb(59, 130, 246) 45%,
+            rgb(96, 165, 250) 50%,
+            rgb(59, 130, 246) 55%,
+            rgb(30, 64, 175) 65%,
+            transparent 80%,
+            transparent 100%
+          );
+          background-size: 200% 100%;
+          animation: lightning-sweep 1.2s ease-in-out infinite;
+          opacity: 0.9;
+          border-radius: 1px;
+        }
+        
+        .dark .phase-lightning-bar {
+          background: linear-gradient(
+            90deg,
+            transparent 0%,
+            transparent 20%,
+            rgb(37, 99, 235) 35%,
+            rgb(96, 165, 250) 45%,
+            rgb(147, 197, 253) 50%,
+            rgb(96, 165, 250) 55%,
+            rgb(37, 99, 235) 65%,
+            transparent 80%,
+            transparent 100%
+          );
+          background-size: 200% 100%;
+          opacity: 0.85;
+        }
+        
+        @keyframes lightning-sweep {
           0% {
             background-position: 100% 0;
+            opacity: 0;
+          }
+          10% {
+            opacity: 0.9;
+          }
+          90% {
+            opacity: 0.9;
           }
           100% {
             background-position: -100% 0;
+            opacity: 0;
           }
-        }
-        
-        .dark .phase-narrator-text {
-          background: linear-gradient(
-            90deg,
-            rgb(180, 180, 180) 0%,
-            rgb(180, 180, 180) 35%,
-            rgb(0, 200, 255) 45%,
-            rgb(80, 240, 255) 50%,
-            rgb(0, 200, 255) 55%,
-            rgb(180, 180, 180) 65%,
-            rgb(180, 180, 180) 100%
-          );
-          background-size: 300% 100%;
-          -webkit-background-clip: text;
-          background-clip: text;
-          -webkit-text-fill-color: transparent;
         }
         
         @media (prefers-reduced-motion: reduce) {
           .phase-narrator-text {
+            transition: none;
+          }
+          .phase-lightning-bar {
             animation: none;
-            background: currentColor;
-            -webkit-text-fill-color: currentColor;
+            opacity: 0.4;
+            background: rgb(59, 130, 246);
           }
         }
       `}</style>
@@ -238,6 +287,7 @@ export const ThinkingIndicator = memo(function ThinkingIndicator({
   className,
   variant = "phase-narrator",
   isSearching = false,
+  userQuery,
 }: ThinkingIndicatorProps) {
 
   const effectivePhase = isSearching ? "searching" : phase;
@@ -251,7 +301,12 @@ export const ThinkingIndicator = memo(function ThinkingIndicator({
         )}
         data-testid="thinking-indicator"
       >
-        <PhaseNarrator phase={effectivePhase} message={message} autoProgress={!effectivePhase} />
+        <PhaseNarrator 
+          phase={effectivePhase} 
+          message={message} 
+          autoProgress={!effectivePhase}
+          userQuery={userQuery}
+        />
       </div>
     );
   }
@@ -259,7 +314,12 @@ export const ThinkingIndicator = memo(function ThinkingIndicator({
   if (variant === "inline") {
     return (
       <span className={cn("inline-flex items-center gap-1.5", className)}>
-        <PhaseNarrator phase={effectivePhase} message={message} autoProgress={!effectivePhase} />
+        <PhaseNarrator 
+          phase={effectivePhase} 
+          message={message} 
+          autoProgress={!effectivePhase}
+          userQuery={userQuery}
+        />
       </span>
     );
   }
@@ -267,14 +327,24 @@ export const ThinkingIndicator = memo(function ThinkingIndicator({
   if (variant === "minimal") {
     return (
       <div className={cn("flex items-center gap-2 py-2", className)}>
-        <PhaseNarrator phase={effectivePhase} message={message} autoProgress={!effectivePhase} />
+        <PhaseNarrator 
+          phase={effectivePhase} 
+          message={message} 
+          autoProgress={!effectivePhase}
+          userQuery={userQuery}
+        />
       </div>
     );
   }
 
   return (
     <div className={cn("flex items-center gap-3 py-2", className)}>
-      <PhaseNarrator phase={effectivePhase} message={message} autoProgress={!effectivePhase} />
+      <PhaseNarrator 
+        phase={effectivePhase} 
+        message={message} 
+        autoProgress={!effectivePhase}
+        userQuery={userQuery}
+      />
     </div>
   );
 });
