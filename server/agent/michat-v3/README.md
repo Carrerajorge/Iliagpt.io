@@ -1,3 +1,38 @@
+# MICHAT v3.1 Enterprise Architecture
+
+## What's New in v3.1
+
+### UX Hardening
+- **UXResponse**: Structured output blocks (text, bullet, notice, tool, workflow, debug)
+- **UXRenderer**: Automatic truncation, summarization, and level-based rendering
+- **UXLevel**: minimal (1800 chars), standard (5000 chars), debug (20000 chars)
+- **userFacingError()**: Human-readable error messages in Spanish
+
+### Scale Infrastructure
+- **SessionStore**: Interface for Redis/Postgres session persistence
+- **DistributedRateLimiter**: Token bucket with distributed support
+- **DurableQueue**: Interface for BullMQ/Kafka/Cloud Tasks
+- **Multi-tenant support**: Per-tenant rate limits and session limits
+
+### Security Enhancements
+- **Prompt Injection Detection**: 30+ injection patterns detected
+- **Input Sanitization**: Script removal, control char filtering, length limits
+- **Output Sanitization**: Secret redaction, truncation
+
+### AgentRunner v3.1
+- Returns `UXResponse` instead of raw strings
+- Automatic tool allow-list enforcement
+- Injection detection with strict mode
+- Follow-up suggestions
+
+### MichatGateway
+- Rate limiting by tenant+user
+- Session persistence with auto-trim
+- Idempotency support
+- Durable workflow queueing
+
+---
+
 # MICHAT v3 Integration Analysis
 
 ## Architecture Mapping: IliaGPT → MICHAT v3

@@ -25,7 +25,26 @@ export type {
   TracerSpan,
 } from "./types";
 
-export { MichatError, MichatErrorCode, wrapError } from "./errors";
+export { MichatError, MichatErrorCode, wrapError, userFacingError, type UserFacingErrorResult } from "./errors";
+
+// v3.1 UX Module
+export { UXLevel, UXBlock, UXResponse, UXLimits, DefaultLimits, UXRenderer, summarizeValue, globalUXRenderer } from "./ux";
+
+// v3.1 Infrastructure Module
+export { 
+  SessionStore, SessionMessage, SessionData, InMemorySessionStore, globalSessionStore,
+  DistributedRateLimiter, RateLimiterConfig, LocalDistributedRateLimiter, globalDistributedRateLimiter,
+  DurableQueue, QueueJob, JobResult, InMemoryDurableQueue, NullQueue, globalDurableQueue
+} from "./infra";
+
+// v3.1 Security Module
+export { sanitizeUserInput as sanitizeUserInputV31, detectPromptInjection, sanitizeOutput, redactSecrets as redactSecretsV31, type SanitizationResult } from "./security";
+
+// v3.1 AgentRunner
+export { AgentRunnerV31, type ExecutionHooks, type LLMConfig, type RunContext } from "./runner";
+
+// v3.1 Gateway
+export { MichatGateway, TenantContext, TenantDefaults, type GatewayRequest, type GatewayDependencies } from "./gateway";
 export { resolveConfig, clamp, jitter, sleep, nowISO, uid, withTimeout, sanitizeUserInput, safeJsonParse, redactSecrets } from "./config";
 
 export { ServiceRegistry, globalServiceRegistry } from "./registry";
