@@ -984,7 +984,20 @@ export function ChatInterface({
       return newValue;
     });
   }, [chatId, saveDraftDebounced, currentTextRef]);
-  const [streamingContent, setStreamingContent] = useState("");
+  
+  const routedStreamingContent = useConversationStreamContent(chatId);
+  const setActiveChatId = useConversationStreamRouter(s => s.setActiveChatId);
+  
+  const [localStreamingContent, setLocalStreamingContent] = useState("");
+  const streamingContent = routedStreamingContent || localStreamingContent;
+  const setStreamingContent = setLocalStreamingContent;
+  
+  useEffect(() => {
+    if (chatId) {
+      setActiveChatId(chatId);
+    }
+  }, [chatId, setActiveChatId]);
+  
   const [isBrowserOpen, setIsBrowserOpen] = useState(false);
   const [browserUrl, setBrowserUrl] = useState("https://www.google.com");
   const [isBrowserMaximized, setIsBrowserMaximized] = useState(false);
@@ -4431,8 +4444,14 @@ IMPORTANTE:
           let lastSeq = -1; // Track last processed sequence for ordering
           let currentEventType = "chunk"; // Track current event type
           let streamComplete = false;
+          
+          // Initialize routed streaming with conversation affinity
+          const streamRequestId = generateStreamRequestId();
+          const streamAssistantMsgId = startStreamingRun(chatId, streamRequestId, userMsgId);
+          console.log('[SSE] Started routed streaming:', { chatId, streamRequestId, streamAssistantMsgId });
 
           if (!reader) {
+            failStreamingRunWithContext(chatId, streamRequestId, 'NO_READER', 'No response body for SSE streaming');
             throw new Error("No response body for SSE streaming");
           }
 
@@ -4489,6 +4508,9 @@ IMPORTANTE:
                 if (currentEventType === 'chunk' && data.content) {
                   fullContent += data.content;
                   
+                  // Route delta through conversation affinity system
+                  appendStreamingDelta(streamRequestId, data.content);
+                  
                   // Update UI based on mode
                   if (isPptMode && shouldWriteToDoc) {
                     pptStreaming.processChunk(data.content);
@@ -4507,9 +4529,8 @@ IMPORTANTE:
                       console.error('[ChatInterface] Error streaming to document:', err);
                     }
                   } else {
-                    // Normal chat mode - update streaming content
+                    // Normal chat mode - streaming content comes from router now
                     streamingContentRef.current = fullContent;
-                    setStreamingContent(fullContent);
                   }
                 }
                 
@@ -4520,7 +4541,10 @@ IMPORTANTE:
           }
         } catch (err: any) {
           if (err.name === "AbortError") {
-            // User cancelled - clean up and return
+            // User cancelled - clean up routed stream and return
+            if (typeof streamRequestId !== 'undefined') {
+              useConversationStreamRouter.getState().abortRun(chatId, streamRequestId);
+            }
             if (isPptMode && pptStreaming.isStreaming) {
               pptStreaming.stopStreaming();
             }
@@ -4536,6 +4560,10 @@ IMPORTANTE:
 
         // Handle completion
         if (sseError) {
+          // Fail the routed stream
+          if (typeof streamRequestId !== 'undefined') {
+            failStreamingRunWithContext(chatId, streamRequestId, 'SSE_ERROR', sseError.message || 'Stream error');
+          }
           throw sseError;
         }
 
@@ -4606,6 +4634,12 @@ IMPORTANTE:
             userMessageId: userMsgId,
           };
           await onSendMessage(aiMsg);
+        }
+
+        // Complete the routed stream
+        if (typeof streamRequestId !== 'undefined') {
+          completeStreamingRun(streamRequestId, fullContent);
+          console.log('[SSE] Completed routed streaming:', { chatId, streamRequestId });
         }
 
         streamingContentRef.current = "";
