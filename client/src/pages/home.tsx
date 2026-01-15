@@ -32,6 +32,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useStreamingStore, useProcessingChatIds, usePendingBadges } from "@/stores/streamingStore";
+import { useBackgroundStreamNotifications } from "@/hooks/use-background-stream-notifications";
 import { useAgentStore } from "@/stores/agent-store";
 import { useSuperAgentStore } from "@/stores/super-agent-store";
 import { pollingManager } from "@/lib/polling-manager";
@@ -141,6 +142,9 @@ export default function Home() {
   const processingChatIds = useProcessingChatIds();
   const pendingResponseCounts = usePendingBadges();
   const { clearBadge } = useStreamingStore();
+
+  // Background stream notifications with sound
+  useBackgroundStreamNotifications(chats, activeChat?.id || null);
 
   // Store the pending chat ID during new chat creation
   const pendingChatIdRef = useRef<string | null>(null);

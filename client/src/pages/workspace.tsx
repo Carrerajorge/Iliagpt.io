@@ -17,6 +17,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Menu, FileText, X, GripVertical } from "lucide-react";
 import { toast } from "sonner";
 import { useStreamingStore, useProcessingChatIds, usePendingBadges } from "@/stores/streamingStore";
+import { useBackgroundStreamNotifications } from "@/hooks/use-background-stream-notifications";
 
 const PANEL_SIZES_KEY = "workspace-panel-sizes";
 
@@ -133,6 +134,9 @@ function WorkspaceContent() {
       moveChatToFolder(chatId, folderId);
     }
   }, [moveChatToFolder, removeChatFromFolder]);
+
+  // Background stream notifications with sound
+  useBackgroundStreamNotifications(chats, activeChat?.id || null);
 
   const handleClearPendingCount = useCallback((chatId: string) => {
     clearBadge(chatId);
