@@ -246,10 +246,13 @@ export default function Home() {
   }, [createChat, addMessage]);
   
   // Stable message sender that uses the correct chat ID
-  const handleSendMessage = useCallback(async (message: Message) => {
-    const targetChatId = activeChat?.id || pendingChatIdRef.current;
-    if (targetChatId) {
-      return await addMessage(targetChatId, message);
+  // IMPORTANT: If targetChatId is provided, use it (for streaming responses that need affinity)
+  // Otherwise fall back to current active chat (for new messages from user)
+  const handleSendMessage = useCallback(async (message: Message, targetChatId?: string) => {
+    // Use explicit targetChatId if provided (ensures streaming responses go to correct chat)
+    const resolvedChatId = targetChatId || activeChat?.id || pendingChatIdRef.current;
+    if (resolvedChatId) {
+      return await addMessage(resolvedChatId, message);
     } else {
       // Fallback: create new chat
       handleSendNewChatMessage(message);

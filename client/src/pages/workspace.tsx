@@ -173,10 +173,12 @@ function WorkspaceContent() {
     addMessage(pendingId, message);
   }, [createChat, addMessage]);
 
-  const handleSendMessage = useCallback(async (message: Message) => {
-    const targetChatId = activeChat?.id || pendingChatIdRef.current;
-    if (targetChatId) {
-      return await addMessage(targetChatId, message);
+  // IMPORTANT: If targetChatId is provided, use it (for streaming responses that need affinity)
+  // Otherwise fall back to current active chat (for new messages from user)
+  const handleSendMessage = useCallback(async (message: Message, targetChatId?: string) => {
+    const resolvedChatId = targetChatId || activeChat?.id || pendingChatIdRef.current;
+    if (resolvedChatId) {
+      return await addMessage(resolvedChatId, message);
     } else {
       handleSendNewChatMessage(message);
       return undefined;

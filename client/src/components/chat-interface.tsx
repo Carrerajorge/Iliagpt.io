@@ -813,7 +813,7 @@ type AiProcessStep = { step: string; status: "pending" | "active" | "done" };
 interface ChatInterfaceProps {
   messages: Message[];
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
-  onSendMessage: (message: Message) => Promise<{ run?: { id: string; chatId: string; userMessageId: string; status: string }; deduplicated?: boolean } | undefined>;
+  onSendMessage: (message: Message, targetChatId?: string) => Promise<{ run?: { id: string; chatId: string; userMessageId: string; status: string }; deduplicated?: boolean } | undefined>;
   isSidebarOpen?: boolean;
   onToggleSidebar?: () => void;
   onCloseSidebar?: () => void;
@@ -4587,7 +4587,7 @@ IMPORTANTE:
             requestId: generateRequestId(),
             userMessageId: userMsgId,
           };
-          await onSendMessage(confirmMsg);
+          await onSendMessage(confirmMsg, routingConversationId);
         } else if (isExcelMode && shouldWriteToDoc && docInsertContentRef.current) {
           // Excel mode: send raw CSV data to Excel editor for cell-by-cell streaming
           try {
@@ -4609,7 +4609,7 @@ IMPORTANTE:
             requestId: generateRequestId(),
             userMessageId: userMsgId,
           };
-          await onSendMessage(confirmMsg);
+          await onSendMessage(confirmMsg, routingConversationId);
         } else if (isWordMode && shouldWriteToDoc && docInsertContentRef.current) {
           try {
             // Word mode: Cumulative HTML mode
@@ -4629,7 +4629,7 @@ IMPORTANTE:
             requestId: generateRequestId(),
             userMessageId: userMsgId,
           };
-          await onSendMessage(confirmMsg);
+          await onSendMessage(confirmMsg, routingConversationId);
         } else {
           // Normal chat mode - create final assistant message
           const aiMsg: Message = {
@@ -4640,7 +4640,7 @@ IMPORTANTE:
             requestId: generateRequestId(),
             userMessageId: userMsgId,
           };
-          await onSendMessage(aiMsg);
+          await onSendMessage(aiMsg, routingConversationId);
         }
 
         // Complete the routed stream

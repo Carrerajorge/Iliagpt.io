@@ -197,6 +197,47 @@ export function generateClientRequestId(): string {
   return `cri_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
+// Retry with exponential backoff for message persistence
+const MAX_RETRIES = 3;
+const INITIAL_BACKOFF_MS = 500;
+
+async function fetchWithRetry(
+  url: string, 
+  options: RequestInit, 
+  retries: number = MAX_RETRIES
+): Promise<Response> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      
+      // Success or client error (don't retry 4xx except 429)
+      if (response.ok || (response.status >= 400 && response.status < 500 && response.status !== 429)) {
+        return response;
+      }
+      
+      // Server error or rate limited - retry with backoff
+      if (response.status >= 500 || response.status === 429) {
+        const backoffMs = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+        console.warn(`[Persistence] Retry ${attempt + 1}/${retries} after ${backoffMs}ms (status: ${response.status})`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+        continue;
+      }
+      
+      return response;
+    } catch (error) {
+      lastError = error as Error;
+      const backoffMs = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+      console.error(`[Persistence] Network error, retry ${attempt + 1}/${retries} after ${backoffMs}ms:`, error);
+      await new Promise(resolve => setTimeout(resolve, backoffMs));
+    }
+  }
+  
+  // All retries exhausted
+  throw lastError || new Error(`Failed after ${retries} retries`);
+}
+
 // Resolve pending chat ID to real ID if available
 export function resolveRealChatId(chatId: string): string {
   return pendingToRealIdMap.get(chatId) || chatId;
@@ -723,7 +764,8 @@ export function useChats() {
         // For user messages, use run-based idempotency with clientRequestId
         const clientRequestId = message.role === 'user' ? (message as any).clientRequestId || generateClientRequestId() : undefined;
         
-        const res = await fetch(`/api/chats/${resolvedChatId}/messages`, {
+        // Use fetchWithRetry for automatic retry with exponential backoff
+        const res = await fetchWithRetry(`/api/chats/${resolvedChatId}/messages`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
