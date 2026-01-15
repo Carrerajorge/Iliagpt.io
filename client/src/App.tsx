@@ -13,6 +13,9 @@ import { SearchModal } from "@/components/search-modal";
 import { ToolCatalog } from "@/components/tool-catalog";
 import Home from "@/pages/home";
 import { Loader2 } from "lucide-react";
+import { initializeStreamingInfrastructure } from "@/hooks/use-routed-streaming";
+
+initializeStreamingInfrastructure();
 
 const PageLoader = () => (
   <div className="flex items-center justify-center min-h-screen">

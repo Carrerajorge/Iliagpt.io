@@ -95,6 +95,8 @@ import { useSuperAgentStore } from "@/stores/super-agent-store";
 import { useSuperAgentStream, type SuperAgentState, type SuperAgentArtifact, type SuperAgentFinal } from "@/hooks/use-super-agent";
 import { useStartAgentRun, useCancelAgentRun, useAgentPolling, abortPendingAgentStart } from "@/hooks/use-agent-polling";
 import { useStreamingStore } from "@/stores/streamingStore";
+import { useConversationStreamRouter, useConversationStreamContent } from "@/stores/conversationStreamRouter";
+import { startStreamingRun, appendStreamingDelta, completeStreamingRun, failStreamingRunWithContext, generateRequestId as generateStreamRequestId } from "@/lib/streamEventAdapter";
 import { DocumentPreviewPanel, type DocumentPreviewArtifact } from "@/components/document-preview-panel";
 import { InlineGmailPreview } from "@/components/inline-gmail-preview";
 import { VoiceChatMode } from "@/components/voice-chat-mode";
