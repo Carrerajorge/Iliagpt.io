@@ -39,15 +39,22 @@ export function UpgradePlanDialog({ open, onOpenChange }: UpgradePlanDialogProps
   }, [open]);
 
   const handleSubscribe = async (planName: string) => {
+    console.log("[Checkout] Starting checkout for plan:", planName);
     const planKey = planName.toLowerCase();
     const localPriceId = PRICE_ID_MAPPING[planKey];
-    if (!localPriceId) return;
+    console.log("[Checkout] Price mapping:", { planKey, localPriceId, priceMapping });
+    if (!localPriceId) {
+      console.error("[Checkout] No local price ID found");
+      return;
+    }
     
     const actualPriceId = priceMapping[localPriceId] || localPriceId;
+    console.log("[Checkout] Actual price ID:", actualPriceId);
     
     setLoadingPlan(planName);
     
     try {
+      console.log("[Checkout] Calling /api/checkout");
       const response = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

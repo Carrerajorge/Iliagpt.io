@@ -176,11 +176,16 @@ export function PricingModal({ open, onClose, quota }: PricingModalProps) {
   };
 
   const handleSubscribe = async (priceId: string, planId: string) => {
-    if (!priceId) return;
+    console.log("[Checkout] Starting checkout:", { priceId, planId });
+    if (!priceId) {
+      console.error("[Checkout] No priceId provided");
+      return;
+    }
     
     setLoadingPlan(planId);
     
     try {
+      console.log("[Checkout] Calling /api/checkout");
       const response = await fetch("/api/checkout", {
         method: "POST",
         headers: {
