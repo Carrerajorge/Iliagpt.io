@@ -132,50 +132,52 @@ export function createStripeRouter() {
 
   router.post("/api/checkout", async (req, res) => {
     try {
-      const user = (req as any).user;
-      const userId = user?.claims?.sub;
-
-      if (!userId) {
-        return res.status(401).json({ error: "Debes iniciar sesión para suscribirte" });
-      }
-
       const { priceId } = req.body;
       if (!priceId) {
         return res.status(400).json({ error: "priceId is required" });
       }
 
-      const [dbUser] = await db.select().from(users).where(eq(users.id, userId));
-      if (!dbUser) {
-        return res.status(404).json({ error: "User not found" });
-      }
-
       const stripe = await getUncachableStripeClient();
       
-      let customerId = dbUser.stripeCustomerId;
-      if (!customerId) {
-        const customer = await stripe.customers.create({
-          email: dbUser.email || undefined,
-          metadata: { userId }
-        });
-        customerId = customer.id;
-        
-        await db.update(users)
-          .set({ stripeCustomerId: customerId })
-          .where(eq(users.id, userId));
+      const user = (req as any).user;
+      const userId = user?.claims?.sub;
+      let customerId: string | undefined;
+
+      if (userId) {
+        const [dbUser] = await db.select().from(users).where(eq(users.id, userId));
+        if (dbUser?.stripeCustomerId) {
+          customerId = dbUser.stripeCustomerId;
+        } else if (dbUser) {
+          const customer = await stripe.customers.create({
+            email: dbUser.email || undefined,
+            metadata: { userId }
+          });
+          customerId = customer.id;
+          await db.update(users)
+            .set({ stripeCustomerId: customerId })
+            .where(eq(users.id, userId));
+        }
       }
 
       const domain = process.env.REPLIT_DOMAINS?.split(',')[0] || 'localhost:5000';
       const protocol = domain.includes('localhost') ? 'http' : 'https';
 
-      const session = await stripe.checkout.sessions.create({
-        customer: customerId,
+      const sessionConfig: any = {
         payment_method_types: ['card'],
         line_items: [{ price: priceId, quantity: 1 }],
         mode: 'subscription',
         success_url: `${protocol}://${domain}/?subscription=success`,
         cancel_url: `${protocol}://${domain}/?subscription=cancelled`,
-        metadata: { userId }
-      });
+      };
+
+      if (customerId) {
+        sessionConfig.customer = customerId;
+        sessionConfig.metadata = { userId };
+      } else {
+        sessionConfig.customer_creation = 'always';
+      }
+
+      const session = await stripe.checkout.sessions.create(sessionConfig);
 
       res.json({ url: session.url });
     } catch (error: any) {
