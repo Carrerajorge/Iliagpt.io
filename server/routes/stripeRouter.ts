@@ -174,15 +174,18 @@ export function createStripeRouter() {
         sessionConfig.customer = customerId;
         sessionConfig.metadata = { userId };
       } else {
-        sessionConfig.customer_creation = 'always';
+        sessionConfig.customer_email = undefined;
       }
 
+      console.log("[Stripe] Creating checkout session with config:", JSON.stringify(sessionConfig, null, 2));
       const session = await stripe.checkout.sessions.create(sessionConfig);
+      console.log("[Stripe] Checkout session created:", session.id, session.url);
 
       res.json({ url: session.url });
     } catch (error: any) {
-      console.error("Checkout error:", error);
-      res.status(500).json({ error: "Failed to create checkout session" });
+      console.error("[Stripe] Checkout error:", error.message);
+      console.error("[Stripe] Error details:", error.raw || error);
+      res.status(500).json({ error: error.message || "Failed to create checkout session" });
     }
   });
 
