@@ -5,9 +5,9 @@ import { users } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 
 const PLAN_PRICE_MAPPING: Record<string, { name: string; amount: number; interval?: string }> = {
-  price_go_monthly: { name: "Go", amount: 500, interval: "month" },
-  price_plus_monthly: { name: "Plus", amount: 1000, interval: "month" },
-  price_pro_yearly: { name: "Pro", amount: 2000, interval: "year" },
+  price_go_monthly: { name: "Go", amount: 500, interval: "month" },      // $5/mes
+  price_plus_monthly: { name: "Plus", amount: 2000, interval: "month" }, // $20/mes
+  price_pro_monthly: { name: "Pro", amount: 20000, interval: "month" },  // $200/mes
 };
 
 export function createStripeRouter() {
@@ -91,10 +91,10 @@ export function createStripeRouter() {
           
           if (productName.includes("go") || amount === 500) {
             priceMapping.price_go_monthly = row.price_id;
-          } else if (productName.includes("plus") || amount === 1000) {
+          } else if (productName.includes("plus") || amount === 2000) {
             priceMapping.price_plus_monthly = row.price_id;
-          } else if (productName.includes("pro") || amount === 2000) {
-            priceMapping.price_pro_yearly = row.price_id;
+          } else if (productName.includes("pro") || amount === 20000) {
+            priceMapping.price_pro_monthly = row.price_id;
           }
         }
       } catch (dbError) {
@@ -112,10 +112,10 @@ export function createStripeRouter() {
             
             if (amount === 500 && interval === "month") {
               priceMapping.price_go_monthly = price.id;
-            } else if (amount === 1000 && interval === "month") {
+            } else if (amount === 2000 && interval === "month") {
               priceMapping.price_plus_monthly = price.id;
-            } else if (amount === 2000 && interval === "year") {
-              priceMapping.price_pro_yearly = price.id;
+            } else if (amount === 20000 && interval === "month") {
+              priceMapping.price_pro_monthly = price.id;
             }
           }
         } catch (stripeError: any) {
