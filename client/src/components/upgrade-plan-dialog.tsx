@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { X, Sparkles, MessageSquare, Image, Brain, Clock, Target, Zap, Users, Shield, FileText, Video, Code, Star, Infinity, CheckCircle2 } from "lucide-react";
+import { X, Sparkles, MessageSquare, Image, Brain, Clock, Target, Zap, Users, Shield, FileText, Video, Code, Star, Infinity, CheckCircle2, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface UpgradePlanDialogProps {
@@ -13,8 +13,60 @@ interface UpgradePlanDialogProps {
 
 type PlanTab = "personal" | "empresa";
 
+const PRICE_ID_MAPPING: Record<string, string> = {
+  go: "price_go_monthly",
+  plus: "price_plus_monthly",
+  pro: "price_pro_monthly",
+  business: "price_business_monthly",
+};
+
 export function UpgradePlanDialog({ open, onOpenChange }: UpgradePlanDialogProps) {
   const [activeTab, setActiveTab] = useState<PlanTab>("personal");
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const [priceMapping, setPriceMapping] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (open) {
+      fetch("/api/stripe/price-ids")
+        .then(res => res.json())
+        .then(data => {
+          if (data.priceMapping) {
+            setPriceMapping(data.priceMapping);
+          }
+        })
+        .catch(err => console.error("Error loading prices:", err));
+    }
+  }, [open]);
+
+  const handleSubscribe = async (planName: string) => {
+    const planKey = planName.toLowerCase();
+    const localPriceId = PRICE_ID_MAPPING[planKey];
+    if (!localPriceId) return;
+    
+    const actualPriceId = priceMapping[localPriceId] || localPriceId;
+    
+    setLoadingPlan(planName);
+    
+    try {
+      const response = await fetch("/api/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priceId: actualPriceId }),
+      });
+      
+      const data = await response.json();
+      
+      if (data.url) {
+        window.location.href = data.url;
+      } else if (data.error) {
+        console.error("Checkout error:", data.error);
+      }
+    } catch (error) {
+      console.error("Error initiating checkout:", error);
+    } finally {
+      setLoadingPlan(null);
+    }
+  };
 
   const personalPlans = [
     {
@@ -217,10 +269,18 @@ export function UpgradePlanDialog({ open, onOpenChange }: UpgradePlanDialogProps
                     "w-full mb-6",
                     (plan as any).buttonColor ? (plan as any).buttonColor : plan.highlight && "bg-primary hover:bg-primary/90"
                   )}
-                  disabled={plan.isCurrentPlan}
+                  disabled={plan.isCurrentPlan || loadingPlan === plan.name}
+                  onClick={() => !plan.isCurrentPlan && handleSubscribe(plan.name)}
                   data-testid={`button-${plan.name.toLowerCase()}`}
                 >
-                  {plan.buttonText}
+                  {loadingPlan === plan.name ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Procesando...
+                    </>
+                  ) : (
+                    plan.buttonText
+                  )}
                 </Button>
                 
                 <div className="space-y-3 flex-1">
