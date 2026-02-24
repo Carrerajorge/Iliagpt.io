@@ -39,9 +39,6 @@ function initializeTracing(): void {
         url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
       });
       provider.addSpanProcessor(new BatchSpanProcessor(otlpExporter));
-    } else {
-      const consoleExporter = new ConsoleSpanExporter();
-      provider.addSpanProcessor(new SimpleSpanProcessor(consoleExporter));
     }
 
     provider.register();

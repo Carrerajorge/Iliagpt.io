@@ -43,17 +43,21 @@
         var originalError = console.error;
         var originalWarn = console.warn;
         var suppressedPatterns = [
-          '[vite] failed to connect to websocket',
+          'vite',
+          'websocket',
+          'WebSocket',
           'Could not parse CSS stylesheet',
           'adoptedStyleSheets',
-          'WebSocket connection',
-          'Cannot read properties of undefined'
+          'Cannot read properties of undefined',
+          'hmr',
+          'HMR'
         ];
         var shouldSuppress = function(args) {
           var msg = args[0];
           if (!msg) return false;
-          var str = typeof msg === 'string' ? msg : (msg.message || String(msg));
-          return suppressedPatterns.some(function(p) { return str.includes(p); });
+          var str = typeof msg === 'string' ? msg : (msg && msg.message ? msg.message : String(msg));
+          var lower = str.toLowerCase();
+          return suppressedPatterns.some(function(p) { return lower.includes(p.toLowerCase()); });
         };
         console.error = function() {
           var args = Array.prototype.slice.call(arguments);
@@ -66,16 +70,25 @@
           originalWarn.apply(console, args);
         };
         window.addEventListener('error', function(e) {
-          if (e.message && (e.message.includes('send') || e.message.includes('WebSocket'))) {
+          if (e.message && (
+            e.message.includes('send') ||
+            e.message.includes('WebSocket') ||
+            e.message.includes('websocket') ||
+            e.message.includes('hmr') ||
+            e.message.includes('Cannot read properties of undefined')
+          )) {
+            e.stopImmediatePropagation();
             e.preventDefault();
             return false;
           }
-        });
+        }, true);
         window.addEventListener('unhandledrejection', function(e) {
-          if (e.reason && e.reason.message && (e.reason.message.includes('WebSocket') || e.reason.message.includes('send'))) {
+          var msg = e.reason && (e.reason.message || String(e.reason));
+          if (msg && (msg.includes('WebSocket') || msg.includes('send') || msg.includes('hmr'))) {
+            e.stopImmediatePropagation();
             e.preventDefault();
           }
-        });
+        }, true);
       })();
     </script>
     <script type="module" src="/src/main.tsx"></script>

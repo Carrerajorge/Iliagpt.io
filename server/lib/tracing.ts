@@ -198,8 +198,8 @@ export function initTracing(config: TracingConfig = {}): void {
     spanProcessors.push(new CountingSpanProcessor(batchProcessor, "otlp"));
   }
 
-  if (enableConsoleExporter) {
-    console.log("[Tracing] Console exporter enabled for development");
+  if (enableConsoleExporter && IS_PRODUCTION) {
+    console.log("[Tracing] Console exporter enabled");
     const consoleExporter = new ConsoleSpanExporter();
     const simpleProcessor = new SimpleSpanProcessor(consoleExporter);
     spanProcessors.push(new CountingSpanProcessor(simpleProcessor, "console"));
