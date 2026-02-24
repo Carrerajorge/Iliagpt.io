@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import { type AuthenticatedRequest } from "../types/express";
 import { z } from "zod";
 import { storage } from "../storage";
 import { getUpload, getSheets } from "../services/spreadsheetAnalyzer";
@@ -13,6 +14,7 @@ import { checkDynamicEscalation } from "../services/router";
 import { pareOrchestrator, type RoutingDecision } from "../services/pare";
 import { runAgent, type AgentState } from "../services/agentRunner";
 import { intentEnginePipeline, stateManager } from "../intent-engine";
+import { analysisService } from "../services/analysisService";
 
 const analyzeRequestSchema = z.object({
   messageId: z.string().optional(),
@@ -46,6 +48,14 @@ const agentRunRequestSchema = z.object({
   planHint: z.array(z.string()).optional().default([]),
 });
 
+const escalationCheckSchema = z.object({
+  response: z.string().min(1, "Response string required"),
+});
+
+const intentAnalyzeSchema = z.object({
+  message: z.string().min(1, "Message is required"),
+});
+
 export function createChatRoutes(): Router {
   const router = Router();
 
@@ -65,10 +75,13 @@ export function createChatRoutes(): Router {
         complexity_score: result.score,
         category: result.category,
         signals: result.signals,
+        recommended_path: result.recommended_path,
+        estimated_tokens: result.estimated_tokens,
+        dimensions: result.dimensions,
       });
     } catch (error: any) {
       console.error("[ChatRoutes] Complexity analysis error:", error);
-      res.status(500).json({ error: error.message || "Failed to analyze complexity" });
+      res.status(500).json({ error: "Failed to analyze complexity" });
     }
   });
 
@@ -76,16 +89,16 @@ export function createChatRoutes(): Router {
     try {
       const validation = routerRequestSchema.safeParse(req.body);
       if (!validation.success) {
-        return res.status(400).json({ 
-          error: "Invalid request body", 
+        return res.status(400).json({
+          error: "Invalid request body",
           details: validation.error.message,
           code: "VALIDATION_ERROR"
         });
       }
 
       const { message, hasAttachments, attachmentTypes } = validation.data;
-      
-      const attachments = hasAttachments 
+
+      const attachments = hasAttachments
         ? attachmentTypes.length > 0
           ? attachmentTypes.map((type, idx) => ({ type, name: `attachment_${idx}` }))
           : [{ type: 'file', name: 'attached' }]
@@ -124,7 +137,7 @@ export function createChatRoutes(): Router {
       res.json({
         route: "chat",
         confidence: 0.5,
-        reasons: ["Router fallback due to error: " + errorMsg],
+        reasons: ["Router fallback due to error"],
         toolNeeds: [],
         planHint: [],
         tool_needs: [],
@@ -137,15 +150,15 @@ export function createChatRoutes(): Router {
     try {
       const validation = agentRunRequestSchema.safeParse(req.body);
       if (!validation.success) {
-        return res.status(400).json({ 
-          error: "Invalid request body", 
+        return res.status(400).json({
+          error: "Invalid request body",
           details: validation.error.message,
           code: "VALIDATION_ERROR"
         });
       }
 
       const { message, planHint } = validation.data;
-      
+
       console.log(JSON.stringify({
         timestamp: new Date().toISOString(),
         level: "info",
@@ -153,12 +166,12 @@ export function createChatRoutes(): Router {
         event: "agent_run_started",
         objective: message.slice(0, 100),
       }));
-      
+
       const result = await runAgent(message, planHint);
 
       res.json({
         success: result.success,
-        run_id: result.run_id,
+        run_id: crypto.randomUUID(),
         result: result.result,
         state: {
           objective: result.state.objective,
@@ -170,9 +183,9 @@ export function createChatRoutes(): Router {
       });
     } catch (error: any) {
       const errorMsg = error.message || "Failed to run agent";
-      console.error("[ChatRoutes] Agent run error:", JSON.stringify({ error: errorMsg, stack: error.stack?.slice(0, 500) }));
-      res.status(500).json({ 
-        error: errorMsg, 
+      console.error("[ChatRoutes] Agent run error:", JSON.stringify({ error: errorMsg }));
+      res.status(500).json({
+        error: "Failed to run agent",
         code: "AGENT_RUN_ERROR",
         suggestion: "Check server logs for details. If LLM is unavailable, heuristic fallback should apply."
       });
@@ -181,23 +194,25 @@ export function createChatRoutes(): Router {
 
   router.post("/escalation-check", async (req: Request, res: Response) => {
     try {
-      const { response } = req.body;
-      if (!response || typeof response !== "string") {
+      const validation = escalationCheckSchema.safeParse(req.body);
+      if (!validation.success) {
         return res.status(400).json({ error: "Response string required" });
       }
 
+      const { response } = validation.data;
       const result = checkDynamicEscalation(response);
       res.json(result);
     } catch (error: any) {
       console.error("[ChatRoutes] Escalation check error:", error);
-      res.status(500).json({ error: error.message || "Failed to check escalation" });
+      res.status(500).json({ error: "Failed to check escalation" });
     }
   });
+
 
   router.post("/uploads/:uploadId/analyze", async (req: Request, res: Response) => {
     try {
       const { uploadId } = req.params;
-      const userId = (req as any).user?.id || "anonymous";
+      const userId = (req as AuthenticatedRequest).user?.id || "anonymous";
 
       const validation = analyzeRequestSchema.safeParse(req.body);
       if (!validation.success) {
@@ -206,222 +221,35 @@ export function createChatRoutes(): Router {
 
       const { messageId, scope, sheetsToAnalyze, prompt } = validation.data;
 
-      const upload = await getUpload(uploadId);
-      if (!upload) {
-        return res.status(404).json({ error: "Upload not found" });
-      }
-
-      let targetSheets: string[];
-      const isSpreadsheet = isSpreadsheetFile(upload.originalFilename || '');
-
-      if (isSpreadsheet) {
-        const sheets = await getSheets(uploadId);
-        if (sheets.length === 0) {
-          targetSheets = ["Sheet1"];
-        } else if (scope === "selected" && sheetsToAnalyze && sheetsToAnalyze.length > 0) {
-          targetSheets = sheetsToAnalyze.filter(name =>
-            sheets.some(s => s.name === name)
-          );
-          if (targetSheets.length === 0) {
-            return res.status(400).json({ error: "No valid sheets specified for analysis" });
-          }
-        } else if (scope === "active") {
-          targetSheets = [sheets[0].name];
-        } else {
-          targetSheets = sheets.map(s => s.name);
-        }
-      } else {
-        const baseName = (upload.originalFilename || 'Document').replace(/\.[^.]+$/, '');
-        targetSheets = [baseName];
-      }
-
-      const chatAnalysis = await storage.createChatMessageAnalysis({
-        messageId: messageId || null,
+      const result = await analysisService.startUploadAnalysis({
         uploadId,
-        status: "pending",
+        userId,
+        messageId,
         scope,
-        sheetsToAnalyze: targetSheets,
-        startedAt: new Date(),
+        sheetsToAnalyze,
+        prompt
       });
 
-      try {
-        const { sessionId } = await startAnalysis({
-          uploadId,
-          userId,
-          scope,
-          sheetNames: targetSheets,
-          analysisMode: "full",
-          userPrompt: prompt,
-        });
+      res.json(result);
 
-        await storage.updateChatMessageAnalysis(chatAnalysis.id, {
-          sessionId,
-          status: "analyzing",
-        });
-
-        res.json({
-          analysisId: chatAnalysis.id,
-          sessionId,
-          status: "analyzing" as const,
-        });
-      } catch (analysisError: any) {
-        await storage.updateChatMessageAnalysis(chatAnalysis.id, {
-          status: "failed",
-          completedAt: new Date(),
-        });
-        throw analysisError;
-      }
     } catch (error: any) {
       console.error("[ChatRoutes] Start analysis error:", error);
-      res.status(500).json({ error: error.message || "Failed to start analysis" });
+      const statusCode = error.message === "Upload not found" ? 404 : 500;
+      const safeMsg = error.message === "Upload not found" ? "Upload not found" : "Failed to start analysis";
+      res.status(statusCode).json({ error: safeMsg });
     }
   });
 
   router.get("/uploads/:uploadId/analysis", async (req: Request, res: Response) => {
     try {
       const { uploadId } = req.params;
-
-      const chatAnalysis = await storage.getChatMessageAnalysisByUploadId(uploadId);
-      if (!chatAnalysis) {
-        return res.status(404).json({ error: "Analysis not found for this upload" });
-      }
-
-      interface SheetStatus {
-        sheetName: string;
-        status: "queued" | "running" | "done" | "failed";
-        error?: string;
-      }
-
-      interface SheetResult {
-        sheetName: string;
-        generatedCode?: string;
-        summary?: string;
-        metrics?: Array<{ label: string; value: string }>;
-        preview?: { headers: string[]; rows: any[][] };
-        error?: string;
-      }
-
-      let progressData = { 
-        currentSheet: 0, 
-        totalSheets: 0,
-        sheets: [] as SheetStatus[]
-      };
-      let resultsData: {
-        crossSheetSummary?: string;
-        sheets: SheetResult[];
-      } = { sheets: [] };
-      let overallStatus: "pending" | "analyzing" | "completed" | "failed" = chatAnalysis.status as any;
-      let errorMessage: string | undefined;
-
-      if (chatAnalysis.sessionId) {
-        try {
-          const analysisProgress = await getAnalysisProgress(chatAnalysis.sessionId);
-          
-          progressData = {
-            currentSheet: analysisProgress.completedJobs,
-            totalSheets: analysisProgress.totalJobs,
-            sheets: analysisProgress.jobs.map(job => ({
-              sheetName: job.sheetName,
-              status: job.status,
-              error: job.error,
-            })),
-          };
-
-          if (analysisProgress.status === "completed" || analysisProgress.status === "failed") {
-            const results = await getAnalysisResults(chatAnalysis.sessionId);
-            if (results) {
-              resultsData.crossSheetSummary = results.crossSheetSummary;
-              
-              resultsData.sheets = analysisProgress.jobs.map(job => {
-                const sheetResults = results.perSheet[job.sheetName];
-                if (!sheetResults) {
-                  return {
-                    sheetName: job.sheetName,
-                    error: job.error || "No results available",
-                  };
-                }
-
-                const metricsObj = sheetResults.outputs?.metrics || {};
-                const metricsArray = Object.entries(metricsObj).map(([label, value]) => ({
-                  label,
-                  value: typeof value === 'object' ? JSON.stringify(value) : String(value),
-                }));
-
-                const PREVIEW_ROW_LIMIT = 100;
-                const PREVIEW_COL_LIMIT = 50;
-                
-                let preview: { headers: string[]; rows: any[][]; meta?: { totalRows: number; totalCols: number; truncated: boolean } } | undefined;
-                const tables = sheetResults.outputs?.tables || [];
-                if (tables.length > 0 && Array.isArray(tables[0])) {
-                  const tableData = tables[0] as any[];
-                  if (tableData.length > 0) {
-                    const firstRow = tableData[0];
-                    if (typeof firstRow === 'object' && firstRow !== null) {
-                      const allHeaders = Object.keys(firstRow);
-                      const limitedHeaders = allHeaders.slice(0, PREVIEW_COL_LIMIT);
-                      const totalRows = tableData.length;
-                      const totalCols = allHeaders.length;
-                      const truncated = totalRows > PREVIEW_ROW_LIMIT || totalCols > PREVIEW_COL_LIMIT;
-                      
-                      preview = {
-                        headers: limitedHeaders,
-                        rows: tableData.slice(0, PREVIEW_ROW_LIMIT).map(row => {
-                          const values = Object.values(row) as any[];
-                          return values.slice(0, PREVIEW_COL_LIMIT);
-                        }),
-                        meta: { totalRows, totalCols, truncated },
-                      };
-                      
-                      analysisLogger.trackPreviewGeneration(
-                        { uploadId, sessionId: chatAnalysis.sessionId || undefined },
-                        Math.min(totalRows, PREVIEW_ROW_LIMIT),
-                        Math.min(totalCols, PREVIEW_COL_LIMIT),
-                        truncated
-                      );
-                    }
-                  }
-                }
-
-                return {
-                  sheetName: job.sheetName,
-                  generatedCode: sheetResults.generatedCode,
-                  summary: sheetResults.summary,
-                  metrics: metricsArray.length > 0 ? metricsArray : undefined,
-                  preview,
-                };
-              });
-            }
-
-            overallStatus = analysisProgress.status;
-            
-            if (chatAnalysis.status !== "completed" && chatAnalysis.status !== "failed") {
-              await storage.updateChatMessageAnalysis(chatAnalysis.id, {
-                status: analysisProgress.status,
-                completedAt: new Date(),
-                summary: resultsData.crossSheetSummary,
-              });
-            }
-          } else {
-            overallStatus = analysisProgress.status === "running" ? "analyzing" : "pending";
-          }
-        } catch (progressError: any) {
-          console.error("[ChatRoutes] Error getting analysis progress:", progressError);
-          errorMessage = progressError.message;
-        }
-      }
-
-      res.json({
-        analysisId: chatAnalysis.id,
-        status: overallStatus,
-        progress: progressData,
-        results: resultsData.sheets.length > 0 ? resultsData : undefined,
-        error: errorMessage,
-        startedAt: chatAnalysis.startedAt?.toISOString(),
-        completedAt: chatAnalysis.completedAt?.toISOString(),
-      });
+      const result = await analysisService.getAnalysisStatus(uploadId);
+      res.json(result);
     } catch (error: any) {
       console.error("[ChatRoutes] Get analysis error:", error);
-      res.status(500).json({ error: error.message || "Failed to get analysis" });
+      const statusCode = error.message === "Analysis not found for this upload" ? 404 : 500;
+      const safeMsg = error.message === "Analysis not found for this upload" ? "Analysis not found for this upload" : "Failed to get analysis";
+      res.status(statusCode).json({ error: safeMsg });
     }
   });
 
@@ -437,14 +265,14 @@ export function createChatRoutes(): Router {
     try {
       const validation = intentRequestSchema.safeParse(req.body);
       if (!validation.success) {
-        return res.status(400).json({ 
-          error: "Invalid request body", 
-          details: validation.error.message 
+        return res.status(400).json({
+          error: "Invalid request body",
+          details: validation.error.message
         });
       }
 
       const { message, sessionId, userId, skipQualityGate, skipSelfHeal } = validation.data;
-      
+
       const result = await intentEnginePipeline.process(message, {
         sessionId: sessionId || `session_${Date.now()}`,
         userId: userId || 'anonymous',
@@ -465,17 +293,18 @@ export function createChatRoutes(): Router {
       });
     } catch (error: any) {
       console.error("[ChatRoutes] Intent engine error:", error);
-      res.status(500).json({ error: error.message || "Failed to process intent" });
+      res.status(500).json({ error: "Failed to process intent" });
     }
   });
 
   router.post("/intent/analyze", async (req: Request, res: Response) => {
     try {
-      const { message } = req.body;
-      if (!message || typeof message !== 'string') {
+      const validation = intentAnalyzeSchema.safeParse(req.body);
+      if (!validation.success) {
         return res.status(400).json({ error: "Message is required" });
       }
 
+      const { message } = validation.data;
       const analysis = await intentEnginePipeline.analyzeOnly(message);
 
       res.json({
@@ -489,7 +318,7 @@ export function createChatRoutes(): Router {
       });
     } catch (error: any) {
       console.error("[ChatRoutes] Intent analysis error:", error);
-      res.status(500).json({ error: error.message || "Failed to analyze intent" });
+      res.status(500).json({ error: "Failed to analyze intent" });
     }
   });
 
@@ -512,7 +341,7 @@ export function createChatRoutes(): Router {
       });
     } catch (error: any) {
       console.error("[ChatRoutes] Get session error:", error);
-      res.status(500).json({ error: error.message || "Failed to get session" });
+      res.status(500).json({ error: "Failed to get session" });
     }
   });
 
@@ -523,7 +352,7 @@ export function createChatRoutes(): Router {
       res.json({ success: true, message: "Session reset" });
     } catch (error: any) {
       console.error("[ChatRoutes] Reset session error:", error);
-      res.status(500).json({ error: error.message || "Failed to reset session" });
+      res.status(500).json({ error: "Failed to reset session" });
     }
   });
 

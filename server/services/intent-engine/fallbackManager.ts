@@ -61,6 +61,8 @@ interface FallbackResult {
   reasoning?: string;
   fallback_method: "llm" | "degraded_rule";
   error?: string;
+  // AGENTIC IMPROVEMENT #6: Suggested actions when intent is unclear
+  suggested_actions?: Array<{ label: string; action: string }>;
 }
 
 async function callLLMClassifier(
@@ -84,7 +86,7 @@ async function callLLMClassifier(
     clearTimeout(timeoutId);
 
     const content = response.choices[0]?.message?.content || "";
-    
+
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error("No JSON found in LLM response");
@@ -145,13 +147,21 @@ function degradedRuleFallback(normalizedText: string): FallbackResult {
     }
   }
 
+  // AGENTIC IMPROVEMENT #6: Return helpful suggestions when no pattern matches
   return {
     intent: "CHAT_GENERAL",
     output_format: null,
     slots: {},
     confidence: 0.50,
     fallback_method: "degraded_rule",
-    reasoning: "No pattern matched in degraded mode"
+    reasoning: "No pattern matched in degraded mode",
+    suggested_actions: [
+      { label: "📝 Crear un resumen", action: "dame un resumen del documento" },
+      { label: "📊 Analizar datos", action: "analiza los datos del documento" },
+      { label: "🔍 Buscar información", action: "busca información sobre [tema]" },
+      { label: "📄 Crear presentación", action: "crea una presentación sobre [tema]" },
+      { label: "📋 Extraer puntos clave", action: "extrae los puntos clave del documento" }
+    ]
   };
 }
 
@@ -166,7 +176,7 @@ export async function llmFallback(
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       const result = await llmCircuitBreaker.fire(normalizedText, originalText) as LLMClassification;
-      
+
       return {
         intent: result.intent,
         output_format: result.output_format,
@@ -187,10 +197,10 @@ export async function llmFallback(
   }
 
   console.error("[IntentRouter] All LLM attempts failed, using degraded fallback");
-  
+
   const degraded = degradedRuleFallback(normalizedText);
   degraded.error = lastError?.message;
-  
+
   return degraded;
 }
 

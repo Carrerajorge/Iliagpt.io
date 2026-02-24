@@ -5,6 +5,7 @@ import { google, gmail_v1 } from 'googleapis';
 import { storage } from '../storage';
 import type { GmailOAuthToken } from '@shared/schema';
 import { recordConnectorUsage } from '../lib/connectorMetrics';
+import { sanitizePlainText } from '../lib/textSanitizers';
 
 let connectionSettings: any;
 
@@ -398,7 +399,7 @@ async function getEmailThreadInternal(gmail: gmail_v1.Gmail, threadId: string): 
         to: getHeader(headers, 'To'),
         date: getHeader(headers, 'Date'),
         subject,
-        body: body.text || body.html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(),
+        body: body.text || sanitizePlainText(body.html, { maxLen: 20000, collapseWs: true }),
         bodyHtml: body.html || undefined,
         snippet: msg.snippet || '',
         source: {

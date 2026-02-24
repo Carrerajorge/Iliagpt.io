@@ -1,14 +1,12 @@
 import React, { memo, useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { convertToLatex, sanitizeMathInput } from "@/lib/mathParser";
+import { loadMathJax } from "@/lib/mathjaxLoader";
 import { Loader2, AlertCircle } from "lucide-react";
+import katex from "katex";
 
 declare global {
   interface Window {
-    katex?: {
-      render: (latex: string, element: HTMLElement, options?: any) => void;
-      renderToString: (latex: string, options?: any) => string;
-    };
     MathJax?: {
       typesetPromise?: (elements?: HTMLElement[]) => Promise<void>;
       tex2chtml?: (latex: string, options?: any) => HTMLElement;
@@ -39,51 +37,10 @@ interface RenderState {
   version?: number;
 }
 
-const MATHJAX_CDN = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js";
-
-let mathJaxLoading: Promise<void> | null = null;
-
-async function loadMathJax(): Promise<void> {
-  if (window.MathJax?.typesetPromise) {
-    return Promise.resolve();
-  }
-
-  if (mathJaxLoading) {
-    return mathJaxLoading;
-  }
-
-  mathJaxLoading = new Promise((resolve, reject) => {
-    (window as any).MathJax = {
-      tex: {
-        inlineMath: [["$", "$"]],
-        displayMath: [["$$", "$$"]],
-      },
-      startup: {
-        ready: () => {
-          (window as any).MathJax.startup.defaultReady();
-          resolve();
-        },
-      },
-    };
-
-    const script = document.createElement("script");
-    script.src = MATHJAX_CDN;
-    script.async = true;
-    script.onerror = () => reject(new Error("Failed to load MathJax"));
-    document.head.appendChild(script);
-  });
-
-  return mathJaxLoading;
-}
-
 function renderWithKatex(latex: string, displayMode: boolean): { html: string; success: boolean; error?: string } {
   try {
-    if (!window.katex) {
-      return { html: "", success: false, error: "KaTeX not loaded" };
-    }
-    
     const sanitized = sanitizeMathInput(latex);
-    const html = window.katex.renderToString(sanitized, {
+    const html = katex.renderToString(sanitized, {
       displayMode,
       throwOnError: true,
       trust: false,
@@ -168,7 +125,7 @@ export const MathRenderer = memo(function MathRenderer({
         await loadMathJax();
         if (versionRef.current !== currentVersion || !containerRef.current) return;
         
-        const sanitizedLatex = sanitizeMathInput(state.latex);
+        const sanitizedLatex = sanitizeMathInput(state.latex ?? "");
         const mathContent = state.displayMode 
           ? `$$${sanitizedLatex}$$` 
           : `$${sanitizedLatex}$`;

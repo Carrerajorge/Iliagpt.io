@@ -4,6 +4,10 @@ import { libraryService, LibraryServiceError, type FileMetadata } from "../servi
 import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
 import { db } from "../db";
 import { eq, and, desc, isNull } from "drizzle-orm";
+import { generateWordDocument, generateExcelDocument, generatePptDocument, parseExcelFromText, parseSlidesFromText } from "../services/documentGeneration";
+import { DocumentCompiler, type CompilerFormat } from "../agent/documents/compiler";
+import fs from "fs";
+import path from "path";
 import {
   libraryFiles,
   libraryFolders,
@@ -614,11 +618,11 @@ export function createLibraryRouter() {
     try {
       const user = (req as any).user;
       const userId = user?.claims?.sub;
-      
+
       if (!userId) {
         return res.status(401).json({ error: "Authentication required" });
       }
-      
+
       const mediaType = req.query.type as string | undefined;
       const items = await storage.getLibraryItems(userId, mediaType);
       res.json(items);
@@ -632,13 +636,13 @@ export function createLibraryRouter() {
     try {
       const user = (req as any).user;
       const userId = user?.claims?.sub;
-      
+
       if (!userId) {
         return res.status(401).json({ error: "Authentication required" });
       }
-      
+
       const { mediaType, title, description, storagePath, thumbnailPath, mimeType, size, metadata, sourceChatId } = req.body;
-      
+
       const item = await storage.createLibraryItem({
         userId,
         mediaType,
@@ -651,7 +655,7 @@ export function createLibraryRouter() {
         metadata: metadata || null,
         sourceChatId: sourceChatId || null,
       });
-      
+
       res.json(item);
     } catch (error: any) {
       console.error("Error creating library item:", error);
@@ -663,21 +667,189 @@ export function createLibraryRouter() {
     try {
       const user = (req as any).user;
       const userId = user?.claims?.sub;
-      
+
       if (!userId) {
         return res.status(401).json({ error: "Authentication required" });
       }
-      
+
       const deleted = await storage.deleteLibraryItem(req.params.id, userId);
-      
+
       if (!deleted) {
         return res.status(404).json({ error: "Library item not found" });
       }
-      
+
       res.json({ success: true });
     } catch (error: any) {
       console.error("Error deleting library item:", error);
       res.status(500).json({ error: "Failed to delete library item" });
+    }
+  });
+
+  // ============================================
+  // SAVE FROM EDITOR — Save AI-generated document to library
+  // ============================================
+  router.post("/api/library/save-from-editor", async (req, res) => {
+    try {
+      const userId = getOrCreateSecureUserId(req);
+      const { title, content, type } = req.body ?? {};
+
+      // Strict type validation (replaces loose truthy checks)
+      if (typeof title !== "string" || typeof content !== "string" || typeof type !== "string") {
+        return res.status(400).json({ error: "title, content, and type must be non-empty strings" });
+      }
+
+      const ALLOWED_TYPES = ["word", "excel", "ppt"] as const;
+      if (!(ALLOWED_TYPES as readonly string[]).includes(type)) {
+        return res.status(400).json({ error: "type must be 'word', 'excel', or 'ppt'" });
+      }
+
+      // Content size validation (prevent huge payloads from consuming memory)
+      const MAX_TITLE_LENGTH = 500;
+      const MAX_CONTENT_SIZE = 5 * 1024 * 1024; // 5MB (Express body limit is 1MB, but be safe)
+      if (title.length === 0 || title.length > MAX_TITLE_LENGTH) {
+        return res.status(400).json({ error: `Title must be 1-${MAX_TITLE_LENGTH} characters` });
+      }
+      if (content.length === 0 || content.length > MAX_CONTENT_SIZE) {
+        return res.status(400).json({ error: "Content must be non-empty and under 5MB" });
+      }
+
+      // Generate binary document via DocumentCompiler (unified pipeline)
+      const formatMap: Record<string, CompilerFormat> = { word: "docx", excel: "xlsx", ppt: "pptx" };
+      const compilerFormat = formatMap[type];
+      if (!compilerFormat) {
+        return res.status(400).json({ error: "Unsupported document type" });
+      }
+
+      const compiler = new DocumentCompiler("corporate");
+      let buffer: Buffer;
+      let ext: string;
+      let mimeType: string;
+
+      try {
+        const result = await compiler.compileFromText({
+          format: compilerFormat,
+          title,
+          content,
+          theme: "corporate",
+        });
+        buffer = result.buffer;
+        ext = compilerFormat === "pptx" ? "pptx" : compilerFormat === "docx" ? "docx" : "xlsx";
+        mimeType = result.mimeType;
+
+        if (result.metrics.degraded) {
+          console.warn(`[Library] Document compiled in degraded mode: ${result.validation.issues.map(i => i.message).join(", ")}`);
+        }
+      } catch (compilerErr) {
+        // Fallback to legacy generation if compiler fails entirely
+        console.warn(`[Library] Compiler failed, using legacy generation: ${compilerErr instanceof Error ? compilerErr.message : String(compilerErr)}`);
+        switch (type) {
+          case "word":
+            buffer = await generateWordDocument(title, content);
+            ext = "docx";
+            mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+            break;
+          case "excel": {
+            const excelData = parseExcelFromText(content);
+            buffer = await generateExcelDocument(title, excelData);
+            ext = "xlsx";
+            mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+            break;
+          }
+          case "ppt": {
+            const slides = parseSlidesFromText(content);
+            buffer = await generatePptDocument(title, slides);
+            ext = "pptx";
+            mimeType = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+            break;
+          }
+          default:
+            return res.status(400).json({ error: "Unsupported document type" });
+        }
+      }
+
+      // Save to local uploads directory (with cleanup on failure)
+      const fileUuid = randomUUID();
+      // Sanitize filename: strip unsafe chars, cap at 80 chars to prevent filesystem issues
+      const safeTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').substring(0, 80);
+      const filename = `${safeTitle || 'document'}_${fileUuid.slice(0, 8)}.${ext}`;
+      const uploadsDir = path.join(process.cwd(), "uploads");
+      await fs.promises.mkdir(uploadsDir, { recursive: true });
+      const filePath = path.join(uploadsDir, fileUuid);
+      const tmpPath = filePath + ".tmp";
+
+      try {
+        // Atomic write: write to tmp first, then rename
+        await fs.promises.writeFile(tmpPath, buffer, { mode: 0o640 });
+        await fs.promises.rename(tmpPath, filePath);
+      } catch (writeErr: any) {
+        await fs.promises.unlink(tmpPath).catch(() => { }); // cleanup tmp on error
+        if (writeErr?.code === "ENOSPC") {
+          return res.status(507).json({ error: "Insufficient disk space to save document" });
+        }
+        throw writeErr;
+      }
+
+      let file: any;
+      try {
+        // Save metadata to library database
+        const storagePath = `/objects/uploads/${fileUuid}`;
+        file = await libraryService.saveFileMetadata(userId, storagePath, {
+          name: `${title}.${ext}`,
+          originalName: filename,
+          type: "document",
+          mimeType,
+          extension: ext,
+          size: buffer.length,
+          tags: ["ai-generated"],
+        });
+      } catch (dbErr) {
+        // Clean up written file if DB save fails
+        try {
+          await fs.promises.unlink(filePath);
+        } catch (cleanupErr) {
+          console.warn(`[Library] Failed to cleanup orphaned file ${fileUuid}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+        }
+        throw dbErr;
+      }
+
+      console.log(`[Library] Saved document to library: ${filename} (${buffer.length} bytes) -> ${file.id}`);
+
+      res.json({
+        success: true,
+        file: {
+          id: file.id,
+          uuid: file.uuid,
+          name: file.name,
+          size: buffer.length,
+          type: ext,
+        },
+      });
+    } catch (error: any) {
+      console.error("Error saving document to library:", error instanceof Error ? error.message : String(error));
+      if (error?.code === "ENOSPC") {
+        return res.status(507).json({ error: "Insufficient disk space" });
+      }
+      // Don't leak internal error details to client
+      res.status(500).json({ error: "Failed to save document to library" });
+    }
+  });
+
+  router.get("/api/library/export", async (req, res) => {
+    try {
+      const userId = getOrCreateSecureUserId(req);
+      const metadata = await libraryService.exportLibraryMetadata(userId);
+
+      // Set headers for file download
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="library_export_${new Date().toISOString().split('T')[0]}.json"`);
+
+      res.json(metadata);
+    } catch (error: any) {
+      if (error instanceof LibraryServiceError) {
+        return res.status(error.statusCode).json({ error: error.message, code: error.code });
+      }
+      console.error("Error exporting library:", error);
+      res.status(500).json({ error: "Failed to export library" });
     }
   });
 

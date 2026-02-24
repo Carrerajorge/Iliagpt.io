@@ -2,7 +2,7 @@ import { EventEmitter } from "events";
 import { randomUUID } from "crypto";
 import { TraceEvent, TraceEventSchema, RunState } from "./types";
 
-type TraceEventType = TraceEvent["event_type"];
+type TraceEventType = TraceEvent["event_type"] | "thought";
 
 interface TraceBusOptions {
   maxListeners?: number;
@@ -26,13 +26,13 @@ export class TraceBus extends EventEmitter {
     this.traceId = randomUUID();
     this.currentSpanId = randomUUID();
     this.spanStack.push(this.currentSpanId);
-    
+
     this.options = {
       maxListeners: options.maxListeners ?? 100,
       bufferSize: options.bufferSize ?? 50,
       flushIntervalMs: options.flushIntervalMs ?? 100,
     };
-    
+
     this.setMaxListeners(this.options.maxListeners);
     this.startFlushTimer();
   }
@@ -45,10 +45,10 @@ export class TraceBus extends EventEmitter {
 
   private flush(): void {
     if (this.buffer.length === 0) return;
-    
+
     const events = [...this.buffer];
     this.buffer = [];
-    
+
     for (const event of events) {
       this.emit("trace", event);
     }
@@ -64,8 +64,8 @@ export class TraceBus extends EventEmitter {
     message: string,
     extra: Partial<Omit<TraceEvent, "schema_version" | "run_id" | "seq" | "trace_id" | "span_id" | "parent_span_id" | "node_id" | "agent" | "event_type" | "message" | "ts">> = {}
   ): TraceEvent {
-    const parentSpanId = this.spanStack.length > 1 
-      ? this.spanStack[this.spanStack.length - 2] 
+    const parentSpanId = this.spanStack.length > 1
+      ? this.spanStack[this.spanStack.length - 2]
       : null;
 
     const event: TraceEvent = {
@@ -114,7 +114,7 @@ export class TraceBus extends EventEmitter {
 
   private publish(event: TraceEvent): void {
     this.buffer.push(event);
-    
+
     if (this.buffer.length >= this.options.bufferSize) {
       this.flush();
     }
@@ -297,6 +297,14 @@ export class TraceBus extends EventEmitter {
     this.publish(event);
   }
 
+  thought(agent: string, message: string, data?: { content: string }): void {
+    const event = this.createEvent("thought", agent, message, {
+      status: "running",
+      data
+    });
+    this.publish(event);
+  }
+
   progressUpdate(agent: string, progress: number, metrics: TraceEvent["metrics"]): void {
     const event = this.createEvent("progress_update", agent, `Progress: ${progress.toFixed(1)}%`, {
       progress,
@@ -313,7 +321,7 @@ export class TraceBus extends EventEmitter {
     found: number;
     candidates_total: number;
   }): void {
-    const event = this.createEvent("search_progress", agent, 
+    const event = this.createEvent("search_progress", agent,
       `Search ${data.provider}: query ${data.query_idx}/${data.query_total}, found ${data.found}`, {
       progress: (data.query_idx / data.query_total) * 100,
       metrics: {
@@ -335,7 +343,7 @@ export class TraceBus extends EventEmitter {
     low_relevance: number;
   }): void {
     const total = data.geo_mismatch + data.year_out_of_range + data.duplicate + data.low_relevance;
-    const event = this.createEvent("filter_progress", agent, 
+    const event = this.createEvent("filter_progress", agent,
       `Filtering: ${total} removed (geo:${data.geo_mismatch}, year:${data.year_out_of_range}, dup:${data.duplicate}, rel:${data.low_relevance})`, {
       evidence: {
         fail_reason: `regions:${data.regions.join(",")};geo:${data.geo_mismatch};year:${data.year_out_of_range};dup:${data.duplicate};rel:${data.low_relevance}`,
@@ -349,7 +357,7 @@ export class TraceBus extends EventEmitter {
     ok: number;
     dead: number;
   }): void {
-    const event = this.createEvent("verify_progress", agent, 
+    const event = this.createEvent("verify_progress", agent,
       `Verification: ${data.checked} checked, ${data.ok} ok, ${data.dead} dead`, {
       metrics: {
         articles_verified: data.ok,
@@ -363,7 +371,7 @@ export class TraceBus extends EventEmitter {
     target: number;
   }): void {
     const progress = (data.accepted / data.target) * 100;
-    const event = this.createEvent("accepted_progress", agent, 
+    const event = this.createEvent("accepted_progress", agent,
       `Accepted: ${data.accepted}/${data.target}`, {
       progress: Math.min(progress, 100),
       metrics: {
@@ -379,7 +387,7 @@ export class TraceBus extends EventEmitter {
     target: number;
   }): void {
     const progress = (data.rows_written / data.target) * 100;
-    const event = this.createEvent("export_progress", agent, 
+    const event = this.createEvent("export_progress", agent,
       `Export: ${data.rows_written}/${data.target} rows (${data.columns_count} columns)`, {
       progress: Math.min(progress, 100),
       phase: "export",

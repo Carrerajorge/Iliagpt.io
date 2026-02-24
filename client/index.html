@@ -29,30 +29,53 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="initial-loader" style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0a0a0a;font-family:system-ui,-apple-system,sans-serif;">
+        <div style="text-align:center;">
+          <div style="width:40px;height:40px;border:3px solid rgba(255,255,255,0.1);border-top-color:#8b5cf6;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px;"></div>
+          <div style="color:#a1a1aa;font-size:14px;letter-spacing:0.5px;">IliaGPT</div>
+        </div>
+      </div>
+      <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+    </div>
     <script>
       (function() {
-        const originalError = console.error;
-        const originalWarn = console.warn;
-        const suppressedPatterns = [
+        var originalError = console.error;
+        var originalWarn = console.warn;
+        var suppressedPatterns = [
           '[vite] failed to connect to websocket',
           'Could not parse CSS stylesheet',
-          'adoptedStyleSheets'
+          'adoptedStyleSheets',
+          'WebSocket connection',
+          'Cannot read properties of undefined'
         ];
-        const shouldSuppress = (args) => {
-          const msg = args[0];
+        var shouldSuppress = function(args) {
+          var msg = args[0];
           if (!msg) return false;
-          const str = typeof msg === 'string' ? msg : (msg.message || String(msg));
-          return suppressedPatterns.some(p => str.includes(p));
+          var str = typeof msg === 'string' ? msg : (msg.message || String(msg));
+          return suppressedPatterns.some(function(p) { return str.includes(p); });
         };
-        console.error = function(...args) {
+        console.error = function() {
+          var args = Array.prototype.slice.call(arguments);
           if (shouldSuppress(args)) return;
           originalError.apply(console, args);
         };
-        console.warn = function(...args) {
+        console.warn = function() {
+          var args = Array.prototype.slice.call(arguments);
           if (shouldSuppress(args)) return;
           originalWarn.apply(console, args);
         };
+        window.addEventListener('error', function(e) {
+          if (e.message && (e.message.includes('send') || e.message.includes('WebSocket'))) {
+            e.preventDefault();
+            return false;
+          }
+        });
+        window.addEventListener('unhandledrejection', function(e) {
+          if (e.reason && e.reason.message && (e.reason.message.includes('WebSocket') || e.reason.message.includes('send'))) {
+            e.preventDefault();
+          }
+        });
       })();
     </script>
     <script type="module" src="/src/main.tsx"></script>

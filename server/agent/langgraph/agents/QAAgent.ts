@@ -4,7 +4,7 @@ import { BaseAgent, BaseAgentConfig, AgentTask, AgentResult, AgentCapability } f
 
 const xaiClient = new OpenAI({
   baseURL: "https://api.x.ai/v1",
-  apiKey: process.env.XAI_API_KEY,
+  apiKey: process.env.XAI_API_KEY || "missing",
 });
 
 const DEFAULT_MODEL = "grok-4-1-fast-non-reasoning";
@@ -117,46 +117,74 @@ Output formats:
     const requirements = task.input.requirements || task.description;
     const testType = task.input.testType || "functional";
 
-    const response = await xaiClient.chat.completions.create({
-      model: this.config.model,
-      messages: [
-        { role: "system", content: this.config.systemPrompt },
-        {
-          role: "user",
-          content: `Generate ${testType} test cases for:
-${requirements}
-
-Additional context: ${JSON.stringify(task.input)}
-
-Return JSON:
-{
-  "testSuite": {
-    "name": "test suite name",
-    "description": "what is being tested",
-    "testCases": [
+    const messages: any[] = [
+      { role: "system", content: this.config.systemPrompt },
       {
-        "id": "TC001",
-        "name": "test case name",
-        "description": "what is tested",
-        "preconditions": ["setup required"],
-        "steps": [{"step": 1, "action": "", "expectedResult": ""}],
-        "priority": "high|medium|low",
-        "type": "positive|negative|edge"
-      }
-    ]
-  },
-  "coverage": {
-    "requirements": ["covered requirements"],
-    "gaps": ["areas not covered"]
-  },
-  "estimatedDuration": "time to execute all tests"
-}`,
-        },
-      ],
-      temperature: 0.1,
-    });
+        role: "user",
+        content: `Generate ${testType} test cases for:\n${requirements}\n\nAdditional context: ${JSON.stringify(task.input)}\n\nReturn JSON:\n{\n  "testSuite": {\n    "name": "test suite name",\n    "description": "what is being tested",\n    "testCases": [\n      {\n        "id": "TC001",\n        "name": "test case name",\n        "description": "what is tested",\n        "preconditions": ["setup required"],\n        "steps": [{"step": 1, "action": "", "expectedResult": ""}],\n        "priority": "high|medium|low",\n        "type": "positive|negative|edge"\n      }\n    ]\n  },\n  "coverage": {\n    "requirements": ["covered requirements"],\n    "gaps": ["areas not covered"]\n  },\n  "estimatedDuration": "time to execute all tests"\n}`,
+      },
+    ];
 
-    const content = response.choices[0].message.content || "{}";
+    let content = "";
+    let isComplete = false;
+    let iteration = 0;
+
+    while (!isComplete && iteration < this.config.maxIterations) {
+      iteration++;
+      const response = await xaiClient.chat.completions.create({
+        model: this.config.model,
+        messages,
+        temperature: 0.1,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "delegate_task",
+              description: "Delegate a sub-task to a specialized agent.",
+              parameters: {
+                type: "object",
+                properties: {
+                  targetAgentName: { type: "string" },
+                  subTaskDescription: { type: "string" },
+                  inputData: { type: "object" }
+                },
+                required: ["targetAgentName", "subTaskDescription"]
+              }
+            }
+          }
+        ],
+        tool_choice: "auto",
+      });
+
+      const message = response.choices[0].message;
+      messages.push(message);
+
+      if (message.tool_calls) {
+        for (const toolCall of message.tool_calls) {
+          if (toolCall.type === "function" && toolCall.function?.name === "delegate_task") {
+            const args = JSON.parse(toolCall.function.arguments);
+            try {
+              const result = await this.delegateTask(args.targetAgentName, args.subTaskDescription, args.inputData || {});
+              messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: JSON.stringify(result.output)
+              });
+            } catch (err: any) {
+              messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: `Error delegating task: ${err.message}`
+              });
+            }
+          }
+        }
+      } else {
+        content = message.content || "{}";
+        isComplete = true;
+      }
+    }
+
     const jsonMatch = content.match(/\{[\s\S]*\}/);
 
     return {
@@ -171,34 +199,74 @@ Return JSON:
     const expected = task.input.expected || "";
     const criteria = task.input.criteria || [];
 
-    const response = await xaiClient.chat.completions.create({
-      model: this.config.model,
-      messages: [
-        { role: "system", content: this.config.systemPrompt },
-        {
-          role: "user",
-          content: `Validate output against specification:
-Actual: ${JSON.stringify(actual)}
-Expected: ${JSON.stringify(expected)}
-Criteria: ${JSON.stringify(criteria)}
-Task: ${task.description}
+    const messages: any[] = [
+      { role: "system", content: this.config.systemPrompt },
+      {
+        role: "user",
+        content: `Validate output against specification:\nActual: ${JSON.stringify(actual)}\nExpected: ${JSON.stringify(expected)}\nCriteria: ${JSON.stringify(criteria)}\nTask: ${task.description}\n\nReturn JSON:\n{\n  "valid": boolean,\n  "score": 0-100,\n  "checks": [\n    {"criterion": "", "passed": boolean, "details": "", "severity": "low|medium|high"}\n  ],\n  "discrepancies": ["list of differences"],\n  "recommendations": ["suggestions for improvement"]\n}`,
+      },
+    ];
 
-Return JSON:
-{
-  "valid": boolean,
-  "score": 0-100,
-  "checks": [
-    {"criterion": "", "passed": boolean, "details": "", "severity": "low|medium|high"}
-  ],
-  "discrepancies": ["list of differences"],
-  "recommendations": ["suggestions for improvement"]
-}`,
-        },
-      ],
-      temperature: 0.1,
-    });
+    let content = "";
+    let isComplete = false;
+    let iteration = 0;
 
-    const content = response.choices[0].message.content || "{}";
+    while (!isComplete && iteration < this.config.maxIterations) {
+      iteration++;
+      const response = await xaiClient.chat.completions.create({
+        model: this.config.model,
+        messages,
+        temperature: 0.1,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "delegate_task",
+              description: "Delegate a sub-task to a specialized agent.",
+              parameters: {
+                type: "object",
+                properties: {
+                  targetAgentName: { type: "string" },
+                  subTaskDescription: { type: "string" },
+                  inputData: { type: "object" }
+                },
+                required: ["targetAgentName", "subTaskDescription"]
+              }
+            }
+          }
+        ],
+        tool_choice: "auto",
+      });
+
+      const message = response.choices[0].message;
+      messages.push(message);
+
+      if (message.tool_calls) {
+        for (const toolCall of message.tool_calls) {
+          if (toolCall.type === "function" && toolCall.function?.name === "delegate_task") {
+            const args = JSON.parse(toolCall.function.arguments);
+            try {
+              const result = await this.delegateTask(args.targetAgentName, args.subTaskDescription, args.inputData || {});
+              messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: JSON.stringify(result.output)
+              });
+            } catch (err: any) {
+              messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: `Error delegating task: ${err.message}`
+              });
+            }
+          }
+        }
+      } else {
+        content = message.content || "{}";
+        isComplete = true;
+      }
+    }
+
     const jsonMatch = content.match(/\{[\s\S]*\}/);
 
     return {
@@ -212,44 +280,74 @@ Return JSON:
     const code = task.input.code || "";
     const context = task.input.context || "";
 
-    const response = await xaiClient.chat.completions.create({
-      model: this.config.model,
-      messages: [
-        { role: "system", content: this.config.systemPrompt },
-        {
-          role: "user",
-          content: `Find bugs and issues in:
-\`\`\`
-${code}
-\`\`\`
+    const messages: any[] = [
+      { role: "system", content: this.config.systemPrompt },
+      {
+        role: "user",
+        content: `Find bugs and issues in:\n\`\`\`\n${code}\n\`\`\`\n\nContext: ${context}\nTask: ${task.description}\n\nReturn JSON:\n{\n  "bugs": [\n    {\n      "id": "BUG001",\n      "severity": "critical|high|medium|low",\n      "type": "logic|security|performance|ux",\n      "location": "file:line",\n      "description": "what's wrong",\n      "reproductionSteps": ["how to reproduce"],\n      "suggestedFix": "how to fix",\n      "confidence": 0-100\n    }\n  ],\n  "codeSmells": ["potential issues"],\n  "edgeCases": ["unhandled scenarios"],\n  "overallRisk": "low|medium|high"\n}`,
+      },
+    ];
 
-Context: ${context}
-Task: ${task.description}
+    let content = "";
+    let isComplete = false;
+    let iteration = 0;
 
-Return JSON:
-{
-  "bugs": [
-    {
-      "id": "BUG001",
-      "severity": "critical|high|medium|low",
-      "type": "logic|security|performance|ux",
-      "location": "file:line",
-      "description": "what's wrong",
-      "reproductionSteps": ["how to reproduce"],
-      "suggestedFix": "how to fix",
-      "confidence": 0-100
+    while (!isComplete && iteration < this.config.maxIterations) {
+      iteration++;
+      const response = await xaiClient.chat.completions.create({
+        model: this.config.model,
+        messages,
+        temperature: 0.1,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "delegate_task",
+              description: "Delegate a sub-task to a specialized agent.",
+              parameters: {
+                type: "object",
+                properties: {
+                  targetAgentName: { type: "string" },
+                  subTaskDescription: { type: "string" },
+                  inputData: { type: "object" }
+                },
+                required: ["targetAgentName", "subTaskDescription"]
+              }
+            }
+          }
+        ],
+        tool_choice: "auto",
+      });
+
+      const message = response.choices[0].message;
+      messages.push(message);
+
+      if (message.tool_calls) {
+        for (const toolCall of message.tool_calls) {
+          if (toolCall.type === "function" && toolCall.function?.name === "delegate_task") {
+            const args = JSON.parse(toolCall.function.arguments);
+            try {
+              const result = await this.delegateTask(args.targetAgentName, args.subTaskDescription, args.inputData || {});
+              messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: JSON.stringify(result.output)
+              });
+            } catch (err: any) {
+              messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: `Error delegating task: ${err.message}`
+              });
+            }
+          }
+        }
+      } else {
+        content = message.content || "{}";
+        isComplete = true;
+      }
     }
-  ],
-  "codeSmells": ["potential issues"],
-  "edgeCases": ["unhandled scenarios"],
-  "overallRisk": "low|medium|high"
-}`,
-        },
-      ],
-      temperature: 0.1,
-    });
 
-    const content = response.choices[0].message.content || "{}";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
 
     return {
@@ -263,43 +361,74 @@ Return JSON:
     const target = task.input.target || "";
     const metrics = task.input.metrics || ["response_time", "throughput", "memory"];
 
-    const response = await xaiClient.chat.completions.create({
-      model: this.config.model,
-      messages: [
-        { role: "system", content: this.config.systemPrompt },
-        {
-          role: "user",
-          content: `Create performance test plan for:
-Target: ${target}
-Metrics: ${JSON.stringify(metrics)}
-Task: ${task.description}
-
-Return JSON:
-{
-  "testPlan": {
-    "scenarios": [
+    const messages: any[] = [
+      { role: "system", content: this.config.systemPrompt },
       {
-        "name": "scenario name",
-        "load": "concurrent users/requests",
-        "duration": "test duration",
-        "rampUp": "ramp up time"
-      }
-    ],
-    "metrics": ["metrics to measure"],
-    "thresholds": {"response_time": "< 200ms", "error_rate": "< 1%"}
-  },
-  "tools": ["recommended tools"],
-  "code": {
-    "k6": "k6 script",
-    "artillery": "artillery config"
-  }
-}`,
-        },
-      ],
-      temperature: 0.1,
-    });
+        role: "user",
+        content: `Create performance test plan for:\nTarget: ${target}\nMetrics: ${JSON.stringify(metrics)}\nTask: ${task.description}\n\nReturn JSON:\n{\n  "testPlan": {\n    "scenarios": [\n      {\n        "name": "scenario name",\n        "load": "concurrent users/requests",\n        "duration": "test duration",\n        "rampUp": "ramp up time"\n      }\n    ],\n    "metrics": ["metrics to measure"],\n    "thresholds": {"response_time": "< 200ms", "error_rate": "< 1%"}\n  },\n  "tools": ["recommended tools"],\n  "code": {\n    "k6": "k6 script",\n    "artillery": "artillery config"\n  }\n}`,
+      },
+    ];
 
-    const content = response.choices[0].message.content || "{}";
+    let content = "";
+    let isComplete = false;
+    let iteration = 0;
+
+    while (!isComplete && iteration < this.config.maxIterations) {
+      iteration++;
+      const response = await xaiClient.chat.completions.create({
+        model: this.config.model,
+        messages,
+        temperature: 0.1,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "delegate_task",
+              description: "Delegate a sub-task to a specialized agent.",
+              parameters: {
+                type: "object",
+                properties: {
+                  targetAgentName: { type: "string" },
+                  subTaskDescription: { type: "string" },
+                  inputData: { type: "object" }
+                },
+                required: ["targetAgentName", "subTaskDescription"]
+              }
+            }
+          }
+        ],
+        tool_choice: "auto",
+      });
+
+      const message = response.choices[0].message;
+      messages.push(message);
+
+      if (message.tool_calls) {
+        for (const toolCall of message.tool_calls) {
+          if (toolCall.type === "function" && toolCall.function?.name === "delegate_task") {
+            const args = JSON.parse(toolCall.function.arguments);
+            try {
+              const result = await this.delegateTask(args.targetAgentName, args.subTaskDescription, args.inputData || {});
+              messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: JSON.stringify(result.output)
+              });
+            } catch (err: any) {
+              messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: `Error delegating task: ${err.message}`
+              });
+            }
+          }
+        }
+      } else {
+        content = message.content || "{}";
+        isComplete = true;
+      }
+    }
+
     const jsonMatch = content.match(/\{[\s\S]*\}/);
 
     return {
@@ -313,37 +442,74 @@ Return JSON:
     const target = task.input.target || task.description;
     const standard = task.input.standard || "WCAG 2.1 AA";
 
-    const response = await xaiClient.chat.completions.create({
-      model: this.config.model,
-      messages: [
-        { role: "system", content: this.config.systemPrompt },
-        {
-          role: "user",
-          content: `Create accessibility test checklist for:
-Target: ${target}
-Standard: ${standard}
-Task: ${task.description}
+    const messages: any[] = [
+      { role: "system", content: this.config.systemPrompt },
+      {
+        role: "user",
+        content: `Create accessibility test checklist for:\nTarget: ${target}\nStandard: ${standard}\nTask: ${task.description}\n\nReturn JSON:\n{\n  "checklist": [\n    {\n      "criterion": "WCAG criterion",\n      "level": "A|AA|AAA",\n      "category": "perceivable|operable|understandable|robust",\n      "testMethod": "how to test",\n      "automatable": boolean\n    }\n  ],\n  "tools": ["recommended a11y tools"],\n  "commonIssues": ["likely accessibility issues to check"]\n}`,
+      },
+    ];
 
-Return JSON:
-{
-  "checklist": [
-    {
-      "criterion": "WCAG criterion",
-      "level": "A|AA|AAA",
-      "category": "perceivable|operable|understandable|robust",
-      "testMethod": "how to test",
-      "automatable": boolean
+    let content = "";
+    let isComplete = false;
+    let iteration = 0;
+
+    while (!isComplete && iteration < this.config.maxIterations) {
+      iteration++;
+      const response = await xaiClient.chat.completions.create({
+        model: this.config.model,
+        messages,
+        temperature: 0.1,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "delegate_task",
+              description: "Delegate a sub-task to a specialized agent.",
+              parameters: {
+                type: "object",
+                properties: {
+                  targetAgentName: { type: "string" },
+                  subTaskDescription: { type: "string" },
+                  inputData: { type: "object" }
+                },
+                required: ["targetAgentName", "subTaskDescription"]
+              }
+            }
+          }
+        ],
+        tool_choice: "auto",
+      });
+
+      const message = response.choices[0].message;
+      messages.push(message);
+
+      if (message.tool_calls) {
+        for (const toolCall of message.tool_calls) {
+          if (toolCall.type === "function" && toolCall.function?.name === "delegate_task") {
+            const args = JSON.parse(toolCall.function.arguments);
+            try {
+              const result = await this.delegateTask(args.targetAgentName, args.subTaskDescription, args.inputData || {});
+              messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: JSON.stringify(result.output)
+              });
+            } catch (err: any) {
+              messages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: `Error delegating task: ${err.message}`
+              });
+            }
+          }
+        }
+      } else {
+        content = message.content || "{}";
+        isComplete = true;
+      }
     }
-  ],
-  "tools": ["recommended a11y tools"],
-  "commonIssues": ["likely accessibility issues to check"]
-}`,
-        },
-      ],
-      temperature: 0.1,
-    });
 
-    const content = response.choices[0].message.content || "{}";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
 
     return {

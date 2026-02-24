@@ -83,10 +83,10 @@ export class PostgresCheckpointer extends BaseCheckpointSaver {
       if (result.rows.length === 0) return undefined;
 
       const row = result.rows[0];
-      const checkpoint = typeof row.checkpoint === "string" 
-        ? JSON.parse(row.checkpoint) 
+      const checkpoint = typeof row.checkpoint === "string"
+        ? JSON.parse(row.checkpoint)
         : row.checkpoint;
-      const metadata = row.metadata 
+      const metadata = row.metadata
         ? (typeof row.metadata === "string" ? JSON.parse(row.metadata) : row.metadata)
         : {};
 
@@ -102,12 +102,12 @@ export class PostgresCheckpointer extends BaseCheckpointSaver {
         metadata: metadata as CheckpointMetadata,
         parentConfig: row.parent_checkpoint_id
           ? {
-              configurable: {
-                thread_id: row.thread_id,
-                checkpoint_ns: row.checkpoint_ns,
-                checkpoint_id: row.parent_checkpoint_id,
-              },
-            }
+            configurable: {
+              thread_id: row.thread_id,
+              checkpoint_ns: row.checkpoint_ns,
+              checkpoint_id: row.parent_checkpoint_id,
+            },
+          }
           : undefined,
       };
     } finally {
@@ -153,10 +153,10 @@ export class PostgresCheckpointer extends BaseCheckpointSaver {
       const result = await client.query<CheckpointRow>(query, params);
 
       for (const row of result.rows) {
-        const checkpoint = typeof row.checkpoint === "string" 
-          ? JSON.parse(row.checkpoint) 
+        const checkpoint = typeof row.checkpoint === "string"
+          ? JSON.parse(row.checkpoint)
           : row.checkpoint;
-        const metadata = row.metadata 
+        const metadata = row.metadata
           ? (typeof row.metadata === "string" ? JSON.parse(row.metadata) : row.metadata)
           : {};
 
@@ -172,12 +172,12 @@ export class PostgresCheckpointer extends BaseCheckpointSaver {
           metadata: metadata as CheckpointMetadata,
           parentConfig: row.parent_checkpoint_id
             ? {
-                configurable: {
-                  thread_id: row.thread_id,
-                  checkpoint_ns: row.checkpoint_ns,
-                  checkpoint_id: row.parent_checkpoint_id,
-                },
-              }
+              configurable: {
+                thread_id: row.thread_id,
+                checkpoint_ns: row.checkpoint_ns,
+                checkpoint_id: row.parent_checkpoint_id,
+              },
+            }
             : undefined,
         };
       }
@@ -277,11 +277,11 @@ export class PostgresCheckpointer extends BaseCheckpointSaver {
     }
   }
 
-  async delete(config: RunnableConfig): Promise<void> {
+  async deleteThread(threadId: string): Promise<void> {
     await this.initialize();
 
-    const threadId = config.configurable?.thread_id as string;
-    const checkpointNs = (config.configurable?.checkpoint_ns as string) || "";
+    // const threadId = config.configurable?.thread_id as string;
+    const checkpointNs = ""; // Default namespace or delete all?
 
     if (!threadId) return;
 
@@ -321,7 +321,10 @@ export class PostgresCheckpointer extends BaseCheckpointSaver {
   }
 }
 
-export const checkpointer = new PostgresCheckpointer({});
+import { RedisCheckpointer } from "./redisCheckpointer";
+
+export const postgresCheckpointer = new PostgresCheckpointer();
+export const checkpointer = new RedisCheckpointer();
 
 export interface ConversationMemory {
   threadId: string;

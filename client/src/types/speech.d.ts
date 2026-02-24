@@ -1,3 +1,4 @@
+declare global {
 interface SpeechRecognitionErrorEvent extends Event {
   error: string;
   message?: string;
@@ -68,11 +69,10 @@ interface SpeechGrammar {
   weight: number;
 }
 
-declare global {
-  interface Window {
-    SpeechRecognition: SpeechRecognitionConstructor;
-    webkitSpeechRecognition: SpeechRecognitionConstructor;
-  }
+interface Window {
+  SpeechRecognition: SpeechRecognitionConstructor;
+  webkitSpeechRecognition: SpeechRecognitionConstructor;
+}
 }
 
 export {};

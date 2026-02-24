@@ -269,7 +269,7 @@ function extractTopic(text: string, locale: SupportedLocale): string | null {
   }
 
   const genericPatterns = [
-    /(?:sobre|about|acerca de|on|regarding)\s+["']?([^"']+?)["']?\s+(?:y|and|et|und|e)\s+/i,
+    /(?:sobre|about|acerca de|on|regarding)\s+["']?([^"'\n]{3,160})["']?\s+(?:y|and|et|und|e)\s+/i,
     /["']([^"']+)["']/
   ];
 

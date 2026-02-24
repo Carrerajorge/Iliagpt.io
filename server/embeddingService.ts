@@ -70,6 +70,10 @@ function extractKeywords(text: string): string[] {
 const EMBEDDING_DIMENSIONS = 1536;
 
 export async function generateEmbedding(text: string): Promise<number[]> {
+  // Guard against type confusion via parameter tampering (CodeQL: type-confusion)
+  if (typeof text !== "string") {
+    throw new TypeError("generateEmbedding: text must be a string");
+  }
   const keywords = extractKeywords(text.slice(0, LIMITS.MAX_EMBEDDING_INPUT));
   const embedding = new Array(EMBEDDING_DIMENSIONS).fill(0);
   

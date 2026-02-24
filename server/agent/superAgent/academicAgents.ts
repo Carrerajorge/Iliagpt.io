@@ -214,8 +214,8 @@ function titleSimilarity(a: string, b: string): number {
 
 export async function verifyCandidate(
   candidate: AcademicCandidate,
-  yearStart: number = 2020,
-  yearEnd: number = 2025
+  yearStart: number = new Date().getFullYear() - 5,
+  yearEnd: number = new Date().getFullYear()
 ): Promise<VerificationResult> {
   if (!candidate.doi) {
     return {
@@ -297,8 +297,8 @@ export async function verifyCandidate(
 export async function verifyBatch(
   candidates: AcademicCandidate[],
   maxConcurrency: number = 5,
-  yearStart: number = 2020,
-  yearEnd: number = 2025
+  yearStart: number = new Date().getFullYear() - 5,
+  yearEnd: number = new Date().getFullYear()
 ): Promise<AcademicCandidate[]> {
   console.log(`[LinkVerifierAgent] Verifying ${candidates.length} candidates (years ${yearStart}-${yearEnd}, concurrency=${maxConcurrency})...`);
   console.log(`[LinkVerifierAgent] DOI cache size: ${doiCache.size} entries`);
@@ -435,8 +435,8 @@ export interface CriticResult {
 export function runCriticGuard(
   candidates: AcademicCandidate[],
   targetCount: number = 50,
-  yearStart: number = 2020,
-  yearEnd: number = 2025
+  yearStart: number = new Date().getFullYear() - 5,
+  yearEnd: number = new Date().getFullYear()
 ): CriticResult {
   console.log(`[CriticGuardAgent] Checking ${candidates.length} candidates against criteria...`);
   

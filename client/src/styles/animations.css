@@ -666,3 +666,102 @@
 .streaming-indicator-container {
   animation: fadeIn 0.2s ease-out forwards;
 }
+
+/* ========================================
+   VIEW TRANSITIONS - SMOOTH ANIMATIONS
+======================================== */
+
+/* Fade in with subtle slide up */
+@keyframes viewFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Fade out with slide down */
+@keyframes viewFadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+/* Slide in from right */
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Slide in from left */
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Scale up animation */
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Utility classes */
+.view-transition-enter {
+  animation: viewFadeIn 200ms ease-out forwards;
+}
+
+.view-transition-exit {
+  animation: viewFadeOut 150ms ease-in forwards;
+}
+
+.slide-in-right {
+  animation: slideInRight 200ms ease-out forwards;
+}
+
+.slide-in-left {
+  animation: slideInLeft 200ms ease-out forwards;
+}
+
+.scale-in {
+  animation: scaleIn 200ms ease-out forwards;
+}
+
+/* Staggered children animations */
+.stagger-children > * {
+  animation: viewFadeIn 200ms ease-out forwards;
+  animation-fill-mode: both;
+}
+
+.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2) { animation-delay: 50ms; }
+.stagger-children > *:nth-child(3) { animation-delay: 100ms; }
+.stagger-children > *:nth-child(4) { animation-delay: 150ms; }
+.stagger-children > *:nth-child(5) { animation-delay: 200ms; }
+.stagger-children > *:nth-child(6) { animation-delay: 250ms; }
+

@@ -1,81 +1,64 @@
 import Stripe from 'stripe';
 
-let connectionSettings: any;
+let stripeClient: Stripe | null = null;
 
-async function getCredentials() {
-  const hostname = process.env.REPLIT_CONNECTORS_HOSTNAME;
-  const xReplitToken = process.env.REPL_IDENTITY
-    ? 'repl ' + process.env.REPL_IDENTITY
-    : process.env.WEB_REPL_RENEWAL
-      ? 'depl ' + process.env.WEB_REPL_RENEWAL
-      : null;
-
-  if (!xReplitToken) {
-    throw new Error('X_REPLIT_TOKEN not found for repl/depl');
+// Get the secret key lazily to ensure dotenv has loaded
+function getSecretKey(): string {
+  const key = process.env.STRIPE_SECRET_KEY || '';
+  if (!key) {
+    throw new Error('STRIPE_SECRET_KEY not configured');
   }
-
-  const connectorName = 'stripe';
-  const isProduction = process.env.REPLIT_DEPLOYMENT === '1';
-  const targetEnvironment = isProduction ? 'production' : 'development';
-
-  const url = new URL(`https://${hostname}/api/v2/connection`);
-  url.searchParams.set('include_secrets', 'true');
-  url.searchParams.set('connector_names', connectorName);
-  url.searchParams.set('environment', targetEnvironment);
-
-  const response = await fetch(url.toString(), {
-    headers: {
-      'Accept': 'application/json',
-      'X_REPLIT_TOKEN': xReplitToken
-    }
-  });
-
-  const data = await response.json();
-  
-  connectionSettings = data.items?.[0];
-
-  if (!connectionSettings || (!connectionSettings.settings.publishable || !connectionSettings.settings.secret)) {
-    throw new Error(`Stripe ${targetEnvironment} connection not found`);
-  }
-
-  return {
-    publishableKey: connectionSettings.settings.publishable,
-    secretKey: connectionSettings.settings.secret,
-  };
+  return key;
 }
 
-export async function getUncachableStripeClient() {
-  const { secretKey } = await getCredentials();
-
-  return new Stripe(secretKey, {
-    apiVersion: '2025-11-17.clover',
-  });
-}
-
-export async function getStripePublishableKey() {
-  const { publishableKey } = await getCredentials();
-  return publishableKey;
-}
-
-export async function getStripeSecretKey() {
-  const { secretKey } = await getCredentials();
-  return secretKey;
-}
-
-let stripeSync: any = null;
-
-export async function getStripeSync() {
-  if (!stripeSync) {
-    const { StripeSync } = await import('stripe-replit-sync');
-    const secretKey = await getStripeSecretKey();
-
-    stripeSync = new StripeSync({
-      poolConfig: {
-        connectionString: process.env.DATABASE_URL!,
-        max: 2,
-      },
-      stripeSecretKey: secretKey,
+export function getStripeClient(): Stripe {
+  if (!stripeClient) {
+    stripeClient = new Stripe(getSecretKey(), {
+      apiVersion: '2026-01-28.clover',
     });
   }
-  return stripeSync;
+  return stripeClient;
 }
+
+// Alias for backwards compatibility
+export async function getUncachableStripeClient(): Promise<Stripe> {
+  return getStripeClient();
+}
+
+export function getStripePublishableKey(): string {
+  const key = process.env.STRIPE_PUBLISHABLE_KEY || '';
+  if (!key) {
+    throw new Error('STRIPE_PUBLISHABLE_KEY not configured');
+  }
+  return key;
+}
+
+export function getStripeSecretKey(): string {
+  return getSecretKey();
+}
+
+// Plan configuration
+export const STRIPE_PLANS = {
+  go: {
+    name: 'Go',
+    price: 5,
+    priceId: process.env.STRIPE_PRICE_GO || '', // Will be created in Stripe
+  },
+  plus: {
+    name: 'Plus',
+    price: 10,
+    priceId: process.env.STRIPE_PRICE_PLUS || '',
+  },
+  pro: {
+    name: 'Pro',
+    price: 200,
+    priceId: process.env.STRIPE_PRICE_PRO || '',
+  },
+  business: {
+    name: 'Business',
+    price: 25,
+    priceId: process.env.STRIPE_PRICE_BUSINESS || '',
+  },
+};
+
+export type PlanType = keyof typeof STRIPE_PLANS;

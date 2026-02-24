@@ -8,7 +8,6 @@ import {
   type GptSession,
   type InsertGptSession,
 } from "@shared/schema";
-import { randomUUID } from "crypto";
 
 export interface GptSessionContract {
   sessionId: string;
@@ -42,6 +41,33 @@ export interface GptSessionContract {
   maxTokens: number;
 }
 
+interface ResolvedGptRuntimeConfig {
+  systemPrompt: string;
+  capabilities: {
+    webBrowsing: boolean;
+    codeInterpreter: boolean;
+    imageGeneration: boolean;
+    fileUpload: boolean;
+    dataAnalysis: boolean;
+  };
+  toolPermissions: {
+    mode: 'allowlist' | 'denylist';
+    tools: string[];
+    actionsEnabled: boolean;
+  };
+  runtimePolicy: {
+    enforceModel: boolean;
+    modelFallbacks: string[];
+    maxTokensOverride?: number;
+    temperatureOverride?: number;
+    allowClientOverride: boolean;
+  };
+  preferredModel: string | null;
+  temperature: number;
+  topP: number;
+  maxTokens: number;
+}
+
 const DEFAULT_CAPABILITIES = {
   webBrowsing: false,
   codeInterpreter: false,
@@ -52,11 +78,86 @@ const DEFAULT_CAPABILITIES = {
 
 const DEFAULT_TOOL_PERMISSIONS = {
   mode: 'allowlist' as const,
-  allowedTools: [] as string[],
+  tools: [] as string[],
   actionsEnabled: true,
 };
 
+const DEFAULT_RUNTIME_POLICY = {
+  enforceModel: false,
+  modelFallbacks: [] as string[],
+  allowClientOverride: false,
+};
+
 const DEFAULT_MODEL = "grok-4-1-fast-non-reasoning";
+const DEFAULT_TEMPERATURE = 0.7;
+const DEFAULT_TOP_P = 1;
+const DEFAULT_MAX_TOKENS = 4096;
+
+function parseNumber(value: unknown, fallback: number): number;
+function parseNumber(value: unknown, fallback: undefined): number | undefined;
+function parseNumber(value: unknown, fallback: number | undefined) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = parseFloat(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+
+function parseBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+      return true;
+    }
+    if (normalized === "false") {
+      return false;
+    }
+  }
+  return fallback;
+}
+
+function toRecord(value: unknown): Record<string, any> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null;
+}
+
+function normalizeCapabilities(value: unknown): ResolvedGptRuntimeConfig["capabilities"] {
+  const source = toRecord(value) ?? {};
+  return {
+    webBrowsing: parseBoolean(source.webBrowsing, DEFAULT_CAPABILITIES.webBrowsing),
+    codeInterpreter: parseBoolean(source.codeInterpreter, DEFAULT_CAPABILITIES.codeInterpreter),
+    imageGeneration: parseBoolean(source.imageGeneration, DEFAULT_CAPABILITIES.imageGeneration),
+    fileUpload: parseBoolean(source.fileUpload, DEFAULT_CAPABILITIES.fileUpload),
+    dataAnalysis: parseBoolean(source.dataAnalysis, DEFAULT_CAPABILITIES.dataAnalysis),
+  };
+}
+
+function normalizeToolPermissions(value: unknown): ResolvedGptRuntimeConfig["toolPermissions"] {
+  const source = toRecord(value) ?? {};
+  return {
+    mode: source.mode === "denylist" ? "denylist" : DEFAULT_TOOL_PERMISSIONS.mode,
+    tools: Array.isArray(source.tools) ? source.tools.filter((tool) => typeof tool === "string") : DEFAULT_TOOL_PERMISSIONS.tools,
+    actionsEnabled: parseBoolean(source.actionsEnabled, DEFAULT_TOOL_PERMISSIONS.actionsEnabled),
+  };
+}
+
+function normalizeRuntimePolicy(value: unknown): ResolvedGptRuntimeConfig["runtimePolicy"] {
+  const source = toRecord(value) ?? {};
+  return {
+    enforceModel: parseBoolean(source.enforceModel, DEFAULT_RUNTIME_POLICY.enforceModel),
+    modelFallbacks: Array.isArray(source.modelFallbacks) ? source.modelFallbacks.filter((name) => typeof name === "string") : DEFAULT_RUNTIME_POLICY.modelFallbacks,
+    maxTokensOverride: parseNumber(source.maxTokensOverride, undefined),
+    temperatureOverride: parseNumber(source.temperatureOverride, undefined),
+    allowClientOverride: parseBoolean(source.allowClientOverride, DEFAULT_RUNTIME_POLICY.allowClientOverride),
+  };
+}
 
 function buildKnowledgeContext(knowledgeItems: GptKnowledge[]): string {
   const activeItems = knowledgeItems.filter(k => k.isActive === "true" && k.extractedText);
@@ -71,17 +172,60 @@ function buildKnowledgeContext(knowledgeItems: GptKnowledge[]): string {
   return contextParts.join("\n\n");
 }
 
-function mapDbSessionToContract(session: GptSession, gpt: Gpt, knowledgeContext: string): GptSessionContract {
-  const capabilities = session.frozenCapabilities || DEFAULT_CAPABILITIES;
-  const toolPerms = session.frozenToolPermissions || { mode: 'allowlist' as const, tools: [], actionsEnabled: true };
-  const runtimePolicy = session.frozenRuntimePolicy || { enforceModel: false, modelFallbacks: [], allowClientOverride: false };
+async function resolveGptRuntimeConfig(gpt: Gpt, configVersion: number): Promise<ResolvedGptRuntimeConfig> {
+  const version = await storage.getGptVersionByNumber(gpt.id, configVersion);
+  const definitionSnapshot = toRecord(version?.definitionSnapshot) ?? toRecord(gpt.definition);
+
+  const capabilities = {
+    ...DEFAULT_CAPABILITIES,
+    ...normalizeCapabilities(gpt.capabilities),
+    ...normalizeCapabilities(definitionSnapshot?.capabilities),
+  };
+
+  const runtimePolicy = {
+    ...DEFAULT_RUNTIME_POLICY,
+    ...normalizeRuntimePolicy(gpt.runtimePolicy),
+    ...normalizeRuntimePolicy(definitionSnapshot?.policies),
+  };
+
+  const toolPermissions = {
+    ...DEFAULT_TOOL_PERMISSIONS,
+    ...normalizeToolPermissions(gpt.toolPermissions),
+  };
+
+  const baseTemperature = parseNumber(version?.temperature ?? gpt.temperature, parseNumber(gpt.temperature, DEFAULT_TEMPERATURE)!);
+  const baseTopP = parseNumber(version?.topP ?? gpt.topP, parseNumber(gpt.topP, DEFAULT_TOP_P)!);
+  const baseMaxTokens = parseNumber(
+    version?.maxTokens ?? gpt.maxTokens,
+    parseNumber(gpt.maxTokens, DEFAULT_MAX_TOKENS)!
+  );
+
+  return {
+    systemPrompt: typeof definitionSnapshot?.instructions === "string" && definitionSnapshot.instructions.length > 0
+      ? definitionSnapshot.instructions
+      : gpt.systemPrompt,
+    capabilities,
+    toolPermissions,
+    runtimePolicy,
+    preferredModel: typeof definitionSnapshot?.model === "string" && definitionSnapshot.model.length > 0
+      ? definitionSnapshot.model
+      : gpt.recommendedModel || null,
+    temperature: parseNumber(runtimePolicy.temperatureOverride, baseTemperature),
+    topP: baseTopP,
+    maxTokens: parseNumber(runtimePolicy.maxTokensOverride, baseMaxTokens),
+  };
+}
+
+function mapDbSessionToContract(session: GptSession, runtimeConfig: ResolvedGptRuntimeConfig, knowledgeContext: string): GptSessionContract {
+  const capabilities = runtimeConfig.capabilities;
+  const runtimePolicy = runtimeConfig.runtimePolicy;
 
   return {
     sessionId: session.id,
     gptId: session.gptId,
     configVersion: session.configVersion,
-    systemPrompt: session.frozenSystemPrompt,
-    enforcedModelId: session.enforcedModelId || null,
+    systemPrompt: runtimeConfig.systemPrompt,
+    enforcedModelId: session.enforcedModelId || runtimeConfig.preferredModel,
     modelFallbacks: runtimePolicy.modelFallbacks || [],
     capabilities: {
       webBrowsing: capabilities.webBrowsing ?? false,
@@ -91,9 +235,9 @@ function mapDbSessionToContract(session: GptSession, gpt: Gpt, knowledgeContext:
       dataAnalysis: capabilities.dataAnalysis ?? false,
     },
     toolPermissions: {
-      mode: toolPerms.mode || 'allowlist',
-      allowedTools: toolPerms.tools || [],
-      actionsEnabled: toolPerms.actionsEnabled ?? true,
+      mode: runtimeConfig.toolPermissions.mode || 'allowlist',
+      allowedTools: runtimeConfig.toolPermissions.tools || [],
+      actionsEnabled: runtimeConfig.toolPermissions.actionsEnabled ?? true,
     },
     runtimePolicy: {
       enforceModel: runtimePolicy.enforceModel ?? false,
@@ -103,9 +247,9 @@ function mapDbSessionToContract(session: GptSession, gpt: Gpt, knowledgeContext:
       allowClientOverride: runtimePolicy.allowClientOverride ?? false,
     },
     knowledgeContext,
-    temperature: parseFloat(gpt.temperature || "0.7"),
-    topP: parseFloat(gpt.topP || "1"),
-    maxTokens: gpt.maxTokens || 4096,
+    temperature: runtimeConfig.temperature,
+    topP: runtimeConfig.topP,
+    maxTokens: runtimeConfig.maxTokens,
   };
 }
 
@@ -121,40 +265,37 @@ export async function createGptSession(chatId: string | null, gptId: string): Pr
     .filter(k => k.isActive === "true")
     .map(k => k.id);
 
-  const capabilities = (gpt.capabilities as any) || DEFAULT_CAPABILITIES;
-  const toolPermissions = gpt.toolPermissions || { mode: 'allowlist' as const, tools: [], actionsEnabled: true };
-  const runtimePolicy = gpt.runtimePolicy || { enforceModel: false, modelFallbacks: [] };
+  const configVersion = parseNumber(gpt.version, 1) || 1;
+  const runtimeConfig = await resolveGptRuntimeConfig(gpt, configVersion);
 
   let enforcedModelId: string | null = null;
-  if (runtimePolicy.enforceModel && gpt.recommendedModel) {
-    enforcedModelId = gpt.recommendedModel;
+  if (runtimeConfig.runtimePolicy.enforceModel) {
+    enforcedModelId = runtimeConfig.preferredModel || runtimeConfig.runtimePolicy.modelFallbacks[0] || DEFAULT_MODEL;
   }
-
-  const configVersion = gpt.version || 1;
 
   const sessionData: InsertGptSession = {
     chatId: chatId || null,
     gptId,
     configVersion,
-    frozenSystemPrompt: gpt.systemPrompt,
+    frozenSystemPrompt: runtimeConfig.systemPrompt,
     frozenCapabilities: {
-      webBrowsing: capabilities.webBrowsing ?? false,
-      codeInterpreter: capabilities.codeInterpreter ?? false,
-      imageGeneration: capabilities.imageGeneration ?? false,
-      fileUpload: capabilities.fileUpload ?? false,
-      dataAnalysis: capabilities.dataAnalysis ?? false,
+      webBrowsing: runtimeConfig.capabilities.webBrowsing ?? false,
+      codeInterpreter: runtimeConfig.capabilities.codeInterpreter ?? false,
+      imageGeneration: runtimeConfig.capabilities.imageGeneration ?? false,
+      fileUpload: runtimeConfig.capabilities.fileUpload ?? false,
+      dataAnalysis: runtimeConfig.capabilities.dataAnalysis ?? false,
     },
     frozenToolPermissions: {
-      mode: toolPermissions.mode || 'allowlist',
-      tools: toolPermissions.tools || [],
-      actionsEnabled: toolPermissions.actionsEnabled ?? true,
+      mode: runtimeConfig.toolPermissions.mode || 'allowlist',
+      tools: runtimeConfig.toolPermissions.tools || [],
+      actionsEnabled: runtimeConfig.toolPermissions.actionsEnabled ?? true,
     },
     frozenRuntimePolicy: {
-      enforceModel: runtimePolicy.enforceModel ?? false,
-      modelFallbacks: runtimePolicy.modelFallbacks || [],
-      maxTokensOverride: runtimePolicy.maxTokensOverride,
-      temperatureOverride: runtimePolicy.temperatureOverride,
-      allowClientOverride: runtimePolicy.allowClientOverride ?? false,
+      enforceModel: runtimeConfig.runtimePolicy.enforceModel ?? false,
+      modelFallbacks: runtimeConfig.runtimePolicy.modelFallbacks || [],
+      maxTokensOverride: runtimeConfig.runtimePolicy.maxTokensOverride,
+      temperatureOverride: runtimeConfig.runtimePolicy.temperatureOverride,
+      allowClientOverride: runtimeConfig.runtimePolicy.allowClientOverride ?? false,
     },
     enforcedModelId,
     knowledgeContextIds,
@@ -162,17 +303,14 @@ export async function createGptSession(chatId: string | null, gptId: string): Pr
 
   const [insertedSession] = await db.insert(gptSessions).values(sessionData).returning();
   
-  return mapDbSessionToContract(insertedSession, gpt, knowledgeContext);
+  return mapDbSessionToContract(insertedSession, runtimeConfig, knowledgeContext);
 }
 
 export async function getOrCreateSession(chatId: string, gptId: string): Promise<GptSessionContract> {
-  // If chatId is empty or invalid, always create a new session
-  // The client should use session_id from response to reuse the session
   if (!chatId || chatId.trim() === "" || chatId.startsWith("pending-")) {
     return createGptSession(null, gptId);
   }
 
-  // Try to find existing session for this chatId + gptId combination
   const [existingSession] = await db
     .select()
     .from(gptSessions)
@@ -185,11 +323,11 @@ export async function getOrCreateSession(chatId: string, gptId: string): Promise
     }
 
     const knowledgeItems = await storage.getGptKnowledge(gptId);
-    const knowledgeContext = buildKnowledgeContext(
-      knowledgeItems.filter(k => existingSession.knowledgeContextIds?.includes(k.id))
-    );
+    const filteredKnowledgeItems = knowledgeItems.filter(k => existingSession.knowledgeContextIds?.includes(k.id));
+    const knowledgeContext = buildKnowledgeContext(filteredKnowledgeItems);
+    const runtimeConfig = await resolveGptRuntimeConfig(gpt, existingSession.configVersion);
 
-    return mapDbSessionToContract(existingSession, gpt, knowledgeContext);
+    return mapDbSessionToContract(existingSession, runtimeConfig, knowledgeContext);
   }
 
   return createGptSession(chatId, gptId);
@@ -221,35 +359,26 @@ export function getEnforcedModel(contract: GptSessionContract, requestedModel?: 
   const enforceModel = policy?.enforceModel ?? false;
   const allowClientOverride = policy?.allowClientOverride ?? false;
   
-  // When enforceModel is true and overrides are not allowed, backend is fully authoritative
   if (enforceModel && !allowClientOverride) {
-    // Use enforced model if available
     if (contract.enforcedModelId) {
       return contract.enforcedModelId;
     }
-    // Fall back to first allowed model
     if (contract.modelFallbacks.length > 0) {
       return contract.modelFallbacks[0];
     }
-    // If no model specified in config, use safe default - do NOT allow client override
     return DEFAULT_MODEL;
   }
   
-  // If client override is allowed OR enforcement is off
   if (requestedModel) {
-    // If there are allowed models, validate the request
     if (contract.modelFallbacks.length > 0) {
       if (contract.modelFallbacks.includes(requestedModel)) {
         return requestedModel;
       }
-      // Client model not in allowed list - use first allowed
       return contract.modelFallbacks[0];
     }
-    // No restrictions - allow client model
     return requestedModel;
   }
   
-  // No client request - use contract defaults
   return contract.enforcedModelId || contract.modelFallbacks[0] || DEFAULT_MODEL;
 }
 
@@ -311,8 +440,9 @@ export async function getSessionById(sessionId: string): Promise<GptSessionContr
   const knowledgeContext = buildKnowledgeContext(
     knowledgeItems.filter(k => session.knowledgeContextIds?.includes(k.id))
   );
-  
-  return mapDbSessionToContract(session, gpt, knowledgeContext);
+  const runtimeConfig = await resolveGptRuntimeConfig(gpt, session.configVersion);
+
+  return mapDbSessionToContract(session, runtimeConfig, knowledgeContext);
 }
 
 export async function deleteSessionByChatId(chatId: string): Promise<void> {

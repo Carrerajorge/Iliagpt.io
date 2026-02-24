@@ -1,0 +1,68 @@
+{
+  "$ref": "#/definitions/AgentTask",
+  "definitions": {
+    "AgentTask": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The primary objective the agent needs to achieve"
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Rules, boundaries, or limitations the agent must strictly follow"
+        },
+        "context": {
+          "type": "object",
+          "additionalProperties": {},
+          "default": {},
+          "description": "Background information, entity data, or environment state relevant to the task"
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean",
+                "default": true
+              }
+            },
+            "required": [
+              "name",
+              "description"
+            ],
+            "additionalProperties": false
+          },
+          "default": [],
+          "description": "Expected files, documents, or data payloads the agent must produce"
+        },
+        "done_definition": {
+          "type": "string",
+          "description": "Clear criteria to determine if the goal has been successfully met"
+        }
+      },
+      "required": [
+        "goal",
+        "done_definition"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -40,9 +40,16 @@ export const ChatRequestSchema = z.object({
     .min(1, "At least one message is required")
     .max(100, "Maximum 100 messages allowed"),
   conversationId: z.string().min(1).max(100).optional(),
-  attachments: z.array(AttachmentSchema).max(20).optional(),
+  attachments: z.preprocess(
+    (v) => (v === null ? undefined : v),
+    z.array(AttachmentSchema).max(20).optional()
+  ),
+
+  images: z.preprocess(
+    (v) => (v === null ? undefined : v),
+    z.array(z.string()).optional()
+  ),
   useRag: z.boolean().optional(),
-  images: z.array(z.string()).optional(),
   gptConfig: z.record(z.any()).optional(),
   documentMode: z.boolean().optional(),
   figmaMode: z.boolean().optional(),
@@ -150,6 +157,8 @@ export function canonicalizeAttachment(attachment: Attachment): Attachment {
     type: attachment.type,
     content: attachment.content?.trim(),
     url: attachment.url?.trim(),
+    storagePath: attachment.storagePath?.trim(),
+    fileId: attachment.fileId?.trim(),
   };
 }
 

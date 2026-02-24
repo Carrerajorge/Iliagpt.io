@@ -1,0 +1,12 @@
+{
+    "mcpServers": {
+        "postgres_local": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-postgres",
+                "postgresql://mchat:mchat@localhost:5432/mchat_dev"
+            ]
+        }
+    }
+}

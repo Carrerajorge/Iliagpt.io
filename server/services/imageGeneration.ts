@@ -1,17 +1,37 @@
 import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
 
-const apiKey = process.env.GEMINI_API_KEY || process.env.AI_INTEGRATIONS_GEMINI_API_KEY || "";
-const baseURL = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
+// Keep env var resolution consistent with the rest of the codebase (chat uses GEMINI_API_KEY or GOOGLE_API_KEY).
+const geminiApiKey =
+  process.env.GEMINI_API_KEY ||
+  process.env.GOOGLE_API_KEY ||
+  process.env.AI_INTEGRATIONS_GEMINI_API_KEY ||
+  process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+  "";
+const xaiApiKey = process.env.XAI_API_KEY || process.env.GROK_API_KEY || "";
 
-const ai = new GoogleGenAI({ 
-  apiKey,
-  ...(baseURL ? { baseURL } : {})
-});
+// Lazy initialization to avoid errors during import
+let _ai: GoogleGenAI | null = null;
+let _xaiClient: OpenAI | null = null;
 
-const IMAGE_MODELS = [
-  "models/gemini-2.5-flash-image",
-  "gemini-2.0-flash-exp-image-generation",
-];
+function getGeminiClient(): GoogleGenAI | null {
+  if (!geminiApiKey) return null;
+  if (!_ai) {
+    _ai = new GoogleGenAI({ apiKey: geminiApiKey });
+  }
+  return _ai;
+}
+
+function getXaiClient(): OpenAI | null {
+  if (!xaiApiKey) return null;
+  if (!_xaiClient) {
+    _xaiClient = new OpenAI({
+      baseURL: "https://api.x.ai/v1",
+      apiKey: xaiApiKey,
+    });
+  }
+  return _xaiClient;
+}
 
 export interface ImageGenerationResult {
   imageBase64: string;
@@ -22,63 +42,84 @@ export interface ImageGenerationResult {
 
 export async function generateImage(prompt: string): Promise<ImageGenerationResult> {
   const startTime = Date.now();
-  console.log(`[ImageGeneration] Starting generation for prompt: "${prompt.slice(0, 100)}..."`);
-  
-  if (!apiKey) {
-    console.error("[ImageGeneration] No API key configured (GEMINI_API_KEY or AI_INTEGRATIONS_GEMINI_API_KEY)");
-    throw new Error("Image generation not configured - missing API key");
-  }
+  console.log(`[ImageGeneration] Generating: "${prompt.slice(0, 50)}..."`);
 
-  let lastError: Error | null = null;
-  
-  for (const model of IMAGE_MODELS) {
-    try {
-      console.log(`[ImageGeneration] Trying model: ${model}`);
-      
-      const response = await ai.models.generateContent({
-        model,
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: prompt }]
+  // Prefer Gemini for image generation in iliagpt.com (user request).
+  const ai = getGeminiClient();
+  if (ai) {
+    const GEMINI_IMAGE_MODELS = [
+      "imagen-3.0-generate-002",
+      "gemini-2.0-flash-exp-image-generation",
+    ];
+
+    for (const model of GEMINI_IMAGE_MODELS) {
+      try {
+        console.log(`[ImageGeneration] Trying Gemini model: ${model}`);
+
+        const response = await ai.models.generateContent({
+          model,
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: `Generate an image: ${prompt}` }]
+            }
+          ],
+          config: {
+            responseModalities: ["IMAGE"],
           }
-        ],
-        config: {
-          responseModalities: ["IMAGE"],
-        }
-      });
+        });
 
-      const parts = response.candidates?.[0]?.content?.parts;
-      
-      if (!parts || parts.length === 0) {
-        console.log(`[ImageGeneration] Model ${model} returned no parts, trying next...`);
-        continue;
-      }
+        const parts = response.candidates?.[0]?.content?.parts;
 
-      for (const part of parts) {
-        if (part.inlineData && part.inlineData.data) {
-          const durationMs = Date.now() - startTime;
-          console.log(`[ImageGeneration] Success with model ${model} in ${durationMs}ms`);
-          return {
-            imageBase64: part.inlineData.data,
-            mimeType: part.inlineData.mimeType || "image/png",
-            prompt,
-            model
-          };
+        if (parts) {
+          for (const part of parts) {
+            if (part.inlineData && part.inlineData.data) {
+              const durationMs = Date.now() - startTime;
+              console.log(`[ImageGeneration] Success with Gemini ${model} in ${durationMs}ms`);
+              return {
+                imageBase64: part.inlineData.data,
+                mimeType: part.inlineData.mimeType || "image/png",
+                prompt,
+                model
+              };
+            }
+          }
         }
+      } catch (error: any) {
+        console.error(`[ImageGeneration] Gemini ${model} failed:`, error.message);
       }
-      
-      console.log(`[ImageGeneration] Model ${model} returned parts but no image data, trying next...`);
-    } catch (error: any) {
-      console.error(`[ImageGeneration] Model ${model} failed:`, error.message);
-      lastError = error;
-      continue;
     }
   }
 
-  const errorMsg = lastError?.message || "All models failed to generate image";
-  console.error(`[ImageGeneration] All models exhausted. Last error: ${errorMsg}`);
-  throw new Error(`Image generation failed: ${errorMsg}`);
+  // Fallback to xAI Grok Image if available
+  const xaiClient = getXaiClient();
+  if (xaiClient) {
+    try {
+      console.log(`[ImageGeneration] Trying xAI Grok Image...`);
+
+      const response = await xaiClient.images.generate({
+        model: "grok-2-image-1212",
+        prompt: prompt,
+        n: 1,
+        response_format: "b64_json",
+      });
+
+      if (response.data && response.data[0]?.b64_json) {
+        const durationMs = Date.now() - startTime;
+        console.log(`[ImageGeneration] Success with xAI Grok Image in ${durationMs}ms`);
+        return {
+          imageBase64: response.data[0].b64_json,
+          mimeType: "image/png",
+          prompt,
+          model: "grok-2-image-1212"
+        };
+      }
+    } catch (error: any) {
+      console.error(`[ImageGeneration] xAI Grok Image failed:`, error.message);
+    }
+  }
+
+  throw new Error("Image generation failed: No working image generation service available");
 }
 
 export interface ImageEditResult extends ImageGenerationResult {
@@ -92,223 +133,113 @@ export async function editImage(
 ): Promise<ImageEditResult> {
   const startTime = Date.now();
   console.log(`[ImageGeneration] Starting edit for prompt: "${editPrompt.slice(0, 100)}..."`);
-  
-  if (!apiKey) {
-    console.error("[ImageGeneration] No API key configured");
-    throw new Error("Image generation not configured - missing API key");
-  }
 
-  const EDIT_MODELS = [
-    "models/gemini-2.5-flash-image",
-    "gemini-2.0-flash-exp-image-generation",
-  ];
+  // For image editing, we'll use Gemini's multimodal capability
+  const ai = getGeminiClient();
+  if (ai) {
+    const EDIT_MODELS = [
+      "gemini-2.0-flash",
+      "gemini-2.5-flash",
+    ];
 
-  let lastError: Error | null = null;
-  
-  for (const model of EDIT_MODELS) {
-    try {
-      console.log(`[ImageGeneration] Trying edit with model: ${model}`);
-      
-      const response = await ai.models.generateContent({
-        model,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                inlineData: {
-                  mimeType: baseMimeType,
-                  data: baseImageBase64,
-                }
-              },
-              { text: `Edit this image: ${editPrompt}` }
-            ]
+    for (const model of EDIT_MODELS) {
+      try {
+        console.log(`[ImageGeneration] Trying edit with model: ${model}`);
+
+        const response = await ai.models.generateContent({
+          model,
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: baseMimeType,
+                    data: baseImageBase64,
+                  }
+                },
+                { text: `Edit this image according to these instructions: ${editPrompt}. Return only the edited image.` }
+              ]
+            }
+          ],
+          config: {
+            responseModalities: ["IMAGE"],
           }
-        ],
-        config: {
-          responseModalities: ["IMAGE"],
+        });
+
+        const parts = response.candidates?.[0]?.content?.parts;
+
+        if (parts) {
+          for (const part of parts) {
+            if (part.inlineData && part.inlineData.data) {
+              const durationMs = Date.now() - startTime;
+              console.log(`[ImageGeneration] Edit success with model ${model} in ${durationMs}ms`);
+              return {
+                imageBase64: part.inlineData.data,
+                mimeType: part.inlineData.mimeType || "image/png",
+                prompt: editPrompt,
+                model
+              };
+            }
+          }
         }
-      });
-
-      const parts = response.candidates?.[0]?.content?.parts;
-      
-      if (!parts || parts.length === 0) {
-        console.log(`[ImageGeneration] Edit model ${model} returned no parts, trying next...`);
-        continue;
+      } catch (error: any) {
+        console.error(`[ImageGeneration] Edit with ${model} failed:`, error.message);
       }
-
-      for (const part of parts) {
-        if (part.inlineData && part.inlineData.data) {
-          const durationMs = Date.now() - startTime;
-          console.log(`[ImageGeneration] Edit success with model ${model} in ${durationMs}ms`);
-          return {
-            imageBase64: part.inlineData.data,
-            mimeType: part.inlineData.mimeType || "image/png",
-            prompt: editPrompt,
-            model
-          };
-        }
-      }
-      
-      console.log(`[ImageGeneration] Edit model ${model} returned parts but no image data, trying next...`);
-    } catch (error: any) {
-      console.error(`[ImageGeneration] Edit model ${model} failed:`, error.message);
-      lastError = error;
-      continue;
     }
   }
 
-  const errorMsg = lastError?.message || "All models failed to edit image";
-  console.error(`[ImageGeneration] All edit models exhausted. Last error: ${errorMsg}`);
-  throw new Error(`Image edit failed: ${errorMsg}`);
+  throw new Error("Image editing failed: No working image editing service available");
 }
 
-export type ImageMode = 'generate' | 'edit_last' | 'edit_specific';
-
-export interface ImageIntentResult {
-  mode: ImageMode;
-  prompt: string;
-  editInstruction: string | null;
-  referenceImageId: string | null;
-}
-
-export function classifyImageIntent(message: string, hasLastImage: boolean): ImageIntentResult {
-  const lowerMessage = message.toLowerCase();
-  
-  // Patterns that indicate editing the last image (implicit or explicit)
-  const editLastPatterns = [
-    // Spanish - explicit image reference
-    /\b(edita|modifica|cambia|ajusta|arregla)\s+(la\s+)?(última|anterior|esa|esta)\s*(imagen|foto)?/i,
-    /\b(hazle|ponle|agrégale|quítale|añádele)\s+/i,
-    /\bpon(le|er)?\s+/i,
-    /\bagrega(r|le)?\s+(a\s+)?(la\s+)?imagen/i,
-    /\bcambia(r|le)?\s+(a\s+)?(la\s+)?imagen/i,
-    
-    // Spanish - IMPLICIT edit commands (when hasLastImage is true, these imply editing the last image)
-    /\bagrega\s+(a\s+)?[A-Z]/i,                   // "agrega a Cristiano", "agrega un árbol"
-    /\bañade\s+(a\s+)?[A-Z]/i,                    // "añade a Messi"
-    /\bpon\s+(a\s+)?[A-Z]/i,                      // "pon a Neymar"
-    /\bquita(r)?\s+(a\s+)?[A-Z]/i,               // "quita a alguien"
-    /\b(al\s+)?(costado|lado|fondo|frente)\b/i,   // "al costado", "al lado", "al fondo"
-    /\b(en\s+el\s+)?(costado|lado|fondo|frente)\b/i,
-    /\bcámbia(le|r)?\s+(el|la|los|las)\s+\w+/i,   // "cámbiale el color", "cambiar el fondo"
-    /\bhaz(le|lo)?\s+más\s+\w+/i,                 // "hazlo más grande", "hazle más brillante"
-    
-    // English - explicit
-    /\b(edit|modify|change|adjust|fix)\s+(the\s+)?(last|previous|that|this)\s*(image|photo)?/i,
-    
-    // English - implicit edit commands
-    /\badd\s+[A-Z]/i,                             // "add Ronaldo", "add a tree"
-    /\bput\s+[A-Z]/i,                             // "put Messi"
-    /\bremove\s+[A-Z]/i,                          // "remove the person"
-    /\b(on\s+the\s+)?(side|left|right|background|front)\b/i,
-    /\bmake\s+(it|the\s+\w+)\s+more\s+\w+/i,      // "make it more colorful"
-  ];
-  
-  const editSpecificPatterns = [
-    /\bedita(r)?\s+(la\s+)?imagen\s+(número|#|id:?\s*)\d+/i,
-    /\bedit\s+(image|photo)\s+(number|#|id:?\s*)\d+/i,
-    /\bmodifica(r)?\s+(la\s+)?imagen\s+\d+/i,
-  ];
-  
-  for (const pattern of editSpecificPatterns) {
-    if (pattern.test(message)) {
-      const idMatch = message.match(/\d+/);
-      return {
-        mode: 'edit_specific',
-        prompt: message,
-        editInstruction: message,
-        referenceImageId: idMatch ? idMatch[0] : null,
-      };
-    }
-  }
-  
-  for (const pattern of editLastPatterns) {
-    if (pattern.test(message) && hasLastImage) {
-      return {
-        mode: 'edit_last',
-        prompt: message,
-        editInstruction: message,
-        referenceImageId: null,
-      };
-    }
-  }
-  
-  return {
-    mode: 'generate',
-    prompt: message,
-    editInstruction: null,
-    referenceImageId: null,
-  };
-}
-
+// Detection functions
 export function detectImageRequest(message: string): boolean {
   const lowerMessage = message.toLowerCase();
   
-  // Negative indicators: structured content that should NOT trigger image generation
-  const structuredContentKeywords = [
-    'tabla', 'table', 'tablas', 'tables',
-    'lista', 'list', 'listas', 'lists',
-    'documento', 'document', 'documentos', 'documents',
-    'texto', 'text', 'textos',
-    'organigrama', 'organigram', 'org chart',
-    'esquema', 'schema', 'outline',
-    'resumen', 'summary', 'resúmenes',
-    'código', 'code', 'script',
-    'excel', 'word', 'powerpoint', 'ppt',
-    'csv', 'json', 'xml', 'html',
-    'fórmula', 'formula', 'ecuación', 'equation',
-    'diagrama de flujo', 'flowchart', 'flow chart',
-    'markdown', 'md',
-    'párrafo', 'paragraph',
-    'artículo', 'article',
-    'informe', 'report',
-    'análisis', 'analysis',
-    'datos', 'data',
-    'filas', 'rows', 'columnas', 'columns',
-    'celdas', 'cells',
-    '10x10', '5x5', '3x3', // Table dimensions
+  const imageKeywords = [
+    "genera", "crea", "dibuja", "haz", "hazme", "diseña",
+    "generate", "create", "draw", "make", "design",
+    "imagen", "image", "foto", "photo", "picture", "ilustración", "illustration",
+    "dibujo", "drawing", "arte", "art", "gráfico", "graphic",
+    "logo", "icono", "icon", "banner", "poster", "cartel"
   ];
   
-  // Check for structured content keywords first (negative indicators)
-  const hasStructuredContent = structuredContentKeywords.some(keyword => 
-    lowerMessage.includes(keyword)
-  );
+  const imagePatterns = [
+    /genera(r)?\s+(una?\s+)?imagen/i,
+    /crea(r)?\s+(una?\s+)?imagen/i,
+    /dibuja(r)?\s+(una?|un)/i,
+    /haz(me)?\s+(una?\s+)?imagen/i,
+    /diseña(r)?\s+(una?|un)/i,
+    /generate\s+(an?\s+)?image/i,
+    /create\s+(an?\s+)?image/i,
+    /draw\s+(an?\s+|a\s+)?/i,
+    /make\s+(an?\s+)?image/i,
+    /imagen\s+de\s+/i,
+    /image\s+of\s+/i,
+  ];
   
-  if (hasStructuredContent) {
-    // Only generate image if there's explicit image-specific noun
-    const explicitImageNouns = [
-      /\bimagen\b/i, /\bimágenes\b/i,
-      /\bfoto\b/i, /\bfotos\b/i, /\bfotografía\b/i,
-      /\bimage\b/i, /\bimages\b/i,
-      /\bpicture\b/i, /\bpictures\b/i,
-      /\bphoto\b/i, /\bphotos\b/i,
-      /\bilustración\b/i, /\billustration\b/i,
-      /\bdibujo\b/i, /\bdrawing\b/i,
-    ];
-    return explicitImageNouns.some(pattern => pattern.test(message));
+  // Check patterns first (more specific)
+  for (const pattern of imagePatterns) {
+    if (pattern.test(lowerMessage)) {
+      return true;
+    }
   }
   
-  // Positive indicators: image-specific patterns
-  const imagePatterns = [
-    /\b(genera|crea|dibuja|haz|hazme|dame|quiero|necesito|podr[ií]as)\b.{0,20}\b(imagen|foto|ilustraci[oó]n|dibujo|arte|retrato|paisaje)\b/i,
-    /\b(generate|create|make|draw|give me|i want|i need|can you)\b.{0,20}\b(image|picture|photo|illustration|drawing|art|portrait|landscape)\b/i,
-    /\b(imagen|picture|photo)\s+(de|of|with)\b/i,
-    /\buna?\s+imagen\s+de\b/i,
-    /\ban?\s+image\s+of\b/i,
-    /\bdibuja(me)?\s+/i,
-    /\bdraw\s+(me\s+)?a\b/i,
-  ];
-
-  return imagePatterns.some(pattern => pattern.test(message));
+  // Check keywords (less specific, requires image-related context)
+  const hasActionKeyword = imageKeywords.slice(0, 12).some(kw => lowerMessage.includes(kw));
+  const hasImageKeyword = imageKeywords.slice(12).some(kw => lowerMessage.includes(kw));
+  
+  return hasActionKeyword && hasImageKeyword;
 }
 
 export function extractImagePrompt(message: string): string {
+  // Remove common prefixes
   let prompt = message
-    .replace(/^(genera|crea|dibuja|haz|hazme|dame|quiero|necesito|podrías|generate|create|make|draw|give me|i want|i need|can you)\s*/i, "")
-    .replace(/\b(una?\s+)?(imagen|image|picture|photo|ilustración|illustration|dibujo|drawing)\s*(de|of|with)?\s*/gi, "")
+    .replace(/^(genera|crea|dibuja|haz|hazme|diseña|generate|create|draw|make|design)\s*/i, "")
+    .replace(/^(una?\s+)?(imagen|image|foto|photo|picture|ilustración|illustration|dibujo|drawing)\s*(de|of)?\s*/i, "")
     .trim();
   
+  // If we removed too much, use original
   if (prompt.length < 5) {
     prompt = message;
   }

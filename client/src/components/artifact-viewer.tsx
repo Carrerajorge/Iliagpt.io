@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useMemo, memo } from "react";
+import DOMPurify from "dompurify";
 import {
   Download,
   Eye,
@@ -26,14 +27,14 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { getFileTheme, getFileCategory, type FileCategory } from "@/lib/fileTypeTheme";
 import { useAsyncHighlight } from "@/hooks/useAsyncHighlight";
 
-export type ArtifactType = 
-  | "image" 
-  | "document" 
-  | "spreadsheet" 
-  | "presentation" 
+export type ArtifactType =
+  | "image"
+  | "document"
+  | "spreadsheet"
+  | "presentation"
   | "pdf"
-  | "code" 
-  | "diagram" 
+  | "code"
+  | "diagram"
   | "svg"
   | "text"
   | "unknown";
@@ -62,7 +63,7 @@ interface ArtifactViewerProps {
 
 function detectArtifactType(artifact: Artifact): ArtifactType {
   if (artifact.type && artifact.type !== "unknown") return artifact.type;
-  
+
   const category = getFileCategory(artifact.name, artifact.mimeType);
   const categoryMap: Record<FileCategory, ArtifactType> = {
     image: "image",
@@ -75,15 +76,15 @@ function detectArtifactType(artifact: Artifact): ArtifactType {
     archive: "unknown",
     unknown: "unknown",
   };
-  
+
   if (artifact.mimeType === "image/svg+xml" || artifact.name?.endsWith(".svg")) {
     return "svg";
   }
-  
+
   if (artifact.name?.endsWith(".mmd") || artifact.name?.endsWith(".mermaid")) {
     return "diagram";
   }
-  
+
   return categoryMap[category] || "unknown";
 }
 
@@ -145,7 +146,7 @@ const ImageArtifact = memo(function ImageArtifact({
       return;
     }
     if (!imageUrl) return;
-    
+
     try {
       const response = await fetch(imageUrl);
       const blob = await response.blob();
@@ -203,39 +204,39 @@ const ImageArtifact = memo(function ImageArtifact({
   }
 
   return (
-    <div 
+    <div
       className={cn(
-        "relative group rounded-lg overflow-hidden border border-border bg-muted/30",
+        "relative group rounded-xl overflow-hidden",
         compact && "max-w-xs"
       )}
       data-testid={`artifact-image-${artifact.id}`}
     >
       {!isLoaded && (
-        <div className="absolute inset-0 flex items-center justify-center bg-muted animate-pulse">
+        <div className="absolute inset-0 flex items-center justify-center bg-muted/50 animate-pulse rounded-xl">
           <ImageIcon className="h-8 w-8 text-muted-foreground/50" />
         </div>
       )}
-      
+
       <img
         key={retryCount}
         src={imageUrl}
         alt={artifact.name || "Imagen"}
         className={cn(
-          "max-w-full h-auto cursor-pointer transition-opacity",
+          "max-w-full h-auto cursor-pointer transition-all rounded-xl shadow-sm hover:shadow-md",
           !isLoaded && "opacity-0"
         )}
-        style={{ maxHeight: compact ? "200px" : "400px" }}
+        style={{ maxHeight: compact ? "200px" : "500px" }}
         onLoad={() => setIsLoaded(true)}
         onError={() => setHasError(true)}
         onClick={handleExpand}
         data-testid={`image-preview-${artifact.id}`}
       />
-      
+
       <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <Button
           variant="secondary"
           size="icon"
-          className="h-8 w-8 bg-black/50 hover:bg-black/70 text-white border-0"
+          className="h-8 w-8 bg-black/50 hover:bg-black/70 text-white border-0 backdrop-blur-sm"
           onClick={handleExpand}
           data-testid={`expand-image-${artifact.id}`}
         >
@@ -244,7 +245,7 @@ const ImageArtifact = memo(function ImageArtifact({
         <Button
           variant="secondary"
           size="icon"
-          className="h-8 w-8 bg-black/50 hover:bg-black/70 text-white border-0"
+          className="h-8 w-8 bg-black/50 hover:bg-black/70 text-white border-0 backdrop-blur-sm"
           onClick={handleDownload}
           data-testid={`download-image-${artifact.id}`}
         >
@@ -279,24 +280,24 @@ const DocumentArtifact = memo(function DocumentArtifact({
       onDownload();
       return;
     }
-    
+
     // Construct download URL from artifact path or use provided URL
     let downloadUrl = artifact.url || artifact.previewUrl;
-    
+
     // If we have a path, construct the proper download endpoint
     const artifactPath = artifact.path || artifact.data?.filePath || artifact.data?.path;
     if (artifactPath) {
       const filename = artifactPath.split('/').pop();
       downloadUrl = `/api/artifacts/${filename}/download`;
     }
-    
+
     if (!downloadUrl) return;
-    
+
     try {
       // Use blob download pattern for binary files (Office documents)
       const response = await fetch(downloadUrl);
       if (!response.ok) throw new Error(`Download failed: ${response.status}`);
-      
+
       const blob = await response.blob();
       const blobUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -319,53 +320,56 @@ const DocumentArtifact = memo(function DocumentArtifact({
   return (
     <div
       className={cn(
-        "flex items-center gap-3 p-3 rounded-lg border transition-all cursor-pointer",
+        "flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer",
         "bg-card hover:bg-accent/50 border-border hover:border-border/80",
-        "hover:shadow-sm group"
+        "hover:shadow-md group"
       )}
       onClick={handleClick}
       data-testid={`artifact-document-${artifact.id}`}
     >
-      <div 
+      {/* Document Type Icon with Color */}
+      <div
         className={cn(
-          "flex items-center justify-center w-10 h-10 rounded-lg shrink-0",
+          "flex items-center justify-center w-11 h-11 rounded-xl shrink-0 shadow-sm",
           "bg-gradient-to-br",
           theme.gradientFrom,
           theme.gradientTo
         )}
       >
-        <IconComponent className="h-5 w-5 text-white" />
+        <span className="text-white text-sm font-bold">{theme.icon}</span>
       </div>
 
+      {/* File Info */}
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium truncate text-foreground">
           {artifact.name}
         </p>
-        <div className="flex items-center gap-2 mt-0.5">
-          <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 font-normal">
-            {theme.label}
-          </Badge>
-        </div>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {theme.label}
+        </p>
       </div>
 
+      {/* Action Buttons - Always visible */}
       <div className="flex items-center gap-1 shrink-0">
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
+          className={cn("h-9 w-9 rounded-lg transition-colors", theme.textColor, "hover:bg-accent")}
           onClick={handleClick}
+          title="Vista previa"
           data-testid={`preview-document-${artifact.id}`}
         >
-          <Eye className="h-4 w-4" />
+          <Eye className="h-4.5 w-4.5" />
         </Button>
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8"
+          className="h-9 w-9 rounded-lg hover:bg-accent"
           onClick={handleDownload}
+          title="Descargar"
           data-testid={`download-document-${artifact.id}`}
         >
-          <Download className="h-4 w-4" />
+          <Download className="h-4.5 w-4.5" />
         </Button>
       </div>
     </div>
@@ -403,7 +407,7 @@ const SvgArtifact = memo(function SvgArtifact({
       onDownload();
       return;
     }
-    
+
     const content = svgContent || "";
     const blob = new Blob([content], { type: "image/svg+xml" });
     const url = URL.createObjectURL(blob);
@@ -428,7 +432,7 @@ const SvgArtifact = memo(function SvgArtifact({
   }
 
   return (
-    <div 
+    <div
       className={cn(
         "relative group rounded-lg overflow-hidden border border-border bg-white dark:bg-slate-900",
         isExpanded && "fixed inset-4 z-50 shadow-2xl"
@@ -456,16 +460,22 @@ const SvgArtifact = memo(function SvgArtifact({
         </Button>
       </div>
 
-      <div 
+      <div
         className={cn(
           "flex items-center justify-center p-4 overflow-auto",
           isExpanded ? "h-full" : "max-h-[400px]"
         )}
       >
         {svgContent ? (
-          <div 
+          <div
             className="svg-container"
-            dangerouslySetInnerHTML={{ __html: svgContent }}
+            // FRONTEND FIX #2: Sanitize SVG content to prevent XSS
+            dangerouslySetInnerHTML={{
+              __html: DOMPurify.sanitize(svgContent, {
+                USE_PROFILES: { svg: true, svgFilters: true },
+                ADD_TAGS: ["use"],
+              }),
+            }}
             onError={() => setHasError(true)}
           />
         ) : svgUrl ? (
@@ -495,10 +505,10 @@ const CodeArtifact = memo(function CodeArtifact({
   const [copied, setCopied] = useState(false);
 
   const code = artifact.content || artifact.data?.content || "";
-  const language = artifact.language || artifact.data?.language || 
+  const language = artifact.language || artifact.data?.language ||
     artifact.name?.split('.').pop() || "text";
 
-  const { highlightedHtml, isLoading } = useAsyncHighlight(code, language);
+  const { html, isLoading } = useAsyncHighlight(code, language);
 
   const handleCopy = useCallback(async () => {
     try {
@@ -530,7 +540,7 @@ const CodeArtifact = memo(function CodeArtifact({
   const hasMore = !isExpanded && lines.length > 15;
 
   return (
-    <div 
+    <div
       className="relative group rounded-lg overflow-hidden border border-border bg-slate-950"
       data-testid={`artifact-code-${artifact.id}`}
     >
@@ -570,10 +580,14 @@ const CodeArtifact = memo(function CodeArtifact({
             {previewLines.join('\n')}
           </pre>
         ) : (
-          <div 
+          <div
             className="p-4 text-sm font-mono"
-            dangerouslySetInnerHTML={{ 
-              __html: highlightedHtml || `<pre class="text-slate-300">${previewLines.join('\n')}</pre>`
+            // FRONTEND FIX #3: Sanitize highlighted code HTML
+            dangerouslySetInnerHTML={{
+              __html: DOMPurify.sanitize(
+                html || `<pre class="text-slate-300">${previewLines.join('\n')}</pre>`,
+                { ALLOWED_TAGS: ["pre", "code", "span"], ALLOWED_ATTR: ["class"] }
+              ),
             }}
           />
         )}
@@ -711,7 +725,7 @@ const FallbackArtifact = memo(function FallbackArtifact({
       onClick={handleClick}
       data-testid={`artifact-fallback-${artifact.id}`}
     >
-      <div 
+      <div
         className={cn(
           "flex items-center justify-center w-10 h-10 rounded-lg shrink-0",
           theme.bgColor
@@ -763,7 +777,7 @@ export const ArtifactViewer = memo(function ArtifactViewer({
             compact={compact}
           />
         );
-      
+
       case "document":
       case "pdf":
       case "spreadsheet":
@@ -775,7 +789,7 @@ export const ArtifactViewer = memo(function ArtifactViewer({
             onDownload={onDownload}
           />
         );
-      
+
       case "svg":
         return (
           <SvgArtifact
@@ -784,7 +798,7 @@ export const ArtifactViewer = memo(function ArtifactViewer({
             onDownload={onDownload}
           />
         );
-      
+
       case "code":
         return (
           <CodeArtifact
@@ -792,7 +806,7 @@ export const ArtifactViewer = memo(function ArtifactViewer({
             onDownload={onDownload}
           />
         );
-      
+
       case "diagram":
         return (
           <DiagramArtifact
@@ -800,7 +814,7 @@ export const ArtifactViewer = memo(function ArtifactViewer({
             onDownload={onDownload}
           />
         );
-      
+
       case "text":
         return (
           <CodeArtifact
@@ -808,7 +822,7 @@ export const ArtifactViewer = memo(function ArtifactViewer({
             onDownload={onDownload}
           />
         );
-      
+
       default:
         return (
           <FallbackArtifact

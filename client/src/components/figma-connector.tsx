@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/apiClient";
 import { Loader2, Check } from "lucide-react";
 
 interface FigmaConnectorProps {
@@ -31,7 +32,9 @@ export function FigmaConnector({ onConnectionChange }: FigmaConnectorProps) {
     }
     
     const error = urlParams.get('figma_error');
-    if (error) {
+    // FRONTEND FIX #20: Validate error param is a known error code before displaying
+    const validErrors = ['no_code', 'not_configured', 'token_exchange_failed', 'access_denied'];
+    if (error && (validErrors.includes(error) || error.length < 50)) {
       toast({
         title: "Error de conexión",
         description: getErrorMessage(error),
@@ -52,7 +55,7 @@ export function FigmaConnector({ onConnectionChange }: FigmaConnectorProps) {
 
   const checkConnectionStatus = async () => {
     try {
-      const response = await fetch("/api/figma/status");
+      const response = await apiFetch("/api/figma/status");
       const data = await response.json();
       setIsConnected(data.connected);
       onConnectionChange?.(data.connected);
@@ -69,7 +72,7 @@ export function FigmaConnector({ onConnectionChange }: FigmaConnectorProps) {
   const handleDisconnect = async () => {
     setIsLoading(true);
     try {
-      await fetch("/api/figma/disconnect", { method: "POST" });
+      await apiFetch("/api/figma/disconnect", { method: "POST" });
       setIsConnected(false);
       onConnectionChange?.(false);
       toast({

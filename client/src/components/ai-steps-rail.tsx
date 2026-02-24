@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useWorkspace, AiProcessStep } from "@/contexts/workspace-context";
-import { format } from "date-fns";
+import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
+import { formatZonedTime, normalizeTimeZone } from "@/lib/platformDateTime";
 
 const categoryConfig = {
   planning: {
@@ -61,6 +62,8 @@ function AiStepItem({ step }: AiStepItemProps) {
   const status = statusConfig[step.status];
   const CategoryIcon = category.icon;
   const StatusIcon = status.icon;
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
 
   return (
     <div
@@ -88,7 +91,7 @@ function AiStepItem({ step }: AiStepItemProps) {
         <div className="flex items-center gap-2 mt-1">
           <span className={cn("text-xs", category.color)}>{category.label}</span>
           <span className="text-xs text-muted-foreground">
-            {format(step.timestamp, "HH:mm:ss")}
+            {formatZonedTime(step.timestamp, { timeZone: platformTimeZone, includeSeconds: true })}
           </span>
         </div>
       </div>

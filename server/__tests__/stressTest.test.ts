@@ -1,13 +1,55 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import ExcelJS from 'exceljs';
 import path from 'path';
 import fs from 'fs';
 
 const LARGE_FIXTURE_PATH = path.join(process.cwd(), 'test_fixtures', 'large-10k-rows.xlsx');
 const ROW_COUNT = 10000;
+const CI_BUDGET_MULTIPLIER = process.env.CI ? 2 : 1;
+const PERF_BUDGET_MS = {
+  parse: Math.ceil(30_000 * CI_BUDGET_MULTIPLIER),
+  preview: Math.ceil(5_000 * CI_BUDGET_MULTIPLIER),
+};
+const MEM_BUDGET_MB = process.env.CI ? 650 : 500;
 
 describe('Stress Test - Large Excel File Processing', () => {
   const startTime = Date.now();
+
+  beforeAll(async () => {
+    if (fs.existsSync(LARGE_FIXTURE_PATH)) return;
+
+    fs.mkdirSync(path.dirname(LARGE_FIXTURE_PATH), { recursive: true });
+
+    const workbook = new ExcelJS.Workbook();
+
+    const salesSheet = workbook.addWorksheet('SalesData');
+    const headers = ['ID', 'Date', 'Product', 'Category', 'Quantity', 'UnitPrice', 'Total', 'Region', 'SalesRep'];
+    salesSheet.addRow(headers);
+
+    for (let id = 1; id <= ROW_COUNT; id++) {
+      const quantity = (id % 10) + 1;
+      const unitPrice = 9.99 + (id % 20);
+      const total = Math.round(quantity * unitPrice * 100) / 100;
+      salesSheet.addRow([
+        id,
+        new Date(2026, 0, 1 + (id % 28)),
+        `Product-${id % 100}`,
+        `Category-${id % 10}`,
+        quantity,
+        unitPrice,
+        total,
+        `Region-${id % 5}`,
+        `Rep-${id % 25}`,
+      ]);
+    }
+
+    const summarySheet = workbook.addWorksheet('Summary');
+    summarySheet.addRow(['Metric', 'Value']);
+    summarySheet.addRow(['Total Rows', String(ROW_COUNT)]);
+    summarySheet.addRow(['Generated At', new Date().toISOString()]);
+
+    await workbook.xlsx.writeFile(LARGE_FIXTURE_PATH);
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -28,7 +70,7 @@ describe('Stress Test - Large Excel File Processing', () => {
     const parseTime = Date.now() - parseStart;
     console.log(`Parse time for ${ROW_COUNT} rows: ${parseTime}ms`);
     
-    expect(parseTime).toBeLessThan(30000); // Should parse in under 30 seconds
+    expect(parseTime).toBeLessThan(PERF_BUDGET_MS.parse); // Should parse within CI-safe budget
     expect(workbook.worksheets.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -100,7 +142,7 @@ describe('Stress Test - Large Excel File Processing', () => {
     const previewTime = Date.now() - previewStart;
     console.log(`Preview extraction time (${PREVIEW_SIZE} rows): ${previewTime}ms`);
     
-    expect(previewTime).toBeLessThan(5000); // Should extract preview in under 5 seconds
+    expect(previewTime).toBeLessThan(PERF_BUDGET_MS.preview); // Preview extraction budget
     expect(headers.length).toBe(9);
     expect(previewRows.length).toBe(PREVIEW_SIZE);
   });
@@ -138,7 +180,7 @@ describe('Stress Test - Large Excel File Processing', () => {
     console.log(`Memory usage for ${ROW_COUNT} rows: ${memDelta.toFixed(2)} MB`);
     
     // Should use less than 500MB for 10k rows
-    expect(memDelta).toBeLessThan(500);
+    expect(memDelta).toBeLessThan(MEM_BUDGET_MB);
   });
 
   it('should generate correct summary metrics format', async () => {

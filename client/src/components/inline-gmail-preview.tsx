@@ -10,7 +10,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
-import { format } from "date-fns";
 import {
   useGmailConnection,
   useGmailEmails,
@@ -19,6 +18,8 @@ import {
   type SourceMetadata,
   type EmailSummary
 } from "@/hooks/use-gmail";
+import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
+import { diffZonedDays, formatZonedDate, formatZonedIntl, formatZonedTime, normalizeTimeZone, type PlatformDateFormat } from "@/lib/platformDateTime";
 
 // Get favicon URL for a domain
 function getFavicon(email: string): string {
@@ -117,19 +118,25 @@ export interface InlineGmailPreviewProps {
 
 type ViewMode = "list" | "thread" | "compose";
 
-function formatEmailDate(dateStr: string): string {
+function formatEmailDate(dateStr: string, opts: { timeZone: string; dateFormat: PlatformDateFormat }): string {
   try {
     const date = new Date(dateStr);
-    const now = new Date();
-    const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
-    
+    const now = Date.now();
+    const diffDays = diffZonedDays(date, now, opts.timeZone);
+
     if (diffDays === 0) {
-      return format(date, "HH:mm");
-    } else if (diffDays < 7) {
-      return format(date, "EEE");
-    } else {
-      return format(date, "d MMM");
+      return formatZonedTime(date, { timeZone: opts.timeZone, includeSeconds: false });
     }
+    if (diffDays !== null && diffDays < 7) {
+      return (
+        formatZonedIntl(date, {
+          timeZone: opts.timeZone,
+          locale: "es-ES",
+          options: { weekday: "short" },
+        }) || ""
+      );
+    }
+    return formatZonedDate(date, { timeZone: opts.timeZone, dateFormat: opts.dateFormat, includeYear: false });
   } catch {
     return dateStr;
   }
@@ -141,6 +148,9 @@ export function InlineGmailPreview({
   threadId: initialThreadId,
   onComplete
 }: InlineGmailPreviewProps) {
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
+  const platformDateFormat = platformSettings.date_format;
   const [viewMode, setViewMode] = useState<ViewMode>(initialThreadId ? "thread" : "list");
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [activeSearchQuery, setActiveSearchQuery] = useState(initialQuery);
@@ -458,7 +468,7 @@ export function InlineGmailPreview({
                         )}
                         role="option"
                         aria-selected={focusedEmailIndex === index}
-                        aria-label={`${email.isUnread ? 'Unread email' : 'Email'} from ${email.from}, subject: ${email.subject}, ${formatEmailDate(email.date)}`}
+                        aria-label={`${email.isUnread ? 'Unread email' : 'Email'} from ${email.from}, subject: ${email.subject}, ${formatEmailDate(email.date, { timeZone: platformTimeZone, dateFormat: platformDateFormat })}`}
                         data-email-item
                         data-testid={`email-item-${email.id}`}
                       >
@@ -499,7 +509,7 @@ export function InlineGmailPreview({
                                 )}
                               </div>
                               <span className="text-xs text-muted-foreground flex-shrink-0">
-                                {formatEmailDate(email.date)}
+                                {formatEmailDate(email.date, { timeZone: platformTimeZone, dateFormat: platformDateFormat })}
                               </span>
                             </div>
                             <p className={cn(
@@ -590,7 +600,7 @@ export function InlineGmailPreview({
                         </div>
                       </div>
                       <span className="text-xs text-muted-foreground">
-                        {formatEmailDate(msg.date)}
+                        {formatEmailDate(msg.date, { timeZone: platformTimeZone, dateFormat: platformDateFormat })}
                       </span>
                     </div>
                     <div className="text-sm whitespace-pre-wrap pl-10">

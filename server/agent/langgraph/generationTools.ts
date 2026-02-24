@@ -6,7 +6,7 @@ import * as path from "path";
 
 const xaiClient = new OpenAI({
   baseURL: "https://api.x.ai/v1",
-  apiKey: process.env.XAI_API_KEY,
+  apiKey: process.env.XAI_API_KEY || "missing",
 });
 
 const DEFAULT_MODEL = "grok-4-1-fast-non-reasoning";

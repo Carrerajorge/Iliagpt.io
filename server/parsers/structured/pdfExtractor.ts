@@ -1,22 +1,19 @@
 import Tesseract from "tesseract.js";
+import { createRequire } from "node:module";
 
-// pdf-parse v2.x exports PDFParse class instead of a function
-// Need to use the new API: new PDFParse({ data: buffer }).getText()
+// Use createRequire to load pdf-parse via CommonJS — dynamic import() causes
+// an API/Worker version mismatch ("4.10.38" vs "5.4.296") at runtime.
+const require = createRequire(import.meta.url);
+const { PDFParse } = require("pdf-parse");
+
 async function parsePdfBuffer(buffer: Buffer): Promise<{ text: string; numpages: number; info: Record<string, unknown> }> {
-  const pdfParseModule = await import("pdf-parse");
-  const PDFParse = pdfParseModule.PDFParse;
-  
   if (!PDFParse) {
     throw new Error('pdf-parse module did not export PDFParse class');
   }
-  
-  // PDFParse v2 requires either 'url', 'data' (Uint8Array), or 'path'
-  // Convert Buffer to Uint8Array for compatibility
-  const uint8Array = new Uint8Array(buffer);
-  
-  const parser = new PDFParse({ data: uint8Array });
+
+  const parser = new PDFParse({ data: buffer });
   const result = await parser.getText();
-  
+
   // Get document info if available
   let info: Record<string, unknown> = {};
   try {
@@ -25,7 +22,7 @@ async function parsePdfBuffer(buffer: Buffer): Promise<{ text: string; numpages:
   } catch {
     // getInfo may fail on some PDFs, continue without metadata
   }
-  
+
   return {
     text: result.text || "",
     numpages: result.pages?.length || 1,

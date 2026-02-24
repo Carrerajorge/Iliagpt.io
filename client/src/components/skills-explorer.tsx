@@ -29,7 +29,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { 
+import {
   FileSpreadsheet, 
   FileText, 
   Presentation, 
@@ -38,6 +38,8 @@ import {
   Code, 
   Globe, 
   Mail,
+  MessageCircle,
+  CalendarDays,
   Calculator,
   BarChart3,
   Search,
@@ -149,6 +151,36 @@ const BUILT_IN_SKILLS: BuiltInSkill[] = [
     enabled: true,
     builtIn: true,
     features: ["Leer emails", "Buscar mensajes", "Resumir hilos", "Filtrar por fecha", "Analizar adjuntos"]
+  },
+  {
+    id: "whatsapp",
+    name: "WhatsApp",
+    description: "Leer y enviar mensajes de WhatsApp, buscar conversaciones y automatizar respuestas.",
+    category: "integrations",
+    icon: <MessageCircle className="h-6 w-6 text-green-600" />,
+    enabled: true,
+    builtIn: true,
+    features: ["Leer chats", "Enviar mensajes", "Buscar conversaciones", "Auto-respuestas", "Estado de conexión"]
+  },
+  {
+    id: "calendar-tasks",
+    name: "Calendario y Tareas",
+    description: "Crear eventos, recordatorios y tareas para organizar seguimiento y productividad.",
+    category: "integrations",
+    icon: <CalendarDays className="h-6 w-6 text-sky-600" />,
+    enabled: true,
+    builtIn: true,
+    features: ["Eventos", "Recordatorios", "Tareas", "Agenda semanal", "Priorización"]
+  },
+  {
+    id: "automation",
+    name: "Automatizaciones",
+    description: "Construir flujos automáticos programados para reportes, alertas y procesos repetitivos.",
+    category: "integrations",
+    icon: <Zap className="h-6 w-6 text-amber-600" />,
+    enabled: true,
+    builtIn: true,
+    features: ["Workflows", "Ejecución programada", "Reintentos", "Monitoreo de runs", "Acciones encadenadas"]
   },
   {
     id: "code-execution",

@@ -1,9 +1,10 @@
-import ExcelJS from 'exceljs';
+import * as ExcelJSModule from 'exceljs';
+const ExcelJS = (ExcelJSModule as any).default || ExcelJSModule;
 import JSZip from 'jszip';
-import { 
-  WorkbookSheets, 
-  NormalizedRecord, 
-  SourceMetadata, 
+import {
+  WorkbookSheets,
+  NormalizedRecord,
+  SourceMetadata,
   AuditTest,
   RawDataRecord
 } from './types';
@@ -17,7 +18,7 @@ export async function buildExcelWorkbookBundle(sheets: WorkbookSheets): Promise<
     generateDataWorkbook(sheets),
     generateChartWorkbook(sheets.clean, sheets.dashboard)
   ]);
-  
+
   const zip = new JSZip();
   zip.file('ETL_Datos_Completos.xlsx', dataBuffer);
   zip.file('ETL_Grafico_Dashboard.xlsx', chartBuffer);
@@ -37,7 +38,7 @@ Este archivo ZIP contiene dos archivos Excel:
 Generado por Sira GPT ETL Agent
 ${new Date().toISOString()}
 `);
-  
+
   const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
   return Buffer.from(zipBuffer);
 }
@@ -46,9 +47,9 @@ async function generateChartWorkbook(clean: NormalizedRecord[], dashboard: Workb
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Sira GPT ETL Agent';
   workbook.created = new Date();
-  
+
   const sheet = workbook.addWorksheet('Chart Data');
-  
+
   const byCountry = new Map<string, { records: number; valueSum: number; valueCount: number }>();
   for (const r of clean) {
     if (!byCountry.has(r.countryCode)) {
@@ -68,7 +69,7 @@ async function generateChartWorkbook(clean: NormalizedRecord[], dashboard: Workb
   headerRow.eachCell(cell => { cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }; });
 
   const countries = Array.from(byCountry.keys()).slice(0, 10);
-  
+
   for (const country of countries) {
     const entry = byCountry.get(country)!;
     const avgValue = entry.valueCount > 0 ? entry.valueSum / entry.valueCount : 0;
@@ -101,6 +102,7 @@ async function generateDataWorkbook(sheets: WorkbookSheets): Promise<Buffer> {
   buildCleanSheet(workbook, sheets.clean);
   buildModelSheet(workbook, sheets.model, sheets.clean);
   buildDashboardSheet(workbook, sheets.dashboard, sheets.clean);
+  buildDictionarySheet(workbook);
   buildAuditSheet(workbook, sheets.audit);
 
   const buffer = await workbook.xlsx.writeBuffer();
@@ -153,7 +155,7 @@ function buildSourcesSheet(workbook: ExcelJS.Workbook, sources: SourceMetadata[]
   for (const source of sources) {
     sheet.addRow([source.sourceId, source.provider, source.url, source.method, source.timestamp, source.indicator, source.country, source.unit, source.frequency, source.notes]);
   }
-  
+
   sheet.getColumn(1).width = 30;
   sheet.getColumn(2).width = 15;
   sheet.getColumn(3).width = 60;
@@ -164,7 +166,7 @@ function buildSourcesSheet(workbook: ExcelJS.Workbook, sources: SourceMetadata[]
   sheet.getColumn(8).width = 15;
   sheet.getColumn(9).width = 10;
   sheet.getColumn(10).width = 40;
-  
+
   if (sources.length > 0) {
     sheet.autoFilter = { from: 'A1', to: `J${sources.length + 1}` };
   }
@@ -183,7 +185,7 @@ function buildRawSheet(workbook: ExcelJS.Workbook, raw: RawDataRecord[]): void {
     const recordCount = Array.isArray(record.rawData) && record.rawData.length >= 2 && Array.isArray(record.rawData[1]) ? record.rawData[1].length : 'N/A';
     sheet.addRow([record.sourceId, record.metadata.provider, record.metadata.indicator, record.metadata.country, record.metadata.timestamp, recordCount, rawSample]);
   }
-  
+
   sheet.getColumn(1).width = 35;
   sheet.getColumn(2).width = 15;
   sheet.getColumn(3).width = 15;
@@ -203,7 +205,7 @@ function buildCleanSheet(workbook: ExcelJS.Workbook, clean: NormalizedRecord[]):
   for (const record of clean) {
     sheet.addRow([record.date, record.country, record.countryCode, record.indicator, record.indicatorCode, record.value, record.unit, record.frequency, record.sourceId]);
   }
-  
+
   sheet.getColumn(1).width = 12;
   sheet.getColumn(2).width = 20;
   sheet.getColumn(3).width = 12;
@@ -214,7 +216,7 @@ function buildCleanSheet(workbook: ExcelJS.Workbook, clean: NormalizedRecord[]):
   sheet.getColumn(7).width = 15;
   sheet.getColumn(8).width = 10;
   sheet.getColumn(9).width = 35;
-  
+
   if (clean.length > 0) {
     sheet.autoFilter = { from: 'A1', to: `I${clean.length + 1}` };
   }
@@ -222,7 +224,7 @@ function buildCleanSheet(workbook: ExcelJS.Workbook, clean: NormalizedRecord[]):
 
 function buildModelSheet(workbook: ExcelJS.Workbook, model: WorkbookSheets['model'], clean: NormalizedRecord[]): void {
   const sheet = workbook.addWorksheet('04_MODEL');
-  
+
   sheet.addRow(['METRIC DEFINITIONS']);
   const defHeaders = ['Metric_ID', 'Name', 'Formula', 'Description'];
   const defHeaderRow = sheet.addRow(defHeaders);
@@ -237,7 +239,7 @@ function buildModelSheet(workbook: ExcelJS.Workbook, model: WorkbookSheets['mode
   sheet.addRow([]);
   sheet.addRow([]);
   sheet.addRow(['SUMMARY BY COUNTRY AND INDICATOR']);
-  
+
   const summaryHeaders = ['Country', 'Indicator', 'Latest_Year', 'Latest_Value', 'Avg_5Y', 'YoY_Change', 'Min', 'Max'];
   const summaryHeaderRow = sheet.addRow(summaryHeaders);
   summaryHeaderRow.font = { bold: true };
@@ -253,7 +255,7 @@ function buildModelSheet(workbook: ExcelJS.Workbook, model: WorkbookSheets['mode
 
   let dataRowStart = sheet.rowCount + 1;
   let rowIndex = 0;
-  
+
   for (const [, records] of Array.from(grouped.entries())) {
     const sorted = records.filter(r => r.value !== null).sort((a, b) => b.date.localeCompare(a.date));
     if (sorted.length === 0) continue;
@@ -277,7 +279,7 @@ function buildModelSheet(workbook: ExcelJS.Workbook, model: WorkbookSheets['mode
 
     const avgCell = row.getCell(5);
     avgCell.value = { formula: `AVERAGE(D${currentRow})`, result: last5.reduce((a, b) => a + b, 0) / last5.length };
-    
+
     if (prev !== null && latest.value !== null) {
       const yoyCell = row.getCell(6);
       yoyCell.value = { formula: `(D${currentRow}-${prev})/${prev}*100`, result: ((latest.value - prev) / prev) * 100 };
@@ -303,7 +305,7 @@ function buildModelSheet(workbook: ExcelJS.Workbook, model: WorkbookSheets['mode
 
 function buildDashboardSheet(workbook: ExcelJS.Workbook, dashboard: WorkbookSheets['dashboard'], clean: NormalizedRecord[]): void {
   const sheet = workbook.addWorksheet('05_DASHBOARD');
-  
+
   sheet.addRow(['DATA DASHBOARD']);
   sheet.addRow(['Chart-ready data - Select data and Insert > Column Chart in Excel']);
   sheet.addRow([]);
@@ -360,7 +362,7 @@ function buildDashboardSheet(workbook: ExcelJS.Workbook, dashboard: WorkbookShee
 
 function buildAuditSheet(workbook: ExcelJS.Workbook, audit: WorkbookSheets['audit']): void {
   const sheet = workbook.addWorksheet('06_AUDIT');
-  
+
   sheet.addRow(['AUDIT RESULTS']);
   sheet.addRow(['Generated:', audit.timestamp]);
   sheet.addRow(['Overall Result:', audit.overallResult]);
@@ -377,7 +379,7 @@ function buildAuditSheet(workbook: ExcelJS.Workbook, audit: WorkbookSheets['audi
 
   sheet.addRow([]);
   sheet.addRow(['TEST DETAILS']);
-  
+
   const headers = ['Test_Name', 'Category', 'Result', 'Details', 'Value', 'Threshold'];
   const headerRow = sheet.addRow(headers);
   headerRow.font = { bold: true };
@@ -403,4 +405,60 @@ function buildAuditSheet(workbook: ExcelJS.Workbook, audit: WorkbookSheets['audi
   sheet.getColumn(4).width = 50;
   sheet.getColumn(5).width = 15;
   sheet.getColumn(6).width = 15;
+}
+
+function buildDictionarySheet(workbook: ExcelJS.Workbook): void {
+  const sheet = workbook.addWorksheet('00_DICTIONARY');
+
+  sheet.addRow(['DATA DICTIONARY']);
+  sheet.addRow(['Detailed column definitions for all data sheets']);
+  sheet.addRow([]);
+
+  const headers = ['Sheet Name', 'Column Name', 'Data Type', 'Description', 'Example'];
+  const headerRow = sheet.addRow(headers);
+  headerRow.font = { bold: true };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF673AB7' } };
+  headerRow.eachCell(cell => { cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }; });
+
+  const definitions = [
+    // 01_SOURCES
+    { sheet: '01_SOURCES', col: 'Source_ID', type: 'String', desc: 'Unique identifier for the data source', ex: 'WB-GDP-USA-2024' },
+    { sheet: '01_SOURCES', col: 'Provider', type: 'String', desc: 'Name of the data provider organization', ex: 'World Bank' },
+    { sheet: '01_SOURCES', col: 'URL', type: 'String', desc: 'Direct link to the source document or API', ex: 'https://data.worldbank.org/...' },
+    { sheet: '01_SOURCES', col: 'Method', type: 'String', desc: 'Method used to acquire the data', ex: 'API' },
+    { sheet: '01_SOURCES', col: 'Timestamp', type: 'DateTime', desc: 'When the data was fetched', ex: '2025-01-19T10:00:00Z' },
+
+    // 02_RAW
+    { sheet: '02_RAW', col: 'Source_ID', type: 'String', desc: 'Reference to the Source ID in 01_SOURCES', ex: 'WB-GDP-USA-2024' },
+    { sheet: '02_RAW', col: 'Raw_JSON_Sample', type: 'JSON', desc: 'First 500 chars of the raw response for verification', ex: '{"data": [...]}' },
+
+    // 03_CLEAN
+    { sheet: '03_CLEAN', col: 'Date', type: 'String (YYYY-MM)', desc: 'Standardized date of the observation', ex: '2023-12' },
+    { sheet: '03_CLEAN', col: 'Country', type: 'String', desc: 'Full name of the country', ex: 'United States' },
+    { sheet: '03_CLEAN', col: 'Country_Code', type: 'String', desc: 'ISO 3-letter country code', ex: 'USA' },
+    { sheet: '03_CLEAN', col: 'Indicator', type: 'String', desc: 'Name of the economic indicator', ex: 'GDP Growth' },
+    { sheet: '03_CLEAN', col: 'Value', type: 'Number', desc: 'Numeric value of the observation', ex: '2.5' },
+    { sheet: '03_CLEAN', col: 'Unit', type: 'String', desc: 'Unit of measurement', ex: 'Percent' },
+
+    // 04_MODEL
+    { sheet: '04_MODEL', col: 'Metric_ID', type: 'String', desc: 'Unique ID for the calculated metric', ex: 'GDP_PER_CAPITA' },
+    { sheet: '04_MODEL', col: 'Formula', type: 'String', desc: 'Excel formula or logic used for calculation', ex: 'GDP / POPULATION' },
+    { sheet: '04_MODEL', col: 'YoY_Change', type: 'Percentage', desc: 'Year-over-Year growth rate', ex: '5.20%' },
+
+    // 05_DASHBOARD
+    { sheet: '05_DASHBOARD', col: 'Total_Records', type: 'Integer', desc: 'Count of data points available', ex: '120' },
+    { sheet: '05_DASHBOARD', col: 'Avg_Value', type: 'Number', desc: 'Average value across the selected period', ex: '450.50' },
+  ];
+
+  for (const def of definitions) {
+    sheet.addRow([def.sheet, def.col, def.type, def.desc, def.ex]);
+  }
+
+  sheet.getColumn(1).width = 20;
+  sheet.getColumn(2).width = 20;
+  sheet.getColumn(3).width = 15;
+  sheet.getColumn(4).width = 50;
+  sheet.getColumn(5).width = 25;
+
+  sheet.autoFilter = { from: 'A4', to: `E${definitions.length + 4}` };
 }

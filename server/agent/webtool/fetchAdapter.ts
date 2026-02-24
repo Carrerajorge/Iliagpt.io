@@ -359,8 +359,8 @@ export class HttpFetchAdapter implements IFetchAdapter {
       message.includes("econnreset") ||
       message.includes("econnrefused") ||
       message.includes("network") ||
-      message.includes("socket") ||
-      message.includes("abort")
+      message.includes("socket")
+      // "abort" removed: aborted requests are intentionally cancelled and should not be retried
     );
   }
   

@@ -20,7 +20,7 @@ import {
 // Helper to extract userId from Passport session
 function getUserId(req: Request): string | undefined {
   const user = (req as any).user;
-  return user?.claims?.sub;
+  return user?.claims?.sub || user?.id;
 }
 
 export function createGmailRouter() {

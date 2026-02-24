@@ -1,10 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense, lazy } from "react";
 import { Button } from "@/components/ui/button";
-import { 
-  ChevronDown, 
-  ChevronRight, 
-  Copy, 
-  Check, 
+import {
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Check,
   AlertCircle,
   CheckCircle2,
   Loader2,
@@ -17,6 +17,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+
+const MonacoEditorLazy = lazy(() => import("@monaco-editor/react"));
 
 interface CodeArtifact {
   id: string;
@@ -46,7 +48,7 @@ interface CodeExecutionBlockProps {
 
 function generateCodeDescription(code: string): string {
   const lines = code.toLowerCase();
-  
+
   if (lines.includes('plt.bar') || lines.includes('bar(')) {
     return 'Generando gráfica de barras';
   }
@@ -80,7 +82,7 @@ function generateCodeDescription(code: string): string {
   if (lines.includes('print(')) {
     return 'Ejecutando código Python';
   }
-  
+
   return 'Código Python ejecutable';
 }
 
@@ -103,7 +105,18 @@ export function CodeExecutionBlock({
 
   const description = generateCodeDescription(code);
 
+  const [editableCode, setEditableCode] = useState(code);
+  const [isDirty, setIsDirty] = useState(false);
+
+  // Sync with prop updates unless user has edited
+  useEffect(() => {
+    if (!isDirty && code !== editableCode) {
+      setEditableCode(code);
+    }
+  }, [code, isDirty, editableCode]);
+
   const handleDownloadImage = (dataUrl: string, filename: string) => {
+    // ... existing implementation ...
     const link = document.createElement('a');
     link.href = dataUrl;
     link.download = filename || 'grafica.png';
@@ -124,7 +137,7 @@ export function CodeExecutionBlock({
       }
       const byteArray = new Uint8Array(byteNumbers);
       const blob = new Blob([byteArray], { type: 'image/png' });
-      
+
       await navigator.clipboard.write([
         new ClipboardItem({ 'image/png': blob })
       ]);
@@ -149,7 +162,7 @@ export function CodeExecutionBlock({
 
   const executeCode = async () => {
     if (isRunning) return;
-    
+
     setIsRunning(true);
     setRun(null);
     setArtifacts([]);
@@ -158,7 +171,8 @@ export function CodeExecutionBlock({
       const response = await fetch("/api/code-interpreter/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, conversationId, language }),
+        // Use editableCode for execution
+        body: JSON.stringify({ code: editableCode, conversationId, language }),
       });
 
       if (!response.ok) {
@@ -168,7 +182,7 @@ export function CodeExecutionBlock({
       const result = await response.json();
       setRun(result.run);
       setArtifacts(result.artifacts || []);
-      
+
       if (onExecuted) {
         onExecuted(result.run, result.artifacts || []);
       }
@@ -234,7 +248,7 @@ export function CodeExecutionBlock({
   };
 
   return (
-    <div 
+    <div
       className="my-4 rounded-xl border border-border/50 overflow-hidden bg-gradient-to-b from-[#1a1a1a] to-[#141414] shadow-lg"
       data-testid="code-execution-block"
     >
@@ -258,10 +272,10 @@ export function CodeExecutionBlock({
             </span>
           </div>
         </div>
-        
+
         <div className="flex items-center gap-2">
           {getStatusBadge()}
-          
+
           <div className="flex items-center gap-1 ml-2">
             <Button
               variant="ghost"
@@ -277,7 +291,7 @@ export function CodeExecutionBlock({
               )}
             </Button>
           </div>
-          
+
           <div className="w-6 h-6 flex items-center justify-center text-gray-500">
             {isExpanded ? (
               <ChevronDown className="w-4 h-4" />
@@ -289,27 +303,34 @@ export function CodeExecutionBlock({
       </button>
 
       {isExpanded && (
-        <div className="max-h-[400px] overflow-auto border-b border-border/30">
-          <SyntaxHighlighter
-            language={language}
-            style={oneDark}
-            customStyle={{
-              margin: 0,
-              padding: "1rem",
-              fontSize: "0.8125rem",
-              background: "transparent",
-              lineHeight: 1.6,
-            }}
-            showLineNumbers
-            lineNumberStyle={{
-              minWidth: "2.5em",
-              paddingRight: "1em",
-              color: "#4a4a4a",
-              userSelect: "none",
-            }}
+        <div className="h-[400px] border-b border-border/30">
+          <Suspense
+            fallback={
+              <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                Cargando editor...
+              </div>
+            }
           >
-            {code}
-          </SyntaxHighlighter>
+            <MonacoEditorLazy
+              height="100%"
+              defaultLanguage={language}
+              value={editableCode}
+              theme="vs-dark"
+              onChange={(value) => {
+                setEditableCode(value || "");
+                setIsDirty(true);
+              }}
+              options={{
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                fontSize: 13,
+                fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+                padding: { top: 16, bottom: 16 },
+                lineNumbers: "on",
+                renderLineHighlight: "none",
+              }}
+            />
+          </Suspense>
         </div>
       )}
 
@@ -326,7 +347,7 @@ export function CodeExecutionBlock({
           </pre>
         </div>
       )}
-      
+
       {run && run.stderr && (
         <div className="border-t border-red-500/20">
           <div className="px-4 py-2 bg-red-950/30 flex items-center gap-2">
@@ -404,7 +425,7 @@ export function CodeExecutionBlock({
       )}
 
       {fullscreenImage && (
-        <div 
+        <div
           className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
           onClick={() => setFullscreenImage(null)}
         >

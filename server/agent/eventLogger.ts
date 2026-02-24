@@ -187,17 +187,22 @@ export async function logToolEvent(
   eventType: "tool_called" | "tool_completed" | "tool_failed",
   payload: Record<string, any>
 ): Promise<void> {
-  await eventLogger.logImmediate({
-    runId,
-    correlationId,
-    eventType,
-    stepIndex,
-    payload: {
-      toolName,
-      ...payload,
-    },
-    metadata: {
-      timestamp: Date.now(),
-    },
-  });
+  // Tool execution must never fail because event persistence is down (e.g. tests, local-only runs).
+  try {
+    await eventLogger.logImmediate({
+      runId,
+      correlationId,
+      eventType,
+      stepIndex,
+      payload: {
+        toolName,
+        ...payload,
+      },
+      metadata: {
+        timestamp: Date.now(),
+      },
+    });
+  } catch (error) {
+    console.warn("[EventLogger] Skipping tool event log (best-effort):", error);
+  }
 }

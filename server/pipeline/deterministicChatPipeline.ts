@@ -1,28 +1,28 @@
 import { EventEmitter } from "events";
 import { randomUUID } from "crypto";
 import { z } from "zod";
-import { 
-  DialogueManager, 
-  getDialogueManager, 
-  DialogueAction, 
+import {
+  DialogueManager,
+  getDialogueManager,
+  DialogueAction,
   ErrorCode,
   DialogueState
 } from "./dialogueManager";
-import { 
-  StageWatchdog, 
-  createWatchdog, 
+import {
+  StageWatchdog,
+  createWatchdog,
   StageTimeoutError,
   type PipelineLatency,
   type StageName
 } from "./stageTimeouts";
-import { 
-  ClarificationPolicy, 
+import {
+  ClarificationPolicy,
   clarificationPolicy,
   type ClarificationContext,
   type ClarificationResult
 } from "./clarificationPolicy";
-import { 
-  TextPreprocessor, 
+import {
+  TextPreprocessor,
   textPreprocessor,
   type PreprocessResult
 } from "./textPreprocessor";
@@ -40,6 +40,7 @@ import {
 import { llmGateway } from "../lib/llmGateway";
 import { promptAnalyzer, type AnalysisResult } from "../agent/orchestration/promptAnalyzer";
 import { intentRouter, type RouteDecision } from "../agent/orchestration/intentRouter";
+import { conversationMemoryManager } from "../services/conversationMemory";
 
 export interface PipelineConfig {
   aggressiveTimeouts: boolean;
@@ -59,7 +60,7 @@ const DEFAULT_CONFIG: PipelineConfig = {
   maxClarificationAttempts: 3,
   confidenceThresholdOk: 0.70,
   confidenceThresholdClarify: 0.40,
-  defaultModel: "grok-4-1-fast-non-reasoning",
+  defaultModel: "gemini-3.1-pro",
   fallbackModel: "gemini-2.5-flash"
 };
 
@@ -129,7 +130,7 @@ export class DeterministicChatPipeline extends EventEmitter {
 
     dialogueManager.startNewTurn(requestId);
     watchdog.startRequest();
-    
+
     this.log("info", "pipeline_started", {
       requestId,
       sessionId,
@@ -157,7 +158,7 @@ export class DeterministicChatPipeline extends EventEmitter {
           analysisResult.intentConfidence,
           analysisResult.intent
         );
-        
+
         this.log("info", "clarification_triggered", {
           requestId,
           sessionId,
@@ -166,7 +167,7 @@ export class DeterministicChatPipeline extends EventEmitter {
           action,
           attempt: dialogueManager.getContext().clarificationAttempts
         });
-        
+
         const latency = watchdog.finishRequest();
         return createClarificationResponse(
           requestId,
@@ -177,7 +178,7 @@ export class DeterministicChatPipeline extends EventEmitter {
           latency.total
         );
       }
-      
+
       dialogueManager.resetClarificationAttempts();
 
       if (this.needsRetrieval(analysisResult)) {
@@ -197,7 +198,7 @@ export class DeterministicChatPipeline extends EventEmitter {
 
       const latency = watchdog.finishRequest();
       dialogueManager.handleSuccess();
-      
+
       this.log("info", "pipeline_completed", {
         requestId,
         sessionId,
@@ -237,7 +238,7 @@ export class DeterministicChatPipeline extends EventEmitter {
         state: dialogueManager.getState()
       });
       dialogueManager.handleError(errorCode, (error as Error).message);
-      
+
       this.emit("error", { requestId, error, errorCode });
       return this.buildFallbackResponse(requestId, sessionId, errorCode, state, latency);
     }
@@ -352,9 +353,9 @@ export class DeterministicChatPipeline extends EventEmitter {
 
   private needsRetrieval(analysis: AnalysisResult): boolean {
     const retrievalIntents = ["research", "document_analysis", "data_analysis", "multi_step_task"];
-    return retrievalIntents.includes(analysis.intent) || 
-           analysis.complexity === "complex" || 
-           analysis.complexity === "expert";
+    return retrievalIntents.includes(analysis.intent) ||
+      analysis.complexity === "complex" ||
+      analysis.complexity === "expert";
   }
 
   private async executeRetrieval(
@@ -394,7 +395,17 @@ export class DeterministicChatPipeline extends EventEmitter {
           messages.push({ role: "system", content: context.systemPrompt });
         }
 
-        for (const msg of context.conversationHistory.slice(-10)) {
+        // CONTEXT FIX: Use memory manager instead of hardcoded slice(-10)
+        const optimizedHistory = await conversationMemoryManager.augmentWithHistory(
+          context.chatId,
+          context.conversationHistory.map(m => ({
+            role: m.role as "user" | "assistant" | "system",
+            content: m.content
+          })),
+          6000 // Reserve tokens for system prompt + current message + response
+        );
+
+        for (const msg of optimizedHistory) {
           messages.push({
             role: msg.role as "user" | "assistant" | "system",
             content: msg.content
@@ -490,12 +501,12 @@ export class DeterministicChatPipeline extends EventEmitter {
 
   private classifyError(error: Error): ErrorCode {
     const message = error.message.toLowerCase();
-    
+
     if (message.includes("timeout")) return "TIMEOUT_GENERATION";
     if (message.includes("429") || message.includes("rate limit")) return "UPSTREAM_429";
     if (message.includes("500") || message.includes("502") || message.includes("503")) return "UPSTREAM_5XX";
     if (message.includes("circuit") && message.includes("open")) return "CIRCUIT_OPEN";
-    
+
     return "UPSTREAM_5XX";
   }
 
@@ -512,7 +523,7 @@ export class DeterministicChatPipeline extends EventEmitter {
 
     try {
       yield { type: "status", content: "preprocessing" };
-      const preprocessResult = await this.executePreprocess(message, watchdog);
+      const preprocessResult = await this.executePreprocess(message, watchdog, requestId, sessionId);
 
       if (preprocessResult.qualityFlags.includes("garbage_input")) {
         yield { type: "error", content: "No pude entender tu mensaje.", done: true };
@@ -525,10 +536,10 @@ export class DeterministicChatPipeline extends EventEmitter {
 
       const clarificationCheck = this.evaluateClarification(analysisResult, context, dialogueManager);
       if (clarificationCheck.shouldClarify && this.config.enableClarification) {
-        yield { 
-          type: "clarification", 
+        yield {
+          type: "clarification",
           content: clarificationCheck.clarification!.question,
-          done: true 
+          done: true
         };
         return;
       }
@@ -540,7 +551,16 @@ export class DeterministicChatPipeline extends EventEmitter {
       if (context.systemPrompt) {
         messages.push({ role: "system", content: context.systemPrompt });
       }
-      for (const msg of context.conversationHistory.slice(-10)) {
+      // CONTEXT FIX: Use memory manager for streaming too
+      const optimizedHistory = await conversationMemoryManager.augmentWithHistory(
+        context.chatId,
+        context.conversationHistory.map(m => ({
+          role: m.role as "user" | "assistant" | "system",
+          content: m.content
+        })),
+        6000
+      );
+      for (const msg of optimizedHistory) {
         messages.push({
           role: msg.role as "user" | "assistant" | "system",
           content: msg.content

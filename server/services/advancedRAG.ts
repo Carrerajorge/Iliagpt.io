@@ -5,9 +5,13 @@ import { eq, inArray, sql, and, gte, lte, like } from 'drizzle-orm';
 import { LRUCache } from 'lru-cache';
 import crypto from 'crypto';
 
-const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+const isTestEnv = process.env.NODE_ENV === 'test' || !!process.env.VITEST_WORKER_ID || !!process.env.VITEST_POOL_ID;
 
-const EMBEDDING_MODEL = 'text-embedding-004';
+// Avoid network calls during tests.
+const genAI = !isTestEnv && process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+
+// Configurable because some projects/keys don't have `text-embedding-004`.
+const EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL || 'gemini-embedding-001';
 const LLM_MODEL = 'gemini-2.0-flash';
 
 interface SemanticChunk {
@@ -117,6 +121,12 @@ async function computeSentenceEmbeddings(sentences: string[]): Promise<number[][
         if (cached) return cached;
         
         try {
+          if (!genAI) {
+            const embedding = generateFallbackEmbedding(sentence);
+            embeddingCache.set(cacheKey, embedding);
+            return embedding;
+          }
+
           const result = await genAI.models.embedContent({
             model: EMBEDDING_MODEL,
             contents: [{ role: 'user', parts: [{ text: sentence }] }],
@@ -333,16 +343,18 @@ Pregunta: ${query}
 JSON:`;
 
   try {
+    if (!genAI) throw new Error('GEMINI_API_KEY not configured');
+
     const [hydeResult, subQueryResult, filterResult] = await Promise.all([
-      genAI.models.generateContent({
+      (genAI as any).models.generateContent({
         model: LLM_MODEL,
         contents: [{ role: 'user', parts: [{ text: hydePrompt }] }],
       }),
-      genAI.models.generateContent({
+      (genAI as any).models.generateContent({
         model: LLM_MODEL,
         contents: [{ role: 'user', parts: [{ text: subQueryPrompt }] }],
       }),
-      genAI.models.generateContent({
+      (genAI as any).models.generateContent({
         model: LLM_MODEL,
         contents: [{ role: 'user', parts: [{ text: filterPrompt }] }],
       })
@@ -574,7 +586,9 @@ ${chunks.slice(0, 20).map((c, i) => `[Pasaje ${i + 1}]: ${c.content.slice(0, 300
 Puntuaciones (solo números separados por comas):`;
 
   try {
-    const result = await genAI.models.generateContent({
+    if (!genAI) throw new Error('GEMINI_API_KEY not configured');
+
+    const result = await (genAI as any).models.generateContent({
       model: LLM_MODEL,
       contents: [{ role: 'user', parts: [{ text: rerankPrompt }] }],
     });
@@ -658,7 +672,9 @@ ${chunks.map((c, i) => `[Pasaje ${i + 1}]:\n${c.content}`).join('\n\n---\n\n')}
 Para cada pasaje, devuelve SOLO las oraciones relevantes (mantén numeración):`;
 
   try {
-    const result = await genAI.models.generateContent({
+    if (!genAI) throw new Error('GEMINI_API_KEY not configured');
+
+    const result = await (genAI as any).models.generateContent({
       model: LLM_MODEL,
       contents: [{ role: 'user', parts: [{ text: compressionPrompt }] }],
     });
@@ -731,7 +747,9 @@ SUFICIENTE: [sí/no]
 SEGUIMIENTO: [pregunta de seguimiento si es necesario, o "ninguno"]`;
 
   try {
-    const result = await genAI.models.generateContent({
+    if (!genAI) throw new Error('GEMINI_API_KEY not configured');
+
+    const result = await (genAI as any).models.generateContent({
       model: LLM_MODEL,
       contents: [{ role: 'user', parts: [{ text: checkPrompt }] }],
     });
@@ -839,7 +857,9 @@ ${query}
 ## Tu respuesta (con citas):`;
 
   try {
-    const result = await genAI.models.generateContent({
+    if (!genAI) throw new Error('GEMINI_API_KEY not configured');
+
+    const result = await (genAI as any).models.generateContent({
       model: LLM_MODEL,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
     });
@@ -899,7 +919,9 @@ Respuesta dada: ${answer.slice(0, 500)}
 Genera 3 preguntas de seguimiento cortas y específicas (una por línea):`;
 
   try {
-    const result = await genAI.models.generateContent({
+    if (!genAI) throw new Error('GEMINI_API_KEY not configured');
+
+    const result = await (genAI as any).models.generateContent({
       model: LLM_MODEL,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
     });

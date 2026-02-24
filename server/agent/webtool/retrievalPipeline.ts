@@ -205,9 +205,10 @@ export class RetrievalPipeline {
     
     const fetchPromises = urls.slice(0, request.maxResults * 2).map(async (url) => {
       const startTime = Date.now();
+      const allowBrowser = request.allowBrowser !== false;
       
       try {
-        if (request.preferBrowser) {
+        if (request.preferBrowser && allowBrowser) {
           const browseResult = await this.browserAdapter.browse(url.original);
           
           if (browseResult.success && browseResult.content) {
@@ -226,7 +227,7 @@ export class RetrievalPipeline {
         if (fetchResult.success && fetchResult.content) {
           const needsBrowser = this.needsBrowserFallback(fetchResult);
           
-          if (needsBrowser) {
+          if (needsBrowser && allowBrowser) {
             const browseResult = await this.browserAdapter.browse(url.original);
             
             if (browseResult.success && browseResult.content) {
@@ -248,23 +249,32 @@ export class RetrievalPipeline {
             timing: { fetchMs: Date.now() - startTime },
           };
         }
-        
-        const browseResult = await this.browserAdapter.browse(url.original);
-        
-        if (browseResult.success && browseResult.content) {
-          return {
-            url,
-            content: browseResult.content,
-            fetchResult: browseResult,
-            method: "browser" as const,
-            timing: { fetchMs: Date.now() - startTime },
-          };
+
+        if (allowBrowser) {
+          const browseResult = await this.browserAdapter.browse(url.original);
+
+          if (browseResult.success && browseResult.content) {
+            return {
+              url,
+              content: browseResult.content,
+              fetchResult: browseResult,
+              method: "browser" as const,
+              timing: { fetchMs: Date.now() - startTime },
+            };
+          }
+
+          errors.push({
+            url: url.original,
+            error: browseResult.error || fetchResult.error || "Failed to fetch content",
+            stage: "browse",
+          });
+          return null;
         }
-        
-        errors.push({ 
-          url: url.original, 
-          error: fetchResult.error || "Failed to fetch content", 
-          stage: "fetch" 
+
+        errors.push({
+          url: url.original,
+          error: fetchResult.error || "Failed to fetch content",
+          stage: "fetch",
         });
         return null;
       } catch (error) {

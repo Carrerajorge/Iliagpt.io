@@ -76,6 +76,7 @@ export interface TraceStep {
   completedAt?: number;
   durationMs?: number;
   output?: string;
+  shellOutput?: string;
   error?: string;
   artifacts: TraceArtifact[];
   events: TraceEvent[];
@@ -173,7 +174,7 @@ export const useAgentTraceStore = create<AgentTraceState>((set, get) => ({
 
     eventSource.onopen = () => {
       set({ isConnected: true, connectionError: null });
-      console.log(`[TraceStore] Connected to activity stream for run ${runId}`);
+      console.debug(`[TraceStore] Connected to activity stream for run ${runId}`);
     };
 
     eventSource.onerror = (error) => {
@@ -229,7 +230,7 @@ export const useAgentTraceStore = create<AgentTraceState>((set, get) => ({
         newEventSources.delete(runId);
         return { eventSources: newEventSources };
       });
-      console.log(`[TraceStore] Disconnected from run ${runId}`);
+      console.debug(`[TraceStore] Disconnected from run ${runId}`);
     }
   },
 
@@ -281,13 +282,23 @@ export const useAgentTraceStore = create<AgentTraceState>((set, get) => ({
         case 'tool_output':
         case 'tool_chunk':
         case 'shell_output':
+        case 'shell_chunk':
+        case 'shell_exit':
           if (event.stepIndex !== undefined) {
             const step = updatedRun.steps[event.stepIndex];
             if (step) {
               step.events.push(event);
+              if (event.event_type === 'shell_chunk') {
+                const chunk = (event as any).chunk || event.output_snippet || '';
+                step.shellOutput = (step.shellOutput || '') + String(chunk);
+              }
+
               if (event.output_snippet) {
                 if (event.event_type === 'tool_chunk') {
                   step.output = (step.output || '') + event.output_snippet;
+                } else if (event.event_type === 'shell_output') {
+                  // Legacy behavior: keep a best-effort preview. Prefer shell_chunk for full output.
+                  step.shellOutput = step.shellOutput || event.output_snippet;
                 } else {
                   step.output = event.output_snippet;
                 }

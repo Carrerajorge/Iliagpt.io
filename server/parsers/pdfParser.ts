@@ -4,6 +4,19 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { PDFParse } = require("pdf-parse");
 
+// Security limits
+const PDF_MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
+const PDF_MAX_EXTRACTED_TEXT = 10 * 1024 * 1024; // 10MB max extracted text
+const PDF_MAX_METADATA_VALUE_LENGTH = 1000;
+
+/** Sanitize metadata values */
+function sanitizeMetadataValue(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  return String(value)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .substring(0, PDF_MAX_METADATA_VALUE_LENGTH) || undefined;
+}
+
 export class PdfParser implements FileParser {
   name = "pdf";
   supportedMimeTypes = ["application/pdf"];
@@ -12,6 +25,11 @@ export class PdfParser implements FileParser {
   async parse(content: Buffer, type: DetectedFileType): Promise<ParsedResult> {
     const startTime = Date.now();
     console.log(`[PdfParser] Starting PDF parse, size: ${content.length} bytes`);
+
+    // Security: enforce file size limit
+    if (content.length > PDF_MAX_FILE_SIZE) {
+      throw new Error(`PDF file exceeds maximum size of ${PDF_MAX_FILE_SIZE / (1024 * 1024)}MB`);
+    }
 
     let timeoutId: NodeJS.Timeout | null = null;
     
@@ -48,7 +66,9 @@ export class PdfParser implements FileParser {
     const parser = new PDFParse({ data: content });
     const data = await parser.getText();
     
-    const text = this.normalizeText(data.text || '');
+    // Security: limit extracted text size
+    const rawText = data.text || '';
+    const text = this.normalizeText(rawText.length > PDF_MAX_EXTRACTED_TEXT ? rawText.substring(0, PDF_MAX_EXTRACTED_TEXT) : rawText);
     const metadata = this.extractMetadata(data);
     const formattedText = this.formatOutput(metadata, text, data.numpages || 0);
 
@@ -80,15 +100,16 @@ export class PdfParser implements FileParser {
   private extractMetadata(data: any): Record<string, string | undefined> {
     const info = data.info || {};
     
+    // Security: sanitize all metadata values
     return {
-      title: info.Title || undefined,
-      author: info.Author || undefined,
+      title: sanitizeMetadataValue(info.Title),
+      author: sanitizeMetadataValue(info.Author),
       creationDate: this.formatPdfDate(info.CreationDate),
       modificationDate: this.formatPdfDate(info.ModDate),
-      producer: info.Producer || undefined,
-      creator: info.Creator || undefined,
-      subject: info.Subject || undefined,
-      keywords: info.Keywords || undefined,
+      producer: sanitizeMetadataValue(info.Producer),
+      creator: sanitizeMetadataValue(info.Creator),
+      subject: sanitizeMetadataValue(info.Subject),
+      keywords: sanitizeMetadataValue(info.Keywords),
     };
   }
 

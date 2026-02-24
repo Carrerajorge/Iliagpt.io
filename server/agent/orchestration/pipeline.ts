@@ -48,6 +48,7 @@ export type Attachment = z.infer<typeof AttachmentSchema>;
 export const PipelineContextSchema = z.object({
   sessionId: z.string(),
   userId: z.string(),
+  intent: z.string().optional(),
   chatId: z.string(),
   messages: z.array(MessageSchema),
   attachments: z.array(AttachmentSchema).optional().default([]),
@@ -161,7 +162,7 @@ export class AgentLoopFacade extends EventEmitter {
     this.options = {
       enableQA: options.enableQA ?? true,
       maxExecutionTimeMs: options.maxExecutionTimeMs ?? 300000,
-      defaultModel: options.defaultModel ?? "grok-3-fast",
+      defaultModel: options.defaultModel ?? "gemini-3.1-pro",
       enableSSE: options.enableSSE ?? true,
       qaConfig: {
         minScore: options.qaConfig?.minScore ?? 0.7,
@@ -257,7 +258,7 @@ export class AgentLoopFacade extends EventEmitter {
           executionResult = await this.executeSingleAgentPath(message, analysis, route, runId);
           break;
         case "multi_agent":
-          executionResult = await this.executeMultiAgentPath(message, analysis, route, runId);
+          executionResult = await this.executeMultiAgentPath(message, analysis, route, runId, validatedContext);
           break;
         default:
           executionResult = await this.executeDirectPath(message, analysis, validatedContext);
@@ -422,7 +423,7 @@ export class AgentLoopFacade extends EventEmitter {
 
   async getRunStatus(runId: string): Promise<RunStatus> {
     const activeRun = this.activeRuns.get(runId);
-    
+
     if (activeRun) {
       return {
         runId,
@@ -444,7 +445,7 @@ export class AgentLoopFacade extends EventEmitter {
 
   async cancelRun(runId: string): Promise<boolean> {
     const activeRun = this.activeRuns.get(runId);
-    
+
     if (!activeRun) {
       console.warn(`[AgentLoopFacade] Cannot cancel run ${runId}: not found`);
       return false;
@@ -531,6 +532,7 @@ Provide a clear, helpful response.`;
         userId: "system",
         chatId: runId,
         messages: [{ role: "user", content: message }],
+        attachments: [],
       });
     }
 
@@ -551,6 +553,8 @@ Provide a clear, helpful response.`;
         deliverables: analysis.deliverables,
       },
       priority: "high",
+      retries: 0,
+      maxRetries: 3,
     });
 
     activityStreamPublisher.publishAgentDelegated(runId, {
@@ -560,7 +564,7 @@ Provide a clear, helpful response.`;
     });
 
     const output = result.output as any;
-    const content = output?.summary || output?.content || 
+    const content = output?.summary || output?.content ||
       (result.success ? "Task completed successfully." : `Task failed: ${result.error}`);
 
     return {
@@ -577,7 +581,8 @@ Provide a clear, helpful response.`;
     message: string,
     analysis: AnalysisResult,
     route: RouteDecision,
-    runId: string
+    runId: string,
+    context: PipelineContext
   ): Promise<{
     content: string;
     artifacts: Artifact[];
@@ -599,14 +604,16 @@ Provide a clear, helpful response.`;
       {
         query: message,
         intent: analysis.intent,
-        complexity: analysis.complexity === "trivial" || analysis.complexity === "simple" 
-          ? "simple" 
-          : analysis.complexity === "moderate" 
-            ? "moderate" 
+        complexity: analysis.complexity === "trivial" || analysis.complexity === "simple"
+          ? "simple"
+          : analysis.complexity === "moderate"
+            ? "moderate"
             : "complex",
         context: {
           deliverables: analysis.deliverables,
           runId,
+          userId: context.userId,
+          chatId: context.chatId,
         },
       },
       {
@@ -617,8 +624,8 @@ Provide a clear, helpful response.`;
           priority: a.priority <= 3 ? "high" : a.priority <= 6 ? "medium" : "low",
         })),
         suggestedTools: route.tools,
-        executionMode: route.executionStrategy === "parallel" ? "parallel" : 
-                       route.executionStrategy === "sequential" ? "sequential" : "hybrid",
+        executionMode: route.executionStrategy === "parallel" ? "parallel" :
+          route.executionStrategy === "sequential" ? "sequential" : "hybrid",
         estimatedComplexity: route.confidence * 10,
       }
     );

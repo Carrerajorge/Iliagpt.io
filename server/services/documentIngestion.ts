@@ -13,6 +13,39 @@ const pdfParse = require("pdf-parse");
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
 const PREVIEW_ROW_LIMIT = 100;
 
+// ============================================
+// SECURITY LIMITS
+// ============================================
+
+/** Maximum extracted text size (5MB) */
+const MAX_EXTRACTED_TEXT = 5 * 1024 * 1024;
+
+/** Maximum number of sheets to process */
+const MAX_SHEETS = 100;
+
+/** Maximum number of pages to process for PDF */
+const MAX_PDF_PAGES = 1000;
+
+/** Timeout for individual parse operations (60s) */
+const PARSE_TIMEOUT_MS = 60_000;
+
+/** Maximum columns for tabular data */
+const MAX_COLUMNS = 500;
+
+/** Wrap async operation with timeout */
+function withParseTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${PARSE_TIMEOUT_MS}ms`)), PARSE_TIMEOUT_MS);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId!));
+}
+
+/** Truncate extracted text to security limit */
+function capText(text: string): string {
+  return text.length > MAX_EXTRACTED_TEXT ? text.substring(0, MAX_EXTRACTED_TEXT) : text;
+}
+
 export interface DocumentMetadata {
   fileType: 'xlsx' | 'xls' | 'csv' | 'tsv' | 'pdf' | 'docx' | 'pptx' | 'ppt' | 'rtf' | 'png' | 'jpeg' | 'gif' | 'bmp' | 'tiff' | 'webp';
   fileName: string;
@@ -321,11 +354,13 @@ export async function extractMetadata(
 
 async function parseExcelXlsx(buffer: Buffer): Promise<DocumentSheet[]> {
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(buffer);
+  await withParseTimeout(workbook.xlsx.load(buffer), "Excel XLSX load");
 
   const sheets: DocumentSheet[] = [];
 
   workbook.eachSheet((worksheet, sheetIndex) => {
+    // Security: limit number of sheets
+    if (sheets.length >= MAX_SHEETS) return;
     const data: any[][] = [];
 
     worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
@@ -362,7 +397,9 @@ function parseExcelXls(buffer: Buffer): DocumentSheet[] {
   const workbook = XLSX.read(buffer, { type: 'buffer' });
   const sheets: DocumentSheet[] = [];
 
-  workbook.SheetNames.forEach((sheetName, sheetIndex) => {
+  // Security: limit number of sheets
+  const sheetNames = workbook.SheetNames.slice(0, MAX_SHEETS);
+  sheetNames.forEach((sheetName, sheetIndex) => {
     const worksheet = workbook.Sheets[sheetName];
     const data: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null });
     
@@ -542,18 +579,22 @@ function detectHeaders(data: any[][]): HeaderDetectionResult {
 }
 
 async function parsePdf(buffer: Buffer): Promise<DocumentSheet[]> {
-  const pdfData = await pdfParse(buffer);
-  const text = pdfData.text || "";
+  const pdfData = await withParseTimeout(pdfParse(buffer), "PDF parse");
+  // Security: cap extracted text
+  const text = capText(pdfData.text || "");
   const numPages = pdfData.numpages || 1;
 
   const pages = text.split(/\f/).filter((page: string) => page.trim().length > 0);
-  
+
   const sheets: DocumentSheet[] = [];
+
+  // Security: limit pages processed
+  const maxPages = Math.min(Math.max(pages.length, numPages), MAX_PDF_PAGES);
 
   if (pages.length === 0 && text.trim()) {
     const lines = text.split(/\r?\n/).filter((line: string) => line.trim());
     const previewLines = lines.slice(0, PREVIEW_ROW_LIMIT);
-    
+
     sheets.push({
       name: "Page 1",
       index: 0,
@@ -564,7 +605,7 @@ async function parsePdf(buffer: Buffer): Promise<DocumentSheet[]> {
       isTabular: false,
     });
   } else {
-    for (let i = 0; i < Math.max(pages.length, numPages); i++) {
+    for (let i = 0; i < maxPages; i++) {
       const pageText = pages[i] || "";
       const lines = pageText.split(/\r?\n/).filter((line: string) => line.trim());
       const previewLines = lines.slice(0, PREVIEW_ROW_LIMIT);
@@ -613,7 +654,7 @@ function parseGenericText(text: string, docName: string): DocumentSheet[] {
 
 async function parsePptx(buffer: Buffer, fileName: string): Promise<DocumentSheet[]> {
   try {
-    const text = await officeParser.parseOfficeAsync(buffer);
+    const text = await withParseTimeout(officeParser.parseOfficeAsync(buffer), "PPTX parse");
     if (!text || text.trim().length === 0) {
       return [{
         name: "Presentation",
@@ -634,7 +675,7 @@ async function parsePptx(buffer: Buffer, fileName: string): Promise<DocumentShee
 
 async function parseRtf(buffer: Buffer): Promise<DocumentSheet[]> {
   try {
-    const text = await officeParser.parseOfficeAsync(buffer);
+    const text = await withParseTimeout(officeParser.parseOfficeAsync(buffer), "RTF parse");
     if (!text || text.trim().length === 0) {
       const rawText = buffer.toString("utf-8")
         .replace(/\\[a-z]+\d*\s?|[{}]/g, " ")
@@ -678,8 +719,9 @@ async function parseImage(buffer: Buffer, fileName: string): Promise<DocumentShe
 }
 
 async function parseDocx(buffer: Buffer): Promise<DocumentSheet[]> {
-  const result = await mammoth.extractRawText({ buffer });
-  const text = result.value || "";
+  const result = await withParseTimeout(mammoth.extractRawText({ buffer }), "DOCX parse");
+  // Security: cap extracted text
+  const text = capText(result.value || "");
 
   const headingPattern = /^(?:#{1,6}\s+.+|[A-Z][A-Z\s]{2,}[A-Z]$|(?:\d+\.)+\s+.+)/m;
   
@@ -817,6 +859,11 @@ export function validateFileSize(buffer: Buffer): { valid: boolean; error?: stri
 }
 
 export async function extractContent(buffer: Buffer, mimeType: string): Promise<string> {
+  // Security: enforce file size limit
+  if (buffer.length > MAX_FILE_SIZE) {
+    throw new Error(`File size exceeds maximum allowed size of ${MAX_FILE_SIZE / (1024 * 1024)}MB`);
+  }
+
   const fileType = await detectFileType(buffer, mimeType);
   if (!fileType) {
     throw new Error('Unsupported file type');
@@ -824,47 +871,49 @@ export async function extractContent(buffer: Buffer, mimeType: string): Promise<
 
   try {
     switch (fileType) {
-      case 'pdf':
-        const pdfData = await pdfParse(buffer);
-        return pdfData.text || '';
-      
-      case 'docx':
-        const docResult = await mammoth.extractRawText({ buffer });
-        return docResult.value || '';
-      
+      case 'pdf': {
+        const pdfData = await withParseTimeout(pdfParse(buffer), "PDF content extraction");
+        return capText(pdfData.text || '');
+      }
+      case 'docx': {
+        const docResult = await withParseTimeout(mammoth.extractRawText({ buffer }), "DOCX content extraction");
+        return capText(docResult.value || '');
+      }
       case 'xlsx':
-      case 'xls':
+      case 'xls': {
         const workbook = XLSX.read(buffer, { type: 'buffer' });
         const sheets: string[] = [];
-        for (const sheetName of workbook.SheetNames) {
+        // Security: limit sheets
+        const sheetNames = workbook.SheetNames.slice(0, MAX_SHEETS);
+        for (const sheetName of sheetNames) {
           const sheet = workbook.Sheets[sheetName];
           const csv = XLSX.utils.sheet_to_csv(sheet);
           sheets.push(`=== ${sheetName} ===\n${csv}`);
         }
-        return sheets.join('\n\n');
-      
+        return capText(sheets.join('\n\n'));
+      }
       case 'csv':
       case 'tsv':
-        return buffer.toString('utf-8');
-      
+        return capText(buffer.toString('utf-8'));
+
       case 'pptx':
-      case 'ppt':
-        const pptText = await officeParser.parseOfficeAsync(buffer);
-        return pptText || '';
-      
-      case 'rtf':
-        const rtfText = await officeParser.parseOfficeAsync(buffer);
-        return rtfText || '';
-      
+      case 'ppt': {
+        const pptText = await withParseTimeout(officeParser.parseOfficeAsync(buffer), "PPT content extraction");
+        return capText(pptText || '');
+      }
+      case 'rtf': {
+        const rtfText = await withParseTimeout(officeParser.parseOfficeAsync(buffer), "RTF content extraction");
+        return capText(rtfText || '');
+      }
       case 'png':
       case 'jpeg':
       case 'gif':
       case 'bmp':
       case 'tiff':
-      case 'webp':
-        const ocrResult = await performOCR(buffer);
-        return ocrResult.text || '';
-      
+      case 'webp': {
+        const ocrResult = await withParseTimeout(performOCR(buffer), "OCR extraction");
+        return capText(ocrResult.text || '');
+      }
       default:
         throw new Error(`Cannot extract content from file type: ${fileType}`);
     }

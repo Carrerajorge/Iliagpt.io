@@ -5,7 +5,7 @@ import { chromium, Browser, Page, BrowserContext } from "playwright";
 
 const xaiClient = new OpenAI({
   baseURL: "https://api.x.ai/v1",
-  apiKey: process.env.XAI_API_KEY,
+  apiKey: process.env.XAI_API_KEY || "missing",
 });
 
 const DEFAULT_MODEL = "grok-4-1-fast-non-reasoning";
@@ -133,7 +133,7 @@ export const browserNavigateTool = tool(
   },
   {
     name: "browser_navigate",
-    description: "Navigates to a URL using headless browser. Supports waiting for elements, capturing page state, and managing browser sessions.",
+    description: "Navigates to a URL using headless browser. Useful for web automation (login, form filling, navigation, screenshots). Supports waiting for elements, capturing page state, and managing browser sessions.",
     schema: z.object({
       url: z.string().url().describe("URL to navigate to"),
       sessionId: z.string().optional().default("default").describe("Browser session ID for maintaining state"),
@@ -256,7 +256,7 @@ export const browserInteractTool = tool(
   },
   {
     name: "browser_interact",
-    description: "Interacts with web page elements: click, type, select, hover, scroll, keyboard events, file upload, checkboxes. Requires an active browser session.",
+    description: "Interacts with web page elements for automation: click, type, select, hover, scroll, keyboard events, file upload, checkboxes. Use for logins and form submissions. Requires an active browser session.",
     schema: z.object({
       action: z.enum(["click", "type", "select", "hover", "scroll", "press", "upload", "wait", "check", "uncheck"])
         .describe("Interaction type"),

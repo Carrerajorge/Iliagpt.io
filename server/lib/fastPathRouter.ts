@@ -1,9 +1,9 @@
 import { llmGateway } from "./llmGateway";
 
-export type IntentType = 
-  | "greeting" 
-  | "simple_question" 
-  | "factual" 
+export type IntentType =
+  | "greeting"
+  | "simple_question"
+  | "factual"
   | "search_required"
   | "document_generation"
   | "code_generation"
@@ -14,6 +14,8 @@ export type IntentType =
 
 export type ComplexityLevel = "trivial" | "simple" | "moderate" | "complex" | "expert";
 
+export type RecommendedLane = "fast" | "deep";
+
 interface ClassificationResult {
   intent: IntentType;
   complexity: ComplexityLevel;
@@ -22,6 +24,18 @@ interface ClassificationResult {
   requiresTools: string[];
   estimatedTokens: number;
   canUseFastPath: boolean;
+  /** Recommended latency lane derived from the classification. */
+  recommendedLane: RecommendedLane;
+}
+
+/** Map complexity/model to the recommended latency lane. */
+function deriveRecommendedLane(
+  complexity: ComplexityLevel,
+  suggestedModel: "flash" | "pro" | "agent",
+): RecommendedLane {
+  if (suggestedModel === "agent") return "deep";
+  if (complexity === "complex" || complexity === "expert") return "deep";
+  return "fast";
 }
 
 const GREETING_PATTERNS = [
@@ -83,6 +97,7 @@ export function classifyPromptFast(prompt: string): ClassificationResult {
         requiresTools: [],
         estimatedTokens: 50,
         canUseFastPath: true,
+        recommendedLane: "fast" as RecommendedLane,
       };
     }
   }
@@ -97,6 +112,7 @@ export function classifyPromptFast(prompt: string): ClassificationResult {
         requiresTools: [],
         estimatedTokens: 200,
         canUseFastPath: true,
+        recommendedLane: "fast" as RecommendedLane,
       };
     }
   }
@@ -111,20 +127,24 @@ export function classifyPromptFast(prompt: string): ClassificationResult {
         requiresTools: ["image_generation"],
         estimatedTokens: 100,
         canUseFastPath: false,
+        recommendedLane: "fast" as RecommendedLane,
       };
     }
   }
 
   for (const pattern of CODE_PATTERNS) {
     if (pattern.test(normalizedPrompt)) {
+      const codeComplexity: ComplexityLevel = wordCount > 50 ? "complex" : "moderate";
+      const codeSuggestedModel: "flash" | "pro" = wordCount > 100 ? "pro" : "flash";
       return {
         intent: "code_generation",
-        complexity: wordCount > 50 ? "complex" : "moderate",
+        complexity: codeComplexity,
         confidence: 0.85,
-        suggestedModel: wordCount > 100 ? "pro" : "flash",
+        suggestedModel: codeSuggestedModel,
         requiresTools: ["code_execution"],
         estimatedTokens: Math.max(500, wordCount * 20),
         canUseFastPath: false,
+        recommendedLane: deriveRecommendedLane(codeComplexity, codeSuggestedModel),
       };
     }
   }
@@ -139,6 +159,7 @@ export function classifyPromptFast(prompt: string): ClassificationResult {
         requiresTools: ["document_generation"],
         estimatedTokens: 1000,
         canUseFastPath: false,
+        recommendedLane: "deep" as RecommendedLane,
       };
     }
   }
@@ -146,14 +167,17 @@ export function classifyPromptFast(prompt: string): ClassificationResult {
   for (const pattern of SEARCH_PATTERNS) {
     if (pattern.test(normalizedPrompt)) {
       const isComplex = COMPLEX_PATTERNS.some(p => p.test(normalizedPrompt));
+      const searchModel: "flash" | "pro" | "agent" = isComplex ? "agent" : "pro";
+      const searchComplexity: ComplexityLevel = isComplex ? "complex" : "moderate";
       return {
         intent: isComplex ? "complex_research" : "search_required",
-        complexity: isComplex ? "complex" : "moderate",
+        complexity: searchComplexity,
         confidence: 0.8,
-        suggestedModel: isComplex ? "agent" : "pro",
+        suggestedModel: searchModel,
         requiresTools: ["web_search", "scientific_search"],
         estimatedTokens: isComplex ? 2000 : 800,
         canUseFastPath: false,
+        recommendedLane: deriveRecommendedLane(searchComplexity, searchModel),
       };
     }
   }
@@ -168,6 +192,7 @@ export function classifyPromptFast(prompt: string): ClassificationResult {
         requiresTools: ["planning", "web_search", "document_generation"],
         estimatedTokens: 3000,
         canUseFastPath: false,
+        recommendedLane: "deep" as RecommendedLane,
       };
     }
   }
@@ -181,6 +206,7 @@ export function classifyPromptFast(prompt: string): ClassificationResult {
       requiresTools: [],
       estimatedTokens: 150,
       canUseFastPath: true,
+      recommendedLane: "fast" as RecommendedLane,
     };
   }
 
@@ -193,6 +219,7 @@ export function classifyPromptFast(prompt: string): ClassificationResult {
       requiresTools: [],
       estimatedTokens: 300,
       canUseFastPath: true,
+      recommendedLane: "fast" as RecommendedLane,
     };
   }
 
@@ -204,6 +231,7 @@ export function classifyPromptFast(prompt: string): ClassificationResult {
     requiresTools: [],
     estimatedTokens: wordCount * 10,
     canUseFastPath: false,
+    recommendedLane: deriveRecommendedLane("moderate", "pro"),
   };
 }
 
@@ -238,6 +266,7 @@ export async function routePrompt(
   fastPathResponse: string | null;
   shouldStream: boolean;
   modelToUse: string;
+  recommendedLane: RecommendedLane;
 }> {
   const classification = classifyPromptFast(prompt);
   const fastPathResponse = classification.canUseFastPath ? getFastPathResponse(prompt) : null;
@@ -253,6 +282,7 @@ export async function routePrompt(
     fastPathResponse,
     shouldStream: !fastPathResponse && classification.complexity !== "trivial",
     modelToUse: modelMap[classification.suggestedModel],
+    recommendedLane: classification.recommendedLane,
   };
 }
 

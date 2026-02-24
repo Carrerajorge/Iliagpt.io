@@ -168,7 +168,7 @@ export class ExecutorAgent {
       correlationId: context.correlationId,
       stepIndex: step.index,
       userPlan: context.userPlan,
-      isConfirmed: true,
+      isConfirmed: (context as any).isConfirmed === true,
     };
 
     await logToolEvent(

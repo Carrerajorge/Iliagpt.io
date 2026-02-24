@@ -8,6 +8,7 @@ import {
 } from "@shared/schema";
 import { db } from "../db";
 import { eq, desc, and, sql, isNull } from "drizzle-orm";
+import { knowledgeBaseService } from "../services/knowledgeBase";
 import { 
   validateUserId, 
   validateResourceId, 
@@ -111,9 +112,25 @@ export class ChatRepository {
       throw new ValidationError("chatId is required to create message");
     }
     logRepositoryAction({ action: "createChatMessage", resourceId: message.chatId });
-    
+
     const [result] = await db.insert(chatMessages).values(message).returning();
-    await db.update(chats).set({ updatedAt: new Date() }).where(eq(chats.id, message.chatId));
+    // Non-blocking: update chat timestamp without awaiting
+    db.update(chats).set({ updatedAt: new Date() }).where(eq(chats.id, message.chatId))
+      .catch((error) => {
+        console.warn("[ChatRepo] Failed to update chat updatedAt:", error?.message || error);
+      });
+    if (message.role === "user" || message.role === "assistant") {
+      queueMicrotask(() => {
+        knowledgeBaseService.ingestChatMessage({
+          chatId: message.chatId,
+          messageId: result.id,
+          role: message.role,
+          content: message.content,
+        }).catch((error) => {
+          console.warn("[Knowledge] Failed to ingest chat message:", error?.message || error);
+        });
+      });
+    }
     return result;
   }
 

@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import type { HydratedConversationState } from "@shared/schema";
+import { apiFetch } from "@/lib/apiClient";
 
 export interface AddMessagePayload {
   role: "user" | "assistant" | "system";
@@ -50,7 +51,7 @@ export interface UpdateContextPayload {
 }
 
 async function fetchConversationState(chatId: string): Promise<HydratedConversationState | null> {
-  const response = await fetch(`/api/memory/chats/${chatId}/state`, {
+  const response = await apiFetch(`/api/memory/chats/${chatId}/state`, {
     credentials: "include",
   });
 
@@ -66,7 +67,7 @@ async function fetchConversationState(chatId: string): Promise<HydratedConversat
 }
 
 async function createConversationState(chatId: string): Promise<HydratedConversationState> {
-  const response = await fetch(`/api/memory/chats/${chatId}/state`, {
+  const response = await apiFetch(`/api/memory/chats/${chatId}/state`, {
     method: "POST",
     credentials: "include",
   });
@@ -79,7 +80,7 @@ async function createConversationState(chatId: string): Promise<HydratedConversa
 }
 
 async function addMessage(chatId: string, payload: AddMessagePayload): Promise<HydratedConversationState> {
-  const response = await fetch(`/api/memory/chats/${chatId}/state/messages`, {
+  const response = await apiFetch(`/api/memory/chats/${chatId}/state/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -94,7 +95,7 @@ async function addMessage(chatId: string, payload: AddMessagePayload): Promise<H
 }
 
 async function addArtifact(chatId: string, payload: AddArtifactPayload): Promise<HydratedConversationState> {
-  const response = await fetch(`/api/memory/chats/${chatId}/state/artifacts`, {
+  const response = await apiFetch(`/api/memory/chats/${chatId}/state/artifacts`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -109,7 +110,7 @@ async function addArtifact(chatId: string, payload: AddArtifactPayload): Promise
 }
 
 async function addImage(chatId: string, payload: AddImagePayload): Promise<HydratedConversationState> {
-  const response = await fetch(`/api/memory/chats/${chatId}/state/images`, {
+  const response = await apiFetch(`/api/memory/chats/${chatId}/state/images`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -124,7 +125,7 @@ async function addImage(chatId: string, payload: AddImagePayload): Promise<Hydra
 }
 
 async function updateContext(chatId: string, payload: UpdateContextPayload): Promise<HydratedConversationState> {
-  const response = await fetch(`/api/memory/chats/${chatId}/state/context`, {
+  const response = await apiFetch(`/api/memory/chats/${chatId}/state/context`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -139,7 +140,7 @@ async function updateContext(chatId: string, payload: UpdateContextPayload): Pro
 }
 
 async function createSnapshot(chatId: string, description?: string): Promise<{ version: number; chatId: string }> {
-  const response = await fetch(`/api/memory/chats/${chatId}/state/snapshot`, {
+  const response = await apiFetch(`/api/memory/chats/${chatId}/state/snapshot`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -159,7 +160,7 @@ async function getLatestImage(chatId: string): Promise<{
   base64Preview: string | null;
   prompt: string;
 } | null> {
-  const response = await fetch(`/api/memory/chats/${chatId}/state/latest-image`, {
+  const response = await apiFetch(`/api/memory/chats/${chatId}/state/latest-image`, {
     credentials: "include",
   });
 

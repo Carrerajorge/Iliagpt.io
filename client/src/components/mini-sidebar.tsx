@@ -5,6 +5,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
 import { IliaGPTLogo } from "@/components/iliagpt-logo";
+import { isAdminUser } from "@/lib/admin";
 
 interface MiniSidebarProps {
   className?: string;
@@ -14,7 +15,7 @@ interface MiniSidebarProps {
 
 export function MiniSidebar({ className, onNewChat, onExpand }: MiniSidebarProps) {
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = isAdminUser(user as any);
   const displayName = isAdmin ? "Admin" : (user?.firstName || user?.email?.split("@")[0] || "Usuario");
   const avatarInitial = isAdmin ? "A" : (user?.firstName?.[0] || user?.email?.[0] || "U").toUpperCase();
   return (

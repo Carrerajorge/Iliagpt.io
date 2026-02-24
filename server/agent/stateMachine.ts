@@ -2,13 +2,17 @@ import { z } from "zod";
 
 export const RunStatusSchema = z.enum([
   "queued",
-  "planning", 
+  "planning",
   "running",
   "verifying",
+  "replanning",
+  "awaiting_confirmation",
+  "cancelling",
   "completed",
   "failed",
   "cancelled",
-  "paused"
+  "paused",
+  "compensated"
 ]);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
@@ -19,7 +23,8 @@ export const StepStatusSchema = z.enum([
   "succeeded",
   "failed",
   "skipped",
-  "cancelled"
+  "cancelled",
+  "compensated"
 ]);
 export type StepStatus = z.infer<typeof StepStatusSchema>;
 
@@ -28,20 +33,25 @@ const RUN_TRANSITIONS: Record<RunStatus, RunStatus[]> = {
   planning: ["running", "failed", "cancelled"],
   running: ["verifying", "failed", "cancelled", "paused"],
   verifying: ["completed", "failed", "cancelled"],
+  replanning: ["running", "failed", "cancelled"],
+  awaiting_confirmation: ["running", "cancelled", "failed"],
+  cancelling: ["cancelled", "failed", "compensated"],
   completed: [],
-  failed: ["queued"],
-  cancelled: ["queued"],
+  failed: ["queued", "compensated"],
+  cancelled: ["queued", "compensated"],
   paused: ["running", "cancelled"],
+  compensated: [],
 };
 
 const STEP_TRANSITIONS: Record<StepStatus, StepStatus[]> = {
   pending: ["running", "skipped", "cancelled"],
   running: ["succeeded", "failed", "cancelled", "verifying"],
   verifying: ["succeeded", "failed"],
-  succeeded: [],
-  failed: ["running"],
+  succeeded: ["compensated"], // A succeeded step can be compensated during run rollback
+  failed: ["running", "compensated"],
   skipped: [],
-  cancelled: [],
+  cancelled: ["compensated"],
+  compensated: [],
 };
 
 export interface TransitionGuard {
@@ -131,11 +141,18 @@ export class RunStateMachine {
     reason?: string;
   }> = [];
   private readonly maxHistorySize: number;
+  private readonly onTransition?: (targetStatus: RunStatus, metadata?: Record<string, any>) => void | Promise<void>;
 
-  constructor(runId: string, initialStatus: RunStatus = "queued", maxHistorySize: number = 100) {
+  constructor(
+    runId: string,
+    initialStatus: RunStatus = "queued",
+    maxHistorySize: number = 100,
+    onTransition?: (targetStatus: RunStatus, metadata?: Record<string, any>) => void | Promise<void>
+  ) {
     this.runId = runId;
     this.status = initialStatus;
     this.maxHistorySize = maxHistorySize;
+    this.onTransition = onTransition;
     this.transitionHistory.push({
       from: initialStatus,
       to: initialStatus,
@@ -179,10 +196,25 @@ export class RunStateMachine {
     }
 
     console.log(`[StateMachine] Run ${this.runId}: ${previousStatus} -> ${targetStatus}${reason ? ` (${reason})` : ""}`);
+
+    if (this.onTransition) {
+      // Fire-and-forget hook for db persistence
+      void Promise.resolve(this.onTransition(targetStatus, { reason })).catch(err => {
+        console.error(`[StateMachine] Error in onTransition hook for run ${this.runId}:`, err);
+      });
+    }
+  }
+
+  rollback(reason?: string): void {
+    if (this.canTransitionTo("compensated")) {
+      this.transition("compensated", reason || "Rollback initiated");
+    } else {
+      throw new Error(`Cannot rollback run ${this.runId} from status ${this.status}`);
+    }
   }
 
   isTerminal(): boolean {
-    return ["completed", "failed", "cancelled"].includes(this.status);
+    return ["completed", "failed", "cancelled", "compensated"].includes(this.status);
   }
 
   isActive(): boolean {
@@ -247,11 +279,18 @@ export class StepStateMachine {
     timestamp: number;
     reason?: string;
   }> = [];
+  private readonly onTransition?: (targetStatus: StepStatus, metadata?: Record<string, any>) => void | Promise<void>;
 
-  constructor(stepId: string, initialStatus: StepStatus = "pending", maxRetries: number = 3) {
+  constructor(
+    stepId: string,
+    initialStatus: StepStatus = "pending",
+    maxRetries: number = 3,
+    onTransition?: (targetStatus: StepStatus, metadata?: Record<string, any>) => void | Promise<void>
+  ) {
     this.stepId = stepId;
     this.status = initialStatus;
     this.maxRetries = maxRetries;
+    this.onTransition = onTransition;
     this.transitionHistory.push({
       from: initialStatus,
       to: initialStatus,
@@ -291,7 +330,7 @@ export class StepStateMachine {
 
     const previousStatus = this.status;
     this.status = targetStatus;
-    
+
     if (previousStatus === "failed" && targetStatus === "running") {
       this.retryCount++;
     }
@@ -304,10 +343,24 @@ export class StepStateMachine {
     });
 
     console.log(`[StateMachine] Step ${this.stepId}: ${previousStatus} -> ${targetStatus}${reason ? ` (${reason})` : ""} (retries: ${this.retryCount})`);
+
+    if (this.onTransition) {
+      void Promise.resolve(this.onTransition(targetStatus, { reason, retryCount: this.retryCount })).catch(err => {
+        console.error(`[StateMachine] Error in onTransition hook for step ${this.stepId}:`, err);
+      });
+    }
+  }
+
+  rollback(reason?: string): void {
+    if (this.canTransitionTo("compensated")) {
+      this.transition("compensated", reason || "Rollback initiated");
+    } else {
+      throw new Error(`Cannot rollback step ${this.stepId} from status ${this.status}`);
+    }
   }
 
   isTerminal(): boolean {
-    return ["succeeded", "failed", "skipped", "cancelled"].includes(this.status);
+    return ["succeeded", "failed", "skipped", "cancelled", "compensated"].includes(this.status);
   }
 
   isActive(): boolean {

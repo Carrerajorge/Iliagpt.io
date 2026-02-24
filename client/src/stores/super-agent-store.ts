@@ -14,6 +14,7 @@ import type {
 
 const createInitialState = (): SuperAgentState => ({
   sessionId: null,
+  runId: null,
   isRunning: false,
   phase: "idle",
   contract: null,
@@ -27,6 +28,8 @@ const createInitialState = (): SuperAgentState => ({
   error: null,
   iteration: 0,
   progress: null,
+  thoughts: [],
+  narration: "",
 });
 
 interface SuperAgentStore {

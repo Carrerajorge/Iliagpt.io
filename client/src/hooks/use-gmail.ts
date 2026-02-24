@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/apiClient";
 
 export interface SourceMetadata {
   provider: 'gmail';
@@ -76,7 +77,7 @@ export function useGmailConnection() {
   const query = useQuery<GmailConnectionStatus>({
     queryKey: ["gmail", "connection"],
     queryFn: async () => {
-      const res = await fetch("/api/oauth/google/gmail/status");
+      const res = await apiFetch("/api/oauth/google/gmail/status");
       const data = await res.json();
       return {
         connected: data.connected ?? false,
@@ -92,7 +93,7 @@ export function useGmailConnection() {
 
   const connectGmail = async () => {
     try {
-      const res = await fetch("/api/oauth/google/gmail/start-json");
+      const res = await apiFetch("/api/oauth/google/gmail/start-json");
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to start Gmail connection");
@@ -111,7 +112,7 @@ export function useGmailConnection() {
 
   const disconnectMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/oauth/google/gmail/disconnect", {
+      const res = await apiFetch("/api/oauth/google/gmail/disconnect", {
         method: "POST"
       });
       const data = await res.json();
@@ -156,7 +157,7 @@ export function useGmailEmails(
       }
 
       const url = `/api/integrations/google/gmail/search?q=${encodeURIComponent(queryParam)}&maxResults=${maxResults}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
@@ -188,7 +189,7 @@ export function useGmailEmails(
       }
 
       const url = `/api/integrations/google/gmail/search?q=${encodeURIComponent(queryParam)}&maxResults=${maxResults}&pageToken=${encodeURIComponent(pageToken)}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       
       if (!res.ok) {
         throw new Error("Error al cargar más correos");
@@ -226,7 +227,7 @@ export function useGmailThread(threadId: string | null | undefined) {
     queryFn: async () => {
       if (!threadId) return null;
       
-      const res = await fetch(`/api/integrations/google/gmail/threads/${threadId}`);
+      const res = await apiFetch(`/api/integrations/google/gmail/threads/${threadId}`);
       
       if (!res.ok) {
         throw new Error("Error al cargar la conversación");
@@ -260,7 +261,7 @@ export function useGmailReply() {
 
   const mutation = useMutation({
     mutationFn: async (params: ReplyParams) => {
-      const res = await fetch("/api/integrations/google/gmail/reply", {
+      const res = await apiFetch("/api/integrations/google/gmail/reply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params)
@@ -300,7 +301,7 @@ export function useGmailSend() {
 
   const mutation = useMutation({
     mutationFn: async (params: { to: string; subject: string; body: string; threadId?: string }) => {
-      const res = await fetch("/api/integrations/google/gmail/send", {
+      const res = await apiFetch("/api/integrations/google/gmail/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params)

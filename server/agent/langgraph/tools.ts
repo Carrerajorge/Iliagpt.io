@@ -1,5 +1,8 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
 import {
   DocumentTool,
   SearchTool,
@@ -22,6 +25,7 @@ import { REASONING_TOOLS, reasonTool, reflectTool, verifyTool } from "./reasonin
 import { ORCHESTRATION_TOOLS, orchestrateTool, workflowTool, strategicPlanTool } from "./orchestrationTools";
 import { COMMUNICATION_TOOLS, decideTool, clarifyTool, summarizeTool, explainTool } from "./communicationTools";
 import { ADVANCED_SYSTEM_TOOLS, codeExecuteTool, fileConvertTool, environmentTool, searchSemanticTool } from "./systemTools";
+import { MACOS_NATIVE_TOOLS } from "../tools/macosNativeTools";
 import { WEB_TOOLS } from "./webTools";
 import { GENERATION_TOOLS } from "./generationTools";
 import { PROCESSING_TOOLS } from "./processingTools";
@@ -108,7 +112,7 @@ export const searchTool = tool(
   },
   {
     name: "search",
-    description: "Performs web search using multiple sources with intelligent fallback (SearXNG, Brave, DuckDuckGo). Returns search results with titles, snippets, and URLs.",
+    description: "Performs web search using multiple sources with intelligent fallback (SearXNG, Brave, DuckDuckGo). Useful for research, fact-checking, price comparisons, and tracking. Returns results with titles, snippets, and URLs.",
     schema: z.object({
       query: z.string().describe("Search query"),
       maxResults: z.number().optional().default(10).describe("Maximum number of results"),
@@ -219,7 +223,7 @@ export const scheduleTool = tool(
   },
   {
     name: "schedule",
-    description: "Creates and manages schedules, timelines, and calendar events.",
+    description: "Creates and manages schedules and calendar events (meetings, reminders, focus blocks). Useful for detecting conflicts and suggesting optimal time slots.",
     schema: z.object({
       action: z.enum(["create", "list", "update"]).describe("Action to perform"),
       title: z.string().optional().describe("Event title"),
@@ -302,10 +306,52 @@ export const pythonTool = tool(
   },
   {
     name: "python",
-    description: "Executes Python code in a sandboxed environment. Use for data analysis, calculations, and scripting.",
+    description: "Executes Python code in a sandboxed environment. Use for data analysis, statistics, machine learning (predictions/forecasting), and real-time/stream processing prototypes.",
     schema: z.object({
       code: z.string().describe("Python code to execute"),
       timeout: z.number().optional().default(60000).describe("Timeout in milliseconds"),
+    }),
+  }
+);
+
+export const macDesktopCreateFolderTool = tool(
+  async (input) => {
+    try {
+      const rawName = String(input.name || "").trim();
+      if (!rawName) {
+        return JSON.stringify({ success: false, error: "Folder name is required" });
+      }
+
+      const invalid = /[\\/:*?"<>|]/.test(rawName) || rawName.includes("..");
+      if (invalid) {
+        return JSON.stringify({ success: false, error: "Invalid folder name" });
+      }
+
+      const desktopDir = path.join(os.homedir(), "Desktop");
+      const folderPath = path.join(desktopDir, rawName);
+      await fs.mkdir(folderPath, { recursive: true });
+      const auditPath = path.join(os.homedir(), ".iliagpt-control-audit.log");
+      await fs.appendFile(
+        auditPath,
+        `${new Date().toISOString()} mac_desktop_create_folder name=${rawName} path=${folderPath}\n`,
+        "utf-8"
+      );
+
+      return JSON.stringify({
+        success: true,
+        created: true,
+        path: folderPath,
+        message: `Folder ready at ${folderPath}`,
+      });
+    } catch (error: any) {
+      return JSON.stringify({ success: false, error: error?.message || "Failed to create folder" });
+    }
+  },
+  {
+    name: "mac_desktop_create_folder",
+    description: "Creates a folder directly on this Mac Desktop. Use this when the user explicitly asks to create a folder in Escritorio/Desktop.",
+    schema: z.object({
+      name: z.string().min(1).max(120).describe("Folder name only (no slashes or path)"),
     }),
   }
 );
@@ -328,6 +374,7 @@ export const SYSTEM_TOOLS = [
   shellTool,
   fileTool,
   pythonTool,
+  macDesktopCreateFolderTool,
 ];
 
 export { MEMORY_TOOLS, memoryStoreTool, memoryRetrieveTool, contextManageTool, sessionStateTool };
@@ -376,6 +423,7 @@ export const ALL_TOOLS = [
   ...ORCHESTRATION_TOOLS,
   ...COMMUNICATION_TOOLS,
   ...ADVANCED_SYSTEM_TOOLS,
+  ...MACOS_NATIVE_TOOLS,
   ...WEB_TOOLS,
   ...GENERATION_TOOLS,
   ...PROCESSING_TOOLS,

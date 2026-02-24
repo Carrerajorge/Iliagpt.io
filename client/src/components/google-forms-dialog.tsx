@@ -410,7 +410,8 @@ export function GoogleFormsDialog({
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => window.open(formUrls.responderUrl, "_blank")}
+                    // FRONTEND FIX #30: Add noopener,noreferrer
+                    onClick={() => window.open(formUrls.responderUrl, "_blank", "noopener,noreferrer")}
                     className="h-6 px-2 text-xs"
                   >
                     <ExternalLink className="h-3 w-3 mr-1" />
@@ -448,8 +449,9 @@ export function GoogleFormsDialog({
 
             <div className="flex flex-col sm:flex-row gap-3">
               {formUrls.editUrl && (
-                <Button 
-                  onClick={() => window.open(formUrls.editUrl, "_blank")}
+                <Button
+                  // FRONTEND FIX #31: Add noopener,noreferrer
+                  onClick={() => window.open(formUrls.editUrl, "_blank", "noopener,noreferrer")}
                   className="flex-1 bg-purple-600 hover:bg-purple-700 text-white"
                   data-testid="button-edit-in-google"
                 >

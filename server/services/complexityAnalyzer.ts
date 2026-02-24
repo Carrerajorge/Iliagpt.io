@@ -95,7 +95,7 @@ export class ComplexityAnalyzer {
     { pattern: /\b(genera|generate|crea|create|produce)\b.*\b(video|vídeo|audio|sonido|sound|voz|voice)\b/i, reason: "Generación de multimedia", category: "content" },
     { pattern: /\b(transcribe|transcripción|transcription|speech to text|voz a texto)\b/i, reason: "Transcripción de audio", category: "content" },
     { pattern: /\b(redacta|write|escribe|draft|artículo|article|blog|post|contenido|content)\b.*\b(completo|complete|secciones|sections|partes|parts)\b/i, reason: "Redacción de contenido extenso", category: "content" },
-    { pattern: /\b(cv|curriculum|resume|currículum|carta de presentación|cover letter)\b/i, reason: "Generación de CV/documentos profesionales", category: "content" },
+    { pattern: /\b(cv|curriculum|currículum|carta de presentación|cover letter)\b|\bresume\b(?!\s+(este|esto|texto)\b)/i, reason: "Generación de CV/documentos profesionales", category: "content" },
     { pattern: /\b(edita|edit|modifica|modify)\b.*\b(imagen|image|foto|photo|video|audio)\b/i, reason: "Edición de multimedia", category: "content" },
     
     // === AUTOMATIZACIÓN Y PRODUCTIVIDAD ===

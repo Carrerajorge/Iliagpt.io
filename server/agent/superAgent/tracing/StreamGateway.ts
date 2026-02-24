@@ -188,7 +188,13 @@ export class StreamGateway {
       client.connected = false;
       try {
         client.res.end();
-      } catch (e) {}
+      } catch (endError) {
+        // Response already closed - this is expected during client disconnection
+        // Log at debug level for troubleshooting
+        if (process.env.NODE_ENV === 'development') {
+          console.debug(`[StreamGateway] res.end() failed for client ${clientId}:`, endError);
+        }
+      }
       this.clients.delete(clientId);
       console.log(`[StreamGateway] Client ${clientId} disconnected`);
     }

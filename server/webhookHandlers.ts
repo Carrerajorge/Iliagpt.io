@@ -1,4 +1,4 @@
-import { getStripeSync, getUncachableStripeClient } from './stripeClient';
+import { getUncachableStripeClient } from './stripeClient';
 import { usageQuotaService } from './services/usageQuotaService';
 import { db } from './db';
 import { users } from '@shared/schema';
@@ -15,8 +15,6 @@ export class WebhookHandlers {
       );
     }
 
-    const sync = await getStripeSync();
-    await sync.processWebhook(payload, signature);
 
     const stripe = await getUncachableStripeClient();
     const event = stripe.webhooks.constructEvent(

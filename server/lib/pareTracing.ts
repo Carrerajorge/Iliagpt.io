@@ -2,7 +2,10 @@ import { trace, context, SpanStatusCode, propagation, Span, SpanKind, Context } 
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { SimpleSpanProcessor, ConsoleSpanExporter, BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { Resource } from '@opentelemetry/resources';
-import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
+// @opentelemetry/semantic-conventions has broken ESM directory imports — use CJS require
+import { createRequire } from 'module';
+const _require = createRequire(import.meta.url);
+const { ATTR_SERVICE_NAME } = _require('@opentelemetry/semantic-conventions') as any;
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import type { Request, Response, NextFunction } from 'express';

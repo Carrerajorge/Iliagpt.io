@@ -1,4 +1,5 @@
 import type { Request } from "express";
+import { randomBytes } from "crypto";
 
 /**
  * Securely retrieves the user ID from a request.
@@ -14,14 +15,35 @@ import type { Request } from "express";
  * @returns User ID string or null if unable to determine
  */
 export function getSecureUserId(req: Request): string | null {
-  // 1. Try authenticated user first
+  // 1. Try authenticated user first (Passport puts user here after deserialize)
   const user = (req as any).user;
-  const authUserId = user?.claims?.sub;
+  const authUserId = user?.claims?.sub || user?.id;
   if (authUserId) {
     return authUserId;
   }
 
-  const session = req.session as any;
+  // `req.session` is only present if express-session middleware has run.
+  // This helper is called very early (e.g. request logger), so it must be
+  // resilient to missing session middleware.
+  const session = (req as any).session as any | undefined;
+
+  // 1.5 Check session.authUserId (workaround for Passport serialization issues)
+  if (session?.authUserId) {
+    return session.authUserId;
+  }
+
+  // 1.6 Check session.passport.user for user info
+  const passportUser = session?.passport?.user;
+  // Many Passport setups serialize just the user id (string).
+  if (typeof passportUser === "string" && passportUser) {
+    return passportUser;
+  }
+  if (passportUser?.claims?.sub) {
+    return passportUser.claims.sub;
+  }
+  if (passportUser?.id) {
+    return passportUser.id;
+  }
 
   // 2. Check X-Anonymous-User-Id header ONLY if it matches session-bound ID
   const headerUserId = req.headers['x-anonymous-user-id'];
@@ -35,7 +57,7 @@ export function getSecureUserId(req: Request): string | null {
   }
 
   // 3. Fallback to session-bound ID or generate new one
-  if (!session.anonUserId) {
+  if (session && !session.anonUserId) {
     const sessionId = (req as any).sessionID;
     if (sessionId) {
       session.anonUserId = `anon_${sessionId}`;
@@ -58,8 +80,9 @@ export function getOrCreateSecureUserId(req: Request): string {
     return userId;
   }
   
-  // Last resort fallback for edge cases where session isn't available
-  return `anon_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  // Last resort fallback for edge cases where session isn't available.
+  // Use crypto.randomBytes instead of Math.random for unpredictable IDs (CodeQL: insecure-randomness).
+  return `anon_${randomBytes(16).toString("hex")}`;
 }
 
 /**
@@ -70,7 +93,24 @@ export function getOrCreateSecureUserId(req: Request): string {
  */
 export function isAuthenticated(req: Request): boolean {
   const user = (req as any).user;
-  return !!user?.claims?.sub;
+  if (user?.claims?.sub || user?.id) {
+    return true;
+  }
+  
+  // Also check session workaround
+  const session = req.session as any;
+  if (session?.authUserId) {
+    return true;
+  }
+  const passportUser = session?.passport?.user;
+  if (typeof passportUser === "string" && passportUser) {
+    return true;
+  }
+  if (passportUser?.claims?.sub || passportUser?.id) {
+    return true;
+  }
+  
+  return false;
 }
 
 /**

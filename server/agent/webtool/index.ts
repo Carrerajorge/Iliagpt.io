@@ -5,6 +5,7 @@ import { metricsCollector } from "../metricsCollector";
 import { retrievalPipeline, RetrievalPipeline } from "./retrievalPipeline";
 import { RetrievalRequestSchema, type RetrievalRequest, type RetrievalPipelineResult } from "./types";
 import { randomUUID } from "crypto";
+import { getUserPrivacySettings } from "../../services/privacyService";
 
 export * from "./types";
 export * from "./canonicalizeUrl";
@@ -43,12 +44,22 @@ async function executeWebTool(input: unknown, context: ToolContext): Promise<Too
       input,
       "WebTool.execute"
     );
+
+    let privacy = { trainingOptIn: false, remoteBrowserDataAccess: false };
+    try {
+      privacy = await getUserPrivacySettings(context.userId);
+    } catch (e: any) {
+      addLog("warn", "Failed to load privacy settings; defaulting to fetch-only mode.", {
+        error: e?.message || String(e),
+      });
+    }
     
     const request: RetrievalRequest = {
       query: validated.query,
       maxResults: validated.maxResults,
       includeScholar: validated.includeScholar,
-      preferBrowser: validated.preferBrowser,
+      preferBrowser: privacy.remoteBrowserDataAccess ? validated.preferBrowser : false,
+      allowBrowser: privacy.remoteBrowserDataAccess,
       extractReadable: validated.extractReadable,
       deduplicateByContent: validated.deduplicateByContent,
       minQualityScore: validated.minQualityScore,
@@ -56,6 +67,10 @@ async function executeWebTool(input: unknown, context: ToolContext): Promise<Too
       blockedDomains: validated.blockedDomains,
       correlationId: context.correlationId,
     };
+
+    if (!privacy.remoteBrowserDataAccess) {
+      addLog("info", "Remote browser data access disabled by privacy settings; retrieval will avoid browser sessions (no cookies/DOM/screenshot session data).");
+    }
     
     addLog("debug", "Executing retrieval pipeline", { request });
     

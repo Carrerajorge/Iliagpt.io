@@ -1,9 +1,18 @@
 import { AcademicCandidate } from "./openAlexClient";
+import { sanitizeSearchQuery } from "../../lib/textSanitizers";
 
 const S2_API_BASE = "https://api.semanticscholar.org/graph/v1";
 const RATE_LIMIT_MS = 1000;
 const MAX_RETRIES = 3;
 const BACKOFF_BASE_MS = 1000;
+const FETCH_TIMEOUT_MS = 15000;
+
+/**
+ * Sanitize and harden Semantic Scholar search query input
+ */
+function sanitizeS2Query(raw: string): string {
+  return sanitizeSearchQuery(raw, 500);
+}
 
 let lastRequestTime = 0;
 
@@ -21,11 +30,15 @@ async function fetchWithRetry(url: string, retries: number = MAX_RETRIES): Promi
     try {
       await rateLimit();
       
+      const controller = new AbortController();
+      const fetchTimer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       const response = await fetch(url, {
         headers: {
           "Accept": "application/json",
         },
+        signal: controller.signal,
       });
+      clearTimeout(fetchTimer);
 
       if (response.ok) {
         return response;
@@ -123,15 +136,26 @@ export async function searchSemanticScholar(
     maxResults?: number;
   } = {}
 ): Promise<AcademicCandidate[]> {
-  const { yearStart = 2020, yearEnd = 2025, maxResults = 100 } = options;
+  const currentYear = new Date().getFullYear();
+  const { yearStart = 2020, yearEnd = currentYear, maxResults = 100 } = options;
+  const clampedMax = Math.max(1, Math.min(100, maxResults));
+  const clampedYearStart = Math.max(1900, Math.min(currentYear + 1, yearStart));
+  const clampedYearEnd = Math.max(clampedYearStart, Math.min(currentYear + 1, yearEnd));
+
+  // Sanitize query input
+  const sanitized = sanitizeS2Query(query);
+  if (!sanitized) {
+    console.warn("[SemanticScholar] Empty query after sanitization");
+    return [];
+  }
 
   const fields = "paperId,externalIds,title,abstract,year,venue,authors,citationCount,fieldsOfStudy,publicationTypes,openAccessPdf";
-  
+
   const params = new URLSearchParams({
-    query,
+    query: sanitized,
     fields,
-    limit: String(Math.min(maxResults, 100)),
-    year: `${yearStart}-${yearEnd}`,
+    limit: String(clampedMax),
+    year: `${clampedYearStart}-${clampedYearEnd}`,
   });
 
   const url = `${S2_API_BASE}/paper/search?${params}`;

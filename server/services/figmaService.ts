@@ -56,7 +56,17 @@ class FigmaService {
       throw new Error("Figma access token not configured");
     }
 
-    const response = await fetch(`${FIGMA_API_BASE}${endpoint}`, {
+    // Validate endpoint to prevent SSRF via path injection (CodeQL: server-side-request-forgery)
+    if (!/^\/[\w\-\/.,?=&%]+$/.test(endpoint)) {
+      throw new Error("Invalid Figma API endpoint");
+    }
+    const fullUrl = `${FIGMA_API_BASE}${endpoint}`;
+    const parsed = new URL(fullUrl);
+    if (parsed.origin !== new URL(FIGMA_API_BASE).origin) {
+      throw new Error("Figma API endpoint resolves to unexpected origin");
+    }
+
+    const response = await fetch(fullUrl, {
       headers: {
         "X-Figma-Token": this.accessToken,
       },

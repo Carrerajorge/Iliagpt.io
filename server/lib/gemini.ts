@@ -1,9 +1,38 @@
 import { GoogleGenAI } from "@google/genai";
+import { secretManager } from "../services/secretManager";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+let _client: GoogleGenAI | null = null;
+
+function getGeminiApiKey(): string | null {
+  try {
+    return secretManager.getLLMProviderKey("gemini");
+  } catch {
+    return null;
+  }
+}
+
+export function getGeminiClient(): GoogleGenAI | null {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) return null;
+  if (!_client) {
+    _client = new GoogleGenAI({ apiKey });
+  }
+  return _client;
+}
+
+export function getGeminiClientOrThrow(): GoogleGenAI {
+  const client = getGeminiClient();
+  if (!client) {
+    throw new Error("GEMINI_API_KEY is not configured");
+  }
+  return client;
+}
 
 export const GEMINI_MODELS = {
+  PRO_31: "gemini-3.1-pro",
+  FLASH_31: "gemini-3.1-flash",
   FLASH_PREVIEW: "gemini-3-flash-preview",
+  PRO_PREVIEW: "gemini-3.1-pro-preview",
   FLASH: "gemini-2.5-flash",
   PRO: "gemini-2.5-pro",
 } as const;
@@ -12,7 +41,7 @@ export type GeminiModelType = typeof GEMINI_MODELS[keyof typeof GEMINI_MODELS];
 
 export interface GeminiChatMessage {
   role: "user" | "model";
-  parts: { text: string }[];
+  parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }>;
 }
 
 export interface GeminiChatOptions {
@@ -33,8 +62,10 @@ export async function geminiChat(
   messages: GeminiChatMessage[],
   options: GeminiChatOptions = {}
 ): Promise<GeminiResponse> {
-  const model = options.model || GEMINI_MODELS.FLASH_PREVIEW;
-  
+  const ai = getGeminiClientOrThrow();
+  // Default to a stable, fast model. Preview models can be rate-limited or unavailable.
+  const model = options.model || GEMINI_MODELS.FLASH;
+
   const contents = messages.map(msg => ({
     role: msg.role,
     parts: msg.parts
@@ -69,8 +100,10 @@ export async function* geminiStreamChat(
   messages: GeminiChatMessage[],
   options: GeminiChatOptions = {}
 ): AsyncGenerator<{ content: string; done: boolean }, void, unknown> {
-  const model = options.model || GEMINI_MODELS.FLASH_PREVIEW;
-  
+  const ai = getGeminiClientOrThrow();
+  // Default to a stable, fast model. Preview models can be rate-limited or unavailable.
+  const model = options.model || GEMINI_MODELS.FLASH;
+
   const contents = messages.map(msg => ({
     role: msg.role,
     parts: msg.parts
@@ -102,5 +135,3 @@ export async function* geminiStreamChat(
     throw new Error(`Gemini API error: ${error.message}`);
   }
 }
-
-export { ai as geminiClient };

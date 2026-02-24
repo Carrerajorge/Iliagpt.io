@@ -144,14 +144,15 @@ export function semanticChunk(text: string, pageInfo?: Map<number, { start: numb
 }
 
 export async function generateEmbeddingGemini(text: string): Promise<number[]> {
-  if (!GEMINI_API_KEY) {
+  const isTestEnv = process.env.NODE_ENV === 'test' || !!process.env.VITEST_WORKER_ID || !!process.env.VITEST_POOL_ID;
+  if (!GEMINI_API_KEY || isTestEnv) {
     return generateFallbackEmbedding(text);
   }
   
   try {
     const genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
     const result = await genAI.models.embedContent({
-      model: 'text-embedding-004',
+      model: process.env.GEMINI_EMBEDDING_MODEL || 'gemini-embedding-001',
       contents: [{ role: 'user', parts: [{ text: text.slice(0, 8000) }] }]
     });
     

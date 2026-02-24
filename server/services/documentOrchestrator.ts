@@ -1,4 +1,4 @@
-import { geminiClient, GEMINI_MODELS } from "../lib/gemini";
+import { getGeminiClientOrThrow, GEMINI_MODELS } from "../lib/gemini";
 import { 
   validateExcelSpec, 
   validateDocSpec,
@@ -36,6 +36,50 @@ import {
 } from "../../shared/documentSpecs";
 
 const MAX_RETRIES = 3;
+
+// ============================================
+// SECURITY LIMITS
+// ============================================
+
+/** Maximum user prompt length (characters) to prevent abuse */
+const MAX_PROMPT_LENGTH = 50_000;
+
+/** Maximum LLM response length (characters) */
+const MAX_RESPONSE_LENGTH = 500_000;
+
+/** LLM call timeout (ms) */
+const LLM_CALL_TIMEOUT_MS = 120_000; // 2 minutes
+
+/**
+ * Security: sanitize user prompt to prevent resource abuse
+ */
+function sanitizePrompt(prompt: string): string {
+  if (!prompt || typeof prompt !== "string") {
+    throw new Error("Prompt is required and must be a string");
+  }
+  // Strip control characters except newline/tab
+  const cleaned = prompt.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+  if (cleaned.length > MAX_PROMPT_LENGTH) {
+    console.warn(`[DocumentOrchestrator] Prompt truncated from ${cleaned.length} to ${MAX_PROMPT_LENGTH} chars`);
+    return cleaned.substring(0, MAX_PROMPT_LENGTH);
+  }
+  return cleaned;
+}
+
+/**
+ * Security: wrap an LLM call with a timeout
+ */
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId!);
+  }
+}
 
 const REPAIR_SYSTEM_PROMPT = `You are a JSON repair specialist. Fix validation errors in the provided JSON.
 
@@ -224,22 +268,33 @@ export async function callGeminiForSpec(
   systemPrompt: string,
   userPrompt: string
 ): Promise<string> {
-  const result = await geminiClient.models.generateContent({
-    model: GEMINI_MODELS.FLASH,
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: userPrompt }],
+  const geminiClient = getGeminiClientOrThrow();
+  const result: any = await withTimeout(
+    geminiClient.models.generateContent({
+      model: GEMINI_MODELS.FLASH,
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: userPrompt }],
+        },
+      ],
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.2,
+        maxOutputTokens: 8192,
       },
-    ],
-    config: {
-      systemInstruction: systemPrompt,
-      temperature: 0.2,
-      maxOutputTokens: 8192,
-    },
-  });
+    }),
+    LLM_CALL_TIMEOUT_MS,
+    "Gemini API call"
+  );
 
-  return result.text ?? "";
+  const text = result.text ?? "";
+  // Security: limit response length
+  if (text.length > MAX_RESPONSE_LENGTH) {
+    console.warn(`[DocumentOrchestrator] LLM response truncated from ${text.length} to ${MAX_RESPONSE_LENGTH} chars`);
+    return text.substring(0, MAX_RESPONSE_LENGTH);
+  }
+  return text;
 }
 
 function extractJsonFromResponse(response: string): string {
@@ -261,6 +316,7 @@ function extractJsonFromResponse(response: string): string {
 export async function generateExcelFromPrompt(
   prompt: string
 ): Promise<GenerationResult<ExcelSpec>> {
+  prompt = sanitizePrompt(prompt);
   let lastErrors: string[] = [];
   let lastBadJson: string = "";
   let lastQualityReport: QualityReport | null = null;
@@ -378,6 +434,7 @@ export async function generateExcelFromPrompt(
 export async function generateWordFromPrompt(
   prompt: string
 ): Promise<GenerationResult<DocSpec>> {
+  prompt = sanitizePrompt(prompt);
   let lastErrors: string[] = [];
   let lastBadJson: string = "";
   let lastQualityReport: QualityReport | null = null;
@@ -592,6 +649,7 @@ function createDefaultQualityReport(): QualityReport {
 export async function generateCvFromPrompt(
   prompt: string
 ): Promise<GenerationResult<CvSpec>> {
+  prompt = sanitizePrompt(prompt);
   let lastErrors: string[] = [];
   let lastBadJson: string = "";
   const allAttemptErrors: string[][] = [];
@@ -694,6 +752,7 @@ export async function generateCvFromPrompt(
 export async function generateReportFromPrompt(
   prompt: string
 ): Promise<GenerationResult<ReportSpec>> {
+  prompt = sanitizePrompt(prompt);
   let lastErrors: string[] = [];
   let lastBadJson: string = "";
   const allAttemptErrors: string[][] = [];
@@ -851,6 +910,7 @@ function convertReportToDocBlocks(spec: ReportSpec): DocSpec["blocks"] {
 export async function generateLetterFromPrompt(
   prompt: string
 ): Promise<GenerationResult<LetterSpec>> {
+  prompt = sanitizePrompt(prompt);
   let lastErrors: string[] = [];
   let lastBadJson: string = "";
   const allAttemptErrors: string[][] = [];

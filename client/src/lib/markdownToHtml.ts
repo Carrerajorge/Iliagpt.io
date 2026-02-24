@@ -8,6 +8,8 @@ import rehypeStringify from "rehype-stringify";
 import type { Root, Element, Text } from 'hast';
 import { visit } from 'unist-util-visit';
 
+const MAX_MARKDOWN_LENGTH = 20000;
+
 /**
  * Common LaTeX commands that indicate mathematical content
  */
@@ -91,6 +93,10 @@ function wrapRawLatex(text: string): string {
 }
 
 function normalizeMarkdown(text: string): string {
+  if (text.length > MAX_MARKDOWN_LENGTH) {
+    throw new Error("Markdown payload too large");
+  }
+
   let normalized = text
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
@@ -193,16 +199,15 @@ export function markdownToHtml(markdown: string): string {
     return '<p></p>';
   }
 
-  const normalized = normalizeMarkdown(markdown);
-  
   try {
+    const normalized = normalizeMarkdown(markdown);
     const result = unified()
       .use(remarkParse)
       .use(remarkGfm)
       .use(remarkMath)
-      .use(remarkRehype, { allowDangerousHtml: true })
+      .use(remarkRehype, { allowDangerousHtml: false })
       .use(rehypeKatex)
-      .use(rehypeStringify, { allowDangerousHtml: true })
+      .use(rehypeStringify, { allowDangerousHtml: false })
       .processSync(normalized);
     
     return String(result) || '<p></p>';
@@ -217,21 +222,25 @@ export function markdownToHtmlAsync(markdown: string): Promise<string> {
     return Promise.resolve('<p></p>');
   }
 
-  const normalized = normalizeMarkdown(markdown);
-  
-  return unified()
-    .use(remarkParse)
-    .use(remarkGfm)
-    .use(remarkMath)
-    .use(remarkRehype, { allowDangerousHtml: true })
-    .use(rehypeKatex)
-    .use(rehypeStringify, { allowDangerousHtml: true })
-    .process(normalized)
-    .then(result => String(result) || '<p></p>')
-    .catch(error => {
-      console.error('[markdownToHtml] Parse error:', error);
-      return `<p>${markdown.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`;
-    });
+  try {
+    const normalized = normalizeMarkdown(markdown);
+    return unified()
+      .use(remarkParse)
+      .use(remarkGfm)
+      .use(remarkMath)
+      .use(remarkRehype, { allowDangerousHtml: false })
+      .use(rehypeKatex)
+      .use(rehypeStringify, { allowDangerousHtml: false })
+      .process(normalized)
+      .then(result => String(result) || '<p></p>')
+      .catch(error => {
+        console.error('[markdownToHtml] Parse error:', error);
+        return `<p>${markdown.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`;
+      });
+  } catch (error) {
+    console.error('[markdownToHtml] Parse error:', error);
+    return Promise.resolve(`<p>${markdown.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`);
+  }
 }
 
 /**
@@ -248,16 +257,15 @@ export function markdownToTipTap(markdown: string): string {
     return '<p></p>';
   }
 
-  const normalized = normalizeMarkdown(markdown);
-  
   try {
+    const normalized = normalizeMarkdown(markdown);
     const result = unified()
       .use(remarkParse)
       .use(remarkGfm)
       .use(remarkMath)
-      .use(remarkRehype, { allowDangerousHtml: true })
+      .use(remarkRehype, { allowDangerousHtml: false })
       .use(rehypePreserveMath) // Use our custom plugin instead of rehypeKatex
-      .use(rehypeStringify, { allowDangerousHtml: true })
+      .use(rehypeStringify, { allowDangerousHtml: false })
       .processSync(normalized);
     
     return String(result) || '<p></p>';

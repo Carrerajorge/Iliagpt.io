@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
+import { generatePptDocument } from "../../services/documentGeneration";
 
 // ============================================================================
 // SCHEMAS: Quality Metrics & KPIs
@@ -1052,56 +1053,98 @@ export class AgenticPipeline extends EventEmitter {
     state: AgenticPipelineState,
     plan: PresentationPlan
   ): Promise<{ buffer: Buffer; mimeType: string; sizeBytes: number }> {
-    const pptxgen = await import("pptxgenjs");
-    const pptx = new pptxgen.default();
+    const safeSlides = (Array.isArray(state.slides) ? state.slides : [])
+      .map((slide: any, index: number) => {
+        const rawTitle = this.sanitizePptText(
+          slide?.title || `Diapositiva ${index + 1}`,
+          160
+        );
 
-    pptx.title = plan.topic;
-    pptx.author = "IliaGPT Agentic Pipeline";
-    pptx.subject = plan.storyArc.hook;
+        const contentLines: string[] = [];
 
-    for (const slide of state.slides) {
-      const pptSlide = pptx.addSlide();
-      
-      pptSlide.addText(slide.title || "", {
-        x: 0.5,
-        y: 0.3,
-        w: "90%",
-        fontSize: 28,
-        bold: true,
-        color: "1a365d",
+        if (typeof slide?.content === "string") {
+          const normalized = this.sanitizePptText(slide.content, 1200);
+          if (normalized) {
+            const splitContent = normalized
+              .split(/\n+/)
+              .map((line: string) => line.trim())
+              .filter((line: string) => line.length > 0)
+              .slice(0, 12);
+
+            if (splitContent.length > 0) {
+              contentLines.push(...splitContent);
+            } else {
+              contentLines.push(normalized);
+            }
+          }
+        }
+
+        if (Array.isArray(slide?.bullets)) {
+          for (const bullet of slide.bullets) {
+            const safeBullet = this.sanitizePptText(String(bullet || ""), 260);
+            if (safeBullet) {
+              contentLines.push(`• ${safeBullet}`);
+            }
+          }
+        }
+
+        if (slide?.speakerNotes) {
+          const notes = this.sanitizePptText(String(slide.speakerNotes), 260);
+          if (notes) {
+            contentLines.push(`Notas: ${notes}`);
+          }
+        }
+
+        return {
+          title: rawTitle,
+          content: contentLines.length > 0 ? contentLines.slice(0, 20) : ["Sin contenido para esta diapositiva."],
+        };
       });
 
-      if (slide.content) {
-        pptSlide.addText(slide.content, {
-          x: 0.5,
-          y: 1.2,
-          w: "90%",
-          h: 4,
-          fontSize: 16,
-          color: "2d3748",
-          valign: "top",
-          bullet: { type: "bullet" },
+    if (safeSlides.length === 0) {
+      safeSlides.push({
+        title: "Resumen Ejecutivo",
+        content: ["La presentación no pudo recuperar slides desde el estado de ejecución. Se muestra resumen inicial."],
+      });
+    }
+
+    if (plan.audience === "academic" && Array.isArray(state.sources) && state.sources.length > 0) {
+      const refs = state.sources
+        .slice(0, 8)
+        .map((source: any, index: number) => {
+          const sourceTitle = this.sanitizePptText(String(source?.title || `Referencia ${index + 1}`), 150);
+          const sourceUrl = this.sanitizePptText(String(source?.url || ""), 220);
+          return `${index + 1}. ${sourceTitle}${sourceUrl ? ` — ${sourceUrl}` : ""}`;
         });
+
+      safeSlides.push({
+        title: "Referencias",
+        content: refs.length > 0 ? refs : ["No se encontraron referencias disponibles."],
+      });
+    }
+
+    const buffer = await generatePptDocument(
+      this.sanitizePptText(plan.topic, 500) || "Presentación",
+      safeSlides,
+      {
+        trace: {
+          source: "agenticPipeline",
+        },
       }
-    }
-
-    if (state.groundingReport && plan.audience === "academic") {
-      const bibSlide = pptx.addSlide();
-      bibSlide.addText("Referencias", { x: 0.5, y: 0.3, w: "90%", fontSize: 28, bold: true, color: "1a365d" });
-      
-      const refs = state.sources.slice(0, 10).map((s, i) => 
-        `[${i + 1}] ${s.title}. Recuperado de ${s.url}`
-      ).join("\n\n");
-      
-      bibSlide.addText(refs, { x: 0.5, y: 1.2, w: "90%", h: 4, fontSize: 12, color: "4a5568" });
-    }
-
-    const buffer = await pptx.write({ outputType: "nodebuffer" }) as Buffer;
+    );
 
     return {
       buffer,
       mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
       sizeBytes: buffer.length,
     };
+  }
+
+  private sanitizePptText(input: string, maxLength: number): string {
+    return input
+      .replace(/\0/g, "")
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+      .trim()
+      .substring(0, maxLength);
   }
 }

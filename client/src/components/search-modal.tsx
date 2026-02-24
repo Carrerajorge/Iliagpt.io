@@ -13,8 +13,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Chat } from "@/hooks/use-chats";
-import { format, isToday, isYesterday, isThisWeek } from "date-fns";
-import { es } from "date-fns/locale";
+import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
+import { diffZonedDays, formatZonedDate, formatZonedIntl, normalizeTimeZone, type PlatformDateFormat } from "@/lib/platformDateTime";
 import Fuse, { FuseResultMatch, IFuseOptions, RangeTuple } from "fuse.js";
 
 interface SearchModalProps {
@@ -50,11 +50,21 @@ const FUSE_OPTIONS: IFuseOptions<ChatSearchItem> = {
   minMatchCharLength: 1,
 };
 
-function formatChatDate(date: Date): string {
-  if (isToday(date)) return "Hoy";
-  if (isYesterday(date)) return "Ayer";
-  if (isThisWeek(date)) return format(date, "EEEE", { locale: es });
-  return format(date, "d MMM", { locale: es });
+function formatChatDate(date: Date, opts: { timeZone: string; dateFormat: PlatformDateFormat }): string {
+  const now = Date.now();
+  const diff = diffZonedDays(date, now, opts.timeZone);
+  if (diff === 0) return "Hoy";
+  if (diff === 1) return "Ayer";
+  if (diff !== null && diff > 1 && diff < 7) {
+    return (
+      formatZonedIntl(date, {
+        timeZone: opts.timeZone,
+        locale: "es-ES",
+        options: { weekday: "long" },
+      }) || ""
+    );
+  }
+  return formatZonedDate(date, { timeZone: opts.timeZone, dateFormat: opts.dateFormat, includeYear: false });
 }
 
 function getLastMessage(chat: Chat): string {
@@ -99,6 +109,10 @@ export function SearchModal({
   onSelectChat,
   triggerRef,
 }: SearchModalProps) {
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
+  const platformDateFormat = platformSettings.date_format;
+
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -259,7 +273,7 @@ export function SearchModal({
                       )}
                     </div>
                     <span className="text-[10px] text-muted-foreground flex-shrink-0">
-                      {formatChatDate(new Date(result.item.timestamp))}
+                      {formatChatDate(new Date(result.item.timestamp), { timeZone: platformTimeZone, dateFormat: platformDateFormat })}
                     </span>
                   </button>
                 ))}
@@ -309,7 +323,7 @@ export function SearchModal({
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
                       <span className="text-[10px] text-muted-foreground">
-                        {formatChatDate(new Date(result.item.timestamp))}
+                        {formatChatDate(new Date(result.item.timestamp), { timeZone: platformTimeZone, dateFormat: platformDateFormat })}
                       </span>
                       <ArrowRight className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                     </div>

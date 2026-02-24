@@ -463,7 +463,7 @@ FORMATO OBLIGATORIO para listar correos:
 **[N]. De: [Remitente]**
 - **Asunto:** [Asunto]
 - **Hora:** [HH:MM]
-- **Resumen:** [2 líneas máximo] [![Gmail](https://michat.blog/gmail-logo.webp)]([ENLACE])
+- **Resumen:** [2 líneas máximo] [![Gmail](https://iliagpt.blog/gmail-logo.webp)]([ENLACE])
 
 Donde [ENLACE] es el valor de "Enlace Gmail" de cada correo en el contexto.
 

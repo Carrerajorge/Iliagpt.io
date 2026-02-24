@@ -5,6 +5,9 @@
 import { generateEmbedding, generateEmbeddingsBatch, cosineSimilarity } from "../embeddingService";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import * as crypto from "crypto";
+import { cache } from "./cache";
+
+const PERSISTENCE_PREFIX = "semantic_cache:";
 
 const DEFAULT_SIMILARITY_THRESHOLD = 0.92;
 const DEFAULT_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -85,6 +88,39 @@ class SemanticCache {
 
     this.initializeLSH();
     this.startCleanupInterval();
+
+    // Warmup from Redis asynchronously
+    this.loadFromPersistence().catch(err => {
+      console.error("[SemanticCache] Failed to load persistence:", err);
+    });
+  }
+
+  private async loadFromPersistence(): Promise<void> {
+    if (!this.config.enablePersistence) return;
+
+    console.log("[SemanticCache] Loading from persistence...");
+    const keys = await cache.scan(`${PERSISTENCE_PREFIX}*`);
+
+    let loadedCount = 0;
+    for (const key of keys) {
+      const entry = await cache.get<CacheEntry>(key);
+      if (entry) {
+        // Hydrate dates properly
+        entry.createdAt = new Date(entry.createdAt);
+        entry.lastAccessedAt = new Date(entry.lastAccessedAt);
+
+        if (!this.isExpired(entry)) {
+          this.entries.set(entry.id, entry);
+          this.indexEntry(entry);
+          this.accessOrder.push(entry.id);
+          loadedCount++;
+        }
+      }
+    }
+
+    if (loadedCount > 0) {
+      console.log(`[SemanticCache] Hydrated ${loadedCount} entries from Redis`);
+    }
   }
 
   private initializeLSH(): void {
@@ -167,7 +203,7 @@ class SemanticCache {
 
   private async getOrGenerateEmbedding(query: string): Promise<number[]> {
     const cacheKey = crypto.createHash("md5").update(query).digest("hex");
-    
+
     const pending = this.pendingEmbeddings.get(cacheKey);
     if (pending) {
       return pending;
@@ -175,7 +211,7 @@ class SemanticCache {
 
     const promise = generateEmbedding(query);
     this.pendingEmbeddings.set(cacheKey, promise);
-    
+
     try {
       const result = await promise;
       return result;
@@ -201,6 +237,10 @@ class SemanticCache {
           this.removeFromIndex(oldestId, entry.queryEmbedding);
           this.entries.delete(oldestId);
           this.stats.evictedEntries++;
+
+          if (this.config.enablePersistence) {
+            cache.delete(`${PERSISTENCE_PREFIX}${oldestId}`).catch(console.error);
+          }
         }
       }
     }
@@ -217,7 +257,7 @@ class SemanticCache {
   private cleanupExpired(): void {
     const now = Date.now();
     const toRemove: string[] = [];
-    
+
     Array.from(this.entries.entries()).forEach(([id, entry]) => {
       if (now - entry.createdAt.getTime() > this.config.ttlMs) {
         toRemove.push(id);
@@ -229,6 +269,11 @@ class SemanticCache {
       if (entry) {
         this.removeFromIndex(id, entry.queryEmbedding);
         this.entries.delete(id);
+
+        if (this.config.enablePersistence) {
+          cache.delete(`${PERSISTENCE_PREFIX}${id}`).catch(console.error);
+        }
+
         const accessIdx = this.accessOrder.indexOf(id);
         if (accessIdx !== -1) {
           this.accessOrder.splice(accessIdx, 1);
@@ -256,9 +301,9 @@ class SemanticCache {
 
     try {
       const queryEmbedding = await this.getOrGenerateEmbedding(query);
-      
+
       const candidates = this.findCandidates(queryEmbedding);
-      
+
       if (candidates.size === 0) {
         Array.from(this.entries.entries()).forEach(([id, entry]) => {
           if (!this.isExpired(entry) && entry.model === model) {
@@ -274,7 +319,7 @@ class SemanticCache {
       for (const candidateId of candidateArray) {
         const entry = this.entries.get(candidateId);
         if (!entry) continue;
-        
+
         if (this.isExpired(entry)) {
           this.removeFromIndex(candidateId, entry.queryEmbedding);
           this.entries.delete(candidateId);
@@ -285,7 +330,7 @@ class SemanticCache {
         if (!this.isTemperatureCompatible(entry.temperature, temperature)) continue;
 
         const similarity = cosineSimilarity(queryEmbedding, entry.queryEmbedding);
-        
+
         this.stats.totalSimilaritySum += similarity;
         this.stats.similarityMeasurements++;
 
@@ -300,11 +345,11 @@ class SemanticCache {
         bestMatch.hitCount++;
         bestMatch.lastAccessedAt = new Date();
         this.updateAccessOrder(bestMatch.id);
-        
+
         console.log(
           `[SemanticCache] HIT: similarity=${bestSimilarity.toFixed(4)}, model=${model}, hitCount=${bestMatch.hitCount}`
         );
-        
+
         return bestMatch;
       }
 
@@ -350,6 +395,15 @@ class SemanticCache {
       console.log(
         `[SemanticCache] SET: query length=${query.length}, model=${model}, total entries=${this.entries.size}`
       );
+
+      if (this.config.enablePersistence) {
+        // Store in Redis with TTL matching config
+        await cache.set(
+          `${PERSISTENCE_PREFIX}${entry.id}`,
+          entry,
+          Math.floor(this.config.ttlMs / 1000)
+        );
+      }
     } catch (error: any) {
       console.error(`[SemanticCache] Error in set: ${error.message}`);
     }
@@ -359,16 +413,16 @@ class SemanticCache {
     try {
       const queryEmbedding = await this.getOrGenerateEmbedding(query);
       const candidates = this.findCandidates(queryEmbedding);
-      
+
       let invalidated = false;
-      
+
       const candidateArray = Array.from(candidates);
       for (const candidateId of candidateArray) {
         const entry = this.entries.get(candidateId);
         if (!entry) continue;
-        
+
         const similarity = cosineSimilarity(queryEmbedding, entry.queryEmbedding);
-        
+
         if (similarity >= 0.98) {
           this.removeFromIndex(candidateId, entry.queryEmbedding);
           this.entries.delete(candidateId);
@@ -400,6 +454,12 @@ class SemanticCache {
       similarityMeasurements: 0,
     };
     console.log("[SemanticCache] Cache cleared");
+
+    if (this.config.enablePersistence) {
+      // Note: Efficient clearing of pattern in Redis is hard without Lua. 
+      // For now allowing Redis TTL to expire them, or manual scan to delete.
+      // Future improvement: use a SET in Redis to track all keys.
+    }
   }
 
   getStats(): CacheStats {
@@ -494,9 +554,14 @@ let semanticCacheInstance: SemanticCache | null = null;
 
 export function getSemanticCache(config?: SemanticCacheConfig): SemanticCache {
   if (!semanticCacheInstance) {
-    semanticCacheInstance = new SemanticCache(config);
+    // Enable persistence by default for P2
+    const finalConfig = {
+      ...config,
+      enablePersistence: config?.enablePersistence ?? true
+    };
+    semanticCacheInstance = new SemanticCache(finalConfig);
     console.log("[SemanticCache] Instance created with config:", {
-      similarityThreshold: config?.similarityThreshold ?? DEFAULT_SIMILARITY_THRESHOLD,
+      similarityThreshold: finalConfig.similarityThreshold ?? DEFAULT_SIMILARITY_THRESHOLD,
       ttlMs: config?.ttlMs ?? DEFAULT_TTL_MS,
       maxEntries: config?.maxEntries ?? DEFAULT_MAX_ENTRIES,
     });
@@ -554,7 +619,7 @@ export function semanticCacheMiddleware(
 
     try {
       const cached = await cache.get(query, model, temperature);
-      
+
       if (cached) {
         res.setHeader("X-Semantic-Cache", "HIT");
         res.setHeader("X-Cache-Similarity", cached.hitCount.toString());
@@ -573,14 +638,14 @@ export function semanticCacheMiddleware(
         if (!responseCaptured && body && (body.content || body.response || body.text)) {
           responseCaptured = true;
           const responseText = body.content || body.response || body.text;
-          
+
           if (typeof responseText === "string" && responseText.length > 0) {
             cache.set(query, responseText, model, temperature).catch((err) => {
               console.error("[SemanticCache Middleware] Error caching response:", err.message);
             });
           }
         }
-        
+
         res.setHeader("X-Semantic-Cache", "MISS");
         return originalJson(body);
       };

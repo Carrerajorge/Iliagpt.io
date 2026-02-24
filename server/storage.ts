@@ -16,9 +16,10 @@
  * See: server/repositories/index.ts for all available exports.
  */
 
-import { 
-  type User, type InsertUser, 
-  type File, type InsertFile, 
+import { cache } from "./lib/cache";
+import {
+  type User, type InsertUser,
+  type File, type InsertFile,
   type FileChunk, type InsertFileChunk,
   type FileJob, type InsertFileJob,
   type AgentRun, type InsertAgentRun,
@@ -85,10 +86,12 @@ import {
   providerMetrics, costBudgets, apiLogs, kpiSnapshots, analyticsEvents, securityPolicies,
   reportTemplates, generatedReports, settingsConfig, agentGapLogs,
   libraryFolders, libraryFiles, libraryCollections, libraryFileCollections, libraryActivity, libraryStorage
-} from "@shared/schema";
-import crypto, { randomUUID } from "crypto";
-import { db } from "./db";
-import { eq, sql, desc, and, isNull, ilike, or } from "drizzle-orm";
+} from "../shared/schema";
+import * as crypto from "crypto";
+import { randomUUID } from "crypto";
+import { db, dbRead } from "./db";
+import { eq, sql, desc, and, isNull, ilike, inArray, or, type SQL } from "drizzle-orm";
+import { knowledgeBaseService } from "./services/knowledgeBase";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -96,6 +99,7 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   createFile(file: InsertFile): Promise<File>;
   getFile(id: string): Promise<File | undefined>;
+  getFileByStoragePath(storagePath: string): Promise<File | undefined>;
   getFiles(userId?: string): Promise<File[]>;
   updateFileStatus(id: string, status: string): Promise<File | undefined>;
   deleteFile(id: string): Promise<void>;
@@ -126,12 +130,15 @@ export interface IStorage {
   createChat(chat: InsertChat): Promise<Chat>;
   getChat(id: string): Promise<Chat | undefined>;
   getChats(userId?: string): Promise<Chat[]>;
+  getActiveChats(userId: string): Promise<Chat[]>;
   updateChat(id: string, updates: Partial<InsertChat>): Promise<Chat | undefined>;
   deleteChat(id: string): Promise<void>;
   createChatMessage(message: InsertChatMessage): Promise<ChatMessage>;
-  getChatMessages(chatId: string): Promise<ChatMessage[]>;
-  updateChatMessageContent(id: string, content: string, status: string): Promise<ChatMessage | undefined>;
+  getChatMessage(chatId: string, messageId: string): Promise<ChatMessage | undefined>;
+  getChatMessages(chatId: string, options?: { limit?: number; offset?: number; before?: Date; orderBy?: 'asc' | 'desc' }): Promise<ChatMessage[]>;
+  updateChatMessageContent(id: string, content: string, status: string, metadata?: Record<string, any>): Promise<ChatMessage | undefined>;
   createChatWithMessages(chat: InsertChat, messages: Partial<InsertChatMessage>[]): Promise<{ chat: Chat; messages: ChatMessage[] }>;
+  searchMessages(userId: string, query: string): Promise<ChatMessage[]>;
   // Chat Run operations (for idempotent message processing)
   createChatRun(run: InsertChatRun): Promise<ChatRun>;
   getChatRun(id: string): Promise<ChatRun | undefined>;
@@ -173,6 +180,7 @@ export interface IStorage {
   createGptVersion(version: InsertGptVersion): Promise<GptVersion>;
   getGptVersions(gptId: string): Promise<GptVersion[]>;
   getLatestGptVersion(gptId: string): Promise<GptVersion | undefined>;
+  getGptVersionByNumber(gptId: string, versionNumber: number): Promise<GptVersion | undefined>;
   // GPT Knowledge operations
   createGptKnowledge(knowledge: InsertGptKnowledge): Promise<GptKnowledge>;
   getGptKnowledge(gptId: string): Promise<GptKnowledge[]>;
@@ -183,6 +191,7 @@ export interface IStorage {
   createGptAction(action: InsertGptAction): Promise<GptAction>;
   getGptActions(gptId: string): Promise<GptAction[]>;
   getGptActionById(id: string): Promise<GptAction | undefined>;
+  getGptActionByIdAndGpt(actionId: string, gptId: string): Promise<GptAction | undefined>;
   updateGptAction(id: string, updates: Partial<InsertGptAction>): Promise<GptAction | undefined>;
   deleteGptAction(id: string): Promise<void>;
   incrementGptActionUsage(id: string): Promise<void>;
@@ -195,11 +204,11 @@ export interface IStorage {
   getAllUsers(): Promise<User[]>;
   updateUser(id: string, updates: Partial<User>): Promise<User | undefined>;
   deleteUser(id: string): Promise<void>;
-  getUserStats(): Promise<{ total: number; active: number; newThisMonth: number }>;
+  getUserStats(): Promise<{ total: number; active: number; newThisMonth: number; newLastMonth: number }>;
   // Admin: AI Models
   createAiModel(model: InsertAiModel): Promise<AiModel>;
   getAiModels(): Promise<AiModel[]>;
-  getAiModelsFiltered(filters: { provider?: string; type?: string; status?: string; search?: string; sortBy?: string; sortOrder?: string; page?: number; limit?: number }): Promise<{ models: AiModel[]; total: number }>;
+  getAiModelsFiltered(filters: { provider?: string; providers?: string[]; type?: string; status?: string; search?: string; sortBy?: string; sortOrder?: string; page?: number; limit?: number }): Promise<{ models: AiModel[]; total: number }>;
   getAiModelById(id: string): Promise<AiModel | undefined>;
   getAiModelByModelId(modelId: string, provider: string): Promise<AiModel | undefined>;
   updateAiModel(id: string, updates: Partial<InsertAiModel>): Promise<AiModel | undefined>;
@@ -208,7 +217,7 @@ export interface IStorage {
   createPayment(payment: InsertPayment): Promise<Payment>;
   getPayments(): Promise<Payment[]>;
   updatePayment(id: string, updates: Partial<InsertPayment>): Promise<Payment | undefined>;
-  getPaymentStats(): Promise<{ total: string; thisMonth: string; count: number }>;
+  getPaymentStats(): Promise<{ total: string; thisMonth: string; previousMonth: string; count: number }>;
   // Admin: Invoices
   createInvoice(invoice: InsertInvoice): Promise<Invoice>;
   getInvoices(): Promise<Invoice[]>;
@@ -355,7 +364,7 @@ export interface IStorage {
   seedDefaultSettings(): Promise<void>;
   // Agent Gap Logs
   createAgentGapLog(log: InsertAgentGapLog): Promise<AgentGapLog>;
-  getAgentGapLogs(status?: string): Promise<AgentGapLog[]>;
+  getAgentGapLogs(status?: string, userId?: string): Promise<AgentGapLog[]>;
   updateAgentGapLog(id: string, updates: Partial<InsertAgentGapLog>): Promise<AgentGapLog | undefined>;
   // Library Folder CRUD
   getLibraryFolders(userId: string): Promise<LibraryFolder[]>;
@@ -393,6 +402,12 @@ export interface IStorage {
   createConversationDocument(doc: InsertConversationDocument): Promise<ConversationDocument>;
   getConversationDocuments(chatId: string): Promise<ConversationDocument[]>;
   deleteConversationDocument(id: string): Promise<void>;
+  // Admin: User monitoring
+  getConversationsByUserId(userId: string): Promise<Chat[]>;
+  getMessagesByConversationId(conversationId: string): Promise<ChatMessage[]>;
+  deleteConversation(conversationId: string): Promise<void>;
+  getAuditLogsByResourceId(resourceId: string): Promise<AuditLog[]>;
+  createImpersonationToken(data: { token: string; adminId: string; targetUserId: string; expiresAt: Date }): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -403,13 +418,15 @@ export class MemStorage implements IStorage {
   }
 
   async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+    return cache.remember(`user:${id}`, 300, async () => {
+      const [result] = await dbRead.select().from(users).where(eq(users.id, id));
+      return result;
+    });
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
+    const [user] = await dbRead.select().from(users).where(eq(users.username, username));
+    return user;
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
@@ -423,15 +440,20 @@ export class MemStorage implements IStorage {
   }
 
   async getFile(id: string): Promise<File | undefined> {
-    const [file] = await db.select().from(files).where(eq(files.id, id));
+    const [file] = await dbRead.select().from(files).where(eq(files.id, id));
+    return file;
+  }
+
+  async getFileByStoragePath(storagePath: string): Promise<File | undefined> {
+    const [file] = await dbRead.select().from(files).where(eq(files.storagePath, storagePath));
     return file;
   }
 
   async getFiles(userId?: string): Promise<File[]> {
     if (userId) {
-      return db.select().from(files).where(eq(files.userId, userId)).orderBy(desc(files.createdAt));
+      return dbRead.select().from(files).where(eq(files.userId, userId)).orderBy(desc(files.createdAt));
     }
-    return db.select().from(files).orderBy(desc(files.createdAt));
+    return dbRead.select().from(files).orderBy(desc(files.createdAt));
   }
 
   async updateFileStatus(id: string, status: string): Promise<File | undefined> {
@@ -454,18 +476,18 @@ export class MemStorage implements IStorage {
   }
 
   async updateFileCompleted(id: string): Promise<File | undefined> {
-    const [file] = await db.update(files).set({ 
-      status: "completed", 
-      processingProgress: 100, 
-      completedAt: new Date() 
+    const [file] = await db.update(files).set({
+      status: "completed",
+      processingProgress: 100,
+      completedAt: new Date()
     }).where(eq(files.id, id)).returning();
     return file;
   }
 
   async updateFileUploadChunks(id: string, uploadedChunks: number, totalChunks: number): Promise<File | undefined> {
-    const [file] = await db.update(files).set({ 
-      uploadedChunks, 
-      totalChunks 
+    const [file] = await db.update(files).set({
+      uploadedChunks,
+      totalChunks
     }).where(eq(files.id, id)).returning();
     return file;
   }
@@ -476,12 +498,12 @@ export class MemStorage implements IStorage {
   }
 
   async getFileJob(fileId: string): Promise<FileJob | undefined> {
-    const [result] = await db.select().from(fileJobs).where(eq(fileJobs.fileId, fileId));
+    const [result] = await dbRead.select().from(fileJobs).where(eq(fileJobs.fileId, fileId));
     return result;
   }
 
   async updateFileJobStatus(fileId: string, status: string, error?: string): Promise<FileJob | undefined> {
-    const updates: Partial<FileJob> = { status };
+    const updates: any = { status };
     if (status === "processing") {
       updates.startedAt = new Date();
     }
@@ -490,7 +512,7 @@ export class MemStorage implements IStorage {
     }
     if (error) {
       updates.lastError = error;
-      updates.retries = sql`${fileJobs.retries} + 1` as any;
+      updates.retries = sql<number>`${fileJobs.retries} + 1` as any;
     }
     const [result] = await db.update(fileJobs).set(updates).where(eq(fileJobs.fileId, fileId)).returning();
     return result;
@@ -503,12 +525,12 @@ export class MemStorage implements IStorage {
   }
 
   async getFileChunks(fileId: string): Promise<FileChunk[]> {
-    return db.select().from(fileChunks).where(eq(fileChunks.fileId, fileId));
+    return dbRead.select().from(fileChunks).where(eq(fileChunks.fileId, fileId));
   }
 
   async searchSimilarChunks(embedding: number[], limit: number = 5, userId?: string): Promise<FileChunk[]> {
     const embeddingStr = `[${embedding.join(",")}]`;
-    
+
     if (userId) {
       const result = await db.execute(sql`
         SELECT fc.*, f.name as file_name,
@@ -522,8 +544,8 @@ export class MemStorage implements IStorage {
       `);
       return result.rows as FileChunk[];
     }
-    
-    const result = await db.execute(sql`
+
+    const result = await dbRead.execute(sql`
       SELECT fc.*, f.name as file_name,
         fc.embedding <=> ${embeddingStr}::vector AS distance
       FROM file_chunks fc
@@ -547,12 +569,12 @@ export class MemStorage implements IStorage {
   }
 
   async getAgentRun(id: string): Promise<AgentRun | undefined> {
-    const [result] = await db.select().from(agentRuns).where(eq(agentRuns.id, id));
+    const [result] = await dbRead.select().from(agentRuns).where(eq(agentRuns.id, id));
     return result;
   }
 
   async getAgentRunsByChatId(chatId: string): Promise<AgentRun[]> {
-    return db.select().from(agentRuns).where(eq(agentRuns.conversationId, chatId)).orderBy(desc(agentRuns.startedAt));
+    return dbRead.select().from(agentRuns).where(eq(agentRuns.conversationId, chatId)).orderBy(desc(agentRuns.startedAt));
   }
 
   async updateAgentRunStatus(id: string, status: string, error?: string): Promise<AgentRun | undefined> {
@@ -573,7 +595,7 @@ export class MemStorage implements IStorage {
   }
 
   async getAgentSteps(runId: string): Promise<AgentStep[]> {
-    return db.select().from(agentSteps).where(eq(agentSteps.runId, runId)).orderBy(agentSteps.stepIndex);
+    return dbRead.select().from(agentSteps).where(eq(agentSteps.runId, runId)).orderBy(agentSteps.stepIndex);
   }
 
   async updateAgentStepStatus(id: string, success: string, error?: string): Promise<AgentStep | undefined> {
@@ -591,11 +613,11 @@ export class MemStorage implements IStorage {
   }
 
   async getAgentAssets(runId: string): Promise<AgentAsset[]> {
-    return db.select().from(agentAssets).where(eq(agentAssets.runId, runId));
+    return dbRead.select().from(agentAssets).where(eq(agentAssets.runId, runId));
   }
 
   async getDomainPolicy(domain: string): Promise<DomainPolicy | undefined> {
-    const [result] = await db.select().from(domainPolicies).where(eq(domainPolicies.domain, domain));
+    const [result] = await dbRead.select().from(domainPolicies).where(eq(domainPolicies.domain, domain));
     return result;
   }
 
@@ -610,15 +632,43 @@ export class MemStorage implements IStorage {
   }
 
   async getChat(id: string): Promise<Chat | undefined> {
-    const [result] = await db.select().from(chats).where(eq(chats.id, id));
-    return result;
+    const [fromRead] = await dbRead.select().from(chats).where(eq(chats.id, id));
+    if (fromRead) return fromRead;
+
+    // Fallback to primary DB for strong reads (avoid replica lag in write-after-read flows).
+    const [fromPrimary] = await db.select().from(chats).where(eq(chats.id, id));
+    return fromPrimary;
   }
 
   async getChats(userId?: string): Promise<Chat[]> {
     if (userId) {
-      return db.select().from(chats).where(eq(chats.userId, userId)).orderBy(desc(chats.updatedAt));
+      return dbRead.select()
+        .from(chats)
+        .where(and(eq(chats.userId, userId), isNull(chats.deletedAt)))
+        .orderBy(desc(chats.updatedAt));
     }
-    return db.select().from(chats).orderBy(desc(chats.updatedAt));
+    return dbRead.select()
+      .from(chats)
+      .where(isNull(chats.deletedAt))
+      .orderBy(desc(chats.updatedAt));
+  }
+
+  async getActiveChats(userId: string): Promise<Chat[]> {
+    return dbRead
+      .select()
+      .from(chats)
+      .where(
+        and(
+          eq(chats.userId, userId),
+          // Handle legacy boolean vs string text column
+          or(
+            eq(chats.archived, "false"),
+            isNull(chats.archived)
+          ),
+          isNull(chats.deletedAt)
+        )
+      )
+      .orderBy(desc(chats.updatedAt));
   }
 
   async updateChat(id: string, updates: Partial<InsertChat>): Promise<Chat | undefined> {
@@ -632,27 +682,116 @@ export class MemStorage implements IStorage {
 
   async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
     const [result] = await db.insert(chatMessages).values(message).returning();
-    await db.update(chats).set({ updatedAt: new Date() }).where(eq(chats.id, message.chatId));
+    queueMicrotask(() => {
+      db.update(chats)
+        .set({ updatedAt: new Date() })
+        .where(eq(chats.id, message.chatId))
+        .catch((error) => {
+          console.warn("[Chats] Failed to update chat updatedAt after message create:", error?.message || error);
+        });
+    });
+    if (message.role === "user" || message.role === "assistant") {
+      queueMicrotask(() => {
+        knowledgeBaseService.ingestChatMessage({
+          chatId: message.chatId,
+          messageId: result.id,
+          role: message.role,
+          content: message.content,
+        }).catch((error) => {
+          console.warn("[Knowledge] Failed to ingest chat message:", error?.message || error);
+        });
+      });
+    }
     return result;
   }
 
-  async getChatMessages(chatId: string): Promise<ChatMessage[]> {
-    return db.select().from(chatMessages).where(eq(chatMessages.chatId, chatId)).orderBy(chatMessages.createdAt);
+  async getChatMessage(chatId: string, messageId: string): Promise<ChatMessage | undefined> {
+    const [fromRead] = await dbRead
+      .select()
+      .from(chatMessages)
+      .where(and(eq(chatMessages.chatId, chatId), eq(chatMessages.id, messageId)));
+    if (fromRead) return fromRead;
+
+    // Fallback to primary DB for strong reads (avoid replica lag in idempotency flows).
+    const [fromPrimary] = await db
+      .select()
+      .from(chatMessages)
+      .where(and(eq(chatMessages.chatId, chatId), eq(chatMessages.id, messageId)));
+    return fromPrimary;
   }
 
-  async updateChatMessageContent(id: string, content: string, status: string): Promise<ChatMessage | undefined> {
+  async getChatMessages(chatId: string, options?: { limit?: number; offset?: number; before?: Date; orderBy?: 'asc' | 'desc' }): Promise<ChatMessage[]> {
+    const { limit, offset, before, orderBy = 'asc' } = options || {};
+    // Cache key includes pagination params
+    const cacheKey = `messages:${chatId}:${limit || 'all'}:${offset || 0}:${before?.getTime() || 'now'}:${orderBy}`;
+
+    return cache.remember(cacheKey, 10, async () => {
+      let query = dbRead.select().from(chatMessages).where(eq(chatMessages.chatId, chatId));
+
+      if (before) {
+        // Cursor pagination
+        query.where(and(eq(chatMessages.chatId, chatId), sql`${chatMessages.createdAt} < ${before.toISOString()}`));
+      }
+
+      if (orderBy === 'desc') {
+        query.orderBy(desc(chatMessages.createdAt));
+      } else {
+        query.orderBy(chatMessages.createdAt);
+      }
+
+      if (limit) {
+        query.limit(limit);
+      }
+
+      if (offset) {
+        query.offset(offset);
+      }
+
+      return await query;
+    });
+  }
+
+  async searchMessages(userId: string, query: string): Promise<ChatMessage[]> {
+    // Sanitize query to avoid syntax errors in websearch_to_tsquery
+
+    const sanitizedQuery = query.replace(/[^\w\sñáéíóúü]/gi, ' ').trim();
+    if (!sanitizedQuery) return [];
+
+    // Use Read Replica for search queries to offload primary
+    const result = await dbRead.execute(sql`
+      SELECT m.* 
+      FROM chat_messages m
+      JOIN chats c ON m.chat_id = c.id
+      WHERE c.user_id = ${userId}
+      AND c.deleted_at IS NULL
+      AND m.search_vector @@ websearch_to_tsquery('spanish', ${sanitizedQuery})
+      ORDER BY ts_rank(m.search_vector, websearch_to_tsquery('spanish', ${sanitizedQuery})) DESC
+      LIMIT 50
+    `);
+
+    return result.rows as ChatMessage[];
+  }
+
+
+
+
+  async updateChatMessageContent(id: string, content: string, status: string, metadata?: Record<string, any>): Promise<ChatMessage | undefined> {
+    const updateData: any = { content, status };
+    if (metadata) {
+      updateData.metadata = metadata;
+    }
     const [result] = await db.update(chatMessages)
-      .set({ content, status })
+      .set(updateData)
       .where(eq(chatMessages.id, id))
       .returning();
     return result;
   }
 
   async createChatWithMessages(chat: InsertChat, messages: Partial<InsertChatMessage>[]): Promise<{ chat: Chat; messages: ChatMessage[] }> {
-    return db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       // Create chat first
       const [createdChat] = await tx.insert(chats).values(chat).returning();
-      
+
       // Insert all messages with the chatId
       const savedMessages: ChatMessage[] = [];
       for (const msg of messages) {
@@ -666,9 +805,26 @@ export class MemStorage implements IStorage {
         }).returning();
         savedMessages.push(savedMsg);
       }
-      
+
       return { chat: createdChat, messages: savedMessages };
     });
+    if (result.messages.length > 0) {
+      queueMicrotask(() => {
+        for (const msg of result.messages) {
+          if (msg.role === "user" || msg.role === "assistant") {
+            knowledgeBaseService.ingestChatMessage({
+              chatId: result.chat.id,
+              messageId: msg.id,
+              role: msg.role,
+              content: msg.content,
+            }).catch((error) => {
+              console.warn("[Knowledge] Failed to ingest chat message:", error?.message || error);
+            });
+          }
+        }
+      });
+    }
+    return result;
   }
 
   async saveDocumentToChat(chatId: string, document: { type: string; title: string; content: string }): Promise<ChatMessage> {
@@ -679,12 +835,12 @@ export class MemStorage implements IStorage {
         eq(chatMessages.role, "assistant")
       ))
       .orderBy(desc(chatMessages.createdAt));
-    
-    const docGenMessage = messages.find(m => 
-      m.content?.includes("Documento generado correctamente") || 
+
+    const docGenMessage = messages.find(m =>
+      m.content?.includes("Documento generado correctamente") ||
       m.content?.includes("Presentación generada correctamente")
     );
-    
+
     const attachment = {
       type: "document",
       name: document.title,
@@ -693,7 +849,7 @@ export class MemStorage implements IStorage {
       content: document.content,
       savedAt: new Date().toISOString()
     };
-    
+
     if (docGenMessage) {
       // Update existing message with the document attachment
       const existingAttachments = Array.isArray(docGenMessage.attachments) ? docGenMessage.attachments : [];
@@ -724,15 +880,21 @@ export class MemStorage implements IStorage {
   }
 
   async getChatRun(id: string): Promise<ChatRun | undefined> {
-    const [result] = await db.select().from(chatRuns).where(eq(chatRuns.id, id));
+    const [result] = await dbRead.select().from(chatRuns).where(eq(chatRuns.id, id));
     return result;
   }
 
   async getChatRunByClientRequestId(chatId: string, clientRequestId: string): Promise<ChatRun | undefined> {
-    const [result] = await db.select().from(chatRuns).where(
+    const [fromRead] = await dbRead.select().from(chatRuns).where(
       and(eq(chatRuns.chatId, chatId), eq(chatRuns.clientRequestId, clientRequestId))
     );
-    return result;
+    if (fromRead) return fromRead;
+
+    // Fallback to primary DB for strong reads (avoid replica lag in idempotency flows).
+    const [fromPrimary] = await db.select().from(chatRuns).where(
+      and(eq(chatRuns.chatId, chatId), eq(chatRuns.clientRequestId, clientRequestId))
+    );
+    return fromPrimary;
   }
 
   async claimPendingRun(chatId: string, clientRequestId?: string): Promise<ChatRun | undefined> {
@@ -761,6 +923,12 @@ export class MemStorage implements IStorage {
     if (status === 'done' || status === 'failed') {
       updates.completedAt = new Date();
     }
+    if (status === 'pending') {
+      // Reset run to pristine state for re-claiming (stale recovery / replace)
+      updates.startedAt = null;
+      updates.completedAt = null;
+      updates.error = null;
+    }
     if (error) {
       updates.error = error;
     }
@@ -785,18 +953,40 @@ export class MemStorage implements IStorage {
   }
 
   async createUserMessageAndRun(chatId: string, message: InsertChatMessage, clientRequestId: string): Promise<{ message: ChatMessage; run: ChatRun }> {
-    return await db.transaction(async (tx) => {
-      const [savedMessage] = await tx.insert(chatMessages).values(message).returning();
-      const [run] = await tx.insert(chatRuns).values({
-        chatId,
-        clientRequestId,
-        userMessageId: savedMessage.id,
-        status: 'pending',
-      }).returning();
-      await tx.update(chatMessages).set({ runId: run.id }).where(eq(chatMessages.id, savedMessage.id));
-      await tx.update(chats).set({ updatedAt: new Date() }).where(eq(chats.id, chatId));
-      return { message: { ...savedMessage, runId: run.id }, run };
+    const messageId = message.id || randomUUID();
+    const runId = randomUUID();
+
+    const messageToInsert: InsertChatMessage = {
+      ...message,
+      id: messageId,
+      runId,
+    };
+
+    const runToInsert: InsertChatRun = {
+      id: runId,
+      chatId,
+      clientRequestId,
+      userMessageId: messageId,
+      status: "pending",
+    };
+
+    const result = await db.transaction(async (tx) => {
+      const [savedMessage] = await tx.insert(chatMessages).values(messageToInsert).returning();
+      const [run] = await tx.insert(chatRuns).values(runToInsert).returning();
+      return { message: savedMessage, run };
     });
+
+    // Best-effort: bump chat updatedAt without blocking the user's round trip.
+    queueMicrotask(() => {
+      db.update(chats)
+        .set({ updatedAt: new Date() })
+        .where(eq(chats.id, chatId))
+        .catch((err) => {
+          console.warn("[Chats] Failed to update updatedAt after message+run create:", err?.message || err);
+        });
+    });
+
+    return result;
   }
 
   // Tool Invocation operations
@@ -806,7 +996,7 @@ export class MemStorage implements IStorage {
   }
 
   async getToolInvocation(runId: string, toolCallId: string): Promise<ToolInvocation | undefined> {
-    const [result] = await db.select().from(toolInvocations).where(
+    const [result] = await dbRead.select().from(toolInvocations).where(
       and(eq(toolInvocations.runId, runId), eq(toolInvocations.toolCallId, toolCallId))
     );
     return result;
@@ -831,20 +1021,20 @@ export class MemStorage implements IStorage {
   }
 
   async getChatShares(chatId: string): Promise<ChatShare[]> {
-    return db.select().from(chatShares).where(eq(chatShares.chatId, chatId)).orderBy(desc(chatShares.createdAt));
+    return dbRead.select().from(chatShares).where(eq(chatShares.chatId, chatId)).orderBy(desc(chatShares.createdAt));
   }
 
   async getChatSharesByEmail(email: string): Promise<ChatShare[]> {
     const normalizedEmail = email.toLowerCase().trim();
-    return db.select().from(chatShares).where(sql`LOWER(${chatShares.email}) = ${normalizedEmail}`).orderBy(desc(chatShares.createdAt));
+    return dbRead.select().from(chatShares).where(sql`LOWER(${chatShares.email}) = ${normalizedEmail}`).orderBy(desc(chatShares.createdAt));
   }
 
   async getChatSharesByUserId(userId: string): Promise<ChatShare[]> {
-    return db.select().from(chatShares).where(eq(chatShares.recipientUserId, userId)).orderBy(desc(chatShares.createdAt));
+    return dbRead.select().from(chatShares).where(eq(chatShares.recipientUserId, userId)).orderBy(desc(chatShares.createdAt));
   }
 
   async getSharedChatsWithDetails(userId: string): Promise<(Chat & { shareRole: string; shareId: string })[]> {
-    const results = await db
+    const results = await dbRead
       .select({
         id: chats.id,
         title: chats.title,
@@ -862,26 +1052,26 @@ export class MemStorage implements IStorage {
       .innerJoin(chats, eq(chatShares.chatId, chats.id))
       .where(eq(chatShares.recipientUserId, userId))
       .orderBy(desc(chatShares.createdAt));
-    
+
     return results as (Chat & { shareRole: string; shareId: string })[];
   }
 
   async getChatShareByEmailAndChat(email: string, chatId: string): Promise<ChatShare | undefined> {
     const normalizedEmail = email.toLowerCase().trim();
-    const [result] = await db.select().from(chatShares)
+    const [result] = await dbRead.select().from(chatShares)
       .where(sql`LOWER(${chatShares.email}) = ${normalizedEmail} AND ${chatShares.chatId} = ${chatId}`);
     return result;
   }
 
   async getChatShareByUserAndChat(userId: string, chatId: string): Promise<ChatShare | undefined> {
-    const [result] = await db.select().from(chatShares)
+    const [result] = await dbRead.select().from(chatShares)
       .where(sql`${chatShares.recipientUserId} = ${userId} AND ${chatShares.chatId} = ${chatId}`);
     return result;
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
     const normalizedEmail = email.toLowerCase().trim();
-    const [result] = await db.select().from(users).where(sql`LOWER(${users.email}) = ${normalizedEmail}`);
+    const [result] = await dbRead.select().from(users).where(ilike(users.email, normalizedEmail));
     return result;
   }
 
@@ -901,17 +1091,17 @@ export class MemStorage implements IStorage {
   }
 
   async getGpt(id: string): Promise<Gpt | undefined> {
-    const [result] = await db.select().from(gpts).where(eq(gpts.id, id));
+    const [result] = await dbRead.select().from(gpts).where(eq(gpts.id, id));
     return result;
   }
 
   async getGptBySlug(slug: string): Promise<Gpt | undefined> {
-    const [result] = await db.select().from(gpts).where(eq(gpts.slug, slug));
+    const [result] = await dbRead.select().from(gpts).where(eq(gpts.slug, slug));
     return result;
   }
 
   async getGpts(filters?: { visibility?: string; categoryId?: string; creatorId?: string }): Promise<Gpt[]> {
-    let query = db.select().from(gpts);
+    let query = dbRead.select().from(gpts);
     if (filters?.visibility) {
       query = query.where(eq(gpts.visibility, filters.visibility)) as typeof query;
     }
@@ -925,7 +1115,7 @@ export class MemStorage implements IStorage {
   }
 
   async getPopularGpts(limit: number = 10): Promise<Gpt[]> {
-    return db.select().from(gpts)
+    return dbRead.select().from(gpts)
       .where(eq(gpts.visibility, "public"))
       .orderBy(desc(gpts.usageCount))
       .limit(limit);
@@ -945,7 +1135,7 @@ export class MemStorage implements IStorage {
   }
 
   async getGptConversationCount(gptId: string): Promise<number> {
-    const [result] = await db.select({ count: sql<number>`count(*)::int` })
+    const [result] = await dbRead.select({ count: sql<number>`count(*)::int` })
       .from(chats)
       .where(eq(chats.gptId, gptId));
     return result?.count || 0;
@@ -958,7 +1148,7 @@ export class MemStorage implements IStorage {
   }
 
   async getGptCategories(): Promise<GptCategory[]> {
-    return db.select().from(gptCategories).orderBy(gptCategories.sortOrder);
+    return dbRead.select().from(gptCategories).orderBy(gptCategories.sortOrder);
   }
 
   // GPT Version operations
@@ -968,13 +1158,20 @@ export class MemStorage implements IStorage {
   }
 
   async getGptVersions(gptId: string): Promise<GptVersion[]> {
-    return db.select().from(gptVersions).where(eq(gptVersions.gptId, gptId)).orderBy(desc(gptVersions.versionNumber));
+    return dbRead.select().from(gptVersions).where(eq(gptVersions.gptId, gptId)).orderBy(desc(gptVersions.versionNumber));
   }
 
   async getLatestGptVersion(gptId: string): Promise<GptVersion | undefined> {
-    const [result] = await db.select().from(gptVersions)
+    const [result] = await dbRead.select().from(gptVersions)
       .where(eq(gptVersions.gptId, gptId))
       .orderBy(desc(gptVersions.versionNumber))
+      .limit(1);
+    return result;
+  }
+
+  async getGptVersionByNumber(gptId: string, versionNumber: number): Promise<GptVersion | undefined> {
+    const [result] = await dbRead.select().from(gptVersions)
+      .where(and(eq(gptVersions.gptId, gptId), eq(gptVersions.versionNumber, versionNumber)))
       .limit(1);
     return result;
   }
@@ -986,13 +1183,13 @@ export class MemStorage implements IStorage {
   }
 
   async getGptKnowledge(gptId: string): Promise<GptKnowledge[]> {
-    return db.select().from(gptKnowledge)
+    return dbRead.select().from(gptKnowledge)
       .where(and(eq(gptKnowledge.gptId, gptId), eq(gptKnowledge.isActive, "true")))
       .orderBy(desc(gptKnowledge.createdAt));
   }
 
   async getGptKnowledgeById(id: string): Promise<GptKnowledge | undefined> {
-    const [result] = await db.select().from(gptKnowledge).where(eq(gptKnowledge.id, id));
+    const [result] = await dbRead.select().from(gptKnowledge).where(eq(gptKnowledge.id, id));
     return result;
   }
 
@@ -1015,13 +1212,19 @@ export class MemStorage implements IStorage {
   }
 
   async getGptActions(gptId: string): Promise<GptAction[]> {
-    return db.select().from(gptActions)
+    return dbRead.select().from(gptActions)
       .where(and(eq(gptActions.gptId, gptId), eq(gptActions.isActive, "true")))
       .orderBy(gptActions.name);
   }
 
   async getGptActionById(id: string): Promise<GptAction | undefined> {
-    const [result] = await db.select().from(gptActions).where(eq(gptActions.id, id));
+    const [result] = await dbRead.select().from(gptActions).where(eq(gptActions.id, id));
+    return result;
+  }
+
+  async getGptActionByIdAndGpt(actionId: string, gptId: string): Promise<GptAction | undefined> {
+    const [result] = await dbRead.select().from(gptActions)
+      .where(and(eq(gptActions.id, actionId), eq(gptActions.gptId, gptId)));
     return result;
   }
 
@@ -1045,30 +1248,66 @@ export class MemStorage implements IStorage {
 
   // Sidebar Pinned GPTs
   async getSidebarPinnedGpts(userId: string): Promise<any[]> {
-    const pinnedRecords = await db.select()
-      .from(sidebarPinnedGpts)
-      .where(eq(sidebarPinnedGpts.userId, userId))
-      .orderBy(sidebarPinnedGpts.displayOrder);
-    
-    const gptDetails = await Promise.all(
-      pinnedRecords.map(async (record) => {
-        const gpt = await this.getGpt(record.gptId);
-        return gpt ? { ...record, gpt } : null;
-      })
-    );
-    
-    return gptDetails.filter(Boolean);
-  }
+    try {
+      const pinnedRecords = await dbRead.select()
+        .from(sidebarPinnedGpts)
+        .where(eq(sidebarPinnedGpts.userId, userId))
+        .orderBy(sidebarPinnedGpts.displayOrder);
 
+      const gptDetails = await Promise.all(
+        pinnedRecords.map(async (record) => {
+          const gpt = await this.getGpt(record.gptId);
+          return gpt ? { ...record, gpt } : null;
+        })
+      );
+
+      return gptDetails.filter(Boolean);
+    } catch (error) {
+      // Fallback to raw SQL in case Drizzle query compilation fails for this environment.
+      console.error("[storage] sidebarPinnedGpts query failed, falling back to raw SQL", error);
+      const result = await dbRead.execute(sql`
+        SELECT id, user_id, gpt_id, display_order, pinned_at
+        FROM sidebar_pinned_gpts
+        WHERE user_id = ${userId}
+        ORDER BY display_order`
+      );
+
+      const records = result.rows as Array<{
+        id: string;
+        user_id: string;
+        gpt_id: string;
+        display_order: number;
+        pinned_at: Date;
+      }>;
+
+      const gptDetails = await Promise.all(
+        records.map(async (record) => {
+          const gpt = await this.getGpt(record.gpt_id);
+          return gpt
+            ? {
+              id: record.id,
+              userId: record.user_id,
+              gptId: record.gpt_id,
+              displayOrder: record.display_order,
+              pinnedAt: record.pinned_at,
+              gpt,
+            }
+            : null;
+        })
+      );
+
+      return gptDetails.filter(Boolean);
+    }
+  }
   async pinGptToSidebar(userId: string, gptId: string, displayOrder: number = 0): Promise<any> {
     const existing = await db.select()
       .from(sidebarPinnedGpts)
       .where(and(eq(sidebarPinnedGpts.userId, userId), eq(sidebarPinnedGpts.gptId, gptId)));
-    
+
     if (existing.length > 0) {
       return existing[0];
     }
-    
+
     const [result] = await db.insert(sidebarPinnedGpts)
       .values({ userId, gptId, displayOrder })
       .returning();
@@ -1081,7 +1320,7 @@ export class MemStorage implements IStorage {
   }
 
   async isGptPinnedToSidebar(userId: string, gptId: string): Promise<boolean> {
-    const [result] = await db.select()
+    const [result] = await dbRead.select()
       .from(sidebarPinnedGpts)
       .where(and(eq(sidebarPinnedGpts.userId, userId), eq(sidebarPinnedGpts.gptId, gptId)));
     return !!result;
@@ -1089,11 +1328,14 @@ export class MemStorage implements IStorage {
 
   // Admin: User management
   async getAllUsers(): Promise<User[]> {
-    return db.select().from(users).orderBy(desc(users.createdAt));
+    return dbRead.select().from(users).orderBy(desc(users.createdAt));
   }
 
   async updateUser(id: string, updates: Partial<User>): Promise<User | undefined> {
     const [result] = await db.update(users).set(updates).where(eq(users.id, id)).returning();
+    if (result) {
+      await cache.delete(`user:${id}`);
+    }
     return result;
   }
 
@@ -1101,14 +1343,26 @@ export class MemStorage implements IStorage {
     await db.delete(users).where(eq(users.id, id));
   }
 
-  async getUserStats(): Promise<{ total: number; active: number; newThisMonth: number }> {
-    const allUsers = await db.select().from(users);
+  async getUserStats(): Promise<{ total: number; active: number; newThisMonth: number; newLastMonth: number }> {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const total = allUsers.length;
-    const active = allUsers.filter(u => u.status === "active").length;
-    const newThisMonth = allUsers.filter(u => u.createdAt && u.createdAt >= monthStart).length;
-    return { total, active, newThisMonth };
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
+    const [row] = await dbRead
+      .select({
+        total: sql<number>`count(*)`,
+        active: sql<number>`count(*) filter (where ${users.status} = 'active')`,
+        newThisMonth: sql<number>`count(*) filter (where ${users.createdAt} >= ${monthStart})`,
+        newLastMonth: sql<number>`count(*) filter (where ${users.createdAt} >= ${lastMonthStart} and ${users.createdAt} < ${monthStart})`,
+      })
+      .from(users);
+
+    return {
+      total: Number(row?.total ?? 0),
+      active: Number(row?.active ?? 0),
+      newThisMonth: Number(row?.newThisMonth ?? 0),
+      newLastMonth: Number(row?.newLastMonth ?? 0),
+    };
   }
 
   // Admin: AI Models
@@ -1118,15 +1372,21 @@ export class MemStorage implements IStorage {
   }
 
   async getAiModels(): Promise<AiModel[]> {
-    return db.select().from(aiModels).orderBy(desc(aiModels.createdAt));
+    return dbRead.select().from(aiModels).orderBy(desc(aiModels.createdAt));
   }
 
-  async getAiModelsFiltered(filters: { provider?: string; type?: string; status?: string; search?: string; sortBy?: string; sortOrder?: string; page?: number; limit?: number }): Promise<{ models: AiModel[]; total: number }> {
-    const { provider, type, status, search, sortBy = "name", sortOrder = "asc", page = 1, limit = 20 } = filters;
+  async getAiModelsFiltered(filters: { provider?: string; providers?: string[]; type?: string; status?: string; search?: string; sortBy?: string; sortOrder?: string; page?: number; limit?: number }): Promise<{ models: AiModel[]; total: number }> {
+    const { provider, providers, type, status, search, sortBy = "name", sortOrder = "asc", page = 1, limit = 20 } = filters;
     const conditions = [];
-    
+
     if (provider) {
       conditions.push(eq(aiModels.provider, provider.toLowerCase()));
+    }
+    if (providers && providers.length > 0) {
+      const normalizedProviders = providers.map((p) => String(p).toLowerCase().trim()).filter(Boolean);
+      if (normalizedProviders.length > 0) {
+        conditions.push(inArray(aiModels.provider, normalizedProviders));
+      }
     }
     if (type) {
       conditions.push(eq(aiModels.modelType, type));
@@ -1139,40 +1399,59 @@ export class MemStorage implements IStorage {
         sql`(${aiModels.name} ILIKE ${`%${search}%`} OR ${aiModels.modelId} ILIKE ${`%${search}%`} OR ${aiModels.description} ILIKE ${`%${search}%`})`
       );
     }
-    
+
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
-    
-    const allModels = await db.select().from(aiModels).where(whereClause);
-    const total = allModels.length;
-    
-    let sortedModels = [...allModels];
-    sortedModels.sort((a, b) => {
-      let aVal: any, bVal: any;
-      switch (sortBy) {
-        case "name": aVal = a.name; bVal = b.name; break;
-        case "provider": aVal = a.provider; bVal = b.provider; break;
-        case "modelType": aVal = a.modelType; bVal = b.modelType; break;
-        case "contextWindow": aVal = a.contextWindow || 0; bVal = b.contextWindow || 0; break;
-        case "createdAt": aVal = a.createdAt; bVal = b.createdAt; break;
-        default: aVal = a.name; bVal = b.name;
-      }
-      const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
-      return sortOrder === "desc" ? -cmp : cmp;
-    });
-    
-    const offset = (page - 1) * limit;
-    const models = sortedModels.slice(offset, offset + limit);
-    
+
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeLimit = Math.min(100, Math.max(1, Number(limit) || 20));
+    const offset = (safePage - 1) * safeLimit;
+
+    const normalizedSortOrder = sortOrder === "desc" ? "desc" : "asc";
+    const normalizedSortBy = new Set(["name", "provider", "modelType", "contextWindow", "createdAt", "lastSyncAt"]).has(sortBy)
+      ? sortBy
+      : "name";
+
+    let sortCol: any = aiModels.name;
+    switch (normalizedSortBy) {
+      case "provider": sortCol = aiModels.provider; break;
+      case "modelType": sortCol = aiModels.modelType; break;
+      case "contextWindow": sortCol = aiModels.contextWindow; break;
+      case "createdAt": sortCol = aiModels.createdAt; break;
+      case "lastSyncAt": sortCol = aiModels.lastSyncAt; break;
+      case "name":
+      default:
+        sortCol = aiModels.name;
+        break;
+    }
+
+    const orderExpr = normalizedSortOrder === "desc" ? desc(sortCol) : sortCol;
+
+    const countQuery = dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(aiModels);
+    if (whereClause) countQuery.where(whereClause);
+
+    const [countRow] = await countQuery;
+    const total = countRow?.count || 0;
+
+    const modelsQuery = dbRead.select().from(aiModels);
+    if (whereClause) modelsQuery.where(whereClause);
+
+    const models = await modelsQuery
+      .orderBy(orderExpr, aiModels.id)
+      .limit(safeLimit)
+      .offset(offset);
+
     return { models, total };
   }
 
   async getAiModelById(id: string): Promise<AiModel | undefined> {
-    const [result] = await db.select().from(aiModels).where(eq(aiModels.id, id));
+    const [result] = await dbRead.select().from(aiModels).where(eq(aiModels.id, id));
     return result;
   }
 
   async getAiModelByModelId(modelId: string, provider: string): Promise<AiModel | undefined> {
-    const [result] = await db.select().from(aiModels).where(
+    const [result] = await dbRead.select().from(aiModels).where(
       and(eq(aiModels.modelId, modelId), eq(aiModels.provider, provider.toLowerCase()))
     );
     return result;
@@ -1194,7 +1473,7 @@ export class MemStorage implements IStorage {
   }
 
   async getPayments(): Promise<Payment[]> {
-    return db.select().from(payments).orderBy(desc(payments.createdAt));
+    return dbRead.select().from(payments).orderBy(desc(payments.createdAt));
   }
 
   async updatePayment(id: string, updates: Partial<InsertPayment>): Promise<Payment | undefined> {
@@ -1202,15 +1481,26 @@ export class MemStorage implements IStorage {
     return result;
   }
 
-  async getPaymentStats(): Promise<{ total: string; thisMonth: string; count: number }> {
-    const allPayments = await db.select().from(payments);
+  async getPaymentStats(): Promise<{ total: string; thisMonth: string; previousMonth: string; count: number }> {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const completedPayments = allPayments.filter(p => p.status === "completed");
-    const thisMonthPayments = completedPayments.filter(p => p.createdAt >= monthStart);
-    const total = completedPayments.reduce((sum, p) => sum + parseFloat(p.amount), 0);
-    const thisMonth = thisMonthPayments.reduce((sum, p) => sum + parseFloat(p.amount), 0);
-    return { total: total.toFixed(2), thisMonth: thisMonth.toFixed(2), count: completedPayments.length };
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
+    const [row] = await dbRead
+      .select({
+        total: sql<number>`coalesce(sum((nullif(${payments.amount}, '')::numeric)) filter (where ${payments.status} = 'completed'), 0)`,
+        thisMonth: sql<number>`coalesce(sum((nullif(${payments.amount}, '')::numeric)) filter (where ${payments.status} = 'completed' and ${payments.createdAt} >= ${monthStart}), 0)`,
+        previousMonth: sql<number>`coalesce(sum((nullif(${payments.amount}, '')::numeric)) filter (where ${payments.status} = 'completed' and ${payments.createdAt} >= ${lastMonthStart} and ${payments.createdAt} < ${monthStart}), 0)`,
+        count: sql<number>`count(*) filter (where ${payments.status} = 'completed')`,
+      })
+      .from(payments);
+
+    return {
+      total: Number(row?.total ?? 0).toFixed(2),
+      thisMonth: Number(row?.thisMonth ?? 0).toFixed(2),
+      previousMonth: Number(row?.previousMonth ?? 0).toFixed(2),
+      count: Number(row?.count ?? 0),
+    };
   }
 
   // Admin: Invoices
@@ -1220,7 +1510,7 @@ export class MemStorage implements IStorage {
   }
 
   async getInvoices(): Promise<Invoice[]> {
-    return db.select().from(invoices).orderBy(desc(invoices.createdAt));
+    return dbRead.select().from(invoices).orderBy(desc(invoices.createdAt));
   }
 
   async updateInvoice(id: string, updates: Partial<InsertInvoice>): Promise<Invoice | undefined> {
@@ -1230,12 +1520,16 @@ export class MemStorage implements IStorage {
 
   // Admin: Settings
   async getSetting(key: string): Promise<PlatformSetting | undefined> {
-    const [result] = await db.select().from(platformSettings).where(eq(platformSettings.key, key));
-    return result;
+    return cache.remember(`setting:${key}`, 300, async () => {
+      const [result] = await dbRead.select().from(platformSettings).where(eq(platformSettings.key, key));
+      return result;
+    });
   }
 
   async getSettings(): Promise<PlatformSetting[]> {
-    return db.select().from(platformSettings).orderBy(platformSettings.category);
+    return cache.remember('settings:all', 300, async () => {
+      return dbRead.select().from(platformSettings).orderBy(platformSettings.category);
+    });
   }
 
   async upsertSetting(key: string, value: string, description?: string, category?: string): Promise<PlatformSetting> {
@@ -1245,11 +1539,15 @@ export class MemStorage implements IStorage {
         .set({ value, description, category, updatedAt: new Date() })
         .where(eq(platformSettings.key, key))
         .returning();
+      await cache.delete(`setting:${key}`);
+      await cache.delete('settings:all');
       return result;
     }
     const [result] = await db.insert(platformSettings)
       .values({ key, value, description, category })
       .returning();
+    await cache.delete(`setting:${key}`);
+    await cache.delete('settings:all');
     return result;
   }
 
@@ -1260,7 +1558,7 @@ export class MemStorage implements IStorage {
   }
 
   async getAuditLogs(limit: number = 100): Promise<AuditLog[]> {
-    return db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(limit);
+    return dbRead.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(limit);
   }
 
   // Admin: Analytics
@@ -1272,7 +1570,7 @@ export class MemStorage implements IStorage {
   async getAnalyticsSnapshots(days: number = 30): Promise<AnalyticsSnapshot[]> {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days);
-    return db.select().from(analyticsSnapshots)
+    return dbRead.select().from(analyticsSnapshots)
       .where(sql`${analyticsSnapshots.date} >= ${cutoff}`)
       .orderBy(analyticsSnapshots.date);
   }
@@ -1280,8 +1578,12 @@ export class MemStorage implements IStorage {
   async getDashboardMetrics(): Promise<{ users: number; queries: number; revenue: string; uptime: number }> {
     const userStats = await this.getUserStats();
     const paymentStats = await this.getPaymentStats();
-    const allUsers = await db.select().from(users);
-    const totalQueries = allUsers.reduce((sum, u) => sum + (u.queryCount || 0), 0);
+    const [row] = await dbRead
+      .select({
+        totalQueries: sql<number>`coalesce(sum(${users.queryCount}), 0)`,
+      })
+      .from(users);
+    const totalQueries = Number(row?.totalQueries ?? 0);
     return {
       users: userStats.total,
       queries: totalQueries,
@@ -1297,7 +1599,7 @@ export class MemStorage implements IStorage {
   }
 
   async getReports(): Promise<Report[]> {
-    return db.select().from(reports).orderBy(desc(reports.createdAt));
+    return dbRead.select().from(reports).orderBy(desc(reports.createdAt));
   }
 
   async updateReport(id: string, updates: Partial<InsertReport>): Promise<Report | undefined> {
@@ -1307,7 +1609,7 @@ export class MemStorage implements IStorage {
 
   // Admin: Domain Policies
   async getDomainPolicies(): Promise<DomainPolicy[]> {
-    return db.select().from(domainPolicies).orderBy(desc(domainPolicies.createdAt));
+    return dbRead.select().from(domainPolicies).orderBy(desc(domainPolicies.createdAt));
   }
 
   async updateDomainPolicy(id: string, updates: Partial<InsertDomainPolicy>): Promise<DomainPolicy | undefined> {
@@ -1327,17 +1629,17 @@ export class MemStorage implements IStorage {
 
   async getLibraryItems(userId: string, mediaType?: string): Promise<LibraryItem[]> {
     if (mediaType) {
-      return db.select().from(libraryItems)
+      return dbRead.select().from(libraryItems)
         .where(sql`${libraryItems.userId} = ${userId} AND ${libraryItems.mediaType} = ${mediaType}`)
         .orderBy(desc(libraryItems.createdAt));
     }
-    return db.select().from(libraryItems)
+    return dbRead.select().from(libraryItems)
       .where(eq(libraryItems.userId, userId))
       .orderBy(desc(libraryItems.createdAt));
   }
 
   async getLibraryItem(id: string, userId: string): Promise<LibraryItem | null> {
-    const [result] = await db.select().from(libraryItems)
+    const [result] = await dbRead.select().from(libraryItems)
       .where(sql`${libraryItems.id} = ${id} AND ${libraryItems.userId} = ${userId}`);
     return result || null;
   }
@@ -1351,11 +1653,11 @@ export class MemStorage implements IStorage {
 
   // Notification Preferences
   async getNotificationEventTypes(): Promise<NotificationEventType[]> {
-    return db.select().from(notificationEventTypes).orderBy(notificationEventTypes.sortOrder);
+    return dbRead.select().from(notificationEventTypes).orderBy(notificationEventTypes.sortOrder);
   }
 
   async getNotificationPreferences(userId: string): Promise<NotificationPreference[]> {
-    return db.select().from(notificationPreferences).where(eq(notificationPreferences.userId, userId));
+    return dbRead.select().from(notificationPreferences).where(eq(notificationPreferences.userId, userId));
   }
 
   async upsertNotificationPreference(pref: InsertNotificationPreference): Promise<NotificationPreference> {
@@ -1374,7 +1676,7 @@ export class MemStorage implements IStorage {
 
   // User Settings
   async getUserSettings(userId: string): Promise<UserSettings | null> {
-    const [result] = await db.select().from(userSettings).where(eq(userSettings.userId, userId));
+    const [result] = await dbRead.select().from(userSettings).where(eq(userSettings.userId, userId));
     return result || null;
   }
 
@@ -1399,19 +1701,26 @@ export class MemStorage implements IStorage {
     const defaultUserProfile = {
       nickname: '',
       occupation: '',
-      bio: ''
+      bio: '',
+      showName: true,
+      linkedInUrl: '',
+      githubUrl: '',
+      websiteDomain: '',
+      receiveEmailComments: false,
     };
 
     const defaultPrivacySettings = {
       trainingOptIn: false,
-      remoteBrowserDataAccess: false
+      remoteBrowserDataAccess: false,
+      analyticsTracking: true,
+      chatHistoryEnabled: true,
     };
 
     const existing = await this.getUserSettings(userId);
-    
+
     if (existing) {
       const mergedSettings = {
-        responsePreferences: settings.responsePreferences 
+        responsePreferences: settings.responsePreferences
           ? { ...existing.responsePreferences, ...settings.responsePreferences }
           : existing.responsePreferences,
         userProfile: settings.userProfile
@@ -1425,7 +1734,7 @@ export class MemStorage implements IStorage {
           : existing.privacySettings,
         updatedAt: new Date()
       };
-      
+
       const [updated] = await db.update(userSettings)
         .set(mergedSettings)
         .where(eq(userSettings.userId, userId))
@@ -1435,7 +1744,7 @@ export class MemStorage implements IStorage {
 
     const newSettings: InsertUserSettings = {
       userId,
-      responsePreferences: settings.responsePreferences 
+      responsePreferences: settings.responsePreferences
         ? { ...defaultResponsePreferences, ...settings.responsePreferences }
         : defaultResponsePreferences,
       userProfile: settings.userProfile
@@ -1455,6 +1764,7 @@ export class MemStorage implements IStorage {
 
   // Integration Management
   async getIntegrationProviders(): Promise<IntegrationProvider[]> {
+    // Use primary DB for integration catalog reads to avoid replica-lag issues (UI expects immediate consistency).
     return db.select().from(integrationProviders).orderBy(integrationProviders.name);
   }
 
@@ -1480,8 +1790,12 @@ export class MemStorage implements IStorage {
   }
 
   async getIntegrationAccountByProvider(userId: string, providerId: string): Promise<IntegrationAccount | null> {
-    const [result] = await db.select().from(integrationAccounts)
-      .where(sql`${integrationAccounts.userId} = ${userId} AND ${integrationAccounts.providerId} = ${providerId}`);
+    const [result] = await db
+      .select()
+      .from(integrationAccounts)
+      .where(and(eq(integrationAccounts.userId, userId), eq(integrationAccounts.providerId, providerId)))
+      .orderBy(desc(integrationAccounts.createdAt))
+      .limit(1);
     return result || null;
   }
 
@@ -1518,25 +1832,35 @@ export class MemStorage implements IStorage {
 
   async upsertIntegrationPolicy(userId: string, policy: Partial<InsertIntegrationPolicy>): Promise<IntegrationPolicy> {
     const existing = await this.getIntegrationPolicy(userId);
-    
+
     if (existing) {
+      const dedupeStrings = (value: unknown): string[] => {
+        if (!Array.isArray(value)) return [];
+        const out: string[] = [];
+        const seen = new Set<string>();
+        for (const item of value) {
+          if (typeof item !== "string") continue;
+          const trimmed = item.trim();
+          if (!trimmed) continue;
+          if (seen.has(trimmed)) continue;
+          seen.add(trimmed);
+          out.push(trimmed);
+        }
+        return out;
+      };
+
       const mergedPolicy = {
-        enabledApps: policy.enabledApps 
-          ? Array.from(new Set([...(existing.enabledApps || []), ...policy.enabledApps]))
-          : existing.enabledApps,
-        enabledTools: policy.enabledTools
-          ? Array.from(new Set([...(existing.enabledTools || []), ...policy.enabledTools]))
-          : existing.enabledTools,
-        disabledTools: policy.disabledTools
-          ? Array.from(new Set([...(existing.disabledTools || []), ...policy.disabledTools]))
-          : existing.disabledTools,
-        resourceScopes: policy.resourceScopes ?? existing.resourceScopes,
-        autoConfirmPolicy: policy.autoConfirmPolicy ?? existing.autoConfirmPolicy,
-        sandboxMode: policy.sandboxMode ?? existing.sandboxMode,
-        maxParallelCalls: policy.maxParallelCalls ?? existing.maxParallelCalls,
+        // Patch semantics: when a field is provided, replace it (do not union).
+        enabledApps: policy.enabledApps !== undefined ? dedupeStrings(policy.enabledApps) : existing.enabledApps,
+        enabledTools: policy.enabledTools !== undefined ? dedupeStrings(policy.enabledTools) : existing.enabledTools,
+        disabledTools: policy.disabledTools !== undefined ? dedupeStrings(policy.disabledTools) : existing.disabledTools,
+        resourceScopes: policy.resourceScopes !== undefined ? policy.resourceScopes : existing.resourceScopes,
+        autoConfirmPolicy: policy.autoConfirmPolicy !== undefined ? policy.autoConfirmPolicy : existing.autoConfirmPolicy,
+        sandboxMode: policy.sandboxMode !== undefined ? policy.sandboxMode : existing.sandboxMode,
+        maxParallelCalls: policy.maxParallelCalls !== undefined ? policy.maxParallelCalls : existing.maxParallelCalls,
         updatedAt: new Date()
       };
-      
+
       const [updated] = await db.update(integrationPolicies)
         .set(mergedPolicy)
         .where(eq(integrationPolicies.userId, userId))
@@ -1583,7 +1907,7 @@ export class MemStorage implements IStorage {
   }
 
   async getConsentLogs(userId: string, limit: number = 50): Promise<ConsentLog[]> {
-    return db.select().from(consentLogs)
+    return dbRead.select().from(consentLogs)
       .where(eq(consentLogs.userId, userId))
       .orderBy(desc(consentLogs.createdAt))
       .limit(limit);
@@ -1597,13 +1921,13 @@ export class MemStorage implements IStorage {
   }
 
   async getSharedLinks(userId: string): Promise<SharedLink[]> {
-    return db.select().from(sharedLinks)
+    return dbRead.select().from(sharedLinks)
       .where(eq(sharedLinks.userId, userId))
       .orderBy(desc(sharedLinks.createdAt));
   }
 
   async getSharedLinkByToken(token: string): Promise<SharedLink | undefined> {
-    const [result] = await db.select().from(sharedLinks).where(eq(sharedLinks.token, token));
+    const [result] = await dbRead.select().from(sharedLinks).where(eq(sharedLinks.token, token));
     return result;
   }
 
@@ -1632,7 +1956,7 @@ export class MemStorage implements IStorage {
 
   async incrementSharedLinkAccess(id: string): Promise<void> {
     await db.update(sharedLinks)
-      .set({ 
+      .set({
         accessCount: sql`${sharedLinks.accessCount} + 1`,
         lastAccessedAt: new Date()
       })
@@ -1641,8 +1965,8 @@ export class MemStorage implements IStorage {
 
   // Archived/Deleted Chats
   async getArchivedChats(userId: string): Promise<Chat[]> {
-    return db.select().from(chats)
-      .where(and(eq(chats.userId, userId), eq(chats.archived, 'true')))
+    return dbRead.select().from(chats)
+      .where(and(eq(chats.userId, userId), eq(chats.archived, 'true'), isNull(chats.deletedAt)))
       .orderBy(desc(chats.updatedAt));
   }
 
@@ -1655,7 +1979,7 @@ export class MemStorage implements IStorage {
   async archiveAllChats(userId: string): Promise<number> {
     const result = await db.update(chats)
       .set({ archived: 'true', updatedAt: new Date() })
-      .where(and(eq(chats.userId, userId), eq(chats.archived, 'false')))
+      .where(and(eq(chats.userId, userId), eq(chats.archived, 'false'), isNull(chats.deletedAt)))
       .returning();
     return result.length;
   }
@@ -1675,7 +1999,7 @@ export class MemStorage implements IStorage {
   }
 
   async getDeletedChats(userId: string): Promise<Chat[]> {
-    return db.select().from(chats)
+    return dbRead.select().from(chats)
       .where(and(eq(chats.userId, userId), sql`${chats.deletedAt} IS NOT NULL`))
       .orderBy(desc(chats.deletedAt));
   }
@@ -1692,14 +2016,15 @@ export class MemStorage implements IStorage {
 
   // Company Knowledge
   async getCompanyKnowledge(userId: string): Promise<CompanyKnowledge[]> {
-    return db.select().from(companyKnowledge)
+    return dbRead.select().from(companyKnowledge)
       .where(eq(companyKnowledge.userId, userId))
       .orderBy(desc(companyKnowledge.createdAt));
   }
 
   async getActiveCompanyKnowledge(userId: string): Promise<CompanyKnowledge[]> {
-    return db.select().from(companyKnowledge)
-      .where(and(eq(companyKnowledge.userId, userId), eq(companyKnowledge.isActive, 'true')))
+    // companyKnowledge schema doesn't include an isActive flag; treat all entries as active.
+    return dbRead.select().from(companyKnowledge)
+      .where(eq(companyKnowledge.userId, userId))
       .orderBy(desc(companyKnowledge.createdAt));
   }
 
@@ -1722,7 +2047,7 @@ export class MemStorage implements IStorage {
 
   // Gmail OAuth Token operations (Custom MCP)
   async getGmailOAuthToken(userId: string): Promise<GmailOAuthToken | null> {
-    const [token] = await db.select().from(gmailOAuthTokens)
+    const [token] = await dbRead.select().from(gmailOAuthTokens)
       .where(eq(gmailOAuthTokens.userId, userId));
     return token || null;
   }
@@ -1754,9 +2079,14 @@ export class MemStorage implements IStorage {
 
   // Message Idempotency operations
   async findMessageByRequestId(requestId: string): Promise<ChatMessage | null> {
-    const [message] = await db.select().from(chatMessages)
+    const [fromRead] = await dbRead.select().from(chatMessages)
       .where(eq(chatMessages.requestId, requestId));
-    return message || null;
+    if (fromRead) return fromRead;
+
+    // Fallback to primary DB for strong reads (avoid replica lag in idempotency flows).
+    const [fromPrimary] = await db.select().from(chatMessages)
+      .where(eq(chatMessages.requestId, requestId));
+    return fromPrimary || null;
   }
 
   async claimPendingMessage(messageId: string): Promise<ChatMessage | null> {
@@ -1787,7 +2117,7 @@ export class MemStorage implements IStorage {
   }
 
   async findAssistantResponseForUserMessage(userMessageId: string): Promise<ChatMessage | null> {
-    const [message] = await db.select().from(chatMessages)
+    const [message] = await dbRead.select().from(chatMessages)
       .where(and(
         eq(chatMessages.userMessageId, userMessageId),
         eq(chatMessages.role, 'assistant')
@@ -1802,7 +2132,7 @@ export class MemStorage implements IStorage {
   }
 
   async getQualityMetrics(since: Date, limit: number = 100): Promise<ResponseQualityMetric[]> {
-    return db.select().from(responseQualityMetrics)
+    return dbRead.select().from(responseQualityMetrics)
       .where(sql`${responseQualityMetrics.createdAt} >= ${since}`)
       .orderBy(desc(responseQualityMetrics.createdAt))
       .limit(limit);
@@ -1845,7 +2175,7 @@ export class MemStorage implements IStorage {
   }
 
   async getConnectorUsageStats(connector: string, since: Date): Promise<ConnectorUsageHourly[]> {
-    return db.select().from(connectorUsageHourly)
+    return dbRead.select().from(connectorUsageHourly)
       .where(and(
         eq(connectorUsageHourly.connector, connector),
         sql`${connectorUsageHourly.createdAt} >= ${since}`
@@ -1861,23 +2191,23 @@ export class MemStorage implements IStorage {
 
   async getOfflineMessages(userId: string, status?: string): Promise<OfflineMessageQueue[]> {
     if (status) {
-      return db.select().from(offlineMessageQueue)
+      return dbRead.select().from(offlineMessageQueue)
         .where(and(
           eq(offlineMessageQueue.userId, userId),
           eq(offlineMessageQueue.status, status)
         ))
         .orderBy(offlineMessageQueue.createdAt);
     }
-    return db.select().from(offlineMessageQueue)
+    return dbRead.select().from(offlineMessageQueue)
       .where(eq(offlineMessageQueue.userId, userId))
       .orderBy(offlineMessageQueue.createdAt);
   }
 
   async updateOfflineMessageStatus(id: string, status: string, error?: string): Promise<OfflineMessageQueue | null> {
-    const updates: Partial<OfflineMessageQueue> = { status };
+    const updates: any = { status };
     if (error) {
-      updates.error = error;
-      updates.retryCount = sql`${offlineMessageQueue.retryCount} + 1` as any;
+      // offlineMessageQueue schema doesn't have an `error` column; keep only retryCount.
+      updates.retryCount = (sql<number>`${offlineMessageQueue.retryCount} + 1` as any);
     }
     const [result] = await db.update(offlineMessageQueue)
       .set(updates)
@@ -1888,7 +2218,7 @@ export class MemStorage implements IStorage {
 
   async syncOfflineMessage(id: string): Promise<OfflineMessageQueue | null> {
     const [result] = await db.update(offlineMessageQueue)
-      .set({ status: 'synced', syncedAt: new Date() })
+      .set({ status: 'synced', processedAt: new Date() })
       .where(eq(offlineMessageQueue.id, id))
       .returning();
     return result || null;
@@ -1899,15 +2229,15 @@ export class MemStorage implements IStorage {
     const messages = await db.select().from(chatMessages)
       .where(eq(chatMessages.chatId, chatId))
       .orderBy(desc(chatMessages.createdAt));
-    
+
     const messageCount = messages.length;
     const lastMessageAt = messages.length > 0 ? messages[0].createdAt : null;
 
     const [result] = await db.update(chats)
-      .set({ 
-        messageCount, 
+      .set({
+        messageCount,
         lastMessageAt,
-        updatedAt: new Date() 
+        updatedAt: new Date()
       })
       .where(eq(chats.id, chatId))
       .returning();
@@ -1921,9 +2251,9 @@ export class MemStorage implements IStorage {
   }
 
   async getProviderMetrics(provider?: string, startDate?: Date, endDate?: Date): Promise<ProviderMetrics[]> {
-    let query = db.select().from(providerMetrics);
+    let query = dbRead.select().from(providerMetrics);
     const conditions: any[] = [];
-    
+
     if (provider) {
       conditions.push(eq(providerMetrics.provider, provider));
     }
@@ -1933,17 +2263,17 @@ export class MemStorage implements IStorage {
     if (endDate) {
       conditions.push(sql`${providerMetrics.windowEnd} <= ${endDate}`);
     }
-    
+
     if (conditions.length > 0) {
-      return db.select().from(providerMetrics)
+      return dbRead.select().from(providerMetrics)
         .where(and(...conditions))
         .orderBy(desc(providerMetrics.windowStart));
     }
-    return db.select().from(providerMetrics).orderBy(desc(providerMetrics.windowStart));
+    return dbRead.select().from(providerMetrics).orderBy(desc(providerMetrics.windowStart));
   }
 
   async getLatestProviderMetrics(): Promise<ProviderMetrics[]> {
-    const result = await db.execute(sql`
+    const result = await dbRead.execute(sql`
       SELECT DISTINCT ON (provider) *
       FROM provider_metrics
       ORDER BY provider, window_start DESC
@@ -1953,11 +2283,11 @@ export class MemStorage implements IStorage {
 
   // Cost Budgets
   async getCostBudgets(): Promise<CostBudget[]> {
-    return db.select().from(costBudgets).orderBy(costBudgets.provider);
+    return dbRead.select().from(costBudgets).orderBy(costBudgets.provider);
   }
 
   async getCostBudget(provider: string): Promise<CostBudget | undefined> {
-    const [result] = await db.select().from(costBudgets).where(eq(costBudgets.provider, provider));
+    const [result] = await dbRead.select().from(costBudgets).where(eq(costBudgets.provider, provider));
     return result;
   }
 
@@ -2002,32 +2332,32 @@ export class MemStorage implements IStorage {
     let countResult: any;
 
     if (conditions.length > 0) {
-      logs = await db.select().from(apiLogs)
+      logs = await dbRead.select().from(apiLogs)
         .where(and(...conditions))
         .orderBy(desc(apiLogs.createdAt))
         .limit(limit)
         .offset(offset);
-      countResult = await db.select({ count: sql<number>`count(*)` }).from(apiLogs).where(and(...conditions));
+      countResult = await dbRead.select({ count: sql<number>`count(*)` }).from(apiLogs).where(and(...conditions));
     } else {
-      logs = await db.select().from(apiLogs)
+      logs = await dbRead.select().from(apiLogs)
         .orderBy(desc(apiLogs.createdAt))
         .limit(limit)
         .offset(offset);
-      countResult = await db.select({ count: sql<number>`count(*)` }).from(apiLogs);
+      countResult = await dbRead.select({ count: sql<number>`count(*)` }).from(apiLogs);
     }
 
     return { logs, total: Number(countResult[0]?.count || 0) };
   }
 
   async getApiLogStats(): Promise<{ byStatusCode: Record<number, number>; byProvider: Record<string, number> }> {
-    const statusCodeStats = await db.execute(sql`
+    const statusCodeStats = await dbRead.execute(sql`
       SELECT status_code, COUNT(*) as count
       FROM api_logs
       WHERE status_code IS NOT NULL
       GROUP BY status_code
     `);
-    
-    const providerStats = await db.execute(sql`
+
+    const providerStats = await dbRead.execute(sql`
       SELECT provider, COUNT(*) as count
       FROM api_logs
       WHERE provider IS NOT NULL
@@ -2035,12 +2365,12 @@ export class MemStorage implements IStorage {
     `);
 
     const byStatusCode: Record<number, number> = {};
-    for (const row of statusCodeStats.rows as any[]) {
+    for (const row of statusCodeStats.rows as { status_code: number; count: number | string }[]) {
       byStatusCode[row.status_code] = Number(row.count);
     }
 
     const byProvider: Record<string, number> = {};
-    for (const row of providerStats.rows as any[]) {
+    for (const row of providerStats.rows as { provider: string; count: number | string }[]) {
       byProvider[row.provider] = Number(row.count);
     }
 
@@ -2054,14 +2384,14 @@ export class MemStorage implements IStorage {
   }
 
   async getLatestKpiSnapshot(): Promise<KpiSnapshot | undefined> {
-    const [result] = await db.select().from(kpiSnapshots)
+    const [result] = await dbRead.select().from(kpiSnapshots)
       .orderBy(desc(kpiSnapshots.createdAt))
       .limit(1);
     return result;
   }
 
   async getKpiSnapshots(limit: number = 100): Promise<KpiSnapshot[]> {
-    return db.select().from(kpiSnapshots)
+    return dbRead.select().from(kpiSnapshots)
       .orderBy(desc(kpiSnapshots.createdAt))
       .limit(limit);
   }
@@ -2075,7 +2405,7 @@ export class MemStorage implements IStorage {
   async getAnalyticsEventStats(startDate?: Date, endDate?: Date): Promise<Record<string, number>> {
     let query;
     const conditions: any[] = [];
-    
+
     if (startDate) {
       conditions.push(sql`${analyticsEvents.createdAt} >= ${startDate}`);
     }
@@ -2084,7 +2414,7 @@ export class MemStorage implements IStorage {
     }
 
     if (conditions.length > 0) {
-      query = await db.execute(sql`
+      query = await dbRead.execute(sql`
         SELECT event_name, COUNT(*) as count
         FROM analytics_events
         WHERE ${sql.join(conditions, sql` AND `)}
@@ -2092,7 +2422,7 @@ export class MemStorage implements IStorage {
         ORDER BY count DESC
       `);
     } else {
-      query = await db.execute(sql`
+      query = await dbRead.execute(sql`
         SELECT event_name, COUNT(*) as count
         FROM analytics_events
         GROUP BY event_name
@@ -2101,7 +2431,7 @@ export class MemStorage implements IStorage {
     }
 
     const stats: Record<string, number> = {};
-    for (const row of query.rows as any[]) {
+    for (const row of query.rows as { event_name: string; count: number | string }[]) {
       stats[row.event_name] = Number(row.count);
     }
     return stats;
@@ -2118,8 +2448,8 @@ export class MemStorage implements IStorage {
     };
 
     const config = configMap[granularity];
-    
-    const result = await db.execute(sql`
+
+    const result = await dbRead.execute(sql`
       SELECT date_trunc(${config.trunc}, created_at) as date, COUNT(*) as count
       FROM users
       WHERE created_at >= NOW() - INTERVAL ${config.interval}
@@ -2127,7 +2457,7 @@ export class MemStorage implements IStorage {
       ORDER BY date ASC
     `);
 
-    return (result.rows as any[]).map(row => ({
+    return (result.rows as { date: string | Date; count: number | string }[]).map(row => ({
       date: new Date(row.date),
       count: Number(row.count),
     }));
@@ -2135,11 +2465,11 @@ export class MemStorage implements IStorage {
 
   // Security Policies CRUD
   async getSecurityPolicies(): Promise<SecurityPolicy[]> {
-    return db.select().from(securityPolicies).orderBy(desc(securityPolicies.priority));
+    return dbRead.select().from(securityPolicies).orderBy(desc(securityPolicies.priority));
   }
 
   async getSecurityPolicy(id: string): Promise<SecurityPolicy | undefined> {
-    const [result] = await db.select().from(securityPolicies).where(eq(securityPolicies.id, id));
+    const [result] = await dbRead.select().from(securityPolicies).where(eq(securityPolicies.id, id));
     return result;
   }
 
@@ -2170,11 +2500,11 @@ export class MemStorage implements IStorage {
 
   // Report Templates CRUD
   async getReportTemplates(): Promise<ReportTemplate[]> {
-    return db.select().from(reportTemplates).orderBy(desc(reportTemplates.createdAt));
+    return dbRead.select().from(reportTemplates).orderBy(desc(reportTemplates.createdAt));
   }
 
   async getReportTemplate(id: string): Promise<ReportTemplate | undefined> {
-    const [result] = await db.select().from(reportTemplates).where(eq(reportTemplates.id, id));
+    const [result] = await dbRead.select().from(reportTemplates).where(eq(reportTemplates.id, id));
     return result;
   }
 
@@ -2185,13 +2515,13 @@ export class MemStorage implements IStorage {
 
   // Generated Reports CRUD
   async getGeneratedReports(limit: number = 100): Promise<GeneratedReport[]> {
-    return db.select().from(generatedReports)
+    return dbRead.select().from(generatedReports)
       .orderBy(desc(generatedReports.createdAt))
       .limit(limit);
   }
 
   async getGeneratedReport(id: string): Promise<GeneratedReport | undefined> {
-    const [result] = await db.select().from(generatedReports).where(eq(generatedReports.id, id));
+    const [result] = await dbRead.select().from(generatedReports).where(eq(generatedReports.id, id));
     return result;
   }
 
@@ -2214,15 +2544,15 @@ export class MemStorage implements IStorage {
 
   // Settings Config CRUD
   async getSettingsConfig(): Promise<SettingsConfig[]> {
-    return db.select().from(settingsConfig).orderBy(settingsConfig.category, settingsConfig.key);
+    return dbRead.select().from(settingsConfig).orderBy(settingsConfig.category, settingsConfig.key);
   }
 
   async getSettingsConfigByCategory(category: string): Promise<SettingsConfig[]> {
-    return db.select().from(settingsConfig).where(eq(settingsConfig.category, category)).orderBy(settingsConfig.key);
+    return dbRead.select().from(settingsConfig).where(eq(settingsConfig.category, category)).orderBy(settingsConfig.key);
   }
 
   async getSettingsConfigByKey(key: string): Promise<SettingsConfig | undefined> {
-    const [result] = await db.select().from(settingsConfig).where(eq(settingsConfig.key, key));
+    const [result] = await dbRead.select().from(settingsConfig).where(eq(settingsConfig.key, key));
     return result;
   }
 
@@ -2244,23 +2574,20 @@ export class MemStorage implements IStorage {
   }
 
   async seedDefaultSettings(): Promise<void> {
-    const existing = await this.getSettingsConfig();
-    if (existing.length > 0) return;
-
     const defaultSettings: InsertSettingsConfig[] = [
-      { category: "general", key: "app_name", value: "Sira GPT", defaultValue: "Sira GPT", valueType: "string", description: "Application name" },
-      { category: "general", key: "app_description", value: "AI-powered chat assistant", defaultValue: "AI-powered chat assistant", valueType: "string", description: "Application description" },
+      { category: "general", key: "app_name", value: "ILIAGPT", defaultValue: "ILIAGPT", valueType: "string", description: "Application name" },
+      { category: "general", key: "app_description", value: "AI Platform", defaultValue: "AI Platform", valueType: "string", description: "Application description" },
       { category: "general", key: "support_email", value: "", defaultValue: "", valueType: "string", description: "Support email address" },
       { category: "general", key: "timezone_default", value: "UTC", defaultValue: "UTC", valueType: "string", description: "Default timezone" },
       { category: "general", key: "date_format", value: "YYYY-MM-DD", defaultValue: "YYYY-MM-DD", valueType: "string", description: "Date format" },
       { category: "general", key: "maintenance_mode", value: false, defaultValue: false, valueType: "boolean", description: "Enable maintenance mode" },
       { category: "branding", key: "primary_color", value: "#6366f1", defaultValue: "#6366f1", valueType: "string", description: "Primary brand color" },
       { category: "branding", key: "secondary_color", value: "#8b5cf6", defaultValue: "#8b5cf6", valueType: "string", description: "Secondary brand color" },
-      { category: "branding", key: "theme_mode", value: "dark", defaultValue: "dark", valueType: "string", description: "Default theme mode" },
+      { category: "branding", key: "theme_mode", value: "auto", defaultValue: "auto", valueType: "string", description: "Default theme mode" },
       { category: "users", key: "allow_registration", value: true, defaultValue: true, valueType: "boolean", description: "Allow user registration" },
       { category: "users", key: "require_email_verification", value: false, defaultValue: false, valueType: "boolean", description: "Require email verification" },
       { category: "users", key: "session_timeout_minutes", value: 1440, defaultValue: 1440, valueType: "number", description: "Session timeout in minutes" },
-      { category: "ai_models", key: "default_model", value: "grok-3-fast", defaultValue: "grok-3-fast", valueType: "string", description: "Default AI model" },
+      { category: "ai_models", key: "default_model", value: "grok-4-1-fast-non-reasoning", defaultValue: "grok-4-1-fast-non-reasoning", valueType: "string", description: "Default AI model" },
       { category: "ai_models", key: "max_tokens_per_request", value: 4096, defaultValue: 4096, valueType: "number", description: "Max tokens per request" },
       { category: "ai_models", key: "enable_streaming", value: true, defaultValue: true, valueType: "boolean", description: "Enable streaming responses" },
       { category: "security", key: "max_login_attempts", value: 5, defaultValue: 5, valueType: "number", description: "Max login attempts before lockout" },
@@ -2276,8 +2603,9 @@ export class MemStorage implements IStorage {
   }
 
   // Agent Gap Logs CRUD
-  private generateGapSignature(prompt: string, intent: string | null): string {
-    const normalized = (prompt.toLowerCase().trim() + '|' + (intent || 'unknown')).substring(0, 200);
+  private generateGapSignature(userId: string | null | undefined, prompt: string, intent: string | null): string {
+    // Include userId so frequency aggregation doesn't merge across different accounts.
+    const normalized = ((userId || 'unknown') + '|' + prompt.toLowerCase().trim() + '|' + (intent || 'unknown')).substring(0, 240);
     let hash = 0;
     for (let i = 0; i < normalized.length; i++) {
       const char = normalized.charCodeAt(i);
@@ -2288,21 +2616,22 @@ export class MemStorage implements IStorage {
   }
 
   async createAgentGapLog(log: InsertAgentGapLog): Promise<AgentGapLog> {
-    const signature = this.generateGapSignature(log.userPrompt, log.detectedIntent || null);
+    const signature = this.generateGapSignature(log.userId || null, log.userPrompt, log.detectedIntent || null);
 
     const existing = await db.select()
       .from(agentGapLogs)
       .where(
         and(
           eq(agentGapLogs.gapSignature, signature),
-          eq(agentGapLogs.status, 'pending')
+          eq(agentGapLogs.status, 'pending'),
+          log.userId ? eq(agentGapLogs.userId, log.userId) : isNull(agentGapLogs.userId)
         )
       )
       .limit(1);
 
     if (existing.length > 0) {
       const updated = await db.update(agentGapLogs)
-        .set({ 
+        .set({
           frequencyCount: sql`${agentGapLogs.frequencyCount} + 1`,
           updatedAt: new Date()
         })
@@ -2317,13 +2646,23 @@ export class MemStorage implements IStorage {
     return result;
   }
 
-  async getAgentGapLogs(status?: string): Promise<AgentGapLog[]> {
+  async getAgentGapLogs(status?: string, userId?: string): Promise<AgentGapLog[]> {
+    if (status && userId) {
+      return dbRead.select().from(agentGapLogs)
+        .where(and(eq(agentGapLogs.status, status), eq(agentGapLogs.userId, userId)))
+        .orderBy(desc(agentGapLogs.createdAt));
+    }
     if (status) {
-      return db.select().from(agentGapLogs)
+      return dbRead.select().from(agentGapLogs)
         .where(eq(agentGapLogs.status, status))
         .orderBy(desc(agentGapLogs.createdAt));
     }
-    return db.select().from(agentGapLogs).orderBy(desc(agentGapLogs.createdAt));
+    if (userId) {
+      return dbRead.select().from(agentGapLogs)
+        .where(eq(agentGapLogs.userId, userId))
+        .orderBy(desc(agentGapLogs.createdAt));
+    }
+    return dbRead.select().from(agentGapLogs).orderBy(desc(agentGapLogs.createdAt));
   }
 
   async updateAgentGapLog(id: string, updates: Partial<InsertAgentGapLog>): Promise<AgentGapLog | undefined> {
@@ -2336,13 +2675,13 @@ export class MemStorage implements IStorage {
 
   // Library Folder CRUD
   async getLibraryFolders(userId: string): Promise<LibraryFolder[]> {
-    return db.select().from(libraryFolders)
+    return dbRead.select().from(libraryFolders)
       .where(eq(libraryFolders.userId, userId))
       .orderBy(libraryFolders.name);
   }
 
   async getLibraryFolder(id: string, userId: string): Promise<LibraryFolder | null> {
-    const [result] = await db.select().from(libraryFolders)
+    const [result] = await dbRead.select().from(libraryFolders)
       .where(and(eq(libraryFolders.uuid, id), eq(libraryFolders.userId, userId)));
     return result || null;
   }
@@ -2368,13 +2707,13 @@ export class MemStorage implements IStorage {
 
   // Library Collection CRUD
   async getLibraryCollections(userId: string): Promise<LibraryCollection[]> {
-    return db.select().from(libraryCollections)
+    return dbRead.select().from(libraryCollections)
       .where(eq(libraryCollections.userId, userId))
       .orderBy(desc(libraryCollections.createdAt));
   }
 
   async getLibraryCollection(id: string, userId: string): Promise<LibraryCollection | null> {
-    const [result] = await db.select().from(libraryCollections)
+    const [result] = await dbRead.select().from(libraryCollections)
       .where(and(eq(libraryCollections.uuid, id), eq(libraryCollections.userId, userId)));
     return result || null;
   }
@@ -2422,21 +2761,21 @@ export class MemStorage implements IStorage {
   }
 
   async getCollectionFiles(collectionId: string, userId: string): Promise<LibraryFile[]> {
-    const [collection] = await db.select().from(libraryCollections)
+    const [collection] = await dbRead.select().from(libraryCollections)
       .where(and(eq(libraryCollections.uuid, collectionId), eq(libraryCollections.userId, userId)));
     if (!collection) return [];
-    const fileLinks = await db.select().from(libraryFileCollections)
+    const fileLinks = await dbRead.select().from(libraryFileCollections)
       .where(eq(libraryFileCollections.collectionId, collection.id))
       .orderBy(libraryFileCollections.order);
     if (fileLinks.length === 0) return [];
     const fileIds = fileLinks.map(fl => fl.fileId);
-    return db.select().from(libraryFiles)
+    return dbRead.select().from(libraryFiles)
       .where(sql`${libraryFiles.id} IN (${sql.join(fileIds.map(id => sql`${id}`), sql`, `)})`);
   }
 
   // Enhanced Library File CRUD
   async getLibraryFile(id: string, userId: string): Promise<LibraryFile | null> {
-    const [result] = await db.select().from(libraryFiles)
+    const [result] = await dbRead.select().from(libraryFiles)
       .where(and(eq(libraryFiles.uuid, id), eq(libraryFiles.userId, userId)));
     return result || null;
   }
@@ -2447,7 +2786,7 @@ export class MemStorage implements IStorage {
       conditions.push(eq(libraryFiles.type, options.type));
     }
     if (options?.folderId) {
-      const [folder] = await db.select().from(libraryFolders)
+      const [folder] = await dbRead.select().from(libraryFolders)
         .where(and(eq(libraryFolders.uuid, options.folderId), eq(libraryFolders.userId, userId)));
       if (folder) {
         conditions.push(eq(libraryFiles.folderId, folder.id));
@@ -2459,10 +2798,10 @@ export class MemStorage implements IStorage {
           ilike(libraryFiles.name, `%${options.search}%`),
           ilike(libraryFiles.originalName, `%${options.search}%`),
           ilike(libraryFiles.description, `%${options.search}%`)
-        ) as any
+        ) as SQL
       );
     }
-    return db.select().from(libraryFiles)
+    return dbRead.select().from(libraryFiles)
       .where(and(...conditions))
       .orderBy(desc(libraryFiles.createdAt));
   }
@@ -2490,7 +2829,7 @@ export class MemStorage implements IStorage {
 
   // Library Storage Stats
   async getLibraryStorageStats(userId: string): Promise<LibraryStorageStats | null> {
-    const [result] = await db.select().from(libraryStorage).where(eq(libraryStorage.userId, userId));
+    const [result] = await dbRead.select().from(libraryStorage).where(eq(libraryStorage.userId, userId));
     return result || null;
   }
 
@@ -2522,7 +2861,7 @@ export class MemStorage implements IStorage {
   }
 
   async getLibraryActivity(userId: string, limit: number = 50): Promise<LibraryActivityRecord[]> {
-    return db.select().from(libraryActivity)
+    return dbRead.select().from(libraryActivity)
       .where(eq(libraryActivity.userId, userId))
       .orderBy(desc(libraryActivity.createdAt))
       .limit(limit);
@@ -2535,7 +2874,7 @@ export class MemStorage implements IStorage {
   }
 
   async getChatMessageAnalysisByUploadId(uploadId: string): Promise<ChatMessageAnalysis | undefined> {
-    const [result] = await db.select()
+    const [result] = await dbRead.select()
       .from(chatMessageAnalysis)
       .where(eq(chatMessageAnalysis.uploadId, uploadId))
       .orderBy(desc(chatMessageAnalysis.createdAt))
@@ -2554,11 +2893,23 @@ export class MemStorage implements IStorage {
   // Conversation Documents - Persistent document context
   async createConversationDocument(doc: InsertConversationDocument): Promise<ConversationDocument> {
     const [result] = await db.insert(conversationDocuments).values(doc).returning();
+    if (doc.extractedText && doc.extractedText.trim().length > 0) {
+      queueMicrotask(() => {
+        knowledgeBaseService.ingestConversationDocument({
+          chatId: doc.chatId,
+          documentId: result.id,
+          fileName: doc.fileName,
+          content: doc.extractedText || "",
+        }).catch((error) => {
+          console.warn("[Knowledge] Failed to ingest conversation document:", error?.message || error);
+        });
+      });
+    }
     return result;
   }
 
   async getConversationDocuments(chatId: string): Promise<ConversationDocument[]> {
-    return db.select()
+    return dbRead.select()
       .from(conversationDocuments)
       .where(eq(conversationDocuments.chatId, chatId))
       .orderBy(conversationDocuments.createdAt);
@@ -2566,6 +2917,49 @@ export class MemStorage implements IStorage {
 
   async deleteConversationDocument(id: string): Promise<void> {
     await db.delete(conversationDocuments).where(eq(conversationDocuments.id, id));
+  }
+
+  // Admin: User monitoring methods
+  async getConversationsByUserId(userId: string): Promise<Chat[]> {
+    return dbRead.select()
+      .from(chats)
+      .where(eq(chats.userId, userId))
+      .orderBy(desc(chats.updatedAt));
+  }
+
+  async getMessagesByConversationId(conversationId: string): Promise<ChatMessage[]> {
+    return dbRead.select()
+      .from(chatMessages)
+      .where(eq(chatMessages.chatId, conversationId))
+      .orderBy(chatMessages.createdAt);
+  }
+
+  async deleteConversation(conversationId: string): Promise<void> {
+    // Delete messages first, then the chat
+    await db.delete(chatMessages).where(eq(chatMessages.chatId, conversationId));
+    await db.delete(chats).where(eq(chats.id, conversationId));
+  }
+
+  async getAuditLogsByResourceId(resourceId: string): Promise<AuditLog[]> {
+    return dbRead.select()
+      .from(auditLogs)
+      .where(eq(auditLogs.resourceId, resourceId))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(100);
+  }
+
+  async createImpersonationToken(data: { token: string; adminId: string; targetUserId: string; expiresAt: Date }): Promise<void> {
+    // Store impersonation token in audit log for security tracking
+    await this.createAuditLog({
+      action: "impersonation_token_created",
+      resource: "users",
+      resourceId: data.targetUserId,
+      details: {
+        adminId: data.adminId,
+        tokenHash: data.token.substring(0, 8) + "...", // Only store hash prefix
+        expiresAt: data.expiresAt.toISOString()
+      }
+    });
   }
 }
 

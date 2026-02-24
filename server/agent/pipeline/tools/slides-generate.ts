@@ -1,13 +1,13 @@
 import { ToolDefinition, ExecutionContext, ToolResult, Artifact } from "../types";
-import PptxGenJS from "pptxgenjs";
 import OpenAI from "openai";
 import * as fs from "fs";
 import * as path from "path";
 import crypto from "crypto";
+import { generatePptDocument } from "../../../services/documentGeneration";
 
 const openai = new OpenAI({ 
   baseURL: "https://api.x.ai/v1", 
-  apiKey: process.env.XAI_API_KEY 
+  apiKey: process.env.XAI_API_KEY || "missing" 
 });
 
 function getSandboxPath(runId: string): string {
@@ -85,84 +85,77 @@ Only output valid JSON, no explanations.`
   }
 }
 
-function createPresentation(data: PresentationData): PptxGenJS {
-  const pptx = new PptxGenJS();
-  
-  pptx.title = data.title;
-  if (data.author) {
-    pptx.author = data.author;
-  }
-  
-  pptx.defineSlideMaster({
-    title: "CONTENT_SLIDE",
-    background: { color: "FFFFFF" },
-    objects: [
-      { placeholder: { options: { name: "title", type: "title", x: 0.5, y: 0.5, w: 9, h: 1 } } },
-      { placeholder: { options: { name: "body", type: "body", x: 0.5, y: 1.75, w: 9, h: 5 } } }
-    ]
-  });
-
-  for (let i = 0; i < data.slides.length; i++) {
-    const slideData = data.slides[i];
-    const slide = pptx.addSlide();
-    
-    if (i === 0) {
-      slide.addText(slideData.title, {
-        x: 0.5,
-        y: 2,
-        w: 9,
-        h: 1.5,
-        fontSize: 36,
-        bold: true,
-        align: "center",
-        color: "333333"
-      });
-      
-      if (data.author) {
-        slide.addText(data.author, {
-          x: 0.5,
-          y: 4,
-          w: 9,
-          h: 0.5,
-          fontSize: 18,
-          align: "center",
-          color: "666666"
-        });
-      }
-    } else {
-      slide.addText(slideData.title, {
-        x: 0.5,
-        y: 0.5,
-        w: 9,
-        h: 1,
-        fontSize: 28,
-        bold: true,
-        color: "333333"
-      });
-      
-      if (slideData.bullets && slideData.bullets.length > 0) {
-        const bulletText = slideData.bullets.map(b => ({ text: b, options: { bullet: true } }));
-        slide.addText(bulletText, {
-          x: 0.5,
-          y: 1.75,
-          w: 9,
-          h: 4.5,
-          fontSize: 18,
-          color: "444444",
-          valign: "top"
-        });
-      }
-    }
-    
-    if (slideData.notes) {
-      slide.addNotes(slideData.notes);
-    }
-  }
-  
-  return pptx;
+function sanitizePptText(input: string, maxLength: number): string {
+  return String(input || "")
+    .replace(/\0/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .trim()
+    .substring(0, maxLength);
 }
 
-const presentationCache = new Map<string, { pptx: PptxGenJS; data: PresentationData }>();
+function toCorporateSlides(data: PresentationData): { title: string; content: string[] }[] {
+  const safeSlides = (Array.isArray(data?.slides) ? data.slides : [])
+    .map((slide, index) => {
+      const lines: string[] = [];
+
+      if (slide?.title) {
+        lines.push(sanitizePptText(slide.title, 180));
+      }
+
+      if (Array.isArray(slide?.bullets)) {
+        for (const bullet of slide.bullets) {
+          const safeBullet = sanitizePptText(String(bullet || ""), 260);
+          if (safeBullet) {
+            lines.push(`• ${safeBullet}`);
+          }
+        }
+      }
+
+      if (slide?.notes) {
+        const safeNotes = sanitizePptText(String(slide.notes), 200);
+        if (safeNotes) lines.push(`Notas: ${safeNotes}`);
+      }
+
+      if (lines.length === 0) {
+        lines.push("Sin contenido disponible.");
+      }
+
+      return {
+        title: sanitizePptText(slide?.title || `Diapositiva ${index + 1}`, 160),
+        content: lines.slice(0, 20),
+      };
+    });
+
+  if (safeSlides.length === 0) {
+    safeSlides.push({
+      title: "Resumen",
+      content: [sanitizePptText(data?.title || "Contenido de la presentación", 200)],
+    });
+  }
+
+  return safeSlides;
+}
+
+async function buildPresentationBuffer(data: PresentationData): Promise<Buffer> {
+  const safeTitle = sanitizePptText(data?.title, 500) || "Presentación";
+  const slides = toCorporateSlides(data);
+
+  try {
+    return await generatePptDocument(safeTitle, slides, {
+      trace: { source: "slides_generate", requestId: data?.topic || data?.title },
+    });
+  } catch (error) {
+    console.warn("[slides_generate] Falling back to emergency corporate template", error);
+    return await generatePptDocument("Presentación", [{
+      title: "Fallback",
+      content: ["No fue posible renderizar la presentación principal. Se muestra una versión de recuperación."],
+    }], {
+      trace: { source: "slides_generate" },
+    });
+  }
+}
+
+const presentationCache = new Map<string, PresentationData>();
 
 export const slidesGenerateTool: ToolDefinition = {
   id: "slides_generate",
@@ -224,10 +217,8 @@ export const slidesGenerateTool: ToolDefinition = {
           }
 
           const data = await generateSlideContent(description, slideCount);
-          const pptx = createPresentation(data);
-          
           const id = crypto.randomUUID();
-          presentationCache.set(id, { pptx, data });
+          presentationCache.set(id, data);
 
           return {
             success: true,
@@ -254,7 +245,7 @@ export const slidesGenerateTool: ToolDefinition = {
             return { success: false, error: "Presentation not found. Create one first." };
           }
 
-          const { pptx, data } = cached;
+          const data = cached;
           const newSlide: SlideContent = {
             title: slideData?.title || "New Slide",
             bullets: slideData?.bullets || [],
@@ -262,34 +253,6 @@ export const slidesGenerateTool: ToolDefinition = {
           };
 
           data.slides.push(newSlide);
-          
-          const slide = pptx.addSlide();
-          slide.addText(newSlide.title, {
-            x: 0.5,
-            y: 0.5,
-            w: 9,
-            h: 1,
-            fontSize: 28,
-            bold: true,
-            color: "333333"
-          });
-          
-          if (newSlide.bullets && newSlide.bullets.length > 0) {
-            const bulletText = newSlide.bullets.map(b => ({ text: b, options: { bullet: true } }));
-            slide.addText(bulletText, {
-              x: 0.5,
-              y: 1.75,
-              w: 9,
-              h: 4.5,
-              fontSize: 18,
-              color: "444444",
-              valign: "top"
-            });
-          }
-          
-          if (newSlide.notes) {
-            slide.addNotes(newSlide.notes);
-          }
 
           return {
             success: true,
@@ -311,10 +274,10 @@ export const slidesGenerateTool: ToolDefinition = {
             return { success: false, error: "Presentation not found. Create one first." };
           }
 
-          const { pptx, data } = cached;
+          const data = cached;
           const outputPath = path.join(sandboxPath, filename);
-          
-          await pptx.writeFile({ fileName: outputPath });
+          const buffer = await buildPresentationBuffer(data);
+          fs.writeFileSync(outputPath, buffer);
 
           const stats = fs.statSync(outputPath);
 

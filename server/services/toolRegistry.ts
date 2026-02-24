@@ -1045,6 +1045,21 @@ export class ToolRegistryService {
         successRate: 100,
         healthStatus: 'healthy',
         failureCount: 0
+      },
+      // SYSTEM/AUTOMATION TOOLS
+      {
+        id: 'macos_integration',
+        name: 'macOS Native Integration',
+        description: 'Execute native macOS actions via AppleScript/JXA (open apps, get/set volume, read/write clipboard)',
+        category: 'automation',
+        capabilities: ['macos', 'applescript', 'jxa', 'clipboard', 'volume', 'open app', 'pbcopy', 'screencapture'],
+        endpoint: '/api/tools/macos',
+        method: 'POST',
+        isEnabled: true,
+        usageCount: 0,
+        successRate: 100,
+        healthStatus: 'healthy',
+        failureCount: 0
       }
     ];
 
@@ -1107,7 +1122,7 @@ export class ToolRegistryService {
     return Array.from(this.tools.values()).filter(tool => {
       const matchesName = tool.name.toLowerCase().includes(normalizedQuery);
       const matchesDescription = tool.description.toLowerCase().includes(normalizedQuery);
-      const matchesCapabilities = tool.capabilities.some(cap => 
+      const matchesCapabilities = tool.capabilities.some(cap =>
         cap.toLowerCase().includes(normalizedQuery)
       );
       return matchesName || matchesDescription || matchesCapabilities;

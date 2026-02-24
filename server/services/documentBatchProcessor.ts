@@ -339,7 +339,11 @@ export class DocumentBatchProcessor {
         console.log(`[DocumentBatchProcessor] Processed ${attachment.name}: ${chunks.length} chunks, ${tokensExtracted} tokens`);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        console.error(`[DocumentBatchProcessor] Failed to process ${attachment.name}:`, errorMessage);
+        // Avoid externally-controlled format string via console formatting.
+        console.error("[DocumentBatchProcessor] Failed to process attachment", {
+          filename: attachment.name,
+          error: errorMessage,
+        });
 
         result.failedFiles.push({
           filename: attachment.name,
@@ -423,14 +427,48 @@ export class DocumentBatchProcessor {
       throw new Error("No storage path provided");
     }
 
+    // Try object storage first
     try {
       return await this.objectStorageService.getObjectEntityBuffer(storagePath);
     } catch (error) {
-      if (error instanceof ObjectNotFoundError) {
-        throw new Error(`File not found: ${storagePath}`);
-      }
-      throw error;
+      // Fall through to local fallback
+      console.log(`[DocumentBatchProcessor] Object storage failed for ${storagePath}, trying local fallback`);
     }
+
+    // Local file fallback (development / local storage mode)
+    try {
+      const fs = await import("fs");
+      const pathMod = await import("path");
+      const uploadsDir = pathMod.default.resolve(process.cwd(), "uploads");
+
+      const localCandidates: string[] = [];
+      if (storagePath.startsWith('/objects/uploads/')) {
+        localCandidates.push(pathMod.default.join(uploadsDir, storagePath.replace('/objects/uploads/', '')));
+      }
+      if (storagePath.startsWith('/objects/')) {
+        localCandidates.push(pathMod.default.join(uploadsDir, storagePath.replace('/objects/', '')));
+      }
+
+      for (const localPath of localCandidates) {
+        // Security: ensure resolved path stays within uploads directory
+        const safePrefix = uploadsDir + pathMod.default.sep;
+        if (!localPath.startsWith(safePrefix) && localPath !== uploadsDir) {
+          continue;
+        }
+
+        if (fs.default.existsSync(localPath)) {
+          const content = await fs.promises.readFile(localPath);
+          if (content.length > 0) {
+            console.log(`[DocumentBatchProcessor] Read ${content.length} bytes from local: ${localPath}`);
+            return content;
+          }
+        }
+      }
+    } catch (localError) {
+      console.warn(`[DocumentBatchProcessor] Local fallback also failed for ${storagePath}:`, localError);
+    }
+
+    throw new Error(`File not found in any storage: ${storagePath}`);
   }
 
   private detectMimeFromFilename(filename: string, providedMimeType: string): string {

@@ -44,15 +44,17 @@ export type RouteDecision = z.infer<typeof RouteDecisionSchema>;
 
 const AGENT_ROLE_TO_NAME: Record<SpecializedAgent, string> = {
   orchestrator: "OrchestratorAgent",
-  research: "ResearchAgent",
+  research: "ResearchAssistantAgent",
   code: "CodeAgent",
-  data: "DataAgent",
+  data: "DataAnalystAgent",
   content: "ContentAgent",
   communication: "CommunicationAgent",
   browser: "BrowserAgent",
   document: "DocumentAgent",
   qa: "QAAgent",
-  security: "SecurityAgent"
+  security: "SecurityAgent",
+  // Computer use is disabled; route to the safer BrowserAgent.
+  computer_use: "BrowserAgent"
 };
 
 const AGENT_TO_TOOLS: Record<SpecializedAgent, string[]> = {
@@ -65,7 +67,9 @@ const AGENT_TO_TOOLS: Record<SpecializedAgent, string[]> = {
   browser: ["browser_navigate", "browser_interact", "browser_extract", "browser_session", "screenshot"],
   document: ["doc_create", "pdf_generate", "pdf_manipulate", "spreadsheet_create", "slides_create", "ocr_extract"],
   qa: ["code_test", "code_review", "verify", "health_check", "validate_output"],
-  security: ["encrypt_data", "decrypt_data", "hash_data", "validate_input", "audit_log", "secrets_manage"]
+  security: ["encrypt_data", "decrypt_data", "hash_data", "validate_input", "audit_log", "secrets_manage"],
+  // Computer use is disabled; restrict to browser-safe tools.
+  computer_use: ["browser_navigate", "browser_interact", "browser_extract", "browser_session", "screenshot"]
 };
 
 const AGENT_CAPABILITIES: Record<SpecializedAgent, string[]> = {
@@ -78,7 +82,9 @@ const AGENT_CAPABILITIES: Record<SpecializedAgent, string[]> = {
   browser: ["navigate", "scrape", "automate", "extract_content"],
   document: ["parse_document", "convert_document", "analyze_document", "create_document"],
   qa: ["generate_tests", "validate", "find_bugs", "quality_assurance"],
-  security: ["vulnerability_scan", "security_audit", "compliance_check", "encryption"]
+  security: ["vulnerability_scan", "security_audit", "compliance_check", "encryption"],
+  // Computer use is disabled; keep capabilities aligned with BrowserAgent.
+  computer_use: ["navigate", "scrape", "automate", "extract_content"]
 };
 
 const COMPLEXITY_TO_STRATEGY: Record<ComplexityLevel, ExecutionStrategy> = {
@@ -387,7 +393,8 @@ export class IntentRouter extends EventEmitter {
       browser: 45000,
       document: 20000,
       qa: 15000,
-      security: 10000
+      security: 10000,
+      computer_use: 60000
     };
 
     return baseDurations[role] || 15000;

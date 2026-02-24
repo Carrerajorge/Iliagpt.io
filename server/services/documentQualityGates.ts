@@ -87,14 +87,14 @@ export const DOC_LIMITS = {
 
 export const EXCEL_LIMITS = {
   MAX_SHEETS: 50,
-  MAX_CELLS_PER_SHEET: 100000,
-  MAX_TABLE_ROWS: 500,
-  MAX_TABLE_COLUMNS: 26,
+  MAX_CELLS_PER_SHEET: 5000000,
+  MAX_TABLE_ROWS: 50000,
+  MAX_TABLE_COLUMNS: 1000,
   MAX_SHEET_NAME_LENGTH: 31,
   // Warning thresholds
   WARN_SHEETS: 30,
-  WARN_CELLS_PER_SHEET: 50000,
-  WARN_TABLE_ROWS: 300,
+  WARN_CELLS_PER_SHEET: 1000000,
+  WARN_TABLE_ROWS: 10000,
 } as const;
 
 // Valid Word table styles
@@ -213,10 +213,10 @@ function tablesOverlap(a: TableBoundingBox, b: TableBoundingBox): boolean {
 function parseRangeToCoords(range: string): { start: { row: number; col: number }; end: { row: number; col: number } } | null {
   const parts = range.split(":");
   if (parts.length !== 2) return null;
-  
+
   const start = parseCellReferenceToCoords(parts[0].trim());
   const end = parseCellReferenceToCoords(parts[1].trim());
-  
+
   if (!start || !end) return null;
   return { start, end };
 }
@@ -846,11 +846,11 @@ function buildReport(issues: ValidationIssue[]): QualityReport {
   const errors = issues
     .filter((i) => i.severity === "error")
     .map(({ code, message, path }) => ({ code, message, path }));
-  
+
   const warnings = issues
     .filter((i) => i.severity === "warning")
     .map(({ code, message, path }) => ({ code, message, path }));
-  
+
   const info = issues
     .filter((i) => i.severity === "info")
     .map(({ code, message, path }) => ({ code, message, path }));

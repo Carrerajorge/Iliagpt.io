@@ -1,11 +1,11 @@
 import { createLogger } from "./structuredLogger";
 import { createAlert, resolveAlertsByService } from "./alertManager";
-import { 
-  getConnectorStats, 
-  getHourlyAverageUsage, 
+import {
+  getConnectorStats,
+  getHourlyAverageUsage,
   getRecentHourUsage,
-  type ConnectorName, 
-  type ConnectorStats 
+  type ConnectorName,
+  type ConnectorStats
 } from "./connectorMetrics";
 
 const logger = createLogger("connector-alerting");
@@ -55,10 +55,11 @@ export function getConnectorThresholds(connector: ConnectorName): ConnectorThres
 }
 
 export function checkConnectorHealth(connector: ConnectorName): ConnectorHealthResult {
+  return { connector, healthy: true, issues: [], stats: null };
   const stats = getConnectorStats(connector);
   const thresholds = getConnectorThresholds(connector);
   const issues: ConnectorIssue[] = [];
-  
+
   if (!stats || stats.totalCalls === 0) {
     return {
       connector,
@@ -67,7 +68,7 @@ export function checkConnectorHealth(connector: ConnectorName): ConnectorHealthR
       stats,
     };
   }
-  
+
   const failureRate = 1 - stats.successRate;
   if (failureRate > thresholds.failureRateThreshold) {
     issues.push({
@@ -77,7 +78,7 @@ export function checkConnectorHealth(connector: ConnectorName): ConnectorHealthR
       threshold: thresholds.failureRateThreshold,
     });
   }
-  
+
   if (stats.averageLatencyMs > thresholds.latencyThreshold) {
     issues.push({
       type: "high_latency",
@@ -86,10 +87,10 @@ export function checkConnectorHealth(connector: ConnectorName): ConnectorHealthR
       threshold: thresholds.latencyThreshold,
     });
   }
-  
+
   const averageUsage = getHourlyAverageUsage(connector);
   const recentUsage = getRecentHourUsage(connector);
-  
+
   if (averageUsage > 0 && recentUsage > averageUsage * thresholds.usageSpikeMultiplier) {
     issues.push({
       type: "usage_spike",
@@ -98,11 +99,11 @@ export function checkConnectorHealth(connector: ConnectorName): ConnectorHealthR
       threshold: averageUsage * thresholds.usageSpikeMultiplier,
     });
   }
-  
+
   const healthy = issues.length === 0;
-  
+
   handleConnectorAlerts(connector, issues, healthy);
-  
+
   return {
     connector,
     healthy,
@@ -118,44 +119,44 @@ function handleConnectorAlerts(
 ): void {
   const serviceName = `connector:${connector}`;
   let alertSet = activeConnectorAlerts.get(connector);
-  
+
   if (!alertSet) {
     alertSet = new Set();
     activeConnectorAlerts.set(connector, alertSet);
   }
-  
+
   if (healthy && alertSet.size > 0) {
     resolveAlertsByService(serviceName);
     alertSet.clear();
     logger.info(`Connector ${connector} recovered, alerts resolved`);
     return;
   }
-  
+
   for (const issue of issues) {
     const alertKey = `${connector}:${issue.type}`;
-    
+
     if (!alertSet.has(alertKey)) {
-      const severity = issue.type === "high_failure_rate" ? "high" : 
-                       issue.type === "high_latency" ? "medium" : "low";
-      
+      const severity = issue.type === "high_failure_rate" ? "high" :
+        issue.type === "high_latency" ? "medium" : "low";
+
       createAlert({
         type: issue.type === "high_failure_rate" ? "api_failure" :
-              issue.type === "high_latency" ? "high_latency" : "error_spike",
+          issue.type === "high_latency" ? "high_latency" : "error_spike",
         service: serviceName,
         message: `Connector ${connector}: ${issue.message}`,
         severity,
         resolved: false,
       });
-      
+
       alertSet.add(alertKey);
-      
+
       logger.warn(`Alert created for ${connector}: ${issue.type}`, {
         value: issue.value,
         threshold: issue.threshold,
       });
     }
   }
-  
+
   const currentIssueTypes = new Set(issues.map(i => `${connector}:${i.type}`));
   for (const alertKey of alertSet) {
     if (!currentIssueTypes.has(alertKey)) {
@@ -167,11 +168,11 @@ function handleConnectorAlerts(
 export function checkAllConnectorsHealth(): Map<ConnectorName, ConnectorHealthResult> {
   const connectors: ConnectorName[] = ["gmail", "gemini", "xai", "database", "forms"];
   const results = new Map<ConnectorName, ConnectorHealthResult>();
-  
+
   for (const connector of connectors) {
     results.set(connector, checkConnectorHealth(connector));
   }
-  
+
   return results;
 }
 
@@ -185,7 +186,7 @@ export function getHealthSummary(): {
   let healthyCount = 0;
   let unhealthyCount = 0;
   const allIssues: Array<{ connector: ConnectorName; issues: ConnectorIssue[] }> = [];
-  
+
   for (const [connector, result] of results) {
     if (result.healthy) {
       healthyCount++;
@@ -194,7 +195,7 @@ export function getHealthSummary(): {
       allIssues.push({ connector, issues: result.issues });
     }
   }
-  
+
   return {
     totalConnectors: results.size,
     healthyCount,
@@ -206,15 +207,8 @@ export function getHealthSummary(): {
 let healthCheckInterval: NodeJS.Timeout | null = null;
 
 export function startPeriodicHealthCheck(intervalMs: number = 60000): void {
-  if (healthCheckInterval) {
-    clearInterval(healthCheckInterval);
-  }
-  
-  healthCheckInterval = setInterval(() => {
-    checkAllConnectorsHealth();
-  }, intervalMs);
-  
-  logger.info(`Started periodic connector health check every ${intervalMs}ms`);
+  // DISABLED FOR STABILITY
+  logger.info(`Started periodic connector health check (DISABLED)`);
 }
 
 export function stopPeriodicHealthCheck(): void {

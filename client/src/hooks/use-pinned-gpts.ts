@@ -25,7 +25,10 @@ export function usePinnedGpts() {
     queryFn: async () => {
       if (!user?.id) return [];
       const res = await fetch(`/api/users/${user.id}/sidebar-gpts`);
-      if (!res.ok) throw new Error("Failed to fetch pinned GPTs");
+      if (!res.ok) {
+        console.warn("[usePinnedGpts] Fallback: unable to fetch pinned GPTs", res.status);
+        return [];
+      }
       return res.json();
     },
     enabled: !!user?.id,

@@ -110,6 +110,14 @@ export interface ToolExecutionResult<T = unknown> {
   trace: ToolCallTrace;
 }
 
+export interface ToolCallPersistenceContext {
+  userId?: string;
+  chatId?: string;
+  runId?: string;
+  providerId?: string;
+  accountId?: string;
+}
+
 export const TOOL_CATEGORIES = [
   "Web",
   "Generation",
@@ -133,6 +141,38 @@ export const TOOL_CATEGORIES = [
 ] as const;
 
 export type ToolCategory = typeof TOOL_CATEGORIES[number];
+
+function redactForLog(value: any): any {
+  const seen = new WeakSet();
+  const sensitiveKeys = ["password", "token", "secret", "key", "auth", "credential", "apiKey"];
+
+  const walk = (v: any): any => {
+    if (v === null || v === undefined) return v;
+    if (typeof v === "string") {
+      if (v.length > 2000) return v.slice(0, 2000) + "...[truncated]";
+      return v;
+    }
+    if (typeof v !== "object") return v;
+    if (seen.has(v)) return "[Circular]";
+    seen.add(v);
+
+    if (Array.isArray(v)) {
+      return v.slice(0, 50).map(walk);
+    }
+
+    const out: Record<string, any> = {};
+    for (const [k, child] of Object.entries(v)) {
+      if (sensitiveKeys.some(s => k.toLowerCase().includes(s.toLowerCase()))) {
+        out[k] = "[REDACTED]";
+      } else {
+        out[k] = walk(child);
+      }
+    }
+    return out;
+  };
+
+  return walk(value);
+}
 
 class RateLimiter {
   private minuteCounts: Map<string, { count: number; resetAt: number }> = new Map();
@@ -256,10 +296,12 @@ class ToolRegistry {
   async execute<TInput, TOutput>(
     name: string,
     input: TInput,
-    options?: { skipValidation?: boolean; skipRateLimit?: boolean }
+    options?: { skipValidation?: boolean; skipRateLimit?: boolean; context?: ToolCallPersistenceContext }
   ): Promise<ToolExecutionResult<TOutput>> {
     const requestId = crypto.randomUUID();
     const startTime = Date.now();
+    const ctx = options?.context;
+    const shouldPersist = !!(ctx?.userId || ctx?.chatId || ctx?.runId || ctx?.accountId);
     
     const trace: ToolCallTrace = {
       requestId,
@@ -269,6 +311,36 @@ class ToolRegistry {
       startTime,
       status: "pending",
       retryCount: 0,
+    };
+
+    const persistTrace = (finalTrace: ToolCallTrace) => {
+      if (!shouldPersist || !ctx) return;
+      void (async () => {
+        try {
+          const safeUserId =
+            ctx.userId && ctx.userId !== "anonymous" && !String(ctx.userId).startsWith("anon_")
+              ? String(ctx.userId)
+              : undefined;
+          const { storage } = await import("../../storage");
+          await storage.createToolCallLog({
+            userId: safeUserId,
+            chatId: ctx.chatId,
+            runId: ctx.runId,
+            toolId: finalTrace.toolName,
+            providerId: ctx.providerId || "agentic_engine",
+            accountId: ctx.accountId,
+            inputRedacted: redactForLog(finalTrace.args),
+            outputRedacted: redactForLog(finalTrace.output),
+            status: finalTrace.status,
+            errorCode: finalTrace.error?.code,
+            errorMessage: finalTrace.error?.message,
+            latencyMs: Math.max(0, Math.round(finalTrace.durationMs ?? (Date.now() - finalTrace.startTime))),
+            idempotencyKey: finalTrace.requestId,
+          });
+        } catch (err: any) {
+          console.warn("[RegistryToolRegistry] Failed to persist tool_call_logs:", err?.message || err);
+        }
+      })();
     };
 
     try {
@@ -284,6 +356,7 @@ class ToolRegistry {
         trace.endTime = Date.now();
         trace.durationMs = trace.endTime - trace.startTime;
         this.addTrace(trace);
+        persistTrace(trace);
         return { success: false, error, trace };
       }
 
@@ -301,6 +374,7 @@ class ToolRegistry {
         trace.endTime = Date.now();
         trace.durationMs = trace.endTime - trace.startTime;
         this.addTrace(trace);
+        persistTrace(trace);
         return { success: false, error, trace };
       }
 
@@ -321,6 +395,7 @@ class ToolRegistry {
           trace.endTime = Date.now();
           trace.durationMs = trace.endTime - trace.startTime;
           this.addTrace(trace);
+          persistTrace(trace);
           return { success: false, error, trace };
         }
       }
@@ -339,6 +414,7 @@ class ToolRegistry {
           trace.endTime = Date.now();
           trace.durationMs = trace.endTime - trace.startTime;
           this.addTrace(trace);
+          persistTrace(trace);
           return { success: false, error, trace };
         }
       }
@@ -365,6 +441,7 @@ class ToolRegistry {
           trace.endTime = Date.now();
           trace.durationMs = trace.endTime - trace.startTime;
           this.addTrace(trace);
+          persistTrace(trace);
           
           circuitBreaker?.recordSuccess();
           return { success: true, data: result as TOutput, trace };
@@ -388,6 +465,7 @@ class ToolRegistry {
       trace.endTime = Date.now();
       trace.durationMs = trace.endTime - trace.startTime;
       this.addTrace(trace);
+      persistTrace(trace);
       
       circuitBreaker?.recordFailure();
       return { success: false, error: lastError, trace };
@@ -402,6 +480,7 @@ class ToolRegistry {
       trace.endTime = Date.now();
       trace.durationMs = trace.endTime - trace.startTime;
       this.addTrace(trace);
+      persistTrace(trace);
       return { success: false, error, trace };
     }
   }

@@ -31,9 +31,10 @@ const HEURISTIC_PATTERNS: Array<{ pattern: RegExp; toolNeed: string; confidence:
   { pattern: /\b(automatiza|automate|automatizar|automation)\b/iu, toolNeed: "automation", confidence: 0.85 },
   { pattern: /\b(paso\s+\d+|step\s+\d+|\d+\.\s+\w+)\b/iu, toolNeed: "multi_step", confidence: 0.75 },
   { pattern: /\b(primero|first)\b.*\b(luego|then|despu[eé]s|after)\b/iu, toolNeed: "multi_step", confidence: 0.7 },
-  { pattern: /\b(cv|curriculum|resume|curr[ií]culum)\b/iu, toolNeed: "generate_file", confidence: 0.9 },
+  // NOTE: Avoid matching Spanish "Resume este texto..." (summarize) as English noun "resume" (CV).
+  { pattern: /\b(cv|curriculum|curr[ií]culum)\b|\bresume\b(?!\s+(este|esto|texto)\b)/iu, toolNeed: "generate_file", confidence: 0.9 },
   { pattern: /\b(landing page|p[aá]gina de aterrizaje)\b/iu, toolNeed: "webdev", confidence: 0.85 },
-  { pattern: /\b(scrape|scrapear|extraer datos|extract data)\b/iu, toolNeed: "web_scrape", confidence: 0.9 },
+  { pattern: /\b(scrape|scrapear|scrapea|scraping|extraer datos|extract data)\b/iu, toolNeed: "web_scrape", confidence: 0.9 },
   { pattern: /\b(usa el agente|use agent|modo agente|agent mode)\b/iu, toolNeed: "explicit_agent", confidence: 1.0 },
   { pattern: /\b(from|de|en)\s+(wikipedia|the web|la web|internet)\b/iu, toolNeed: "web_search", confidence: 0.85 },
   { pattern: /\b(get|obtener|find|buscar)\s+information\s+from\b/iu, toolNeed: "web_search", confidence: 0.8 },
@@ -41,6 +42,7 @@ const HEURISTIC_PATTERNS: Array<{ pattern: RegExp; toolNeed: string; confidence:
 ];
 
 const TRIVIAL_PATTERNS = [
+  /^hola[,\s!?.,]*(buenos d[ií]as?|buenas tardes|buenas noches)[\s!?.,]*$/iu,
   /^(hola|hi|hello|hey|buenos d[ií]as?|buenas tardes|buenas noches)[\s!?.,]*$/iu,
   /^(gracias|thanks|thank you|thx|ty|muchas gracias)[\s!?.,]*$/iu,
   /^(ok|okay|s[ií]|si|yes|no|nope|vale|bien|bueno|sure|got it)[\s!?.,]*$/iu,

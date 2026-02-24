@@ -1,5 +1,19 @@
-import ExcelJS from "exceljs";
+import * as ExcelJSModule from "exceljs";
+const ExcelJS = (ExcelJSModule as any).default || ExcelJSModule;
 import type { FileParser, ParsedResult, DetectedFileType } from "./base";
+
+// Security limits
+const XLSX_MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+const XLSX_MAX_SHEETS = 100;
+const XLSX_MAX_CELL_VALUE_LENGTH = 50_000;
+const XLSX_MAX_METADATA_VALUE_LENGTH = 1000;
+
+/** Sanitize metadata values */
+function sanitizeMetadataValue(value: unknown): string {
+  return String(value ?? "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .substring(0, XLSX_MAX_METADATA_VALUE_LENGTH);
+}
 
 export class XlsxParser implements FileParser {
   name = "xlsx";
@@ -15,6 +29,11 @@ export class XlsxParser implements FileParser {
     const startTime = Date.now();
     console.log(`[XlsxParser] Starting Excel parse, size: ${content.length} bytes`);
 
+    // Security: enforce file size limit
+    if (content.length > XLSX_MAX_FILE_SIZE) {
+      throw new Error(`Excel file exceeds maximum size of ${XLSX_MAX_FILE_SIZE / (1024 * 1024)}MB`);
+    }
+
     try {
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(content);
@@ -28,8 +47,12 @@ export class XlsxParser implements FileParser {
       }> = [];
 
       const metadata = this.extractWorkbookMetadata(workbook);
-      
+
+      // Security: limit number of sheets processed
+      let sheetCount = 0;
       workbook.eachSheet((worksheet) => {
+        if (sheetCount >= XLSX_MAX_SHEETS) return;
+        sheetCount++;
         const sheetResult = this.parseSheet(worksheet);
         sheetData.push(sheetResult);
       });
@@ -71,10 +94,11 @@ export class XlsxParser implements FileParser {
     workbook.eachSheet(() => sheetCount++);
     metadata.sheetCount = sheetCount;
 
-    if (workbook.creator) metadata.author = workbook.creator;
+    // Security: sanitize metadata values
+    if (workbook.creator) metadata.author = sanitizeMetadataValue(workbook.creator);
     if (workbook.created) metadata.creationDate = workbook.created.toISOString().split('T')[0];
     if (workbook.modified) metadata.modificationDate = workbook.modified.toISOString().split('T')[0];
-    if (workbook.company) metadata.company = workbook.company;
+    if (workbook.company) metadata.company = sanitizeMetadataValue(workbook.company);
 
     return metadata;
   }
@@ -166,7 +190,8 @@ export class XlsxParser implements FileParser {
       return cell.value.toFixed(2);
     }
 
-    return String(cell.value);
+    // Security: limit cell value length
+    return String(cell.value).substring(0, XLSX_MAX_CELL_VALUE_LENGTH);
   }
 
   private createMarkdownTable(

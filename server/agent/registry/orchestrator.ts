@@ -55,6 +55,7 @@ export const TaskIntentSchema = z.object({
     "testing",
     "security",
     "orchestration",
+    "computer_use",
   ]),
   confidence: z.number().min(0).max(1),
   suggestedAgent: z.string(),
@@ -103,6 +104,7 @@ const INTENT_PATTERNS: Record<TaskIntent["intent"], RegExp[]> = {
   testing: [/test|verify|validate|check|qa|quality|assert/i],
   security: [/security|vulnerability|scan|audit|encrypt|hash|password/i],
   orchestration: [/workflow|pipeline|automate|schedule|coordinate|manage/i],
+  computer_use: [/computer use|control del (computador|ordenador)|browser control|agentic|terminal control|screen interact|screenshot|agentic brows|navega.*autónom|autonomous.*brows|control.*pantalla|screen.*control/i],
 };
 
 const INTENT_TO_AGENT: Record<TaskIntent["intent"], AgentRole> = {
@@ -116,6 +118,7 @@ const INTENT_TO_AGENT: Record<TaskIntent["intent"], AgentRole> = {
   testing: "QA",
   security: "Security",
   orchestration: "Orchestrator",
+  computer_use: "ComputerUse",
 };
 
 const INTENT_TO_TOOLS: Record<TaskIntent["intent"], string[]> = {
@@ -129,6 +132,7 @@ const INTENT_TO_TOOLS: Record<TaskIntent["intent"], string[]> = {
   testing: ["test_run", "validate_output", "assert_condition", "report_generate"],
   security: ["security_scan", "encrypt", "hash", "audit_log"],
   orchestration: ["workflow_create", "task_schedule", "agent_delegate", "monitor"],
+  computer_use: ["computer_use_session", "computer_use_navigate", "computer_use_interact", "computer_use_agentic", "terminal_execute", "generate_perfect_ppt", "generate_perfect_doc", "generate_perfect_excel", "vision_analyze"],
 };
 
 class Orchestrator {

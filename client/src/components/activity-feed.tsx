@@ -63,10 +63,10 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { 
-  useAgentTraceStore, 
-  type TraceStep, 
-  type TraceRun, 
+import {
+  useAgentTraceStore,
+  type TraceStep,
+  type TraceRun,
   type TraceArtifact,
   type TraceToolCall,
   type TraceCitation,
@@ -76,19 +76,17 @@ import {
   type TraceProgress,
 } from "@/stores/agentTraceStore";
 import { useAgentStore } from "@/stores/agent-store";
-import { format, formatDistanceToNow } from "date-fns";
-import { es } from "date-fns/locale";
 
 export function useActivityFeed(messageId?: string | null) {
   const { subscribeToRun, unsubscribeFromRun, runs, activeRunId, isConnected } = useAgentTraceStore();
   const agentStoreRuns = useAgentStore((state) => state.runs);
-  
+
   const activeRun = useMemo(() => {
     if (messageId) {
       const agentRun = agentStoreRuns[messageId];
       return agentRun?.runId || null;
     }
-    
+
     const activeRuns = Object.values(agentStoreRuns).filter(
       (run) => run.runId && ['starting', 'queued', 'planning', 'running', 'verifying'].includes(run.status)
     );
@@ -103,9 +101,9 @@ export function useActivityFeed(messageId?: string | null) {
 
   useEffect(() => {
     if (!activeRun) return;
-    
+
     subscribeToRun(activeRun);
-    
+
     return () => {
       unsubscribeFromRun(activeRun);
     };
@@ -173,16 +171,16 @@ function normalizeToolName(toolName: string): string {
     "code-generate": "code_generate",
     "code-review": "code_review",
   };
-  
+
   if (normalizedMappings[toolName]) {
     return normalizedMappings[toolName];
   }
-  
+
   const underscored = toolName.replace(/-/g, "_");
   if (TOOL_ICONS[underscored]) {
     return underscored;
   }
-  
+
   return toolName;
 }
 
@@ -191,7 +189,7 @@ function getToolIcon(toolName: string): typeof Terminal {
   return TOOL_ICONS[normalized] || Wrench;
 }
 
-const STATUS_CONFIG = {
+const STATUS_CONFIG: Record<string, { icon: typeof Clock; color: string; bg: string; label: string; animate?: boolean }> = {
   pending: { icon: Clock, color: "text-muted-foreground", bg: "bg-muted", label: "Pendiente" },
   running: { icon: Loader2, color: "text-blue-500", bg: "bg-blue-500/10", label: "Ejecutando", animate: true },
   completed: { icon: Check, color: "text-green-500", bg: "bg-green-500/10", label: "Completado" },
@@ -349,7 +347,8 @@ function ArtifactCard({ artifact, compact = false }: ArtifactCardProps) {
             variant="outline"
             size="sm"
             className="h-7 gap-1.5 text-xs"
-            onClick={() => artifact.url && window.open(artifact.url, "_blank")}
+            // FRONTEND FIX #36: Add noopener,noreferrer to prevent window.opener attacks
+            onClick={() => artifact.url && window.open(artifact.url, "_blank", "noopener,noreferrer")}
             data-testid={`artifact-${artifact.name}`}
           >
             <Icon className="h-3 w-3" />
@@ -376,12 +375,12 @@ function ArtifactCard({ artifact, compact = false }: ArtifactCardProps) {
             {artifact.url && (
               <>
                 <Button variant="ghost" size="icon" className="h-7 w-7" asChild>
-                  <a href={artifact.url} target="_blank" rel="noopener noreferrer">
+                  <a href={artifact.url} target="_blank" rel="noopener noreferrer" aria-label={`Abrir ${artifact.name}`}>
                     <ExternalLink className="h-3.5 w-3.5" />
                   </a>
                 </Button>
                 <Button variant="ghost" size="icon" className="h-7 w-7" asChild>
-                  <a href={artifact.url} download>
+                  <a href={artifact.url} download aria-label={`Descargar ${artifact.name}`}>
                     <Download className="h-3.5 w-3.5" />
                   </a>
                 </Button>
@@ -553,7 +552,7 @@ function ToolTimelineCard({ toolCalls }: ToolTimelineCardProps) {
                 {isFailed && <XCircle className="h-2 w-2 text-white" />}
                 {isRunning && <Loader2 className="h-2 w-2 text-white animate-spin" />}
               </div>
-              
+
               <div className="flex-1 min-w-0 flex items-center gap-2">
                 <ToolIcon className={cn(
                   "h-3.5 w-3.5 flex-shrink-0",
@@ -574,7 +573,7 @@ function ToolTimelineCard({ toolCalls }: ToolTimelineCardProps) {
                   </Badge>
                 )}
               </div>
-              
+
               {tool.error && (
                 <Tooltip>
                   <TooltipTrigger>
@@ -640,9 +639,9 @@ function CitationsPanel({ citations }: CitationsPanelProps) {
               data-testid={`citation-${i}`}
             >
               {citation.favicon ? (
-                <img 
-                  src={citation.favicon} 
-                  alt="" 
+                <img
+                  src={citation.favicon}
+                  alt=""
                   className="w-4 h-4 rounded-sm flex-shrink-0 mt-0.5"
                   onError={(e) => {
                     (e.target as HTMLImageElement).style.display = 'none';
@@ -671,7 +670,7 @@ function CitationsPanel({ citations }: CitationsPanelProps) {
               </div>
               {citation.url && (
                 <Button variant="ghost" size="icon" className="h-6 w-6" asChild>
-                  <a href={citation.url} target="_blank" rel="noopener noreferrer">
+                  <a href={citation.url} target="_blank" rel="noopener noreferrer" aria-label={`Abrir fuente: ${citation.source}`}>
                     <ExternalLink className="h-3 w-3" />
                   </a>
                 </Button>
@@ -702,8 +701,8 @@ function VerificationBadge({ verifications }: VerificationBadgeProps) {
       animate={{ opacity: 1, scale: 1 }}
       className={cn(
         "flex items-center gap-3 p-3 rounded-lg border",
-        allPassed 
-          ? "bg-green-500/5 border-green-500/30" 
+        allPassed
+          ? "bg-green-500/5 border-green-500/30"
           : "bg-red-500/5 border-red-500/30"
       )}
       data-testid="verification-badge"
@@ -809,8 +808,8 @@ function AgentDelegationCard({ activeAgent, delegatedAgents }: AgentDelegationCa
                   <div
                     className={cn(
                       "flex items-center gap-1.5 px-2 py-1 rounded-full text-xs",
-                      isCompleted 
-                        ? "bg-green-500/10 text-green-600" 
+                      isCompleted
+                        ? "bg-green-500/10 text-green-600"
                         : "bg-muted text-muted-foreground"
                     )}
                   >
@@ -839,8 +838,8 @@ interface ProgressDisplayProps {
 function ProgressDisplay({ progress, phase }: ProgressDisplayProps) {
   const phaseConfig = PHASE_CONFIG[phase as keyof typeof PHASE_CONFIG] || PHASE_CONFIG.executing;
   const PhaseIcon = phaseConfig.icon;
-  
-  const percentage = progress?.percentage ?? 
+
+  const percentage = progress?.percentage ??
     (progress?.total ? Math.round((progress.current / progress.total) * 100) : phaseConfig.progress);
 
   return (
@@ -857,7 +856,7 @@ function ProgressDisplay({ progress, phase }: ProgressDisplayProps) {
           {percentage}%
         </span>
       </div>
-      
+
       <div className="relative h-2 bg-muted rounded-full overflow-hidden">
         <motion.div
           className={cn(
@@ -912,7 +911,7 @@ function MemoryEventCard({ memoryEvents }: MemoryEventCardProps) {
           Memory Events
         </span>
       </div>
-      
+
       <div className="space-y-1">
         {recentEvents.map((event, i) => (
           <motion.div
@@ -1009,7 +1008,7 @@ function EnhancedArtifactCard({ artifact }: EnhancedArtifactCardProps) {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
-                  <a href={artifact.url} target="_blank" rel="noopener noreferrer">
+                  <a href={artifact.url} target="_blank" rel="noopener noreferrer" aria-label={`Ver ${artifact.name}`}>
                     <Eye className="h-4 w-4" />
                   </a>
                 </Button>
@@ -1019,7 +1018,7 @@ function EnhancedArtifactCard({ artifact }: EnhancedArtifactCardProps) {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
-                  <a href={artifact.url} download={artifact.name}>
+                  <a href={artifact.url} download={artifact.name} aria-label={`Descargar ${artifact.name}`}>
                     <Download className="h-4 w-4" />
                   </a>
                 </Button>
@@ -1054,7 +1053,7 @@ export function ActivityFeed({ runId, isOpen, onClose, onCancel, onRetry }: Acti
   const run = runId ? runs.get(runId) : getActiveRun();
   const phaseConfig = run ? PHASE_CONFIG[run.phase] : null;
   const PhaseIcon = phaseConfig?.icon || Brain;
-  
+
   const scrollEndRef = useRef<HTMLDivElement>(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
 
@@ -1130,9 +1129,9 @@ export function ActivityFeed({ runId, isOpen, onClose, onCancel, onRetry }: Acti
             <>
               <ProgressDisplay progress={run.progress} phase={run.phase} />
 
-              <AgentDelegationCard 
-                activeAgent={run.activeAgent} 
-                delegatedAgents={run.delegatedAgents} 
+              <AgentDelegationCard
+                activeAgent={run.activeAgent}
+                delegatedAgents={run.delegatedAgents}
               />
 
               {activeAgentName && activeStep && !run.activeAgent && (
@@ -1232,7 +1231,7 @@ export function ActivityFeed({ runId, isOpen, onClose, onCancel, onRetry }: Acti
                   </span>
                 </motion.div>
               )}
-              
+
               <div ref={scrollEndRef} />
             </>
           )}

@@ -54,8 +54,11 @@ const MIME_ALLOWLIST: string[] = [
   'application/rtf',
   'image/png',
   'image/jpeg',
+  'image/jpg',
   'image/gif',
   'image/webp',
+  'image/bmp',
+  'image/tiff',
   'image/svg+xml',
   'text/markdown',
   'application/zip',
@@ -65,7 +68,7 @@ const MIME_ALLOWLIST_PATTERNS: RegExp[] = [
   /^application\/vnd\.openxmlformats-officedocument\..*/,
   /^application\/vnd\.oasis\.opendocument\..*/,
   /^text\/.*/,
-  /^image\/(png|jpeg|gif|webp|svg\+xml)$/,
+  /^image\/(png|jpeg|jpg|gif|webp|bmp|tiff|svg\+xml)$/,
 ];
 
 const MIME_DENYLIST: string[] = [
@@ -111,7 +114,23 @@ const MAGIC_SIGNATURES: MagicSignature[] = [
   { bytes: [0xFF, 0xD8, 0xFF], mime: 'image/jpeg', extension: 'jpg' },
   { bytes: [0x47, 0x49, 0x46, 0x38, 0x37, 0x61], mime: 'image/gif', extension: 'gif' },
   { bytes: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61], mime: 'image/gif', extension: 'gif' },
-  { bytes: [0x52, 0x49, 0x46, 0x46], mime: 'application/octet-stream', extension: 'webp' },
+  {
+    bytes: [
+      0x52, 0x49, 0x46, 0x46, // RIFF
+      0x00, 0x00, 0x00, 0x00, // size (ignored)
+      0x57, 0x45, 0x42, 0x50, // WEBP
+    ],
+    mask: [
+      0xFF, 0xFF, 0xFF, 0xFF,
+      0x00, 0x00, 0x00, 0x00,
+      0xFF, 0xFF, 0xFF, 0xFF,
+    ],
+    mime: 'image/webp',
+    extension: 'webp',
+  },
+  { bytes: [0x42, 0x4D], mime: 'image/bmp', extension: 'bmp' }, // BMP
+  { bytes: [0x49, 0x49, 0x2A, 0x00], mime: 'image/tiff', extension: 'tiff' }, // TIFF (LE)
+  { bytes: [0x4D, 0x4D, 0x00, 0x2A], mime: 'image/tiff', extension: 'tiff' }, // TIFF (BE)
   { bytes: [0x00, 0x00, 0x00], mime: 'video/mp4', extension: 'mp4', offset: 4 },
   { bytes: [0x1A, 0x45, 0xDF, 0xA3], mime: 'video/webm', extension: 'webm' },
   { bytes: [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1], mime: 'application/x-cfb', extension: 'doc' },
@@ -141,6 +160,9 @@ const EXTENSION_TO_MIME: Record<string, string> = {
   'jpeg': 'image/jpeg',
   'gif': 'image/gif',
   'webp': 'image/webp',
+  'bmp': 'image/bmp',
+  'tif': 'image/tiff',
+  'tiff': 'image/tiff',
   'svg': 'image/svg+xml',
   'exe': 'application/x-msdownload',
   'sh': 'application/x-sh',
@@ -301,15 +323,66 @@ function detectTextMimeType(buffer: Buffer): string {
   return 'text/plain';
 }
 
+/** Dangerous double extensions that may indicate disguised executables */
+const DANGEROUS_DOUBLE_EXTENSIONS = [
+  /\.(pdf|docx?|xlsx?|pptx?|txt|csv|jpg|jpeg|png|gif)\.exe$/i,
+  /\.(pdf|docx?|xlsx?|pptx?|txt|csv|jpg|jpeg|png|gif)\.scr$/i,
+  /\.(pdf|docx?|xlsx?|pptx?|txt|csv|jpg|jpeg|png|gif)\.bat$/i,
+  /\.(pdf|docx?|xlsx?|pptx?|txt|csv|jpg|jpeg|png|gif)\.cmd$/i,
+  /\.(pdf|docx?|xlsx?|pptx?|txt|csv|jpg|jpeg|png|gif)\.com$/i,
+  /\.(pdf|docx?|xlsx?|pptx?|txt|csv|jpg|jpeg|png|gif)\.msi$/i,
+  /\.(pdf|docx?|xlsx?|pptx?|txt|csv|jpg|jpeg|png|gif)\.vbs$/i,
+  /\.(pdf|docx?|xlsx?|pptx?|txt|csv|jpg|jpeg|png|gif)\.js$/i,
+  /\.(pdf|docx?|xlsx?|pptx?|txt|csv|jpg|jpeg|png|gif)\.ps1$/i,
+  /\.(pdf|docx?|xlsx?|pptx?|txt|csv|jpg|jpeg|png|gif)\.dll$/i,
+];
+
 function getExtension(filename: string): string {
   const parts = filename.split('.');
   return parts.length > 1 ? parts[parts.length - 1].toLowerCase() : '';
 }
 
 /**
+ * Check for dangerous double extensions (e.g., report.pdf.exe)
+ */
+function hasDoubleExtension(filename: string): { dangerous: boolean; pattern?: string } {
+  if (!filename || typeof filename !== 'string') return { dangerous: false };
+  const normalized = filename.toLowerCase().trim();
+  for (const pattern of DANGEROUS_DOUBLE_EXTENSIONS) {
+    if (pattern.test(normalized)) {
+      return { dangerous: true, pattern: normalized };
+    }
+  }
+  return { dangerous: false };
+}
+
+/**
+ * Detect SVG files with embedded scripts or event handlers
+ */
+function hasSvgScriptContent(buffer: Buffer): boolean {
+  // Only check text/XML content that looks like SVG
+  const content = buffer.toString('utf8', 0, Math.min(buffer.length, 50000)).toLowerCase();
+  if (!content.includes('<svg') && !content.includes('xmlns="http://www.w3.org/2000/svg"')) {
+    return false;
+  }
+  // Check for dangerous SVG elements/attributes
+  const svgDangerPatterns = [
+    /<script[\s>]/i,
+    /on\w+\s*=/i,  // event handlers like onclick, onload
+    /javascript:/i,
+    /<foreignobject[\s>]/i,
+    /<iframe[\s>]/i,
+    /<embed[\s>]/i,
+    /xlink:href\s*=\s*["']javascript:/i,
+    /href\s*=\s*["']data:text\/html/i,
+  ];
+  return svgDangerPatterns.some(p => p.test(content));
+}
+
+/**
  * Validate a detected MIME type against allowlist/denylist
  */
-export function validateMimeType(detectedMime: string, buffer?: Buffer): MimeValidationResult {
+export function validateMimeType(detectedMime: string, buffer?: Buffer, filename?: string): MimeValidationResult {
   if (MIME_DENYLIST.includes(detectedMime)) {
     console.warn(`[MimeDetector] SECURITY: Denylisted MIME type detected: ${detectedMime}`);
     return {
@@ -318,7 +391,20 @@ export function validateMimeType(detectedMime: string, buffer?: Buffer): MimeVal
       matchedRule: 'denylist',
     };
   }
-  
+
+  // Security: check for dangerous double extensions
+  if (filename) {
+    const doubleExt = hasDoubleExtension(filename);
+    if (doubleExt.dangerous) {
+      console.warn(`[MimeDetector] SECURITY: Dangerous double extension detected: ${doubleExt.pattern}`);
+      return {
+        allowed: false,
+        reason: 'Suspicious double file extension detected',
+        matchedRule: 'denylist',
+      };
+    }
+  }
+
   if (buffer) {
     const dangerousMagic = matchDangerousMagicBytes(buffer);
     if (dangerousMagic) {
@@ -329,12 +415,22 @@ export function validateMimeType(detectedMime: string, buffer?: Buffer): MimeVal
         matchedRule: 'dangerous_magic',
       };
     }
-    
+
     if (isShellScript(buffer)) {
       console.warn(`[MimeDetector] SECURITY: Shell script detected`);
       return {
         allowed: false,
         reason: 'Shell scripts are not allowed',
+        matchedRule: 'dangerous_magic',
+      };
+    }
+
+    // Security: check SVG files for embedded scripts
+    if (detectedMime === 'image/svg+xml' && hasSvgScriptContent(buffer)) {
+      console.warn(`[MimeDetector] SECURITY: SVG with embedded script content detected`);
+      return {
+        allowed: false,
+        reason: 'SVG files with embedded scripts are not allowed',
         matchedRule: 'dangerous_magic',
       };
     }
@@ -499,6 +595,8 @@ export const mimeDetector = {
   validateMimeMatch,
   validateMimeType,
   detectDangerousFormat,
+  hasDoubleExtension,
+  hasSvgScriptContent,
   EXTENSION_TO_MIME,
   MIME_ALLOWLIST,
   MIME_DENYLIST,

@@ -66,18 +66,21 @@ export const AnomalySchema = z.object({
   suggestedAction: z.string().optional(),
 });
 
-export const SectionSchema = z.object({
-  id: z.string(),
-  type: z.enum(["heading", "paragraph", "list", "table", "image", "code", "quote", "metadata"]),
-  level: z.number().optional(),
-  title: z.string().optional(),
-  content: z.string().optional(),
-  sourceRef: z.string(),
-  children: z.array(z.lazy(() => SectionSchema)).optional(),
-  style: z.string().optional(),
-  listItems: z.array(z.string()).optional(),
-  tableRef: z.string().optional(),
-});
+export const SectionSchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    id: z.string(),
+    type: z.enum(["heading", "paragraph", "list", "table", "image", "code", "quote", "metadata"]),
+    level: z.number().optional(),
+    title: z.string().optional(),
+    content: z.string().optional(),
+    sourceRef: z.string(),
+    children: z.array(SectionSchema).optional(),
+    style: z.string().optional(),
+    listItems: z.array(z.string()).optional(),
+    tableRef: z.string().optional(),
+  })
+);
+
 
 export const SheetSummarySchema = z.object({
   name: z.string(),

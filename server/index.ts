@@ -1,22 +1,85 @@
-import express, { type Request, Response, NextFunction } from "express";
+
+import "./otel";
+
+import "./config/load-env";
+import "./lib/expressAsyncPatch";
+import { env } from "./config/env"; // Validates env vars immediately on import
+
+import compression from "compression";
+import express, { type NextFunction, type Request, type Response } from "express";
+import { createServer } from "http";
+import hpp from "hpp";
+
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
-import { createServer } from "http";
-import { requestTracerMiddleware } from "./lib/requestTracer";
-import { requestLoggerMiddleware } from "./middleware/requestLogger";
-import { startAggregator } from "./services/analyticsAggregator";
-import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
-import { seedProductionData } from "./seed-production";
-import { verifyDatabaseConnection, startHealthChecks, stopHealthChecks, drainConnections } from "./db";
-import { securityHeaders, apiSecurityHeaders } from "./middleware/securityHeaders";
-import { setupGracefulShutdown, registerCleanup } from "./lib/gracefulShutdown";
-import { pythonServiceManager } from "./lib/pythonServiceManager";
-import { initTracing, shutdownTracing, getTracingMetrics } from "./lib/tracing";
 
+import { apiErrorHandler } from "./middleware/apiErrorHandler";
+import { canonicalUrlMiddleware } from "./middleware/canonicalUrl";
+import { corsMiddleware } from "./middleware/cors";
+import { csrfProtection, csrfTokenMiddleware } from "./middleware/csrf";
+import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
+import { idempotency } from "./middleware/idempotency";
+import { requestLoggerMiddleware } from "./middleware/requestLogger";
+import { apiSecurityHeaders } from "./middleware/securityHeaders";
+import { sessionDeviceInfoMiddleware } from "./middleware/sessionDeviceInfo";
+import { setupSecurity } from "./middleware/security";
+import { requestBoundaryGuard } from "./middleware/requestBoundary";
+import { correlationIdMiddleware } from "./middleware/correlationId";
+
+import { authLimiter, billingLimiter, globalLimiter } from "./middleware/rateLimiter";
+import { responseBudget } from "./middleware/responseBudget";
+import { abuseDetection, stopAbuseDetectionCleanup } from "./middleware/abuseDetection";
+import { requestIntegrity, stopIntegrityCleanup } from "./middleware/requestIntegrity";
+import { hostValidation } from "./middleware/hostValidation";
+import { hardenServer } from "./middleware/socketHardening";
+
+import { runCleanup } from "./lib/cleanup";
+import { db, drainConnections, startHealthChecks, stopHealthChecks, verifyDatabaseConnection } from "./db";
+import { setupGracefulShutdown, registerCleanup } from "./lib/gracefulShutdown";
+import { Logger } from "./lib/logger";
+import { pythonServiceManager } from "./lib/pythonServiceManager";
+import { requestTracerMiddleware } from "./lib/requestTracer";
+import { getTracingMetrics, initTracing, shutdownTracing } from "./lib/tracing";
+
+import { seedProductionData } from "./seed-production";
+import { startAggregator } from "./services/analyticsAggregator";
+import { startChatScheduleRunner } from "./services/chatScheduleRunner";
+import { startTelemetryPipeline } from "./telemetry/pipeline";
+
+import { registerAuthRoutes, setupAuth } from "./replit_integrations/auth";
+import { getUserId } from "./types/express";
+import { updateContext } from "./middleware/correlationContext";
+import { validateApiKey } from "./routes/apiKeysRouter";
+import { AppError } from "./utils/errors";
 initTracing();
 
 const app = express();
+app.set("trust proxy", 1); // Trust first proxy (critical for rate limiting behind load balancers)
 const httpServer = createServer(app);
+
+function clampConfigNumber(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.min(Math.max(Math.trunc(parsed), min), max);
+}
+
+const stopSocketHardening = hardenServer(httpServer, {
+  headersTimeout: Number(process.env.SOCKET_HEADERS_TIMEOUT_MS) || 60_000, // 1 min (was 10_000)
+  keepAliveTimeout: Number(process.env.SOCKET_KEEP_ALIVE_TIMEOUT_MS) || 605_000, // 10 min 5 sec (was 65_000)
+  requestTimeout: Number(process.env.SOCKET_REQUEST_TIMEOUT_MS) || 600_000, // 10 min (was 120_000)
+  maxConnectionsPerIP: Number(process.env.SOCKET_MAX_CONNECTIONS_PER_IP) || 300, // accommodate higher traffic
+  minBytesPerSecond: Number(process.env.SOCKET_MIN_BYTES_PER_SEC) || 100, // Prevent slowloris but allow slow streams
+  cleanupIntervalMs: Number(process.env.SOCKET_CLEANUP_INTERVAL_MS) || 60_000,
+});
+
+const telemetryPipelineController = startTelemetryPipeline({
+  db,
+  batchSize: clampConfigNumber(process.env.TELEMETRY_BATCH_SIZE, 100, 5, 5_000),
+  flushIntervalMs: clampConfigNumber(process.env.TELEMETRY_FLUSH_INTERVAL_MS, 2_000, 200, 60_000),
+  maxQueueSize: clampConfigNumber(process.env.TELEMETRY_MAX_QUEUE_SIZE, 5_000, 200, 200_000),
+});
 
 declare module "http" {
   interface IncomingMessage {
@@ -24,70 +87,94 @@ declare module "http" {
   }
 }
 
+// DNS rebinding protection — must be very early, before any routing
+app.use(hostValidation());
+
 // Request logger middleware with correlation context - must go first
+app.use(correlationIdMiddleware);
 app.use(requestLoggerMiddleware);
 
-// Security headers middleware - CSP, HSTS, X-Frame-Options, etc.
-app.use(securityHeaders());
+// Canonical URL redirect (www -> non-www) - must be before CORS and sessions
+app.use(canonicalUrlMiddleware);
 
-// API-specific security headers for /api routes
-app.use("/api", apiSecurityHeaders());
-
-// Legacy request tracer middleware for stats
-app.use(requestTracerMiddleware);
-
+// Compression middleware - skip SSE streams (text/event-stream) to prevent buffering.
+// compression() buffers output to build compression blocks, which breaks real-time SSE.
 app.use(
-  express.json({
-    limit: '100mb',
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
+  compression({
+    filter: (req, res) => {
+      if (
+        req.url?.includes("/chat/stream") ||
+        req.url?.includes("/super/stream") ||
+        req.headers.accept === "text/event-stream" ||
+        res.getHeader("Content-Type")?.toString().includes("text/event-stream")
+      ) {
+        return false;
+      }
+      return compression.filter(req, res);
     },
   }),
 );
 
-app.use(express.urlencoded({ extended: false, limit: '100mb' }));
+// CORS configuration - must be before other middleware
+app.use(corsMiddleware);
+
+// Security Middleware (Helmet + HPP)
+app.use(hpp()); // Prevent HTTP Parameter Pollution
+setupSecurity(app); // Enhanced Helmet Config
+
+// CSRF Token Generation (sets cookie)
+app.use(csrfTokenMiddleware);
+
+// API-specific security headers for /api routes
+app.use("/api", apiSecurityHeaders());
+
+// Defense in Depth
+app.disable("x-powered-by");
+
+// Route-specific body limits (MUST come before global parser)
+// /api/chat/stream needs a higher limit to support inline image base64 for vision
+app.use("/api/chat/stream", express.json({
+  limit: "500mb", // Supports massive contexts > 1M tokens and heavy files
+  verify: (req: any, _res, buf) => {
+    req.rawBody = buf.toString();
+  },
+  strict: true,
+}));
+
+// Global Body Limit: Reduced to 1MB to prevent DoS
+// For large file uploads, use specific routes with increased limits (e.g. Multer)
+app.use(
+  express.json({
+    limit: "500mb",
+    verify: (req: any, res: any, buf: Buffer) => {
+      req.rawBody = buf.toString();
+    },
+    // SECURITY FIX #15: Strict JSON parsing to reject malformed JSON
+    strict: true,
+  }),
+);
+
+app.use(express.urlencoded({ extended: false, limit: '500mb', parameterLimit: 1000 }));
+
+// API hardening boundary: path/query/payload validation and canonicalization
+app.use("/api", requestBoundaryGuard);
+app.use("/api", requestIntegrity());
+
+// Response time budget: tracks latency and logs overruns (observability layer)
+app.use("/api", responseBudget());
+
+// Legacy request tracer middleware for stats
+app.use(requestTracerMiddleware);
 
 export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`${formattedTime} [${source}] ${message}`);
+  Logger.info(`[${source}] ${message}`);
 }
-
-app.use((req, res, next) => {
-  const start = Date.now();
-  const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
-
-  res.on("finish", () => {
-    const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      log(logLine);
-    }
-  });
-
-  next();
-});
 
 (async () => {
   const isProduction = process.env.NODE_ENV === "production";
+  const isTest = process.env.NODE_ENV === "test";
   const startPythonService = process.env.START_PYTHON_SERVICE === "true";
-  
+
   // Start Python Agent Tools service if enabled
   if (startPythonService) {
     log("Starting Python Agent Tools service...");
@@ -98,26 +185,139 @@ app.use((req, res, next) => {
       log("[WARNING] Python service failed to start - some features may not work");
     }
   }
-  
+
   // Verify database connection before starting (critical in production)
   log("Verifying database connection...");
   const dbConnected = await verifyDatabaseConnection();
-  
+
   if (!dbConnected && isProduction) {
     log("[FATAL] Cannot start production server without database connection");
     process.exit(1);
   }
-  
+
   if (dbConnected) {
     log("Database connection verified successfully");
     startHealthChecks();
     log("Database health checks started");
+
+    // Setup Full-Text Search
+    const { setupFts } = await import("./lib/fts");
+    await setupFts();
+
+    // Initialize CQRS admin projection (subscribes to auth events, refreshes materialized view)
+    const { initAdminProjection } = await import("./services/adminProjection");
+    initAdminProjection();
+
+    // Start background ActionTriggerDaemon
+    const { actionTriggerDaemon } = await import("./services/actionTriggerDaemon");
+    await actionTriggerDaemon.start();
   } else {
     log("[WARNING] Database connection failed - some features may not work");
   }
 
+  // Initialize connector manifests + mount connector tools/policies.
+  // This enables "Apps" (Slack/Notion/GitHub/etc) tool wiring via the Integration Kernel.
+  try {
+    const { initializeConnectorManifests, mountConnectorTools } = await import("./integrations/kernel");
+    await initializeConnectorManifests();
+    await mountConnectorTools();
+    log("Connector manifests initialized and tools mounted", "integrations");
+  } catch (err: any) {
+    log(`[WARNING] Connector initialization failed: ${err?.message || err}`, "integrations");
+  }
+
+  // Verify LLM connectivity in production
+  if (isProduction) {
+    try {
+      const { llmGateway } = await import("./lib/llmGateway");
+      const llmHealth = await llmGateway.healthCheck();
+      if (llmHealth.xai?.available) {
+        log("✅ xAI LLM connected");
+      }
+      if (llmHealth.gemini?.available) {
+        log("✅ Gemini LLM connected");
+      }
+      if (!llmHealth.xai?.available && !llmHealth.gemini?.available) {
+        log("[WARNING] No LLM providers available - chat will not work");
+      }
+    } catch (error) {
+      log("[WARNING] LLM health check failed:", error);
+    }
+  }
+
+  // Session + Passport (must be before csrfProtection/rateLimiter/idempotency)
+  await setupAuth(app);
+  // Ensure CorrelationContext has the authenticated userId (req.user can be populated by Passport/session).
+  // Also bind the session to the authenticated userId for simpler secure queries later.
+  app.use((req, _res, next) => {
+    const userId = getUserId(req);
+    if (userId && !userId.startsWith("anon_")) {
+      updateContext({ userId });
+
+      const session = (req as any).session as any | undefined;
+      if (session && !session.authUserId) {
+        session.authUserId = userId;
+      }
+    }
+    next();
+  });
+
+  registerAuthRoutes(app);
+
+  // Capture best-effort device metadata for session management UI.
+  app.use("/api", sessionDeviceInfoMiddleware);
+
+  // CSRF Protection for API (validates header)
+  // NOTE: /api/packages is an API endpoint; protect it via auth/feature-flags/policy (not CSRF),
+  // and allow local/automation calls without Secure-cookie issues.
+  if (!isTest) {
+    app.use("/api", validateApiKey);
+    app.use("/api", (req, res, next) => {
+      if (req.path.startsWith("/packages")) return next(); // /api/packages/*
+      return csrfProtection(req, res, next);
+    });
+  } else {
+    log("CSRF protection disabled in test environment", "security");
+  }
+
+  // Rate Limiting (User-based) - Applied AFTER auth to use req.user
+  app.use("/api", globalLimiter);
+  // Legacy/public routes outside /api should still be rate-limited.
+  app.use(["/tools", "/agents", "/metrics", "/mcp"], globalLimiter);
+  app.use("/api/auth", authLimiter);
+  app.use("/api/checkout", billingLimiter);
+  app.use("/api/billing", billingLimiter);
+  app.use("/api/stripe", billingLimiter);
+
+  // Behavioral abuse detection (anomaly scoring, complementary to rate limiter)
+  app.use("/api", abuseDetection());
+
+  // Idempotency for mutations
+  app.use("/api", idempotency);
+
   await registerRoutes(httpServer, app);
 
+  // Initialize OpenClaw agentic integration layer (feature-flagged)
+  const { initializeOpenClaw } = await import("./openclaw/index");
+  await initializeOpenClaw(httpServer);
+
+  // Ensure unmatched API routes return consistent JSON (instead of Express' default HTML 404).
+  // This MUST be registered after all routes, but before the API error handler.
+  app.use("/api", (req, _res, next) => {
+    next(
+      new AppError(
+        `Route ${req.method} ${req.originalUrl || req.path} not found`,
+        404,
+        "NOT_FOUND",
+        true,
+      ),
+    );
+  });
+
+  // API Error Handler (Centralized)
+  app.use("/api", apiErrorHandler);
+
+  // App-level error handler (catch-all)
   app.use(errorHandler);
 
   // importantly only setup vite in development and after
@@ -132,58 +332,116 @@ app.use((req, res, next) => {
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    async () => {
-      log(`serving on port ${port}`);
-      log(`Environment: ${isProduction ? "PRODUCTION" : "development"}`);
-      log(`Database: ${dbConnected ? "connected" : "NOT CONNECTED"}`);
-      startAggregator();
-      await seedProductionData();
+  const port = env.PORT;
 
-      // Setup graceful shutdown with connection draining
-      setupGracefulShutdown(httpServer, {
-        timeout: 30000,
-        onShutdown: async () => {
-          log("Running application cleanup...");
-        },
-      });
+  const listenOptions = isProduction
+    ? ({ port, host: "0.0.0.0", reusePort: true } as const)
+    : port;
 
-      // Register database cleanup
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const server = (httpServer.listen as any)(listenOptions, async () => {
+    log(`serving on port ${port}`);
+    log(`Environment: ${isProduction ? "PRODUCTION" : "development"}`);
+    log(`Database: ${dbConnected ? "connected" : "NOT CONNECTED"}`);
+    startAggregator();
+    await seedProductionData();
+    if (dbConnected) {
+      startChatScheduleRunner();
+    } else {
+      log("[Schedules] Skipping schedule runner start because DB is not connected");
+    }
+
+    // Advanced 1 Million Tokens Hyperparametrizations - Deep Scaling
+    // Keeps connection alive for up to 6 minutes for massive O(N^2) context generations
+    server.keepAliveTimeout = 360000;
+    server.headersTimeout = 361000;
+
+    // Setup graceful shutdown with connection draining
+    setupGracefulShutdown(httpServer, {
+      timeout: 30000,
+      onShutdown: async () => {
+        log("Running application cleanup...");
+      },
+    });
+
+    // Register database cleanup
+    registerCleanup(async () => {
+      log("Stopping database health checks...");
+      stopHealthChecks();
+      log("Draining database connections...");
+      await drainConnections();
+      log("Database cleanup complete");
+    });
+
+    // Register Python service cleanup
+    if (startPythonService && pythonServiceManager.isRunning()) {
       registerCleanup(async () => {
-        log("Stopping database health checks...");
-        stopHealthChecks();
-        log("Draining database connections...");
-        await drainConnections();
-        log("Database cleanup complete");
+        log("Stopping Python service...");
+        pythonServiceManager.stop();
       });
+    }
 
-      // Register Python service cleanup
-      if (startPythonService && pythonServiceManager.isRunning()) {
-        registerCleanup(async () => {
-          log("Stopping Python service...");
-          pythonServiceManager.stop();
-        });
-      }
+    // Register WhatsApp Web cleanup
+    registerCleanup(async () => {
+      log("Shutting down WhatsApp Web sessions...");
+      const { whatsappWebManager } = await import('./integrations/whatsappWeb');
+      await whatsappWebManager.shutdownAll();
+      log("WhatsApp Web cleanup complete");
+    });
 
-      // Register OpenTelemetry tracing cleanup
-      registerCleanup(async () => {
-        log("Shutting down OpenTelemetry tracing...");
-        await shutdownTracing();
-        log("OpenTelemetry tracing shutdown complete");
-      });
+    // Register OpenTelemetry tracing cleanup
+    registerCleanup(async () => {
+      log("Shutting down OpenTelemetry tracing...");
+      await shutdownTracing();
+      log("OpenTelemetry tracing shutdown complete");
+    });
 
-      const tracingStatus = getTracingMetrics();
-      log(`OpenTelemetry: initialized=${tracingStatus.isInitialized}, sampleRate=${tracingStatus.sampleRate * 100}%`);
+    // Register security middleware cleanup
+    registerCleanup(async () => {
+      stopAbuseDetectionCleanup();
+      stopIntegrityCleanup();
+      log("Security middleware cleanup complete");
+    });
 
-      log("Graceful shutdown handler configured");
-    },
-  );
+    registerCleanup(async () => {
+      await telemetryPipelineController.stop();
+      log("Telemetry pipeline cleanup complete");
+    });
+
+    registerCleanup(async () => {
+      stopSocketHardening();
+      log("Socket hardening cleanup complete");
+    });
+
+    // Schedule Daily Cleanup (24h)
+    setInterval(() => {
+      runCleanup().catch(err => log(`[Cleanup Error] ${err.message}`));
+    }, 24 * 60 * 60 * 1000);
+    // Run once on startup after delay
+    setTimeout(() => {
+      runCleanup().catch(err => log(`[Cleanup Error] ${err.message}`));
+    }, 60 * 1000);
+
+    const tracingStatus = getTracingMetrics();
+    log(
+      `OpenTelemetry: initialized=${tracingStatus.isInitialized}, sampleRate=${tracingStatus.sampleRate * 100}%`,
+    );
+
+    log("Graceful shutdown handler configured");
+
+    // Optional: auto-register Telegram webhook after the server is reachable.
+    if (env.TELEGRAM_AUTO_SET_WEBHOOK && env.TELEGRAM_WEBHOOK_URL && env.TELEGRAM_BOT_TOKEN) {
+      setTimeout(() => {
+        import("./channels/telegram/telegramApi")
+          .then(({ telegramSetWebhook }) =>
+            telegramSetWebhook({
+              webhookUrl: env.TELEGRAM_WEBHOOK_URL as string,
+              secretToken: env.TELEGRAM_WEBHOOK_SECRET_TOKEN,
+            }),
+          )
+          .then(() => log(`[Telegram] Webhook configured: ${env.TELEGRAM_WEBHOOK_URL}`))
+          .catch((e) => log(`[Telegram] Webhook auto-config failed: ${e?.message || e}`));
+      }, 1500);
+    }
+  });
 })();

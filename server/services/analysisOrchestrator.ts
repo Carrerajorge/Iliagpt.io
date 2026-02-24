@@ -166,7 +166,7 @@ async function executeSheetJob(
     job?.sheetName
   );
   const jobTimer = analysisLogger.trackSheetJobStart(jobContext);
-  
+
   try {
     await updateAnalysisJob(jobId, {
       status: "running",
@@ -460,7 +460,7 @@ export async function getAnalysisResults(sessionId: string): Promise<AnalysisRes
     });
 
     const summaryOutput = jobOutputs.find(o => o.outputType === "summary");
-    const summary = summaryOutput 
+    const summary = summaryOutput
       ? (summaryOutput.payload as any).text || ""
       : "";
 

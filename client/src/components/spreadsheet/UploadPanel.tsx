@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Upload, FileSpreadsheet, X, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { apiFetch } from '@/lib/apiClient';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
@@ -58,42 +59,21 @@ export function UploadPanel({
     mutationFn: async (file: File) => {
       const formData = new FormData();
       formData.append('file', file);
+      setUploadProgress(10);
 
-      const xhr = new XMLHttpRequest();
-      
-      return new Promise<UploadedFile>((resolve, reject) => {
-        xhr.upload.addEventListener('progress', (event) => {
-          if (event.lengthComputable) {
-            const percent = Math.round((event.loaded / event.total) * 100);
-            setUploadProgress(percent);
-          }
-        });
-
-        xhr.addEventListener('load', () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              const response = JSON.parse(xhr.responseText);
-              resolve(response);
-            } catch {
-              reject(new Error('Invalid response from server'));
-            }
-          } else {
-            try {
-              const errorResponse = JSON.parse(xhr.responseText);
-              reject(new Error(errorResponse.message || 'Upload failed'));
-            } catch {
-              reject(new Error('Upload failed'));
-            }
-          }
-        });
-
-        xhr.addEventListener('error', () => {
-          reject(new Error('Network error during upload'));
-        });
-
-        xhr.open('POST', '/api/spreadsheet/upload');
-        xhr.send(formData);
+      const response = await apiFetch('/api/spreadsheet/upload', {
+        method: 'POST',
+        body: formData,
       });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Upload failed' }));
+        throw new Error(errorData.message || errorData.error || 'Upload failed');
+      }
+
+      const uploaded = await response.json();
+      setUploadProgress(100);
+      return uploaded;
     },
     onSuccess: (data) => {
       setUploadProgress(100);
@@ -293,7 +273,7 @@ export function UploadPanel({
                 <div className="flex items-center gap-2 px-2 py-1.5 border-b">
                   <Checkbox
                     id="select-all"
-                    checked={allSelected}
+                    checked={allSelected ?? false}
                     ref={(el) => {
                       if (el && 'indeterminate' in el) {
                         (el as any).indeterminate = someSelected;

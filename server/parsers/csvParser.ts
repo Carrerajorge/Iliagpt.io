@@ -13,31 +13,73 @@ export interface CSVParseResult extends ParsedResult {
   totalColumns: number;
 }
 
+// CSV Security Limits
+const CSV_MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+const CSV_MAX_ROWS = 1_000_000;
+const CSV_MAX_COLUMNS = 1_000;
+const CSV_MAX_CELL_LENGTH = 100_000; // 100KB per cell
+const CSV_MAX_LINE_LENGTH = 1_000_000; // 1MB per line
+
+/**
+ * CSV formula injection prefixes that could trigger code execution
+ * when opened in spreadsheet applications (Excel, LibreOffice Calc, Google Sheets).
+ */
+const CSV_FORMULA_PREFIXES = ["=", "+", "-", "@", "\t", "\r", "|", "\\"];
+
+/**
+ * Sanitize a CSV cell value to prevent formula injection attacks.
+ * Prefixes dangerous values with a single quote to neutralize them.
+ */
+function sanitizeCsvCell(value: string): string {
+  if (!value || value.length === 0) return value;
+  const trimmed = value.trimStart();
+  if (trimmed.length === 0) return value;
+  if (CSV_FORMULA_PREFIXES.some(prefix => trimmed.startsWith(prefix))) {
+    return `'${value}`;
+  }
+  return value;
+}
+
 /**
  * Dedicated CSV Parser with row/column citations
  * Generates citations in format: [doc:filename.csv row:N col:M]
+ *
+ * Security hardening:
+ * - File size limits to prevent memory exhaustion
+ * - Row/column count limits
+ * - Cell length limits
+ * - Formula injection protection (CSV injection / DDE attacks)
  */
 export class CsvParser implements FileParser {
   name = "CsvParser";
+  supportedMimeTypes = [
+    "text/csv",
+    "application/csv",
+    "text/comma-separated-values",
+  ];
 
   supports(fileType: DetectedFileType): boolean {
-    const mimeTypes = [
-      "text/csv",
-      "application/csv",
-      "text/comma-separated-values",
-    ];
     const extensions = ["csv"];
-    
+
     return (
-      mimeTypes.includes(fileType.mimeType.toLowerCase()) ||
+      this.supportedMimeTypes.includes(fileType.mimeType.toLowerCase()) ||
       extensions.includes(fileType.extension?.toLowerCase() || "")
     );
   }
 
-  async parse(buffer: Buffer, filename: string): Promise<CSVParseResult> {
+  async parse(buffer: Buffer, fileTypeOrFilename: DetectedFileType | string): Promise<CSVParseResult> {
+    const filename = typeof fileTypeOrFilename === "string"
+      ? fileTypeOrFilename
+      : (fileTypeOrFilename.extension ? `file.${fileTypeOrFilename.extension}` : "file.csv");
+
+    // Security: enforce file size limit
+    if (buffer.length > CSV_MAX_FILE_SIZE) {
+      throw new Error(`CSV file exceeds maximum size of ${CSV_MAX_FILE_SIZE / (1024 * 1024)}MB`);
+    }
+
     const content = buffer.toString("utf-8");
     const lines = content.split(/\r?\n/).filter(line => line.trim().length > 0);
-    
+
     if (lines.length === 0) {
       return {
         text: "",
@@ -56,8 +98,21 @@ export class CsvParser implements FileParser {
       };
     }
 
+    // Security: enforce row limit
+    if (lines.length > CSV_MAX_ROWS + 1) { // +1 for header
+      throw new Error(`CSV file exceeds maximum row count of ${CSV_MAX_ROWS}`);
+    }
+
     // Parse headers from first line
-    const headers = this.parseCSVLine(lines[0]);
+    const rawHeaders = this.parseCSVLine(lines[0]);
+
+    // Security: enforce column limit
+    if (rawHeaders.length > CSV_MAX_COLUMNS) {
+      throw new Error(`CSV file exceeds maximum column count of ${CSV_MAX_COLUMNS}`);
+    }
+
+    // Sanitize headers against formula injection
+    const headers = rawHeaders.map(h => sanitizeCsvCell(h.substring(0, CSV_MAX_CELL_LENGTH)));
     const rows: CSVRowInfo[] = [];
     const textParts: string[] = [];
 
@@ -68,9 +123,15 @@ export class CsvParser implements FileParser {
 
     // Parse data rows
     for (let i = 1; i < lines.length; i++) {
-      const values = this.parseCSVLine(lines[i]);
+      // Security: enforce line length limit
+      if (lines[i].length > CSV_MAX_LINE_LENGTH) {
+        console.warn(`[CsvParser] Row ${i} exceeds max line length, truncating`);
+        lines[i] = lines[i].substring(0, CSV_MAX_LINE_LENGTH);
+      }
+
+      const rawValues = this.parseCSVLine(lines[i]);
       const rowNumber = i; // 1-indexed (excluding header)
-      
+
       const rowInfo: CSVRowInfo = {
         rowNumber,
         columns: headers,
@@ -81,9 +142,11 @@ export class CsvParser implements FileParser {
       const cellTexts: string[] = [];
       for (let j = 0; j < headers.length; j++) {
         const header = headers[j] || `col${j + 1}`;
-        const value = values[j] || "";
+        // Sanitize cell value against formula injection and enforce cell length limit
+        const rawValue = rawValues[j] || "";
+        const value = sanitizeCsvCell(rawValue.substring(0, CSV_MAX_CELL_LENGTH));
         rowInfo.values[header] = value;
-        
+
         if (value.trim()) {
           // Format: [doc:file.csv row:N col:header]
           cellTexts.push(`${header}: "${value}" [doc:${filename} row:${rowNumber} col:${header}]`);

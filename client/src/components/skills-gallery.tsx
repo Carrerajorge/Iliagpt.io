@@ -233,7 +233,7 @@ export function SkillsGallery({ isOpen, onClose, onSelectSkill }: SkillsGalleryP
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-3xl max-h-[80vh] p-0 gap-0" data-testid="skills-gallery-dialog">
+      <DialogContent className="max-w-3xl max-h-[80vh] p-0 gap-0 bg-background/80 backdrop-blur-2xl border-border/50 shadow-2xl" data-testid="skills-gallery-dialog">
         <DialogHeader className="px-4 py-3 border-b">
           <DialogTitle className="flex items-center gap-2 text-lg">
             <Wand2 className="h-5 w-5 text-primary" />
@@ -242,7 +242,7 @@ export function SkillsGallery({ isOpen, onClose, onSelectSkill }: SkillsGalleryP
         </DialogHeader>
 
         <div className="flex h-[500px]">
-          <div className="w-48 border-r bg-muted/30 p-2">
+          <div className="w-48 border-r border-border/30 bg-[#A5A0FF]/[0.02] p-3">
             <div className="space-y-1">
               <Button
                 variant={selectedCategory === null ? "secondary" : "ghost"}
@@ -282,7 +282,7 @@ export function SkillsGallery({ isOpen, onClose, onSelectSkill }: SkillsGalleryP
                   placeholder="Buscar capacidad..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 text-sm bg-muted/50 rounded-lg border-0 focus:ring-2 focus:ring-primary/20 outline-none"
+                  className="w-full pl-9 pr-4 py-2 text-sm bg-muted/30 rounded-lg border border-border/30 focus:bg-background focus:ring-2 focus:ring-[#A5A0FF]/30 outline-none transition-all placeholder:text-muted-foreground"
                   data-testid="skills-search-input"
                 />
               </div>
@@ -350,41 +350,41 @@ function SkillCard({ skill, onClick }: SkillCardProps) {
     <button
       onClick={onClick}
       className={cn(
-        "w-full text-left p-3 rounded-lg border bg-card hover:bg-accent/50",
-        "transition-all hover:shadow-sm hover:border-primary/30",
-        "group focus:outline-none focus:ring-2 focus:ring-primary/20"
+        "w-full text-left p-4 rounded-2xl border border-border/50 bg-card overflow-hidden group",
+        "transition-all duration-300 hover:bg-[#A5A0FF]/[0.02] hover:border-[#A5A0FF]/40 hover:shadow-lg hover:shadow-[#A5A0FF]/10 hover:-translate-y-0.5",
+        "focus:outline-none focus:ring-2 focus:ring-[#A5A0FF]/30"
       )}
       data-testid={`skill-card-${skill.id}`}
     >
-      <div className="flex items-start gap-3">
-        <div className="p-2 rounded-lg bg-primary/10 text-primary shrink-0">
-          <Icon className="h-5 w-5" />
+      <div className="flex items-start gap-4">
+        <div className="p-3 rounded-xl bg-gradient-to-br from-[#A5A0FF]/10 to-transparent text-[#A5A0FF] shrink-0 border border-[#A5A0FF]/20 shadow-sm shadow-[#A5A0FF]/5 group-hover:scale-105 transition-transform duration-300">
+          <Icon className="h-6 w-6" />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="font-medium text-sm">{skill.name}</span>
+          <div className="flex items-center gap-2 mb-1.5 mt-0.5">
+            <span className="font-semibold text-base">{skill.name}</span>
             {skill.popular && (
-              <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
-                <Star className="h-2.5 w-2.5 mr-0.5 fill-current" />
+              <Badge variant="secondary" className="text-[10px] h-5 px-2 bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                <Star className="h-3 w-3 mr-1 fill-current" />
                 Popular
               </Badge>
             )}
             {skill.new && (
-              <Badge className="text-[10px] h-4 px-1.5 bg-green-500">
+              <Badge className="text-[10px] h-5 px-2 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
                 Nuevo
               </Badge>
             )}
           </div>
-          <p className="text-xs text-muted-foreground line-clamp-2">
+          <p className="text-sm text-muted-foreground/90 line-clamp-2">
             {skill.description}
           </p>
           {skill.example && (
-            <p className="text-xs text-primary/70 mt-1.5 italic">
+            <p className="text-xs text-[#A5A0FF]/80 mt-2 font-medium bg-[#A5A0FF]/5 py-1 px-2 rounded-md inline-block border border-[#A5A0FF]/10">
               Ej: "{skill.example}"
             </p>
           )}
         </div>
-        <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors shrink-0 mt-1" />
+        <ChevronRight className="h-5 w-5 text-muted-foreground/30 group-hover:text-[#A5A0FF] transition-colors shrink-0 mt-3 group-hover:translate-x-1" />
       </div>
     </button>
   );
@@ -446,15 +446,15 @@ export function SkillsCommandPalette({
                         key={skill.id}
                         value={skill.name}
                         onSelect={() => handleSelect(skill)}
-                        className="gap-3 py-2.5"
+                        className="gap-3 py-2.5 px-3 rounded-lg transition-colors group"
                         data-testid={`command-skill-${skill.id}`}
                       >
-                        <div className="p-1.5 rounded bg-primary/10">
-                          <Icon className="h-4 w-4 text-primary" />
+                        <div className="p-1.5 rounded-md bg-gradient-to-br from-[#A5A0FF]/10 to-transparent border border-[#A5A0FF]/20 text-[#A5A0FF] group-hover:scale-105 transition-transform">
+                          <Icon className="h-4 w-4" />
                         </div>
                         <div className="flex-1">
                           <div className="font-medium text-sm">{skill.name}</div>
-                          <div className="text-xs text-muted-foreground">{skill.description}</div>
+                          <div className="text-xs text-muted-foreground/80">{skill.description}</div>
                         </div>
                       </CommandItem>
                     );

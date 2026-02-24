@@ -90,12 +90,29 @@ const RESEARCH_KEYWORDS_EN = [
 
 const SOURCE_COUNT_PATTERN = /(\d+)\s*(?:fuentes?|sources?)/i;
 
+// Patterns that indicate browser automation — these should NOT go through SuperAgent
+const WEB_AUTOMATION_PATTERNS = [
+  /\b(navega|navigate|abre|open|visita|visit)\b.*\b(a|to|hacia)\b/i,
+  /\b(navega|navigate|abre|open|visita|visit|ve a|ir a|entra|ingresa|accede|go to)\b.*\b(\.com|\.pe|\.org|\.net|\.io|www\.)\b/i,
+  /\b(navega|navigate|abre|open|visita|visit|ve a|ir a|entra|ingresa|accede|go to)\b.*\b(google|youtube|amazon|facebook|twitter|instagram|linkedin|wikipedia|mercadolibre|mesa247)\b/i,
+  /\b(reserva|book|booking)\b.*\b(restaurante|restaurant|hotel|vuelo|flight|mesa|table)\b/i,
+  /\b(usa|use|controla|control)\b.*\b(navegador|browser|chromium|chrome)\b/i,
+  /\b(busca|search|encuentra|find)\b.*\b(en|on|in)\b.*\b(\.com|\.pe|\.org|google|youtube|amazon)\b/i,
+];
+
 export function shouldUseSuperAgent(prompt: string): SuperAgentDetectionResult {
   if (!prompt || typeof prompt !== "string") {
     return { use: false };
   }
 
   const normalizedPrompt = prompt.toLowerCase().trim();
+
+  // Skip SuperAgent for web automation commands — these go through browser agent
+  for (const pattern of WEB_AUTOMATION_PATTERNS) {
+    if (pattern.test(prompt)) {
+      return { use: false };
+    }
+  }
 
   for (const pattern of [...RESEARCH_PATTERNS_ES, ...RESEARCH_PATTERNS_EN]) {
     const match = prompt.match(pattern);

@@ -1,4 +1,4 @@
-import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { QueryClient, QueryFunction, QueryCache, MutationCache } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 const AUTH_STORAGE_KEY = "siragpt_auth_user";
@@ -8,8 +8,21 @@ let isRedirecting = false;
 function handleUnauthorized() {
   if (isRedirecting) return;
   
-  const publicPaths = ['/login', '/signup', '/welcome', '/privacy'];
-  const isPublicPath = publicPaths.some(path => window.location.pathname.startsWith(path));
+  const publicPathPrefixes = [
+    '/login',
+    '/signup',
+    '/welcome',
+    '/about',
+    '/learn',
+    '/pricing',
+    '/business',
+    '/download',
+    '/power',
+    '/terms',
+    '/privacy-policy',
+  ];
+  const pathname = window.location.pathname;
+  const isPublicPath = pathname === '/' || publicPathPrefixes.some(path => pathname.startsWith(path));
   
   if (!isPublicPath) {
     isRedirecting = true;
@@ -145,22 +158,57 @@ function getReadableErrorMessage(error: string): string {
   return 'Something went wrong';
 }
 
+const TOAST_COOLDOWN_MS = 30_000;
+const lastToastAtByKey = new Map<string, number>();
+const OFFLINE_TOAST_ID = "network-offline";
+let hasBoundNetworkListeners = false;
+
+function maybeBindNetworkListeners() {
+  if (hasBoundNetworkListeners) return;
+  hasBoundNetworkListeners = true;
+
+  window.addEventListener("online", () => {
+    lastToastAtByKey.delete(OFFLINE_TOAST_ID);
+    toast.dismiss(OFFLINE_TOAST_ID);
+  });
+}
+
 export function showErrorToast(
   message: string,
-  options?: { 
+  options?: {
     onRetry?: () => void;
     description?: string;
   }
 ) {
+  maybeBindNetworkListeners();
+
   const toastMessage = getReadableErrorMessage(message);
-  
+
+  // Use stable ids so Sonner replaces instead of stacking (especially important for 429 spam).
+  const toastId = (() => {
+    if (toastMessage === "No internet connection") return OFFLINE_TOAST_ID;
+    if (toastMessage === "Too many requests, please wait") return "rate-limit";
+    if (toastMessage === "Server temporarily unavailable") return "server-unavailable";
+    if (toastMessage === "Request timed out") return "request-timeout";
+    if (toastMessage === "Network error occurred") return "network-error";
+    return "global-error";
+  })();
+
+  const now = Date.now();
+  const lastAt = lastToastAtByKey.get(toastId);
+  if (lastAt && now - lastAt < TOAST_COOLDOWN_MS) return;
+  lastToastAtByKey.set(toastId, now);
+
   toast.error(toastMessage, {
+    id: toastId,
     description: options?.description,
     duration: options?.onRetry ? 10000 : 5000,
-    action: options?.onRetry ? {
-      label: "Retry",
-      onClick: options.onRetry
-    } : undefined,
+    action: options?.onRetry
+      ? {
+          label: "Retry",
+          onClick: options.onRetry,
+        }
+      : undefined,
   });
 }
 
@@ -196,6 +244,26 @@ function defaultRetryCondition(failureCount: number, error: unknown): boolean {
 }
 
 export const queryClient = new QueryClient({
+  queryCache: new QueryCache({
+    onError: (error) => {
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      // Ignore 401 (handled by redirect), 404 (often expected), and 422 (validation)
+      if (!msg.includes("401") && !msg.includes("404") && !msg.includes("422")) {
+        // Debounce network errors slightly to avoid spam
+        if (!document.hidden) {
+          showErrorToast(msg);
+        }
+      }
+    }
+  }),
+  mutationCache: new MutationCache({
+    onError: (error) => {
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      if (!msg.includes("401")) {
+        showErrorToast(msg, { description: "La acción falló. Por favor intente de nuevo." });
+      }
+    }
+  }),
   defaultOptions: {
     queries: {
       queryFn: getQueryFn({ on401: "returnNull" }),

@@ -1,8 +1,6 @@
 import { google, forms_v1 } from "googleapis";
 import { OAuth2Client } from "google-auth-library";
-import { GoogleGenAI } from "@google/genai";
-
-const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+import { getGeminiClientOrThrow } from "../lib/gemini";
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
@@ -134,6 +132,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenDat
 
 export async function generateFormStructure(prompt: string, customTitle?: string): Promise<GeneratedFormStructure> {
   console.log("[GoogleForms] Generating form structure for prompt:", prompt.slice(0, 100));
+  const genAI = getGeminiClientOrThrow();
   
   const systemPrompt = `Eres un experto en crear formularios de Google. Dado un prompt del usuario, genera un JSON con la estructura del formulario.
 

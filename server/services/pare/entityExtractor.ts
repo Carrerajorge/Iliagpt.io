@@ -1,4 +1,7 @@
 import { Entity, EntityType, EntityPattern } from "./types";
+import * as fs from 'fs';
+import * as path from 'path';
+import { resolveSafePath } from '../../utils/pathSecurity';
 
 const ENTITY_PATTERNS: EntityPattern[] = [
   { type: "url", pattern: "https?://[^\\s<>\"{}|\\\\^`\\[\\]]+" },
@@ -79,6 +82,7 @@ export class EntityExtractor {
   private extractByRegex(prompt: string, targetTypes?: EntityType[]): Entity[] {
     const entities: Entity[] = [];
 
+    // Patterns loop
     for (const pattern of this.patterns) {
       if (targetTypes && !targetTypes.includes(pattern.type)) {
         continue;
@@ -91,6 +95,32 @@ export class EntityExtractor {
         while ((match = regex.exec(prompt)) !== null) {
           const value = match[0];
           const normalizer = pattern.normalizer ? NORMALIZERS[pattern.normalizer] : undefined;
+          const normalizedValue = normalizer ? normalizer(value) : undefined;
+          let metadata: Record<string, any> = {};
+
+          // Feature: Feasibility Validation (#31)
+          if (pattern.type === "file_path") {
+            try {
+              const absolutePath = resolveSafePath(value);
+              const exists = fs.existsSync(absolutePath);
+              metadata.exists = exists;
+              metadata.absolutePath = absolutePath;
+
+              if (exists) {
+                try {
+                  const stats = fs.statSync(absolutePath);
+                  metadata.isDirectory = stats.isDirectory();
+                  metadata.size = stats.size;
+                } catch (e) {
+                  // ignore stat error
+                }
+              }
+            } catch (securityError) {
+              // Path traversal attempt or invalid path
+              metadata.exists = false;
+              metadata.securityViolation = true;
+            }
+          }
 
           entities.push({
             type: pattern.type,
@@ -98,8 +128,8 @@ export class EntityExtractor {
             startPos: match.index,
             endPos: match.index + value.length,
             confidence: 0.85,
-            normalizedValue: normalizer ? normalizer(value) : undefined,
-            metadata: {},
+            normalizedValue,
+            metadata,
           });
         }
       } catch (error) {
@@ -125,7 +155,7 @@ Si no hay entidades: {"entities":[]}`;
 
       const result = await geminiChat(
         [{ role: "user", parts: [{ text: `${systemPrompt}\n\nTexto: "${prompt}"` }] }],
-        { model: "gemini-2.0-flash", maxOutputTokens: 300, temperature: 0.1 }
+        { model: "gemini-2.5-flash", maxOutputTokens: 300, temperature: 0.1 }
       );
 
       const responseText = result.content?.trim() || "";

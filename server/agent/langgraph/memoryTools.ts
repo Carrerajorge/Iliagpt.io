@@ -8,7 +8,7 @@ import crypto from "crypto";
 
 const xaiClient = new OpenAI({
   baseURL: "https://api.x.ai/v1",
-  apiKey: process.env.XAI_API_KEY,
+  apiKey: process.env.XAI_API_KEY || "missing",
 });
 
 async function generateEmbedding(text: string): Promise<number[]> {
@@ -78,7 +78,7 @@ export const memoryStoreTool = tool(
   },
   {
     name: "memory_store",
-    description: "Stores content in vector memory with semantic embedding. Use for remembering important information, user preferences, or context across conversations.",
+    description: "Stores content in vector memory with semantic embedding. Use for remembering important info: user preferences, projects/status, contacts/relationships, and feedback to improve future responses.",
     schema: z.object({
       content: z.string().describe("The content to store in memory"),
       namespace: z.string().optional().default("default").describe("Memory namespace for organization (e.g., 'user_prefs', 'facts', 'conversation')"),
@@ -146,7 +146,7 @@ export const memoryRetrieveTool = tool(
   },
   {
     name: "memory_retrieve",
-    description: "Retrieves relevant memories using semantic search. Finds information similar to the query from stored memories.",
+    description: "Retrieves relevant memories using semantic search (preferences, projects, contacts, prior feedback). Finds information similar to the query from stored memories.",
     schema: z.object({
       query: z.string().describe("The search query to find relevant memories"),
       namespace: z.string().optional().describe("Filter by namespace"),

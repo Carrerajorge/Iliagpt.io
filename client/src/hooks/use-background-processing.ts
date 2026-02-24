@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { TaskPersistenceService, type BackgroundTask } from '../lib/taskPersistenceService';
 import { TabCoordinator } from '../lib/tabCoordinator';
 import { WORKER_CODE } from '../lib/backgroundWorkerCode';
+import { useSettingsContext } from '@/contexts/SettingsContext';
+import { channelIncludesPush, isWithinQuietHours } from '@/lib/notification-preferences';
 
 export type ProcessingStatus = 'idle' | 'initializing' | 'processing' | 'paused' | 'completed' | 'error';
 
@@ -75,6 +77,8 @@ export function useBackgroundProcessing(options: UseBackgroundProcessingOptions 
     autoRecover = true
   } = options;
 
+  const { settings } = useSettingsContext();
+
   const [status, setStatus] = useState<ProcessingStatus>('idle');
   const [progress, setProgress] = useState<ProcessingProgress>({ current: 0, total: 0, percent: 0 });
   const [isPageVisible, setIsPageVisible] = useState(true);
@@ -132,18 +136,27 @@ export function useBackgroundProcessing(options: UseBackgroundProcessingOptions 
     });
   }, [applyResult]);
 
-  const showNotification = useCallback(async (title: string, options: NotificationOptions) => {
-    if (!('Notification' in window)) return;
-
-    if (Notification.permission === 'granted') {
-      new Notification(title, options);
-    } else if (Notification.permission !== 'denied') {
-      const permission = await Notification.requestPermission();
-      if (permission === 'granted') {
-        new Notification(title, options);
-      }
+  const showNotification = useCallback((title: string, options: NotificationOptions) => {
+    if (!settings.notifDesktop) return;
+    if (!channelIncludesPush(settings.notifTasks)) return;
+    if (
+      isWithinQuietHours({
+        enabled: settings.notifQuietHours,
+        start: settings.notifQuietStart,
+        end: settings.notifQuietEnd,
+      })
+    ) {
+      return;
     }
-  }, []);
+    if (!('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+
+    try {
+      new Notification(title, options);
+    } catch {
+      // ignore
+    }
+  }, [settings.notifDesktop, settings.notifQuietEnd, settings.notifQuietHours, settings.notifQuietStart, settings.notifTasks]);
 
   const handleExternalTaskCompletion = useCallback((data: { result?: any }) => {
     if (data.result) {

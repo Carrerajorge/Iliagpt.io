@@ -4,23 +4,29 @@ import { eq } from "drizzle-orm";
 import { storage } from "../storage";
 import { db } from "../db";
 import { agentModeRuns, agentModeSteps } from "@shared/schema";
-import { agentOrchestrator, agentManager, guardrails } from "../agent";
+import { agentOrchestrator } from "../agent/orchestrator";
+import { agentManager } from "../services/agentManager";
+import { guardrails } from "../agent/guardrails";
+import { agentQueue } from "../agent/queue/agentQueue";
 import { browserSessionManager, SessionEvent } from "../agent/browser";
 
 export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, event: SessionEvent) => void) {
   const router = Router();
 
-  router.post("/agent/runs", async (req, res) => {
+  // Legacy agent run endpoints (pre agentModeRuns + SSE event bus).
+  // Kept for backwards compatibility but moved under /api/agent-legacy/* to avoid
+  // shadowing the canonical /api/agent/* routes (see server/routes/agentRoutes.ts).
+  router.post("/agent-legacy/runs", async (req, res) => {
     try {
       let { chatId, message, attachments } = req.body;
-      
+
       if (!message) {
         return res.status(400).json({ error: "message is required" });
       }
-      
+
       const runId = randomUUID();
       const userId = "anonymous";
-      
+
       if (!chatId || chatId.startsWith("pending-") || chatId === "") {
         const newChatId = randomUUID();
         console.log(`[AgentRouter] Creating new chat ${newChatId} for agent run`);
@@ -37,7 +43,7 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
           chatId = newChatId;
         }
       }
-      
+
       try {
         await db.insert(agentModeRuns).values({
           id: runId,
@@ -52,20 +58,33 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
           throw dbError;
         }
       }
-      
-      const orchestrator = await agentManager.startRun(
+
+      const orchestrator = await agentManager.createRun(
         runId,
         chatId,
         userId,
         message,
         attachments
       );
-      
+
+      // Enqueue for async execution
+      if (agentQueue) {
+        await agentQueue.add("agent-execution", {
+          runId,
+          chatId,
+          userId,
+          message,
+          attachments
+        });
+      } else {
+        console.warn("[AgentRouter] AgentQueue not available, execution might be delayed");
+      }
+
       const progress = orchestrator.getProgress();
       const eventStream = orchestrator.getEventStream ? orchestrator.getEventStream() : [];
       const todoList = orchestrator.getTodoList ? orchestrator.getTodoList() : [];
       const workspaceFiles = orchestrator.getWorkspaceFiles ? Object.fromEntries(orchestrator.getWorkspaceFiles()) : {};
-      
+
       const planWithResponse = progress.plan as any;
       res.json({
         id: progress.runId,
@@ -97,10 +116,10 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
   });
 
   // Get active runs for a specific chat
-  router.get("/agent/runs/chat/:chatId", async (req, res) => {
+  router.get("/agent-legacy/runs/chat/:chatId", async (req, res) => {
     try {
       const { chatId } = req.params;
-      
+
       // First check in-memory runs
       const activeRuns = agentManager.getActiveRunsForChat(chatId);
       if (activeRuns.length > 0) {
@@ -108,7 +127,7 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
         const orchestrator = agentManager.getOrchestrator(latestRun.runId);
         const eventStream = orchestrator?.getEventStream ? orchestrator.getEventStream() : [];
         const todoList = orchestrator?.getTodoList ? orchestrator.getTodoList() : [];
-        const workspaceFiles = orchestrator?.getWorkspaceFiles ? 
+        const workspaceFiles = orchestrator?.getWorkspaceFiles ?
           Object.fromEntries(orchestrator.getWorkspaceFiles()) : {};
 
         return res.json({
@@ -135,20 +154,20 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
           updatedAt: new Date().toISOString()
         });
       }
-      
+
       // Fall back to database
       const runs = await storage.getAgentRunsByChatId(chatId);
       if (runs.length === 0) {
         return res.json(null);
       }
-      
+
       const latestRun = runs[0];
       const steps = await storage.getAgentSteps(latestRun.id);
       const assets = await storage.getAgentAssets(latestRun.id);
-      
+
       res.json({
         id: latestRun.id,
-        chatId: latestRun.chatId,
+        chatId: (latestRun as any).conversationId || (latestRun as any).chatId || chatId,
         status: latestRun.status,
         plan: null,
         steps: steps.map((s: any) => ({
@@ -162,10 +181,10 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
         eventStream: [],
         todoList: [],
         workspaceFiles: {},
-        summary: latestRun.summary,
+        summary: (latestRun as any).summary || null,
         error: latestRun.error,
-        createdAt: latestRun.createdAt,
-        updatedAt: latestRun.updatedAt
+        createdAt: (latestRun as any).createdAt,
+        updatedAt: (latestRun as any).updatedAt
       });
     } catch (error: any) {
       console.error("Error fetching runs for chat:", error);
@@ -173,15 +192,15 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
     }
   });
 
-  router.get("/agent/runs/:id", async (req, res) => {
+  router.get("/agent-legacy/runs/:id", async (req, res) => {
     try {
       const progress = agentManager.getRunStatus(req.params.id);
-      
+
       if (progress) {
         const orchestrator = agentManager.getOrchestrator(req.params.id);
         const eventStream = orchestrator?.getEventStream ? orchestrator.getEventStream() : [];
         const todoList = orchestrator?.getTodoList ? orchestrator.getTodoList() : [];
-        const workspaceFiles = orchestrator?.getWorkspaceFiles ? 
+        const workspaceFiles = orchestrator?.getWorkspaceFiles ?
           Object.fromEntries(orchestrator.getWorkspaceFiles()) : {};
 
         // Get summary from orchestrator or conversational response from plan
@@ -212,17 +231,17 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
           updatedAt: new Date().toISOString()
         });
       }
-      
+
       // Try agentModeRuns first (new table with summary), then fallback to old agentRuns
       const [modeRun] = await db.select().from(agentModeRuns).where(eq(agentModeRuns.id, req.params.id));
-      
+
       if (modeRun) {
         // Load steps from agentModeSteps table
         const modeSteps = await db.select().from(agentModeSteps)
           .where(eq(agentModeSteps.runId, req.params.id))
           .orderBy(agentModeSteps.stepIndex);
-        
-        return res.json({ 
+
+        return res.json({
           id: modeRun.id,
           chatId: modeRun.chatId,
           status: modeRun.status,
@@ -246,16 +265,16 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
           updatedAt: modeRun.completedAt?.toISOString() || modeRun.startedAt?.toISOString() || modeRun.createdAt?.toISOString()
         });
       }
-      
+
       const run = await storage.getAgentRun(req.params.id);
       if (!run) {
         return res.status(404).json({ error: "Run not found" });
       }
       const steps = await storage.getAgentSteps(req.params.id);
       const assets = await storage.getAgentAssets(req.params.id);
-      res.json({ 
+      res.json({
         id: run.id,
-        chatId: run.chatId,
+        chatId: (run as any).conversationId || (run as any).chatId || "",
         status: run.status,
         plan: null,
         steps: steps.map((s: any) => ({
@@ -271,15 +290,15 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
         workspaceFiles: {},
         summary: null,
         error: run.error,
-        createdAt: run.createdAt,
-        updatedAt: run.updatedAt
+        createdAt: (run as any).createdAt,
+        updatedAt: (run as any).updatedAt
       });
     } catch (error: any) {
       res.status(500).json({ error: "Failed to get agent run" });
     }
   });
 
-  router.post("/agent/runs/:id/cancel", async (req, res) => {
+  router.post("/agent-legacy/runs/:id/cancel", async (req, res) => {
     try {
       let success = await agentManager.cancelRun(req.params.id);
       if (!success) {
@@ -301,7 +320,7 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
       if (!objective) {
         return res.status(400).json({ error: "Objective is required" });
       }
-      
+
       const sessionId = await browserSessionManager.createSession(
         objective,
         config || {},
@@ -309,9 +328,9 @@ export function createAgentRouter(broadcastBrowserEvent: (sessionId: string, eve
           broadcastBrowserEvent(event.sessionId, event);
         }
       );
-      
+
       browserSessionManager.startScreenshotStreaming(sessionId, 1500);
-      
+
       res.json({ sessionId });
     } catch (error: any) {
       console.error("Error creating browser session:", error);

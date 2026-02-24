@@ -1,9 +1,20 @@
 import { AcademicCandidate } from "./openAlexClient";
+import { persistentJsonCacheGet, persistentJsonCacheSet } from "../../lib/persistentJsonCache";
+import { sanitizeSearchQuery } from "../../lib/textSanitizers";
 
 const CROSSREF_WORKS_BASE = "https://api.crossref.org/works";
+const CROSSREF_MAILTO = (process.env.CROSSREF_MAILTO || process.env.ACADEMIC_MAILTO || "").trim();
+const BASE_USER_AGENT = (process.env.HTTP_USER_AGENT || "IliaGPT/1.0").trim();
 const RATE_LIMIT_MS = 200;
 const MAX_RETRIES = 3;
 const BACKOFF_BASE_MS = 1000;
+
+/**
+ * Sanitize and harden CrossRef search query input
+ */
+function sanitizeCrossRefQuery(raw: string): string {
+    return sanitizeSearchQuery(raw, 500);
+}
 
 let lastRequestTime = 0;
 
@@ -20,7 +31,7 @@ async function fetchWithRetry(url: string, options: RequestInit, retries = MAX_R
   for (let attempt = 0; attempt <= retries; attempt++) {
     await rateLimit();
     const response = await fetch(url, options);
-    if (response.status === 429 && attempt < retries) {
+    if ((response.status === 429 || response.status >= 500) && attempt < retries) {
       const waitTime = BACKOFF_BASE_MS * Math.pow(2, attempt);
       console.log(`[CrossRef] Rate limited, waiting ${waitTime}ms before retry ${attempt + 1}/${retries}`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
@@ -42,6 +53,9 @@ export interface CrossRefWork {
   }>;
   "container-title"?: string[];
   abstract?: string;
+  volume?: string;
+  issue?: string;
+  page?: string;
   published?: { "date-parts": number[][] };
   "published-print"?: { "date-parts": number[][] };
   "published-online"?: { "date-parts": number[][] };
@@ -59,7 +73,11 @@ export interface CrossRefMetadata {
   title: string;
   authors: string[];
   year: number;
+  publicationDate?: string;
   journal: string;
+  volume?: string;
+  issue?: string;
+  pages?: string;
   abstract: string;
   documentType: string;
   language: string;
@@ -80,6 +98,26 @@ function extractYear(work: CrossRefWork): number {
     work.issued?.["date-parts"]?.[0];
   
   return dateParts?.[0] || 0;
+}
+
+function datePartsToIso(parts: number[] | undefined): string | undefined {
+  if (!parts || parts.length === 0) return undefined;
+  const y = parts[0];
+  if (!y || !Number.isFinite(y)) return undefined;
+  const m = parts[1] && Number.isFinite(parts[1]) ? parts[1] : 1;
+  const d = parts[2] && Number.isFinite(parts[2]) ? parts[2] : 1;
+  const mm = String(Math.max(1, Math.min(12, m))).padStart(2, "0");
+  const dd = String(Math.max(1, Math.min(31, d))).padStart(2, "0");
+  return `${String(y).padStart(4, "0")}-${mm}-${dd}`;
+}
+
+function extractPublicationDate(work: CrossRefWork): string | undefined {
+  const parts =
+    work["published-online"]?.["date-parts"]?.[0] ||
+    work["published-print"]?.["date-parts"]?.[0] ||
+    work.published?.["date-parts"]?.[0] ||
+    work.issued?.["date-parts"]?.[0];
+  return datePartsToIso(parts);
 }
 
 function cleanAbstract(abstract: string | undefined): string {
@@ -200,16 +238,27 @@ function extractLocationFromAffiliations(affiliations: string[]): { city: string
 }
 
 export async function lookupDOI(doi: string): Promise<CrossRefMetadata | null> {
-  const cleanDoi = doi.replace(/^https?:\/\/doi\.org\//, "");
-  const url = `${CROSSREF_WORKS_BASE}/${encodeURIComponent(cleanDoi)}`;
+  const cleanDoi = (doi || "").replace(/^https?:\/\/doi\.org\//i, "").trim();
+  if (!cleanDoi) return null;
+
+  const cacheKey = cleanDoi.toLowerCase();
+  const cached = await persistentJsonCacheGet<CrossRefMetadata>("crossref.lookupDoi", cacheKey);
+  if (cached) return cached;
+
+  const u = new URL(`${CROSSREF_WORKS_BASE}/${encodeURIComponent(cleanDoi)}`);
+  if (CROSSREF_MAILTO) u.searchParams.set("mailto", CROSSREF_MAILTO);
   
   console.log(`[CrossRef] Looking up DOI: ${cleanDoi}`);
 
   try {
-    const response = await fetchWithRetry(url, {
+    const ua = CROSSREF_MAILTO && !/mailto:/i.test(BASE_USER_AGENT)
+      ? `${BASE_USER_AGENT} (mailto:${CROSSREF_MAILTO})`
+      : BASE_USER_AGENT;
+
+    const response = await fetchWithRetry(u.toString(), {
       headers: {
         "Accept": "application/json",
-        "User-Agent": "IliaGPT/1.0 (mailto:research@iliagpt.com)",
+        "User-Agent": ua,
       },
     });
 
@@ -242,13 +291,18 @@ export async function lookupDOI(doi: string): Promise<CrossRefMetadata | null> {
     }
 
     const { city, country } = extractLocationFromAffiliations(affiliations);
+    const publicationDate = extractPublicationDate(work);
 
-    return {
+    const metadata: CrossRefMetadata = {
       doi: work.DOI,
       title: work.title?.[0] || "",
       authors,
       year: extractYear(work),
+      publicationDate,
       journal: work["container-title"]?.[0] || "Unknown",
+      volume: work.volume || "",
+      issue: work.issue || "",
+      pages: work.page || "",
       abstract: cleanAbstract(work.abstract),
       documentType: work.type || "article",
       language: work.language || "en",
@@ -260,6 +314,9 @@ export async function lookupDOI(doi: string): Promise<CrossRefMetadata | null> {
       city,
       country,
     };
+
+    await persistentJsonCacheSet("crossref.lookupDoi", cacheKey, metadata, 1000 * 60 * 60 * 24 * 30);
+    return metadata;
   } catch (error: any) {
     console.error(`[CrossRef] Lookup error: ${error.message}`);
     return null;
@@ -274,25 +331,41 @@ export async function searchCrossRef(
     maxResults?: number;
   } = {}
 ): Promise<AcademicCandidate[]> {
-  const { yearStart = 2020, yearEnd = 2025, maxResults = 100 } = options;
-  
+  const currentYear = new Date().getFullYear();
+  const { yearStart = 2020, yearEnd = currentYear, maxResults = 100 } = options;
+  const clampedMax = Math.max(1, Math.min(100, maxResults));
+  const clampedYearStart = Math.max(1900, Math.min(currentYear + 1, yearStart));
+  const clampedYearEnd = Math.max(clampedYearStart, Math.min(currentYear + 1, yearEnd));
+
+  // Sanitize query input
+  const sanitized = sanitizeCrossRefQuery(query);
+  if (!sanitized) {
+    console.warn("[CrossRef] Empty query after sanitization");
+    return [];
+  }
+
   await rateLimit();
 
   const params = new URLSearchParams({
-    query,
-    rows: String(Math.min(maxResults, 100)),
-    filter: `from-pub-date:${yearStart},until-pub-date:${yearEnd}`,
+    query: sanitized,
+    rows: String(clampedMax),
+    filter: `from-pub-date:${clampedYearStart}-01-01,until-pub-date:${clampedYearEnd}-12-31`,
     sort: "relevance",
   });
+  if (CROSSREF_MAILTO) params.set("mailto", CROSSREF_MAILTO);
 
   const url = `${CROSSREF_WORKS_BASE}?${params}`;
   console.log(`[CrossRef] Searching: ${url}`);
 
   try {
+    const ua = CROSSREF_MAILTO && !/mailto:/i.test(BASE_USER_AGENT)
+      ? `${BASE_USER_AGENT} (mailto:${CROSSREF_MAILTO})`
+      : BASE_USER_AGENT;
+
     const response = await fetch(url, {
       headers: {
         "Accept": "application/json",
-        "User-Agent": "IliaGPT/1.0 (mailto:research@iliagpt.com)",
+        "User-Agent": ua,
       },
     });
 
@@ -321,29 +394,31 @@ export async function searchCrossRef(
         }
       }
 
-      return {
-        source: "crossref" as const,
-        sourceId: work.DOI,
-        doi: work.DOI,
-        title: work.title?.[0] || "",
-        year: extractYear(work),
-        journal: work["container-title"]?.[0] || "Unknown",
-        abstract: cleanAbstract(work.abstract),
-        authors,
-        keywords: work.subject || [],
-        language: work.language || "en",
-        documentType: work.type || "article",
-        citationCount: work["is-referenced-by-count"] || 0,
-        affiliations,
-        city: "Unknown",
-        country: "Unknown",
-        landingUrl: work.URL || "",
-        doiUrl: work.DOI ? `https://doi.org/${work.DOI}` : "",
-        verified: false,
-        relevanceScore: 0,
-        verificationStatus: "pending" as const,
-      };
-    });
+	      return {
+	        source: "crossref" as const,
+	        sourceId: work.DOI,
+	        doi: work.DOI,
+	        title: work.title?.[0] || "",
+	        year: extractYear(work),
+	        publicationDate: extractPublicationDate(work) || "",
+	        journal: work["container-title"]?.[0] || "Unknown",
+	        abstract: cleanAbstract(work.abstract),
+	        authors,
+	        keywords: work.subject || [],
+	        language: work.language || "en",
+	        documentType: work.type || "article",
+	        citationCount: work["is-referenced-by-count"] || 0,
+	        affiliations,
+	        city: "Unknown",
+	        country: "Unknown",
+	        institutionCountryCodes: [],
+	        landingUrl: work.URL || "",
+	        doiUrl: work.DOI ? `https://doi.org/${work.DOI}` : "",
+	        verified: false,
+	        relevanceScore: 0,
+	        verificationStatus: "pending" as const,
+	      };
+	    });
 
     return candidates;
   } catch (error: any) {
@@ -359,9 +434,15 @@ export interface VerifyDOIResult {
   city?: string;
   country?: string;
   year?: number;
+  publicationDate?: string;
   authors?: string[];
   journal?: string;
   abstract?: string;
+  documentType?: string;
+  language?: string;
+  volume?: string;
+  issue?: string;
+  pages?: string;
   keywords?: string[];
 }
 
@@ -379,9 +460,15 @@ export async function verifyDOI(doi: string): Promise<VerifyDOIResult> {
     city: metadata.city,
     country: metadata.country,
     year: metadata.year,
+    publicationDate: metadata.publicationDate,
+    volume: metadata.volume,
+    issue: metadata.issue,
+    pages: metadata.pages,
     authors: metadata.authors,
     journal: metadata.journal,
     abstract: metadata.abstract,
+    documentType: metadata.documentType,
+    language: metadata.language,
     keywords: metadata.keywords,
   };
 }

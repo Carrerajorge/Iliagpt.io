@@ -20,6 +20,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { BrowserSessionState, BrowserAction } from "@/hooks/use-browser-session";
+import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
+import { formatZonedTime, normalizeTimeZone } from "@/lib/platformDateTime";
 
 interface VirtualComputerProps {
   state: BrowserSessionState;
@@ -33,6 +35,8 @@ export function VirtualComputer({ state, onClose, onCancel, className, compact =
   const [isMinimized, setIsMinimized] = useState(false);
   const [isTimelineExpanded, setIsTimelineExpanded] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
 
   const getStatusColor = () => {
     switch (state.status) {
@@ -80,11 +84,7 @@ export function VirtualComputer({ state, onClose, onCancel, className, compact =
   };
 
   const formatTime = (date: Date) => {
-    return new Date(date).toLocaleTimeString("es-ES", { 
-      hour: "2-digit", 
-      minute: "2-digit", 
-      second: "2-digit" 
-    });
+    return formatZonedTime(date, { timeZone: platformTimeZone, includeSeconds: true });
   };
 
   const getActionDescription = (action: BrowserAction) => {

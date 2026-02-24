@@ -1,5 +1,10 @@
 import { useAgentStore } from '@/stores/agent-store';
 
+interface EventHandler {
+  type: string;
+  handler: (event: MessageEvent) => void;
+}
+
 interface StreamingInstance {
   runId: string;
   messageId: string;
@@ -11,6 +16,7 @@ interface StreamingInstance {
   lastEventCount: number;
   isUsingSSE: boolean;
   reconnectAttempts: number;
+  eventHandlers: EventHandler[]; // Track handlers for cleanup
 }
 
 interface PollingManagerOptions {
@@ -57,6 +63,7 @@ class PollingManager {
       lastEventCount: 0,
       isUsingSSE: false,
       reconnectAttempts: 0,
+      eventHandlers: [],
     };
 
     this.instances.set(runId, instance);
@@ -105,6 +112,13 @@ class PollingManager {
   }
 
   private clearInstance(instance: StreamingInstance): void {
+    // Remove all event listeners before closing EventSource
+    if (instance.eventSource && instance.eventHandlers.length > 0) {
+      for (const { type, handler } of instance.eventHandlers) {
+        instance.eventSource.removeEventListener(type, handler);
+      }
+      instance.eventHandlers = [];
+    }
     if (instance.eventSource) {
       instance.eventSource.close();
       instance.eventSource = null;
@@ -122,6 +136,15 @@ class PollingManager {
   private connectSSE(runId: string): void {
     const instance = this.instances.get(runId);
     if (!instance) return;
+
+    // Clean up existing handlers and EventSource before reconnecting
+    if (instance.eventSource) {
+      for (const { type, handler } of instance.eventHandlers) {
+        instance.eventSource.removeEventListener(type, handler);
+      }
+      instance.eventSource.close();
+      instance.eventHandlers = [];
+    }
 
     try {
       const url = `/api/agent/runs/${runId}/events/stream`;
@@ -146,14 +169,17 @@ class PollingManager {
         'task_start', 'plan_created', 'plan_step', 'step_started',
         'tool_call', 'tool_output', 'tool_chunk', 'observation',
         'verification', 'step_completed', 'step_failed', 'step_retried',
-        'replan', 'thinking', 'shell_output', 'artifact_created',
+        'replan', 'thinking', 'shell_output', 'shell_chunk', 'shell_exit', 'artifact_created',
         'error', 'done', 'cancelled', 'heartbeat'
       ];
-      
+
+      // Store handlers for cleanup
       for (const eventType of eventTypes) {
-        eventSource.addEventListener(eventType, (event: MessageEvent) => {
+        const handler = (event: MessageEvent) => {
           this.handleSSEMessage(runId, event, eventType);
-        });
+        };
+        eventSource.addEventListener(eventType, handler);
+        instance.eventHandlers.push({ type: eventType, handler });
       }
 
     } catch (error) {

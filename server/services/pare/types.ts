@@ -26,6 +26,9 @@ export const EntityTypeEnum = z.enum([
   "programming_language",
   "action_verb",
   "domain_term",
+  "technology",
+  "library",
+  "project_name"
 ]);
 export type EntityType = z.infer<typeof EntityTypeEnum>;
 
@@ -70,7 +73,7 @@ export const TaskNodeSchema = z.object({
 });
 export type TaskNode = z.infer<typeof TaskNodeSchema>;
 
-export const ExecutionPlanSchema: z.ZodType<ExecutionPlan> = z.object({
+export const ExecutionPlanSchema: z.ZodType<ExecutionPlan, z.ZodTypeDef, any> = z.object({
   planId: z.string(),
   objective: z.string(),
   nodes: z.array(TaskNodeSchema),

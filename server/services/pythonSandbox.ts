@@ -1,398 +1,439 @@
+/**
+ * Python Sandbox Executor
+ * 
+ * Features:
+ * - Isolated Python execution environment
+ * - Resource limits (CPU, memory, time)
+ * - Network restrictions
+ * - Secure file I/O sandboxing
+ */
+
 import { spawn, ChildProcess } from "child_process";
-import * as fs from "fs";
-import * as path from "path";
-import * as crypto from "crypto";
+import path from "path";
+import fs from "fs/promises";
+import crypto from "crypto";
+import os from "os";
 
-const SANDBOX_DIR = "/tmp/python_sandbox";
-const DEFAULT_TIMEOUT_MS = 30000;
-const MAX_MEMORY_MB = 512;
-const MAX_CPU_TIME_SECONDS = 60;
-
-export interface ExecutePythonCodeParams {
-  code: string;
-  filePath: string;
-  sheetName: string;
-  timeoutMs?: number;
+export interface SandboxConfig {
+  maxExecutionTime: number;    // milliseconds
+  maxMemoryMB: number;         // megabytes
+  maxOutputSize: number;       // bytes
+  allowNetwork: boolean;
+  allowFileWrite: boolean;
+  pythonPath: string;
+  tempDir: string;
 }
 
-export interface ExecutePythonCodeResult {
+export interface ExecutionResult {
   success: boolean;
-  output?: any;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  executionTime: number;
+  timedOut: boolean;
+  memoryExceeded: boolean;
   error?: string;
-  executionTimeMs: number;
 }
 
-export interface SandboxOutput {
-  tables: Array<{ name: string; data: any[] }>;
-  metrics: Record<string, any>;
-  charts: any[];
-  logs: string[];
-  summary: string;
+const DEFAULT_CONFIG: SandboxConfig = {
+  maxExecutionTime: 30000,     // 30 seconds
+  maxMemoryMB: 256,            // 256 MB
+  maxOutputSize: 1024 * 1024,  // 1 MB
+  allowNetwork: false,
+  allowFileWrite: false,
+  pythonPath: "python3",
+  tempDir: os.tmpdir(),
+};
+
+// Dangerous modules and functions to block
+// Note: network-related modules become allowed when config.allowNetwork=true
+const BASE_BLOCKED_MODULES = [
+  "os",
+  "subprocess",
+  "sys",
+  "shutil",
+  "pickle",
+  "ctypes",
+  "multiprocessing",
+  "__builtins__.__import__",
+] as const;
+
+const NETWORK_MODULES = ["socket", "urllib", "requests", "http", "ftplib", "smtplib"] as const;
+
+function getBlockedModules(config: SandboxConfig): string[] {
+  return config.allowNetwork ? [...BASE_BLOCKED_MODULES] : [...BASE_BLOCKED_MODULES, ...NETWORK_MODULES];
 }
 
-function ensureSandboxDirectory(): void {
-  if (!fs.existsSync(SANDBOX_DIR)) {
-    fs.mkdirSync(SANDBOX_DIR, { recursive: true, mode: 0o700 });
-  }
-}
+const BLOCKED_FUNCTIONS = [
+  "exec",
+  "eval",
+  "compile",
+  "open",
+  "__import__",
+  "getattr",
+  "setattr",
+  "delattr",
+  "globals",
+  "locals",
+  "vars",
+];
 
-function generateTempFilePath(extension: string = ".py"): string {
-  const timestamp = Date.now();
-  const random = crypto.randomBytes(8).toString("hex");
-  return path.join(SANDBOX_DIR, `sandbox_${timestamp}_${random}${extension}`);
-}
+// Create sandbox wrapper script
+function createSandboxWrapper(userCode: string, config: SandboxConfig): string {
+  const blockedModulesStr = getBlockedModules(config).map(m => `"${m}"`).join(", ");
+  const blockedFunctionsStr = BLOCKED_FUNCTIONS.map(f => `"${f}"`).join(", ");
 
-function buildWrapperCode(userCode: string, filePath: string, sheetName: string): string {
-  const escapedFilePath = filePath.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  const escapedSheetName = sheetName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  
-  return `#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-import json
+  return `
 import sys
-import resource
 import signal
+import resource
 
-# Set resource limits for security
-def set_resource_limits():
-    # Limit CPU time to ${MAX_CPU_TIME_SECONDS} seconds
-    resource.setrlimit(resource.RLIMIT_CPU, (${MAX_CPU_TIME_SECONDS}, ${MAX_CPU_TIME_SECONDS}))
-    # Limit memory to ${MAX_MEMORY_MB}MB
-    memory_bytes = ${MAX_MEMORY_MB} * 1024 * 1024
-    try:
-        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
-    except (ValueError, OSError):
-        pass  # May not be available on all systems
-    # Allow limited subprocesses for pandas internals (e.g., numexpr)
-    resource.setrlimit(resource.RLIMIT_NPROC, (10, 10))
-    # Limit file size creation to 10MB
-    resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
+# Set resource limits
+def set_limits():
+    # Memory limit
+    memory_bytes = ${config.maxMemoryMB} * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+    
+    # CPU time limit (slightly more than wall time)
+    cpu_seconds = ${Math.ceil(config.maxExecutionTime / 1000)} + 5
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
+    
+    # Disable core dumps
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    
+    # Limit file descriptors
+    resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
 
 try:
-    set_resource_limits()
+    set_limits()
 except Exception as e:
-    # Resource limits may not be available on all systems
-    pass
+    print(f"Warning: Could not set resource limits: {e}", file=sys.stderr)
 
-# Handle timeout gracefully
+# Block dangerous imports
+blocked_modules = [${blockedModulesStr}]
+blocked_functions = [${blockedFunctionsStr}]
+
+original_import = __builtins__.__import__
+
+def safe_import(name, *args, **kwargs):
+    if any(name.startswith(blocked) for blocked in blocked_modules):
+        raise ImportError(f"Module '{name}' is not allowed in sandbox")
+    return original_import(name, *args, **kwargs)
+
+__builtins__.__import__ = safe_import
+
+# Remove dangerous builtins
+for func in blocked_functions:
+    if hasattr(__builtins__, func):
+        try:
+            delattr(__builtins__, func)
+        except:
+            pass
+
+# Timeout handler
 def timeout_handler(signum, frame):
-    raise TimeoutError("Execution time limit exceeded")
+    raise TimeoutError("Execution timed out")
 
 signal.signal(signal.SIGALRM, timeout_handler)
-signal.alarm(${MAX_CPU_TIME_SECONDS})
+signal.alarm(${Math.ceil(config.maxExecutionTime / 1000)})
+
+# Redirect to capture output
+import io
+from contextlib import redirect_stdout, redirect_stderr
+
+stdout_capture = io.StringIO()
+stderr_capture = io.StringIO()
 
 try:
-    import pandas as pd
-    import numpy as np
-    from datetime import datetime
-    import math
-
-    # Set pandas display options
-    pd.set_option('display.max_columns', None)
-    pd.set_option('display.max_rows', None)
-    pd.set_option('display.width', None)
-
-    # Structured output container
-    _output = {"tables": [], "metrics": {}, "charts": [], "logs": [], "summary": ""}
-
-    def register_table(name, df):
-        """Register a DataFrame as a named table in the output."""
-        if isinstance(df, pd.DataFrame):
-            _output["tables"].append({
-                "name": str(name),
-                "data": df.to_dict(orient='records')
-            })
-        elif isinstance(df, pd.Series):
-            _output["tables"].append({
-                "name": str(name),
-                "data": df.to_frame().to_dict(orient='records')
-            })
-        else:
-            _output["tables"].append({
-                "name": str(name),
-                "data": [{"value": df}]
-            })
-
-    def register_metric(name, value):
-        """Register a named metric in the output."""
-        if isinstance(value, (np.integer, np.floating)):
-            value = value.item()
-        elif isinstance(value, np.ndarray):
-            value = value.tolist()
-        elif pd.isna(value):
-            value = None
-        _output["metrics"][str(name)] = value
-
-    def register_chart(chart_config):
-        """Register a chart configuration in the output."""
-        _output["charts"].append(chart_config)
-
-    def log(message):
-        """Add a log message to the output."""
-        _output["logs"].append(str(message))
-
-    def set_summary(text):
-        """Set the summary text for the analysis."""
-        _output["summary"] = str(text)
-
-    # File and sheet configuration
-    file_path = '${escapedFilePath}'
-    sheet_name = '${escapedSheetName}'
-
-    # USER CODE STARTS HERE
-${userCode}
-    # USER CODE ENDS HERE
-
-    # Output results as JSON
-    def serialize_output(obj):
-        """Custom JSON serializer for numpy and pandas types."""
-        if isinstance(obj, (np.integer,)):
-            return int(obj)
-        elif isinstance(obj, (np.floating,)):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, pd.Timestamp):
-            return obj.isoformat()
-        elif isinstance(obj, datetime):
-            return obj.isoformat()
-        elif pd.isna(obj):
-            return None
-        return str(obj)
-
-    print(json.dumps(_output, default=serialize_output, ensure_ascii=False))
-
+    with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+        # === USER CODE START ===
+${userCode.split("\n").map(line => "        " + line).join("\n")}
+        # === USER CODE END ===
+    
+    # Print captured output
+    print(stdout_capture.getvalue(), end="")
+    print(stderr_capture.getvalue(), end="", file=sys.stderr)
+    
+except TimeoutError as e:
+    print(f"Error: {e}", file=sys.stderr)
+    sys.exit(124)
+except MemoryError:
+    print("Error: Memory limit exceeded", file=sys.stderr)
+    sys.exit(137)
 except Exception as e:
-    import traceback
-    error_output = {
-        "tables": [],
-        "metrics": {},
-        "charts": [],
-        "logs": [f"Error: {str(e)}"],
-        "summary": f"Execution failed: {str(e)}",
-        "_error": True,
-        "_error_message": str(e),
-        "_traceback": traceback.format_exc()
-    }
-    print(json.dumps(error_output, ensure_ascii=False))
+    print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
     sys.exit(1)
 finally:
-    signal.alarm(0)  # Cancel the alarm
+    signal.alarm(0)
 `;
 }
 
-function cleanupTempFile(filePath: string): void {
+// Execute Python code in sandbox
+export async function executePython(
+  code: string,
+  options: Partial<SandboxConfig> = {}
+): Promise<ExecutionResult> {
+  const config = { ...DEFAULT_CONFIG, ...options };
+  const startTime = Date.now();
+
+  // Create temporary file for script
+  const scriptId = crypto.randomBytes(8).toString("hex");
+  const scriptPath = path.join(config.tempDir, `sandbox_${scriptId}.py`);
+
   try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    // Create sandbox wrapper
+    const wrappedCode = createSandboxWrapper(code, config);
+    await fs.writeFile(scriptPath, wrappedCode, "utf-8");
+
+    return new Promise<ExecutionResult>((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let memoryExceeded = false;
+
+      const pythonProcess: ChildProcess = spawn(config.pythonPath, [scriptPath], {
+        cwd: config.tempDir,
+        env: {
+          ...process.env,
+          PYTHONUNBUFFERED: "1",
+          PYTHONDONTWRITEBYTECODE: "1",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      // Timeout handler
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        pythonProcess.kill("SIGKILL");
+      }, config.maxExecutionTime);
+
+      // Capture stdout
+      pythonProcess.stdout?.on("data", (data: Buffer) => {
+        if (stdout.length < config.maxOutputSize) {
+          stdout += data.toString().slice(0, config.maxOutputSize - stdout.length);
+        }
+      });
+
+      // Capture stderr
+      pythonProcess.stderr?.on("data", (data: Buffer) => {
+        if (stderr.length < config.maxOutputSize) {
+          stderr += data.toString().slice(0, config.maxOutputSize - stderr.length);
+        }
+      });
+
+      // Handle completion
+      pythonProcess.on("close", async (exitCode) => {
+        clearTimeout(timeout);
+        const executionTime = Date.now() - startTime;
+
+        // Check for memory exceeded (exit code 137 = OOM killed)
+        if (exitCode === 137) {
+          memoryExceeded = true;
+        }
+
+        // Clean up temp file
+        try {
+          await fs.unlink(scriptPath);
+        } catch {
+          // Ignore cleanup errors
+        }
+
+        resolve({
+          success: exitCode === 0 && !timedOut && !memoryExceeded,
+          stdout: stdout.trim(),
+          stderr: stderr.trim(),
+          exitCode,
+          executionTime,
+          timedOut,
+          memoryExceeded,
+          error: timedOut
+            ? "Execution timed out"
+            : memoryExceeded
+              ? "Memory limit exceeded"
+              : undefined,
+        });
+      });
+
+      // Handle spawn errors
+      pythonProcess.on("error", async (error) => {
+        clearTimeout(timeout);
+
+        try {
+          await fs.unlink(scriptPath);
+        } catch {
+          // Ignore cleanup errors
+        }
+
+        resolve({
+          success: false,
+          stdout: "",
+          stderr: error.message,
+          exitCode: null,
+          executionTime: Date.now() - startTime,
+          timedOut: false,
+          memoryExceeded: false,
+          error: error.message,
+        });
+      });
+    });
   } catch (error) {
-    console.error(`[PythonSandbox] Failed to cleanup temp file ${filePath}:`, error);
+    // Clean up on error
+    try {
+      await fs.unlink(scriptPath);
+    } catch {
+      // Ignore
+    }
+
+    return {
+      success: false,
+      stdout: "",
+      stderr: (error as Error).message,
+      exitCode: null,
+      executionTime: Date.now() - startTime,
+      timedOut: false,
+      memoryExceeded: false,
+      error: (error as Error).message,
+    };
   }
 }
 
-async function executePythonProcess(
-  scriptPath: string,
-  timeoutMs: number
-): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+// Validate code before execution
+export function validateCode(code: string): { valid: boolean; issues: string[] } {
+  const issues: string[] = [];
+
+  // Check for blocked imports
+  for (const module of BLOCKED_MODULES) {
+    const importRegex = new RegExp(`import\\s+${module}|from\\s+${module}`, "g");
+    if (importRegex.test(code)) {
+      issues.push(`Blocked module: ${module}`);
+    }
+  }
+
+  // Check for blocked functions
+  for (const func of BLOCKED_FUNCTIONS) {
+    const funcRegex = new RegExp(`\\b${func}\\s*\\(`, "g");
+    if (funcRegex.test(code)) {
+      issues.push(`Blocked function: ${func}()`);
+    }
+  }
+
+  // Check for file operations
+  if (/open\s*\(|with\s+open/.test(code)) {
+    issues.push("File operations are restricted");
+  }
+
+  // Check for network operations
+  if (/socket|urllib|requests|http\.client/.test(code)) {
+    issues.push("Network operations are restricted");
+  }
+
+  return {
+    valid: issues.length === 0,
+    issues,
+  };
+}
+
+// Execute with pre-validation
+export async function safeExecutePython(
+  code: string,
+  options: Partial<SandboxConfig> = {}
+): Promise<ExecutionResult> {
+  const validation = validateCode(code);
+
+  if (!validation.valid) {
+    return {
+      success: false,
+      stdout: "",
+      stderr: `Code validation failed:\n${validation.issues.join("\n")}`,
+      exitCode: null,
+      executionTime: 0,
+      timedOut: false,
+      memoryExceeded: false,
+      error: "Code validation failed",
+    };
+  }
+
+  return executePython(code, options);
+}
+
+// Get Python version
+export async function getPythonVersion(
+  pythonPath = "python3"
+): Promise<string | null> {
   return new Promise((resolve) => {
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    let killed = false;
-    let resolved = false;
+    const proc = spawn(pythonPath, ["--version"]);
+    let version = "";
 
-    const pythonProcess: ChildProcess = spawn("python3", [scriptPath], {
-      cwd: SANDBOX_DIR,
-      env: {
-        ...process.env,
-        PYTHONUNBUFFERED: "1",
-        PYTHONDONTWRITEBYTECODE: "1",
-        PYTHONHASHSEED: "0",
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: false, // Explicit: prevent command injection
+    proc.stdout?.on("data", (data: Buffer) => {
+      version += data.toString();
     });
 
-    const timeout = setTimeout(() => {
-      if (!resolved) {
-        killed = true;
-        pythonProcess.kill("SIGKILL");
-      }
-    }, timeoutMs);
-
-    pythonProcess.stdout?.on("data", (data: Buffer) => {
-      stdout.push(data.toString());
+    proc.stderr?.on("data", (data: Buffer) => {
+      version += data.toString();
     });
 
-    pythonProcess.stderr?.on("data", (data: Buffer) => {
-      stderr.push(data.toString());
+    proc.on("close", (code) => {
+      resolve(code === 0 ? version.trim() : null);
     });
 
-    pythonProcess.on("close", (exitCode: number | null) => {
-      clearTimeout(timeout);
-      if (!resolved) {
-        resolved = true;
-        resolve({
-          stdout: stdout.join(""),
-          stderr: stderr.join(""),
-          exitCode: killed ? -1 : exitCode,
-        });
-      }
-    });
-
-    pythonProcess.on("error", (error: Error) => {
-      clearTimeout(timeout);
-      if (!resolved) {
-        resolved = true;
-        resolve({
-          stdout: stdout.join(""),
-          stderr: `Process error: ${error.message}`,
-          exitCode: -1,
-        });
-      }
+    proc.on("error", () => {
+      resolve(null);
     });
   });
 }
 
-function parseJsonOutput(stdout: string): { parsed: any; error?: string } {
-  const trimmed = stdout.trim();
-  if (!trimmed) {
-    return { parsed: null, error: "No output from Python script" };
-  }
+// Wrapper to match expected interface from analysisOrchestrator
+export async function executePythonCode(params: {
+  code: string;
+  filePath: string;
+  sheetName: string;
+  timeoutMs: number;
+}) {
+  const result = await executePython(params.code, {
+    maxExecutionTime: params.timeoutMs,
+    // Enable file write/network if needed, but keeping default secure for now
+  });
 
-  const lines = trimmed.split("\n");
-  const lastLine = lines[lines.length - 1];
-
-  try {
-    const parsed = JSON.parse(lastLine);
-    return { parsed };
-  } catch (e) {
+  let output: any = {};
+  if (result.success) {
     try {
-      const parsed = JSON.parse(trimmed);
-      return { parsed };
-    } catch (e2) {
-      return {
-        parsed: null,
-        error: `Failed to parse JSON output: ${(e2 as Error).message}. Output: ${trimmed.slice(0, 500)}`,
-      };
+      // Try to find the JSON output block if mixed with logs
+      const stdout = result.stdout;
+      // Heuristic: check if stdout acts like JSON or look for specific markers if implemented
+      // For now assume stdout IS the JSON output
+      output = JSON.parse(stdout);
+    } catch (e) {
+      // If not JSON, strictly speaking it might be just logs or failure in output generation
+      console.warn("[executePythonCode] Failed to parse output as JSON", e);
+      // Fallback: treat stdout as logs
+      output = { logs: [result.stdout, result.stderr].filter(Boolean) };
     }
-  }
-}
-
-export async function executePythonCode(
-  params: ExecutePythonCodeParams
-): Promise<ExecutePythonCodeResult> {
-  const { code, filePath, sheetName, timeoutMs = DEFAULT_TIMEOUT_MS } = params;
-  const startTime = Date.now();
-
-  ensureSandboxDirectory();
-
-  const scriptPath = generateTempFilePath(".py");
-  const wrappedCode = buildWrapperCode(code, filePath, sheetName);
-
-  try {
-    fs.writeFileSync(scriptPath, wrappedCode, { encoding: "utf-8", mode: 0o600 });
-
-    const { stdout, stderr, exitCode } = await executePythonProcess(scriptPath, timeoutMs);
-    const executionTimeMs = Date.now() - startTime;
-
-    if (exitCode === -1) {
-      return {
-        success: false,
-        error: "Execution timed out or was terminated",
-        executionTimeMs,
-      };
-    }
-
-    const { parsed, error: parseError } = parseJsonOutput(stdout);
-
-    if (parseError) {
-      return {
-        success: false,
-        error: parseError + (stderr ? `\nStderr: ${stderr}` : ""),
-        executionTimeMs,
-      };
-    }
-
-    if (parsed && parsed._error) {
-      return {
-        success: false,
-        error: parsed._error_message || "Unknown execution error",
-        output: {
-          logs: parsed.logs || [],
-          traceback: parsed._traceback,
-        },
-        executionTimeMs,
-      };
-    }
-
-    return {
-      success: true,
-      output: parsed,
-      executionTimeMs,
-    };
-  } catch (error) {
-    const executionTimeMs = Date.now() - startTime;
-    return {
-      success: false,
-      error: `Sandbox execution error: ${(error as Error).message}`,
-      executionTimeMs,
-    };
-  } finally {
-    cleanupTempFile(scriptPath);
-  }
-}
-
-export async function initializeSandbox(): Promise<void> {
-  ensureSandboxDirectory();
-  console.log(`[PythonSandbox] Sandbox directory initialized at ${SANDBOX_DIR}`);
-}
-
-export function validateCodeBeforeExecution(code: string): { valid: boolean; errors: string[] } {
-  const errors: string[] = [];
-
-  const dangerousPatterns = [
-    { pattern: /import\s+os\b/, message: "Import of 'os' module is not allowed" },
-    { pattern: /from\s+os\s+import/, message: "Import from 'os' module is not allowed" },
-    { pattern: /import\s+subprocess\b/, message: "Import of 'subprocess' module is not allowed" },
-    { pattern: /from\s+subprocess\s+import/, message: "Import from 'subprocess' module is not allowed" },
-    { pattern: /import\s+shutil\b/, message: "Import of 'shutil' module is not allowed" },
-    { pattern: /from\s+shutil\s+import/, message: "Import from 'shutil' module is not allowed" },
-    { pattern: /import\s+socket\b/, message: "Import of 'socket' module is not allowed" },
-    { pattern: /from\s+socket\s+import/, message: "Import from 'socket' module is not allowed" },
-    { pattern: /import\s+urllib\b/, message: "Import of 'urllib' module is not allowed" },
-    { pattern: /from\s+urllib\s+import/, message: "Import from 'urllib' module is not allowed" },
-    { pattern: /import\s+requests\b/, message: "Import of 'requests' module is not allowed" },
-    { pattern: /from\s+requests\s+import/, message: "Import from 'requests' module is not allowed" },
-    { pattern: /import\s+http\b/, message: "Import of 'http' module is not allowed" },
-    { pattern: /from\s+http\s+import/, message: "Import from 'http' module is not allowed" },
-    { pattern: /\beval\s*\(/, message: "Use of 'eval()' is not allowed" },
-    { pattern: /\bexec\s*\(/, message: "Use of 'exec()' is not allowed" },
-    { pattern: /\bcompile\s*\(/, message: "Use of 'compile()' is not allowed" },
-    { pattern: /__import__\s*\(/, message: "Use of '__import__()' is not allowed" },
-    { pattern: /open\s*\([^)]*['"][wa]\+?['"]/, message: "Opening files in write mode is not allowed" },
-    { pattern: /\.\s*__class__/, message: "Access to '__class__' is not allowed" },
-    { pattern: /\.\s*__bases__/, message: "Access to '__bases__' is not allowed" },
-    { pattern: /\.\s*__subclasses__/, message: "Access to '__subclasses__' is not allowed" },
-    { pattern: /\.\s*__globals__/, message: "Access to '__globals__' is not allowed" },
-  ];
-
-  for (const { pattern, message } of dangerousPatterns) {
-    if (pattern.test(code)) {
-      errors.push(message);
-    }
+  } else {
+    output = { logs: [result.stdout, result.stderr].filter(Boolean) };
   }
 
   return {
-    valid: errors.length === 0,
-    errors,
+    success: result.success,
+    error: result.error || (result.exitCode !== 0 ? result.stderr : undefined),
+    executionTimeMs: result.executionTime,
+    output
   };
 }
 
-export const pythonSandbox = {
+export async function initializeSandbox() {
+  try {
+    await fs.mkdir(DEFAULT_CONFIG.tempDir, { recursive: true });
+  } catch {
+    // ignore
+  }
+}
+
+export default {
+  executePython,
+  safeExecutePython,
+  validateCode,
+  getPythonVersion,
   executePythonCode,
   initializeSandbox,
-  validateCodeBeforeExecution,
+  DEFAULT_CONFIG,
 };
-
-export default pythonSandbox;

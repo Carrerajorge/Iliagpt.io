@@ -1,64 +1,132 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { X, Chrome, Apple, Building2, Phone, ArrowLeft, Eye, EyeOff } from "lucide-react";
+import { X, Chrome, Apple, Building2, Phone, ArrowLeft, Eye, EyeOff, AlertCircle, CheckCircle } from "lucide-react";
+import { validateEmail, validatePassword, validatePasswordMatch, getPasswordStrength } from "@/lib/validation";
+import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 
 export default function SignupPage() {
   const [, setLocation] = useLocation();
+  const { settings: platformSettings, isLoading: platformLoading } = usePlatformSettings();
+  const allowRegistration = platformSettings.allow_registration;
+  const supportEmail = (platformSettings.support_email || "").trim();
   const [step, setStep] = useState<"social" | "email">("social");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+
+  // Validation results
+  const emailValidation = useMemo(() => validateEmail(email), [email]);
+  const passwordValidation = useMemo(() => validatePassword(password), [password]);
+  const passwordMatchValidation = useMemo(() => validatePasswordMatch(password, confirmPassword), [password, confirmPassword]);
+  const passwordStrength = useMemo(() => getPasswordStrength(password), [password]);
+
+  const isFormValid = emailValidation.isValid && passwordValidation.isValid && passwordMatchValidation.isValid;
 
   const handleEmailContinue = () => {
-    if (email) {
+    setTouched(prev => ({ ...prev, email: true }));
+    if (emailValidation.isValid) {
       setStep("email");
     }
   };
 
   const handleSignup = () => {
-    if (password && password === confirmPassword) {
-      // Redirect to Replit Auth
-      window.location.href = "/api/login";
+    setTouched({ email: true, password: true, confirmPassword: true });
+    if (isFormValid) {
+      // Email/password signup is completed in the first-party login flow.
+      // Keep the email context and avoid legacy Replit-only redirects.
+      const emailParam = encodeURIComponent(email);
+      window.location.href = `/login?email=${emailParam}`;
     }
   };
 
-  const handleSocialSignup = () => {
-    // Redirect to Replit Auth (supports Google, Apple, etc.)
-    window.location.href = "/api/login";
+  const handleBlur = (field: string) => {
+    setTouched(prev => ({ ...prev, [field]: true }));
   };
+
+  // Password strength indicator colors
+  const strengthColors = ['bg-red-500', 'bg-orange-500', 'bg-yellow-500', 'bg-lime-500', 'bg-green-500'];
+
+  const handleSocialSignup = () => {
+    // Direct Google OAuth entrypoint (first-party), avoiding legacy Replit OIDC redirects.
+    window.location.href = "/api/auth/google";
+  };
+
+  if (!platformLoading && !allowRegistration) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <div className="w-full max-w-md relative space-y-4">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="absolute -top-2 -right-2 z-10"
+            onClick={() => setLocation("/welcome")}
+            data-testid="button-close-signup-disabled"
+          >
+            <X className="h-5 w-5" />
+          </Button>
+
+          <div className="text-center mb-2 mt-4">
+            <h1 className="text-2xl font-semibold mb-2">Registro deshabilitado</h1>
+            <p className="text-muted-foreground">
+              En este momento no se aceptan nuevas cuentas.
+            </p>
+            {supportEmail ? (
+              <p className="text-sm text-muted-foreground mt-2">
+                Soporte:{" "}
+                <a className="text-primary hover:underline" href={`mailto:${supportEmail}`}>
+                  {supportEmail}
+                </a>
+              </p>
+            ) : null}
+          </div>
+
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setLocation("/login")}>
+              Iniciar sesion
+            </Button>
+            <Button className="flex-1" onClick={() => setLocation("/welcome")}>
+              Volver
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (step === "email") {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-4">
-        <div className="w-full max-w-md relative">
-          <Button 
-            variant="ghost" 
+      <div className="min-h-screen bg-white flex items-center justify-center p-4">
+        <div className="w-full max-w-md">
+          <div className="rounded-3xl border border-black/10 bg-white p-8 shadow-sm relative">
+          <Button
+            variant="ghost"
             size="icon"
-            className="absolute -top-2 -left-2"
+            className="absolute top-4 left-4 rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-black/5"
             onClick={() => setStep("social")}
             data-testid="button-back-signup"
           >
             <ArrowLeft className="h-5 w-5" />
           </Button>
 
-          <Button 
-            variant="ghost" 
+          <Button
+            variant="ghost"
             size="icon"
-            className="absolute -top-2 -right-2"
+            className="absolute top-4 right-4 z-10 rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-black/5"
             onClick={() => setLocation("/welcome")}
             data-testid="button-close-signup-email"
           >
             <X className="h-5 w-5" />
           </Button>
 
-          <div className="text-center mb-8 mt-4">
-            <h1 className="text-3xl font-semibold mb-3">Crea tu cuenta</h1>
-            <p className="text-muted-foreground">
+          <div className="text-center mb-8 mt-2">
+            <h1 className="text-3xl font-extrabold tracking-tight text-zinc-950 mb-3">Crea tu cuenta</h1>
+            <p className="text-zinc-600">
               Ingresa tu correo electrónico y crea una contraseña
             </p>
           </div>
@@ -66,115 +134,177 @@ export default function SignupPage() {
           <div className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="signup-email">Correo electrónico</Label>
-              <Input 
+              <Input
                 id="signup-email"
                 type="email"
                 placeholder="tu@email.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="h-12 text-base"
+                onBlur={() => handleBlur('email')}
+                className={`h-12 text-base rounded-xl bg-white border-black/10 text-zinc-900 placeholder:text-zinc-400 ${touched.email && !emailValidation.isValid ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
                 data-testid="input-signup-email"
               />
+              {touched.email && !emailValidation.isValid && (
+                <p className="text-sm text-red-500 flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3" />
+                  {emailValidation.error}
+                </p>
+              )}
+              {touched.email && emailValidation.warnings?.map((warning, i) => (
+                <p key={i} className="text-sm text-yellow-600 flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3" />
+                  {warning}
+                </p>
+              ))}
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="signup-password">Contraseña</Label>
               <div className="relative">
-                <Input 
+                <Input
                   id="signup-password"
                   type={showPassword ? "text" : "password"}
                   placeholder="Mínimo 8 caracteres"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="h-12 text-base pr-10"
+                  onBlur={() => handleBlur('password')}
+                  className={`h-12 text-base pr-10 rounded-xl bg-white border-black/10 text-zinc-900 placeholder:text-zinc-400 ${touched.password && !passwordValidation.isValid ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
                   data-testid="input-signup-password"
                 />
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="absolute right-0 top-0 h-12 w-12"
+                  className="absolute right-0 top-0 h-12 w-12 rounded-full text-zinc-600 hover:text-zinc-900 hover:bg-black/5"
                   onClick={() => setShowPassword(!showPassword)}
                   data-testid="button-toggle-password"
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </Button>
               </div>
+              {touched.password && !passwordValidation.isValid && (
+                <p className="text-sm text-red-500 flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3" />
+                  {passwordValidation.error}
+                </p>
+              )}
+              {/* Password strength indicator */}
+              {password && (
+                <div className="space-y-1">
+                  <div className="flex gap-1">
+                    {[0, 1, 2, 3, 4].map((i) => (
+                      <div
+                        key={i}
+                        className={`h-1 flex-1 rounded-full transition-colors ${
+                          i <= passwordStrength.score ? strengthColors[passwordStrength.score] : 'bg-zinc-200'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                  <p className={`text-xs ${passwordStrength.score >= 3 ? 'text-green-600' : passwordStrength.score >= 2 ? 'text-yellow-600' : 'text-red-500'}`}>
+                    Fortaleza: {passwordStrength.label}
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="signup-confirm-password">Confirmar contraseña</Label>
               <div className="relative">
-                <Input 
+                <Input
                   id="signup-confirm-password"
                   type={showConfirmPassword ? "text" : "password"}
                   placeholder="Repite tu contraseña"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="h-12 text-base pr-10"
+                  onBlur={() => handleBlur('confirmPassword')}
+                  className={`h-12 text-base pr-10 rounded-xl bg-white border-black/10 text-zinc-900 placeholder:text-zinc-400 ${touched.confirmPassword && !passwordMatchValidation.isValid ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
                   data-testid="input-signup-confirm-password"
                 />
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="absolute right-0 top-0 h-12 w-12"
+                  className="absolute right-0 top-0 h-12 w-12 rounded-full text-zinc-600 hover:text-zinc-900 hover:bg-black/5"
                   onClick={() => setShowConfirmPassword(!showConfirmPassword)}
                   data-testid="button-toggle-confirm-password"
                 >
                   {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </Button>
               </div>
-              {confirmPassword && password !== confirmPassword && (
-                <p className="text-sm text-red-500">Las contraseñas no coinciden</p>
+              {touched.confirmPassword && !passwordMatchValidation.isValid && (
+                <p className="text-sm text-red-500 flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3" />
+                  {passwordMatchValidation.error}
+                </p>
+              )}
+              {touched.confirmPassword && passwordMatchValidation.isValid && confirmPassword && (
+                <p className="text-sm text-green-600 flex items-center gap-1">
+                  <CheckCircle className="h-3 w-3" />
+                  Las contraseñas coinciden
+                </p>
               )}
             </div>
 
-            <Button 
-              className="w-full h-12 text-base mt-4"
+            <Button
+              className="w-full h-12 text-base mt-4 bg-black text-white hover:bg-zinc-900 border border-black/10 rounded-xl font-semibold"
               onClick={handleSignup}
-              disabled={!email || !password || password !== confirmPassword || password.length < 8}
+              disabled={!isFormValid}
               data-testid="button-create-account"
             >
               Crear cuenta
             </Button>
           </div>
 
-          <p className="text-center text-xs text-muted-foreground mt-6">
+          <p className="text-center text-xs text-zinc-500 mt-6">
             Al crear una cuenta, aceptas nuestros{" "}
-            <a href="#" className="text-primary hover:underline">Términos de servicio</a>
+            <button
+              type="button"
+              className="text-zinc-900 font-semibold underline decoration-zinc-300 underline-offset-4 hover:decoration-zinc-600"
+              onClick={() => setLocation("/terms")}
+            >
+              Términos de servicio
+            </button>
             {" "}y{" "}
-            <a href="#" className="text-primary hover:underline">Política de privacidad</a>
+            <button
+              type="button"
+              className="text-zinc-900 font-semibold underline decoration-zinc-300 underline-offset-4 hover:decoration-zinc-600"
+              onClick={() => setLocation("/privacy-policy")}
+            >
+              Política de privacidad
+            </button>
           </p>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
-      <div className="w-full max-w-md relative">
-        <Button 
-          variant="ghost" 
+    <div className="min-h-screen bg-white flex items-center justify-center p-4">
+      <div className="w-full max-w-md">
+        <div className="rounded-3xl border border-black/10 bg-white p-8 shadow-sm relative">
+        <Button
+          variant="ghost"
           size="icon"
-          className="absolute -top-2 -right-2"
+          className="absolute top-4 right-4 z-10 rounded-full text-zinc-500 hover:text-zinc-900 hover:bg-black/5"
           onClick={() => setLocation("/welcome")}
           data-testid="button-close-signup"
         >
           <X className="h-5 w-5" />
         </Button>
 
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-semibold mb-3">Crea tu cuenta</h1>
-          <p className="text-muted-foreground">
+        <div className="text-center mb-8 mt-2">
+          <h1 className="text-3xl font-extrabold tracking-tight text-zinc-950 mb-3">Crea tu cuenta</h1>
+          <p className="text-zinc-600">
             Obtendrás respuestas más inteligentes, podrás cargar archivos e imágenes, y más.
           </p>
         </div>
 
         <div className="space-y-3">
-          <Button 
-            variant="outline" 
-            className="w-full h-14 justify-center gap-3 text-base font-medium border-2 hover:bg-muted/50 hover:border-primary/30 transition-all duration-200 rounded-xl shadow-sm"
+          <Button
+            variant="outline"
+            className="w-full h-12 justify-center gap-3 text-base font-semibold border-black/10 bg-white text-zinc-900 hover:bg-zinc-50 transition-colors rounded-xl shadow-sm"
             onClick={handleSocialSignup}
             data-testid="button-signup-google"
           >
@@ -187,9 +317,9 @@ export default function SignupPage() {
             Continuar con Google
           </Button>
 
-          <Button 
-            variant="outline" 
-            className="w-full h-12 justify-start gap-3 text-base font-normal opacity-50 cursor-not-allowed"
+          <Button
+            variant="outline"
+            className="w-full h-12 justify-start gap-3 text-base font-normal bg-zinc-50 border-black/10 text-zinc-500 cursor-not-allowed hover:bg-zinc-50"
             disabled
             data-testid="button-signup-apple"
           >
@@ -197,9 +327,9 @@ export default function SignupPage() {
             Continuar con Apple
           </Button>
 
-          <Button 
-            variant="outline" 
-            className="w-full h-12 justify-start gap-3 text-base font-normal opacity-50 cursor-not-allowed"
+          <Button
+            variant="outline"
+            className="w-full h-12 justify-start gap-3 text-base font-normal bg-zinc-50 border-black/10 text-zinc-500 cursor-not-allowed hover:bg-zinc-50"
             disabled
             data-testid="button-signup-microsoft"
           >
@@ -212,9 +342,9 @@ export default function SignupPage() {
             Continuar con Microsoft
           </Button>
 
-          <Button 
-            variant="outline" 
-            className="w-full h-12 justify-start gap-3 text-base font-normal opacity-50 cursor-not-allowed"
+          <Button
+            variant="outline"
+            className="w-full h-12 justify-start gap-3 text-base font-normal bg-zinc-50 border-black/10 text-zinc-500 cursor-not-allowed hover:bg-zinc-50"
             disabled
             data-testid="button-signup-phone"
           >
@@ -224,22 +354,22 @@ export default function SignupPage() {
         </div>
 
         <div className="flex items-center gap-4 my-6">
-          <div className="flex-1 h-px bg-border" />
-          <span className="text-muted-foreground text-sm">o</span>
-          <div className="flex-1 h-px bg-border" />
+          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-zinc-200 to-transparent" />
+          <span className="text-zinc-500 text-sm">o</span>
+          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-zinc-200 to-transparent" />
         </div>
 
         <div className="space-y-4">
-          <Input 
+          <Input
             type="email"
             placeholder="Dirección de correo electrónico"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="h-12 text-base"
+            className="h-12 text-base rounded-xl bg-white border-black/10 text-zinc-900 placeholder:text-zinc-400"
             data-testid="input-signup-email-initial"
           />
-          <Button 
-            className="w-full h-12 text-base"
+          <Button
+            className="w-full h-12 text-base bg-black text-white hover:bg-zinc-900 border border-black/10 rounded-xl font-semibold"
             onClick={handleEmailContinue}
             disabled={!email}
             data-testid="button-signup-continue"
@@ -248,16 +378,17 @@ export default function SignupPage() {
           </Button>
         </div>
 
-        <p className="text-center text-sm text-muted-foreground mt-6">
+        <p className="text-center text-sm text-zinc-500 mt-6">
           ¿Ya tienes una cuenta?{" "}
-          <button 
+          <button
             onClick={() => setLocation("/login")}
-            className="text-primary hover:underline"
+            className="text-zinc-900 font-semibold underline decoration-zinc-300 underline-offset-4 hover:decoration-zinc-600"
             data-testid="link-goto-login"
           >
             Inicia sesión
           </button>
         </p>
+        </div>
       </div>
     </div>
   );

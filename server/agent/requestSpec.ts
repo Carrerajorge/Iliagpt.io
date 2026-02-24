@@ -43,7 +43,8 @@ export const SpecializedAgentSchema = z.enum([
   "browser",
   "document",
   "qa",
-  "security"
+  "security",
+  "computer_use"
 ]);
 export type SpecializedAgent = z.infer<typeof SpecializedAgentSchema>;
 
@@ -125,7 +126,9 @@ const INTENT_PATTERNS: Record<IntentType, RegExp[]> = {
   research: [
     /\b(investiga|busca|encuentra|search|find|research|look up|investigar)\b/i,
     /\b(qué es|what is|cuál es|who is|quién es)\b/i,
-    /\b(información sobre|info about|datos de)\b/i
+    /\b(información sobre|info about)\b/i,
+    // "datos de" tends to collide with data_analysis. Avoid obvious analysis contexts.
+    /\b(datos de|datos sobre)\b(?!.*\b(ventas|sales|presupuesto|budget|cálculo|calculo|usuarios|users|estadísticas|estadisticas|statistics)\b)/i
   ],
   document_analysis: [
     /\b(analiza|analyze|revisa|review|examina|examine)\b.*\b(documento|document|archivo|file|pdf|excel|word)\b/i,
@@ -133,7 +136,8 @@ const INTENT_PATTERNS: Record<IntentType, RegExp[]> = {
   ],
   document_generation: [
     /\b(crea|create|genera|generate|escribe|write|redacta|draft)\b.*\b(documento|document|informe|report|carta|letter)\b/i,
-    /\b(hazme|make me|prepara|prepare)\b.*\b(un|a)\b/i
+    // Broad, but avoid stealing obvious presentation/spreadsheet/image requests.
+    /\b(hazme|make me|prepara|prepare)\b.*\b(un|a)\b(?!.*\b(presentación|presentation|ppt|powerpoint|slides|diapositivas|excel|spreadsheet|hoja de cálculo|hoja de calculo|tabla|table|imagen|image|foto|illustration|ilustración|ilustracion)\b)/i
   ],
   presentation_creation: [
     /\b(crea|create|genera|generate|hazme|make)\b.*\b(presentación|presentation|ppt|powerpoint|slides|diapositivas)\b/i
@@ -150,8 +154,26 @@ const INTENT_PATTERNS: Record<IntentType, RegExp[]> = {
     /\b(implementa|implement|desarrolla|develop|crea|create)\b.*\b(en|in)\b.*\b(python|javascript|typescript|java|c\+\+)\b/i
   ],
   web_automation: [
+    // Navigation to websites (with or without "web/sitio" keyword — detect by URL patterns)
     /\b(navega|navigate|abre|open|visita|visit|scrape|extrae de)\b.*\b(web|página|page|sitio|site|url)\b/i,
-    /\b(automatiza|automate)\b.*\b(browser|navegador)\b/i
+    /\b(navega|navigate|abre|open|visita|visit|ve a|ir a|entra|ingresa|accede|go to)\b.*\b(\.com|\.pe|\.org|\.net|\.io|www\.)\b/i,
+    /\b(navega|navigate|abre|open|visita|visit|ve a|ir a|entra|ingresa|accede|go to)\b.*\b(google|youtube|amazon|facebook|twitter|instagram|linkedin|whatsapp|wikipedia|mercadolibre|mesa247)\b/i,
+    /\b(automatiza|automate)\b.*\b(browser|navegador)\b/i,
+    /\b(reserva|reservación|reservation|book|booking)\b.*\b(restaurante|restaurant|hotel|vuelo|flight|mesa|table)\b/i,
+    /\b(compra|buy|purchase|ordena|order)\b.*\b(en línea|online|web|internet|boleto|ticket)\b/i,
+    /\b(busca y|search and)\b.*\b(reserva|book|compra|buy|registra|register)\b/i,
+    // Broader patterns for flight/hotel/travel searches and actions
+    /\b(busca|buscar|encuentra|search|find)\b.*\b(vuelos?|flights?|pasajes?|boletos?|tickets?)\b/i,
+    /\b(busca|buscar|encuentra|search|find)\b.*\b(hoteles?|hotels?|hospedaje|alojamiento|accommodation)\b/i,
+    /\b(reserva|book|compra|buy)\b.*\b(vuelos?|flights?|pasajes?|boletos?)\b/i,
+    // Direct web actions with URL patterns
+    /\b(haz|make|realiza|do|ejecuta|execute)\b.*\b(en|on|in)\b.*\b(\.com|\.pe|web|sitio|página)\b/i,
+    // Explicit browser control commands
+    /\b(usa|use|controla|control)\b.*\b(navegador|browser|chromium|chrome)\b/i,
+    // "navega a [anything]" — navigation verb always implies browser automation
+    /\b(navega|navigate|visita|visit)\b\s+(a|to|hacia)\b/i,
+    // "busca en [website]" pattern
+    /\b(busca|search|encuentra|find)\b.*\b(en|on|in)\b.*\b(\.com|\.pe|\.org|google|youtube|amazon)\b/i,
   ],
   image_generation: [
     /\b(genera|generate|crea|create|dibuja|draw|hazme|make)\b.*\b(imagen|image|foto|photo|ilustración|illustration)\b/i
@@ -196,6 +218,29 @@ const AGENT_MAPPING: Record<IntentType, SpecializedAgent[]> = {
 
 export function detectIntent(message: string, attachments: AttachmentSpec[] = []): { intent: IntentType; confidence: number } {
   const lowerMessage = message.toLowerCase();
+
+  // Reservation override: even short prompts like "reserva en cala para 2"
+  // should route to web automation instead of generic chat.
+  const hasReservationVerb = /\b(reserva|reservar|reservacion|reservation|book|booking)\b/i.test(lowerMessage);
+  const hasBookingContext =
+    /\b(restaurante|restaurant|mesa|table|hotel|vuelo|flight)\b/i.test(lowerMessage) ||
+    /\b(?:para|for)\s+\d{1,2}\b/i.test(lowerMessage) ||
+    /\b\d{1,2}\s*(?:personas?|people|guests?|comensales?)\b/i.test(lowerMessage) ||
+    /\b\d{1,2}(?::\d{2})\s*(?:am|pm)?\b/i.test(lowerMessage) ||
+    /\b(hoy|manana|mañana|today|tomorrow|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/i.test(lowerMessage) ||
+    /\ben\s+[a-záéíóúñ]/i.test(lowerMessage);
+  if (hasReservationVerb && hasBookingContext) {
+    return { intent: "web_automation", confidence: 0.9 };
+  }
+
+  // Special-case: combined research + document deliverable (e.g., "investiga ... y crea un Word")
+  // We treat this as a multi-step task so the agent will both research and generate a DOCX artifact.
+  const wantsResearch = /\b(investiga|busca|encuentra|search|find|research|look up|investigar)\b/i.test(lowerMessage);
+  const wantsWordDoc = /\b(word|docx?|documento|informe|report|whitepaper)\b/i.test(lowerMessage);
+  const wantsCreateOrWrite = /\b(crea|create|genera|generate|escribe|write|redacta|draft|prepara|prepare)\b/i.test(lowerMessage);
+  if (wantsResearch && wantsWordDoc && wantsCreateOrWrite) {
+    return { intent: "multi_step_task", confidence: 0.9 };
+  }
   
   if (attachments.length > 0) {
     const hasDocuments = attachments.some(a => 
@@ -209,8 +254,31 @@ export function detectIntent(message: string, attachments: AttachmentSpec[] = []
     }
   }
   
-  for (const [intent, patterns] of Object.entries(INTENT_PATTERNS) as [IntentType, RegExp[]][]) {
-    if (intent === "chat" || intent === "unknown") continue;
+  // PRIORITY: Check web_automation first — navigation commands should always route to browser,
+  // even if they also contain words like "busca" that match research patterns.
+  const webAutoPatterns = INTENT_PATTERNS.web_automation || [];
+  for (const pattern of webAutoPatterns) {
+    if (pattern.test(lowerMessage)) {
+      return { intent: "web_automation", confidence: 0.85 };
+    }
+  }
+
+  // Check intents in priority order: specific before general.
+  // presentation/spreadsheet before document_generation (which has broader patterns),
+  // data_analysis before research (which has broader patterns like "datos de").
+  const INTENT_CHECK_ORDER: IntentType[] = [
+    "document_analysis",
+    "presentation_creation",
+    "spreadsheet_creation",
+    "data_analysis",
+    "image_generation",
+    "code_generation",
+    "document_generation",
+    "multi_step_task",
+    "research",
+  ];
+  for (const intent of INTENT_CHECK_ORDER) {
+    const patterns = INTENT_PATTERNS[intent] || [];
     for (const pattern of patterns) {
       if (pattern.test(lowerMessage)) {
         return { intent, confidence: 0.8 };
@@ -233,8 +301,14 @@ export function createRequestSpec(params: {
   attachments?: AttachmentSpec[];
   sessionState?: SessionState;
   constraints?: Partial<QualityConstraints>;
+  /** When provided by the intent analysis layer, skips regex detectIntent(). */
+  intentOverride?: IntentType;
+  /** Confidence from the planner (used only when intentOverride is set). */
+  confidenceOverride?: number;
 }): RequestSpec {
-  const { intent, confidence } = detectIntent(params.rawMessage, params.attachments);
+  const { intent, confidence } = params.intentOverride
+    ? { intent: params.intentOverride, confidence: params.confidenceOverride ?? 0.8 }
+    : detectIntent(params.rawMessage, params.attachments);
   const deliverableType = DELIVERABLE_MAPPING[intent];
   const targetAgents = AGENT_MAPPING[intent];
   

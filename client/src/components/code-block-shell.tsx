@@ -393,7 +393,7 @@ export function CodeBlockShell({
   const scrollToLine = useCallback((lineNum: number) => {
     const container = codeContainerRef.current;
     if (!container) return;
-    
+
     const targetScrollTop = (lineNum - 1) * LINE_HEIGHT;
     container.scrollTo({
       top: Math.max(0, targetScrollTop - containerHeightPx / 3),
@@ -424,20 +424,25 @@ export function CodeBlockShell({
   return (
     <div
       className={cn(
-        "rounded-lg border border-zinc-800 bg-zinc-950 overflow-hidden",
+        "rounded-xl border border-zinc-800/80 bg-[#0d0d0d]/95 backdrop-blur-md overflow-hidden shadow-xl shadow-black/20",
         className
       )}
       data-testid="code-block-shell"
     >
       <div
-        className="flex items-center justify-between px-3 py-2 bg-zinc-900 border-b border-zinc-800"
+        className="flex items-center justify-between px-4 py-2 bg-gradient-to-b from-zinc-800/40 to-zinc-900/40 border-b border-zinc-800/60 backdrop-blur-sm"
         data-testid="code-block-toolbar"
       >
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-zinc-400 font-mono uppercase tracking-wide">
+        <div className="flex items-center gap-3">
+          <div className="flex gap-1.5 mr-2">
+            <div className="w-3 h-3 rounded-full bg-[#FF5F56] border border-[#E0443E] shadow-sm"></div>
+            <div className="w-3 h-3 rounded-full bg-[#FFBD2E] border border-[#DEA123] shadow-sm"></div>
+            <div className="w-3 h-3 rounded-full bg-[#27C93F] border border-[#1AAB29] shadow-sm"></div>
+          </div>
+          <span className="text-[11px] text-zinc-400 font-mono tracking-wider">
             {language}
           </span>
-          <span className="text-xs text-zinc-600">
+          <span className="text-[11px] text-zinc-600 font-mono">
             {lineCount} {lineCount === 1 ? "line" : "lines"}
           </span>
         </div>

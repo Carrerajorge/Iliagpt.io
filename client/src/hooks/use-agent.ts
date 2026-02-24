@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { apiFetch } from "@/lib/apiClient";
 
 export interface AgentStep {
   runId: string;
@@ -118,7 +119,7 @@ export function useAgent() {
   const cancel = useCallback(async () => {
     if (state.runId) {
       try {
-        await fetch(`/api/agent/runs/${state.runId}/cancel`, { method: "POST" });
+        await apiFetch(`/api/agent/runs/${state.runId}/cancel`, { method: "POST" });
         setState((prev) => ({ ...prev, status: "cancelled" }));
       } catch (e) {
         console.error("Error cancelling agent run:", e);

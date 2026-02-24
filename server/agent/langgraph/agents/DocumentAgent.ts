@@ -4,7 +4,7 @@ import { BaseAgent, BaseAgentConfig, AgentTask, AgentResult, AgentCapability } f
 
 const xaiClient = new OpenAI({
   baseURL: "https://api.x.ai/v1",
-  apiKey: process.env.XAI_API_KEY,
+  apiKey: process.env.XAI_API_KEY || "missing",
 });
 
 const DEFAULT_MODEL = "grok-4-1-fast-non-reasoning";
@@ -52,6 +52,7 @@ Output formats:
 
     try {
       const docTaskType = this.determineDocumentTaskType(task);
+      console.log(`[DocumentAgent] Task: "${task.description}" -> Type: "${docTaskType}"`);
       let result: any;
 
       switch (docTaskType) {
@@ -65,12 +66,15 @@ Output formats:
           result = await this.analyzeDocument(task);
           break;
         case "create":
+          console.log(`[DocumentAgent] Calling createDocument...`);
           result = await this.createDocument(task);
+          console.log(`[DocumentAgent] createDocument returned: content_len=${result?.content?.length || 0}`);
           break;
         case "manipulate":
           result = await this.manipulateDocument(task);
           break;
         default:
+          console.log(`[DocumentAgent] Calling handleGeneralDocument (fallback)...`);
           result = await this.handleGeneralDocument(task);
       }
 
@@ -100,7 +104,7 @@ Output formats:
     if (description.includes("parse") || description.includes("extract")) return "parse";
     if (description.includes("convert") || description.includes("transform")) return "convert";
     if (description.includes("analyze") || description.includes("summarize") || description.includes("compare")) return "analyze";
-    if (description.includes("create") || description.includes("generate")) return "create";
+    if (description.includes("create") || description.includes("generate") || description.includes("write") || description.includes("draft")) return "create";
     if (description.includes("merge") || description.includes("split") || description.includes("manipulate")) return "manipulate";
     return "general";
   }
@@ -210,28 +214,59 @@ Provide:
   private async createDocument(task: AgentTask): Promise<any> {
     const docType = task.input.docType || "document";
     const template = task.input.template || null;
+    const section = task.input.section || null;
+    const tone = task.input.tone || "formal";
+
+    // Build a targeted prompt based on available information
+    let userPrompt = "";
+
+    if (section && section.title) {
+      // This is a section writing task from the production pipeline
+      const sectionTitle = section.title || "Untitled Section";
+      const sectionObjective = section.objective || "";
+      const targetWords = section.targetWordCount || 200;
+
+      userPrompt = `Escribe el contenido para la sección "${sectionTitle}" de un documento profesional.
+
+Objetivo de la sección: ${sectionObjective || "Desarrollar el tema de manera completa y profesional."}
+
+Tono: ${tone}
+Extensión objetivo: Aproximadamente ${targetWords} palabras.
+
+INSTRUCCIONES:
+1. Escribe contenido sustancial y profesional en español
+2. Usa formato markdown cuando sea apropiado (listas, énfasis)
+3. NO incluyas el título de la sección (ya está agregado)
+4. Enfócate solo en el CONTENIDO del cuerpo de la sección
+5. Sé específico y detallado
+
+Genera el contenido ahora:`;
+    } else {
+      // Generic document creation
+      userPrompt = `Create a ${docType} document:
+Task: ${task.description}
+Template: ${template ? JSON.stringify(template) : "none"}
+Requirements: ${JSON.stringify(task.input)}
+
+Generate complete document content with proper formatting in markdown.`;
+    }
 
     const response = await xaiClient.chat.completions.create({
       model: this.config.model,
       messages: [
         { role: "system", content: this.config.systemPrompt },
-        {
-          role: "user",
-          content: `Create a ${docType} document:
-Task: ${task.description}
-Template: ${template ? JSON.stringify(template) : "none"}
-Requirements: ${JSON.stringify(task.input)}
-
-Generate complete document content with proper formatting.`,
-        },
+        { role: "user", content: userPrompt },
       ],
       temperature: 0.3,
     });
 
+    const generatedContent = response.choices[0].message.content || "";
+    console.log(`[DocumentAgent] createDocument generated ${generatedContent.length} chars for "${section?.title || 'generic'}"`);
+
     return {
       type: "document_creation",
       docType,
-      content: response.choices[0].message.content,
+      content: generatedContent,
       timestamp: new Date().toISOString(),
     };
   }

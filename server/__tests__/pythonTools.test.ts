@@ -204,5 +204,20 @@ describe('Python Tools Integration', () => {
       const customClient = new PythonToolsClient('http://custom-api:9000');
       expect(customClient.getBaseUrl()).toBe('http://custom-api:9000');
     });
+
+    it('should reject invalid base URL', () => {
+      expect(() => new PythonToolsClient('ht!tp://invalid-url')).toThrow(/Invalid Python tool service URL|Python tool service URL is required/);
+    });
+
+    it('should reject invalid tool names without contacting remote service', async () => {
+      await expect(client.getTool('invalid tool!')).rejects.toThrow(PythonToolsClientError);
+      await expect(client.executeTool('invalid tool!', {})).rejects.toThrow(PythonToolsClientError);
+      await expect(client.getAgent('invalid/agent')).rejects.toThrow(PythonToolsClientError);
+    });
+
+    it('should reject oversized agent tasks before remote execution', async () => {
+      const oversizedTask = "x".repeat(4_500);
+      await expect(client.executeAgent("assistant", oversizedTask)).rejects.toThrow(PythonToolsClientError);
+    });
   });
 });

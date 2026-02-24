@@ -6,6 +6,8 @@
 @import "./styles/animations.css";
 @import "./styles/mobile.css";
 @import "./styles/micro-animations.css";
+@import "./styles/premium-effects.css";
+@import "./styles/marketing-minimal.css";
 @import "./styles/accessibility.css";
 
 @custom-variant dark (&:is(.dark *));
@@ -43,8 +45,8 @@
   transition: all 0.2s ease;
 }
 
-.floating-label input:focus + span,
-.floating-label input:not(:placeholder-shown) + span {
+.floating-label input:focus+span,
+.floating-label input:not(:placeholder-shown)+span {
   transform: translateY(-1.5rem) translateX(-0.5rem);
   font-size: 0.75rem;
   color: hsl(var(--foreground));
@@ -67,9 +69,11 @@
 .surface-1 {
   background-color: hsl(var(--bg-surface-1));
 }
+
 .surface-2 {
   background-color: hsl(var(--bg-surface-2));
 }
+
 .surface-3 {
   background-color: hsl(var(--bg-surface-3));
 }
@@ -78,9 +82,11 @@
 .text-token-primary {
   color: hsl(var(--text-primary));
 }
+
 .text-token-secondary {
   color: hsl(var(--text-secondary));
 }
+
 .text-token-tertiary {
   color: hsl(var(--text-tertiary));
 }
@@ -89,9 +95,11 @@
 .icon-token-primary {
   color: hsl(var(--icon-primary));
 }
+
 .icon-token-secondary {
   color: hsl(var(--icon-secondary));
 }
+
 .icon-token-tertiary {
   color: hsl(var(--icon-tertiary));
 }
@@ -112,6 +120,16 @@
 
 .liquid-bg-light {
   background-color: hsl(var(--background));
+}
+
+/* Minimal background: subtle grid + soft vignette (stays readable in light/dark). */
+.paper-grid {
+  background-color: hsl(var(--background));
+  background-image:
+    radial-gradient(circle at 1px 1px, hsl(var(--foreground) / 0.06) 1px, transparent 0),
+    radial-gradient(circle at 50% 20%, hsl(var(--foreground) / 0.035), transparent 55%);
+  background-size: 28px 28px, auto;
+  background-position: 0 0, center;
 }
 
 /* Simple Card - Uses design tokens */
@@ -233,7 +251,7 @@
   transform: translateX(4px);
 }
 
-/* Smooth scrollbar for liquid feel */
+/* Smooth scrollbar for liquid feel - explicitly classed */
 .liquid-scroll::-webkit-scrollbar {
   width: 6px;
 }
@@ -249,6 +267,24 @@
 
 .liquid-scroll::-webkit-scrollbar-thumb:hover {
   background-color: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* Global Thin Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--border) / 0.7);
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground)/0.5);
 }
 
 /* Simple glow effect - Uses design tokens */
@@ -362,6 +398,7 @@
 }
 
 @media (max-width: 768px) {
+
   .data-table th,
   .data-table td {
     font-size: 13px;
@@ -370,9 +407,210 @@
 }
 
 @media (max-width: 480px) {
+
   .data-table th,
   .data-table td {
     font-size: 12px;
     padding: 8px 10px;
+  }
+}
+
+/* ============================================================================
+   RESPONSIVE DESIGN - Mobile First Approach
+   ============================================================================ */
+
+/* Touch-friendly minimum sizes */
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Mobile Navigation */
+@media (max-width: 768px) {
+  /* Sidebar */
+  .sidebar-container {
+    position: fixed;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+  }
+  
+  .sidebar-container.open {
+    transform: translateX(0);
+  }
+  
+  /* Main content takes full width on mobile */
+  .main-content {
+    width: 100% !important;
+    margin-left: 0 !important;
+  }
+  
+  /* Chat input area */
+  .chat-input-container {
+    padding: 8px 12px;
+  }
+  
+  /* Message bubbles */
+  .message-content {
+    max-width: 90%;
+    font-size: 15px;
+  }
+  
+  /* Buttons - larger touch targets */
+  button, .btn {
+    min-height: 44px;
+    padding: 10px 16px;
+  }
+  
+  /* Hide non-essential elements */
+  .hide-mobile {
+    display: none !important;
+  }
+  
+  /* Stack elements vertically */
+  .flex-mobile-col {
+    flex-direction: column;
+  }
+  
+  /* Full width on mobile */
+  .w-mobile-full {
+    width: 100% !important;
+  }
+  
+  /* Modals */
+  .modal-content, .dialog-content {
+    width: 95vw !important;
+    max-width: 95vw !important;
+    margin: 10px;
+  }
+  
+  /* Admin panel tabs - scrollable */
+  .admin-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  
+  .admin-tabs::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Small phones */
+@media (max-width: 375px) {
+  .message-content {
+    font-size: 14px;
+  }
+  
+  .chat-header {
+    padding: 8px;
+  }
+  
+  h1 { font-size: 1.5rem; }
+  h2 { font-size: 1.25rem; }
+  h3 { font-size: 1.1rem; }
+}
+
+/* Tablet */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .sidebar-container {
+    width: 260px;
+  }
+  
+  .main-content {
+    margin-left: 260px;
+  }
+}
+
+/* Desktop */
+@media (min-width: 1025px) {
+  .sidebar-container {
+    width: 280px;
+  }
+  
+  .main-content {
+    margin-left: 280px;
+  }
+}
+
+/* Large screens */
+@media (min-width: 1440px) {
+  .container {
+    max-width: 1400px;
+  }
+}
+
+/* Safe area for notched devices (iPhone X+) */
+@supports (padding: max(0px)) {
+  .safe-area-bottom {
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+  
+  .safe-area-top {
+    padding-top: max(16px, env(safe-area-inset-top));
+  }
+}
+
+/* Reduced motion for accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* High contrast mode */
+@media (prefers-contrast: high) {
+  :root {
+    --border-color: currentColor;
+  }
+  
+  button, .btn {
+    border: 2px solid currentColor;
+  }
+}
+
+/* Print styles */
+@media print {
+  .sidebar-container,
+  .chat-input-container,
+  .no-print {
+    display: none !important;
+  }
+  
+  .main-content {
+    margin: 0 !important;
+    width: 100% !important;
+  }
+}
+
+/* ============================================================================
+   CUSTOM KEYFRAMES FOR COMPONENTS
+   ============================================================================ */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { 
+    opacity: 0; 
+    transform: translateY(20px); 
+  }
+  to { 
+    opacity: 1; 
+    transform: translateY(0); 
+  }
+}
+
+@keyframes zoomIn {
+  from { 
+    opacity: 0; 
+    transform: scale(0.95); 
+  }
+  to { 
+    opacity: 1; 
+    transform: scale(1); 
   }
 }

@@ -65,32 +65,32 @@ const Icons = {
   ),
   bold: (
     <svg viewBox="0 0 24 24" fill="currentColor">
-      <path d="M6 4v16h6.5c2.5 0 4.5-2 4.5-4.5 0-1.93-1.23-3.58-2.95-4.2.87-.63 1.45-1.65 1.45-2.8 0-1.93-1.57-3.5-3.5-3.5H6zm3 3h2.5c.83 0 1.5.67 1.5 1.5S12.33 10 11.5 10H9V7zm0 6h3c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5H9v-3z"/>
+      <path d="M6 4v16h6.5c2.5 0 4.5-2 4.5-4.5 0-1.93-1.23-3.58-2.95-4.2.87-.63 1.45-1.65 1.45-2.8 0-1.93-1.57-3.5-3.5-3.5H6zm3 3h2.5c.83 0 1.5.67 1.5 1.5S12.33 10 11.5 10H9V7zm0 6h3c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5H9v-3z" />
     </svg>
   ),
   italic: (
     <svg viewBox="0 0 24 24" fill="currentColor">
-      <path d="M10 4v3h2.21l-3.42 10H6v3h8v-3h-2.21l3.42-10H18V4h-8z"/>
+      <path d="M10 4v3h2.21l-3.42 10H6v3h8v-3h-2.21l3.42-10H18V4h-8z" />
     </svg>
   ),
   underline: (
     <svg viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 17c3.31 0 6-2.69 6-6V3h-2.5v8c0 1.93-1.57 3.5-3.5 3.5S8.5 12.93 8.5 11V3H6v8c0 3.31 2.69 6 6 6zm-7 2v2h14v-2H5z"/>
+      <path d="M12 17c3.31 0 6-2.69 6-6V3h-2.5v8c0 1.93-1.57 3.5-3.5 3.5S8.5 12.93 8.5 11V3H6v8c0 3.31 2.69 6 6 6zm-7 2v2h14v-2H5z" />
     </svg>
   ),
   alignLeft: (
     <svg viewBox="0 0 24 24" fill="currentColor">
-      <path d="M3 5h18v2H3V5zm0 4h12v2H3V9zm0 4h18v2H3v-2zm0 4h12v2H3v-2z"/>
+      <path d="M3 5h18v2H3V5zm0 4h12v2H3V9zm0 4h18v2H3v-2zm0 4h12v2H3v-2z" />
     </svg>
   ),
   alignCenter: (
     <svg viewBox="0 0 24 24" fill="currentColor">
-      <path d="M3 5h18v2H3V5zm3 4h12v2H6V9zm-3 4h18v2H3v-2zm3 4h12v2H6v-2z"/>
+      <path d="M3 5h18v2H3V5zm3 4h12v2H6V9zm-3 4h18v2H3v-2zm3 4h12v2H6v-2z" />
     </svg>
   ),
   alignRight: (
     <svg viewBox="0 0 24 24" fill="currentColor">
-      <path d="M3 5h18v2H3V5zm6 4h12v2H9V9zm-6 4h18v2H3v-2zm6 4h12v2H9v-2z"/>
+      <path d="M3 5h18v2H3V5zm6 4h12v2H9V9zm-6 4h18v2H3v-2zm6 4h12v2H9v-2z" />
     </svg>
   ),
   merge: (
@@ -376,7 +376,7 @@ export interface RibbonCommands {
   insertColumn: () => void;
   deleteRow: () => void;
   deleteColumn: () => void;
-  insertChart: (type: 'bar' | 'line' | 'pie') => void;
+  insertChart: (type: string) => void;
   applyConditionalFormat: () => void;
   sort: (direction: 'asc' | 'desc') => void;
   filter: () => void;
@@ -420,20 +420,24 @@ const Dropdown: React.FC<DropdownProps> = ({ value, options, onChange, width = 1
   }, []);
 
   return (
-    <div className="relative" ref={dropdownRef} style={{ width }}>
-      <button
+    <div
+      className="relative"
+      ref={dropdownRef}
+      style={{ "--w": width + "px" } as React.CSSProperties}
+    >
+      <div className="w-[var(--w)]">  <button
         className={`flex items-center justify-between w-full h-[22px] px-2 border rounded text-[11px] transition-colors
           ${disabled ? 'bg-gray-100 text-gray-400 cursor-not-allowed border-gray-200' : 'bg-white border-gray-300 hover:border-gray-400 hover:bg-gray-50'}`}
         onClick={() => !disabled && setIsOpen(!isOpen)}
         disabled={disabled}
         aria-haspopup="listbox"
-        aria-expanded={isOpen}
+        aria-expanded={isOpen ? "true" : "false"}
       >
         <span className="flex-1 text-left truncate font-medium">{value}</span>
         <span className="w-3 h-3 ml-1 text-gray-500">{Icons.dropdown}</span>
-      </button>
+      </button></div>
       {isOpen && (
-        <div 
+        <div
           className="absolute top-full left-0 right-0 mt-0.5 bg-white border border-gray-300 rounded shadow-lg max-h-64 overflow-y-auto z-50"
           role="listbox"
         >
@@ -487,10 +491,10 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ color, onChange, icon, toolti
         title={tooltip}
         aria-label={tooltip}
         aria-haspopup="true"
-        aria-expanded={isOpen}
+        aria-expanded={isOpen ? "true" : "false"}
       >
         <span className="w-4 h-4">{icon}</span>
-        <div className="w-4 h-1 rounded-sm -mt-0.5" style={{ backgroundColor: color }} />
+        <div className="w-4 h-1 rounded-sm -mt-0.5 bg-[var(--bg-col)]" style={{ "--bg-col": color } as React.CSSProperties} />
       </button>
       {isOpen && (
         <div className="absolute top-full left-0 mt-1 p-2 bg-white border border-gray-300 rounded-lg shadow-xl z-50 min-w-[180px]">
@@ -551,30 +555,46 @@ const BorderPicker: React.FC<BorderPickerProps> = ({ onSelect }) => {
   }, []);
 
   const borderOptions = [
-    { type: 'all' as const, label: 'Todos los bordes', icon: (
-      <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5"/><line x1="10" y1="2" x2="10" y2="18" stroke="currentColor" strokeWidth="1"/><line x1="2" y1="10" x2="18" y2="10" stroke="currentColor" strokeWidth="1"/></svg>
-    )},
-    { type: 'outside' as const, label: 'Borde exterior', icon: (
-      <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"/></svg>
-    )},
-    { type: 'inside' as const, label: 'Bordes interiores', icon: (
-      <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2"/><line x1="10" y1="2" x2="10" y2="18" stroke="currentColor" strokeWidth="1.5"/><line x1="2" y1="10" x2="18" y2="10" stroke="currentColor" strokeWidth="1.5"/></svg>
-    )},
-    { type: 'none' as const, label: 'Sin borde', icon: (
-      <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2"/></svg>
-    )},
-    { type: 'top' as const, label: 'Borde superior', icon: (
-      <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2"/><line x1="2" y1="2" x2="18" y2="2" stroke="currentColor" strokeWidth="2"/></svg>
-    )},
-    { type: 'bottom' as const, label: 'Borde inferior', icon: (
-      <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2"/><line x1="2" y1="18" x2="18" y2="18" stroke="currentColor" strokeWidth="2"/></svg>
-    )},
-    { type: 'left' as const, label: 'Borde izquierdo', icon: (
-      <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2"/><line x1="2" y1="2" x2="2" y2="18" stroke="currentColor" strokeWidth="2"/></svg>
-    )},
-    { type: 'right' as const, label: 'Borde derecho', icon: (
-      <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2"/><line x1="18" y1="2" x2="18" y2="18" stroke="currentColor" strokeWidth="2"/></svg>
-    )},
+    {
+      type: 'all' as const, label: 'Todos los bordes', icon: (
+        <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" /><line x1="10" y1="2" x2="10" y2="18" stroke="currentColor" strokeWidth="1" /><line x1="2" y1="10" x2="18" y2="10" stroke="currentColor" strokeWidth="1" /></svg>
+      )
+    },
+    {
+      type: 'outside' as const, label: 'Borde exterior', icon: (
+        <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" /></svg>
+      )
+    },
+    {
+      type: 'inside' as const, label: 'Bordes interiores', icon: (
+        <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2" /><line x1="10" y1="2" x2="10" y2="18" stroke="currentColor" strokeWidth="1.5" /><line x1="2" y1="10" x2="18" y2="10" stroke="currentColor" strokeWidth="1.5" /></svg>
+      )
+    },
+    {
+      type: 'none' as const, label: 'Sin borde', icon: (
+        <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2" /></svg>
+      )
+    },
+    {
+      type: 'top' as const, label: 'Borde superior', icon: (
+        <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2" /><line x1="2" y1="2" x2="18" y2="2" stroke="currentColor" strokeWidth="2" /></svg>
+      )
+    },
+    {
+      type: 'bottom' as const, label: 'Borde inferior', icon: (
+        <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2" /><line x1="2" y1="18" x2="18" y2="18" stroke="currentColor" strokeWidth="2" /></svg>
+      )
+    },
+    {
+      type: 'left' as const, label: 'Borde izquierdo', icon: (
+        <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2" /><line x1="2" y1="2" x2="2" y2="18" stroke="currentColor" strokeWidth="2" /></svg>
+      )
+    },
+    {
+      type: 'right' as const, label: 'Borde derecho', icon: (
+        <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2" /><line x1="18" y1="2" x2="18" y2="18" stroke="currentColor" strokeWidth="2" /></svg>
+      )
+    },
   ];
 
   return (
@@ -585,7 +605,7 @@ const BorderPicker: React.FC<BorderPickerProps> = ({ onSelect }) => {
         title="Bordes"
         aria-label="Bordes"
         aria-haspopup="true"
-        aria-expanded={isOpen}
+        aria-expanded={isOpen ? "true" : "false"}
       >
         <span className="w-4 h-4">{Icons.borders}</span>
         <span className="w-2.5 h-2.5 text-gray-500">{Icons.dropdown}</span>
@@ -740,7 +760,7 @@ const MergePicker: React.FC<MergePickerProps> = ({ onMerge, onUnmerge }) => {
         title="Combinar celdas"
         aria-label="Combinar celdas"
         aria-haspopup="true"
-        aria-expanded={isOpen}
+        aria-expanded={isOpen ? "true" : "false"}
       >
         <span className="w-4 h-4">{Icons.merge}</span>
         <span className="w-2.5 h-2.5 text-gray-500">{Icons.dropdown}</span>
@@ -751,21 +771,21 @@ const MergePicker: React.FC<MergePickerProps> = ({ onMerge, onUnmerge }) => {
             className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] rounded hover:bg-gray-100"
             onClick={() => { onMerge(); setIsOpen(false); }}
           >
-            <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5"/><path d="M6 10h8M10 6l4 4-4 4" stroke="currentColor" strokeWidth="1.5"/></svg>
+            <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M6 10h8M10 6l4 4-4 4" stroke="currentColor" strokeWidth="1.5" /></svg>
             Combinar y centrar
           </button>
           <button
             className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] rounded hover:bg-gray-100"
             onClick={() => { onMerge(); setIsOpen(false); }}
           >
-            <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="6" fill="none" stroke="currentColor" strokeWidth="1.5"/><rect x="2" y="12" width="16" height="6" fill="none" stroke="currentColor" strokeWidth="1.5"/></svg>
+            <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="6" fill="none" stroke="currentColor" strokeWidth="1.5" /><rect x="2" y="12" width="16" height="6" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg>
             Combinar horizontalmente
           </button>
           <button
             className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] rounded hover:bg-gray-100"
             onClick={() => { onMerge(); setIsOpen(false); }}
           >
-            <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="6" height="16" fill="none" stroke="currentColor" strokeWidth="1.5"/><rect x="12" y="2" width="6" height="16" fill="none" stroke="currentColor" strokeWidth="1.5"/></svg>
+            <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="6" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" /><rect x="12" y="2" width="6" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg>
             Combinar verticalmente
           </button>
           <div className="border-t border-gray-200 my-1" />
@@ -773,7 +793,7 @@ const MergePicker: React.FC<MergePickerProps> = ({ onMerge, onUnmerge }) => {
             className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] rounded hover:bg-gray-100 text-red-600"
             onClick={() => { onUnmerge(); setIsOpen(false); }}
           >
-            <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5"/><line x1="6" y1="10" x2="14" y2="10" stroke="currentColor" strokeWidth="1.5"/></svg>
+            <svg viewBox="0 0 20 20" className="w-4 h-4"><rect x="2" y="2" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" /><line x1="6" y1="10" x2="14" y2="10" stroke="currentColor" strokeWidth="1.5" /></svg>
             Separar celdas
           </button>
         </div>
@@ -842,9 +862,9 @@ interface SplitButtonProps {
 const SplitButton: React.FC<SplitButtonProps> = ({ icon, label, onClick, onDropdownClick, size = 'large', tooltip }) => {
   return (
     <div className={`flex flex-col items-stretch rounded overflow-hidden border border-transparent hover:border-gray-300 transition-colors ${size === 'large' ? 'min-w-[48px] h-[58px]' : ''}`}>
-      <button 
-        className="flex-1 flex flex-col items-center justify-center border-none bg-transparent cursor-pointer p-1 gap-0.5 hover:bg-[rgba(0,0,0,0.06)] transition-colors" 
-        onClick={onClick} 
+      <button
+        className="flex-1 flex flex-col items-center justify-center border-none bg-transparent cursor-pointer p-1 gap-0.5 hover:bg-[rgba(0,0,0,0.06)] transition-colors"
+        onClick={onClick}
         title={tooltip || label}
         aria-label={tooltip || label}
       >
@@ -886,7 +906,7 @@ const ChartThumbnail: React.FC<{ type: string; label: string; onClick: () => voi
         <rect x="32" y="20" width="12" height="45" stroke="#111827" fill="#2563eb" fillOpacity="0.5" />
         <rect x="49" y="10" width="12" height="55" stroke="#111827" fill="#2563eb" fillOpacity="0.7" />
         <rect x="66" y="25" width="12" height="40" stroke="#111827" fill="#2563eb" fillOpacity="0.4" />
-        <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+        <line x1="10" y1="66" x2="92" y2="66" stroke="#111827" />
       </svg>
     ),
     col_stacked: (
@@ -896,7 +916,7 @@ const ChartThumbnail: React.FC<{ type: string; label: string; onClick: () => voi
         <rect x="45" y="30" width="14" height="36" stroke="#111827" fill="#2563eb" fillOpacity="0.5" />
         <rect x="45" y="16" width="14" height="14" stroke="#111827" fill="#f59e0b" fillOpacity="0.5" />
         <rect x="70" y="20" width="14" height="46" stroke="#111827" fill="#2563eb" fillOpacity="0.5" />
-        <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+        <line x1="10" y1="66" x2="92" y2="66" stroke="#111827" />
       </svg>
     ),
     bar_clustered: (
@@ -908,43 +928,43 @@ const ChartThumbnail: React.FC<{ type: string; label: string; onClick: () => voi
     ),
     line_basic: (
       <svg viewBox="0 0 100 80" fill="none" className="w-14 h-12">
-        <polyline points="12,56 34,36 56,46 86,20" stroke="#2563eb" strokeWidth="2" fill="none"/>
-        <circle cx="12" cy="56" r="3" fill="#2563eb"/>
-        <circle cx="34" cy="36" r="3" fill="#2563eb"/>
-        <circle cx="56" cy="46" r="3" fill="#2563eb"/>
-        <circle cx="86" cy="20" r="3" fill="#2563eb"/>
-        <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+        <polyline points="12,56 34,36 56,46 86,20" stroke="#2563eb" strokeWidth="2" fill="none" />
+        <circle cx="12" cy="56" r="3" fill="#2563eb" />
+        <circle cx="34" cy="36" r="3" fill="#2563eb" />
+        <circle cx="56" cy="46" r="3" fill="#2563eb" />
+        <circle cx="86" cy="20" r="3" fill="#2563eb" />
+        <line x1="10" y1="66" x2="92" y2="66" stroke="#111827" />
       </svg>
     ),
     area_basic: (
       <svg viewBox="0 0 100 80" fill="none" className="w-14 h-12">
-        <polygon points="12,66 12,56 34,36 56,46 86,20 86,66" fill="#2563eb" fillOpacity="0.3" stroke="#2563eb" strokeWidth="2"/>
-        <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+        <polygon points="12,66 12,56 34,36 56,46 86,20 86,66" fill="#2563eb" fillOpacity="0.3" stroke="#2563eb" strokeWidth="2" />
+        <line x1="10" y1="66" x2="92" y2="66" stroke="#111827" />
       </svg>
     ),
     pie_basic: (
       <svg viewBox="0 0 100 80" fill="none" className="w-14 h-12">
-        <circle cx="50" cy="40" r="28" fill="none" stroke="#111827"/>
-        <path d="M50,40 L50,12 A28,28 0 0,1 78,40 Z" fill="#2563eb" fillOpacity="0.7"/>
-        <path d="M50,40 L78,40 A28,28 0 0,1 35,65 Z" fill="#f59e0b" fillOpacity="0.7"/>
-        <path d="M50,40 L35,65 A28,28 0 0,1 50,12 Z" fill="#22c55e" fillOpacity="0.7"/>
+        <circle cx="50" cy="40" r="28" fill="none" stroke="#111827" />
+        <path d="M50,40 L50,12 A28,28 0 0,1 78,40 Z" fill="#2563eb" fillOpacity="0.7" />
+        <path d="M50,40 L78,40 A28,28 0 0,1 35,65 Z" fill="#f59e0b" fillOpacity="0.7" />
+        <path d="M50,40 L35,65 A28,28 0 0,1 50,12 Z" fill="#22c55e" fillOpacity="0.7" />
       </svg>
     ),
     scatter_basic: (
       <svg viewBox="0 0 100 80" fill="none" className="w-14 h-12">
-        <circle cx="20" cy="50" r="4" fill="#2563eb"/>
-        <circle cx="35" cy="35" r="4" fill="#2563eb"/>
-        <circle cx="50" cy="45" r="4" fill="#2563eb"/>
-        <circle cx="65" cy="25" r="4" fill="#2563eb"/>
-        <circle cx="80" cy="30" r="4" fill="#2563eb"/>
-        <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
-        <line x1="12" y1="10" x2="12" y2="66" stroke="#111827"/>
+        <circle cx="20" cy="50" r="4" fill="#2563eb" />
+        <circle cx="35" cy="35" r="4" fill="#2563eb" />
+        <circle cx="50" cy="45" r="4" fill="#2563eb" />
+        <circle cx="65" cy="25" r="4" fill="#2563eb" />
+        <circle cx="80" cy="30" r="4" fill="#2563eb" />
+        <line x1="10" y1="66" x2="92" y2="66" stroke="#111827" />
+        <line x1="12" y1="10" x2="12" y2="66" stroke="#111827" />
       </svg>
     ),
     radar_basic: (
       <svg viewBox="0 0 100 80" fill="none" className="w-14 h-12">
-        <polygon points="50,15 80,30 75,55 25,55 20,30" fill="#2563eb" fillOpacity="0.3" stroke="#2563eb" strokeWidth="2"/>
-        <polygon points="50,25 68,35 65,50 35,50 32,35" fill="none" stroke="#111827" strokeDasharray="2"/>
+        <polygon points="50,15 80,30 75,55 25,55 20,30" fill="#2563eb" fillOpacity="0.3" stroke="#2563eb" strokeWidth="2" />
+        <polygon points="50,25 68,35 65,50 35,50 32,35" fill="none" stroke="#111827" strokeDasharray="2" />
       </svg>
     )
   };
@@ -986,7 +1006,7 @@ const ChartPicker: React.FC<ChartPickerProps> = ({ icon, label, onSelect, chartT
   return (
     <div className="relative" ref={pickerRef}>
       <div className="flex flex-col items-stretch rounded overflow-hidden border border-transparent hover:border-gray-300 transition-colors min-w-[52px] h-[58px]">
-        <button 
+        <button
           className="flex-1 flex flex-col items-center justify-center border-none bg-transparent cursor-pointer p-1 gap-0.5 hover:bg-[rgba(0,0,0,0.06)] transition-colors"
           onClick={() => setIsOpen(!isOpen)}
         >
@@ -1059,15 +1079,15 @@ const HomeTabContent: React.FC<{
           <div className="flex items-center gap-0.5">
             <Dropdown value={currentFont} options={fonts} onChange={(f) => commands.setFont?.(f)} width={140} />
             <Dropdown value={currentFontSize} options={sizes} onChange={(s) => commands.setFontSize?.(parseInt(s))} width={50} />
-            <RibbonButton 
-              icon={<span className="text-[12px] font-semibold">A<sup className="text-[7px] ml-[-1px]">▲</sup></span>} 
-              onClick={() => commands.setFontSize?.(parseInt(currentFontSize) + 2)} 
-              tooltip="Aumentar tamaño de fuente" 
+            <RibbonButton
+              icon={<span className="text-[12px] font-semibold">A<sup className="text-[7px] ml-[-1px]">▲</sup></span>}
+              onClick={() => commands.setFontSize?.(parseInt(currentFontSize) + 2)}
+              tooltip="Aumentar tamaño de fuente"
             />
-            <RibbonButton 
-              icon={<span className="text-[10px] font-semibold">A<sup className="text-[7px] ml-[-1px]">▼</sup></span>} 
-              onClick={() => commands.setFontSize?.(Math.max(6, parseInt(currentFontSize) - 2))} 
-              tooltip="Reducir tamaño de fuente" 
+            <RibbonButton
+              icon={<span className="text-[10px] font-semibold">A<sup className="text-[7px] ml-[-1px]">▼</sup></span>}
+              onClick={() => commands.setFontSize?.(Math.max(6, parseInt(currentFontSize) - 2))}
+              tooltip="Reducir tamaño de fuente"
             />
           </div>
           <div className="flex items-center gap-px">
@@ -1114,20 +1134,20 @@ const HomeTabContent: React.FC<{
         <div className="flex flex-col gap-1">
           <NumberFormatPicker value={currentNumberFormat} onChange={(fmt) => commands.setNumberFormat?.(fmt)} />
           <div className="flex items-center gap-px">
-            <RibbonButton 
-              icon={<span className="text-[11px] font-bold text-green-700">$</span>} 
-              onClick={() => commands.setNumberFormat?.('Moneda')} 
-              tooltip="Formato moneda" 
+            <RibbonButton
+              icon={<span className="text-[11px] font-bold text-green-700">$</span>}
+              onClick={() => commands.setNumberFormat?.('Moneda')}
+              tooltip="Formato moneda"
             />
-            <RibbonButton 
-              icon={<span className="text-[11px] font-bold">%</span>} 
-              onClick={() => commands.setNumberFormat?.('Porcentaje')} 
-              tooltip="Formato porcentaje" 
+            <RibbonButton
+              icon={<span className="text-[11px] font-bold">%</span>}
+              onClick={() => commands.setNumberFormat?.('Porcentaje')}
+              tooltip="Formato porcentaje"
             />
-            <RibbonButton 
-              icon={<span className="text-[9px] font-mono">,00</span>} 
-              onClick={() => commands.setNumberFormat?.('Número')} 
-              tooltip="Estilo millares" 
+            <RibbonButton
+              icon={<span className="text-[9px] font-mono">,00</span>}
+              onClick={() => commands.setNumberFormat?.('Número')}
+              tooltip="Estilo millares"
             />
           </div>
         </div>
@@ -1138,8 +1158,8 @@ const HomeTabContent: React.FC<{
       <RibbonGroup title="Estilos">
         <div className="flex items-start gap-0.5">
           <SplitButton icon={Icons.conditionalFormat} label="Condicional" onClick={() => commands.applyConditionalFormat?.()} tooltip="Formato condicional" />
-          <SplitButton icon={Icons.formatTable} label="Tabla" onClick={() => {}} tooltip="Dar formato como tabla" />
-          <SplitButton icon={Icons.cellStyles} label="Estilos" onClick={() => {}} tooltip="Estilos de celda" />
+          <SplitButton icon={Icons.formatTable} label="Tabla" onClick={() => { }} tooltip="Dar formato como tabla" />
+          <SplitButton icon={Icons.cellStyles} label="Estilos" onClick={() => { }} tooltip="Estilos de celda" />
         </div>
       </RibbonGroup>
 
@@ -1149,7 +1169,7 @@ const HomeTabContent: React.FC<{
         <div className="flex items-start gap-0.5">
           <SplitButton icon={Icons.insertRow} label="Insertar" onClick={() => commands.insertRow?.()} tooltip="Insertar celdas" />
           <SplitButton icon={Icons.deleteRow} label="Eliminar" onClick={() => commands.deleteRow?.()} tooltip="Eliminar celdas" />
-          <SplitButton icon={Icons.format} label="Formato" onClick={() => {}} tooltip="Formato de celdas" />
+          <SplitButton icon={Icons.format} label="Formato" onClick={() => { }} tooltip="Formato de celdas" />
         </div>
       </RibbonGroup>
 
@@ -1192,19 +1212,19 @@ const InsertTabContent: React.FC<{ commands: Partial<RibbonCommands> }> = ({ com
     <div className="flex items-start gap-0.5 px-1 py-0.5 min-h-[72px]">
       <RibbonGroup title="Hoja / Tablas">
         <div className="flex items-start gap-0.5">
-          <SplitButton 
+          <SplitButton
             icon={
               <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <rect x="3" y="3" width="18" height="18" rx="1" />
                 <line x1="3" y1="9" x2="21" y2="9" />
                 <line x1="9" y1="3" x2="9" y2="21" />
               </svg>
-            } 
-            label="Hoja de tabla" 
-            onClick={() => {}} 
-            tooltip="Insertar tabla dinámica" 
+            }
+            label="Hoja de tabla"
+            onClick={() => { }}
+            tooltip="Insertar tabla dinámica"
           />
-          <SplitButton icon={Icons.formatTable} label="Tabla" onClick={() => {}} tooltip="Insertar tabla" />
+          <SplitButton icon={Icons.formatTable} label="Tabla" onClick={() => { }} tooltip="Insertar tabla" />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
@@ -1245,21 +1265,21 @@ const InsertTabContent: React.FC<{ commands: Partial<RibbonCommands> }> = ({ com
       <RibbonSeparator />
       <RibbonGroup title="Ilustraciones">
         <div className="flex items-start gap-0.5">
-          <SplitButton icon={Icons.image} label="Imagen" onClick={() => {}} tooltip="Insertar imagen" />
-          <SplitButton icon={Icons.shapes} label="Formas" onClick={() => {}} tooltip="Insertar forma" />
-          <SplitButton 
+          <SplitButton icon={Icons.image} label="Imagen" onClick={() => { }} tooltip="Insertar imagen" />
+          <SplitButton icon={Icons.shapes} label="Formas" onClick={() => { }} tooltip="Insertar forma" />
+          <SplitButton
             icon={
               <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <rect x="3" y="3" width="18" height="18" rx="2" />
                 <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
                 <path d="M21 15l-5-5L5 21" />
               </svg>
-            } 
-            label="Instantánea" 
-            onClick={() => {}} 
-            tooltip="Captura de pantalla de rango" 
+            }
+            label="Instantánea"
+            onClick={() => { }}
+            tooltip="Captura de pantalla de rango"
           />
-          <SplitButton 
+          <SplitButton
             icon={
               <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <rect x="4" y="4" width="16" height="16" rx="2" />
@@ -1267,34 +1287,34 @@ const InsertTabContent: React.FC<{ commands: Partial<RibbonCommands> }> = ({ com
                 <line x1="14" y1="10" x2="18" y2="10" />
                 <line x1="14" y1="14" x2="18" y2="14" />
               </svg>
-            } 
-            label="Controles" 
-            onClick={() => {}} 
-            tooltip="Insertar controles de formulario" 
+            }
+            label="Controles"
+            onClick={() => { }}
+            tooltip="Insertar controles de formulario"
           />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
       <RibbonGroup title="Vínculos">
-        <SplitButton 
+        <SplitButton
           icon={
             <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5">
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
             </svg>
-          } 
-          label="Hipervínculo" 
-          onClick={() => {}} 
-          tooltip="Insertar hipervínculo (Ctrl+K)" 
+          }
+          label="Hipervínculo"
+          onClick={() => { }}
+          tooltip="Insertar hipervínculo (Ctrl+K)"
         />
       </RibbonGroup>
       <RibbonSeparator />
       <RibbonGroup title="Texto">
-        <SplitButton 
-          icon={<span className="text-[16px] font-serif">A</span>} 
-          label="Cuadro de texto" 
-          onClick={() => {}} 
-          tooltip="Insertar cuadro de texto" 
+        <SplitButton
+          icon={<span className="text-[16px] font-serif">A</span>}
+          label="Cuadro de texto"
+          onClick={() => { }}
+          tooltip="Insertar cuadro de texto"
         />
       </RibbonGroup>
     </div>
@@ -1306,9 +1326,9 @@ const DrawTabContent: React.FC<{ commands: Partial<RibbonCommands> }> = ({ comma
     <div className="flex items-start gap-0.5 px-1 py-0.5 min-h-[72px]">
       <RibbonGroup title="Herramientas">
         <div className="flex items-start gap-0.5">
-          <SplitButton icon={Icons.pencil} label="Lápiz" onClick={() => {}} tooltip="Dibujar con lápiz" />
-          <SplitButton icon={Icons.highlighter} label="Resaltador" onClick={() => {}} tooltip="Resaltar" />
-          <SplitButton icon={Icons.eraser} label="Borrador" onClick={() => {}} tooltip="Borrar" />
+          <SplitButton icon={Icons.pencil} label="Lápiz" onClick={() => { }} tooltip="Dibujar con lápiz" />
+          <SplitButton icon={Icons.highlighter} label="Resaltador" onClick={() => { }} tooltip="Resaltar" />
+          <SplitButton icon={Icons.eraser} label="Borrador" onClick={() => { }} tooltip="Borrar" />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
@@ -1327,9 +1347,9 @@ const PageLayoutTabContent: React.FC = () => {
     <div className="flex items-start gap-0.5 px-1 py-0.5 min-h-[72px]">
       <RibbonGroup title="Configurar página">
         <div className="flex items-start gap-0.5">
-          <SplitButton icon={Icons.format} label="Márgenes" onClick={() => {}} tooltip="Configurar márgenes" />
-          <SplitButton icon={Icons.format} label="Orientación" onClick={() => {}} tooltip="Orientación de página" />
-          <SplitButton icon={Icons.format} label="Tamaño" onClick={() => {}} tooltip="Tamaño de papel" />
+          <SplitButton icon={Icons.format} label="Márgenes" onClick={() => { }} tooltip="Configurar márgenes" />
+          <SplitButton icon={Icons.format} label="Orientación" onClick={() => { }} tooltip="Orientación de página" />
+          <SplitButton icon={Icons.format} label="Tamaño" onClick={() => { }} tooltip="Tamaño de papel" />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
@@ -1354,64 +1374,64 @@ const FormulasTabContent: React.FC<{ commands: Partial<RibbonCommands> }> = ({ c
     <div className="flex items-start gap-0.5 px-1 py-0.5 min-h-[72px]">
       <RibbonGroup title="Funciones rápidas">
         <div className="flex items-start gap-0.5">
-          <SplitButton 
-            icon={Icons.sum} 
-            label="SUMA" 
-            onClick={() => commands.insertFormula?.('SUM')} 
-            tooltip="Insertar SUMA - suma los valores de un rango" 
+          <SplitButton
+            icon={Icons.sum}
+            label="SUMA"
+            onClick={() => commands.insertFormula?.('SUM')}
+            tooltip="Insertar SUMA - suma los valores de un rango"
           />
-          <SplitButton 
-            icon={<span className="text-[10px] font-bold">x̄</span>} 
-            label="PROMEDIO" 
-            onClick={() => commands.insertFormula?.('AVERAGE')} 
-            tooltip="Insertar PROMEDIO - calcula el promedio de un rango" 
+          <SplitButton
+            icon={<span className="text-[10px] font-bold">x̄</span>}
+            label="PROMEDIO"
+            onClick={() => commands.insertFormula?.('AVERAGE')}
+            tooltip="Insertar PROMEDIO - calcula el promedio de un rango"
           />
-          <SplitButton 
-            icon={<span className="text-[10px] font-bold">#</span>} 
-            label="CONTAR" 
-            onClick={() => commands.insertFormula?.('COUNT')} 
-            tooltip="Insertar CONTAR - cuenta las celdas con números" 
+          <SplitButton
+            icon={<span className="text-[10px] font-bold">#</span>}
+            label="CONTAR"
+            onClick={() => commands.insertFormula?.('COUNT')}
+            tooltip="Insertar CONTAR - cuenta las celdas con números"
           />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
       <RibbonGroup title="Estadísticas">
         <div className="flex items-start gap-0.5">
-          <SplitButton 
-            icon={<span className="text-[10px] font-bold">↑</span>} 
-            label="MAX" 
-            onClick={() => commands.insertFormula?.('MAX')} 
-            tooltip="Insertar MAX - encuentra el valor máximo" 
+          <SplitButton
+            icon={<span className="text-[10px] font-bold">↑</span>}
+            label="MAX"
+            onClick={() => commands.insertFormula?.('MAX')}
+            tooltip="Insertar MAX - encuentra el valor máximo"
           />
-          <SplitButton 
-            icon={<span className="text-[10px] font-bold">↓</span>} 
-            label="MIN" 
-            onClick={() => commands.insertFormula?.('MIN')} 
-            tooltip="Insertar MIN - encuentra el valor mínimo" 
+          <SplitButton
+            icon={<span className="text-[10px] font-bold">↓</span>}
+            label="MIN"
+            onClick={() => commands.insertFormula?.('MIN')}
+            tooltip="Insertar MIN - encuentra el valor mínimo"
           />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
       <RibbonGroup title="Lógicas">
         <div className="flex items-start gap-0.5">
-          <SplitButton 
-            icon={<span className="text-[10px] font-bold">?:</span>} 
-            label="SI" 
-            onClick={() => commands.insertFormula?.('IF')} 
-            tooltip="Insertar SI - condición lógica" 
+          <SplitButton
+            icon={<span className="text-[10px] font-bold">?:</span>}
+            label="SI"
+            onClick={() => commands.insertFormula?.('IF')}
+            tooltip="Insertar SI - condición lógica"
           />
-          <SplitButton 
-            icon={<span className="text-[10px] font-bold">↔</span>} 
-            label="BUSCARV" 
-            onClick={() => commands.insertFormula?.('VLOOKUP')} 
-            tooltip="Insertar BUSCARV - buscar valores en una tabla" 
+          <SplitButton
+            icon={<span className="text-[10px] font-bold">↔</span>}
+            label="BUSCARV"
+            onClick={() => commands.insertFormula?.('VLOOKUP')}
+            tooltip="Insertar BUSCARV - buscar valores en una tabla"
           />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
       <RibbonGroup title="Biblioteca">
         <div className="flex items-start gap-0.5">
-          <SplitButton icon={Icons.function} label="Todas" onClick={() => {}} tooltip="Ver todas las funciones disponibles" />
+          <SplitButton icon={Icons.function} label="Todas" onClick={() => { }} tooltip="Ver todas las funciones disponibles" />
         </div>
       </RibbonGroup>
     </div>
@@ -1423,7 +1443,7 @@ const DataTabContent: React.FC<{ commands: Partial<RibbonCommands> }> = ({ comma
     <div className="flex items-start gap-0.5 px-1 py-0.5 min-h-[72px]">
       <RibbonGroup title="Obtener datos">
         <div className="flex items-start gap-0.5">
-          <SplitButton icon={Icons.format} label="Externos" onClick={() => {}} tooltip="Obtener datos externos" />
+          <SplitButton icon={Icons.format} label="Externos" onClick={() => { }} tooltip="Obtener datos externos" />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
@@ -1437,8 +1457,8 @@ const DataTabContent: React.FC<{ commands: Partial<RibbonCommands> }> = ({ comma
       <RibbonSeparator />
       <RibbonGroup title="Herramientas de datos">
         <div className="flex items-start gap-0.5">
-          <SplitButton icon={Icons.textToColumns} label="Texto en col." onClick={() => {}} tooltip="Texto en columnas" />
-          <SplitButton icon={Icons.dataValidation} label="Validación" onClick={() => {}} tooltip="Validación de datos" />
+          <SplitButton icon={Icons.textToColumns} label="Texto en col." onClick={() => { }} tooltip="Texto en columnas" />
+          <SplitButton icon={Icons.dataValidation} label="Validación" onClick={() => { }} tooltip="Validación de datos" />
         </div>
       </RibbonGroup>
     </div>
@@ -1450,21 +1470,21 @@ const ReviewTabContent: React.FC = () => {
     <div className="flex items-start gap-0.5 px-1 py-0.5 min-h-[72px]">
       <RibbonGroup title="Revisión">
         <div className="flex items-start gap-0.5">
-          <SplitButton icon={Icons.spellcheck} label="Ortografía" onClick={() => {}} tooltip="Revisar ortografía" />
+          <SplitButton icon={Icons.spellcheck} label="Ortografía" onClick={() => { }} tooltip="Revisar ortografía" />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
       <RibbonGroup title="Comentarios">
         <div className="flex items-start gap-0.5">
-          <SplitButton icon={Icons.comment} label="Nuevo" onClick={() => {}} tooltip="Nuevo comentario" />
-          <SplitButton icon={Icons.share} label="Mostrar" onClick={() => {}} tooltip="Mostrar comentarios" />
+          <SplitButton icon={Icons.comment} label="Nuevo" onClick={() => { }} tooltip="Nuevo comentario" />
+          <SplitButton icon={Icons.share} label="Mostrar" onClick={() => { }} tooltip="Mostrar comentarios" />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
       <RibbonGroup title="Proteger">
         <div className="flex items-start gap-0.5">
-          <SplitButton icon={Icons.protect} label="Hoja" onClick={() => {}} tooltip="Proteger hoja" />
-          <SplitButton icon={Icons.protect} label="Libro" onClick={() => {}} tooltip="Proteger libro" />
+          <SplitButton icon={Icons.protect} label="Hoja" onClick={() => { }} tooltip="Proteger hoja" />
+          <SplitButton icon={Icons.protect} label="Libro" onClick={() => { }} tooltip="Proteger libro" />
         </div>
       </RibbonGroup>
     </div>
@@ -1487,20 +1507,20 @@ const ViewTabContent: React.FC<{ commands: Partial<RibbonCommands> }> = ({ comma
       <RibbonGroup title="Mostrar">
         <div className="flex flex-col gap-1.5 py-1">
           <label className="flex items-center gap-2 text-[10px] cursor-pointer hover:bg-gray-100 px-1 py-0.5 rounded">
-            <input 
-              type="checkbox" 
+            <input
+              type="checkbox"
               checked={showGridlines}
               onChange={(e) => { setShowGridlines(e.target.checked); commands.toggleGridlines?.(); }}
-              className="w-3.5 h-3.5 accent-[#217346]" 
+              className="w-3.5 h-3.5 accent-[#217346]"
             />
             <span className="font-medium">Líneas de cuadrícula</span>
           </label>
           <label className="flex items-center gap-2 text-[10px] cursor-pointer hover:bg-gray-100 px-1 py-0.5 rounded">
-            <input 
-              type="checkbox" 
+            <input
+              type="checkbox"
               checked={showHeaders}
               onChange={(e) => setShowHeaders(e.target.checked)}
-              className="w-3.5 h-3.5 accent-[#217346]" 
+              className="w-3.5 h-3.5 accent-[#217346]"
             />
             <span className="font-medium">Encabezados</span>
           </label>
@@ -1510,13 +1530,13 @@ const ViewTabContent: React.FC<{ commands: Partial<RibbonCommands> }> = ({ comma
       <RibbonGroup title="Ventana">
         <div className="flex items-start gap-0.5">
           <SplitButton icon={Icons.freezePanes} label="Inmovilizar" onClick={() => commands.freezePanes?.()} tooltip="Inmovilizar paneles" />
-          <SplitButton icon={Icons.format} label="Dividir" onClick={() => {}} tooltip="Dividir ventana" />
+          <SplitButton icon={Icons.format} label="Dividir" onClick={() => { }} tooltip="Dividir ventana" />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
       <RibbonGroup title="Zoom">
         <div className="flex items-start gap-0.5">
-          <SplitButton icon={Icons.zoom} label="Zoom" onClick={() => {}} tooltip="Ajustar zoom" />
+          <SplitButton icon={Icons.zoom} label="Zoom" onClick={() => { }} tooltip="Ajustar zoom" />
           <RibbonButton icon={<span className="text-[10px] font-bold">100%</span>} size="large" label="100%" tooltip="Zoom al 100%" />
         </div>
       </RibbonGroup>
@@ -1538,8 +1558,8 @@ const AutomateTabContent: React.FC<{ onRunAutomation?: (prompt: string) => void 
     <div className="flex items-start gap-0.5 px-1 py-0.5 min-h-[72px]">
       <RibbonGroup title="Scripts">
         <div className="flex items-start gap-0.5">
-          <SplitButton icon={Icons.macro} label="Grabar" onClick={() => {}} tooltip="Grabar macro" />
-          <SplitButton icon={Icons.script} label="Editor" onClick={() => {}} tooltip="Editor de scripts" />
+          <SplitButton icon={Icons.macro} label="Grabar" onClick={() => { }} tooltip="Grabar macro" />
+          <SplitButton icon={Icons.script} label="Editor" onClick={() => { }} tooltip="Editor de scripts" />
         </div>
       </RibbonGroup>
       <RibbonSeparator />
@@ -1554,7 +1574,7 @@ const AutomateTabContent: React.FC<{ onRunAutomation?: (prompt: string) => void 
             className="h-7 w-64 px-2 text-[11px] border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-[#217346] focus:border-[#217346]"
             aria-label="Prompt de automatización"
           />
-          <button 
+          <button
             onClick={handleRun}
             disabled={!prompt.trim()}
             className="h-7 px-3 text-[11px] font-medium text-white bg-[#217346] rounded hover:bg-[#185c37] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
@@ -1574,7 +1594,7 @@ export function ExcelRibbon({ commands, cellFormat, currentFont = 'Calibri', cur
   const handleKeyDown = useCallback((e: React.KeyboardEvent, tabId: TabId) => {
     const tabs = RIBBON_TABS.map(t => t.id);
     const currentIndex = tabs.indexOf(tabId);
-    
+
     if (e.key === 'ArrowRight') {
       e.preventDefault();
       const nextIndex = (currentIndex + 1) % tabs.length;
@@ -1613,9 +1633,9 @@ export function ExcelRibbon({ commands, cellFormat, currentFont = 'Calibri', cur
 
   return (
     <div className="flex flex-col border-b border-gray-300 bg-white select-none" data-testid="excel-ribbon">
-      <div 
-        className="flex items-center h-8 px-1 bg-[#217346]" 
-        role="tablist" 
+      <div
+        className="flex items-center h-8 px-1 bg-[#217346]"
+        role="tablist"
         aria-label="Pestañas de la cinta de opciones"
         ref={tabListRef}
       >
@@ -1627,8 +1647,8 @@ export function ExcelRibbon({ commands, cellFormat, currentFont = 'Calibri', cur
             aria-controls={`ribbon-panel-${tab.id}`}
             tabIndex={activeTab === tab.id ? 0 : -1}
             className={`px-3 py-1.5 text-[11px] font-medium rounded-t transition-all cursor-pointer
-              ${activeTab === tab.id 
-                ? 'bg-white text-[#217346] shadow-sm' 
+              ${activeTab === tab.id
+                ? 'bg-white text-[#217346] shadow-sm'
                 : 'text-white/90 hover:text-white hover:bg-white/10'}`}
             onClick={() => setActiveTab(tab.id)}
             onKeyDown={(e) => handleKeyDown(e, tab.id)}
@@ -1637,8 +1657,8 @@ export function ExcelRibbon({ commands, cellFormat, currentFont = 'Calibri', cur
           </button>
         ))}
       </div>
-      
-      <div 
+
+      <div
         id={`ribbon-panel-${activeTab}`}
         role="tabpanel"
         aria-labelledby={activeTab}

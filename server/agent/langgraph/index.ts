@@ -35,7 +35,15 @@ export interface PendingApproval {
 
 export const AgentStateAnnotation = Annotation.Root({
   messages: Annotation<BaseMessage[]>({
-    reducer: (prev, next) => next,
+    reducer: (prev, next) => {
+      // Additive reducer: append new messages to existing ones.
+      // Nodes should return only NEW messages, not the full array.
+      // If a node returns the full array (contains prev messages), detect and use as-is.
+      if (next.length > 0 && prev.length > 0 && next[0] === prev[0]) {
+        return next; // Node returned full array including previous messages
+      }
+      return [...prev, ...next];
+    },
     default: () => [],
   }),
   threadId: Annotation<string | undefined>({
@@ -59,7 +67,7 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => ({}),
   }),
   toolsExecuted: Annotation<Array<{ name: string; success: boolean; latencyMs: number }>>({
-    reducer: (prev, next) => next,
+    reducer: (prev, next) => [...prev, ...next],
     default: () => [],
   }),
   executionMetrics: Annotation<ExecutionMetrics>({
@@ -172,7 +180,7 @@ export class LangGraphAgent {
       model: "grok-4-1-fast-non-reasoning",
       maxIterations: 10,
       timeout: 120000,
-      includeSystemTools: false,
+      includeSystemTools: process.env.ILIAGPT_LOCAL_FULL_ACCESS === "true",
       enableHumanInLoop: false,
       verbose: false,
       ...config,

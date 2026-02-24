@@ -18,6 +18,7 @@ export interface UserStats {
   total: number;
   active: number;
   newThisMonth: number;
+  newLastMonth: number;
 }
 
 export class UserRepository {
@@ -99,12 +100,14 @@ export class UserRepository {
     const allUsers = await db.select().from(users);
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
     const total = allUsers.length;
     const active = allUsers.filter(u => u.status === "active").length;
     const newThisMonth = allUsers.filter(u => u.createdAt && u.createdAt >= monthStart).length;
-    
-    return { total, active, newThisMonth };
+    const newLastMonth = allUsers.filter(u => u.createdAt && u.createdAt >= lastMonthStart && u.createdAt < monthStart).length;
+
+    return { total, active, newThisMonth, newLastMonth };
   }
 
   async getUserOrThrow(id: string): Promise<User> {

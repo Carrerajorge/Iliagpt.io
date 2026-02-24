@@ -125,6 +125,7 @@ export const RetrievalRequestSchema = z.object({
   maxResults: z.number().int().min(1).max(20).default(5),
   includeScholar: z.boolean().default(false),
   preferBrowser: z.boolean().default(false),
+  allowBrowser: z.boolean().default(true),
   extractReadable: z.boolean().default(true),
   deduplicateByContent: z.boolean().default(true),
   minQualityScore: z.number().min(0).max(500).default(0),

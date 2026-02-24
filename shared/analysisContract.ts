@@ -71,7 +71,7 @@ export type AnalyzeStartResponse = z.infer<typeof AnalyzeStartResponseSchema>;
 export function validateAnalysisResponse(data: unknown): AnalysisResponse {
   const result = AnalysisResponseSchema.safeParse(data);
   if (!result.success) {
-    const errors = result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ');
+    const errors = result.error.issues.map((i: z.ZodIssue) => `${i.path.join('.')}: ${i.message}`).join(', ');
     throw new Error(`Invalid analysis response shape: ${errors}`);
   }
   return result.data;
@@ -80,7 +80,7 @@ export function validateAnalysisResponse(data: unknown): AnalysisResponse {
 export function validateAnalyzeStartResponse(data: unknown): AnalyzeStartResponse {
   const result = AnalyzeStartResponseSchema.safeParse(data);
   if (!result.success) {
-    const errors = result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ');
+    const errors = result.error.issues.map((i: z.ZodIssue) => `${i.path.join('.')}: ${i.message}`).join(', ');
     throw new Error(`Invalid analyze start response shape: ${errors}`);
   }
   return result.data;

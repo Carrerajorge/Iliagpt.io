@@ -21,21 +21,31 @@ export async function checkToolPolicy(
     if (policy.disabledTools?.includes(toolId)) {
       return { allowed: false, reason: "Tool is disabled by user preference" };
     }
-    
-    if (policy.enabledApps && policy.enabledApps.length > 0) {
-      if (!policy.enabledApps.includes(providerId)) {
+
+    // Only enforce enabledApps allowlist for actual integration providers.
+    const provider = await storage.getIntegrationProvider(providerId);
+    const isIntegrationProvider = !!provider;
+
+    if (isIntegrationProvider) {
+      const enabledApps = Array.isArray(policy.enabledApps) ? policy.enabledApps : [];
+      if (!enabledApps.includes(providerId)) {
         return { allowed: false, reason: `Provider ${providerId} is not enabled` };
       }
-    }
-    
-    const tools = await storage.getIntegrationTools(providerId);
-    const tool = tools.find(t => t.id === toolId);
-    
-    if (tool?.confirmationRequired === "true" && policy.autoConfirmPolicy !== "always") {
-      return { 
-        allowed: true, 
-        requiresConfirmation: policy.autoConfirmPolicy === "ask" 
-      };
+
+      const tools = await storage.getIntegrationTools(providerId);
+      const tool = tools.find(t => t.id === toolId);
+
+      if (tool?.confirmationRequired === "true") {
+        if (policy.autoConfirmPolicy === "always") {
+          return { allowed: true };
+        }
+        if (policy.autoConfirmPolicy === "ask") {
+          return { allowed: true, requiresConfirmation: true };
+        }
+        if (policy.autoConfirmPolicy === "never") {
+          return { allowed: false, reason: "Action requires confirmation but auto-confirm is set to never" };
+        }
+      }
     }
     
     return { allowed: true };

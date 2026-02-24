@@ -6,7 +6,7 @@ export type PhaseStatus = z.infer<typeof PhaseStatusSchema>;
 export const AgentStateSchema = z.enum(["idle", "analyzing", "planning", "executing", "delivering", "error"]);
 export type AgentState = z.infer<typeof AgentStateSchema>;
 
-export const ToolCategorySchema = z.enum(["system", "file", "document", "search", "browser", "communication", "development"]);
+export const ToolCategorySchema = z.enum(["system", "file", "document", "search", "browser", "communication", "development", "integration", "data", "ai"]);
 export type ToolCategory = z.infer<typeof ToolCategorySchema>;
 
 export const StepSchema = z.object({

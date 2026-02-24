@@ -38,7 +38,13 @@ export const SlotsSchema = z.object({
   source_language: z.string().optional(),
   target_language: z.string().optional(),
   num_slides: z.number().optional(),
-  template: z.string().optional()
+  template: z.string().optional(),
+  file_paths: z.array(z.string()).optional(),
+  validation_issues: z.array(z.string()).optional(),
+  page_numbers: z.array(z.number()).optional(),
+  page_range: z.object({ start: z.number(), end: z.number() }).optional(),
+  section_number: z.number().optional(),
+  scope: z.enum(["all", "partial", "specific"]).optional()
 });
 
 export const SingleIntentResultSchema = z.object({

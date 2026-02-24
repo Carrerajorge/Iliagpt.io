@@ -21,7 +21,7 @@ export interface RealToolResult {
 
 export async function realWebSearch(input: { query: string; maxResults?: number }): Promise<RealToolResult> {
   const { query, maxResults = 5 } = input;
-  
+
   try {
     const wikiUrl = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=${maxResults}&format=json&origin=*`;
     const response = await fetch(wikiUrl, {
@@ -29,15 +29,15 @@ export async function realWebSearch(input: { query: string; maxResults?: number 
         "User-Agent": "IliaGPT/1.0 (https://replit.com; E2E Testing)",
       },
     });
-    
+
     const data = await response.json();
-    
+
     const titles = data[1] || [];
     const snippets = data[2] || [];
     const urls = data[3] || [];
-    
+
     const results: Array<{ title: string; url: string; snippet: string }> = [];
-    
+
     for (let i = 0; i < Math.min(titles.length, maxResults); i++) {
       results.push({
         title: titles[i],
@@ -73,18 +73,18 @@ export async function realWebSearch(input: { query: string; maxResults?: number 
 
 export async function realBrowseUrl(input: { url: string }): Promise<RealToolResult> {
   const { url } = input;
-  
+
   try {
     const response = await fetch(url, {
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; IliaGPT/1.0)",
       },
     });
-    
+
     const html = await response.text();
     const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
     const title = titleMatch ? titleMatch[1].trim() : "No title";
-    
+
     const textContent = html
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
@@ -126,22 +126,22 @@ export async function realBrowseUrl(input: { url: string }): Promise<RealToolRes
 
 export async function realDocumentCreate(input: { title: string; content: string; type: string }): Promise<RealToolResult> {
   const { title, content, type } = input;
-  
+
   try {
     ensureArtifactsDir();
     const sanitizedTitle = title.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 50);
     const filename = `${sanitizedTitle}_${Date.now()}.${type === "docx" ? "txt" : type}`;
     const filePath = path.join(ARTIFACTS_DIR, filename);
-    
+
     let fileContent = content;
     if (type === "md") {
       fileContent = `# ${title}\n\n${content}`;
     } else if (type === "txt") {
       fileContent = `${title}\n${"=".repeat(title.length)}\n\n${content}`;
     }
-    
+
     fs.writeFileSync(filePath, fileContent, "utf-8");
-    
+
     const stats = fs.statSync(filePath);
     const isValid = fs.existsSync(filePath) && stats.size > 0;
 
@@ -171,17 +171,17 @@ export async function realDocumentCreate(input: { title: string; content: string
 
 export async function realPdfGenerate(input: { title: string; content: string; outputPath?: string }): Promise<RealToolResult> {
   const { title, content, outputPath } = input;
-  
+
   try {
     ensureArtifactsDir();
     const sanitizedTitle = title.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 50);
     const filename = outputPath || path.join(ARTIFACTS_DIR, `${sanitizedTitle}_${Date.now()}.pdf`);
-    
+
     const dir = path.dirname(filename);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    
+
     const pdfContent = `%PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -221,9 +221,9 @@ trailer
 startxref
 595
 %%EOF`;
-    
+
     fs.writeFileSync(filename, pdfContent);
-    
+
     const stats = fs.statSync(filename);
     const isValid = fs.existsSync(filename) && stats.size > 100;
 
@@ -253,7 +253,7 @@ startxref
 
 export async function realDataAnalyze(input: { data: unknown[]; operation: string }): Promise<RealToolResult> {
   const { data, operation } = input;
-  
+
   try {
     if (!Array.isArray(data) || data.length === 0) {
       return {
@@ -318,10 +318,10 @@ export async function realDataAnalyze(input: { data: unknown[]; operation: strin
 
 export async function realHashGenerate(input: { data: string; algorithm: string }): Promise<RealToolResult> {
   const { data, algorithm } = input;
-  
+
   try {
     const hash = crypto.createHash(algorithm).update(data).digest("hex");
-    
+
     return {
       success: true,
       data: {
@@ -343,11 +343,71 @@ export async function realHashGenerate(input: { data: string; algorithm: string 
   }
 }
 
+export async function realSlidesCreate(input: { title: string; slides: any[]; template?: string }): Promise<RealToolResult> {
+  const { title, slides, template } = input;
+  try {
+    // Dynamic import to avoid circular dependencies or load issues if not needed
+    const { documentCreator } = await import("../sandbox/documentCreator");
+
+    // Map generic input to strongly typed DocumentSlide
+    const typedSlides = slides.map(s => ({
+      title: s.title,
+      content: s.content,
+      bullets: s.bullets,
+      imageUrl: s.imageUrl,
+      // chart: s.chart // Pending complex mapping if needed
+    }));
+
+    const result = await documentCreator.createPptx(title, typedSlides, template);
+
+    return {
+      success: result.success,
+      data: result.data || {},
+      message: result.message,
+      artifacts: result.filesCreated,
+      validationPassed: result.success,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      data: { error: String(error) },
+      message: `Failed to create slides: ${error}`,
+      validationPassed: false,
+    };
+  }
+}
+
+export async function realSpreadsheetCreate(input: { title: string; sheets: any[] }): Promise<RealToolResult> {
+  const { title, sheets } = input;
+  try {
+    const { documentCreator } = await import("../sandbox/documentCreator");
+
+    const result = await documentCreator.createXlsx(title, sheets);
+
+    return {
+      success: result.success,
+      data: result.data || {},
+      message: result.message,
+      artifacts: result.filesCreated,
+      validationPassed: result.success,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      data: { error: String(error) },
+      message: `Failed to create spreadsheet: ${error}`,
+      validationPassed: false,
+    };
+  }
+}
+
 export const REAL_TOOL_HANDLERS: Record<string, (input: any) => Promise<RealToolResult>> = {
   web_search: realWebSearch,
   browse_url: realBrowseUrl,
   document_create: realDocumentCreate,
   pdf_generate: realPdfGenerate,
+  slides_create: realSlidesCreate,
+  spreadsheet_create: realSpreadsheetCreate,
   data_analyze: realDataAnalyze,
   hash: realHashGenerate,
 };

@@ -69,10 +69,10 @@ interface CellData {
   backgroundColor?: string;
   numberFormat?: string;
   borders?: {
-    top?: { style: string; color: string };
-    bottom?: { style: string; color: string };
-    left?: { style: string; color: string };
-    right?: { style: string; color: string };
+    top?: { style: 'thin' | 'medium' | 'thick' | 'double'; color: string };
+    bottom?: { style: 'thin' | 'medium' | 'thick' | 'double'; color: string };
+    left?: { style: 'thin' | 'medium' | 'thick' | 'double'; color: string };
+    right?: { style: 'thin' | 'medium' | 'thick' | 'double'; color: string };
   };
 }
 
@@ -153,7 +153,7 @@ const parseRange = (range: string): Array<{ row: number; col: number }> => {
 const evaluateFormula = (formula: string, cells: { [key: string]: CellData }): string => {
   if (!formula.startsWith('=')) return formula;
   const expr = formula.substring(1).toUpperCase().trim();
-  
+
   const getCellValue = (ref: string): number => {
     const parsed = parseCellRef(ref);
     if (!parsed) return 0;
@@ -162,7 +162,7 @@ const evaluateFormula = (formula: string, cells: { [key: string]: CellData }): s
     const val = parseFloat(cell.value.replace(/[^\d.-]/g, ''));
     return isNaN(val) ? 0 : val;
   };
-  
+
   const getRangeValues = (rangeStr: string): number[] => {
     const rangeCells = parseRange(rangeStr);
     return rangeCells.map(c => {
@@ -172,13 +172,13 @@ const evaluateFormula = (formula: string, cells: { [key: string]: CellData }): s
       return isNaN(val) ? 0 : val;
     });
   };
-  
+
   const sumMatch = expr.match(/^SUM\(([^)]+)\)$/);
   if (sumMatch) {
     const values = getRangeValues(sumMatch[1]);
     return values.reduce((a, b) => a + b, 0).toString();
   }
-  
+
   const avgMatch = expr.match(/^AVERAGE\(([^)]+)\)$/);
   if (avgMatch) {
     const values = getRangeValues(avgMatch[1]);
@@ -186,7 +186,7 @@ const evaluateFormula = (formula: string, cells: { [key: string]: CellData }): s
     const sum = values.reduce((a, b) => a + b, 0);
     return (sum / values.length).toFixed(2);
   }
-  
+
   const countMatch = expr.match(/^COUNT\(([^)]+)\)$/);
   if (countMatch) {
     const rangeCells = parseRange(countMatch[1]);
@@ -197,26 +197,26 @@ const evaluateFormula = (formula: string, cells: { [key: string]: CellData }): s
     });
     return count.toString();
   }
-  
+
   const minMatch = expr.match(/^MIN\(([^)]+)\)$/);
   if (minMatch) {
     const values = getRangeValues(minMatch[1]).filter(v => !isNaN(v));
     if (values.length === 0) return '0';
     return Math.min(...values).toString();
   }
-  
+
   const maxMatch = expr.match(/^MAX\(([^)]+)\)$/);
   if (maxMatch) {
     const values = getRangeValues(maxMatch[1]).filter(v => !isNaN(v));
     if (values.length === 0) return '0';
     return Math.max(...values).toString();
   }
-  
+
   const cellRefMatch = expr.match(/^([A-Z]+\d+)$/);
   if (cellRefMatch) {
     return getCellValue(cellRefMatch[1]).toString();
   }
-  
+
   return '#ERROR';
 };
 
@@ -231,11 +231,11 @@ const parseSheetData = (content: string): SpreadsheetData => {
     const cells: { [key: string]: CellData } = {};
     let maxRow = 0;
     let maxCol = 0;
-    
+
     const parser = new DOMParser();
     const doc = parser.parseFromString(content, 'text/html');
     const rows = doc.querySelectorAll('tbody tr');
-    
+
     rows.forEach((row, rowIndex) => {
       const tds = row.querySelectorAll('td');
       tds.forEach((td, colIndex) => {
@@ -246,8 +246,8 @@ const parseSheetData = (content: string): SpreadsheetData => {
             value,
             bold: style.includes('font-weight: bold'),
             italic: style.includes('font-style: italic'),
-            align: style.includes('text-align: right') ? 'right' : 
-                   style.includes('text-align: center') ? 'center' : 'left'
+            align: style.includes('text-align: right') ? 'right' :
+              style.includes('text-align: center') ? 'center' : 'left'
           };
         }
         maxCol = Math.max(maxCol, colIndex);
@@ -308,7 +308,7 @@ const parseContent = (content: string): WorkbookData => {
         activeSheetId: 'sheet1'
       };
     }
-  } catch {}
+  } catch { }
 
   const sheetData = parseSheetData(content);
   return {
@@ -359,7 +359,7 @@ const convertFromSparseGrid = (grid: SparseGrid): SpreadsheetData => {
   const cells: { [key: string]: CellData } = {};
   let maxRow = 0;
   let maxCol = 0;
-  
+
   try {
     const allCells = grid.getAllCells();
     allCells.forEach(({ row, col, data }) => {
@@ -394,7 +394,7 @@ const convertFromSparseGrid = (grid: SparseGrid): SpreadsheetData => {
   } catch (e) {
     console.error('Failed to convert from sparse grid:', e);
   }
-  
+
   return {
     cells,
     rowCount: Math.max(maxRow + 1, 20),
@@ -414,7 +414,7 @@ export function SpreadsheetEditor({
   const [workbook, setWorkbook] = useState<WorkbookData>(() => parseContent(content));
   const [selectedCell, setSelectedCell] = useState<string | null>(null);
   const [editingCell, setEditingCell] = useState<string | null>(null);
-  const [selectionRange, setSelectionRange] = useState<{start: string; end: string} | null>(null);
+  const [selectionRange, setSelectionRange] = useState<{ start: string; end: string } | null>(null);
   const [showChart, setShowChart] = useState(false);
   const [chartType, setChartType] = useState<'bar' | 'line' | 'pie'>('bar');
   const [useVirtualized, setUseVirtualized] = useState(true);
@@ -441,15 +441,15 @@ export function SpreadsheetEditor({
   const formulaInputRef = useRef<HTMLInputElement>(null);
   const initialContentRef = useRef(content);
   const insertFnRegisteredRef = useRef(false);
-  
+
   const streaming = useExcelStreaming(sparseGrid);
   const { STREAM_STATUS } = streaming;
-  
+
   const undoRedo = useExcelUndoRedo(sparseGrid, (newGrid) => {
     setSparseGrid(newGrid);
     setGridVersion(v => v + 1);
   });
-  
+
   const CHART_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
 
   // Get active sheet data
@@ -506,9 +506,9 @@ export function SpreadsheetEditor({
 
   // Extract chart data from spreadsheet
   const chartData = useMemo(() => {
-    const result: Array<{ name: string; value: number; [key: string]: string | number }> = [];
+    const result: Array<{ name: string; value: number;[key: string]: string | number }> = [];
     const headers: string[] = [];
-    
+
     // Get headers from first row
     for (let c = 0; c < data.colCount; c++) {
       const cell = data.cells[getCellKey(0, c)];
@@ -516,17 +516,17 @@ export function SpreadsheetEditor({
         headers[c] = cell.value;
       }
     }
-    
+
     // Get data rows
     for (let r = 1; r < data.rowCount; r++) {
       const labelCell = data.cells[getCellKey(r, 0)];
       if (!labelCell?.value) continue;
-      
-      const row: { name: string; value: number; [key: string]: string | number } = {
+
+      const row: { name: string; value: number;[key: string]: string | number } = {
         name: labelCell.value,
         value: 0
       };
-      
+
       let hasNumericData = false;
       for (let c = 1; c < data.colCount; c++) {
         const cell = data.cells[getCellKey(r, c)];
@@ -540,12 +540,12 @@ export function SpreadsheetEditor({
           }
         }
       }
-      
+
       if (hasNumericData) {
         result.push(row);
       }
     }
-    
+
     return { data: result, headers: headers.filter((h, i) => i > 0 && h) };
   }, [data.cells, data.rowCount, data.colCount]);
 
@@ -553,8 +553,8 @@ export function SpreadsheetEditor({
   const setData = useCallback((updater: (prev: SpreadsheetData) => SpreadsheetData) => {
     setWorkbook(prev => ({
       ...prev,
-      sheets: prev.sheets.map(sheet => 
-        sheet.id === prev.activeSheetId 
+      sheets: prev.sheets.map(sheet =>
+        sheet.id === prev.activeSheetId
           ? { ...sheet, data: updater(sheet.data) }
           : sheet
       )
@@ -567,8 +567,8 @@ export function SpreadsheetEditor({
     const newData = convertFromSparseGrid(updatedGrid);
     setWorkbook(prev => ({
       ...prev,
-      sheets: prev.sheets.map(sheet => 
-        sheet.id === prev.activeSheetId 
+      sheets: prev.sheets.map(sheet =>
+        sheet.id === prev.activeSheetId
           ? { ...sheet, data: newData }
           : sheet
       )
@@ -578,14 +578,14 @@ export function SpreadsheetEditor({
   const handleUpdateChart = useCallback((chartId: string, updates: Partial<ChartLayerConfig>) => {
     setWorkbook(prev => ({
       ...prev,
-      sheets: prev.sheets.map(sheet => 
+      sheets: prev.sheets.map(sheet =>
         sheet.id === prev.activeSheetId
           ? {
-              ...sheet,
-              charts: (sheet.charts || []).map(chart =>
-                chart.id === chartId ? { ...chart, ...updates } : chart
-              )
-            }
+            ...sheet,
+            charts: (sheet.charts || []).map(chart =>
+              chart.id === chartId ? { ...chart, ...updates } : chart
+            )
+          }
           : sheet
       )
     }));
@@ -594,12 +594,12 @@ export function SpreadsheetEditor({
   const handleDeleteChart = useCallback((chartId: string) => {
     setWorkbook(prev => ({
       ...prev,
-      sheets: prev.sheets.map(sheet => 
+      sheets: prev.sheets.map(sheet =>
         sheet.id === prev.activeSheetId
           ? {
-              ...sheet,
-              charts: (sheet.charts || []).filter(chart => chart.id !== chartId)
-            }
+            ...sheet,
+            charts: (sheet.charts || []).filter(chart => chart.id !== chartId)
+          }
           : sheet
       )
     }));
@@ -607,7 +607,7 @@ export function SpreadsheetEditor({
 
   const handleInsertChart = useCallback((chartType: ChartLayerConfig['type']) => {
     if (!virtualSelectedCell) return;
-    
+
     const title = `Gráfico de ${chartType === 'bar' ? 'Barras' : chartType === 'line' ? 'Líneas' : chartType === 'pie' ? 'Circular' : 'Área'}`;
     const newChart = createChartFromSelection(
       chartType,
@@ -619,10 +619,10 @@ export function SpreadsheetEditor({
         endCol: virtualSelectedCell.col
       }
     );
-    
+
     setWorkbook(prev => ({
       ...prev,
-      sheets: prev.sheets.map(sheet => 
+      sheets: prev.sheets.map(sheet =>
         sheet.id === prev.activeSheetId
           ? { ...sheet, charts: [...(sheet.charts || []), newChart] }
           : sheet
@@ -639,12 +639,12 @@ export function SpreadsheetEditor({
     console.log('[AI Generate] Called with prompt:', aiPrompt);
     if (!aiPrompt.trim()) return;
     setShowAIPrompt(false);
-    
+
     const lowerPrompt = aiPrompt.toLowerCase();
-    
+
     // Detect complex prompts that need orchestration (includes chart requests)
     const isComplexPrompt = /completo|análisis|análisis completo|4 hojas|gráficos?|gráfica|grafica|gr[aá]fico de barras|gr[aá]fico de lineas|gr[aá]fico de pastel|charts?|bar chart|line chart|pie chart|dashboard|resumen|fórmulas múltiples|crea.*gr[aá]fic|genera.*gr[aá]fic/i.test(lowerPrompt);
-    
+
     if (isComplexPrompt) {
       // Use the AI Orchestrator for complex multi-sheet workbooks
       const streamingHook = {
@@ -653,7 +653,7 @@ export function SpreadsheetEditor({
         },
         processStreamQueue: () => streaming.processStreamQueue()
       };
-      
+
       // Convert current workbook to orchestrator format
       const orchestratorWorkbook = {
         sheets: workbook.sheets.map(sheet => ({
@@ -665,7 +665,7 @@ export function SpreadsheetEditor({
         })),
         activeSheetId: workbook.activeSheetId
       } as unknown as OrchestratorWorkbook;
-      
+
       const orchestrator = new ExcelOrchestrator(
         orchestratorWorkbook,
         (updater) => {
@@ -680,7 +680,7 @@ export function SpreadsheetEditor({
               })),
               activeSheetId: prev.activeSheetId
             } as unknown as OrchestratorWorkbook);
-            
+
             return {
               ...prev,
               sheets: updated.sheets.map(sheet => ({
@@ -694,7 +694,7 @@ export function SpreadsheetEditor({
         },
         streamingHook
       );
-      
+
       try {
         await orchestrator.analyzeAndPlan(aiPrompt);
         await orchestrator.executePlan((progress) => {
@@ -710,14 +710,14 @@ export function SpreadsheetEditor({
         console.error('[Orchestrator] Error:', err);
         setOrchestratorProgress(null);
       }
-      
+
       setAIPrompt('');
       return;
     }
-    
+
     // Simple data generation for non-complex prompts
     let sampleData: (string | number | null)[][];
-    
+
     if (lowerPrompt.includes('ventas') || lowerPrompt.includes('sales')) {
       sampleData = [
         ['Mes', 'Producto', 'Cantidad', 'Precio', 'Total'],
@@ -747,11 +747,11 @@ export function SpreadsheetEditor({
         ['', 'Total:', '=SUM(C2:C4)'],
       ];
     }
-    
+
     const startRow = virtualSelectedCell?.row || 0;
     const startCol = virtualSelectedCell?.col || 0;
     console.log('[AI Generate] Starting streaming at', startRow, startCol);
-    
+
     try {
       await streaming.simulateStreaming(sampleData, startRow, startCol);
       console.log('[AI Generate] Streaming completed');
@@ -768,7 +768,7 @@ export function SpreadsheetEditor({
       },
       processStreamQueue: () => streaming.processStreamQueue()
     };
-    
+
     const orchestratorWorkbook = {
       sheets: workbook.sheets.map(sheet => ({
         id: sheet.id,
@@ -779,7 +779,7 @@ export function SpreadsheetEditor({
       })),
       activeSheetId: workbook.activeSheetId
     } as unknown as OrchestratorWorkbook;
-    
+
     const orchestrator = new ExcelOrchestrator(
       orchestratorWorkbook,
       (updater) => {
@@ -794,9 +794,9 @@ export function SpreadsheetEditor({
             })),
             activeSheetId: prev.activeSheetId
           } as unknown as OrchestratorWorkbook);
-          
+
           console.log('[Orchestrator] Updated sheets:', updated.sheets.map(s => ({ name: s.name, chartsCount: s.charts?.length || 0 })));
-          
+
           const newWorkbook = {
             ...prev,
             sheets: updated.sheets.map(sheet => ({
@@ -808,15 +808,15 @@ export function SpreadsheetEditor({
             })),
             activeSheetId: updated.activeSheetId
           };
-          
+
           console.log('[Orchestrator] New workbook sheets:', newWorkbook.sheets.map(s => ({ name: s.name, chartsCount: s.charts?.length || 0 })));
-          
+
           return newWorkbook;
         });
       },
       streamingHook
     );
-    
+
     try {
       console.log('[Orchestrator] Analyzing prompt:', prompt);
       await orchestrator.analyzeAndPlan(prompt);
@@ -857,15 +857,15 @@ export function SpreadsheetEditor({
   // Handle AI Command submission
   const handleAICommand = useCallback(async (command: string) => {
     if (!command.trim() || isAIProcessing) return;
-    
+
     setIsAIProcessing(true);
     setShowAISuggestions(false);
-    
+
     const startRow = virtualSelectedCell?.row || 0;
     const startCol = virtualSelectedCell?.col || 0;
     const rowCount = 6;
     const colCount = 5;
-    
+
     try {
       const response = await fetch('/api/ai/excel-command', {
         method: 'POST',
@@ -880,7 +880,7 @@ export function SpreadsheetEditor({
       if (!response.ok) throw new Error('AI command failed');
 
       const result = await response.json();
-      
+
       if (result.columnData && Array.isArray(result.columnData)) {
         const data = result.columnData.map((v: string) => [v]);
         await streaming.simulateStreaming(data, startRow, startCol);
@@ -890,7 +890,7 @@ export function SpreadsheetEditor({
         sparseGrid.setCell(startRow, startCol, { value: result.cell });
         setGridVersion(v => v + 1);
       }
-      
+
       setAICommand('');
     } catch (error) {
       console.error('AI command error:', error);
@@ -924,7 +924,7 @@ export function SpreadsheetEditor({
         if (templateDoc.sheets && templateDoc.sheets.length > 0) {
           const templateSheet = templateDoc.sheets[0];
           const templateData = templateSheet.data;
-          
+
           if (Array.isArray(templateData)) {
             await streaming.simulateStreaming(templateData, 0, 0);
           }
@@ -940,7 +940,7 @@ export function SpreadsheetEditor({
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (aiSuggestionsRef.current && !aiSuggestionsRef.current.contains(e.target as Node) &&
-          aiCommandRef.current && !aiCommandRef.current.contains(e.target as Node)) {
+        aiCommandRef.current && !aiCommandRef.current.contains(e.target as Node)) {
         setShowAISuggestions(false);
       }
     };
@@ -1039,7 +1039,7 @@ export function SpreadsheetEditor({
 
   const insertContentFn = useCallback(async (text: string) => {
     console.log('[insertContentFn] Called with text length:', text.length);
-    
+
     // Clean markdown from text
     const cleanMarkdown = (str: string) => str
       .replace(/^\*\*[^*]+\*\*\s*/gm, '')
@@ -1047,7 +1047,7 @@ export function SpreadsheetEditor({
       .replace(/^\s*-\s+/gm, '')
       .replace(/\[GRAFICO:[^\]]+\]/g, '')
       .trim();
-    
+
     // Parse GRAFICO command from content
     const parseGraficoCommand = (content: string): ChartConfig | null => {
       const graficoMatch = content.match(/\[GRAFICO:(barras|lineas|pastel)\]/i);
@@ -1062,7 +1062,7 @@ export function SpreadsheetEditor({
         visible: true
       };
     };
-    
+
     // Convert lines to 2D array for streaming
     const linesToMatrix = (lines: string[]): (string | number | null)[][] => {
       return lines.map(line => {
@@ -1074,12 +1074,12 @@ export function SpreadsheetEditor({
         });
       });
     };
-    
+
     // Parse lines and insert into a sheet, handling formulas (non-streaming fallback)
     const insertLines = (lines: string[], sheetData: SpreadsheetData): SpreadsheetData => {
       const newCells = { ...sheetData.cells };
       let maxColInserted = 0;
-      
+
       let startRow = 0;
       for (let r = 0; r < sheetData.rowCount; r++) {
         let rowHasData = false;
@@ -1095,7 +1095,7 @@ export function SpreadsheetEditor({
         }
         startRow = r + 1;
       }
-      
+
       lines.forEach((line, rowOffset) => {
         const values = line.split(/[,\t]/).map(v => v.trim());
         values.forEach((value, colOffset) => {
@@ -1110,7 +1110,7 @@ export function SpreadsheetEditor({
           }
         });
       });
-      
+
       // Evaluate formulas after all cells are inserted
       Object.keys(newCells).forEach(key => {
         const cell = newCells[key];
@@ -1118,7 +1118,7 @@ export function SpreadsheetEditor({
           cell.value = evaluateFormula(cell.formula, newCells);
         }
       });
-      
+
       return {
         ...sheetData,
         cells: newCells,
@@ -1126,19 +1126,19 @@ export function SpreadsheetEditor({
         colCount: Math.max(sheetData.colCount, maxColInserted + 1)
       };
     };
-    
+
     // Check for chart command in text
     const chartConfig = parseGraficoCommand(text);
-    
+
     // Check if there are sheet commands
     const hasSheetCommands = /\[(NUEVA_HOJA|HOJA):/.test(text);
-    
+
     // If no sheet commands, insert into active sheet with streaming
     if (!hasSheetCommands) {
       const cleanText = cleanMarkdown(text);
       const lines = cleanText.split('\n').filter(line => line.trim());
       if (lines.length === 0 && !chartConfig) return;
-      
+
       if (lines.length > 0 && useVirtualized) {
         // Find the first empty row in the sparse grid
         let startRow = 0;
@@ -1157,7 +1157,7 @@ export function SpreadsheetEditor({
           }
           startRow = r + 1;
         }
-        
+
         // Use streaming for virtualized mode
         const matrix = linesToMatrix(lines);
         console.log('[insertContentFn] Streaming', matrix.length, 'rows to active sheet starting at row', startRow);
@@ -1165,14 +1165,14 @@ export function SpreadsheetEditor({
       } else if (lines.length > 0) {
         setData(prev => insertLines(lines, prev));
       }
-      
+
       // Apply chart config to active sheet
       if (chartConfig) {
         setWorkbook(prev => ({
           ...prev,
-          sheets: prev.sheets.map(s => 
-            s.id === prev.activeSheetId 
-              ? { ...s, chartConfig } 
+          sheets: prev.sheets.map(s =>
+            s.id === prev.activeSheetId
+              ? { ...s, chartConfig }
               : s
           )
         }));
@@ -1181,12 +1181,12 @@ export function SpreadsheetEditor({
       }
       return;
     }
-    
+
     // Parse sheet commands and their content using regex.exec
     const sheetCommandPattern = /\[(NUEVA_HOJA|HOJA):([^\]]+)\]/g;
     const commands: { type: string; name: string; startIndex: number; endIndex: number }[] = [];
     let match;
-    
+
     while ((match = sheetCommandPattern.exec(text)) !== null) {
       commands.push({
         type: match[1],
@@ -1195,7 +1195,7 @@ export function SpreadsheetEditor({
         endIndex: match.index + match[0].length
       });
     }
-    
+
     // Pre-calculate chart configs for each command section
     const commandChartConfigs: (ChartConfig | null)[] = commands.map((cmd, idx) => {
       const contentStart = cmd.endIndex;
@@ -1203,7 +1203,7 @@ export function SpreadsheetEditor({
       const content = text.substring(contentStart, contentEnd);
       return parseGraficoCommand(content);
     });
-    
+
     // Find the last chart config for showing after update
     let finalChartConfig: ChartConfig | null = null;
     for (let i = commandChartConfigs.length - 1; i >= 0; i--) {
@@ -1212,7 +1212,7 @@ export function SpreadsheetEditor({
         break;
       }
     }
-    
+
     // Pre-calculate the last sheet's data for streaming
     let lastSheetLines: string[] = [];
     if (useVirtualized && commands.length > 0) {
@@ -1225,26 +1225,26 @@ export function SpreadsheetEditor({
         lastSheetLines = cleanedText.split('\n').filter(line => line.trim());
       }
     }
-    
+
     // Process multiple sheets
     setWorkbook(prev => {
       const newSheets: SheetData[] = prev.sheets.map(s => ({ ...s, data: { ...s.data, cells: { ...s.data.cells } } }));
       let newWorkbook: WorkbookData = { ...prev, sheets: newSheets };
       let lastSheetId = prev.activeSheetId;
-      
+
       commands.forEach((cmd, idx) => {
         const contentStart = cmd.endIndex;
         const contentEnd = idx < commands.length - 1 ? commands[idx + 1].startIndex : text.length;
         const content = text.substring(contentStart, contentEnd);
         const sectionChartConfig = commandChartConfigs[idx];
-        
+
         const cleanedText = cleanMarkdown(content);
         const lines = cleanedText.split('\n').filter(line => line.trim());
-        
+
         if (cmd.type === 'NUEVA_HOJA') {
           const newId = `sheet${Date.now()}_${idx}`;
           const newSheet = createEmptySheet(newId, cmd.name);
-          
+
           // For virtualized mode, we'll stream the last sheet - skip direct insert
           const isLastCommand = idx === commands.length - 1;
           if (!(useVirtualized && isLastCommand && lines.length > 0)) {
@@ -1252,11 +1252,11 @@ export function SpreadsheetEditor({
               newSheet.data = insertLines(lines, newSheet.data);
             }
           }
-          
+
           if (sectionChartConfig) {
             newSheet.chartConfig = sectionChartConfig;
           }
-          
+
           newWorkbook.sheets.push(newSheet);
           lastSheetId = newId;
         } else if (cmd.type === 'HOJA') {
@@ -1275,32 +1275,32 @@ export function SpreadsheetEditor({
           }
         }
       });
-      
+
       newWorkbook.activeSheetId = lastSheetId;
       return newWorkbook;
     });
-    
+
     // Stream the last sheet's data if we're in virtualized mode
     if (useVirtualized && lastSheetLines.length > 0) {
       // Wait for React to update the workbook state
       await new Promise(resolve => setTimeout(resolve, 200));
-      
+
       // Create a fresh sparse grid for the new sheet
       const newGrid = new SparseGrid();
       setSparseGrid(newGrid);
       setGridVersion(v => v + 1);
-      
+
       // Update the streaming hook's grid reference
       streaming.setGrid(newGrid);
-      
+
       // Wait for state update
       await new Promise(resolve => setTimeout(resolve, 50));
-      
+
       const matrix = linesToMatrix(lastSheetLines);
       console.log('[insertContentFn] Streaming', matrix.length, 'rows to new sheet');
       await streaming.simulateStreaming(matrix, 0, 0);
     }
-    
+
     // Show chart if any sheet had chart config
     if (finalChartConfig) {
       setShowChart(true);
@@ -1319,7 +1319,7 @@ export function SpreadsheetEditor({
     try {
       const [row, col] = key.split('-').map(Number);
       if (isNaN(row) || isNaN(col)) return;
-      
+
       // Update the data state
       setData(prev => ({
         ...prev,
@@ -1328,7 +1328,7 @@ export function SpreadsheetEditor({
           [key]: { ...prev.cells[key], value: '', ...updates },
         },
       }));
-      
+
       // Also update sparse grid for virtualized view
       sparseGrid.setCell(row, col, {
         value: updates.value ?? '',
@@ -1344,7 +1344,7 @@ export function SpreadsheetEditor({
         numberFormat: updates.numberFormat,
       });
       setGridVersion(v => v + 1);
-      
+
     } catch (e) {
       console.error('Failed to update cell:', e);
     }
@@ -1375,7 +1375,7 @@ export function SpreadsheetEditor({
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent, key: string) => {
     const [row, col] = key.split('-').map(Number);
-    
+
     if (e.key === 'Enter') {
       e.preventDefault();
       setEditingCell(null);
@@ -1429,7 +1429,7 @@ export function SpreadsheetEditor({
           if (cell?.value) {
             navigator.clipboard.writeText(String(cell.value));
             const cellRef = colToName(active.col + 1) + (active.row + 1);
-            toast.success('Copiado', { 
+            toast.success('Copiado', {
               description: `Celda ${cellRef} copiada`,
               duration: 2000,
               icon: <Copy className="h-4 w-4" />
@@ -1437,7 +1437,7 @@ export function SpreadsheetEditor({
           }
         } else if (data.cells[active.key]?.value) {
           navigator.clipboard.writeText(data.cells[active.key].value);
-          toast.success('Copiado', { 
+          toast.success('Copiado', {
             description: 'Contenido copiado',
             duration: 2000,
             icon: <Copy className="h-4 w-4" />
@@ -1458,7 +1458,7 @@ export function SpreadsheetEditor({
             sparseGrid.setCell(active.row, active.col, { ...cell, value: '' });
             setGridVersion(v => v + 1);
             const cellRef = colToName(active.col + 1) + (active.row + 1);
-            toast.success('Cortado', { 
+            toast.success('Cortado', {
               description: `Celda ${cellRef} cortada`,
               duration: 2000,
               icon: <Scissors className="h-4 w-4" />
@@ -1467,7 +1467,7 @@ export function SpreadsheetEditor({
         } else if (data.cells[active.key]?.value) {
           navigator.clipboard.writeText(data.cells[active.key].value);
           updateCell(active.key, { ...data.cells[active.key], value: '' });
-          toast.success('Cortado', { 
+          toast.success('Cortado', {
             description: 'Contenido cortado',
             duration: 2000,
             icon: <Scissors className="h-4 w-4" />
@@ -1476,9 +1476,9 @@ export function SpreadsheetEditor({
       }
       return;
     }
-    
+
     if (!selectedCell || editingCell) return;
-    
+
     const [row, col] = selectedCell.split('-').map(Number);
     let newRow = row;
     let newCol = col;
@@ -1602,7 +1602,7 @@ export function SpreadsheetEditor({
       const maxRow = Math.max(virtualSelectionRange.startRow, virtualSelectionRange.endRow);
       const minCol = Math.min(virtualSelectionRange.startCol, virtualSelectionRange.endCol);
       const maxCol = Math.max(virtualSelectionRange.startCol, virtualSelectionRange.endCol);
-      
+
       const cells: Array<{ row: number; col: number }> = [];
       for (let r = minRow; r <= maxRow; r++) {
         for (let c = minCol; c <= maxCol; c++) {
@@ -1618,7 +1618,7 @@ export function SpreadsheetEditor({
         const maxRow = Math.max(startParts[0], endParts[0]);
         const minCol = Math.min(startParts[1], endParts[1]);
         const maxCol = Math.max(startParts[1], endParts[1]);
-        
+
         const cells: Array<{ row: number; col: number }> = [];
         for (let r = minRow; r <= maxRow; r++) {
           for (let c = minCol; c <= maxCol; c++) {
@@ -1628,7 +1628,7 @@ export function SpreadsheetEditor({
         return cells;
       }
     }
-    
+
     const active = getActiveCell();
     return active ? [{ row: active.row, col: active.col }] : [];
   }, [useVirtualized, virtualSelectionRange, selectionRange, getActiveCell]);
@@ -1636,7 +1636,7 @@ export function SpreadsheetEditor({
   const applyToSelection = useCallback((updater: (cell: SparseCellData) => Partial<SparseCellData>) => {
     const cells = getSelectionCells();
     if (cells.length === 0) return;
-    
+
     if (useVirtualized) {
       cells.forEach(({ row, col }) => {
         const existing = sparseGrid.getCell(row, col) || { value: '' };
@@ -1729,25 +1729,26 @@ export function SpreadsheetEditor({
     applyToSelection(() => ({ backgroundColor }));
   }, [applyToSelection]);
 
-  const updateChartConfig = useCallback((type: 'bar' | 'line' | 'pie', visible: boolean) => {
+  const updateChartConfig = useCallback((type: string, visible: boolean) => {
+    const chartType = type as 'bar' | 'line' | 'pie';
     setWorkbook(prev => ({
       ...prev,
-      sheets: prev.sheets.map(s => 
-        s.id === prev.activeSheetId 
-          ? { ...s, chartConfig: { type, visible, title: s.chartConfig?.title } } 
+      sheets: prev.sheets.map(s =>
+        s.id === prev.activeSheetId
+          ? { ...s, chartConfig: { type: chartType, visible, title: s.chartConfig?.title } }
           : s
       )
     }));
-    setChartType(type);
+    setChartType(chartType);
     setShowChart(visible);
   }, []);
 
   const hideChart = useCallback(() => {
     setWorkbook(prev => ({
       ...prev,
-      sheets: prev.sheets.map(s => 
+      sheets: prev.sheets.map(s =>
         s.id === prev.activeSheetId && s.chartConfig
-          ? { ...s, chartConfig: { ...s.chartConfig, visible: false } } 
+          ? { ...s, chartConfig: { ...s.chartConfig, visible: false } }
           : s
       )
     }));
@@ -1779,26 +1780,26 @@ export function SpreadsheetEditor({
   const setBorders = useCallback((type: 'all' | 'outside' | 'inside' | 'none' | 'top' | 'bottom' | 'left' | 'right', style: 'thin' | 'medium' | 'thick' = 'thin') => {
     const active = getActiveCell();
     if (!active) return;
-    
+
     const borderStyle = { style, color: '#000000' };
     const cells = getSelectionCells();
     if (cells.length === 0) return;
-    
+
     const minRow = Math.min(...cells.map(c => c.row));
     const maxRow = Math.max(...cells.map(c => c.row));
     const minCol = Math.min(...cells.map(c => c.col));
     const maxCol = Math.max(...cells.map(c => c.col));
-    
+
     const applyBordersToCell = (row: number, col: number, existingBorders: any) => {
       if (type === 'none') return undefined;
-      
+
       const isTop = row === minRow;
       const isBottom = row === maxRow;
       const isLeft = col === minCol;
       const isRight = col === maxCol;
-      
+
       const borders = { ...existingBorders };
-      
+
       if (type === 'all') {
         borders.top = borderStyle;
         borders.bottom = borderStyle;
@@ -1820,10 +1821,10 @@ export function SpreadsheetEditor({
         if (type === 'left') borders.left = borderStyle;
         if (type === 'right') borders.right = borderStyle;
       }
-      
+
       return borders;
     };
-    
+
     if (useVirtualized) {
       cells.forEach(({ row, col }) => {
         const cell = sparseGrid.getCell(row, col) || { value: '' };
@@ -1844,16 +1845,16 @@ export function SpreadsheetEditor({
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [findText, setFindText] = useState('');
   const [replaceText, setReplaceText] = useState('');
-  const [findResults, setFindResults] = useState<Array<{row: number, col: number}>>([]);
+  const [findResults, setFindResults] = useState<Array<{ row: number, col: number }>>([]);
   const [currentFindIndex, setCurrentFindIndex] = useState(0);
 
   const findInSpreadsheet = useCallback(() => {
     if (!findText) return;
-    const results: Array<{row: number, col: number}> = [];
-    
+    const results: Array<{ row: number, col: number }> = [];
+
     if (useVirtualized) {
-      for (let r = 0; r < GRID_CONFIG.maxRows && r < 1000; r++) {
-        for (let c = 0; c < GRID_CONFIG.maxCols && c < 100; c++) {
+      for (let r = 0; r < GRID_CONFIG.MAX_ROWS && r < 1000; r++) {
+        for (let c = 0; c < GRID_CONFIG.MAX_COLS && c < 100; c++) {
           const cell = sparseGrid.getCell(r, c);
           if (cell?.value && String(cell.value).toLowerCase().includes(findText.toLowerCase())) {
             results.push({ row: r, col: c });
@@ -1869,7 +1870,7 @@ export function SpreadsheetEditor({
         }
       });
     }
-    
+
     setFindResults(results);
     setCurrentFindIndex(0);
     if (results.length > 0) {
@@ -1884,7 +1885,7 @@ export function SpreadsheetEditor({
 
   const replaceInSpreadsheet = useCallback((replaceAll: boolean) => {
     if (!findText) return;
-    
+
     if (useVirtualized) {
       const cellsToReplace = replaceAll ? findResults : (findResults.length > 0 ? [findResults[currentFindIndex]] : []);
       cellsToReplace.forEach(({ row, col }) => {
@@ -1904,7 +1905,7 @@ export function SpreadsheetEditor({
       });
       setData(prev => ({ ...prev, cells: newCells }));
     }
-    
+
     if (!replaceAll && findResults.length > 1) {
       setCurrentFindIndex(prev => (prev + 1) % findResults.length);
     } else {
@@ -1915,10 +1916,10 @@ export function SpreadsheetEditor({
   const insertFormula = useCallback((formulaType: 'SUM' | 'AVERAGE' | 'COUNT' | 'MAX' | 'MIN' | 'IF' | 'VLOOKUP') => {
     const active = getActiveCell();
     if (!active) return;
-    
+
     const selectionCells = getSelectionCells();
     let formula = '';
-    
+
     if (selectionCells.length > 1) {
       const rows = selectionCells.map(c => c.row);
       const cols = selectionCells.map(c => c.col);
@@ -1938,18 +1939,15 @@ export function SpreadsheetEditor({
         formula = `=${formulaType}(A1:A10)`;
       }
     }
-    
+
     if (useVirtualized) {
       const cell = sparseGrid.getCell(active.row, active.col) || { value: '' };
-      const engine = new FormulaEngine((r, c) => {
-        const data = sparseGrid.getCell(r, c);
-        return data?.value ?? '';
-      });
+      const engine = new FormulaEngine(sparseGrid);
       const result = engine.evaluate(formula);
-      sparseGrid.setCell(active.row, active.col, { 
-        ...cell, 
-        formula, 
-        value: String(result) 
+      sparseGrid.setCell(active.row, active.col, {
+        ...cell,
+        formula,
+        value: String(result)
       });
       setGridVersion(v => v + 1);
     } else {
@@ -1962,12 +1960,12 @@ export function SpreadsheetEditor({
   const sortData = useCallback((direction: 'asc' | 'desc') => {
     const active = getActiveCell();
     if (!active) return;
-    
+
     const colToSort = active.col;
-    
+
     if (useVirtualized) {
-      const rowsWithData: Array<{row: number, values: Map<number, any>}> = [];
-      
+      const rowsWithData: Array<{ row: number, values: Map<number, any> }> = [];
+
       for (let r = 0; r < 1000; r++) {
         const cell = sparseGrid.getCell(r, colToSort);
         if (cell?.value) {
@@ -1979,23 +1977,23 @@ export function SpreadsheetEditor({
           rowsWithData.push({ row: r, values: rowData });
         }
       }
-      
+
       if (rowsWithData.length === 0) return;
-      
+
       rowsWithData.sort((a, b) => {
         const aVal = a.values.get(colToSort)?.value || '';
         const bVal = b.values.get(colToSort)?.value || '';
         const aNum = parseFloat(aVal);
         const bNum = parseFloat(bVal);
-        
+
         if (!isNaN(aNum) && !isNaN(bNum)) {
           return direction === 'asc' ? aNum - bNum : bNum - aNum;
         }
-        return direction === 'asc' 
+        return direction === 'asc'
           ? String(aVal).localeCompare(String(bVal))
           : String(bVal).localeCompare(String(aVal));
       });
-      
+
       rowsWithData.forEach((rowInfo, newIndex) => {
         for (let c = 0; c < 100; c++) {
           const cellData = rowInfo.values.get(c);
@@ -2006,11 +2004,11 @@ export function SpreadsheetEditor({
           }
         }
       });
-      
+
       setGridVersion(v => v + 1);
     } else {
-      const rowsWithData: Array<{row: number, cells: { [key: string]: CellData }}> = [];
-      
+      const rowsWithData: Array<{ row: number, cells: { [key: string]: CellData } }> = [];
+
       for (let r = 0; r < data.rowCount; r++) {
         const key = getCellKey(r, colToSort);
         const cell = data.cells[key];
@@ -2025,30 +2023,30 @@ export function SpreadsheetEditor({
           rowsWithData.push({ row: r, cells: rowCells });
         }
       }
-      
+
       if (rowsWithData.length === 0) return;
-      
+
       rowsWithData.sort((a, b) => {
         const aVal = a.cells[colToSort.toString()]?.value || '';
         const bVal = b.cells[colToSort.toString()]?.value || '';
         const aNum = parseFloat(aVal);
         const bNum = parseFloat(bVal);
-        
+
         if (!isNaN(aNum) && !isNaN(bNum)) {
           return direction === 'asc' ? aNum - bNum : bNum - aNum;
         }
-        return direction === 'asc' 
+        return direction === 'asc'
           ? String(aVal).localeCompare(String(bVal))
           : String(bVal).localeCompare(String(aVal));
       });
-      
+
       const newCells: { [key: string]: CellData } = {};
       rowsWithData.forEach((rowInfo, newIndex) => {
         Object.entries(rowInfo.cells).forEach(([col, cellData]) => {
           newCells[getCellKey(newIndex, parseInt(col))] = cellData;
         });
       });
-      
+
       setData(prev => ({ ...prev, cells: newCells }));
     }
   }, [getActiveCell, useVirtualized, sparseGrid, data]);
@@ -2074,13 +2072,13 @@ export function SpreadsheetEditor({
     copy: () => {
       const active = getActiveCell();
       if (!active) return;
-      
+
       if (useVirtualized) {
         const cell = sparseGrid.getCell(active.row, active.col);
         if (cell?.value) {
           navigator.clipboard.writeText(String(cell.value));
           const cellRef = colToName(active.col + 1) + (active.row + 1);
-          toast.success('Copiado', { 
+          toast.success('Copiado', {
             description: `Celda ${cellRef} copiada al portapapeles`,
             duration: 2000,
             icon: <Copy className="h-4 w-4" />
@@ -2090,7 +2088,7 @@ export function SpreadsheetEditor({
         const cell = data.cells[active.key];
         if (cell?.value) {
           navigator.clipboard.writeText(cell.value);
-          toast.success('Copiado', { 
+          toast.success('Copiado', {
             description: 'Contenido copiado al portapapeles',
             duration: 2000,
             icon: <Copy className="h-4 w-4" />
@@ -2101,7 +2099,7 @@ export function SpreadsheetEditor({
     cut: () => {
       const active = getActiveCell();
       if (!active) return;
-      
+
       if (useVirtualized) {
         const cell = sparseGrid.getCell(active.row, active.col);
         if (cell?.value) {
@@ -2109,7 +2107,7 @@ export function SpreadsheetEditor({
           sparseGrid.setCell(active.row, active.col, { ...cell, value: '' });
           setGridVersion(v => v + 1);
           const cellRef = colToName(active.col + 1) + (active.row + 1);
-          toast.success('Cortado', { 
+          toast.success('Cortado', {
             description: `Celda ${cellRef} cortada`,
             duration: 2000,
             icon: <Scissors className="h-4 w-4" />
@@ -2120,7 +2118,7 @@ export function SpreadsheetEditor({
         if (cell?.value) {
           navigator.clipboard.writeText(cell.value);
           updateCell(active.key, { ...cell, value: '' });
-          toast.success('Cortado', { 
+          toast.success('Cortado', {
             description: 'Contenido cortado al portapapeles',
             duration: 2000,
             icon: <Scissors className="h-4 w-4" />
@@ -2131,7 +2129,7 @@ export function SpreadsheetEditor({
     paste: async () => {
       const active = getActiveCell();
       if (!active) return;
-      
+
       try {
         const text = await navigator.clipboard.readText();
         if (useVirtualized) {
@@ -2139,7 +2137,7 @@ export function SpreadsheetEditor({
           sparseGrid.setCell(active.row, active.col, { ...cell, value: text });
           setGridVersion(v => v + 1);
           const cellRef = colToName(active.col + 1) + (active.row + 1);
-          toast.success('Pegado', { 
+          toast.success('Pegado', {
             description: `Contenido pegado en ${cellRef}`,
             duration: 2000,
             icon: <Clipboard className="h-4 w-4" />
@@ -2147,7 +2145,7 @@ export function SpreadsheetEditor({
         } else {
           const cell = data.cells[active.key] || { value: '' };
           updateCell(active.key, { ...cell, value: text });
-          toast.success('Pegado', { 
+          toast.success('Pegado', {
             description: 'Contenido pegado',
             duration: 2000,
             icon: <Clipboard className="h-4 w-4" />
@@ -2197,7 +2195,7 @@ export function SpreadsheetEditor({
   const cellFormat: CellFormat = useMemo(() => {
     const active = getActiveCell();
     if (!active) return {};
-    
+
     if (useVirtualized) {
       const cell = sparseGrid.getCell(active.row, active.col);
       return {
@@ -2261,12 +2259,12 @@ export function SpreadsheetEditor({
   }, []);
 
   const selectedCellData = selectedCell ? data.cells[selectedCell] : null;
-  const selectedCellLabel = selectedCell 
+  const selectedCellLabel = selectedCell
     ? `${getColumnLabel(parseInt(selectedCell.split('-')[1]))}${parseInt(selectedCell.split('-')[0]) + 1}`
     : '';
 
   return (
-    <div 
+    <div
       className="spreadsheet-editor flex flex-col h-full bg-white dark:bg-black"
       onKeyDown={handleNavigationKeyDown}
       tabIndex={0}
@@ -2295,9 +2293,8 @@ export function SpreadsheetEditor({
         currentFontSize={11}
         currentNumberFormat="General"
         onRunAutomation={(prompt) => {
-          if (orchestratorRef.current) {
-            orchestratorRef.current.runPrompt(prompt);
-          }
+          // TODO: Wire up orchestrator when available
+          console.info('[SpreadsheetEditor] Automation prompt:', prompt);
         }}
       />
 
@@ -2324,7 +2321,7 @@ export function SpreadsheetEditor({
             return 'A1';
           })()}
         </div>
-        
+
         {/* Undo/Redo Buttons */}
         <div className="flex items-center gap-0.5 mx-1 border-l border-r border-gray-300 dark:border-gray-700 px-2">
           <Button
@@ -2362,7 +2359,7 @@ export function SpreadsheetEditor({
             <Redo className="h-4 w-4" />
           </Button>
         </div>
-        
+
         <span className="text-gray-400 text-sm mx-1 font-medium">fx</span>
         <input
           ref={formulaInputRef}
@@ -2372,6 +2369,7 @@ export function SpreadsheetEditor({
           value={selectedCellData?.formula || selectedCellData?.value || ''}
           onChange={(e) => selectedCell && handleCellChange(selectedCell, e.target.value)}
           data-testid="formula-input"
+          aria-label="Barra de fórmulas"
         />
         <Button
           variant={useVirtualized ? 'default' : 'ghost'}
@@ -2399,13 +2397,13 @@ export function SpreadsheetEditor({
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: 'white', 
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'white',
                     border: '1px solid #e5e7eb',
                     borderRadius: '6px',
                     fontSize: '12px'
-                  }} 
+                  }}
                 />
                 {chartData.headers.length > 0 ? (
                   chartData.headers.map((header, i) => (
@@ -2420,13 +2418,13 @@ export function SpreadsheetEditor({
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: 'white', 
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'white',
                     border: '1px solid #e5e7eb',
                     borderRadius: '6px',
                     fontSize: '12px'
-                  }} 
+                  }}
                 />
                 {chartData.headers.length > 0 ? (
                   chartData.headers.map((header, i) => (
@@ -2452,13 +2450,13 @@ export function SpreadsheetEditor({
                     <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: 'white', 
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'white',
                     border: '1px solid #e5e7eb',
                     borderRadius: '6px',
                     fontSize: '12px'
-                  }} 
+                  }}
                 />
               </RechartsPieChart>
             )}
@@ -2499,7 +2497,7 @@ export function SpreadsheetEditor({
             selectionRange={virtualSelectionRange}
             onSelectionRangeChange={setVirtualSelectionRange}
           />
-          
+
           {/* Streaming Indicator */}
           <StreamingIndicator
             status={streaming.streamStatus}
@@ -2557,6 +2555,7 @@ export function SpreadsheetEditor({
                             onChange={(e) => handleCellChange(key, e.target.value)}
                             onBlur={handleCellBlur}
                             onKeyDown={(e) => handleKeyDown(e, key)}
+                            aria-label={`Editar celda ${getCellKey(rowIndex, colIndex)}`}
                           />
                         ) : (
                           <span className="spreadsheet-cell-content">{cell.value}</span>
@@ -2604,7 +2603,7 @@ export function SpreadsheetEditor({
             <Plus className="h-4 w-4" />
           </button>
         </div>
-        
+
         {/* Selection Info */}
         <div className="px-3 py-1 text-xs text-gray-600 dark:text-gray-400 border-l border-gray-200 dark:border-gray-800 font-medium" data-testid="selection-info">
           {(() => {
@@ -2642,7 +2641,7 @@ export function SpreadsheetEditor({
             return '';
           })()}
         </div>
-        
+
         <div className="px-3 py-1 text-xs text-gray-500 border-l border-gray-200 dark:border-gray-800">
           {data.rowCount} × {data.colCount}
         </div>
@@ -2665,6 +2664,7 @@ export function SpreadsheetEditor({
               onKeyDown={(e) => e.key === 'Enter' && handleAIGenerate()}
               autoFocus
               data-testid="input-ai-prompt"
+              aria-label="Prompt para generar con IA"
             />
             <div className="flex gap-2 justify-end">
               <Button variant="outline" onClick={() => setShowAIPrompt(false)}>
@@ -2687,6 +2687,7 @@ export function SpreadsheetEditor({
             <button
               onClick={() => setFindReplaceOpen(false)}
               className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              aria-label="Cerrar búsqueda"
             >
               <X className="w-4 h-4" />
             </button>
@@ -2703,6 +2704,7 @@ export function SpreadsheetEditor({
                 onKeyDown={(e) => e.key === 'Enter' && findInSpreadsheet()}
                 autoFocus
                 data-testid="input-find-text"
+                aria-label="Texto a buscar"
               />
             </div>
             <div>
@@ -2714,6 +2716,7 @@ export function SpreadsheetEditor({
                 placeholder="Nuevo texto..."
                 className="w-full px-3 py-1.5 text-sm border rounded focus:ring-1 focus:ring-green-500 outline-none dark:bg-gray-800 dark:border-gray-700"
                 data-testid="input-replace-text"
+                aria-label="Texto para reemplazar"
               />
             </div>
             {findResults.length > 0 && (

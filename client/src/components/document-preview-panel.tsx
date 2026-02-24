@@ -69,10 +69,10 @@ const WordPreview = memo(function WordPreview({ data }: { data: any }) {
   const content = useMemo(() => {
     if (!data) return null;
     if (typeof data === "string") return data;
+    if (data.html) return { type: "html" as const, value: data.html };
     if (data.content) return data.content;
     if (data.text) return data.text;
     if (data.markdown) return data.markdown;
-    if (data.html) return data.html;
     if (Array.isArray(data.paragraphs)) {
       return data.paragraphs.join("\n\n");
     }
@@ -83,6 +83,18 @@ const WordPreview = memo(function WordPreview({ data }: { data: any }) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground" data-testid="word-preview-empty">
         <p>No hay contenido disponible para previsualizar</p>
+      </div>
+    );
+  }
+
+  // Render HTML content from mammoth conversion
+  if (typeof content === "object" && content.type === "html") {
+    return (
+      <div className="prose prose-sm dark:prose-invert max-w-none p-6" data-testid="word-preview-content">
+        <div
+          className="font-serif leading-relaxed text-foreground"
+          dangerouslySetInnerHTML={{ __html: content.value }}
+        />
       </div>
     );
   }
@@ -312,6 +324,25 @@ export const DocumentPreviewPanel = memo(function DocumentPreviewPanel({
 
   const renderPreview = () => {
     if (!artifact?.data) {
+      // If we have a URL but no data, show a download prompt
+      if (artifact?.url) {
+        return (
+          <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground p-8" data-testid="url-only-preview">
+            <div className={cn("w-16 h-16 rounded-2xl flex items-center justify-center", theme.bgColor)}>
+              <IconComponent className="h-8 w-8 text-white" />
+            </div>
+            <p className="text-center">Este documento está disponible para descargar.</p>
+            <a
+              href={artifact.url}
+              download={artifact.name}
+              className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors flex items-center gap-2"
+            >
+              <Download className="h-4 w-4" />
+              Descargar {artifact.name}
+            </a>
+          </div>
+        );
+      }
       return (
         <div className="flex items-center justify-center h-full text-muted-foreground" data-testid="no-data-preview">
           <p>No hay datos disponibles para previsualizar</p>

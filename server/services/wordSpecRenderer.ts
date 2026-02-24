@@ -21,6 +21,40 @@ import { DocSpec, DocBlock, TitleBlock, TocBlock, NumberedBlock } from "../../sh
 import { tokenizeMarkdown, hasMarkdown, RichTextToken } from "./richText/markdownTokenizer";
 import { createMathFromLatex } from "./richText/latexMath";
 
+// ============================================
+// SECURITY LIMITS
+// ============================================
+
+/** Maximum number of blocks to process */
+const MAX_BLOCKS = 10_000;
+
+/** Maximum text length per block */
+const MAX_BLOCK_TEXT_LENGTH = 100_000;
+
+/** Maximum items in a bullet/numbered list */
+const MAX_LIST_ITEMS = 1_000;
+
+/** Maximum table rows */
+const MAX_TABLE_ROWS = 5_000;
+
+/** Maximum table columns */
+const MAX_TABLE_COLUMNS = 200;
+
+/** Maximum LaTeX expression length */
+const MAX_LATEX_LENGTH = 10_000;
+
+/** Allowed URL protocols for hyperlinks */
+const ALLOWED_URL_PROTOCOLS = ["http:", "https:", "mailto:"];
+
+/**
+ * Security: validate URL protocol to prevent javascript:, data:, file:// injection
+ */
+function isAllowedUrl(url: string): boolean {
+  if (!url || typeof url !== "string") return false;
+  const trimmed = url.trim().toLowerCase();
+  return ALLOWED_URL_PROTOCOLS.some(proto => trimmed.startsWith(proto));
+}
+
 interface FontConfig {
   font: string;
   size: number;
@@ -79,21 +113,27 @@ async function tokensToChildren(text: string, fontConfig: FontConfig, extraBold?
         children.push(new DocxMath({ children: [new MathRun(token.text)] }));
       }
     } else if (token.link) {
-      children.push(
-        new ExternalHyperlink({
-          children: [
-            new TextRun({
-              text: token.text,
-              font: fontConfig.font,
-              size: fontConfig.size,
-              bold: token.bold || extraBold,
-              italics: token.italic,
-              style: "Hyperlink",
-            }),
-          ],
-          link: token.link,
-        })
-      );
+      // Security: validate URL protocol to prevent javascript:, data:, file:// injection
+      if (isAllowedUrl(token.link)) {
+        children.push(
+          new ExternalHyperlink({
+            children: [
+              new TextRun({
+                text: token.text,
+                font: fontConfig.font,
+                size: fontConfig.size,
+                bold: token.bold || extraBold,
+                italics: token.italic,
+                style: "Hyperlink",
+              }),
+            ],
+            link: token.link,
+          })
+        );
+      } else {
+        // Render as plain text if URL is unsafe
+        children.push(tokenToTextRun(token, fontConfig, extraBold));
+      }
     } else {
       children.push(tokenToTextRun(token, fontConfig, extraBold));
     }
@@ -141,7 +181,9 @@ async function processParagraphBlock(block: Extract<DocBlock, { type: "paragraph
 
 async function processBulletsBlock(block: Extract<DocBlock, { type: "bullets" }>, fontConfig: FontConfig): Promise<Paragraph[]> {
   const paragraphs: Paragraph[] = [];
-  for (const item of block.items) {
+  // Security: limit list items
+  const items = block.items.slice(0, MAX_LIST_ITEMS);
+  for (const item of items) {
     paragraphs.push(
       new Paragraph({
         children: await tokensToChildren(item, fontConfig) as any,
@@ -155,7 +197,9 @@ async function processBulletsBlock(block: Extract<DocBlock, { type: "bullets" }>
 
 async function processNumberedBlock(block: NumberedBlock, fontConfig: FontConfig): Promise<Paragraph[]> {
   const paragraphs: Paragraph[] = [];
-  for (const item of block.items) {
+  // Security: limit list items
+  const items = block.items.slice(0, MAX_LIST_ITEMS);
+  for (const item of items) {
     paragraphs.push(
       new Paragraph({
         children: await tokensToChildren(item, fontConfig) as any,
@@ -177,9 +221,13 @@ function processTocBlock(block: TocBlock): TableOfContents {
 async function processTableBlock(block: Extract<DocBlock, { type: "table" }>, fontConfig: FontConfig): Promise<Table> {
   const rows: TableRow[] = [];
 
+  // Security: limit table dimensions
+  const columns = block.columns.slice(0, MAX_TABLE_COLUMNS);
+  const dataRows = (block.rows || []).slice(0, MAX_TABLE_ROWS);
+
   if (block.header !== false) {
     const headerCells: TableCell[] = [];
-    for (const col of block.columns) {
+    for (const col of columns) {
       headerCells.push(
         new TableCell({
           children: [
@@ -200,9 +248,9 @@ async function processTableBlock(block: Extract<DocBlock, { type: "table" }>, fo
     rows.push(new TableRow({ children: headerCells }));
   }
 
-  for (const row of block.rows) {
+  for (const row of dataRows) {
     const dataCells: TableCell[] = [];
-    for (const cell of row) {
+    for (const cell of row.slice(0, MAX_TABLE_COLUMNS)) {
       dataCells.push(
         new TableCell({
           children: [
@@ -272,13 +320,19 @@ export async function renderWordFromSpec(spec: DocSpec): Promise<Buffer> {
     bodyElements.push(new Paragraph({ spacing: { after: 400 } }));
   }
 
-  for (const block of spec.blocks) {
+  // Security: limit total number of blocks processed
+  const blocks = spec.blocks.slice(0, MAX_BLOCKS);
+  for (const block of blocks) {
     bodyElements.push(...await processBlock(block, fontConfig));
   }
 
+  // Security: sanitize document metadata
+  const safeTitle = (spec.title || "").replace(/[\x00-\x1F\x7F]/g, "").substring(0, 500);
+  const safeAuthor = (spec.author || "").replace(/[\x00-\x1F\x7F]/g, "").substring(0, 200);
+
   const doc = new Document({
-    title: spec.title,
-    creator: spec.author ?? undefined,
+    title: safeTitle,
+    creator: safeAuthor || undefined,
     numbering: {
       config: [
         {

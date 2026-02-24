@@ -45,13 +45,17 @@ export type WorkerMessageFromWorker =
   | { type: 'ready' }
   | { type: 'shutdown_complete' };
 
-export enum WorkerErrorCode {
-  TIMEOUT = 'WORKER_TIMEOUT',
-  MEMORY_EXCEEDED = 'WORKER_MEMORY_EXCEEDED',
-  PARSE_ERROR = 'WORKER_PARSE_ERROR',
-  WORKER_TERMINATED = 'WORKER_TERMINATED',
-  UNKNOWN = 'WORKER_UNKNOWN_ERROR',
-}
+// NOTE: This must be runtime-loadable under Node's "strip types" TS loader.
+// Node cannot strip TypeScript enums (it throws: "TypeScript enum is not supported in strip-only mode").
+export const WorkerErrorCode = {
+  TIMEOUT: 'WORKER_TIMEOUT',
+  MEMORY_EXCEEDED: 'WORKER_MEMORY_EXCEEDED',
+  PARSE_ERROR: 'WORKER_PARSE_ERROR',
+  WORKER_TERMINATED: 'WORKER_TERMINATED',
+  UNKNOWN: 'WORKER_UNKNOWN_ERROR',
+} as const;
+
+export type WorkerErrorCode = (typeof WorkerErrorCode)[keyof typeof WorkerErrorCode];
 
 export function serializeTask(task: ParserTask): ParserTask {
   return {

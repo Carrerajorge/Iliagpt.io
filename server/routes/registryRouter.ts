@@ -665,7 +665,16 @@ export function createRegistryRouter(): Router {
       const { filename } = req.params;
       const artifactsDir = path.join(process.cwd(), "artifacts");
       const filePath = path.join(artifactsDir, filename);
-      
+
+      // SECURITY: Prevent path traversal attacks
+      const realPath = path.resolve(filePath);
+      if (!realPath.startsWith(path.resolve(artifactsDir))) {
+        return res.status(403).json({
+          success: false,
+          error: "Invalid file path - access denied",
+        });
+      }
+
       if (!fs.existsSync(filePath)) {
         return res.status(404).json({
           success: false,
@@ -722,7 +731,16 @@ export function createRegistryRouter(): Router {
       const { filename } = req.params;
       const artifactsDir = path.join(process.cwd(), "artifacts");
       const filePath = path.join(artifactsDir, filename);
-      
+
+      // SECURITY: Prevent path traversal attacks
+      const realPath = path.resolve(filePath);
+      if (!realPath.startsWith(path.resolve(artifactsDir))) {
+        return res.status(403).json({
+          success: false,
+          error: "Invalid file path - access denied",
+        });
+      }
+
       if (!fs.existsSync(filePath)) {
         return res.status(404).json({
           success: false,

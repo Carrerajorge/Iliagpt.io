@@ -9,7 +9,7 @@ function getOpenAIClient(): OpenAI {
   }
   return new OpenAI({ 
     baseURL: "https://api.x.ai/v1", 
-    apiKey: process.env.XAI_API_KEY 
+    apiKey: process.env.XAI_API_KEY || "missing" 
   });
 }
 
@@ -225,12 +225,16 @@ Create an execution plan.`
     const parsed = JSON.parse(response.choices[0]?.message?.content || "{}");
     const rawSteps = parsed.steps || parsed.plan || [];
     
+    // Two-pass approach: first assign IDs, then resolve dependencies
+    const stepIds: string[] = rawSteps.map((_: any, index: number) =>
+      `step_${index}_${crypto.randomUUID().slice(0, 8)}`
+    );
     steps = rawSteps.map((step: any, index: number) => ({
-      id: `step_${index}_${crypto.randomUUID().slice(0, 8)}`,
+      id: stepIds[index],
       toolId: step.toolId || step.tool || "respond",
       description: step.description || `Step ${index + 1}`,
       params: step.params || {},
-      dependsOn: step.dependsOn || (index > 0 ? [steps[index - 1]?.id] : undefined),
+      dependsOn: step.dependsOn || (index > 0 ? [stepIds[index - 1]] : undefined),
       condition: step.condition,
       optional: step.optional || false,
       timeout: step.timeout,

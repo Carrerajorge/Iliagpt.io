@@ -234,7 +234,8 @@ export function createRunController(): Router {
 
   router.post("/runs", async (req: Request, res: Response) => {
     try {
-      const { prompt, targetCount = 50, yearStart = 2020, yearEnd = 2025 }: RunRequest = req.body;
+      const currentYear = new Date().getFullYear();
+      const { prompt, targetCount = 50, yearStart = currentYear - 5, yearEnd = currentYear }: RunRequest = req.body;
 
       if (!prompt) {
         return res.status(400).json({ error: "prompt is required" });

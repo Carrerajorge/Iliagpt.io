@@ -491,7 +491,7 @@ export type Component = z.infer<typeof BaseComponentSchema> & {
 
 export const ComponentSchema: z.ZodType<Component> = BaseComponentSchema.extend({
   children: z.lazy(() => z.array(z.union([z.string(), ComponentSchema]))).optional(),
-});
+}) as any;
 
 export const ActionSchema = z.object({
   name: z.string(),
@@ -632,23 +632,23 @@ export const QualityGateSchema = z.object({
   id: z.string().default(() => randomUUID()),
   name: z.string(),
   targetType: ArtifactTypeSchema,
-  
+
   minElements: z.number().int().min(0).optional(),
   maxElements: z.number().int().positive().optional(),
-  
+
   requiredFields: z.array(z.string()).default([]),
-  
+
   formatConstraints: FormatConstraintSchema.optional(),
-  
+
   customRules: z.array(z.object({
     name: z.string(),
     description: z.string().optional(),
     expression: z.string().describe("JSONPath or custom expression"),
     errorMessage: z.string(),
   })).default([]),
-  
+
   severity: z.enum(["error", "warning", "info"]).default("error"),
-  
+
   enabled: z.boolean().default(true),
 });
 export type QualityGate = z.infer<typeof QualityGateSchema>;
@@ -693,7 +693,7 @@ export function validateArtifact(artifact: ArtifactSpec, gate: QualityGate): Val
 
   if (gate.minElements !== undefined || gate.maxElements !== undefined) {
     let elementCount = 0;
-    
+
     switch (artifact.type) {
       case "presentation":
         elementCount = (spec as PresentationSpec).slides?.length ?? 0;
@@ -852,10 +852,10 @@ export function createSheetSpec(params: Partial<SheetSpec> & { name: string; she
   });
 }
 
-export function createAppSpec(params: Partial<AppSpec> & { 
-  name: string; 
-  type: AppType; 
-  components: Component[] 
+export function createAppSpec(params: Partial<AppSpec> & {
+  name: string;
+  type: AppType;
+  components: Component[]
 }): AppSpec {
   return AppSpecSchema.parse({
     id: randomUUID(),
@@ -869,10 +869,10 @@ export function createAppSpec(params: Partial<AppSpec> & {
 export function createArtifact<T extends ArtifactType>(
   type: T,
   spec: T extends "presentation" ? PresentationSpec :
-        T extends "document" ? DocSpec :
-        T extends "spreadsheet" ? SheetSpec :
-        T extends "app" ? AppSpec :
-        Record<string, unknown>
+    T extends "document" ? DocSpec :
+    T extends "spreadsheet" ? SheetSpec :
+    T extends "app" ? AppSpec :
+    Record<string, unknown>
 ): ArtifactSpec {
   return ArtifactSpecSchema.parse({ type, spec });
 }
@@ -903,4 +903,85 @@ export function validateArtifactSpec(spec: unknown): ArtifactSpec {
 
 export function validateQualityGate(gate: unknown): QualityGate {
   return QualityGateSchema.parse(gate);
+}
+
+// ============================================
+// Utility / Mappers for Agent Executor
+// ============================================
+
+export function buildPresentationSpec(args: any, userId: string = "system"): PresentationSpec {
+  const slideSpec = {
+    title: args.title || "Untitled Presentation",
+    theme: args.theme || "professional",
+    slides: (args.slides || []).map((s: any, i: number) => ({
+      id: `slide-${i + 1}`,
+      layout: s.layout || "content",
+      elements: [
+        ...(s.title ? [{
+          id: `title-${i}`,
+          type: "text" as const,
+          content: s.title,
+          position: { x: 5, y: 5, w: 90, h: 15 },
+          style: { fontSize: 32, bold: true, align: "center" as const }
+        }] : []),
+        ...(s.content ? [{
+          id: `content-${i}`,
+          type: "text" as const,
+          content: s.content,
+          position: { x: 5, y: 25, w: 90, h: 60 }
+        }] : []),
+        ...(s.bullets ? [{
+          id: `bullets-${i}`,
+          type: "list" as const,
+          items: s.bullets,
+          position: { x: 5, y: 25, w: 90, h: 60 }
+        }] : [])
+      ]
+    })),
+    metadata: { author: userId, createdAt: new Date() }
+  };
+  return PresentationSpecSchema.parse(slideSpec);
+}
+
+export function buildDocumentSpec(args: any, userId: string = "system"): DocSpec {
+  const docSpec = {
+    title: args.title || "Untitled Document",
+    sections: (args.sections || []).map((s: any, i: number) => ({
+      id: `section-${i + 1}`,
+      heading: s.heading || `Section ${i + 1}`,
+      level: s.level || 1,
+      content: s.content ? [{ type: "paragraph" as const, text: s.content }] : [],
+      bullets: s.bullets
+    })),
+    metadata: { author: userId, createdAt: new Date() }
+  };
+  return DocSpecSchema.parse(docSpec);
+}
+
+export function buildSpreadsheetSpec(args: any, userId: string = "system"): SheetSpec {
+  const sheetSpec = {
+    name: args.title || "Untitled Spreadsheet",
+    sheets: (args.sheets || []).map((s: any, i: number) => {
+      const cells: Record<string, CellSpec> = {};
+      const headers = s.headers || [];
+      headers.forEach((header: string, colIdx: number) => {
+        const colLetter = String.fromCharCode(65 + colIdx);
+        cells[`${colLetter}1`] = { value: header, style: { bold: true } };
+      });
+      const rows = s.rows || [];
+      rows.forEach((row: any[], rowIdx: number) => {
+        row.forEach((value: any, colIdx: number) => {
+          const colLetter = String.fromCharCode(65 + colIdx);
+          cells[`${colLetter}${rowIdx + 2}`] = { value };
+        });
+      });
+      return {
+        id: `sheet-${i + 1}`,
+        name: s.name || `Sheet${i + 1}`,
+        cells
+      };
+    }),
+    metadata: { author: userId, createdAt: new Date() }
+  };
+  return SheetSpecSchema.parse(sheetSpec);
 }

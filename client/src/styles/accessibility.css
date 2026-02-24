@@ -144,6 +144,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+
   *,
   *::before,
   *::after {
@@ -159,7 +160,7 @@
     --border: 0 0% 0%;
     --input: 0 0% 0%;
   }
-  
+
   :root.dark {
     --border: 0 0% 100%;
     --input: 0 0% 100%;
@@ -181,11 +182,182 @@
   * {
     forced-color-adjust: auto;
   }
-  
+
   button,
   input,
   select,
   textarea {
     border: 1px solid ButtonText;
   }
+}
+
+/* ========================================
+   ENHANCED FOCUS STATES (Phase 5.2)
+======================================== */
+
+/* Premium Focus Ring */
+.focus-ring-premium:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--primary)),
+    0 0 20px hsl(var(--primary) / 0.3);
+}
+
+/* Animated focus ring */
+.focus-animated:focus-visible {
+  outline: none;
+  animation: focus-pulse 0.3s ease-out forwards;
+}
+
+@keyframes focus-pulse {
+  0% {
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0.5);
+  }
+
+  100% {
+    box-shadow:
+      0 0 0 2px hsl(var(--background)),
+      0 0 0 4px hsl(var(--primary));
+  }
+}
+
+/* Visible focus for all interactive elements */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Ensure focus is visible on dark backgrounds */
+.dark button:focus-visible,
+.dark a:focus-visible,
+.dark [role="button"]:focus-visible {
+  outline-color: hsl(var(--primary));
+  box-shadow: 0 0 0 4px hsl(var(--primary) / 0.2);
+}
+
+/* ========================================
+   SKIP LINKS (Phase 5.3)
+======================================== */
+
+.skip-link {
+  position: fixed;
+  top: -100%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  padding: 1rem 2rem;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font-weight: 600;
+  border-radius: 0 0 0.5rem 0.5rem;
+  text-decoration: none;
+  transition: top 0.2s ease;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.skip-link:focus {
+  top: 0;
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+/* ========================================
+   LANDMARKS & REGIONS
+======================================== */
+
+/* Visual indicators for landmarks (only when needed) */
+[role="main"],
+[role="navigation"],
+[role="complementary"],
+[role="banner"],
+[role="contentinfo"] {
+  /* Ensures proper stacking */
+  position: relative;
+}
+
+/* ========================================
+   COLOR CONTRAST ENHANCEMENTS (Phase 5.1)
+======================================== */
+
+/* Ensure minimum 4.5:1 contrast for text */
+.text-high-contrast {
+  color: hsl(0 0% 0%);
+}
+
+.dark .text-high-contrast {
+  color: hsl(0 0% 100%);
+}
+
+/* Links with proper contrast */
+a:not([class]) {
+  color: hsl(220 90% 45%);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.dark a:not([class]) {
+  color: hsl(220 90% 70%);
+}
+
+a:not([class]):hover {
+  text-decoration-thickness: 2px;
+}
+
+/* Muted text with WCAG AA compliance (4.5:1 minimum) */
+.text-muted-accessible {
+  color: hsl(0 0% 35%);
+}
+
+.dark .text-muted-accessible {
+  color: hsl(0 0% 70%);
+}
+
+/* ========================================
+   TOUCH TARGET SIZES
+======================================== */
+
+/* Ensure minimum 44x44px touch targets for mobile */
+@media (pointer: coarse) {
+
+  button,
+  a,
+  input[type="checkbox"],
+  input[type="radio"],
+  [role="button"],
+  [role="link"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Increase padding for small buttons */
+  .btn-sm {
+    min-height: 44px;
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+}
+
+/* ========================================
+   KEYBOARD NAVIGATION HELPERS
+======================================== */
+
+/* Show focus order indicator (debug mode) */
+.debug-focus-order [tabindex]:focus-visible::after {
+  content: attr(tabindex);
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: red;
+  color: white;
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 50%;
 }

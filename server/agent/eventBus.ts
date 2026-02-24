@@ -24,6 +24,13 @@ class AgentEventBus extends EventEmitter {
     this.startHeartbeat();
   }
 
+  // Type-safe event listener overloads
+  public override on(event: 'trace', listener: (event: TraceEvent) => void): this;
+  public override on(event: TraceEventType, listener: (event: TraceEvent) => void): this;
+  public override on(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.on(event, listener);
+  }
+
   private startHeartbeat(): void {
     this.heartbeatInterval = setInterval(() => {
       for (const [clientId, client] of this.clients) {
@@ -40,7 +47,7 @@ class AgentEventBus extends EventEmitter {
 
   subscribe(runId: string, res: Response): string {
     const clientId = randomUUID();
-    
+
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -90,7 +97,7 @@ class AgentEventBus extends EventEmitter {
 
   async emit(runId: string, eventType: TraceEventType, options?: Partial<Omit<TraceEvent, 'event_type' | 'runId' | 'timestamp'>>): Promise<TraceEvent> {
     const event = createTraceEvent(eventType, runId, options);
-    
+
     if (!this.eventHistory.has(runId)) {
       this.eventHistory.set(runId, []);
     }
@@ -117,11 +124,16 @@ class AgentEventBus extends EventEmitter {
   }
 
   private async persistEvent(event: TraceEvent): Promise<void> {
+    const insert = (db as any)?.insert;
+    if (typeof insert !== "function") {
+      return;
+    }
+
     try {
       // Generate correlationId if not provided (required by DB schema)
       const correlationId = event.stepId || randomUUID();
-      
-      await db.insert(agentModeEvents).values({
+
+      await insert(agentModeEvents).values({
         id: randomUUID(),
         runId: event.runId,
         stepIndex: event.stepIndex ?? null,
@@ -177,7 +189,7 @@ class AgentEventBus extends EventEmitter {
     for (const client of this.clients.values()) {
       try {
         client.res.end();
-      } catch {}
+      } catch { }
     }
     this.clients.clear();
     this.eventHistory.clear();
@@ -185,3 +197,4 @@ class AgentEventBus extends EventEmitter {
 }
 
 export const agentEventBus = new AgentEventBus();
+export const unifiedEventBus = agentEventBus;

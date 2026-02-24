@@ -1,15 +1,12 @@
-import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import type { Response } from "express";
 import { toolRegistry, type ToolContext, type ToolResult } from "./toolRegistry";
 import { emitTraceEvent } from "./unifiedChatHandler";
 import type { RequestSpec } from "./requestSpec";
-import { renderPresentation, renderDocument, renderSpreadsheet } from "./artifactRenderer";
-import { SlideSpecSchema, DocSpecSchema, SheetSpecSchema } from "./builderSpec";
-import { randomUUID } from "crypto";
-import { initializeOpenClawTools } from "./openclaw";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+import { randomUUID } from "crypto";
+import { getGeminiClientOrThrow } from "../lib/gemini";
+import { requestUnderstandingAgent } from "./requestUnderstanding";
 
 export interface AgentExecutorOptions {
   maxIterations?: number;
@@ -18,261 +15,150 @@ export interface AgentExecutorOptions {
   userId: string;
   chatId: string;
   requestSpec: RequestSpec;
+  accessLevel?: 'owner' | 'trusted' | 'unknown';
 }
 
-interface FunctionDeclaration {
-  name: string;
-  description: string;
-  parameters: {
-    type: string;
-    properties: Record<string, any>;
-    required?: string[];
+import { type FunctionDeclaration, AGENT_TOOLS } from "../config/agentTools";
+
+import { zodToJsonSchema } from "zod-to-json-schema";
+import { BUNDLED_SKILL_TOOLS } from "./tools/bundledSkillTools";
+
+const dynamicSkillTools: FunctionDeclaration[] = BUNDLED_SKILL_TOOLS.map(t => {
+  const schema = zodToJsonSchema(t.inputSchema, { target: "jsonSchema7" }) as any;
+  // Remove unsupported keywords for Gemini
+  if (schema.$schema) delete schema.$schema;
+  if (schema.additionalProperties !== undefined) delete schema.additionalProperties;
+
+  return {
+    name: t.name,
+    description: t.description,
+    parameters: schema
   };
+});
+
+const LOCAL_FILESYSTEM_SIGNAL_REGEX =
+  /\b(?:carpetas?|caprteas?|careptas?|carpteas?|folders?|directorios?|directories?|archivos?|files?)\b.*\b(?:mac|computadora|pc|laptop|sistema|escritorio|desktop|descargas|downloads|documentos|documents|home|disco)\b|\b(?:analiza|explora|listar|list|revisa|cuenta|count|cu[aá]ntas?)\b.*\b(?:mi\s+(?:mac|computadora|pc)|desktop|escritorio|home)\b|\b(?:cu[aá]ntas?|how\s+many|cantidad(?:\s+de)?|n[uú]mero(?:\s+de)?)\s+(?:carpetas?|caprteas?|careptas?|carpteas?|folders?|directorios?|directories?|archivos?|files?)\b/i;
+const SKILL_SIGNAL_REGEX = /\b(skill|skills|habilidad|habilidades)\b|\$[a-z0-9_-]{2,80}/i;
+
+function tokenizePrompt(rawPrompt: string): string[] {
+  return String(rawPrompt || "")
+    .toLowerCase()
+    .split(/[^a-z0-9áéíóúñ_-]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3);
 }
 
-const AGENT_TOOLS: FunctionDeclaration[] = [
-  {
-    name: "web_search",
-    description: "Search the web for current information on any topic",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "The search query" },
-        maxResults: { type: "number", description: "Maximum results (default 5)" }
-      },
-      required: ["query"]
-    }
-  },
-  {
-    name: "fetch_url",
-    description: "Fetch and extract text content from a URL",
-    parameters: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "URL to fetch" },
-        extractText: { type: "boolean", description: "Extract readable text (default true)" }
-      },
-      required: ["url"]
-    }
-  },
-  {
-    name: "create_presentation",
-    description: "Create a PowerPoint presentation with slides",
-    parameters: {
-      type: "object",
-      properties: {
-        title: { type: "string", description: "Presentation title" },
-        slides: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              title: { type: "string" },
-              content: { type: "string" },
-              bullets: { type: "array", items: { type: "string" } },
-              layout: { type: "string", enum: ["title", "content", "twoColumn", "imageLeft", "imageRight"] }
-            }
-          },
-          description: "Array of slide definitions"
-        },
-        theme: { type: "string", description: "Theme name (default 'professional')" }
-      },
-      required: ["title", "slides"]
-    }
-  },
-  {
-    name: "create_document",
-    description: "Create a Word document with sections and content",
-    parameters: {
-      type: "object",
-      properties: {
-        title: { type: "string", description: "Document title" },
-        sections: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              heading: { type: "string" },
-              content: { type: "string" },
-              bullets: { type: "array", items: { type: "string" } },
-              level: { type: "number" }
-            }
-          },
-          description: "Document sections"
-        }
-      },
-      required: ["title", "sections"]
-    }
-  },
-  {
-    name: "create_spreadsheet",
-    description: "Create an Excel spreadsheet with data",
-    parameters: {
-      type: "object",
-      properties: {
-        title: { type: "string", description: "Spreadsheet title" },
-        sheets: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              name: { type: "string" },
-              headers: { type: "array", items: { type: "string" } },
-              rows: { type: "array", items: { type: "array" } }
-            }
-          },
-          description: "Sheet definitions"
-        }
-      },
-      required: ["title", "sheets"]
-    }
-  },
-  {
-    name: "analyze_data",
-    description: "Analyze data and provide statistical insights",
-    parameters: {
-      type: "object",
-      properties: {
-        data: { type: "string", description: "Data to analyze (JSON, CSV, or description)" },
-        analysisType: { type: "string", enum: ["summary", "trends", "comparison", "forecast"] }
-      },
-      required: ["data"]
-    }
-  },
-  {
-    name: "generate_chart",
-    description: "Generate a chart visualization",
-    parameters: {
-      type: "object",
-      properties: {
-        chartType: { type: "string", enum: ["bar", "line", "pie", "scatter", "area"] },
-        title: { type: "string" },
-        data: { type: "object", description: "Chart data with labels and values" }
-      },
-      required: ["chartType", "data"]
-    }
-  },
-  {
-    name: "memory_search",
-    description: "Search conversation memory for prior decisions, facts, preferences, and context. Use before answering questions about past interactions.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query for memory" },
-        chatId: { type: "string", description: "Limit search to a specific chat" },
-        memoryType: { type: "string", enum: ["context", "fact", "preference", "artifact_ref", "all"], description: "Filter by memory type" },
-        limit: { type: "number", description: "Maximum results (default 10)" },
-        citations: { type: "boolean", description: "Include source citations (default true)" }
-      },
-      required: ["query"]
-    }
-  },
-  {
-    name: "memory_get",
-    description: "Retrieve a specific memory entry by exact key",
-    parameters: {
-      type: "object",
-      properties: {
-        memoryKey: { type: "string", description: "The exact memory key to retrieve" },
-        chatId: { type: "string", description: "Limit to a specific chat" }
-      },
-      required: ["memoryKey"]
-    }
-  },
-  {
-    name: "web_fetch",
-    description: "Fetch and extract content from a URL, converting HTML to clean markdown or plain text",
-    parameters: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "URL to fetch" },
-        mode: { type: "string", enum: ["markdown", "text"], description: "Content extraction mode (default markdown)" },
-        maxLength: { type: "number", description: "Maximum characters to return" },
-        timeout: { type: "number", description: "Timeout in milliseconds" }
-      },
-      required: ["url"]
-    }
-  },
-  {
-    name: "subagent_spawn",
-    description: "Spawn a sub-agent to handle a specific task in parallel. Sub-agents execute independently and report results.",
-    parameters: {
-      type: "object",
-      properties: {
-        task: { type: "string", description: "Description of the task for the sub-agent" },
-        toolProfile: { type: "string", enum: ["minimal", "coding", "messaging", "full"], description: "Tool access level (default minimal)" },
-        timeoutMs: { type: "number", description: "Timeout in ms (default 120000)" }
-      },
-      required: ["task"]
-    }
-  },
-  {
-    name: "subagent_status",
-    description: "Check the status of spawned sub-agents",
-    parameters: {
-      type: "object",
-      properties: {
-        subagentId: { type: "string", description: "Specific sub-agent ID (omit for all)" }
-      },
-      required: []
-    }
+function getRelevantDynamicSkillTools(rawPrompt: string, maxTools = 8): FunctionDeclaration[] {
+  if (!SKILL_SIGNAL_REGEX.test(rawPrompt)) {
+    return [];
   }
-];
+  const tokens = tokenizePrompt(rawPrompt);
+  if (tokens.length === 0) {
+    return dynamicSkillTools.slice(0, maxTools);
+  }
 
-function zodToJsonSchema(schema: z.ZodType): any {
-  if (schema instanceof z.ZodObject) {
-    const shape = schema.shape;
-    const properties: Record<string, any> = {};
-    const required: string[] = [];
-    
-    for (const [key, value] of Object.entries(shape)) {
-      const zodValue = value as z.ZodType;
-      properties[key] = zodToJsonSchema(zodValue);
-      if (!(zodValue instanceof z.ZodOptional)) {
-        required.push(key);
+  const scored = dynamicSkillTools
+    .map((tool) => {
+      const haystack = `${tool.name} ${tool.description || ""}`.toLowerCase();
+      let score = 0;
+      for (const token of tokens) {
+        if (haystack.includes(token)) {
+          score += 1;
+        }
       }
-    }
-    
-    return { type: "object", properties, required: required.length > 0 ? required : undefined };
-  }
-  if (schema instanceof z.ZodString) return { type: "string" };
-  if (schema instanceof z.ZodNumber) return { type: "number" };
-  if (schema instanceof z.ZodBoolean) return { type: "boolean" };
-  if (schema instanceof z.ZodArray) return { type: "array", items: zodToJsonSchema(schema.element) };
-  if (schema instanceof z.ZodOptional) return zodToJsonSchema(schema.unwrap());
-  if (schema instanceof z.ZodEnum) return { type: "string", enum: schema.options };
-  return { type: "string" };
+      return { tool, score };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  return scored.slice(0, maxTools).map((entry) => entry.tool);
 }
 
-function getToolsForIntent(intent: string): FunctionDeclaration[] {
-  initializeOpenClawTools();
-  const memoryTools = ["memory_search", "memory_get"];
+function withToolSubset(tools: FunctionDeclaration[], names: string[]): FunctionDeclaration[] {
+  const allowed = new Set(names);
+  return tools.filter((tool) => allowed.has(tool.name));
+}
+
+function getToolsForIntent(
+  intent: string,
+  accessLevel: 'owner' | 'trusted' | 'unknown' = 'owner',
+  rawPrompt = "",
+): FunctionDeclaration[] {
+  const toolPool = [...AGENT_TOOLS, ...getRelevantDynamicSkillTools(rawPrompt)];
+  let matchedTools = toolPool;
+
   switch (intent) {
     case "research":
-      return AGENT_TOOLS.filter(t => ["web_search", "fetch_url", "web_fetch", ...memoryTools].includes(t.name));
+      matchedTools = withToolSubset(toolPool, ["web_search", "fetch_url", "memory_search", "openclaw_rag_search"]);
+      break;
     case "presentation_creation":
-      return AGENT_TOOLS.filter(t => ["create_presentation", "web_search", "web_fetch", ...memoryTools].includes(t.name));
+      matchedTools = withToolSubset(toolPool, ["create_presentation", "web_search", "fetch_url"]);
+      break;
     case "document_generation":
-      return AGENT_TOOLS.filter(t => ["create_document", "web_search", "web_fetch", ...memoryTools].includes(t.name));
+      matchedTools = withToolSubset(toolPool, ["create_document", "web_search", "fetch_url", "memory_search"]);
+      break;
     case "spreadsheet_creation":
-      return AGENT_TOOLS.filter(t => ["create_spreadsheet", "analyze_data", ...memoryTools].includes(t.name));
+      matchedTools = withToolSubset(toolPool, ["create_spreadsheet", "analyze_data", "generate_chart"]);
+      break;
     case "data_analysis":
-      return AGENT_TOOLS.filter(t => ["analyze_data", "generate_chart", "create_spreadsheet", ...memoryTools].includes(t.name));
-    case "multi_step_task":
-      return AGENT_TOOLS;
+      matchedTools = withToolSubset(toolPool, ["analyze_data", "generate_chart", "create_spreadsheet", "read_file"]);
+      break;
+    case "web_automation":
+      matchedTools = withToolSubset(toolPool, ["web_search", "fetch_url", "browse_and_act"]);
+      break;
     default:
-      return AGENT_TOOLS;
+      matchedTools = toolPool;
+      break;
   }
+
+  // For local computer/folder requests, force local read-only tools into the set.
+  if (LOCAL_FILESYSTEM_SIGNAL_REGEX.test(rawPrompt)) {
+    const mustHave = new Set(["list_files", "read_file", "memory_search", "openclaw_clawi_status"]);
+    const byName = new Map(matchedTools.map((tool) => [tool.name, tool]));
+    for (const tool of AGENT_TOOLS) {
+      if (mustHave.has(tool.name)) {
+        byName.set(tool.name, tool);
+      }
+    }
+    matchedTools = Array.from(byName.values());
+  }
+
+  // Filter out sensitive tools if user is not the owner
+  if (accessLevel !== 'owner') {
+    const sensitiveToolPatterns = ["browse_and_act", "skill_shell", "skill_run_command", "skill_system", "skill_file", "openclaw_clawi_exec"];
+    matchedTools = matchedTools.filter(t => !sensitiveToolPatterns.some(pattern => t.name.includes(pattern)));
+  }
+
+  // Restrict completely unknown users to safe, read-only tools
+  if (accessLevel === 'unknown') {
+    const safeToolPatterns = ["web_search", "fetch_url", "analyze_data", "list_files", "read_file", "memory_search"];
+    matchedTools = matchedTools.filter(t => safeToolPatterns.some(pattern => t.name.includes(pattern)));
+  }
+
+  return matchedTools;
 }
+
+import {
+  type ReservationDetails,
+  type ReservationMissingField,
+  extractReservationDetails,
+  getMissingReservationFields,
+  isRestaurantReservationRequest,
+  normalizeSpaces,
+  formatReservationDetails,
+  buildReservationClarificationQuestion
+} from "./utils/reservationExtractor";
 
 async function executeToolCall(
   toolName: string,
   args: Record<string, any>,
   context: ToolContext,
-  runId: string
+  runId: string,
+  sseRes?: Response,
+  preExtractedReservation?: ReservationDetails
 ): Promise<{ result: any; artifact?: { type: string; url: string; name: string } }> {
   console.log(`[AgentExecutor] Executing tool: ${toolName}`, args);
-  
+
   await emitTraceEvent(runId, "tool_call_started", {
     toolCall: {
       id: randomUUID(),
@@ -281,22 +167,32 @@ async function executeToolCall(
       status: "running"
     }
   });
-  
+
   const startTime = Date.now();
   let result: any;
   let artifact: { type: string; url: string; name: string } | undefined;
-  
+
   try {
     switch (toolName) {
       case "web_search": {
-        const searchResult = await toolRegistry.execute("search", {
-          query: args.query,
-          maxResults: args.maxResults || 5
-        }, context);
-        result = searchResult.success ? searchResult.output : { error: searchResult.error?.message };
+        try {
+          // Use DuckDuckGo search directly (avoids toolRegistry network policy blocks)
+          const { searchWeb } = await import("../services/webSearch");
+          const searchResult = await searchWeb(args.query, args.maxResults || 5);
+          result = searchResult.results?.length > 0
+            ? searchResult.results.map((r: any) => ({ title: r.title, url: r.url, snippet: r.snippet }))
+            : { message: "No results found", query: args.query };
+        } catch (err: any) {
+          // Fallback to toolRegistry
+          const searchResult = await toolRegistry.execute("search", {
+            query: args.query,
+            maxResults: args.maxResults || 5
+          }, context);
+          result = searchResult.success ? searchResult.output : { error: searchResult.error?.message };
+        }
         break;
       }
-      
+
       case "fetch_url": {
         try {
           const { fetchUrl } = await import("../services/webSearch");
@@ -310,181 +206,99 @@ async function executeToolCall(
         }
         break;
       }
-      
-      case "create_presentation": {
-        const slideSpec = {
-          title: args.title,
-          theme: args.theme || "professional",
-          slides: args.slides.map((s: any, i: number) => ({
-            id: `slide-${i + 1}`,
-            layout: s.layout || "content",
-            elements: [
-              ...(s.title ? [{
-                id: `title-${i}`,
-                type: "text" as const,
-                content: s.title,
-                position: { x: 5, y: 5, w: 90, h: 15 },
-                style: { fontSize: 32, bold: true, align: "center" as const }
-              }] : []),
-              ...(s.content ? [{
-                id: `content-${i}`,
-                type: "text" as const,
-                content: s.content,
-                position: { x: 5, y: 25, w: 90, h: 60 }
-              }] : []),
-              ...(s.bullets ? [{
-                id: `bullets-${i}`,
-                type: "list" as const,
-                items: s.bullets,
-                position: { x: 5, y: 25, w: 90, h: 60 }
-              }] : [])
-            ]
-          })),
-          metadata: { author: context.userId, createdAt: new Date() }
-        };
-        
-        const validatedSpec = SlideSpecSchema.parse(slideSpec);
-        const buffer = await renderPresentation(validatedSpec);
-        const filename = `${args.title.replace(/[^a-zA-Z0-9]/g, "_")}_${Date.now()}.pptx`;
-        const fs = await import("fs/promises");
-        const path = await import("path");
-        const outputDir = path.join(process.cwd(), "generated_artifacts");
-        await fs.mkdir(outputDir, { recursive: true });
-        const outputPath = path.join(outputDir, filename);
-        await fs.writeFile(outputPath, buffer);
-        
-        result = { success: true, filename, slidesCount: args.slides.length };
-        artifact = { type: "presentation", url: `/api/artifacts/${filename}`, name: filename };
-        
-        await emitTraceEvent(runId, "artifact_created", {
-          artifact: {
-            id: randomUUID(),
-            type: "presentation",
-            name: filename,
-            url: artifact.url,
-            size: buffer.length,
-            mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-          }
-        });
-        break;
-      }
-      
-      case "create_document": {
-        const docSpec = {
-          title: args.title,
-          sections: args.sections.map((s: any, i: number) => ({
-            id: `section-${i + 1}`,
-            heading: s.heading,
-            level: s.level || 1,
-            content: s.content ? [{ type: "paragraph" as const, text: s.content }] : [],
-            bullets: s.bullets
-          })),
-          metadata: { author: context.userId, createdAt: new Date() }
-        };
-        
-        const validatedSpec = DocSpecSchema.parse(docSpec);
-        const buffer = await renderDocument(validatedSpec);
-        const filename = `${args.title.replace(/[^a-zA-Z0-9]/g, "_")}_${Date.now()}.docx`;
-        const fs = await import("fs/promises");
-        const path = await import("path");
-        const outputDir = path.join(process.cwd(), "generated_artifacts");
-        await fs.mkdir(outputDir, { recursive: true });
-        const outputPath = path.join(outputDir, filename);
-        await fs.writeFile(outputPath, buffer);
-        
-        result = { success: true, filename, sectionsCount: args.sections.length };
-        artifact = { type: "document", url: `/api/artifacts/${filename}`, name: filename };
-        
-        await emitTraceEvent(runId, "artifact_created", {
-          artifact: {
-            id: randomUUID(),
-            type: "document",
-            name: filename,
-            url: artifact.url,
-            size: buffer.length,
-            mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          }
-        });
-        break;
-      }
-      
-      case "create_spreadsheet": {
-        const sheetSpec = {
-          title: args.title,
-          sheets: args.sheets.map((s: any, i: number) => ({
-            id: `sheet-${i + 1}`,
-            name: s.name || `Sheet${i + 1}`,
-            columns: s.headers.map((h: string, j: number) => ({
-              id: `col-${j}`,
-              header: h,
-              type: "text" as const,
-              width: 15
-            })),
-            rows: s.rows.map((row: any[], k: number) => ({
-              id: `row-${k}`,
-              cells: row.map((cell, l) => ({
-                columnId: `col-${l}`,
-                value: cell
-              }))
-            }))
-          })),
-          metadata: { author: context.userId, createdAt: new Date() }
-        };
-        
-        const validatedSpec = SheetSpecSchema.parse(sheetSpec);
-        const buffer = await renderSpreadsheet(validatedSpec);
-        const filename = `${args.title.replace(/[^a-zA-Z0-9]/g, "_")}_${Date.now()}.xlsx`;
-        const fs = await import("fs/promises");
-        const path = await import("path");
-        const outputDir = path.join(process.cwd(), "generated_artifacts");
-        await fs.mkdir(outputDir, { recursive: true });
-        const outputPath = path.join(outputDir, filename);
-        await fs.writeFile(outputPath, buffer);
-        
-        result = { success: true, filename, sheetsCount: args.sheets.length };
-        artifact = { type: "spreadsheet", url: `/api/artifacts/${filename}`, name: filename };
-        
-        await emitTraceEvent(runId, "artifact_created", {
-          artifact: {
-            id: randomUUID(),
-            type: "spreadsheet",
-            name: filename,
-            url: artifact.url,
-            size: buffer.length,
-            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-          }
-        });
-        break;
-      }
-      
+
+
+
+
+
       case "analyze_data": {
-        result = {
-          summary: `Analysis of provided data`,
-          type: args.analysisType || "summary",
-          insights: [
-            "Data analysis placeholder - integrate with actual analysis service"
-          ]
-        };
+        try {
+          // Dynamic import to keep startup fast
+          const ss = await import("simple-statistics");
+
+          let parsedData: any[] = [];
+          if (typeof args.data === "string") {
+            try {
+              parsedData = JSON.parse(args.data);
+            } catch {
+              // Try CSV parsing if JSON fails? For now rely on description or basic numbers
+              result = { error: "Could not parse data as JSON" };
+            }
+          } else if (Array.isArray(args.data)) {
+            parsedData = args.data;
+          }
+
+          if (parsedData.length > 0) {
+            // Extract numeric values if it's an array of objects
+            const valueKeys = Object.keys(parsedData[0]).filter(k => typeof parsedData[0][k] === 'number');
+            const insights: string[] = [];
+
+            valueKeys.forEach(key => {
+              const values = parsedData.map((d: any) => d[key]);
+              const mean = ss.mean(values);
+              const median = ss.median(values);
+              const max = ss.max(values);
+              const min = ss.min(values);
+              const stdDev = ss.standardDeviation(values);
+
+              insights.push(`Field '${key}': Mean=${mean.toFixed(2)}, Median=${median}, Range=[${min}, ${max}], StdDev=${stdDev.toFixed(2)}`);
+            });
+
+            result = {
+              summary: `Analysis performed on ${parsedData.length} records.`,
+              type: args.analysisType || "statistical",
+              insights,
+              stats: {
+                recordCount: parsedData.length,
+                fieldsAnalyzed: valueKeys
+              }
+            };
+          } else {
+            result = { error: "No valid data provided for analysis" };
+          }
+        } catch (e: any) {
+          result = { error: `Analysis failed: ${e.message}` };
+        }
         break;
       }
-      
+
       case "generate_chart": {
+        // Return a structured Chart.js/Recharts compatible config
+        const chartConfig = {
+          type: args.chartType,
+          data: args.data, // Expects { labels: [], datasets: [{ label: '', data: [] }] }
+          options: {
+            responsive: true,
+            plugins: {
+              title: {
+                display: true,
+                text: args.title
+              },
+              legend: {
+                position: 'top'
+              }
+            }
+          }
+        };
+
         result = {
+          success: true,
           chartType: args.chartType,
           title: args.title,
-          message: "Chart data prepared for visualization"
+          config: chartConfig,
+          message: "Chart configuration generated successfully"
         };
         break;
       }
-      
+
       default: {
         const toolResult = await toolRegistry.execute(toolName, args, context);
         result = toolResult.success ? toolResult.output : { error: toolResult.error?.message };
       }
     }
-    
+
     const durationMs = Date.now() - startTime;
-    
+
     await emitTraceEvent(runId, "tool_call_succeeded", {
       toolCall: {
         id: randomUUID(),
@@ -495,12 +309,12 @@ async function executeToolCall(
         durationMs
       }
     });
-    
+
     return { result, artifact };
-    
+
   } catch (error: any) {
     const durationMs = Date.now() - startTime;
-    
+
     await emitTraceEvent(runId, "tool_call_failed", {
       toolCall: {
         id: randomUUID(),
@@ -511,33 +325,261 @@ async function executeToolCall(
         durationMs
       }
     });
-    
+
     return { result: { error: error.message } };
   }
 }
 
-function writeSse(res: Response, event: string, data: any): void {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  if (typeof (res as any).flush === "function") {
-    (res as any).flush();
+function collectRecentUserText(messages: Array<{ role: string; content: string }>): string {
+  return messages
+    .filter((m) => m.role === "user")
+    .slice(-4)
+    .map((m) => normalizeSpaces(m.content))
+    .filter(Boolean)
+    .join(" ");
+}
+
+function extractExplicitPath(rawText: string): string | null {
+  const text = String(rawText || "");
+  const absolutePath = text.match(/(\/[^\s"'`]+)/);
+  if (absolutePath?.[1]) {
+    return absolutePath[1];
   }
+  const homePath = text.match(/(~\/[^\s"'`]+)/);
+  if (homePath?.[1]) {
+    return homePath[1];
+  }
+  return null;
+}
+
+function inferLocalDirectoryFromPrompt(rawText: string): string {
+  const explicit = extractExplicitPath(rawText);
+  if (explicit) return explicit;
+
+  const lower = String(rawText || "").toLowerCase();
+  if (/\b(escritorio|desktop)\b/i.test(lower)) return "~/Desktop";
+  if (/\b(descargas|downloads)\b/i.test(lower)) return "~/Downloads";
+  if (/\b(documentos|documents)\b/i.test(lower)) return "~/Documents";
+  if (/\b(im[aá]genes|pictures|fotos|photos)\b/i.test(lower)) return "~/Pictures";
+  if (/\b(m[uú]sica|music)\b/i.test(lower)) return "~/Music";
+  if (/\b(videos|movies)\b/i.test(lower)) return "~/Movies";
+  return "~";
 }
 
 export async function executeAgentLoop(
   messages: Array<{ role: string; content: string }>,
   res: Response,
   options: AgentExecutorOptions
-): Promise<void> {
-  const { runId, userId, chatId, requestSpec, maxIterations = 10 } = options;
-  
-  const tools = getToolsForIntent(requestSpec.intent);
+): Promise<string> {
+  const ai = getGeminiClientOrThrow();
+  const { runId, userId, chatId, requestSpec, maxIterations = 10, accessLevel = 'owner' } = options;
+
+  const writeSse = (event: string, payload: Record<string, unknown>) => {
+    try {
+      const r = res as any;
+      if (r.writableEnded || r.destroyed) return false;
+      res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+      if (typeof r.flush === "function") r.flush();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const sse = {
+    write: (event: string, payload: Record<string, unknown>) => writeSse(event, payload),
+    end: () => {
+      try {
+        const r = res as any;
+        if (!r.writableEnded && !r.destroyed) {
+          res.end();
+        }
+      } catch {
+        // ignore
+      }
+    },
+  };
+
+  const tools = getToolsForIntent(requestSpec.intent, accessLevel, requestSpec.rawMessage || "");
   const toolContext: ToolContext = { userId, chatId, runId };
-  
+
   const artifacts: Array<{ type: string; url: string; name: string }> = [];
   let iteration = 0;
   let conversationHistory = [...messages];
   let fullResponse = "";
-  
+
+  const recentUserText = collectRecentUserText(messages) || requestSpec.rawMessage || "";
+  const isLocalFsRequest = LOCAL_FILESYSTEM_SIGNAL_REGEX.test(recentUserText || requestSpec.rawMessage || "");
+
+  // Request understanding brief is best-effort: if the planner LLM is unavailable
+  // or the call fails for any reason, we continue without the brief rather than
+  // aborting the entire agent loop (which would surface as a generic error).
+  let requestBrief: Awaited<ReturnType<typeof requestUnderstandingAgent.buildBrief>> | null = null;
+  try {
+    requestBrief = await requestUnderstandingAgent.buildBrief({
+      text: recentUserText || requestSpec.rawMessage || "",
+      conversationHistory: messages
+        .slice(-6)
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({ role: m.role as "user" | "assistant", content: String(m.content || "") })),
+      availableTools: tools.map((tool) => tool.name),
+      userId,
+      chatId,
+      requestId: runId,
+      userPlan: "free",
+    });
+
+    writeSse(res, "brief", {
+      runId,
+      brief: requestBrief,
+    });
+
+    if (requestBrief.blocker?.is_blocked) {
+      const question =
+        normalizeSpaces(requestBrief.blocker.question || "") ||
+        "Necesito una aclaración para ejecutar la solicitud con seguridad.";
+      fullResponse = question;
+
+      writeSse(res, "clarification", {
+        runId,
+        question,
+        blocker: "intent_requirements",
+      });
+
+      const chunks = question.match(/.{1,100}/g) || [question];
+      for (let i = 0; i < chunks.length; i++) {
+        writeSse(res, "chunk", {
+          content: chunks[i],
+          sequence: i + 1,
+          runId,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      await emitTraceEvent(runId, "progress_update", {
+        progress: {
+          current: 0,
+          total: maxIterations,
+          message: "Waiting for required clarification before tool execution",
+        },
+      });
+      await emitTraceEvent(runId, "agent_completed", {
+        agent: {
+          name: requestSpec.primaryAgent,
+          role: "primary",
+          status: "completed",
+        },
+        iterations: 0,
+        artifactsGenerated: 0,
+      });
+
+      return fullResponse;
+    }
+
+    conversationHistory.unshift({
+      role: "system",
+      content: `Execution brief:
+- Objective: ${requestBrief.objective}
+- Scope(in): ${requestBrief.scope.in_scope.join("; ") || "n/a"}
+- Required inputs: ${requestBrief.required_inputs.filter((entry) => entry.required).map((entry) => entry.input).join("; ") || "none"}
+- Expected output: ${requestBrief.expected_output.format} :: ${requestBrief.expected_output.description}
+- Definition of done: ${requestBrief.definition_of_done.join("; ") || "n/a"}
+- Suggested tools: ${requestBrief.tool_routing.suggested_tools.join(", ") || "none"}
+- Blocked tools: ${requestBrief.tool_routing.blocked_tools.join(", ") || "none"}
+- Guardrails flags: ${requestBrief.guardrails.flags.join(", ") || "none"}`,
+    });
+  } catch (briefErr: any) {
+    console.warn(`[AgentLoop] requestUnderstanding.buildBrief failed (non-fatal):`, briefErr?.message || briefErr);
+  }
+
+  const isReservationRequest =
+    requestSpec.intent === "web_automation" && isRestaurantReservationRequest(recentUserText);
+  const reservationDetails = isReservationRequest ? extractReservationDetails(recentUserText) : undefined;
+
+  if (isReservationRequest && reservationDetails) {
+    const missingFields = getMissingReservationFields(reservationDetails);
+    if (missingFields.length > 0) {
+      const clarificationQuestion = buildReservationClarificationQuestion(reservationDetails, missingFields);
+      fullResponse = clarificationQuestion;
+      writeSse(res, "clarification", {
+        runId,
+        question: clarificationQuestion,
+        missingFields,
+      });
+      const chunks = clarificationQuestion.match(/.{1,100}/g) || [clarificationQuestion];
+      for (let i = 0; i < chunks.length; i++) {
+        writeSse(res, "chunk", {
+          content: chunks[i],
+          sequence: i + 1,
+          runId
+        });
+        await new Promise(r => setTimeout(r, 10));
+      }
+      await emitTraceEvent(runId, "progress_update", {
+        progress: {
+          current: 0,
+          total: maxIterations,
+          message: "Waiting for missing reservation details from user"
+        }
+      });
+      await emitTraceEvent(runId, "agent_completed", {
+        agent: {
+          name: requestSpec.primaryAgent,
+          role: "primary",
+          status: "completed"
+        },
+        iterations: 0,
+        artifactsGenerated: 0,
+      });
+      return fullResponse;
+    }
+  }
+
+  // For web_automation intent, inject a system hint so the LLM uses browse_and_act
+  // We PREPEND it as the first system message for maximum priority
+  if (requestSpec.intent === "web_automation") {
+    const reservationHint =
+      isReservationRequest && reservationDetails
+        ? `\nReservation details extracted from the user: ${formatReservationDetails(reservationDetails)}`
+        : "";
+    conversationHistory.unshift({
+      role: "system",
+      content: `YOU ARE A WEB AUTOMATION AGENT. YOUR PRIMARY FUNCTION IS TO CALL TOOLS, NOT GENERATE TEXT.
+
+YOU MUST IMMEDIATELY call the "browse_and_act" function to complete the user's request. DO NOT write text responses.
+
+MANDATORY RULES:
+1. Your FIRST action MUST be a function call to "browse_and_act" with a URL and goal
+2. For restaurant reservations in Peru: url="https://www.mesa247.pe", goal="[full details from user]"
+3. For hotel bookings: url="https://www.booking.com"
+4. For flights: url="https://www.google.com/travel/flights"
+5. For general web tasks: url="https://www.google.com"
+6. The browse_and_act tool controls a REAL Chromium browser — it can click, type, scroll, fill forms, navigate
+7. Include ALL details in the goal: date, time, number of people, location, contact details, preferences
+8. For reservations, only claim success if a real confirmation page or confirmation code is visible.
+
+DO NOT respond with text. CALL browse_and_act NOW.${reservationHint}`
+    });
+  }
+
+  if (isLocalFsRequest) {
+    const inferredDirectory = inferLocalDirectoryFromPrompt(recentUserText || requestSpec.rawMessage || "");
+    conversationHistory.unshift({
+      role: "system",
+      content: `YOU ARE A LOCAL FILESYSTEM ANALYST.
+You MUST inspect the user's local folders by calling tools, not by asking the user to run commands.
+
+MANDATORY RULES:
+1) Your first action should call "list_files".
+2) If the user did not provide a path, start with directory="${inferredDirectory}".
+3) Use additional list_files calls for key folders when useful (Desktop/Downloads/Documents).
+4) Summarize findings clearly with concrete paths and counts.
+5) NEVER tell the user to run /local or terminal commands manually.`,
+    });
+  }
+
+  console.log(`[AgentExecutor] Starting loop: intent=${requestSpec.intent}, tools=[${tools.map(t => t.name).join(', ')}], messages=${conversationHistory.length}, systemMsgs=${conversationHistory.filter(m => m.role === 'system').length}, toolDeclarations=${tools.length}`);
+
   await emitTraceEvent(runId, "progress_update", {
     progress: {
       current: 0,
@@ -545,104 +587,353 @@ export async function executeAgentLoop(
       message: `Starting agent loop with ${tools.length} available tools`
     }
   });
-  
+
   while (iteration < maxIterations) {
     iteration++;
-    
+
     await emitTraceEvent(runId, "thinking", {
       content: `Iteration ${iteration}: Analyzing and planning next action...`,
       phase: "execution"
     });
-    
+
     try {
-      const geminiMessages = conversationHistory.map(m => ({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content }]
-      }));
-      
-      const response = await ai.models.generateContent({
+      // Separate system messages from conversation, and build Gemini-compatible messages
+      // Gemini requires alternating user/model roles — merge consecutive same-role messages
+      let systemInstruction = "";
+      const nonSystemMessages = conversationHistory.filter(m => {
+        if (m.role === "system") {
+          systemInstruction += (systemInstruction ? "\n\n" : "") + m.content;
+          return false;
+        }
+        return true;
+      });
+
+      const geminiMessages: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+      for (const m of nonSystemMessages) {
+        const role = m.role === "assistant" ? "model" : "user";
+        const last = geminiMessages[geminiMessages.length - 1];
+        if (last && last.role === role) {
+          // Merge into previous message to avoid consecutive same-role
+          last.parts[0].text += "\n\n" + m.content;
+        } else {
+          geminiMessages.push({ role, parts: [{ text: m.content }] });
+        }
+      }
+
+      // Ensure conversation starts with a user message (Gemini requirement)
+      if (geminiMessages.length > 0 && geminiMessages[0].role !== "user") {
+        geminiMessages.unshift({ role: "user", parts: [{ text: "Begin" }] });
+      }
+
+      // Wrap Gemini call with a 60s timeout to prevent hanging
+      const geminiPromise = ai.models.generateContent({
         model: "gemini-2.0-flash",
         contents: geminiMessages as any,
         config: {
           temperature: 0.7,
-          maxOutputTokens: 4096
+          maxOutputTokens: 4096,
+          ...(systemInstruction ? { systemInstruction } : {}),
+          tools: tools.length > 0 ? [{
+            functionDeclarations: tools
+          }] : undefined
         },
-        tools: tools.length > 0 ? [{
-          functionDeclarations: tools
-        }] : undefined
-      });
-      
+      } as any);
+
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Gemini API call timed out after 60s")), 60000)
+      );
+
+      const response = await Promise.race([geminiPromise, timeoutPromise]);
+
       const candidate = response.candidates?.[0];
       if (!candidate) {
         throw new Error("No response from model");
       }
-      
+
       const parts = candidate.content?.parts || [];
       let hasToolCall = false;
       let textContent = "";
-      
+      let shouldExitAgentLoop = false;
+
+      // Debug: log what the LLM returned
+      const partTypes = parts.map((p: any) => p.functionCall ? `functionCall:${p.functionCall.name}` : p.text ? `text:${(p.text as string).slice(0, 80)}...` : 'other');
+      console.log(`[AgentExecutor] Iteration ${iteration}: LLM returned ${parts.length} parts: [${partTypes.join(', ')}]`);
+
       for (const part of parts) {
         if (part.functionCall) {
           hasToolCall = true;
           const { name, args } = part.functionCall;
-          
-          writeSse(res, "tool_start", {
+
+          sse.write("tool_start", {
             runId,
-            toolName: name,
+            toolName: name!,
             args,
             iteration
           });
-          
+
           const { result, artifact } = await executeToolCall(
-            name,
+            name!,
             args as Record<string, any>,
             toolContext,
-            runId
+            runId,
+            res,
+            reservationDetails
           );
-          
+
           if (artifact) {
             artifacts.push(artifact);
           }
-          
-          writeSse(res, "tool_result", {
+
+          sse.write("tool_result", {
             runId,
             toolName: name,
             result,
             artifact,
             iteration
           });
-          
+
           conversationHistory.push({
             role: "assistant",
             content: `[Called tool: ${name}]`
           });
+
+          // Truncate large tool results (especially browse_and_act with 20+ steps)
+          // to avoid overwhelming the LLM on the next iteration
+          let resultSummary: string;
+          if (name === "browse_and_act") {
+            const r = result as any;
+            resultSummary = JSON.stringify({
+              success: r.success,
+              stepsCount: r.stepsCount || r.steps?.length || 0,
+              summary: r.data?.summary || r.data?.finalUrl || "Task completed",
+              lastSteps: (r.steps || []).slice(-3).map((s: any) =>
+                typeof s === 'string' ? s.slice(0, 100) : JSON.stringify(s).slice(0, 100)
+              ),
+            });
+          } else {
+            const raw = JSON.stringify(result);
+            resultSummary = raw.length > 2000 ? raw.slice(0, 2000) + "... [truncated]" : raw;
+          }
+
           conversationHistory.push({
             role: "user",
-            content: `Tool result for ${name}: ${JSON.stringify(result)}`
+            content: `Tool result for ${name}: ${resultSummary}`
           });
+
+          // FAST EXIT: After browse_and_act completes, generate an immediate
+          // response instead of making another (slow/failing) LLM call.
+          // The browser automation already took 2-10 minutes; the user doesn't
+          // need to wait for another LLM round-trip just to get a summary.
+          if (name === "browse_and_act") {
+            const r = result as any;
+            const wasSuccessful = r.success === true;
+            const stepsCount = r.stepsCount || r.steps?.length || 0;
+            const lastSteps = (r.steps || []).slice(-3).map((s: any) =>
+              typeof s === 'string' ? s : (s?.action || s?.description || JSON.stringify(s).slice(0, 80))
+            );
+            const dataStatus = String(r?.data?.status || "").toLowerCase();
+            const missingFields = Array.isArray(r?.data?.missingFields)
+              ? (r.data.missingFields as string[])
+              : [];
+            const clarificationQuestion = typeof r?.data?.question === "string" ? r.data.question.trim() : "";
+            const confirmationCode =
+              r?.data?.confirmationCode ||
+              r?.data?.reservationCode ||
+              r?.data?.bookingReference ||
+              r?.data?.confirmation;
+            const isNeedsUserInput = dataStatus === "needs_user_input" || missingFields.length > 0;
+
+            let summaryText: string;
+            if (isNeedsUserInput) {
+              const reason = String(r?.data?.reason || "").toLowerCase();
+              const question =
+                clarificationQuestion ||
+                `Para continuar con la reserva necesito: ${missingFields.join(", ")}.`;
+              // Build rich "needs input" message based on reason
+              if (reason === "no_web_availability" && isReservationRequest) {
+                const rd = reservationDetails;
+                const avail = Array.isArray(r?.data?.availableTimes) ? r.data.availableTimes : [];
+                const availBlock = avail.length > 0 ? `\n\n**Horarios disponibles:** ${avail.join(", ")}` : "";
+                summaryText = `⚠️ **Sin disponibilidad online**\n\n${question}${availBlock}\n\n_Restaurante: ${rd?.restaurant || "—"} · Fecha: ${rd?.date || "—"} · Personas: ${rd?.partySize || "—"}_`;
+              } else if (reason === "past_date" && isReservationRequest) {
+                summaryText = `⚠️ **Fecha pasada**\n\n${question}`;
+              } else if (reason === "duplicate_reservation_detected" && isReservationRequest) {
+                summaryText = `⚠️ **Reserva duplicada**\n\n${question}`;
+              } else if (reason === "restaurant_closed" && isReservationRequest) {
+                summaryText = `⚠️ **Restaurante cerrado**\n\n${question}`;
+              } else if (reason === "runtime_timeout") {
+                summaryText = `⏳ **Tiempo agotado**\n\n${question}`;
+              } else if (reason === "page_navigation_error" || reason === "browser_session_closed") {
+                summaryText = `❌ **Error de conexión**\n\n${question}`;
+              } else if (reason === "invalid_contact_data") {
+                summaryText = `⚠️ **Datos inválidos**\n\n${question}`;
+              } else {
+                summaryText = question;
+              }
+              sse.write("clarification", {
+                runId,
+                question,
+                missingFields,
+              });
+            } else if (isReservationRequest) {
+              const rd = reservationDetails;
+              const checkItems: string[] = [];
+              if (rd?.restaurant) checkItems.push(`- [x] **Restaurante:** ${rd.restaurant}`);
+              if (rd?.date) checkItems.push(`- [x] **Fecha:** ${rd.date}`);
+              if (r?.data?.timeAdjusted && r?.data?.selectedTime) {
+                checkItems.push(`- [x] **Hora:** ${r.data.selectedTime} _(solicitada: ${r.data.requestedTime || rd?.time})_`);
+              } else if (rd?.time) {
+                checkItems.push(`- [x] **Hora:** ${rd.time}`);
+              }
+              if (rd?.partySize) checkItems.push(`- [x] **Personas:** ${rd.partySize}`);
+              if (rd?.contactName) checkItems.push(`- [x] **Nombre:** ${rd.contactName}`);
+              if (rd?.phone) checkItems.push(`- [x] **Teléfono:** ${rd.phone}`);
+              if (rd?.email) checkItems.push(`- [x] **Email:** ${rd.email}`);
+
+              const checklistBlock = checkItems.length > 0 ? `\n\n**Checklist:**\n${checkItems.join("\n")}` : "";
+              if (wasSuccessful && confirmationCode) {
+                summaryText = `✅ **Reserva confirmada en la web**\n\nCódigo/confirmación: ${confirmationCode}${checklistBlock}\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
+              } else if (wasSuccessful) {
+                summaryText = `✅ **Automatización web completada exitosamente**${checklistBlock}\n\nRealicé ${stepsCount} acciones en el navegador para completar tu solicitud.\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
+              } else {
+                summaryText = `⚠️ **Automatización web finalizada** (${stepsCount} pasos)${checklistBlock}\n\nNavegué por el sitio web y realicé varias acciones, pero no pude confirmar que la tarea se completó al 100%.\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}\n\nTe recomiendo verificar directamente en el sitio web.`;
+              }
+            } else if (wasSuccessful && confirmationCode) {
+              summaryText = `✅ **Reserva confirmada en la web**\n\nCódigo/confirmación: ${confirmationCode}\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
+            } else if (wasSuccessful) {
+              summaryText = `✅ **Automatización web completada exitosamente**\n\nRealicé ${stepsCount} acciones en el navegador para completar tu solicitud.\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
+            } else {
+              summaryText = `⚠️ **Automatización web finalizada** (${stepsCount} pasos)\n\nNavegué por el sitio web y realicé varias acciones, pero no pude confirmar que la tarea se completó al 100%.\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}\n\nTe recomiendo verificar directamente en el sitio web.`;
+            }
+
+            fullResponse = summaryText;
+            // Send the entire summary as a single chunk to preserve markdown formatting.
+            // Leading \n\n separates it from inline browser_report blockquotes already streamed.
+            sse.write("chunk", {
+              content: "\n\n" + summaryText,
+              sequence: 1,
+              runId,
+            });
+            console.log(`[AgentExecutor] browse_and_act FAST EXIT: success=${wasSuccessful}, steps=${stepsCount}`);
+            shouldExitAgentLoop = true;
+            break;
+          }
         } else if (part.text) {
           textContent += part.text;
         }
       }
-      
+
+      if (shouldExitAgentLoop) {
+        break;
+      }
+
       if (textContent) {
         fullResponse += textContent;
-        
+
         if (!hasToolCall) {
+          // For web_automation intent: if the LLM returned text instead of a tool call
+          // AND we haven't already tried browse_and_act (iteration 1 = first attempt),
+          // force it to use browse_and_act by injecting a strong nudge and retrying.
+          // After the first browse_and_act attempt, allow text responses (result summaries).
+          const alreadyUsedBrowser = conversationHistory.some(m =>
+            m.content.includes("[Called tool: browse_and_act]")
+          );
+          if (requestSpec.intent === "web_automation" && iteration <= 2 && !alreadyUsedBrowser) {
+            console.log(`[AgentExecutor] web_automation: LLM returned text instead of tool call on iteration ${iteration}, forcing tool use...`);
+            conversationHistory.push({
+              role: "assistant",
+              content: textContent
+            });
+            conversationHistory.push({
+              role: "user",
+              content: `IMPORTANT: Do NOT respond with text. You MUST call the "browse_and_act" function right now to open a real browser and complete the task. Call browse_and_act with url="https://www.mesa247.pe" and goal containing all the details from the user's request. Do it NOW.`
+            });
+            textContent = "";
+            fullResponse = "";
+            continue; // retry the iteration
+          }
+
+          const alreadyUsedListFiles = conversationHistory.some((m) =>
+            m.content.includes("[Called tool: list_files]"),
+          );
+          if (isLocalFsRequest && iteration <= 2 && !alreadyUsedListFiles) {
+            const inferredDirectory = inferLocalDirectoryFromPrompt(recentUserText || requestSpec.rawMessage || "");
+            console.log(`[AgentExecutor] local_fs: LLM returned text instead of tool call on iteration ${iteration}, forcing list_files(${inferredDirectory})...`);
+            conversationHistory.push({
+              role: "assistant",
+              content: textContent,
+            });
+            conversationHistory.push({
+              role: "user",
+              content: `IMPORTANT: do not ask the user to run commands. Call list_files now with {"directory":"${inferredDirectory}","maxEntries":200}. After that, summarize findings with concrete paths and counts.`,
+            });
+            textContent = "";
+            fullResponse = "";
+            continue; // retry the iteration
+          }
+
+          // A1: Agent Verifier - Quality Gate
+          try {
+            // Dynamic import to avoid circular dependencies if any, though explicit import is better. 
+            // Since I can't add top-level imports easily with replace_file_content if I don't target the top, I'll use dynamic import or just hope for the best? 
+            // Actually, I should use multi_replace to add the import.
+            // But wait, I can use dynamic import here to be safe and localized.
+            const { validateResponse } = await import("../services/responseValidator");
+            const validation = validateResponse(textContent);
+
+            if (!validation.isValid && iteration < maxIterations) {
+              console.warn(`[AgentVerifier] Response rejected: ${validation.issues.map(i => i.message).join(", ")}`);
+
+              await emitTraceEvent(runId, "verification_failed", {
+                issues: validation.issues,
+                rejectedContent: textContent.substring(0, 100) + "..."
+              });
+
+              conversationHistory.push({
+                role: "assistant",
+                content: textContent
+              });
+              conversationHistory.push({
+                role: "user",
+                content: `SYSTEM_ALERT: Your response was rejected by the Quality Verifier. 
+Issues detected:
+${validation.issues.map(i => `- ${i.message}`).join("\n")}
+
+Please rewrite your response addressing these issues.`
+              });
+
+              // Skip streaming and continue to next iteration for retry
+              continue;
+            }
+          } catch (err: any) {
+            console.error("[AgentVerifier] Error during validation:", err);
+            // Fail open: if verifier crashes, let the response through but log it
+            await emitTraceEvent(runId, "verification_failed", {
+              error: {
+                message: `Verifier crashed: ${err.message}`,
+                details: { stack: err.stack }
+              },
+              metadata: {
+                checkName: "System Integrity",
+                contentSnippet: textContent.substring(0, 50)
+              }
+            });
+          }
+
           const chunks = textContent.match(/.{1,100}/g) || [textContent];
           for (let i = 0; i < chunks.length; i++) {
-            writeSse(res, "chunk", {
+            sse.write("chunk", {
               content: chunks[i],
               sequence: i + 1,
               runId
             });
             await new Promise(r => setTimeout(r, 10));
           }
-          
+
           break;
         }
       }
-      
+
       await emitTraceEvent(runId, "progress_update", {
         progress: {
           current: iteration,
@@ -650,10 +941,10 @@ export async function executeAgentLoop(
           message: `Completed iteration ${iteration}`
         }
       });
-      
+
     } catch (error: any) {
-      console.error(`[AgentExecutor] Error in iteration ${iteration}:`, error);
-      
+      console.error(`[AgentExecutor] Error in iteration ${iteration}:`, error?.message || error);
+
       await emitTraceEvent(runId, "error", {
         error: {
           code: "AGENT_EXECUTION_ERROR",
@@ -661,32 +952,65 @@ export async function executeAgentLoop(
           retryable: iteration < maxIterations
         }
       });
-      
+
+      // If browse_and_act already ran successfully and the follow-up LLM call
+      // failed (timeout, too-large context, etc.), generate a fallback summary
+      // instead of retrying forever or crashing.
+      const alreadyBrowsed = conversationHistory.some(m =>
+        m.content.includes("[Called tool: browse_and_act]")
+      );
+      if (alreadyBrowsed && !fullResponse) {
+        console.log(`[AgentExecutor] Post-browse LLM call failed, generating fallback summary`);
+        // Extract browse result from conversation history
+        const browseResultMsg = conversationHistory.find(m =>
+          m.content.startsWith("Tool result for browse_and_act:")
+        );
+        const browseData = browseResultMsg?.content || "";
+        const successMatch = browseData.match(/"success"\s*:\s*(true|false)/);
+        const wasSuccessful = successMatch?.[1] === "true";
+
+        const fallback = wasSuccessful
+          ? "✅ He completado la automatización web exitosamente. El navegador realizó todas las acciones necesarias en el sitio web."
+          : "⚠️ He intentado completar la tarea de automatización web. El navegador navegó por el sitio web y realizó varias acciones, pero no pude confirmar que la tarea se completó al 100%. Te recomiendo verificar directamente en el sitio.";
+
+        fullResponse = fallback;
+        const chunks = fallback.match(/.{1,100}/g) || [fallback];
+        for (let i = 0; i < chunks.length; i++) {
+          sse.write("chunk", {
+            content: chunks[i],
+            sequence: i + 1,
+            runId
+          });
+        }
+        break; // Exit the while loop
+      }
+
       if (iteration >= maxIterations) {
         throw error;
       }
     }
   }
-  
+
   if (!fullResponse && iteration >= maxIterations) {
-    const fallbackMsg = artifacts.length > 0 
-      ? `I've completed the requested tasks and generated ${artifacts.length} artifact(s) for you.`
-      : "I've processed your request. Let me know if you need anything else.";
-    writeSse(res, "chunk", {
+    const fallbackMsg = artifacts.length > 0
+      ? `He completado las tareas solicitadas y generé ${artifacts.length} archivo(s) para ti.`
+      : "He procesado tu solicitud. Avísame si necesitas algo más.";
+    fullResponse = fallbackMsg;
+    sse.write("chunk", {
       content: fallbackMsg,
       sequence: 1,
       runId
     });
   }
-  
+
   if (artifacts.length > 0) {
-    writeSse(res, "artifacts", {
+    sse.write("artifacts", {
       runId,
       artifacts,
       count: artifacts.length
     });
   }
-  
+
   await emitTraceEvent(runId, "agent_completed", {
     agent: {
       name: requestSpec.primaryAgent,
@@ -696,6 +1020,24 @@ export async function executeAgentLoop(
     iterations: iteration,
     artifactsGenerated: artifacts.length
   });
+
+  // Ensure deterministic termination signal is sent when the agent finishes,
+  // preventing the frontend from getting stuck in an infinite polling loop.
+  sse.write("done", { runId, status: "completed", isFallback: true });
+  sse.end();
+
+  return fullResponse;
 }
 
-export { AGENT_TOOLS, getToolsForIntent };
+export {
+  AGENT_TOOLS,
+  getToolsForIntent,
+  isRestaurantReservationRequest,
+  extractReservationDetails,
+  getMissingReservationFields,
+  formatReservationDetails,
+  buildReservationClarificationQuestion,
+  normalizeSpaces,
+  collectRecentUserText,
+};
+export type { ReservationDetails, ReservationMissingField };

@@ -1,58 +1,108 @@
 import { Sidebar } from "@/components/sidebar";
+import { SkeletonPage } from "@/components/skeletons";
 import { MiniSidebar } from "@/components/mini-sidebar";
 import { ChatInterface } from "@/components/chat-interface";
-import { GptExplorer, Gpt } from "@/components/gpt-explorer";
-import { GptBuilder } from "@/components/gpt-builder";
-import { AboutGptDialog } from "@/components/about-gpt-dialog";
-import { UserLibrary } from "@/components/user-library";
-import { AppsView } from "@/components/apps-view";
-import { SearchModal } from "@/components/search-modal";
-import { SettingsDialog } from "@/components/settings-dialog";
-import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
-import { ExportChatDialog } from "@/components/export-chat-dialog";
-import { FavoritesDialog } from "@/components/favorites-dialog";
-import { PromptTemplatesDialog } from "@/components/prompt-templates-dialog";
+import { ChatErrorBoundary } from "@/components/error-boundaries";
+// Re-deploy: override manual hotfix-20260220-051334 with git-tracked code
+import type { Gpt } from "@/components/gpt-explorer";
 import { OfflineIndicator, OfflineBanner } from "@/components/offline-indicator";
-import { MediaLibraryModal } from "@/components/media-library-modal";
 import { useMediaLibrary } from "@/hooks/use-media-library";
-import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { lazy, Suspense, useState, useCallback, useMemo, useEffect, useRef } from "react";
+
 import { useFavorites } from "@/hooks/use-favorites";
 import { usePromptTemplates } from "@/hooks/use-prompt-templates";
 import { useNotifications } from "@/hooks/use-notifications";
 import { useOnlineStatus } from "@/hooks/use-online-status";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { useChats, Message } from "@/hooks/use-chats";
+import { useChats, Message, generateRequestId, resolveRealChatId } from "@/hooks/use-chats";
 import { useChatFolders } from "@/hooks/use-chat-folders";
 import { usePinnedGpts } from "@/hooks/use-pinned-gpts";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useStreamingStore, useProcessingChatIds, usePendingBadges } from "@/stores/streamingStore";
-import { useBackgroundStreamNotifications } from "@/hooks/use-background-stream-notifications";
 import { useAgentStore } from "@/stores/agent-store";
 import { useSuperAgentStore } from "@/stores/super-agent-store";
 import { pollingManager } from "@/lib/polling-manager";
 import { queryClient } from "@/lib/queryClient";
+import { apiFetch } from "@/lib/apiClient";
+
+const isLocalDevHost = () => {
+  if (typeof window === "undefined") return false;
+  if (import.meta.env.DEV) return true;
+  const host = window.location.hostname;
+  if (host === "localhost" || host === "127.0.0.1" || host.endsWith(".local")) return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  const private172 = host.match(/^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+  if (private172) {
+    const second = Number(private172[1]);
+    if (second >= 16 && second <= 31) return true;
+  }
+  return false;
+};
+
+const AppsViewLazy = lazy(() => import("@/components/apps-view").then((m) => ({ default: m.AppsView })));
+const ChannelsHubDialogLazy = lazy(() =>
+  import("@/components/channels-hub-dialog").then((m) => ({ default: m.ChannelsHubDialog }))
+);
+import { whatsappWebEventStream } from "@/lib/whatsapp-web-events";
+const GptExplorerLazy = lazy(() => import("@/components/gpt-explorer").then((m) => ({ default: m.GptExplorer })));
+const AboutGptDialogLazy = lazy(() =>
+  import("@/components/about-gpt-dialog").then((m) => ({ default: m.AboutGptDialog }))
+);
+const GptBuilderLazy = lazy(() => import("@/components/gpt-builder").then((m) => ({ default: m.GptBuilder })));
+const UserLibraryLazy = lazy(() => import("@/components/user-library").then((m) => ({ default: m.UserLibrary })));
+const CodexDialogLazy = lazy(() => import("@/components/codex-dialog").then((m) => ({ default: m.CodexDialog })));
+const SearchModalLazy = lazy(() => import("@/components/search-modal").then((m) => ({ default: m.SearchModal })));
+const SettingsDialogLazy = lazy(() => import("@/components/settings-dialog").then((m) => ({ default: m.SettingsDialog })));
+const KeyboardShortcutsDialogLazy = lazy(() =>
+  import("@/components/keyboard-shortcuts-dialog").then((m) => ({ default: m.KeyboardShortcutsDialog }))
+);
+const ExportChatDialogLazy = lazy(() =>
+  import("@/components/export-chat-dialog").then((m) => ({ default: m.ExportChatDialog }))
+);
+const FavoritesDialogLazy = lazy(() =>
+  import("@/components/favorites-dialog").then((m) => ({ default: m.FavoritesDialog }))
+);
+const PromptTemplatesDialogLazy = lazy(() =>
+  import("@/components/prompt-templates-dialog").then((m) => ({ default: m.PromptTemplatesDialog }))
+);
 
 export default function Home() {
   const isMobile = useIsMobile();
-  const [, setLocation] = useLocation();
-  const { isAuthenticated, isLoading } = useAuth();
+  const [location, setLocation] = useLocation();
+  const { user, isLoading, isReady } = useAuth();
 
 
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
+    // Keep login requirement outside local development host.
+    if (isReady && !isLoading && !user && !isLocalDevHost()) {
       setLocation("/welcome");
     }
-  }, [isAuthenticated, isLoading, setLocation]);
+  }, [user, isLoading, isReady, setLocation]);
 
   useEffect(() => {
     useMediaLibrary.getState().preload();
   }, []);
+
+
+  // Parse chat id from URL: /chat/:id
+
+  const chatIdFromUrl = useMemo(() => {
+
+    const m = location.match(/^\/chat\/([^/?#]+)/);
+
+    return m ? decodeURIComponent(m[1]) : null;
+
+  }, [location]);
+
+
+
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const [isNewChatMode, setIsNewChatMode] = useState(false);
@@ -61,8 +111,9 @@ export default function Home() {
   const [isGptBuilderOpen, setIsGptBuilderOpen] = useState(false);
   const [aboutGptId, setAboutGptId] = useState<string | null>(null);
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
-  const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
+  const [isCodexOpen, setIsCodexOpen] = useState(false);
   const [isAppsDialogOpen, setIsAppsDialogOpen] = useState(false);
+  const [isWhatsAppConnectOpen, setIsWhatsAppConnectOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
@@ -72,19 +123,20 @@ export default function Home() {
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const [editingGpt, setEditingGpt] = useState<Gpt | null>(null);
   const [activeGpt, setActiveGpt] = useState<Gpt | null>(null);
-  
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+
   const { favorites, addFavorite, removeFavorite, isFavorite } = useFavorites();
   const { templates, addTemplate, removeTemplate, updateTemplate, incrementUsage, categories } = usePromptTemplates();
   const { notifyTaskComplete, requestPermission } = useNotifications();
   const { isOnline } = useOnlineStatus();
-  
-  const { 
-    chats, 
+
+  const {
+    chats,
     hiddenChats,
     pinnedChats,
-    activeChat, 
-    setActiveChatId, 
-    createChat, 
+    activeChat,
+    setActiveChatId,
+    createChat,
     addMessage,
     deleteChat,
     editChatTitle,
@@ -95,7 +147,8 @@ export default function Home() {
     updateMessageAttachments,
     editMessageAndTruncate,
     truncateAndReplaceMessage,
-    truncateMessagesAt
+    truncateMessagesAt,
+    isLoading: isChatsLoading
   } = useChats();
 
   const {
@@ -114,60 +167,232 @@ export default function Home() {
     }
   }, [moveChatToFolder, removeChatFromFolder]);
 
-  // AI processing state - kept in parent to survive ChatInterface key changes
-  const [aiState, setAiStateRaw] = useState<"idle" | "thinking" | "responding">("idle");
-  const [aiStateChatId, setAiStateChatId] = useState<string | null>(null);
-  const [aiProcessSteps, setAiProcessSteps] = useState<{step: string; status: "pending" | "active" | "done"}[]>([]);
-  
+  type HomeAiState = "idle" | "thinking" | "responding" | "agent_working";
+  type HomeAiStep = { step: string; status: "pending" | "active" | "done" };
+  type HomeConversationUiState = {
+    aiState: HomeAiState;
+    aiProcessSteps: HomeAiStep[];
+    pendingRequestId: string | null;
+    streamBuffer: string;
+  };
+
+  const createHomeConversationUiState = (): HomeConversationUiState => ({
+    aiState: "idle",
+    aiProcessSteps: [],
+    pendingRequestId: null,
+    streamBuffer: "",
+  });
+
+  const [conversationUiStateMap, setConversationUiStateMap] = useState<Record<string, HomeConversationUiState>>({});
+
   // Super Agent UI state - kept in parent to survive ChatInterface key changes
   const [uiPhase, setUiPhase] = useState<'idle' | 'thinking' | 'console' | 'done'>('idle');
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  
-  // Wrapper for setAiState that tracks which chat the state belongs to
-  const setAiState = useCallback((newState: "idle" | "thinking" | "responding" | ((prev: "idle" | "thinking" | "responding") => "idle" | "thinking" | "responding")) => {
-    const resolvedState = typeof newState === 'function' ? newState(aiState) : newState;
-    setAiStateRaw(resolvedState);
-    if (resolvedState === 'idle') {
-      setAiStateChatId(null);
+
+  // Document generation state - kept in parent to survive ChatInterface key changes during new chat creation
+  const [selectedDocTool, setSelectedDocTool] = useState<"word" | "excel" | "ppt" | "figma" | null>(null);
+  const [docGenerationState, setDocGenerationState] = useState<{
+    status: 'idle' | 'generating' | 'ready' | 'error';
+    progress: number;
+    stage: string;
+    downloadUrl: string | null;
+    fileName: string | null;
+    fileSize: number | null;
+    error?: string;
+  }>({ status: 'idle', progress: 0, stage: '', downloadUrl: null, fileName: null, fileSize: null });
+
+  // URL Persistence for Simulator/Plan (B4)
+  // Read planId from URL on mount/navigation only — avoid circular deps
+  // by NOT including activeRunId/uiPhase in the restore effect deps.
+  const search = useSearch();
+  const activeRunIdRef = useRef(activeRunId);
+  activeRunIdRef.current = activeRunId;
+  const uiPhaseRef = useRef(uiPhase);
+  uiPhaseRef.current = uiPhase;
+
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    const planId = params.get("planId");
+
+    if (planId && planId !== activeRunIdRef.current) {
+      setUiPhase('console');
+      setActiveRunId(planId);
+    } else if (!planId && activeRunIdRef.current && uiPhaseRef.current === 'console') {
+      setUiPhase('idle');
+      setActiveRunId(null);
+    }
+  }, [search]);
+
+  // Update URL when activeRunId changes — one-way data flow (state → URL)
+  useEffect(() => {
+    if (activeRunId && uiPhase === 'console') {
+      const url = new URL(window.location.href);
+      url.searchParams.set("planId", activeRunId);
+      window.history.replaceState({}, "", url.toString());
     } else {
-      // Capture the current chat ID when entering non-idle state
-      const currentChatId = activeChat?.id || pendingChatIdRef.current;
-      if (currentChatId) {
-        setAiStateChatId(currentChatId);
+      const url = new URL(window.location.href);
+      if (url.searchParams.has("planId")) {
+        url.searchParams.delete("planId");
+        window.history.replaceState({}, "", url.toString());
       }
     }
-  }, [aiState, activeChat?.id]);
-  
+  }, [activeRunId, uiPhase]);
+
   // Use global streaming store for tracking processing chats and pending badges
   const processingChatIds = useProcessingChatIds();
   const pendingResponseCounts = usePendingBadges();
   const { clearBadge } = useStreamingStore();
 
-  // Background stream notifications with sound
-  useBackgroundStreamNotifications(chats, activeChat?.id || null);
+  // WhatsApp: listen for mirrored messages and inject chats into the sidebar in real-time.
+  const lastWaRefreshRef = useRef(0);
+  useEffect(() => {
+    const unsub = whatsappWebEventStream.subscribe({
+      onMessage: () => {
+        // Throttle: at most one refresh every 3 seconds to avoid hammering the API
+        const now = Date.now();
+        if (now - lastWaRefreshRef.current < 3000) return;
+        lastWaRefreshRef.current = now;
+        window.dispatchEvent(new Event("refresh-chats"));
+      },
+    });
+    return unsub;
+  }, []);
 
   // Store the pending chat ID during new chat creation
   const pendingChatIdRef = useRef<string | null>(null);
-  
+
+  const ensureConversationUiState = useCallback((conversationId: string | null | undefined) => {
+    if (!conversationId) return;
+    setConversationUiStateMap((prev) => {
+      if (prev[conversationId]) return prev;
+      return { ...prev, [conversationId]: createHomeConversationUiState() };
+    });
+  }, []);
+
+  const moveConversationUiState = useCallback((fromConversationId?: string | null, toConversationId?: string | null) => {
+    if (!fromConversationId || !toConversationId || fromConversationId === toConversationId) return;
+    setConversationUiStateMap((prev) => {
+      const sourceState = prev[fromConversationId];
+      if (!sourceState) return prev;
+      const { [fromConversationId]: _, ...rest } = prev;
+      if (rest[toConversationId]) return rest;
+      return { ...rest, [toConversationId]: sourceState };
+    });
+  }, []);
+
+  const activeConversationId = useMemo(() => {
+    if (activeChat?.id) return activeChat.id;
+    if (pendingChatIdRef.current) return pendingChatIdRef.current;
+    if (isNewChatMode && newChatStableKey) return newChatStableKey;
+    return null;
+  }, [activeChat?.id, isNewChatMode, newChatStableKey]);
+
+  useEffect(() => {
+    ensureConversationUiState(activeConversationId);
+  }, [activeConversationId, ensureConversationUiState]);
+
+  const activeConversationState = activeConversationId
+    ? conversationUiStateMap[activeConversationId]
+    : undefined;
+
+  const aiState: HomeAiState = activeConversationState?.aiState || "idle";
+  const aiProcessSteps: HomeAiStep[] = activeConversationState?.aiProcessSteps || [];
+  const aiStateChatId = aiState === "idle" ? null : activeConversationId;
+
+  const setAiState = useCallback((newState: HomeAiState | ((prev: HomeAiState) => HomeAiState)) => {
+    const targetConversationId = activeConversationId || pendingChatIdRef.current || newChatStableKey;
+    if (!targetConversationId) return;
+    setConversationUiStateMap((prev) => {
+      const current = prev[targetConversationId] || createHomeConversationUiState();
+      const resolvedState = typeof newState === "function"
+        ? (newState as (prev: HomeAiState) => HomeAiState)(current.aiState)
+        : newState;
+      return {
+        ...prev,
+        [targetConversationId]: {
+          ...current,
+          aiState: resolvedState,
+          aiProcessSteps: resolvedState === "idle" ? [] : current.aiProcessSteps,
+        },
+      };
+    });
+  }, [activeConversationId, newChatStableKey]);
+
+  const setAiProcessSteps = useCallback((nextSteps: HomeAiStep[] | ((prev: HomeAiStep[]) => HomeAiStep[])) => {
+    const targetConversationId = activeConversationId || pendingChatIdRef.current || newChatStableKey;
+    if (!targetConversationId) return;
+    setConversationUiStateMap((prev) => {
+      const current = prev[targetConversationId] || createHomeConversationUiState();
+      const resolvedSteps = typeof nextSteps === "function"
+        ? (nextSteps as (prev: HomeAiStep[]) => HomeAiStep[])(current.aiProcessSteps)
+        : nextSteps;
+      return {
+        ...prev,
+        [targetConversationId]: {
+          ...current,
+          aiProcessSteps: resolvedSteps,
+        },
+      };
+    });
+  }, [activeConversationId, newChatStableKey]);
+
+
+  // Sync URL to active chat state (direct navigation to /chat/:id)
+
+  useEffect(() => {
+
+    if (!chatIdFromUrl) return;
+
+    if (activeChat?.id === chatIdFromUrl) return;
+
+    // Exit new chat mode and clear project selection
+
+    setIsNewChatMode(false);
+
+    // Only clear newChatStableKey if this navigation is NOT from our own
+    // pending chat creation (handleSendNewChatMessage sets location after
+    // creating the chat — clearing the key here would cause a remount
+    // that kills the in-flight streaming request).
+    const isPendingChatNavigation = pendingChatIdRef.current != null;
+    if (!isPendingChatNavigation) {
+      setNewChatStableKey(null);
+    }
+
+    // CRITICAL: Do NOT clear pendingChatIdRef when the URL change came from
+    // our own new-chat flow (replaceState in handleSendNewChatMessage).
+    // The ref is needed by stale closures in useStreamChat.finalize →
+    // handleSendMessage to find the correct chat for the assistant response.
+    // Clearing it here causes finalize to fall through to
+    // handleSendNewChatMessage, creating a SECOND pending chat (split bug).
+    if (!isPendingChatNavigation) {
+      pendingChatIdRef.current = null;
+    }
+
+    setSelectedProjectId(null);
+
+    setActiveChatId(chatIdFromUrl);
+
+  }, [chatIdFromUrl, activeChat?.id, setActiveChatId]);
+
+
+
+
   const handleClearPendingCount = useCallback((chatId: string) => {
     clearBadge(chatId);
   }, [clearBadge]);
-  
+
   // Clear pending count when selecting a chat
   const handleSelectChatWithClear = useCallback((id: string) => {
     // Keep processing state for background chats - don't clear processingChatIds
     // This allows multiple chats to process simultaneously
     handleClearPendingCount(id);
-    
-    // DO NOT reset aiState - let background streaming complete naturally
-    // The aiStateChatId check prevents the indicator from showing on wrong chat
-    // Only reset process steps for UI display
-    setAiProcessSteps([]);
-    
+
     setIsNewChatMode(false);
     setNewChatStableKey(null);
     setActiveChatId(id);
-  }, [handleClearPendingCount, setActiveChatId, setAiProcessSteps]);
+    setLocation(`/chat/${id}`);
+    setSelectedProjectId(null); // Clear project selection when selecting a chat
+  }, [handleClearPendingCount, setActiveChatId]);
 
   // Listen for select-chat custom event (used by Agent Mode navigation)
   // This event is used when agent creates a new chat - we need to preserve the stable key
@@ -185,92 +410,188 @@ export default function Home() {
           setNewChatStableKey(null);
         }
         setActiveChatId(chatId);
-        setAiProcessSteps([]);
+        setLocation(`/chat/${chatId}`, { replace: !!preserveKey });
       }
     };
-    
+
     window.addEventListener("select-chat", handleSelectChatEvent as EventListener);
     return () => {
       window.removeEventListener("select-chat", handleSelectChatEvent as EventListener);
     };
-  }, [handleClearPendingCount, setActiveChatId, setAiProcessSteps]);
+  }, [handleClearPendingCount, setActiveChatId]);
 
   const handleNewChat = (options?: { preserveGpt?: boolean }) => {
     // TRANSACTIONAL RESET: Block all re-hydration for 5 seconds
     // This prevents stale state from coming back after navigation
     useAgentStore.getState().blockRehydration();
-    
+
     // Clear all streaming badges and pending response indicators
     useStreamingStore.getState().clearAllBadges();
-    
+
     // Clear all Super Agent runs
     useSuperAgentStore.getState().clearAllRuns();
-    
+
     // Cancel all active agent runs and clear agent state
     pollingManager.cancelAll();
     useAgentStore.getState().clearAllRuns();
-    
+
     // Clear conversation state query cache to prevent stale data
     queryClient.removeQueries({ queryKey: ['conversationState'] });
-    
-    // Reset AI processing state for UI display
-    setAiProcessSteps([]);
-    setAiStateRaw('idle');
-    setAiStateChatId(null);
-    
+
     // Reset Super Agent UI state
     setUiPhase('idle');
     setActiveRunId(null);
-    
+
+    // Reset document generation state
+    setSelectedDocTool(null);
+    setDocGenerationState({ status: 'idle', progress: 0, stage: '', downloadUrl: null, fileName: null, fileSize: null });
+
     // Clear chat references - this triggers new chat mode
+    const newConversationId = `new-chat-${Date.now()}`;
     setActiveChatId(null);
+    setSelectedProjectId(null);
     setIsNewChatMode(true);
-    setNewChatStableKey(null);
+    setNewChatStableKey(newConversationId);
+    ensureConversationUiState(newConversationId);
     pendingChatIdRef.current = null;
-    
+
     // AGGRESSIVE RESET: Clear active GPT to return to LLM models view
     // Only clear GPT if not explicitly preserving it (e.g., when selecting a new GPT)
     if (!options?.preserveGpt) {
       setActiveGpt(null);
     }
-    
+
     // Close any open dialogs
     setIsAppsDialogOpen(false);
+    setLocation("/");
   };
-  
-  const handleSendNewChatMessage = useCallback((message: Message) => {
+
+  const handleSelectProject = useCallback((projectId: string) => {
+    // Clear chat selection to show project welcome screen
+    setActiveChatId(null);
+    setIsNewChatMode(false);
+    setNewChatStableKey(null);
+    pendingChatIdRef.current = null;
+
+    // Set selected project
+    setSelectedProjectId(projectId);
+
+    // Clear other UI states
+    setActiveGpt(null);
+  }, [setActiveChatId]);
+
+  const handleSendNewChatMessage = useCallback(async (message: Message) => {
     const { pendingId, stableKey } = createChat();
+    moveConversationUiState(newChatStableKey, pendingId);
+    ensureConversationUiState(pendingId);
     pendingChatIdRef.current = pendingId;
-    // CRITICAL: Use the stableKey from createChat to ensure chatInterfaceKey
-    // matches activeChat.stableKey after backend confirms. This prevents
-    // component remount when newChatStableKey is cleared during navigation.
     setNewChatStableKey(stableKey);
     setIsNewChatMode(false);
-    addMessage(pendingId, message);
-  }, [createChat, addMessage]);
-  
+    const result = await addMessage(pendingId, message);
+    const realId = result?.run?.chatId || (result ? resolveRealChatId(pendingId) : null);
+    if (realId && !realId.startsWith("pending-")) {
+      moveConversationUiState(pendingId, realId);
+      // addMessage already renames the chat entry and updates activeChatId,
+      // but call setActiveChatId again as a safety net.
+      setActiveChatId(realId);
+      // Keep the ref pointing to the real ID so that stale closures in
+      // useStreamChat.finalize → handleSendMessage can still find the correct
+      // chat via pendingChatIdRef.current (refs are read by reference, not
+      // captured by value like state).
+      pendingChatIdRef.current = realId;
+      // Silently update the URL bar without triggering wouter's router.
+      window.history.replaceState(null, "", `/chat/${realId}`);
+    }
+    return result;
+  }, [addMessage, createChat, ensureConversationUiState, moveConversationUiState, newChatStableKey, setActiveChatId]);
+
   // Stable message sender that uses the correct chat ID
-  // IMPORTANT: If targetChatId is provided, use it (for streaming responses that need affinity)
-  // Otherwise fall back to current active chat (for new messages from user)
-  const handleSendMessage = useCallback(async (message: Message, targetChatId?: string) => {
-    // Use explicit targetChatId if provided (ensures streaming responses go to correct chat)
-    const resolvedChatId = targetChatId || activeChat?.id || pendingChatIdRef.current;
-    if (resolvedChatId) {
-      return await addMessage(resolvedChatId, message);
+  const handleSendMessage = useCallback(async (message: Message) => {
+    if (import.meta.env.DEV) {
+      console.debug("[home] handleSendMessage", {
+        messageContent: message.content?.substring(0, 50),
+        activeChat: activeChat?.id,
+        pendingChatId: pendingChatIdRef.current,
+      });
+    }
+    
+    // Check for Simulator / Dry-Run command (B4)
+    if (message.content.trim().startsWith('/plan ') || message.content.trim().startsWith('/preview ')) {
+      const goal = message.content.replace(/^\/(plan|preview)\s+/, '').trim();
+
+      // 1. Send user message first
+      const targetChatId = activeChat?.id || pendingChatIdRef.current;
+      let chatId = targetChatId;
+
+      if (!chatId) {
+        const { pendingId, stableKey } = createChat();
+        pendingChatIdRef.current = pendingId;
+        setNewChatStableKey(stableKey);
+        setIsNewChatMode(false);
+        chatId = pendingId;
+      }
+
+      // Add user message
+      await addMessage(chatId!, message);
+
+      // 2. Call Preview API
+      try {
+        // Add a temporary "thinking" step or message? 
+        // For now just fetch.
+        const res = await apiFetch('/api/planning/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ goal })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.preview?.plan) {
+            // 3. Create Assistant Message with Plan
+            const planMsg: Message = {
+              id: generateRequestId(),
+              role: 'assistant',
+              content: `He generado un plan para: "${goal}". Revisa los pasos y ejecútalo cuando estés listo.`,
+              timestamp: new Date(),
+              agentRun: {
+                runId: data.preview.plan.id,
+                status: 'planning', // Supported status
+                steps: [],
+                eventStream: [],
+                summary: null,
+                error: null
+              }
+            };
+
+            await addMessage(chatId!, planMsg);
+
+            // Also initialize run in AgentStore so PlanViewer works correctly
+            useAgentStore.getState().setRunId(planMsg.id, data.preview.plan.id, chatId!);
+            // Manually force status to planning in store
+            useAgentStore.getState().updateRun(planMsg.id, {
+              status: 'planning',
+              runId: data.preview.plan.id,
+              chatId: chatId!
+            });
+
+          }
+        }
+      } catch (e) {
+        console.error("Preview failed", e);
+        // Add error message?
+      }
+
+      return;
+    }
+
+    const targetChatId = activeChat?.id || pendingChatIdRef.current;
+    if (targetChatId) {
+      return await addMessage(targetChatId, message);
     } else {
       // Fallback: create new chat
-      handleSendNewChatMessage(message);
-      return undefined;
+      return await handleSendNewChatMessage(message);
     }
-  }, [activeChat?.id, addMessage, handleSendNewChatMessage]);
-
-
-  const chatInterfaceKey = useMemo(() => {
-    // Prioritize newChatStableKey to prevent component remount during new chat creation
-    if (newChatStableKey) return newChatStableKey;
-    if (activeChat) return activeChat.stableKey;
-    return "default-chat";
-  }, [activeChat?.stableKey, newChatStableKey]);
+  }, [activeChat?.id, addMessage, handleSendNewChatMessage, createChat, addMessage]);
 
   // Get messages from either activeChat or pending chat
   const currentMessages = useMemo(() => {
@@ -303,7 +624,11 @@ export default function Home() {
   };
 
   const handleOpenLibrary = () => {
-    setIsMediaLibraryOpen(true);
+    setIsLibraryOpen(true);
+  };
+
+  const handleOpenCodex = () => {
+    setIsCodexOpen(true);
   };
 
   const handleSelectGpt = (gpt: Gpt) => {
@@ -415,12 +740,15 @@ export default function Home() {
         setIsExportOpen(false);
         setIsGptExplorerOpen(false);
         setIsLibraryOpen(false);
-        setIsMediaLibraryOpen(false);
         setIsFavoritesOpen(false);
         setIsTemplatesOpen(false);
       },
     },
   ]);
+
+  if (isChatsLoading || isLoading) {
+    return <SkeletonPage />;
+  }
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background relative">
@@ -428,17 +756,17 @@ export default function Home() {
       <div className="liquid-blob liquid-blob-1 opacity-30"></div>
       <div className="liquid-blob liquid-blob-2 opacity-20"></div>
       <div className="liquid-blob liquid-blob-3 opacity-25"></div>
-      
+
       {/* Desktop Sidebar - Full */}
       <div className={isSidebarOpen ? "hidden md:block" : "hidden"}>
-        <Sidebar 
-          chats={chats} 
+        <Sidebar
+          chats={chats}
           hiddenChats={hiddenChats}
           pinnedChats={pinnedChats}
-          activeChatId={activeChat?.id || null} 
-          onSelectChat={handleSelectChatWithClear} 
-          onNewChat={handleNewChat} 
-          onToggle={() => setIsSidebarOpen(false)} 
+          activeChatId={activeChat?.id || null}
+          onSelectChat={handleSelectChatWithClear}
+          onNewChat={handleNewChat}
+          onToggle={() => setIsSidebarOpen(false)}
           onDeleteChat={deleteChat}
           onEditChat={editChatTitle}
           onArchiveChat={archiveChat}
@@ -448,6 +776,8 @@ export default function Home() {
           onOpenGpts={handleOpenGpts}
           onOpenApps={handleOpenApps}
           onOpenSkills={handleOpenSkills}
+          onOpenWhatsAppConnect={() => setIsWhatsAppConnectOpen(true)}
+          onOpenCodex={handleOpenCodex}
           onOpenLibrary={handleOpenLibrary}
           processingChatIds={processingChatIds}
           pendingResponseCounts={pendingResponseCounts}
@@ -455,12 +785,14 @@ export default function Home() {
           folders={folders}
           onCreateFolder={createFolder}
           onMoveToFolder={handleMoveToFolder}
+          selectedProjectId={selectedProjectId}
+          onSelectProject={handleSelectProject}
         />
       </div>
 
       {/* Desktop Sidebar - Mini (collapsed) */}
       <div className={!isSidebarOpen ? "hidden md:block" : "hidden"}>
-        <MiniSidebar 
+        <MiniSidebar
           onNewChat={handleNewChat}
           onExpand={() => setIsSidebarOpen(true)}
         />
@@ -475,14 +807,14 @@ export default function Home() {
             </Button>
           </SheetTrigger>
           <SheetContent side="left" className="p-0 w-[260px]">
-            <Sidebar 
-              chats={chats} 
+            <Sidebar
+              chats={chats}
               hiddenChats={hiddenChats}
               pinnedChats={pinnedChats}
-              activeChatId={activeChat?.id || null} 
-              onSelectChat={handleSelectChatWithClear} 
-              onNewChat={handleNewChat} 
-              onToggle={() => setIsSidebarOpen(!isSidebarOpen)} 
+              activeChatId={activeChat?.id || null}
+              onSelectChat={handleSelectChatWithClear}
+              onNewChat={handleNewChat}
+              onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
               onDeleteChat={deleteChat}
               onEditChat={editChatTitle}
               onArchiveChat={archiveChat}
@@ -492,6 +824,7 @@ export default function Home() {
               onOpenGpts={handleOpenGpts}
               onOpenApps={handleOpenApps}
               onOpenSkills={handleOpenSkills}
+              onOpenWhatsAppConnect={() => setIsWhatsAppConnectOpen(true)}
               onOpenLibrary={handleOpenLibrary}
               processingChatIds={processingChatIds}
               pendingResponseCounts={pendingResponseCounts}
@@ -499,31 +832,44 @@ export default function Home() {
               folders={folders}
               onCreateFolder={createFolder}
               onMoveToFolder={handleMoveToFolder}
+              selectedProjectId={selectedProjectId}
+              onSelectProject={handleSelectProject}
             />
           </SheetContent>
         </Sheet>
       </div>
 
+      <Suspense fallback={null}>
+        {isWhatsAppConnectOpen ? (
+          <ChannelsHubDialogLazy
+            open={isWhatsAppConnectOpen}
+            onOpenChange={setIsWhatsAppConnectOpen}
+          />
+        ) : null}
+      </Suspense>
+
       {/* Main Content */}
       <main className="flex-1 flex flex-col h-full w-full min-h-0">
         {isAppsDialogOpen ? (
-          <AppsView 
-            onClose={() => setIsAppsDialogOpen(false)}
-            onOpenGmail={() => {
-              setIsAppsDialogOpen(false);
-            }}
-          />
-        ) : (activeChat || isNewChatMode || chats.length === 0) && (
-          <ChatInterface 
-            key={chatInterfaceKey} 
-            messages={currentMessages}
-            setMessages={noopSetMessages}
-            onSendMessage={handleSendMessage}
-            isSidebarOpen={isSidebarOpen} 
-            onToggleSidebar={() => setIsSidebarOpen(true)}
-            onCloseSidebar={() => setIsSidebarOpen(false)}
-            activeGpt={activeGpt}
-            aiState={aiState}
+          <Suspense fallback={<SkeletonPage />}>
+            <AppsViewLazy
+              onClose={() => setIsAppsDialogOpen(false)}
+              onOpenGmail={() => {
+                setIsAppsDialogOpen(false);
+              }}
+            />
+          </Suspense>
+        ) : (
+          <ChatErrorBoundary>
+            <ChatInterface
+              messages={currentMessages}
+              setMessages={noopSetMessages}
+              onSendMessage={handleSendMessage}
+              isSidebarOpen={isSidebarOpen}
+              onToggleSidebar={() => setIsSidebarOpen(true)}
+              onCloseSidebar={() => setIsSidebarOpen(false)}
+              activeGpt={activeGpt}
+              aiState={aiState}
             setAiState={setAiState}
             aiStateChatId={aiStateChatId}
             aiProcessSteps={aiProcessSteps}
@@ -546,8 +892,8 @@ export default function Home() {
             onDeleteChat={deleteChat}
             onDownloadChat={downloadChat}
             onEditChatTitle={editChatTitle}
-            isPinned={activeChat?.pinned === true || activeChat?.pinned === "true"}
-            isArchived={activeChat?.archived === true || activeChat?.archived === "true"}
+            isPinned={!!activeChat?.pinned}
+            isArchived={!!activeChat?.archived}
             folders={folders}
             onMoveToFolder={handleMoveToFolder}
             onCreateFolder={createFolder}
@@ -556,122 +902,166 @@ export default function Home() {
             setUiPhase={setUiPhase}
             activeRunId={activeRunId}
             setActiveRunId={setActiveRunId}
+            selectedProjectId={selectedProjectId}
+            selectedDocTool={selectedDocTool}
+            setSelectedDocTool={setSelectedDocTool}
+            docGenerationState={docGenerationState}
+            setDocGenerationState={setDocGenerationState}
           />
+          </ChatErrorBoundary>
         )}
       </main>
 
       {/* GPT Explorer Modal */}
-      <GptExplorer
-        open={isGptExplorerOpen}
-        onOpenChange={setIsGptExplorerOpen}
-        onSelectGpt={handleSelectGpt}
-        onCreateGpt={handleCreateGpt}
-      />
+      
+      <Suspense fallback={null}>
+        {isGptExplorerOpen ? (
+          <GptExplorerLazy
+            open={isGptExplorerOpen}
+            onOpenChange={setIsGptExplorerOpen}
+            onSelectGpt={handleSelectGpt}
+            onCreateGpt={handleCreateGpt}
+          />
+        ) : null}
+      </Suspense>
+      
 
       {/* About GPT Dialog */}
-      <AboutGptDialog
-        open={!!aboutGptId}
-        onOpenChange={(open) => !open && setAboutGptId(null)}
-        gptId={aboutGptId}
-        onSelectGpt={async (gpt) => {
-          setAboutGptId(null);
-          try {
-            const res = await fetch(`/api/gpts/${gpt.id}`);
-            if (res.ok) {
-              const fullGpt = await res.json();
-              handleSelectGpt(fullGpt);
-            }
-          } catch (error) {
-            console.error("Error fetching GPT:", error);
-          }
-        }}
-        onEditGpt={() => {
-          if (activeGpt) {
-            setAboutGptId(null);
-            setEditingGpt(activeGpt);
-            setIsGptBuilderOpen(true);
-          }
-        }}
-        onCopyLink={() => {
-          if (aboutGptId) {
-            navigator.clipboard.writeText(`${window.location.origin}/gpts/${aboutGptId}`);
-            toast.success("Enlace copiado al portapapeles");
-          }
-        }}
-      />
+      <Suspense fallback={null}>
+        {aboutGptId ? (
+          <AboutGptDialogLazy
+            open={!!aboutGptId}
+            onOpenChange={(open) => !open && setAboutGptId(null)}
+            gptId={aboutGptId}
+            onSelectGpt={async (gpt) => {
+              setAboutGptId(null);
+              try {
+                const res = await apiFetch(`/api/gpts/${gpt.id}`);
+                if (res.ok) {
+                  const fullGpt = await res.json();
+                  handleSelectGpt(fullGpt);
+                }
+              } catch (error) {
+                console.error("Error fetching GPT:", error);
+              }
+            }}
+            onEditGpt={() => {
+              if (activeGpt) {
+                setAboutGptId(null);
+                setEditingGpt(activeGpt);
+                setIsGptBuilderOpen(true);
+              }
+            }}
+            onCopyLink={() => {
+              if (aboutGptId) {
+                navigator.clipboard.writeText(`${window.location.origin}/gpts/${aboutGptId}`);
+                toast.success("Enlace copiado al portapapeles");
+              }
+            }}
+          />
+        ) : null}
+      </Suspense>
 
       {/* GPT Builder Modal */}
-      <GptBuilder
-        open={isGptBuilderOpen}
-        onOpenChange={setIsGptBuilderOpen}
-        editingGpt={editingGpt}
-        onSave={() => {
-          setIsGptBuilderOpen(false);
-          setEditingGpt(null);
-        }}
-      />
+      
+      <Suspense fallback={null}>
+        {isGptBuilderOpen ? (
+          <GptBuilderLazy
+            open={isGptBuilderOpen}
+            onOpenChange={setIsGptBuilderOpen}
+            editingGpt={editingGpt}
+            onSave={() => {
+              setIsGptBuilderOpen(false);
+              setEditingGpt(null);
+            }}
+          />
+        ) : null}
+      </Suspense>
+      
 
       {/* User Library Modal */}
-      <UserLibrary
-        open={isLibraryOpen}
-        onOpenChange={setIsLibraryOpen}
-      />
-
-      {/* Media Library Modal */}
-      <MediaLibraryModal
-        open={isMediaLibraryOpen}
-        onOpenChange={setIsMediaLibraryOpen}
-      />
+      
+      <Suspense fallback={null}>
+        {isLibraryOpen ? (
+          <UserLibraryLazy open={isLibraryOpen} onOpenChange={setIsLibraryOpen} />
+        ) : null}
+      </Suspense>
+      {/* Codex Dialog */}
+      <Suspense fallback={null}>
+        {isCodexOpen ? (
+          <CodexDialogLazy isOpen={isCodexOpen} onClose={() => setIsCodexOpen(false)} />
+        ) : null}
+      </Suspense>
 
       {/* Search Modal */}
-      <SearchModal
-        open={isSearchOpen}
-        onOpenChange={setIsSearchOpen}
-        chats={chats}
-        onSelectChat={handleSelectChatWithClear}
-      />
+      <Suspense fallback={null}>
+        {isSearchOpen ? (
+          <SearchModalLazy
+            open={isSearchOpen}
+            onOpenChange={setIsSearchOpen}
+            chats={chats}
+            onSelectChat={handleSelectChatWithClear}
+          />
+        ) : null}
+      </Suspense>
 
       {/* Settings Dialog */}
-      <SettingsDialog
-        open={isSettingsOpen}
-        onOpenChange={setIsSettingsOpen}
-      />
+      
+      <Suspense fallback={null}>
+        {isSettingsOpen ? (
+          <SettingsDialogLazy open={isSettingsOpen} onOpenChange={setIsSettingsOpen} />
+        ) : null}
+      </Suspense>
+      
 
       {/* Keyboard Shortcuts Dialog */}
-      <KeyboardShortcutsDialog
-        open={isShortcutsOpen}
-        onOpenChange={setIsShortcutsOpen}
-      />
+      <Suspense fallback={null}>
+        {isShortcutsOpen ? (
+          <KeyboardShortcutsDialogLazy open={isShortcutsOpen} onOpenChange={setIsShortcutsOpen} />
+        ) : null}
+      </Suspense>
 
       {/* Export Chat Dialog */}
-      <ExportChatDialog
-        open={isExportOpen}
-        onOpenChange={setIsExportOpen}
-        chatTitle={activeChat?.title || "Conversación"}
-        messages={currentMessages}
-      />
+      <Suspense fallback={null}>
+        {isExportOpen ? (
+          <ExportChatDialogLazy
+            open={isExportOpen}
+            onOpenChange={setIsExportOpen}
+            chatTitle={activeChat?.title || "Conversación"}
+            messages={currentMessages}
+          />
+        ) : null}
+      </Suspense>
 
       {/* Favorites Dialog */}
-      <FavoritesDialog
-        open={isFavoritesOpen}
-        onOpenChange={setIsFavoritesOpen}
-        favorites={favorites}
-        onRemove={removeFavorite}
-        onSelect={handleSelectChatWithClear}
-      />
+      <Suspense fallback={null}>
+        {isFavoritesOpen ? (
+          <FavoritesDialogLazy
+            open={isFavoritesOpen}
+            onOpenChange={setIsFavoritesOpen}
+            favorites={favorites}
+            onRemove={removeFavorite}
+            onSelect={handleSelectChatWithClear}
+          />
+        ) : null}
+      </Suspense>
 
       {/* Prompt Templates Dialog */}
-      <PromptTemplatesDialog
-        open={isTemplatesOpen}
-        onOpenChange={setIsTemplatesOpen}
-        templates={templates}
-        categories={categories}
-        onAdd={addTemplate}
-        onRemove={removeTemplate}
-        onUpdate={updateTemplate}
-        onSelect={setPendingPrompt}
-        onIncrementUsage={incrementUsage}
-      />
+      <Suspense fallback={null}>
+        {isTemplatesOpen ? (
+          <PromptTemplatesDialogLazy
+            open={isTemplatesOpen}
+            onOpenChange={setIsTemplatesOpen}
+            templates={templates}
+            categories={categories}
+            onAdd={addTemplate}
+            onRemove={removeTemplate}
+            onUpdate={updateTemplate}
+            onSelect={setPendingPrompt}
+            onIncrementUsage={incrementUsage}
+          />
+        ) : null}
+      </Suspense>
 
     </div>
   );

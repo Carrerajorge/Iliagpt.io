@@ -1,4 +1,0 @@
-E2E_Test_Document
-=================
-
-This is a test document created by E2E prove-it script.

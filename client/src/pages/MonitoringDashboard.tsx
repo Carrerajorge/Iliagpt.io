@@ -19,6 +19,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Button } from '@/components/ui/button';
+import { usePlatformSettings } from '@/contexts/PlatformSettingsContext';
+import { formatZonedTime, normalizeTimeZone } from '@/lib/platformDateTime';
 
 interface ExecutionAnalytics {
   totalExecutions: number;
@@ -62,6 +64,8 @@ export default function MonitoringDashboard() {
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
   
   const [executionAnalytics, setExecutionAnalytics] = useState<ExecutionAnalytics | null>(null);
   const [pythonHealth, setPythonHealth] = useState<PythonToolsHealth | null>(null);
@@ -188,7 +192,7 @@ export default function MonitoringDashboard() {
                 Monitoring Dashboard
               </h1>
               <p className="text-muted-foreground mt-1">
-                Last updated: {lastUpdate.toLocaleTimeString()}
+                Last updated: {formatZonedTime(lastUpdate, { timeZone: platformTimeZone, includeSeconds: true })}
               </p>
             </div>
           </div>
@@ -429,7 +433,7 @@ export default function MonitoringDashboard() {
                           {formatDuration(exec.duration)}
                         </td>
                         <td className="px-4 py-3 text-sm text-muted-foreground">
-                          {new Date(exec.timestamp).toLocaleTimeString()}
+                          {formatZonedTime(exec.timestamp, { timeZone: platformTimeZone, includeSeconds: true })}
                         </td>
                       </tr>
                     ))}
@@ -467,7 +471,7 @@ export default function MonitoringDashboard() {
                       <div className="flex items-center justify-between">
                         <span className="font-medium text-sm">{exec.toolName}</span>
                         <span className="text-xs text-muted-foreground">
-                          {new Date(exec.timestamp).toLocaleTimeString()}
+                          {formatZonedTime(exec.timestamp, { timeZone: platformTimeZone, includeSeconds: true })}
                         </span>
                       </div>
                       {exec.error && (

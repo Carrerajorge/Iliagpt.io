@@ -1,6 +1,7 @@
 import mammoth from "mammoth";
 import JSZip from "jszip";
 import type { FileParser, ParsedResult, DetectedFileType } from "./base";
+import { sanitizePlainText } from "../lib/textSanitizers";
 
 export class DocxParser implements FileParser {
   name = "docx";
@@ -8,9 +9,27 @@ export class DocxParser implements FileParser {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ];
 
+  // Avoid top-level constants: some CI bundling paths can concatenate modules
+  // without sufficient name mangling, triggering duplicate symbol errors.
+  private static readonly MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
+  private static readonly MAX_EXTRACTED_TEXT_BYTES = 10 * 1024 * 1024; // 10MB max extracted text
+  private static readonly MAX_METADATA_VALUE_LENGTH = 1000;
+
+  /** Sanitize metadata values to prevent injection in output */
+  private sanitizeMetadataValue(value: string): string {
+    return String(value)
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+      .substring(0, DocxParser.MAX_METADATA_VALUE_LENGTH);
+  }
+
   async parse(content: Buffer, type: DetectedFileType): Promise<ParsedResult> {
     const startTime = Date.now();
     console.log(`[DocxParser] Starting DOCX parse, size: ${content.length} bytes`);
+
+    // Security: enforce file size limit
+    if (content.length > DocxParser.MAX_FILE_SIZE_BYTES) {
+      throw new Error(`DOCX file exceeds maximum size of ${DocxParser.MAX_FILE_SIZE_BYTES / (1024 * 1024)}MB`);
+    }
 
     try {
       const [htmlResult, metadata] = await Promise.all([
@@ -69,19 +88,19 @@ export class DocxParser implements FileParser {
       }
 
       const metadata: Record<string, any> = {};
-      
+
       const titleMatch = coreXml.match(/<dc:title>([^<]*)<\/dc:title>/);
-      if (titleMatch) metadata.title = titleMatch[1];
-      
+      if (titleMatch) metadata.title = this.sanitizeMetadataValue(titleMatch[1]);
+
       const creatorMatch = coreXml.match(/<dc:creator>([^<]*)<\/dc:creator>/);
-      if (creatorMatch) metadata.author = creatorMatch[1];
-      
+      if (creatorMatch) metadata.author = this.sanitizeMetadataValue(creatorMatch[1]);
+
       const subjectMatch = coreXml.match(/<dc:subject>([^<]*)<\/dc:subject>/);
-      if (subjectMatch) metadata.subject = subjectMatch[1];
-      
+      if (subjectMatch) metadata.subject = this.sanitizeMetadataValue(subjectMatch[1]);
+
       const createdMatch = coreXml.match(/<dcterms:created[^>]*>([^<]*)<\/dcterms:created>/);
       if (createdMatch) metadata.creationDate = this.formatDate(createdMatch[1]);
-      
+
       const modifiedMatch = coreXml.match(/<dcterms:modified[^>]*>([^<]*)<\/dcterms:modified>/);
       if (modifiedMatch) metadata.modificationDate = this.formatDate(modifiedMatch[1]);
 
@@ -111,9 +130,13 @@ export class DocxParser implements FileParser {
   }
 
   private htmlToStructuredText(html: string): string {
-    const lines: string[] = [];
-    
-    let processed = html
+    // Security: limit input HTML size for processing
+    const safeHtml =
+      html.length > DocxParser.MAX_EXTRACTED_TEXT_BYTES
+        ? html.substring(0, DocxParser.MAX_EXTRACTED_TEXT_BYTES)
+        : html;
+
+    let processed = safeHtml
       .replace(/<h1[^>]*class="title"[^>]*>(.*?)<\/h1>/gi, (_, content) => `# ${this.stripTags(content)}\n\n`)
       .replace(/<h1[^>]*>(.*?)<\/h1>/gi, (_, content) => `# ${this.stripTags(content)}\n\n`)
       .replace(/<h2[^>]*class="subtitle"[^>]*>(.*?)<\/h2>/gi, (_, content) => `## ${this.stripTags(content)}\n\n`)
@@ -203,14 +226,7 @@ export class DocxParser implements FileParser {
   }
 
   private stripTags(html: string): string {
-    return html
-      .replace(/<[^>]*>/g, '')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'");
+    return sanitizePlainText(html, { maxLen: 5_000_000, collapseWs: true });
   }
 
   private formatOutput(metadata: Record<string, any>, content: string): string {

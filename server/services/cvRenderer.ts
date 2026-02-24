@@ -18,6 +18,30 @@ import {
   TabStopType,
 } from "docx";
 import { parseAndRenderToDocx, hasRichTextMarkers } from "./richText";
+// ============================================
+// SECURITY
+// ============================================
+
+/** Allowed URL protocols for hyperlinks */
+const ALLOWED_URL_PROTOCOLS = ["http:", "https:", "mailto:"];
+
+/** Maximum items per section */
+const MAX_SECTION_ITEMS = 200;
+
+/** Maximum text length per field */
+const MAX_FIELD_TEXT_LENGTH = 50_000;
+
+function isAllowedUrl(url: string): boolean {
+  if (!url || typeof url !== "string") return false;
+  const trimmed = url.trim().toLowerCase();
+  return ALLOWED_URL_PROTOCOLS.some(proto => trimmed.startsWith(proto));
+}
+
+/** Validate hex color - must be 6-char hex (no #) */
+function isValidHexColor(color: string): boolean {
+  return /^[0-9A-Fa-f]{3,8}$/.test(color);
+}
+
 import {
   CvSpec,
   CvHeader,
@@ -262,7 +286,7 @@ function createHeaderSection(header: CvHeader, config: InternalRenderConfig): (P
     );
   });
   
-  if (header.website) {
+  if (header.website && isAllowedUrl(header.website)) {
     if (contactParts.length > 0) {
       contactChildren.push(
         new TextRun({
@@ -716,7 +740,7 @@ function createCertificationsSection(certifications: CvCertification[], config: 
       }),
     ];
     
-    if (cert.url) {
+    if (cert.url && isAllowedUrl(cert.url)) {
       certChildren.push(
         new TextRun({
           text: "  ",
@@ -767,7 +791,7 @@ function createProjectsSection(projects: CvProject[], config: InternalRenderConf
       }),
     ];
     
-    if (project.url) {
+    if (project.url && isAllowedUrl(project.url)) {
       titleChildren.push(
         new TextRun({
           text: "  ",
@@ -1091,7 +1115,7 @@ function createSidebarLayout(spec: CvSpec, config: InternalRenderConfig): (Parag
     }
   }
   
-  if (spec.header.website) {
+  if (spec.header.website && isAllowedUrl(spec.header.website)) {
     sidebarContent.push(
       new Paragraph({
         children: [
@@ -1220,9 +1244,12 @@ export async function renderCvFromSpec(
       break;
   }
   
+  // Security: sanitize document metadata
+  const safeName = (spec.header.name || "").replace(/[\x00-\x1F\x7F]/g, "").substring(0, 200);
+
   const doc = new Document({
-    title: `CV - ${spec.header.name}`,
-    creator: spec.header.name,
+    title: `CV - ${safeName}`,
+    creator: safeName,
     styles: {
       paragraphStyles: [
         {

@@ -44,7 +44,7 @@ export function ObjectUploader({
 
   const handleFilesSelected = useCallback(async (files: FileList | File[]) => {
     const fileArray = Array.from(files).slice(0, maxNumberOfFiles);
-    
+
     const newUploadingFiles: UploadingFile[] = fileArray.map((file) => ({
       id: `pending_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`,
       file,
@@ -57,6 +57,8 @@ export function ObjectUploader({
     }));
 
     setUploadingFiles(newUploadingFiles);
+
+    const successfulResults: Array<{ storagePath: string; name: string }> = [];
 
     for (const uploadingFile of newUploadingFiles) {
       try {
@@ -87,6 +89,7 @@ export function ObjectUploader({
           )
         );
 
+        successfulResults.push({ storagePath: result.storagePath, name: uploadingFile.file.name });
         onFileUploaded?.(result.fileId, result.storagePath, uploadingFile.file.name);
       } catch (error: any) {
         setUploadingFiles((prev) =>
@@ -106,15 +109,8 @@ export function ObjectUploader({
       }
     }
 
-    const successful = newUploadingFiles
-      .filter((f) => f.progress.phase !== 'error')
-      .map((f) => ({
-        storagePath: '',
-        name: f.file.name,
-      }));
-
-    if (successful.length > 0) {
-      onComplete?.({ successful });
+    if (successfulResults.length > 0) {
+      onComplete?.({ successful: successfulResults });
     }
   }, [maxNumberOfFiles, onComplete, onFileUploaded]);
 

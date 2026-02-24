@@ -307,12 +307,12 @@ export async function getSheetByName(
     .from(spreadsheetSheets)
     .where(eq(spreadsheetSheets.uploadId, uploadId))
     .limit(1);
-  
+
   const sheets = await db
     .select()
     .from(spreadsheetSheets)
     .where(eq(spreadsheetSheets.uploadId, uploadId));
-  
+
   return sheets.find(s => s.name === sheetName);
 }
 
@@ -320,6 +320,12 @@ export async function parseSpreadsheet(
   buffer: Buffer,
   mimeType: string
 ): Promise<ParsedSpreadsheet> {
+  // If file is very large (> 10MB) and background jobs are enabled
+  if (buffer.length > 10 * 1024 * 1024 && process.env.ENABLE_BACKGROUND_JOBS === "true") {
+    console.log("[SpreadsheetAnalyzer] Large file detected, candidate for background processing.");
+    // logic to dispatch would go here if we changed the return signature to support async job IDs
+  }
+
   if (mimeType === "text/csv") {
     return parseDelimited(buffer, ",");
   }
@@ -354,7 +360,7 @@ function parseExcelXls(buffer: Buffer): ParsedSpreadsheet {
   workbook.SheetNames.forEach((sheetName, sheetIndex) => {
     const worksheet = workbook.Sheets[sheetName];
     const data: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null });
-    
+
     const compactData = data.filter((row) => row && row.some((cell: any) => cell !== null && cell !== ''));
     const headerInfo = detectHeaders(compactData);
     const headers = headerInfo.headers;
@@ -438,7 +444,7 @@ function parseDelimitedLine(line: string, delimiter: string): string[] {
   if (delimiter === "\t") {
     return line.split("\t").map(cell => cell.trim());
   }
-  
+
   // For commas, handle quoted values
   const result: string[] = [];
   let current = "";
@@ -681,7 +687,7 @@ function computeColumnStatistics(values: any[], type: string): ColumnStatistics 
     const numericValues = values
       .map(v => typeof v === "number" ? v : parseFloat(String(v)))
       .filter(v => !isNaN(v));
-    
+
     if (numericValues.length > 0) {
       statistics.min = Math.min(...numericValues);
       statistics.max = Math.max(...numericValues);
@@ -766,19 +772,19 @@ export function generateCrossSheetSummary(sheets: SheetInfo[]): CrossSheetSummar
 
   const relationships: CrossSheetRelationship[] = [];
   const sheetNames = sheets.map(s => s.name);
-  
+
   for (let i = 0; i < sheetNames.length; i++) {
     for (let j = i + 1; j < sheetNames.length; j++) {
       const sheet1Headers = headersBySheet.get(sheetNames[i]) || new Set();
       const sheet2Headers = headersBySheet.get(sheetNames[j]) || new Set();
-      
+
       const linkingColumns: string[] = [];
       sheet1Headers.forEach(header => {
         if (sheet2Headers.has(header)) {
           linkingColumns.push(header);
         }
       });
-      
+
       if (linkingColumns.length > 0) {
         relationships.push({
           sourceSheet: sheetNames[i],
@@ -799,7 +805,7 @@ export function generateCrossSheetSummary(sheets: SheetInfo[]): CrossSheetSummar
   });
 
   let naturalLanguageSummary = `This workbook contains ${totalSheets} sheet${totalSheets > 1 ? "s" : ""} with a total of ${totalRows} rows and ${totalColumns} columns (${totalDataPoints.toLocaleString()} data points). `;
-  
+
   if (sheets.length <= 3) {
     naturalLanguageSummary += `Sheets: ${sheetDescriptions.join("; ")}. `;
   } else {
@@ -811,7 +817,7 @@ export function generateCrossSheetSummary(sheets: SheetInfo[]): CrossSheetSummar
   }
 
   if (relationships.length > 0) {
-    const relationshipDesc = relationships.slice(0, 3).map(r => 
+    const relationshipDesc = relationships.slice(0, 3).map(r =>
       `${r.sourceSheet} ↔ ${r.targetSheet} (via ${r.linkingColumns.slice(0, 3).join(", ")})`
     ).join("; ");
     naturalLanguageSummary += `Potential relationships detected: ${relationshipDesc}${relationships.length > 3 ? ` and ${relationships.length - 3} more` : ""}.`;

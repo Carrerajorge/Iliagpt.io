@@ -14,23 +14,15 @@ export { pareQuotaGuard, getQuotaConfig, type QuotaConfig, type QuotaViolation }
 
 export { pareAnalyzeSchemaValidator, pareChatSchemaValidator, createSchemaValidator, type SchemaValidationError, type PareContextWithValidation } from './pareSchemaValidator';
 
-export { 
-  responseCache, 
-  cacheEndpoint, 
-  noCacheEndpoint, 
-  privateCacheEndpoint, 
-  clearResponseCache, 
-  getResponseCacheStats, 
+export {
+  responseCache,
+  cacheEndpoint,
+  noCacheEndpoint,
+  privateCacheEndpoint,
+  clearResponseCache,
+  getResponseCacheStats,
   resetResponseCacheStats,
-  type ResponseCacheOptions 
+  type ResponseCacheOptions
 } from './responseCache';
 
-export { 
-  compression, 
-  gzipOnly, 
-  brotliOnly, 
-  conditionalCompression, 
-  getCompressionStats, 
-  resetCompressionStats,
-  type CompressionOptions 
-} from './compression';
+export { compression } from './compression';

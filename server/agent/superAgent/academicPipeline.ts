@@ -11,6 +11,7 @@ import {
 } from "./academicAgents";
 import { createXlsx, storeArtifactMeta, ArtifactMeta } from "./artifactTools";
 import { EventEmitter } from "events";
+import { sanitizeSearchQuery } from "../../lib/textSanitizers";
 
 export interface PipelineConfig {
   targetCount: number;
@@ -25,11 +26,48 @@ export interface PipelineConfig {
 const DEFAULT_CONFIG: PipelineConfig = {
   targetCount: 50,
   yearStart: 2020,
-  yearEnd: 2025,
+  yearEnd: new Date().getFullYear(),
   maxRetries: 4,
   verificationConcurrency: 8,
   maxSearchIterations: 3,
 };
+
+/**
+ * Sanitize and harden pipeline topic input
+ */
+function sanitizePipelineTopic(raw: string): string {
+  return sanitizeSearchQuery(raw, 500);
+}
+
+/**
+ * Validate and clamp pipeline config values
+ */
+function hardenConfig(config: Partial<PipelineConfig>): Partial<PipelineConfig> {
+  const currentYear = new Date().getFullYear();
+  const hardened = { ...config };
+  if (hardened.targetCount !== undefined) {
+    hardened.targetCount = Math.max(1, Math.min(500, hardened.targetCount));
+  }
+  if (hardened.yearStart !== undefined) {
+    hardened.yearStart = Math.max(1900, Math.min(currentYear + 1, hardened.yearStart));
+  }
+  if (hardened.yearEnd !== undefined) {
+    hardened.yearEnd = Math.max(1900, Math.min(currentYear + 1, hardened.yearEnd));
+  }
+  if (hardened.yearStart && hardened.yearEnd && hardened.yearStart > hardened.yearEnd) {
+    [hardened.yearStart, hardened.yearEnd] = [hardened.yearEnd, hardened.yearStart];
+  }
+  if (hardened.maxRetries !== undefined) {
+    hardened.maxRetries = Math.max(1, Math.min(10, hardened.maxRetries));
+  }
+  if (hardened.verificationConcurrency !== undefined) {
+    hardened.verificationConcurrency = Math.max(1, Math.min(20, hardened.verificationConcurrency));
+  }
+  if (hardened.maxSearchIterations !== undefined) {
+    hardened.maxSearchIterations = Math.max(1, Math.min(10, hardened.maxSearchIterations));
+  }
+  return hardened;
+}
 
 export interface PipelineResult {
   success: boolean;
@@ -131,20 +169,44 @@ function extractKeyTerms(topic: string): string[] {
   return terms;
 }
 
+const DOI_CACHE_MAX_SIZE = 5000;
 export const doiCache = new Map<string, boolean>();
+
+function doiCacheSet(doi: string, valid: boolean): void {
+  if (doiCache.size >= DOI_CACHE_MAX_SIZE) {
+    // Evict oldest entry (first key in Map insertion order)
+    const firstKey = doiCache.keys().next().value;
+    if (firstKey !== undefined) doiCache.delete(firstKey);
+  }
+  doiCache.set(doi, valid);
+}
 
 export async function runAcademicPipeline(
   topic: string,
   emitter: EventEmitter,
   config: Partial<PipelineConfig> = {}
 ): Promise<PipelineResult> {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
+  // Sanitize topic input and harden config
+  const sanitizedTopic = sanitizePipelineTopic(topic);
+  const hardenedConfig = hardenConfig(config);
+  const cfg = { ...DEFAULT_CONFIG, ...hardenedConfig };
   const startTime = Date.now();
   const warnings: string[] = [];
   const sourcesUsed: string[] = [];
   const failuresByReason: Record<string, number> = {};
-  
-  console.log(`[AcademicPipeline] Starting robust search for: "${topic}"`);
+
+  if (!sanitizedTopic) {
+    console.error("[AcademicPipeline] Empty topic after sanitization");
+    return {
+      success: false,
+      articles: [],
+      criticResult: { passed: false, issues: ["Empty or invalid search topic"], score: 0 } as any,
+      stats: { totalFetched: 0, relevantAfterFilter: 0, verifiedCount: 0, finalCount: 0, durationMs: 0, sourcesUsed: [], failuresByReason: {} },
+      warnings: ["Topic was empty or invalid after sanitization"],
+    };
+  }
+
+  console.log(`[AcademicPipeline] Starting robust search for: "${sanitizedTopic}"`);
   console.log(`[AcademicPipeline] Target: ${cfg.targetCount} articles, Years: ${cfg.yearStart}-${cfg.yearEnd}`);
 
   let allCandidates: AcademicCandidate[] = [];
@@ -162,7 +224,7 @@ export async function runAcademicPipeline(
       currentVerified: verifiedArticles.length 
     });
 
-    const queries = buildSearchQueries(topic, iteration - 1);
+    const queries = buildSearchQueries(sanitizedTopic, iteration - 1);
     console.log(`[AcademicPipeline] Using ${queries.length} search queries`);
 
     try {
@@ -512,7 +574,7 @@ async function exportToExcel(articles: AcademicCandidate[], topic: string, warni
 
   const summary: Record<string, any> = {
     "Total Articles": articles.length,
-    "Target": 50,
+    "Target": cfg.targetCount,
     "Year Range": `${Math.min(...articles.map(a => a.year || 2020))}-${Math.max(...articles.map(a => a.year || 2025))}`,
     "Search Topic": topic,
     "Generated At": new Date().toISOString(),

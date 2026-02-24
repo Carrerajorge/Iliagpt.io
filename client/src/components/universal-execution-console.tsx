@@ -513,7 +513,8 @@ function ArtifactsPanel({
       if (onDownload) {
         onDownload(artifact);
       } else {
-        window.open(artifact.download_url, "_blank");
+        // FRONTEND FIX #38: Add noopener,noreferrer to prevent window.opener attacks
+        window.open(artifact.download_url, "_blank", "noopener,noreferrer");
       }
     }
   }, [onDownload]);

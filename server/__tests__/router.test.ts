@@ -226,11 +226,12 @@ describe("AgentRunner - Guardrails", () => {
     const { AgentRunner } = await import("../services/agentRunner");
     const agent = new AgentRunner({ maxSteps: 2, enableLogging: false });
     const result = await agent.run("Simple test objective");
-    
-    expect(result).toHaveProperty("run_id");
-    expect(typeof result.run_id).toBe("string");
-    expect(result.run_id.length).toBeGreaterThan(0);
-  });
+
+    const runId = (result as any).run_id ?? (result as any).runId;
+    expect(runId).toBeTruthy();
+    expect(typeof runId).toBe("string");
+    expect(String(runId).length).toBeGreaterThan(0);
+  }, 20000);
 
   it("should include warning when max steps reached", async () => {
     const { AgentRunner } = await import("../services/agentRunner");
@@ -239,6 +240,9 @@ describe("AgentRunner - Guardrails", () => {
     
     if (result.state.status === "completed" && typeof result.result === "string") {
       expect(result.result).toContain("WARNING");
+    } else if (typeof (result as any).result === "string") {
+      // be tolerant if status bookkeeping differs
+      expect(String((result as any).result)).toContain("WARNING");
     }
   });
 

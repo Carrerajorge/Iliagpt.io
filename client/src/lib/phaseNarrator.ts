@@ -75,108 +75,66 @@ function createDefaultMetrics(): NarrationMetrics {
 function generateNarration(phase: string, m: NarrationMetrics): string {
   switch (phase) {
     case "idle":
-      return "Iniciando agente de búsqueda…";
+      return "⚡ Iniciando...";
 
     case "planning":
-      if (m.target > 0 && m.providers.length > 0) {
-        return `Plan: buscar ${m.target} artículos (${m.yearStart || 2020}–${m.yearEnd || 2025}) en ${m.providers.join(", ")}.`;
-      }
       if (m.target > 0) {
-        return `Plan: buscar ${m.target} artículos (${m.yearStart || 2020}–${m.yearEnd || 2025}).`;
+        return `🎯 Objetivo: ${m.target} artículos • ${m.yearStart}-${m.yearEnd}`;
       }
-      return "Analizando consulta y preparando plan…";
+      return "🧠 Analizando estrategia...";
 
     case "signals":
     case "search":
-      if (m.currentProvider && m.queryIdx > 0 && m.queryTotal > 0) {
-        const found = m.candidatesTotal > 0 ? ` → ${m.candidatesTotal} candidatos` : "";
-        return `${m.currentProvider}: consulta ${m.queryIdx}/${m.queryTotal}, pág. ${m.page || 1}${found}.`;
-      }
-      if (m.currentProvider && m.candidatesTotal > 0) {
-        return `${m.currentProvider}: ${m.candidatesTotal} candidatos encontrados.`;
+      if (m.candidatesTotal > 0) {
+        return `🔎 ${m.currentProvider}: ${m.candidatesTotal} encontrados`;
       }
       if (m.currentProvider) {
-        return `Buscando en ${m.currentProvider}…`;
+        return `📡 Conectando con ${m.currentProvider}...`;
       }
-      if (m.candidatesTotal > 0) {
-        return `Buscando artículos: ${m.candidatesTotal} candidatos.`;
-      }
-      return "Buscando en bases académicas…";
+      return "🌍 Escaneando fuentes académicas...";
 
     case "filter":
-      const filterReasons: string[] = [];
-      if (m.geoMismatch > 0) filterReasons.push(`región: ${m.geoMismatch}`);
-      if (m.yearOutOfRange > 0) filterReasons.push(`año: ${m.yearOutOfRange}`);
-      if (m.duplicate > 0) filterReasons.push(`duplicados: ${m.duplicate}`);
-      if (m.lowRelevance > 0) filterReasons.push(`irrelevantes: ${m.lowRelevance}`);
-      if (filterReasons.length > 0) {
-        return `Filtros aplicados → descartados: ${filterReasons.join(", ")}.`;
+      const discarded = m.geoMismatch + m.yearOutOfRange + m.duplicate + m.lowRelevance;
+      if (discarded > 0) {
+        return `🛡️ Filtrando calidad: ${discarded} descartados`;
       }
-      return "Aplicando filtros de región y año…";
+      return "⚖️ Aplicando filtros de relevancia...";
 
     case "verification":
     case "deep":
-      if (m.checked > 0) {
-        return `Verificando DOIs: ${m.checked} revisados, ${m.verified} válidos, ${m.dead} caídos.`;
+      if (m.verified > 0) {
+        return `✅ Verificados: ${m.verified} artículos`;
       }
-      return "Verificando enlaces y DOIs…";
+      return "🔬 Analizando DOIs y Enlaces...";
 
     case "enrichment":
-      if (m.accepted > 0) {
-        return `Enriqueciendo: ${m.accepted}/${m.target} artículos aceptados.`;
-      }
-      return "Enriqueciendo metadatos…";
+      return `✨ Enriqueciendo metadatos (${m.accepted} aceptados)`;
 
     case "export":
     case "creating":
-      if (m.filename && m.rowsWritten > 0) {
-        return `Generando ${m.filename}: fila ${m.rowsWritten}/${m.rowsTotal || m.target || "?"}…`;
-      }
       if (m.filename) {
-        return `Generando ${m.filename}…`;
+        return `💾 Generando ${m.filename}...`;
       }
-      if (m.accepted > 0) {
-        return `Generando Excel con ${m.accepted} artículos…`;
-      }
-      return "Generando archivo Excel…";
+      return "📊 Construyendo reporte...";
 
     case "finalization":
     case "completed":
-      if (m.filename) {
-        const rejected = m.rejectedTotal > 0 ? ` (${m.rejectedTotal} descartados)` : "";
-        return `Excel listo: ${m.filename}${rejected}.`;
-      }
       if (m.accepted > 0) {
-        return `Completado: ${m.accepted} artículos exportados.`;
+        return `🚀 ¡Listo! ${m.accepted} artículos procesados`;
       }
-      return "Exportación finalizada.";
+      return "🏁 Investigación finalizada";
 
     case "rate_limited":
-      if (m.rateLimitedProvider && m.retryIn > 0) {
-        return `${m.rateLimitedProvider} limitó solicitudes, reintentando en ${m.retryIn}s…`;
-      }
-      return "Esperando por límite de tasa…";
+      return `⏳ Esperando (${m.retryIn}s) • ${m.rateLimitedProvider}`;
 
     case "retry":
-      if (m.currentTool && m.retryIn > 0) {
-        return `Reintentando ${m.currentTool} en ${m.retryIn}s…`;
-      }
-      return "Reintentando solicitud…";
+      return `🔄 Reintentando operación...`;
 
     case "tool_executing":
-      if (m.currentTool) {
-        return `Ejecutando: ${m.currentTool}…`;
-      }
-      return "Ejecutando herramienta…";
+      return `🛠️ Ejecutando herramienta...`;
 
     default:
-      if (m.candidatesTotal > 0 && m.accepted > 0) {
-        return `Procesando: ${m.accepted}/${m.target} aceptados de ${m.candidatesTotal} candidatos.`;
-      }
-      if (m.candidatesTotal > 0) {
-        return `Procesando ${m.candidatesTotal} candidatos…`;
-      }
-      return "Procesando solicitud…";
+      return "⚡ Procesando...";
   }
 }
 
@@ -218,7 +176,7 @@ function extractMetricsFromEvent(
       const pagesSearched = evt.pages_searched ?? event.metrics?.pages_searched;
       const candidatesFound = evt.candidates_found ?? event.metrics?.candidates_found;
       const articlesCollected = evt.articles_collected ?? event.metrics?.articles_collected;
-      
+
       if (queriesCurrent) updates.queryIdx = queriesCurrent;
       if (queriesTotal) updates.queryTotal = queriesTotal;
       if (pagesSearched) updates.page = pagesSearched;

@@ -12,9 +12,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { Star, Trash2, MessageSquare, Search, X } from "lucide-react";
 import { FavoriteMessage } from "@/hooks/use-favorites";
-import { format } from "date-fns";
-import { es } from "date-fns/locale";
 import { cn } from "@/lib/utils";
+import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
+import { formatZonedDate, normalizeTimeZone } from "@/lib/platformDateTime";
 
 interface FavoritesDialogProps {
   open: boolean;
@@ -31,6 +31,9 @@ export function FavoritesDialog({
   onRemove,
   onSelect,
 }: FavoritesDialogProps) {
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
+  const platformDateFormat = platformSettings.date_format;
   const [search, setSearch] = useState("");
 
   const filteredFavorites = favorites.filter(
@@ -104,7 +107,7 @@ export function FavoritesDialog({
                       </span>
                       <span>•</span>
                       <span>
-                        {format(fav.savedAt, "d MMM yyyy", { locale: es })}
+                        {formatZonedDate(fav.savedAt, { timeZone: platformTimeZone, dateFormat: platformDateFormat })}
                       </span>
                     </div>
                     <Button

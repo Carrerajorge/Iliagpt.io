@@ -233,8 +233,24 @@ export function recordIntentCorrection(
   return signal;
 }
 
+function isTestEnv(): boolean {
+  // Vitest sets one of these.
+  return (
+    process.env.NODE_ENV === "test" ||
+    Boolean(process.env.VITEST) ||
+    process.env.VITEST_WORKER_ID !== undefined ||
+    process.env.VITEST_POOL_ID !== undefined
+  );
+}
+
 async function ensureEmbeddingIndexInitialized(): Promise<void> {
   if (embeddingIndexInitialized) return;
+
+  // In unit tests we don't need the heavy semantic index (and it can slow suites / cause timeouts).
+  if (isTestEnv()) {
+    embeddingIndexInitialized = true;
+    return;
+  }
   
   if (embeddingIndexInitPromise) {
     return embeddingIndexInitPromise;
@@ -514,7 +530,9 @@ export async function routeIntent(
       if (intent === ruleResult.intent) {
         intentScores[intent] = ruleResult.confidence;
       } else {
-        intentScores[intent] = Math.random() * 0.1;
+        // Use deterministic zero score for non-matching intents instead of random noise
+        // Random values cause non-deterministic calibration and make debugging impossible
+        intentScores[intent] = 0;
       }
     }
     

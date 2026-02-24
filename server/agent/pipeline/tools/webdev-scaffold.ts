@@ -285,7 +285,7 @@ const FASTAPI_TEMPLATE: ScaffoldTemplate = {
     "requirements.txt": `fastapi>=0.128.0
 uvicorn[standard]>=0.40.0
 pydantic>=2.0.0
-python-multipart>=0.0.21`,
+python-multipart>=0.0.22`,
     "app/__init__.py": "",
     "app/main.py": `from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

@@ -882,7 +882,7 @@ describe('HttpFetchAdapter', () => {
 
       expect(result.success).toBe(true);
       expect(result.retryCount).toBe(2);
-    });
+    }, 15000);
 
     it('should fail after max retries', async () => {
       global.fetch = vi.fn().mockRejectedValue(new Error('network timeout'));

@@ -4,7 +4,7 @@ import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import { Button } from "@/components/ui/button";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { X, MoreHorizontal, Check, Bot, Globe, Code, Image, MessageSquare, User, Loader2, FileText, PenTool } from "lucide-react";
+import { X, MoreHorizontal, Check, Bot, Globe, Code, Image, MessageSquare, User, Loader2, FileText, PenTool, Github, Linkedin, ExternalLink } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 
 interface GptAboutData {
@@ -26,6 +26,12 @@ interface GptAboutData {
     id: string;
     name: string;
     avatar: string | null;
+    links?: {
+      website: string | null;
+      linkedIn: string | null;
+      github: string | null;
+    };
+    receiveEmailComments?: boolean;
   } | null;
   conversationCount: number;
   relatedGpts: Array<{
@@ -79,6 +85,19 @@ export function AboutGptDialog({
       .filter(([_, enabled]) => enabled)
       .map(([key]) => key);
   }, [data?.gpt?.capabilities]);
+
+  const openExternal = (url: string) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
+      window.open(parsed.toString(), "_blank", "noopener,noreferrer");
+    } catch {
+      // Ignore invalid URLs
+    }
+  };
+
+  const creatorLinks = data?.creator?.links;
+  const hasCreatorLinks = !!(creatorLinks?.website || creatorLinks?.linkedIn || creatorLinks?.github);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -152,10 +171,51 @@ export function AboutGptDialog({
                 </h2>
 
                 {data.creator && (
-                  <p className="text-sm text-muted-foreground flex items-center gap-1 mb-4" data-testid="text-gpt-creator">
+                  <p className="text-sm text-muted-foreground flex items-center gap-1 mb-2" data-testid="text-gpt-creator">
                     Por {data.creator.name}
                     <User className="h-3 w-3" />
                   </p>
+                )}
+
+                {hasCreatorLinks && (
+                  <div className="flex items-center gap-2 mb-4">
+                    {creatorLinks?.website && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openExternal(creatorLinks.website!)}
+                        data-testid="button-creator-website"
+                      >
+                        <Globe className="h-4 w-4 mr-2" />
+                        Web <ExternalLink className="h-3 w-3 ml-1 text-muted-foreground" />
+                      </Button>
+                    )}
+                    {creatorLinks?.linkedIn && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openExternal(creatorLinks.linkedIn!)}
+                        data-testid="button-creator-linkedin"
+                      >
+                        <Linkedin className="h-4 w-4 mr-2" />
+                        LinkedIn <ExternalLink className="h-3 w-3 ml-1 text-muted-foreground" />
+                      </Button>
+                    )}
+                    {creatorLinks?.github && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openExternal(creatorLinks.github!)}
+                        data-testid="button-creator-github"
+                      >
+                        <Github className="h-4 w-4 mr-2" />
+                        GitHub <ExternalLink className="h-3 w-3 ml-1 text-muted-foreground" />
+                      </Button>
+                    )}
+                  </div>
                 )}
 
                 <div className="text-center mb-6">

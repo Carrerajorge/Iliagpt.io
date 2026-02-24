@@ -1,14 +1,15 @@
 import { tool, DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import OpenAI from "openai";
+import { DEFAULT_XAI_TEXT_MODEL, DEFAULT_XAI_REASONING_MODEL } from "../../lib/modelRegistry";
 
 const xaiClient = new OpenAI({
   baseURL: "https://api.x.ai/v1",
-  apiKey: process.env.XAI_API_KEY,
+  apiKey: process.env.XAI_API_KEY || "missing",
 });
 
-const DEFAULT_MODEL = "grok-4-1-fast-non-reasoning";
-const REASONING_MODEL = "grok-3-mini-fast";
+const DEFAULT_MODEL = DEFAULT_XAI_TEXT_MODEL;
+const REASONING_MODEL = DEFAULT_XAI_REASONING_MODEL;
 
 interface AgentConfig {
   description: string;

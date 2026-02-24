@@ -1,6 +1,19 @@
 import JSZip from "jszip";
 import type { FileParser, ParsedResult, DetectedFileType } from "./base";
 
+// Security limits
+const PPTX_MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
+const PPTX_MAX_SLIDES = 500;
+const PPTX_MAX_TEXT_PER_SLIDE = 500_000; // 500KB per slide text
+const PPTX_MAX_METADATA_VALUE_LENGTH = 1000;
+
+/** Sanitize metadata values */
+function sanitizeMetadataValue(value: string): string {
+  return String(value)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .substring(0, PPTX_MAX_METADATA_VALUE_LENGTH);
+}
+
 interface SlideContent {
   slideNumber: number;
   title: string;
@@ -19,6 +32,11 @@ export class PptxParser implements FileParser {
   async parse(content: Buffer, type: DetectedFileType): Promise<ParsedResult> {
     const startTime = Date.now();
     console.log(`[PptxParser] Starting PowerPoint parse, size: ${content.length} bytes`);
+
+    // Security: enforce file size limit
+    if (content.length > PPTX_MAX_FILE_SIZE) {
+      throw new Error(`PowerPoint file exceeds maximum size of ${PPTX_MAX_FILE_SIZE / (1024 * 1024)}MB`);
+    }
 
     try {
       const zip = await JSZip.loadAsync(content);
@@ -59,11 +77,11 @@ export class PptxParser implements FileParser {
       
       if (coreXml) {
         const titleMatch = coreXml.match(/<dc:title>([^<]*)<\/dc:title>/);
-        if (titleMatch) metadata.title = titleMatch[1];
-        
+        if (titleMatch) metadata.title = sanitizeMetadataValue(titleMatch[1]);
+
         const creatorMatch = coreXml.match(/<dc:creator>([^<]*)<\/dc:creator>/);
-        if (creatorMatch) metadata.author = creatorMatch[1];
-        
+        if (creatorMatch) metadata.author = sanitizeMetadataValue(creatorMatch[1]);
+
         const createdMatch = coreXml.match(/<dcterms:created[^>]*>([^<]*)<\/dcterms:created>/);
         if (createdMatch) metadata.creationDate = this.formatDate(createdMatch[1]);
       }
@@ -74,7 +92,7 @@ export class PptxParser implements FileParser {
         if (slidesMatch) metadata.totalSlides = parseInt(slidesMatch[1], 10);
         
         const companyMatch = appXml.match(/<Company>([^<]*)<\/Company>/);
-        if (companyMatch) metadata.company = companyMatch[1];
+        if (companyMatch) metadata.company = sanitizeMetadataValue(companyMatch[1]);
       }
     } catch (error) {
       console.warn("[PptxParser] Could not extract metadata:", error);
@@ -104,6 +122,12 @@ export class PptxParser implements FileParser {
     });
 
     slideFiles.sort((a, b) => a.num - b.num);
+
+    // Security: limit number of slides processed
+    if (slideFiles.length > PPTX_MAX_SLIDES) {
+      console.warn(`[PptxParser] Presentation has ${slideFiles.length} slides, limiting to ${PPTX_MAX_SLIDES}`);
+      slideFiles.length = PPTX_MAX_SLIDES;
+    }
 
     for (const slideFile of slideFiles) {
       try {
@@ -165,7 +189,8 @@ export class PptxParser implements FileParser {
   private extractTextParagraphs(xml: string): string[] {
     const paragraphs: string[] = [];
     const processedTexts = new Set<string>();
-    
+    let totalTextLength = 0;
+
     const paragraphMatches = Array.from(xml.matchAll(/<a:p>([\s\S]*?)<\/a:p>/g));
     
     for (const match of paragraphMatches) {
@@ -200,6 +225,10 @@ export class PptxParser implements FileParser {
       const fullText = textParts.join('').trim();
       
       if (fullText && !processedTexts.has(fullText)) {
+        // Security: limit total extracted text per slide
+        totalTextLength += fullText.length;
+        if (totalTextLength > PPTX_MAX_TEXT_PER_SLIDE) break;
+
         processedTexts.add(fullText);
         paragraphs.push(bulletPrefix + this.cleanText(fullText));
       }

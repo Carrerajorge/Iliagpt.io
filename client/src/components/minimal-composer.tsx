@@ -1,11 +1,11 @@
 import { memo, useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
-import { 
-  ArrowUp, 
-  Plus, 
-  Mic, 
-  Paperclip, 
-  Image, 
+import {
+  ArrowUp,
+  Plus,
+  Mic,
+  Paperclip,
+  Image,
   FileText,
   Settings,
   Sparkles,
@@ -85,13 +85,21 @@ export const MinimalComposer = memo(function MinimalComposer({
 
   return (
     <div className={cn("relative", className)}>
+      {/* Gradient border effect on focus */}
       <div
         className={cn(
-          "relative rounded-2xl border transition-all duration-200",
-          "bg-background",
-          isFocused 
-            ? "border-primary/50 shadow-lg shadow-primary/5" 
-            : "border-border hover:border-border/80",
+          "absolute -inset-[1px] rounded-[18px] opacity-0 transition-opacity duration-300",
+          "bg-gradient-to-r from-blue-500/50 via-purple-500/50 to-pink-500/50",
+          isFocused && "opacity-100"
+        )}
+      />
+      <div
+        className={cn(
+          "relative rounded-2xl border transition-all duration-300",
+          "bg-background/80 backdrop-blur-xl",
+          isFocused
+            ? "border-white/20 shadow-[0_8px_32px_-8px_rgba(59,130,246,0.25)]"
+            : "border-border/60 hover:border-border shadow-lg shadow-black/5",
           disabled && "opacity-50 pointer-events-none"
         )}
       >
@@ -158,7 +166,7 @@ export const MinimalComposer = memo(function MinimalComposer({
               disabled={disabled}
               className={cn(
                 "min-h-[40px] max-h-[200px] resize-none",
-                "border-0 bg-transparent focus-visible:ring-0",
+                "border-0 bg-transparent outline-none focus-visible:outline-none focus-visible:ring-0",
                 "py-2 px-1",
                 "text-base placeholder:text-muted-foreground/60"
               )}
@@ -178,8 +186,8 @@ export const MinimalComposer = memo(function MinimalComposer({
                       size="icon"
                       className={cn(
                         "h-8 w-8 rounded-full",
-                        showAdvanced 
-                          ? "text-primary bg-primary/10" 
+                        showAdvanced
+                          ? "text-primary bg-primary/10"
                           : "text-muted-foreground hover:text-foreground"
                       )}
                       onClick={onToggleAdvanced}
@@ -198,9 +206,9 @@ export const MinimalComposer = memo(function MinimalComposer({
               disabled={!canSubmit}
               onClick={onSubmit}
               className={cn(
-                "h-9 w-9 rounded-full transition-all duration-200",
+                "h-9 w-9 rounded-full transition-all duration-300",
                 canSubmit
-                  ? "bg-primary hover:bg-primary/90 text-primary-foreground shadow-md"
+                  ? "bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white shadow-lg shadow-blue-500/25 hover:shadow-blue-500/40 hover:scale-105"
                   : "bg-muted text-muted-foreground"
               )}
             >

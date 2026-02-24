@@ -12,24 +12,25 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { 
-  Image, 
-  Video, 
-  FileText, 
-  Trash2, 
-  Download, 
-  Search, 
+import {
+  Image,
+  Video,
+  FileText,
+  Trash2,
+  Download,
+  Search,
   X,
   Grid3X3,
   List,
   ExternalLink,
   Clock,
-  HardDrive
+  HardDrive,
+  Upload
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMediaLibrary, formatFileSize } from "@/hooks/use-media-library";
-import { format } from "date-fns";
-import { es } from "date-fns/locale";
+import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
+import { formatZonedDate, normalizeTimeZone } from "@/lib/platformDateTime";
 
 interface MediaLibraryModalProps {
   open: boolean;
@@ -54,17 +55,17 @@ const VIRTUALIZATION_THRESHOLD = 50;
 const COLUMN_COUNT = 4;
 const ITEM_SIZE = 140;
 
-function MediaItemCard({ 
-  item, 
-  isSelected, 
-  onSelect, 
-  onDelete, 
+function MediaItemCard({
+  item,
+  isSelected,
+  onSelect,
+  onDelete,
   onDownload,
-  selectable 
-}: { 
-  item: MediaItem; 
+  selectable
+}: {
+  item: MediaItem;
   isSelected: boolean;
-  onSelect: () => void; 
+  onSelect: () => void;
   onDelete: () => void;
   onDownload: () => void;
   selectable?: boolean;
@@ -157,20 +158,20 @@ interface CellProps {
   columnCount: number;
 }
 
-function GridCell({ 
-  columnIndex, 
-  rowIndex, 
-  style, 
-  items, 
-  selectedId, 
-  onSelect, 
-  onDelete, 
-  onDownload, 
-  selectable, 
-  columnCount 
-}: { 
-  columnIndex: number; 
-  rowIndex: number; 
+function GridCell({
+  columnIndex,
+  rowIndex,
+  style,
+  items,
+  selectedId,
+  onSelect,
+  onDelete,
+  onDownload,
+  selectable,
+  columnCount
+}: {
+  columnIndex: number;
+  rowIndex: number;
   style: React.CSSProperties;
 } & CellProps) {
   const index = rowIndex * columnCount + columnIndex;
@@ -191,11 +192,11 @@ function GridCell({
   );
 }
 
-function VirtualizedGrid({ 
-  items, 
-  selectedId, 
-  onSelect, 
-  onDelete, 
+function VirtualizedGrid({
+  items,
+  selectedId,
+  onSelect,
+  onDelete,
   onDownload,
   selectable,
   containerWidth,
@@ -249,28 +250,31 @@ export function MediaLibraryModal({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const containerRef = useRef<HTMLDivElement>(null);
-  
-  const { 
-    items, 
-    isLoading, 
-    filter, 
-    setFilter, 
-    remove, 
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
+  const platformDateFormat = platformSettings.date_format;
+
+  const {
+    items,
+    isLoading,
+    filter,
+    setFilter,
+    remove,
     loadAll,
-    totalCount 
+    totalCount
   } = useMediaLibrary();
 
   const filteredItems = useMemo(() => {
     let result = filter === 'all' ? items : items.filter(item => item.type === filter);
-    
+
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
-      result = result.filter(item => 
+      result = result.filter(item =>
         item.name.toLowerCase().includes(query) ||
         item.type.toLowerCase().includes(query)
       );
     }
-    
+
     return result;
   }, [items, filter, searchQuery]);
 
@@ -280,7 +284,8 @@ export function MediaLibraryModal({
       onSelect?.(item);
       onOpenChange(false);
     } else {
-      window.open(item.url, '_blank');
+      // FRONTEND FIX #28: Add noopener,noreferrer to prevent opener attacks
+      window.open(item.url, '_blank', 'noopener,noreferrer');
     }
   }, [selectable, onSelect, onOpenChange]);
 
@@ -302,7 +307,7 @@ export function MediaLibraryModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent 
+      <DialogContent
         className="w-screen h-screen max-w-none max-h-none m-0 rounded-none flex flex-col p-0 gap-0"
         data-testid="modal-media-library"
       >
@@ -385,10 +390,55 @@ export function MediaLibraryModal({
               <div className="animate-spin h-8 w-8 border-2 border-primary border-t-transparent rounded-full" />
             </div>
           ) : filteredItems.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-muted-foreground py-12">
-              <Image className="h-12 w-12 mb-4 opacity-30" />
-              <p className="text-sm font-medium">No hay archivos</p>
-              <p className="text-xs mt-1">Los archivos generados aparecerán aquí</p>
+            <div className="flex flex-col items-center justify-center h-full text-center py-16 px-6">
+              {/* Ilustración animada */}
+              <div className="relative mb-6">
+                <div className="absolute inset-0 bg-gradient-to-br from-primary/20 to-purple-500/20 rounded-full blur-2xl animate-pulse" />
+                <div className="relative w-24 h-24 rounded-2xl bg-gradient-to-br from-primary/10 to-purple-500/10 border border-border flex items-center justify-center">
+                  <Upload className="h-10 w-10 text-primary/60" />
+                </div>
+              </div>
+
+              {/* Título y descripción */}
+              <h3 className="text-lg font-semibold text-foreground mb-2">
+                Tu biblioteca está vacía
+              </h3>
+              <p className="text-sm text-muted-foreground max-w-sm mb-6">
+                Sube imágenes, documentos y videos para usarlos en tus conversaciones y proyectos
+              </p>
+
+              {/* CTA Principal */}
+              <label className="cursor-pointer">
+                <input
+                  type="file"
+                  className="hidden"
+                  multiple
+                  accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+                  onChange={(e) => {
+                    // Trigger file upload through media library hook
+                    console.log('File selected:', e.target.files);
+                  }}
+                />
+                <Button className="gap-2 mb-4" asChild>
+                  <span>
+                    <Upload className="h-4 w-4" />
+                    Subir primer archivo
+                  </span>
+                </Button>
+              </label>
+
+              {/* Tipos soportados */}
+              <div className="flex flex-wrap justify-center gap-2 max-w-xs">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs font-medium">
+                  <Image className="h-3 w-3" /> Imágenes
+                </span>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-purple-500/10 text-purple-600 dark:text-purple-400 text-xs font-medium">
+                  <Video className="h-3 w-3" /> Videos
+                </span>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-orange-500/10 text-orange-600 dark:text-orange-400 text-xs font-medium">
+                  <FileText className="h-3 w-3" /> Documentos
+                </span>
+              </div>
             </div>
           ) : viewMode === 'grid' ? (
             useVirtualization ? (
@@ -434,9 +484,10 @@ export function MediaLibraryModal({
                   >
                     <div className="h-12 w-12 rounded-lg overflow-hidden bg-muted flex-shrink-0">
                       {item.thumbnailBase64 ? (
-                        <img src={item.thumbnailBase64} alt="" className="h-full w-full object-cover" />
+                        // FRONTEND FIX #10: Add meaningful alt text for accessibility
+                        <img src={item.thumbnailBase64} alt={`Thumbnail for ${item.name}`} className="h-full w-full object-cover" />
                       ) : item.type === 'image' ? (
-                        <img src={item.url} alt="" className="h-full w-full object-cover" />
+                        <img src={item.url} alt={item.name || 'Media image'} className="h-full w-full object-cover" />
                       ) : (
                         <div className="h-full w-full flex items-center justify-center">
                           {item.type === 'video' ? (
@@ -453,7 +504,7 @@ export function MediaLibraryModal({
                       <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
                         <span className="flex items-center gap-1">
                           <Clock className="h-3 w-3" />
-                          {format(new Date(item.createdAt), "d MMM yyyy", { locale: es })}
+                          {formatZonedDate(item.createdAt, { timeZone: platformTimeZone, dateFormat: platformDateFormat })}
                         </span>
                         <span>{formatFileSize(item.size)}</span>
                         <span className="capitalize">{item.type}</span>
@@ -465,7 +516,8 @@ export function MediaLibraryModal({
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={(e) => { e.stopPropagation(); window.open(item.url, '_blank'); }}
+                        // FRONTEND FIX #29: Add noopener,noreferrer
+                        onClick={(e) => { e.stopPropagation(); window.open(item.url, '_blank', 'noopener,noreferrer'); }}
                       >
                         <ExternalLink className="h-4 w-4" />
                       </Button>
@@ -496,7 +548,7 @@ export function MediaLibraryModal({
         {filteredItems.length > 0 && (
           <div className="px-6 py-3 border-t text-xs text-muted-foreground flex items-center justify-between flex-shrink-0">
             <span>
-              {filteredItems.length} archivo{filteredItems.length !== 1 ? 's' : ''} 
+              {filteredItems.length} archivo{filteredItems.length !== 1 ? 's' : ''}
               {filter !== 'all' && ` (${filter})`}
             </span>
             {totalCount > items.length && (

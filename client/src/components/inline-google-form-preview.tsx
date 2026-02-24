@@ -461,7 +461,8 @@ export function InlineGoogleFormPreview({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => window.open(formUrls.responderUrl, "_blank")}
+              // FRONTEND FIX #32: Add noopener,noreferrer to prevent window.opener attacks
+              onClick={() => window.open(formUrls.responderUrl, "_blank", "noopener,noreferrer")}
               className="h-7 px-2 text-xs"
             >
               <ExternalLink className="h-3 w-3 mr-1" />
@@ -527,7 +528,8 @@ export function InlineGoogleFormPreview({
           <div className="flex flex-wrap gap-2">
             {formUrls.editUrl && (
               <Button 
-                onClick={() => window.open(formUrls.editUrl, "_blank")}
+                // FRONTEND FIX #33: Add noopener,noreferrer to prevent window.opener attacks
+                onClick={() => window.open(formUrls.editUrl, "_blank", "noopener,noreferrer")}
                 className="flex-1 bg-purple-600 hover:bg-purple-700 text-white"
                 size="sm"
               >

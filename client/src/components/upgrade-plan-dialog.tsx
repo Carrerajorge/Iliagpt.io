@@ -1,10 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { apiFetch } from "@/lib/apiClient";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { X, Sparkles, MessageSquare, Image, Brain, Clock, Target, Zap, Users, Shield, FileText, Video, Code, Star, Infinity, CheckCircle2, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
 
 interface UpgradePlanDialogProps {
   open: boolean;
@@ -13,9 +15,10 @@ interface UpgradePlanDialogProps {
 
 type PlanTab = "personal" | "empresa";
 
-const PRICE_ID_MAPPING: Record<string, string> = {
+// Plan to price ID mapping (will be fetched from backend)
+const PLAN_PRICE_IDS: Record<string, string> = {
   go: "price_go_monthly",
-  plus: "price_plus_monthly",
+  plus: "price_plus_monthly", 
   pro: "price_pro_monthly",
   business: "price_business_monthly",
 };
@@ -23,53 +26,89 @@ const PRICE_ID_MAPPING: Record<string, string> = {
 export function UpgradePlanDialog({ open, onOpenChange }: UpgradePlanDialogProps) {
   const [activeTab, setActiveTab] = useState<PlanTab>("personal");
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
-  const [priceMapping, setPriceMapping] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    if (open) {
-      fetch("/api/stripe/price-ids")
-        .then(res => res.json())
-        .then(data => {
-          if (data.priceMapping) {
-            setPriceMapping(data.priceMapping);
-          }
-        })
-        .catch(err => console.error("Error loading prices:", err));
-    }
-  }, [open]);
+  const { toast } = useToast();
 
   const handleSubscribe = async (planName: string) => {
-    console.log("[Checkout] Starting checkout for plan:", planName);
     const planKey = planName.toLowerCase();
-    const localPriceId = PRICE_ID_MAPPING[planKey];
-    console.log("[Checkout] Price mapping:", { planKey, localPriceId, priceMapping });
-    if (!localPriceId) {
-      console.error("[Checkout] No local price ID found");
-      return;
-    }
-    
-    const actualPriceId = priceMapping[localPriceId] || localPriceId;
-    console.log("[Checkout] Actual price ID:", actualPriceId);
-    
-    setLoadingPlan(planName);
+    setLoadingPlan(planKey);
     
     try {
-      console.log("[Checkout] Calling /api/checkout");
-      const response = await fetch("/api/checkout", {
+      // First, get the actual price IDs from the backend
+      const priceResponse = await apiFetch("/api/stripe/price-ids");
+      const priceData = await priceResponse.json();
+      
+      const priceIdKey = PLAN_PRICE_IDS[planKey];
+      const priceId = priceData.priceMapping?.[priceIdKey];
+      
+      if (!priceId) {
+        // If no price found, try to create products first
+        toast({
+          title: "Configurando pagos...",
+          description: "Preparando el sistema de pagos, intenta de nuevo en unos segundos.",
+        });
+        
+        // Trigger product creation (admin-only, opt-in on server)
+        const seedRes = await apiFetch("/api/stripe/create-products", { method: "POST" });
+        const seedData = await seedRes.json().catch(() => null);
+        if (!seedRes.ok) {
+          if (seedRes.status === 404) {
+            toast({
+              title: "Inicialización deshabilitada",
+              description:
+                "El servidor tiene deshabilitada la inicialización de productos. Habilita ALLOW_STRIPE_PRODUCT_SEEDING=true para usar esta función.",
+              variant: "destructive",
+            });
+          } else if (seedRes.status === 403) {
+            toast({
+              title: "Acceso restringido",
+              description: "Solo administradores pueden inicializar productos de Stripe.",
+              variant: "destructive",
+            });
+          } else {
+            toast({
+              title: "Error",
+              description: seedData?.error || "No se pudo inicializar productos de Stripe.",
+              variant: "destructive",
+            });
+          }
+          return;
+        }
+
+        toast({
+          title: "Productos listos",
+          description: "Stripe fue inicializado. Intenta suscribirte de nuevo.",
+        });
+        return;
+      }
+      
+      // Create checkout session
+      const checkoutResponse = await apiFetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ priceId: actualPriceId }),
+        body: JSON.stringify({ priceId }),
       });
       
-      const data = await response.json();
+      const checkoutData = await checkoutResponse.json();
       
-      if (data.url) {
-        window.location.href = data.url;
-      } else if (data.error) {
-        console.error("Checkout error:", data.error);
+      if (checkoutData.error) {
+        toast({
+          title: "Error",
+          description: checkoutData.error,
+          variant: "destructive",
+        });
+        return;
+      }
+      
+      if (checkoutData.url) {
+        window.location.href = checkoutData.url;
       }
     } catch (error) {
-      console.error("Error initiating checkout:", error);
+      console.error("Subscription error:", error);
+      toast({
+        title: "Error",
+        description: "No se pudo procesar la suscripción. Intenta de nuevo.",
+        variant: "destructive",
+      });
     } finally {
       setLoadingPlan(null);
     }
@@ -111,7 +150,7 @@ export function UpgradePlanDialog({ open, onOpenChange }: UpgradePlanDialogProps
     },
     {
       name: "Plus",
-      price: 20,
+      price: 10,
       description: "Descubre toda la experiencia",
       buttonText: "Obtener Plus",
       buttonVariant: "default" as const,
@@ -276,11 +315,11 @@ export function UpgradePlanDialog({ open, onOpenChange }: UpgradePlanDialogProps
                     "w-full mb-6",
                     (plan as any).buttonColor ? (plan as any).buttonColor : plan.highlight && "bg-primary hover:bg-primary/90"
                   )}
-                  disabled={plan.isCurrentPlan || loadingPlan === plan.name}
+                  disabled={plan.isCurrentPlan || loadingPlan === plan.name.toLowerCase()}
                   onClick={() => !plan.isCurrentPlan && handleSubscribe(plan.name)}
                   data-testid={`button-${plan.name.toLowerCase()}`}
                 >
-                  {loadingPlan === plan.name ? (
+                  {loadingPlan === plan.name.toLowerCase() ? (
                     <>
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                       Procesando...

@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import "@/types/speech.d";
+/// <reference path="../types/speech.d.ts" />
 
 interface UseVoiceOptions {
   language?: string;

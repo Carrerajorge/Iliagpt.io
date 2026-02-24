@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
-import Fuse from "fuse.js";
+import Fuse, { type IFuseOptions } from "fuse.js";
 
 export interface ChatItem {
   id: string;
@@ -19,7 +19,7 @@ export interface SearchResult {
   }[];
 }
 
-const FUSE_OPTIONS: Fuse.IFuseOptions<ChatItem> = {
+const FUSE_OPTIONS: IFuseOptions<ChatItem> = {
   keys: [
     { name: "title", weight: 0.6 },
     { name: "lastMessage", weight: 0.3 },

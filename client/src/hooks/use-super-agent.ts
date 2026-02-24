@@ -1,4 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { PhaseNarrator } from "../lib/phaseNarrator";
+import { apiFetch } from "@/lib/apiClient";
 
 export type SSEEventType =
   | "contract"
@@ -13,7 +15,9 @@ export type SSEEventType =
   | "final"
   | "error"
   | "heartbeat"
-  | "progress";
+  | "heartbeat"
+  | "progress"
+  | "thought";
 
 export type SuperAgentPhase =
   | "idle"
@@ -108,6 +112,11 @@ export interface SuperAgentFinal {
   iterations: number;
 }
 
+export interface SuperAgentThought {
+  content: string;
+  timestamp: number;
+}
+
 export interface SuperAgentState {
   sessionId: string | null;
   runId: string | null;
@@ -124,6 +133,8 @@ export interface SuperAgentState {
   error: string | null;
   iteration: number;
   progress: SuperAgentProgress | null;
+  thoughts: SuperAgentThought[];
+  narration: string;
 }
 
 const initialState: SuperAgentState = {
@@ -142,6 +153,8 @@ const initialState: SuperAgentState = {
   error: null,
   iteration: 0,
   progress: null,
+  thoughts: [],
+  narration: "⚡ Iniciando...",
 };
 
 export interface UseSuperAgentReturn {
@@ -155,6 +168,12 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
   const [state, setState] = useState<SuperAgentState>(initialState);
   const abortControllerRef = useRef<AbortController | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const narratorRef = useRef<PhaseNarrator | null>(null);
+
+  // Initialize narrator
+  if (!narratorRef.current) {
+    narratorRef.current = new PhaseNarrator();
+  }
 
   const cleanup = useCallback(() => {
     if (abortControllerRef.current) {
@@ -165,15 +184,24 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
     }
+    narratorRef.current?.reset();
   }, []);
 
   const handleEvent = useCallback((eventType: SSEEventType, data: unknown) => {
+    // Process event through narrator
+    const narration = narratorRef.current!.processEvent({
+      event_type: eventType as any,
+      ...data as any
+    });
+
     setState((prev) => {
+      let nextState = { ...prev, narration };
+
       switch (eventType) {
         case "contract": {
           const contract = data as SuperAgentContract;
           return {
-            ...prev,
+            ...nextState,
             contract,
             sourcesTarget: contract.requirements.min_sources || 100,
             phase: "planning",
@@ -181,14 +209,14 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
         }
 
         case "plan": {
-          return prev;
+          return nextState;
         }
 
         case "progress": {
           const progress = data as SuperAgentProgress;
           return {
-            ...prev,
-            phase: progress.phase || prev.phase,
+            ...nextState,
+            phase: progress.phase || nextState.phase,
             progress,
           };
         }
@@ -196,30 +224,30 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
         case "tool_call": {
           const toolCall = data as SuperAgentToolCall;
           return {
-            ...prev,
-            toolCalls: [...prev.toolCalls, toolCall],
+            ...nextState,
+            toolCalls: [...nextState.toolCalls, toolCall],
           };
         }
 
         case "tool_result": {
           const toolResult = data as SuperAgentToolResult;
           return {
-            ...prev,
-            toolResults: [...prev.toolResults, toolResult],
+            ...nextState,
+            toolResults: [...nextState.toolResults, toolResult],
           };
         }
 
         case "source_signal": {
           const source = data as SuperAgentSource;
-          const existingIndex = prev.sources.findIndex((s) => s.id === source.id);
+          const existingIndex = nextState.sources.findIndex((s) => s.id === source.id);
           if (existingIndex >= 0) {
-            const newSources = [...prev.sources];
+            const newSources = [...nextState.sources];
             newSources[existingIndex] = source;
-            return { ...prev, sources: newSources };
+            return { ...nextState, sources: newSources };
           }
           return {
-            ...prev,
-            sources: [...prev.sources, source],
+            ...nextState,
+            sources: [...nextState.sources, source],
           };
         }
 
@@ -230,10 +258,10 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
             claims_count: number;
             word_count: number;
           };
-          const newSources = prev.sources.map((s) =>
+          const newSources = nextState.sources.map((s) =>
             s.id === deepData.source_id ? { ...s, fetched: true } : s
           );
-          return { ...prev, sources: newSources, phase: "deep" };
+          return { ...nextState, sources: newSources, phase: "deep" };
         }
 
         case "artifact": {
@@ -245,9 +273,9 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
             size?: number;
           };
           return {
-            ...prev,
+            ...nextState,
             artifacts: [
-              ...prev.artifacts,
+              ...nextState.artifacts,
               {
                 id: artifact.id,
                 type: artifact.type,
@@ -263,7 +291,7 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
         case "verify": {
           const verify = data as SuperAgentVerify;
           return {
-            ...prev,
+            ...nextState,
             verify,
             phase: "verifying",
           };
@@ -272,7 +300,7 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
         case "iterate": {
           const iterateData = data as { iteration: number };
           return {
-            ...prev,
+            ...nextState,
             iteration: iterateData.iteration,
           };
         }
@@ -280,7 +308,7 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
         case "final": {
           const final = data as SuperAgentFinal;
           return {
-            ...prev,
+            ...nextState,
             final,
             phase: "completed",
             isRunning: false,
@@ -290,7 +318,7 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
         case "error": {
           const errorData = data as { message: string; recoverable?: boolean };
           return {
-            ...prev,
+            ...nextState,
             error: errorData.message,
             phase: "error",
             isRunning: false,
@@ -298,11 +326,27 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
         }
 
         case "heartbeat": {
-          return prev;
+          return nextState;
+        }
+
+        case "thought": {
+          const thoughtData = data as { content: string };
+          return {
+            ...nextState,
+            thoughts: [
+              ...nextState.thoughts,
+              {
+                content: thoughtData.content,
+                timestamp: Date.now()
+              }
+            ],
+            // Update narration to show thinking status if needed, or keep latest
+            narration: "🤔 Razonando..."
+          };
         }
 
         default:
-          return prev;
+          return nextState;
       }
     });
   }, []);
@@ -321,7 +365,7 @@ export function useSuperAgentStream(): UseSuperAgentReturn {
       abortControllerRef.current = abortController;
 
       try {
-        const response = await fetch("/api/super/stream", {
+        const response = await apiFetch("/api/super/stream", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

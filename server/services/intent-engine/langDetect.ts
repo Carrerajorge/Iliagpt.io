@@ -263,8 +263,12 @@ function detectByMarkers(text: string): LanguageDetectionResult {
 }
 
 function detectByFranc(text: string): LanguageDetectionResult {
+  // Guard against type confusion via parameter tampering (CodeQL: type-confusion)
+  if (typeof text !== "string") {
+    return { locale: "es", confidence: 0.5, method: "default", all_scores: getDefaultScores(), is_rtl: false };
+  }
   const defaultScores = getDefaultScores();
-  
+
   if (text.length < 10) {
     return {
       locale: "es",
@@ -301,6 +305,10 @@ function detectByFranc(text: string): LanguageDetectionResult {
 }
 
 export function detectLanguage(text: string): LanguageDetectionResult {
+  // Guard against type confusion via parameter tampering (CodeQL: type-confusion)
+  if (typeof text !== "string") {
+    return { locale: "es", confidence: 0.5, method: "default", all_scores: getDefaultScores(), is_rtl: false };
+  }
   const scriptLocale = detectByScript(text);
   if (scriptLocale) {
     const defaultScores = getDefaultScores();

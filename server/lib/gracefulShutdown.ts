@@ -18,7 +18,7 @@ interface ConnectionTracker {
 
 type CleanupFn = () => Promise<void>;
 
-const DEFAULT_TIMEOUT = 30000;
+const DEFAULT_TIMEOUT = 10000; // Reduced from 30s to 10s for faster deployments
 const DEFAULT_SIGNALS: NodeJS.Signals[] = ["SIGTERM", "SIGINT", "SIGHUP"];
 
 let isShuttingDown = false;
@@ -219,11 +219,11 @@ export function setupGracefulShutdown(
   config: ShutdownConfig = {}
 ): void {
   const serverArray = Array.isArray(servers) ? servers : [servers];
-  
+
   const mergedConfig: Required<ShutdownConfig> = {
     timeout: config.timeout ?? DEFAULT_TIMEOUT,
     signals: config.signals ?? DEFAULT_SIGNALS,
-    onShutdown: config.onShutdown ?? (async () => {}),
+    onShutdown: config.onShutdown ?? (async () => { }),
     forceExitCode: config.forceExitCode ?? 0,
   };
 

@@ -131,6 +131,71 @@ const queueDepthGauge = new Gauge({
   registers: [register],
 });
 
+const validActionOutcomes = ['success', 'failure', 'validation_error', 'rate_limited', 'blocked', 'timeout'] as const;
+type ActionOutcome = typeof validActionOutcomes[number];
+
+const gptActionRequestDurationHistogram = new Histogram({
+  name: 'pare_gpt_action_duration_seconds',
+  help: 'GPT Action request latency in seconds',
+  labelNames: ['gpt_id', 'action_id', 'outcome', 'circuit_state'] as const,
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+  registers: [register],
+});
+
+const gptActionRequestsTotalCounter = new Counter({
+  name: 'pare_gpt_action_requests_total',
+  help: 'Total GPT Action requests',
+  labelNames: ['gpt_id', 'action_id', 'outcome'] as const,
+  registers: [register],
+});
+
+const gptActionRetriesTotalCounter = new Counter({
+  name: 'pare_gpt_action_retries_total',
+  help: 'Total GPT Action retries',
+  labelNames: ['gpt_id', 'action_id'] as const,
+  registers: [register],
+});
+
+const gptActionValidationErrorsTotalCounter = new Counter({
+  name: 'pare_gpt_action_validation_errors_total',
+  help: 'Total GPT Action validation errors',
+  labelNames: ['gpt_id', 'action_id', 'stage'] as const,
+  registers: [register],
+});
+
+const gptActionRateLimitCounter = new Counter({
+  name: 'pare_gpt_action_rate_limit_total',
+  help: 'GPT Action requests rejected by rate limit',
+  labelNames: ['gpt_id', 'action_id'] as const,
+  registers: [register],
+});
+
+const gptActionCircuitBreakerStateGauge = new Gauge({
+  name: 'pare_gpt_action_circuit_state',
+  help: 'Current GPT Action circuit state (0=closed, 0.5=half_open, 1=open)',
+  labelNames: ['gpt_id', 'action_id', 'state'] as const,
+  registers: [register],
+});
+
+function normalizeActionOutcome(outcome: string): ActionOutcome {
+  const value = outcome.toLowerCase().trim();
+  if (validActionOutcomes.includes(value as ActionOutcome)) {
+    return value as ActionOutcome;
+  }
+  return 'failure';
+}
+
+function normalizeActionIdentifier(value: string): string {
+  return value
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .slice(0, 80) || "unknown";
+}
+
+function normalizeActionState(state?: string): string {
+  const validStates = ["closed", "half_open", "open"];
+  return validStates.includes(state || "") ? state! : "closed";
+}
+
 export function recordRequestDuration(
   endpoint: string,
   statusCode: number,
@@ -186,6 +251,75 @@ export function setCircuitBreakerState(parserType: string, state: CircuitState):
 
 export function setQueueDepth(depth: number): void {
   queueDepthGauge.set(Math.max(0, Math.floor(depth)));
+}
+
+export function recordGptActionRequest(
+  gptId: string,
+  actionId: string,
+  outcome: string,
+  durationSec: number,
+  circuitState: "closed" | "half_open" | "open"
+): void {
+  const outcomeLabel = normalizeActionOutcome(outcome);
+  const normalizedGptId = normalizeActionIdentifier(gptId);
+  const normalizedActionId = normalizeActionIdentifier(actionId);
+  const state = normalizeActionState(circuitState);
+  gptActionRequestDurationHistogram.observe(
+    {
+      gpt_id: normalizedGptId,
+      action_id: normalizedActionId,
+      outcome: outcomeLabel,
+      circuit_state: state,
+    },
+    durationSec
+  );
+  gptActionRequestsTotalCounter.inc({
+    gpt_id: normalizedGptId,
+    action_id: normalizedActionId,
+    outcome: outcomeLabel,
+  });
+}
+
+export function recordGptActionRetry(gptId: string, actionId: string): void {
+  gptActionRetriesTotalCounter.inc({
+    gpt_id: normalizeActionIdentifier(gptId),
+    action_id: normalizeActionIdentifier(actionId),
+  });
+}
+
+export function recordGptActionValidationError(
+  gptId: string,
+  actionId: string,
+  stage: string
+): void {
+  gptActionValidationErrorsTotalCounter.inc({
+    gpt_id: normalizeActionIdentifier(gptId),
+    action_id: normalizeActionIdentifier(actionId),
+    stage: stage || "unknown",
+  });
+}
+
+export function recordGptActionRateLimit(gptId: string, actionId: string): void {
+  gptActionRateLimitCounter.inc({
+    gpt_id: normalizeActionIdentifier(gptId),
+    action_id: normalizeActionIdentifier(actionId),
+  });
+}
+
+export function setGptActionCircuitBreakerState(
+  gptId: string,
+  actionId: string,
+  state: "closed" | "half_open" | "open",
+  count: number
+): void {
+  gptActionCircuitBreakerStateGauge.set(
+    {
+      gpt_id: normalizeActionIdentifier(gptId),
+      action_id: normalizeActionIdentifier(actionId),
+      state,
+    },
+    count
+  );
 }
 
 export async function getMetricsText(): Promise<string> {

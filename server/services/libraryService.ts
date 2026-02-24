@@ -537,6 +537,85 @@ export class LibraryService {
       console.error("Error logging activity:", error);
     }
   }
+
+  /**
+   * Export the user's entire library metadata as a structured JSON object
+   */
+  async exportLibraryMetadata(userId: string): Promise<any> {
+    if (!userId) {
+      throw new LibraryServiceError("User ID is required", "UNAUTHORIZED", 401);
+    }
+
+    try {
+      // 1. Get all folders
+      const folders = await db
+        .select()
+        .from(libraryFolders)
+        .where(
+          and(
+            eq(libraryFolders.userId, userId),
+            isNull(libraryFolders.deletedAt)
+          )
+        );
+
+      // 2. Get all files
+      const files = await db
+        .select()
+        .from(libraryFiles)
+        .where(
+          and(
+            eq(libraryFiles.userId, userId),
+            isNull(libraryFiles.deletedAt)
+          )
+        );
+
+      // 3. Structure into a hierarchy
+      const rootFiles = files.filter(f => !f.folderId).map(f => this.formatFileForExport(f));
+
+      const structuredFolders = folders.map(folder => {
+        const folderFiles = files
+          .filter(f => f.folderId === folder.id)
+          .map(f => this.formatFileForExport(f));
+
+        return {
+          id: folder.id,
+          name: folder.name,
+          color: folder.color,
+          createdAt: folder.createdAt,
+          updatedAt: folder.updatedAt,
+          files: folderFiles
+        };
+      });
+
+      return {
+        exportDate: new Date().toISOString(),
+        totalFiles: files.length,
+        totalFolders: folders.length,
+        rootFiles,
+        folders: structuredFolders
+      };
+
+    } catch (error) {
+      console.error("Error exporting library metadata:", error);
+      throw new LibraryServiceError("Failed to export library metadata", "EXPORT_FAILED");
+    }
+  }
+
+  private formatFileForExport(file: LibraryFile): any {
+    return {
+      id: file.id,
+      name: file.name,
+      description: file.description,
+      type: file.type,
+      size: file.size,
+      mimeType: file.mimeType,
+      createdAt: file.createdAt,
+      updatedAt: file.updatedAt,
+      tags: file.tags || [],
+      metadata: file.metadata || {},
+      downloadUrlPath: `/api/library/files/${file.id}/download`
+    };
+  }
 }
 
 export const libraryService = new LibraryService();

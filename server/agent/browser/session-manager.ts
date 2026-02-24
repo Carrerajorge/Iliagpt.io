@@ -30,14 +30,39 @@ interface ActiveSession {
 }
 
 class BrowserSessionManager {
+  private static readonly MAX_SESSIONS = 10;
+  private static readonly SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+  private static readonly MAX_OBSERVATIONS = 500;
+  private static readonly MAX_NETWORK_REQUESTS = 1000;
+
   private sessions: Map<string, ActiveSession> = new Map();
   private globalCallbacks: Set<SessionEventCallback> = new Set();
+  private cleanupInterval: ReturnType<typeof setInterval>;
+
+  constructor() {
+    // Periodic cleanup of stale sessions
+    this.cleanupInterval = setInterval(() => this.cleanupStaleSessions(), 60000);
+  }
+
+  private async cleanupStaleSessions(): Promise<void> {
+    const now = Date.now();
+    for (const [id, session] of this.sessions.entries()) {
+      if (now - session.createdAt.getTime() > BrowserSessionManager.SESSION_TTL_MS) {
+        console.warn(`[BrowserSessionManager] Cleaning up stale session ${id}`);
+        await this.closeSession(id);
+      }
+    }
+  }
 
   async createSession(
     objective: string,
     config: Partial<SessionConfig> = {},
     onEvent?: SessionEventCallback
   ): Promise<string> {
+    if (this.sessions.size >= BrowserSessionManager.MAX_SESSIONS) {
+      throw new Error(`Maximum number of browser sessions (${BrowserSessionManager.MAX_SESSIONS}) reached. Close existing sessions before creating new ones.`);
+    }
+
     const sessionConfig = { ...DEFAULT_SESSION_CONFIG, ...config };
     const sessionId = crypto.randomUUID();
 
@@ -99,6 +124,9 @@ class BrowserSessionManager {
 
   private setupNetworkCapture(session: ActiveSession): void {
     session.page.on("request", (request: Request) => {
+      if (session.networkRequests.length >= BrowserSessionManager.MAX_NETWORK_REQUESTS) {
+        session.networkRequests.shift(); // rotate oldest entry
+      }
       const req: NetworkRequest = {
         url: request.url(),
         method: request.method()
@@ -469,6 +497,9 @@ class BrowserSessionManager {
         type: "state",
         data: state
       };
+      if (session.observations.length >= BrowserSessionManager.MAX_OBSERVATIONS) {
+        session.observations.shift();
+      }
       session.observations.push(observation);
 
       this.emitEvent(session, {
@@ -566,7 +597,7 @@ class BrowserSessionManager {
     this.sessions.delete(sessionId);
   }
 
-  cancelSession(sessionId: string): void {
+  async cancelSession(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
@@ -579,7 +610,7 @@ class BrowserSessionManager {
       data: { reason: "User cancelled" }
     });
 
-    this.closeSession(sessionId).catch(() => {});
+    await this.closeSession(sessionId);
   }
 
   getSession(sessionId: string): ComputerSession | null {

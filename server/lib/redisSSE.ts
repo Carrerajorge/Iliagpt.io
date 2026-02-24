@@ -40,7 +40,7 @@ class RedisSSEManager {
   private heartbeatIntervals = new Map<string, NodeJS.Timeout>();
   private connectionTimeouts = new Map<Response, NodeJS.Timeout>();
 
-  private constructor() {}
+  private constructor() { }
 
   static getInstance(): RedisSSEManager {
     if (!RedisSSEManager.instance) {
@@ -52,10 +52,21 @@ class RedisSSEManager {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
+    // Skip Redis if no URL configured - operate in local-only mode
+    if (!process.env.REDIS_URL) {
+      console.log("[RedisSSE] No REDIS_URL configured, operating in local-only mode (no persistence)");
+      return;
+    }
+
     try {
       this.pubClient = createClient({ url: REDIS_URL });
       this.subClient = createClient({ url: REDIS_URL });
       this.stateClient = createClient({ url: REDIS_URL });
+
+      // Add error handlers to prevent crash on connection issues
+      this.pubClient.on('error', (err) => console.warn('[RedisSSE] Pub client error:', err.message));
+      this.subClient.on('error', (err) => console.warn('[RedisSSE] Sub client error:', err.message));
+      this.stateClient.on('error', (err) => console.warn('[RedisSSE] State client error:', err.message));
 
       await Promise.all([
         this.pubClient.connect(),
@@ -65,8 +76,11 @@ class RedisSSEManager {
 
       this.initialized = true;
       console.log("[RedisSSE] Initialized with Redis at", REDIS_URL);
-    } catch (error) {
-      console.error("[RedisSSE] Failed to initialize:", error);
+    } catch (error: any) {
+      console.warn("[RedisSSE] Failed to initialize (non-fatal, running in local-only mode):", error.message);
+      this.pubClient = null;
+      this.subClient = null;
+      this.stateClient = null;
       this.initialized = false;
     }
   }
@@ -300,7 +314,7 @@ class RedisSSEManager {
       if (!res.writableEnded) {
         res.end();
       }
-    } catch {}
+    } catch { }
   }
 
   private async unsubscribeSession(sessionId: string): Promise<void> {
@@ -311,7 +325,7 @@ class RedisSSEManager {
           if (!conn.writableEnded) {
             conn.end();
           }
-        } catch {}
+        } catch { }
       }
       this.activeConnections.delete(sessionId);
     }
@@ -325,7 +339,7 @@ class RedisSSEManager {
     if (this.subClient) {
       try {
         await this.subClient.unsubscribe(this.channelKey(sessionId));
-      } catch {}
+      } catch { }
     }
 
     console.log(`[RedisSSE] Unsubscribed from ${sessionId}`);

@@ -14,9 +14,9 @@ interface PareRateLimiterConfig {
 
 const DEFAULT_CONFIG: PareRateLimiterConfig = {
   ipWindowMs: 60000,
-  ipMaxRequests: parseInt(process.env.PARE_RATE_LIMIT_IP_MAX || "60", 10),
+  ipMaxRequests: parseInt(process.env.PARE_RATE_LIMIT_IP_MAX || "300", 10),
   userWindowMs: 60000,
-  userMaxRequests: parseInt(process.env.PARE_RATE_LIMIT_USER_MAX || "30", 10),
+  userMaxRequests: parseInt(process.env.PARE_RATE_LIMIT_USER_MAX || "150", 10),
 };
 
 const ipRateLimitStore: Map<string, SlidingWindowEntry> = new Map();

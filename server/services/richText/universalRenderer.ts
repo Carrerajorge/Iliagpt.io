@@ -38,7 +38,11 @@ import {
   TabStopPosition,
   TabStopType,
   ShadingType,
+  ImageRun,
 } from "docx";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
 export interface RenderOptions {
   fontRegistry?: FontRegistry;
@@ -172,7 +176,7 @@ export function renderBlockToDocx(
       return [renderTableToDocx(block, opts)];
 
     case "image":
-      return [];
+      return renderImageToDocx(block, opts);
 
     default:
       return [];
@@ -238,19 +242,20 @@ function renderOrderedListToDocx(
   block: OrderedListBlock,
   opts: Required<RenderOptions>
 ): Paragraph[] {
-  return renderListItemsToDocx(block.items, true, 0, opts);
+  return renderListItemsToDocx(block.items, true, 0, opts, block.start ?? 1);
 }
 
 function renderListItemsToDocx(
   items: ListItem[],
   ordered: boolean,
   level: number,
-  opts: Required<RenderOptions>
+  opts: Required<RenderOptions>,
+  start: number = 1
 ): Paragraph[] {
   const paragraphs: Paragraph[] = [];
 
   items.forEach((item, index) => {
-    const bullet = ordered ? `${index + 1}.` : "•";
+    const bullet = ordered ? `${start + index}.` : "•";
     const indent = convertInchesToTwip(0.25 + level * 0.25);
 
     const bulletRun = new DocxTextRun({
@@ -344,6 +349,145 @@ function renderTableToDocx(
     rows,
     width: { size: 100, type: WidthType.PERCENTAGE },
   });
+}
+
+function resolveImageData(src: string): Buffer | null {
+  if (src.startsWith("data:")) {
+    const match = src.match(/^data:(.+?);base64,(.*)$/);
+    if (!match) return null;
+    return Buffer.from(match[2], "base64");
+  }
+
+  if (src.startsWith("http://") || src.startsWith("https://")) {
+    return null;
+  }
+
+  const filePath = src.startsWith("file://") ? fileURLToPath(src) : path.resolve(src);
+  if (!fs.existsSync(filePath)) return null;
+
+  return fs.readFileSync(filePath);
+}
+
+function renderImageToDocx(
+  block: Extract<RichTextBlock, { type: "image" }>,
+  opts: Required<RenderOptions>
+): Paragraph[] {
+  const data = resolveImageData(block.src);
+  if (!data) return [];
+
+  const dimensions = getImageDimensions(data);
+  const { width, height } = getScaledImageDimensions(
+    block.width,
+    block.height,
+    dimensions
+  );
+  const imageRun = new ImageRun({
+    data,
+    transformation: {
+      width,
+      height,
+    },
+  });
+
+  const paragraphs: Paragraph[] = [
+    new Paragraph({
+      children: [imageRun],
+      alignment: AlignmentType.CENTER,
+    }),
+  ];
+
+  const caption = block.title || block.alt;
+  if (caption) {
+    paragraphs.push(
+      new Paragraph({
+        children: [
+          new DocxTextRun({
+            text: caption,
+            italics: true,
+            size: opts.defaultFontSize * 2 - 1,
+            color: opts.colors.lightText?.replace("#", ""),
+          }),
+        ],
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 120 },
+      })
+    );
+  }
+
+  return paragraphs;
+}
+
+function getImageDimensions(
+  data: Buffer
+): { width: number; height: number } | null {
+  if (data.length < 24) return null;
+
+  if (data.slice(1, 4).toString("ascii") === "PNG") {
+    return {
+      width: data.readUInt32BE(16),
+      height: data.readUInt32BE(20),
+    };
+  }
+
+  if (data[0] === 0xff && data[1] === 0xd8) {
+    let offset = 2;
+    while (offset < data.length) {
+      if (data[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const marker = data[offset + 1];
+      if (marker === 0xc0 || marker === 0xc2) {
+        const height = data.readUInt16BE(offset + 5);
+        const width = data.readUInt16BE(offset + 7);
+        return { width, height };
+      }
+      const segmentLength = data.readUInt16BE(offset + 2);
+      if (segmentLength <= 0) break;
+      offset += 2 + segmentLength;
+    }
+  }
+
+  return null;
+}
+
+function getScaledImageDimensions(
+  width: number | undefined,
+  height: number | undefined,
+  dimensions: { width: number; height: number } | null
+): { width: number; height: number } {
+  const fallbackWidth = 400;
+  const fallbackHeight = 300;
+  const maxWidth = 600;
+
+  if (width && height) {
+    const clampedWidth = Math.min(width, maxWidth);
+    const scale = clampedWidth / width;
+    return { width: clampedWidth, height: Math.round(height * scale) };
+  }
+
+  if (dimensions) {
+    if (width) {
+      const clampedWidth = Math.min(width, maxWidth);
+      return {
+        width: clampedWidth,
+        height: Math.round((clampedWidth * dimensions.height) / dimensions.width),
+      };
+    }
+
+    if (height) {
+      const derivedWidth = Math.round((height * dimensions.width) / dimensions.height);
+      const clampedWidth = Math.min(derivedWidth, maxWidth);
+      const scale = clampedWidth / derivedWidth;
+      return { width: clampedWidth, height: Math.round(height * scale) };
+    }
+
+    const clampedWidth = Math.min(dimensions.width, maxWidth);
+    const scale = clampedWidth / dimensions.width;
+    return { width: clampedWidth, height: Math.round(dimensions.height * scale) };
+  }
+
+  return { width: fallbackWidth, height: fallbackHeight };
 }
 
 function getDocxAlignment(
@@ -465,17 +609,10 @@ export function renderBlockToHtml(block: RichTextBlock, options: RenderOptions =
       return `<p${pStyle}>${renderRunsToHtml(block.runs, opts)}</p>`;
 
     case "bullet-list":
-      const ulItems = block.items
-        .map((item) => `<li>${renderRunsToHtml(item.runs, opts)}</li>`)
-        .join("");
-      return `<ul>${ulItems}</ul>`;
+      return renderListToHtml(block.items, false, opts);
 
     case "ordered-list":
-      const olStart = block.start && block.start !== 1 ? ` start="${block.start}"` : "";
-      const olItems = block.items
-        .map((item) => `<li>${renderRunsToHtml(item.runs, opts)}</li>`)
-        .join("");
-      return `<ol${olStart}>${olItems}</ol>`;
+      return renderListToHtml(block.items, true, opts, block.start);
 
     case "blockquote":
       return `<blockquote>${renderRunsToHtml(block.runs, opts)}</blockquote>`;
@@ -508,7 +645,11 @@ export function renderBlockToHtml(block: RichTextBlock, options: RenderOptions =
     case "image":
       const altAttr = block.alt ? ` alt="${escapeHtml(block.alt)}"` : "";
       const titleAttr = block.title ? ` title="${escapeHtml(block.title)}"` : "";
-      return `<img src="${escapeHtml(block.src)}"${altAttr}${titleAttr}>`;
+      const sizeAttrs = [
+        block.width ? ` width="${block.width}"` : "",
+        block.height ? ` height="${block.height}"` : "",
+      ].join("");
+      return `<img src="${escapeHtml(block.src)}"${altAttr}${titleAttr}${sizeAttrs}>`;
 
     default:
       return "";
@@ -614,6 +755,27 @@ export function renderDocumentToHtml(
 ${body}
 </body>
 </html>`;
+}
+
+function renderListToHtml(
+  items: ListItem[],
+  ordered: boolean,
+  opts: Required<RenderOptions>,
+  start?: number
+): string {
+  const tag = ordered ? "ol" : "ul";
+  const startAttr = ordered && start && start !== 1 ? ` start="${start}"` : "";
+  const listItems = items
+    .map((item) => {
+      const content = renderRunsToHtml(item.runs, opts);
+      const children =
+        item.children && item.children.length > 0
+          ? renderListToHtml(item.children, ordered, opts)
+          : "";
+      return `<li>${content}${children}</li>`;
+    })
+    .join("");
+  return `<${tag}${startAttr}>${listItems}</${tag}>`;
 }
 
 function escapeHtml(text: string): string {

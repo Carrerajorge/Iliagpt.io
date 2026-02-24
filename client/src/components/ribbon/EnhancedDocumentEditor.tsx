@@ -20,7 +20,7 @@ import { aiOrchestrator } from '@/lib/orchestrator';
 import { exportToWord } from '@/lib/docSpecSerializer';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { X, Download, Sparkles, Loader2 } from 'lucide-react';
+import { X, Download, Sparkles, Loader2, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { markdownToTipTap } from '@/lib/markdownToHtml';
 import { autoSaveToMediaLibrary } from '@/lib/mediaAutoSave';
@@ -32,6 +32,7 @@ interface EnhancedDocumentEditorProps {
   onChange: (content: string) => void;
   onClose: () => void;
   onDownload: () => void;
+  onSaveToLibrary?: () => void;
   onTextSelect?: (text: string, applyRewrite: (newText: string) => void) => void;
   onTextDeselect?: () => void;
   onInsertContent?: (insertFn: (content: string, replaceMode?: boolean | 'html') => void) => void;
@@ -43,6 +44,7 @@ export function EnhancedDocumentEditor({
   onChange,
   onClose,
   onDownload,
+  onSaveToLibrary,
   onTextSelect,
   onTextDeselect,
   onInsertContent,
@@ -123,7 +125,7 @@ export function EnhancedDocumentEditor({
 
   useEffect(() => {
     if (!editor || !onInsertContent) return;
-    
+
     // insertFn modes:
     // - replaceMode = true: Replace with markdown content (converted to TipTap)
     // - replaceMode = false: Append markdown to end of document
@@ -139,7 +141,7 @@ export function EnhancedDocumentEditor({
         editor.chain().focus().insertContent(markdownToTipTap(text)).run();
       }
     };
-    
+
     onInsertContent(insertFn);
   }, [editor, onInsertContent]);
 
@@ -155,7 +157,7 @@ export function EnhancedDocumentEditor({
     try {
       const { from, to } = editor.state.selection;
       const selectedText = editor.state.doc.textBetween(from, to, ' ');
-      
+
       const plan = await aiOrchestrator.planFromPrompt(action, {
         selectedText,
         documentContent: editor.getHTML(),
@@ -199,7 +201,7 @@ export function EnhancedDocumentEditor({
 
   const handleExportWord = useCallback(async () => {
     if (!editor) return;
-    
+
     try {
       const doc = editor.getJSON();
       const blob = await exportToWord(doc as any, title);
@@ -224,6 +226,17 @@ export function EnhancedDocumentEditor({
       <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/30">
         <h2 className="font-semibold text-lg truncate max-w-md">{title}</h2>
         <div className="flex items-center gap-2">
+          {onSaveToLibrary && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onSaveToLibrary}
+              data-testid="btn-save-to-library"
+            >
+              <BookOpen className="h-4 w-4 mr-1" />
+              Guardar
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -237,6 +250,7 @@ export function EnhancedDocumentEditor({
             variant="ghost"
             size="icon"
             onClick={onClose}
+            className="bg-red-500 hover:bg-red-600 text-white rounded-md"
             data-testid="btn-close-editor"
           >
             <X className="h-5 w-5" />

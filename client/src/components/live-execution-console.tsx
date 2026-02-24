@@ -136,18 +136,25 @@ function InlineArtifact({ artifact }: { artifact: RunStreamState["artifacts"][0]
   );
 }
 
-export function LiveExecutionConsole({ 
+export function LiveExecutionConsole({
   runId,
   forceShow = false,
-  onComplete, 
+  onComplete,
   onError,
-  className 
+  className
 }: LiveExecutionConsoleProps) {
   const [state, setState] = useState<RunStreamState | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [narrationText, setNarrationText] = useState<string>("Iniciando agente de búsqueda…");
   const narratorRef = useRef<PhaseNarrator | null>(null);
   const processedEventsRef = useRef<Set<string>>(new Set());
+
+  // Store callbacks in refs to avoid re-triggering the SSE effect when
+  // parent re-renders with new inline functions (prevents mount/unmount loop & React #185)
+  const onCompleteRef = useRef(onComplete);
+  const onErrorRef = useRef(onError);
+  useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
+  useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
   useEffect(() => {
     console.log('[LiveExecutionConsole] Mounted with runId=', runId);
@@ -166,25 +173,25 @@ export function LiveExecutionConsole({
     setNarrationText("Iniciando agente de búsqueda…");
 
     const unsubscribe = streamClient.subscribe((newState) => {
-      console.log(`[LiveExecutionConsole] State update:`, newState.connectionMode, newState.phase, newState.status, 
+      console.log(`[LiveExecutionConsole] State update:`, newState.connectionMode, newState.phase, newState.status,
         `queries=${newState.queries_current}/${newState.queries_total}`, `found=${newState.candidates_found}`);
       setState(newState);
-      
+
       for (const event of newState.events) {
         const eventKey = `${event.run_id}-${event.seq}`;
         if (processedEventsRef.current.has(eventKey)) continue;
         processedEventsRef.current.add(eventKey);
-        
+
         const narration = narratorRef.current!.processEvent(event);
         console.log(`[PhaseNarrator] ${event.event_type}: ${narration}`);
       }
-      
-      if (newState.status === "completed" && onComplete) {
-        onComplete(newState.artifacts);
+
+      if (newState.status === "completed" && onCompleteRef.current) {
+        onCompleteRef.current(newState.artifacts);
       }
-      
-      if (newState.status === "failed" && onError && newState.error) {
-        onError(newState.error);
+
+      if (newState.status === "failed" && onErrorRef.current && newState.error) {
+        onErrorRef.current(newState.error);
       }
     });
 
@@ -196,7 +203,7 @@ export function LiveExecutionConsole({
       streamClient.destroy();
       narratorRef.current?.destroy();
     };
-  }, [runId, onComplete, onError]);
+  }, [runId]);
 
   if (!runId) {
     return null;

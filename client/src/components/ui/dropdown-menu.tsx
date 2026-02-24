@@ -6,7 +6,16 @@ import { Check, ChevronRight, Circle } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
-const DropdownMenu = DropdownMenuPrimitive.Root
+type DropdownMenuRootProps = React.ComponentPropsWithoutRef<
+  typeof DropdownMenuPrimitive.Root
+>;
+
+// React 19 + Radix FocusScope can hit "Maximum update depth exceeded" when a
+// modal DropdownMenu re-renders while open/closing. Disabling "modal" avoids the
+// FocusScope trap while keeping the same UI behavior for our menus.
+const DropdownMenu = ({ modal = false, ...props }: DropdownMenuRootProps) => (
+  <DropdownMenuPrimitive.Root modal={modal} {...props} />
+);
 
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger
 

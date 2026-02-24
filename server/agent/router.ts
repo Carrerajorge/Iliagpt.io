@@ -2,7 +2,7 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ 
   baseURL: "https://api.x.ai/v1", 
-  apiKey: process.env.XAI_API_KEY 
+  apiKey: process.env.XAI_API_KEY || "missing" 
 });
 
 export type RouteDecision = "llm" | "agent" | "hybrid";

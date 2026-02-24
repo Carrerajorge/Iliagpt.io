@@ -1,7 +1,6 @@
 import { type Express } from "express";
 import { createServer as createViteServer, createLogger } from "vite";
 import { type Server } from "http";
-import viteConfig from "../vite.config";
 import fs from "fs";
 import path from "path";
 import { nanoid } from "nanoid";
@@ -9,30 +8,39 @@ import { nanoid } from "nanoid";
 const viteLogger = createLogger();
 
 export async function setupVite(server: Server, app: Express) {
-  const serverOptions = {
-    middlewareMode: true,
-    hmr: { server, path: "/vite-hmr" },
-    allowedHosts: true as const,
-  };
-
+  const clientRoot = path.resolve(import.meta.dirname, "..", "client");
+  
   const vite = await createViteServer({
-    ...viteConfig,
-    configFile: false,
+    configFile: path.resolve(import.meta.dirname, "..", "vite.config.ts"),
+    root: clientRoot,
+    server: {
+      middlewareMode: true,
+      hmr: { server, path: "/vite-hmr" },
+    },
+    appType: "custom",
     customLogger: {
       ...viteLogger,
       error: (msg, options) => {
         viteLogger.error(msg, options);
-        process.exit(1);
+        // Don't exit on error - let the server continue running
       },
     },
-    server: serverOptions,
-    appType: "custom",
   });
 
   app.use(vite.middlewares);
 
+  // SPA fallback - only for routes that are not API or Vite-served files
   app.use("*", async (req, res, next) => {
     const url = req.originalUrl;
+
+    // Skip if this looks like an API route or a file that Vite should handle
+    if (url.startsWith("/api") || 
+        url.startsWith("/src/") || 
+        url.startsWith("/@") ||
+        url.startsWith("/node_modules/") ||
+        url.includes(".") && !url.endsWith(".html")) {
+      return next();
+    }
 
     try {
       const clientTemplate = path.resolve(

@@ -1,50 +1,66 @@
-import { drizzle } from "drizzle-orm/node-postgres";
-import pg from "pg";
-import * as schema from "@shared/schema";
-import { Registry, Histogram, Counter, Gauge } from 'prom-client';
+import { drizzle } from "drizzle-orm/node-postgres"; import { migrate } from "drizzle-orm/node-postgres/migrator"; import * as pkg from "pg"; import type { PoolClient } from "pg"; import * as schema
+  from "../shared/schema"; import { Registry, Histogram, Counter, Gauge } from 'prom-client'; import { env } from "./config/env"; import { Logger } from "./lib/logger";
 
-const { Pool } = pg;
-
-// CRITICAL: Validate DATABASE_URL in production
-const isProduction = process.env.NODE_ENV === "production";
-const databaseUrl = process.env.DATABASE_URL;
-
-if (isProduction && !databaseUrl) {
-  console.error("[FATAL] DATABASE_URL is not set in production environment!");
-  console.error("[FATAL] The server cannot start without a PostgreSQL database.");
-  console.error("[FATAL] Please configure DATABASE_URL in your deployment secrets.");
-  console.error("[FATAL] In Replit Deployments: Go to Secrets tab and add DATABASE_URL");
-  process.exit(1);
-}
-
-if (!databaseUrl) {
-  console.warn("[WARNING] DATABASE_URL is not set. Database operations will fail.");
-}
+const { Pool } = pkg;
 
 const pool = new Pool({
-  connectionString: databaseUrl,
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
+  connectionString: env.DATABASE_URL,
+  max: env.DB_POOL_MAX || (env.NODE_ENV === 'production' ? 25 : 5), // Pool Size of at least 20 for pg_bouncer
+  min: env.DB_POOL_MIN || 0, // Pg_bouncer handles underlying pool, allow 0 at app level
+  idleTimeoutMillis: 3000,   // Close idle connections very fast (3s) to rely on pg_bouncer
+  connectionTimeoutMillis: 3000, // Fail extremely fast (3s)
+  allowExitOnIdle: false,
+  keepAlive: true,           // Required for stability behind TCP load balancing
+  application_name: 'iliagpt_server_write',
+  // Ensure predictable table resolution and add strict statement timeout for heavy AI traffic
+  options: '-c search_path=public -c statement_timeout=15000',
 });
+
+// Read Replica Pool (Optional)
+const poolRead = env.DATABASE_READ_URL ? new Pool({
+  connectionString: env.DATABASE_READ_URL,
+  max: env.DB_POOL_MAX || (env.NODE_ENV === 'production' ? 20 : 5),
+  min: env.DB_POOL_MIN || 2,
+  idleTimeoutMillis: 10000,
+  connectionTimeoutMillis: 5000,
+  allowExitOnIdle: false,
+  application_name: 'iliagpt_server_read',
+  options: '-c search_path=public',
+}) : pool; // Fallback to primary pool if no read replica
 
 pool.on('error', (err: any) => {
   if (err.code === '57P01') {
-    console.warn('[DB] Connection terminated by administrator, pool will reconnect automatically');
+    Logger.warn('[DB Write] Connection terminated by administrator, pool will reconnect automatically');
   } else {
-    console.error('[DB] Unexpected error on idle client:', err.message || err);
+    Logger.error('[DB Write] Unexpected error on idle client:', err.message || err);
   }
   healthState.consecutiveFailures++;
   updateHealthStatus();
 });
 
+if (env.DATABASE_READ_URL) {
+  poolRead.on('error', (err: any) => {
+    Logger.error('[DB Read] Unexpected error on idle client:', err.message || err);
+  });
+  poolRead.on('connect', () => {
+    Logger.info('[DB Read] New client connected to read pool');
+  });
+}
+
 pool.on('connect', () => {
-  console.log('[DB] New client connected to pool');
+  Logger.info('[DB Write] New client connected to pool');
 });
 
-export { pool };
+export { pool, poolRead };
 
 export const db = drizzle(pool, { schema });
+export const dbRead = drizzle(poolRead, { schema });
+
+export async function runMigrations(): Promise<void> {
+  await pool.query('CREATE EXTENSION IF NOT EXISTS "pgcrypto";');
+  await pool.query("CREATE EXTENSION IF NOT EXISTS vector;");
+  await migrate(db, { migrationsFolder: "./migrations" });
+}
 
 export type HealthStatus = 'HEALTHY' | 'DEGRADED' | 'UNHEALTHY';
 
@@ -108,7 +124,7 @@ const dbConnectionFailuresCounter = new Counter({
 
 function updateHealthStatus(): void {
   let newStatus: HealthStatus;
-  
+
   if (healthState.consecutiveFailures >= 3) {
     newStatus = 'UNHEALTHY';
   } else if (healthState.consecutiveFailures >= 1) {
@@ -134,7 +150,7 @@ async function performHealthCheck(): Promise<boolean> {
   }
 
   const startTime = Date.now();
-  let client: pg.PoolClient | null = null;
+  let client: PoolClient | null = null;
 
   try {
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -185,7 +201,7 @@ async function performHealthCheck(): Promise<boolean> {
   } finally {
     if (client) {
       try {
-        client.release();
+        (client as any).release();
       } catch (e) {
       }
     }
@@ -206,7 +222,7 @@ async function attemptReconnect(): Promise<void> {
 
   healthState.reconnectAttempts++;
   const delay = calculateBackoffDelay();
-  
+
   console.log(`[DB Health] Attempting reconnection (attempt ${healthState.reconnectAttempts}, delay: ${delay}ms)`);
 
   try {
@@ -240,7 +256,7 @@ function scheduleReconnect(): void {
   const delay = calculateBackoffDelay();
 
   console.log(`[DB Health] Scheduling reconnection in ${delay}ms`);
-  
+
   reconnectTimeoutId = setTimeout(() => {
     reconnectTimeoutId = null;
     attemptReconnect();
@@ -294,7 +310,7 @@ export function startHealthChecks(): void {
   }
 
   console.log(`[DB Health] Starting periodic health checks (interval: ${HEALTH_CHECK_INTERVAL_MS}ms)`);
-  
+
   performHealthCheck();
 
   healthCheckIntervalId = setInterval(() => {
@@ -321,7 +337,7 @@ export function stopHealthChecks(): void {
 
 export async function drainConnections(): Promise<void> {
   console.log('[DB Health] Draining database connections');
-  
+
   try {
     await pool.end();
     console.log('[DB Health] All database connections drained');
@@ -338,24 +354,53 @@ export async function getDbMetricsText(): Promise<string> {
   return dbMetricsRegistry.metrics();
 }
 
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  opts: { label: string; retries: number; delayMs: number; maxDelayMs: number }
+): Promise<T> {
+  let attempt = 0;
+  let delay = opts.delayMs;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      attempt += 1;
+      const msg = err?.message || String(err);
+      console.warn(`[Startup] ${opts.label} failed (${attempt}/${opts.retries}): ${msg}`);
+      if (attempt >= opts.retries) throw err;
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(opts.maxDelayMs, Math.round(delay * 1.6));
+    }
+  }
+}
+
 export async function verifyDatabaseConnection(): Promise<boolean> {
   try {
-    const client = await pool.connect();
-    const result = await client.query('SELECT current_database(), NOW() as server_time');
-    client.release();
+    const result = await retryWithBackoff(
+      async () => {
+        const client = await pool.connect();
+        try {
+          return await client.query('SELECT current_database(), NOW() as server_time');
+        } finally {
+          client.release();
+        }
+      },
+      { label: "DB connect", retries: 10, delayMs: 300, maxDelayMs: 3000 }
+    );
+
     console.log(`[DB] Connected to database: ${result.rows[0].current_database}`);
-    
+
     healthState.consecutiveSuccesses = HEALTHY_THRESHOLD;
     healthState.status = 'HEALTHY';
     updateHealthStatus();
-    
+
     return true;
   } catch (error: any) {
     console.error('[DB] Failed to connect to database:', error.message);
     healthState.consecutiveFailures++;
     updateHealthStatus();
-    
-    if (isProduction) {
+
+    if (env.NODE_ENV === "production") {
       console.error('[FATAL] Cannot start production server without database connection');
       process.exit(1);
     }

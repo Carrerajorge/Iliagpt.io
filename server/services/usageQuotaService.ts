@@ -1,6 +1,6 @@
 import { db } from "../db";
-import { users } from "@shared/schema";
-import { eq, sql } from "drizzle-orm";
+import { apiLogs, billingCreditGrants, users } from "@shared/schema";
+import { and, asc, eq, gt, gte, lt, sql } from "drizzle-orm";
 
 export interface UsageCheckResult {
   allowed: boolean;
@@ -26,7 +26,81 @@ const PLAN_LIMITS: Record<string, PlanLimits> = {
   admin: { dailyRequests: -1, model: "grok-4-1-fast-non-reasoning" },
 };
 
-const ADMIN_EMAIL = "carrerajorge874@gmail.com";
+// SECURITY: Admin email moved to environment variable
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "";
+const ADMIN_ROLE_SET = new Set(["admin", "superadmin"]);
+
+const DEFAULT_MONTHLY_TOKEN_LIMITS: Record<string, number | null> = {
+  free: 100_000,
+  go: 1_000_000,
+  plus: 5_000_000,
+  pro: null,
+  business: null,
+  enterprise: null,
+  admin: null,
+};
+
+function normalizeRole(value: unknown): string {
+  return String(value || "").toLowerCase().trim();
+}
+
+function isSystemAdminUser(user: typeof users.$inferSelect): boolean {
+  const email = String(user.email || "").toLowerCase().trim();
+  const role = normalizeRole((user as any).role);
+  return (ADMIN_EMAIL && email === ADMIN_EMAIL.toLowerCase()) || ADMIN_ROLE_SET.has(role);
+}
+
+function addMonths(base: Date, deltaMonths: number): Date {
+  const d = new Date(base);
+  const day = d.getDate();
+  d.setMonth(d.getMonth() + deltaMonths);
+  // Preserve end-of-month behavior where possible
+  if (d.getDate() !== day) d.setDate(0);
+  return d;
+}
+
+function toValidDate(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value : null;
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const d = new Date(value);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+  return null;
+}
+
+function getEffectivePlanKey(user: typeof users.$inferSelect, isAdmin: boolean): string {
+  if (isAdmin) return "admin";
+  const subscriptionStatus = String((user as any).subscriptionStatus || "").toLowerCase().trim();
+  const subscriptionPlan = String((user as any).subscriptionPlan || "").toLowerCase().trim();
+  const plan = String((user as any).plan || "free").toLowerCase().trim();
+  if (subscriptionStatus === "active" && subscriptionPlan) return subscriptionPlan;
+  return plan || "free";
+}
+
+function getMonthlyTokenLimitTokens(user: typeof users.$inferSelect, planKey: string): number | null {
+  const configured = typeof (user as any).monthlyTokenLimit === "number" ? (user as any).monthlyTokenLimit : null;
+  if (configured && configured > 0) return configured;
+  if (planKey in DEFAULT_MONTHLY_TOKEN_LIMITS) return DEFAULT_MONTHLY_TOKEN_LIMITS[planKey] ?? null;
+  return DEFAULT_MONTHLY_TOKEN_LIMITS.free;
+}
+
+function getCurrentCycleEnd(user: typeof users.$inferSelect, now: Date): Date {
+  const subscriptionPeriodEnd = toValidDate((user as any).subscriptionPeriodEnd);
+  let cycleEnd =
+    subscriptionPeriodEnd && subscriptionPeriodEnd.getTime() > now.getTime()
+      ? subscriptionPeriodEnd
+      : new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+  // Ensure the boundary is in the future (handles stale subscriptionPeriodEnd).
+  while (cycleEnd.getTime() <= now.getTime()) {
+    cycleEnd = addMonths(cycleEnd, 1);
+  }
+
+  return cycleEnd;
+}
 
 function getNextMidnight(): Date {
   const now = new Date();
@@ -39,7 +113,7 @@ function getNextMidnight(): Date {
 export class UsageQuotaService {
   async checkAndIncrementUsage(userId: string): Promise<UsageCheckResult> {
     const [user] = await db.select().from(users).where(eq(users.id, userId));
-    
+
     if (!user) {
       return {
         allowed: false,
@@ -51,10 +125,11 @@ export class UsageQuotaService {
       };
     }
 
-    const isAdmin = user.email === ADMIN_EMAIL || user.role === "admin";
+    // SECURITY: Check admin status using env variable and database role
+    const isAdmin = isSystemAdminUser(user);
     const plan = isAdmin ? "admin" : (user.plan || "free");
     const planLimits = PLAN_LIMITS[plan] || PLAN_LIMITS.free;
-    
+
     if (isAdmin || planLimits.dailyRequests === -1) {
       return {
         allowed: true,
@@ -66,32 +141,40 @@ export class UsageQuotaService {
     }
 
     const now = new Date();
-    const resetAt = user.dailyRequestsResetAt;
-    let currentUsed = user.dailyRequestsUsed || 0;
+    const nextReset = getNextMidnight();
 
-    if (!resetAt || now >= resetAt) {
-      currentUsed = 0;
-      const nextReset = getNextMidnight();
-      
-      await db.update(users)
-        .set({
-          dailyRequestsUsed: 1,
-          dailyRequestsResetAt: nextReset,
-          dailyRequestsLimit: planLimits.dailyRequests,
-          updatedAt: now
-        })
-        .where(eq(users.id, userId));
+    // FIX: Use atomic SQL operation to prevent race condition
+    // This performs the check and increment in a single atomic operation
+    const result = await db.execute(sql`
+      UPDATE users
+      SET
+        daily_requests_used = CASE
+          WHEN daily_requests_reset_at IS NULL OR NOW() >= daily_requests_reset_at
+          THEN 1
+          ELSE COALESCE(daily_requests_used, 0) + 1
+        END,
+        daily_requests_reset_at = CASE
+          WHEN daily_requests_reset_at IS NULL OR NOW() >= daily_requests_reset_at
+          THEN ${nextReset}
+          ELSE daily_requests_reset_at
+        END,
+        daily_requests_limit = ${planLimits.dailyRequests},
+        updated_at = NOW()
+      WHERE id = ${userId}
+        AND (
+          -- Allow if reset needed
+          daily_requests_reset_at IS NULL
+          OR NOW() >= daily_requests_reset_at
+          -- Or if under limit
+          OR COALESCE(daily_requests_used, 0) < ${planLimits.dailyRequests}
+        )
+      RETURNING
+        daily_requests_used as used,
+        daily_requests_reset_at as reset_at
+    `);
 
-      return {
-        allowed: true,
-        remaining: planLimits.dailyRequests - 1,
-        limit: planLimits.dailyRequests,
-        resetAt: nextReset,
-        plan
-      };
-    }
-
-    if (currentUsed >= planLimits.dailyRequests) {
+    // If no rows updated, user has exceeded limit
+    if (result.rows.length === 0) {
       return {
         allowed: false,
         remaining: 0,
@@ -102,25 +185,20 @@ export class UsageQuotaService {
       };
     }
 
-    await db.update(users)
-      .set({
-        dailyRequestsUsed: currentUsed + 1,
-        updatedAt: now
-      })
-      .where(eq(users.id, userId));
+    const updatedData = result.rows[0] as { used: number; reset_at: Date };
 
     return {
       allowed: true,
-      remaining: planLimits.dailyRequests - currentUsed - 1,
+      remaining: planLimits.dailyRequests - updatedData.used,
       limit: planLimits.dailyRequests,
-      resetAt: user.dailyRequestsResetAt,
+      resetAt: updatedData.reset_at,
       plan
     };
   }
 
   async getUsageStatus(userId: string): Promise<UsageCheckResult> {
     const [user] = await db.select().from(users).where(eq(users.id, userId));
-    
+
     if (!user) {
       return {
         allowed: false,
@@ -131,7 +209,7 @@ export class UsageQuotaService {
       };
     }
 
-    const isAdmin = user.email === ADMIN_EMAIL || user.role === "admin";
+    const isAdmin = isSystemAdminUser(user);
     const plan = isAdmin ? "admin" : (user.plan || "free");
     const isPaid = plan !== "free" && plan !== "admin";
     const planLimits = PLAN_LIMITS[plan] || PLAN_LIMITS.free;
@@ -171,7 +249,7 @@ export class UsageQuotaService {
 
   async updateUserPlan(userId: string, plan: string): Promise<void> {
     const planLimits = PLAN_LIMITS[plan] || PLAN_LIMITS.free;
-    
+
     await db.update(users)
       .set({
         plan,
@@ -181,6 +259,155 @@ export class UsageQuotaService {
         updatedAt: new Date()
       })
       .where(eq(users.id, userId));
+  }
+
+  async hasTokenQuota(userId: string): Promise<boolean> {
+    const [user] = await db.select().from(users).where(eq(users.id, userId));
+    if (!user) return false;
+
+    const isAdmin = isSystemAdminUser(user);
+    const planKey = getEffectivePlanKey(user, isAdmin);
+    const limitTokens = getMonthlyTokenLimitTokens(user, planKey);
+    if (limitTokens === null) return true;
+
+    const now = new Date();
+    const cycleEnd = getCurrentCycleEnd(user, now);
+    const cycleStart = addMonths(cycleEnd, -1);
+
+    const resetAt = toValidDate((user as any).tokensResetAt);
+    let monthlyUsed = typeof (user as any).monthlyTokensUsed === "number" ? (user as any).monthlyTokensUsed : 0;
+
+    if (!resetAt) {
+      // First time we enforce monthly quotas for this user: bootstrap from api_logs for the current cycle.
+      const [usageRow] = await db
+        .select({
+          tokensIn: sql<number>`COALESCE(SUM(${apiLogs.tokensIn}), 0)`,
+          tokensOut: sql<number>`COALESCE(SUM(${apiLogs.tokensOut}), 0)`,
+        })
+        .from(apiLogs)
+        .where(and(eq(apiLogs.userId, userId), gte(apiLogs.createdAt, cycleStart), lt(apiLogs.createdAt, cycleEnd)));
+
+      const tokensIn = usageRow?.tokensIn ?? 0;
+      const tokensOut = usageRow?.tokensOut ?? 0;
+      monthlyUsed = Math.max(0, tokensIn + tokensOut);
+
+      await db
+        .update(users)
+        .set({ monthlyTokensUsed: monthlyUsed, tokensResetAt: cycleEnd, updatedAt: new Date() })
+        .where(eq(users.id, userId));
+    } else if (now.getTime() >= resetAt.getTime()) {
+      monthlyUsed = 0;
+      await db
+        .update(users)
+        .set({ monthlyTokensUsed: 0, tokensResetAt: cycleEnd, updatedAt: new Date() })
+        .where(eq(users.id, userId));
+    }
+
+    if (monthlyUsed < limitTokens) return true;
+
+    const [{ extraCredits = 0 } = { extraCredits: 0 }] = await db
+      .select({
+        extraCredits: sql<number>`COALESCE(SUM(${billingCreditGrants.creditsRemaining}), 0)`,
+      })
+      .from(billingCreditGrants)
+      .where(
+        and(
+          eq(billingCreditGrants.userId, userId),
+          gt(billingCreditGrants.creditsRemaining, 0),
+          gt(billingCreditGrants.expiresAt, now)
+        )
+      );
+
+    return (extraCredits ?? 0) > 0;
+  }
+
+  async recordTokenUsage(userId: string, tokens: number): Promise<void> {
+    if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens <= 0) return;
+
+    await db.transaction(async (tx) => {
+      const [user] = await tx.select().from(users).where(eq(users.id, userId)).limit(1);
+      if (!user) return;
+
+      const isAdmin = isSystemAdminUser(user);
+      const planKey = getEffectivePlanKey(user, isAdmin);
+      const limitTokens = getMonthlyTokenLimitTokens(user, planKey);
+      const now = new Date();
+      const cycleEnd = getCurrentCycleEnd(user, now);
+
+      // Atomic: increment lifetime + monthly usage, and keep the current cycle boundary aligned.
+      const usageUpdate = await tx.execute(sql`
+        UPDATE users
+        SET
+          tokens_consumed = COALESCE(tokens_consumed, 0) + ${tokens},
+          monthly_tokens_used = CASE
+            WHEN tokens_reset_at IS NULL OR NOW() >= tokens_reset_at
+            THEN ${tokens}
+            ELSE COALESCE(monthly_tokens_used, 0) + ${tokens}
+          END,
+          tokens_reset_at = ${cycleEnd},
+          updated_at = NOW()
+        WHERE id = ${userId}
+        RETURNING monthly_tokens_used as monthly_used
+      `);
+
+      if (!usageUpdate?.rows?.length) return;
+
+      const monthlyUsedAfter = Number((usageUpdate.rows[0] as any)?.monthly_used || 0);
+      const monthlyUsedBefore = Math.max(0, monthlyUsedAfter - tokens);
+
+      // Charge only the portion of *this call* that exceeded the monthly allowance.
+      let overageToCharge = 0;
+      if (limitTokens !== null) {
+        const overAfter = Math.max(0, monthlyUsedAfter - limitTokens);
+        const overBefore = Math.max(0, monthlyUsedBefore - limitTokens);
+        overageToCharge = Math.max(0, overAfter - overBefore);
+      }
+
+      if (overageToCharge <= 0) return;
+
+      let remainingToCharge = overageToCharge;
+      let charged = 0;
+
+      const grants = await tx
+        .select({
+          id: billingCreditGrants.id,
+          creditsRemaining: billingCreditGrants.creditsRemaining,
+        })
+        .from(billingCreditGrants)
+        .where(
+          and(
+            eq(billingCreditGrants.userId, userId),
+            gt(billingCreditGrants.creditsRemaining, 0),
+            gt(billingCreditGrants.expiresAt, now)
+          )
+        )
+        .orderBy(asc(billingCreditGrants.expiresAt), asc(billingCreditGrants.createdAt));
+
+      for (const grant of grants) {
+        if (remainingToCharge <= 0) break;
+        const remaining = typeof grant.creditsRemaining === "number" ? grant.creditsRemaining : Number(grant.creditsRemaining || 0);
+        if (!Number.isFinite(remaining) || remaining <= 0) continue;
+
+        const take = Math.min(remaining, remainingToCharge);
+        await tx
+          .update(billingCreditGrants)
+          .set({ creditsRemaining: Math.max(0, remaining - take) })
+          .where(eq(billingCreditGrants.id, grant.id));
+
+        remainingToCharge -= take;
+        charged += take;
+      }
+
+      if (charged > 0) {
+        await tx
+          .update(users)
+          .set({
+            creditsBalance: sql<number>`GREATEST(COALESCE(${users.creditsBalance}, 0) - ${charged}, 0)`,
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, userId));
+      }
+    });
   }
 }
 

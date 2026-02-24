@@ -42,6 +42,8 @@ import {
   Minimize2,
 } from 'lucide-react';
 import { autoSaveToMediaLibrary } from '@/lib/mediaAutoSave';
+import { usePlatformSettings } from '@/contexts/PlatformSettingsContext';
+import { formatZonedDate, normalizeTimeZone, type PlatformDateFormat } from '@/lib/platformDateTime';
 
 export interface SmartTableProps {
   config: TableConfig;
@@ -49,7 +51,12 @@ export interface SmartTableProps {
   onRowClick?: (row: any) => void;
 }
 
-function formatCellValue(value: any, type: ColumnType, format?: string): string {
+function formatCellValue(
+  value: any,
+  type: ColumnType,
+  format: string | undefined,
+  opts?: { timeZone: string; dateFormat: PlatformDateFormat }
+): string {
   if (value === null || value === undefined) return '-';
   
   switch (type) {
@@ -61,7 +68,10 @@ function formatCellValue(value: any, type: ColumnType, format?: string): string 
         : String(value);
     case 'date':
       try {
-        return new Date(value).toLocaleDateString();
+        return formatZonedDate(value, {
+          timeZone: opts?.timeZone || "UTC",
+          dateFormat: opts?.dateFormat || "YYYY-MM-DD",
+        });
       } catch {
         return String(value);
       }
@@ -202,6 +212,10 @@ function dateRangeFilter(row: Row<any>, columnId: string, filterValue: [string, 
 }
 
 export function SmartTable({ config, className, onRowClick }: SmartTableProps) {
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
+  const platformDateFormat = platformSettings.date_format;
+
   const {
     columns: configColumns,
     data,
@@ -326,16 +340,20 @@ export function SmartTable({ config, className, onRowClick }: SmartTableProps) {
       );
     }
 
-    configColumns.forEach((col) => {
-      cols.push(
-        columnHelper.accessor(col.accessorKey, {
-          id: col.id,
-          header: col.header,
-          cell: (info) => formatCellValue(info.getValue(), col.type, col.format),
-          enableSorting: col.sortable !== false && enableSorting,
-          enableColumnFilter: col.filterable !== false && enableFiltering,
-          filterFn: col.type === 'number' || col.type === 'currency'
-            ? numberRangeFilter
+	    configColumns.forEach((col) => {
+	      cols.push(
+	        columnHelper.accessor(col.accessorKey, {
+	          id: col.id,
+	          header: col.header,
+	          cell: (info) =>
+	            formatCellValue(info.getValue(), col.type, col.format, {
+	              timeZone: platformTimeZone,
+	              dateFormat: platformDateFormat,
+	            }),
+	          enableSorting: col.sortable !== false && enableSorting,
+	          enableColumnFilter: col.filterable !== false && enableFiltering,
+	          filterFn: col.type === 'number' || col.type === 'currency'
+	            ? numberRangeFilter
             : col.type === 'date'
             ? dateRangeFilter
             : 'includesString',
@@ -345,8 +363,16 @@ export function SmartTable({ config, className, onRowClick }: SmartTableProps) {
       );
     });
 
-    return cols;
-  }, [configColumns, enableRowSelection, enableSorting, enableFiltering, columnHelper]);
+	    return cols;
+	  }, [
+	    configColumns,
+	    enableRowSelection,
+	    enableSorting,
+	    enableFiltering,
+	    columnHelper,
+	    platformTimeZone,
+	    platformDateFormat,
+	  ]);
 
   const table = useReactTable({
     data,

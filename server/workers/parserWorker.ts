@@ -11,8 +11,8 @@ import type {
   WorkerMessageFromWorker, 
   ParserTask, 
   ParserTaskResult 
-} from '../lib/pareWorkerTask';
-import { deserializeContent, WorkerErrorCode } from '../lib/pareWorkerTask';
+} from '../lib/pareWorkerTask.ts';
+import { deserializeContent, WorkerErrorCode } from '../lib/pareWorkerTask.ts';
 
 if (!parentPort) {
   throw new Error('This script must be run as a worker thread');

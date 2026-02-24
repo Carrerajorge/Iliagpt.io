@@ -355,7 +355,7 @@ export class FastFirstPipeline extends EventEmitter {
             content: cached.content,
             snippet: searchResult.snippet,
             relevanceScore: filtered.overallScore,
-            qualityScore: calculateQualityScore(canonicalUrl, cached.content),
+            qualityScore: calculateQualityScore(canonicalUrl, {}, cached.content.length),
             fetchMethod: "cache",
             timing: {
               fetchMs: 0,
@@ -461,7 +461,7 @@ export class FastFirstPipeline extends EventEmitter {
         content,
         snippet: searchResult.snippet,
         relevanceScore: filtered.overallScore,
-        qualityScore: calculateQualityScore(canonicalUrl, content),
+        qualityScore: calculateQualityScore(canonicalUrl, {}, content.length),
         fetchMethod,
         timing: {
           fetchMs,
@@ -511,9 +511,9 @@ export class FastFirstPipeline extends EventEmitter {
     
     const hasHeavyJs = (html.match(/<script/gi) || []).length > 10;
     
-    const hasNoSSRContent = !html.includes("data-reactroot") && 
+    const hasNoSSRContent = !html.includes("data-reactroot") &&
                            !html.includes("data-server-rendered") &&
-                           lowerHtml.includes("__next") || lowerHtml.includes("__nuxt");
+                           (lowerHtml.includes("__next") || lowerHtml.includes("__nuxt"));
     
     return hasSpaIndicators && (hasMinimalContent || hasHeavyJs || hasNoSSRContent);
   }

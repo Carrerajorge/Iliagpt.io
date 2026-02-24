@@ -1,10 +1,39 @@
-/**
- * TypeScript client for the Python AI Agent v5.0 service.
- * Provides methods to interact with the FastAPI service running on port 8081.
- */
+import { z } from "zod";
+
+// ... (existing imports)
+
+const SearchRequestSchema = z.object({
+  query: z.string().min(1, "Query is required"),
+  num_results: z.number().min(1).max(20).optional(),
+  use_browser: z.boolean().optional(),
+});
+
+const BrowseRequestSchema = z.object({
+  url: z.string().url("Invalid URL"),
+  screenshot: z.boolean().optional(),
+  scroll: z.boolean().optional(),
+  wait_for: z.enum(['load', 'domcontentloaded', 'networkidle']).optional(),
+});
+
+const DocumentRequestSchema = z.object({
+  doc_type: z.enum(['pptx', 'docx', 'xlsx']),
+  title: z.string().min(1),
+  content: z.any(),
+  theme: z.string().optional(),
+  filename: z.string().optional(),
+});
+
+const ExecuteRequestSchema = z.object({
+  tool: z.string().min(1),
+  params: z.record(z.any()),
+});
+
+// ... (existing code)
 
 const PYTHON_AGENT_BASE_URL = process.env.PYTHON_AGENT_URL || 'http://localhost:8081';
 const DEFAULT_TIMEOUT = 120000; // 2 minutes
+
+// ... (existing code)
 
 interface RunAgentRequest {
   input: string;
@@ -64,10 +93,10 @@ async function fetchWithTimeout(
   options: RequestInit & { timeout?: number } = {}
 ): Promise<Response> {
   const { timeout = DEFAULT_TIMEOUT, ...fetchOptions } = options;
-  
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
-  
+
   try {
     const response = await fetch(url, {
       ...fetchOptions,
@@ -92,7 +121,7 @@ export async function runAgent(
   options: { verbose?: boolean; timeout?: number } = {}
 ): Promise<RunAgentResponse> {
   const { verbose = false, timeout = 60 } = options;
-  
+
   try {
     const response = await fetchWithTimeout(`${PYTHON_AGENT_BASE_URL}/run`, {
       method: 'POST',
@@ -106,7 +135,7 @@ export async function runAgent(
       } as RunAgentRequest),
       timeout: (timeout + 10) * 1000, // Add buffer for HTTP overhead
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new PythonAgentClientError(
@@ -115,7 +144,7 @@ export async function runAgent(
         errorData
       );
     }
-    
+
     return await response.json() as RunAgentResponse;
   } catch (error: any) {
     if (error instanceof PythonAgentClientError) {
@@ -144,7 +173,7 @@ export async function getTools(): Promise<ToolsResponse> {
       },
       timeout: 10000, // 10 seconds should be enough for tools list
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new PythonAgentClientError(
@@ -153,7 +182,7 @@ export async function getTools(): Promise<ToolsResponse> {
         errorData
       );
     }
-    
+
     return await response.json() as ToolsResponse;
   } catch (error: any) {
     if (error instanceof PythonAgentClientError) {
@@ -182,7 +211,7 @@ export async function healthCheck(): Promise<HealthResponse> {
       },
       timeout: 5000, // 5 seconds for health check
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new PythonAgentClientError(
@@ -191,7 +220,7 @@ export async function healthCheck(): Promise<HealthResponse> {
         errorData
       );
     }
-    
+
     return await response.json() as HealthResponse;
   } catch (error: any) {
     if (error instanceof PythonAgentClientError) {
@@ -304,14 +333,15 @@ interface FilesResponse {
  * Browse a URL using the Python agent's browser.
  */
 export async function browse(request: BrowseRequest): Promise<BrowseResponse> {
+  const validRequest = BrowseRequestSchema.parse(request);
   try {
     const response = await fetchWithTimeout(`${PYTHON_AGENT_BASE_URL}/browse`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+      body: JSON.stringify(validRequest),
       timeout: 60000,
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new PythonAgentClientError(
@@ -320,7 +350,7 @@ export async function browse(request: BrowseRequest): Promise<BrowseResponse> {
         errorData
       );
     }
-    
+
     return await response.json() as BrowseResponse;
   } catch (error: any) {
     if (error instanceof PythonAgentClientError) throw error;
@@ -332,14 +362,15 @@ export async function browse(request: BrowseRequest): Promise<BrowseResponse> {
  * Search the web using the Python agent.
  */
 export async function search(request: SearchRequest): Promise<SearchResponse> {
+  const validRequest = SearchRequestSchema.parse(request);
   try {
     const response = await fetchWithTimeout(`${PYTHON_AGENT_BASE_URL}/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+      body: JSON.stringify(validRequest),
       timeout: 30000,
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new PythonAgentClientError(
@@ -348,7 +379,7 @@ export async function search(request: SearchRequest): Promise<SearchResponse> {
         errorData
       );
     }
-    
+
     return await response.json() as SearchResponse;
   } catch (error: any) {
     if (error instanceof PythonAgentClientError) throw error;
@@ -360,14 +391,15 @@ export async function search(request: SearchRequest): Promise<SearchResponse> {
  * Create a document using the Python agent.
  */
 export async function createDocument(request: DocumentRequest): Promise<DocumentResponse> {
+  const validRequest = DocumentRequestSchema.parse(request);
   try {
     const response = await fetchWithTimeout(`${PYTHON_AGENT_BASE_URL}/document`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+      body: JSON.stringify(validRequest),
       timeout: 120000,
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new PythonAgentClientError(
@@ -376,7 +408,7 @@ export async function createDocument(request: DocumentRequest): Promise<Document
         errorData
       );
     }
-    
+
     return await response.json() as DocumentResponse;
   } catch (error: any) {
     if (error instanceof PythonAgentClientError) throw error;
@@ -388,14 +420,15 @@ export async function createDocument(request: DocumentRequest): Promise<Document
  * Execute a specific tool directly.
  */
 export async function executeTool(request: ExecuteRequest): Promise<ExecuteResponse> {
+  const validRequest = ExecuteRequestSchema.parse(request);
   try {
     const response = await fetchWithTimeout(`${PYTHON_AGENT_BASE_URL}/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+      body: JSON.stringify(validRequest),
       timeout: 60000,
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new PythonAgentClientError(
@@ -404,7 +437,7 @@ export async function executeTool(request: ExecuteRequest): Promise<ExecuteRespo
         errorData
       );
     }
-    
+
     return await response.json() as ExecuteResponse;
   } catch (error: any) {
     if (error instanceof PythonAgentClientError) throw error;
@@ -422,7 +455,7 @@ export async function listFiles(): Promise<FilesResponse> {
       headers: { 'Content-Type': 'application/json' },
       timeout: 10000,
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new PythonAgentClientError(
@@ -431,7 +464,7 @@ export async function listFiles(): Promise<FilesResponse> {
         errorData
       );
     }
-    
+
     return await response.json() as FilesResponse;
   } catch (error: any) {
     if (error instanceof PythonAgentClientError) throw error;
@@ -449,7 +482,7 @@ export async function getStatus(): Promise<any> {
       headers: { 'Content-Type': 'application/json' },
       timeout: 10000,
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new PythonAgentClientError(
@@ -458,7 +491,7 @@ export async function getStatus(): Promise<any> {
         errorData
       );
     }
-    
+
     return await response.json();
   } catch (error: any) {
     if (error instanceof PythonAgentClientError) throw error;

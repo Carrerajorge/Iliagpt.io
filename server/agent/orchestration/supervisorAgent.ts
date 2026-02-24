@@ -1,14 +1,14 @@
 import { z } from "zod";
 import OpenAI from "openai";
 import crypto from "crypto";
-import { 
-  BaseAgent, 
-  BaseAgentConfig, 
-  AgentTask, 
-  AgentResult, 
-  AgentCapability, 
+import {
+  BaseAgent,
+  BaseAgentConfig,
+  AgentTask,
+  AgentResult,
+  AgentCapability,
   AGENT_REGISTRY,
-  AgentState 
+  AgentState
 } from "../langgraph/agents/types";
 import { toolRegistry, ToolExecutionResult } from "../registry/toolRegistry";
 import { activityStreamPublisher } from "./activityStream";
@@ -16,7 +16,7 @@ import { agentEventBus } from "../eventBus";
 
 const xaiClient = new OpenAI({
   baseURL: "https://api.x.ai/v1",
-  apiKey: process.env.XAI_API_KEY,
+  apiKey: process.env.XAI_API_KEY || "missing",
 });
 
 const DEFAULT_MODEL = "grok-4-1-fast-non-reasoning";
@@ -59,6 +59,8 @@ export type StepResult = z.infer<typeof StepResultSchema>;
 export const ExecutionContextSchema = z.object({
   runId: z.string(),
   parentRunId: z.string().optional(),
+  userId: z.string().optional(),
+  chatId: z.string().optional(),
   previousResults: z.record(z.any()),
   sharedMemory: z.record(z.any()),
   maxRetries: z.number().default(3),
@@ -146,9 +148,9 @@ Your responsibilities:
 6. Track progress and emit real-time events for UI updates
 
 Available worker agents:
-- ResearchAgent: Web research, information gathering, fact-checking
+- ResearchAssistantAgent: Web research, information gathering, fact-checking
 - CodeAgent: Code generation, review, refactoring, debugging
-- DataAgent: Data analysis, transformation, visualization
+- DataAnalystAgent: Data analysis, transformation, visualization
 - ContentAgent: Content creation, document generation
 - CommunicationAgent: Email, notifications, messaging
 - BrowserAgent: Autonomous web navigation and interaction
@@ -191,11 +193,11 @@ Use the Command pattern: each step is a command that can be executed, retried, o
   async execute(task: AgentTask): Promise<AgentResult> {
     const startTime = Date.now();
     const runId = crypto.randomUUID();
-    
-    this.updateState({ 
-      status: "running", 
-      currentTask: task.description, 
-      startedAt: new Date().toISOString() 
+
+    this.updateState({
+      status: "running",
+      currentTask: task.description,
+      startedAt: new Date().toISOString()
     });
 
     try {
@@ -209,10 +211,10 @@ Use the Command pattern: each step is a command that can be executed, retried, o
       const route = await this.analyzeAndRoute(analysis);
       const result = await this.orchestrate(analysis, route);
 
-      this.updateState({ 
-        status: "completed", 
-        progress: 100, 
-        completedAt: new Date().toISOString() 
+      this.updateState({
+        status: "completed",
+        progress: 100,
+        completedAt: new Date().toISOString()
       });
 
       return {
@@ -238,7 +240,7 @@ Use the Command pattern: each step is a command that can be executed, retried, o
     const wordCount = query.split(/\s+/).length;
     const hasMultipleTasks = /and|then|after|also|additionally|furthermore/i.test(query);
     const hasComplexKeywords = /integrate|coordinate|orchestrate|analyze.*and.*generate|multi-step/i.test(query);
-    
+
     if (wordCount > 50 || hasComplexKeywords || (hasMultipleTasks && wordCount > 30)) {
       return "complex";
     }
@@ -252,8 +254,8 @@ Use the Command pattern: each step is a command that can be executed, retried, o
     const response = await xaiClient.chat.completions.create({
       model: this.config.model,
       messages: [
-        { 
-          role: "system", 
+        {
+          role: "system",
           content: `You are a routing specialist. Analyze the query and determine which agents should handle it.
 Available agents: ${Array.from(this.workerAdapters.keys()).join(", ")}
 
@@ -263,7 +265,7 @@ Return a JSON object with:
   "suggestedTools": ["tool1", "tool2"],
   "executionMode": "sequential|parallel|hybrid",
   "estimatedComplexity": 1-10
-}` 
+}`
         },
         { role: "user", content: `Query: ${analysis.query}\nIntent: ${analysis.intent}\nComplexity: ${analysis.complexity}` },
       ],
@@ -272,12 +274,12 @@ Return a JSON object with:
 
     const content = response.choices[0].message.content || "{}";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
-    
+
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
         return RouteDecisionSchema.parse(parsed);
-      } catch {}
+      } catch { }
     }
 
     return {
@@ -289,7 +291,11 @@ Return a JSON object with:
   }
 
   async orchestrate(analysis: AnalysisResult, route: RouteDecision): Promise<OrchestrationResult> {
-    const runId = crypto.randomUUID();
+    const providedRunId = (analysis as any)?.context?.runId;
+    const runId =
+      typeof providedRunId === "string" && providedRunId.trim()
+        ? providedRunId.trim()
+        : crypto.randomUUID();
     const startTime = Date.now();
 
     activityStreamPublisher.publishRunCreated(runId, {
@@ -325,8 +331,15 @@ Return a JSON object with:
       },
     });
 
+    const contextUserId =
+      typeof (analysis as any)?.context?.userId === "string" ? String((analysis as any).context.userId).trim() : undefined;
+    const contextChatId =
+      typeof (analysis as any)?.context?.chatId === "string" ? String((analysis as any).context.chatId).trim() : undefined;
+
     const context: ExecutionContext = {
       runId,
+      userId: contextUserId || undefined,
+      chatId: contextChatId || undefined,
       previousResults: {},
       sharedMemory: {},
       maxRetries: 3,
@@ -341,7 +354,7 @@ Return a JSON object with:
     try {
       for (const group of plan.parallelGroups) {
         const groupSteps = plan.steps.filter(s => group.includes(s.id));
-        
+
         const groupPromises = groupSteps.map(async (step) => {
           const canExecute = step.dependencies.every(d => completedSteps.has(d));
           if (!canExecute) {
@@ -374,7 +387,7 @@ Return a JSON object with:
       const aggregatedOutput = await this.aggregateResults(stepResults);
 
       const success = aggregatedOutput.metrics.failedSteps === 0;
-      
+
       if (success) {
         activityStreamPublisher.publishRunCompleted(runId, {
           status: "completed",
@@ -426,8 +439,8 @@ Return a JSON object with:
     const response = await xaiClient.chat.completions.create({
       model: this.config.model,
       messages: [
-        { 
-          role: "system", 
+        {
+          role: "system",
           content: `You are a planning specialist. Create a detailed execution plan with parallelizable steps.
 
 Return a JSON plan with this exact structure:
@@ -451,11 +464,11 @@ Return a JSON plan with this exact structure:
 }
 
 Group steps that can run in parallel. Steps in the same group run concurrently.
-Steps in later groups wait for earlier groups to complete.` 
+Steps in later groups wait for earlier groups to complete.`
         },
-        { 
-          role: "user", 
-          content: `Objective: ${objective}\n\nAssigned Agents:\n${agents.map(a => `- ${a.name}: ${a.reason}`).join("\n")}` 
+        {
+          role: "user",
+          content: `Objective: ${objective}\n\nAssigned Agents:\n${agents.map(a => `- ${a.name}: ${a.reason}`).join("\n")}`
         },
       ],
       temperature: this.config.temperature,
@@ -463,7 +476,7 @@ Steps in later groups wait for earlier groups to complete.`
 
     const content = response.choices[0].message.content || "{}";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
-    
+
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
@@ -535,10 +548,21 @@ Steps in later groups wait for earlier groups to complete.`
         let result: any;
 
         if (step.tool && toolRegistry.has(step.tool)) {
-          const toolResult = await toolRegistry.execute(step.tool, {
-            ...step.input,
-            previousResults: context.previousResults,
-          });
+          const toolResult = await toolRegistry.execute(
+            step.tool,
+            {
+              ...step.input,
+              previousResults: context.previousResults,
+            },
+            {
+              context: {
+                userId: context.userId,
+                chatId: context.chatId,
+                runId: context.runId,
+                providerId: "agentic_engine",
+              },
+            }
+          );
           result = toolResult.success ? toolResult.data : { error: toolResult.error };
         } else {
           result = await this.delegateToAgent(step.agent, {
@@ -551,6 +575,8 @@ Steps in later groups wait for earlier groups to complete.`
               sharedMemory: context.sharedMemory,
             },
             priority: step.priority,
+            retries: 0,
+            maxRetries: 3,
           });
         }
 
@@ -589,11 +615,11 @@ Steps in later groups wait for earlier groups to complete.`
         throw new Error(result.error || "Step execution failed");
       } catch (error: any) {
         retryCount++;
-        
+
         if (retryCount <= maxRetries) {
           const replanEvent = `Step ${step.id} failed (attempt ${retryCount}/${maxRetries}): ${error.message}. Retrying...`;
           this.replanEvents.get(context.runId)?.push(replanEvent);
-          
+
           activityStreamPublisher.publishToolCallFailed(context.runId, {
             toolName: step.tool || step.agent,
             toolCallId: step.id,
@@ -609,7 +635,7 @@ Steps in later groups wait for earlier groups to complete.`
         }
 
         const durationMs = Date.now() - startTime;
-        
+
         activityStreamPublisher.publishToolCallFailed(context.runId, {
           toolName: step.tool || step.agent,
           toolCallId: step.id,
@@ -654,14 +680,14 @@ Steps in later groups wait for earlier groups to complete.`
 
   async delegateToAgent(agentName: string, task: AgentTask): Promise<AgentResult> {
     const adapter = this.workerAdapters.get(agentName);
-    
+
     if (!adapter) {
       const fallbackAdapter = this.workerAdapters.get("ContentAgent");
       if (fallbackAdapter) {
         console.warn(`[SupervisorAgent] Agent "${agentName}" not found, using ContentAgent as fallback`);
         return await fallbackAdapter.invoke(task);
       }
-      
+
       return {
         taskId: task.id,
         agentId: "unknown",
@@ -680,7 +706,7 @@ Steps in later groups wait for earlier groups to complete.`
 
     try {
       const result = await adapter.invoke(task);
-      
+
       activityStreamPublisher.publishAgentDelegated(task.id, {
         agentName,
         status: result.success ? "completed" : "failed",

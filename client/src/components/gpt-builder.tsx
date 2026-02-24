@@ -7,7 +7,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { 
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -20,7 +21,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { 
+import {
   ChevronLeft,
   Plus,
   X,
@@ -40,7 +41,9 @@ import {
   ExternalLink
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiFetch } from "@/lib/apiClient";
 import { useToast } from "@/hooks/use-toast";
+import { useUpload } from "@/hooks/use-upload";
 import { useModelAvailability } from "@/contexts/ModelAvailabilityContext";
 import type { Gpt } from "./gpt-explorer";
 import type { GptKnowledge, GptAction } from "@shared/schema";
@@ -58,6 +61,8 @@ interface ActionFormData {
   httpMethod: string;
   endpoint: string;
   authType: string;
+  authConfig?: string;
+  openApiSpec?: string;
 }
 
 export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilderProps) {
@@ -85,7 +90,7 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [savedGptData, setSavedGptData] = useState<Gpt | null>(null);
-  
+
   const [formData, setFormData] = useState({
     name: "",
     slug: "",
@@ -183,8 +188,8 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
   const loadKnowledgeAndActions = async (gptId: string) => {
     try {
       const [knowledgeRes, actionsRes] = await Promise.all([
-        fetch(`/api/gpts/${gptId}/knowledge`),
-        fetch(`/api/gpts/${gptId}/actions`)
+        apiFetch(`/api/gpts/${gptId}/knowledge`),
+        apiFetch(`/api/gpts/${gptId}/actions`)
       ]);
       if (knowledgeRes.ok) setKnowledgeFiles(await knowledgeRes.json());
       if (actionsRes.ok) setActions(await actionsRes.json());
@@ -244,7 +249,7 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
       const url = editingGpt ? `/api/gpts/${editingGpt.id}` : "/api/gpts";
       const method = editingGpt ? "PATCH" : "POST";
 
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -254,7 +259,7 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
         const savedGpt = await response.json();
         setSavedGptData(savedGpt);
         // Sync all formData with server response without marking dirty
-        syncFormData({ 
+        syncFormData({
           visibility: savedGpt.visibility || "private",
           name: savedGpt.name,
           slug: savedGpt.slug,
@@ -265,18 +270,23 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
         // onSave is called when modal closes to prevent parent from closing builder
         setShowUpdateModal(true);
       } else {
-        throw new Error("Error al guardar");
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Error al guardar");
       }
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: "Error",
-        description: "No se pudo guardar el GPT",
+        description: error.message || "No se pudo guardar el GPT",
         variant: "destructive"
       });
     } finally {
       setSaving(false);
     }
   };
+
+  const { uploadFile, isUploading: isHookUploading, progress: uploadProgress } = useUpload({
+    uploadIdPrefix: `gpt-knowledge-${editingGpt?.id || 'new'}`,
+  });
 
   const handleFileUpload = async (files: FileList) => {
     if (!editingGpt) {
@@ -289,35 +299,48 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
     }
 
     setUploading(true);
+    let uploadedCount = 0;
+
     for (const file of Array.from(files)) {
       try {
-        const response = await fetch(`/api/gpts/${editingGpt.id}/knowledge`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            fileName: file.name,
-            fileType: file.type || "application/octet-stream",
-            fileSize: file.size,
-            storageUrl: `pending://${file.name}`,
-            embeddingStatus: "pending"
-          })
-        });
-        if (response.ok) {
-          const newKnowledge = await response.json();
-          setKnowledgeFiles(prev => [newKnowledge, ...prev]);
+        const uploadRes = await uploadFile(file);
+
+        if (uploadRes && uploadRes.storagePath) {
+          const response = await apiFetch(`/api/gpts/${editingGpt.id}/knowledge`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fileName: file.name,
+              fileType: file.type || "application/octet-stream",
+              fileSize: file.size,
+              storageUrl: uploadRes.storagePath,
+              embeddingStatus: "pending"
+            })
+          });
+
+          if (response.ok) {
+            const newKnowledge = await response.json();
+            setKnowledgeFiles(prev => [newKnowledge, ...prev]);
+            uploadedCount++;
+          }
         }
       } catch (error) {
         console.error("Error uploading file:", error);
       }
     }
+
     setUploading(false);
-    toast({ title: "Archivos agregados" });
+    if (uploadedCount > 0) {
+      toast({ title: `${uploadedCount} archivo(s) agregado(s)` });
+    } else {
+      toast({ title: "No se pudieron agregar archivos", variant: "destructive" });
+    }
   };
 
   const handleDeleteKnowledge = async (id: string) => {
     if (!editingGpt) return;
     try {
-      await fetch(`/api/gpts/${editingGpt.id}/knowledge/${id}`, { method: "DELETE" });
+      await apiFetch(`/api/gpts/${editingGpt.id}/knowledge/${id}`, { method: "DELETE" });
       setKnowledgeFiles(prev => prev.filter(k => k.id !== id));
     } catch (error) {
       console.error("Error deleting knowledge:", error);
@@ -327,9 +350,9 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
   const handleDeleteGpt = async () => {
     if (!editingGpt) return;
     if (!confirm("¿Estás seguro de que quieres eliminar este GPT?")) return;
-    
+
     try {
-      const response = await fetch(`/api/gpts/${editingGpt.id}`, { method: "DELETE" });
+      const response = await apiFetch(`/api/gpts/${editingGpt.id}`, { method: "DELETE" });
       if (response.ok) {
         toast({ title: "GPT eliminado" });
         onOpenChange(false);
@@ -346,7 +369,7 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
   const handleDuplicateGpt = async () => {
     if (!editingGpt) return;
     try {
-      const response = await fetch("/api/gpts", {
+      const response = await apiFetch("/api/gpts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -411,7 +434,7 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
       return;
     }
     setEditingAction(null);
-    setActionForm({ name: "", description: "", httpMethod: "GET", endpoint: "", authType: "none" });
+    setActionForm({ name: "", description: "", httpMethod: "GET", endpoint: "", authType: "none", authConfig: "", openApiSpec: "" });
     setShowActionEditor(true);
   };
 
@@ -424,13 +447,20 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
       });
       return;
     }
-    
+
     try {
+      const payload = {
+        ...actionForm,
+        authConfig: actionForm.authConfig && actionForm.authType !== 'none'
+          ? { token: actionForm.authConfig }
+          : null,
+      };
+
       if (editingAction) {
-        const response = await fetch(`/api/gpts/${editingGpt.id}/actions/${editingAction.id}`, {
+        const response = await apiFetch(`/api/gpts/${editingGpt.id}/actions/${editingAction.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(actionForm)
+          body: JSON.stringify(payload)
         });
         if (response.ok) {
           const updated = await response.json();
@@ -438,10 +468,10 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
           toast({ title: "Acción actualizada" });
         }
       } else {
-        const response = await fetch(`/api/gpts/${editingGpt.id}/actions`, {
+        const response = await apiFetch(`/api/gpts/${editingGpt.id}/actions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(actionForm)
+          body: JSON.stringify(payload)
         });
         if (response.ok) {
           const newAction = await response.json();
@@ -463,18 +493,18 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
     if (!savedGptData) return;
     const typedVisibility = newVisibility as "private" | "team" | "public";
     const previousVisibility = savedGptData.visibility as "private" | "team" | "public";
-    
+
     // Update immediately for UI responsiveness (without marking dirty)
     syncFormData({ visibility: typedVisibility });
     setSavedGptData(prev => prev ? { ...prev, visibility: typedVisibility } : null);
-    
+
     try {
-      const response = await fetch(`/api/gpts/${savedGptData.id}`, {
+      const response = await apiFetch(`/api/gpts/${savedGptData.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ visibility: newVisibility })
       });
-      
+
       if (response.ok) {
         const updatedGpt = await response.json();
         setSavedGptData(updatedGpt);
@@ -547,7 +577,7 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
               {hasChanges && (
                 <span className="text-sm text-muted-foreground">Actualizaciones pendientes</span>
               )}
-              
+
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-more-options">
@@ -583,9 +613,9 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              <Button 
-                variant="outline" 
-                size="sm" 
+              <Button
+                variant="outline"
+                size="sm"
                 data-testid="button-share"
                 onClick={() => {
                   if (editingGpt) {
@@ -603,15 +633,25 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                 <LinkIcon className="h-4 w-4 mr-2" />
                 Compartir
               </Button>
-              
-              <Button 
-                size="sm" 
+
+              <Button
+                size="sm"
                 onClick={handleSave}
                 disabled={saving || !hasChanges}
                 className="bg-green-600 hover:bg-green-700"
                 data-testid="button-update"
               >
                 {saving ? "Guardando..." : "Actualizar"}
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => onOpenChange(false)}
+                className="h-8 w-8 ml-2 text-muted-foreground hover:bg-muted"
+                aria-label="Cerrar configuración de GPT"
+              >
+                <X className="h-5 w-5" />
               </Button>
             </div>
           </header>
@@ -623,8 +663,8 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                   onClick={() => setActiveTab("crear")}
                   className={cn(
                     "px-6 py-2 text-sm font-medium rounded-full transition-colors",
-                    activeTab === "crear" 
-                      ? "bg-muted text-foreground" 
+                    activeTab === "crear"
+                      ? "bg-muted text-foreground"
                       : "text-muted-foreground hover:text-foreground"
                   )}
                   data-testid="tab-crear"
@@ -635,8 +675,8 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                   onClick={() => setActiveTab("configurar")}
                   className={cn(
                     "px-6 py-2 text-sm font-medium rounded-full transition-colors",
-                    activeTab === "configurar" 
-                      ? "bg-muted text-foreground" 
+                    activeTab === "configurar"
+                      ? "bg-muted text-foreground"
                       : "text-muted-foreground hover:text-foreground"
                   )}
                   data-testid="tab-configurar"
@@ -645,336 +685,340 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto" style={{ maxHeight: 'calc(100vh - 140px)' }}>
+              <div className="flex-1 overflow-y-auto max-h-[calc(100vh-140px)]">
                 <div className="p-6 max-w-2xl mx-auto space-y-6 pb-10">
                   {activeTab === "crear" ? (
-                    <div className="space-y-4">
-                      <p className="text-muted-foreground text-sm">
-                        Usa la conversación para configurar tu GPT. Describe cómo quieres que se comporte y qué debería saber.
-                      </p>
+                    <div className="flex flex-col h-[calc(100vh-220px)] border rounded-lg overflow-hidden bg-background">
+                      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                        <div className="flex gap-3">
+                          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                            <span className="text-sm">🤖</span>
+                          </div>
+                          <div className="bg-muted p-3 rounded-lg rounded-tl-none max-w-[85%] text-sm">
+                            ¡Hola! Te ayudaré a crear y configurar tu GPT. Dime, ¿de qué trata y qué quieres que haga? Puedo actualizar su configuración en tiempo real según lo que hablemos.
+                          </div>
+                        </div>
+                      </div>
+                      <div className="p-4 bg-muted/30 border-t">
+                        <div className="flex flex-col gap-2 relative">
+                          <Textarea
+                            placeholder="Escribe un mensaje al Agent Builder..."
+                            className="min-h-[80px] max-h-[200px] resize-y pr-12 text-sm bg-background border-muted"
+                          />
+                          <Button size="icon" className="absolute right-3 bottom-3 h-8 w-8 rounded-lg bg-primary/90 hover:bg-primary transition-all shadow-sm" aria-label="Enviar mensaje al builder">
+                            <Send className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <p className="text-xs text-center text-muted-foreground mt-2">
+                          El chat de Agent Builder está en desarrollo. Generará metadatos automáticamente guiando tus decisiones.
+                        </p>
+                      </div>
                     </div>
                   ) : (
-                    <>
-                      <div className="flex justify-center mb-6">
-                        <button 
-                          className="w-20 h-20 rounded-full border-2 border-dashed border-muted-foreground/30 flex items-center justify-center hover:border-muted-foreground/50 transition-colors overflow-hidden"
-                          onClick={() => avatarInputRef.current?.click()}
-                          data-testid="button-upload-avatar"
-                        >
-                          {avatarPreview ? (
-                            <img src={avatarPreview} alt="Avatar" className="w-full h-full object-cover" />
-                          ) : (
-                            <Plus className="h-8 w-8 text-muted-foreground/50" />
-                          )}
-                        </button>
-                        <input
-                          ref={avatarInputRef}
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={handleAvatarUpload}
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="name">Nombre</Label>
-                        <Input
-                          id="name"
-                          placeholder="Escribe un nombre para tu GPT"
-                          value={formData.name}
-                          onChange={(e) => handleFormChange({ name: e.target.value, slug: generateSlug(e.target.value) })}
-                          data-testid="input-gpt-name"
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="description">Descripción</Label>
-                        <Input
-                          id="description"
-                          placeholder="Añade una breve descripción sobre qué hace este GPT"
-                          value={formData.description}
-                          onChange={(e) => handleFormChange({ description: e.target.value })}
-                          data-testid="input-gpt-description"
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="instructions">Instrucciones</Label>
-                        <Textarea
-                          id="instructions"
-                          placeholder="¿Qué hace este GPT? ¿Cómo se comporta? ¿Qué debería evitar hacer?"
-                          value={formData.systemPrompt}
-                          onChange={(e) => handleFormChange({ systemPrompt: e.target.value })}
-                          className="min-h-[200px] max-h-[400px] resize-y overflow-y-auto"
-                          maxLength={8000}
-                          data-testid="input-gpt-instructions"
-                        />
-                        <p className="text-xs text-muted-foreground text-right">
-                          {formData.systemPrompt.length}/8,000 caracteres
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          Las conversaciones con tu GPT pueden potencialmente incluir todas las instrucciones proporcionadas o parte de ellas.
-                        </p>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Frases para iniciar una conversación</Label>
-                        {formData.conversationStarters.map((starter, index) => (
-                          <div key={index} className="flex items-center gap-2">
-                            <Input
-                              placeholder="Escribe una frase de inicio..."
-                              value={starter}
-                              onChange={(e) => updateConversationStarter(index, e.target.value)}
-                              data-testid={`input-starter-${index}`}
-                            />
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => removeConversationStarter(index)}
-                              className="h-8 w-8 flex-shrink-0"
+                    <Accordion type="single" collapsible className="w-full space-y-4" defaultValue="general">
+                      <AccordionItem value="general" className="border rounded-lg bg-card px-4">
+                        <AccordionTrigger className="hover:no-underline font-medium">1. Identidad del Agente</AccordionTrigger>
+                        <AccordionContent className="space-y-6 pt-2 pb-6">
+                          <div className="flex justify-center mb-2">
+                            <button
+                              className="w-20 h-20 rounded-full border-2 border-dashed border-muted-foreground/30 flex items-center justify-center hover:border-muted-foreground/50 transition-colors overflow-hidden relative group"
+                              onClick={() => avatarInputRef.current?.click()}
+                              data-testid="button-upload-avatar"
                             >
-                              <X className="h-4 w-4" />
+                              {avatarPreview ? (
+                                <>
+                                  <img src={avatarPreview} alt="Avatar" className="w-full h-full object-cover" />
+                                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                    <Upload className="h-5 w-5 text-white" />
+                                  </div>
+                                </>
+                              ) : (
+                                <Plus className="h-8 w-8 text-muted-foreground/50" />
+                              )}
+                            </button>
+                            <input
+                              ref={avatarInputRef}
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={handleAvatarUpload}
+                              aria-label="Subir avatar"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label htmlFor="name">Nombre</Label>
+                            <Input
+                              id="name"
+                              placeholder="Ej: Asistente Analítico"
+                              value={formData.name}
+                              onChange={(e) => handleFormChange({ name: e.target.value, slug: generateSlug(e.target.value) })}
+                              data-testid="input-gpt-name"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label htmlFor="description">Descripción</Label>
+                            <Input
+                              id="description"
+                              placeholder="Añade una breve descripción sobre el objetivo principal"
+                              value={formData.description}
+                              onChange={(e) => handleFormChange({ description: e.target.value })}
+                              data-testid="input-gpt-description"
+                            />
+                          </div>
+                        </AccordionContent>
+                      </AccordionItem>
+
+                      <AccordionItem value="instructions" className="border rounded-lg bg-card px-4">
+                        <AccordionTrigger className="hover:no-underline font-medium">2. Instrucciones y Comportamiento</AccordionTrigger>
+                        <AccordionContent className="space-y-6 pt-2 pb-6">
+                          <div className="space-y-2">
+                            <Label htmlFor="instructions" className="flex justify-between">
+                              <span>System Prompt</span>
+                              <span className="text-xs font-normal text-muted-foreground">{formData.systemPrompt.length}/8,000</span>
+                            </Label>
+                            <Textarea
+                              id="instructions"
+                              placeholder="Define minuciosamente cómo actúa este GPT y sus límites operativos..."
+                              value={formData.systemPrompt}
+                              onChange={(e) => handleFormChange({ systemPrompt: e.target.value })}
+                              className="min-h-[200px] max-h-[400px] resize-y font-mono text-sm leading-relaxed bg-muted/30"
+                              maxLength={8000}
+                              data-testid="input-gpt-instructions"
+                            />
+                          </div>
+
+                          <div className="space-y-3">
+                            <Label>Frases sugestivas de entrada (Conversation Starters)</Label>
+                            <div className="space-y-2">
+                              {formData.conversationStarters.map((starter, index) => (
+                                <div key={index} className="flex items-center gap-2 group">
+                                  <Input
+                                    placeholder="Ej: Analiza este reporte de gastos..."
+                                    value={starter}
+                                    onChange={(e) => updateConversationStarter(index, e.target.value)}
+                                    className="bg-muted/30"
+                                    data-testid={`input-starter-${index}`}
+                                  />
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => removeConversationStarter(index)}
+                                    className="h-9 w-9 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={addConversationStarter}
+                              className="w-full text-muted-foreground border-dashed"
+                            >
+                              <Plus className="h-4 w-4 mr-2" />
+                              Añadir frase de inicio
                             </Button>
                           </div>
-                        ))}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={addConversationStarter}
-                          className="text-muted-foreground"
-                        >
-                          <Plus className="h-4 w-4 mr-2" />
-                          Añadir frase
-                        </Button>
-                      </div>
 
-                      <div className="space-y-2">
-                        <Label>Conocimientos</Label>
-                        <p className="text-xs text-muted-foreground">
-                          Las conversaciones con tu GPT pueden potencialmente revelar todos los archivos cargados o parte de ellos.
-                        </p>
-                        
-                        {knowledgeFiles.length > 0 && (
-                          <div className="space-y-2 mb-3">
-                            {knowledgeFiles.map((file) => (
-                              <div key={file.id} className="flex items-center justify-between p-2 bg-muted/50 rounded-lg">
-                                <div className="flex items-center gap-2">
-                                  <FileText className="h-4 w-4 text-muted-foreground" />
-                                  <span className="text-sm">{file.fileName}</span>
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-1">
+                              <Label>Modelo Principal</Label>
+                              <HelpCircle className="h-4 w-4 text-muted-foreground" />
+                            </div>
+                            <Select
+                              value={formData.recommendedModel || "none"}
+                              onValueChange={(value) => handleFormChange({ recommendedModel: value === "none" ? "" : value })}
+                            >
+                              <SelectTrigger className="w-full bg-muted/30" data-testid="select-model">
+                                <SelectValue placeholder="Modelo predeterminado delegado a la plataforma" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="none">Dinámico (Determinado por la plataforma)</SelectItem>
+                                <SelectItem value="gpt-4o">GPT-4o (Lógico avanzado)</SelectItem>
+                                <SelectItem value="gpt-4o-mini">GPT-4o mini (Velocidad)</SelectItem>
+                                <SelectItem value="gpt-o1">GPT-o1 (Razonamiento profundo)</SelectItem>
+                                <SelectItem value="gpt-o3-mini">GPT-o3-mini</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </AccordionContent>
+                      </AccordionItem>
+
+                      <AccordionItem value="knowledge" className="border rounded-lg bg-card px-4">
+                        <AccordionTrigger className="hover:no-underline font-medium flex items-center gap-2">
+                          3. Base de Conocimiento (RAG)
+                          <span className="ml-2 text-xs font-normal px-2 py-0.5 rounded-full bg-muted flex items-center justify-center">
+                            {knowledgeFiles.length}
+                          </span>
+                        </AccordionTrigger>
+                        <AccordionContent className="space-y-4 pt-2 pb-6">
+                          <p className="text-xs text-muted-foreground pb-2 border-b">
+                            Archivos indexados para ser usados como contexto externo incrustado en memoria vectorial.
+                          </p>
+                          {knowledgeFiles.length > 0 && (
+                            <div className="space-y-2 mb-4">
+                              {knowledgeFiles.map((file) => (
+                                <div key={file.id} className="flex items-center justify-between p-3 bg-muted/40 border rounded-lg hover:border-primary/50 transition-colors">
+                                  <div className="flex items-center gap-3 overflow-hidden">
+                                    <div className="p-2 bg-primary/10 rounded-md text-primary">
+                                      <FileText className="h-4 w-4" />
+                                    </div>
+                                    <div className="flex flex-col overflow-hidden">
+                                      <span className="text-sm font-medium truncate" title={file.fileName}>{file.fileName}</span>
+                                      <span className="text-xs text-muted-foreground">Vector Mapping {file.embeddingStatus === "completed" ? "✅" : "⏳"}</span>
+                                    </div>
+                                  </div>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => handleDeleteKnowledge(file.id)}
+                                    className="h-8 w-8 text-muted-foreground hover:text-destructive shrink-0"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
                                 </div>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => handleDeleteKnowledge(file.id)}
-                                  className="h-6 w-6"
-                                >
-                                  <X className="h-3 w-3" />
-                                </Button>
+                              ))}
+                            </div>
+                          )}
+
+                          {isHookUploading && (
+                            <div className="space-y-2 mb-4 p-4 border rounded-lg bg-muted/30">
+                              <div className="flex justify-between items-center text-sm">
+                                <span className="text-muted-foreground flex items-center gap-2">
+                                  <Upload className="h-4 w-4 animate-pulse" />
+                                  Subiendo archivo(s)...
+                                </span>
+                                <span className="font-medium">{uploadProgress}%</span>
+                              </div>
+                              <div className="h-1.5 w-full bg-secondary rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-primary transition-all duration-300 ease-out"
+                                  style={{ width: `${uploadProgress}%` }}
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          <Button
+                            variant="secondary"
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={uploading || isHookUploading}
+                            className="w-full"
+                            data-testid="button-upload-files"
+                          >
+                            <Upload className="h-4 w-4 mr-2" />
+                            {uploading || isHookUploading ? "Ingestando en vector db..." : "Añadir Conocimiento de Formatos (.pdf, .json, .csv)"}
+                          </Button>
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            multiple
+                            className="hidden"
+                            accept=".pdf,.txt,.docx,.xlsx,.csv,.json"
+                            onChange={(e) => e.target.files && handleFileUpload(e.target.files)}
+                            aria-label="Cargar archivos de conocimiento"
+                          />
+                        </AccordionContent>
+                      </AccordionItem>
+
+                      <AccordionItem value="capabilities" className="border rounded-lg bg-card px-4">
+                        <AccordionTrigger className="hover:no-underline font-medium">4. Habilidades Nativas</AccordionTrigger>
+                        <AccordionContent className="pt-2 pb-6">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {[
+                              { id: "webBrowsing", label: "Búsqueda en la web", icon: "🌐" },
+                              { id: "canvas", label: "Lienzo Interactivo", icon: "🎨" },
+                              { id: "imageGeneration", label: "Generación de imagen", icon: "🖼️" },
+                              { id: "codeInterpreter", label: "Intérprete de código", icon: "💻" },
+                              { id: "wordCreation", label: "Creación de Word", icon: "📝" },
+                              { id: "excelCreation", label: "Creación de Excel", icon: "📊" },
+                              { id: "pptCreation", label: "Creación de PowerPoint", icon: "🖥️" },
+                            ].map((cap) => (
+                              <div key={cap.id} className="flex items-start space-x-3 p-3 bg-muted/20 border rounded-lg hover:bg-muted/40 transition-colors">
+                                <Checkbox
+                                  id={cap.id}
+                                  checked={(formData.capabilities as any)[cap.id]}
+                                  onCheckedChange={(checked) =>
+                                    handleFormChange({
+                                      capabilities: { ...formData.capabilities, [cap.id]: !!checked }
+                                    })
+                                  }
+                                  className="mt-0.5"
+                                />
+                                <label htmlFor={cap.id} className="text-sm cursor-pointer select-none flex-1 leading-snug">
+                                  <span className="mr-2">{cap.icon}</span>
+                                  {cap.label}
+                                </label>
                               </div>
                             ))}
                           </div>
-                        )}
-                        
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => fileInputRef.current?.click()}
-                          disabled={uploading}
-                          data-testid="button-upload-files"
-                        >
-                          {uploading ? "Subiendo..." : "Cargar archivos"}
-                        </Button>
-                        <input
-                          ref={fileInputRef}
-                          type="file"
-                          multiple
-                          className="hidden"
-                          accept=".pdf,.txt,.docx,.xlsx,.csv,.json"
-                          onChange={(e) => e.target.files && handleFileUpload(e.target.files)}
-                        />
-                      </div>
+                        </AccordionContent>
+                      </AccordionItem>
 
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-1">
-                          <Label>Modelo recomendado</Label>
-                          <HelpCircle className="h-4 w-4 text-muted-foreground" />
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          Recomienda al usuario un modelo que debería usarse de manera predeterminada para obtener los mejores resultados.
-                        </p>
-                        <Select
-                          value={formData.recommendedModel || "none"}
-                          onValueChange={(value) => handleFormChange({ recommendedModel: value === "none" ? "" : value })}
-                        >
-                          <SelectTrigger data-testid="select-model">
-                            <SelectValue placeholder="Ningún modelo recomendado: los usuarios podrán usar el modelo que prefieran." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="none">Ningún modelo recomendado</SelectItem>
-                            <SelectItem value="gpt-4o">GPT-4o</SelectItem>
-                            <SelectItem value="gpt-4o-mini">GPT-4o mini</SelectItem>
-                            <SelectItem value="gpt-o1">GPT-o1</SelectItem>
-                            <SelectItem value="gpt-o3-mini">GPT-o3-mini</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
+                      <AccordionItem value="actions" className="border rounded-lg bg-card px-4">
+                        <AccordionTrigger className="hover:no-underline font-medium flex items-center gap-2">
+                          5. Acciones y Conexiones API
+                          <span className="ml-2 text-xs font-normal px-2 py-0.5 rounded-full bg-muted flex items-center justify-center">
+                            {actions.length}
+                          </span>
+                        </AccordionTrigger>
+                        <AccordionContent className="space-y-4 pt-2 pb-6">
+                          <p className="text-xs text-muted-foreground pb-2 border-b">
+                            Vincula APIs web a tu GPT mediante peticiones JSON externalizadas y validadas por esquema.
+                          </p>
 
-                      <div className="space-y-3">
-                        <Label>Funcionalidades</Label>
-                        
-                        <div className="flex items-center space-x-2">
-                          <Checkbox
-                            id="web-browsing"
-                            checked={formData.capabilities.webBrowsing}
-                            onCheckedChange={(checked) => 
-                              handleFormChange({ 
-                                capabilities: { ...formData.capabilities, webBrowsing: !!checked }
-                              })
-                            }
-                          />
-                          <label htmlFor="web-browsing" className="text-sm">
-                            Búsqueda en la web
-                          </label>
-                        </div>
-
-                        <div className="flex items-center space-x-2">
-                          <Checkbox
-                            id="canvas"
-                            checked={formData.capabilities.canvas}
-                            onCheckedChange={(checked) => 
-                              handleFormChange({ 
-                                capabilities: { ...formData.capabilities, canvas: !!checked }
-                              })
-                            }
-                          />
-                          <label htmlFor="canvas" className="text-sm">
-                            Lienzo
-                          </label>
-                        </div>
-
-                        <div className="flex items-center space-x-2">
-                          <Checkbox
-                            id="image-generation"
-                            checked={formData.capabilities.imageGeneration}
-                            onCheckedChange={(checked) => 
-                              handleFormChange({ 
-                                capabilities: { ...formData.capabilities, imageGeneration: !!checked }
-                              })
-                            }
-                          />
-                          <label htmlFor="image-generation" className="text-sm">
-                            Generación de imagen
-                          </label>
-                        </div>
-
-                        <div className="flex items-center space-x-2">
-                          <Checkbox
-                            id="code-interpreter"
-                            checked={formData.capabilities.codeInterpreter}
-                            onCheckedChange={(checked) => 
-                              handleFormChange({ 
-                                capabilities: { ...formData.capabilities, codeInterpreter: !!checked }
-                              })
-                            }
-                          />
-                          <label htmlFor="code-interpreter" className="text-sm flex items-center gap-1">
-                            Intérprete de código y análisis de datos
-                            <HelpCircle className="h-4 w-4 text-muted-foreground" />
-                          </label>
-                        </div>
-
-                        <div className="flex items-center space-x-2">
-                          <Checkbox
-                            id="word-creation"
-                            checked={formData.capabilities.wordCreation}
-                            onCheckedChange={(checked) => 
-                              handleFormChange({ 
-                                capabilities: { ...formData.capabilities, wordCreation: !!checked }
-                              })
-                            }
-                          />
-                          <label htmlFor="word-creation" className="text-sm">
-                            Creación de Word
-                          </label>
-                        </div>
-
-                        <div className="flex items-center space-x-2">
-                          <Checkbox
-                            id="excel-creation"
-                            checked={formData.capabilities.excelCreation}
-                            onCheckedChange={(checked) => 
-                              handleFormChange({ 
-                                capabilities: { ...formData.capabilities, excelCreation: !!checked }
-                              })
-                            }
-                          />
-                          <label htmlFor="excel-creation" className="text-sm">
-                            Creación de Excel
-                          </label>
-                        </div>
-
-                        <div className="flex items-center space-x-2">
-                          <Checkbox
-                            id="ppt-creation"
-                            checked={formData.capabilities.pptCreation}
-                            onCheckedChange={(checked) => 
-                              handleFormChange({ 
-                                capabilities: { ...formData.capabilities, pptCreation: !!checked }
-                              })
-                            }
-                          />
-                          <label htmlFor="ppt-creation" className="text-sm">
-                            Creación de PowerPoint
-                          </label>
-                        </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Acciones</Label>
-                        
-                        {actions.length > 0 && (
-                          <div className="space-y-2 mb-3">
-                            {actions.map((action) => (
-                              <div key={action.id} className="flex items-center justify-between p-2 bg-muted/50 rounded-lg">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs font-mono bg-muted px-1.5 py-0.5 rounded">
-                                    {action.httpMethod}
-                                  </span>
-                                  <span className="text-sm">{action.name}</span>
+                          {actions.length > 0 && (
+                            <div className="space-y-2 mb-4">
+                              {actions.map((action) => (
+                                <div key={action.id} className="flex items-center justify-between p-3 bg-muted/40 border rounded-lg hover:border-primary/50 transition-colors cursor-pointer" onClick={() => {
+                                  setEditingAction(action);
+                                  setActionForm({
+                                    name: action.name,
+                                    description: action.description || "",
+                                    httpMethod: action.httpMethod || "GET",
+                                    endpoint: action.endpoint ?? "",
+                                    authType: action.authType ?? "none",
+                                    authConfig: action.authConfig ? (action.authConfig as any).token : "",
+                                    openApiSpec: action.openApiSpec ? JSON.stringify(action.openApiSpec, null, 2) : ""
+                                  });
+                                  setShowActionEditor(true);
+                                }}>
+                                  <div className="flex items-center gap-3">
+                                    <span className={cn(
+                                      "text-[10px] font-bold tracking-wider px-2 py-1 rounded w-16 text-center shadow-sm",
+                                      action.httpMethod === "GET" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400" :
+                                        action.httpMethod === "POST" ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400" :
+                                          action.httpMethod === "DELETE" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400" :
+                                            "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400"
+                                    )}>
+                                      {action.httpMethod}
+                                    </span>
+                                    <div className="flex flex-col">
+                                      <span className="text-sm font-medium">{action.name}</span>
+                                      <span className="text-xs text-muted-foreground truncate max-w-[200px]" title={action.endpoint || ""}>{action.endpoint}</span>
+                                    </div>
+                                  </div>
+                                  <ChevronLeft className="h-4 w-4 text-muted-foreground rotate-180" />
                                 </div>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => {
-                                    setEditingAction(action);
-                                    setActionForm({
-                                      name: action.name,
-                                      description: action.description || "",
-                                      httpMethod: action.httpMethod,
-                                      endpoint: action.endpoint,
-                                      authType: action.authType
-                                    });
-                                    setShowActionEditor(true);
-                                  }}
-                                  className="h-6 w-6"
-                                >
-                                  <MoreHorizontal className="h-3 w-3" />
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={handleCreateAction}
-                          data-testid="button-create-action"
-                        >
-                          Crear nueva acción
-                        </Button>
-                      </div>
-                    </>
+                              ))}
+                            </div>
+                          )}
+
+                          <Button
+                            variant="secondary"
+                            onClick={handleCreateAction}
+                            className="w-full"
+                            data-testid="button-create-action"
+                          >
+                            <Plus className="h-4 w-4 mr-2" />
+                            Añadir Conexión API / Endpoint
+                          </Button>
+                        </AccordionContent>
+                      </AccordionItem>
+                    </Accordion>
                   )}
                 </div>
               </div>
@@ -983,8 +1027,8 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
             <div className="w-[400px] flex flex-col bg-muted/20">
               <div className="flex items-center justify-between px-4 py-3 border-b">
                 <span className="text-sm font-medium">Vista previa</span>
-                <Select 
-                  value={previewModelId || (availableModels[0]?.modelId || "")} 
+                <Select
+                  value={previewModelId || (availableModels[0]?.modelId || "")}
                   onValueChange={setPreviewModelId}
                 >
                   <SelectTrigger className="w-[160px] h-8 text-xs">
@@ -1023,12 +1067,13 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                     onChange={(e) => setPreviewMessage(e.target.value)}
                     className="flex-1 bg-transparent outline-none text-sm"
                     data-testid="input-preview-message"
+                    aria-label="Mensaje de vista previa"
                   />
                   <Button variant="ghost" size="icon" className="h-8 w-8">
                     <Mic className="h-4 w-4" />
                   </Button>
-                  <Button 
-                    size="icon" 
+                  <Button
+                    size="icon"
                     className="h-8 w-8 rounded-full"
                     disabled={!previewMessage.trim()}
                   >
@@ -1090,9 +1135,9 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                     </div>
                   </div>
                   <div>
-                    <Label>Autenticación</Label>
-                    <div className="flex gap-1 mt-1">
-                      {[{ value: "none", label: "Ninguna" }, { value: "api_key", label: "API Key" }].map((auth) => (
+                    <Label>Autenticación (Opcional)</Label>
+                    <div className="flex gap-1 mt-1 mb-3">
+                      {[{ value: "none", label: "Ninguna" }, { value: "api_key", label: "API Key" }, { value: "bearer", label: "Bearer Token" }].map((auth) => (
                         <Button
                           key={auth.value}
                           type="button"
@@ -1104,6 +1149,23 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                         </Button>
                       ))}
                     </div>
+                    {actionForm.authType !== "none" && (
+                      <div className="space-y-1 animate-in fade-in slide-in-from-top-2">
+                        <Label htmlFor="action-auth-config" className="text-xs text-muted-foreground flex items-center gap-1">
+                          <Lock className="h-3 w-3" />
+                          Vault: Token o API Key
+                        </Label>
+                        <Input
+                          id="action-auth-config"
+                          type="password"
+                          placeholder={actionForm.authType === "bearer" ? "ey..." : "sk-..."}
+                          value={actionForm.authConfig || ""}
+                          onChange={(e) => setActionForm(prev => ({ ...prev, authConfig: e.target.value }))}
+                          className="mt-1 font-mono text-xs"
+                          data-testid="input-action-auth-config"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div>
@@ -1116,6 +1178,43 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                     className="mt-1 font-mono text-sm"
                     data-testid="input-action-endpoint"
                   />
+                </div>
+                <div>
+                  <Label htmlFor="action-openapi-spec" className="flex items-center justify-between">
+                    <span>Esquema OpenAPI (Opcional)</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        const input = document.createElement("input");
+                        input.type = "file";
+                        input.accept = "application/json,.json,.yaml,.yml";
+                        input.onchange = async (e) => {
+                          const file = (e.target as HTMLInputElement).files?.[0];
+                          if (file) {
+                            const text = await file.text();
+                            setActionForm(prev => ({ ...prev, openApiSpec: text }));
+                          }
+                        };
+                        input.click();
+                      }}
+                      className="h-6 text-xs px-2"
+                    >
+                      <Upload className="h-3 w-3 mr-1" /> Importar Archivo
+                    </Button>
+                  </Label>
+                  <Textarea
+                    id="action-openapi-spec"
+                    placeholder="Pega aquí el JSON o YAML de tu esquema OpenAPI para autoconfigurar las acciones..."
+                    value={actionForm.openApiSpec || ""}
+                    onChange={(e) => setActionForm(prev => ({ ...prev, openApiSpec: e.target.value }))}
+                    className="mt-1 font-mono text-xs h-32"
+                  />
+                  {actionForm.openApiSpec && (
+                    <p className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1">
+                      <FileText className="h-3 w-3" /> Esquema cargado. El GPT respetará esta estructura de petición/respuesta.
+                    </p>
+                  )}
                 </div>
                 <div className="flex justify-end gap-2 pt-4">
                   <Button variant="outline" onClick={() => setShowActionEditor(false)}>
@@ -1148,7 +1247,7 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
               <VisuallyHidden>
                 <DialogDescription>Tu GPT ha sido actualizado correctamente</DialogDescription>
               </VisuallyHidden>
-              
+
               <div className="py-4">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center overflow-hidden">
@@ -1160,14 +1259,14 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                   </div>
                   <div>
                     <h3 className="font-semibold">{savedGptData.name}</h3>
-                    <p className="text-sm text-muted-foreground">Por {savedGptData.creatorUsername || "ti"}</p>
+                    <p className="text-sm text-muted-foreground">Por {(savedGptData as { creatorUsername?: string }).creatorUsername || "ti"}</p>
                   </div>
                 </div>
 
                 <div className="space-y-3">
                   <Label className="text-sm font-medium">Acceso</Label>
-                  
-                  <div 
+
+                  <div
                     className={cn(
                       "flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors",
                       formData.visibility === "private" ? "border-primary bg-primary/5" : "border-border hover:bg-muted/50"
@@ -1192,7 +1291,7 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                     </div>
                   </div>
 
-                  <div 
+                  <div
                     className={cn(
                       "flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors",
                       formData.visibility === "team" ? "border-primary bg-primary/5" : "border-border hover:bg-muted/50"
@@ -1217,7 +1316,7 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                     </div>
                   </div>
 
-                  <div 
+                  <div
                     className={cn(
                       "flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors",
                       formData.visibility === "public" ? "border-primary bg-primary/5" : "border-border hover:bg-muted/50"
@@ -1267,6 +1366,6 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
           </Dialog>
         )}
       </DialogContent>
-    </Dialog>
+    </Dialog >
   );
 }

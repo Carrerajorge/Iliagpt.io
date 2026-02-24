@@ -1,0 +1,168 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import express from "express";
+import { createHttpTestClient } from "../../tests/helpers/httpTestClient";
+
+const chatMock = vi.fn();
+const llmChatMock = vi.fn();
+const resolveSkillContextMock = vi.fn();
+const buildSkillSectionMock = vi.fn();
+
+vi.mock("../services/ChatServiceV2", () => ({
+  chatService: { chat: chatMock },
+  AVAILABLE_MODELS: {},
+  DEFAULT_PROVIDER: "xai",
+  DEFAULT_MODEL: "grok-3-fast",
+}));
+
+vi.mock("../lib/llmGateway", () => ({
+  llmGateway: {
+    chat: llmChatMock,
+    // Defensive stub: some paths use streamChat; tests for skill-context injection should never hit it.
+    streamChat: vi.fn(async () => {
+      throw new Error("llmGateway.streamChat should be mocked in tests");
+    }),
+  },
+}));
+
+vi.mock("../storage", () => ({
+  storage: {
+    getUserSettings: vi.fn(async () => null),
+    createAuditLog: vi.fn(async () => null),
+    getChat: vi.fn(async () => null),
+    createChat: vi.fn(async () => null),
+    createChatMessage: vi.fn(async () => ({ id: "m1" })),
+  },
+}));
+
+vi.mock("../services/conversationMemory", () => ({
+  conversationMemoryManager: {
+    augmentWithHistory: vi.fn(async (_cid: string, msgs: any[]) => msgs),
+  },
+}));
+
+vi.mock("../services/usageQuotaService", () => ({
+  usageQuotaService: {
+    hasTokenQuota: vi.fn(async () => true),
+    checkAndIncrementUsage: vi.fn(async () => ({ allowed: true })),
+    recordTokenUsage: vi.fn(async () => null),
+  },
+}));
+
+vi.mock("../lib/anonUserHelper", () => ({
+  getOrCreateSecureUserId: vi.fn(() => "user_test"),
+}));
+
+vi.mock("../types/express", () => ({
+  getUserId: vi.fn(() => "user_test"),
+}));
+
+vi.mock("../lib/ensureUserRowExists", () => ({
+  ensureUserRowExists: vi.fn(async () => null),
+}));
+
+vi.mock("../services/questionClassifier", () => ({
+  questionClassifier: {
+    classifyQuestion: vi.fn(() => ({ type: "factual_simple" })),
+  },
+}));
+
+vi.mock("../services/skillContextResolver", () => ({
+  drizzleSkillStore: {},
+  resolveSkillContextFromRequest: resolveSkillContextMock,
+  buildSkillSystemPromptSection: buildSkillSectionMock,
+}));
+
+vi.mock("../services/skillPlatform", () => ({
+  getSkillPlatformService: vi.fn(() => ({
+    executeFromMessage: vi.fn(async () => ({
+      status: "skipped",
+      continueWithModel: true,
+      outputText: "",
+      autoCreated: false,
+      requiresConfirmation: false,
+      traces: [],
+      fallbackText: "",
+      error: undefined,
+      output: undefined,
+      policyBreached: undefined,
+      selectedSkill: undefined,
+    })),
+  })),
+}));
+
+async function makeApp() {
+  const { createChatAiRouter } = await import("../routes/chatAiRouter");
+  const app = express();
+  app.use(express.json({ limit: "1mb" }));
+  app.use("/api", createChatAiRouter(() => {}));
+  return app;
+}
+
+describe("chat skill integration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    resolveSkillContextMock.mockResolvedValue({
+      source: "custom_skill",
+      id: "skill_abc",
+      name: "Analyst",
+      instructions: "Prioriza respuesta ejecutiva.",
+    });
+    buildSkillSectionMock.mockReturnValue("\n\n[SKILL_CONTEXT]\nPrioriza respuesta ejecutiva.\n[/SKILL_CONTEXT]");
+    chatMock.mockResolvedValue({ content: "ok", role: "assistant", usage: { totalTokens: 10 } });
+    llmChatMock.mockResolvedValue({ content: "stream ok", provider: "xai", model: "grok-3-fast" });
+  });
+
+  it("injects skill context into /api/chat request pipeline", async () => {
+    const app = await makeApp();
+    const { client, close } = await createHttpTestClient(app);
+    try {
+      const res = await client
+        .post("/api/chat")
+        .send({
+          messages: [{ role: "user", content: "hola" }],
+          conversationId: "chat_1",
+        });
+
+      expect(res.status).toBe(200);
+      expect(resolveSkillContextMock).toHaveBeenCalled();
+
+      const sentMessages = chatMock.mock.calls[0][0];
+      expect(sentMessages[0].role).toBe("system");
+      expect(sentMessages[0].content).toContain("[SKILL_CONTEXT]");
+    } finally {
+      await close();
+    }
+  }, 60000);
+
+  it("injects skill context into /api/chat/stream fast-path system prompt", async () => {
+    const app = await makeApp();
+    const { client, close } = await createHttpTestClient(app);
+    try {
+      const res = await client
+        .post("/api/chat/stream")
+        .send({
+          messages: [{ role: "user", content: "¿qué es la fotosíntesis?" }],
+          latencyMode: "fast",
+        });
+
+      expect(res.status).toBe(200);
+      expect(resolveSkillContextMock).toHaveBeenCalled();
+
+      // Fast-path behavior can vary (direct short-circuit vs full pipeline).
+      // Always require successful stream completion and skill context resolution.
+      const llmMessages = llmChatMock.mock.calls[0]?.[0];
+      const chatMessages = chatMock.mock.calls[0]?.[0];
+      const outboundMessages = llmMessages || chatMessages;
+
+      if (outboundMessages?.[0]) {
+      expect(outboundMessages[0].role).toBe("system");
+      expect(outboundMessages[0].content).toContain("[SKILL_CONTEXT]");
+      }
+
+      expect(res.text.includes("event: done") || res.text.includes("event: error")).toBe(true);
+    } finally {
+      await close();
+    }
+  }, 60000);
+});

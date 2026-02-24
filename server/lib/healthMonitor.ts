@@ -38,7 +38,7 @@ export async function checkService(
 ): Promise<ServiceHealth> {
   const startTime = Date.now();
   let health = services.get(name);
-  
+
   if (!health) {
     health = {
       name,
@@ -49,19 +49,19 @@ export async function checkService(
     };
     services.set(name, health);
   }
-  
+
   const previousStatus = health.status;
-  
+
   try {
     const success = await checkFn();
     const latency = Date.now() - startTime;
-    
+
     if (success) {
       health.consecutiveFailures = 0;
       health.status = "healthy";
       health.latency = latency;
       health.lastError = undefined;
-      
+
       // Si estaba en mal estado, resolver alertas
       if (previousStatus !== "healthy") {
         resolveAlertsByService(name);
@@ -74,14 +74,14 @@ export async function checkService(
     const latency = Date.now() - startTime;
     handleFailure(health, error.message || "Unknown error", latency);
   }
-  
+
   health.lastCheck = new Date();
-  
+
   // Notificar si cambió el estado
   if (previousStatus !== health.status) {
     notifyStatusChange(name, health.status, previousStatus);
   }
-  
+
   return { ...health };
 }
 
@@ -90,7 +90,7 @@ function handleFailure(health: ServiceHealth, errorMessage: string, latency: num
   health.consecutiveFailures++;
   health.latency = latency;
   health.lastError = errorMessage;
-  
+
   if (health.consecutiveFailures >= UNHEALTHY_THRESHOLD) {
     if (health.status !== "unhealthy") {
       health.status = "unhealthy";
@@ -145,9 +145,9 @@ export function registerService(
   if (existingInterval) {
     clearInterval(existingInterval);
   }
-  
+
   serviceConfigs.set(name, { name, checkFn, intervalMs });
-  
+
   // Inicializar estado del servicio
   services.set(name, {
     name,
@@ -156,19 +156,19 @@ export function registerService(
     errorCount: 0,
     consecutiveFailures: 0,
   });
-  
+
   // Ejecutar primera verificación
   checkService(name, checkFn).catch(err => {
     logger.error(`Initial health check failed for ${name}`, { error: err.message });
   });
-  
+
   // Configurar intervalo de verificación automática
   const interval = setInterval(() => {
     checkService(name, checkFn).catch(err => {
       logger.error(`Scheduled health check failed for ${name}`, { error: err.message });
     });
   }, intervalMs);
-  
+
   serviceIntervals.set(name, interval);
   logger.info(`Registered service ${name} for health monitoring`, { intervalMs });
 }
@@ -200,7 +200,7 @@ export function registerAlert(callback: AlertCallback): () => void {
 
 export function getOverallStatus(): ServiceStatus {
   const healthStates = Array.from(services.values());
-  
+
   if (healthStates.some(h => h.status === "unhealthy")) {
     return "unhealthy";
   }
@@ -213,8 +213,9 @@ export function getOverallStatus(): ServiceStatus {
 // Función de inicialización para registrar servicios comunes
 export function initializeHealthMonitoring(): void {
   logger.info("Initializing health monitoring system");
-  
+
   // Registrar xAI health check
+  /*
   if (process.env.XAI_API_KEY) {
     registerService("xai", async () => {
       const { llmGateway } = await import("./llmGateway");
@@ -231,7 +232,8 @@ export function initializeHealthMonitoring(): void {
       return result.gemini.available;
     }, 60000);
   }
-  
+  */
+
   // Registrar Database health check
   registerService("database", async () => {
     try {

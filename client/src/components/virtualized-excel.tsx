@@ -1,13 +1,20 @@
 import { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react';
 import { cn } from '@/lib/utils';
+import { getFormulaEngineWorker } from '@/lib/worker-client';
 import { SparseGrid, getColumnName, formatCellRef, CellData, CellBorders } from '@/lib/sparseGrid';
-import { FormulaEngine } from '@/lib/formulaEngine';
 import { ChartLayer, ChartConfig as ChartLayerConfig } from './excel-chart-layer';
-import { 
-  buildPositionCache, 
-  getVisibleRange, 
+import { OfficeToolShell, OfficeViewMode } from './office/OfficeToolShell';
+import { Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
+import { Toggle } from '@/components/ui/toggle';
+import { Separator } from '@/components/ui/separator';
+import * as XLSX from 'xlsx';
+import { usePlatformSettings } from '@/contexts/PlatformSettingsContext';
+import { formatZonedDate, normalizeTimeZone, type PlatformDateFormat } from '@/lib/platformDateTime';
+import {
+  buildPositionCache,
+  getVisibleRange,
   ScrollThrottler,
-  type PositionCache 
+  type PositionCache
 } from '@/lib/excelPerformance';
 
 export interface SelectionRange {
@@ -17,14 +24,18 @@ export interface SelectionRange {
   endCol: number;
 }
 
-function formatDisplayValue(value: string, numberFormat?: string): string {
+function formatDisplayValue(
+  value: string,
+  numberFormat: string | undefined,
+  opts?: { timeZone: string; dateFormat: PlatformDateFormat }
+): string {
   if (!numberFormat || numberFormat === 'General' || numberFormat === 'Texto') {
     return value;
   }
-  
+
   const num = parseFloat(value);
   if (isNaN(num)) return value;
-  
+
   switch (numberFormat) {
     case 'Número':
     case 'Number':
@@ -40,9 +51,14 @@ function formatDisplayValue(value: string, numberFormat?: string): string {
       try {
         const date = new Date(num);
         if (!isNaN(date.getTime())) {
-          return date.toLocaleDateString('es-ES');
+          return formatZonedDate(date, {
+            timeZone: opts?.timeZone || "UTC",
+            dateFormat: opts?.dateFormat || "YYYY-MM-DD",
+          });
         }
-      } catch {}
+      } catch {
+        // FRONTEND FIX #19: Intentionally silent - invalid date value, return as-is
+      }
       return value;
     default:
       return value;
@@ -51,7 +67,7 @@ function formatDisplayValue(value: string, numberFormat?: string): string {
 
 function getBorderStyle(borders?: CellBorders): React.CSSProperties {
   const style: React.CSSProperties = {};
-  
+
   if (borders?.top) {
     const width = borders.top.style === 'thin' ? '1px' : borders.top.style === 'medium' ? '2px' : borders.top.style === 'thick' ? '3px' : '3px';
     style.borderTop = `${width} ${borders.top.style === 'double' ? 'double' : 'solid'} ${borders.top.color}`;
@@ -68,7 +84,7 @@ function getBorderStyle(borders?: CellBorders): React.CSSProperties {
     const width = borders.left.style === 'thin' ? '1px' : borders.left.style === 'medium' ? '2px' : borders.left.style === 'thick' ? '3px' : '3px';
     style.borderLeft = `${width} ${borders.left.style === 'double' ? 'double' : 'solid'} ${borders.left.color}`;
   }
-  
+
   return style;
 }
 
@@ -85,17 +101,17 @@ function detectNumericPattern(values: number[]): AutofillPattern {
   if (values.length === 0) {
     return { type: 'copy', values: [] };
   }
-  
+
   if (values.length === 1) {
     return { type: 'arithmetic', values, start: values[0], step: 1 };
   }
-  
+
   // Check for arithmetic progression (constant difference)
   const diffs: number[] = [];
   for (let i = 1; i < values.length; i++) {
     diffs.push(values[i] - values[i - 1]);
   }
-  
+
   const allSameDiff = diffs.every(d => Math.abs(d - diffs[0]) < 0.0001);
   if (allSameDiff) {
     return {
@@ -105,7 +121,7 @@ function detectNumericPattern(values: number[]): AutofillPattern {
       step: diffs[0]
     };
   }
-  
+
   // Check for geometric progression (constant ratio)
   if (values.every(v => v !== 0)) {
     const ratios: number[] = [];
@@ -122,50 +138,50 @@ function detectNumericPattern(values: number[]): AutofillPattern {
       };
     }
   }
-  
+
   return { type: 'copy', values };
 }
 
 function detectPattern(cellValues: (string | undefined)[]): AutofillPattern {
   const values = cellValues.filter(v => v !== undefined && v !== '') as string[];
-  
+
   if (values.length === 0) {
     return { type: 'copy', values: [] };
   }
-  
+
   // Try to parse as numbers
   const numbers = values.map(v => parseFloat(v));
   const allNumbers = numbers.every(n => !isNaN(n));
-  
+
   if (allNumbers) {
     return detectNumericPattern(numbers);
   }
-  
+
   // Text pattern - just copy
   return { type: 'copy', values };
 }
 
 function generateFillValues(pattern: AutofillPattern, count: number): (string | number)[] {
   const result: (string | number)[] = [];
-  
+
   switch (pattern.type) {
     case 'arithmetic':
       for (let i = 0; i < count; i++) {
         const value = (pattern.start || 0) + (pattern.step || 1) * (i + 1);
         // Keep as integer if step is integer
-        result.push(Number.isInteger(pattern.step) && Number.isInteger(pattern.start || 0) 
-          ? Math.round(value) 
+        result.push(Number.isInteger(pattern.step) && Number.isInteger(pattern.start || 0)
+          ? Math.round(value)
           : Math.round(value * 100) / 100);
       }
       break;
-      
+
     case 'geometric':
       for (let i = 0; i < count; i++) {
         const value = (pattern.start || 1) * Math.pow(pattern.ratio || 2, i + 1);
         result.push(Math.round(value * 100) / 100);
       }
       break;
-      
+
     case 'copy':
     default:
       for (let i = 0; i < count; i++) {
@@ -174,7 +190,7 @@ function generateFillValues(pattern: AutofillPattern, count: number): (string | 
       }
       break;
   }
-  
+
   return result;
 }
 
@@ -266,6 +282,8 @@ const VirtualCell = memo(function VirtualCell({
   onChange,
   onTypingChange,
   onKeyDown,
+  platformTimeZone,
+  platformDateFormat,
 }: {
   row: number;
   col: number;
@@ -286,6 +304,8 @@ const VirtualCell = memo(function VirtualCell({
   onChange: (value: string) => void;
   onTypingChange: (value: string) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
+  platformTimeZone: string;
+  platformDateFormat: PlatformDateFormat;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -297,8 +317,11 @@ const VirtualCell = memo(function VirtualCell({
   }, [isEditing]);
 
   const borderStyles = getBorderStyle(data.borders);
-  const displayValue = formatDisplayValue(data.value, data.numberFormat);
-  
+  const displayValue = formatDisplayValue(data.value, data.numberFormat, {
+    timeZone: platformTimeZone,
+    dateFormat: platformDateFormat,
+  });
+
   const textDecorations: string[] = [];
   if (data.underline) textDecorations.push('underline');
   if (data.strikethrough) textDecorations.push('line-through');
@@ -400,11 +423,11 @@ const ColumnHeader = memo(function ColumnHeader({
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const isNearEdge = e.clientX >= rect.right - RESIZE_CONFIG.RESIZE_HANDLE_SIZE;
-    
+
     if (isNearEdge) {
       e.preventDefault();
       e.stopPropagation();
-      
+
       const now = Date.now();
       if (now - lastClickRef.current < RESIZE_CONFIG.DOUBLE_CLICK_DELAY) {
         onAutoFit(col);
@@ -431,7 +454,7 @@ const ColumnHeader = memo(function ColumnHeader({
       data-testid={`col-header-${col}`}
     >
       {getColumnName(col)}
-      <div 
+      <div
         className={cn(
           "absolute right-0 top-0 bottom-0 w-1 transition-colors",
           isHoveringResize && "bg-blue-500"
@@ -475,11 +498,11 @@ const RowHeader = memo(function RowHeader({
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const isNearEdge = e.clientY >= rect.bottom - RESIZE_CONFIG.RESIZE_HANDLE_SIZE;
-    
+
     if (isNearEdge) {
       e.preventDefault();
       e.stopPropagation();
-      
+
       const now = Date.now();
       if (now - lastClickRef.current < RESIZE_CONFIG.DOUBLE_CLICK_DELAY) {
         onAutoFit(row);
@@ -507,7 +530,7 @@ const RowHeader = memo(function RowHeader({
       title={`Fila ${displayNumber}`}
     >
       {displayNumber}
-      <div 
+      <div
         className={cn(
           "absolute left-0 right-0 bottom-0 h-1 transition-colors",
           isHoveringResize && "bg-blue-500"
@@ -541,20 +564,54 @@ export function VirtualizedExcel({
   onSelectionRangeChange,
 }: VirtualizedExcelProps) {
   void version;
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
+  const platformDateFormat = platformSettings.date_format;
+
   const [scrollPos, setScrollPos] = useState({ top: 0, left: 0 });
   const viewportRef = useRef<HTMLDivElement>(null);
   const scrollRAF = useRef<number | null>(null);
-  const formulaEngine = useRef(new FormulaEngine(grid));
+  // Worker reference
+  const formulaWorker = useRef<any>(null);
+
+  // Initialize worker
+  useEffect(() => {
+    const worker = getFormulaEngineWorker();
+    if (worker) {
+      formulaWorker.current = worker;
+      // Initial sync
+      if (grid) {
+        const cells = grid.getAllCells().reduce((acc: any, { row, col, data }) => {
+          acc[`${row},${col}`] = data;
+          return acc;
+        }, {});
+        worker.updateGrid(cells);
+      }
+    }
+  }, []);
+
+  // Sync grid to worker when it changes
+  useEffect(() => {
+    if (formulaWorker.current && grid) {
+      // Serialize grid for worker
+      const cells = grid.getAllCells().reduce((acc: any, { row, col, data }) => {
+        acc[`${row},${col}`] = data;
+        return acc;
+      }, {});
+      formulaWorker.current.updateGrid(cells);
+    }
+  }, [grid]);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollThrottler = useRef(new ScrollThrottler(16));
-  
+
   const [internalSelectionRange, setInternalSelectionRange] = useState<SelectionRange | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState<{ row: number; col: number } | null>(null);
-  
+
   const selectionRange = externalSelectionRange ?? internalSelectionRange;
   const setSelectionRange = onSelectionRangeChange ?? setInternalSelectionRange;
-  
+
   const [resizeState, setResizeState] = useState<ResizeState>({
     isResizing: false,
     type: null,
@@ -563,14 +620,14 @@ export function VirtualizedExcel({
     startSize: 0,
     currentSize: 0,
   });
-  
+
   const [editingValue, setEditingValue] = useState<string | undefined>(undefined);
-  
+
   // Fill handle state
   const [isFillDragging, setIsFillDragging] = useState(false);
   const [fillTargetRow, setFillTargetRow] = useState<number | null>(null);
   const [fillSourceRange, setFillSourceRange] = useState<{ startRow: number; endRow: number; col: number } | null>(null);
-  
+
   const isInSelectionRange = useCallback((row: number, col: number): boolean => {
     if (!selectionRange) return false;
     const minRow = Math.min(selectionRange.startRow, selectionRange.endRow);
@@ -604,16 +661,16 @@ export function VirtualizedExcel({
 
   const handleAutoFitColumn = useCallback((col: number) => {
     if (!grid) return;
-    
+
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    
+
     let maxWidth = 50;
     const headerText = getColumnName(col);
     ctx.font = 'bold 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
     maxWidth = Math.max(maxWidth, ctx.measureText(headerText).width + 20);
-    
+
     const cells = grid.getAllCells();
     for (const { row: r, col: c, data: cell } of cells) {
       if (c === col && cell.value) {
@@ -626,20 +683,20 @@ export function VirtualizedExcel({
         maxWidth = Math.max(maxWidth, textWidth);
       }
     }
-    
+
     const clampedWidth = Math.max(RESIZE_CONFIG.MIN_COL_WIDTH, Math.min(RESIZE_CONFIG.MAX_COL_WIDTH, Math.ceil(maxWidth)));
     onColumnWidthChange?.(col, clampedWidth);
   }, [grid, onColumnWidthChange]);
 
   const handleAutoFitRow = useCallback((row: number) => {
     if (!grid) return;
-    
+
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    
+
     let maxHeight = GRID_CONFIG.ROW_HEIGHT;
-    
+
     const cells = grid.getAllCells();
     for (const { row: r, col: c, data: cell } of cells) {
       if (r === row && cell.value) {
@@ -649,11 +706,11 @@ export function VirtualizedExcel({
         const fontStyle = cell.italic ? 'italic' : 'normal';
         const fontFamily = cell.fontFamily || '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
         ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
-        
+
         const text = String(cell.value);
         const colWidth = columnWidths?.[c] || GRID_CONFIG.COL_WIDTH;
         const availableWidth = colWidth - 12;
-        
+
         let totalLines = 0;
         const paragraphs = text.split('\n');
         for (const paragraph of paragraphs) {
@@ -665,12 +722,12 @@ export function VirtualizedExcel({
           const wrappedLines = Math.ceil(textWidth / availableWidth);
           totalLines += Math.max(1, wrappedLines);
         }
-        
+
         const estimatedHeight = totalLines * lineHeight + 8;
         maxHeight = Math.max(maxHeight, estimatedHeight);
       }
     }
-    
+
     const clampedHeight = Math.max(RESIZE_CONFIG.MIN_ROW_HEIGHT, Math.min(RESIZE_CONFIG.MAX_ROW_HEIGHT, Math.ceil(maxHeight)));
     onRowHeightChange?.(row, clampedHeight);
   }, [grid, columnWidths, onRowHeightChange]);
@@ -682,11 +739,11 @@ export function VirtualizedExcel({
       const delta = resizeState.type === 'column'
         ? e.clientX - resizeState.startPos
         : e.clientY - resizeState.startPos;
-      
+
       const minSize = resizeState.type === 'column' ? RESIZE_CONFIG.MIN_COL_WIDTH : RESIZE_CONFIG.MIN_ROW_HEIGHT;
       const maxSize = resizeState.type === 'column' ? RESIZE_CONFIG.MAX_COL_WIDTH : RESIZE_CONFIG.MAX_ROW_HEIGHT;
       const newSize = Math.max(minSize, Math.min(maxSize, resizeState.startSize + delta));
-      
+
       setResizeState(prev => ({ ...prev, currentSize: newSize }));
     };
 
@@ -721,9 +778,7 @@ export function VirtualizedExcel({
     };
   }, [resizeState, onColumnWidthChange, onRowHeightChange]);
 
-  useEffect(() => {
-    formulaEngine.current.setGrid(grid);
-  }, [grid]);
+
 
   useEffect(() => {
     const throttler = scrollThrottler.current;
@@ -747,12 +802,12 @@ export function VirtualizedExcel({
   const positionCache = useMemo(() => {
     const colCache = new Map<number, number>();
     const rowCache = new Map<number, number>();
-    
+
     return {
       getColumnLeft: (col: number): number => {
         if (col === 0) return 0;
         if (colCache.has(col)) return colCache.get(col)!;
-        
+
         let startCol = 0;
         let startPos = 0;
         for (let i = col - 1; i >= 0; i--) {
@@ -762,7 +817,7 @@ export function VirtualizedExcel({
             break;
           }
         }
-        
+
         let pos = startPos;
         for (let i = startCol; i < col; i++) {
           pos += columnWidths?.[i] ?? GRID_CONFIG.COL_WIDTH;
@@ -773,7 +828,7 @@ export function VirtualizedExcel({
       getRowTop: (row: number): number => {
         if (row === 0) return 0;
         if (rowCache.has(row)) return rowCache.get(row)!;
-        
+
         let startRow = 0;
         let startPos = 0;
         for (let i = row - 1; i >= 0; i--) {
@@ -783,7 +838,7 @@ export function VirtualizedExcel({
             break;
           }
         }
-        
+
         let pos = startPos;
         for (let i = startRow; i < row; i++) {
           pos += rowHeights?.[i] ?? GRID_CONFIG.ROW_HEIGHT;
@@ -801,7 +856,7 @@ export function VirtualizedExcel({
     const positions = positionCacheOptimized.rowPositions;
     let left = 0;
     let right = positions.length - 2;
-    
+
     while (left <= right) {
       const mid = Math.floor((left + right) / 2);
       if (positions[mid] <= scrollTop && scrollTop < positions[mid + 1]) {
@@ -819,7 +874,7 @@ export function VirtualizedExcel({
     const positions = positionCacheOptimized.columnPositions;
     let left = 0;
     let right = positions.length - 2;
-    
+
     while (left <= right) {
       const mid = Math.floor((left + right) / 2);
       if (positions[mid] <= scrollLeft && scrollLeft < positions[mid + 1]) {
@@ -835,10 +890,10 @@ export function VirtualizedExcel({
 
   const getConditionalStyle = useCallback((row: number, col: number, value: string | number): React.CSSProperties => {
     if (!conditionalFormats) return {};
-    
+
     const numValue = typeof value === 'number' ? value : parseFloat(String(value).replace(/[^\d.-]/g, ''));
     if (isNaN(numValue)) return {};
-    
+
     for (const format of conditionalFormats) {
       const { range, rules } = format;
       if (row >= range.startRow && row <= range.endRow && col >= range.startCol && col <= range.endCol) {
@@ -870,6 +925,124 @@ export function VirtualizedExcel({
     return {};
   }, [conditionalFormats]);
 
+  // Shell state
+  const [viewMode, setViewMode] = useState<OfficeViewMode>('visual');
+  const [csvContent, setCsvContent] = useState('');
+
+  // Sync CSV for code view
+  useEffect(() => {
+    if (viewMode === 'code' && grid) {
+      // Simple CSV generation
+      const cells = grid.getAllCells();
+      // This is a simplified CSV export for the code view
+      let maxRow = 0;
+      let maxCol = 0;
+      cells.forEach(c => {
+        if (c.row > maxRow) maxRow = c.row;
+        if (c.col > maxCol) maxCol = c.col;
+      });
+
+      let csv = '';
+      for (let r = 0; r <= maxRow; r++) {
+        const rowArr = [];
+        for (let c = 0; c <= maxCol; c++) {
+          const cell = grid.getCell(r, c);
+          // Escape quotes
+          const val = cell?.value ? String(cell.value).replace(/"/g, '""') : '';
+          rowArr.push(`"${val}"`);
+        }
+        csv += rowArr.join(',') + '\n';
+      }
+      setCsvContent(csv);
+    }
+  }, [viewMode, grid]);
+
+  const handleDownload = () => {
+    // Generate simple XLSX
+    const wb = XLSX.utils.book_new();
+    const wsData = [];
+    const cells = grid.getAllCells();
+    let maxRow = 0;
+    let maxCol = 0;
+    cells.forEach(c => {
+      if (c.row > maxRow) maxRow = c.row;
+      if (c.col > maxCol) maxCol = c.col;
+    });
+
+    for (let r = 0; r <= maxRow; r++) {
+      const rowArr = [];
+      for (let c = 0; c <= maxCol; c++) {
+        const cell = grid.getCell(r, c);
+        rowArr.push(cell?.value || '');
+      }
+      wsData.push(rowArr);
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    XLSX.writeFile(wb, "spreadsheet.xlsx");
+  };
+
+  const handleCsvChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setCsvContent(e.target.value);
+    // We don't live-update grid from CSV typing to avoid perf issues, 
+    // but we could add an "Apply" button or debounce. 
+    // For now, this is read-only projection or simple edit.
+    // Implementing full CSV parsing back to grid is complex for this step
+    // but fits the "Code View" philosophy.
+  };
+
+  const handleFormat = useCallback((format: Partial<CellData>) => {
+    if (!selectedCell && !selectionRange) return;
+
+    const updates: Array<{ row: number, col: number, data: Partial<CellData> }> = [];
+
+    const startRow = selectionRange ? Math.min(selectionRange.startRow, selectionRange.endRow) : selectedCell!.row;
+    const endRow = selectionRange ? Math.max(selectionRange.startRow, selectionRange.endRow) : selectedCell!.row;
+    const startCol = selectionRange ? Math.min(selectionRange.startCol, selectionRange.endCol) : selectedCell!.col;
+    const endCol = selectionRange ? Math.max(selectionRange.startCol, selectionRange.endCol) : selectedCell!.col;
+
+    for (let r = startRow; r <= endRow; r++) {
+      for (let c = startCol; c <= endCol; c++) {
+        const current = grid.getCell(r, c) || {};
+        // Merge styles
+        const newData = { ...current, ...format };
+        grid.setCell(r, c, newData);
+      }
+    }
+    onGridChange(grid);
+  }, [grid, selectedCell, selectionRange, onGridChange]);
+
+  const Toolbar = () => (
+    <div className="flex items-center gap-1">
+      <span className="text-xs font-semibold mr-2">{selectionRange ? 'Rango' : 'Celda'}</span>
+
+      <Toggle size="sm" onPressedChange={(pressed) => handleFormat({ bold: pressed })} title="Negrita"><Bold className="h-4 w-4" /></Toggle>
+      <Toggle size="sm" onPressedChange={(pressed) => handleFormat({ italic: pressed })} title="Cursiva"><Italic className="h-4 w-4" /></Toggle>
+      <Toggle size="sm" onPressedChange={(pressed) => handleFormat({ underline: pressed })} title="Subrayado"><Underline className="h-4 w-4" /></Toggle>
+
+      <Separator orientation="vertical" className="h-6 mx-1" />
+
+      <Toggle size="sm" onPressedChange={() => handleFormat({ align: 'left' })} title="Alinear Izquierda"><AlignLeft className="h-4 w-4" /></Toggle>
+      <Toggle size="sm" onPressedChange={() => handleFormat({ align: 'center' })} title="Centrar"><AlignCenter className="h-4 w-4" /></Toggle>
+      <Toggle size="sm" onPressedChange={() => handleFormat({ align: 'right' })} title="Alinear Derecha"><AlignRight className="h-4 w-4" /></Toggle>
+
+      <Separator orientation="vertical" className="h-6 mx-1" />
+
+      {/* Simple Color Pickers */}
+      <div className="flex items-center gap-1 border border-gray-200 rounded px-1">
+        <div className="w-4 h-4 rounded-full overflow-hidden border border-gray-300 relative" title="Color de Texto">
+          <input type="color" className="absolute -top-1 -left-1 w-8 h-8 cursor-pointer opacity-0" onChange={(e) => handleFormat({ color: e.target.value })} />
+          <div className="w-full h-full bg-black/80 pointer-events-none" />
+        </div>
+        <div className="w-4 h-4 rounded-full overflow-hidden border border-gray-300 relative bg-yellow-100" title="Color de Fondo">
+          <input type="color" className="absolute -top-1 -left-1 w-8 h-8 cursor-pointer opacity-0" onChange={(e) => handleFormat({ backgroundColor: e.target.value })} />
+        </div>
+      </div>
+
+    </div>
+  );
+
   const calculatedStartRow = findRowAtPosition(scrollPos.top);
   const startRow = Math.max(0, calculatedStartRow - GRID_CONFIG.BUFFER_ROWS);
   const startCol = Math.max(0, findColAtPosition(scrollPos.left) - GRID_CONFIG.BUFFER_COLS);
@@ -883,14 +1056,23 @@ export function VirtualizedExcel({
     });
   }, []);
 
-  const updateCell = useCallback((row: number, col: number, value: string) => {
+  const updateCell = useCallback(async (row: number, col: number, value: string) => {
     if (value.startsWith('=')) {
-      const evaluated = formulaEngine.current.evaluate(value);
-      grid.setCell(row, col, { value: evaluated, formula: value });
+      if (formulaWorker.current) {
+        try {
+          const evaluated = await formulaWorker.current.evaluate(value);
+          grid.setCell(row, col, { value: evaluated, formula: value });
+        } catch (e) {
+          console.error('Formula evaluation failed:', e);
+          grid.setCell(row, col, { value: '#ERROR!', formula: value });
+        }
+      } else {
+        grid.setCell(row, col, { value: value, formula: value });
+      }
     } else {
       grid.setCell(row, col, { value, formula: undefined });
     }
-    
+
     onGridChange(grid);
   }, [grid, onGridChange]);
 
@@ -962,13 +1144,13 @@ export function VirtualizedExcel({
   const handleFillHandleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    
+
     if (!selectedCell && !selectionRange) return;
-    
+
     const startRow = selectionRange ? Math.min(selectionRange.startRow, selectionRange.endRow) : selectedCell!.row;
     const endRow = selectionRange ? Math.max(selectionRange.startRow, selectionRange.endRow) : selectedCell!.row;
     const col = selectionRange ? selectionRange.startCol : selectedCell!.col;
-    
+
     setIsFillDragging(true);
     setFillSourceRange({ startRow, endRow, col });
     setFillTargetRow(endRow);
@@ -976,13 +1158,13 @@ export function VirtualizedExcel({
 
   const handleFillMouseMove = useCallback((e: MouseEvent) => {
     if (!isFillDragging || !fillSourceRange) return;
-    
+
     const viewportElement = viewportRef.current;
     if (!viewportElement) return;
-    
+
     const rect = viewportElement.getBoundingClientRect();
     const relativeY = e.clientY - rect.top + scrollPos.top - GRID_CONFIG.COL_HEADER_HEIGHT;
-    
+
     // Find which row the mouse is over
     const row = findRowAtPosition(relativeY);
     if (row > fillSourceRange.endRow) {
@@ -999,10 +1181,10 @@ export function VirtualizedExcel({
       setFillTargetRow(null);
       return;
     }
-    
+
     const { startRow, endRow, col } = fillSourceRange;
     const targetEnd = fillTargetRow;
-    
+
     if (targetEnd > endRow) {
       // Collect source values
       const sourceValues: (string | undefined)[] = [];
@@ -1010,20 +1192,20 @@ export function VirtualizedExcel({
         const cell = grid.getCell(r, col);
         sourceValues.push(cell?.value);
       }
-      
+
       // Detect pattern and generate fill values
       const pattern = detectPattern(sourceValues);
       const fillCount = targetEnd - endRow;
       const fillValues = generateFillValues(pattern, fillCount);
-      
+
       // Apply fill values
       for (let i = 0; i < fillValues.length; i++) {
         const targetRow = endRow + 1 + i;
         grid.setCell(targetRow, col, { value: String(fillValues[i]) });
       }
-      
+
       onGridChange(grid);
-      
+
       // Update selection to include filled range
       setSelectionRange({
         startRow,
@@ -1032,7 +1214,7 @@ export function VirtualizedExcel({
         endCol: col,
       });
     }
-    
+
     setIsFillDragging(false);
     setFillSourceRange(null);
     setFillTargetRow(null);
@@ -1044,7 +1226,7 @@ export function VirtualizedExcel({
       document.addEventListener('mousemove', handleFillMouseMove);
       document.addEventListener('mouseup', handleFillMouseUp);
       document.body.style.cursor = 'crosshair';
-      
+
       return () => {
         document.removeEventListener('mousemove', handleFillMouseMove);
         document.removeEventListener('mouseup', handleFillMouseUp);
@@ -1141,7 +1323,7 @@ export function VirtualizedExcel({
       console.warn('Invalid selected cell coordinates:', selectedCell);
       return;
     }
-    
+
     let newRow = row;
     let newCol = col;
 
@@ -1175,7 +1357,7 @@ export function VirtualizedExcel({
             const maxRow = Math.max(selectionRange.startRow, selectionRange.endRow);
             const minCol = Math.min(selectionRange.startCol, selectionRange.endCol);
             const maxCol = Math.max(selectionRange.startCol, selectionRange.endCol);
-            
+
             for (let r = minRow; r <= maxRow; r++) {
               for (let c = minCol; c <= maxCol; c++) {
                 grid.setCell(r, c, { value: '' });
@@ -1246,271 +1428,330 @@ export function VirtualizedExcel({
   const totalHeight = positionCacheOptimized.totalHeight;
 
   return (
-    <div
-      ref={containerRef}
-      className={cn("flex flex-col h-full w-full overflow-hidden bg-white dark:bg-gray-900 outline-none", className)}
-      onKeyDown={handleKeyDown}
-      tabIndex={0}
-      data-testid="virtualized-excel"
+    <OfficeToolShell
+      title="Libro de Excel"
+      type="excel"
+      viewMode={viewMode}
+      onViewModeChange={setViewMode}
+      onClose={() => { }} // No-op for now or elevate prop
+      onDownload={handleDownload}
+      toolbar={<Toolbar />}
+      className={className}
     >
-      <div className="flex flex-1 overflow-hidden">
+      {viewMode === 'visual' ? (
         <div
-          className="flex-shrink-0 bg-gray-100 dark:bg-gray-800 flex flex-col"
-          style={{ width: GRID_CONFIG.ROW_HEADER_WIDTH }}
+          ref={containerRef}
+          className={cn("flex flex-col h-full w-full overflow-hidden bg-white dark:bg-gray-900 outline-none")}
+          onKeyDown={handleKeyDown}
+          tabIndex={0}
+          data-testid="virtualized-excel"
         >
-          <div
-            className="flex-shrink-0 z-20 bg-gray-200 dark:bg-gray-700 border-r border-b border-gray-300 dark:border-gray-600"
-            style={{ height: GRID_CONFIG.COL_HEADER_HEIGHT, width: GRID_CONFIG.ROW_HEADER_WIDTH }}
-          />
-          <div
-            className="flex-1 relative overflow-hidden"
-          >
-            <div 
-              style={{ 
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                height: totalHeight,
-                transform: `translateY(-${scrollPos.top}px)`,
-              }}
-            >
-              {visibleRows.map(row => (
-                <RowHeader
-                  key={row}
-                  row={row}
-                  height={getRowHeight(row)}
-                  onResizeStart={handleRowResizeStart}
-                  onAutoFit={handleAutoFitRow}
-                  isResizing={resizeState.isResizing && resizeState.type === 'row'}
-                  onSelectRow={handleSelectRow}
-                  style={{
-                    position: 'absolute',
-                    top: getRowTop(row),
-                    left: 0,
-                    width: GRID_CONFIG.ROW_HEADER_WIDTH,
-                    height: resizeState.isResizing && resizeState.type === 'row' && resizeState.index === row 
-                      ? resizeState.currentSize 
-                      : getRowHeight(row),
+          <div className="flex flex-col w-full h-full">
+            {/* Formula Bar */}
+            <div className="flex items-center gap-2 px-3 py-2 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 flex-shrink-0">
+              <div className="font-serif italic text-gray-400 font-bold px-1 select-none">fx</div>
+              <div className="flex-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-sm flex items-center shadow-inner">
+                <input
+                  className="flex-1 w-full border-none outline-none text-sm h-7 px-2 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-400"
+                  value={editingValue !== undefined ? editingValue : (selectedCell ? grid.getCell(selectedCell.row, selectedCell.col)?.value || '' : '')}
+                  onChange={(e) => {
+                    if (selectedCell) {
+                      if (editingValue === undefined) {
+                        setEditingValue(e.target.value);
+                        onEditCell(selectedCell);
+                      } else {
+                        setEditingValue(e.target.value);
+                      }
+                    }
                   }}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div
-            className="flex-shrink-0 bg-gray-100 dark:bg-gray-800 overflow-hidden"
-            style={{ height: GRID_CONFIG.COL_HEADER_HEIGHT }}
-          >
-            <div
-              className="relative"
-              style={{
-                width: totalWidth,
-                height: GRID_CONFIG.COL_HEADER_HEIGHT,
-                transform: `translateX(-${scrollPos.left}px)`,
-              }}
-            >
-              {visibleCols.map(col => (
-                <ColumnHeader
-                  key={col}
-                  col={col}
-                  width={getColumnWidth(col)}
-                  onResizeStart={handleColumnResizeStart}
-                  onAutoFit={handleAutoFitColumn}
-                  isResizing={resizeState.isResizing && resizeState.type === 'column'}
-                  onSelectColumn={handleSelectColumn}
-                  style={{
-                    top: 0,
-                    left: getColumnLeft(col),
-                    width: resizeState.isResizing && resizeState.type === 'column' && resizeState.index === col
-                      ? resizeState.currentSize
-                      : getColumnWidth(col),
-                    height: GRID_CONFIG.COL_HEADER_HEIGHT,
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      if (selectedCell && editingValue !== undefined) {
+                        updateCell(selectedCell.row, selectedCell.col, editingValue);
+                        setEditingValue(undefined);
+                        onEditCell(null);
+                        containerRef.current?.focus();
+                      }
+                    }
                   }}
+                  placeholder={selectedCell ? "Escribe un valor o fórmula..." : "Selecciona una celda"}
+                  disabled={!selectedCell}
                 />
-              ))}
+              </div>
             </div>
-          </div>
 
-          <div
-            ref={viewportRef}
-            className="flex-1 overflow-auto"
-            onScroll={handleScroll}
-            data-testid="excel-viewport"
-          >
-            <div
-              style={{
-                width: totalWidth,
-                height: totalHeight,
-                position: 'relative',
-              }}
-            >
-              {visibleRows.map(row =>
-                visibleCols.map(col => {
-                  const cellData = grid.getCell(row, col) || { value: '' };
-                  const safeData = {
-                    value: cellData.value ?? '',
-                    formula: cellData.formula,
-                    bold: cellData.bold,
-                    italic: cellData.italic,
-                    underline: cellData.underline,
-                    strikethrough: cellData.strikethrough,
-                    align: cellData.align,
-                    verticalAlign: cellData.verticalAlign,
-                    fontFamily: cellData.fontFamily,
-                    fontSize: cellData.fontSize,
-                    color: cellData.color,
-                    backgroundColor: cellData.backgroundColor,
-                    numberFormat: cellData.numberFormat,
-                    borders: cellData.borders,
-                    wrapText: cellData.wrapText,
-                    indent: cellData.indent,
-                    format: cellData.format,
-                  };
-                  const isSelected = selectedCell?.row === row && selectedCell?.col === col;
-                  const isEditing = editingCell?.row === row && editingCell?.col === col;
-                  const inRange = isInSelectionRange(row, col);
-
-                  const isStreamingCell = activeStreamingCell?.row === row && activeStreamingCell?.col === col;
-                  const isRecentlyWritten = isRecentCell(row, col);
-                  const conditionalStyle = getConditionalStyle(row, col, safeData.value);
-                  
-                  return (
-                    <VirtualCell
-                      key={`${row}:${col}`}
-                      row={row}
-                      col={col}
-                      data={safeData}
-                      isSelected={isSelected}
-                      isInRange={inRange}
-                      isEditing={isEditing}
-                      isStreaming={isStreamingCell}
-                      isRecentlyWritten={isRecentlyWritten}
-                      typingValue={isStreamingCell ? typingValue : undefined}
-                      editingValue={isEditing ? editingValue : undefined}
-                      style={{
-                        top: getRowTop(row),
-                        left: getColumnLeft(col),
-                        width: getColumnWidth(col),
-                        height: getRowHeight(row),
-                      }}
-                      conditionalStyle={conditionalStyle}
-                      onMouseDown={(e) => handleCellMouseDown(row, col, e)}
-                      onMouseEnter={() => handleCellMouseEnter(row, col)}
-                      onDoubleClick={() => handleCellEdit(row, col)}
-                      onBlur={handleCellBlur}
-                      onChange={(value) => handleCellChange(row, col, value)}
-                      onTypingChange={handleTypingChange}
-                      onKeyDown={(e) => handleCellKeyDown(e, row, col)}
-                    />
-                  );
-                })
-              )}
-              
-              {/* Fill Handle - small square at bottom-right of selection */}
-              {selectedCell && !editingCell && !isFillDragging && (() => {
-                const targetRow = selectionRange 
-                  ? Math.max(selectionRange.startRow, selectionRange.endRow) 
-                  : selectedCell.row;
-                const targetCol = selectionRange 
-                  ? Math.max(selectionRange.startCol, selectionRange.endCol) 
-                  : selectedCell.col;
-                
-                const cellBottom = getRowTop(targetRow) + getRowHeight(targetRow);
-                const cellRight = getColumnLeft(targetCol) + getColumnWidth(targetCol);
-                
-                return (
-                  <div
-                    className="absolute w-3 h-3 bg-blue-600 border-2 border-white cursor-crosshair z-30 shadow-sm hover:scale-125 transition-transform"
-                    style={{
-                      top: cellBottom - 6,
-                      left: cellRight - 6,
-                    }}
-                    onMouseDown={handleFillHandleMouseDown}
-                    data-testid="fill-handle"
-                    title="Arrastra para rellenar serie"
-                  />
-                );
-              })()}
-              
-              {/* Fill preview range indicator */}
-              {isFillDragging && fillSourceRange && fillTargetRow !== null && fillTargetRow > fillSourceRange.endRow && (
+            <div className="flex flex-1 overflow-hidden">
+              <div
+                className="flex-shrink-0 bg-gray-100 dark:bg-gray-800 flex flex-col"
+                style={{ width: GRID_CONFIG.ROW_HEADER_WIDTH }}
+              >
                 <div
-                  className="absolute border-2 border-dashed border-blue-500 bg-blue-100/30 pointer-events-none z-20"
-                  style={{
-                    top: getRowTop(fillSourceRange.endRow + 1),
-                    left: getColumnLeft(fillSourceRange.col),
-                    width: getColumnWidth(fillSourceRange.col),
-                    height: getRowTop(fillTargetRow) + getRowHeight(fillTargetRow) - getRowTop(fillSourceRange.endRow + 1),
-                  }}
+                  className="flex-shrink-0 z-20 bg-gray-200 dark:bg-gray-700 border-r border-b border-gray-300 dark:border-gray-600"
+                  style={{ height: GRID_CONFIG.COL_HEADER_HEIGHT, width: GRID_CONFIG.ROW_HEADER_WIDTH }}
                 />
-              )}
-              
-              {charts && charts.length > 0 && onUpdateChart && onDeleteChart && (
-                <ChartLayer
-                  charts={charts}
-                  grid={grid}
-                  gridConfig={GRID_CONFIG}
-                  onUpdateChart={onUpdateChart}
-                  onDeleteChart={onDeleteChart}
-                />
-              )}
+                <div
+                  className="flex-1 relative overflow-hidden"
+                >
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: totalHeight,
+                      transform: `translateY(-${scrollPos.top}px)`,
+                    }}
+                  >
+                    {visibleRows.map(row => (
+                      <RowHeader
+                        key={row}
+                        row={row}
+                        height={getRowHeight(row)}
+                        onResizeStart={handleRowResizeStart}
+                        onAutoFit={handleAutoFitRow}
+                        isResizing={resizeState.isResizing && resizeState.type === 'row'}
+                        onSelectRow={handleSelectRow}
+                        style={{
+                          position: 'absolute',
+                          top: getRowTop(row),
+                          left: 0,
+                          width: GRID_CONFIG.ROW_HEADER_WIDTH,
+                          height: resizeState.isResizing && resizeState.type === 'row' && resizeState.index === row
+                            ? resizeState.currentSize
+                            : getRowHeight(row),
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex-1 flex flex-col overflow-hidden">
+                <div
+                  className="flex-shrink-0 bg-gray-100 dark:bg-gray-800 overflow-hidden"
+                  style={{ height: GRID_CONFIG.COL_HEADER_HEIGHT }}
+                >
+                  <div
+                    className="relative"
+                    style={{
+                      width: totalWidth,
+                      height: GRID_CONFIG.COL_HEADER_HEIGHT,
+                      transform: `translateX(-${scrollPos.left}px)`,
+                    }}
+                  >
+                    {visibleCols.map(col => (
+                      <ColumnHeader
+                        key={col}
+                        col={col}
+                        width={getColumnWidth(col)}
+                        onResizeStart={handleColumnResizeStart}
+                        onAutoFit={handleAutoFitColumn}
+                        isResizing={resizeState.isResizing && resizeState.type === 'column'}
+                        onSelectColumn={handleSelectColumn}
+                        style={{
+                          top: 0,
+                          left: getColumnLeft(col),
+                          width: resizeState.isResizing && resizeState.type === 'column' && resizeState.index === col
+                            ? resizeState.currentSize
+                            : getColumnWidth(col),
+                          height: GRID_CONFIG.COL_HEADER_HEIGHT,
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div
+                  ref={viewportRef}
+                  className="flex-1 overflow-auto"
+                  onScroll={handleScroll}
+                  data-testid="excel-viewport"
+                >
+                  <div
+                    style={{
+                      width: totalWidth,
+                      height: totalHeight,
+                      position: 'relative',
+                    }}
+                  >
+                    {visibleRows.map(row =>
+                      visibleCols.map(col => {
+                        const cellData = grid.getCell(row, col) || { value: '' };
+                        const safeData = {
+                          value: cellData.value ?? '',
+                          formula: cellData.formula,
+                          bold: cellData.bold,
+                          italic: cellData.italic,
+                          underline: cellData.underline,
+                          strikethrough: cellData.strikethrough,
+                          align: cellData.align,
+                          verticalAlign: cellData.verticalAlign,
+                          fontFamily: cellData.fontFamily,
+                          fontSize: cellData.fontSize,
+                          color: cellData.color,
+                          backgroundColor: cellData.backgroundColor,
+                          numberFormat: cellData.numberFormat,
+                          borders: cellData.borders,
+                          wrapText: cellData.wrapText,
+                          indent: cellData.indent,
+                          format: cellData.format,
+                        };
+                        const isSelected = selectedCell?.row === row && selectedCell?.col === col;
+                        const isEditing = editingCell?.row === row && editingCell?.col === col;
+                        const inRange = isInSelectionRange(row, col);
+
+                        const isStreamingCell = activeStreamingCell?.row === row && activeStreamingCell?.col === col;
+                        const isRecentlyWritten = isRecentCell(row, col);
+                        const conditionalStyle = getConditionalStyle(row, col, safeData.value);
+
+	                        return (
+	                          <VirtualCell
+	                            key={`${row}:${col}`}
+	                            row={row}
+	                            col={col}
+	                            data={safeData}
+	                            isSelected={isSelected}
+	                            isInRange={inRange}
+	                            isEditing={isEditing}
+	                            isStreaming={isStreamingCell}
+	                            isRecentlyWritten={isRecentlyWritten}
+	                            typingValue={isStreamingCell ? typingValue : undefined}
+	                            editingValue={isEditing ? editingValue : undefined}
+	                            platformTimeZone={platformTimeZone}
+	                            platformDateFormat={platformDateFormat}
+	                            style={{
+	                              top: getRowTop(row),
+	                              left: getColumnLeft(col),
+	                              width: getColumnWidth(col),
+	                              height: getRowHeight(row),
+	                            }}
+                            conditionalStyle={conditionalStyle}
+                            onMouseDown={(e) => handleCellMouseDown(row, col, e)}
+                            onMouseEnter={() => handleCellMouseEnter(row, col)}
+                            onDoubleClick={() => handleCellEdit(row, col)}
+                            onBlur={handleCellBlur}
+                            onChange={(value) => handleCellChange(row, col, value)}
+                            onTypingChange={handleTypingChange}
+                            onKeyDown={(e) => handleCellKeyDown(e, row, col)}
+                          />
+                        );
+                      })
+                    )}
+
+                    {/* Fill Handle - small square at bottom-right of selection */}
+                    {selectedCell && !editingCell && !isFillDragging && (() => {
+                      const targetRow = selectionRange
+                        ? Math.max(selectionRange.startRow, selectionRange.endRow)
+                        : selectedCell.row;
+                      const targetCol = selectionRange
+                        ? Math.max(selectionRange.startCol, selectionRange.endCol)
+                        : selectedCell.col;
+
+                      const cellBottom = getRowTop(targetRow) + getRowHeight(targetRow);
+                      const cellRight = getColumnLeft(targetCol) + getColumnWidth(targetCol);
+
+                      return (
+                        <div
+                          className="absolute w-3 h-3 bg-blue-600 border-2 border-white cursor-crosshair z-30 shadow-sm hover:scale-125 transition-transform"
+                          style={{
+                            top: cellBottom - 6,
+                            left: cellRight - 6,
+                          }}
+                          onMouseDown={handleFillHandleMouseDown}
+                          data-testid="fill-handle"
+                          title="Arrastra para rellenar serie"
+                        />
+                      );
+                    })()}
+
+                    {/* Fill preview range indicator */}
+                    {isFillDragging && fillSourceRange && fillTargetRow !== null && fillTargetRow > fillSourceRange.endRow && (
+                      <div
+                        className="absolute border-2 border-dashed border-blue-500 bg-blue-100/30 pointer-events-none z-20"
+                        style={{
+                          top: getRowTop(fillSourceRange.endRow + 1),
+                          left: getColumnLeft(fillSourceRange.col),
+                          width: getColumnWidth(fillSourceRange.col),
+                          height: getRowTop(fillTargetRow) + getRowHeight(fillTargetRow) - getRowTop(fillSourceRange.endRow + 1),
+                        }}
+                      />
+                    )}
+
+                    {charts && charts.length > 0 && onUpdateChart && onDeleteChart && (
+                      <ChartLayer
+                        charts={charts}
+                        grid={grid}
+                        gridConfig={GRID_CONFIG}
+                        onUpdateChart={onUpdateChart}
+                        onDeleteChart={onDeleteChart}
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
+
+            <div className="flex-shrink-0 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 flex items-center justify-between">
+              <span>
+                {selectionRange ? (
+                  selectionRange.startRow === selectionRange.endRow && selectionRange.startCol === selectionRange.endCol
+                    ? `Celda: ${formatCellRef(selectionRange.startRow, selectionRange.startCol)}`
+                    : `Rango: ${formatCellRef(selectionRange.startRow, selectionRange.startCol)}:${formatCellRef(selectionRange.endRow, selectionRange.endCol)} (${(Math.abs(selectionRange.endRow - selectionRange.startRow) + 1) * (Math.abs(selectionRange.endCol - selectionRange.startCol) + 1)} celdas)`
+                ) : selectedCell
+                  ? `Celda: ${formatCellRef(selectedCell.row, selectedCell.col)}`
+                  : 'Selecciona una celda'}
+              </span>
+              <span>
+                Datos: {grid.getCellCount().toLocaleString()} celdas |
+                Capacidad: {(GRID_CONFIG.MAX_ROWS * GRID_CONFIG.MAX_COLS).toLocaleString()} celdas
+              </span>
+            </div>
+
+            {resizeState.isResizing && (
+              <div
+                className="fixed bg-blue-500 pointer-events-none z-50"
+                style={resizeState.type === 'column' ? {
+                  width: 2,
+                  top: 0,
+                  bottom: 0,
+                  left: resizeState.startPos + (resizeState.currentSize - resizeState.startSize),
+                } : {
+                  height: 2,
+                  left: 0,
+                  right: 0,
+                  top: resizeState.startPos + (resizeState.currentSize - resizeState.startSize),
+                }}
+              />
+            )}
+
+            {resizeState.isResizing && (
+              <div
+                className="fixed bg-gray-900 text-white text-xs px-2 py-1 rounded shadow-lg pointer-events-none z-50"
+                style={{
+                  left: resizeState.type === 'column'
+                    ? resizeState.startPos + (resizeState.currentSize - resizeState.startSize) + 10
+                    : 80,
+                  top: resizeState.type === 'column'
+                    ? 80
+                    : resizeState.startPos + (resizeState.currentSize - resizeState.startSize) + 10,
+                }}
+              >
+                {resizeState.type === 'column' ? 'Ancho' : 'Alto'}: {Math.round(resizeState.currentSize)}px
+              </div>
+            )}
           </div>
         </div>
-      </div>
-
-      <div className="flex-shrink-0 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 flex items-center justify-between">
-        <span>
-          {selectionRange ? (
-            selectionRange.startRow === selectionRange.endRow && selectionRange.startCol === selectionRange.endCol
-              ? `Celda: ${formatCellRef(selectionRange.startRow, selectionRange.startCol)}`
-              : `Rango: ${formatCellRef(selectionRange.startRow, selectionRange.startCol)}:${formatCellRef(selectionRange.endRow, selectionRange.endCol)} (${(Math.abs(selectionRange.endRow - selectionRange.startRow) + 1) * (Math.abs(selectionRange.endCol - selectionRange.startCol) + 1)} celdas)`
-          ) : selectedCell
-            ? `Celda: ${formatCellRef(selectedCell.row, selectedCell.col)}`
-            : 'Selecciona una celda'}
-        </span>
-        <span>
-          Datos: {grid.getCellCount().toLocaleString()} celdas | 
-          Capacidad: {(GRID_CONFIG.MAX_ROWS * GRID_CONFIG.MAX_COLS).toLocaleString()} celdas
-        </span>
-      </div>
-
-      {resizeState.isResizing && (
-        <div 
-          className="fixed bg-blue-500 pointer-events-none z-50"
-          style={resizeState.type === 'column' ? {
-            width: 2,
-            top: 0,
-            bottom: 0,
-            left: resizeState.startPos + (resizeState.currentSize - resizeState.startSize),
-          } : {
-            height: 2,
-            left: 0,
-            right: 0,
-            top: resizeState.startPos + (resizeState.currentSize - resizeState.startSize),
-          }}
-        />
-      )}
-
-      {resizeState.isResizing && (
-        <div 
-          className="fixed bg-gray-900 text-white text-xs px-2 py-1 rounded shadow-lg pointer-events-none z-50"
-          style={{
-            left: resizeState.type === 'column' 
-              ? resizeState.startPos + (resizeState.currentSize - resizeState.startSize) + 10 
-              : 80,
-            top: resizeState.type === 'column' 
-              ? 80 
-              : resizeState.startPos + (resizeState.currentSize - resizeState.startSize) + 10,
-          }}
-        >
-          {resizeState.type === 'column' ? 'Ancho' : 'Alto'}: {Math.round(resizeState.currentSize)}px
+      ) : (
+        <div className="h-full w-full bg-[#1e1e1e] p-4 font-mono text-sm">
+          <textarea
+            className="w-full h-full bg-transparent text-[#d4d4d4] resize-none focus:outline-none"
+            value={csvContent}
+            onChange={handleCsvChange}
+            spellCheck={false}
+          />
         </div>
       )}
-    </div>
+    </OfficeToolShell>
   );
 }
 

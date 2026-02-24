@@ -1,4 +1,0 @@
-search for nonexistent_random_term_xyz123 and crea
-==================================================
-
-search for nonexistent_random_term_xyz123 and create document

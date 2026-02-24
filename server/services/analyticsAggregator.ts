@@ -1,6 +1,6 @@
 import { db } from "../db";
-import { apiLogs, providerMetrics, costBudgets, kpiSnapshots, users, chatMessages } from "@shared/schema";
-import { sql, gte, and, desc, count, isNotNull } from "drizzle-orm";
+import { apiLogs } from "@shared/schema";
+import { sql, gte, and, count, isNotNull } from "drizzle-orm";
 import { storage } from "../storage";
 
 const AGGREGATION_INTERVAL_MS = 60 * 1000;
@@ -13,9 +13,11 @@ const COST_PER_1K_TOKENS: Record<string, number> = {
 };
 
 const DEFAULT_BUDGET_EUR = "100.00";
+const TABLE_EXISTS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 let aggregatorInterval: NodeJS.Timeout | null = null;
 let isRunning = false;
+const tableExistsCache = new Map<string, { exists: boolean; checkedAt: number }>();
 
 interface ProviderStats {
   provider: string;
@@ -37,6 +39,28 @@ function calculatePercentile(sortedValues: number[], percentile: number): number
 function estimateCost(provider: string, tokensIn: number, tokensOut: number): number {
   const rate = COST_PER_1K_TOKENS[provider.toLowerCase()] || COST_PER_1K_TOKENS.default;
   return ((tokensIn + tokensOut) / 1000) * rate;
+}
+
+async function tableExists(tableName: string): Promise<boolean> {
+  const cached = tableExistsCache.get(tableName);
+  if (cached && Date.now() - cached.checkedAt < TABLE_EXISTS_CACHE_TTL_MS) {
+    return cached.exists;
+  }
+  const result = await db.execute(sql`select to_regclass(${tableName}) as table_name`);
+  const row = result.rows?.[0] as { table_name?: string | null } | undefined;
+  const exists = Boolean(row?.table_name);
+  tableExistsCache.set(tableName, { exists, checkedAt: Date.now() });
+  return exists;
+}
+
+async function getMissingTables(tableNames: string[]): Promise<string[]> {
+  const checks = await Promise.all(
+    tableNames.map(async (tableName) => ({
+      tableName,
+      exists: await tableExists(tableName),
+    }))
+  );
+  return checks.filter((check) => !check.exists).map((check) => check.tableName);
 }
 
 async function ensureCostBudgetExists(provider: string): Promise<void> {
@@ -69,6 +93,18 @@ export async function runAggregation(): Promise<void> {
 
   try {
     console.log(`[Analytics] Running aggregation for window: ${windowStart.toISOString()} - ${windowEnd.toISOString()}`);
+
+    const missingTables = await getMissingTables([
+      "public.api_logs",
+      "public.provider_metrics",
+      "public.cost_budgets",
+      "public.kpi_snapshots",
+    ]);
+
+    if (missingTables.length > 0) {
+      console.warn(`[Analytics] Skipping aggregation; missing tables: ${missingTables.join(", ")}`);
+      return;
+    }
 
     const logs = await db
       .select({
@@ -195,11 +231,27 @@ export async function calculateKpis(): Promise<void> {
   const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
 
   try {
+    const requiredTables = await getMissingTables([
+      "public.api_logs",
+      "public.cost_budgets",
+      "public.kpi_snapshots",
+    ]);
+
+    if (requiredTables.length > 0) {
+      console.warn(`[Analytics] Skipping KPI calculation; missing tables: ${requiredTables.join(", ")}`);
+      return;
+    }
+
+    // "Active users now" should reflect distinct accounts, not message volume.
+    // We use api_logs (LLM calls) as the most reliable cross-feature activity signal.
     const [activeUsersResult] = await db
-      .select({ count: count() })
-      .from(chatMessages)
-      .where(gte(chatMessages.createdAt, tenMinutesAgo));
-    const activeUsersNow = activeUsersResult?.count || 0;
+      .select({ count: sql<number>`COUNT(DISTINCT ${apiLogs.userId})` })
+      .from(apiLogs)
+      .where(and(
+        gte(apiLogs.createdAt, tenMinutesAgo),
+        isNotNull(apiLogs.userId)
+      ));
+    const activeUsersNow = Number(activeUsersResult?.count || 0);
 
     const [queriesResult] = await db
       .select({ count: count() })

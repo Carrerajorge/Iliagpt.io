@@ -1,118 +1,91 @@
-import { Router } from 'express';
-import type { Request, Response } from 'express';
+import { Router } from "express";
+import type { Request, Response } from "express";
+import { z } from "zod";
+
+import { InMemoryClientErrorLogStore } from "../core/errors/infrastructure/inMemoryClientErrorLogStore";
+import { getClientErrorStats, getRecentClientErrors, logClientError } from "../core/errors/application/clientErrorService";
 
 const router = Router();
 
-interface ErrorLog {
-  errorId: string;
-  message: string;
-  stack?: string;
-  componentStack?: string;
-  componentName?: string;
-  url: string;
-  userAgent: string;
-  timestamp: string;
-  userId?: number;
-  sessionId?: string;
+const store = new InMemoryClientErrorLogStore({ maxLogs: 1000 });
+
+const clientErrorLogRequestSchema = z.object({
+  errorId: z.string().optional(),
+  message: z.string(),
+  stack: z.string().optional(),
+  componentStack: z.string().optional(),
+  componentName: z.string().optional(),
+  url: z.string(),
+  userAgent: z.string(),
+});
+
+function requireAdmin(req: Request, res: Response): boolean {
+  const user = (req as any).user;
+  if (!user?.id) {
+    res.status(401).json({ error: "Authentication required" });
+    return false;
+  }
+  if (user.role !== "admin") {
+    res.status(403).json({ error: "Admin access required" });
+    return false;
+  }
+  return true;
 }
 
-const errorLogs: ErrorLog[] = [];
-const MAX_LOGS = 1000;
-
-router.post('/log', async (req: Request, res: Response) => {
+router.post("/log", async (req: Request, res: Response) => {
   try {
-    const errorLog: ErrorLog = {
-      ...req.body,
-      userId: (req as any).user?.id,
-      sessionId: (req as any).sessionID
-    };
-
-    errorLogs.unshift(errorLog);
-    if (errorLogs.length > MAX_LOGS) {
-      errorLogs.pop();
+    const parsed = clientErrorLogRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid payload" });
     }
 
-    console.error('[CLIENT ERROR]', {
-      errorId: errorLog.errorId,
-      component: errorLog.componentName,
-      message: errorLog.message,
-      url: errorLog.url,
-      timestamp: errorLog.timestamp
-    });
+    const userId = typeof (req as any).user?.id === "number" ? (req as any).user.id : undefined;
+    const sessionId = typeof (req as any).sessionID === "string" ? (req as any).sessionID : undefined;
 
-    res.json({ success: true, errorId: errorLog.errorId });
-  } catch (error) {
-    console.error('Error logging client error:', error);
-    res.status(500).json({ error: 'Failed to log error' });
-  }
-});
-
-router.get('/recent', async (req: Request, res: Response) => {
-  try {
-    const limit = parseInt(req.query.limit as string) || 50;
-    const component = req.query.component as string;
-
-    let filtered = errorLogs;
-    if (component) {
-      filtered = errorLogs.filter(e => e.componentName === component);
+    const result = await logClientError(store, { ...parsed.data, userId, sessionId });
+    if (!result.ok) {
+      return res.status(400).json({ error: result.error.code });
     }
 
-    res.json({
-      errors: filtered.slice(0, limit),
-      total: filtered.length,
-      components: [...new Set(errorLogs.map(e => e.componentName).filter(Boolean))]
+    console.error("[CLIENT ERROR]", {
+      errorId: result.value.errorId,
+      component: parsed.data.componentName,
+      message: parsed.data.message.slice(0, 200),
+      url: parsed.data.url,
+      timestamp: new Date().toISOString(),
     });
+
+    res.json({ success: true, errorId: result.value.errorId });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch errors' });
+    console.error("Error logging client error:", error);
+    res.status(500).json({ error: "Failed to log error" });
   }
 });
 
-router.get('/stats', async (req: Request, res: Response) => {
+router.get("/recent", async (req: Request, res: Response) => {
   try {
-    const now = new Date();
-    const last24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const lastWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    if (!requireAdmin(req, res)) return;
 
-    const errors24h = errorLogs.filter(e => new Date(e.timestamp) > last24h);
-    const errorsWeek = errorLogs.filter(e => new Date(e.timestamp) > lastWeek);
+    const rawLimit = parseInt(req.query.limit as string) || 50;
+    const limit = Math.min(Math.max(rawLimit, 1), 200);
+    const componentName = typeof req.query.component === "string" ? req.query.component : undefined;
 
-    const byComponent: Record<string, number> = {};
-    errorLogs.forEach(e => {
-      const name = e.componentName || 'Unknown';
-      byComponent[name] = (byComponent[name] || 0) + 1;
-    });
-
-    const byMessage: Record<string, number> = {};
-    errorLogs.forEach(e => {
-      const msg = e.message.slice(0, 100);
-      byMessage[msg] = (byMessage[msg] || 0) + 1;
-    });
-
-    const topErrors = Object.entries(byMessage)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([message, count]) => ({ message, count }));
-
-    res.json({
-      total: errorLogs.length,
-      last24Hours: errors24h.length,
-      lastWeek: errorsWeek.length,
-      byComponent,
-      topErrors,
-      healthScore: calculateHealthScore(errors24h.length)
-    });
+    const payload = await getRecentClientErrors(store, { limit, componentName });
+    res.json(payload);
   } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch stats' });
+    res.status(500).json({ error: "Failed to fetch errors" });
   }
 });
 
-function calculateHealthScore(errorsIn24h: number): number {
-  if (errorsIn24h === 0) return 100;
-  if (errorsIn24h < 5) return 90;
-  if (errorsIn24h < 20) return 75;
-  if (errorsIn24h < 50) return 50;
-  if (errorsIn24h < 100) return 25;
-  return 10;
-}
+router.get("/stats", async (req: Request, res: Response) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+
+    const payload = await getClientErrorStats(store);
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch stats" });
+  }
+});
 
 export default router;

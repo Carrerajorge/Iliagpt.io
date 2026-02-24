@@ -1,5 +1,7 @@
+import crypto from "crypto";
 import { storage } from "../storage";
 import { checkDomainPolicy, checkRateLimit, sanitizeUrl, isValidObjective, extractDomain } from "./security";
+import { classifyActionRisk, RiskLevel, RiskClassification } from "./riskClassifier";
 
 export interface PIIMatch {
   type: "email" | "phone" | "ssn" | "credit_card" | "ip_address" | "date_of_birth";
@@ -106,7 +108,7 @@ class Guardrails {
 
   detectPII(text: string): PIIMatch[] {
     const matches: PIIMatch[] = [];
-    
+
     for (const { type, pattern, redactFn } of PII_PATTERNS) {
       const regex = new RegExp(pattern.source, pattern.flags);
       let match;
@@ -148,9 +150,9 @@ class Guardrails {
   }
 
   async checkDownload(
-    url: string, 
-    mimeType?: string, 
-    size?: number, 
+    url: string,
+    mimeType?: string,
+    size?: number,
     filename?: string
   ): Promise<DownloadPolicy> {
     if (!this.config.enableDownloadControls) {
@@ -232,14 +234,22 @@ class Guardrails {
     }
   }
 
-  getAuditLog(sessionId?: string, limit: number = 100): AuditLogEntry[] {
-    let entries = [...auditLog];
-    
-    if (sessionId) {
-      entries = entries.filter(e => e.sessionId === sessionId);
+  getAuditLog(sessionId: string, limit = 100): AuditLogEntry[] {
+    return [...auditLog].filter((entry) => entry.sessionId === sessionId).slice(-limit);
+  }
+
+  evaluateRisk(
+    sessionId: string,
+    actionType: string,
+    target: string,
+    params?: Record<string, any>,
+    userThreshold: RiskLevel = "high"
+  ): RiskClassification {
+    const risk = classifyActionRisk(actionType, target, params, userThreshold);
+    if (risk.requiresConfirmation) {
+      void this.logAction(sessionId, "risk_assessment", target, "flagged", risk.reason, { riskLevel: risk.level });
     }
-    
-    return entries.slice(-limit);
+    return risk;
   }
 
   async validateAction(
@@ -252,7 +262,7 @@ class Guardrails {
       try {
         const sanitized = sanitizeUrl(target);
         const policy = await checkDomainPolicy(sanitized);
-        
+
         if (!policy.allowed) {
           await this.logAction(sessionId, actionType, target, "blocked", policy.reason);
           return { allowed: false, reason: policy.reason };
@@ -263,20 +273,17 @@ class Guardrails {
           await this.logAction(sessionId, actionType, target, "blocked", "Rate limit exceeded");
           return { allowed: false, reason: "Rate limit exceeded for this domain" };
         }
-
-        await this.logAction(sessionId, actionType, target, "allowed");
-        return { allowed: true };
-      } catch (e: any) {
-        await this.logAction(sessionId, actionType, target, "blocked", e.message);
-        return { allowed: false, reason: e.message };
+      } catch (error: any) {
+        await this.logAction(sessionId, actionType, target, "blocked", error?.message || "Invalid URL");
+        return { allowed: false, reason: error?.message || "Invalid URL" };
       }
     }
 
-    if (actionType === "type" && params?.text) {
-      const { matches } = this.detectPII(params.text) ? { matches: this.detectPII(params.text) } : { matches: [] };
+    if (actionType === "type" && typeof params?.text === "string") {
+      const matches = this.detectPII(params.text);
       if (matches.length > 0) {
         await this.logAction(sessionId, actionType, target, "flagged", "Input contains PII", {
-          piiTypes: matches.map(m => m.type)
+          piiTypes: matches.map((m) => m.type),
         });
       }
     }
@@ -294,11 +301,16 @@ class Guardrails {
 
   async sanitizeOutput(text: string, sessionId?: string): Promise<string> {
     const { text: redacted, matches } = this.redactPII(text);
-    
+
     if (matches.length > 0 && sessionId) {
-      await this.logAction(sessionId, "output_sanitize", "response", "flagged", 
-        `Redacted ${matches.length} PII instances`, {
-          piiTypes: Array.from(new Set(matches.map(m => m.type)))
+      await this.logAction(
+        sessionId,
+        "output_sanitize",
+        "response",
+        "flagged",
+        `Redacted ${matches.length} PII instances`,
+        {
+          piiTypes: Array.from(new Set(matches.map((m) => m.type))),
         }
       );
     }

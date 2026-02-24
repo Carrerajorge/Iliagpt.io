@@ -9,6 +9,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Check, Zap, Rocket, Star, Crown, Clock } from "lucide-react";
+import { apiFetch } from "@/lib/apiClient";
 
 interface QuotaInfo {
   remaining: number;
@@ -83,7 +84,7 @@ const plans: PlanInfo[] = [
   {
     id: "plus",
     name: "Plus",
-    price: "$20",
+    price: "$10",
     priceId: "price_plus_monthly",
     description: "Descubre toda la experiencia",
     icon: <Star className="h-6 w-6" />,
@@ -104,8 +105,8 @@ const plans: PlanInfo[] = [
   {
     id: "pro",
     name: "Pro",
-    price: "$200",
-    priceId: "price_pro_monthly",
+    price: "$20",
+    priceId: "price_pro_yearly",
     description: "Maximiza tu productividad",
     icon: <Crown className="h-6 w-6" />,
     gradient: "from-amber-500 to-orange-600",
@@ -159,7 +160,7 @@ export function PricingModal({ open, onClose, quota }: PricingModalProps) {
 
   useEffect(() => {
     if (open) {
-      fetch("/api/stripe/price-ids")
+      apiFetch("/api/stripe/price-ids")
         .then(res => res.json())
         .then(data => {
           if (data.priceMapping) {
@@ -175,28 +176,41 @@ export function PricingModal({ open, onClose, quota }: PricingModalProps) {
     return priceMapping[planPriceId] || planPriceId;
   };
 
-  const handleSubscribe = async (priceId: string, planId: string) => {
-    console.log("[Checkout] Starting checkout:", { priceId, planId });
-    if (!priceId) {
-      console.error("[Checkout] No priceId provided");
-      return;
-    }
-    
-    setLoadingPlan(planId);
-    
+  // FRONTEND FIX #47: Validate checkout URL to prevent open redirect
+  const ALLOWED_CHECKOUT_HOSTS = ['checkout.stripe.com', 'pay.stripe.com'];
+
+  const isValidCheckoutUrl = (url: string): boolean => {
     try {
-      console.log("[Checkout] Calling /api/checkout");
-      const response = await fetch("/api/checkout", {
+      const parsed = new URL(url);
+      return parsed.protocol === 'https:' &&
+        ALLOWED_CHECKOUT_HOSTS.some(host => parsed.hostname === host || parsed.hostname.endsWith('.' + host));
+    } catch {
+      return false;
+    }
+  };
+
+  const handleSubscribe = async (priceId: string, planId: string) => {
+    if (!priceId) return;
+
+    setLoadingPlan(planId);
+
+    try {
+      const response = await apiFetch("/api/checkout", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ priceId }),
       });
-      
+
       const data = await response.json();
-      
+
       if (data.url) {
+        // FRONTEND FIX #48: Validate URL before redirect to prevent open redirect
+        if (!isValidCheckoutUrl(data.url)) {
+          console.error("Invalid checkout URL - not a trusted Stripe domain");
+          return;
+        }
         window.location.href = data.url;
       } else if (data.error) {
         console.error("Checkout error:", data.error);
@@ -292,7 +306,9 @@ export function PricingModal({ open, onClose, quota }: PricingModalProps) {
                       {plan.price}
                     </span>
                     {plan.price !== "$0" && (
-                      <span className="text-gray-500 dark:text-gray-400">/mes</span>
+                      <span className="text-gray-500 dark:text-gray-400">
+                        {plan.id === "pro" ? "/año" : "/mes"}
+                      </span>
                     )}
                   </div>
                   <CardDescription className="mt-1">

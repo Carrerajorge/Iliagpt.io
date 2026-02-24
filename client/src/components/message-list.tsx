@@ -58,6 +58,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
+import { UncertaintyBadge } from "@/components/ui/uncertainty-badge";
+import { VerificationBadge } from "@/components/ui/verification-badge";
 import {
   Popover,
   PopoverContent,
@@ -89,15 +91,16 @@ import { SuperAgentDisplay } from "@/components/super-agent-display";
 import { useSuperAgentRun } from "@/stores/super-agent-store";
 import { LiveExecutionConsole } from "@/components/live-execution-console";
 import { PhaseNarrator } from "@/components/thinking-indicator";
+import { PlanViewer } from "@/components/agent/PlanViewer";
+import { detectClientIntent } from "@/lib/clientIntentDetector";
+import { useSettingsContext } from "@/contexts/SettingsContext";
+import { RetrievalVis } from "@/components/retrieval-vis";
+import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
+import { formatZonedTime, normalizeTimeZone } from "@/lib/platformDateTime";
 
-const formatMessageTime = (timestamp: Date | undefined): string => {
+const formatMessageTime = (timestamp: Date | undefined, timeZone: string): string => {
   if (!timestamp) return "";
-  const date = new Date(timestamp);
-  return date.toLocaleTimeString('es-ES', { 
-    hour: '2-digit', 
-    minute: '2-digit',
-    hour12: false 
-  });
+  return formatZonedTime(timestamp, { timeZone: normalizeTimeZone(timeZone), includeSeconds: false });
 };
 
 interface DocumentBlock {
@@ -141,16 +144,16 @@ const ImageSkeleton = memo(function ImageSkeleton({ className }: { className?: s
   );
 });
 
-const LazyImage = memo(function LazyImage({ 
-  src, 
-  alt, 
-  className, 
+const LazyImage = memo(function LazyImage({
+  src,
+  alt,
+  className,
   style,
   onClick,
   "data-testid": testId
-}: { 
-  src: string; 
-  alt: string; 
+}: {
+  src: string;
+  alt: string;
   className?: string;
   style?: React.CSSProperties;
   onClick?: () => void;
@@ -188,13 +191,13 @@ const CleanDataTableWrapper = ({ children }: { children?: React.ReactNode }) => 
     if (!tableRef.current) return;
     const table = tableRef.current.querySelector('table');
     if (!table) return;
-    
+
     const rows = table.querySelectorAll('tr');
     const text = Array.from(rows).map(row => {
       const cells = row.querySelectorAll('th, td');
       return Array.from(cells).map(cell => cell.textContent?.trim() || '').join('\t');
     }).join('\n');
-    
+
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -208,7 +211,7 @@ const CleanDataTableWrapper = ({ children }: { children?: React.ReactNode }) => 
     if (!tableRef.current) return;
     const table = tableRef.current.querySelector('table');
     if (!table) return;
-    
+
     const rows = table.querySelectorAll('tr');
     const csv = Array.from(rows).map(row => {
       const cells = row.querySelectorAll('th, td');
@@ -217,7 +220,7 @@ const CleanDataTableWrapper = ({ children }: { children?: React.ReactNode }) => 
         return text.includes(',') ? `"${text}"` : text;
       }).join(',');
     }).join('\n');
-    
+
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -228,7 +231,7 @@ const CleanDataTableWrapper = ({ children }: { children?: React.ReactNode }) => 
   }, []);
 
   return (
-    <div 
+    <div
       ref={tableRef}
       className={cn(
         "relative group my-4",
@@ -363,7 +366,7 @@ const parseDocumentBlocks = (
 
       const parsed = JSON.parse(jsonStr);
       const validated = DocumentBlockSchema.safeParse(parsed);
-      
+
       if (validated.success) {
         const doc = validated.data;
         doc.content = doc.content
@@ -382,11 +385,11 @@ const parseDocumentBlocks = (
         error: e instanceof Error ? e.message : 'Unknown error',
         blockPreview: match[1]?.substring(0, 50) + '...'
       });
-      
+
       try {
         const blockContent = match[1];
         if (!blockContent) continue;
-        
+
         const typeMatch = blockContent.match(
           /"type"\s*:\s*"(word|excel|ppt)"/
         );
@@ -488,10 +491,10 @@ const AttachmentList = memo(function AttachmentList({
             className={cn(
               "flex items-center gap-2 px-3 py-2 rounded-xl text-sm border bg-card border-border cursor-pointer hover:bg-accent transition-colors"
             )}
-            onClick={() => onReopenDocument?.({ 
-              type: att.documentType as "word" | "excel" | "ppt", 
-              title: att.title || att.name, 
-              content: att.content || "" 
+            onClick={() => onReopenDocument?.({
+              type: att.documentType as "word" | "excel" | "ppt",
+              title: att.title || att.name,
+              content: att.content || ""
             })}
             data-testid={`attachment-document-${i}`}
           >
@@ -540,7 +543,8 @@ const AttachmentList = memo(function AttachmentList({
               sheets={att.spreadsheetData.sheets}
               previewData={att.spreadsheetData.previewData}
               onDownload={() => onOpenPreview?.(att)}
-              onExpand={() => window.open(`/spreadsheet-analyzer?uploadId=${att.spreadsheetData!.uploadId}`, '_blank')}
+              // FRONTEND FIX #39: Add noopener,noreferrer to prevent window.opener attacks
+              onExpand={() => window.open(`/spreadsheet-analyzer?uploadId=${att.spreadsheetData!.uploadId}`, '_blank', 'noopener,noreferrer')}
             />
             {att.spreadsheetData.analysisId && (
               <DocumentAnalysisResults
@@ -596,9 +600,9 @@ interface ActionToolbarProps {
   content: string;
   msgIndex: number;
   copiedMessageId: string | null;
-  messageFeedback: Record<string, "up" | "down">;
+  messageFeedback: Record<string, "up" | "down" | null>;
   speakingMessageId: string | null;
-  aiState: "idle" | "thinking" | "responding";
+  aiState: "idle" | "thinking" | "responding" | "agent_working";
   isRegenerating: boolean;
   variant: "compact" | "default";
   webSources?: WebSource[];
@@ -736,9 +740,9 @@ const ActionToolbar = memo(function ActionToolbar({
               <p>Regenerar</p>
             </TooltipContent>
           </Tooltip>
-          <PopoverContent 
-            className="w-52 p-1.5 bg-background/95 backdrop-blur-xl border-border/50 shadow-lg" 
-            align="start" 
+          <PopoverContent
+            className="w-52 p-1.5 bg-background/95 backdrop-blur-xl border-border/50 shadow-lg"
+            align="start"
             side="top"
             sideOffset={8}
           >
@@ -854,8 +858,8 @@ const ActionToolbar = memo(function ActionToolbar({
         </DropdownMenu>
 
         {webSources && webSources.length > 0 && onViewSources && (
-          <SourcesIndicator 
-            sources={webSources} 
+          <SourcesIndicator
+            sources={webSources}
             onViewSources={onViewSources}
           />
         )}
@@ -906,6 +910,8 @@ const UserMessage = memo(function UserMessage({
   onOpenPreview,
   onReopenDocument
 }: UserMessageProps) {
+  const { settings: platformSettings } = usePlatformSettings();
+
   if (variant === "compact") {
     return (
       <div className="bg-primary/10 text-primary-foreground px-3 py-2 rounded-lg max-w-full text-sm">
@@ -957,14 +963,14 @@ const UserMessage = memo(function UserMessage({
             onReopenDocument={onReopenDocument}
           />
           {message.content && (
-            <div className="liquid-message-user px-4 py-2.5 text-sm break-words leading-relaxed">
+            <div className="px-5 py-3 text-[15px] break-words leading-relaxed bg-[#A5A0FF]/15 backdrop-blur-xl border border-[#A5A0FF]/30 shadow-lg shadow-[#A5A0FF]/5 rounded-[24px] rounded-tr-[4px] text-foreground transition-all duration-300 hover:bg-[#A5A0FF]/25 hover:shadow-[#A5A0FF]/10 max-w-full">
               {message.content}
             </div>
           )}
           <div className="flex items-center justify-end gap-1.5 mt-2">
             {message.timestamp && (
               <span className="text-[10px] text-muted-foreground/60 mr-1">
-                {formatMessageTime(message.timestamp)}
+                {formatMessageTime(message.timestamp, platformSettings.timezone_default)}
               </span>
             )}
             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1011,7 +1017,7 @@ const UserMessage = memo(function UserMessage({
 interface AgentRunContentProps {
   agentRun: {
     runId: string | null;
-    status: "starting" | "running" | "completed" | "failed" | "cancelled" | "queued" | "planning" | "verifying" | "paused" | "cancelling" | "replanning";
+    status: "idle" | "starting" | "running" | "completed" | "failed" | "cancelled" | "queued" | "planning" | "verifying" | "paused" | "cancelling" | "replanning";
     userMessage?: string;
     steps: Array<{
       stepIndex: number;
@@ -1033,34 +1039,49 @@ interface AgentRunContentProps {
   onPause?: () => void;
   onResume?: () => void;
   onArtifactPreview?: (artifact: AgentArtifact) => void;
+  onOpenLightbox?: (imageUrl: string) => void;
 }
 
-const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRetry, onPause, onResume, onArtifactPreview }: AgentRunContentProps) {
+const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRetry, onPause, onResume, onArtifactPreview, onOpenLightbox }: AgentRunContentProps) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [showAllEvents, setShowAllEvents] = useState(false);
   const [isSlowConnection, setIsSlowConnection] = useState(false);
   const [waitingSeconds, setWaitingSeconds] = useState(0);
+  const [viewMode, setViewMode] = useState<"steps" | "plan">("steps");
   const eventsEndRef = useRef<HTMLDivElement>(null);
-  
+
   const isCancellable = ["starting", "running", "queued", "planning", "verifying", "paused", "replanning"].includes(agentRun.status);
   const isActive = ["starting", "running", "queued", "planning", "verifying", "cancelling", "replanning"].includes(agentRun.status);
   const isPaused = agentRun.status === "paused";
   const isCancelling = agentRun.status === "cancelling";
   const isWaitingForResponse = agentRun.status === "starting" || agentRun.status === "queued";
-  
+  const showObjective = [
+    "starting",
+    "queued",
+    "planning",
+    "running",
+    "verifying",
+    "replanning",
+    "paused",
+    "cancelling",
+    "completed",
+    "failed",
+    "cancelled",
+  ].includes(agentRun.status);
+
   useEffect(() => {
     if (isActive && eventsEndRef.current) {
       eventsEndRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   }, [agentRun.eventStream?.length, isActive]);
-  
+
   useEffect(() => {
     if (!isWaitingForResponse) {
       setIsSlowConnection(false);
       setWaitingSeconds(0);
       return;
     }
-    
+
     const interval = setInterval(() => {
       setWaitingSeconds(prev => {
         const newVal = prev + 1;
@@ -1070,7 +1091,7 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
         return newVal;
       });
     }, 1000);
-    
+
     return () => clearInterval(interval);
   }, [isWaitingForResponse]);
 
@@ -1142,8 +1163,8 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
     return (agentRun.eventStream || []).map(event => normalizeAgentEvent(event));
   }, [agentRun.eventStream]);
 
-  const visibleEvents = showAllEvents 
-    ? mappedEvents 
+  const visibleEvents = showAllEvents
+    ? mappedEvents
     : mappedEvents.slice(-5);
   const hiddenEventsCount = mappedEvents.length - visibleEvents.length;
 
@@ -1187,6 +1208,28 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
           <Bot className="h-5 w-5 text-purple-500" />
           <span className="text-sm font-medium text-purple-700 dark:text-purple-300">Modo Agente</span>
           <div className="flex-1" />
+          {agentRun.runId && (
+            <div className="flex bg-background/50 rounded-md p-0.5 mr-2" onClick={(e) => e.stopPropagation()}>
+              <button
+                onClick={() => setViewMode("steps")}
+                className={cn(
+                  "px-2 py-0.5 text-xs rounded transition-colors",
+                  viewMode === "steps" ? "bg-white dark:bg-zinc-700 shadow-sm font-medium" : "text-muted-foreground hover:bg-white/50 dark:hover:bg-zinc-700/50"
+                )}
+              >
+                Pasos
+              </button>
+              <button
+                onClick={() => setViewMode("plan")}
+                className={cn(
+                  "px-2 py-0.5 text-xs rounded transition-colors",
+                  viewMode === "plan" ? "bg-white dark:bg-zinc-700 shadow-sm font-medium" : "text-muted-foreground hover:bg-white/50 dark:hover:bg-zinc-700/50"
+                )}
+              >
+                Plan
+              </button>
+            </div>
+          )}
           {getStatusIcon()}
           <span className="text-xs text-muted-foreground">{getStatusText()}</span>
           <ChevronDown className={cn(
@@ -1194,7 +1237,7 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
             isExpanded && "rotate-180"
           )} />
         </button>
-        
+
         {/* Prominent Cancel Button - always visible when active */}
         {isCancellable && onCancel && (
           <Button
@@ -1204,8 +1247,8 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
             disabled={isCancelling}
             className={cn(
               "shrink-0 h-10 px-3 border",
-              isCancelling 
-                ? "text-red-400 border-red-300/50 bg-red-50/50 dark:bg-red-900/20 cursor-not-allowed" 
+              isCancelling
+                ? "text-red-400 border-red-300/50 bg-red-50/50 dark:bg-red-900/20 cursor-not-allowed"
                 : "text-muted-foreground border-border hover:text-red-500 hover:border-red-300 hover:bg-red-50/50 dark:hover:bg-red-900/20"
             )}
             data-testid="button-cancel-agent-header"
@@ -1226,7 +1269,7 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
       </div>
 
       {/* Objective display - show what the agent is working on */}
-      {objective && isActive && (
+      {objective && showObjective && (
         <div className="px-3 py-2 bg-purple-500/5 rounded-lg border border-purple-500/10">
           <div className="flex items-center gap-2 text-xs text-purple-600 dark:text-purple-400 font-medium uppercase tracking-wide mb-1">
             <Target className="h-3 w-3" />
@@ -1236,7 +1279,7 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
           {stepProgress.total > 0 && (
             <div className="mt-2 flex items-center gap-2">
               <div className="flex-1 h-1.5 bg-purple-500/20 rounded-full overflow-hidden">
-                <div 
+                <div
                   className="h-full bg-gradient-to-r from-purple-500 to-blue-500 transition-all duration-500"
                   style={{ width: `${Math.min(100, (stepProgress.completed / stepProgress.total) * 100)}%` }}
                 />
@@ -1286,8 +1329,8 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
                   disabled={isCancelling}
                   className={cn(
                     "text-xs",
-                    isCancelling 
-                      ? "text-red-400 cursor-not-allowed" 
+                    isCancelling
+                      ? "text-red-400 cursor-not-allowed"
                       : "text-muted-foreground hover:text-red-500"
                   )}
                   data-testid="button-cancel-agent"
@@ -1308,8 +1351,15 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
             </div>
           )}
 
+          {/* Plan Viewer */}
+          {viewMode === "plan" && agentRun.runId && (
+            <div className="border border-border/50 rounded-lg overflow-hidden">
+              <PlanViewer planId={agentRun.runId} />
+            </div>
+          )}
+
           {/* Event timeline - Manus style with human-readable cards */}
-          {mappedEvents.length > 0 && (
+          {mappedEvents.length > 0 && viewMode === "steps" && (
             <div className="relative" data-testid="agent-event-timeline">
               {hiddenEventsCount > 0 && !showAllEvents && (
                 <button
@@ -1326,8 +1376,8 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
                   const isLast = idx === visibleEvents.length - 1;
                   const showDetails = hasPayloadDetails(event);
                   return (
-                    <div 
-                      key={event.id} 
+                    <div
+                      key={event.id}
                       className={cn(
                         "flex items-start gap-2 text-sm py-1.5 px-2 rounded-md transition-all",
                         isLast && isActive && "bg-purple-500/5 border-l-2 border-purple-500 -ml-[11px] pl-[9px]"
@@ -1463,11 +1513,11 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
               <AgentStepsDisplay
                 steps={agentRun.steps.map(step => ({
                   ...step,
-                  status: (step.status === 'completed' || step.status === 'succeeded' || step.status === 'success') 
+                  status: (step.status === 'completed' || step.status === 'succeeded' || step.status === 'success')
                     ? 'succeeded' as const
-                    : (step.status === 'failed' || step.status === 'error') 
+                    : (step.status === 'failed' || step.status === 'error')
                       ? 'failed' as const
-                      : (step.status === 'running' || step.status === 'in_progress') 
+                      : (step.status === 'running' || step.status === 'in_progress')
                         ? 'running' as const
                         : 'pending' as const
                 }))}
@@ -1480,7 +1530,7 @@ const AgentRunContent = memo(function AgentRunContent({ agentRun, onCancel, onRe
                   }
                 }}
                 onImageExpand={(imageUrl) => {
-                  onOpenLightbox(imageUrl);
+                  onOpenLightbox?.(imageUrl);
                 }}
                 onDownload={(artifact) => {
                   if (artifact.data?.base64) {
@@ -1579,9 +1629,9 @@ interface AssistantMessageProps {
   totalMessages: number;
   variant: "compact" | "default";
   copiedMessageId: string | null;
-  messageFeedback: Record<string, "up" | "down">;
+  messageFeedback: Record<string, "up" | "down" | null>;
   speakingMessageId: string | null;
-  aiState: "idle" | "thinking" | "responding";
+  aiState: "idle" | "thinking" | "responding" | "agent_working";
   isRegenerating: boolean;
   isGeneratingImage: boolean;
   pendingGeneratedImage: { messageId: string; imageData: string } | null;
@@ -1638,6 +1688,8 @@ const AssistantMessage = memo(function AssistantMessage({
 }: AssistantMessageProps) {
   const [sourcesPanelOpen, setSourcesPanelOpen] = useState(false);
   const superAgentState = useSuperAgentRun(message.id);
+  const { settings: platformSettings } = usePlatformSettings();
+  const { settings } = useSettingsContext();
 
   const parsedContent = useMemo(() => {
     if (!message.content || message.isThinking) {
@@ -1694,10 +1746,27 @@ const AssistantMessage = memo(function AssistantMessage({
     !imageData;
 
   return (
-    <div className="flex flex-col gap-2 w-full min-w-0">
+    <div className="flex flex-col gap-2 w-full min-w-0 bg-[#A5A0FF]/[0.02] dark:bg-[#A5A0FF]/[0.04] backdrop-blur-sm border border-[#A5A0FF]/10 rounded-[28px] rounded-tl-[6px] p-5 shadow-sm transition-all hover:bg-[#A5A0FF]/[0.04] dark:hover:bg-[#A5A0FF]/[0.06]">
+      {/* Uncertainty Badge */}
+      {message.confidence && message.confidence !== 'high' && (
+        <div className="flex justify-start mb-1">
+          <UncertaintyBadge
+            confidence={message.confidence}
+            reason={message.uncertaintyReason}
+          />
+        </div>
+      )}
+
+      {/* Verification Badge - Visualizes A1 (Agent Verifier) status */}
+      <VerificationBadge
+        verified={!!message.metadata?.verified}
+        attempts={message.metadata?.verificationAttempts}
+        className="mb-2"
+      />
+
       {/* Agent run content - show progress and events */}
       {message.agentRun && (
-        <AgentRunContent 
+        <AgentRunContent
           agentRun={message.agentRun}
           onCancel={onAgentCancel ? () => onAgentCancel(message.id, message.agentRun!.runId || "") : undefined}
           onRetry={onAgentRetry ? () => onAgentRetry(message.id, message.agentRun?.userMessage || "") : undefined}
@@ -1734,13 +1803,19 @@ const AssistantMessage = memo(function AssistantMessage({
                   step.status === "pending" && "text-muted-foreground",
                   step.status === "loading" && "text-foreground font-medium",
                   step.status === "complete" &&
-                    "text-muted-foreground line-through"
+                  "text-muted-foreground line-through"
                 )}
               >
                 {step.title}
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {message.retrievalSteps && message.retrievalSteps.length > 0 && (
+        <div className="mb-3 w-full max-w-sm">
+          <RetrievalVis steps={message.retrievalSteps} />
         </div>
       )}
 
@@ -1756,6 +1831,7 @@ const AssistantMessage = memo(function AssistantMessage({
                 <CodeExecutionBlock
                   code={block.content.trim()}
                   language="python"
+                  autoRun={settings.codeInterpreter}
                 />
               </div>
             ) : block.content?.trim() ? (
@@ -1775,42 +1851,65 @@ const AssistantMessage = memo(function AssistantMessage({
             ) : null
           )}
           {documents.length > 0 && (
-            <div className="flex gap-2 flex-wrap mt-3">
-              {documents.map((doc, idx) => (
-                <Button
-                  key={idx}
-                  variant="outline"
-                  className="flex items-center gap-2 px-4 py-2 h-auto"
-                  onClick={() => onOpenDocumentPreview(doc)}
-                >
-                  {doc.type === "word" && (
-                    <FileText className="h-5 w-5 text-blue-600" />
-                  )}
-                  {doc.type === "excel" && (
-                    <FileSpreadsheet className="h-5 w-5 text-green-600" />
-                  )}
-                  {doc.type === "ppt" && (
-                    <FileIcon className="h-5 w-5 text-orange-600" />
-                  )}
-                  <span className="text-sm font-medium">{doc.title}</span>
-                </Button>
-              ))}
+            <div className="flex gap-3 flex-wrap mt-3">
+              {documents.map((doc, idx) => {
+                const docTheme = {
+                  word: { iconBg: 'bg-blue-600', icon: 'W', label: 'Word', textColor: 'text-blue-600' },
+                  excel: { iconBg: 'bg-green-600', icon: 'E', label: 'Excel', textColor: 'text-green-600' },
+                  ppt: { iconBg: 'bg-orange-500', icon: 'P', label: 'PowerPoint', textColor: 'text-orange-500' },
+                }[doc.type] || { iconBg: 'bg-gray-500', icon: '?', label: 'Documento', textColor: 'text-gray-500' };
+                return (
+                  <div
+                    key={idx}
+                    className="flex items-center gap-3 p-3 rounded-xl border border-border bg-card hover:bg-accent/50 hover:shadow-md transition-all cursor-pointer group min-w-[240px] max-w-sm"
+                    onClick={() => onOpenDocumentPreview(doc)}
+                  >
+                    <div className={cn("w-11 h-11 rounded-xl flex items-center justify-center shrink-0 shadow-sm", docTheme.iconBg)}>
+                      <span className="text-white text-sm font-bold">{docTheme.icon}</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate text-foreground">{doc.title}</p>
+                      <p className="text-xs text-muted-foreground">{docTheme.label}</p>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn("h-8 w-8 rounded-lg", docTheme.textColor)}
+                        onClick={(e) => { e.stopPropagation(); onOpenDocumentPreview(doc); }}
+                        title="Vista previa"
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 rounded-lg"
+                        onClick={(e) => { e.stopPropagation(); onOpenDocumentPreview(doc); }}
+                        title="Descargar"
+                      >
+                        <Download className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </>
       )}
 
-      {message.documentAnalysis && 
-       message.ui_components && 
-       message.ui_components.length > 0 && 
-       !message.isThinking && (
-        <div className="mt-3 w-full">
-          <SemanticDocumentAnalysisResults
-            documentModel={message.documentAnalysis.documentModel}
-            insights={message.ui_components.includes('insights_panel') ? (message.documentAnalysis.insights || []) : []}
-          />
-        </div>
-      )}
+      {message.documentAnalysis &&
+        message.ui_components &&
+        message.ui_components.length > 0 &&
+        !message.isThinking && (
+          <div className="mt-3 w-full">
+            <SemanticDocumentAnalysisResults
+              documentModel={message.documentAnalysis.documentModel}
+              insights={message.ui_components.includes('insights_panel') ? (message.documentAnalysis.insights || []) : []}
+            />
+          </div>
+        )}
 
       {showSkeleton && (
         <div className="mt-3">
@@ -1875,18 +1974,18 @@ const AssistantMessage = memo(function AssistantMessage({
       {message.artifact && (
         <div className="mt-3 w-full">
           {message.artifact.type === "image" ? (
-            <div className="relative rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
+            <div className="relative rounded-xl overflow-hidden group">
               <img
                 src={message.artifact.previewUrl || message.artifact.downloadUrl}
                 alt="Imagen generada"
-                className="max-w-full max-h-[500px] object-contain mx-auto cursor-pointer hover:opacity-90 transition-opacity"
+                className="max-w-full max-h-[500px] object-contain rounded-xl cursor-pointer hover:opacity-95 transition-all shadow-sm hover:shadow-md"
                 onClick={() => onOpenLightbox(message.artifact?.previewUrl || message.artifact?.downloadUrl || "")}
                 data-testid={`image-artifact-${message.id}`}
               />
-              <div className="absolute top-2 right-2 flex gap-2">
+              <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
                   onClick={() => onOpenLightbox(message.artifact?.previewUrl || message.artifact?.downloadUrl || "")}
-                  className="p-2 bg-black/50 hover:bg-black/70 text-white rounded-lg transition-colors"
+                  className="p-2 bg-black/50 hover:bg-black/70 text-white rounded-lg transition-colors backdrop-blur-sm"
                   title="Ampliar"
                 >
                   <ZoomIn className="h-4 w-4" />
@@ -1894,7 +1993,7 @@ const AssistantMessage = memo(function AssistantMessage({
                 <a
                   href={message.artifact.downloadUrl}
                   download
-                  className="p-2 bg-black/50 hover:bg-black/70 text-white rounded-lg transition-colors"
+                  className="p-2 bg-black/50 hover:bg-black/70 text-white rounded-lg transition-colors backdrop-blur-sm"
                   title="Descargar"
                 >
                   <Download className="h-4 w-4" />
@@ -1902,83 +2001,119 @@ const AssistantMessage = memo(function AssistantMessage({
               </div>
             </div>
           ) : (
-            <div className="p-4 rounded-lg border bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-blue-200 dark:border-blue-800">
-              <div className="flex items-center gap-3">
-                <div className={cn(
-                  "w-12 h-12 rounded-lg flex items-center justify-center flex-shrink-0",
-                  message.artifact.type === "document" && "bg-blue-600",
-                  message.artifact.type === "spreadsheet" && "bg-green-600",
-                  message.artifact.type === "presentation" && "bg-orange-600",
-                  message.artifact.type === "pdf" && "bg-red-600"
+            (() => {
+              // Normalize artifact type for display: accept both word/excel/ppt and document/spreadsheet/presentation
+              const artTypeNorm: Record<string, string> = { word: 'document', excel: 'spreadsheet', ppt: 'presentation', docx: 'document', xlsx: 'spreadsheet', pptx: 'presentation' };
+              const artType = artTypeNorm[message.artifact.type] || message.artifact.type;
+              const artFileName = message.artifact.filename || message.artifact.name;
+              return (
+                <div className={cn("p-4 rounded-xl border shadow-sm",
+                  artType === "document" && "bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-blue-200 dark:border-blue-800",
+                  artType === "spreadsheet" && "bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-950/30 dark:to-emerald-950/30 border-green-200 dark:border-green-800",
+                  artType === "presentation" && "bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-950/30 dark:to-amber-950/30 border-orange-200 dark:border-orange-800",
+                  artType === "pdf" && "bg-gradient-to-r from-red-50 to-rose-50 dark:from-red-950/30 dark:to-rose-950/30 border-red-200 dark:border-red-800",
+                  !["document", "spreadsheet", "presentation", "pdf"].includes(artType) && "bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-blue-200 dark:border-blue-800"
                 )}>
-                  {message.artifact.type === "document" && <FileText className="h-6 w-6 text-white" />}
-                  {message.artifact.type === "spreadsheet" && <FileSpreadsheet className="h-6 w-6 text-white" />}
-                  {message.artifact.type === "presentation" && <FileIcon className="h-6 w-6 text-white" />}
-                  {message.artifact.type === "pdf" && <FileText className="h-6 w-6 text-white" />}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                    {message.artifact.type === "document" && "Documento Word"}
-                    {message.artifact.type === "spreadsheet" && "Hoja de cálculo Excel"}
-                    {message.artifact.type === "presentation" && "Presentación PowerPoint"}
-                    {message.artifact.type === "pdf" && "Documento PDF"}
-                  </p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {message.artifact.sizeBytes ? `${Math.round(message.artifact.sizeBytes / 1024)}KB` : "Listo para descargar"}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {(message.artifact.type === "presentation" || message.artifact.type === "document" || message.artifact.type === "spreadsheet") && onReopenDocument && (
-                    <button
-                      onClick={async () => {
-                        const docType = message.artifact?.type === "presentation" ? "ppt" 
-                          : message.artifact?.type === "document" ? "word" 
-                          : "excel";
-                        const docTitle = message.artifact?.type === "presentation" ? "Presentación PowerPoint"
-                          : message.artifact?.type === "document" ? "Documento Word"
-                          : "Hoja de cálculo Excel";
-                        
-                        // Try to fetch content from contentUrl if available (for PPT deck JSON)
-                        let content = "";
-                        const contentUrl = (message.artifact as any)?.contentUrl;
-                        if (contentUrl && docType === "ppt") {
-                          try {
-                            const response = await fetch(contentUrl);
-                            if (response.ok) {
-                              // Get raw text - PPTEditorShell will parse it
-                              content = await response.text();
-                              console.log("[View] Fetched PPT deck content, length:", content.length);
+                  <div className="flex items-center gap-3">
+                    <div className={cn(
+                      "w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm",
+                      artType === "document" && "bg-blue-600",
+                      artType === "spreadsheet" && "bg-green-600",
+                      artType === "presentation" && "bg-orange-500",
+                      artType === "pdf" && "bg-red-600",
+                      !["document", "spreadsheet", "presentation", "pdf"].includes(artType) && "bg-gray-600"
+                    )}>
+                      {artType === "document" && <span className="text-white text-lg font-bold">W</span>}
+                      {artType === "spreadsheet" && <span className="text-white text-lg font-bold">E</span>}
+                      {artType === "presentation" && <span className="text-white text-lg font-bold">P</span>}
+                      {artType === "pdf" && <FileText className="h-6 w-6 text-white" />}
+                      {!["document", "spreadsheet", "presentation", "pdf"].includes(artType) && <FileIcon className="h-6 w-6 text-white" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate" title={artFileName}>
+                        {artFileName || (artType === "document" ? "Documento Word" : artType === "spreadsheet" ? "Hoja de cálculo Excel" : artType === "presentation" ? "Presentación PowerPoint" : artType === "pdf" ? "Documento PDF" : "Documento")}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {message.artifact.sizeBytes ? `${Math.round(message.artifact.sizeBytes / 1024)}KB · ` : ""}{artType === "document" ? "Word" : artType === "spreadsheet" ? "Excel" : artType === "presentation" ? "PowerPoint" : artType === "pdf" ? "PDF" : "Documento"}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {(artType === "presentation" || artType === "document" || artType === "spreadsheet") && onReopenDocument && (
+                        <button
+                          onClick={async () => {
+                            const docType = artType === "presentation" ? "ppt"
+                              : artType === "document" ? "word"
+                                : "excel";
+                            const docTitle = artType === "presentation" ? "Presentación PowerPoint"
+                              : artType === "document" ? "Documento Word"
+                                : "Hoja de cálculo Excel";
+
+                            // Try to fetch content from contentUrl if available (for PPT deck JSON)
+                            let content = "";
+                            const contentUrl = (message.artifact as any)?.contentUrl;
+                            if (contentUrl && docType === "ppt") {
+                              try {
+                                const response = await fetch(contentUrl);
+                                if (response.ok) {
+                                  // Get raw text - PPTEditorShell will parse it
+                                  content = await response.text();
+                                  console.log("[View] Fetched PPT deck content, length:", content.length);
+                                }
+                              } catch (error) {
+                                console.error("[View] Failed to fetch content:", error);
+                              }
                             }
-                          } catch (error) {
-                            console.error("[View] Failed to fetch content:", error);
-                          }
-                        }
-                        
-                        onReopenDocument({ 
-                          type: docType as "word" | "excel" | "ppt", 
-                          title: docTitle,
-                          content 
-                        });
-                      }}
-                      className="px-4 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
-                      data-testid={`button-view-artifact-${message.id}`}
-                    >
-                      <Eye className="h-4 w-4" />
-                      Ver
-                    </button>
-                  )}
-                  <a
-                    href={message.artifact.downloadUrl}
-                    download
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
-                    data-testid={`button-download-artifact-${message.id}`}
-                  >
-                    <Download className="h-4 w-4" />
-                    Descargar
-                  </a>
+
+                            // For Word documents from production pipeline, fetch the docx and convert to HTML
+                            if (!content && docType === "word" && message.artifact.downloadUrl) {
+                              try {
+                                const response = await fetch(message.artifact.downloadUrl);
+                                if (response.ok) {
+                                  const blob = await response.blob();
+                                  const arrayBuffer = await blob.arrayBuffer();
+                                  const mammoth = await import('mammoth');
+                                  const result = await mammoth.convertToHtml({ arrayBuffer });
+                                  content = result.value;
+                                  console.log("[View] Converted Word doc to HTML, length:", content.length);
+                                }
+                              } catch (error) {
+                                console.error("[View] Failed to convert Word doc:", error);
+                              }
+                            }
+
+                            onReopenDocument({
+                              type: docType as "word" | "excel" | "ppt",
+                              title: docTitle,
+                              content
+                            });
+                          }}
+                          className="px-4 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
+                          data-testid={`button-view-artifact-${message.id}`}
+                        >
+                          <Eye className="h-4 w-4" />
+                          Ver
+                        </button>
+                      )}
+                      <a
+                        href={message.artifact.downloadUrl}
+                        download={artFileName || true}
+                        className={cn("px-4 py-2 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors",
+                          artType === "document" && "bg-blue-600 hover:bg-blue-700",
+                          artType === "spreadsheet" && "bg-green-600 hover:bg-green-700",
+                          artType === "presentation" && "bg-orange-500 hover:bg-orange-600",
+                          artType === "pdf" && "bg-red-600 hover:bg-red-700",
+                          !["document", "spreadsheet", "presentation", "pdf"].includes(artType) && "bg-blue-600 hover:bg-blue-700"
+                        )}
+                        data-testid={`button-download-artifact-${message.id}`}
+                      >
+                        <Download className="h-4 w-4" />
+                        Descargar
+                      </a>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
+              );
+            })()
           )}
         </div>
       )}
@@ -2017,7 +2152,7 @@ const AssistantMessage = memo(function AssistantMessage({
         <div className="flex items-center gap-3 mt-4">
           {message.timestamp && (
             <span className="text-[10px] text-muted-foreground/60">
-              {formatMessageTime(message.timestamp)}
+              {formatMessageTime(message.timestamp, platformSettings.timezone_default)}
             </span>
           )}
           <ActionToolbar
@@ -2079,12 +2214,12 @@ interface MessageItemProps {
   editingMessageId: string | null;
   editContent: string;
   copiedMessageId: string | null;
-  messageFeedback: Record<string, "up" | "down">;
+  messageFeedback: Record<string, "up" | "down" | null>;
   speakingMessageId: string | null;
   isGeneratingImage: boolean;
   pendingGeneratedImage: { messageId: string; imageData: string } | null;
   latestGeneratedImageRef: React.RefObject<{ messageId: string; imageData: string } | null>;
-  aiState: "idle" | "thinking" | "responding";
+  aiState: "idle" | "thinking" | "responding" | "agent_working";
   regeneratingMsgIndex: number | null;
   handleCopyMessage: (content: string, id: string) => void;
   handleStartEdit: (msg: Message) => void;
@@ -2154,13 +2289,13 @@ const MessageItem = memo(function MessageItem({
         "flex",
         variant === "compact"
           ? cn(
-              "gap-2 text-sm",
-              message.role === "user" ? "justify-end" : "justify-start"
-            )
+            "gap-2 text-sm",
+            message.role === "user" ? "justify-end" : "justify-start"
+          )
           : cn(
-              "w-full max-w-3xl mx-auto gap-4",
-              message.role === "user" ? "justify-end" : "justify-start"
-            )
+            "w-full max-w-3xl mx-auto gap-4",
+            message.role === "user" ? "justify-end" : "justify-start"
+          )
       )}
     >
       <div
@@ -2260,13 +2395,13 @@ export interface MessageListProps {
   editContent: string;
   setEditContent: (value: string) => void;
   copiedMessageId: string | null;
-  messageFeedback: Record<string, "up" | "down">;
+  messageFeedback: Record<string, "up" | "down" | null>;
   speakingMessageId: string | null;
   isGeneratingImage: boolean;
   pendingGeneratedImage: { messageId: string; imageData: string } | null;
   latestGeneratedImageRef: React.RefObject<{ messageId: string; imageData: string } | null>;
   streamingContent: string;
-  aiState: "idle" | "thinking" | "responding";
+  aiState: "idle" | "thinking" | "responding" | "agent_working";
   regeneratingMsgIndex: number | null;
   handleCopyMessage: (content: string, id: string) => void;
   handleStartEdit: (msg: Message) => void;
@@ -2295,6 +2430,7 @@ export interface MessageListProps {
   activeRunId?: string | null;
   onRunComplete?: (artifacts: Array<{ id: string; type: string; name: string; url: string }>) => void;
   uiPhase?: 'idle' | 'thinking' | 'console' | 'done';
+  aiProcessSteps?: { step: string; status: "pending" | "active" | "done" }[];
 }
 
 const VIRTUALIZATION_THRESHOLD = 50;
@@ -2341,7 +2477,8 @@ export function MessageList({
   onQuestionClick,
   activeRunId,
   onRunComplete,
-  uiPhase = 'idle'
+  uiPhase = 'idle',
+  aiProcessSteps = []
 }: MessageListProps) {
   const internalParentRef = useRef<HTMLDivElement>(null);
   const scrollRef = parentRef || internalParentRef;
@@ -2363,9 +2500,35 @@ export function MessageList({
     return messages.filter(m => m.role === "assistant").pop();
   }, [messages]);
 
+  const detectedIntent = useMemo(() => {
+    const lastUserMsg = messages.filter(m => m.role === "user").pop();
+    return lastUserMsg ? detectClientIntent(lastUserMsg.content) : undefined;
+  }, [messages]);
+
+  // Map backend steps to thinking phases for real-time sync
+  const realTimePhase = useMemo(() => {
+    if (!aiProcessSteps.length) return undefined;
+
+    // Find the latest active or done step
+    const activeStep = aiProcessSteps.find(s => s.status === 'active') || aiProcessSteps[aiProcessSteps.length - 1];
+    if (!activeStep) return undefined;
+
+    const stepText = activeStep.step.toLowerCase();
+
+    if (stepText.includes('connect') || stepText.includes('start')) return 'connecting';
+    if (stepText.includes('search') || stepText.includes('query')) return 'searching';
+    if (stepText.includes('analyz') || stepText.includes('read') || stepText.includes('review')) return 'analyzing';
+    if (stepText.includes('process') || stepText.includes('comput') || stepText.includes('calculat')) return 'processing';
+    if (stepText.includes('generat') || stepText.includes('writ') || stepText.includes('creat')) return 'generating';
+    if (stepText.includes('respond') || stepText.includes('reply')) return 'responding';
+    if (stepText.includes('final') || stepText.includes('don') || stepText.includes('complet')) return 'finalizing';
+
+    return 'processing'; // Default fallback
+  }, [aiProcessSteps]);
+
   const isLastMessageAssistant = messages.length > 0 && messages[messages.length - 1].role === "assistant";
   const showSuggestedReplies = variant === "default" && aiState === "idle" && isLastMessageAssistant && lastAssistantMessage && !streamingContent;
-  
+
   const suggestions = useMemo(() => {
     return showSuggestedReplies && lastAssistantMessage ? generateSuggestions(lastAssistantMessage.content) : [];
   }, [showSuggestedReplies, lastAssistantMessage?.content]);
@@ -2439,7 +2602,7 @@ export function MessageList({
         })}
 
         {streamingContent && variant === "default" && (
-          <div 
+          <div
             className="flex w-full max-w-3xl mx-auto gap-4 justify-start"
             style={{
               position: 'absolute',
@@ -2499,7 +2662,7 @@ export function MessageList({
               transform: `translateY(${virtualizer.getTotalSize()}px)`,
             }}
           >
-            <LiveExecutionConsole 
+            <LiveExecutionConsole
               key={activeRunId}
               runId={activeRunId}
               onComplete={onRunComplete}
@@ -2523,9 +2686,10 @@ export function MessageList({
               transform: `translateY(${virtualizer.getTotalSize()}px)`,
             }}
           >
-            <PhaseNarrator 
-              autoProgress={true}
-              userQuery={messages.filter(m => m.role === 'user').pop()?.content}
+            <PhaseNarrator
+              autoProgress={!realTimePhase}
+              phase={realTimePhase}
+              intent={detectedIntent}
             />
           </motion.div>
         )}
@@ -2615,7 +2779,7 @@ export function MessageList({
           animate={{ opacity: 1, y: 0 }}
           className="flex w-full max-w-3xl mx-auto gap-4 justify-start"
         >
-          <LiveExecutionConsole 
+          <LiveExecutionConsole
             key={`std-${activeRunId}`}
             runId={activeRunId}
             onComplete={onRunComplete}
@@ -2632,9 +2796,10 @@ export function MessageList({
           data-testid="thinking-indicator-standard"
           className="flex w-full max-w-3xl mx-auto gap-4 justify-start px-4"
         >
-          <PhaseNarrator 
-            autoProgress={true}
-            userQuery={messages.filter(m => m.role === 'user').pop()?.content}
+          <PhaseNarrator
+            autoProgress={!realTimePhase}
+            phase={realTimePhase}
+            intent={detectedIntent}
           />
         </motion.div>
       )}

@@ -6,7 +6,7 @@ import { MiniSidebar } from "@/components/mini-sidebar";
 import { ChatInterface } from "@/components/chat-interface";
 import { AiStepsRail } from "@/components/ai-steps-rail";
 import { WorkspaceProvider, useWorkspace } from "@/contexts/workspace-context";
-import { useChats, Message } from "@/hooks/use-chats";
+import { useChats, Message, resolveRealChatId } from "@/hooks/use-chats";
 import { useChatFolders } from "@/hooks/use-chat-folders";
 import { useAuth } from "@/hooks/use-auth";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -17,7 +17,6 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Menu, FileText, X, GripVertical } from "lucide-react";
 import { toast } from "sonner";
 import { useStreamingStore, useProcessingChatIds, usePendingBadges } from "@/stores/streamingStore";
-import { useBackgroundStreamNotifications } from "@/hooks/use-background-stream-notifications";
 
 const PANEL_SIZES_KEY = "workspace-panel-sizes";
 
@@ -41,13 +40,12 @@ function ResizeHandle({ className, ...props }: { className?: string; id?: string
   return (
     <PanelResizeHandle
       className={cn(
-        "group relative flex w-1.5 items-center justify-center bg-transparent transition-colors hover:bg-accent/50 active:bg-accent",
+        "group relative flex w-1.5 items-center justify-center bg-transparent transition-colors hover:bg-[#A5A0FF]/20 active:bg-[#A5A0FF]/30",
         className
       )}
       {...props}
     >
-      <div className="z-10 flex h-8 w-3 items-center justify-center rounded-sm opacity-0 group-hover:opacity-100 transition-opacity">
-        <GripVertical className="h-4 w-4 text-muted-foreground" />
+      <div className="z-10 flex h-12 w-1 items-center justify-center rounded-full bg-[#A5A0FF]/50 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-[0_0_8px_rgba(165,160,255,0.4)]">
       </div>
     </PanelResizeHandle>
   );
@@ -55,30 +53,135 @@ function ResizeHandle({ className, ...props }: { className?: string; id?: string
 
 function WorkspaceContent() {
   const [, setLocation] = useLocation();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, isReady } = useAuth();
   const isMobile = useIsMobile();
   const { activeDocumentId, setActiveDocument } = useWorkspace();
 
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
+    if (isReady && !isLoading && !isAuthenticated) {
       setLocation("/welcome");
     }
-  }, [isAuthenticated, isLoading, setLocation]);
+  }, [isAuthenticated, isLoading, isReady, setLocation]);
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(!isMobile);
   const [isAiRailCollapsed, setIsAiRailCollapsed] = useState(false);
   const [isNewChatMode, setIsNewChatMode] = useState(false);
   const [newChatStableKey, setNewChatStableKey] = useState<string | null>(null);
 
-  const [aiState, setAiState] = useState<"idle" | "thinking" | "responding">("idle");
-  const [aiProcessSteps, setAiProcessSteps] = useState<{step: string; status: "pending" | "active" | "done"}[]>([]);
-  
+  type WorkspaceAiState = "idle" | "thinking" | "responding" | "streaming" | "agent_working" | "sending" | "error" | "done";
+  type WorkspaceAiStep = { step: string; status: "pending" | "active" | "done" };
+  type WorkspaceConversationUiState = {
+    aiState: WorkspaceAiState;
+    aiProcessSteps: WorkspaceAiStep[];
+    pendingRequestId: string | null;
+    streamBuffer: string;
+  };
+
+  const createWorkspaceConversationUiState = (): WorkspaceConversationUiState => ({
+    aiState: "idle",
+    aiProcessSteps: [],
+    pendingRequestId: null,
+    streamBuffer: "",
+  });
+
+  const [conversationUiStateMap, setConversationUiStateMap] = useState<Record<string, WorkspaceConversationUiState>>({});
+
+  const {
+    chats,
+    hiddenChats,
+    pinnedChats,
+    activeChat,
+    setActiveChatId,
+    createChat,
+    addMessage,
+    deleteChat,
+    editChatTitle,
+    archiveChat,
+    hideChat,
+    pinChat,
+    downloadChat,
+  } = useChats();
+
   // Use global streaming store for tracking processing chats and pending badges
   const processingChatIds = useProcessingChatIds();
   const pendingResponseCounts = usePendingBadges();
   const { clearBadge } = useStreamingStore();
 
   const pendingChatIdRef = useRef<string | null>(null);
+
+  const ensureConversationUiState = useCallback((conversationId: string | null | undefined) => {
+    if (!conversationId) return;
+    setConversationUiStateMap((prev) => {
+      if (prev[conversationId]) return prev;
+      return { ...prev, [conversationId]: createWorkspaceConversationUiState() };
+    });
+  }, []);
+
+  const moveConversationUiState = useCallback((fromConversationId?: string | null, toConversationId?: string | null) => {
+    if (!fromConversationId || !toConversationId || fromConversationId === toConversationId) return;
+    setConversationUiStateMap((prev) => {
+      const sourceState = prev[fromConversationId];
+      if (!sourceState) return prev;
+      const { [fromConversationId]: _, ...rest } = prev;
+      if (rest[toConversationId]) return rest;
+      return { ...rest, [toConversationId]: sourceState };
+    });
+  }, []);
+
+  const activeConversationId = useMemo(() => {
+    if (activeChat?.id) return activeChat.id;
+    if (pendingChatIdRef.current) return pendingChatIdRef.current;
+    if (isNewChatMode && newChatStableKey) return newChatStableKey;
+    return null;
+  }, [activeChat?.id, isNewChatMode, newChatStableKey]);
+
+  useEffect(() => {
+    ensureConversationUiState(activeConversationId);
+  }, [activeConversationId, ensureConversationUiState]);
+
+  const activeConversationState = activeConversationId
+    ? conversationUiStateMap[activeConversationId]
+    : undefined;
+
+  const aiState: WorkspaceAiState = activeConversationState?.aiState || "idle";
+  const aiProcessSteps: WorkspaceAiStep[] = activeConversationState?.aiProcessSteps || [];
+
+  const setAiState = useCallback((nextState: WorkspaceAiState | ((prev: WorkspaceAiState) => WorkspaceAiState)) => {
+    const targetConversationId = activeConversationId || pendingChatIdRef.current || newChatStableKey;
+    if (!targetConversationId) return;
+    setConversationUiStateMap((prev) => {
+      const current = prev[targetConversationId] || createWorkspaceConversationUiState();
+      const resolvedState = typeof nextState === "function"
+        ? (nextState as (prev: WorkspaceAiState) => WorkspaceAiState)(current.aiState)
+        : nextState;
+      return {
+        ...prev,
+        [targetConversationId]: {
+          ...current,
+          aiState: resolvedState,
+          aiProcessSteps: resolvedState === "idle" ? [] : current.aiProcessSteps,
+        },
+      };
+    });
+  }, [activeConversationId, newChatStableKey]);
+
+  const setAiProcessSteps = useCallback((nextSteps: WorkspaceAiStep[] | ((prev: WorkspaceAiStep[]) => WorkspaceAiStep[])) => {
+    const targetConversationId = activeConversationId || pendingChatIdRef.current || newChatStableKey;
+    if (!targetConversationId) return;
+    setConversationUiStateMap((prev) => {
+      const current = prev[targetConversationId] || createWorkspaceConversationUiState();
+      const resolvedSteps = typeof nextSteps === "function"
+        ? (nextSteps as (prev: WorkspaceAiStep[]) => WorkspaceAiStep[])(current.aiProcessSteps)
+        : nextSteps;
+      return {
+        ...prev,
+        [targetConversationId]: {
+          ...current,
+          aiProcessSteps: resolvedSteps,
+        },
+      };
+    });
+  }, [activeConversationId, newChatStableKey]);
 
   const [panelSizes, setPanelSizes] = useState<StoredPanelSizes>(() => {
     try {
@@ -104,21 +207,7 @@ function WorkspaceContent() {
     });
   }, []);
 
-  const {
-    chats,
-    hiddenChats,
-    pinnedChats,
-    activeChat,
-    setActiveChatId,
-    createChat,
-    addMessage,
-    deleteChat,
-    editChatTitle,
-    archiveChat,
-    hideChat,
-    pinChat,
-    downloadChat,
-  } = useChats();
+
 
   const {
     folders,
@@ -135,9 +224,6 @@ function WorkspaceContent() {
     }
   }, [moveChatToFolder, removeChatFromFolder]);
 
-  // Background stream notifications with sound
-  useBackgroundStreamNotifications(chats, activeChat?.id || null);
-
   const handleClearPendingCount = useCallback((chatId: string) => {
     clearBadge(chatId);
   }, [clearBadge]);
@@ -149,11 +235,7 @@ function WorkspaceContent() {
     setIsNewChatMode(false);
     setNewChatStableKey(null);
     setActiveChatId(id);
-    // DON'T clear processingChatIdRef or call setAiState("idle") here
-    // Let the background streaming complete naturally and trigger badge notification
-    // Only reset the process steps for UI
-    setAiProcessSteps([]);
-  }, [handleClearPendingCount, setActiveChatId, setAiProcessSteps]);
+  }, [handleClearPendingCount, setActiveChatId]);
 
   const handleNewChat = () => {
     // Keep processing state for background chats - don't clear processingChatIds
@@ -162,38 +244,33 @@ function WorkspaceContent() {
     setActiveChatId(null);
     setIsNewChatMode(true);
     setNewChatStableKey(newKey);
+    ensureConversationUiState(newKey);
     pendingChatIdRef.current = null;
-    // DON'T clear processingChatIdRef or call setAiState("idle") here
-    // Let the background streaming complete naturally and trigger badge notification
-    // Only reset the process steps for UI
-    setAiProcessSteps([]);
   };
 
-  const handleSendNewChatMessage = useCallback((message: Message) => {
+  const handleSendNewChatMessage = useCallback(async (message: Message) => {
     const { pendingId, stableKey } = createChat();
+    moveConversationUiState(newChatStableKey, pendingId);
+    ensureConversationUiState(pendingId);
     pendingChatIdRef.current = pendingId;
     setNewChatStableKey((prev) => prev || stableKey);
     setIsNewChatMode(false);
-    addMessage(pendingId, message);
-  }, [createChat, addMessage]);
-
-  // IMPORTANT: If targetChatId is provided, use it (for streaming responses that need affinity)
-  // Otherwise fall back to current active chat (for new messages from user)
-  const handleSendMessage = useCallback(async (message: Message, targetChatId?: string) => {
-    const resolvedChatId = targetChatId || activeChat?.id || pendingChatIdRef.current;
-    if (resolvedChatId) {
-      return await addMessage(resolvedChatId, message);
-    } else {
-      handleSendNewChatMessage(message);
-      return undefined;
+    // IMPORTANT: return the promise so ChatInterface can await it and continue the flow
+    const result = await addMessage(pendingId, message);
+    const realId = result?.run?.chatId || (result ? resolveRealChatId(pendingId) : null);
+    if (realId && !realId.startsWith("pending-")) {
+      moveConversationUiState(pendingId, realId);
     }
-  }, [activeChat?.id, addMessage, handleSendNewChatMessage]);
+    return result;
+  }, [addMessage, createChat, ensureConversationUiState, moveConversationUiState, newChatStableKey]);
 
-  const chatInterfaceKey = useMemo(() => {
-    if (newChatStableKey) return newChatStableKey;
-    if (activeChat) return activeChat.stableKey;
-    return "default-chat";
-  }, [activeChat?.stableKey, newChatStableKey]);
+  const handleSendMessage = useCallback(async (message: Message) => {
+    const targetChatId = activeChat?.id || pendingChatIdRef.current;
+    if (targetChatId) {
+      return await addMessage(targetChatId, message);
+    }
+    return await handleSendNewChatMessage(message);
+  }, [activeChat?.id, addMessage, handleSendNewChatMessage]);
 
   const currentMessages = useMemo(() => {
     if (activeChat?.messages) return activeChat.messages;
@@ -207,7 +284,7 @@ function WorkspaceContent() {
 
   // Local messages state for agent mode updates (syncs with currentMessages)
   const [displayMessages, setDisplayMessages] = useState<Message[]>([]);
-  
+
   // Sync displayMessages with currentMessages when it changes
   useEffect(() => {
     setDisplayMessages(currentMessages);
@@ -277,9 +354,9 @@ function WorkspaceContent() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background relative" data-testid="workspace-container">
-      <div className="liquid-blob liquid-blob-1 opacity-30"></div>
-      <div className="liquid-blob liquid-blob-2 opacity-20"></div>
-      <div className="liquid-blob liquid-blob-3 opacity-25"></div>
+      <div className="liquid-blob liquid-blob-1 opacity-[0.07] dark:opacity-[0.05]"></div>
+      <div className="liquid-blob liquid-blob-2 opacity-[0.05] dark:opacity-[0.03]"></div>
+      <div className="liquid-blob liquid-blob-3 opacity-[0.06] dark:opacity-[0.04]"></div>
 
       {isMobile ? (
         <>
@@ -301,13 +378,13 @@ function WorkspaceContent() {
 
           <div className="flex-1 flex flex-col">
             <ChatInterface
-              key={chatInterfaceKey}
               messages={displayMessages}
               setMessages={setDisplayMessages}
               onSendMessage={handleSendMessage}
               chatId={activeChat?.id || pendingChatIdRef.current}
               aiState={aiState}
               setAiState={setAiState}
+              aiStateChatId={aiState === "idle" ? null : activeConversationId}
               aiProcessSteps={aiProcessSteps}
               setAiProcessSteps={setAiProcessSteps}
             />
@@ -372,17 +449,19 @@ function WorkspaceContent() {
                 id="chat-panel"
                 data-testid="panel-chat"
               >
-                <ChatInterface
-                  key={chatInterfaceKey}
-                  messages={displayMessages}
-                  setMessages={setDisplayMessages}
-                  onSendMessage={handleSendMessage}
-                  chatId={activeChat?.id || pendingChatIdRef.current}
-                  aiState={aiState}
-                  setAiState={setAiState}
-                  aiProcessSteps={aiProcessSteps}
-                  setAiProcessSteps={setAiProcessSteps}
-                />
+                <div className="relative h-full">
+                  <ChatInterface
+                    messages={displayMessages}
+                    setMessages={setDisplayMessages}
+                    onSendMessage={handleSendMessage}
+                    chatId={activeChat?.id || pendingChatIdRef.current}
+                    aiState={aiState}
+                    setAiState={setAiState}
+                    aiStateChatId={aiState === "idle" ? null : activeConversationId}
+                    aiProcessSteps={aiProcessSteps}
+                    setAiProcessSteps={setAiProcessSteps}
+                  />
+                </div>
               </Panel>
 
               {activeDocumentId && (

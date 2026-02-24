@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { 
   Activity, AlertTriangle, CheckCircle, Clock, 
   RefreshCw, TrendingDown, TrendingUp, Server,
-  Monitor, Cpu
+  Monitor, Cpu, Database, Network
 } from 'lucide-react';
+import { usePlatformSettings } from '@/contexts/PlatformSettingsContext';
+import { formatZonedDateTime, normalizeTimeZone } from '@/lib/platformDateTime';
 
 interface ErrorStats {
   total: number;
@@ -12,6 +14,19 @@ interface ErrorStats {
   byComponent: Record<string, number>;
   topErrors: { message: string; count: number }[];
   healthScore: number;
+}
+
+interface ServiceHealth {
+  name: string;
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  latency: number;
+  lastCheck: string;
+  details?: any;
+}
+
+interface SystemHealthData {
+  overall: 'healthy' | 'degraded' | 'unhealthy';
+  services: ServiceHealth[];
 }
 
 interface ErrorLog {
@@ -24,15 +39,20 @@ interface ErrorLog {
 
 export default function SystemHealth() {
   const [stats, setStats] = useState<ErrorStats | null>(null);
+  const [infraHealth, setInfraHealth] = useState<SystemHealthData | null>(null);
   const [recentErrors, setRecentErrors] = useState<ErrorLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
+  const platformDateFormat = platformSettings.date_format;
 
   const fetchData = async () => {
     try {
-      const [statsRes, errorsRes] = await Promise.all([
+      const [statsRes, errorsRes, healthRes] = await Promise.all([
         fetch('/api/errors/stats'),
-        fetch('/api/errors/recent?limit=20')
+        fetch('/api/errors/recent?limit=20'),
+        fetch('/api/observability/health')
       ]);
 
       if (statsRes.ok) {
@@ -41,6 +61,12 @@ export default function SystemHealth() {
       if (errorsRes.ok) {
         const data = await errorsRes.json();
         setRecentErrors(data.errors);
+      }
+      if (healthRes.ok) {
+        const data = await healthRes.json();
+        if (data.success) {
+          setInfraHealth(data.data);
+        }
       }
     } catch (error) {
       console.error('Error fetching health data:', error);
@@ -57,6 +83,15 @@ export default function SystemHealth() {
       return () => clearInterval(interval);
     }
   }, [autoRefresh]);
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'healthy': return 'text-green-400';
+      case 'degraded': return 'text-yellow-400';
+      case 'unhealthy': return 'text-red-400';
+      default: return 'text-gray-400';
+    }
+  };
 
   const getHealthColor = (score: number) => {
     if (score >= 90) return 'text-green-400';
@@ -89,7 +124,7 @@ export default function SystemHealth() {
             Estado del Sistema
           </h1>
           <p className="text-gray-400 mt-1">
-            Monitoreo de errores y salud de la aplicación
+            Monitoreo de infraestructura y errores
           </p>
         </div>
         
@@ -114,6 +149,42 @@ export default function SystemHealth() {
           </button>
         </div>
       </div>
+
+      {/* Infrastructure Status Cards */}
+      {infraHealth && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400 text-sm">Estado General</span>
+              <Activity className={`w-5 h-5 ${getStatusColor(infraHealth.overall)}`} />
+            </div>
+            <div className={`text-xl font-bold mt-2 capitalize ${getStatusColor(infraHealth.overall)}`}>
+              {infraHealth.overall === 'healthy' ? 'Operativo' : infraHealth.overall}
+            </div>
+          </div>
+
+          {infraHealth.services.map((service) => (
+            <div key={service.name} className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-gray-400 text-sm capitalize">{service.name}</span>
+                {service.name.toLowerCase().includes('db') || service.name.includes('postgres') ? (
+                  <Database className={`w-5 h-5 ${getStatusColor(service.status)}`} />
+                ) : service.name.toLowerCase().includes('redis') ? (
+                  <Server className={`w-5 h-5 ${getStatusColor(service.status)}`} />
+                ) : (
+                  <Network className={`w-5 h-5 ${getStatusColor(service.status)}`} />
+                )}
+              </div>
+              <div className="flex items-end gap-2 mt-2">
+                <div className={`text-xl font-bold capitalize ${getStatusColor(service.status)}`}>
+                  {service.status}
+                </div>
+                <div className="text-xs text-gray-500 mb-1">{service.latency}ms</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {stats && (
         <div className={`p-6 rounded-xl border ${getHealthBg(stats.healthScore)}`} data-testid="health-score-card">
@@ -281,11 +352,11 @@ export default function SystemHealth() {
                     <td className="px-4 py-3 text-sm text-gray-400 max-w-md truncate">
                       {error.message}
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-500">
-                      {new Date(error.timestamp).toLocaleString('es-ES')}
-                    </td>
-                  </tr>
-                ))}
+	                    <td className="px-4 py-3 text-sm text-gray-500">
+	                      {formatZonedDateTime(error.timestamp, { timeZone: platformTimeZone, dateFormat: platformDateFormat })}
+	                    </td>
+	                  </tr>
+	                ))}
               </tbody>
             </table>
           </div>

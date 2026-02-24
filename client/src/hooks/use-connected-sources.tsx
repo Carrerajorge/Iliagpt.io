@@ -55,7 +55,9 @@ async function fetchConnectedSources(): Promise<ConnectedSource[]> {
           email: data.email,
         });
       }
-    } catch {}
+    } catch {
+      // FRONTEND FIX #17: Intentionally silent - continue checking other sources if one fails
+    }
   }
 
   if (formsRes.status === "fulfilled" && formsRes.value.ok) {
@@ -68,7 +70,9 @@ async function fetchConnectedSources(): Promise<ConnectedSource[]> {
           icon: <GoogleFormsIcon />,
         });
       }
-    } catch {}
+    } catch {
+      // FRONTEND FIX #18: Intentionally silent - continue checking other sources
+    }
   }
 
   return sources;

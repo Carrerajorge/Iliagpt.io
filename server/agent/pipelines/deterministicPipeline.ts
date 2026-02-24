@@ -5,6 +5,7 @@ import * as path from "path";
 import { z } from "zod";
 import { llmGateway } from "../../lib/llmGateway";
 import { searchWeb, searchScholar, needsAcademicSearch } from "../../services/webSearch";
+import { generatePptDocument } from "../../services/documentGeneration";
 
 export const PipelineStageSchema = z.enum([
   "search",
@@ -199,8 +200,16 @@ export interface PipelineResult {
       outputCount: number;
     }>;
     totalDurationMs: number;
-    reproducible: boolean;
+  reproducible: boolean;
   };
+}
+
+function sanitizePptText(value: unknown, maxLength: number): string {
+  return String(value || "")
+    .replace(/\0/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .trim()
+    .substring(0, maxLength);
 }
 
 const STAGE_ORDER: PipelineStage[] = [
@@ -898,10 +907,7 @@ Responde en formato JSON con la siguiente estructura:
 
   private async assembleArtifact(): Promise<PipelineResult["artifact"]> {
     if (!this.state) throw new Error("Pipeline state not initialized");
-    
-    const PptxGenJS = (await import("pptxgenjs")).default;
-    const pptx = new PptxGenJS();
-    
+
     const theme = {
       primary: "#6366F1",
       secondary: "#8B5CF6",
@@ -910,66 +916,52 @@ Responde en formato JSON con la siguiente estructura:
       text: "#F8FAFC",
     };
 
-    pptx.title = this.state.topic;
-    pptx.author = "IliaGPT";
-    pptx.layout = "LAYOUT_16x9";
-
     const deckSlides: any[] = [];
 
-    for (const slide of this.state.slides) {
-      const pptSlide = pptx.addSlide();
-      
-      pptSlide.background = { color: theme.bg };
-
-      pptSlide.addShape("rect", {
-        x: 0, y: 0, w: 0.15, h: "100%",
-        fill: { color: theme.primary },
-      });
-
-      pptSlide.addText(slide.title, {
-        x: 0.5, y: 0.3, w: 9, h: 0.8,
-        fontSize: slide.type === "cover" ? 36 : 28,
-        bold: true,
-        color: theme.text,
-        fontFace: "Inter",
-      });
-
-      const contentY = slide.type === "cover" ? 1.5 : 1.2;
-      slide.content.forEach((text, i) => {
-        pptSlide.addText(text, {
-          x: 0.5, y: contentY + (i * 0.5), w: 9, h: 0.5,
-          fontSize: slide.type === "bibliography" ? 12 : 18,
-          color: theme.text,
-          fontFace: "Inter",
-          bullet: slide.type !== "cover" && slide.type !== "bibliography",
-        });
-      });
-
-      if (slide.imageId) {
-        const image = this.state.images.find(img => img.id === slide.imageId);
-        if (image) {
-          pptSlide.addImage({
-            data: `data:${image.mimeType};base64,${image.base64}`,
-            x: 6.5, y: 1.2, w: 3, h: 2.5,
-          });
-        }
-      }
-
+    for (const slide of this.state.slides || []) {
       deckSlides.push({
         id: crypto.randomUUID(),
-        title: slide.title,
-        content: slide.content,
+        title: sanitizePptText(slide.title, 220) || "Diapositiva",
+        content: Array.isArray(slide.content) && slide.content.length > 0
+          ? slide.content.map((entry) => sanitizePptText(entry, 260)).filter(Boolean).slice(0, 20)
+          : ["Sin contenido disponible."],
         type: slide.type,
       });
     }
 
-    const buffer = await pptx.write({ outputType: "nodebuffer" }) as Buffer;
+    const presentationTitle = sanitizePptText(this.state.topic, 500) || "Presentación";
+    const presentationSlides = deckSlides.map((slide) => ({
+      title: slide.title,
+      content: slide.content.slice(0, 18),
+    }));
+
+    let buffer: Buffer;
+    try {
+      buffer = await generatePptDocument(presentationTitle, presentationSlides, {
+        trace: {
+          source: "deterministicPipeline",
+        },
+      });
+    } catch (error: any) {
+      console.warn("[DeterministicPipeline] Fallback to emergency presentation template.", error);
+      buffer = await generatePptDocument("Presentación", [{
+        title: "Fallback",
+        content: [
+          "No fue posible renderizar la presentación con el generador principal.",
+          `Error: ${sanitizePptText(error?.message || error, 240)}`,
+        ],
+      }], {
+        trace: {
+          source: "deterministicPipeline",
+        },
+      });
+    }
 
     return {
       type: "presentation",
       mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
       buffer,
-      filename: `${this.state.topic.replace(/[^a-zA-Z0-9]/g, "_")}_presentation.pptx`,
+      filename: `${presentationTitle.replace(/[^a-zA-Z0-9]/g, "_")}_presentation.pptx`,
       sizeBytes: buffer.length,
       deckState: {
         title: this.state.topic,

@@ -3,8 +3,9 @@ import { useDeckStore, selectDeck } from '../store/deckStore';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 
-const THUMB_WIDTH = 50;
-const THUMB_HEIGHT = 28;
+// Increased thumbnail size for better visibility (Improvement #7)
+const THUMB_WIDTH = 80;
+const THUMB_HEIGHT = 45;
 
 export function SlidesPanel() {
   const deck = useDeckStore(selectDeck);
@@ -28,8 +29,8 @@ export function SlidesPanel() {
               <div
                 className={cn(
                   "rounded-sm overflow-hidden transition-all border-2",
-                  activeSlideId === slide.id 
-                    ? "border-[#D83B01] ring-1 ring-[#D83B01]/30" 
+                  activeSlideId === slide.id
+                    ? "border-[#D83B01] ring-1 ring-[#D83B01]/30"
                     : "border-gray-300 hover:border-gray-400"
                 )}
                 style={{

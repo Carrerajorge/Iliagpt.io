@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAgentTraceStore, type TraceStep, type TraceRun } from '@/stores/agentTraceStore';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -19,13 +19,21 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { usePlatformSettings } from '@/contexts/PlatformSettingsContext';
+import { formatZonedTime, normalizeTimeZone } from '@/lib/platformDateTime';
 
 interface AgentTraceViewerProps {
   runId: string;
   onClose?: () => void;
 }
 
-const statusConfig = {
+const statusConfig: Record<TraceStep['status'], {
+  icon: typeof Clock;
+  color: string;
+  bg: string;
+  label: string;
+  animate?: boolean;
+}> = {
   pending: { icon: Clock, color: 'text-muted-foreground', bg: 'bg-muted', label: 'Pendiente' },
   running: { icon: Loader2, color: 'text-blue-500', bg: 'bg-blue-500/10', label: 'Ejecutando', animate: true },
   completed: { icon: CheckCircle2, color: 'text-green-500', bg: 'bg-green-500/10', label: 'Completado' },
@@ -156,7 +164,7 @@ function StepTimeline({ steps, runId }: { steps: TraceStep[]; runId: string }) {
 
 function StepDetails({ step }: { step: TraceStep }) {
   const shellEvents = step.events.filter(e => 
-    e.event_type === 'shell_output' || e.event_type === 'tool_call'
+    e.event_type === 'shell_output' || e.event_type === 'shell_chunk' || e.event_type === 'shell_exit' || e.event_type === 'tool_call'
   );
   
   const hasArtifacts = step.artifacts.length > 0;
@@ -273,6 +281,8 @@ function ArtifactsPanel({ step }: { step: TraceStep }) {
 function ShellPanel({ step }: { step: TraceStep }) {
   const shellEvents = step.events.filter(e => 
     e.event_type === 'shell_output' || 
+    e.event_type === 'shell_chunk' ||
+    e.event_type === 'shell_exit' ||
     e.event_type === 'tool_call' ||
     e.event_type === 'tool_output'
   );
@@ -285,6 +295,8 @@ function ShellPanel({ step }: { step: TraceStep }) {
     );
   }
 
+  const fullShell = step.shellOutput;
+
   return (
     <ScrollArea className="h-[200px] rounded border bg-black p-3" data-testid={`shell-panel-${step.index}`}>
       <div className="font-mono text-xs text-green-400 space-y-1">
@@ -293,11 +305,20 @@ function ShellPanel({ step }: { step: TraceStep }) {
             {event.command && (
               <div className="text-blue-400">$ {event.command}</div>
             )}
-            {event.output_snippet && (
-              <pre className="whitespace-pre-wrap text-gray-300">{event.output_snippet}</pre>
-            )}
           </div>
         ))}
+
+        {fullShell ? (
+          <pre className="whitespace-pre-wrap text-gray-300">{fullShell}</pre>
+        ) : (
+          shellEvents.map((event, i) => (
+            <div key={`legacy-${i}`}>
+              {event.output_snippet && (
+                <pre className="whitespace-pre-wrap text-gray-300">{event.output_snippet}</pre>
+              )}
+            </div>
+          ))
+        )}
       </div>
     </ScrollArea>
   );
@@ -305,6 +326,8 @@ function ShellPanel({ step }: { step: TraceStep }) {
 
 function LogsPanel({ step }: { step: TraceStep }) {
   const [showRaw, setShowRaw] = useState(false);
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
 
   return (
     <div className="space-y-2" data-testid={`logs-panel-${step.index}`}>
@@ -332,7 +355,7 @@ function LogsPanel({ step }: { step: TraceStep }) {
                 className="flex items-center gap-2 text-xs py-1 border-b border-border/50 last:border-0"
               >
                 <span className="text-muted-foreground w-16 shrink-0">
-                  {new Date(event.timestamp).toLocaleTimeString()}
+                  {formatZonedTime(event.timestamp, { timeZone: platformTimeZone, includeSeconds: true })}
                 </span>
                 <Badge variant="outline" className="text-[10px] shrink-0">
                   {event.event_type}
@@ -348,8 +371,6 @@ function LogsPanel({ step }: { step: TraceStep }) {
     </div>
   );
 }
-
-import { useState } from 'react';
 
 export function AgentTraceViewer({ runId, onClose }: AgentTraceViewerProps) {
   const { runs, subscribeToRun, unsubscribeFromRun, isConnected, connectionError } = useAgentTraceStore();

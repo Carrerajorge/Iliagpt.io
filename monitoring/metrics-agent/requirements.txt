@@ -1,0 +1,5 @@
+psutil==6.0.0
+
+influxdb-client==1.45.0
+
+websockets==12.0

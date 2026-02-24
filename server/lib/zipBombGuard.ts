@@ -62,11 +62,21 @@ export interface ExtractionProgress {
   abortReason?: string;
 }
 
+/** Security: clamp env var to reasonable bounds */
+function clampEnvInt(envVar: string, defaultVal: number, min: number, max: number): number {
+  const parsed = parseInt(process.env[envVar] || String(defaultVal), 10);
+  if (!Number.isFinite(parsed)) return defaultVal;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+/** Maximum entry name length (prevents memory abuse from oversized filenames) */
+const MAX_ENTRY_NAME_LENGTH = 1024;
+
 const DEFAULT_OPTIONS: ZipBombCheckOptions = {
   maxCompressionRatio: 100,
-  maxNestedDepth: parseInt(process.env.PARE_MAX_NESTED_DEPTH || '2', 10),
-  maxExtractedSizeMB: parseInt(process.env.PARE_MAX_UNCOMPRESSED_SIZE_MB || '100', 10),
-  maxFileCount: parseInt(process.env.PARE_MAX_ZIP_ENTRIES || '10000', 10),
+  maxNestedDepth: clampEnvInt('PARE_MAX_NESTED_DEPTH', 2, 1, 10),
+  maxExtractedSizeMB: clampEnvInt('PARE_MAX_UNCOMPRESSED_SIZE_MB', 100, 1, 2000),
+  maxFileCount: clampEnvInt('PARE_MAX_ZIP_ENTRIES', 10000, 1, 100000),
 };
 
 const ARCHIVE_EXTENSIONS = ['.zip', '.jar', '.war', '.ear', '.docx', '.xlsx', '.pptx', '.odt', '.ods', '.odp'];
@@ -94,18 +104,26 @@ function isArchiveFile(filename: string, buffer?: Buffer): boolean {
   return false;
 }
 
-function checkPathTraversal(entryPath: string): { hasTraversal: boolean; hasAbsolutePath: boolean } {
+function checkPathTraversal(entryPath: string): { hasTraversal: boolean; hasAbsolutePath: boolean; nameTooLong: boolean } {
+  // Security: reject entries with oversized names
+  if (entryPath.length > MAX_ENTRY_NAME_LENGTH) {
+    return { hasTraversal: false, hasAbsolutePath: false, nameTooLong: true };
+  }
+
   const normalizedPath = entryPath.replace(/\\/g, '/');
-  
-  const hasTraversal = normalizedPath.includes('../') || 
+
+  const hasTraversal = normalizedPath.includes('../') ||
                        normalizedPath.includes('..\\') ||
                        normalizedPath === '..' ||
-                       normalizedPath.startsWith('../');
-  
-  const hasAbsolutePath = normalizedPath.startsWith('/') || 
+                       normalizedPath.startsWith('../') ||
+                       // Also detect URL-encoded traversal
+                       normalizedPath.includes('%2e%2e') ||
+                       normalizedPath.includes('%2E%2E');
+
+  const hasAbsolutePath = normalizedPath.startsWith('/') ||
                           /^[a-zA-Z]:/.test(normalizedPath);
-  
-  return { hasTraversal, hasAbsolutePath };
+
+  return { hasTraversal, hasAbsolutePath, nameTooLong: false };
 }
 
 function estimateUncompressedSize(zip: JSZip): number {
@@ -166,25 +184,34 @@ export async function checkZipBomb(
     
     zip.forEach((relativePath, file) => {
       if (progress.aborted) return;
-      
+
       const pathCheck = checkPathTraversal(relativePath);
-      
+
+      if (pathCheck.nameTooLong) {
+        pathTraversalAttempts++;
+        violations.push({
+          code: ZipViolationCode.PATH_TRAVERSAL,
+          message: `Entry name exceeds maximum length (${MAX_ENTRY_NAME_LENGTH})`,
+          path: relativePath.substring(0, 100) + '...',
+        });
+      }
+
       if (pathCheck.hasTraversal) {
         pathTraversalAttempts++;
         violations.push({
           code: ZipViolationCode.PATH_TRAVERSAL,
           message: `Path traversal detected in archive entry`,
-          path: relativePath,
+          path: relativePath.substring(0, MAX_ENTRY_NAME_LENGTH),
           details: { pattern: '../' },
         });
       }
-      
+
       if (pathCheck.hasAbsolutePath) {
         absolutePathAttempts++;
         violations.push({
           code: ZipViolationCode.ABSOLUTE_PATH,
           message: `Absolute path detected in archive entry`,
-          path: relativePath,
+          path: relativePath.substring(0, MAX_ENTRY_NAME_LENGTH),
           details: { pattern: relativePath.charAt(0) },
         });
       }
@@ -453,20 +480,29 @@ export async function checkPathTraversalInZip(buffer: Buffer): Promise<{
     
     zip.forEach((relativePath) => {
       const pathCheck = checkPathTraversal(relativePath);
-      
+      const safePath = relativePath.substring(0, MAX_ENTRY_NAME_LENGTH);
+
+      if (pathCheck.nameTooLong) {
+        violations.push({
+          code: ZipViolationCode.PATH_TRAVERSAL,
+          message: `Entry name exceeds maximum length`,
+          path: safePath.substring(0, 100) + '...',
+        });
+      }
+
       if (pathCheck.hasTraversal) {
         violations.push({
           code: ZipViolationCode.PATH_TRAVERSAL,
-          message: `Path traversal detected: ${relativePath}`,
-          path: relativePath,
+          message: `Path traversal detected: ${safePath}`,
+          path: safePath,
         });
       }
-      
+
       if (pathCheck.hasAbsolutePath) {
         violations.push({
           code: ZipViolationCode.ABSOLUTE_PATH,
-          message: `Absolute path detected: ${relativePath}`,
-          path: relativePath,
+          message: `Absolute path detected: ${safePath}`,
+          path: safePath,
         });
       }
     });

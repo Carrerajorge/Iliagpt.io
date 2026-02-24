@@ -81,7 +81,10 @@ export async function runPipeline(options: PipelineRunOptions): Promise<Pipeline
 
     await storage.updateAgentRunStatus(agentRun.id, "running");
 
-    const { results, artifacts } = await pipelineExecutor.execute(plan, onProgress);
+    const { results, artifacts } = await pipelineExecutor.execute(plan, onProgress, {
+      userId,
+      conversationId,
+    });
 
     // Collect webSources from all completed steps
     const allWebSources: WebSource[] = [];
@@ -93,7 +96,11 @@ export async function runPipeline(options: PipelineRunOptions): Promise<Pipeline
 
     const successCount = results.filter(r => r.status === "completed").length;
     const failCount = results.filter(r => r.status === "failed").length;
-    const success = failCount === 0 || successCount > 0;
+    const requiredFailCount = results.filter(r =>
+      r.status === "failed" && !plan.steps.find(s => s.id === r.stepId)?.optional
+    ).length;
+    // Pipeline succeeds only if no required steps failed and at least one step completed
+    const success = requiredFailCount === 0 && successCount > 0;
 
     await storage.updateAgentRunStatus(
       agentRun.id, 

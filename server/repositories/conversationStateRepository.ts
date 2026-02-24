@@ -31,6 +31,7 @@ import {
   RetrievalTelemetry,
   HydratedConversationState,
   ProcessedRequest,
+  chats,
 } from "@shared/schema";
 
 export class ConversationStateRepository {
@@ -84,6 +85,16 @@ export class ConversationStateRepository {
   async getOrCreate(chatId: string, userId?: string): Promise<ConversationState> {
     const existing = await this.findByChatId(chatId);
     if (existing) return existing;
+
+    // conversation_states.chat_id has an FK to chats.id. The frontend can generate a provisional chatId
+    // before any "chat creation" endpoint is called, so we must ensure the parent row exists.
+    await db
+      .insert(chats)
+      .values({
+        id: chatId,
+        userId: userId || null,
+      })
+      .onConflictDoNothing();
 
     return this.create({
       chatId,

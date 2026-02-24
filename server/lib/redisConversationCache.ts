@@ -14,6 +14,11 @@ class RedisConversationCache {
   }
 
   private async initializeRedis() {
+    if (process.env.NODE_ENV === "test" && process.env.ENABLE_REDIS_IN_TEST !== "true") {
+      console.log("[RedisConversationCache] Skipping Redis in test environment (in-memory fallback)");
+      return;
+    }
+
     const redisUrl = process.env.REDIS_URL;
     if (!redisUrl) {
       console.log("[RedisConversationCache] No REDIS_URL, using in-memory fallback");

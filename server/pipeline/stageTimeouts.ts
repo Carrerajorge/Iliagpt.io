@@ -23,23 +23,23 @@ export interface StageTimeoutConfig {
 }
 
 const DEFAULT_TIMEOUTS: StageTimeoutConfig = {
-  preprocess: 500,
-  nlu: 1000,
-  retrieval: 3000,
-  rerank: 1500,
-  generation: 8000,
-  postprocess: 500,
-  total: 15000
+  preprocess: 200,
+  nlu: 400,
+  retrieval: 2000,
+  rerank: 800,
+  generation: 6000,
+  postprocess: 200,
+  total: 10000
 };
 
 const AGGRESSIVE_TIMEOUTS: StageTimeoutConfig = {
-  preprocess: 200,
-  nlu: 500,
-  retrieval: 2000,
-  rerank: 1000,
-  generation: 5000,
-  postprocess: 300,
-  total: 10000
+  preprocess: 100,
+  nlu: 200,
+  retrieval: 1500,
+  rerank: 500,
+  generation: 4000,
+  postprocess: 100,
+  total: 7000
 };
 
 export interface StageResult<T = any> {

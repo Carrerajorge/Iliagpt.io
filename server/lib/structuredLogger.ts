@@ -1,7 +1,9 @@
 import { nanoid } from "nanoid";
+import { logger as baseLogger, LogLevel, Logger as BaseLogger } from "../utils/logger";
+import { sanitizeSensitiveData } from "./securityUtils";
+import crypto from "node:crypto";
 
-// Tipos para el sistema de logging estructurado
-export type LogLevel = "debug" | "info" | "warn" | "error";
+export type { LogLevel };
 
 export interface LogEntry {
   id: string;
@@ -32,18 +34,88 @@ export interface LogStats {
   newestEntry?: Date;
 }
 
-export interface Logger {
-  debug: (message: string, metadata?: Record<string, any>) => void;
-  info: (message: string, metadata?: Record<string, any>) => void;
-  warn: (message: string, metadata?: Record<string, any>) => void;
-  error: (message: string, metadata?: Record<string, any>) => void;
-  withRequest: (requestId: string, userId?: string) => Logger;
-  withDuration: (duration: number) => Logger;
+// Extend BaseLogger to include chainable methods used by existing code
+export interface StructuredLogger extends BaseLogger {
+  withRequest: (requestId: string, userId?: string) => StructuredLogger;
+  withDuration: (duration: number) => StructuredLogger;
 }
 
 const MAX_LOG_ENTRIES = 5000;
 const logs: LogEntry[] = [];
+const MAX_METADATA_BYTES = 4096;
+const MAX_METADATA_DEPTH = 8;
 
+function safeSerialize(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value !== "object") {
+    return value;
+  }
+
+  if (seen.has(value as object)) {
+    return "[circular]";
+  }
+  seen.add(value as object);
+
+  if (depth >= MAX_METADATA_DEPTH) {
+    return "[max-depth]";
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => safeSerialize(item, depth + 1, seen));
+  }
+
+  const record = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  const keys = Object.keys(record);
+  for (const key of keys) {
+    if (key.startsWith("__proto__") || key === "prototype" || key === "constructor") {
+      output[key] = "[redacted]";
+      continue;
+    }
+
+    output[key] = safeSerialize(record[key], depth + 1, seen);
+  }
+
+  return output;
+}
+
+function normalizeMetadata(metadata?: Record<string, any>): Record<string, unknown> | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return metadata ? { value: sanitizeSensitiveData({ value: metadata } as Record<string, unknown>) } : undefined;
+  }
+
+  let normalized: Record<string, unknown> = safeSerialize(
+    sanitizeSensitiveData(metadata as Record<string, unknown>)
+  ) as Record<string, unknown>;
+
+  const serialized = JSON.stringify(normalized);
+  if (serialized.length <= MAX_METADATA_BYTES) {
+    return normalized;
+  }
+
+  const truncatedHash = crypto.createHash("sha256").update(serialized).digest("hex");
+
+  normalized = {
+    _truncated: true,
+    _originalBytes: serialized.length,
+    _sha256: truncatedHash,
+    _timestamp: new Date().toISOString(),
+  };
+
+  return normalized;
+}
+
+/**
+ * Adds a log entry to the in-memory buffer (for UI/Dashboard)
+ * AND emits it via the standardized Pino logger (for infrastructure)
+ */
 function addLog(entry: Omit<LogEntry, "id" | "timestamp">): void {
   const logEntry: LogEntry = {
     ...entry,
@@ -53,43 +125,47 @@ function addLog(entry: Omit<LogEntry, "id" | "timestamp">): void {
 
   logs.push(logEntry);
 
-  // Rotación: eliminar entradas antiguas si excedemos el límite
+  // Rotation: delete old entries if max exceeded
   if (logs.length > MAX_LOG_ENTRIES) {
     logs.splice(0, logs.length - MAX_LOG_ENTRIES);
   }
 
-  // Output al console para desarrollo
-  const prefix = `[${logEntry.component}]`;
-  const reqInfo = logEntry.requestId ? ` [${logEntry.requestId}]` : "";
-  const userInfo = logEntry.userId ? ` (user:${logEntry.userId})` : "";
-  const durationInfo = logEntry.duration !== undefined ? ` ${logEntry.duration}ms` : "";
-  const metaInfo = logEntry.metadata ? ` ${JSON.stringify(logEntry.metadata)}` : "";
-  
-  const formattedMessage = `${prefix}${reqInfo}${userInfo} ${logEntry.message}${durationInfo}${metaInfo}`;
-  
+  // Use standardized Pino logger for output
+  // We recreate the context object expected by Pino
+  const context = {
+    component: logEntry.component,
+    requestId: logEntry.requestId,
+    userId: logEntry.userId,
+    duration: logEntry.duration,
+    ...(logEntry.metadata || {}),
+  };
+
+  // Delegate to Pino
   switch (logEntry.level) {
     case "debug":
-      console.debug(formattedMessage);
+      baseLogger.debug(logEntry.message, context);
       break;
     case "info":
-      console.info(formattedMessage);
+      baseLogger.info(logEntry.message, context);
       break;
     case "warn":
-      console.warn(formattedMessage);
+      baseLogger.warn(logEntry.message, context);
       break;
     case "error":
-      console.error(formattedMessage);
+      baseLogger.error(logEntry.message, context);
       break;
   }
 }
 
-export function createLogger(component: string): Logger {
+export function createLogger(component: string): StructuredLogger {
   let contextRequestId: string | undefined;
   let contextUserId: string | undefined;
   let contextDuration: number | undefined;
 
   const createLogMethod = (level: LogLevel) => {
     return (message: string, metadata?: Record<string, any>) => {
+      const normalizedMetadata = normalizeMetadata(metadata);
+
       addLog({
         level,
         message,
@@ -97,37 +173,46 @@ export function createLogger(component: string): Logger {
         requestId: contextRequestId,
         userId: contextUserId,
         duration: contextDuration,
-        metadata,
+        metadata: normalizedMetadata,
       });
     };
   };
 
-  const logger: Logger = {
+  // Implement the chainable interface
+  const logger = {
+    // Standard methods
     debug: createLogMethod("debug"),
     info: createLogMethod("info"),
     warn: createLogMethod("warn"),
     error: createLogMethod("error"),
-    
-    withRequest(requestId: string, userId?: string): Logger {
-      const childLogger = createLogger(component);
-      (childLogger as any)._setContext(requestId, userId, contextDuration);
-      return childLogger;
+
+    // Pino-compatible child (maps to createLogger)
+    child(context: any): BaseLogger {
+      return baseLogger.child({ ...context, component });
     },
-    
-    withDuration(duration: number): Logger {
-      const childLogger = createLogger(component);
-      (childLogger as any)._setContext(contextRequestId, contextUserId, duration);
-      return childLogger;
+
+    // Chainable context methods (specific to this implementation)
+    withRequest(requestId: string, userId?: string): StructuredLogger {
+      const child = createLogger(component);
+      (child as any)._setContext(requestId, userId, contextDuration);
+      return child;
+    },
+
+    withDuration(duration: number): StructuredLogger {
+      const child = createLogger(component);
+      (child as any)._setContext(contextRequestId, contextUserId, duration);
+      return child;
     },
   };
 
+  // Hidden context setter
   (logger as any)._setContext = (reqId?: string, userId?: string, duration?: number) => {
     contextRequestId = reqId;
     contextUserId = userId;
     contextDuration = duration;
   };
 
-  return logger;
+  return logger as StructuredLogger;
 }
 
 export function getLogs(filters?: LogFilters): LogEntry[] {
@@ -186,5 +271,5 @@ export function clearLogs(): void {
   logs.length = 0;
 }
 
-// Logger por defecto del sistema
+// Default system logger
 export const systemLogger = createLogger("system");

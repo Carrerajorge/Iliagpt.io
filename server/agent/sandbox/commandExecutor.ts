@@ -208,6 +208,39 @@ export class CommandExecutor {
       };
     }
 
+    // Security Check for Code Content
+    if (this.config.enableSecurity) {
+      let language: "python" | "javascript" | undefined;
+      if (interpreterKey.includes("python")) language = "python";
+      if (interpreterKey === "node") language = "javascript";
+
+      if (language) {
+        const check = this.security.analyzeCode(scriptContent, language);
+        if (!check.isSafe) {
+          const analysis: SecurityAnalysis = {
+            command: "[script content]",
+            isSafe: false,
+            threatLevel: "high",
+            action: "block",
+            matchedRules: [check.reason || "Dangerous pattern matched"],
+            warnings: [],
+            sanitizedCommand: "[blocked]",
+          };
+
+          return {
+            command: `${interpreter} [script]`,
+            status: "blocked",
+            returnCode: 1,
+            stdout: "",
+            stderr: "",
+            executionTime: 0,
+            errorMessage: `Security Block: ${check.reason}`,
+            securityAnalysis: analysis,
+          };
+        }
+      }
+    }
+
     const interpreterPath = CommandExecutor.ALLOWED_INTERPRETERS[interpreterKey];
     const ext = extMap[interpreterKey] ?? ".txt";
 
@@ -218,7 +251,7 @@ export class CommandExecutor {
 
     try {
       fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
-      
+
       return new Promise((resolve) => {
         let stdout = "";
         let stderr = "";

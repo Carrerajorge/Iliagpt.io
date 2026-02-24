@@ -41,7 +41,7 @@ export function CanvasStage() {
     transformer.getLayer()?.batchDraw();
   }, [selection, activeSlideId, slide.elements]);
 
-  const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
+  const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
     if (e.target === e.target.getStage() || e.target.getClassName() === 'Rect' && e.target.getParent() === e.target.getStage()) {
       clearSelection();
     }

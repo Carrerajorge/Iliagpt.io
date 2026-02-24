@@ -301,12 +301,14 @@ export class WordAgentOrchestrator extends EventEmitter {
 
     while (retryCount <= config.maxRetries) {
       try {
+        let timeoutTimer: ReturnType<typeof setTimeout>;
         const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error(`Stage ${stageId} timed out`)), config.timeoutMs);
+          timeoutTimer = setTimeout(() => reject(new Error(`Stage ${stageId} timed out`)), config.timeoutMs);
         });
 
         const executePromise = stage.execute(input, context);
         const output = await Promise.race([executePromise, timeoutPromise]);
+        clearTimeout(timeoutTimer!);
 
         const qualityGate = stage.validate(output);
 
@@ -671,7 +673,9 @@ export class WordAgentOrchestrator extends EventEmitter {
   }
 
   private getCacheKey(stageId: string, input: any): string {
-    return `${stageId}:${JSON.stringify(input)}`.slice(0, 500);
+    const crypto = require("crypto");
+    const hash = crypto.createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    return `${stageId}:${hash}`;
   }
 
   private sleep(ms: number): Promise<void> {

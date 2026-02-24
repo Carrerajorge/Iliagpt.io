@@ -97,7 +97,9 @@ export class KeywordExtractor {
     const dateMatches = text.match(datePattern) || [];
     results.push(...dateMatches);
 
-    const numberPattern = /\d+(?:\.\d+)?\s*(?:usd|eur|%|kg|km|m2|gb|mb|kb|tb)/gi;
+    // Keep the regex deterministic and bounded to reduce worst-case backtracking on crafted input.
+    const numberPattern =
+      /\b\d{1,18}(?:\.\d{1,6})?\s*(?:(?:usd|eur|kg|km|m2|gb|mb|kb|tb)\b|%(?=$|\s|[.,;:!?]))/gi;
     const numberMatches = text.match(numberPattern) || [];
     results.push(...numberMatches.map(m => m.toLowerCase().replace(/\s+/g, '')));
 

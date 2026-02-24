@@ -3,6 +3,14 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Trash2, Pause, Play, ArrowUp, Mic, Square, AudioLines } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  SILVER_ICON_BUTTON_BASE,
+  SILVER_ICON_BUTTON_DANGER_TONE,
+  SILVER_ICON_BUTTON_DISABLED_TONE,
+  SILVER_ICON_BUTTON_TONE,
+} from "@/lib/silver-ui";
+import { useSettingsContext } from "@/contexts/SettingsContext";
+import { type AIState, isAiBusyState } from "@/components/chat-interface/types";
 
 interface RecordingPanelProps {
   isRecording: boolean;
@@ -17,7 +25,7 @@ interface RecordingPanelProps {
   onOpenVoiceChat: () => void;
   onStopChat: () => void;
   onSubmit: () => void;
-  aiState: "idle" | "thinking" | "responding";
+  aiState: AIState;
   hasContent: boolean;
   isAgentRunning?: boolean;
   onAgentStop?: () => void;
@@ -49,9 +57,12 @@ export function RecordingPanel({
   onAgentStop,
   isFilesLoading = false,
 }: RecordingPanelProps) {
+  const { settings } = useSettingsContext();
+  const voiceEnabled = !!settings.voiceMode;
+
   // Show stop button if either AI is processing OR agent is running
-  const showStopButton = aiState !== "idle" || isAgentRunning;
-  
+  const showStopButton = isAiBusyState(aiState) || isAgentRunning;
+
   const handleStop = () => {
     if (isAgentRunning && onAgentStop) {
       onAgentStop();
@@ -65,7 +76,7 @@ export function RecordingPanel({
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.9 }}
-        className="flex items-center gap-3 px-2"
+        className="flex items-center gap-2.5 px-1.5"
         data-testid="recording-ui-compact"
       >
         <Tooltip>
@@ -74,11 +85,15 @@ export function RecordingPanel({
               variant="ghost"
               size="icon"
               onClick={onDiscard}
-              className="h-10 w-10 rounded-full border-2 border-muted-foreground/30 hover:border-red-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all focus-visible:ring-2 focus-visible:ring-primary/50"
+              className={cn(
+                "h-9 w-9 sm:h-8 sm:w-8",
+                SILVER_ICON_BUTTON_BASE,
+                SILVER_ICON_BUTTON_DANGER_TONE
+              )}
               aria-label="Discard recording"
               data-testid="button-discard-recording"
             >
-              <Trash2 className="h-5 w-5" aria-hidden="true" />
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>Descartar grabación</TooltipContent>
@@ -93,8 +108,8 @@ export function RecordingPanel({
               isPaused ? "bg-muted-foreground" : "bg-red-500"
             )}
           />
-          
-          <span className="text-lg font-medium tabular-nums min-w-[48px]" data-testid="recording-timer">
+
+          <span className="text-base font-medium tabular-nums min-w-[48px]" data-testid="recording-timer">
             {formatRecordingTime(recordingTime)}
           </span>
 
@@ -102,7 +117,7 @@ export function RecordingPanel({
             {Array.from({ length: 20 }).map((_, i) => (
               <motion.div
                 key={i}
-                animate={isPaused ? { height: 4 } : { 
+                animate={isPaused ? { height: 4 } : {
                   height: [4, 8 + Math.random() * 12, 4, 12 + Math.random() * 8, 4]
                 }}
                 transition={{
@@ -123,14 +138,18 @@ export function RecordingPanel({
               variant="ghost"
               size="icon"
               onClick={isPaused ? onResume : onPause}
-              className="h-10 w-10 rounded-full border-2 border-muted-foreground/30 hover:border-foreground/50 transition-all focus-visible:ring-2 focus-visible:ring-primary/50"
+              className={cn(
+                "h-9 w-9 sm:h-8 sm:w-8",
+                SILVER_ICON_BUTTON_BASE,
+                SILVER_ICON_BUTTON_TONE
+              )}
               aria-label={isPaused ? "Resume recording" : "Pause recording"}
               data-testid={isPaused ? "button-resume-recording" : "button-pause-recording"}
             >
               {isPaused ? (
-                <Play className="h-5 w-5" aria-hidden="true" />
+                <Play className="h-4 w-4" aria-hidden="true" />
               ) : (
-                <Pause className="h-5 w-5" aria-hidden="true" />
+                <Pause className="h-4 w-4" aria-hidden="true" />
               )}
             </Button>
           </TooltipTrigger>
@@ -143,11 +162,15 @@ export function RecordingPanel({
               size="icon"
               onClick={onSend}
               disabled={!canSend}
-              className="h-10 w-10 rounded-full border-2 border-muted-foreground/30 hover:border-foreground/50 bg-transparent hover:bg-muted text-foreground disabled:opacity-50 transition-all focus-visible:ring-2 focus-visible:ring-primary/50"
+              className={cn(
+                "h-9 w-9 sm:h-8 sm:w-8",
+                SILVER_ICON_BUTTON_BASE,
+                canSend ? SILVER_ICON_BUTTON_TONE : SILVER_ICON_BUTTON_DISABLED_TONE
+              )}
               aria-label="Send message"
               data-testid="button-send-recording"
             >
-              <ArrowUp className="h-5 w-5" aria-hidden="true" />
+              <ArrowUp className="h-4 w-4" aria-hidden="true" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>Enviar mensaje</TooltipContent>
@@ -158,31 +181,44 @@ export function RecordingPanel({
 
   return (
     <>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button 
-            variant="ghost"
-            onClick={onToggleRecording}
-            size="icon" 
-            className="h-9 w-9 rounded-full transition-all duration-300 text-muted-foreground hover:text-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-primary/50"
-            aria-label="Start voice dictation"
-            data-testid="button-voice-dictation"
-          >
-            <Mic className="h-5 w-5" aria-hidden="true" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Dictar texto</TooltipContent>
-      </Tooltip>
+      {voiceEnabled && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              onClick={onToggleRecording}
+              size="icon"
+              className={cn(
+                "h-9 w-9 sm:h-8 sm:w-8",
+                SILVER_ICON_BUTTON_BASE,
+                SILVER_ICON_BUTTON_TONE
+              )}
+              aria-label="Start voice dictation"
+              data-testid="button-voice-dictation"
+            >
+              <Mic className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Dictar texto</TooltipContent>
+        </Tooltip>
+      )}
 
       {showStopButton ? (
-        <Button 
+        <Button
           onClick={handleStop}
-          size="icon" 
-          className="h-10 w-10 rounded-full bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-lg shadow-red-500/50 focus-visible:ring-2 focus-visible:ring-white/50"
+          variant="ghost"
+          size="icon"
+          className={cn(
+            "h-9 w-9 sm:h-8 sm:w-8",
+            SILVER_ICON_BUTTON_BASE,
+            "border-red-300/60 hover:border-red-400 dark:border-red-300/30 dark:hover:border-red-300/50",
+            "bg-white/35 hover:bg-red-50 dark:bg-white/5 dark:hover:bg-red-950/30",
+            "text-red-600 hover:text-red-700 dark:text-red-300 dark:hover:text-red-200"
+          )}
           aria-label={isAgentRunning ? "Stop agent" : "Stop AI response"}
           data-testid="button-stop-chat"
         >
-          <Square className="h-5 w-5 fill-current" aria-hidden="true" />
+          <Square className="h-4 w-4" aria-hidden="true" />
         </Button>
       ) : hasContent ? (
         <motion.div
@@ -192,35 +228,44 @@ export function RecordingPanel({
           transition={{ duration: 0.2, ease: "easeOut" }}
           key="send-button"
         >
-          <Button 
+          <Button
             onClick={onSubmit}
-            size="icon" 
+            size="icon"
             disabled={isFilesLoading}
             className={cn(
-              "h-9 w-9 rounded-full transition-all duration-300 focus-visible:ring-2 focus-visible:ring-primary/50",
-              isFilesLoading ? "opacity-50 cursor-not-allowed bg-muted" : "liquid-btn"
+              "h-9 w-9 sm:h-8 sm:w-8",
+              SILVER_ICON_BUTTON_BASE,
+              isFilesLoading
+                ? SILVER_ICON_BUTTON_DISABLED_TONE
+                : SILVER_ICON_BUTTON_TONE
             )}
             aria-label={isFilesLoading ? "Uploading files..." : "Send message (Cmd+Enter)"}
             data-testid="button-send-message"
           >
-            <ArrowUp className="h-5 w-5" aria-hidden="true" />
+            <ArrowUp className="h-4 w-4" aria-hidden="true" />
           </Button>
         </motion.div>
       ) : (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button 
-              onClick={onOpenVoiceChat}
-              size="icon" 
-              className="h-9 w-9 rounded-full transition-all duration-300 bg-foreground text-background hover:bg-foreground/90 focus-visible:ring-2 focus-visible:ring-primary/50"
-              aria-label="Start voice conversation mode"
-              data-testid="button-voice-chat-mode"
-            >
-              <AudioLines className="h-5 w-5" aria-hidden="true" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Modo conversación por voz</TooltipContent>
-        </Tooltip>
+        voiceEnabled ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                onClick={onOpenVoiceChat}
+                size="icon"
+                className={cn(
+                  "h-9 w-9 sm:h-8 sm:w-8",
+                  SILVER_ICON_BUTTON_BASE,
+                  SILVER_ICON_BUTTON_TONE
+                )}
+                aria-label="Start voice conversation mode"
+                data-testid="button-voice-chat-mode"
+              >
+                <AudioLines className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Modo conversación por voz</TooltipContent>
+          </Tooltip>
+        ) : null
       )}
     </>
   );

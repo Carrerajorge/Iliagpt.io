@@ -1,32 +1,32 @@
-"use client"
+"use client";
 
-import * as React from "react"
-import * as TooltipPrimitive from "@radix-ui/react-tooltip"
+import * as React from "react";
 
-import { cn } from "@/lib/utils"
+/**
+ * React 19 compatibility: Radix Tooltip currently triggers a "Maximum update depth exceeded"
+ * loop in this codebase (ref -> setState churn) when the app re-renders (e.g. switching models).
+ *
+ * For now we intentionally disable tooltips (no-op components) to keep the UI stable.
+ * If we want tooltips back, replace this with a non-Radix implementation or a fixed Radix version.
+ */
 
-const TooltipProvider = TooltipPrimitive.Provider
+type WrapperProps = { children: React.ReactNode };
 
-const Tooltip = TooltipPrimitive.Root
+export function TooltipProvider({ children }: WrapperProps) {
+  return <>{children}</>;
+}
 
-const TooltipTrigger = TooltipPrimitive.Trigger
+export function Tooltip({ children }: WrapperProps) {
+  return <>{children}</>;
+}
 
-const TooltipContent = React.forwardRef<
-  React.ElementRef<typeof TooltipPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Content>
->(({ className, sideOffset = 4, ...props }, ref) => (
-  <TooltipPrimitive.Portal>
-    <TooltipPrimitive.Content
-      ref={ref}
-      sideOffset={sideOffset}
-      className={cn(
-        "z-50 overflow-hidden rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 origin-[--radix-tooltip-content-transform-origin]",
-        className
-      )}
-      {...props}
-    />
-  </TooltipPrimitive.Portal>
-))
-TooltipContent.displayName = TooltipPrimitive.Content.displayName
+export function TooltipTrigger({ children }: WrapperProps & { asChild?: boolean }) {
+  return <>{children}</>;
+}
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }
+export const TooltipContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  function TooltipContent(_props, _ref) {
+    return null;
+  }
+);
+

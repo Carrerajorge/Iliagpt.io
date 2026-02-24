@@ -658,11 +658,13 @@ export function initializeOpenClawTools(): void {
 
 export function getOpenClawToolsForUser(plan: UserPlan): ToolDefinition[] {
   initializeOpenClawTools();
-  const tier = (["go", "plus", "pro"].includes(plan) ? plan : undefined) as SubscriptionTier | undefined;
-  if (tier) {
-    return toolRegistry.listForTier(tier);
+  const allTools = toolRegistry.list();
+  const availableNames = getToolsForPlan(plan);
+  if (availableNames.length === 0) {
+    return allTools;
   }
-  return toolRegistry.listForLegacyPlan(plan);
+  const nameSet = new Set(availableNames);
+  return allTools.filter(t => nameSet.has(t.name));
 }
 
 function zodSchemaToJsonSchema(schema: any): any {

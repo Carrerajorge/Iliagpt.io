@@ -1,12 +1,12 @@
 import React, { useState, memo, useCallback, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  ChevronDown, 
-  ChevronRight, 
-  Download, 
-  CheckCircle2, 
-  Loader2, 
-  XCircle, 
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  CheckCircle2,
+  Loader2,
+  XCircle,
   Clock,
   Search,
   Globe,
@@ -114,7 +114,7 @@ const PERMANENT_ERROR_PATTERNS = [
 
 export function classifyError(error: string | null | undefined, stepErrors?: string[]): ClassifiedError {
   const errorText = error || stepErrors?.join(' ') || '';
-  
+
   if (!errorText) {
     return {
       type: 'unknown',
@@ -131,7 +131,7 @@ export function classifyError(error: string | null | undefined, stepErrors?: str
   if (isTransient && !isPermanent) {
     let userMessage = 'Problema de conexión temporal';
     let icon: React.ElementType = WifiOff;
-    
+
     if (/rate limit|too many requests|429/i.test(errorText)) {
       userMessage = 'Límite de solicitudes alcanzado';
       icon = Clock;
@@ -142,7 +142,7 @@ export function classifyError(error: string | null | undefined, stepErrors?: str
       userMessage = 'El servidor está temporalmente ocupado';
       icon = ServerCrash;
     }
-    
+
     return {
       type: 'transient',
       isRetryable: true,
@@ -155,7 +155,7 @@ export function classifyError(error: string | null | undefined, stepErrors?: str
   if (isPermanent) {
     let userMessage = 'Error de configuración o permisos';
     let icon: React.ElementType = Ban;
-    
+
     if (/unauthorized|401|authentication|invalid.*key|invalid.*token/i.test(errorText)) {
       userMessage = 'Error de autenticación - verifica tus credenciales';
       icon = Ban;
@@ -169,7 +169,7 @@ export function classifyError(error: string | null | undefined, stepErrors?: str
       userMessage = 'Límite de uso alcanzado o problema de facturación';
       icon = AlertTriangle;
     }
-    
+
     return {
       type: 'permanent',
       isRetryable: false,
@@ -204,17 +204,17 @@ export const ErrorBanner = memo(function ErrorBanner({
   className,
 }: ErrorBannerProps) {
   const [isCopied, setIsCopied] = useState(false);
-  
-  const stepErrors = useMemo(() => 
+
+  const stepErrors = useMemo(() =>
     steps.filter(s => s.status === 'failed' && s.error).map(s => s.error!),
     [steps]
   );
-  
-  const classifiedError = useMemo(() => 
+
+  const classifiedError = useMemo(() =>
     classifyError(error, stepErrors),
     [error, stepErrors]
   );
-  
+
   const fullErrorLog = useMemo(() => {
     const logs: string[] = [];
     logs.push(`=== Error Log ===`);
@@ -225,7 +225,7 @@ export const ErrorBanner = memo(function ErrorBanner({
     logs.push('');
     logs.push(`=== Detalles técnicos ===`);
     logs.push(classifiedError.technicalDetails);
-    
+
     if (stepErrors.length > 0) {
       logs.push('');
       logs.push(`=== Errores en pasos (${stepErrors.length}) ===`);
@@ -233,10 +233,10 @@ export const ErrorBanner = memo(function ErrorBanner({
         logs.push(`[Paso ${step.stepIndex}] ${step.toolName}: ${step.error}`);
       });
     }
-    
+
     return logs.join('\n');
   }, [status, classifiedError, stepErrors, steps]);
-  
+
   const handleCopyLog = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(fullErrorLog);
@@ -255,15 +255,15 @@ export const ErrorBanner = memo(function ErrorBanner({
       toast.info('Para reintentar, envía tu mensaje nuevamente');
     }
   }, [onRetry]);
-  
+
   if (status !== 'failed' && status !== 'cancelled') {
     return null;
   }
-  
+
   const Icon = classifiedError.icon;
   const isTransient = classifiedError.type === 'transient';
   const isPermanent = classifiedError.type === 'permanent';
-  
+
   return (
     <motion.div
       initial={{ opacity: 0, y: -10 }}
@@ -292,7 +292,7 @@ export const ErrorBanner = memo(function ErrorBanner({
             !isTransient && !isPermanent && "text-red-600 dark:text-red-400"
           )} />
         </div>
-        
+
         <div className="flex-1 min-w-0 space-y-1">
           <div className="flex items-center gap-2">
             <h4 className={cn(
@@ -304,8 +304,8 @@ export const ErrorBanner = memo(function ErrorBanner({
               {classifiedError.userMessage}
             </h4>
             {classifiedError.isRetryable && (
-              <Badge 
-                variant="outline" 
+              <Badge
+                variant="outline"
                 className={cn(
                   "text-[10px] px-1.5 py-0 h-4",
                   isTransient && "border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-300"
@@ -315,12 +315,12 @@ export const ErrorBanner = memo(function ErrorBanner({
               </Badge>
             )}
           </div>
-          
+
           <p className="text-xs text-muted-foreground line-clamp-2">
             {classifiedError.technicalDetails.slice(0, 200)}
             {classifiedError.technicalDetails.length > 200 && '...'}
           </p>
-          
+
           {stepErrors.length > 0 && (
             <p className="text-xs text-muted-foreground">
               {stepErrors.length} paso{stepErrors.length !== 1 ? 's' : ''} fallido{stepErrors.length !== 1 ? 's' : ''}
@@ -328,7 +328,7 @@ export const ErrorBanner = memo(function ErrorBanner({
           )}
         </div>
       </div>
-      
+
       <div className="flex items-center gap-2 pt-2 border-t border-inherit">
         {classifiedError.isRetryable && (
           <Button
@@ -345,7 +345,7 @@ export const ErrorBanner = memo(function ErrorBanner({
             Reintentar
           </Button>
         )}
-        
+
         <Button
           variant="ghost"
           size="sm"
@@ -365,7 +365,7 @@ export const ErrorBanner = memo(function ErrorBanner({
             </>
           )}
         </Button>
-        
+
         {!classifiedError.isRetryable && (
           <span className="text-xs text-muted-foreground ml-auto">
             Este error requiere acción manual
@@ -528,7 +528,7 @@ const PhaseIndicator = memo(function PhaseIndicator({ currentPhase, isAnimating 
   const Icon = config.icon;
   const currentIndex = PHASE_ORDER.indexOf(currentPhase);
   const isTerminal = ['completed', 'failed', 'cancelled'].includes(currentPhase);
-  
+
   return (
     <div className="flex items-center gap-1.5" data-testid="phase-indicator">
       {PHASE_ORDER.slice(0, -1).map((phase, index) => {
@@ -537,14 +537,14 @@ const PhaseIndicator = memo(function PhaseIndicator({ currentPhase, isAnimating 
         const isActive = phase === currentPhase;
         const isPast = currentIndex > index || isTerminal;
         const isFuture = currentIndex < index && !isTerminal;
-        
+
         return (
           <React.Fragment key={phase}>
             <motion.div
               initial={{ scale: 0.9, opacity: 0.5 }}
-              animate={{ 
-                scale: isActive ? 1.1 : 1, 
-                opacity: isFuture ? 0.4 : 1 
+              animate={{
+                scale: isActive ? 1.1 : 1,
+                opacity: isFuture ? 0.4 : 1
               }}
               transition={{ duration: 0.2 }}
               className={cn(
@@ -566,17 +566,17 @@ const PhaseIndicator = memo(function PhaseIndicator({ currentPhase, isAnimating 
               <span className="hidden sm:inline">{phaseConfig.label}</span>
             </motion.div>
             {index < PHASE_ORDER.length - 2 && (
-              <div 
+              <div
                 className={cn(
                   "w-4 h-0.5 rounded-full transition-colors",
                   isPast ? "bg-green-500" : "bg-muted"
-                )} 
+                )}
               />
             )}
           </React.Fragment>
         );
       })}
-      
+
       {isTerminal && (
         <motion.div
           initial={{ scale: 0.9, opacity: 0 }}
@@ -605,7 +605,7 @@ const ProgressBar = memo(function ProgressBar({ steps, isRunning, status }: Prog
   const completedCount = steps.filter(s => s.status === 'succeeded').length;
   const failedCount = steps.filter(s => s.status === 'failed').length;
   const totalSteps = steps.length;
-  
+
   const progress = useMemo(() => {
     if (status === 'completed') return 100;
     if (status === 'failed' || status === 'cancelled') return (completedCount / Math.max(totalSteps, 1)) * 100;
@@ -658,11 +658,11 @@ const TimeEstimate = memo(function TimeEstimate({ steps, startTime, isRunning }:
 
   useEffect(() => {
     if (!isRunning || !startTime) return;
-    
+
     const interval = setInterval(() => {
       setElapsedTime(Math.floor((Date.now() - startTime) / 1000));
     }, 1000);
-    
+
     return () => clearInterval(interval);
   }, [isRunning, startTime]);
 
@@ -676,19 +676,19 @@ const TimeEstimate = memo(function TimeEstimate({ steps, startTime, isRunning }:
   const estimatedRemaining = useMemo(() => {
     const completedSteps = steps.filter(s => s.status === 'succeeded');
     if (completedSteps.length < 2) return null;
-    
+
     const times = completedSteps.map(s => {
       if (s.startedAt && s.completedAt) {
         return new Date(s.completedAt).getTime() - new Date(s.startedAt).getTime();
       }
       return null;
     }).filter((t): t is number => t !== null);
-    
+
     if (times.length < 2) return null;
-    
+
     const avgTime = times.reduce((a, b) => a + b, 0) / times.length;
     const pendingSteps = steps.filter(s => s.status === 'pending' || s.status === 'running').length;
-    
+
     return Math.ceil((avgTime * pendingSteps) / 1000);
   }, [steps]);
 
@@ -715,7 +715,7 @@ interface ReplanNotificationProps {
 
 const ReplanNotification = memo(function ReplanNotification({ count, lastReason }: ReplanNotificationProps) {
   if (count === 0) return null;
-  
+
   return (
     <motion.div
       initial={{ opacity: 0, y: -10 }}
@@ -743,11 +743,11 @@ interface CompletionSummaryProps {
   status: AgentRunStatus;
 }
 
-const CompletionSummary = memo(function CompletionSummary({ 
-  summary, 
-  steps, 
+const CompletionSummary = memo(function CompletionSummary({
+  summary,
+  steps,
   startTime,
-  status 
+  status
 }: CompletionSummaryProps) {
   const completedSteps = steps.filter(s => s.status === 'succeeded').length;
   const failedSteps = steps.filter(s => s.status === 'failed').length;
@@ -790,7 +790,7 @@ const CompletionSummary = memo(function CompletionSummary({
           {status === 'failed' && <XCircle className="h-4 w-4 text-red-600 dark:text-red-400" />}
           {status === 'cancelled' && <XCircle className="h-4 w-4 text-gray-600 dark:text-gray-400" />}
         </div>
-        
+
         <div className="flex-1 min-w-0">
           <h4 className={cn(
             "font-medium text-sm",
@@ -804,7 +804,7 @@ const CompletionSummary = memo(function CompletionSummary({
             {status === 'failed' && "Tarea fallida"}
             {status === 'cancelled' && "Tarea cancelada"}
           </h4>
-          
+
           {summary && (
             <p className="text-sm text-foreground mt-1 leading-relaxed">
               {summary}
@@ -853,7 +853,7 @@ const StepItem = memo(function StepItem({ step }: { step: AgentStep }) {
       data-testid={`agent-step-${step.stepIndex}`}
     >
       <StepStatusIcon status={step.status} className="mt-0.5 shrink-0" />
-      
+
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <IconComponent className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -866,7 +866,7 @@ const StepItem = memo(function StepItem({ step }: { step: AgentStep }) {
             </span>
           )}
         </div>
-        
+
         {step.error && (
           <p className="text-xs text-red-500 mt-1 line-clamp-2">{step.error}</p>
         )}
@@ -889,8 +889,8 @@ const StepItem = memo(function StepItem({ step }: { step: AgentStep }) {
             <CollapsibleContent className="mt-2">
               <div className="text-xs bg-muted/50 rounded-md p-2 max-h-32 overflow-auto">
                 <pre className="whitespace-pre-wrap break-words text-muted-foreground">
-                  {typeof step.output === "string" 
-                    ? step.output 
+                  {typeof step.output === "string"
+                    ? step.output
                     : JSON.stringify(step.output, null, 2)?.slice(0, 500)}
                 </pre>
               </div>
@@ -902,20 +902,20 @@ const StepItem = memo(function StepItem({ step }: { step: AgentStep }) {
   );
 });
 
-export const StepGroup = memo(function StepGroup({ 
-  steps, 
+export const StepGroup = memo(function StepGroup({
+  steps,
   isRunning = false,
   defaultOpen = false,
   maxVisibleSteps = 5
 }: StepGroupProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen || isRunning);
   const [showAll, setShowAll] = useState(false);
-  
+
   const completedCount = steps.filter(s => s.status === "succeeded").length;
   const failedCount = steps.filter(s => s.status === "failed").length;
   const runningCount = steps.filter(s => s.status === "running").length;
   const totalSteps = steps.length;
-  
+
   const visibleSteps = useMemo(() => {
     if (showAll || steps.length <= maxVisibleSteps) return steps;
     const runningIndex = steps.findIndex(s => s.status === 'running');
@@ -957,11 +957,11 @@ export const StepGroup = memo(function StepGroup({
               <ChevronRight className="h-4 w-4" />
             )}
           </div>
-          
+
           <span className="text-sm font-medium text-foreground">
             {totalSteps} {totalSteps === 1 ? "paso" : "pasos"}
           </span>
-          
+
           <span className="text-xs text-muted-foreground ml-auto flex items-center gap-1.5">
             {runningCount > 0 && (
               <Loader2 className="h-3 w-3 animate-spin text-amber-500" />
@@ -970,9 +970,9 @@ export const StepGroup = memo(function StepGroup({
           </span>
         </button>
       </CollapsibleTrigger>
-      
+
       <CollapsibleContent>
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className={cn(
@@ -988,7 +988,7 @@ export const StepGroup = memo(function StepGroup({
               ))}
             </AnimatePresence>
           </div>
-          
+
           {hiddenCount > 0 && !showAll && (
             <button
               onClick={() => setShowAll(true)}
@@ -998,7 +998,7 @@ export const StepGroup = memo(function StepGroup({
               Mostrar {hiddenCount} paso{hiddenCount !== 1 ? 's' : ''} más
             </button>
           )}
-          
+
           {showAll && steps.length > maxVisibleSteps && (
             <button
               onClick={() => setShowAll(false)}
@@ -1028,7 +1028,7 @@ const InlineImageCard = memo(function InlineImageCard({
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
-  
+
   const imageUrl = useMemo(() => {
     if (artifact.url) return artifact.url;
     if (artifact.previewUrl) return artifact.previewUrl;
@@ -1054,9 +1054,9 @@ const InlineImageCard = memo(function InlineImageCard({
       onDownload();
       return;
     }
-    
+
     if (!imageUrl) return;
-    
+
     try {
       const response = await fetch(imageUrl);
       const blob = await response.blob();
@@ -1100,7 +1100,7 @@ const InlineImageCard = memo(function InlineImageCard({
   }
 
   return (
-    <div 
+    <div
       className="relative group rounded-lg overflow-hidden border border-border bg-muted/30"
       data-testid={`inline-image-${artifact.id}`}
     >
@@ -1109,7 +1109,7 @@ const InlineImageCard = memo(function InlineImageCard({
           <ImageIcon className="h-8 w-8 text-muted-foreground/50" />
         </div>
       )}
-      
+
       {hasError ? (
         <div className="flex flex-col sm:flex-row items-center gap-3 p-4 text-muted-foreground">
           <div className="flex items-center gap-2">
@@ -1147,7 +1147,7 @@ const InlineImageCard = memo(function InlineImageCard({
             animate={{ opacity: isLoaded ? 1 : 0 }}
             data-testid={`generated-image-preview-${artifact.id}`}
           />
-          
+
           <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
             <Button
               variant="secondary"
@@ -1174,10 +1174,10 @@ const InlineImageCard = memo(function InlineImageCard({
   );
 });
 
-export const DocumentCard = memo(function DocumentCard({ 
-  artifact, 
-  onClick, 
-  onDownload 
+export const DocumentCard = memo(function DocumentCard({
+  artifact,
+  onClick,
+  onDownload
 }: DocumentCardProps) {
   const category = getFileCategory(artifact.name, artifact.mimeType);
   const theme = getFileTheme(artifact.name, artifact.mimeType);
@@ -1205,7 +1205,7 @@ export const DocumentCard = memo(function DocumentCard({
       onClick={handleClick}
       data-testid={`document-card-${artifact.id}`}
     >
-      <div 
+      <div
         className={cn(
           "flex items-center justify-center w-10 h-10 rounded-lg shrink-0",
           "bg-gradient-to-br",
@@ -1221,8 +1221,8 @@ export const DocumentCard = memo(function DocumentCard({
           {artifact.name}
         </p>
         <div className="flex items-center gap-2 mt-0.5">
-          <Badge 
-            variant="outline" 
+          <Badge
+            variant="outline"
             className="text-[10px] px-1.5 py-0 h-4 font-normal"
           >
             {theme.label}
@@ -1298,12 +1298,12 @@ export const AgentStepsDisplay = memo(function AgentStepsDisplay({
   const hasSteps = steps.length > 0;
   const hasArtifacts = artifacts.length > 0;
   const hasSummary = summary && summary.trim().length > 0;
-  
+
   const phase = mapStatusToPhase(status);
   const isTerminal = ['completed', 'failed', 'cancelled'].includes(phase);
-  
+
   const replanInfo = useMemo(() => {
-    const replanEvents = eventStream.filter(e => 
+    const replanEvents = eventStream.filter(e =>
       e.content?.event_type === 'replan' || e.type === 'thinking'
     );
     const lastReplan = replanEvents[replanEvents.length - 1];
@@ -1350,52 +1350,52 @@ export const AgentStepsDisplay = memo(function AgentStepsDisplay({
   }, [onImageExpand]);
 
   const hasError = status === 'failed' || (error && error.trim().length > 0);
-  
+
   if (!hasSteps && !hasArtifacts && !hasSummary && !isRunning && !hasError) {
     return null;
   }
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className={cn("space-y-3", className)} 
+      className={cn("space-y-3", className)}
       data-testid="agent-steps-display"
     >
       {(isRunning || isTerminal) && (
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-2 flex-wrap">
-            <PhaseIndicator 
-              currentPhase={phase} 
-              isAnimating={isRunning} 
+            <PhaseIndicator
+              currentPhase={phase}
+              isAnimating={isRunning}
             />
-            <TimeEstimate 
-              steps={steps} 
-              startTime={startTime} 
-              isRunning={isRunning} 
+            <TimeEstimate
+              steps={steps}
+              startTime={startTime}
+              isRunning={isRunning}
             />
           </div>
-          
+
           {isRunning && hasSteps && (
-            <ProgressBar 
-              steps={steps} 
-              isRunning={isRunning} 
-              status={status || 'running'} 
+            <ProgressBar
+              steps={steps}
+              isRunning={isRunning}
+              status={status || 'running'}
             />
           )}
         </div>
       )}
 
       {replanInfo.count > 0 && isRunning && (
-        <ReplanNotification 
-          count={replanInfo.count} 
-          lastReason={replanInfo.lastReason} 
+        <ReplanNotification
+          count={replanInfo.count}
+          lastReason={replanInfo.lastReason}
         />
       )}
 
       {hasSteps && (
-        <StepGroup 
-          steps={steps} 
+        <StepGroup
+          steps={steps}
           isRunning={isRunning}
           defaultOpen={isRunning}
           maxVisibleSteps={isRunning ? 5 : 10}
@@ -1440,12 +1440,12 @@ export const AgentStepsDisplay = memo(function AgentStepsDisplay({
 
 export default AgentStepsDisplay;
 
-export function showAgentErrorToast(error: string | null, options?: { 
+export function showAgentErrorToast(error: string | null, options?: {
   isRetryable?: boolean;
   onRetry?: () => void;
 }) {
   const classified = classifyError(error);
-  
+
   if (classified.type === 'transient' || options?.isRetryable) {
     toast.error(classified.userMessage, {
       description: classified.technicalDetails.slice(0, 100),
@@ -1467,6 +1467,5 @@ export function showCriticalAgentError(error: string, details?: string) {
   toast.error('Error crítico del agente', {
     description: error.slice(0, 150),
     duration: 15000,
-    important: true,
   });
 }

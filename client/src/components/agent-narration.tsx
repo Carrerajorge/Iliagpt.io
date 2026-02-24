@@ -1,5 +1,7 @@
 import { memo, useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
+import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
+import { formatZonedTime, normalizeTimeZone } from "@/lib/platformDateTime";
 import { 
   Bot, 
   Search, 
@@ -80,6 +82,8 @@ const NarrationItem = memo(function NarrationItem({
   showTimestamp: boolean;
 }) {
   const Icon = message.icon ? iconMap[message.icon] : Bot;
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
   
   const typeStyles = {
     action: "border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/20",
@@ -123,7 +127,7 @@ const NarrationItem = memo(function NarrationItem({
         
         {showTimestamp && (
           <span className="text-[10px] text-muted-foreground/60 mt-1 block">
-            {new Date(message.timestamp).toLocaleTimeString()}
+            {formatZonedTime(message.timestamp, { timeZone: platformTimeZone, includeSeconds: true })}
           </span>
         )}
       </div>

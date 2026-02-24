@@ -3,6 +3,7 @@ import { PdfParser } from "../parsers/pdfParser";
 import { DocxParser } from "../parsers/docxParser";
 import { XlsxParser } from "../parsers/xlsxParser";
 import { PptxParser } from "../parsers/pptxParser";
+import { CsvParser } from "../parsers/csvParser";
 import { TextParser } from "../parsers/textParser";
 import { FallbackParser } from "../parsers/fallbackParser";
 import { ImageParser } from "../parsers/imageParser";
@@ -17,6 +18,7 @@ class ParserRegistry {
     this.registerParser(new DocxParser());
     this.registerParser(new XlsxParser());
     this.registerParser(new PptxParser());
+    this.registerParser(new CsvParser());
     this.registerParser(new TextParser());
     this.registerParser(new ImageParser());
   }

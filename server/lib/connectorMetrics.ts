@@ -2,7 +2,7 @@ import { createLogger } from "./structuredLogger";
 
 const logger = createLogger("connector-metrics");
 
-export type ConnectorName = "gmail" | "gemini" | "xai" | "database" | "forms";
+export type ConnectorName = "gmail" | "gemini" | "xai" | "openai" | "anthropic" | "deepseek" | "database" | "forms";
 
 export interface HourlyBucket {
   hour: number;
@@ -37,7 +37,7 @@ const HOURS_TO_KEEP = 24;
 
 const connectorMetrics: Map<ConnectorName, ConnectorMetricsData> = new Map();
 
-const CONNECTORS: ConnectorName[] = ["gmail", "gemini", "xai", "database", "forms"];
+const CONNECTORS: ConnectorName[] = ["gmail", "gemini", "xai", "openai", "anthropic", "deepseek", "database", "forms"];
 
 function initializeConnector(connector: ConnectorName): ConnectorMetricsData {
   return {

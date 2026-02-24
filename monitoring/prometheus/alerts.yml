@@ -1,0 +1,131 @@
+groups:
+
+  - name: system-alerts
+
+    rules:
+
+      # CPU
+
+      - alert: HighCPUUsageWarning
+
+        expr: 100 * avg by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) > 90
+
+        for: 5m
+
+        labels:
+
+          severity: warning
+
+        annotations:
+
+          summary: "CPU alta ({{ $labels.instance }})"
+
+          description: "CPU promedio 5m: {{ printf \"%.1f\" $value }}% (>90%) por 5m."
+
+
+      - alert: HighCPUUsageCritical
+
+        expr: 100 * avg by (instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) > 97
+
+        for: 10m
+
+        labels:
+
+          severity: critical
+
+        annotations:
+
+          summary: "CPU crítica ({{ $labels.instance }})"
+
+          description: "CPU promedio 5m: {{ printf \"%.1f\" $value }}% (>97%) por 10m."
+
+
+      # RAM
+
+      - alert: HighMemoryUsageWarning
+
+        expr: 100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 90
+
+        for: 5m
+
+        labels:
+
+          severity: warning
+
+        annotations:
+
+          summary: "RAM alta ({{ $labels.instance }})"
+
+          description: "Uso RAM: {{ printf \"%.1f\" $value }}% (>90%) por 5m."
+
+
+      - alert: HighMemoryUsageCritical
+
+        expr: 100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 97
+
+        for: 10m
+
+        labels:
+
+          severity: critical
+
+        annotations:
+
+          summary: "RAM crítica ({{ $labels.instance }})"
+
+          description: "Uso RAM: {{ printf \"%.1f\" $value }}% (>97%) por 10m."
+
+
+      # Disco (por mountpoint, filtrando FS ruidosos)
+
+      - alert: LowDiskSpaceWarning
+
+        expr: 100 * (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/var/lib/docker/.+"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/var/lib/docker/.+"})) > 85
+
+        for: 10m
+
+        labels:
+
+          severity: warning
+
+        annotations:
+
+          summary: "Disco bajo ({{ $labels.instance }} {{ $labels.mountpoint }})"
+
+          description: "Uso disco: {{ printf \"%.1f\" $value }}% (>85%) por 10m."
+
+
+      - alert: LowDiskSpaceCritical
+
+        expr: 100 * (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/var/lib/docker/.+"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs",mountpoint!~"/var/lib/docker/.+"})) > 95
+
+        for: 10m
+
+        labels:
+
+          severity: critical
+
+        annotations:
+
+          summary: "Disco crítico ({{ $labels.instance }} {{ $labels.mountpoint }})"
+
+          description: "Uso disco: {{ printf \"%.1f\" $value }}% (>95%) por 10m."
+
+
+      # Host/exporter caído
+
+      - alert: InstanceDown
+
+        expr: up{job="node-exporter"} == 0
+
+        for: 2m
+
+        labels:
+
+          severity: critical
+
+        annotations:
+
+          summary: "Node exporter caído ({{ $labels.instance }})"
+
+          description: "No hay métricas del host por 2m. Puede ser caída del VPS o del exporter."

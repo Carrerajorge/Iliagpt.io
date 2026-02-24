@@ -1,0 +1,18 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Compiled N-API binary artifacts (except the prebuilt one if we keep it, but usually ignored)
+*.node
+
+# Debug logs
+*.log
+*.txt
+
+# Node modules (for NAPI build scripts)
+node_modules/
+package-lock.json
+
+# Exclude the prebuilt binary from being ignored, as it is currently committed for legacy reasons
+# If we transition to purely downloading it from CI, we can un-comment this.
+!iliagpt-native.node

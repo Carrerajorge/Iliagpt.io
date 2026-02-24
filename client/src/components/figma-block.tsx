@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Maximize2, Minimize2, Plus, Minus, ExternalLink, Copy, Check, RotateCcw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-type DiagramType = "flowchart" | "orgchart" | "mindmap";
+type DiagramType = "flowchart" | "orgchart" | "mindmap" | "sequence" | "network";
 
 interface FigmaNode {
   id: string;
@@ -85,13 +85,13 @@ export function FigmaBlock({ diagram, fileUrl }: FigmaBlockProps) {
 
   const contentBounds = useMemo(() => {
     const padding = 60;
-    
+
     if (diagram.nodes.length === 0) {
       return { minX: 0, minY: 0, maxX: 400, maxY: 200, width: 400, height: 200 };
     }
-    
+
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    
+
     diagram.nodes.forEach(node => {
       const dims = nodeDimensions[node.id] || { width: MIN_NODE_WIDTH, height: NODE_HEIGHT };
       minX = Math.min(minX, node.x);
@@ -99,7 +99,7 @@ export function FigmaBlock({ diagram, fileUrl }: FigmaBlockProps) {
       maxX = Math.max(maxX, node.x + dims.width);
       maxY = Math.max(maxY, node.y + dims.height);
     });
-    
+
     return {
       minX: minX - padding,
       minY: minY - padding,
@@ -114,12 +114,13 @@ export function FigmaBlock({ diagram, fileUrl }: FigmaBlockProps) {
   const handleZoomOut = () => setZoom(prev => Math.max(prev - 0.25, 0.5));
   const handleResetZoom = useCallback(() => setZoom(1), []);
 
+  // FRONTEND FIX #27: Add noopener,noreferrer to external links
   const handleEditInFigma = () => {
     if (fileUrl) {
-      window.open(fileUrl, '_blank');
+      window.open(fileUrl, '_blank', 'noopener,noreferrer');
     } else {
       // Open Figma new file page
-      window.open('https://www.figma.com/files/recents-and-sharing/recently-viewed', '_blank');
+      window.open('https://www.figma.com/files/recents-and-sharing/recently-viewed', '_blank', 'noopener,noreferrer');
       toast({
         title: "Abre Figma",
         description: "Crea un nuevo archivo de diseño y recrea el diagrama mostrado aquí.",
@@ -141,7 +142,7 @@ export function FigmaBlock({ diagram, fileUrl }: FigmaBlockProps) {
   const getNodePath = (node: FigmaNode) => {
     const dims = nodeDimensions[node.id] || { width: MIN_NODE_WIDTH, height: NODE_HEIGHT };
     const { width, height } = dims;
-    
+
     switch (node.type) {
       case "start":
       case "end":
@@ -184,21 +185,21 @@ export function FigmaBlock({ diagram, fileUrl }: FigmaBlockProps) {
   const renderConnection = (conn: FigmaConnection, index: number) => {
     const fromNode = diagram.nodes.find(n => n.id === conn.from);
     const toNode = diagram.nodes.find(n => n.id === conn.to);
-    
+
     if (!fromNode || !toNode) return null;
-    
+
     const isOrgChart = diagram.diagramType === "orgchart";
-    
+
     if (isOrgChart) {
       const fromAnchor = getNodeAnchor(fromNode, "bottom");
       const toAnchor = getNodeAnchor(toNode, "top");
       const midY = (fromAnchor.y + toAnchor.y) / 2;
-      
+
       const pathD = `M ${fromAnchor.x} ${fromAnchor.y} 
                      L ${fromAnchor.x} ${midY} 
                      L ${toAnchor.x} ${midY} 
                      L ${toAnchor.x} ${toAnchor.y}`;
-      
+
       return (
         <g key={`conn-${index}`}>
           <path
@@ -211,13 +212,13 @@ export function FigmaBlock({ diagram, fileUrl }: FigmaBlockProps) {
         </g>
       );
     }
-    
+
     const from = getNodeCenter(fromNode);
     const to = getNodeCenter(toNode);
-    
+
     const midX = (from.x + to.x) / 2;
     const midY = (from.y + to.y) / 2;
-    
+
     return (
       <g key={`conn-${index}`}>
         <defs>
@@ -282,7 +283,7 @@ export function FigmaBlock({ diagram, fileUrl }: FigmaBlockProps) {
     const maxLen = isOrgChart ? MAX_LABEL_LENGTH_ORGCHART : MAX_LABEL_LENGTH;
     const { text: displayText, isTruncated } = truncateLabel(node.label, maxLen);
     const style = getNodeStyle(node);
-    
+
     return (
       <g key={node.id}>
         {isTruncated && <title>{node.label}</title>}
@@ -313,11 +314,11 @@ export function FigmaBlock({ diagram, fileUrl }: FigmaBlockProps) {
       <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/30">
         <div className="flex items-center gap-2">
           <svg width="16" height="24" viewBox="0 0 38 57" fill="none">
-            <path d="M19 28.5C19 23.2533 23.2533 19 28.5 19C33.7467 19 38 23.2533 38 28.5C38 33.7467 33.7467 38 28.5 38C23.2533 38 19 33.7467 19 28.5Z" fill="#1ABCFE"/>
-            <path d="M0 47.5C0 42.2533 4.25329 38 9.5 38H19V47.5C19 52.7467 14.7467 57 9.5 57C4.25329 57 0 52.7467 0 47.5Z" fill="#0ACF83"/>
-            <path d="M19 0V19H28.5C33.7467 19 38 14.7467 38 9.5C38 4.25329 33.7467 0 28.5 0H19Z" fill="#FF7262"/>
-            <path d="M0 9.5C0 14.7467 4.25329 19 9.5 19H19V0H9.5C4.25329 0 0 4.25329 0 9.5Z" fill="#F24E1E"/>
-            <path d="M0 28.5C0 33.7467 4.25329 38 9.5 38H19V19H9.5C4.25329 19 0 23.2533 0 28.5Z" fill="#A259FF"/>
+            <path d="M19 28.5C19 23.2533 23.2533 19 28.5 19C33.7467 19 38 23.2533 38 28.5C38 33.7467 33.7467 38 28.5 38C23.2533 38 19 33.7467 19 28.5Z" fill="#1ABCFE" />
+            <path d="M0 47.5C0 42.2533 4.25329 38 9.5 38H19V47.5C19 52.7467 14.7467 57 9.5 57C4.25329 57 0 52.7467 0 47.5Z" fill="#0ACF83" />
+            <path d="M19 0V19H28.5C33.7467 19 38 14.7467 38 9.5C38 4.25329 33.7467 0 28.5 0H19Z" fill="#FF7262" />
+            <path d="M0 9.5C0 14.7467 4.25329 19 9.5 19H19V0H9.5C4.25329 0 0 4.25329 0 9.5Z" fill="#F24E1E" />
+            <path d="M0 28.5C0 33.7467 4.25329 38 9.5 38H19V19H9.5C4.25329 19 0 23.2533 0 28.5Z" fill="#A259FF" />
           </svg>
           <span className="text-sm font-medium">Figma</span>
         </div>
@@ -329,16 +330,16 @@ export function FigmaBlock({ diagram, fileUrl }: FigmaBlockProps) {
         </button>
       </div>
 
-      <div 
+      <div
         ref={containerRef}
         className="relative bg-[#f5f5f5] overflow-auto"
-        style={{ 
+        style={{
           backgroundImage: 'radial-gradient(circle, #ddd 1px, transparent 1px)',
           backgroundSize: '20px 20px',
           minHeight: isMaximized ? 'calc(100% - 100px)' : '350px'
         }}
       >
-        <svg 
+        <svg
           width="100%"
           height="100%"
           viewBox={`${contentBounds.minX} ${contentBounds.minY} ${contentBounds.width} ${contentBounds.height}`}
@@ -364,11 +365,11 @@ export function FigmaBlock({ diagram, fileUrl }: FigmaBlockProps) {
             data-testid="button-edit-figma"
           >
             <svg width="12" height="18" viewBox="0 0 38 57" fill="none">
-              <path d="M19 28.5C19 23.2533 23.2533 19 28.5 19C33.7467 19 38 23.2533 38 28.5C38 33.7467 33.7467 38 28.5 38C23.2533 38 19 33.7467 19 28.5Z" fill="#1ABCFE"/>
-              <path d="M0 47.5C0 42.2533 4.25329 38 9.5 38H19V47.5C19 52.7467 14.7467 57 9.5 57C4.25329 57 0 52.7467 0 47.5Z" fill="#0ACF83"/>
-              <path d="M19 0V19H28.5C33.7467 19 38 14.7467 38 9.5C38 4.25329 33.7467 0 28.5 0H19Z" fill="#FF7262"/>
-              <path d="M0 9.5C0 14.7467 4.25329 19 9.5 19H19V0H9.5C4.25329 0 0 4.25329 0 9.5Z" fill="#F24E1E"/>
-              <path d="M0 28.5C0 33.7467 4.25329 38 9.5 38H19V19H9.5C4.25329 19 0 23.2533 0 28.5Z" fill="#A259FF"/>
+              <path d="M19 28.5C19 23.2533 23.2533 19 28.5 19C33.7467 19 38 23.2533 38 28.5C38 33.7467 33.7467 38 28.5 38C23.2533 38 19 33.7467 19 28.5Z" fill="#1ABCFE" />
+              <path d="M0 47.5C0 42.2533 4.25329 38 9.5 38H19V47.5C19 52.7467 14.7467 57 9.5 57C4.25329 57 0 52.7467 0 47.5Z" fill="#0ACF83" />
+              <path d="M19 0V19H28.5C33.7467 19 38 14.7467 38 9.5C38 4.25329 33.7467 0 28.5 0H19Z" fill="#FF7262" />
+              <path d="M0 9.5C0 14.7467 4.25329 19 9.5 19H19V0H9.5C4.25329 0 0 4.25329 0 9.5Z" fill="#F24E1E" />
+              <path d="M0 28.5C0 33.7467 4.25329 38 9.5 38H19V19H9.5C4.25329 19 0 23.2533 0 28.5Z" fill="#A259FF" />
             </svg>
             Edit in Figma
             <ExternalLink className="h-3 w-3" />
@@ -421,19 +422,19 @@ export function parseFigmaDiagram(text: string): FigmaDiagram | null {
 
 export function generateFlowchartFromDescription(description: string): FigmaDiagram {
   const steps = description.split(/[,;]|\sy\s/).map(s => s.trim()).filter(s => s.length > 0);
-  
+
   const nodes: FigmaNode[] = [
     { id: "start", type: "start", label: "Inicio", x: 50, y: 175 }
   ];
-  
+
   const connections: FigmaConnection[] = [];
   let lastId = "start";
   let xPos = 200;
-  
+
   steps.forEach((step, index) => {
     const id = `step-${index}`;
     const isDecision = step.toLowerCase().includes("decisión") || step.toLowerCase().includes("decision") || step.includes("?");
-    
+
     nodes.push({
       id,
       type: isDecision ? "decision" : "process",
@@ -441,14 +442,14 @@ export function generateFlowchartFromDescription(description: string): FigmaDiag
       x: xPos,
       y: 175
     });
-    
+
     connections.push({ from: lastId, to: id });
     lastId = id;
     xPos += 150;
   });
-  
+
   nodes.push({ id: "end", type: "end", label: "Fin", x: xPos, y: 175 });
   connections.push({ from: lastId, to: "end" });
-  
+
   return { diagramType: "flowchart", nodes, connections };
 }

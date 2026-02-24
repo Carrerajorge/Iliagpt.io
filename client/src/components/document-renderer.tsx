@@ -1,4 +1,5 @@
 import React, { memo, useMemo, useState, useEffect, useRef, lazy, Suspense, useCallback, Component, type ReactNode, type ErrorInfo } from "react";
+import DOMPurify from "dompurify";
 import { cn } from "@/lib/utils";
 import { parseDocument, detectFormat, type DocumentFormat } from "@/lib/rstParser";
 import { Loader2, AlertTriangle, RefreshCw } from "lucide-react";
@@ -102,10 +103,20 @@ function splitIntoChunks(content: string, chunkSize: number): ContentChunk[] {
 }
 
 const RstContent = memo(function RstContent({ html, className }: { html: string; className?: string }) {
+  // FRONTEND FIX #4: Sanitize RST HTML content to prevent XSS
+  const sanitizedHtml = useMemo(() => DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'hr', 'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+                   'table', 'thead', 'tbody', 'tr', 'th', 'td', 'pre', 'code', 'blockquote', 'a', 'img',
+                   'strong', 'em', 'b', 'i', 'u', 'span', 'div', 'figure', 'figcaption', 'section', 'article'],
+    ALLOWED_ATTR: ['class', 'href', 'src', 'alt', 'title', 'id', 'name', 'target', 'rel'],
+    ADD_ATTR: ['target'],
+    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed'],
+  }), [html]);
+
   return (
-    <div 
+    <div
       className={cn("rst-content", className)}
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
       data-testid="rst-content"
     />
   );

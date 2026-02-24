@@ -11,8 +11,8 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { Download, FileText, FileJson, CheckCircle2 } from "lucide-react";
 import { Message } from "@/hooks/use-chats";
-import { format } from "date-fns";
-import { es } from "date-fns/locale";
+import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
+import { formatZonedDate, formatZonedDateTime, formatZonedTime, normalizeTimeZone, type PlatformDateFormat } from "@/lib/platformDateTime";
 
 interface ExportChatDialogProps {
   open: boolean;
@@ -29,6 +29,9 @@ export function ExportChatDialog({
   chatTitle,
   messages,
 }: ExportChatDialogProps) {
+  const { settings: platformSettings } = usePlatformSettings();
+  const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
+  const platformDateFormat = platformSettings.date_format;
   const [format, setFormat] = useState<ExportFormat>("txt");
   const [exported, setExported] = useState(false);
 
@@ -37,12 +40,12 @@ export function ExportChatDialog({
     let filename: string;
     let mimeType: string;
 
-    const timestamp = new Date().toISOString().split("T")[0];
+    const timestamp = formatZonedDate(new Date(), { timeZone: platformTimeZone, dateFormat: platformDateFormat }).replace(/\//g, "-");
     const safeTitle = chatTitle.replace(/[^a-zA-Z0-9]/g, "_").slice(0, 30);
 
     switch (format) {
       case "txt":
-        content = formatAsTxt(chatTitle, messages);
+        content = formatAsTxt(chatTitle, messages, { timeZone: platformTimeZone, dateFormat: platformDateFormat });
         filename = `${safeTitle}_${timestamp}.txt`;
         mimeType = "text/plain";
         break;
@@ -52,7 +55,7 @@ export function ExportChatDialog({
         mimeType = "application/json";
         break;
       case "md":
-        content = formatAsMarkdown(chatTitle, messages);
+        content = formatAsMarkdown(chatTitle, messages, { timeZone: platformTimeZone, dateFormat: platformDateFormat });
         filename = `${safeTitle}_${timestamp}.md`;
         mimeType = "text/markdown";
         break;
@@ -164,21 +167,16 @@ export function ExportChatDialog({
   );
 }
 
-function formatAsTxt(title: string, messages: Message[]): string {
+function formatAsTxt(title: string, messages: Message[], opts: { timeZone: string; dateFormat: PlatformDateFormat }): string {
   const lines: string[] = [];
   lines.push(`Conversación: ${title}`);
-  lines.push(`Exportado: ${new Date().toLocaleString("es-ES")}`);
+  lines.push(`Exportado: ${formatZonedDateTime(new Date(), { timeZone: opts.timeZone, dateFormat: opts.dateFormat })}`);
   lines.push("=".repeat(50));
   lines.push("");
 
   for (const msg of messages) {
     const role = msg.role === "user" ? "Tú" : "IliaGPT";
-    const time = msg.timestamp
-      ? new Date(msg.timestamp).toLocaleTimeString("es-ES", {
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-      : "";
+    const time = msg.timestamp ? formatZonedTime(msg.timestamp, { timeZone: opts.timeZone, includeSeconds: false }) : "";
     lines.push(`[${role}] ${time}`);
     lines.push(msg.content);
     lines.push("");
@@ -203,13 +201,11 @@ function formatAsJson(title: string, messages: Message[]): string {
   );
 }
 
-function formatAsMarkdown(title: string, messages: Message[]): string {
+function formatAsMarkdown(title: string, messages: Message[], opts: { timeZone: string; dateFormat: PlatformDateFormat }): string {
   const lines: string[] = [];
   lines.push(`# ${title}`);
   lines.push("");
-  lines.push(
-    `> Exportado: ${new Date().toLocaleString("es-ES")}`
-  );
+  lines.push(`> Exportado: ${formatZonedDateTime(new Date(), { timeZone: opts.timeZone, dateFormat: opts.dateFormat })}`);
   lines.push("");
   lines.push("---");
   lines.push("");

@@ -1,5 +1,11 @@
 import PptxGenJS from "pptxgenjs";
 import {
+  CORPORATE_PPT_DESIGN_SYSTEM,
+  CORPORATE_PPT_MASTER_NAME,
+  defineCorporateMaster,
+  generatePptDocument,
+} from "../services/documentGeneration";
+import {
   Document,
   Paragraph as DocxParagraph,
   TextRun,
@@ -148,71 +154,102 @@ export async function renderPresentation(
 ): Promise<{ buffer: Buffer; filename: string }> {
   try {
     const pptx = new PptxGenJS();
+    const safeTitle = sanitizePptText(spec.title).substring(0, 500) || "Presentación";
+    const safeAuthor = sanitizePptText(spec.author).substring(0, 200);
+    const safeLanguage = sanitizePptText(spec.metadata?.language).substring(0, 16);
 
-    // Set presentation metadata
-    pptx.title = spec.title;
-    if (spec.author) pptx.author = spec.author;
-    if (spec.metadata?.language) pptx.lang = spec.metadata.language;
+    pptx.layout = "LAYOUT_16x9";
+    pptx.title = safeTitle;
+    if (safeAuthor) pptx.author = safeAuthor;
+    if (safeLanguage) pptx.lang = safeLanguage;
+    defineCorporateMaster(pptx);
 
-    // Process each slide
-    for (const slideSpec of spec.slides) {
-      const slide = pptx.addSlide();
-      
-      // Apply background
-      if (slideSpec.background) {
-        if (slideSpec.background.color) {
-          slide.background = { color: slideSpec.background.color.replace("#", "") };
-        } else if (slideSpec.background.image) {
-          slide.background = { path: slideSpec.background.image };
-        } else if (slideSpec.background.gradient) {
-          const gradient = slideSpec.background.gradient;
-          slide.background = {
-            color: gradient.colors[0]?.replace("#", "") || "FFFFFF",
-          };
-        }
-      }
+    const safeSlides = spec.slides.length > 0
+      ? spec.slides
+      : [{
+          title: safeTitle,
+          layout: "title",
+          subtitle: "Sin contenido",
+          elements: [],
+        }];
 
-      // Apply slide layout title/subtitle
-      if (slideSpec.layout === "title" || slideSpec.layout === "title-content") {
-        slide.addText(slideSpec.title, {
-          x: 0.5,
-          y: slideSpec.layout === "title" ? 2 : 0.5,
-          w: 9,
-          h: 1.5,
-          fontSize: slideSpec.layout === "title" ? 44 : 32,
-          bold: true,
-          align: "center",
-          valign: "middle",
-        });
+    for (const slideSpec of safeSlides) {
+      const slide = pptx.addSlide({ masterName: CORPORATE_PPT_MASTER_NAME });
+      const safeSlideTitle = sanitizePptText(slideSpec.title).substring(0, 160) || "Diapositiva";
+      const safeSubtitle = sanitizePptText(slideSpec.subtitle).substring(0, 200);
+      const slideBg = slideSpec.background?.color || CORPORATE_PPT_DESIGN_SYSTEM.palette.bg;
 
-        if (slideSpec.subtitle) {
-          slide.addText(slideSpec.subtitle, {
+      slide.background = { color: normalizeHex(slideBg) };
+
+      try {
+        if (slideSpec.layout === "title" || slideSpec.layout === "title-content") {
+          slide.addText(safeSlideTitle, {
             x: 0.5,
-            y: slideSpec.layout === "title" ? 3.5 : 1.5,
+            y: slideSpec.layout === "title" ? 2 : 0.5,
             w: 9,
-            h: 0.75,
-            fontSize: 20,
+            h: 1.5,
+            fontSize: slideSpec.layout === "title" ? 44 : 32,
+            bold: true,
             align: "center",
             valign: "middle",
-            color: "666666",
+            fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.heading,
+            color: CORPORATE_PPT_DESIGN_SYSTEM.palette.text,
           });
+
+          if (safeSubtitle) {
+            slide.addText(safeSubtitle, {
+              x: 0.5,
+              y: slideSpec.layout === "title" ? 3.5 : 1.5,
+              w: 9,
+              h: 0.75,
+              fontSize: 20,
+              align: "center",
+              valign: "middle",
+              color: CORPORATE_PPT_DESIGN_SYSTEM.palette.muted,
+              fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
+            });
+          }
+        }
+
+        const sortedElements = [...(slideSpec.elements || [])].sort(
+          (a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0)
+        );
+        for (const element of sortedElements) {
+          await addSlideElement(slide, element);
+        }
+      } catch (slideError) {
+        console.warn(`[artifactRenderer] Falling back for slide "${safeSlideTitle}": ${slideError}`);
+        slide.addText(safeSlideTitle, {
+          x: 0.5,
+          y: 0.45,
+          w: 9,
+          h: 1,
+          fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.sectionTitle,
+          color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary,
+          bold: true,
+          fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.heading,
+        });
+        slide.addText("No se pudo renderizar esta diapositiva con el layout solicitado.", {
+          x: 0.5,
+          y: 1.75,
+          w: 9,
+          h: 3.5,
+          fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.body,
+          color: CORPORATE_PPT_DESIGN_SYSTEM.palette.text,
+          fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
+          valign: "top",
+        });
+      }
+      
+      // Apply background overrides
+      if (slideSpec.background) {
+        if (slideSpec.background.image) {
+          slide.background = { path: slideSpec.background.image };
+        } else if (slideSpec.background.gradient?.colors?.[0]) {
+          slide.background = { color: normalizeHex(slideSpec.background.gradient.colors[0]) };
         }
       }
 
-      // Process slide elements - sort by zIndex before rendering
-      const sortedElements = [...(slideSpec.elements || [])].sort(
-        (a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0)
-      );
-      for (const element of sortedElements) {
-        await addSlideElement(slide, element);
-      }
-
-      // Add speaker notes
-      if (slideSpec.notes) {
-        slide.addNotes(slideSpec.notes);
-      }
-
-      // Apply transition
       if (slideSpec.transition && slideSpec.transition.type !== "none") {
         const transitionMap: Record<string, string> = {
           fade: "fade",
@@ -229,17 +266,36 @@ export async function renderPresentation(
           speed: slideSpec.transition.duration < 500 ? "fast" : slideSpec.transition.duration > 1000 ? "slow" : "med",
         };
       }
+      if (slideSpec.notes) {
+        slide.addNotes(slideSpec.notes);
+      }
     }
 
     // Generate buffer
     const data = await pptx.write({ outputType: "nodebuffer" });
     const buffer = Buffer.from(data as ArrayBuffer);
     
-    const filename = sanitizeFilename(spec.title) + ".pptx";
+    const filename = sanitizeFilename(safeTitle) + ".pptx";
     
     return { buffer, filename };
   } catch (error) {
-    throw new Error(`Failed to render presentation: ${error instanceof Error ? error.message : String(error)}`);
+    const message = error instanceof Error ? error.message : String(error);
+    const safeTitle = sanitizePptText(spec.title).substring(0, 500) || "Presentación";
+    const fallback = await generatePptDocument(safeTitle, [{
+      title: "Fallback",
+      content: [
+        "No fue posible renderizar la presentación solicitada.",
+        `Error: ${sanitizePptText(message).substring(0, 220)}`,
+      ],
+    }], {
+      trace: {
+        source: "artifactRenderer",
+      },
+    });
+    return {
+      buffer: fallback,
+      filename: `${sanitizeFilename(safeTitle)}.pptx`,
+    };
   }
 }
 
@@ -295,19 +351,19 @@ async function addSlideElement(
     y,
     w,
     h,
-    fontSize: style?.fontSize || 18,
+    fontSize: style?.fontSize || CORPORATE_PPT_DESIGN_SYSTEM.sizes.body,
     bold: style?.bold || false,
     italic: style?.italic || false,
     underline: style?.underline ? { style: "sng" } : undefined,
     strike: style?.strikethrough || false,
-    color: style?.color?.replace("#", "") || "000000",
-    fontFace: style?.fontFamily || "Arial",
+    color: normalizeHex(style?.color || CORPORATE_PPT_DESIGN_SYSTEM.palette.text),
+    fontFace: style?.fontFamily || CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
     align: (style?.alignment as PptxGenJS.HAlign) || "left",
     valign: "middle",
   };
 
   if (style?.fill) {
-    textOptions.fill = { color: style.fill.replace("#", "") };
+    textOptions.fill = { color: normalizeHex(style.fill) };
   }
 
   if (style?.rotation) {
@@ -1058,6 +1114,17 @@ export async function renderArtifact(
 // ============================================
 // Utility Functions
 // ============================================
+
+function sanitizePptText(value: string | undefined): string {
+  return String(value || "")
+    .replace(/\0/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .trim();
+}
+
+function normalizeHex(value: string): string {
+  return String(value || "").trim().replace("#", "").toUpperCase();
+}
 
 function sanitizeFilename(name: string): string {
   return name

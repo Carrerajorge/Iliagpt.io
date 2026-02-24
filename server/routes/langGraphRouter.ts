@@ -254,7 +254,7 @@ export function createLangGraphRouter() {
           activeThreads: activeThreads.length,
           threads: activeThreads,
           toolsAvailable: ALL_TOOLS.length,
-          defaultModel: "grok-4-1-fast-non-reasoning",
+          defaultModel: "gemini-3.1-pro",
           framework: "LangGraph",
           version: "1.0.0",
         },

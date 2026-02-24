@@ -99,11 +99,12 @@ class ObservationCollector {
   }
 
   async extractTable(sessionId: string, tableSelector: string): Promise<string[][]> {
+    const safeSelector = JSON.stringify(tableSelector);
     const result = await browserSessionManager.evaluate(sessionId, `
       (function() {
-        const table = document.querySelector('${tableSelector}');
+        const table = document.querySelector(${safeSelector});
         if (!table) return [];
-        
+
         const rows = [];
         table.querySelectorAll('tr').forEach(tr => {
           const cells = [];
@@ -120,11 +121,12 @@ class ObservationCollector {
   }
 
   async extractList(sessionId: string, listSelector: string): Promise<string[]> {
+    const safeSelector = JSON.stringify(listSelector);
     const result = await browserSessionManager.evaluate(sessionId, `
       (function() {
-        const list = document.querySelector('${listSelector}');
+        const list = document.querySelector(${safeSelector});
         if (!list) return [];
-        
+
         return Array.from(list.querySelectorAll('li')).map(li => li.textContent?.trim() || '');
       })()
     `);

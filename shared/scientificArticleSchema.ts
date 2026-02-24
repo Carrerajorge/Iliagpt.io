@@ -165,9 +165,9 @@ export function generateAPA7Citation(article: ScientificArticle): string {
   }
   
   if (doi) {
-    citation += ` ${doi}`;
+    citation += ` 🔗 ${doi}`;
   }
-  
+
   return citation;
 }
 
@@ -180,7 +180,7 @@ function formatAuthorsAPA7(authors: Author[]): string {
     if (author.lastName && author.firstName) {
       const initials = author.firstName
         .split(/\s+/)
-        .map(name => name.charAt(0).toUpperCase() + ".")
+        .map((name: string) => name.charAt(0).toUpperCase() + ".")
         .join(" ");
       return `${author.lastName}, ${initials}`;
     }
@@ -222,12 +222,12 @@ export function formatArticleForDisplay(article: ScientificArticle): {
 } {
   return {
     title: article.title,
-    authors: article.authors.map(a => a.fullName || `${a.firstName} ${a.lastName}`).join(", "),
+    authors: article.authors.map((a: Author) => a.fullName || `${a.firstName} ${a.lastName}`).join(", "),
     journal: article.journal?.title || "N/A",
     year: article.year?.toString() || "N/A",
     citationCount: article.citationCount?.toString() || "N/A",
     doi: article.doi || "N/A",
-    url: article.url || (article.doi ? `https://doi.org/${article.doi}` : "N/A"),
+    url: article.url ? `🔗 ${article.url}` : (article.doi ? `🔗 https://doi.org/${article.doi}` : "N/A"),
     abstract: article.abstract || "No disponible",
     keywords: article.keywords?.join(", ") || "N/A",
     source: article.source,

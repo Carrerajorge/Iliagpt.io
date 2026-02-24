@@ -1,11 +1,6 @@
-import mammoth from "mammoth";
-import ExcelJS from "exceljs";
-import * as XLSX from "xlsx";
-import * as pdfParse from "pdf-parse";
-import officeParser from "officeparser";
-import { ocrService } from "./services/ocrService";
+import mammoth from "mammoth"; import ExcelJS from "exceljs"; import * as XLSX from "xlsx"; import officeParser from "officeparser"; import { ocrService } from 
+"./services/ocrService"; import { sanitizePlainText } from "./lib/textSanitizers";
 
-const pdf = (pdfParse as any).default || pdfParse;
 
 export interface ExtractTextResult {
   text: string;
@@ -106,7 +101,7 @@ export async function extractText(content: Buffer, mimeType: string): Promise<st
 
   if (mimeType === "text/html") {
     const html = content.toString("utf-8");
-    return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    return sanitizePlainText(html, { maxLen: 5_000_000, collapseWs: true });
   }
 
   if (mimeType === "application/rtf" || mimeType === "text/rtf") {
@@ -134,9 +129,13 @@ export async function extractText(content: Buffer, mimeType: string): Promise<st
 
   if (mimeType === "application/pdf") {
     try {
+      // Lazy import para que no crashee el boot por pdf-parse/canvas
+      const mod: any = await import("pdf-parse");
+      const pdf = mod.default ?? mod;
+
       const data = await pdf(content);
       const extractedText = data.text || "";
-      
+
       if (ocrService.isScannedDocument(content, mimeType, extractedText)) {
         try {
           const ocrResult = await ocrService.extractTextWithOCRFallback(
@@ -150,13 +149,14 @@ export async function extractText(content: Buffer, mimeType: string): Promise<st
           return extractedText;
         }
       }
-      
+
       return extractedText;
     } catch (error) {
       console.error("Error parsing PDF:", error);
       throw new Error("Failed to parse PDF");
     }
   }
+
 
   if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
     try {

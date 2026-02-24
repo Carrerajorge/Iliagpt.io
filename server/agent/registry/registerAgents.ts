@@ -59,10 +59,10 @@ function registerOrchestratorAgent(): void {
 
   const agent = createAgent(config, async (task, tools) => {
     const startTime = Date.now();
-    
+
     try {
       const planResult = await tools.execute("plan", { goal: task.description });
-      
+
       return {
         taskId: task.id,
         agentId: crypto.randomUUID(),
@@ -89,18 +89,19 @@ function registerOrchestratorAgent(): void {
 
 function registerResearchAgent(): void {
   const config: AgentConfig = {
-    name: "ResearchAgent",
+    name: "ResearchAssistantAgent",
     description: "Specializes in web research, information gathering, fact-checking, and knowledge synthesis",
     role: "Research",
     model: "grok-4-1-fast-non-reasoning",
     temperature: 0.5,
     maxTokens: 8192,
-    systemPrompt: `You are the Research Agent. Your role is to:
+    systemPrompt: `You are the Research Assistant Agent. Your role is to:
 1. Search and gather information from multiple sources
 2. Verify facts and cross-reference information
 3. Synthesize findings into coherent summaries
-4. Identify knowledge gaps and suggest follow-up research`,
-    tools: ["web_search", "browse_url", "extract_content", "text_summarize", "verify", "memory_store", "memory_retrieve"],
+4. Identify knowledge gaps and suggest follow-up research
+5. Create research reports and summaries`,
+    tools: ["web_search", "browse_url", "extract_content", "text_summarize", "verify", "memory_store", "memory_retrieve", "document_create"],
     capabilities: [
       {
         name: "web_research",
@@ -124,13 +125,13 @@ function registerResearchAgent(): void {
 
   const agent = createAgent(config, async (task, tools) => {
     const startTime = Date.now();
-    
+
     try {
-      const searchResult = await tools.execute("web_search", { 
-        query: task.description, 
-        maxResults: 5 
+      const searchResult = await tools.execute("web_search", {
+        query: task.description,
+        maxResults: 5
       });
-      
+
       return {
         taskId: task.id,
         agentId: crypto.randomUUID(),
@@ -193,13 +194,13 @@ function registerCodeAgent(): void {
 
   const agent = createAgent(config, async (task, tools) => {
     const startTime = Date.now();
-    
+
     try {
       const codeResult = await tools.execute("code_generate", {
         language: task.input.language || "javascript",
         description: task.description,
       });
-      
+
       return {
         taskId: task.id,
         agentId: crypto.randomUUID(),
@@ -226,19 +227,20 @@ function registerCodeAgent(): void {
 
 function registerDataAgent(): void {
   const config: AgentConfig = {
-    name: "DataAgent",
+    name: "DataAnalystAgent",
     description: "Specializes in data processing, analysis, visualization, and database operations",
     role: "Data",
     model: "grok-4-1-fast-non-reasoning",
     temperature: 0.3,
     maxTokens: 8192,
-    systemPrompt: `You are the Data Agent. Your role is to:
+    systemPrompt: `You are the Data Analyst Agent. Your role is to:
 1. Transform and clean data
 2. Perform statistical analysis
 3. Create visualizations and charts
 4. Query and manage databases
-5. Process various data formats (JSON, CSV, Excel)`,
-    tools: ["data_transform", "data_visualize", "json_parse", "csv_parse", "statistics_compute", "spreadsheet_analyze", "db_query", "db_schema"],
+5. Process various data formats (JSON, CSV, Excel)
+6. Generate spreadsheets and reports`,
+    tools: ["data_transform", "data_visualize", "json_parse", "csv_parse", "statistics_compute", "spreadsheet_analyze", "spreadsheet_create", "db_query", "db_schema"],
     capabilities: [
       {
         name: "data_analysis",
@@ -262,13 +264,13 @@ function registerDataAgent(): void {
 
   const agent = createAgent(config, async (task, tools) => {
     const startTime = Date.now();
-    
+
     try {
       const transformResult = await tools.execute("data_transform", {
         data: task.input.data || [],
         operations: ["analyze"],
       });
-      
+
       return {
         taskId: task.id,
         agentId: crypto.randomUUID(),
@@ -331,13 +333,13 @@ function registerContentAgent(): void {
 
   const agent = createAgent(config, async (task, tools) => {
     const startTime = Date.now();
-    
+
     try {
       const contentResult = await tools.execute("text_generate", {
         prompt: task.description,
         maxTokens: 1024,
       });
-      
+
       return {
         taskId: task.id,
         agentId: crypto.randomUUID(),
@@ -400,14 +402,14 @@ function registerCommunicationAgent(): void {
 
   const agent = createAgent(config, async (task, tools) => {
     const startTime = Date.now();
-    
+
     try {
       const messageResult = await tools.execute("message_compose", {
         platform: "generic",
         content: task.description,
         format: "plain",
       });
-      
+
       return {
         taskId: task.id,
         agentId: crypto.randomUUID(),
@@ -470,13 +472,13 @@ function registerBrowserAgent(): void {
 
   const agent = createAgent(config, async (task, tools) => {
     const startTime = Date.now();
-    
+
     try {
       const browseResult = await tools.execute("browse_url", {
         url: task.input.url || "https://example.com",
         action: "extract",
       });
-      
+
       return {
         taskId: task.id,
         agentId: crypto.randomUUID(),
@@ -539,14 +541,14 @@ function registerDocumentAgent(): void {
 
   const agent = createAgent(config, async (task, tools) => {
     const startTime = Date.now();
-    
+
     try {
       const docResult = await tools.execute("document_create", {
         type: task.input.type || "docx",
         title: task.input.title || "Document",
         content: task.description,
       });
-      
+
       return {
         taskId: task.id,
         agentId: crypto.randomUUID(),
@@ -609,13 +611,13 @@ function registerQAAgent(): void {
 
   const agent = createAgent(config, async (task, tools) => {
     const startTime = Date.now();
-    
+
     try {
       const verifyResult = await tools.execute("verify", {
         claim: task.description,
         evidence: [],
       });
-      
+
       return {
         taskId: task.id,
         agentId: crypto.randomUUID(),
@@ -678,13 +680,13 @@ function registerSecurityAgent(): void {
 
   const agent = createAgent(config, async (task, tools) => {
     const startTime = Date.now();
-    
+
     try {
       const scanResult = await tools.execute("security_scan", {
         target: task.input.target || "code",
         scanType: "code",
       });
-      
+
       return {
         taskId: task.id,
         agentId: crypto.randomUUID(),

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ILIAGPT Extension</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      width: 320px;
+      margin: 0;
+      padding: 0;
+      background-color: #1a1a1b; /* Minimalist dark mode */
+      color: #e5e7eb;
+    }
+    .container {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status {
+      font-size: 13px;
+      color: #9ca3af;
+      margin-top: -8px;
+    }
+    .status.connected {
+      color: #10b981;
+    }
+    .btn {
+      background-color: #ffffff;
+      color: #000000;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    .btn:hover {
+      background-color: #e5e5e5;
+    }
+    .btn-secondary {
+      background-color: #374151;
+      color: #ffffff;
+    }
+    .btn-secondary:hover {
+      background-color: #4b5563;
+    }
+    .footer {
+      margin-top: 8px;
+      font-size: 11px;
+      color: #6b7280;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+      </svg>
+      ILIAGPT Bridge
+    </h2>
+    <div class="status connected" id="connectionStatus">● Connected to desktop</div>
+    
+    <p style="font-size: 13px; color: #d1d5db; margin: 0;">
+      Extensión habilitada para permitir que el agente autónomo controle y extraiga información de esta pestaña.
+    </p>
+
+    <button class="btn" id="openPlatformBtn">Open Platform</button>
+    <button class="btn btn-secondary" id="extractBtn">Manually Extract Page</button>
+    
+    <div class="footer">
+      Version <span id="versionLabel">1.5.0</span> • Secure Bridge Mode
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

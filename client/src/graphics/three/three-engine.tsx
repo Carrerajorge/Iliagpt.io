@@ -117,7 +117,7 @@ export const ThreeEngine = React.forwardRef<ThreeEngineRef | CanvasEngineRef, Th
     }
 
     return (
-      <ThreeJSErrorBoundary onError={(err) => console.error('ThreeJS Error:', err)}>
+      <ThreeJSErrorBoundary>
         <Suspense fallback={<LoadingState width={width} height={height} />}>
           <ThreeEngineImpl
             ref={ref as React.Ref<ThreeEngineRef>}

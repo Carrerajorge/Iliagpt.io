@@ -134,29 +134,32 @@ export class ConcurrencyPool<T> extends EventEmitter {
   private async executeTask(task: PoolTask<T>, retryCount = 0): Promise<PoolResult<T>> {
     const startTime = Date.now();
     const timeout = task.timeout || this.options.defaultTimeout;
-    
+
+    let timeoutTimer: ReturnType<typeof setTimeout>;
     try {
       const result = await Promise.race([
         task.execute(),
         new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("Task timeout")), timeout);
+          timeoutTimer = setTimeout(() => reject(new Error("Task timeout")), timeout);
         }),
       ]);
-      
+      clearTimeout(timeoutTimer!);
+
       const poolResult: PoolResult<T> = {
         id: task.id,
         success: true,
         result,
         durationMs: Date.now() - startTime,
       };
-      
+
       this.results.set(task.id, poolResult);
       this.completedCount++;
       this.emit("result", poolResult);
       this.emit("progress", { completed: this.completedCount, total: this.totalTasks });
-      
+
       return poolResult;
     } catch (error) {
+      clearTimeout(timeoutTimer!);
       const errorMessage = error instanceof Error ? error.message : String(error);
       
       if (

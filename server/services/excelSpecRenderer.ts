@@ -1,9 +1,24 @@
-import ExcelJS from "exceljs";
+import * as ExcelJSModule from "exceljs";
+const ExcelJS = ExcelJSModule.default || ExcelJSModule;
 import type { ExcelSpec, TableSpec, ChartSpec, SheetLayoutSpec, HeaderStyle } from "../../shared/documentSpecs";
 import { tokenizeMarkdown, hasMarkdown, RichTextToken } from "./richText/markdownTokenizer";
 import { formatLatexForExcel } from "./richText/latexToImage";
 
-const FORMULA_PREFIXES = ["=", "+", "-", "@"];
+// Security: complete list of formula injection prefixes (CSV injection / DDE attacks)
+const FORMULA_PREFIXES = ["=", "+", "-", "@", "\t", "\r", "|", "\\"];
+
+// Security limits
+const MAX_SHEETS = 50;
+const MAX_TABLE_ROWS = 100_000;
+const MAX_TABLE_COLUMNS = 500;
+const MAX_CELL_LENGTH = 32_767; // Excel cell limit
+const MAX_CELL_REF_COL_LETTERS = 3; // Max 3 column letters (XFD = max Excel column)
+const MAX_CELL_REF_ROW = 1_048_576; // Max Excel row
+
+/** Validate a hex color string (6-char hex without #) */
+function isValidHexColor(color: string): boolean {
+  return /^[0-9A-Fa-f]{6}$/.test(color.replace(/^#/, ""));
+}
 
 interface ExcelRichTextRun {
   text: string;
@@ -60,12 +75,24 @@ const MIN_COL_WIDTH = 8;
 const MAX_COL_WIDTH = 60;
 
 function parseCellReference(ref: string): { col: number; row: number } {
-  const match = ref.match(/^([A-Z]+)(\d+)$/i);
+  // Security: validate cell reference format with bounded length
+  const safeRef = String(ref).trim().substring(0, 20);
+  const match = safeRef.match(/^([A-Z]+)(\d+)$/i);
   if (!match) {
-    throw new Error(`Invalid cell reference: ${ref}`);
+    throw new Error(`Invalid cell reference: ${safeRef}`);
   }
   const colLetters = match[1].toUpperCase();
-  const row = parseInt(match[2], 10);
+  const rowStr = match[2];
+
+  // Security: limit column letters and row number to prevent abuse
+  if (colLetters.length > MAX_CELL_REF_COL_LETTERS) {
+    throw new Error(`Cell reference column exceeds maximum: ${colLetters}`);
+  }
+  const row = parseInt(rowStr, 10);
+  if (row < 1 || row > MAX_CELL_REF_ROW || !Number.isFinite(row)) {
+    throw new Error(`Cell reference row out of range: ${row}`);
+  }
+
   let col = 0;
   for (let i = 0; i < colLetters.length; i++) {
     col = col * 26 + (colLetters.charCodeAt(i) - 64);
@@ -125,15 +152,22 @@ let tableCounter = 0;
 
 export async function renderExcelFromSpec(spec: ExcelSpec): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "Sira GPT";
+  // Security: generic creator metadata
+  workbook.creator = "Document Generator";
+  workbook.lastModifiedBy = "";
+  workbook.company = "";
+  workbook.manager = "";
   workbook.created = new Date();
   tableCounter = 0;
 
   if (spec.workbook_title) {
-    workbook.title = spec.workbook_title;
+    workbook.title = String(spec.workbook_title).substring(0, 500);
   }
 
-  for (const sheetSpec of spec.sheets) {
+  // Security: limit number of sheets
+  const sheets = (spec.sheets || []).slice(0, MAX_SHEETS);
+
+  for (const sheetSpec of sheets) {
     const sheetName = sheetSpec.name.replace(/[\\/:*?\[\]]/g, "").slice(0, 31) || "Sheet";
     const worksheet = workbook.addWorksheet(sheetName);
 
@@ -156,7 +190,17 @@ function renderTable(worksheet: ExcelJS.Worksheet, table: TableSpec): void {
   const anchor = parseCellReference(table.anchor);
   const startRow = anchor.row;
   const startCol = anchor.col;
-  
+
+  // Security: enforce column and row limits
+  if (table.headers.length > MAX_TABLE_COLUMNS) {
+    console.warn(`[ExcelRenderer] Table has ${table.headers.length} columns, truncating to ${MAX_TABLE_COLUMNS}`);
+    table.headers = table.headers.slice(0, MAX_TABLE_COLUMNS);
+  }
+  if (table.rows && table.rows.length > MAX_TABLE_ROWS) {
+    console.warn(`[ExcelRenderer] Table has ${table.rows.length} rows, truncating to ${MAX_TABLE_ROWS}`);
+    table.rows = table.rows.slice(0, MAX_TABLE_ROWS);
+  }
+
   const endCol = startCol + table.headers.length - 1;
   const endRow = startRow + (table.rows?.length || 0);
   
@@ -254,11 +298,15 @@ function applyHeaderStyle(
     }
 
     if (style.fill_color) {
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: `FF${style.fill_color.replace(/^#/, "")}` },
-      };
+      const cleanColor = String(style.fill_color).replace(/^#/, "");
+      // Security: validate color is a valid hex value
+      if (isValidHexColor(cleanColor)) {
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: `FF${cleanColor}` },
+        };
+      }
     }
 
     const alignmentOptions: Partial<ExcelJS.Alignment> = {};

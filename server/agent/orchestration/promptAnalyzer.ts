@@ -266,14 +266,16 @@ export class PromptAnalyzer extends EventEmitter {
         }
       }
 
-      const deliverables = llmDeliverables.length > 0 
-        ? llmDeliverables 
+      const deliverables = llmDeliverables.length > 0
+        ? llmDeliverables
         : await this.extractDeliverables(message, enhancedIntent);
+      const normalizedDeliverables = this.normalizeDeliverables(deliverables);
+      const dedupedDeliverables = this.dedupeDeliverables(normalizedDeliverables);
       
-      this.emitEvent("deliverables_extracted", { 
+      this.emitEvent("deliverables_extracted", {
         analysisId, 
-        count: deliverables.length,
-        types: deliverables.map(d => d.type)
+        count: dedupedDeliverables.length,
+        types: dedupedDeliverables.map(d => d.type)
       });
 
       const memoryContext = await this.hydrateMemory(
@@ -287,14 +289,34 @@ export class PromptAnalyzer extends EventEmitter {
         actionsCount: memoryContext.previousActions.length
       });
 
-      const complexity = this.assessComplexity(message, deliverables, memoryContext);
-      const suggestedAgents = this.determineSuggestedAgents(enhancedIntent, deliverables, complexity);
+      const multiIntent = this.detectMultiIntent(message);
+      const attachmentSummary = this.summarizeAttachments(validatedContext.attachments);
+      const clarificationsNeeded = this.detectMissingRequirements(message, dedupedDeliverables);
+      const complexity = this.assessComplexity(message, dedupedDeliverables, memoryContext, {
+        attachmentCount: attachmentSummary.count,
+        hasExtractedContent: attachmentSummary.hasExtractedContent,
+        isMultiIntent: multiIntent.isMultiIntent
+      });
+      const suggestedAgents = this.determineSuggestedAgents(
+        enhancedIntent,
+        dedupedDeliverables,
+        complexity,
+        clarificationsNeeded.length > 0
+      );
+      const executionHints = this.buildExecutionHints({
+        complexity,
+        deliverables: dedupedDeliverables,
+        hasAttachments: attachmentSummary.count > 0,
+        clarificationsCount: clarificationsNeeded.length,
+        multiIntent,
+        memoryContext
+      });
 
       const analysisResult: AnalysisResult = {
         id: analysisId,
         intent: enhancedIntent,
         intentConfidence: enhancedConfidence,
-        deliverables,
+        deliverables: dedupedDeliverables,
         complexity,
         suggestedAgents,
         primaryAgent: suggestedAgents[0],
@@ -305,6 +327,13 @@ export class PromptAnalyzer extends EventEmitter {
         metadata: {
           hasAttachments,
           attachmentCount: validatedContext.attachments.length,
+          attachmentSummary,
+          multiIntent,
+          clarificationsNeeded,
+          requiresClarification: clarificationsNeeded.length > 0,
+          executionHints,
+          deliverablesRawCount: deliverables.length,
+          deliverablesDedupedCount: dedupedDeliverables.length,
           messageLength: message.length,
           analysisTimeMs: Date.now() - startTime
         }
@@ -732,7 +761,12 @@ export class PromptAnalyzer extends EventEmitter {
   private assessComplexity(
     message: string,
     deliverables: DeliverableSpec[],
-    memoryContext: MemoryContext
+    memoryContext: MemoryContext,
+    signals?: {
+      attachmentCount: number;
+      hasExtractedContent: boolean;
+      isMultiIntent: boolean;
+    }
   ): ComplexityLevel {
     for (const [level, patterns] of Object.entries(COMPLEXITY_KEYWORDS) as [ComplexityLevel, RegExp[]][]) {
       for (const pattern of patterns) {
@@ -755,6 +789,9 @@ export class PromptAnalyzer extends EventEmitter {
     if (hasHighComplexityDeliverable) return "complex";
 
     if (memoryContext.previousActions.length > 5) return "moderate";
+    if (signals?.isMultiIntent && message.length > 120) return "complex";
+    if (signals?.attachmentCount && signals.attachmentCount > 0) return "moderate";
+    if (signals?.hasExtractedContent && message.length > 200) return "moderate";
 
     if (message.length < 50) return "simple";
     if (message.length > 500) return "moderate";
@@ -762,10 +799,122 @@ export class PromptAnalyzer extends EventEmitter {
     return "moderate";
   }
 
+  private normalizeDeliverables(deliverables: DeliverableSpec[]): DeliverableSpec[] {
+    return deliverables.map(deliverable => ({
+      ...deliverable,
+      format: deliverable.format || this.getDefaultFormat(deliverable.type),
+      requirements: Array.from(new Set(deliverable.requirements || []))
+    }));
+  }
+
+  private dedupeDeliverables(deliverables: DeliverableSpec[]): DeliverableSpec[] {
+    const seen = new Set<string>();
+    const result: DeliverableSpec[] = [];
+
+    for (const deliverable of deliverables) {
+      const key = `${deliverable.type}:${deliverable.format ?? "default"}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push(deliverable);
+      }
+    }
+
+    return result;
+  }
+
+  private detectMultiIntent(message: string): {
+    isMultiIntent: boolean;
+    segments: string[];
+    separators: string[];
+  } {
+    const separatorRegex = /\s+(?:y|and|adem[aá]s|tambi[eé]n|also|plus)\s+|[;\n]+/gi;
+    const separators = message.match(separatorRegex)?.map(s => s.trim()).filter(Boolean) || [];
+    const segments = message
+      .split(separatorRegex)
+      .map(segment => segment.trim())
+      .filter(segment => segment.length >= 12);
+
+    return {
+      isMultiIntent: segments.length >= 2,
+      segments,
+      separators
+    };
+  }
+
+  private summarizeAttachments(attachments: AttachmentSpec[]): {
+    count: number;
+    totalSize: number;
+    types: Record<string, number>;
+    hasExtractedContent: boolean;
+  } {
+    const summary = {
+      count: attachments.length,
+      totalSize: 0,
+      types: {} as Record<string, number>,
+      hasExtractedContent: false
+    };
+
+    for (const attachment of attachments) {
+      summary.totalSize += attachment.size || 0;
+      summary.types[attachment.mimeType] = (summary.types[attachment.mimeType] || 0) + 1;
+      if (attachment.extractedContent) {
+        summary.hasExtractedContent = true;
+      }
+    }
+
+    return summary;
+  }
+
+  private detectMissingRequirements(message: string, deliverables: DeliverableSpec[]): string[] {
+    const clarifications: string[] = [];
+    const hasLengthSignal = /\b(\d+\s*(p[aá]ginas?|pages?|slides?|diapositivas?|secciones?|sections?|filas|rows|columnas|columns))\b/i.test(message);
+    const hasAudienceSignal = /\b(p[úu]blico|audiencia|cliente|stakeholders|directivos|equipo|team)\b/i.test(message);
+    const hasLanguageSignal = /\b(espa[nñ]ol|ingl[eé]s|english|spanish)\b/i.test(message);
+
+    for (const deliverable of deliverables) {
+      if (["document", "presentation", "spreadsheet"].includes(deliverable.type) && !hasLengthSignal) {
+        clarifications.push(`Define alcance/longitud para ${deliverable.type}`);
+      }
+      if (deliverable.type === "document" && !hasAudienceSignal) {
+        clarifications.push("Indicar audiencia objetivo para el documento");
+      }
+      if (!hasLanguageSignal) {
+        clarifications.push("Especificar idioma de salida");
+      }
+    }
+
+    return Array.from(new Set(clarifications));
+  }
+
+  private buildExecutionHints(input: {
+    complexity: ComplexityLevel;
+    deliverables: DeliverableSpec[];
+    hasAttachments: boolean;
+    clarificationsCount: number;
+    multiIntent: { isMultiIntent: boolean; segments: string[] };
+    memoryContext: MemoryContext;
+  }): Record<string, any> {
+    const requiresDecomposition = input.multiIntent.isMultiIntent || input.deliverables.length > 1;
+    const requiresVerification = ["moderate", "complex", "expert"].includes(input.complexity);
+    const requiresTools = input.hasAttachments || input.deliverables.some(d => ["research", "data_analysis", "code"].includes(d.type));
+    const requiresMemory = input.memoryContext.facts.length > 0 || input.memoryContext.previousActions.length > 0;
+    const shouldClarify = input.clarificationsCount > 0;
+
+    return {
+      requiresDecomposition,
+      requiresVerification,
+      requiresTools,
+      requiresMemory,
+      shouldClarify,
+      deliverableTypes: input.deliverables.map(d => d.type)
+    };
+  }
+
   private determineSuggestedAgents(
     intent: IntentType,
     deliverables: DeliverableSpec[],
-    complexity: ComplexityLevel
+    complexity: ComplexityLevel,
+    needsClarification: boolean
   ): SpecializedAgent[] {
     const baseAgents = [...INTENT_TO_AGENTS[intent]];
     
@@ -785,10 +934,17 @@ export class PromptAnalyzer extends EventEmitter {
       if (deliverable.type === "data_analysis" && !baseAgents.includes("data")) {
         baseAgents.push("data");
       }
+      if (["document", "presentation", "spreadsheet"].includes(deliverable.type) && !baseAgents.includes("document")) {
+        baseAgents.push("document");
+      }
     }
 
     if (!baseAgents.includes("qa") && complexity !== "trivial" && complexity !== "simple") {
       baseAgents.push("qa");
+    }
+
+    if (needsClarification && !baseAgents.includes("communication")) {
+      baseAgents.push("communication");
     }
 
     return baseAgents.slice(0, 5) as SpecializedAgent[];

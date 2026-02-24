@@ -5,7 +5,7 @@ import { retrievalMetrics } from "../agent/webtool/retrievalMetrics";
 import { isAuthenticated } from "../replit_integrations/auth/replitAuth";
 import { authStorage } from "../replit_integrations/auth/storage";
 import { storage } from "../storage";
-import { createRateLimiter } from "../middleware/rateLimiter";
+import { createCustomRateLimiter } from "../middleware/userRateLimiter";
 import {
   v2MetricsCollector,
   domainCircuitBreaker,
@@ -51,7 +51,7 @@ class RetrievalErrorTracker {
   recordError(domain: string, errorType: ErrorTrackingEntry["errorType"]): void {
     const key = `${domain}:${errorType}`;
     const existing = this.errors.get(key);
-    
+
     if (existing) {
       existing.count++;
       existing.lastOccurred = Date.now();
@@ -60,7 +60,7 @@ class RetrievalErrorTracker {
         const oldestKey = this.findOldestEntry();
         if (oldestKey) this.errors.delete(oldestKey);
       }
-      
+
       this.errors.set(key, {
         domain,
         errorType,
@@ -73,14 +73,14 @@ class RetrievalErrorTracker {
   private findOldestEntry(): string | null {
     let oldestKey: string | null = null;
     let oldestTime = Infinity;
-    
+
     for (const [key, entry] of this.errors.entries()) {
       if (entry.lastOccurred < oldestTime) {
         oldestTime = entry.lastOccurred;
         oldestKey = key;
       }
     }
-    
+
     return oldestKey;
   }
 
@@ -173,7 +173,7 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
 export function createRetrievalAdminRouter(): Router {
   const router = Router();
 
-  const v2StatusRateLimiter = createRateLimiter({
+  const v2StatusRateLimiter = createCustomRateLimiter({
     windowMs: 60000,
     maxRequests: 10,
     keyPrefix: "retrieval-v2-status",
@@ -209,9 +209,9 @@ export function createRetrievalAdminRouter(): Router {
         const avgLatencyMs =
           allPhasesCounts > 0
             ? Object.values(phasePercentiles).reduce(
-                (sum, p) => sum + p.avg * p.count,
-                0
-              ) / allPhasesCounts
+              (sum, p) => sum + p.avg * p.count,
+              0
+            ) / allPhasesCounts
             : 0;
 
         const openCircuits = domainCircuitBreaker.getAllOpenCircuits();
@@ -307,7 +307,7 @@ export function createRetrievalAdminRouter(): Router {
       const methodBreakdown = retrievalMetrics.getMethodBreakdown();
       const rawErrorSummary = retrievalErrorTracker.getSummary(windowMs);
       const latencyHistogram = retrievalMetrics.getLatencyHistogram();
-      
+
       const errorSummary = {
         ...rawErrorSummary,
         topErrorDomains: rawErrorSummary.topErrorDomains.map(e => ({
@@ -354,7 +354,7 @@ export function createRetrievalAdminRouter(): Router {
         errorType: error instanceof Error ? error.constructor.name : "Unknown",
         message: error instanceof Error ? error.message : "Unknown error",
       });
-      res.status(500).json({ 
+      res.status(500).json({
         error: "Failed to fetch retrieval status",
       });
     }

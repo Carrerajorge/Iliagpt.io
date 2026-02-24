@@ -14,8 +14,8 @@ import type {
   ParserTaskResult, 
   WorkerMessageToWorker, 
   WorkerMessageFromWorker 
-} from "./pareWorkerTask";
-import { serializeTask, WorkerErrorCode } from "./pareWorkerTask";
+} from "./pareWorkerTask.ts";
+import { serializeTask, WorkerErrorCode } from "./pareWorkerTask.ts";
 
 export interface SandboxOptions {
   timeoutMs: number;

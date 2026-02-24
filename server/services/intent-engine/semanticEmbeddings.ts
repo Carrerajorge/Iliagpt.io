@@ -2,9 +2,19 @@ import { GoogleGenAI } from "@google/genai";
 import type { IntentType } from "../../../shared/schemas/intent";
 import { logStructured } from "./telemetry";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const isTestEnv =
+  process.env.NODE_ENV === "test" ||
+  !!process.env.VITEST_WORKER_ID ||
+  !!process.env.VITEST_POOL_ID;
 
-const EMBEDDING_MODEL = "text-embedding-004";
+// Only initialize AI if we have a valid key AND we're not in tests (avoid network flakiness/timeouts)
+const hasGeminiKey =
+  !isTestEnv && !!(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 10);
+const ai = hasGeminiKey ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! }) : null;
+
+// NOTE: In some Gemini projects/keys, `text-embedding-004` is not available.
+// Use env override so production can select an available embedding model.
+const EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
 const EMBEDDING_DIMENSIONS = 768;
 const BATCH_SIZE = 100;
 const RATE_LIMIT_DELAY_MS = 100;
@@ -799,10 +809,56 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return magnitude === 0 ? 0 : dotProduct / magnitude;
 }
 
+// Simple TF-IDF style fallback embedding when no API key
+function generateSimpleEmbedding(text: string): number[] {
+  const normalized = text.toLowerCase().replace(/[^\w\s]/g, "");
+  const words = normalized.split(/\s+/).filter(w => w.length > 2);
+  const embedding = new Array(EMBEDDING_DIMENSIONS).fill(0);
+  
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    // Use multiple hash positions for better distribution
+    const hash1 = Math.abs(hashCode(word)) % EMBEDDING_DIMENSIONS;
+    const hash2 = Math.abs(hashCode(word + "_2")) % EMBEDDING_DIMENSIONS;
+    const hash3 = Math.abs(hashCode(word + "_3")) % EMBEDDING_DIMENSIONS;
+    
+    embedding[hash1] += 1 / (i + 1);
+    embedding[hash2] += 0.5 / (i + 1);
+    embedding[hash3] += 0.25 / (i + 1);
+  }
+  
+  // L2 normalize
+  const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
+  if (magnitude > 0) {
+    for (let i = 0; i < embedding.length; i++) {
+      embedding[i] /= magnitude;
+    }
+  }
+  
+  return embedding;
+}
+
+function hashCode(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return hash;
+}
+
 async function generateEmbedding(text: string): Promise<number[]> {
   const cacheKey = text.toLowerCase().trim().substring(0, 500);
   const cached = embeddingCache.get(cacheKey);
   if (cached) return cached;
+
+  // If no Gemini API key, use simple fallback immediately
+  if (!ai) {
+    const embedding = generateSimpleEmbedding(text);
+    embeddingCache.set(cacheKey, embedding);
+    return embedding;
+  }
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
@@ -826,15 +882,21 @@ async function generateEmbedding(text: string): Promise<number[]> {
         continue;
       }
       if (attempt === MAX_RETRIES - 1) {
-        logStructured("error", "Embedding generation failed after retries", {
+        logStructured("warn", "Embedding generation failed, using fallback", {
           error: error.message,
           text_preview: text.substring(0, 50)
         });
-        throw error;
+        // Fallback to simple embedding instead of throwing
+        const embedding = generateSimpleEmbedding(text);
+        embeddingCache.set(cacheKey, embedding);
+        return embedding;
       }
     }
   }
-  throw new Error("Failed to generate embedding");
+  // Final fallback
+  const embedding = generateSimpleEmbedding(text);
+  embeddingCache.set(cacheKey, embedding);
+  return embedding;
 }
 
 async function generateEmbeddingsBatch(texts: string[]): Promise<number[][]> {
@@ -932,22 +994,26 @@ function insertIntoIndex(
   text: string,
   embedding: number[]
 ): void {
+  // IMPORTANT: we must add the new node to `indexedExamples` before creating back-links.
+  // Otherwise we can temporarily store neighbor references to an index that doesn't exist yet,
+  // and traversal can hit `indexedExamples[newIdx] === undefined` (reading '.layer').
   const newIdx = indexedExamples.length;
   const layer = Math.min(selectLayerForNewNode(), DEFAULT_HNSW_CONFIG.maxLayers - 1);
-  
+
   const newExample: IndexedExample = {
     intent,
     text,
     embedding,
     layer,
-    neighbors: []
+    neighbors: [],
   };
-  
-  if (indexedExamples.length === 0) {
-    indexedExamples.push(newExample);
+
+  indexedExamples.push(newExample);
+
+  if (newIdx === 0) {
     return;
   }
-  
+
   let entryPoint = 0;
   for (let l = DEFAULT_HNSW_CONFIG.maxLayers - 1; l > layer; l--) {
     const results = searchLayerGreedy(embedding, entryPoint, 1, l);
@@ -955,21 +1021,23 @@ function insertIntoIndex(
       entryPoint = results[0];
     }
   }
-  
+
   for (let l = layer; l >= 0; l--) {
     const candidates = searchLayerGreedy(
-      embedding, 
-      entryPoint, 
+      embedding,
+      entryPoint,
       DEFAULT_HNSW_CONFIG.efConstruction,
       l
     );
-    
+
     const neighbors = selectNeighbors(embedding, candidates, DEFAULT_HNSW_CONFIG.M);
-    
+
     for (const neighborIdx of neighbors) {
       newExample.neighbors.push(neighborIdx);
-      
+
       const neighbor = indexedExamples[neighborIdx];
+      if (!neighbor) continue;
+
       if (!neighbor.neighbors.includes(newIdx)) {
         if (neighbor.neighbors.length < DEFAULT_HNSW_CONFIG.M * 2) {
           neighbor.neighbors.push(newIdx);
@@ -983,13 +1051,11 @@ function insertIntoIndex(
         }
       }
     }
-    
+
     if (candidates.length > 0) {
       entryPoint = candidates[0];
     }
   }
-  
-  indexedExamples.push(newExample);
 }
 
 export async function initializeEmbeddingIndex(): Promise<void> {

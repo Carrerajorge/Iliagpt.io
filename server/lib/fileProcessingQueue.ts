@@ -22,7 +22,8 @@ export type FileStatusUpdate = {
 export class FileProcessingQueue {
   private jobs: Map<string, FileJob> = new Map();
   private queue: string[] = [];
-  private processing: boolean = false;
+  private activeCount: number = 0;
+  private maxConcurrent: number = 3;
   private onStatusChange?: (update: FileStatusUpdate) => void;
   private processCallback?: (job: FileJob) => Promise<void>;
   private maxRetries: number = 3;
@@ -38,11 +39,9 @@ export class FileProcessingQueue {
     this.jobs.set(job.fileId, newJob);
     this.queue.push(job.fileId);
     this.notifyStatusChange(newJob);
-    
-    if (!this.processing) {
-      this.processNext();
-    }
-    
+
+    this.processNext();
+
     return newJob;
   }
 
@@ -97,9 +96,7 @@ export class FileProcessingQueue {
         job.error = error;
         this.queue.push(fileId);
         this.notifyStatusChange(job);
-        if (!this.processing) {
-          this.processNext();
-        }
+        this.processNext();
       } else {
         job.status = 'failed';
         job.error = error;
@@ -115,7 +112,7 @@ export class FileProcessingQueue {
   }
 
   private async processNext(): Promise<void> {
-    if (this.processing || this.queue.length === 0) {
+    if (this.activeCount >= this.maxConcurrent || this.queue.length === 0) {
       return;
     }
 
@@ -130,10 +127,13 @@ export class FileProcessingQueue {
       return;
     }
 
-    this.processing = true;
+    this.activeCount++;
     job.status = 'processing';
     job.startedAt = new Date();
     this.notifyStatusChange(job);
+
+    // Start another concurrent job if available
+    this.processNext();
 
     try {
       if (this.processCallback) {
@@ -144,7 +144,7 @@ export class FileProcessingQueue {
       console.error(`[FileQueue] Error processing job ${fileId}:`, error);
       this.markFailed(fileId, error.message || 'Unknown error');
     } finally {
-      this.processing = false;
+      this.activeCount--;
       this.processNext();
     }
   }

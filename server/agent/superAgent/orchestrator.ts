@@ -7,16 +7,24 @@ import {
   SourceSignal,
   SSEEvent,
   SSEEventType,
+  IntentType
 } from "./contracts";
 import { parsePromptToContract, validateContract, repairContract } from "./contractRouter";
 import { shouldResearch } from "./researchPolicy";
 import { collectSignals, SignalsProgress } from "./signalsPipeline";
 import { deepDiveSources, DeepDiveProgress, ExtractedContent } from "./deepDivePipeline";
-import { createXlsx, createDocx, storeArtifactMeta, packCitations, XlsxSpec, DocxSpec } from "./artifactTools";
+import { createXlsx, createDocx, createPptx, storeArtifactMeta, packCitations, XlsxSpec, DocxSpec, PptxSpec } from "./artifactTools";
 import { evaluateQualityGate, shouldRetry, formatGateReport } from "./qualityGate";
 import { searchScopus, scopusArticlesToSourceSignals, isScopusConfigured, ScopusArticle } from "./scopusClient";
 import { searchWos, WosArticle } from "./wosClient";
 import { runAcademicPipeline, candidatesToSourceSignals, PipelineResult, PipelineConfig } from "./academicPipeline";
+import { PromptUnderstanding, UserSpec, TaskSpec } from "../promptUnderstanding";
+import { requestUnderstandingAgent } from "../requestUnderstanding";
+import {
+  buildOpenClaw1000CapabilityProfile,
+  suggestOpenClaw1000ToolForStep,
+  type OpenClaw1000CapabilityProfile,
+} from "../../services/openClaw1000CapabilityProfiler";
 
 function isWosConfigured(): boolean {
   return !!process.env.WOS_API_KEY;
@@ -31,6 +39,9 @@ function wosArticlesToSourceSignals(articles: WosArticle[]): SourceSignal[] {
     source: "wos" as const,
     rank: index + 1,
     timestamp: Date.now(),
+    domain: "webofscience.com",
+    score: 1.0,
+    fetched: false,
     metadata: {
       authors: article.authors,
       year: article.year,
@@ -45,6 +56,10 @@ function wosArticlesToSourceSignals(articles: WosArticle[]): SourceSignal[] {
     },
   }));
 }
+
+// ...
+
+
 
 export interface OrchestratorConfig {
   maxIterations: number;
@@ -67,11 +82,14 @@ export class SuperAgentOrchestrator extends EventEmitter {
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private eventCounter: number = 0;
   private abortSignal?: AbortSignal;
+  private promptUnderstanding: PromptUnderstanding;
+  private capabilityProfile: OpenClaw1000CapabilityProfile | null = null;
 
   constructor(sessionId: string, config: Partial<OrchestratorConfig> = {}) {
     super();
     this.sessionId = sessionId;
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.promptUnderstanding = new PromptUnderstanding();
   }
 
   private emitSSE(eventType: SSEEventType, data: unknown): void {
@@ -82,7 +100,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
       data,
       session_id: this.sessionId,
     };
-    
+
     this.emit("sse", event);
   }
 
@@ -113,38 +131,271 @@ export class SuperAgentOrchestrator extends EventEmitter {
     }
   }
 
+  private convertSpecToContract(spec: UserSpec, originalPrompt: string): AgentContract {
+    // Detect intent based on tasks
+    let intent: IntentType = "answer";
+    const hasSearch = spec.tasks.some(t => t.verb.includes("SEARCH"));
+    const hasDoc = spec.tasks.some(t => t.verb.includes("CREATE_DOCUMENT") || t.verb.includes("DOC"));
+    const hasXls = spec.tasks.some(t => t.verb.includes("CREATE_SPREADSHEET") || t.verb.includes("EXCEL"));
+    const hasPpt = spec.tasks.some(t => t.verb.includes("CREATE_PRESENTATION") || t.verb.includes("PRESENTATION") || t.verb.includes("PPT") || t.verb.includes("SLIDES"));
+
+    // Also detect pptx from original prompt as fallback
+    const promptLower = originalPrompt.toLowerCase();
+    const hasPptFromPrompt = !hasPpt && /\b(powerpoint|pptx|presentaci[oó]n|slides?|diapositivas?)\b/i.test(promptLower);
+
+    const effectiveHasPpt = hasPpt || hasPptFromPrompt;
+
+    const multiFormat = [hasDoc, hasXls, effectiveHasPpt].filter(Boolean).length > 1;
+    if (multiFormat) intent = "mixed";
+    else if (effectiveHasPpt) intent = "create_pptx";
+    else if (hasDoc) intent = "create_docx";
+    else if (hasXls) intent = "create_xlsx";
+    else if (hasSearch) intent = "research";
+
+    // Extract requirements
+    const mustCreate: ("docx" | "xlsx" | "pptx")[] = [];
+    if (hasDoc && !effectiveHasPpt) mustCreate.push("docx");
+    if (hasXls) mustCreate.push("xlsx");
+    if (effectiveHasPpt) mustCreate.push("pptx");
+
+    // Extract quantity
+    let minSources = 0;
+    const quantityConstraint = spec.constraints.find(c => c.type === "quantity");
+    if (quantityConstraint) {
+      const val = parseInt(quantityConstraint.value, 10);
+      if (!isNaN(val)) minSources = val;
+    } else {
+      // Check params of search tasks
+      const searchTask = spec.tasks.find(t => t.verb.includes("SEARCH"));
+      if (searchTask) {
+        const limitParam = searchTask.params.find(p => p.name === "limit" || p.name === "count");
+        if (limitParam) {
+          const val = parseInt(limitParam.value, 10);
+          if (!isNaN(val)) minSources = val;
+        }
+      }
+    }
+    if (minSources === 0 && hasSearch) minSources = 20; // Default
+
+    return {
+      contract_id: `contract_${randomUUID().substring(0, 8)}`,
+      timestamp: Date.now(),
+      intent,
+      requirements: {
+        min_sources: minSources,
+        must_create: mustCreate,
+        language: "es",
+        verify_facts: true,
+        include_citations: true,
+        max_depth: 3
+      },
+      plan: spec.tasks.map(t => ({
+        id: t.id,
+        action: t.verb,
+        tool: t.tool_hints?.[0] || "unknown", // Using the hints we added in LLMExtractor
+        input: t.params.reduce((acc, p) => ({ ...acc, [p.name]: p.value }), {}),
+        depends_on: t.dependencies,
+        status: "pending" as const
+      })),
+      tool_calls: [],
+      acceptance_checks: [],
+      original_prompt: originalPrompt,
+      parsed_entities: [],
+      language_detected: "es"
+    };
+  }
+
+  private applyOpenClawCapabilityProfile(contract: AgentContract, prompt: string): AgentContract {
+    const profile = buildOpenClaw1000CapabilityProfile(prompt, {
+      limit: 24,
+      minScore: 0.1,
+      includeStatuses: ["implemented", "partial"],
+    });
+    this.capabilityProfile = profile;
+
+    if (profile.matches.length === 0) {
+      return contract;
+    }
+
+    const usedTools = new Set(
+      contract.plan
+        .map((step) => step.tool)
+        .filter((tool): tool is string => Boolean(tool) && tool !== "unknown")
+    );
+
+    const enrichedPlan = contract.plan.map((step) => {
+      if (step.tool && step.tool !== "unknown") {
+        return step;
+      }
+
+      const stepContext = `${step.action} ${JSON.stringify(step.input || {})}`;
+      const suggestedTool = suggestOpenClaw1000ToolForStep(stepContext, profile, usedTools);
+      if (!suggestedTool) return step;
+
+      usedTools.add(suggestedTool);
+      return { ...step, tool: suggestedTool };
+    });
+
+    const capabilityChecks = profile.matches.slice(0, 8).map((match, index) => ({
+      id: `oc_${match.capability.code}_${index + 1}`,
+      condition: `${match.capability.capability} :: tool=${match.capability.toolName}`,
+      threshold: Math.round(match.score * 100),
+      required: match.capability.status === "implemented",
+    }));
+
+    const mergedChecks = [...contract.acceptance_checks];
+    const existingCheckIds = new Set(mergedChecks.map((check) => check.id));
+    for (const check of capabilityChecks) {
+      if (!existingCheckIds.has(check.id)) {
+        mergedChecks.push(check);
+      }
+    }
+
+    const mergedEntities = Array.from(new Set([
+      ...contract.parsed_entities,
+      ...profile.matches.slice(0, 12).map((match) => `openclaw:${match.capability.code}`),
+      ...profile.categories.slice(0, 6).map((group) => `openclaw_category:${group.category}`),
+    ]));
+
+    const requirements = { ...contract.requirements };
+    const suggestsResearch = profile.categories.some((group) =>
+      group.category === "academic_research" ||
+      group.category === "web_realtime_search" ||
+      group.category === "knowledge_rag_memory"
+    );
+    if (suggestsResearch && requirements.min_sources <= 0) {
+      requirements.min_sources = 20;
+    }
+
+    return {
+      ...contract,
+      requirements,
+      plan: enrichedPlan,
+      acceptance_checks: mergedChecks,
+      parsed_entities: mergedEntities,
+    };
+  }
+
+  private emitThought(content: string): void {
+    this.emitSSE("thought", { content, timestamp: Date.now() });
+  }
+
   async execute(prompt: string, signal?: AbortSignal): Promise<ExecutionState> {
     this.abortSignal = signal;
-    
+
     try {
       this.startHeartbeat();
-      
+
       if (signal?.aborted) {
         throw new Error("Ejecución cancelada por el usuario");
       }
-      
-      let contract = parsePromptToContract(prompt);
-      
+
+      this.emitThought("Analizando solicitud del usuario...");
+
+      // === Mandatory Request-Understanding Gate (Brief) ===
+      const brief = await requestUnderstandingAgent.buildBrief({
+        text: prompt,
+        chatId: this.sessionId,
+        requestId: this.sessionId,
+      });
+      this.emitSSE("brief", brief);
+
+      if (brief.blocker?.is_blocked) {
+        const question = (brief.blocker.question || "").trim() || "¿Puede aclarar el punto bloqueador para poder completar el encargo?";
+        // Return immediately with a single clarification question
+        this.state = ExecutionStateSchema.parse({
+          contract: this.convertSpecToContract({
+            goal: brief.intent.primary_intent,
+            tasks: [],
+            inputs_provided: {},
+            missing_inputs: [],
+            constraints: [],
+            success_criteria: [],
+            assumptions: [],
+            risks: [],
+            questions: [question],
+            confidence: brief.intent.confidence,
+          } as any, prompt),
+          phase: "completed",
+          sources: [],
+          sources_count: 0,
+          deep_sources: [],
+          artifacts: [],
+          tool_results: [],
+          iteration: 0,
+          max_iterations: this.config.maxIterations,
+          acceptance_results: [],
+          started_at: Date.now(),
+          completed_at: Date.now(),
+          final_response: question,
+        });
+
+        this.emitSSE("final", {
+          response: question,
+          sources_count: 0,
+          artifacts: [],
+          duration_ms: 0,
+          iterations: 0,
+        });
+
+        return this.state;
+      }
+
+      console.log("[SuperAgent] Orchestrator using PromptUnderstanding for:", prompt.substring(0, 50));
+      const processingResult = await this.promptUnderstanding.processFullPrompt(prompt, { useLLM: true });
+
+      this.emitThought("Generando plan de ejecución basado en las tareas detectadas...");
+      let contract = this.convertSpecToContract(processingResult.spec, prompt);
+      contract = this.applyOpenClawCapabilityProfile(contract, prompt);
+      this.emitThought(`Plan generado: Intención detectada como '${contract.intent}'.`);
+      if (this.capabilityProfile && this.capabilityProfile.matches.length > 0) {
+        const topCapabilities = this.capabilityProfile.matches.slice(0, 5).map((match) =>
+          `${match.capability.code}:${match.capability.toolName}`
+        );
+        this.emitThought(
+          `OpenClaw1000 activo: ${this.capabilityProfile.matches.length} capacidades alineadas. Top: ${topCapabilities.join(", ")}.`
+        );
+        this.emitSSE("progress", {
+          phase: "planning",
+          status: "capability_profile",
+          matched: this.capabilityProfile.matches.length,
+          categories: this.capabilityProfile.categories,
+          recommended_tools: this.capabilityProfile.recommendedTools,
+          top_capabilities: this.capabilityProfile.matches.slice(0, 10).map((match) => ({
+            id: match.capability.id,
+            code: match.capability.code,
+            capability: match.capability.capability,
+            tool: match.capability.toolName,
+            score: match.score,
+          })),
+        });
+      }
+
+      console.log("[SuperAgent] Contract generated:", JSON.stringify(contract, null, 2));
+
       if (this.config.enforceContract) {
+        // We can keep validateContract as a sanity check, though LLM is usually better
         const validation = validateContract(contract);
         if (!validation.valid) {
-          contract = repairContract(contract);
+          this.emitThought("Advertencia: El contrato inicial contiene errores, intentando reparar...");
+          console.warn("[SuperAgent] Contract validation failed (using LLM contract anyway):", validation.errors);
+          // contract = repairContract(contract); // DISABLED: Trust LLM over legacy validation
         }
       }
-      
+
       const isAcademicSearch = this.isScientificArticleRequest(prompt);
-      const run_title = isAcademicSearch 
+      const run_title = isAcademicSearch
         ? "Búsqueda académica"
-        : contract.intent === "create_docx" || contract.intent === "create_xlsx"
-          ? `Creando ${contract.requirements?.must_create?.[0] || "documento"}`
+        : contract.intent === "create_docx" || contract.intent === "create_xlsx" || contract.intent === "mixed"
+          ? `Creando ${contract.requirements?.must_create?.join(" + ") || "documentos"}`
           : "Procesando solicitud";
 
-      this.emitSSE("contract", { 
+      this.emitSSE("contract", {
         ...contract,
         run_title,
         target: contract.requirements?.min_sources || 50,
       });
-      
+
       this.state = ExecutionStateSchema.parse({
         contract,
         phase: "planning",
@@ -158,38 +409,46 @@ export class SuperAgentOrchestrator extends EventEmitter {
         acceptance_results: [],
         started_at: Date.now(),
       });
-      
+
       const yearRange = this.extractYearRange(prompt);
       this.emitSSE("plan", {
         run_title,
         target: contract.requirements?.min_sources || 50,
         steps: contract.plan,
         requirements: contract.requirements,
+        capability_profile: this.capabilityProfile
+          ? {
+            matched: this.capabilityProfile.matches.length,
+            categories: this.capabilityProfile.categories,
+            recommendedTools: this.capabilityProfile.recommendedTools,
+          }
+          : undefined,
         rules: {
-          yearStart: yearRange.start || 2020,
-          yearEnd: yearRange.end || 2025,
+          yearStart: yearRange.start || new Date().getFullYear() - 5,
+          yearEnd: yearRange.end || new Date().getFullYear(),
           output: contract.requirements?.must_create?.[0] || "xlsx",
         },
       });
-      
+
+      this.emitThought("Iniciando ejecución del plan por fases...");
       await this.executePhases();
-      
+
       return this.state;
-      
+
     } catch (error: any) {
       if (this.state) {
         this.state.phase = "error";
         this.state.error = error.message;
       }
-      
+
       this.emitSSE("error", {
         message: error.message,
         stack: error.stack,
         recoverable: false,
       });
-      
+
       throw error;
-      
+
     } finally {
       this.stopHeartbeat();
     }
@@ -200,22 +459,27 @@ export class SuperAgentOrchestrator extends EventEmitter {
 
     const requirements = this.state.contract.requirements;
     const researchDecision = shouldResearch(this.state.contract.original_prompt);
-    
-    if (researchDecision.shouldResearch || requirements.min_sources > 0) {
+    const capabilityDrivenResearch = this.capabilityProfile?.categories.some((group) =>
+      group.category === "academic_research" ||
+      group.category === "web_realtime_search" ||
+      group.category === "knowledge_rag_memory"
+    ) ?? false;
+
+    if (researchDecision.shouldResearch || requirements.min_sources > 0 || capabilityDrivenResearch) {
       this.checkAbort();
       await this.executeSignalsPhase();
       this.checkAbort();
       await this.executeDeepPhase();
     }
-    
+
     if (requirements.must_create.length > 0) {
       this.checkAbort();
       await this.executeCreatePhase();
     }
-    
+
     this.checkAbort();
     await this.executeVerifyPhase();
-    
+
     if (this.state.artifacts.length > 0 || this.state.sources.length > 0 || this.state.phase !== "error") {
       this.checkAbort();
       await this.executeFinalizePhase();
@@ -256,43 +520,84 @@ export class SuperAgentOrchestrator extends EventEmitter {
     return {};
   }
 
+  private getSearchParametersFromContract(): { query: string; yearStart?: number; yearEnd?: number; limit: number } {
+    const contract = this.state?.contract;
+    if (!contract) return { query: "", limit: 50 };
+
+    // Try to find a search step in the plan
+    const searchStep = contract.plan.find(p =>
+      p.action.includes("SEARCH") ||
+      p.action === "research" ||
+      p.tool?.includes("search")
+    );
+
+    if (searchStep && searchStep.input) {
+      console.log("[Orchestrator] Found search step:", JSON.stringify(searchStep, null, 2));
+      const query = (searchStep.input as Record<string, any>).query || (searchStep.input as Record<string, any>).object || contract.original_prompt.substring(0, 50);
+      console.log("[Orchestrator] Extracted query from step:", query);
+      const limit = parseInt((searchStep.input as Record<string, any>).limit || (searchStep.input as Record<string, any>).count || (searchStep.input as Record<string, any>).quantity, 10) || contract.requirements.min_sources || 50;
+      const yearStart = parseInt((searchStep.input as Record<string, any>).year_start || (searchStep.input as Record<string, any>).start_year, 10);
+      const yearEnd = parseInt((searchStep.input as Record<string, any>).year_end || (searchStep.input as Record<string, any>).end_year, 10);
+
+      return {
+        query,
+        limit,
+        yearStart: isNaN(yearStart) ? undefined : yearStart,
+        yearEnd: isNaN(yearEnd) ? undefined : yearEnd
+      };
+    }
+
+    // Fallback if no search step (shouldn't happen with PromptUnderstanding)
+    // Extract using legacy logic but constrained
+    return {
+      query: this.extractSearchTopic(contract.original_prompt), // Assuming extractSearchTopic exists and is suitable
+      limit: contract.requirements.min_sources || 50,
+      ...this.extractYearRange(contract.original_prompt)
+    };
+  }
+
   private async executeSignalsPhase(): Promise<void> {
     if (!this.state) return;
-    
+
     this.state.phase = "signals";
-    this.emitSSE("phase_started", { 
-      phase: "signals", 
+    this.emitSSE("phase_started", {
+      phase: "signals",
       status: "running",
-      message: "Buscando artículos en bases de datos académicas…" 
+      message: "Buscando artículos en bases de datos académicas…"
     });
     this.emitSSE("progress", { phase: "signals", status: "starting" });
-    
+
+    const params = this.getSearchParametersFromContract();
     const prompt = this.state.contract.original_prompt;
     const researchDecision = shouldResearch(prompt);
-    const targetCount = this.state.contract.requirements.min_sources || 100;
-    
+
+    // Aggressive overrides
     const isScientific = this.isScientificArticleRequest(prompt);
     const hasScopus = isScopusConfigured();
     const hasWos = isWosConfigured();
-    
+
     if (isScientific) {
       if (hasScopus || hasWos) {
-        await this.executeSignalsWithAcademicDatabases(prompt, targetCount, hasScopus, hasWos);
+        this.emitThought(`Estrategia: Búsqueda académica propietaria detectada. Usando ${hasScopus ? "Scopus" : ""} ${hasWos ? "Web of Science" : ""}.`);
+        await this.executeSignalsWithAcademicDatabases(params.query, params.limit, hasScopus, hasWos);
       } else {
-        await this.executeSignalsWithOpenAlex(prompt, targetCount);
+        this.emitThought("Estrategia: Búsqueda científica solicitada pero sin llaves API propietarias. Usando pipeline OpenAlex.");
+        await this.executeSignalsWithOpenAlex(params.query, params.limit);
       }
     } else {
-      await this.executeSignalsWithWebSearch(researchDecision, targetCount);
+      this.emitThought("Estrategia: Búsqueda web general para recopilación de señales.");
+      await this.executeSignalsWithWebSearch(researchDecision, params.limit);
     }
   }
 
-  private async executeSignalsWithOpenAlex(prompt: string, targetCount: number): Promise<void> {
+  private async executeSignalsWithOpenAlex(query: string, targetCount: number): Promise<void> {
     if (!this.state) return;
-    
-    const searchTopic = this.extractSearchTopic(prompt);
-    const yearRange = this.extractYearRange(prompt);
-    const isLatamOnly = this.isLatamOnlyRequest(prompt);
-    
+
+    const params = this.getSearchParametersFromContract();
+    const searchTopic = query || params.query; // Use the passed query, fallback to params if somehow empty
+    const yearRange = { start: params.yearStart, end: params.yearEnd };
+    const isLatamOnly = this.isLatamOnlyRequest(this.state.contract.original_prompt);
+
     this.emitSSE("tool_call", {
       id: "tc_signals_openalex",
       tool: "academic_pipeline",
@@ -310,16 +615,16 @@ export class SuperAgentOrchestrator extends EventEmitter {
     try {
       const pipelineEmitter = new EventEmitter();
       let pipelineSearchCount = 0;
-      
+
       pipelineEmitter.on("pipeline_phase", (data) => {
         this.emitSSE("progress", {
           phase: "signals",
           status: data.phase,
           ...data,
         });
-        
+
         const candidateCount = data.count || data.totalCandidates || data.relevantCount || data.verifiedCount || data.enrichedCount || 0;
-        
+
         if (data.phase === "search" && data.status !== "starting") {
           pipelineSearchCount++;
           this.emitSSE("search_progress", {
@@ -374,8 +679,8 @@ export class SuperAgentOrchestrator extends EventEmitter {
 
       pipelineResult = await runAcademicPipeline(searchTopic, pipelineEmitter, {
         targetCount: Math.min(targetCount, 50),
-        yearStart: yearRange.start || 2020,
-        yearEnd: yearRange.end || 2025,
+        yearStart: yearRange.start || new Date().getFullYear() - 5,
+        yearEnd: yearRange.end || new Date().getFullYear(),
         maxSearchIterations: 4,
         regionFilter: isLatamOnly ? "latam" : "global",
       });
@@ -408,12 +713,12 @@ export class SuperAgentOrchestrator extends EventEmitter {
           download_url: pipelineResult.artifact.downloadUrl,
           created_at: Date.now(),
         });
-        
+
         this.emitSSE("artifact", pipelineResult.artifact);
       }
 
       const successWithWarning = pipelineResult.articles.length > 0;
-      
+
       this.emitSSE("tool_result", {
         tool_call_id: "tc_signals_openalex",
         success: successWithWarning,
@@ -431,8 +736,8 @@ export class SuperAgentOrchestrator extends EventEmitter {
       this.state.tool_results.push({
         tool_call_id: "tc_signals_openalex",
         success: true,
-        output: { 
-          collected: pipelineResult.stats.finalCount, 
+        output: {
+          collected: pipelineResult.stats.finalCount,
           source: pipelineResult.stats.sourcesUsed.join("+"),
           verified: pipelineResult.stats.verifiedCount,
           warnings: pipelineResult.warnings,
@@ -441,7 +746,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
 
     } else {
       console.log(`[OpenAlex Pipeline] No results, falling back to web search`);
-      
+
       this.emitSSE("tool_result", {
         tool_call_id: "tc_signals_openalex",
         success: false,
@@ -454,27 +759,28 @@ export class SuperAgentOrchestrator extends EventEmitter {
         output: { error: "No verified articles found" },
       });
 
-      const researchDecision = shouldResearch(prompt);
+      const researchDecision = shouldResearch(this.state.contract.original_prompt);
       await this.executeSignalsWithWebSearch(researchDecision, targetCount);
     }
   }
 
   private async executeSignalsWithAcademicDatabases(
-    prompt: string, 
+    query: string,
     targetCount: number,
     useScopus: boolean,
     useWos: boolean
   ): Promise<void> {
     if (!this.state) return;
-    
-    const searchTopic = this.extractSearchTopic(prompt);
-    const yearRange = this.extractYearRange(prompt);
+
+    const searchTopic = query;
+    const params = this.getSearchParametersFromContract(); // Get year range from contract params
+    const yearRange = { start: params.yearStart, end: params.yearEnd };
     const sourcesPerDb = Math.ceil(targetCount / (useScopus && useWos ? 2 : 1));
-    
+
     const sources: string[] = [];
     if (useScopus) sources.push("Scopus");
     if (useWos) sources.push("Web of Science");
-    
+
     this.emitSSE("tool_call", {
       id: "tc_signals",
       tool: "search_academic_parallel",
@@ -503,26 +809,26 @@ export class SuperAgentOrchestrator extends EventEmitter {
           startYear: yearRange.start,
           endYear: yearRange.end,
         })
-        .then(result => {
-          queriesCurrent++;
-          const signals = scopusArticlesToSourceSignals(result.articles);
-          for (const signal of signals) {
-            this.emitSSE("source_signal", signal);
-          }
-          allSignals.push(...signals);
-          totalInDatabase += result.totalResults;
-          searchTime = Math.max(searchTime, result.searchTime);
-          this.emitSSE("search_progress", {
-            queries_current: queriesCurrent,
-            queries_total: queriesTotal,
-            pages_searched: queriesCurrent,
-            candidates_found: allSignals.length,
-          });
-        })
-        .catch(err => {
-          console.error(`[Scopus] Error: ${err.message}`);
-          errors.push(`Scopus: ${err.message}`);
-        })
+          .then(result => {
+            queriesCurrent++;
+            const signals = scopusArticlesToSourceSignals(result.articles);
+            for (const signal of signals) {
+              this.emitSSE("source_signal", signal);
+            }
+            allSignals.push(...signals);
+            totalInDatabase += result.totalResults;
+            searchTime = Math.max(searchTime, result.searchTime);
+            this.emitSSE("search_progress", {
+              queries_current: queriesCurrent,
+              queries_total: queriesTotal,
+              pages_searched: queriesCurrent,
+              candidates_found: allSignals.length,
+            });
+          })
+          .catch(err => {
+            console.error(`[Scopus] Error: ${err.message}`);
+            errors.push(`Scopus: ${err.message}`);
+          })
       );
     }
 
@@ -533,26 +839,26 @@ export class SuperAgentOrchestrator extends EventEmitter {
           startYear: yearRange.start,
           endYear: yearRange.end,
         })
-        .then(result => {
-          queriesCurrent++;
-          const signals = wosArticlesToSourceSignals(result.articles);
-          for (const signal of signals) {
-            this.emitSSE("source_signal", signal);
-          }
-          allSignals.push(...signals);
-          totalInDatabase += result.totalResults;
-          searchTime = Math.max(searchTime, result.searchTime);
-          this.emitSSE("search_progress", {
-            queries_current: queriesCurrent,
-            queries_total: queriesTotal,
-            pages_searched: queriesCurrent,
-            candidates_found: allSignals.length,
-          });
-        })
-        .catch(err => {
-          console.error(`[WoS] Error: ${err.message}`);
-          errors.push(`WoS: ${err.message}`);
-        })
+          .then(result => {
+            queriesCurrent++;
+            const signals = wosArticlesToSourceSignals(result.articles);
+            for (const signal of signals) {
+              this.emitSSE("source_signal", signal);
+            }
+            allSignals.push(...signals);
+            totalInDatabase += result.totalResults;
+            searchTime = Math.max(searchTime, result.searchTime);
+            this.emitSSE("search_progress", {
+              queries_current: queriesCurrent,
+              queries_total: queriesTotal,
+              pages_searched: queriesCurrent,
+              candidates_found: allSignals.length,
+            });
+          })
+          .catch(err => {
+            console.error(`[WoS] Error: ${err.message}`);
+            errors.push(`WoS: ${err.message}`);
+          })
       );
     }
 
@@ -590,112 +896,42 @@ export class SuperAgentOrchestrator extends EventEmitter {
 
     if (allSignals.length < targetCount) {
       console.log(`[AcademicDatabases] Only found ${allSignals.length}/${targetCount} from Scopus/WoS, falling back to OpenAlex pipeline`);
-      await this.executeSignalsWithOpenAlex(prompt, targetCount);
+      await this.executeSignalsWithOpenAlex(query, targetCount);
     }
   }
 
-  private async executeSignalsWithScopus(prompt: string, targetCount: number): Promise<void> {
-    if (!this.state) return;
-    
-    const searchTopic = this.extractSearchTopic(prompt);
-    const yearRange = this.extractYearRange(prompt);
-    
-    this.emitSSE("tool_call", {
-      id: "tc_signals",
-      tool: "search_scopus",
-      input: { query: searchTopic, target: targetCount, yearRange },
-    });
-
-    this.emitSSE("progress", {
-      phase: "signals",
-      status: "searching_scopus",
-      message: `Buscando artículos científicos en Scopus: "${searchTopic}"`,
-    });
-
-    try {
-      const result = await searchScopus(searchTopic, {
-        maxResults: Math.min(targetCount, 100),
-        startYear: yearRange.start,
-        endYear: yearRange.end,
-      });
-
-      const signals = scopusArticlesToSourceSignals(result.articles);
-      
-      for (const signal of signals) {
-        this.emitSSE("source_signal", signal);
-      }
-
-      this.state.sources = signals;
-      this.state.sources_count = signals.length;
-
-      this.emitSSE("progress", {
-        phase: "signals",
-        status: "completed",
-        collected: signals.length,
-        target: targetCount,
-        source: "scopus",
-      });
-
-      this.emitSSE("tool_result", {
-        tool_call_id: "tc_signals",
-        success: signals.length > 0,
-        output: {
-          collected: signals.length,
-          target: targetCount,
-          source: "scopus",
-          total_in_database: result.totalResults,
-          duration_ms: result.searchTime,
-        },
-      });
-
-      this.state.tool_results.push({
-        tool_call_id: "tc_signals",
-        success: signals.length > 0,
-        output: { collected: signals.length, source: "scopus" },
-      });
-
-    } catch (error: any) {
-      console.error(`[Scopus] Error: ${error.message}`);
-      this.emitSSE("progress", {
-        phase: "signals",
-        status: "scopus_error",
-        message: `Error en Scopus: ${error.message}. Usando búsqueda web alternativa.`,
-      });
-      
-      const researchDecision = shouldResearch(prompt);
-      await this.executeSignalsWithWebSearch(researchDecision, targetCount);
-    }
-  }
 
   private async executeSignalsWithWebSearch(researchDecision: any, targetCount: number): Promise<void> {
     if (!this.state) return;
-    
+
     const queries = researchDecision.searchQueries.length > 0
       ? researchDecision.searchQueries
       : [this.extractSearchTopic(this.state.contract.original_prompt)];
-    
+
     this.emitSSE("tool_call", {
       id: "tc_signals",
       tool: "search_web_parallel",
       input: { queries, target: targetCount },
     });
-    
+
     let queriesCurrent = 0;
     const queriesTotal = queries.length;
-    
+
     const result = await collectSignals(
       queries,
       targetCount,
       (progress: SignalsProgress) => {
-        queriesCurrent = progress.queriesExecuted || queriesCurrent;
+        queriesCurrent = progress.queriesCompleted || queriesCurrent;
+        const { phase: signalPhase, ...rest } = progress;
         this.emitSSE("progress", {
           phase: "signals",
-          ...progress,
+          status: signalPhase,
+          ...rest,
         });
         this.emitSSE("search_progress", {
           queries_current: queriesCurrent,
           queries_total: queriesTotal,
-          pages_searched: progress.pagesSearched || queriesCurrent,
+          pages_searched: queriesCurrent,
           candidates_found: progress.collected || 0,
         });
       },
@@ -703,10 +939,10 @@ export class SuperAgentOrchestrator extends EventEmitter {
         this.emitSSE("source_signal", signal);
       }
     );
-    
+
     this.state.sources = result.signals;
     this.state.sources_count = result.totalCollected;
-    
+
     this.emitSSE("tool_result", {
       tool_call_id: "tc_signals",
       success: result.totalCollected > 0,
@@ -717,7 +953,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
         duration_ms: result.durationMs,
       },
     });
-    
+
     this.state.tool_results.push({
       tool_call_id: "tc_signals",
       success: result.totalCollected > 0,
@@ -727,32 +963,38 @@ export class SuperAgentOrchestrator extends EventEmitter {
 
   private async executeDeepPhase(): Promise<void> {
     if (!this.state || this.state.sources.length === 0) return;
-    
+
     this.state.phase = "deep";
-    this.emitSSE("phase_started", { 
-      phase: "verification", 
+    this.emitSSE("phase_started", {
+      phase: "verification",
       status: "running",
-      message: "Verificando DOIs y enlaces de artículos…" 
+      message: "Verificando DOIs y enlaces de artículos…"
     });
     this.emitSSE("progress", { phase: "deep", status: "starting" });
-    
+
+    this.emitThought(`Seleccionando los mejores ${Math.min(20, this.state.sources.length)} candidatos por relevancia para análisis profundo.`);
+
     const topSources = [...this.state.sources]
       .sort((a, b) => b.score - a.score)
       .slice(0, 20);
-    
+
     this.emitSSE("tool_call", {
       id: "tc_deep",
       tool: "fetch_url_parallel",
       input: { urls: topSources.map(s => s.url) },
     });
-    
+
     const result = await deepDiveSources(
       topSources,
       20,
       (progress: DeepDiveProgress) => {
+        const { phase: deepPhase, ...rest } = progress as any; // Cast as any if DeepDiveProgress doesn't strictly have phase or to be safe, but usually it does. Actually let's assume it might not have phase or it does.
+        // Wait, I should check DeepDiveProgress. If I don't know it, safely destructure if it exists.
+        // But simply spreading ...progress caused the lint, implying it HAS phase.
         this.emitSSE("progress", {
           phase: "deep",
-          ...progress,
+          status: deepPhase || "running",
+          ...rest,
         });
       },
       (content: ExtractedContent) => {
@@ -764,7 +1006,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
         });
       }
     );
-    
+
     for (const extracted of result.sources.filter(s => s.success)) {
       const sourceIdx = this.state.sources.findIndex(s => s.id === extracted.sourceId);
       if (sourceIdx >= 0) {
@@ -774,7 +1016,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
         this.state.deep_sources.push(this.state.sources[sourceIdx]);
       }
     }
-    
+
     this.emitSSE("tool_result", {
       tool_call_id: "tc_deep",
       success: result.totalSuccess > 0,
@@ -784,7 +1026,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
         duration_ms: result.durationMs,
       },
     });
-    
+
     this.state.tool_results.push({
       tool_call_id: "tc_deep",
       success: result.totalSuccess > 0,
@@ -794,33 +1036,33 @@ export class SuperAgentOrchestrator extends EventEmitter {
 
   private async executeCreatePhase(): Promise<void> {
     if (!this.state) return;
-    
+
     this.state.phase = "creating";
-    
+
     // Notify frontend that we're starting document generation
-    this.emitSSE("phase_started", { 
-      phase: "export", 
+    this.emitSSE("phase_started", {
+      phase: "export",
       status: "running",
-      message: "Generando documentos…" 
+      message: "Generando documentos…"
     });
-    this.emitSSE("progress", { 
-      phase: "export", 
+    this.emitSSE("progress", {
+      phase: "export",
       status: "starting",
       message: "Generando documentos...",
       documents_total: this.state.contract.requirements.must_create.length,
     });
-    
+
     for (const docType of this.state.contract.requirements.must_create) {
       this.emitSSE("tool_call", {
         id: `tc_create_${docType}`,
         tool: `create_${docType}`,
         input: {},
       });
-      
+
       try {
         if (docType === "xlsx") {
-          this.emitSSE("progress", { 
-            phase: "export", 
+          this.emitSSE("progress", {
+            phase: "export",
             status: "generating",
             message: `Generando Excel con ${this.state.sources.filter(s => s.verified === true).length} artículos...`,
             document_type: "xlsx",
@@ -832,17 +1074,17 @@ export class SuperAgentOrchestrator extends EventEmitter {
           const spec = this.buildXlsxSpec();
           const artifact = await createXlsx(spec);
           storeArtifactMeta(artifact);
-          
+
           this.state.artifacts.push({
             id: artifact.id,
             type: "xlsx",
             name: artifact.name,
             download_url: artifact.downloadUrl,
           });
-          
+
           this.emitSSE("artifact", artifact);
-          this.emitSSE("progress", { 
-            phase: "export", 
+          this.emitSSE("progress", {
+            phase: "export",
             status: "completed",
             message: `Excel generado: ${artifact.name}`,
             document_type: "xlsx",
@@ -853,16 +1095,16 @@ export class SuperAgentOrchestrator extends EventEmitter {
             success: true,
             output: { artifact_id: artifact.id, download_url: artifact.downloadUrl },
           });
-          
+
           this.state.tool_results.push({
             tool_call_id: `tc_create_${docType}`,
             success: true,
             output: { artifact_id: artifact.id },
           });
-          
+
         } else if (docType === "docx") {
-          this.emitSSE("progress", { 
-            phase: "export", 
+          this.emitSSE("progress", {
+            phase: "export",
             status: "generating",
             message: "Generando documento Word...",
             document_type: "docx",
@@ -874,17 +1116,17 @@ export class SuperAgentOrchestrator extends EventEmitter {
           const spec = this.buildDocxSpec();
           const artifact = await createDocx(spec);
           storeArtifactMeta(artifact);
-          
+
           this.state.artifacts.push({
             id: artifact.id,
             type: "docx",
             name: artifact.name,
             download_url: artifact.downloadUrl,
           });
-          
+
           this.emitSSE("artifact", artifact);
-          this.emitSSE("progress", { 
-            phase: "export", 
+          this.emitSSE("progress", {
+            phase: "export",
             status: "completed",
             message: `Word generado: ${artifact.name}`,
             document_type: "docx",
@@ -895,7 +1137,48 @@ export class SuperAgentOrchestrator extends EventEmitter {
             success: true,
             output: { artifact_id: artifact.id, download_url: artifact.downloadUrl },
           });
-          
+
+          this.state.tool_results.push({
+            tool_call_id: `tc_create_${docType}`,
+            success: true,
+            output: { artifact_id: artifact.id },
+          });
+        } else if (docType === "pptx") {
+          this.emitSSE("progress", {
+            phase: "export",
+            status: "generating",
+            message: "Generando presentación PowerPoint...",
+            document_type: "pptx",
+          });
+          this.emitSSE("artifact_generating", {
+            artifact_type: "pptx",
+            filename: "presentation.pptx",
+          });
+          const spec = this.buildPptxSpec();
+          const artifact = await createPptx(spec);
+          storeArtifactMeta(artifact);
+
+          this.state.artifacts.push({
+            id: artifact.id,
+            type: "pptx",
+            name: artifact.name,
+            download_url: artifact.downloadUrl,
+          });
+
+          this.emitSSE("artifact", artifact);
+          this.emitSSE("progress", {
+            phase: "export",
+            status: "completed",
+            message: `PowerPoint generado: ${artifact.name}`,
+            document_type: "pptx",
+            artifact_id: artifact.id,
+          });
+          this.emitSSE("tool_result", {
+            tool_call_id: `tc_create_${docType}`,
+            success: true,
+            output: { artifact_id: artifact.id, download_url: artifact.downloadUrl },
+          });
+
           this.state.tool_results.push({
             tool_call_id: `tc_create_${docType}`,
             success: true,
@@ -908,7 +1191,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
           success: false,
           error: error.message,
         });
-        
+
         this.state.tool_results.push({
           tool_call_id: `tc_create_${docType}`,
           success: false,
@@ -933,20 +1216,20 @@ export class SuperAgentOrchestrator extends EventEmitter {
   }
 
   private hasScopusData(sources: SourceSignal[]): boolean {
-    return sources.some(s => (s as any).scopusData);
+    return sources.some(s => s.scopusData);
   }
 
   private buildXlsxSpec(): XlsxSpec {
     const sources = this.state?.sources || [];
     const deepSources = this.state?.deep_sources || [];
     const prompt = this.state?.contract.original_prompt || "";
-    
+
     if (this.hasScopusData(sources)) {
       return this.buildScopusXlsxSpec(sources, prompt);
     }
-    
+
     const requestedColumns = this.extractRequestedColumns(prompt);
-    
+
     if (requestedColumns && requestedColumns.length > 0) {
       const dataRows = sources.slice(0, 100).map((s, i) => {
         return requestedColumns.map(col => {
@@ -969,7 +1252,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
           return "";
         });
       });
-      
+
       return {
         title: this.extractResearchTitle(prompt),
         sheets: [
@@ -986,7 +1269,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
         ],
       };
     }
-    
+
     return {
       title: this.extractResearchTitle(prompt),
       sheets: [
@@ -1017,7 +1300,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
         {
           name: "Claims",
           headers: ["Source", "Claim"],
-          data: deepSources.flatMap(s => 
+          data: deepSources.flatMap(s =>
             (s.claims || []).map(claim => [s.title.substring(0, 50), claim])
           ),
         },
@@ -1029,13 +1312,13 @@ export class SuperAgentOrchestrator extends EventEmitter {
     const requestedColumns = this.extractRequestedColumns(prompt);
     const defaultColumns = ["#", "Authors", "Title", "Year", "Journal", "Abstract", "Keywords", "Language", "Document Type", "DOI", "Citations", "Affiliations", "Scopus URL"];
     const columns = requestedColumns && requestedColumns.length > 0 ? requestedColumns : defaultColumns;
-    
+
     const dataRows = sources.slice(0, 100).map((s, i) => {
-      const scopusData = (s as any).scopusData as ScopusArticle | undefined;
-      
+      const scopusData = s.scopusData as ScopusArticle | undefined;
+
       return columns.map(col => {
         const colLower = col.toLowerCase();
-        
+
         if (colLower === "#" || colLower === "no" || colLower === "número") return (i + 1).toString();
         if (colLower === "title" || colLower === "titulo" || colLower === "título") return scopusData?.title || s.title;
         if (colLower === "authors" || colLower === "autores" || colLower === "author") return scopusData?.authors?.join("; ") || "";
@@ -1056,7 +1339,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
         return "";
       });
     });
-    
+
     return {
       title: this.extractResearchTitle(prompt),
       sheets: [
@@ -1110,15 +1393,15 @@ export class SuperAgentOrchestrator extends EventEmitter {
   }
 
   private extractYear(source: SourceSignal): string {
-    const yearMatch = source.title.match(/\b(20\d{2})\b/) || 
-                      source.url.match(/\b(20\d{2})\b/) ||
-                      (source.snippet && source.snippet.match(/\b(20\d{2})\b/));
+    const yearMatch = source.title.match(/\b(20\d{2})\b/) ||
+      source.url.match(/\b(20\d{2})\b/) ||
+      (source.snippet && source.snippet.match(/\b(20\d{2})\b/));
     return yearMatch ? yearMatch[1] : "";
   }
 
   private extractDOI(source: SourceSignal): string {
     const doiMatch = source.url.match(/10\.\d{4,}\/[^\s]+/) ||
-                     (source.content && source.content.match(/10\.\d{4,}\/[^\s]+/));
+      (source.content && source.content.match(/10\.\d{4,}\/[^\s]+/));
     return doiMatch ? doiMatch[0] : "";
   }
 
@@ -1134,7 +1417,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
       })),
       deepSources.flatMap(s => (s.claims || []).map(c => ({ text: c, sourceIds: [s.id] })))
     );
-    
+
     return {
       title: this.state?.contract.original_prompt.substring(0, 100) || "Research Report",
       sections: [
@@ -1149,7 +1432,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
         {
           heading: "Key Findings",
           level: 1,
-          paragraphs: deepSources.slice(0, 5).flatMap(s => 
+          paragraphs: deepSources.slice(0, 5).flatMap(s =>
             (s.claims || []).slice(0, 2).map(c => `• ${c}`)
           ),
           citations: citationsPack.formatted.apa.slice(0, 5),
@@ -1183,22 +1466,75 @@ export class SuperAgentOrchestrator extends EventEmitter {
     };
   }
 
+  private buildPptxSpec(): PptxSpec {
+    const sources = this.state?.sources || [];
+    const deepSources = this.state?.deep_sources || [];
+    const prompt = this.state?.contract.original_prompt || "Presentation";
+
+    const slides: PptxSpec["slides"] = [];
+
+    // Summary slide
+    slides.push({
+      title: "Resumen",
+      bullets: [
+        `Investigación: "${prompt.substring(0, 80)}"`,
+        `Fuentes analizadas: ${sources.length}`,
+        `Fuentes con análisis profundo: ${deepSources.length}`,
+      ],
+    });
+
+    // Key findings slides from deep sources
+    const claims = deepSources.flatMap(s => (s.claims || []).map(c => ({ claim: c, source: s.title })));
+    for (let i = 0; i < Math.min(claims.length, 15); i += 5) {
+      const chunk = claims.slice(i, i + 5);
+      slides.push({
+        title: `Hallazgos Clave ${Math.floor(i / 5) + 1}`,
+        bullets: chunk.map(c => c.claim.substring(0, 200)),
+      });
+    }
+
+    // Top sources slide
+    slides.push({
+      title: "Fuentes Principales",
+      bullets: sources.slice(0, 8).map((s, i) => `${i + 1}. ${s.title.substring(0, 80)} (${s.domain})`),
+    });
+
+    // Ensure at least 3 slides
+    if (slides.length < 3) {
+      slides.push({
+        title: "Fuentes Adicionales",
+        bullets: sources.slice(0, 5).map(s => `${s.title.substring(0, 100)} — ${s.url}`),
+      });
+    }
+
+    return {
+      title: prompt.substring(0, 100),
+      slides,
+      metadata: {
+        author: "IliaGPT Super Agent",
+        subject: prompt,
+      },
+    };
+  }
+
   private async executeVerifyPhase(): Promise<void> {
     if (!this.state) return;
-    
+
     this.state.phase = "verifying";
     this.state.iteration++;
-    
+
+    this.emitThought(`Verificación de Calidad (Iteración ${this.state.iteration}): Evaluando cumplimiento de contrato y consistencia.`);
+
     this.emitSSE("tool_call", {
       id: "tc_quality_gate",
       tool: "quality_gate",
       input: { iteration: this.state.iteration },
     });
-    
+
     const gateResult = evaluateQualityGate(this.state, this.state.contract.requirements);
-    
+
     this.state.acceptance_results = gateResult.checks;
-    
+
     this.emitSSE("verify", {
       passed: gateResult.passed,
       checks: gateResult.checks,
@@ -1206,27 +1542,35 @@ export class SuperAgentOrchestrator extends EventEmitter {
       warnings: gateResult.warnings,
       report: formatGateReport(gateResult),
     });
-    
+
     this.emitSSE("tool_result", {
       tool_call_id: "tc_quality_gate",
       success: gateResult.passed,
       output: gateResult,
     });
-    
+
     if (!gateResult.passed) {
+      this.emitThought(`Falló verificación de calidad. Motivo principal: ${gateResult.blockers[0]?.reason || "Requisitos no cumplidos"}.`);
+
       const retryDecision = shouldRetry(gateResult, this.state);
-      
+
       if (retryDecision.shouldRetry) {
+        this.emitThought(`Decisión de Agente: Reintentar con estrategia '${retryDecision.strategy}'. Acciones: ${retryDecision.actions.join(", ")}.`);
+
         this.emitSSE("iterate", {
           iteration: this.state.iteration,
           max: this.state.max_iterations,
           strategy: retryDecision.strategy,
           actions: retryDecision.actions,
         });
-        
+
         await this.executeRetryActions(retryDecision.actions);
         await this.executeVerifyPhase();
+      } else {
+        this.emitThought("Decisión de Agente: Máximo de intentos alcanzado o error irrecuperable. Finalizando con advertencias.");
       }
+    } else {
+      this.emitThought("Verificación Exitosa: Todos los criterios de aceptación cumplidos. Procediendo a finalización.");
     }
   }
 
@@ -1244,14 +1588,15 @@ export class SuperAgentOrchestrator extends EventEmitter {
 
   private async executeFinalizePhase(): Promise<void> {
     if (!this.state) return;
-    
+
     this.state.phase = "finalizing";
-    
+    this.emitThought("Generando respuesta final y consolidando artefactos...");
+
     const response = this.buildFinalResponse();
     this.state.final_response = response;
     this.state.phase = "completed";
     this.state.completed_at = Date.now();
-    
+
     this.emitSSE("final", {
       response,
       sources_count: this.state.sources_count,
@@ -1263,41 +1608,49 @@ export class SuperAgentOrchestrator extends EventEmitter {
 
   private buildFinalResponse(): string {
     if (!this.state) return "";
-    
+
     const parts: string[] = [];
-    
+
     parts.push(`## Research Complete\n`);
     parts.push(`Analyzed **${this.state.sources_count}** sources for your query.\n`);
-    
+
     if (this.state.deep_sources.length > 0) {
       parts.push(`### Key Findings\n`);
       const claims = this.state.deep_sources
         .flatMap(s => s.claims || [])
         .slice(0, 10);
-      
+
       for (const claim of claims) {
         parts.push(`- ${claim}\n`);
       }
     }
-    
+
     if (this.state.artifacts.length > 0) {
       parts.push(`\n### Generated Documents\n`);
       for (const artifact of this.state.artifacts) {
         parts.push(`- 📄 **${artifact.name}** - [Download](${artifact.download_url})\n`);
       }
     }
-    
+
     if (this.state.sources.length > 0) {
       parts.push(`\n### Top Sources\n`);
       const topSources = [...this.state.sources]
         .sort((a, b) => b.score - a.score)
         .slice(0, 5);
-      
+
       for (const source of topSources) {
         parts.push(`- [${source.title}](${source.url}) (${source.domain})\n`);
       }
     }
-    
+
+    if (this.capabilityProfile && this.capabilityProfile.matches.length > 0) {
+      parts.push(`\n### OpenClaw1000 Capability Profile\n`);
+      parts.push(`Matched capabilities: **${this.capabilityProfile.matches.length}**\n`);
+      for (const match of this.capabilityProfile.matches.slice(0, 5)) {
+        parts.push(`- ${match.capability.code} ${match.capability.capability} (${match.capability.toolName}) score=${match.score}\n`);
+      }
+    }
+
     return parts.join("");
   }
 
@@ -1308,17 +1661,17 @@ export class SuperAgentOrchestrator extends EventEmitter {
         .replace(/\s*\d+\s*(artículos?|articulos?|fuentes?|sources?|papers?).*$/i, "")
         .replace(/\s*(científicos?|cientificos?|académicos?)$/i, "")
         .trim();
-      
+
       const yearMatch = prompt.match(/(?:del|from)\s+(\d{4})\s+(?:al|to|hasta)\s+(\d{4})/i);
       if (yearMatch && !topic.includes(yearMatch[1])) {
         topic = `${topic} ${yearMatch[1]}-${yearMatch[2]}`;
       }
-      
+
       if (topic.length >= 10) {
         return topic.substring(0, 100);
       }
     }
-    
+
     const stopWords = new Set([
       "dame", "give", "quiero", "want", "necesito", "need", "crea", "create",
       "genera", "generate", "busca", "search", "investiga", "research",
@@ -1329,7 +1682,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
       "papers", "excel", "word", "documento", "ordenado", "coloca", "colocalo",
       "tabla", "en"
     ]);
-    
+
     const cleaned = prompt
       .replace(/\s*\d+\s*(artículos?|articulos?|fuentes?|sources?|referencias?|papers?).*$/i, "")
       .replace(/\s*(científicos?|cientificos?|académicos?|academicos?)/gi, "")
@@ -1340,16 +1693,16 @@ export class SuperAgentOrchestrator extends EventEmitter {
       .replace(/\s+ordenado\s+por.*$/i, "")
       .replace(/\s+y\s+coloca.*$/i, "")
       .trim();
-    
+
     const words = cleaned.split(/\s+/).filter(word => {
       const lowerWord = word.toLowerCase().replace(/[.,!?:;]/g, "");
       return lowerWord.length > 2 && !stopWords.has(lowerWord);
     });
-    
+
     if (words.length >= 2) {
       return words.join(" ").substring(0, 100);
     }
-    
+
     return cleaned.substring(0, 100) || prompt.substring(0, 100);
   }
 

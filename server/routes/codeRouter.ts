@@ -1,11 +1,14 @@
 import { Router } from "express";
 import * as codeInterpreter from "../services/codeInterpreterService";
 import * as pistonService from "../services/pistonService";
+import { requireNetworkAccessEnabled } from "../middleware/networkAccessGuard";
+import { storage } from "../storage";
+import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
 
 export function createCodeRouter() {
   const router = Router();
 
-  router.post("/api/code-interpreter/run", async (req, res) => {
+  router.post("/api/code-interpreter/run", requireNetworkAccessEnabled(), async (req, res) => {
     try {
       const { code, conversationId, language } = req.body;
       
@@ -13,8 +16,20 @@ export function createCodeRouter() {
         return res.status(400).json({ error: "Code is required" });
       }
 
-      const user = (req as any).user;
-      const userId = user?.claims?.sub;
+      const userId = getOrCreateSecureUserId(req);
+      try {
+        const userSettings = await storage.getUserSettings(userId);
+        const enabled = userSettings?.featureFlags?.codeInterpreterEnabled ?? true;
+        if (!enabled) {
+          return res.status(403).json({
+            error: "Code interpreter is disabled in your settings",
+            code: "CODE_INTERPRETER_DISABLED",
+          });
+        }
+      } catch (e) {
+        // Best-effort: if settings lookup fails, allow execution rather than breaking core UX.
+        console.warn("[CodeInterpreter] Failed to load user settings, allowing execution:", (e as any)?.message || e);
+      }
 
       const result = await codeInterpreter.executeCode(code, {
         conversationId,
@@ -63,7 +78,7 @@ export function createCodeRouter() {
     }
   });
 
-  router.post("/api/sandbox/execute", async (req, res) => {
+  router.post("/api/sandbox/execute", requireNetworkAccessEnabled(), async (req, res) => {
     try {
       const { code, language, stdin, args } = req.body;
 
@@ -73,6 +88,21 @@ export function createCodeRouter() {
 
       if (!language || typeof language !== "string") {
         return res.status(400).json({ error: "Language is required" });
+      }
+
+      const userId = getOrCreateSecureUserId(req);
+      try {
+        const userSettings = await storage.getUserSettings(userId);
+        const enabled = userSettings?.featureFlags?.codeInterpreterEnabled ?? true;
+        if (!enabled) {
+          return res.status(403).json({
+            error: "Code interpreter is disabled in your settings",
+            code: "CODE_INTERPRETER_DISABLED",
+          });
+        }
+      } catch (e) {
+        // Best-effort: if settings lookup fails, allow execution rather than breaking core UX.
+        console.warn("[Sandbox] Failed to load user settings, allowing execution:", (e as any)?.message || e);
       }
 
       const langInfo = await pistonService.getLanguageInfo(language);

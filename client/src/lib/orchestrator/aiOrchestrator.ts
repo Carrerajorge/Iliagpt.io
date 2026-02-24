@@ -1,4 +1,5 @@
 import { commandBus, type CommandResult } from '@/lib/commands';
+import { apiFetch } from '@/lib/apiClient';
 
 export interface DocumentPlan {
   intent: string;
@@ -42,7 +43,7 @@ class AIOrchestrator {
     }
   ): Promise<DocumentPlan> {
     try {
-      const response = await fetch('/api/documents/plan', {
+      const response = await apiFetch('/api/documents/plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -13,10 +13,10 @@ interface StreamState {
 }
 
 const ELEMENT_POSITIONS: Record<StreamElementType, { x: number; y: number; fontSize: number; bold?: boolean }> = {
-  title: { x: 80, y: 80, fontSize: 44, bold: true },
-  bullet: { x: 100, y: 200, fontSize: 24 },
-  text: { x: 80, y: 200, fontSize: 24 },
-  chart: { x: 200, y: 200, fontSize: 24 }
+  title: { x: 60, y: 60, fontSize: 36, bold: true }, // Pro Rule: 32-40pt
+  bullet: { x: 80, y: 160, fontSize: 18 },           // Pro Rule: 16-18pt
+  text: { x: 80, y: 160, fontSize: 16 },             // Pro Rule: 16-18pt
+  chart: { x: 150, y: 180, fontSize: 14 }
 };
 
 const MARKERS = {
@@ -34,7 +34,7 @@ export interface PptStreamParserOptions {
 
 export function createPptStreamParser(options: PptStreamParserOptions = {}) {
   const editInPlace = options.editInPlace ?? true;
-  
+
   let state: StreamState = {
     currentSlideId: null,
     currentElementId: null,
@@ -55,7 +55,7 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
       state.yOffset = 0;
       return currentSlideId;
     }
-    
+
     store().addSlide();
     const newSlideId = store().activeSlideId;
     state.currentSlideId = newSlideId;
@@ -68,7 +68,7 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
     if (!state.currentSlideId) {
       getOrCreateSlide();
     }
-    
+
     if (state.editMode) {
       const existingTitleId = store().findTitleElement(state.currentSlideId!);
       if (existingTitleId) {
@@ -76,7 +76,7 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
         return existingTitleId;
       }
     }
-    
+
     return createTextElement('title');
   }
 
@@ -84,7 +84,7 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
     if (!state.currentSlideId) {
       getOrCreateSlide();
     }
-    
+
     if (state.editMode) {
       const existingId = store().findOrCreateContentElement(state.currentSlideId!, state.yOffset);
       if (existingId) {
@@ -92,11 +92,11 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
         if (initialText) {
           store().appendTextDelta(existingId, initialText);
         }
-        state.yOffset += 60;
+        state.yOffset += 40;
         return existingId;
       }
     }
-    
+
     return createTextElement(type, initialText);
   }
 
@@ -104,10 +104,10 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
     if (!state.currentSlideId) {
       getOrCreateSlide();
     }
-    
+
     const pos = ELEMENT_POSITIONS[type];
     const y = type === 'title' ? pos.y : pos.y + state.yOffset;
-    
+
     const elementId = store().createStreamingTextElement(
       state.currentSlideId!,
       pos.x,
@@ -122,7 +122,7 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
       });
     }
 
-    state.yOffset += 60;
+    state.yOffset += 40; // Tighter spacing for 18pt font
     return elementId;
   }
 
@@ -141,7 +141,7 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
     if (!state.currentSlideId) {
       getOrCreateSlide();
     }
-    
+
     try {
       const spec = JSON.parse(jsonSpec);
       store().addChartElement(spec);
@@ -212,7 +212,7 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
         }
       } else {
         const endIdx = buffer.indexOf(MARKERS.end);
-        
+
         if (endIdx === -1) {
           const potentialEndStart = buffer.lastIndexOf('::');
           if (potentialEndStart !== -1 && potentialEndStart > buffer.length - 6) {
@@ -223,7 +223,7 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
             state.buffer = buffer.slice(potentialEndStart);
             return;
           }
-          
+
           if (state.currentType !== 'chart') {
             appendToElement(buffer);
           } else {
@@ -233,13 +233,13 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
           buffer = '';
         } else {
           const content = buffer.slice(0, endIdx);
-          
+
           if (state.currentType === 'chart') {
             createChartElement(content);
           } else if (content) {
             appendToElement(content);
           }
-          
+
           finalizeElement();
           buffer = buffer.slice(endIdx + MARKERS.end.length);
         }
@@ -278,7 +278,7 @@ export function createPptStreamParser(options: PptStreamParserOptions = {}) {
     getState(): Readonly<StreamState> {
       return { ...state };
     },
-    
+
     setEditMode(enabled: boolean): void {
       state.editMode = enabled;
     }

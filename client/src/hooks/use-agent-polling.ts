@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useAgentStore, useAgentRun } from "@/stores/agent-store";
 import { pollingManager } from "@/lib/polling-manager";
+import { apiFetch } from "@/lib/apiClient";
 
 // Global map of AbortControllers for pending agent start requests
 const pendingAgentStartControllers = new Map<string, AbortController>();
@@ -68,7 +69,7 @@ export function useStartAgentRun() {
       let resolvedChatId = chatId;
       
       if (!chatId || chatId.startsWith("pending-") || chatId === "") {
-        const chatRes = await fetch('/api/chats', {
+        const chatRes = await apiFetch('/api/chats', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
@@ -91,7 +92,7 @@ export function useStartAgentRun() {
         return null;
       }
       
-      const runRes = await fetch('/api/agent/runs', {
+      const runRes = await apiFetch('/api/agent/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -112,7 +113,7 @@ export function useStartAgentRun() {
         pendingAgentStartControllers.delete(messageId);
         // Attempt to cancel the backend run that was just created
         try {
-          await fetch(`/api/agent/runs/${runData.id}/cancel`, {
+          await apiFetch(`/api/agent/runs/${runData.id}/cancel`, {
             method: 'POST',
             credentials: 'include'
           });
@@ -156,7 +157,7 @@ export function useCancelAgentRun() {
     stopPolling(messageId);
     
     try {
-      await fetch(`/api/agent/runs/${runId}/cancel`, {
+      await apiFetch(`/api/agent/runs/${runId}/cancel`, {
         method: 'POST',
         credentials: 'include'
       });
