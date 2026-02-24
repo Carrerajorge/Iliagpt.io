@@ -23,6 +23,12 @@ import type { UnifiedChatRequest, UnifiedChatContext } from "../agent/unifiedCha
 import { createRequestSpec, AttachmentSpecSchema } from "../agent/requestSpec";
 import { routeIntent, type IntentResult } from "../services/intentRouter";
 import type { z } from "zod";
+import {
+  initializeOpenClawTools,
+  getOpenClawToolDeclarations,
+  executeOpenClawTool,
+  buildOpenClawSystemPromptSection,
+} from "../agent/openclaw/index";
 
 type AttachmentSpec = z.infer<typeof AttachmentSpecSchema>;
 
@@ -899,8 +905,14 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         }
       }
 
-      // Build system message with attachment awareness and citation instructions
-      let systemContent = `Eres MICHAT, un asistente de IA avanzado. Responde de manera útil y profesional en el idioma del usuario.`;
+      initializeOpenClawTools();
+      const userPlan = (req as any).userPlan || "go";
+      const openclawSystemSection = buildOpenClawSystemPromptSection({
+        citationsEnabled: true,
+        tier: userPlan as any,
+      });
+
+      let systemContent = `Eres MICHAT, un asistente de IA avanzado con capacidades agénticas de OpenClaw v2026.2.23. Responde de manera útil y profesional en el idioma del usuario.\n\n${openclawSystemSection}`;
       
       if (hasAttachments && attachmentContext && batchResult) {
         // Build citation format instructions based on document types
@@ -1012,12 +1024,38 @@ ${systemContent}`;
         phase: 'planning'
       }).catch(() => {});
 
-      const streamGenerator = llmGateway.streamChat(
+      const toolDeclarations = getOpenClawToolDeclarations(userPlan);
+      const toolContext = {
+        userId: userId || "anonymous",
+        runId: effectiveRunId,
+        userPlan: userPlan as any,
+        chatId: chatId || "none",
+      };
+      
+      console.log(`[Chat] OpenClaw tools enabled: ${toolDeclarations.length} tools for plan "${userPlan}"`);
+
+      const streamGenerator = llmGateway.streamChatWithTools(
         [systemMessage, ...formattedMessages],
+        toolDeclarations,
+        async (toolName: string, toolArgs: any) => {
+          console.log(`[Chat] Tool call: ${toolName}`, JSON.stringify(toolArgs).slice(0, 200));
+          emitTraceEvent(effectiveRunId, 'tool_start', {
+            tool: { name: toolName, args: toolArgs }
+          }).catch(() => {});
+
+          const result = await executeOpenClawTool(toolName, toolArgs, toolContext);
+
+          emitTraceEvent(effectiveRunId, 'tool_end', {
+            tool: { name: toolName, success: !result?.error, output: JSON.stringify(result).slice(0, 500) }
+          }).catch(() => {});
+
+          return result;
+        },
         {
           userId: userId || conversationId || "anonymous",
           requestId,
           disableImageGeneration: hasAttachments,
+          maxToolRounds: 8,
         }
       );
 
@@ -1027,10 +1065,34 @@ ${systemContent}`;
       for await (const chunk of streamGenerator) {
         if (isConnectionClosed) break;
 
+        if ((chunk as any).toolCall) {
+          const tc = (chunk as any).toolCall;
+          if (tc.result !== null) {
+            writeSse(res, 'tool_result', {
+              tool: tc.name,
+              args: tc.args,
+              result: typeof tc.result === 'string' ? tc.result.slice(0, 5000) : JSON.stringify(tc.result).slice(0, 5000),
+              sequenceId: chunk.sequenceId,
+              requestId: chunk.requestId || requestId,
+              runId: effectiveRunId,
+              timestamp: Date.now(),
+            });
+          } else {
+            writeSse(res, 'tool_call', {
+              tool: tc.name,
+              args: tc.args,
+              sequenceId: chunk.sequenceId,
+              requestId: chunk.requestId || requestId,
+              runId: effectiveRunId,
+              timestamp: Date.now(),
+            });
+          }
+          continue;
+        }
+
         fullContent += chunk.content;
         lastAckSequence = chunk.sequenceId;
 
-        // Update run's lastSeq for deduplication on reconnect
         if (claimedRun && chunk.sequenceId > (claimedRun.lastSeq || 0)) {
           await storage.updateChatRunLastSeq(claimedRun.id, chunk.sequenceId);
         }

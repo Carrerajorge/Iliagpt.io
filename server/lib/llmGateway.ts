@@ -1182,6 +1182,140 @@ class LLMGateway {
 
     return results;
   }
+
+  async *streamChatWithTools(
+    messages: ChatCompletionMessageParam[],
+    tools: Array<{
+      type: "function";
+      function: {
+        name: string;
+        description: string;
+        parameters: any;
+      };
+    }>,
+    executeToolFn: (name: string, args: any) => Promise<any>,
+    options: LLMRequestOptions & { maxToolRounds?: number } = {}
+  ): AsyncGenerator<StreamChunk & { toolCall?: { name: string; args: any; result: any } }, void, unknown> {
+    const requestId = options.requestId || this.generateRequestId();
+    const userId = options.userId || "anonymous";
+    const maxRounds = options.maxToolRounds ?? 10;
+    let sequenceId = 0;
+    let currentMessages = [...messages];
+    
+    if (!this.checkRateLimit(userId)) {
+      throw new Error(`Rate limit exceeded for user ${userId}`);
+    }
+
+    for (let round = 0; round < maxRounds; round++) {
+      const truncated = this.truncateContext(currentMessages, MAX_CONTEXT_TOKENS * 2);
+      
+      try {
+        const response = await this.xaiClient.chat.completions.create({
+          model: options.model || MODELS.TEXT,
+          messages: truncated,
+          temperature: options.temperature ?? 0.7,
+          tools: tools.length > 0 ? tools : undefined,
+          tool_choice: tools.length > 0 ? "auto" : undefined,
+          stream: false,
+        });
+
+        const choice = response.choices[0];
+        if (!choice) break;
+
+        const toolCalls = choice.message.tool_calls;
+        
+        if (toolCalls && toolCalls.length > 0) {
+          currentMessages.push({
+            role: "assistant",
+            content: choice.message.content || null,
+            tool_calls: toolCalls,
+          } as any);
+
+          for (const tc of toolCalls) {
+            const fnName = tc.function.name;
+            let fnArgs: any = {};
+            try {
+              fnArgs = JSON.parse(tc.function.arguments || "{}");
+            } catch {}
+
+            yield {
+              content: "",
+              sequenceId: sequenceId++,
+              done: false,
+              requestId,
+              toolCall: { name: fnName, args: fnArgs, result: null },
+            };
+
+            let toolResult: any;
+            try {
+              toolResult = await executeToolFn(fnName, fnArgs);
+            } catch (err: any) {
+              toolResult = { error: err.message };
+            }
+
+            currentMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult),
+            } as any);
+
+            yield {
+              content: "",
+              sequenceId: sequenceId++,
+              done: false,
+              requestId,
+              toolCall: { name: fnName, args: fnArgs, result: toolResult },
+            };
+          }
+          continue;
+        }
+
+        const content = choice.message.content || "";
+        const words = content.split(/(\s+)/);
+        for (let i = 0; i < words.length; i += 3) {
+          const chunk = words.slice(i, i + 3).join("");
+          if (chunk) {
+            yield {
+              content: chunk,
+              sequenceId: sequenceId++,
+              done: false,
+              requestId,
+            };
+          }
+        }
+
+        yield { content: "", sequenceId: sequenceId++, done: true, requestId };
+        return;
+      } catch (error: any) {
+        if (round === 0 && process.env.GEMINI_API_KEY) {
+          try {
+            const { messages: geminiMessages, systemInstruction } = this.convertToGeminiMessages(currentMessages);
+            const stream = geminiStreamChat(geminiMessages, {
+              model: GEMINI_MODELS.FLASH_PREVIEW as any,
+              systemInstruction,
+              temperature: options.temperature ?? 0.7,
+            });
+            for await (const chunk of stream) {
+              yield {
+                content: chunk.content,
+                sequenceId: sequenceId++,
+                done: chunk.done,
+                requestId,
+              };
+              if (chunk.done) return;
+            }
+            return;
+          } catch (geminiErr: any) {
+            throw error;
+          }
+        }
+        throw error;
+      }
+    }
+
+    yield { content: "\n\n[Reached maximum tool call rounds]", sequenceId: sequenceId++, done: false, requestId };
+    yield { content: "", sequenceId: sequenceId++, done: true, requestId };
+  }
 }
 
 export const llmGateway = new LLMGateway();

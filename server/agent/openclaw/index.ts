@@ -658,16 +658,76 @@ export function initializeOpenClawTools(): void {
 
 export function getOpenClawToolsForUser(plan: UserPlan): ToolDefinition[] {
   initializeOpenClawTools();
+  const tier = (["go", "plus", "pro"].includes(plan) ? plan : undefined) as SubscriptionTier | undefined;
+  if (tier) {
+    return toolRegistry.listForTier(tier);
+  }
   return toolRegistry.listForLegacyPlan(plan);
+}
+
+function zodSchemaToJsonSchema(schema: any): any {
+  try {
+    if (schema && typeof schema === "object" && schema._def) {
+      const def = schema._def;
+      if (def.typeName === "ZodObject") {
+        const properties: Record<string, any> = {};
+        const required: string[] = [];
+        const shape = schema.shape || {};
+        for (const [key, value] of Object.entries(shape)) {
+          properties[key] = zodSchemaToJsonSchema(value);
+          const v = value as any;
+          if (v && v._def && v._def.typeName !== "ZodOptional" && v._def.typeName !== "ZodDefault") {
+            required.push(key);
+          }
+        }
+        const result: any = { type: "object", properties };
+        if (required.length > 0) result.required = required;
+        return result;
+      }
+      if (def.typeName === "ZodString") return { type: "string", ...(def.description ? { description: def.description } : {}) };
+      if (def.typeName === "ZodNumber") return { type: "number", ...(def.description ? { description: def.description } : {}) };
+      if (def.typeName === "ZodBoolean") return { type: "boolean", ...(def.description ? { description: def.description } : {}) };
+      if (def.typeName === "ZodEnum") return { type: "string", enum: def.values, ...(def.description ? { description: def.description } : {}) };
+      if (def.typeName === "ZodArray") return { type: "array", items: zodSchemaToJsonSchema(def.type) };
+      if (def.typeName === "ZodOptional") return zodSchemaToJsonSchema(def.innerType);
+      if (def.typeName === "ZodDefault") return zodSchemaToJsonSchema(def.innerType);
+      if (def.typeName === "ZodAny") return {};
+      if (def.typeName === "ZodRecord") return { type: "object", additionalProperties: zodSchemaToJsonSchema(def.valueType) };
+      if (def.description) {
+        const inner = zodSchemaToJsonSchema(def.innerType || def.type);
+        return { ...inner, description: def.description };
+      }
+    }
+  } catch {}
+  return { type: "string" };
 }
 
 export function getOpenClawToolDeclarations(plan: UserPlan) {
   const tools = getOpenClawToolsForUser(plan);
   return tools.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    parameters: tool.inputSchema,
+    type: "function" as const,
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: zodSchemaToJsonSchema(tool.inputSchema),
+    },
   }));
+}
+
+export async function executeOpenClawTool(name: string, args: any, context?: Partial<ToolContext>): Promise<any> {
+  initializeOpenClawTools();
+  const ctx: ToolContext = {
+    userId: context?.userId || "system",
+    runId: context?.runId || `exec-${Date.now()}`,
+    chatId: context?.chatId || "none",
+    userPlan: context?.userPlan,
+    correlationId: context?.correlationId,
+  };
+  const result = await toolRegistry.execute(name, args, ctx);
+  if (!result.success && result.error) {
+    return { error: result.error.message || "Tool execution failed", code: result.error.code };
+  }
+  return result.output;
 }
 
 export function buildOpenClawSystemPromptSection(options: {
@@ -698,7 +758,7 @@ export function buildOpenClawSystemPromptSection(options: {
     browse_url: "Control headless web browser",
     memory_search: "Semantic search over conversation memory",
     memory_get: "Retrieve specific memory entry",
-    sessions_spawn: "Spawn a sub-agent session",
+    subagent_status: "Check sub-agent status and results",
     generate_image: "Generate images via AI",
     generate_document: "Generate Word/PDF documents",
     analyze_spreadsheet: "Analyze spreadsheet data",

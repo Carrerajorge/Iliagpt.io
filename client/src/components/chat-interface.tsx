@@ -4511,7 +4511,28 @@ IMPORTANTE:
                   throw new Error(data.error || 'SSE stream error');
                 }
                 
-                // Handle chunk events with content
+                if (currentEventType === 'tool_call') {
+                  const toolName = data.tool || 'unknown';
+                  console.log(`[SSE] Tool call: ${toolName}`, data.args);
+                  setAiProcessSteps(prev => {
+                    const existing = prev.find(s => s.step.includes(toolName));
+                    if (existing) return prev;
+                    return [...prev, { step: `🔧 ${toolName}`, status: "active" as const }];
+                  });
+                  currentEventType = "chunk";
+                  continue;
+                }
+
+                if (currentEventType === 'tool_result') {
+                  const toolName = data.tool || 'unknown';
+                  console.log(`[SSE] Tool result: ${toolName}`, typeof data.result === 'string' ? data.result.slice(0, 200) : '(object)');
+                  setAiProcessSteps(prev => 
+                    prev.map(s => s.step.includes(toolName) ? { ...s, status: "done" as const } : s)
+                  );
+                  currentEventType = "chunk";
+                  continue;
+                }
+
                 if (currentEventType === 'chunk' && data.content) {
                   fullContent += data.content;
                   

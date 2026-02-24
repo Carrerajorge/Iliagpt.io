@@ -38,7 +38,7 @@ const TOOL_CATALOG: CatalogEntry[] = [
   { name: "memory_search", section: "memory", description: "Search conversation memory", profiles: ["minimal", "coding", "messaging", "full"] },
   { name: "memory_get", section: "memory", description: "Retrieve a specific memory entry", profiles: ["minimal", "coding", "messaging", "full"] },
 
-  { name: "sessions_spawn", section: "sessions", description: "Spawn a sub-agent session", profiles: ["full"] },
+  { name: "subagent_status", section: "sessions", description: "Check sub-agent status and results", profiles: ["full"] },
 
   { name: "generate_image", section: "media", description: "Generate an image via AI", profiles: ["coding", "messaging", "full"] },
   { name: "generate_document", section: "media", description: "Generate Word/PDF documents", profiles: ["minimal", "coding", "messaging", "full"] },

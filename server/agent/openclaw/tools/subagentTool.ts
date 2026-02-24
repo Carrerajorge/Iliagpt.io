@@ -163,7 +163,7 @@ export const subagentSpawnTool: ToolDefinition = {
   description:
     "Spawn a specialized sub-agent to handle a parallel task. Sub-agents run with a restricted tool profile and report results back. Use this for tasks that can be parallelised independently.",
   inputSchema: spawnSubagentSchema,
-  capabilities: ["spawns_agents"],
+  capabilities: ["long_running"],
   execute: async (input, context): Promise<ToolResult> => {
     const startTime = Date.now();
 
