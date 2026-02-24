@@ -146,10 +146,11 @@ export function buildOpenClawSystemPromptSection(options: {
   sections.push("");
 
   sections.push("## Available Tools");
-  const allowedTools = options.tier
+  const allowedEntries = options.tier
     ? getToolsForProfile(getProfileForTier(options.tier))
     : getToolsForProfile("full");
-  sections.push(`You have access to: ${allowedTools.join(", ")}`);
+  const toolNames = allowedEntries.map((e: any) => e.name || e);
+  sections.push(`You have access to: ${toolNames.join(", ")}`);
   sections.push("");
 
   sections.push("## Web Research");
@@ -173,7 +174,17 @@ export async function handleCompaction(
   messages: ConversationMessage[],
   overrides?: Partial<CompactionConfig>
 ): Promise<{ compacted: boolean; messages: ConversationMessage[]; summary?: string }> {
-  if (!needsCompaction(messages, overrides)) {
+  const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
+    baseRatio: 0.4,
+    minRatio: 0.15,
+    safetyMargin: 1.2,
+    contextWindowSize: 128_000,
+    preserveRecentCount: 4,
+    modelId: "gemini-2.0-flash",
+    maxConcurrentSummarizations: 3,
+  };
+  const mergedConfig = { ...DEFAULT_COMPACTION_CONFIG, ...overrides };
+  if (!needsCompaction(messages, mergedConfig)) {
     return { compacted: false, messages };
   }
 
