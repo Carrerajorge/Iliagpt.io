@@ -45,7 +45,7 @@ const DEFAULT_TOOL_POLICIES: Record<string, Partial<ToolPolicy>> = {
   },
   generate_image: {
     capabilities: ["requires_network", "accesses_external_api", "produces_artifacts"],
-    allowedPlans: ["pro", "admin"],
+    allowedPlans: ["free", "pro", "admin"],
     requiresConfirmation: false,
     maxExecutionTimeMs: 60000,
     maxRetries: 2,
@@ -69,11 +69,11 @@ const DEFAULT_TOOL_POLICIES: Record<string, Partial<ToolPolicy>> = {
   },
   execute_code: {
     capabilities: ["executes_code", "high_risk"],
-    allowedPlans: ["pro", "admin"],
-    requiresConfirmation: true,
+    allowedPlans: ["free", "pro", "admin"],
+    requiresConfirmation: false,
     maxExecutionTimeMs: 30000,
     maxRetries: 1,
-    deniedByDefault: true,
+    deniedByDefault: false,
   },
   read_file: {
     capabilities: ["reads_files"],
@@ -93,8 +93,8 @@ const DEFAULT_TOOL_POLICIES: Record<string, Partial<ToolPolicy>> = {
   },
   shell_command: {
     capabilities: ["executes_code", "high_risk"],
-    allowedPlans: ["pro", "admin"],
-    requiresConfirmation: true,
+    allowedPlans: ["free", "pro", "admin"],
+    requiresConfirmation: false,
     maxExecutionTimeMs: 60000,
     maxRetries: 1,
     deniedByDefault: false,
@@ -144,12 +144,12 @@ export class PolicyEngine {
       const policy: ToolPolicy = {
         toolName,
         capabilities: partialPolicy.capabilities || [],
-        allowedPlans: partialPolicy.allowedPlans || ["admin"],
-        requiresConfirmation: partialPolicy.requiresConfirmation ?? true,
+        allowedPlans: partialPolicy.allowedPlans || ["free", "pro", "admin"],
+        requiresConfirmation: partialPolicy.requiresConfirmation ?? false,
         maxExecutionTimeMs: partialPolicy.maxExecutionTimeMs ?? 30000,
         maxRetries: partialPolicy.maxRetries ?? 1,
         rateLimit: partialPolicy.rateLimit,
-        deniedByDefault: partialPolicy.deniedByDefault ?? true,
+        deniedByDefault: partialPolicy.deniedByDefault ?? false,
       };
       this.policies.set(toolName, policy);
     }
@@ -169,10 +169,18 @@ export class PolicyEngine {
 
     if (!policy) {
       return {
-        allowed: false,
+        allowed: true,
         requiresConfirmation: false,
-        reason: `No policy defined for tool: ${context.toolName}`,
-        policy: this.createDenyAllPolicy(context.toolName),
+        reason: `No explicit policy for tool: ${context.toolName}, allowing by default`,
+        policy: {
+          toolName: context.toolName,
+          capabilities: [],
+          allowedPlans: ["free", "pro", "admin"],
+          requiresConfirmation: false,
+          maxExecutionTimeMs: 60000,
+          maxRetries: 2,
+          deniedByDefault: false,
+        },
       };
     }
 

@@ -56,8 +56,8 @@ const TOOL_CATALOG: CatalogEntry[] = [
 ];
 
 const TIER_TO_PROFILE: Record<SubscriptionTier, ToolProfile> = {
-  go: "minimal",
-  plus: "coding",
+  go: "full",
+  plus: "full",
   pro: "full",
 };
 
