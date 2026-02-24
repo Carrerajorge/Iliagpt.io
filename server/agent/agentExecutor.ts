@@ -7,6 +7,7 @@ import type { RequestSpec } from "./requestSpec";
 import { renderPresentation, renderDocument, renderSpreadsheet } from "./artifactRenderer";
 import { SlideSpecSchema, DocSpecSchema, SheetSpecSchema } from "./builderSpec";
 import { randomUUID } from "crypto";
+import { initializeOpenClawTools } from "./openclaw";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
@@ -150,6 +151,71 @@ const AGENT_TOOLS: FunctionDeclaration[] = [
       },
       required: ["chartType", "data"]
     }
+  },
+  {
+    name: "memory_search",
+    description: "Search conversation memory for prior decisions, facts, preferences, and context. Use before answering questions about past interactions.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query for memory" },
+        chatId: { type: "string", description: "Limit search to a specific chat" },
+        memoryType: { type: "string", enum: ["context", "fact", "preference", "artifact_ref", "all"], description: "Filter by memory type" },
+        limit: { type: "number", description: "Maximum results (default 10)" },
+        citations: { type: "boolean", description: "Include source citations (default true)" }
+      },
+      required: ["query"]
+    }
+  },
+  {
+    name: "memory_get",
+    description: "Retrieve a specific memory entry by exact key",
+    parameters: {
+      type: "object",
+      properties: {
+        memoryKey: { type: "string", description: "The exact memory key to retrieve" },
+        chatId: { type: "string", description: "Limit to a specific chat" }
+      },
+      required: ["memoryKey"]
+    }
+  },
+  {
+    name: "web_fetch",
+    description: "Fetch and extract content from a URL, converting HTML to clean markdown or plain text",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "URL to fetch" },
+        mode: { type: "string", enum: ["markdown", "text"], description: "Content extraction mode (default markdown)" },
+        maxLength: { type: "number", description: "Maximum characters to return" },
+        timeout: { type: "number", description: "Timeout in milliseconds" }
+      },
+      required: ["url"]
+    }
+  },
+  {
+    name: "subagent_spawn",
+    description: "Spawn a sub-agent to handle a specific task in parallel. Sub-agents execute independently and report results.",
+    parameters: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "Description of the task for the sub-agent" },
+        toolProfile: { type: "string", enum: ["minimal", "coding", "messaging", "full"], description: "Tool access level (default minimal)" },
+        timeoutMs: { type: "number", description: "Timeout in ms (default 120000)" }
+      },
+      required: ["task"]
+    }
+  },
+  {
+    name: "subagent_status",
+    description: "Check the status of spawned sub-agents",
+    parameters: {
+      type: "object",
+      properties: {
+        subagentId: { type: "string", description: "Specific sub-agent ID (omit for all)" }
+      },
+      required: []
+    }
   }
 ];
 
@@ -179,17 +245,21 @@ function zodToJsonSchema(schema: z.ZodType): any {
 }
 
 function getToolsForIntent(intent: string): FunctionDeclaration[] {
+  initializeOpenClawTools();
+  const memoryTools = ["memory_search", "memory_get"];
   switch (intent) {
     case "research":
-      return AGENT_TOOLS.filter(t => ["web_search", "fetch_url"].includes(t.name));
+      return AGENT_TOOLS.filter(t => ["web_search", "fetch_url", "web_fetch", ...memoryTools].includes(t.name));
     case "presentation_creation":
-      return AGENT_TOOLS.filter(t => ["create_presentation", "web_search"].includes(t.name));
+      return AGENT_TOOLS.filter(t => ["create_presentation", "web_search", "web_fetch", ...memoryTools].includes(t.name));
     case "document_generation":
-      return AGENT_TOOLS.filter(t => ["create_document", "web_search"].includes(t.name));
+      return AGENT_TOOLS.filter(t => ["create_document", "web_search", "web_fetch", ...memoryTools].includes(t.name));
     case "spreadsheet_creation":
-      return AGENT_TOOLS.filter(t => ["create_spreadsheet", "analyze_data"].includes(t.name));
+      return AGENT_TOOLS.filter(t => ["create_spreadsheet", "analyze_data", ...memoryTools].includes(t.name));
     case "data_analysis":
-      return AGENT_TOOLS.filter(t => ["analyze_data", "generate_chart", "create_spreadsheet"].includes(t.name));
+      return AGENT_TOOLS.filter(t => ["analyze_data", "generate_chart", "create_spreadsheet", ...memoryTools].includes(t.name));
+    case "multi_step_task":
+      return AGENT_TOOLS;
     default:
       return AGENT_TOOLS;
   }

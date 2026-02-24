@@ -17,6 +17,13 @@ import { randomUUID } from "crypto";
 import { metricsCollector } from "./metricsCollector";
 import { validateOrThrow } from "./validation";
 import { defaultToolRegistry as sandboxToolRegistry } from "./sandbox/tools";
+import {
+  filterToolDefinitions,
+  filterToolDefinitionsByTier,
+  getProfileForLegacyPlan,
+  type ToolProfile,
+  type SubscriptionTier,
+} from "./openclaw/toolCatalog";
 
 export const ToolDefinitionSchema = z.object({
   name: z.string().min(1, "Tool name is required"),
@@ -128,6 +135,19 @@ export class ToolRegistry {
   listForPlan(plan: "free" | "pro" | "admin"): ToolDefinition[] {
     const allowedTools = policyEngine.getToolsForPlan(plan);
     return this.list().filter(t => allowedTools.includes(t.name));
+  }
+
+  listForProfile(profile: ToolProfile): ToolDefinition[] {
+    return filterToolDefinitions(this.list(), profile);
+  }
+
+  listForTier(tier: SubscriptionTier): ToolDefinition[] {
+    return filterToolDefinitionsByTier(this.list(), tier);
+  }
+
+  listForLegacyPlan(plan: string): ToolDefinition[] {
+    const profile = getProfileForLegacyPlan(plan);
+    return filterToolDefinitions(this.list(), profile);
   }
 
   async execute(name: string, input: any, context: ToolContext): Promise<ToolResult> {

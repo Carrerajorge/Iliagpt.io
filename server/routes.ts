@@ -49,6 +49,7 @@ import scientificSearchRouter from "./routes/scientificSearchRouter";
 import documentAnalysisRouter from "./routes/documentAnalysisRouter";
 import ragRouter from "./routes/ragRouter";
 import { createStripeRouter } from "./routes/stripeRouter";
+import { createOpenClawRouter } from "./routes/openclawRouter";
 import { createRunController } from "./agent/superAgent/tracing/RunController";
 import { initializeEventStore, getEventStore } from "./agent/superAgent/tracing/EventStore";
 import type { ExecutionEvent, ExecutionEventType } from "@shared/executionProtocol";
@@ -314,6 +315,7 @@ export async function registerRoutes(
   app.use("/api/document-analysis", documentAnalysisRouter);
   app.use("/api/rag", ragRouter);
   app.use(createStripeRouter());
+  app.use("/api/openclaw", createOpenClawRouter());
   app.use("/api", createRunController());
 
   // ===== Run Detail Endpoints =====
