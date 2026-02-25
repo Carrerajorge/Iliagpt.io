@@ -38,6 +38,7 @@
       </div>
       <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
     </div>
+    <style>vite-error-overlay{display:none!important}</style>
     <script>
       (function() {
         var originalError = console.error;
@@ -91,6 +92,15 @@
             e.preventDefault();
           }
         }, true);
+        new MutationObserver(function(mutations) {
+          mutations.forEach(function(m) {
+            m.addedNodes.forEach(function(n) {
+              if (n.tagName && n.tagName.toLowerCase() === 'vite-error-overlay') {
+                n.remove();
+              }
+            });
+          });
+        }).observe(document.documentElement, { childList: true, subtree: true });
       })();
     </script>
     <script type="module" src="/src/main.tsx"></script>
