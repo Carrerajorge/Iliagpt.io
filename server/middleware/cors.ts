@@ -72,8 +72,7 @@ export function isAllowedOrigin(originHeader: string | undefined): boolean {
 function isValidReplitDomain(domain: string): boolean {
     if (!domain || typeof domain !== 'string') return false;
     const trimmed = domain.trim().toLowerCase();
-    // Replit domains should match *.replit.dev, *.repl.co, or *.replit.app
-    return /^[a-z0-9][a-z0-9\-]*\.(replit\.dev|repl\.co|replit\.app)$/.test(trimmed);
+    return /^[a-z0-9][a-z0-9.\-]*\.(replit\.dev|repl\.co|replit\.app)$/.test(trimmed);
 }
 
 export const corsOptions: cors.CorsOptions = {
