@@ -1,7 +1,7 @@
-import swaggerJsdoc from 'swagger-jsdoc';
+import swaggerJsdoc, { Options } from 'swagger-jsdoc';
 
-const options: swaggerJsdoc.Options = {
-  swaggerDefinition: {
+const options: Options = {
+  definition: {
     openapi: '3.0.0',
     info: {
       title: 'ILIAGPT PRO API',
@@ -64,7 +64,7 @@ function buildSwaggerSpec() {
     process.env.CI === 'true' ||
     process.env.NODE_ENV === 'test'
   ) {
-    return options.swaggerDefinition as any;
+    return options.definition as any;
   }
 
   try {
@@ -74,7 +74,7 @@ function buildSwaggerSpec() {
       '[Swagger] swagger-jsdoc generation failed; using static definition',
       err
     );
-    return options.swaggerDefinition as any;
+    return options.definition as any;
   }
 }
 

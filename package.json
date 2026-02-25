@@ -158,7 +158,6 @@
     "@types/memoizee": "^0.4.12",
     "@types/multer": "^2.0.0",
     "@types/prismjs": "^1.26.5",
-    "@types/react-pdf": "^6.2.0",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/react-window": "^1.8.8",
     "@types/supertest": "^6.0.3",
@@ -179,6 +178,7 @@
     "bcrypt": "^6.0.0",
     "bullmq": "^5.70.1",
     "chalk": "^5.6.2",
+    "chevrotain": "^11.0.3",
     "chokidar": "^5.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -290,7 +290,7 @@
     "stripe": "^20.0.0",
     "stripe-replit-sync": "^1.0.0",
     "supertest": "^7.2.2",
-    "swagger-jsdoc": "^1.10.3",
+    "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "tailwind-merge": "^3.3.1",
     "tailwindcss-animate": "^1.0.7",
@@ -371,6 +371,13 @@
     "bufferutil": "^4.0.8"
   },
   "overrides": {
-    "xlsx": "npm:@e965/xlsx@^0.20.3"
+    "xlsx": "npm:@e965/xlsx@^0.20.3",
+    "fast-xml-parser": "^5.3.6",
+    "readdir-glob": {
+      "minimatch": "^10.2.1"
+    },
+    "glob@10": {
+      "minimatch": "^10.2.1"
+    }
   }
 }
