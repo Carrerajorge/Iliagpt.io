@@ -845,7 +845,7 @@ export async function handleCompaction(
   return {
     compacted: true,
     messages: result.messages,
-    summary: result.summary,
+    summary: `Compacted ${result.chunksCompacted} chunks: ${result.originalTokenCount} → ${result.compactedTokenCount} tokens (${Math.round(result.compressionRatio * 100)}%)`,
   };
 }
 

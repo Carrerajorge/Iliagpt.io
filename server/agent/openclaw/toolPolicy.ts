@@ -82,8 +82,8 @@ const PLUS_TOOLS = new Set([
 
 const PRO_TOOLS = new Set([
   ...PLUS_TOOLS,
-  "sessions_spawn",
   "subagent_spawn",
+  "subagent_status",
   "send_email",
 ]);
 
