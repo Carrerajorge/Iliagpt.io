@@ -56,7 +56,7 @@ export const setupSecurity = (app: Express) => {
         directives: cspDirectives,
       },
       crossOriginEmbedderPolicy: false,
-      crossOriginResourcePolicy: { policy: "same-origin" },
+      crossOriginResourcePolicy: { policy: isProduction ? "same-origin" : "cross-origin" },
       crossOriginOpenerPolicy: { policy: "same-origin" },
       referrerPolicy: { policy: "strict-origin-when-cross-origin" },
       hsts: isProduction ? { maxAge: 31536000, includeSubDomains: true, preload: true } : false,

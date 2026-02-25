@@ -75,7 +75,9 @@
             e.message.includes('WebSocket') ||
             e.message.includes('websocket') ||
             e.message.includes('hmr') ||
-            e.message.includes('Cannot read properties of undefined')
+            e.message.includes('Cannot read properties of undefined') ||
+            e.message.includes('Importing binding name') ||
+            e.message.includes('is not found')
           )) {
             e.stopImmediatePropagation();
             e.preventDefault();

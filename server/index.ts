@@ -326,6 +326,13 @@ export function log(message: string, source = "express") {
   if (isProduction) {
     serveStatic(app);
   } else {
+    app.use((req, res, next) => {
+      if (req.path.startsWith('/src/') || req.path.startsWith('/@') || req.path.startsWith('/node_modules/')) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      }
+      next();
+    });
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
   }

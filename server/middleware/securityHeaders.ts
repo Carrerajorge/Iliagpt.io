@@ -174,9 +174,8 @@ export function securityHeaders(config: SecurityHeadersConfig = {}) {
       res.setHeader("Permissions-Policy", sanitizeHeaderValue(permissionsPolicy));
     }
 
-    // Security: Cross-Origin-Opener-Policy prevents window.opener attacks
     res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-    res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+    res.setHeader("Cross-Origin-Resource-Policy", isProductionEnv ? "same-origin" : "cross-origin");
     res.setHeader("Cross-Origin-Embedder-Policy", "unsafe-none");
 
     res.removeHeader("X-Powered-By");
