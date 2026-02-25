@@ -43,53 +43,24 @@
       (function() {
         var originalError = console.error;
         var originalWarn = console.warn;
-        var suppressedPatterns = [
-          'vite',
-          'websocket',
-          'WebSocket',
-          'Could not parse CSS stylesheet',
-          'adoptedStyleSheets',
-          'Cannot read properties of undefined',
-          'hmr',
-          'HMR'
-        ];
-        var shouldSuppress = function(args) {
-          var msg = args[0];
-          if (!msg) return false;
-          var str = typeof msg === 'string' ? msg : (msg && msg.message ? msg.message : String(msg));
-          var lower = str.toLowerCase();
-          return suppressedPatterns.some(function(p) { return lower.includes(p.toLowerCase()); });
-        };
+        function isViteHmrMsg(str) {
+          if (!str) return false;
+          var s = typeof str === 'string' ? str : String(str);
+          return s.indexOf('[vite]') === 0 || (s.indexOf('WebSocket') !== -1 && s.indexOf('vite') !== -1) || s.indexOf('[hmr]') !== -1;
+        }
         console.error = function() {
-          var args = Array.prototype.slice.call(arguments);
-          if (shouldSuppress(args)) return;
-          originalError.apply(console, args);
+          if (arguments.length && isViteHmrMsg(arguments[0])) return;
+          originalError.apply(console, arguments);
         };
         console.warn = function() {
-          var args = Array.prototype.slice.call(arguments);
-          if (shouldSuppress(args)) return;
-          originalWarn.apply(console, args);
+          if (arguments.length && isViteHmrMsg(arguments[0])) return;
+          originalWarn.apply(console, arguments);
         };
         window.addEventListener('error', function(e) {
-          if (e.message && (
-            e.message.includes('send') ||
-            e.message.includes('WebSocket') ||
-            e.message.includes('websocket') ||
-            e.message.includes('hmr') ||
-            e.message.includes('Cannot read properties of undefined') ||
-            e.message.includes('Importing binding name') ||
-            e.message.includes('is not found')
-          )) {
+          if (e.message && e.message.indexOf('[vite]') !== -1) {
             e.stopImmediatePropagation();
             e.preventDefault();
             return false;
-          }
-        }, true);
-        window.addEventListener('unhandledrejection', function(e) {
-          var msg = e.reason && (e.reason.message || String(e.reason));
-          if (msg && (msg.includes('WebSocket') || msg.includes('send') || msg.includes('hmr'))) {
-            e.stopImmediatePropagation();
-            e.preventDefault();
           }
         }, true);
         new MutationObserver(function(mutations) {
