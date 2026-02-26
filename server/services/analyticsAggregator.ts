@@ -317,13 +317,17 @@ export function startAggregator(): void {
     return;
   }
 
-  console.log("[Analytics] Starting analytics aggregator (60s interval)");
+  const intervalMs = process.env.NODE_ENV !== 'production'
+    ? 5 * 60 * 1000
+    : AGGREGATION_INTERVAL_MS;
+
+  console.log(`[Analytics] Starting analytics aggregator (${intervalMs / 1000}s interval)`);
 
   runAggregation().catch(console.error);
 
   aggregatorInterval = setInterval(() => {
     runAggregation().catch(console.error);
-  }, AGGREGATION_INTERVAL_MS);
+  }, intervalMs);
 }
 
 export function stopAggregator(): void {

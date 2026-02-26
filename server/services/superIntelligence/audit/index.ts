@@ -86,20 +86,22 @@ import { queryAnalyzer } from './QueryAnalyzer';
 import { Logger } from '../../../lib/logger';
 
 export async function initializeAuditSystem(): Promise<void> {
+  if (process.env.NODE_ENV !== 'production') {
+    Logger.info('[AuditSystem] Skipping audit system in development mode to conserve memory');
+    return;
+  }
+
   Logger.info('[AuditSystem] Initializing SuperIntelligence Audit System...');
 
   try {
-    // Restaurar datos de Redis
     await Promise.all([
       latencyAnalyzer.restore(),
       tokenTracker.restore(),
       queryAnalyzer.restore(),
     ]);
 
-    // Iniciar recolección de métricas
     performanceAuditor.startCollection();
 
-    // Iniciar auto-persistencia
     tokenTracker.startAutoPersist();
 
     Logger.info('[AuditSystem] SuperIntelligence Audit System initialized successfully');

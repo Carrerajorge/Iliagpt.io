@@ -99,6 +99,15 @@ let isInitialized = false;
  * Initialize the complete super-intelligence system
  */
 export async function initializeSuperIntelligence(): Promise<SuperIntelligenceStatus> {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[SuperIntelligence] Skipping in development mode to conserve memory');
+    return {
+      initialized: true,
+      modules: { audit: false, understanding: false, cognitive: false, metaAgent: false, learning: false },
+      stats: { totalAgents: 0, activeTasks: 0, totalFeedback: 0, healthScore: 100 }
+    };
+  }
+
   console.log('');
   console.log('╔══════════════════════════════════════════════════════════════╗');
   console.log('║        SUPER INTELLIGENCE SYSTEM INITIALIZATION               ║');
@@ -114,7 +123,6 @@ export async function initializeSuperIntelligence(): Promise<SuperIntelligenceSt
   };
 
   try {
-    // Phase 1: Initialize Audit System
     console.log('┌─────────────────────────────────────────────────────────────┐');
     console.log('│ Phase 1: Audit System                                        │');
     console.log('└─────────────────────────────────────────────────────────────┘');
@@ -122,7 +130,6 @@ export async function initializeSuperIntelligence(): Promise<SuperIntelligenceSt
     moduleStatus.audit = true;
     console.log('✓ Audit System initialized\n');
 
-    // Phase 2: Initialize Understanding System
     console.log('┌─────────────────────────────────────────────────────────────┐');
     console.log('│ Phase 2: User Understanding System                           │');
     console.log('└─────────────────────────────────────────────────────────────┘');
@@ -130,7 +137,6 @@ export async function initializeSuperIntelligence(): Promise<SuperIntelligenceSt
     moduleStatus.understanding = true;
     console.log('✓ Understanding System initialized\n');
 
-    // Phase 3: Initialize Cognitive System
     console.log('┌─────────────────────────────────────────────────────────────┐');
     console.log('│ Phase 3: Cognitive Architecture                              │');
     console.log('└─────────────────────────────────────────────────────────────┘');
@@ -138,7 +144,6 @@ export async function initializeSuperIntelligence(): Promise<SuperIntelligenceSt
     moduleStatus.cognitive = true;
     console.log('✓ Cognitive System initialized\n');
 
-    // Phase 4: Initialize Meta-Agent System
     console.log('┌─────────────────────────────────────────────────────────────┐');
     console.log('│ Phase 4: Meta-Agent Supervisor                               │');
     console.log('└─────────────────────────────────────────────────────────────┘');
@@ -146,7 +151,6 @@ export async function initializeSuperIntelligence(): Promise<SuperIntelligenceSt
     moduleStatus.metaAgent = true;
     console.log('✓ Meta-Agent System initialized\n');
 
-    // Phase 5: Initialize Learning System
     console.log('┌─────────────────────────────────────────────────────────────┐');
     console.log('│ Phase 5: Continuous Learning System                          │');
     console.log('└─────────────────────────────────────────────────────────────┘');
