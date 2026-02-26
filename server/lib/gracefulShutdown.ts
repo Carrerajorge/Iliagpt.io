@@ -19,7 +19,7 @@ interface ConnectionTracker {
 type CleanupFn = () => Promise<void>;
 
 const DEFAULT_TIMEOUT = 10000; // Reduced from 30s to 10s for faster deployments
-const DEFAULT_SIGNALS: NodeJS.Signals[] = ["SIGTERM", "SIGINT", "SIGHUP"];
+const DEFAULT_SIGNALS: NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
 
 let isShuttingDown = false;
 let shutdownPromise: Promise<void> | null = null;
@@ -270,6 +270,10 @@ export function setupGracefulShutdown(
   for (const signal of mergedConfig.signals) {
     process.on(signal, () => handleSignal(signal));
   }
+
+  process.on("SIGHUP", () => {
+    logger.debug("Received SIGHUP, ignoring (development environment)");
+  });
 
   process.on("uncaughtException", (error) => {
     logger.error("Uncaught exception, initiating shutdown", {
