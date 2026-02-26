@@ -84,7 +84,8 @@ export function trackWebSocketConnections(wss: WebSocketServer): () => void {
 
 async function drainConnections(timeoutMs: number): Promise<void> {
   const startTime = Date.now();
-  const deadline = startTime + timeoutMs;
+  const maxWait = Math.min(timeoutMs, 3000);
+  const deadline = startTime + maxWait;
 
   logger.info("Draining connections", {
     totalTrackers: connectionTrackers.length,
@@ -100,7 +101,18 @@ async function drainConnections(timeoutMs: number): Promise<void> {
     }
   }
 
-  const checkInterval = 100;
+  for (const tracker of connectionTrackers) {
+    for (const socket of tracker.httpConnections) {
+      try {
+        socket.setKeepAlive(false);
+        if (socket.setTimeout) socket.setTimeout(1000);
+      } catch (error) {
+        logger.debug("Error updating socket keepalive", { error });
+      }
+    }
+  }
+
+  const checkInterval = 250;
   while (Date.now() < deadline) {
     let activeConnections = 0;
     for (const tracker of connectionTrackers) {
@@ -130,7 +142,11 @@ async function drainConnections(timeoutMs: number): Promise<void> {
     remainingConnections += tracker.wsConnections.size;
   }
 
-  logger.warn("Force closed remaining connections", { remainingConnections });
+  if (remainingConnections > 0) {
+    logger.warn("Force closed remaining connections", { remainingConnections });
+  } else {
+    logger.info("All connections closed");
+  }
 }
 
 async function runCleanupFunctions(): Promise<void> {

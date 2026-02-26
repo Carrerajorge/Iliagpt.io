@@ -365,7 +365,7 @@ export function log(message: string, source = "express") {
 
     // Setup graceful shutdown with connection draining
     setupGracefulShutdown(httpServer, {
-      timeout: 30000,
+      timeout: 10000,
       onShutdown: async () => {
         log("Running application cleanup...");
       },
