@@ -72,6 +72,14 @@ export function getTraceId(): string | undefined {
   return getTraceIdFromContext();
 }
 
+const DEV_SKIP_LOG_PREFIXES = ['/src/', '/node_modules/', '/@', '/@vite/', '/@replit/', '/__vite'];
+const isDev = process.env.NODE_ENV !== 'production';
+
+function shouldSkipLogging(path: string): boolean {
+  if (!isDev) return false;
+  return DEV_SKIP_LOG_PREFIXES.some(prefix => path.startsWith(prefix));
+}
+
 export function requestLoggerMiddleware(
   req: Request,
   res: Response,
@@ -92,6 +100,8 @@ export function requestLoggerMiddleware(
     res.locals.requestId = traceId;
   }
 
+  const skipLog = shouldSkipLogging(req.path);
+
   const context: CorrelationContext = {
     traceId,
     requestId: traceId,
@@ -102,43 +112,40 @@ export function requestLoggerMiddleware(
   };
 
   runWithContext(context, () => {
-    const requestLogger = logger.child({ traceId });
+    if (!skipLog) {
+      const requestLogger = logger.child({ traceId });
 
-    requestLogger.info("Request started", {
-      method: req.method,
-      path: req.path,
-      // SECURITY FIX #21: Use sanitized query params
-      query: sanitizeQueryForLogging(req.query as Record<string, any>),
-      userAgent: req.get("user-agent"),
-      ip: req.ip || req.socket.remoteAddress,
-    });
-
-    res.on("finish", () => {
-      const durationMs = Date.now() - startTime;
-      // NOTE: Cannot set headers here - response already sent.
-      // Only set response headers before headers are sent. (We still log duration here.)
-
-      const isError = res.statusCode >= 400;
-
-      const logMethod = isError ? "warn" : "info";
-      requestLogger[logMethod]("Request completed", {
+      requestLogger.info("Request started", {
         method: req.method,
         path: req.path,
-        statusCode: res.statusCode,
-        durationMs,
+        query: sanitizeQueryForLogging(req.query as Record<string, any>),
+        userAgent: req.get("user-agent"),
+        ip: req.ip || req.socket.remoteAddress,
       });
-    });
 
-    res.on("error", (error: Error) => {
-      const durationMs = Date.now() - startTime;
-      requestLogger.error("Request error", {
-        method: req.method,
-        path: req.path,
-        error: error.message,
-        stack: error.stack,
-        durationMs,
+      res.on("finish", () => {
+        const durationMs = Date.now() - startTime;
+        const isError = res.statusCode >= 400;
+        const logMethod = isError ? "warn" : "info";
+        requestLogger[logMethod]("Request completed", {
+          method: req.method,
+          path: req.path,
+          statusCode: res.statusCode,
+          durationMs,
+        });
       });
-    });
+
+      res.on("error", (error: Error) => {
+        const durationMs = Date.now() - startTime;
+        requestLogger.error("Request error", {
+          method: req.method,
+          path: req.path,
+          error: error.message,
+          stack: error.stack,
+          durationMs,
+        });
+      });
+    }
 
     next();
   });

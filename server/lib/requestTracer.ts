@@ -48,10 +48,15 @@ function isSafeRecordKey(key: string): boolean {
   return !FORBIDDEN_RECORD_KEYS.has(key) && !key.startsWith("__");
 }
 
+const DEV_SKIP_LOG_PREFIXES = ['/src/', '/node_modules/', '/@', '/@vite/', '/@replit/', '/__vite'];
+const isDevMode = process.env.NODE_ENV !== 'production';
+
+function shouldSkipTracerLog(path: string): boolean {
+  if (!isDevMode) return false;
+  return DEV_SKIP_LOG_PREFIXES.some(prefix => path.startsWith(prefix));
+}
+
 export function requestTracerMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // IMPORTANT: Do not override upstream correlation/request IDs.
-  // `correlationIdMiddleware` + `requestLoggerMiddleware` already establish canonical IDs and headers.
-  // This tracer is for stats only and must preserve end-to-end traceability.
   const upstreamFromLocals =
     typeof (res.locals as any)?.requestId === "string" ? String((res.locals as any).requestId).trim() : "";
   const upstreamFromCorrelation =
@@ -63,12 +68,12 @@ export function requestTracerMiddleware(req: Request, res: Response, next: NextF
   const requestId = upstream || nanoid(16);
   const startTime = Date.now();
   
-  // Almacenar requestId en res.locals para acceso en otras partes
   if (!res.locals.requestId) {
     res.locals.requestId = requestId;
   }
   
   const userId = (req as any).user?.id;
+  const skipLog = shouldSkipTracerLog(req.path);
   
   const requestInfo: RequestInfo = {
     requestId,
@@ -82,55 +87,52 @@ export function requestTracerMiddleware(req: Request, res: Response, next: NextF
   totalRequests++;
 
   try {
-    // Preserve the canonical request id header if already set upstream.
     if (!res.getHeader("X-Request-Id")) {
       res.setHeader("X-Request-Id", requestId);
     }
   } catch {
-    // Ignore if headers cannot be mutated at this point.
   }
   
-  // Contadores por método y path
   const method = isSafeRecordKey(req.method) ? req.method : "INVALID";
   methodCounts[method] = (methodCounts[method] || 0) + 1;
   const normalizedPath = normalizePath(req.path);
   const safePath = isSafeRecordKey(normalizedPath) ? normalizedPath : "INVALID";
   pathCounts[safePath] = (pathCounts[safePath] || 0) + 1;
   
-  logger.withRequest(requestId, userId).info(`→ ${req.method} ${req.path}`, {
-    query: sanitizeQueryForLogging(req.query as Record<string, unknown>),
-    userAgent: sanitizeUserAgent(req.get("user-agent")),
-  });
+  if (!skipLog) {
+    logger.withRequest(requestId, userId).info(`→ ${req.method} ${req.path}`, {
+      query: sanitizeQueryForLogging(req.query as Record<string, unknown>),
+      userAgent: sanitizeUserAgent(req.get("user-agent")),
+    });
+  }
   
-  // Handler para cuando termina la respuesta
   res.on("finish", () => {
     const duration = Date.now() - startTime;
     activeRequests.delete(requestId);
     
-    // Actualizar estadísticas
     totalDuration += duration;
     maxDuration = Math.max(maxDuration, duration);
     minDuration = Math.min(minDuration, duration);
     
     const isError = res.statusCode >= 400;
     
-    // Agregar al historial
     requestHistory.push({
       duration,
       timestamp: Date.now(),
       error: isError,
     });
     
-    // Rotación del historial
     if (requestHistory.length > REQUEST_HISTORY_MAX) {
       requestHistory.splice(0, requestHistory.length - REQUEST_HISTORY_MAX);
     }
     
-    const logMethod = isError ? "warn" : "info";
-    logger.withRequest(requestId, userId).withDuration(duration)[logMethod](
-      `← ${req.method} ${req.path} ${res.statusCode}`,
-      { statusCode: res.statusCode }
-    );
+    if (!skipLog) {
+      const logMethod = isError ? "warn" : "info";
+      logger.withRequest(requestId, userId).withDuration(duration)[logMethod](
+        `← ${req.method} ${req.path} ${res.statusCode}`,
+        { statusCode: res.statusCode }
+      );
+    }
   });
   
   res.on("error", (error) => {

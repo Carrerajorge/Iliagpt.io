@@ -81,7 +81,7 @@ interface HealthCheckResult {
   consecutiveFailures: number;
 }
 
-const HEALTH_CHECK_INTERVAL_MS = 30000;
+const HEALTH_CHECK_INTERVAL_MS = process.env.NODE_ENV === 'production' ? 30000 : 120000;
 const HEALTH_CHECK_TIMEOUT_MS = 5000;
 const HEALTHY_THRESHOLD = 3;
 const MAX_RECONNECT_DELAY_MS = 30000;
