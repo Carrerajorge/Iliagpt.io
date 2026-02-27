@@ -1,5 +1,6 @@
 import type { UploadSecurityContract } from "@shared/uploadContracts";
 import { apiFetch } from "@/lib/apiClient";
+import { getInMemoryCsrfToken, setInMemoryCsrfToken } from "@/lib/csrfTokenStore";
 
 type UploadHeaders = Record<string, string>;
 
@@ -67,7 +68,11 @@ function getCookieValue(name: string): string | null {
     return null;
   }
   const match = document.cookie.match(new RegExp(`(^|;\\s*)${name}=([^;]*)`));
-  return match ? decodeURIComponent(match[2]) : null;
+  const cookieVal = match ? decodeURIComponent(match[2]) : null;
+  if (name === "XSRF-TOKEN" && !cookieVal) {
+    return getInMemoryCsrfToken();
+  }
+  return cookieVal;
 }
 
 function analyzeUploadUrl(rawUrl: string): UrlAnalysis {
@@ -212,6 +217,12 @@ export async function ensureCsrfToken(): Promise<void> {
             const effectiveToken = isToken(rotatedToken) ? rotatedToken : cookieToken;
             if (!isToken(effectiveToken)) {
               throw new Error("Invalid CSRF token after refresh");
+            }
+            if (isToken(rotatedToken)) {
+              setInMemoryCsrfToken(rotatedToken);
+              try {
+                document.cookie = `XSRF-TOKEN=${rotatedToken}; path=/; max-age=14400; SameSite=Lax`;
+              } catch {}
             }
             return;
           } catch (error: unknown) {

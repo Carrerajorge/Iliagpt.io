@@ -52,6 +52,9 @@ The system incorporates robust production-grade systems for stability under high
 ### Data Storage
 PostgreSQL is used as the relational database, managed with Drizzle ORM. Client-side persistence leverages `localStorage` for chat history and preferences, and IndexedDB for background tasks and the offline queue.
 
+### CSRF Token Architecture
+The CSRF system uses a shared token store (`client/src/lib/csrfTokenStore.ts`) that both `apiClient.ts` and `uploadTransport.ts` import from. This avoids circular imports between these modules. The store provides cookie-first resolution with in-memory fallback for Safari/Replit webview environments where third-party cookies are blocked. The server CSRF middleware (`server/middleware/csrf.ts`) accepts header-only CSRF tokens when cookies are unavailable, provided the origin check passes.
+
 ### Key Design Patterns
 The project utilizes a monorepo structure (`client/`, `server/`, `shared/`) and ensures type safety through Zod schemas for runtime validation.
 

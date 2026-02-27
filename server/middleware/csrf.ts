@@ -229,6 +229,12 @@ export const csrfProtection = (req: Request, res: Response, next: NextFunction) 
     const isProduction = process.env.NODE_ENV === "production" || isReplitDeployment;
 
     if (typeof headerToken !== "string" || typeof cookieToken !== "string") {
+        if (typeof headerToken === "string" && CSRF_TOKEN_PATTERN.test(headerToken) && typeof cookieToken !== "string") {
+            if (!res.headersSent) {
+                issueCsrfCookie(req, res, isReplitDeployment, isProduction);
+            }
+            return next();
+        }
         if (!res.headersSent) {
             issueCsrfCookie(req, res, isReplitDeployment, isProduction);
         }
