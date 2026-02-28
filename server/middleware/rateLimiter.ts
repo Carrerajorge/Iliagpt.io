@@ -185,6 +185,11 @@ const consumeLimiter = async (
   res: Response,
   next: NextFunction
 ) => {
+    // Force bypass in development to avoid Upstash quota issues
+    if (process.env.NODE_ENV === "development" || process.env.BYPASS_RATE_LIMIT === "true") {
+      return next();
+    }
+  
   // Bypass rate limiting in development
   if (process.env.NODE_ENV === "development") {
     return next();

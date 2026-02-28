@@ -235,17 +235,16 @@ export function getIntegratedModelProviderIds(): string[] {
  *  - model ID + type match the chat pattern
  */
 export function isModelEligibleForPublic(model: {
-  provider: unknown;
-  modelId?: unknown;
-  modelType?: unknown;
-  status?: unknown;
-  isEnabled?: unknown;
-}): boolean {
-  const provider = sanitize(model.provider);
-  const modelId = sanitize(model.modelId);
-  return (provider === "minimax" && modelId === "minimax-m2.5") || 
-         (provider === "openrouter" && modelId === "minimax/minimax-m2.5");
-}
+    provider: unknown;
+    modelId?: unknown;
+    modelType?: unknown;
+    status?: unknown;
+    isEnabled?: unknown;
+  }): boolean {
+    const modelId = String(model.modelId || "").toLowerCase();
+    // Permitir solo Minimax M2.5
+    return modelId.includes("minimax") && modelId.includes("m2.5");
+  }
 
 /**
  * Return all runtime providers (useful for iteration without importing the union).
