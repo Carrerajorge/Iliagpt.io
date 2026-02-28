@@ -19,6 +19,11 @@ class RedisConversationCache {
       return;
     }
 
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[RedisConversationCache] Redis disabled in development (in-memory fallback)");
+      return;
+    }
+
     const redisUrl = process.env.REDIS_URL;
     if (!redisUrl) {
       console.log("[RedisConversationCache] No REDIS_URL, using in-memory fallback");

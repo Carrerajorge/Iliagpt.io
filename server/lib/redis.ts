@@ -17,9 +17,13 @@ import { createLogger } from './productionLogger';
 const logger = createLogger('RedisSingleton');
 
 function buildRedisClient(): Redis {
-  const redisUrl = process.env.REDIS_URL;
-  const host = process.env.REDIS_HOST;
+  const isDev = process.env.NODE_ENV !== "production";
+  const redisUrl = isDev ? undefined : process.env.REDIS_URL;
+  const host = isDev ? undefined : process.env.REDIS_HOST;
   const port = process.env.REDIS_PORT ? Number(process.env.REDIS_PORT) : undefined;
+  if (isDev) {
+    logger.info('Redis disabled in development to avoid Upstash quota issues');
+  }
 
   // Cap reconnection attempts so we don't spam logs when Redis is unavailable.
   const MAX_RETRIES = 5;

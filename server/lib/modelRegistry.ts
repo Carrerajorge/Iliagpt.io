@@ -71,17 +71,17 @@ export const DEFAULT_GEMINI_REASONING_MODEL = GEMINI_MODELS_REGISTRY.PRO_31;
 /** Default Gemini model for vision tasks. */
 export const DEFAULT_GEMINI_VISION_MODEL = GEMINI_MODELS_REGISTRY.FLASH_31;
 
-/** Default provider (app-level). */
-export const DEFAULT_PROVIDER = "gemini" as const;
+/** Default provider (app-level). Routes through OpenRouter via OPENAI_BASE_URL. */
+export const DEFAULT_PROVIDER = "openai" as const;
 
 /** Default model for general text completion (app-level). */
-export const DEFAULT_TEXT_MODEL = DEFAULT_GEMINI_TEXT_MODEL;
+export const DEFAULT_TEXT_MODEL = "minimax/minimax-m2.5";
 
 /** Default model for reasoning / planning tasks (app-level). */
-export const DEFAULT_REASONING_MODEL = DEFAULT_GEMINI_REASONING_MODEL;
+export const DEFAULT_REASONING_MODEL = "minimax/minimax-m2.5";
 
 /** Default model for vision tasks (app-level). */
-export const DEFAULT_VISION_MODEL = DEFAULT_GEMINI_VISION_MODEL;
+export const DEFAULT_VISION_MODEL = "minimax/minimax-m2.5";
 
 // ============================================================================
 // Known Model Sets (for provider detection in llmGateway)

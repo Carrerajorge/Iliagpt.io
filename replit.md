@@ -60,8 +60,8 @@ The project utilizes a monorepo structure (`client/`, `server/`, `shared/`) and 
 
 ## External Dependencies
 ### AI Services
-- **xAI Grok API**: Primary AI model provider.
-- **Google Gemini API**: Default AI model provider.
+- **OpenRouter (minimax/minimax-m2.5)**: Sole active AI model, accessed via OpenAI-compatible API through OpenRouter. `OPENAI_BASE_URL=https://openrouter.ai/api/v1` routes the existing OpenAI client to OpenRouter. `OPENAI_API_KEY` stores the OpenRouter API key. All default providers/models in `server/lib/modelRegistry.ts` point to `minimax/minimax-m2.5` via the `openai` provider.
+- **Redis**: Bypassed in development (`NODE_ENV !== "production"`) across `redis.ts`, `cache.ts`, `rateLimiter.ts`, `redisConversationCache.ts`, and `redisSSE.ts` to avoid Upstash quota issues. In-memory fallbacks are used instead.
 - **LangGraph + LangChain**: Agent orchestration framework for stateful, multi-step workflows.
 
 ### Database

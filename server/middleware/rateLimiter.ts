@@ -71,7 +71,8 @@ let initialized = false;
 // Inicialización asíncrona segura
 const initLimiterPromise = (async () => {
   try {
-    if (process.env.REDIS_URL) {
+    const isDev = process.env.NODE_ENV !== "production";
+    if (process.env.REDIS_URL && !isDev) {
       // Race the connect against a hard timeout to prevent indefinite hangs
       const connectWithTimeout = Promise.race([
         redisClient.connect(),

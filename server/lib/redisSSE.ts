@@ -7,7 +7,7 @@ import { createClient, RedisClientType } from "redis";
 import { randomUUID } from "crypto";
 import { getHeartbeatManager, getConnectionStats as getHBStats } from "./connectionHeartbeat";
 
-const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
+const REDIS_URL = process.env.NODE_ENV !== "production" ? "" : (process.env.REDIS_URL || "redis://localhost:6379");
 const SESSION_TTL = parseInt(process.env.SESSION_TTL_SECONDS || "3600", 10);
 const SSE_HEARTBEAT_INTERVAL = parseFloat(process.env.SSE_HEARTBEAT_INTERVAL || "15") * 1000;
 const SSE_CLIENT_TIMEOUT = parseFloat(process.env.SSE_CLIENT_TIMEOUT || "300") * 1000;
@@ -52,7 +52,11 @@ class RedisSSEManager {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // Skip Redis if no URL configured - operate in local-only mode
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[RedisSSE] Redis disabled in development, operating in local-only mode");
+      return;
+    }
+
     if (!process.env.REDIS_URL) {
       console.log("[RedisSSE] No REDIS_URL configured, operating in local-only mode (no persistence)");
       return;

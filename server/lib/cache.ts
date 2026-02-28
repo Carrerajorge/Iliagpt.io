@@ -31,6 +31,13 @@ export class CacheService {
             throw new Error(msg);
         }
 
+        if (process.env.NODE_ENV !== 'production') {
+            Logger.info("[Cache] Redis disabled in development to avoid Upstash quota issues");
+            this.isConnected = false;
+            this.redis = null;
+            return;
+        }
+
         if (process.env.REDIS_URL) {
             try {
                 this.redis = new Redis(process.env.REDIS_URL, {

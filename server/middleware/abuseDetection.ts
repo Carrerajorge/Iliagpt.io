@@ -13,16 +13,18 @@ const MAX_ABUSE_SCORE = clampThreshold(Number(process.env.ABUSE_DETECTION_MAX_SC
 
 const EXEMPT_PATH_PREFIX = new Set([
   "/api/health", "/health", "/ready", "/metrics",
-  // SPA page-load endpoints (GET-only status/list calls)
   "/api/chats",
   "/api/models",
   "/api/settings",
-  "/api/user/usage",
+  "/api/user",
+  "/api/users",
   "/api/memory",
   "/api/integrations",
   "/api/oauth",
-  "/api/figma/status",
-  "/api/agent/runs",
+  "/api/figma",
+  "/api/agent",
+  "/api/admin",
+  "/user",
 ]);
 
 interface AbuseRecord {

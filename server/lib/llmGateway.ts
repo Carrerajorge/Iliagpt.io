@@ -194,6 +194,9 @@ function detectProviderFromModel(model: string | undefined): LLMProvider | null 
   if (/^(gpt-|o\d|chatgpt)/i.test(model)) {
     return "openai";
   }
+  if (/minimax/i.test(model)) {
+    return "openai";
+  }
 
   return null;
 }
@@ -694,6 +697,9 @@ class LLMGateway {
   // T100-7.1: Algoritmo Inteligente de Enrutamiento (Smart Routing)
   // Evalúa dinámicamente Costo, Latencia (Observabilidad) y Tasa de Errores (Breakers)
   private getSmartRoutedProviders(): LLMProvider[] {
+    if (process.env.OPENAI_BASE_URL?.includes("openrouter.ai")) {
+      return ["openai"];
+    }
     const configured: LLMProvider[] = ["gemini", "deepseek", "xai", "openai", "anthropic"];
     const active = configured.filter((p) => this.isProviderConfigured(p));
 
