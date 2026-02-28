@@ -68,7 +68,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { NotificationsControlPanels } from "@/components/settings/notifications-control-panels";
 
-type SettingsSection = "general" | "notifications" | "personalization" | "apps" | "schedules" | "data" | "security" | "account";
+type SettingsSection = "general" | "ai_config" | "notifications" | "personalization" | "apps" | "schedules" | "data" | "security" | "account";
 type BuilderLinkKind = "website" | "linkedin" | "github";
 
 interface SettingsDialogProps {
@@ -110,6 +110,7 @@ function getUrlLabel(url: string): string {
 
 const menuItems: { id: SettingsSection; label: string; icon: React.ReactNode }[] = [
   { id: "general", label: "General", icon: <Settings className="h-4 w-4" /> },
+  { id: "ai_config", label: "Modelos AI", icon: <Box className="h-4 w-4" /> },
   { id: "notifications", label: "Notificaciones", icon: <Bell className="h-4 w-4" /> },
   { id: "personalization", label: "Personalización", icon: <Palette className="h-4 w-4" /> },
   { id: "apps", label: "Aplicaciones", icon: <AppWindow className="h-4 w-4" /> },
@@ -1191,12 +1192,12 @@ function DataControlsSection() {
               <div className="space-y-2">
                 {archivedChats.map((chat) => (
                   <div key={chat.id} className="flex items-center justify-between p-3 border rounded-lg" data-testid={`archived-chat-${chat.id}`}>
-	                      <div className="flex-1 min-w-0">
-	                        <p className="text-sm font-medium truncate">{chat.title}</p>
-	                        <p className="text-xs text-muted-foreground">
-	                          {formatZonedDate(chat.createdAt, { timeZone: platformTimeZone, dateFormat: platformDateFormat })}
-	                        </p>
-	                      </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium truncate">{chat.title}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {formatZonedDate(chat.createdAt, { timeZone: platformTimeZone, dateFormat: platformDateFormat })}
+                                </p>
+                              </div>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1275,31 +1276,31 @@ function DataControlsSection() {
             ) : sharedLinks.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-8">No tienes enlaces compartidos.</p>
             ) : (
-	              <div className="space-y-2">
-	                {sharedLinks.map((link) => (
-	                  <div key={link.id} className={cn("p-3 border rounded-lg", link.isRevoked === 'true' && "opacity-50")} data-testid={`shared-link-${link.id}`}>
-	                    <div className="flex items-center justify-between">
-	                      <div className="flex-1 min-w-0">
-	                        <div className="flex items-center gap-2">
-	                          <Share2 className="h-4 w-4 text-muted-foreground" />
-	                          <span className="text-sm font-medium capitalize">{link.resourceType}</span>
-	                          <span className={cn(
-	                            "text-xs px-2 py-0.5 rounded-full",
-	                            link.scope === 'public' ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" :
-	                              link.scope === 'organization' ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300" :
-	                                "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-	                          )}>
-	                            {link.scope === 'public' ? 'Público' : link.scope === 'organization' ? 'Organización' : 'Solo con enlace'}
-	                          </span>
-	                        </div>
-	                        <p className="text-xs text-muted-foreground mt-1">
-	                          Creado: {formatZonedDate(link.createdAt, { timeZone: platformTimeZone, dateFormat: platformDateFormat })} · {link.accessCount} accesos
-	                        </p>
-	                      </div>
-	                      {link.isRevoked !== 'true' && (
-	                        <Button
-	                          variant="ghost"
-	                          size="sm"
+                      <div className="space-y-2">
+                        {sharedLinks.map((link) => (
+                          <div key={link.id} className={cn("p-3 border rounded-lg", link.isRevoked === 'true' && "opacity-50")} data-testid={`shared-link-${link.id}`}>
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <Share2 className="h-4 w-4 text-muted-foreground" />
+                                  <span className="text-sm font-medium capitalize">{link.resourceType}</span>
+                                  <span className={cn(
+                                    "text-xs px-2 py-0.5 rounded-full",
+                                    link.scope === 'public' ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" :
+                                      link.scope === 'organization' ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300" :
+                                        "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                                  )}>
+                                    {link.scope === 'public' ? 'Público' : link.scope === 'organization' ? 'Organización' : 'Solo con enlace'}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Creado: {formatZonedDate(link.createdAt, { timeZone: platformTimeZone, dateFormat: platformDateFormat })} · {link.accessCount} accesos
+                                </p>
+                              </div>
+                              {link.isRevoked !== 'true' && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
                           className="text-red-500 hover:text-red-600"
                           onClick={() => revokeLink.mutate(link.id)}
                           disabled={revokeLink.isPending}
@@ -1490,23 +1491,23 @@ function TrustedDevicesDialog(props: {
                       {d.ip && lastSeen ? <span> · </span> : null}
                       {lastSeen ? <span>Última actividad: {lastSeen}</span> : <span>Última actividad: —</span>}
                     </div>
-	                    <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
-	                      <span className={cn(
-	                        "inline-flex items-center gap-1",
-	                        d.pushApprovalsEnabled ? "text-green-600 dark:text-green-400" : "text-muted-foreground"
-	                      )}>
-	                        {d.pushApprovalsEnabled ? <CheckCircle2 className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
-	                        {d.pushApprovalsEnabled ? "Aprobaciones push: activas" : "Aprobaciones push: inactivas"}
-	                      </span>
-	                      <span className={cn(
-	                        "inline-flex items-center gap-1",
-	                        d.hasPushSubscription ? "text-green-600 dark:text-green-400" : "text-muted-foreground"
-	                      )}>
-	                        {d.hasPushSubscription ? <Check className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
-	                        {d.hasPushSubscription ? "Push: registrado" : "Push: sin registrar"}
-	                      </span>
-	                    </div>
-	                  </div>
+                            <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
+                              <span className={cn(
+                                "inline-flex items-center gap-1",
+                                d.pushApprovalsEnabled ? "text-green-600 dark:text-green-400" : "text-muted-foreground"
+                              )}>
+                                {d.pushApprovalsEnabled ? <CheckCircle2 className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
+                                {d.pushApprovalsEnabled ? "Aprobaciones push: activas" : "Aprobaciones push: inactivas"}
+                              </span>
+                              <span className={cn(
+                                "inline-flex items-center gap-1",
+                                d.hasPushSubscription ? "text-green-600 dark:text-green-400" : "text-muted-foreground"
+                              )}>
+                                {d.hasPushSubscription ? <Check className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+                                {d.hasPushSubscription ? "Push: registrado" : "Push: sin registrar"}
+                              </span>
+                            </div>
+                          </div>
 
                   <Button
                     variant="outline"
@@ -2133,8 +2134,66 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     toast({ title: "Todas las sesiones cerradas", description: "Se han cerrado todas las sesiones activas." });
   };
 
+  const updateAiKey = useMutation({
+    mutationFn: async (key: string) => {
+      const res = await apiFetch(`/api/admin/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ key: 'MINIMAX_API_KEY', value: key, category: 'ai_providers' }),
+      });
+      if (!res.ok) throw new Error('Failed to update API key');
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Éxito", description: "API Key de Minimax actualizada correctamente." });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "No se pudo actualizar la API Key.", variant: "destructive" });
+    }
+  });
+
+  const { data: currentApiKey } = useQuery({
+    queryKey: ['/api/admin/settings/MINIMAX_API_KEY'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/admin/settings/MINIMAX_API_KEY', { credentials: 'include' });
+      if (!res.ok) return { value: "" };
+      return res.json();
+    }
+  });
+
   const renderSectionContent = () => {
     switch (activeSection) {
+      case "ai_config":
+        return (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-xl font-semibold">Configuración de Modelos AI</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Configura las credenciales para el modelo Minimax M2.5
+              </p>
+            </div>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Minimax API Key</label>
+                <div className="flex gap-2">
+                  <Input 
+                    type="password" 
+                    placeholder="Introduzca su API Key de Minimax"
+                    defaultValue={currentApiKey?.value || ""}
+                    onBlur={(e) => {
+                      if (e.target.value) updateAiKey.mutate(e.target.value);
+                    }}
+                    data-testid="input-minimax-key"
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Esta clave se utilizará para todas las interacciones con el modelo Minimax-M2.5.
+                </p>
+              </div>
+            </div>
+          </div>
+        );
       case "general":
         return (
           <div className="space-y-6">

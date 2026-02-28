@@ -591,7 +591,60 @@ export async function registerRoutes(
     }),
   );
 
-  app.use("/api/ppt", pptExportRouter);
+  
+    app.use("/api/ppt", pptExportRouter);
+
+    // Get platform setting by key
+    app.get("/api/admin/settings/:key", async (req, res) => {
+      try {
+        const { key } = req.params;
+        const setting = await storage.getSetting(key);
+        if (!setting) {
+          return res.status(404).json({ message: "Setting not found" });
+        }
+        res.json(setting);
+      } catch (error: any) {
+        res.status(500).json({ message: error.message });
+      }
+    });
+
+    // Create or update platform setting
+    app.post("/api/admin/settings", async (req, res) => {
+      try {
+        const { key, value, description, category } = req.body;
+        const setting = await storage.upsertSetting(key, value, description, category);
+        res.json(setting);
+      } catch (error: any) {
+        res.status(500).json({ message: error.message });
+      }
+    });
+  
+
+  // Get platform setting by key
+  app.get("/api/admin/settings/:key", async (req, res) => {
+    try {
+      const { key } = req.params;
+      const setting = await storage.getSetting(key);
+      if (!setting) {
+        return res.status(404).json({ message: "Setting not found" });
+      }
+      res.json(setting);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Create or update platform setting
+  app.post("/api/admin/settings", async (req, res) => {
+    try {
+      const { key, value, description, category } = req.body;
+      const setting = await storage.upsertSetting(key, value, description, category);
+      res.json(setting);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   app.use("/api", createChatsRouter());
   app.use(createFilesRouter());
   app.use(createLocalStorageRouter());
