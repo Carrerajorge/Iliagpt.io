@@ -57,6 +57,7 @@ ROUTER_CONFIDENCE_THRESHOLD = "0.65"
 MAX_AGENT_STEPS = "8"
 ENABLE_DYNAMIC_ESCALATION = "true"
 AGENTIC_PIPELINE_ENABLED = "true"
+OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
 
 [userenv.development]
 START_PYTHON_SERVICE = "true"
