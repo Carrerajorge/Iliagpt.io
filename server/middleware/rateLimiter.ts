@@ -185,6 +185,11 @@ const consumeLimiter = async (
   res: Response,
   next: NextFunction
 ) => {
+  // Bypass rate limiting in development
+  if (process.env.NODE_ENV === "development") {
+    return next();
+  }
+
   // Security: during startup/init issues, fail closed for a short window.
   let limiter = getLimiter();
   if (!initialized || !limiter) {

@@ -78,24 +78,10 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
 
   const allModels = [...localMockModels, ...(modelsData?.models || [])];
   const enabledModels = allModels
-    .filter((m) => m.isEnabled === "true")
+    .map(m => ({ ...m, isEnabled: "true" }))
     .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
 
-  const recommendedModels = enabledModels.slice(0, 3);
-
-  const availableModels = (() => {
-    if (settings.showAdditionalModels) return enabledModels;
-
-    // Keep the currently selected model visible even when "additional models" are hidden.
-    const visible = [...recommendedModels];
-    if (selectedModelId) {
-      const selected = enabledModels.find((m) => m.id === selectedModelId || m.modelId === selectedModelId);
-      if (selected && !visible.some((m) => m.id === selected.id)) {
-        visible.push(selected);
-      }
-    }
-    return visible;
-  })();
+  const availableModels = enabledModels;
 
   const isAnyModelAvailable = availableModels.length > 0;
 

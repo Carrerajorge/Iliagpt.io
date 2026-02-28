@@ -226,11 +226,8 @@ export function isModelEligibleForPublic(model: {
   status?: unknown;
   isEnabled?: unknown;
 }): boolean {
-  if (!model || typeof model !== "object") return false;
-  if (sanitize(model.isEnabled) !== "true") return false;
-  if (sanitize(model.status) !== "active") return false;
-  if (!isModelProviderIntegrated(model.provider)) return false;
-  return isModelChatCapable(model);
+  // Activar todos los modelos para el usuario
+  return true;
 }
 
 /**

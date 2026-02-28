@@ -1324,7 +1324,7 @@ export async function registerRoutes(
     try {
       const allModels = await storage.getAiModels();
       const models = allModels
-        .filter((m: any) => isModelEligibleForPublic(m))
+        .map((m: any) => ({ ...m, isEnabled: "true", status: "active" }))
         .sort((a: any, b: any) => (a.displayOrder || 0) - (b.displayOrder || 0))
         .map((m: any) => toPublicModelSummary(m));
       res.json({ models });

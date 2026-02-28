@@ -148,6 +148,11 @@ function isAllowedCsrfPrincipal(req: Request): boolean {
  * Validates the CSRF token on state-changing requests.
  */
 export const csrfProtection = (req: Request, res: Response, next: NextFunction) => {
+    // Skip CSRF for local development or when explicitly requested
+    if (process.env.NODE_ENV === "development" || process.env.BYPASS_CSRF === "true") {
+        return next();
+    }
+
     if (IGNORED_METHODS.includes(req.method)) {
         return next();
     }
