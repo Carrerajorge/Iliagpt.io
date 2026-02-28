@@ -16,10 +16,10 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ChatRuntimeProvider = "xai" | "gemini" | "openai" | "anthropic" | "deepseek" | "minimax";
+export type ChatRuntimeProvider = "xai" | "gemini" | "openai" | "anthropic" | "deepseek" | "minimax" | "openrouter";
 
 const ALL_RUNTIME_PROVIDERS: readonly ChatRuntimeProvider[] = Object.freeze([
-  "xai", "gemini", "openai", "anthropic", "deepseek", "minimax",
+  "xai", "gemini", "openai", "anthropic", "deepseek", "minimax", "openrouter",
 ]) as readonly ChatRuntimeProvider[];
 
 // ─── Immutable Lookup Maps ────────────────────────────────────────────────────
@@ -34,6 +34,7 @@ const PROVIDER_ALIAS_MAP: Readonly<Record<string, ChatRuntimeProvider>> = Object
   anthropic: "anthropic",
   deepseek: "deepseek",
   minimax: "minimax",
+  openrouter: "openrouter",
 });
 
 /** Every env-var name that proves a provider is configured, grouped by runtime. */
@@ -44,6 +45,7 @@ const API_KEY_ENV_VARS: Readonly<Record<ChatRuntimeProvider, readonly string[]>>
   anthropic: Object.freeze(["ANTHROPIC_API_KEY"]),
   deepseek: Object.freeze(["DEEPSEEK_API_KEY"]),
   minimax: Object.freeze(["MINIMAX_API_KEY"]),
+  openrouter: Object.freeze(["OPENROUTER_API_KEY"]),
 });
 
 /** Model-ID regex per runtime to detect chat-capable model IDs. */
@@ -54,6 +56,7 @@ const CHAT_MODEL_PATTERNS: Readonly<Record<ChatRuntimeProvider, RegExp>> = Objec
   anthropic: /^claude/i,
   deepseek: /^deepseek/i,
   minimax: /minimax/i,
+  openrouter: /./i,
 });
 
 /** Model types considered chat-capable. */
@@ -240,7 +243,8 @@ export function isModelEligibleForPublic(model: {
 }): boolean {
   const provider = sanitize(model.provider);
   const modelId = sanitize(model.modelId);
-  return provider === "minimax" && modelId === "minimax-m2.5";
+  return (provider === "minimax" && modelId === "minimax-m2.5") || 
+         (provider === "openrouter" && modelId === "minimax/minimax-m2.5");
 }
 
 /**

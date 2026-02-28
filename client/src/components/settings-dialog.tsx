@@ -2140,13 +2140,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ key: 'MINIMAX_API_KEY', value: key, category: 'ai_providers' }),
+        body: JSON.stringify({ key: 'OPENROUTER_API_KEY', value: key, category: 'ai_providers' }),
       });
       if (!res.ok) throw new Error('Failed to update API key');
       return res.json();
     },
     onSuccess: () => {
-      toast({ title: "Éxito", description: "API Key de Minimax actualizada correctamente." });
+      toast({ title: "Éxito", description: "API Key de OpenRouter actualizada correctamente." });
     },
     onError: () => {
       toast({ title: "Error", description: "No se pudo actualizar la API Key.", variant: "destructive" });
@@ -2154,9 +2154,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   });
 
   const { data: currentApiKey } = useQuery({
-    queryKey: ['/api/admin/settings/MINIMAX_API_KEY'],
+    queryKey: ['/api/admin/settings/OPENROUTER_API_KEY'],
     queryFn: async () => {
-      const res = await apiFetch('/api/admin/settings/MINIMAX_API_KEY', { credentials: 'include' });
+      const res = await apiFetch('/api/admin/settings/OPENROUTER_API_KEY', { credentials: 'include' });
       if (!res.ok) return { value: "" };
       return res.json();
     }
@@ -2170,25 +2170,25 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             <div>
               <h2 className="text-xl font-semibold">Configuración de Modelos AI</h2>
               <p className="text-sm text-muted-foreground mt-1">
-                Configura las credenciales para el modelo Minimax M2.5
+                Configura las credenciales para el modelo Minimax M2.5 vía OpenRouter
               </p>
             </div>
             <div className="space-y-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">Minimax API Key</label>
+                <label className="text-sm font-medium">OpenRouter API Key</label>
                 <div className="flex gap-2">
                   <Input 
                     type="password" 
-                    placeholder="Introduzca su API Key de Minimax"
+                    placeholder="Introduzca su API Key de OpenRouter"
                     defaultValue={currentApiKey?.value || ""}
                     onBlur={(e) => {
                       if (e.target.value) updateAiKey.mutate(e.target.value);
                     }}
-                    data-testid="input-minimax-key"
+                    data-testid="input-openrouter-key"
                   />
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Esta clave se utilizará para todas las interacciones con el modelo Minimax-M2.5.
+                  Esta clave se utilizará para todas las interacciones con el modelo Minimax-M2.5 a través de OpenRouter.
                 </p>
               </div>
             </div>
