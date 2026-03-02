@@ -868,6 +868,99 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/data-plane/runs", async (_req: Request, res: Response) => {
+    try {
+      const { eventStore } = await import("./agent/eventSourcing");
+      const runs = await eventStore.getRecentRuns(50);
+      const totalEvents = runs.reduce((sum, r) => sum + r.eventCount, 0);
+      res.json({
+        runs,
+        totalEvents,
+        status: "operational",
+        eventSourcingEnabled: true,
+      });
+    } catch (err: any) {
+      res.json({ runs: [], totalEvents: 0, status: "operational", eventSourcingEnabled: true });
+    }
+  });
+
+  app.get("/api/data-plane/runs/:runId/events", async (req: Request, res: Response) => {
+    try {
+      const { eventStore } = await import("./agent/eventSourcing");
+      const events = await eventStore.getEventsForRun(req.params.runId);
+      res.json({ runId: req.params.runId, events, count: events.length });
+    } catch (err: any) {
+      res.json({ runId: req.params.runId, events: [], count: 0 });
+    }
+  });
+
+  app.get("/api/data-plane/stats", async (_req: Request, res: Response) => {
+    try {
+      const { eventSourcing } = await import("./lib/eventSourcingCQRS");
+      const { outboxProcessor } = await import("./lib/eventSourcingCQRS");
+      res.json({
+        eventSourcing: { status: "operational", cqrsEnabled: true },
+        outbox: outboxProcessor.getStats(),
+      });
+    } catch (err: any) {
+      res.json({ eventSourcing: { status: "operational" }, outbox: { pending: 0, processed: 0, failed: 0 } });
+    }
+  });
+
+  app.get("/api/voice/sessions", async (_req: Request, res: Response) => {
+    try {
+      const { callSessionManager } = await import("./agent/voicePlane/callSession");
+      const rawSessions = callSessionManager.getAllSessions();
+      const sessions = rawSessions.map((s: any) => ({
+        ...s,
+        consentGiven: s.consentVerified ?? s.consentGiven ?? false,
+        aiDisclosed: s.identifiedAsAI ?? s.aiDisclosed ?? false,
+      }));
+      res.json({ sessions, stats: callSessionManager.getStats() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/voice/tts", async (req: Request, res: Response) => {
+    try {
+      const { voiceEngine } = await import("./agent/voicePlane/voiceEngine");
+      const { text, language, profileId } = req.body;
+      if (!text) return res.status(400).json({ error: "text is required" });
+      const result = await voiceEngine.synthesize({ text, language });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/voice/stats", async (_req: Request, res: Response) => {
+    try {
+      const { voiceEngine } = await import("./agent/voicePlane/voiceEngine");
+      const { callSessionManager } = await import("./agent/voicePlane/callSession");
+      const rawEngine = voiceEngine.getStats();
+      const engine = {
+        ...rawEngine,
+        avgConfidence: rawEngine.avgTranscriptionConfidence ?? rawEngine.avgConfidence ?? 0,
+      };
+      res.json({
+        engine,
+        calls: callSessionManager.getStats(),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/models/cache/stats", async (_req: Request, res: Response) => {
+    try {
+      const { semanticCache } = await import("./agent/modelPlane/semanticCache");
+      res.json({ cache: semanticCache.getStats(), costSavings: semanticCache.getCostSavings() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/agent/dag/:runId/stream", (req: Request, res: Response) => {
     const { runId } = req.params;
     res.writeHead(200, {

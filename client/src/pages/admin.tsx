@@ -68,7 +68,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
   Table,
   FolderOpen,
   Gauge,
-  FlaskConical
+  FlaskConical,
+  Phone
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
@@ -92,8 +93,10 @@ import SREPanel from "@/components/admin/SREPanel";
 import GovernanceConsole from "@/components/admin/GovernanceConsole";
 import SecurityDashboard from "@/components/admin/SecurityDashboard";
 import ModelExperiments from "@/components/admin/ModelExperiments";
+import VoicePlane from "@/components/admin/VoicePlane";
+import DataPlaneExplorer from "@/components/admin/DataPlaneExplorer";
 
-type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard" | "experiments";
+type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard" | "experiments" | "voice" | "data-plane";
 
 const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -117,6 +120,8 @@ const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] =
   { id: "governance", label: "Governance", icon: ShieldCheck },
   { id: "security-dashboard", label: "Security Monitor", icon: ShieldAlert },
   { id: "experiments", label: "Model Experiments", icon: FlaskConical },
+  { id: "voice", label: "Voice Plane", icon: Phone },
+  { id: "data-plane", label: "Data Plane", icon: Database },
 ];
 
 function DashboardSection() {
@@ -6313,6 +6318,10 @@ export default function AdminPage() {
         return <SecurityDashboard />;
       case "experiments":
         return <ModelExperiments />;
+      case "voice":
+        return <VoicePlane />;
+      case "data-plane":
+        return <DataPlaneExplorer />;
       default:
         return <DashboardSection />;
     }

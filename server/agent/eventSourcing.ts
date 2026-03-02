@@ -337,6 +337,28 @@ class EventStore {
     };
   }
 
+  async getRecentRuns(limit: number = 50): Promise<{ runId: string; eventCount: number; firstEvent: Date; lastEvent: Date }[]> {
+    if (!db || typeof (db as any).select !== "function") {
+      return [];
+    }
+    try {
+      const { sql } = await import("drizzle-orm");
+      const rows = await (db as any).execute(
+        sql`SELECT "run_id" AS "runId", COUNT(*) AS "eventCount", MIN("timestamp") AS "firstEvent", MAX("timestamp") AS "lastEvent" FROM "agent_mode_events" GROUP BY "run_id" ORDER BY MAX("timestamp") DESC LIMIT ${limit}`
+      );
+      const results = rows?.rows ?? rows ?? [];
+      return results.map((r: any) => ({
+        runId: r.runId || r.run_id,
+        eventCount: parseInt(r.eventCount || r.event_count || "0", 10),
+        firstEvent: new Date(r.firstEvent || r.first_event || Date.now()),
+        lastEvent: new Date(r.lastEvent || r.last_event || Date.now()),
+      }));
+    } catch (err) {
+      console.error("[EventSourcing] getRecentRuns error:", err);
+      return [];
+    }
+  }
+
   clearSnapshotCache(runId?: string): void {
     if (runId) {
       this.snapshotCache.delete(runId);
