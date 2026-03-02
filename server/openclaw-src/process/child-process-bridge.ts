@@ -9,7 +9,7 @@ export type ChildProcessBridgeOptions = {
 const defaultSignals: NodeJS.Signals[] =
   process.platform === "win32"
     ? ["SIGTERM", "SIGINT", "SIGBREAK"]
-    : ["SIGTERM", "SIGINT", "SIGQUIT"];
+    : ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"];
 
 export function attachChildProcessBridge(
   child: ChildProcess,

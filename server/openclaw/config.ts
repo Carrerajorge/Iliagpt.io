@@ -49,7 +49,7 @@ export function getOpenClawConfig(): OpenClawConfig {
       path: process.env.OPENCLAW_WS_PATH || '/ws/openclaw',
     },
     tools: {
-      enabled: process.env.ENABLE_OPENCLAW_TOOLS === 'true',
+      enabled: process.env.ENABLE_OPENCLAW_TOOLS !== 'false',
       safeBins: process.env.OPENCLAW_SAFE_BINS
         ? process.env.OPENCLAW_SAFE_BINS.split(',').map(s => s.trim())
         : DEFAULT_SAFE_BINS,
