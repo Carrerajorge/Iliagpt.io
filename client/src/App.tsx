@@ -306,6 +306,7 @@ function Router() {
             <Route path="/privacy-policy" component={PrivacyPolicyPage} />
             <Route path="/terms" component={TermsPage} />
             <Route path="/admin" component={ProtectedAdminPage} />
+            <Route path="/admin/budget" component={ProtectedAdminPage} />
             <Route path="/admin/health" component={ProtectedSystemHealthPage} />
             <Route path="/workspace-settings" component={ProtectedWorkspaceSettingsPage} />
             <Route path="/workspace" component={ProtectedWorkspacePage} />

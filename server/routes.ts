@@ -937,6 +937,73 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/admin/budget", async (req: Request, res: Response) => {
+    try {
+      const { budgetManager } = await import("./agent/budgetManager");
+      const { db } = await import("./db");
+      const { agentModeRuns } = await import("@shared/schema");
+      const { desc } = await import("drizzle-orm");
+      const runs = await db.select().from(agentModeRuns).orderBy(desc(agentModeRuns.createdAt)).limit(500);
+
+      const modelCosts: Record<string, { promptTokens: number; completionTokens: number; totalTokens: number; cost: number; runs: number }> = {};
+      let totalCost = 0;
+      let totalTokens = 0;
+      const topRuns: Array<{ runId: string; model: string; tokens: number; cost: number; duration: number; timestamp: string }> = [];
+      const dailyCosts: Record<string, number> = {};
+
+      for (const run of runs.slice(-500)) {
+        const model = (run as any).model || 'minimax/minimax-m2.5';
+        const tokens = ((run as any).promptTokens || 0) + ((run as any).completionTokens || 0);
+        const cost = (run as any).estimatedCost || tokens * 0.000002;
+        const duration = (run as any).completedAt && (run as any).startedAt
+          ? new Date((run as any).completedAt).getTime() - new Date((run as any).startedAt).getTime()
+          : 0;
+
+        if (!modelCosts[model]) modelCosts[model] = { promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0, runs: 0 };
+        modelCosts[model].promptTokens += (run as any).promptTokens || 0;
+        modelCosts[model].completionTokens += (run as any).completionTokens || 0;
+        modelCosts[model].totalTokens += tokens;
+        modelCosts[model].cost += cost;
+        modelCosts[model].runs++;
+        totalCost += cost;
+        totalTokens += tokens;
+
+        const day = new Date((run as any).createdAt || Date.now()).toISOString().slice(0, 10);
+        dailyCosts[day] = (dailyCosts[day] || 0) + cost;
+
+        topRuns.push({ runId: run.id, model, tokens, cost, duration, timestamp: (run as any).createdAt || new Date().toISOString() });
+      }
+
+      topRuns.sort((a, b) => b.cost - a.cost);
+
+      const currentBudget = budgetManager.getStatus('_global');
+      const maxBudget = parseFloat(process.env.AGENT_COST_CEILING_USD || '10.00');
+
+      res.json({
+        totalCost,
+        totalTokens,
+        totalRuns: runs.length,
+        maxBudget,
+        budgetUsedPercent: Math.min((totalCost / maxBudget) * 100, 100),
+        currentRunBudget: currentBudget || null,
+        modelBreakdown: Object.entries(modelCosts).map(([model, data]) => ({
+          model, ...data,
+        })),
+        dailyCosts: Object.entries(dailyCosts).sort(([a], [b]) => a.localeCompare(b)).map(([date, cost]) => ({ date, cost })),
+        topRuns: topRuns.slice(0, 20),
+        alerts: {
+          warningThreshold: 0.8,
+          criticalThreshold: 0.95,
+          isWarning: totalCost / maxBudget > 0.8,
+          isCritical: totalCost / maxBudget > 0.95,
+        },
+      });
+    } catch (err: any) {
+      console.error("[BudgetAPI] Error:", err);
+      res.status(500).json({ error: err.message || "Budget data unavailable" });
+    }
+  });
+
   app.get("/api/agent/runs/:runId/state", async (req: Request, res: Response) => {
     try {
       const { runId } = req.params;

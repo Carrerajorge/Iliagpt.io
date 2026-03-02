@@ -85,8 +85,9 @@ import { SecurityAlertsPanel } from "@/components/admin/SecurityAlerts";
 import { AdminNotificationsPopover } from "@/components/admin/NotificationsPopover";
 import { TerminalPanel } from "@/components/terminal-panel";
 import ReleasesManager from "./admin/ReleasesManager";
+import BudgetDashboard from "@/components/admin/BudgetDashboard";
 
-type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases";
+type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget";
 
 const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -105,6 +106,7 @@ const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] =
   { id: "excel", label: "Excel Manager", icon: FileSpreadsheet },
   { id: "terminal", label: "Terminal", icon: Terminal },
   { id: "releases", label: "App Releases", icon: Download },
+  { id: "budget", label: "Budget & Costs", icon: DollarSign },
 ];
 
 function DashboardSection() {
@@ -6291,6 +6293,8 @@ export default function AdminPage() {
         return <MonitoringSection />;
       case "releases":
         return <ReleasesManager />;
+      case "budget":
+        return <BudgetDashboard />;
       default:
         return <DashboardSection />;
     }

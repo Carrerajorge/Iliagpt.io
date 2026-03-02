@@ -109,3 +109,38 @@ export {
   type PipelineEvent,
   type AgentLoopFacadeOptions,
 } from "./pipeline";
+
+export {
+  SubAgentSpawner,
+  subAgentSpawner,
+  SubAgentStatusSchema,
+  SubAgentConfigSchema,
+  SubAgentResultSchema,
+  PoolStatsSchema,
+  type SubAgentStatus,
+  type SubAgentConfig,
+  type SubAgentResult,
+  type PoolStats,
+  type SubAgentExecutorFn,
+  type SubAgentSpawnerEvent,
+} from "./subAgentSpawner";
+
+export {
+  TaskDecomposer,
+  taskDecomposer,
+  MicroTaskSchema,
+  TaskDAGSchema as DecomposerTaskDAGSchema,
+  DecompositionOptionsSchema,
+  type MicroTask,
+  type TaskDAG as DecomposerTaskDAG,
+  type DecompositionOptions,
+} from "./taskDecomposer";
+
+export {
+  ResultAggregator,
+  resultAggregator,
+  AggregatedResultSchema,
+  AggregationOptionsSchema,
+  type AggregatedResult,
+  type AggregationOptions,
+} from "./resultAggregator";
