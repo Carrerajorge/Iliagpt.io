@@ -602,8 +602,10 @@ export function Composer({
     );
   };
 
+  const [toolsPopoverOpen, setToolsPopoverOpen] = useState(false);
+
   const renderToolsPopover = () => (
-    <Popover>
+    <Popover open={toolsPopoverOpen} onOpenChange={setToolsPopoverOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
@@ -627,7 +629,7 @@ export function Composer({
               <Button
                 variant="ghost"
                 className="justify-start gap-3 text-sm h-10 glass-menu-item"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => { setToolsPopoverOpen(false); fileInputRef.current?.click(); }}
                 data-testid="button-upload-files"
               >
                 <div className="flex items-center justify-center w-6 h-6 rounded-lg bg-muted">
@@ -638,25 +640,25 @@ export function Composer({
               <Button
                 variant="ghost"
                 className="justify-start gap-2 text-sm h-9 glass-menu-item"
-                onClick={() => setIsBrowserOpen(!isBrowserOpen)}
+                onClick={() => { setToolsPopoverOpen(false); setIsBrowserOpen(!isBrowserOpen); }}
                 disabled={!webSearchEnabled}
               >
                 <Search className="h-4 w-4" />
                 Web Search
               </Button>
-              <Button variant="ghost" className="justify-start gap-2 text-sm h-9 glass-menu-item">
+              <Button variant="ghost" className="justify-start gap-2 text-sm h-9 glass-menu-item" onClick={() => setToolsPopoverOpen(false)}>
                 <Image className="h-4 w-4" />
                 Image Generation
               </Button>
-              <Button variant="ghost" className="justify-start gap-2 text-sm h-9 glass-menu-item">
+              <Button variant="ghost" className="justify-start gap-2 text-sm h-9 glass-menu-item" onClick={() => setToolsPopoverOpen(false)}>
                 <Video className="h-4 w-4" />
                 Video Generation
               </Button>
-              <Button variant="ghost" className="justify-start gap-2 text-sm h-9 glass-menu-item">
+              <Button variant="ghost" className="justify-start gap-2 text-sm h-9 glass-menu-item" onClick={() => setToolsPopoverOpen(false)}>
                 <Bot className="h-4 w-4" />
                 Agente
               </Button>
-              <Button variant="ghost" className="justify-start gap-2 text-sm h-9 glass-menu-item">
+              <Button variant="ghost" className="justify-start gap-2 text-sm h-9 glass-menu-item" onClick={() => setToolsPopoverOpen(false)}>
                 <Plug className="h-4 w-4" />
                 Connectors MPC
               </Button>
@@ -669,7 +671,7 @@ export function Composer({
                   className="hidden"
                   multiple
                   accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.json,.html,.htm,.jpg,.jpeg,.png,.gif,.bmp,.webp,.tif,.tiff"
-                  onChange={handleFileUpload}
+                  onChange={(e) => { setToolsPopoverOpen(false); handleFileUpload(e); }}
                 />
                 <Button variant="ghost" className="w-full justify-start gap-2 text-sm h-9 glass-menu-item" asChild>
                   <span>
@@ -681,7 +683,7 @@ export function Composer({
               <Button
                 variant="ghost"
                 className="justify-start gap-2 text-sm h-9 glass-menu-item"
-                onClick={() => { try { setShowKnowledgeBase(true); onCloseSidebar?.(); } catch (err) { console.error("[Composer] Error opening knowledge base:", err); } }}
+                onClick={() => { try { setToolsPopoverOpen(false); setShowKnowledgeBase(true); onCloseSidebar?.(); } catch (err) { console.error("[Composer] Error opening knowledge base:", err); } }}
                 data-testid="button-knowledge-base"
               >
                 <Users className="h-4 w-4" />
@@ -694,6 +696,7 @@ export function Composer({
                 onClick={() => {
                   try {
                     if (!webSearchEnabled) return;
+                    setToolsPopoverOpen(false);
                     setSelectedTool("web");
                     onCloseSidebar?.();
                   } catch (err) {
@@ -709,7 +712,7 @@ export function Composer({
               <Button
                 variant="ghost"
                 className="justify-start gap-3 text-sm h-10 glass-menu-item"
-                onClick={() => { try { setSelectedTool("image"); onCloseSidebar?.(); } catch (err) { console.error("[Composer] Error selecting image tool:", err); } }}
+                onClick={() => { try { setToolsPopoverOpen(false); setSelectedTool("image"); onCloseSidebar?.(); } catch (err) { console.error("[Composer] Error selecting image tool:", err); } }}
               >
                 <div className="flex items-center justify-center w-6 h-6 rounded-lg bg-pink-100 dark:bg-pink-900/30">
                   <Image className="h-4 w-4 text-pink-600 dark:text-pink-400" />
@@ -732,7 +735,7 @@ export function Composer({
                       <Button
                         variant="ghost"
                         className="justify-start gap-2 text-sm h-9 glass-menu-item"
-                        onClick={() => { try { openBlankDocEditor("word"); } catch (err) { console.error("[Composer] Error opening Word editor:", err); } }}
+                        onClick={() => { try { setToolsPopoverOpen(false); openBlankDocEditor("word"); } catch (err) { console.error("[Composer] Error opening Word editor:", err); } }}
                         data-testid="button-create-word"
                       >
                         <div className="flex items-center justify-center w-5 h-5 rounded bg-blue-600">
@@ -743,7 +746,7 @@ export function Composer({
                       <Button
                         variant="ghost"
                         className="justify-start gap-2 text-sm h-9 glass-menu-item"
-                        onClick={() => { try { openBlankDocEditor("excel"); } catch (err) { console.error("[Composer] Error opening Excel editor:", err); } }}
+                        onClick={() => { try { setToolsPopoverOpen(false); openBlankDocEditor("excel"); } catch (err) { console.error("[Composer] Error opening Excel editor:", err); } }}
                         data-testid="button-create-excel"
                       >
                         <div className="flex items-center justify-center w-5 h-5 rounded bg-green-600">
@@ -754,7 +757,7 @@ export function Composer({
                       <Button
                         variant="ghost"
                         className="justify-start gap-2 text-sm h-9 glass-menu-item"
-                        onClick={() => { try { openBlankDocEditor("ppt"); } catch (err) { console.error("[Composer] Error opening PPT editor:", err); } }}
+                        onClick={() => { try { setToolsPopoverOpen(false); openBlankDocEditor("ppt"); } catch (err) { console.error("[Composer] Error opening PPT editor:", err); } }}
                         data-testid="button-create-ppt"
                       >
                         <div className="flex items-center justify-center w-5 h-5 rounded bg-orange-500">
@@ -765,7 +768,7 @@ export function Composer({
                       <Button
                         variant="ghost"
                         className="justify-start gap-2 text-sm h-9 glass-menu-item"
-                        onClick={() => { try { setSelectedDocTool("figma"); onCloseSidebar?.(); } catch (err) { console.error("[Composer] Error selecting Figma tool:", err); } }}
+                        onClick={() => { try { setToolsPopoverOpen(false); setSelectedDocTool("figma"); onCloseSidebar?.(); } catch (err) { console.error("[Composer] Error selecting Figma tool:", err); } }}
                       >
                         <div className="flex items-center justify-center w-5 h-5 rounded bg-card border border-border">
                           <svg width="10" height="14" viewBox="0 0 38 57" fill="none">
@@ -794,7 +797,7 @@ export function Composer({
               <Button
                 variant="ghost"
                 className="justify-start gap-2 text-sm h-9 glass-menu-item"
-                onClick={() => { try { setSelectedTool("agent"); onCloseSidebar?.(); } catch (err) { console.error("[Composer] Error selecting agent tool:", err); } }}
+                onClick={() => { try { setToolsPopoverOpen(false); setSelectedTool("agent"); onCloseSidebar?.(); } catch (err) { console.error("[Composer] Error selecting agent tool:", err); } }}
               >
                 <Bot className="h-4 w-4" />
                 Agente
