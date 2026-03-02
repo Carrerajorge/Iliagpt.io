@@ -173,6 +173,7 @@ import { StreamingIndicator } from "./chat-interface/StreamingIndicator";
 import { EditableDocumentPreview, type TextSelection } from "./chat-interface/EditableDocumentPreview";
 import { extractTextFromChildren, isNumericValue } from "./chat-interface/utils";
 import { PdfPreview } from "@/components/PdfPreview";
+import { FilePreviewModal } from "@/components/FilePreviewModal";
 
 function AvatarWithFallback({
   src,
@@ -7719,87 +7720,19 @@ IMPORTANTE:
 
         {/* Uploaded File Preview Modal (PDFs, docs from composer) */}
         {previewUploadedFile && (() => {
-          const fileTheme = getFileTheme(previewUploadedFile.name, previewUploadedFile.mimeType);
-          const isPdf = previewUploadedFile.mimeType?.includes("pdf") || previewUploadedFile.name?.toLowerCase().endsWith(".pdf");
-          const isImg = previewUploadedFile.mimeType?.startsWith("image/");
-          const rawUrl = previewUploadedFile.fileId
-            ? `/api/files/${previewUploadedFile.fileId}/raw`
-            : undefined;
-          const previewUrl = previewUploadedFile.dataUrl || rawUrl;
-
-          if (isPdf && (rawUrl || previewUploadedFile.dataUrl)) {
-            return (
-              <PdfPreview
-                url={rawUrl || previewUploadedFile.dataUrl || ""}
-                title={previewUploadedFile.name}
-                onClose={() => setPreviewUploadedFile(null)}
-              />
-            );
-          }
-
           return (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4"
-              onClick={() => setPreviewUploadedFile(null)}
-            >
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className="relative bg-card rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
-                onClick={(e: React.MouseEvent) => e.stopPropagation()}
-              >
-                <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-                  <div className="flex items-center gap-3">
-                    <div className={cn("flex items-center justify-center w-10 h-10 rounded-lg", fileTheme.bgColor)}>
-                      <span className="text-white text-sm font-bold">{fileTheme.icon}</span>
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-lg text-foreground truncate max-w-md">{previewUploadedFile.name}</h3>
-                      <p className="text-sm text-muted-foreground">{fileTheme.label}</p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setPreviewUploadedFile(null)}
-                    className="w-8 h-8 rounded-full bg-muted hover:bg-muted-foreground/20 flex items-center justify-center transition-colors"
-                    data-testid="button-close-file-preview"
-                  >
-                    <X className="h-5 w-5" />
-                  </button>
-                </div>
-                <div className="flex-1 overflow-auto min-h-[300px]">
-                  {isImg && previewUrl ? (
-                    <div className="flex items-center justify-center p-8 bg-muted/30">
-                      <img
-                        src={previewUrl}
-                        alt={previewUploadedFile.name}
-                        className="max-w-full max-h-[70vh] object-contain rounded-lg"
-                      />
-                    </div>
-                  ) : previewUploadedFile.content ? (
-                    <div className="p-6 overflow-auto max-h-[70vh]">
-                      <pre className="whitespace-pre-wrap text-sm font-mono text-foreground">{previewUploadedFile.content}</pre>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center h-[300px] gap-4 text-muted-foreground">
-                      <div className={cn("w-16 h-16 rounded-2xl flex items-center justify-center", fileTheme.bgColor)}>
-                        <span className="text-white text-2xl font-bold">{fileTheme.icon}</span>
-                      </div>
-                      <p className="text-lg font-medium">{previewUploadedFile.name}</p>
-                      <p className="text-sm">Vista previa no disponible para este tipo de archivo</p>
-                      {rawUrl && (
-                        <a href={rawUrl} download={previewUploadedFile.name} className="text-sm text-blue-500 hover:underline" data-testid="link-download-file-preview">
-                          Descargar archivo
-                        </a>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </motion.div>
-            </motion.div>
+            <FilePreviewModal
+              file={{
+                id: previewUploadedFile.fileId,
+                fileId: previewUploadedFile.fileId,
+                name: previewUploadedFile.name,
+                mimeType: previewUploadedFile.mimeType,
+                type: previewUploadedFile.mimeType,
+                dataUrl: previewUploadedFile.dataUrl,
+                content: previewUploadedFile.content,
+              }}
+              onClose={() => setPreviewUploadedFile(null)}
+            />
           );
         })()}
 

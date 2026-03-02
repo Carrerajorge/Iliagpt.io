@@ -2515,6 +2515,76 @@ export function createFilesRouter() {
     }
   });
 
+  router.get("/api/files/:id/preview-html", async (req, res) => {
+    try {
+      const file = await storage.getFile(req.params.id);
+      if (!file) {
+        return res.status(404).json({ error: "File not found" });
+      }
+      if (process.env.NODE_ENV === "production") {
+        const actorId = getUploadActorId(req);
+        if (!canAccessFileForActor(file.userId, actorId)) {
+          return res.status(403).json({ error: "Access denied" });
+        }
+      }
+
+      const fsSync = await import("fs");
+      const pathMod = await import("path");
+      let filePath: string | null = null;
+
+      if (file.storagePath?.startsWith("/objects/uploads/")) {
+        const objectId = file.storagePath.replace("/objects/uploads/", "");
+        const uploadsDir = pathMod.default.resolve(process.cwd(), "uploads");
+        filePath = pathMod.default.resolve(uploadsDir, objectId);
+        if (!filePath.startsWith(uploadsDir + pathMod.default.sep)) filePath = null;
+      }
+
+      if (!filePath || !fsSync.default.existsSync(filePath)) {
+        return res.status(404).json({ error: "File not found on disk" });
+      }
+
+      const ext = (file.name || "").toLowerCase().split(".").pop();
+      const buffer = await fsSync.promises.readFile(filePath);
+
+      if (ext === "docx" || file.type?.includes("wordprocessingml")) {
+        const mammoth = await import("mammoth");
+        const result = await mammoth.default.convertToHtml({ buffer });
+        return res.json({ html: result.value, type: "docx", messages: result.messages });
+      }
+
+      if (ext === "xlsx" || ext === "xls" || file.type?.includes("spreadsheetml")) {
+        const XLSX = await import("xlsx");
+        const workbook = XLSX.read(buffer, { type: "buffer" });
+        const sheets: Record<string, any[]> = {};
+        for (const sheetName of workbook.SheetNames) {
+          const sheet = workbook.Sheets[sheetName];
+          sheets[sheetName] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+        }
+        return res.json({ sheets, type: "xlsx", sheetNames: workbook.SheetNames });
+      }
+
+      if (ext === "pptx" || file.type?.includes("presentationml")) {
+        return res.json({ type: "pptx", message: "PowerPoint preview not supported yet" });
+      }
+
+      if (ext === "csv" || ext === "tsv") {
+        const text = buffer.toString("utf-8");
+        return res.json({ type: "text", content: text });
+      }
+
+      const textExtensions = ["txt", "md", "json", "xml", "log", "js", "ts", "tsx", "jsx", "py", "html", "css", "yaml", "yml", "sh", "sql", "env"];
+      if (textExtensions.includes(ext || "")) {
+        const text = buffer.toString("utf-8");
+        return res.json({ type: "text", content: text });
+      }
+
+      return res.json({ type: "unknown", message: "Preview not available" });
+    } catch (error: any) {
+      console.error("Error generating preview:", error);
+      res.status(500).json({ error: "Failed to generate preview" });
+    }
+  });
+
   // Serve files from /objects/uploads/ path (local storage fallback)
   router.get("/objects/uploads/:objectId", async (req, res) => {
     try {

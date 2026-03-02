@@ -35,8 +35,10 @@ interface PDFViewerState {
   scale: number;
 }
 
-const PDFJS_CDN_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.mjs";
-const PDFJS_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
+const PDFJS_WORKER_URL = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString();
 
 const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
 const DEFAULT_ZOOM = 1;
@@ -159,7 +161,7 @@ const PDFViewer = memo(function PDFViewer({
     if (pdfjsLibRef.current) return pdfjsLibRef.current;
 
     try {
-      const pdfjsLib = await import(/* @vite-ignore */ PDFJS_CDN_URL);
+      const pdfjsLib = await import('pdfjs-dist');
       pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
       pdfjsLibRef.current = pdfjsLib;
       return pdfjsLib;
