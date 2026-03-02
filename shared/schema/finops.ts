@@ -1,6 +1,4 @@
 import { pgTable, text, timestamp, integer, uuid, doublePrecision, boolean, jsonb } from "drizzle-orm/pg-core";
-import { users } from "./auth";
-import { workspaces } from "./workspace";
 
 // --- T100-2.1: CATÁLOGO DE MODELOS Y PRICING OFICIAL ---
 export const pricingCatalog = pgTable("pricing_catalog", {
@@ -35,8 +33,8 @@ export const tokenLedgerUsage = pgTable("token_ledger_usage", {
     requestId: text("request_id").notNull(), // Corelated with x-correlation-id Pino log
     sessionId: text("session_id"),
 
-    userId: uuid("user_id").references(() => users.id),
-    workspaceId: uuid("workspace_id").references(() => workspaces.id),
+    userId: text("user_id"),
+    workspaceId: text("workspace_id"),
 
     modelId: uuid("model_id").references(() => pricingCatalog.id),
     modelName: text("model_name").notNull(), // Snapshot of the model string used
