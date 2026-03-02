@@ -5,7 +5,7 @@ import { useStreamingTransition } from "@/hooks/use-streaming-transition";
 import { useStreamChat } from "@/hooks/use-stream-chat";
 import { apiFetch, getAnonUserIdHeader } from "@/lib/apiClient";
 import { getFileUploader } from "@/lib/fileUploader";
-import { ensureCsrfToken, resolveUploadUrlForResponse, uploadBlobWithProgress } from "@/lib/uploadTransport";
+
 import { WelcomeAnimation } from "@/components/welcome-animation-simple";
 import { WelcomeExplosion, useFirstVisit } from "@/components/welcome-explosion";
 import {
@@ -3036,97 +3036,59 @@ export function ChatInterface({
 
         try {
           const stableConversationId = chatId && !chatId.startsWith("pending-") ? chatId : null;
-          const uploadId = `upload-${tempId}`;
-          const uploadHeaders: Record<string, string> = {
-            "Content-Type": "application/json",
-            "X-Upload-Id": uploadId,
-          };
-          const multipartHeaders: Record<string, string> = {
-            "X-Upload-Id": uploadId,
-          };
-          if (stableConversationId) {
-            uploadHeaders["X-Conversation-Id"] = stableConversationId;
-            multipartHeaders["X-Conversation-Id"] = stableConversationId;
+
+          const formData = new FormData();
+          formData.append('file', file);
+          if (stableConversationId) formData.append('conversationId', stableConversationId);
+
+          const uploadRes = await apiFetch('/api/files/fast-upload', {
+            method: 'POST',
+            body: formData,
+            timeoutMs: 30000,
+          });
+
+          if (!uploadRes.ok) {
+            const errData = await uploadRes.json().catch(() => ({ error: 'Upload failed' }));
+            throw new Error(errData?.error || `Upload failed (status ${uploadRes.status})`);
           }
 
-          const safeJson = async (res: Response): Promise<any> => {
-            try {
-              return await res.json();
-            } catch {
-              return null;
-            }
-          };
-
-          await ensureCsrfToken();
-          const urlRes = await retryFetch(() => apiFetch("/api/objects/upload", {
-            method: "POST",
-            headers: uploadHeaders,
-            body: JSON.stringify({
-              uploadId,
-              fileName: file.name,
-              mimeType: file.type,
-              fileSize: file.size,
-              ...(stableConversationId ? { conversationId: stableConversationId } : {}),
-            }),
-          }), 2);
-          const urlData = await safeJson(urlRes);
-          if (!urlRes.ok) {
-            throw new Error(urlData?.error || `Failed to get upload URL (status ${urlRes.status})`);
+          const registeredFile = await uploadRes.json();
+          if (!registeredFile?.id) {
+            throw new Error("Server returned invalid upload response");
           }
-          const { uploadURL, storagePath } = urlData || {};
-          if (!uploadURL || !storagePath) throw new Error("No upload URL received");
-          const effectiveUploadUrl = resolveUploadUrlForResponse(uploadURL, urlRes.url);
 
-          await retryUpload(() => uploadBlobWithProgress(effectiveUploadUrl, file, undefined, {
-            timeoutMs: 120000,
-            skipContentType: true,
-          }));
-
+          const storagePath = registeredFile.storagePath || '';
           let spreadsheetData: UploadedFile['spreadsheetData'] | undefined;
 
           if (isExcel) {
             try {
-              const formData = new FormData();
-              formData.append('file', file);
-
-              await ensureCsrfToken();
+              const spreadsheetForm = new FormData();
+              spreadsheetForm.append('file', file);
               const spreadsheetRes = await apiFetch('/api/spreadsheet/upload', {
                 method: 'POST',
-                headers: multipartHeaders,
-                body: formData,
+                body: spreadsheetForm,
                 timeoutMs: 30000,
               });
-
               if (spreadsheetRes.ok) {
-                const spreadsheetResult = await safeJson(spreadsheetRes);
-                if (!spreadsheetResult) {
-                  throw new Error("Invalid spreadsheet response");
-                }
-                const uploadId = spreadsheetResult.id;
-                const sheetDetails = spreadsheetResult.sheetDetails || [];
-                const sheets = sheetDetails.map((s: any) => ({
-                  name: s.name,
-                  rowCount: s.rowCount,
-                  columnCount: s.columnCount,
-                }));
-
-                spreadsheetData = {
-                  uploadId,
-                  sheets,
-                };
-
-                if (spreadsheetResult.firstSheetPreview) {
-                  spreadsheetData.previewData = {
-                    headers: spreadsheetResult.firstSheetPreview.headers || [],
-                    data: spreadsheetResult.firstSheetPreview.data || [],
+                const spreadsheetResult = await spreadsheetRes.json().catch(() => null);
+                if (spreadsheetResult) {
+                  const sheetDetails = spreadsheetResult.sheetDetails || [];
+                  spreadsheetData = {
+                    uploadId: spreadsheetResult.id,
+                    sheets: sheetDetails.map((s: any) => ({ name: s.name, rowCount: s.rowCount, columnCount: s.columnCount })),
                   };
+                  if (spreadsheetResult.firstSheetPreview) {
+                    spreadsheetData.previewData = {
+                      headers: spreadsheetResult.firstSheetPreview.headers || [],
+                      data: spreadsheetResult.firstSheetPreview.data || [],
+                    };
+                  }
+                  triggerDocumentAnalysis(spreadsheetResult.id, file.name, (analysisId) => {
+                    setUploadedFiles((prev: any[]) =>
+                      prev.map((f: any) => f.id === tempId ? { ...f, analysisId } : f)
+                    );
+                  });
                 }
-
-                triggerDocumentAnalysis(uploadId, file.name, (analysisId) => {
-                  setUploadedFiles((prev: any[]) =>
-                    prev.map((f: any) => f.id === tempId ? { ...f, analysisId } : f)
-                  );
-                });
               }
             } catch (spreadsheetError) {
               console.warn("Failed to parse spreadsheet:", spreadsheetError);
@@ -3134,51 +3096,8 @@ export function ChatInterface({
           }
 
           setUploadedFiles((prev: any[]) =>
-            prev.map((f: any) => f.id === tempId ? { ...f, status: "processing", spreadsheetData } : f)
+            prev.map((f: any) => f.id === tempId ? { ...f, id: registeredFile.id, storagePath, status: "ready", spreadsheetData } : f)
           );
-
-          await ensureCsrfToken();
-          const registerRes = await apiFetch("/api/files", {
-            method: "POST",
-            headers: uploadHeaders,
-            body: JSON.stringify({
-              name: file.name,
-              type: file.type,
-              size: file.size,
-              storagePath,
-              uploadId,
-              ...(stableConversationId ? { conversationId: stableConversationId } : {}),
-            }),
-            timeoutMs: 30000,
-          });
-          const registeredFile = await safeJson(registerRes);
-          if (!registerRes.ok) {
-            throw new Error(registeredFile?.error || `File registration failed (status ${registerRes.status})`);
-          }
-          if (!registeredFile?.id) {
-            throw new Error("Server returned invalid file registration response");
-          }
-
-          setUploadedFiles((prev: any[]) =>
-            prev.map((f: any) => f.id === tempId ? { ...f, id: registeredFile.id, storagePath, spreadsheetData } : f)
-          );
-
-          // FAST PATH for images: The client already has the dataUrl preview, and the server marks
-          // images as 'ready' via a fire-and-forget processFileAsync call. There is a race condition
-          // where the client polls before processFileAsync finishes updating the DB. For images,
-          // skip the server poll — mark as ready immediately so attachments work without delay.
-          if (isImage) {
-            setUploadedFiles((prev: any[]) =>
-              prev.map((f: any) => (f.id === registeredFile.id || f.id === tempId
-                ? { ...f, id: registeredFile.id, status: "ready" }
-                : f))
-            );
-          } else {
-            // Start content polling in background. Upload is already persisted and sendable.
-            void pollFileStatusFast(registeredFile.id, tempId).catch((pollError) => {
-              console.warn("Background file status polling failed:", pollError);
-            });
-          }
 
           if (isAnalyzableFile(file.name) && !isExcel) {
             triggerDocumentAnalysis(registeredFile.id, file.name, (analysisId) => {

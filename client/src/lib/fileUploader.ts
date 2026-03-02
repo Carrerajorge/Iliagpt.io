@@ -233,106 +233,29 @@ export class ChunkedFileUploader {
     const fileId = `file_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
 
     try {
-      onProgress({
-        fileId,
-        phase: 'validating',
-        uploadProgress: 0,
-        processingProgress: 0,
+      onProgress({ fileId, phase: 'uploading', uploadProgress: 10, processingProgress: 0 });
+
+      const formData = new FormData();
+      formData.append('file', normalizedFile);
+      if (options.conversationId) formData.append('conversationId', options.conversationId);
+      if (options.uploadId) formData.append('uploadId', options.uploadId);
+
+      const res = await apiFetch('/api/files/fast-upload', {
+        method: 'POST',
+        body: formData,
+        ...(this.abortController?.signal ? { signal: this.abortController.signal } : {}),
       });
 
-      const validation = await this.validateFile(normalizedFile);
-      if (!validation.valid) {
-        throw new Error(validation.errors.join('. '));
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: 'Upload failed' }));
+        throw new Error(errData.error || `Upload failed with status ${res.status}`);
       }
 
-      onProgress({
-        fileId,
-        phase: 'uploading',
-        uploadProgress: 0,
-        processingProgress: 0,
-      });
+      const result = await res.json();
+      const actualFileId = result.id || fileId;
+      const storagePath = result.storagePath || '';
 
-      const config = await this.fetchConfig();
-      const useChunked = normalizedFile.size > config.chunkSize;
-
-      let storagePath: string;
-      let registeredFileId: string | undefined;
-
-      if (useChunked) {
-        const result = await this.uploadChunked(normalizedFile, config, options, (percent) => {
-          onProgress({
-            fileId: registeredFileId || fileId,
-            phase: 'uploading',
-            uploadProgress: percent,
-            processingProgress: 0,
-          });
-        });
-        storagePath = result.storagePath;
-        if (result.fileId) {
-          registeredFileId = result.fileId;
-        }
-      } else {
-        const result = await this.uploadSingle(
-          normalizedFile,
-          options,
-          (percent) => {
-            onProgress({
-              fileId: registeredFileId || fileId,
-              phase: 'uploading',
-              uploadProgress: percent,
-              processingProgress: 0,
-            });
-          }
-        );
-        storagePath = result.storagePath;
-      }
-
-      // Register the file in the database if not already done (chunked upload does it via /complete)
-      if (!registeredFileId) {
-        const endpoint = '/api/files';
-
-        const registerRes = await retryWithBackoff(async () => {
-          const headers: Record<string, string> = {
-            "Content-Type": "application/json",
-          };
-          if (options.uploadId) {
-            headers["X-Upload-Id"] = options.uploadId;
-          }
-          if (options.conversationId) {
-            headers["X-Conversation-Id"] = options.conversationId;
-          }
-          await ensureCsrfToken();
-          const res = await apiFetch(endpoint, {
-            method: 'POST',
-            headers,
-            ...(this.abortController?.signal ? { signal: this.abortController.signal } : {}),
-            body: JSON.stringify({
-              name: normalizedFile.name,
-              type: normalizedFile.type,
-              size: normalizedFile.size,
-              storagePath,
-              ...(options.uploadId ? { uploadId: options.uploadId } : {}),
-              ...(options.conversationId ? { conversationId: options.conversationId } : {}),
-            }),
-          });
-          if (!res.ok) {
-            const errorData = await res.json().catch(() => ({ error: 'Registration failed' }));
-            throw new Error(errorData.error || `File registration failed with status ${res.status}`);
-          }
-          return res.json();
-        }, 2, RETRY_BASE_DELAY_MS, this.abortController.signal);
-
-        registeredFileId = registerRes.id;
-      }
-
-      const actualFileId = registeredFileId || fileId;
-
-      onProgress({
-        fileId: actualFileId,
-        phase: 'processing',
-        uploadProgress: 100,
-        processingProgress: 0,
-      });
+      onProgress({ fileId: actualFileId, phase: 'completed', uploadProgress: 100, processingProgress: 100 });
 
       return { fileId: actualFileId, storagePath };
     } catch (error: any) {

@@ -965,10 +965,82 @@ async function processFileAsync(fileId: string, storagePath: string, mimeType: s
   }
 }
 
+import multer from "multer";
+import fsSync from "node:fs";
+
+const fastUploadStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    const dir = path.resolve(process.cwd(), "uploads");
+    if (!fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (_req, file, cb) => {
+    const id = crypto.randomUUID();
+    const ext = path.extname(file.originalname);
+    cb(null, `${id}${ext}`);
+  },
+});
+const fastUpload = multer({
+  storage: fastUploadStorage,
+  limits: { fileSize: LIMITS.MAX_FILE_SIZE_BYTES },
+});
+
 export function createFilesRouter() {
   const router = Router();
   const objectStorageService = new ObjectStorageService();
   const uploadsDir = path.resolve(process.cwd(), "uploads");
+
+  router.post("/api/files/fast-upload", fastUpload.single("file"), async (req: Request, res: Response) => {
+    try {
+      const multerFile = req.file;
+      if (!multerFile) {
+        return res.status(400).json({ error: "No file provided" });
+      }
+      const actorId = getUploadActorId(req);
+      const fileName = sanitizeFileName(multerFile.originalname || "upload");
+      const mimeType = normalizeUploadIntentMimeType(multerFile.mimetype, fileName) || multerFile.mimetype;
+
+      if (!ALLOWED_MIME_TYPES.includes(mimeType as any)) {
+        try { fsSync.unlinkSync(multerFile.path); } catch {}
+        return res.status(400).json({ error: `Unsupported file type: ${mimeType}` });
+      }
+      if (multerFile.size === 0) {
+        try { fsSync.unlinkSync(multerFile.path); } catch {}
+        return res.status(400).json({ error: "File is empty" });
+      }
+
+      const storagePath = `/objects/uploads/${path.basename(multerFile.filename)}`;
+      const conversationId = typeof req.body?.conversationId === "string" ? req.body.conversationId.trim() : null;
+
+      const file = await storage.createFile({
+        name: fileName,
+        type: mimeType,
+        size: multerFile.size,
+        storagePath,
+        status: "ready",
+        userId: actorId,
+      });
+
+      try {
+        await storage.createFileJob({ fileId: file.id, status: "pending" });
+      } catch {}
+
+      processFileAsync(file.id, storagePath, mimeType, fileName);
+
+      return res.json({
+        id: file.id,
+        name: fileName,
+        type: mimeType,
+        size: multerFile.size,
+        storagePath,
+        status: "ready",
+        conversationId,
+      });
+    } catch (error: any) {
+      console.error("[FastUpload] Error:", error);
+      return res.status(500).json({ error: "Upload failed" });
+    }
+  });
 
   router.use((req, res, next) => {
     const requestId = String((req as any).requestId || req.correlationId || res.locals?.traceId || "").trim();

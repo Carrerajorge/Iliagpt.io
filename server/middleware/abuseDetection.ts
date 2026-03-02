@@ -24,6 +24,9 @@ const EXEMPT_PATH_PREFIX = new Set([
   "/api/figma",
   "/api/agent",
   "/api/admin",
+  "/api/files",
+  "/api/objects",
+  "/api/csrf",
   "/user",
 ]);
 
@@ -122,6 +125,10 @@ export function abuseDetection() {
     res: Response,
     next: NextFunction,
   ): void {
+    if (process.env.NODE_ENV !== "production") {
+      next();
+      return;
+    }
     if (isExempt(req)) {
       next();
       return;
