@@ -985,6 +985,8 @@ export function ChatInterface({
     content?: string;
     isLoading?: boolean;
     isProcessing?: boolean;
+    previewMode?: "pdf" | "image" | "text";
+    blobUrl?: string;
   } | null>(null);
   const [copiedAttachmentContent, setCopiedAttachmentContent] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
@@ -2378,6 +2380,34 @@ export function ChatInterface({
 
     if (att.type === "image" && att.storagePath) {
       setLightboxImage(att.storagePath);
+      return;
+    }
+
+    const mime = att.mimeType || "";
+    const isPdf = mime.includes("pdf") || att.name?.toLowerCase().endsWith(".pdf");
+    const isImage = mime.startsWith("image/");
+
+    if (isPdf && att.fileId) {
+      setPreviewFileAttachment({
+        ...att,
+        isLoading: false,
+        isProcessing: false,
+        content: undefined,
+        previewMode: "pdf",
+        blobUrl: `/api/files/${att.fileId}/content`,
+      });
+      return;
+    }
+
+    if (isImage && att.fileId) {
+      setPreviewFileAttachment({
+        ...att,
+        isLoading: false,
+        isProcessing: false,
+        content: undefined,
+        previewMode: "image",
+        blobUrl: `/api/files/${att.fileId}/content`,
+      });
       return;
     }
 
@@ -4709,9 +4739,39 @@ export function ChatInterface({
                 } else if (eventType === "production_complete") {
                   setAiProcessStepsForChat((prev: any[]) => prev.map((s: any) => ({ ...s, status: "done" })), effectiveChatIdForStream);
                 } else if (eventType === "tool_start") {
-                  // keep compatibility with older backend tool events
                   if (data.toolName === "browse_and_act") {
                     setAiStateForChat("agent_working", effectiveChatIdForStream);
+                  }
+                  const agenticTools = ["bash", "web_fetch", "web_search", "read_file", "write_file", "edit_file", "list_files"];
+                  if (agenticTools.includes(data.toolName)) {
+                    setAiStateForChat("agent_working", effectiveChatIdForStream);
+                    const toolLabels: Record<string, string> = {
+                      bash: "Ejecutando comando...",
+                      web_fetch: "Obteniendo pagina web...",
+                      web_search: "Buscando en la web...",
+                      read_file: "Leyendo archivo...",
+                      write_file: "Escribiendo archivo...",
+                      edit_file: "Editando archivo...",
+                      list_files: "Listando archivos...",
+                    };
+                    setAiProcessStepsForChat((prev: any[]) => {
+                      const stepId = `tool-${data.toolName}-${data.iteration || Date.now()}`;
+                      const exists = prev.find((s: any) => s.id === stepId);
+                      if (exists) return prev;
+                      return [...prev, {
+                        id: stepId,
+                        message: toolLabels[data.toolName] || `Usando ${data.toolName}...`,
+                        status: "active"
+                      }];
+                    }, effectiveChatIdForStream);
+                  }
+                } else if (eventType === "tool_result") {
+                  const agenticTools = ["bash", "web_fetch", "web_search", "read_file", "write_file", "edit_file", "list_files"];
+                  if (agenticTools.includes(data.toolName)) {
+                    setAiProcessStepsForChat((prev: any[]) =>
+                      prev.map((s: any) =>
+                        s.id?.startsWith(`tool-${data.toolName}`) ? { ...s, status: "done" } : s
+                      ), effectiveChatIdForStream);
                   }
                 }
               },
@@ -6127,7 +6187,41 @@ IMPORTANTE:
                     return;
                   }
 
-                  if (eventType === "tool_start" || eventType === "tool_result") {
+                  if (eventType === "tool_start") {
+                    const agenticTools = ["bash", "web_fetch", "web_search", "read_file", "write_file", "edit_file", "list_files"];
+                    if (agenticTools.includes(data?.toolName)) {
+                      setAiStateForStream("agent_working");
+                      const toolLabels: Record<string, string> = {
+                        bash: "Ejecutando comando...",
+                        web_fetch: "Obteniendo pagina web...",
+                        web_search: "Buscando en la web...",
+                        read_file: "Leyendo archivo...",
+                        write_file: "Escribiendo archivo...",
+                        edit_file: "Editando archivo...",
+                        list_files: "Listando archivos...",
+                      };
+                      setAiProcessStepsForStream((prev: any[]) => {
+                        const stepId = `tool-${data.toolName}-${data.iteration || Date.now()}`;
+                        const exists = prev.find((s: any) => s.id === stepId);
+                        if (exists) return prev;
+                        return [...prev, {
+                          id: stepId,
+                          message: toolLabels[data.toolName] || `Usando ${data.toolName}...`,
+                          status: "active"
+                        }];
+                      });
+                    }
+                    return;
+                  }
+
+                  if (eventType === "tool_result") {
+                    const agenticTools = ["bash", "web_fetch", "web_search", "read_file", "write_file", "edit_file", "list_files"];
+                    if (agenticTools.includes(data?.toolName)) {
+                      setAiProcessStepsForStream((prev: any[]) =>
+                        prev.map((s: any) =>
+                          s.id?.startsWith(`tool-${data.toolName}`) ? { ...s, status: "done" } : s
+                        ));
+                    }
                     return;
                   }
 
@@ -7447,7 +7541,6 @@ IMPORTANTE:
                 </div>
               </div>
 
-              {/* Content */}
               <div className="flex-1 overflow-auto p-6">
                 {previewFileAttachment.isLoading ? (
                   <motion.div
@@ -7493,10 +7586,37 @@ IMPORTANTE:
                           Procesando archivo...
                         </p>
                         <p className="text-sm text-amber-600 dark:text-amber-400 mt-1">
-                          El contenido estará disponible en breve
+                          El contenido estara disponible en breve
                         </p>
                       </div>
                     </div>
+                  </motion.div>
+                ) : previewFileAttachment.previewMode === "pdf" && previewFileAttachment.blobUrl ? (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <iframe
+                      src={previewFileAttachment.blobUrl}
+                      className="w-full h-[70vh] rounded-lg border border-border"
+                      title={previewFileAttachment.name}
+                      data-testid="preview-pdf-iframe"
+                    />
+                  </motion.div>
+                ) : previewFileAttachment.previewMode === "image" && previewFileAttachment.blobUrl ? (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.3 }}
+                    className="flex items-center justify-center"
+                  >
+                    <img
+                      src={previewFileAttachment.blobUrl}
+                      alt={previewFileAttachment.name}
+                      className="max-w-full max-h-[70vh] object-contain rounded-lg"
+                      data-testid="preview-image-inline"
+                    />
                   </motion.div>
                 ) : previewFileAttachment.content ? (
                   <motion.div
@@ -7520,7 +7640,7 @@ IMPORTANTE:
                   >
                     <FileText className="h-16 w-16 text-muted-foreground/50 mb-4" />
                     <p className="text-muted-foreground">
-                      La vista previa no está disponible para este tipo de archivo.
+                      La vista previa no esta disponible para este tipo de archivo.
                     </p>
                     {previewFileAttachment.storagePath && (
                       <Button

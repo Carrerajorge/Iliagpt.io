@@ -7,6 +7,12 @@ import type { RequestSpec } from "./requestSpec";
 import { randomUUID } from "crypto";
 import { getGeminiClientOrThrow } from "../lib/gemini";
 import { requestUnderstandingAgent } from "./requestUnderstanding";
+import OpenAI from "openai";
+import {
+  AGENT_TOOLS as OPENCLAW_TOOLS,
+  executeToolCall as executeOpenClawToolCall,
+  type ToolCall as OpenClawToolCall,
+} from "../agents/toolEngine";
 
 export interface AgentExecutorOptions {
   maxIterations?: number;
@@ -597,229 +603,234 @@ MANDATORY RULES:
     });
 
     try {
-      // Separate system messages from conversation, and build Gemini-compatible messages
-      // Gemini requires alternating user/model roles — merge consecutive same-role messages
-      let systemInstruction = "";
-      const nonSystemMessages = conversationHistory.filter(m => {
-        if (m.role === "system") {
-          systemInstruction += (systemInstruction ? "\n\n" : "") + m.content;
-          return false;
-        }
+      const openaiClient = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
+        baseURL: process.env.OPENAI_BASE_URL || "https://openrouter.ai/api/v1",
+      });
+
+      const openaiMessages: OpenAI.ChatCompletionMessageParam[] = conversationHistory.map(m => ({
+        role: m.role as "system" | "user" | "assistant",
+        content: m.content,
+      }));
+
+      const openaiTools: OpenAI.ChatCompletionTool[] = [
+        ...tools.map(t => ({
+          type: "function" as const,
+          function: {
+            name: t.name,
+            description: t.description || "",
+            parameters: t.parameters || {},
+          }
+        })),
+        ...OPENCLAW_TOOLS,
+      ];
+
+      const uniqueToolNames = new Set<string>();
+      const dedupedTools = openaiTools.filter(t => {
+        if (uniqueToolNames.has(t.function.name)) return false;
+        uniqueToolNames.add(t.function.name);
         return true;
       });
 
-      const geminiMessages: Array<{ role: string; parts: Array<{ text: string }> }> = [];
-      for (const m of nonSystemMessages) {
-        const role = m.role === "assistant" ? "model" : "user";
-        const last = geminiMessages[geminiMessages.length - 1];
-        if (last && last.role === role) {
-          // Merge into previous message to avoid consecutive same-role
-          last.parts[0].text += "\n\n" + m.content;
-        } else {
-          geminiMessages.push({ role, parts: [{ text: m.content }] });
-        }
-      }
-
-      // Ensure conversation starts with a user message (Gemini requirement)
-      if (geminiMessages.length > 0 && geminiMessages[0].role !== "user") {
-        geminiMessages.unshift({ role: "user", parts: [{ text: "Begin" }] });
-      }
-
-      // Wrap Gemini call with a 60s timeout to prevent hanging
-      const geminiPromise = ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: geminiMessages as any,
-        config: {
-          temperature: 0.7,
-          maxOutputTokens: 4096,
-          ...(systemInstruction ? { systemInstruction } : {}),
-          tools: tools.length > 0 ? [{
-            functionDeclarations: tools
-          }] : undefined
-        },
-      } as any);
+      const agentModel = process.env.AGENT_MODEL || "minimax/minimax-m2.5";
+      const completionPromise = openaiClient.chat.completions.create({
+        model: agentModel,
+        messages: openaiMessages,
+        temperature: 0.7,
+        max_tokens: 4096,
+        tools: dedupedTools.length > 0 ? dedupedTools : undefined,
+        tool_choice: dedupedTools.length > 0 ? "auto" : undefined,
+      });
 
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Gemini API call timed out after 60s")), 60000)
+        setTimeout(() => reject(new Error("Agent LLM call timed out after 60s")), 60000)
       );
 
-      const response = await Promise.race([geminiPromise, timeoutPromise]);
+      const response = await Promise.race([completionPromise, timeoutPromise]);
 
-      const candidate = response.candidates?.[0];
-      if (!candidate) {
+      const choice = response.choices?.[0];
+      if (!choice) {
         throw new Error("No response from model");
       }
 
-      const parts = candidate.content?.parts || [];
-      let hasToolCall = false;
-      let textContent = "";
+      const toolCalls = choice.message?.tool_calls || [];
+      let hasToolCall = toolCalls.length > 0;
+      let textContent = choice.message?.content || "";
       let shouldExitAgentLoop = false;
 
-      // Debug: log what the LLM returned
-      const partTypes = parts.map((p: any) => p.functionCall ? `functionCall:${p.functionCall.name}` : p.text ? `text:${(p.text as string).slice(0, 80)}...` : 'other');
-      console.log(`[AgentExecutor] Iteration ${iteration}: LLM returned ${parts.length} parts: [${partTypes.join(', ')}]`);
+      console.log(`[AgentExecutor] Iteration ${iteration}: LLM returned ${toolCalls.length} tool_calls, text=${textContent.slice(0, 80)}...`);
 
-      for (const part of parts) {
-        if (part.functionCall) {
-          hasToolCall = true;
-          const { name, args } = part.functionCall;
+      if (hasToolCall) {
+        conversationHistory.push({
+          role: "assistant",
+          content: choice.message.content || null,
+          tool_calls: toolCalls.map(tc => ({
+            id: tc.id,
+            type: "function" as const,
+            function: { name: tc.function.name, arguments: tc.function.arguments },
+          })),
+        } as any);
+      }
 
-          sse.write("tool_start", {
-            runId,
-            toolName: name!,
+      for (const tc of toolCalls) {
+        const name = tc.function.name;
+        let args: Record<string, any> = {};
+        try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
+
+        sse.write("tool_start", {
+          runId,
+          toolName: name,
+          args,
+          iteration
+        });
+
+        let result: any;
+        let artifact: { type: string; url: string; name: string } | undefined;
+
+        const isOpenClawTool = OPENCLAW_TOOLS.some(t => t.function.name === name);
+        if (isOpenClawTool) {
+          const toolResult = await executeOpenClawToolCall(
+            { id: tc.id, type: "function", function: { name, arguments: tc.function.arguments } },
+            (msg) => sse.write("tool_status", { runId, toolName: name, status: msg, iteration })
+          );
+          try { result = JSON.parse(toolResult.content); } catch { result = toolResult.content; }
+        } else {
+          const execResult = await executeToolCall(
+            name,
             args,
-            iteration
-          });
-
-          const { result, artifact } = await executeToolCall(
-            name!,
-            args as Record<string, any>,
             toolContext,
             runId,
             res,
             reservationDetails
           );
+          result = execResult.result;
+          artifact = execResult.artifact;
+        }
 
-          if (artifact) {
-            artifacts.push(artifact);
-          }
+        if (artifact) {
+          artifacts.push(artifact);
+        }
 
-          sse.write("tool_result", {
-            runId,
-            toolName: name,
-            result,
-            artifact,
-            iteration
+        sse.write("tool_result", {
+          runId,
+          toolName: name,
+          result,
+          artifact,
+          iteration
+        });
+
+        let resultSummary: string;
+        if (name === "browse_and_act") {
+          const r = result as any;
+          resultSummary = JSON.stringify({
+            success: r.success,
+            stepsCount: r.stepsCount || r.steps?.length || 0,
+            summary: r.data?.summary || r.data?.finalUrl || "Task completed",
+            lastSteps: (r.steps || []).slice(-3).map((s: any) =>
+              typeof s === 'string' ? s.slice(0, 100) : JSON.stringify(s).slice(0, 100)
+            ),
           });
+        } else {
+          const raw = JSON.stringify(result);
+          resultSummary = raw.length > 2000 ? raw.slice(0, 2000) + "... [truncated]" : raw;
+        }
 
-          conversationHistory.push({
-            role: "assistant",
-            content: `[Called tool: ${name}]`
-          });
+        conversationHistory.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: resultSummary,
+        } as any);
 
-          // Truncate large tool results (especially browse_and_act with 20+ steps)
-          // to avoid overwhelming the LLM on the next iteration
-          let resultSummary: string;
-          if (name === "browse_and_act") {
-            const r = result as any;
-            resultSummary = JSON.stringify({
-              success: r.success,
-              stepsCount: r.stepsCount || r.steps?.length || 0,
-              summary: r.data?.summary || r.data?.finalUrl || "Task completed",
-              lastSteps: (r.steps || []).slice(-3).map((s: any) =>
-                typeof s === 'string' ? s.slice(0, 100) : JSON.stringify(s).slice(0, 100)
-              ),
-            });
-          } else {
-            const raw = JSON.stringify(result);
-            resultSummary = raw.length > 2000 ? raw.slice(0, 2000) + "... [truncated]" : raw;
-          }
+        if (name === "browse_and_act") {
+          const r = result as any;
+          const wasSuccessful = r.success === true;
+          const stepsCount = r.stepsCount || r.steps?.length || 0;
+          const lastSteps = (r.steps || []).slice(-3).map((s: any) =>
+            typeof s === 'string' ? s : (s?.action || s?.description || JSON.stringify(s).slice(0, 80))
+          );
+          const dataStatus = String(r?.data?.status || "").toLowerCase();
+          const missingFields = Array.isArray(r?.data?.missingFields)
+            ? (r.data.missingFields as string[])
+            : [];
+          const clarificationQuestion = typeof r?.data?.question === "string" ? r.data.question.trim() : "";
+          const confirmationCode =
+            r?.data?.confirmationCode ||
+            r?.data?.reservationCode ||
+            r?.data?.bookingReference ||
+            r?.data?.confirmation;
+          const isNeedsUserInput = dataStatus === "needs_user_input" || missingFields.length > 0;
 
-          conversationHistory.push({
-            role: "user",
-            content: `Tool result for ${name}: ${resultSummary}`
-          });
-
-          // FAST EXIT: After browse_and_act completes, generate an immediate
-          // response instead of making another (slow/failing) LLM call.
-          // The browser automation already took 2-10 minutes; the user doesn't
-          // need to wait for another LLM round-trip just to get a summary.
-          if (name === "browse_and_act") {
-            const r = result as any;
-            const wasSuccessful = r.success === true;
-            const stepsCount = r.stepsCount || r.steps?.length || 0;
-            const lastSteps = (r.steps || []).slice(-3).map((s: any) =>
-              typeof s === 'string' ? s : (s?.action || s?.description || JSON.stringify(s).slice(0, 80))
-            );
-            const dataStatus = String(r?.data?.status || "").toLowerCase();
-            const missingFields = Array.isArray(r?.data?.missingFields)
-              ? (r.data.missingFields as string[])
-              : [];
-            const clarificationQuestion = typeof r?.data?.question === "string" ? r.data.question.trim() : "";
-            const confirmationCode =
-              r?.data?.confirmationCode ||
-              r?.data?.reservationCode ||
-              r?.data?.bookingReference ||
-              r?.data?.confirmation;
-            const isNeedsUserInput = dataStatus === "needs_user_input" || missingFields.length > 0;
-
-            let summaryText: string;
-            if (isNeedsUserInput) {
-              const reason = String(r?.data?.reason || "").toLowerCase();
-              const question =
-                clarificationQuestion ||
-                `Para continuar con la reserva necesito: ${missingFields.join(", ")}.`;
-              // Build rich "needs input" message based on reason
-              if (reason === "no_web_availability" && isReservationRequest) {
-                const rd = reservationDetails;
-                const avail = Array.isArray(r?.data?.availableTimes) ? r.data.availableTimes : [];
-                const availBlock = avail.length > 0 ? `\n\n**Horarios disponibles:** ${avail.join(", ")}` : "";
-                summaryText = `⚠️ **Sin disponibilidad online**\n\n${question}${availBlock}\n\n_Restaurante: ${rd?.restaurant || "—"} · Fecha: ${rd?.date || "—"} · Personas: ${rd?.partySize || "—"}_`;
-              } else if (reason === "past_date" && isReservationRequest) {
-                summaryText = `⚠️ **Fecha pasada**\n\n${question}`;
-              } else if (reason === "duplicate_reservation_detected" && isReservationRequest) {
-                summaryText = `⚠️ **Reserva duplicada**\n\n${question}`;
-              } else if (reason === "restaurant_closed" && isReservationRequest) {
-                summaryText = `⚠️ **Restaurante cerrado**\n\n${question}`;
-              } else if (reason === "runtime_timeout") {
-                summaryText = `⏳ **Tiempo agotado**\n\n${question}`;
-              } else if (reason === "page_navigation_error" || reason === "browser_session_closed") {
-                summaryText = `❌ **Error de conexión**\n\n${question}`;
-              } else if (reason === "invalid_contact_data") {
-                summaryText = `⚠️ **Datos inválidos**\n\n${question}`;
-              } else {
-                summaryText = question;
-              }
-              sse.write("clarification", {
-                runId,
-                question,
-                missingFields,
-              });
-            } else if (isReservationRequest) {
+          let summaryText: string;
+          if (isNeedsUserInput) {
+            const reason = String(r?.data?.reason || "").toLowerCase();
+            const question =
+              clarificationQuestion ||
+              `Para continuar con la reserva necesito: ${missingFields.join(", ")}.`;
+            if (reason === "no_web_availability" && isReservationRequest) {
               const rd = reservationDetails;
-              const checkItems: string[] = [];
-              if (rd?.restaurant) checkItems.push(`- [x] **Restaurante:** ${rd.restaurant}`);
-              if (rd?.date) checkItems.push(`- [x] **Fecha:** ${rd.date}`);
-              if (r?.data?.timeAdjusted && r?.data?.selectedTime) {
-                checkItems.push(`- [x] **Hora:** ${r.data.selectedTime} _(solicitada: ${r.data.requestedTime || rd?.time})_`);
-              } else if (rd?.time) {
-                checkItems.push(`- [x] **Hora:** ${rd.time}`);
-              }
-              if (rd?.partySize) checkItems.push(`- [x] **Personas:** ${rd.partySize}`);
-              if (rd?.contactName) checkItems.push(`- [x] **Nombre:** ${rd.contactName}`);
-              if (rd?.phone) checkItems.push(`- [x] **Teléfono:** ${rd.phone}`);
-              if (rd?.email) checkItems.push(`- [x] **Email:** ${rd.email}`);
-
-              const checklistBlock = checkItems.length > 0 ? `\n\n**Checklist:**\n${checkItems.join("\n")}` : "";
-              if (wasSuccessful && confirmationCode) {
-                summaryText = `✅ **Reserva confirmada en la web**\n\nCódigo/confirmación: ${confirmationCode}${checklistBlock}\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
-              } else if (wasSuccessful) {
-                summaryText = `✅ **Automatización web completada exitosamente**${checklistBlock}\n\nRealicé ${stepsCount} acciones en el navegador para completar tu solicitud.\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
-              } else {
-                summaryText = `⚠️ **Automatización web finalizada** (${stepsCount} pasos)${checklistBlock}\n\nNavegué por el sitio web y realicé varias acciones, pero no pude confirmar que la tarea se completó al 100%.\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}\n\nTe recomiendo verificar directamente en el sitio web.`;
-              }
-            } else if (wasSuccessful && confirmationCode) {
-              summaryText = `✅ **Reserva confirmada en la web**\n\nCódigo/confirmación: ${confirmationCode}\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
-            } else if (wasSuccessful) {
-              summaryText = `✅ **Automatización web completada exitosamente**\n\nRealicé ${stepsCount} acciones en el navegador para completar tu solicitud.\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
+              const avail = Array.isArray(r?.data?.availableTimes) ? r.data.availableTimes : [];
+              const availBlock = avail.length > 0 ? `\n\n**Horarios disponibles:** ${avail.join(", ")}` : "";
+              summaryText = `**Sin disponibilidad online**\n\n${question}${availBlock}\n\n_Restaurante: ${rd?.restaurant || "—"} · Fecha: ${rd?.date || "—"} · Personas: ${rd?.partySize || "—"}_`;
+            } else if (reason === "past_date" && isReservationRequest) {
+              summaryText = `**Fecha pasada**\n\n${question}`;
+            } else if (reason === "duplicate_reservation_detected" && isReservationRequest) {
+              summaryText = `**Reserva duplicada**\n\n${question}`;
+            } else if (reason === "restaurant_closed" && isReservationRequest) {
+              summaryText = `**Restaurante cerrado**\n\n${question}`;
+            } else if (reason === "runtime_timeout") {
+              summaryText = `**Tiempo agotado**\n\n${question}`;
+            } else if (reason === "page_navigation_error" || reason === "browser_session_closed") {
+              summaryText = `**Error de conexion**\n\n${question}`;
+            } else if (reason === "invalid_contact_data") {
+              summaryText = `**Datos invalidos**\n\n${question}`;
             } else {
-              summaryText = `⚠️ **Automatización web finalizada** (${stepsCount} pasos)\n\nNavegué por el sitio web y realicé varias acciones, pero no pude confirmar que la tarea se completó al 100%.\n\n**Últimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}\n\nTe recomiendo verificar directamente en el sitio web.`;
+              summaryText = question;
             }
-
-            fullResponse = summaryText;
-            // Send the entire summary as a single chunk to preserve markdown formatting.
-            // Leading \n\n separates it from inline browser_report blockquotes already streamed.
-            sse.write("chunk", {
-              content: "\n\n" + summaryText,
-              sequence: 1,
+            sse.write("clarification", {
               runId,
+              question,
+              missingFields,
             });
-            console.log(`[AgentExecutor] browse_and_act FAST EXIT: success=${wasSuccessful}, steps=${stepsCount}`);
-            shouldExitAgentLoop = true;
-            break;
+          } else if (isReservationRequest) {
+            const rd = reservationDetails;
+            const checkItems: string[] = [];
+            if (rd?.restaurant) checkItems.push(`- [x] **Restaurante:** ${rd.restaurant}`);
+            if (rd?.date) checkItems.push(`- [x] **Fecha:** ${rd.date}`);
+            if (r?.data?.timeAdjusted && r?.data?.selectedTime) {
+              checkItems.push(`- [x] **Hora:** ${r.data.selectedTime} _(solicitada: ${r.data.requestedTime || rd?.time})_`);
+            } else if (rd?.time) {
+              checkItems.push(`- [x] **Hora:** ${rd.time}`);
+            }
+            if (rd?.partySize) checkItems.push(`- [x] **Personas:** ${rd.partySize}`);
+            if (rd?.contactName) checkItems.push(`- [x] **Nombre:** ${rd.contactName}`);
+            if (rd?.phone) checkItems.push(`- [x] **Telefono:** ${rd.phone}`);
+            if (rd?.email) checkItems.push(`- [x] **Email:** ${rd.email}`);
+
+            const checklistBlock = checkItems.length > 0 ? `\n\n**Checklist:**\n${checkItems.join("\n")}` : "";
+            if (wasSuccessful && confirmationCode) {
+              summaryText = `**Reserva confirmada en la web**\n\nCodigo/confirmacion: ${confirmationCode}${checklistBlock}\n\n**Ultimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
+            } else if (wasSuccessful) {
+              summaryText = `**Automatizacion web completada exitosamente**${checklistBlock}\n\nRealice ${stepsCount} acciones en el navegador para completar tu solicitud.\n\n**Ultimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
+            } else {
+              summaryText = `**Automatizacion web finalizada** (${stepsCount} pasos)${checklistBlock}\n\nNavegue por el sitio web y realice varias acciones, pero no pude confirmar que la tarea se completo al 100%.\n\n**Ultimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}\n\nTe recomiendo verificar directamente en el sitio web.`;
+            }
+          } else if (wasSuccessful && confirmationCode) {
+            summaryText = `**Reserva confirmada en la web**\n\nCodigo/confirmacion: ${confirmationCode}\n\n**Ultimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
+          } else if (wasSuccessful) {
+            summaryText = `**Automatizacion web completada exitosamente**\n\nRealice ${stepsCount} acciones en el navegador para completar tu solicitud.\n\n**Ultimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}`;
+          } else {
+            summaryText = `**Automatizacion web finalizada** (${stepsCount} pasos)\n\nNavegue por el sitio web y realice varias acciones, pero no pude confirmar que la tarea se completo al 100%.\n\n**Ultimas acciones:**\n${lastSteps.map((s: string) => `- ${s}`).join("\n")}\n\nTe recomiendo verificar directamente en el sitio web.`;
           }
-        } else if (part.text) {
-          textContent += part.text;
+
+          fullResponse = summaryText;
+          sse.write("chunk", {
+            content: "\n\n" + summaryText,
+            sequence: 1,
+            runId,
+          });
+          console.log(`[AgentExecutor] browse_and_act FAST EXIT: success=${wasSuccessful}, steps=${stepsCount}`);
+          shouldExitAgentLoop = true;
+          break;
         }
       }
 
@@ -836,7 +847,8 @@ MANDATORY RULES:
           // force it to use browse_and_act by injecting a strong nudge and retrying.
           // After the first browse_and_act attempt, allow text responses (result summaries).
           const alreadyUsedBrowser = conversationHistory.some(m =>
-            m.content.includes("[Called tool: browse_and_act]")
+            (m as any).role === "tool" && (m as any).tool_call_id && String(m.content || "").includes("browse_and_act")
+            || (m as any).tool_calls?.some((tc: any) => tc.function?.name === "browse_and_act")
           );
           if (requestSpec.intent === "web_automation" && iteration <= 2 && !alreadyUsedBrowser) {
             console.log(`[AgentExecutor] web_automation: LLM returned text instead of tool call on iteration ${iteration}, forcing tool use...`);
@@ -854,7 +866,7 @@ MANDATORY RULES:
           }
 
           const alreadyUsedListFiles = conversationHistory.some((m) =>
-            m.content.includes("[Called tool: list_files]"),
+            (m as any).tool_calls?.some((tc: any) => tc.function?.name === "list_files"),
           );
           if (isLocalFsRequest && iteration <= 2 && !alreadyUsedListFiles) {
             const inferredDirectory = inferLocalDirectoryFromPrompt(recentUserText || requestSpec.rawMessage || "");
@@ -957,15 +969,15 @@ Please rewrite your response addressing these issues.`
       // failed (timeout, too-large context, etc.), generate a fallback summary
       // instead of retrying forever or crashing.
       const alreadyBrowsed = conversationHistory.some(m =>
-        m.content.includes("[Called tool: browse_and_act]")
+        (m as any).tool_calls?.some((tc: any) => tc.function?.name === "browse_and_act")
       );
       if (alreadyBrowsed && !fullResponse) {
         console.log(`[AgentExecutor] Post-browse LLM call failed, generating fallback summary`);
         // Extract browse result from conversation history
         const browseResultMsg = conversationHistory.find(m =>
-          m.content.startsWith("Tool result for browse_and_act:")
+          (m as any).role === "tool" && String(m.content || "").includes('"success"')
         );
-        const browseData = browseResultMsg?.content || "";
+        const browseData = String(browseResultMsg?.content || "");
         const successMatch = browseData.match(/"success"\s*:\s*(true|false)/);
         const wasSuccessful = successMatch?.[1] === "true";
 

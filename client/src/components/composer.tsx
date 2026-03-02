@@ -449,39 +449,35 @@ export function Composer({
                   )}
                 </div>
               ) : (
-                <div className="flex items-center gap-2 px-2 py-1.5 pr-6 max-w-[180px]">
-                  <div className={cn(
-                    "flex items-center justify-center w-8 h-8 rounded flex-shrink-0",
-                    (file.name.toLowerCase().endsWith(".pdf") || file.type.includes("pdf")) ? "bg-red-500" :
-                      (file.name.toLowerCase().endsWith(".docx") || file.name.toLowerCase().endsWith(".doc") || file.type.includes("word") || file.type.includes("document") || file.type.includes("wordprocessing")) ? "bg-blue-600" :
-                        (file.name.toLowerCase().endsWith(".xlsx") || file.name.toLowerCase().endsWith(".xls") || file.name.toLowerCase().endsWith(".csv") || file.type.includes("sheet") || file.type.includes("excel") || file.type.includes("spreadsheet")) ? "bg-green-600" :
-                          (file.name.toLowerCase().endsWith(".pptx") || file.name.toLowerCase().endsWith(".ppt") || file.type.includes("presentation") || file.type.includes("powerpoint")) ? "bg-orange-500" :
-                            "bg-muted-foreground"
-                  )}>
-                    <span className="text-white text-[10px] font-bold">
-                      {(file.name.toLowerCase().endsWith(".pdf") || file.type.includes("pdf")) ? "PDF" :
-                        (file.name.toLowerCase().endsWith(".docx") || file.name.toLowerCase().endsWith(".doc") || file.type.includes("word") || file.type.includes("document") || file.type.includes("wordprocessing")) ? "DOC" :
-                          (file.name.toLowerCase().endsWith(".xlsx") || file.name.toLowerCase().endsWith(".xls") || file.name.toLowerCase().endsWith(".csv") || file.type.includes("sheet") || file.type.includes("excel") || file.type.includes("spreadsheet")) ? "XLS" :
-                            (file.name.toLowerCase().endsWith(".pptx") || file.name.toLowerCase().endsWith(".ppt") || file.type.includes("presentation") || file.type.includes("powerpoint")) ? "PPT" :
-                              "FILE"}
-                    </span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <span className="text-xs font-medium truncate block">{file.name}</span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {file.status === "uploading" ? "Subiendo..." :
-                        file.status === "processing" ? "Procesando..." :
-                          file.status === "error" ? "Error" :
-                            formatFileSize(file.size)}
-                    </span>
-                  </div>
-                  {(file.status === "uploading" || file.status === "processing") && (
-                    <Loader2 className="h-3 w-3 animate-spin text-blue-500 flex-shrink-0" />
-                  )}
-                  {file.status === "ready" && (
-                    <CheckCircle2 className="h-3 w-3 text-green-500 flex-shrink-0" />
-                  )}
-                </div>
+                (() => {
+                  const docTheme = getFileTheme(file.name, file.mimeType || file.type);
+                  return (
+                    <div className="flex items-center gap-2 px-2 py-1.5 pr-6 max-w-[200px]">
+                      <div className={cn(
+                        "flex items-center justify-center w-8 h-8 rounded flex-shrink-0",
+                        docTheme.bgColor
+                      )}>
+                        {(file.status === "uploading" || file.status === "processing") ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-white" />
+                        ) : (
+                          <span className="text-white text-[10px] font-bold">{docTheme.icon}</span>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-xs font-medium truncate block">{file.name}</span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {file.status === "uploading" ? "Subiendo..." :
+                            file.status === "processing" ? "Procesando..." :
+                              file.status === "error" ? "Error" :
+                                `${docTheme.label} - ${formatFileSize(file.size)}`}
+                        </span>
+                      </div>
+                      {file.status === "ready" && (
+                        <CheckCircle2 className="h-3 w-3 text-green-500 flex-shrink-0" />
+                      )}
+                    </div>
+                  );
+                })()
               )}
             </div>
           ))}

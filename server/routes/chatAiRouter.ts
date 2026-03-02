@@ -6307,13 +6307,17 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         /\b(?:carpetas?|caprteas?|careptas?|carpteas?|folders?|directorios?|directories?|archivos?|files?)\b.*\b(?:mac|computadora|pc|laptop|sistema|escritorio|desktop|descargas|downloads|documentos|documents|home|disco)\b|\b(?:analiza|explora|listar|list|revisa|cuenta|count|cu[aá]ntas?)\b.*\b(?:mi\s+(?:mac|computadora|pc)|desktop|escritorio|home)\b/i.test(
           userMessageText || "",
         );
-      const agentLoopIntents = new Set(["web_automation", "multi_step_task", "research", "data_analysis", "document_analysis"]);
+      const agentLoopIntents = new Set(["web_automation", "multi_step_task", "research", "data_analysis", "document_analysis", "coding", "file_management", "system_admin"]);
+      const agenticKeywordSignal = /\b(?:busca(?:r|me)?|search|investiga|fetch|navega|browse|ejecuta|run|terminal|command|consola|instala|install|crea\s+(?:un?\s+)?(?:archivo|carpeta|file|folder)|escribe?\s+(?:en|un)|lee|read|edita|edit|abre|open|descarga|download)\b/i.test(userMessageText || "");
       const shouldRouteThroughAgentLoop =
         shouldRunModel &&
-        Boolean(unifiedContext?.isAgenticMode) &&
         (
-          agentLoopIntents.has(unifiedContext!.requestSpec.intent) ||
-          localFsSignal
+          Boolean(unifiedContext?.isAgenticMode) &&
+          (
+            agentLoopIntents.has(unifiedContext!.requestSpec.intent) ||
+            localFsSignal
+          )
+          || agenticKeywordSignal
         );
 
       if (shouldRouteThroughAgentLoop) {
