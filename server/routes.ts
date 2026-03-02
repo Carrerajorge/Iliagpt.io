@@ -964,6 +964,117 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/files/list", async (req: Request, res: Response) => {
+    try {
+      const { secureFileGateway } = await import("./agent/filePlane");
+      const dir = (req.query.dir as string) || ".";
+      const workspace = (req.query.workspace as string) || "project";
+      const result = await secureFileGateway.list(dir, workspace, "system");
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/files/read", async (req: Request, res: Response) => {
+    try {
+      const { secureFileGateway, parseFile, generateChunks } = await import("./agent/filePlane");
+      const { filePath, parse, chunks, workspace } = req.body;
+      if (!filePath) return res.status(400).json({ error: "filePath is required" });
+      const ws = workspace || "project";
+      const content = await secureFileGateway.read(filePath, ws, "system");
+      const result: any = { content };
+      if (parse && typeof content === "object" && "content" in content) {
+        result.parsed = parseFile(content.content, filePath);
+      }
+      if (chunks && typeof content === "object" && "content" in content) {
+        result.chunks = generateChunks(content.content, filePath);
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/files/write", async (req: Request, res: Response) => {
+    try {
+      const { secureFileGateway } = await import("./agent/filePlane");
+      const { filePath, content, workspace } = req.body;
+      if (!filePath || content === undefined) return res.status(400).json({ error: "filePath and content are required" });
+      const result = await secureFileGateway.write(filePath, content, workspace || "default", "system");
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/files/search", async (req: Request, res: Response) => {
+    try {
+      const { secureFileGateway } = await import("./agent/filePlane");
+      const { query, workspace } = req.body;
+      if (!query) return res.status(400).json({ error: "query is required" });
+      const result = await secureFileGateway.search(query, workspace || "project", "system");
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/files/delete", async (req: Request, res: Response) => {
+    try {
+      const { secureFileGateway } = await import("./agent/filePlane");
+      const { filePath, workspace } = req.body;
+      if (!filePath) return res.status(400).json({ error: "filePath is required" });
+      const result = await secureFileGateway.delete(filePath, workspace || "default", "system");
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/files/stat", async (req: Request, res: Response) => {
+    try {
+      const { secureFileGateway } = await import("./agent/filePlane");
+      const { filePath, workspace } = req.body;
+      if (!filePath) return res.status(400).json({ error: "filePath is required" });
+      const result = await secureFileGateway.stat(filePath, workspace || "project", "system");
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/files/hash", async (req: Request, res: Response) => {
+    try {
+      const { secureFileGateway } = await import("./agent/filePlane");
+      const { filePath, workspace } = req.body;
+      if (!filePath) return res.status(400).json({ error: "filePath is required" });
+      const result = await secureFileGateway.hash(filePath, workspace || "project", "system");
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/files/stats", async (_req: Request, res: Response) => {
+    try {
+      const { secureFileGateway } = await import("./agent/filePlane");
+      res.json(secureFileGateway.getStats());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/files/audit", async (req: Request, res: Response) => {
+    try {
+      const { secureFileGateway } = await import("./agent/filePlane");
+      const limit = parseInt(req.query.limit as string) || 100;
+      res.json({ entries: secureFileGateway.getAuditLog(limit) });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/agent/dag/:runId/stream", (req: Request, res: Response) => {
     const { runId } = req.params;
     res.writeHead(200, {
@@ -1258,6 +1369,118 @@ export async function registerRoutes(
   // ===== Browser & Terminal Control =====
   app.use("/api/browser-control", createBrowserControlRouter());
   app.use("/api/terminal", requireAdminMiddleware, require2FA, createTerminalControlRouter());
+
+  // ===== Terminal Plane API (Audit + Stats + Exec via RBAC TerminalController) =====
+  app.post("/api/terminal-plane/exec", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { TerminalController: TC } = await import("./agent/tools/terminalControl");
+      const controller = new TC();
+      const authReq = req as AuthenticatedRequest;
+      const userId = authReq.user?.claims?.sub || authReq.user?.id || (req.session as any)?.authUserId || "admin";
+      const command = req.body.command || "";
+      const riskLevel = req.body.riskLevel || "unknown";
+      const confirmed = req.body.confirmed === true;
+      const dangerousPatterns = /^\s*(sudo|rm\s+-rf|mkfs|dd\s+if|:()\{|shutdown|reboot|kill\s+-9\s+1|systemctl)/i;
+      const needsConfirmation = dangerousPatterns.test(command) && !confirmed;
+      if (needsConfirmation) {
+        return res.status(200).json({
+          requiresConfirmation: true,
+          command,
+          riskLevel: "high",
+          message: "This command requires explicit confirmation before execution.",
+        });
+      }
+      const result = await controller.execute({
+        tool: "terminal.exec" as const,
+        command,
+        userId: String(userId),
+        role: "admin",
+        confirmed,
+        timeout: req.body.timeout || 60000,
+      });
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/terminal-plane/audit", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const { auditLogger } = await import("./agent/tools/terminalControl");
+      const entries = auditLogger.getEntries({ limit: 200 });
+      res.json(entries);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/terminal-plane/stats", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const { auditLogger } = await import("./agent/tools/terminalControl");
+      const entries = auditLogger.getEntries({});
+      const totalExecutions = entries.length;
+      const allowedExecutions = entries.filter((e) => e.allowed).length;
+      const deniedExecutions = entries.filter((e) => !e.allowed).length;
+      const durations = entries.filter((e) => e.durationMs > 0).map((e) => e.durationMs);
+      const averageDurationMs = durations.length > 0 ? durations.reduce((a, b) => a + b, 0) / durations.length : 0;
+
+      const cmdCounts = new Map<string, number>();
+      for (const e of entries) {
+        if (e.command) {
+          const base = e.command.split(/\s+/)[0];
+          cmdCounts.set(base, (cmdCounts.get(base) || 0) + 1);
+        }
+      }
+      const topCommands = Array.from(cmdCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([command, count]) => ({ command, count }));
+
+      const { computerControlPlane } = await import("./agent/computerControl");
+      const riskBreakdown: Record<string, number> = { safe: 0, moderate: 0, dangerous: 0, critical: 0 };
+      for (const e of entries) {
+        if (e.command) {
+          const classification = computerControlPlane.classifyCommand(e.command);
+          riskBreakdown[classification.riskLevel] = (riskBreakdown[classification.riskLevel] || 0) + 1;
+        }
+      }
+
+      res.json({ totalExecutions, allowedExecutions, deniedExecutions, averageDurationMs, topCommands, riskBreakdown });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ===== Computer Control Plane API =====
+  app.get("/api/computer-control/status", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const { computerControlPlane } = await import("./agent/computerControl");
+      const killSwitch = computerControlPlane.getKillSwitchState();
+      const activeRuns = computerControlPlane.getActiveRunIds();
+      const activeRunCount = computerControlPlane.getActiveRunCount();
+      res.json({ killSwitch, activeRuns, activeRunCount });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/computer-control/kill-switch", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { computerControlPlane } = await import("./agent/computerControl");
+      const authReq = req as AuthenticatedRequest;
+      const userId = String(authReq.user?.claims?.sub || authReq.user?.id || (req.session as any)?.authUserId || "admin");
+      const { arm, reason } = req.body;
+      let event;
+      if (arm) {
+        event = computerControlPlane.armKillSwitch(userId, reason || "Armed via admin API");
+      } else {
+        event = computerControlPlane.disarmKillSwitch(userId, reason || "Disarmed via admin API");
+      }
+      res.json({ success: true, event });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
 
   // ===== macOS Native Control (AppleScript, System, Apps, Calendar, etc.) =====
   app.use("/api/macos", requireAdminMiddleware, createMacOSControlRouter());

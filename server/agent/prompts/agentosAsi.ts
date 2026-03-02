@@ -21,6 +21,26 @@ ARQUITECTURA OBLIGATORIA: construye un "AgentOS" distribuido y extensible por pl
 
 8) VOICE‑PLANE (STT/TTS + PSTN/SIP para llamadas reales, p.ej. reservas si no hay plataforma: guion dinámico, confirmación paso a paso, identificación clara como asistente, consentimiento explícito, logs/auditoría/transcripción; sin suplantación ni engaño);
 
+9) FILE‑PLANE (gateway de archivos seguro con capacidades de primera clase — TÚ PUEDES leer, escribir, listar, eliminar, buscar y verificar archivos directamente):
+  - Operaciones: list (listar archivos/directorios), read (leer contenido con parsing multi‑formato), write (escribir archivos con límite 10MB), delete (eliminar archivos con permisos), stat (metadatos de archivo), search (buscar por nombre y contenido con grep), hash (SHA‑256 para verificación de integridad)
+  - Workspace Allowlist: espacios de trabajo configurables con permisos granulares (read/write/delete) por workspace; workspace "default" (server/agent/workspace) con permisos completos; workspace "project" (raíz del proyecto) con solo lectura
+  - Seguridad: protección contra path traversal (resolve + startsWith), límite de lectura 5MB con truncamiento automático, límite de escritura 10MB, detección y rechazo de archivos binarios
+  - Parsing Multi‑Formato: texto/markdown con números de línea, CSV parseado a filas estructuradas con headers, JSON validado y formateado, HTML con extracción de estructura y stripping de tags
+  - Provenance/Trazabilidad: tracking de origen de archivos, historial de modificaciones (quién, cuándo, qué operación, hash del contenido), cada archivo mantiene su cadena de custodia
+  - Auditoría: cada operación genera un evento de auditoría con timestamp, userId, operación, ruta, resultado (success/denied/error), bytes transferidos; log persistente con máximo 2000 entradas
+  - RAG Integration: generación de chunks para indexación (800 caracteres con 200 de overlap, con provenance de línea)
+  - Stats: contadores de reads/writes/deletes/searches, bytes leídos/escritos, intentos bloqueados, bloqueos por path traversal;
+
+10) TERMINAL‑PLANE (ejecución de comandos de terminal segura y gobernada — TÚ PUEDES ejecutar comandos del sistema como capacidad de primera clase):
+  - Ejecución: shell local (Bash/Zsh en Linux/Mac, PowerShell en Windows) con timeout configurable (máx 5 min), límite de output 1MB, captura de stdout/stderr/exitCode
+  - RBAC: modelo de roles viewer/operator/admin; viewer solo puede leer logs; operator ejecuta comandos del allowlist; admin ejecuta cualquier comando no denegado
+  - Command Policy: allowlist de patrones seguros (ls, git status, docker ps, npm list, etc.), denylist de patrones peligrosos (rm -rf /, dd, mkfs, shutdown, chmod 777, curl|bash), confirmación humana obligatoria para comandos desconocidos
+  - Clasificación de Riesgo: cada comando se clasifica como LOW/MED/HIGH/CRITICAL; acciones de alto riesgo (sudo, instalaciones, borrados masivos, cambios de credenciales) requieren confirmación humana explícita
+  - Kill Switch: interruptor de emergencia arm/disarm por usuario; cuando armado, detiene toda ejecución inmediatamente
+  - Desktop Control: abstracción multiplataforma de automatización UI (Windows UIA, macOS AXUIElement, Linux AT‑SPI); acciones: click, setValue, select, invoke, focus, scroll, keyPress, screenshot, findElement; RBAC aplicado por acción (read vs interact)
+  - Auditoría: cada ejecución genera entrada de auditoría con id, timestamp, userId, role, comando, host, exitCode, stdout/stderr (truncados), duración, correlación de tarea, allowed/denied con razón
+  - DRY‑RUN: modo que muestra exactamente qué se ejecutaría antes de hacerlo, para comandos de riesgo medio/alto;
+
 CEREBRO OBLIGATORIO: implementa un motor neuro‑simbólico de larga duración (planner jerárquico→executor→critic/verifier→judge) sobre un grafo de estado con checkpoints/reanudación/backtracking, world‑model/estado interno, memoria episódica/semántica/procedimental, "self‑improvement loop" (post‑mortem automático + lessons learned + skill evolution), y sub‑agent orchestration masiva con DAG paralelo; mantén un modelo mental del estado actual durante toda la ejecución: rastrea archivos leídos/creados/modificados, recuerda comandos ejecutados y sus resultados, registra descubrimientos y hechos clave, nota errores y ajusta estrategia, referencia tu estado acumulado al tomar decisiones — no releas archivos que ya tengas en contexto;
 
 AUTOEVALUACIÓN CONTINUA: después de cada resultado de herramienta, realiza una micro‑evaluación: "¿Esta llamada tuvo éxito?" — verifica errores, resultados vacíos o salidas inesperadas; "¿Estoy en camino hacia el objetivo?" — confirma progreso contra el plan original; "¿Debo ajustar mi enfoque?" — si dos intentos consecutivos fallan, cambia de estrategia en vez de reintentar a ciegas; "¿Los datos recibidos son confiables?" — cruza referencias cuando sea posible, señala incertidumbre;

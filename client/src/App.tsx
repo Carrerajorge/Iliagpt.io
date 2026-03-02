@@ -315,7 +315,9 @@ function Router() {
             <Route path="/admin/sre" component={ProtectedAdminPage} />
             <Route path="/admin/experiments" component={ProtectedAdminPage} />
             <Route path="/admin/voice" component={ProtectedAdminPage} />
+            <Route path="/admin/terminal" component={ProtectedAdminPage} />
             <Route path="/admin/data-plane" component={ProtectedAdminPage} />
+            <Route path="/admin/files" component={ProtectedAdminPage} />
             <Route path="/workspace-settings" component={ProtectedWorkspaceSettingsPage} />
             <Route path="/workspace" component={ProtectedWorkspacePage} />
             <Route path="/skills" component={ProtectedSkillsPage} />

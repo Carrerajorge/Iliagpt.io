@@ -86,7 +86,7 @@ import { ActivityFeed } from "@/components/admin/ActivityFeed";
 import { RealtimeMetricsPanel } from "@/components/admin/RealtimeMetrics";
 import { SecurityAlertsPanel } from "@/components/admin/SecurityAlerts";
 import { AdminNotificationsPopover } from "@/components/admin/NotificationsPopover";
-import { TerminalPanel } from "@/components/terminal-panel";
+
 import ReleasesManager from "./admin/ReleasesManager";
 import BudgetDashboard from "@/components/admin/BudgetDashboard";
 import SREPanel from "@/components/admin/SREPanel";
@@ -95,8 +95,10 @@ import SecurityDashboard from "@/components/admin/SecurityDashboard";
 import ModelExperiments from "@/components/admin/ModelExperiments";
 import VoicePlane from "@/components/admin/VoicePlane";
 import DataPlaneExplorer from "@/components/admin/DataPlaneExplorer";
+import TerminalPlane from "@/components/admin/TerminalPlane";
+import FilePlane from "@/components/admin/FilePlane";
 
-type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard" | "experiments" | "voice" | "data-plane";
+type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard" | "experiments" | "voice" | "data-plane" | "files";
 
 const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -122,6 +124,7 @@ const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] =
   { id: "experiments", label: "Model Experiments", icon: FlaskConical },
   { id: "voice", label: "Voice Plane", icon: Phone },
   { id: "data-plane", label: "Data Plane", icon: Database },
+  { id: "files", label: "File Plane", icon: FolderOpen },
 ];
 
 function DashboardSection() {
@@ -6298,12 +6301,7 @@ export default function AdminPage() {
       case "excel":
         return <ExcelManagerSection />;
       case "terminal":
-        // Terminal needs full height minus padding to handle internal scrolling
-        return (
-          <div className="h-[calc(100vh-6rem)]">
-            <TerminalPanel />
-          </div>
-        );
+        return <TerminalPlane />;
       case "monitoring":
         return <MonitoringSection />;
       case "releases":
@@ -6322,6 +6320,8 @@ export default function AdminPage() {
         return <VoicePlane />;
       case "data-plane":
         return <DataPlaneExplorer />;
+      case "files":
+        return <FilePlane />;
       default:
         return <DashboardSection />;
     }
