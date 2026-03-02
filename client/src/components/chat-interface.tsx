@@ -975,6 +975,13 @@ export function ChatInterface({
   const [pendingGeneratedImage, setPendingGeneratedImage] = useState<{ messageId: string; imageData: string } | null>(null);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [previewUploadedImage, setPreviewUploadedImage] = useState<{ name: string; dataUrl: string } | null>(null);
+  const [previewUploadedFile, setPreviewUploadedFile] = useState<{
+    name: string;
+    mimeType?: string;
+    fileId?: string;
+    dataUrl?: string;
+    content?: string;
+  } | null>(null);
   const [previewFileAttachment, setPreviewFileAttachment] = useState<{
     name: string;
     type: string;
@@ -7012,6 +7019,7 @@ IMPORTANTE:
                   placeholder={selectedDocText ? "Escribe cómo mejorar el texto..." : "Type your message here..."}
                   selectedDocText={selectedDocText}
                   handleDocTextDeselect={handleDocTextDeselect}
+                  onPreviewFile={(file) => setPreviewUploadedFile(file)}
                   onTextareaFocus={handleCloseModelSelector}
                   isFilesLoading={uploadedFiles.some((f: UploadedFile) => isFileUploadBlockingSend(f))}
                   latencyMode={latencyMode}
@@ -7347,6 +7355,7 @@ IMPORTANTE:
               placeholder="Escribe tu mensaje aquí..."
               onCloseSidebar={onCloseSidebar}
               setPreviewUploadedImage={setPreviewUploadedImage}
+              onPreviewFile={(file) => setPreviewUploadedFile(file)}
               isFigmaConnected={isFigmaConnected}
               isFigmaConnecting={isFigmaConnecting}
               handleFigmaConnect={handleFigmaConnect}
@@ -7694,6 +7703,86 @@ IMPORTANTE:
             </motion.div>
           </motion.div>
         )}
+
+        {/* Uploaded File Preview Modal (PDFs, docs from composer) */}
+        {previewUploadedFile && (() => {
+          const fileTheme = getFileTheme(previewUploadedFile.name, previewUploadedFile.mimeType);
+          const isPdf = previewUploadedFile.mimeType?.includes("pdf") || previewUploadedFile.name?.toLowerCase().endsWith(".pdf");
+          const isImg = previewUploadedFile.mimeType?.startsWith("image/");
+          const previewUrl = previewUploadedFile.fileId
+            ? `/api/files/${previewUploadedFile.fileId}/content`
+            : previewUploadedFile.dataUrl;
+          return (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4"
+              onClick={() => setPreviewUploadedFile(null)}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                className="relative bg-card rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
+                onClick={(e: React.MouseEvent) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+                  <div className="flex items-center gap-3">
+                    <div className={cn("flex items-center justify-center w-10 h-10 rounded-lg", fileTheme.bgColor)}>
+                      <span className="text-white text-sm font-bold">{fileTheme.icon}</span>
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-lg text-foreground truncate max-w-md">{previewUploadedFile.name}</h3>
+                      <p className="text-sm text-muted-foreground">{fileTheme.label}</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setPreviewUploadedFile(null)}
+                    className="w-8 h-8 rounded-full bg-muted hover:bg-muted-foreground/20 flex items-center justify-center transition-colors"
+                    data-testid="button-close-file-preview"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+                <div className="flex-1 overflow-auto min-h-[300px]">
+                  {isPdf && previewUrl ? (
+                    <iframe
+                      src={previewUrl}
+                      className="w-full h-[75vh] border-0"
+                      title={previewUploadedFile.name}
+                    />
+                  ) : isImg && previewUrl ? (
+                    <div className="flex items-center justify-center p-8 bg-muted/30">
+                      <img
+                        src={previewUrl}
+                        alt={previewUploadedFile.name}
+                        className="max-w-full max-h-[70vh] object-contain rounded-lg"
+                      />
+                    </div>
+                  ) : previewUploadedFile.content ? (
+                    <div className="p-6 overflow-auto max-h-[70vh]">
+                      <pre className="whitespace-pre-wrap text-sm font-mono text-foreground">{previewUploadedFile.content}</pre>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-[300px] gap-4 text-muted-foreground">
+                      <div className={cn("w-16 h-16 rounded-2xl flex items-center justify-center", fileTheme.bgColor)}>
+                        <span className="text-white text-2xl font-bold">{fileTheme.icon}</span>
+                      </div>
+                      <p className="text-lg font-medium">{previewUploadedFile.name}</p>
+                      <p className="text-sm">Vista previa no disponible para este tipo de archivo</p>
+                      {previewUrl && (
+                        <a href={previewUrl} download={previewUploadedFile.name} className="text-sm text-blue-500 hover:underline" data-testid="link-download-file-preview">
+                          Descargar archivo
+                        </a>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
 
         {/* Screen reader announcements */}
         <div

@@ -126,6 +126,7 @@ export interface ComposerProps {
   handleDocTextDeselect?: () => void;
   onCloseSidebar?: () => void;
   setPreviewUploadedImage?: (value: { name: string; dataUrl: string } | null) => void;
+  onPreviewFile?: (file: { name: string; mimeType?: string; fileId?: string; dataUrl?: string; content?: string }) => void;
   isFigmaConnected?: boolean;
   isFigmaConnecting?: boolean;
   handleFigmaConnect?: () => void;
@@ -195,6 +196,7 @@ export function Composer({
   handleDocTextDeselect,
   onCloseSidebar,
   setPreviewUploadedImage,
+  onPreviewFile,
   isFigmaConnected,
   isFigmaConnecting,
   handleFigmaConnect,
@@ -452,7 +454,16 @@ export function Composer({
                 (() => {
                   const docTheme = getFileTheme(file.name, file.mimeType || file.type);
                   return (
-                    <div className="flex items-center gap-2 px-2 py-1.5 pr-6 max-w-[200px]">
+                    <div
+                      className="flex items-center gap-2 px-2 py-1.5 pr-6 max-w-[200px] cursor-pointer"
+                      onClick={() => file.status === "ready" && onPreviewFile?.({
+                        name: file.name,
+                        mimeType: file.mimeType || file.type,
+                        fileId: file.id,
+                        dataUrl: file.dataUrl,
+                        content: file.content,
+                      })}
+                    >
                       <div className={cn(
                         "flex items-center justify-center w-8 h-8 rounded flex-shrink-0",
                         docTheme.bgColor
@@ -547,6 +558,13 @@ export function Composer({
                       ),
                       file.status === "error" && "bg-red-50 dark:bg-red-950/30 border-[0.5px] border-red-200 dark:border-red-800"
                     )}
+                    onClick={() => file.status === "ready" && onPreviewFile?.({
+                      name: file.name,
+                      mimeType: file.mimeType || file.type,
+                      fileId: file.id,
+                      dataUrl: file.dataUrl,
+                      content: file.content,
+                    })}
                   >
                     <div className={cn(
                       "flex items-center justify-center w-6 h-6 rounded shrink-0",
