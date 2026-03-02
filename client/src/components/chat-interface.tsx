@@ -6801,6 +6801,7 @@ IMPORTANTE:
   };
 
   const hasMessages = displayMessages.length > 0;
+  const showConversationSkeleton = isConversationStateLoading && !hasMessages;
 
   return (
     <>
@@ -6884,7 +6885,7 @@ IMPORTANTE:
                 )}
 
                 {/* Messages Area - Compact for document mode */}
-                {isConversationStateLoading ? (
+                {showConversationSkeleton ? (
                   <div
                     className={cn(
                       "flex-1 overflow-y-auto space-y-3 overscroll-contain pb-[var(--composer-height,120px)]",
@@ -7216,74 +7217,81 @@ IMPORTANTE:
             </Panel>
           </PanelGroup>
         ) : (
-          <div className="flex-1 flex flex-col min-w-0 min-h-0 h-full overflow-hidden">
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 h-full overflow-hidden bg-background">
             {/* Content Area - conditional based on whether we have messages */}
-            {isConversationStateLoading ? (
-              <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 md:p-10 space-y-6">
+            {showConversationSkeleton ? (
+              <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 md:p-10 space-y-6 bg-background">
                 <SkeletonChatMessages count={3} />
               </div>
-            ) : hasMessages ? (
-              <>
-                {/* Scrollable messages container */}
+            ) : (
+              <div className="flex-1 min-h-0 relative bg-background">
+                {/* Messages container — ALWAYS mounted to avoid unmount/mount flash */}
                 <div
                   ref={messagesContainerRef}
                   onScroll={handleScroll}
-                  className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 md:p-10 space-y-6"
+                  className={cn(
+                    "absolute inset-0 overflow-y-auto p-4 sm:p-6 md:p-10 space-y-6 bg-background",
+                    !hasMessages && "invisible"
+                  )}
                 >
-                  <ChatMessageList
-                    messages={displayMessages}
-                    onUserRetrySend={handleUserRetrySend}
-                    variant="default"
-                    editingMessageId={editingMessageId}
-                    editContent={editContent}
-                    setEditContent={setEditContent}
-                    copiedMessageId={copiedMessageId}
-                    messageFeedback={messageFeedback}
-                    speakingMessageId={speakingMessageId}
-                    isGeneratingImage={isGeneratingImage}
-                    pendingGeneratedImage={pendingGeneratedImage}
-                    latestGeneratedImageRef={latestGeneratedImageRef}
-                    streamingContent={streamingContent}
-                    aiState={aiState}
-                    regeneratingMsgIndex={regeneratingMsgIndex}
-                    handleCopyMessage={handleCopyMessage}
-                    handleStartEdit={handleStartEdit}
-                    handleCancelEdit={handleCancelEdit}
-                    handleSendEdit={handleSendEdit}
-                    handleFeedback={handleFeedback}
-                    handleRegenerate={handleRegenerate}
-                    handleShare={handleShare}
-                    handleReadAloud={handleReadAloud}
-                    handleOpenDocumentPreview={handleOpenDocumentPreview}
-                    handleOpenFileAttachmentPreview={handleOpenFileAttachmentPreview}
-                    handleDownloadImage={handleDownloadImage}
-                    setLightboxImage={setLightboxImage}
-                    handleReopenDocument={handleReopenDocument}
-                    minimizedDocument={minimizedDocument}
-                    onRestoreDocument={restoreDocEditor}
-                    onSelectSuggestedReply={(text) => setInput(text)}
-                    onAgentCancel={handleAgentCancel}
-                    onAgentRetry={handleAgentRetry}
-                    onAgentArtifactPreview={(artifact) => setDocumentPreviewArtifact(artifact as DocumentPreviewArtifact)}
-                    onSuperAgentCancel={handleSuperAgentCancel}
-                    onSuperAgentRetry={handleSuperAgentRetry}
-                    onQuestionClick={(text) => setInput(text)}
-                    onToolConfirm={handleToolConfirm}
-                    onToolDeny={handleToolDeny}
-                    activeRunId={activeRunId}
-                    onRunComplete={() => {
-                      console.log('[uiPhase] Run completed, uiPhase=done');
-                      setUiPhase('done');
-                      setActiveRunId(null);
-                    }}
-                    uiPhase={uiPhase}
-                    aiProcessSteps={aiProcessSteps}
-                  />
-                  <div ref={messagesEndRef} />
+                  {hasMessages && (
+                    <>
+                      <ChatMessageList
+                        messages={displayMessages}
+                        onUserRetrySend={handleUserRetrySend}
+                        variant="default"
+                        editingMessageId={editingMessageId}
+                        editContent={editContent}
+                        setEditContent={setEditContent}
+                        copiedMessageId={copiedMessageId}
+                        messageFeedback={messageFeedback}
+                        speakingMessageId={speakingMessageId}
+                        isGeneratingImage={isGeneratingImage}
+                        pendingGeneratedImage={pendingGeneratedImage}
+                        latestGeneratedImageRef={latestGeneratedImageRef}
+                        streamingContent={streamingContent}
+                        aiState={aiState}
+                        regeneratingMsgIndex={regeneratingMsgIndex}
+                        handleCopyMessage={handleCopyMessage}
+                        handleStartEdit={handleStartEdit}
+                        handleCancelEdit={handleCancelEdit}
+                        handleSendEdit={handleSendEdit}
+                        handleFeedback={handleFeedback}
+                        handleRegenerate={handleRegenerate}
+                        handleShare={handleShare}
+                        handleReadAloud={handleReadAloud}
+                        handleOpenDocumentPreview={handleOpenDocumentPreview}
+                        handleOpenFileAttachmentPreview={handleOpenFileAttachmentPreview}
+                        handleDownloadImage={handleDownloadImage}
+                        setLightboxImage={setLightboxImage}
+                        handleReopenDocument={handleReopenDocument}
+                        minimizedDocument={minimizedDocument}
+                        onRestoreDocument={restoreDocEditor}
+                        onSelectSuggestedReply={(text) => setInput(text)}
+                        onAgentCancel={handleAgentCancel}
+                        onAgentRetry={handleAgentRetry}
+                        onAgentArtifactPreview={(artifact) => setDocumentPreviewArtifact(artifact as DocumentPreviewArtifact)}
+                        onSuperAgentCancel={handleSuperAgentCancel}
+                        onSuperAgentRetry={handleSuperAgentRetry}
+                        onQuestionClick={(text) => setInput(text)}
+                        onToolConfirm={handleToolConfirm}
+                        onToolDeny={handleToolDeny}
+                        activeRunId={activeRunId}
+                        onRunComplete={() => {
+                          console.log('[uiPhase] Run completed, uiPhase=done');
+                          setUiPhase('done');
+                          setActiveRunId(null);
+                        }}
+                        uiPhase={uiPhase}
+                        aiProcessSteps={aiProcessSteps}
+                      />
+                      <div ref={messagesEndRef} />
+                    </>
+                  )}
                 </div>
 
                 {/* Scroll to bottom button */}
-                {showScrollButton && (
+                {hasMessages && showScrollButton && (
                   <motion.button
                     initial={{ opacity: 0, scale: 0.8, y: 10 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -7299,10 +7307,10 @@ IMPORTANTE:
                     <span className="text-sm font-medium">Ir al final</span>
                   </motion.button>
                 )}
-              </>
-            ) : (
-              /* No messages - center content vertically */
-              <div className="flex-1 min-h-0 flex flex-col items-center justify-center px-4">
+
+                {/* Welcome/Empty state — overlaid on top, hidden when messages exist */}
+                {!hasMessages && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center px-4 bg-background z-10">
                 {aiState !== "idle" && (!aiStateChatId || chatId === aiStateChatId) && uiPhase !== 'console' ? (
                   /* Processing indicators when AI is working */
                   <div className="w-full max-w-3xl mx-auto flex flex-col gap-4">
@@ -7421,6 +7429,8 @@ IMPORTANTE:
                     )}
                   </div>
                 )}
+              </div>
+            )}
               </div>
             )}
 

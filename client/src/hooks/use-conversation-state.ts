@@ -179,18 +179,22 @@ export function useConversationState(chatId: string | null | undefined) {
   const queryClient = useQueryClient();
   const queryKey = ["conversationState", chatId];
 
+  const isRealChatId = !!chatId && !chatId.startsWith("pending-") && !chatId.startsWith("new-chat-");
+
   const {
     data: state,
-    isLoading,
+    isLoading: rawIsLoading,
     error,
     refetch,
   } = useQuery<HydratedConversationState | null>({
     queryKey,
     queryFn: () => (chatId ? fetchConversationState(chatId) : Promise.resolve(null)),
-    enabled: !!chatId,
+    enabled: isRealChatId,
     staleTime: 1000 * 60 * 2,
     retry: 1,
   });
+
+  const isLoading = isRealChatId ? rawIsLoading : false;
 
   const addMessageMutation = useMutation({
     mutationFn: (payload: AddMessagePayload) => {
