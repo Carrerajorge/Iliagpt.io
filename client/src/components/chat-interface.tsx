@@ -7721,11 +7721,10 @@ IMPORTANTE:
           const fileTheme = getFileTheme(previewUploadedFile.name, previewUploadedFile.mimeType);
           const isPdf = previewUploadedFile.mimeType?.includes("pdf") || previewUploadedFile.name?.toLowerCase().endsWith(".pdf");
           const isImg = previewUploadedFile.mimeType?.startsWith("image/");
-          const previewUrl = previewUploadedFile.dataUrl
-            ? previewUploadedFile.dataUrl
-            : previewUploadedFile.fileId
-              ? `/api/files/${previewUploadedFile.fileId}/content`
-              : undefined;
+          const rawUrl = previewUploadedFile.fileId
+            ? `/api/files/${previewUploadedFile.fileId}/raw`
+            : undefined;
+          const previewUrl = previewUploadedFile.dataUrl || rawUrl;
           let pdfBlobUrl: string | undefined;
           if (isPdf && previewUploadedFile.dataUrl?.startsWith("data:")) {
             try {
@@ -7737,7 +7736,7 @@ IMPORTANTE:
               pdfBlobUrl = URL.createObjectURL(new Blob([ab], { type: mimeString }));
             } catch {}
           }
-          const effectivePdfUrl = pdfBlobUrl || (isPdf && previewUploadedFile.fileId ? `/api/files/${previewUploadedFile.fileId}/content` : undefined);
+          const effectivePdfUrl = pdfBlobUrl || rawUrl;
           return (
             <motion.div
               initial={{ opacity: 0 }}
@@ -7797,8 +7796,8 @@ IMPORTANTE:
                       </div>
                       <p className="text-lg font-medium">{previewUploadedFile.name}</p>
                       <p className="text-sm">Vista previa no disponible para este tipo de archivo</p>
-                      {previewUrl && (
-                        <a href={previewUrl} download={previewUploadedFile.name} className="text-sm text-blue-500 hover:underline" data-testid="link-download-file-preview">
+                      {rawUrl && (
+                        <a href={rawUrl} download={previewUploadedFile.name} className="text-sm text-blue-500 hover:underline" data-testid="link-download-file-preview">
                           Descargar archivo
                         </a>
                       )}

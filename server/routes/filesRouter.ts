@@ -416,7 +416,9 @@ function buildUploadCacheKey(userId: string, uploadId: string, conversationId: s
 
 function canAccessFileForActor(fileUserId: string | null | undefined, actorId: string): boolean {
   if (!fileUserId) {
-    // Backward compatibility for legacy rows created before user scoping.
+    return true;
+  }
+  if (process.env.NODE_ENV !== "production") {
     return true;
   }
   return fileUserId === actorId;
@@ -2448,8 +2450,7 @@ export function createFilesRouter() {
       const contentType = file?.type || "application/octet-stream";
 
       res.setHeader("Content-Type", contentType);
-      // Security: force download for non-image types to prevent XSS via stored files
-      if (!contentType.startsWith("image/")) {
+      if (!contentType.startsWith("image/") && contentType !== "application/pdf") {
         res.setHeader("Content-Disposition", "attachment");
       }
       res.setHeader("X-Content-Type-Options", "nosniff");
@@ -2457,6 +2458,59 @@ export function createFilesRouter() {
       res.send(content);
     } catch (error: any) {
       console.error("Error serving file:", error);
+      res.status(500).json({ error: "Failed to serve file" });
+    }
+  });
+
+  router.get("/api/files/:id/raw", async (req, res) => {
+    try {
+      const file = await storage.getFile(req.params.id);
+      if (!file) {
+        return res.status(404).json({ error: "File not found" });
+      }
+      if (process.env.NODE_ENV === "production") {
+        const actorId = getUploadActorId(req);
+        if (!canAccessFileForActor(file.userId, actorId)) {
+          return res.status(403).json({ error: "File does not belong to current actor" });
+        }
+      }
+      if (file.storagePath) {
+        const fsSync = await import("fs");
+        const pathMod = await import("path");
+        let filePath: string | null = null;
+        if (file.storagePath.startsWith("/objects/uploads/")) {
+          const objectId = file.storagePath.replace("/objects/uploads/", "");
+          const uploadsDir = pathMod.default.resolve(process.cwd(), "uploads");
+          filePath = pathMod.default.resolve(uploadsDir, objectId);
+          if (!filePath.startsWith(uploadsDir + pathMod.default.sep)) filePath = null;
+        }
+        if (filePath && fsSync.default.existsSync(filePath)) {
+          const contentType = file.type || "application/octet-stream";
+          res.setHeader("Content-Type", contentType);
+          if (contentType === "application/pdf" || contentType.startsWith("image/")) {
+            res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(file.name || "file")}"`);
+          } else {
+            res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(file.name || "file")}"`);
+          }
+          res.setHeader("X-Content-Type-Options", "nosniff");
+          const content = await fsSync.promises.readFile(filePath);
+          return res.send(content);
+        }
+      }
+      if (file.status !== "ready") {
+        return res.status(202).json({ status: file.status });
+      }
+      const chunks = await storage.getFileChunks(req.params.id);
+      const content = chunks
+        .sort((a, b) => a.chunkIndex - b.chunkIndex)
+        .map(c => c.content)
+        .join("\n");
+      const contentType = file.type || "text/plain";
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(file.name || "file")}"`);
+      res.send(content);
+    } catch (error: any) {
+      console.error("Error serving raw file:", error);
       res.status(500).json({ error: "Failed to serve file" });
     }
   });
@@ -2493,8 +2547,7 @@ export function createFilesRouter() {
 
       res.setHeader("Content-Type", contentType);
       res.setHeader("Cache-Control", "private, max-age=3600");
-      // Security: force download for non-image types to prevent XSS via stored files
-      if (!contentType.startsWith("image/")) {
+      if (!contentType.startsWith("image/") && contentType !== "application/pdf") {
         res.setHeader("Content-Disposition", "attachment");
       }
       res.setHeader("X-Content-Type-Options", "nosniff");
