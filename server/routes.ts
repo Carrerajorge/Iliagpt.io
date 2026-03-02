@@ -865,6 +865,28 @@ export async function registerRoutes(
   app.use(createSettingsRouter());
   app.use("/api", createRunController());
   app.use("/api/superintelligence", superintelligenceRouter);
+
+  app.get("/api/agent/runs/:runId/traces", async (req: Request, res: Response) => {
+    try {
+      const { runId } = req.params;
+      if (!runId) {
+        return res.status(400).json({ error: "runId is required" });
+      }
+      const { getTracesForRun } = await import("./agent/tracing");
+      const traces = await getTracesForRun(runId);
+      if (!traces) {
+        return res.status(404).json({ error: "No traces found for this run" });
+      }
+      const format = req.query.format as string | undefined;
+      if (format === "otel") {
+        return res.json(traces.otel);
+      }
+      return res.json(traces);
+    } catch (error: any) {
+      console.error("[Traces API] Error:", error);
+      return res.status(500).json({ error: "Failed to retrieve traces" });
+    }
+  });
   app.use("/api/understanding", requestUnderstandingRoutes); // Request Understanding Pipeline (gating agent, RAG, verification)
 
   // SuperIntelligence System
@@ -895,6 +917,50 @@ export async function registerRoutes(
   // OpenClaw runtime capabilities are fused directly into the native agent pipeline.
   app.use("/api/openclaw", openClawRouter);
   app.use("/api/openclaw", createOpenClawRouter());
+
+  // ===== Event Sourcing - CQRS Replay =====
+  app.get("/api/agent/runs/:runId/replay", async (req: Request, res: Response) => {
+    try {
+      const { runId } = req.params;
+      const upToIndex = req.query.upToIndex !== undefined ? parseInt(req.query.upToIndex as string, 10) : undefined;
+
+      const { eventStore } = await import("./agent/eventSourcing");
+      const result = await eventStore.replay(runId, upToIndex);
+
+      res.json({
+        ok: true,
+        data: result,
+      });
+    } catch (err: any) {
+      console.error("[EventSourcing] Replay error:", err);
+      res.status(500).json({ ok: false, error: err.message || "Replay failed" });
+    }
+  });
+
+  app.get("/api/agent/runs/:runId/state", async (req: Request, res: Response) => {
+    try {
+      const { runId } = req.params;
+      const eventIndex = req.query.eventIndex !== undefined ? parseInt(req.query.eventIndex as string, 10) : undefined;
+
+      const { eventStore } = await import("./agent/eventSourcing");
+
+      if (eventIndex !== undefined) {
+        const state = await eventStore.getStateAtEvent(runId, eventIndex);
+        return res.json({ ok: true, data: state });
+      }
+
+      const events = await eventStore.getEventsForRun(runId);
+      if (events.length === 0) {
+        return res.json({ ok: true, data: null });
+      }
+
+      const result = await eventStore.replay(runId);
+      res.json({ ok: true, data: result.finalState });
+    } catch (err: any) {
+      console.error("[EventSourcing] State query error:", err);
+      res.status(500).json({ ok: false, error: err.message || "State query failed" });
+    }
+  });
 
   // ===== Run Detail Endpoints =====
   app.use("/api/runs", createRunRouter());
