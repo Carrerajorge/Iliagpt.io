@@ -497,6 +497,29 @@ export async function executeAgentLoop(
   const recentUserText = collectRecentUserText(messages) || requestSpec.rawMessage || "";
   const isLocalFsRequest = LOCAL_FILESYSTEM_SIGNAL_REGEX.test(recentUserText || requestSpec.rawMessage || "");
 
+  try {
+    const { promptInjectionDetector } = await import("./security/promptInjectionDetector");
+    const { governanceModeManager } = await import("./governance/modeManager");
+    const injectionResult = promptInjectionDetector.scanUserInput(recentUserText, userId);
+    if (injectionResult.blocked) {
+      sse.write("security_block", { runId, reason: "prompt_injection_detected", severity: injectionResult.severity });
+      const msg = "Tu solicitud fue bloqueada por el sistema de seguridad. Por favor reformula tu mensaje.";
+      sse.write("chunk", { content: msg, sequence: 1, runId });
+      sse.end();
+      return msg;
+    }
+    const perms = governanceModeManager.getPermissions();
+    if (!perms.allowCodeExecution && requestSpec.intent === "code_execution") {
+      sse.write("governance_block", { runId, reason: "mode_restriction", mode: governanceModeManager.getMode() });
+      const msg = `Ejecución de código no permitida en modo ${governanceModeManager.getMode()}.`;
+      sse.write("chunk", { content: msg, sequence: 1, runId });
+      sse.end();
+      return msg;
+    }
+  } catch {
+    // Security checks are best-effort; don't block execution if they fail
+  }
+
   // Request understanding brief is best-effort: if the planner LLM is unavailable
   // or the call fails for any reason, we continue without the brief rather than
   // aborting the entire agent loop (which would surface as a generic error).
@@ -1459,6 +1482,17 @@ Please rewrite your response addressing these issues.`
     }
   } catch (memErr: any) {
     console.warn(`[AgentExecutor] Memory persistence failed (non-fatal):`, memErr?.message);
+  }
+
+  try {
+    const { outputSanitizer } = await import("./security/outputSanitizer");
+    const sanitized = outputSanitizer.sanitize(fullResponse);
+    if (sanitized.redactions.length > 0) {
+      console.log(`[SecurityPlane] Output sanitized: ${sanitized.redactions.length} redactions applied`);
+    }
+    fullResponse = sanitized.sanitizedText;
+  } catch {
+    // Output sanitization is best-effort
   }
 
   return fullResponse;

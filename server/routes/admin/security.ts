@@ -2,6 +2,7 @@ import { Router } from "express";
 import { storage } from "../../storage";
 import { auditLog, AuditActions } from "../../services/auditLogger";
 import { securityAlerts } from "../../services/securityAlerts";
+import { securityMonitor } from "../../agent/security/securityMonitor";
 
 const MAX_LIMIT = 500;
 const MAX_LIMIT_EXPORT = 5000;
@@ -718,6 +719,24 @@ securityRouter.post("/alerts/:id/resolve", async (req, res) => {
 securityRouter.get("/alerts/stats", async (req, res) => {
     try {
         res.json(securityAlerts.getStats());
+    } catch (error: any) {
+        res.status(500).json({ error: safeAdminError(error) });
+    }
+});
+
+securityRouter.get("/summary", async (_req, res) => {
+    try {
+        res.json(securityMonitor.getSecuritySummary());
+    } catch (error: any) {
+        res.status(500).json({ error: safeAdminError(error) });
+    }
+});
+
+securityRouter.get("/events", async (req, res) => {
+    try {
+        const limit = parseQueryLimit(req.query.limit, 100, 500);
+        const severity = typeof req.query.severity === "string" ? req.query.severity : undefined;
+        res.json(securityMonitor.getEvents(limit, severity as any));
     } catch (error: any) {
         res.status(500).json({ error: safeAdminError(error) });
     }

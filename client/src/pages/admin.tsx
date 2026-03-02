@@ -66,7 +66,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
   Zap,
   FileSpreadsheet,
   Table,
-  FolderOpen
+  FolderOpen,
+  Gauge
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
@@ -86,8 +87,11 @@ import { AdminNotificationsPopover } from "@/components/admin/NotificationsPopov
 import { TerminalPanel } from "@/components/terminal-panel";
 import ReleasesManager from "./admin/ReleasesManager";
 import BudgetDashboard from "@/components/admin/BudgetDashboard";
+import SREPanel from "@/components/admin/SREPanel";
+import GovernanceConsole from "@/components/admin/GovernanceConsole";
+import SecurityDashboard from "@/components/admin/SecurityDashboard";
 
-type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget";
+type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard";
 
 const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -107,6 +111,9 @@ const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] =
   { id: "terminal", label: "Terminal", icon: Terminal },
   { id: "releases", label: "App Releases", icon: Download },
   { id: "budget", label: "Budget & Costs", icon: DollarSign },
+  { id: "sre", label: "SRE Panel", icon: Gauge },
+  { id: "governance", label: "Governance", icon: ShieldCheck },
+  { id: "security-dashboard", label: "Security Monitor", icon: ShieldAlert },
 ];
 
 function DashboardSection() {
@@ -6295,6 +6302,12 @@ export default function AdminPage() {
         return <ReleasesManager />;
       case "budget":
         return <BudgetDashboard />;
+      case "sre":
+        return <SREPanel />;
+      case "governance":
+        return <GovernanceConsole />;
+      case "security-dashboard":
+        return <SecurityDashboard />;
       default:
         return <DashboardSection />;
     }
