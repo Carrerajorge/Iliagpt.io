@@ -26,8 +26,7 @@ import { detectIntent, validateResponse, buildDocumentPrompt, createAuditLog } f
 import { DeterministicPipeline } from "../agent/pipelines/deterministicPipeline";
 import OpenAI from "openai";
 import { DEFAULT_PROVIDER as APP_DEFAULT_PROVIDER, DEFAULT_TEXT_MODEL as APP_DEFAULT_MODEL } from "../lib/modelRegistry";
-
-const AGENTIC_PIPELINE_ENABLED = process.env.AGENTIC_PIPELINE_ENABLED === 'true';
+import { isAgenticEnabled } from "../config/features";
 
 // Cache Helpers utilizing Redis
 const CACHE_TTL_SEC = 5 * 60; // 5 minutes
@@ -1131,7 +1130,7 @@ ${excelPlan ? `**📊 Estructura Excel:** ${excelPlan.sheets.length} hojas` : ""
 
     // AGENTIC PIPELINE: Route complex requests through AgentLoopFacade when feature flag is enabled
     // This provides multi-agent orchestration, QA verification, and SSE streaming for complex tasks
-    if (AGENTIC_PIPELINE_ENABLED && lastUserMessage && !documentMode && !figmaMode && !hasImages) {
+    if (isAgenticEnabled() && lastUserMessage && !documentMode && !figmaMode && !hasImages) {
       const agenticContext: AgenticContext = {
         hasAttachments: hasRawAttachments || (attachmentContext?.length > 0) || false,
         hasActiveDocuments: hasActiveDocuments,

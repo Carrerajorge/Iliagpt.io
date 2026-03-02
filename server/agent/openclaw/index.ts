@@ -31,6 +31,131 @@ import {
   type ConversationMessage,
 } from "./compaction";
 
+const WORKSPACE_ROOT = process.cwd();
+
+const BLOCKED_COMMANDS = [
+  "rm -rf /",
+  "rm -rf /*",
+  "mkfs",
+  "dd if=",
+  ":(){:|:&};:",
+  "chmod -R 777 /",
+  "chown -R",
+  "shutdown",
+  "reboot",
+  "halt",
+  "poweroff",
+  "init 0",
+  "init 6",
+  "kill -9 1",
+  "killall",
+  "pkill -9",
+  "wget|sh",
+  "curl|sh",
+  "wget|bash",
+  "curl|bash",
+  "> /dev/sda",
+  "> /dev/null",
+  "nc -l",
+  "ncat -l",
+  "passwd",
+  "useradd",
+  "userdel",
+  "groupadd",
+  "groupdel",
+  "visudo",
+  "crontab -r",
+  "iptables -F",
+  "systemctl",
+  "service",
+  "mount",
+  "umount",
+  "fdisk",
+  "parted",
+  "eval",
+  "source /dev",
+];
+
+const BLOCKED_COMMAND_PATTERNS = [
+  /rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?\/(?!tmp\/openclaw)/,
+  />\s*\/dev\/sd/,
+  /\|\s*(ba)?sh\b/,
+  /;\s*(ba)?sh\b/,
+  /`[^`]*`/,
+  /\$\([^)]*\)/,
+  /sudo\s+/,
+  /su\s+-?\s/,
+  /chmod\s+[0-7]{3,4}\s+\//,
+  /chown\s+.*\s+\//,
+  /curl\s+.*\|\s*(ba)?sh/,
+  /wget\s+.*\|\s*(ba)?sh/,
+  /python[23]?\s+-c\s+.*import\s+os/,
+  /node\s+-e\s+.*child_process/,
+  /perl\s+-e/,
+  /ruby\s+-e/,
+];
+
+function validatePath(inputPath: string): { valid: boolean; resolved: string; error?: string } {
+  const pathMod = require("path");
+  const resolved = pathMod.resolve(WORKSPACE_ROOT, inputPath);
+
+  if (!resolved.startsWith(WORKSPACE_ROOT)) {
+    return {
+      valid: false,
+      resolved,
+      error: `Path traversal blocked: "${inputPath}" resolves outside workspace root`,
+    };
+  }
+
+  const normalizedInput = pathMod.normalize(inputPath);
+  if (normalizedInput.startsWith("..") || normalizedInput.includes("/../")) {
+    return {
+      valid: false,
+      resolved,
+      error: `Path traversal blocked: "${inputPath}" contains directory traversal`,
+    };
+  }
+
+  const blockedPaths = ["/etc", "/var", "/usr", "/bin", "/sbin", "/boot", "/root", "/proc", "/sys", "/dev"];
+  for (const blocked of blockedPaths) {
+    if (resolved.startsWith(blocked) || resolved === blocked) {
+      return {
+        valid: false,
+        resolved,
+        error: `Access denied: "${inputPath}" points to a restricted system path`,
+      };
+    }
+  }
+
+  return { valid: true, resolved };
+}
+
+function validateShellCommand(command: string): { valid: boolean; error?: string } {
+  const normalizedCmd = command.toLowerCase().trim();
+
+  for (const blocked of BLOCKED_COMMANDS) {
+    if (normalizedCmd.includes(blocked.toLowerCase())) {
+      return { valid: false, error: `Blocked command detected: contains "${blocked}"` };
+    }
+  }
+
+  for (const pattern of BLOCKED_COMMAND_PATTERNS) {
+    if (pattern.test(command)) {
+      return { valid: false, error: `Blocked command pattern detected: ${pattern.toString()}` };
+    }
+  }
+
+  if (command.includes("&&") || command.includes("||") || command.includes(";")) {
+    const parts = command.split(/&&|\|\||;/).map((p: string) => p.trim());
+    for (const part of parts) {
+      const subResult = validateShellCommand(part);
+      if (!subResult.valid) return subResult;
+    }
+  }
+
+  return { valid: true };
+}
+
 const ReadFileSchema = z.object({
   path: z.string().describe("File path to read"),
   offset: z.number().int().min(0).optional().describe("Start line (0-based)"),
@@ -122,13 +247,17 @@ const CreateDocumentSchema = z.object({
 
 const readFileTool: ToolDefinition = {
   name: "read_file",
-  description: "Read file contents from the workspace with optional line range",
+  description: "Read file contents from the workspace with optional line range. Restricted to workspace directory only.",
   inputSchema: ReadFileSchema,
   async execute(input: any, context: ToolContext): Promise<ToolResult> {
     try {
+      const pathCheck = validatePath(input.path);
+      if (!pathCheck.valid) {
+        return { success: false, output: null, error: { code: "PATH_VALIDATION_ERROR", message: pathCheck.error!, retryable: false } };
+      }
       const fs = await import("fs/promises");
       const path = await import("path");
-      const fullPath = path.resolve(process.cwd(), input.path);
+      const fullPath = pathCheck.resolved;
       const content = await fs.readFile(fullPath, "utf-8");
       const lines = content.split("\n");
       const offset = input.offset || 0;
@@ -156,13 +285,17 @@ const readFileTool: ToolDefinition = {
 
 const writeFileTool: ToolDefinition = {
   name: "write_file",
-  description: "Create or overwrite a file in the workspace",
+  description: "Create or overwrite a file in the workspace. Restricted to workspace directory only.",
   inputSchema: WriteFileSchema,
   async execute(input: any, context: ToolContext): Promise<ToolResult> {
     try {
+      const pathCheck = validatePath(input.path);
+      if (!pathCheck.valid) {
+        return { success: false, output: null, error: { code: "PATH_VALIDATION_ERROR", message: pathCheck.error!, retryable: false } };
+      }
       const fs = await import("fs/promises");
       const path = await import("path");
-      const fullPath = path.resolve(process.cwd(), input.path);
+      const fullPath = pathCheck.resolved;
       if (input.createDirs) {
         await fs.mkdir(path.dirname(fullPath), { recursive: true });
       }
@@ -183,13 +316,17 @@ const writeFileTool: ToolDefinition = {
 
 const listFilesTool: ToolDefinition = {
   name: "list_files",
-  description: "List files in a directory with optional glob pattern",
+  description: "List files in a directory with optional glob pattern. Restricted to workspace directory only.",
   inputSchema: ListFilesSchema,
   async execute(input: any, context: ToolContext): Promise<ToolResult> {
     try {
+      const pathCheck = validatePath(input.path || ".");
+      if (!pathCheck.valid) {
+        return { success: false, output: null, error: { code: "PATH_VALIDATION_ERROR", message: pathCheck.error!, retryable: false } };
+      }
       const fs = await import("fs/promises");
       const path = await import("path");
-      const dirPath = path.resolve(process.cwd(), input.path || ".");
+      const dirPath = pathCheck.resolved;
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
       const files = entries.map((e: any) => ({
         name: e.name,
@@ -212,10 +349,20 @@ const listFilesTool: ToolDefinition = {
 
 const shellCommandTool: ToolDefinition = {
   name: "shell_command",
-  description: "Execute a shell command with timeout",
+  description: "Execute a shell command with timeout. Commands are validated against a blocklist of dangerous operations. Working directory is restricted to the workspace.",
   inputSchema: ShellCommandSchema,
   async execute(input: any, context: ToolContext): Promise<ToolResult> {
     try {
+      const cmdCheck = validateShellCommand(input.command);
+      if (!cmdCheck.valid) {
+        return { success: false, output: null, error: { code: "COMMAND_BLOCKED", message: cmdCheck.error!, retryable: false } };
+      }
+      if (input.cwd) {
+        const cwdCheck = validatePath(input.cwd);
+        if (!cwdCheck.valid) {
+          return { success: false, output: null, error: { code: "PATH_VALIDATION_ERROR", message: cwdCheck.error!, retryable: false } };
+        }
+      }
       const { execSync } = await import("child_process");
       const result = execSync(input.command, {
         timeout: input.timeoutMs,
@@ -251,10 +398,37 @@ const shellCommandTool: ToolDefinition = {
 
 const executeCodeTool: ToolDefinition = {
   name: "execute_code",
-  description: "Execute code in a sandboxed environment",
+  description: "Execute code directly on the host via child_process (NOT sandboxed). Code is written to a temp file and executed with the system interpreter. Use with caution — no isolation or resource limits beyond timeout are enforced.",
   inputSchema: ExecuteCodeSchema,
   async execute(input: any, context: ToolContext): Promise<ToolResult> {
     try {
+      const dangerousPatterns = [
+        /require\s*\(\s*['"]child_process['"]\s*\)/,
+        /import\s+.*['"]child_process['"]/,
+        /process\.exit/,
+        /import\s+os\b/,
+        /import\s+subprocess\b/,
+        /import\s+shutil\b/,
+        /__import__/,
+        /os\.system\s*\(/,
+        /os\.popen\s*\(/,
+        /subprocess\.\w+\s*\(/,
+        /exec\s*\(/,
+        /eval\s*\(/,
+      ];
+      for (const pattern of dangerousPatterns) {
+        if (pattern.test(input.code)) {
+          return {
+            success: false,
+            output: null,
+            error: {
+              code: "CODE_VALIDATION_ERROR",
+              message: `Blocked: code contains potentially dangerous pattern: ${pattern.toString()}`,
+              retryable: false,
+            },
+          };
+        }
+      }
       const { execSync } = await import("child_process");
       let cmd: string;
       const tmpFile = `/tmp/openclaw_exec_${Date.now()}`;

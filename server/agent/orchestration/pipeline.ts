@@ -302,8 +302,10 @@ export class AgentLoopFacade extends EventEmitter {
         size: artifact.size,
       } : undefined;
 
+      const qaFailed = qaResult != null && !qaResult.passed;
+
       const result: PipelineResult = {
-        success: true,
+        success: !qaFailed,
         runId,
         response: {
           content: executionResult.content,
@@ -344,12 +346,12 @@ export class AgentLoopFacade extends EventEmitter {
             type: a.type,
             name: a.name
           })),
-          success: true
+          success: !qaFailed
         }
       );
 
       this.emitPipelineEvent("pipeline_completed", runId, {
-        success: true,
+        success: !qaFailed,
         durationMs,
         path: route.path,
       });
@@ -692,9 +694,13 @@ Provide a clear, helpful response.`;
     } catch (error: any) {
       console.error(`[AgentLoopFacade] QA verification failed:`, error);
       return {
-        passed: true,
-        score: 1,
-        issues: [],
+        passed: false,
+        score: 0,
+        issues: [{
+          type: "verification_error",
+          severity: "error" as const,
+          description: `QA verification crashed: ${error.message}`,
+        }],
         durationMs: 0,
       };
     }

@@ -24,15 +24,22 @@ const defaultHandler: TaskHandler = async (ctx) => {
   const role = getRoleById(ctx.agentRole);
   const roleName = role?.name || ctx.agentRole;
 
+  console.warn(
+    `[SuperOrchestrator] EXPERIMENTAL: No real handler registered for role "${ctx.agentRole}". ` +
+    `Using stub that returns synthetic output. Register a handler via registerTaskHandler() for production use.`
+  );
+
   return {
     output: {
-      status: "executed",
+      status: "stub_executed",
+      experimental: true,
+      warning: "This result was produced by a stub handler. No real agent execution occurred.",
       agentRole: roleName,
-      summary: `Task processed by ${roleName} agent`,
+      summary: `[STUB] Task processed by ${roleName} agent (no real handler registered)`,
       input: ctx.input,
       capabilities: role?.capabilities || [],
     },
-    costUsd: role?.costTier === "high" ? 0.05 : role?.costTier === "medium" ? 0.02 : 0.005,
+    costUsd: 0,
   };
 };
 

@@ -146,6 +146,7 @@ import { createWorkflowRouter } from "./routes/workflowRouter";
 import { createDeviceControlRouter } from "./routes/deviceControlRouter";
 import openClawRouter from "./routes/openClawRouter";
 import { createOpenClawRouter } from "./routes/openclawRouter";
+
 import { createSkillPlatformRouter } from "./routes/skillPlatformRouter";
 import { CSRF_COOKIE_NAME, CSRF_TOKEN_PATTERN, issueCsrfCookie } from "./middleware/csrf";
 import { finopsRouter } from "./routes/finopsRouter";
@@ -2137,9 +2138,8 @@ export async function registerRoutes(
 
   app.use("/api/workflows", createWorkflowRouter());
 
-  // OpenClaw runtime capabilities are fused directly into the native agent pipeline.
   app.use("/api/openclaw", openClawRouter);
-  app.use("/api/openclaw", createOpenClawRouter());
+  app.use("/api/openclaw/runtime", createOpenClawRouter());
 
   // ===== Event Sourcing - CQRS Replay =====
   app.get("/api/agent/runs/:runId/replay", async (req: Request, res: Response) => {

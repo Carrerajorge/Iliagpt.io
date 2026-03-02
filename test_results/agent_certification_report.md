@@ -1,11 +1,11 @@
 # Agent Certification Report
 
 **Generated**: 2026-01-02T19:38:12.587Z
-**Status**: ✅ PASSED
+**Status**: ❌ FAILED
 
 ## Summary
 
-- **Test Suites**: 4/4 passed
+- **Test Suites**: 2/4 passed
 - **Total Tests**: 10 passed, 2 failed
 - **Total Duration**: 25.96s
 
@@ -13,9 +13,9 @@
 
 | Suite | Status | Duration | Tests Passed | Tests Failed |
 |-------|--------|----------|--------------|-------------|
-| All Agent Tests | ✅ | 11.54s | 7 | 1 |
+| All Agent Tests | ❌ | 11.54s | 7 | 1 |
 | Benchmark Tests | ✅ | 5.92s | 1 | 0 |
-| Chaos Tests | ✅ | 6.24s | 1 | 1 |
+| Chaos Tests | ❌ | 6.24s | 1 | 1 |
 | Cache Isolation Tests | ✅ | 2.26s | 1 | 0 |
 
 ## Detailed Output
@@ -24,7 +24,7 @@
 
 **Command**: `npx vitest run server/agent/__tests__ 2>&1`
 
-**Status**: PASSED
+**Status**: FAILED
 
 <details>
 <summary>Output (click to expand)</summary>
@@ -237,7 +237,7 @@ rifying
 
 **Command**: `npx vitest run server/agent/__tests__/chaos.test.ts 2>&1`
 
-**Status**: PASSED
+**Status**: FAILED
 
 <details>
 <summary>Output (click to expand)</summary>

@@ -37,20 +37,56 @@ export interface RunStatus {
 
 class SuperOrchestrator {
   private initialized = false;
+  private static readonly EXPERIMENTAL_WARNING = "[SuperOrchestrator] WARNING: This module is EXPERIMENTAL concurrency capability. Not production-ready.";
 
   initialize() {
     if (this.initialized) return;
+
+    console.warn(SuperOrchestrator.EXPERIMENTAL_WARNING);
 
     registerTaskProcessor(async (job) => {
       return executeTask(job.data);
     });
 
+    orchestratorEvents.on("task:inline", async (data: { runId: string; taskId: string; task: any }) => {
+      console.warn("[SuperOrchestrator] task:inline fallback – queue unavailable, executing task synchronously", data.taskId);
+      try {
+        const result = await executeTask({
+          runId: data.runId,
+          taskId: data.taskId,
+          agentRole: data.task.agentRole,
+          input: data.task.inputJson,
+          riskLevel: data.task.riskLevel,
+        });
+        orchestratorEvents.emit(
+          result.status === "completed" ? "task:completed" : "task:failed",
+          { runId: data.runId, taskId: data.taskId, result, error: result.error, retryCount: data.task.retryCount ?? 0, maxRetries: data.task.maxRetries ?? 3 }
+        );
+      } catch (err: any) {
+        orchestratorEvents.emit("task:failed", {
+          runId: data.runId,
+          taskId: data.taskId,
+          error: err.message || String(err),
+          retryCount: data.task.retryCount ?? 0,
+          maxRetries: data.task.maxRetries ?? 3,
+        });
+      }
+    });
+
     startOrchestratorWorker(10);
     this.initialized = true;
-    console.log("[SuperOrchestrator] Initialized");
+    console.log("[SuperOrchestrator] Initialized (experimental)");
+  }
+
+  private ensureInitialized() {
+    if (!this.initialized) {
+      console.warn("[SuperOrchestrator] Auto-initializing on first use. Call initialize() explicitly for production setups.");
+      this.initialize();
+    }
   }
 
   async submitRun(options: SubmitRunOptions): Promise<{ runId: string; taskCount: number }> {
+    this.ensureInitialized();
     const validation = await governanceEngine.validateRunSubmission(
       options.createdBy,
       options.tasks.length

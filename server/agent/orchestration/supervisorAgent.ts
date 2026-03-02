@@ -14,10 +14,26 @@ import { toolRegistry, ToolExecutionResult } from "../registry/toolRegistry";
 import { activityStreamPublisher } from "./activityStream";
 import { agentEventBus } from "../eventBus";
 
-const xaiClient = new OpenAI({
-  baseURL: "https://api.x.ai/v1",
-  apiKey: process.env.XAI_API_KEY || "missing",
-});
+function createXaiClient(): OpenAI {
+  const apiKey = process.env.XAI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "[SupervisorAgent] XAI_API_KEY environment variable is required but not set. " +
+      "Set XAI_API_KEY before initializing SupervisorAgent."
+    );
+  }
+  const baseURL = process.env.XAI_BASE_URL || "https://api.x.ai/v1";
+  return new OpenAI({ baseURL, apiKey });
+}
+
+let xaiClient: OpenAI | null = null;
+
+function getXaiClient(): OpenAI {
+  if (!xaiClient) {
+    xaiClient = createXaiClient();
+  }
+  return xaiClient;
+}
 
 const DEFAULT_MODEL = "grok-4-1-fast-non-reasoning";
 
@@ -251,7 +267,7 @@ Use the Command pattern: each step is a command that can be executed, retried, o
   }
 
   private async analyzeAndRoute(analysis: AnalysisResult): Promise<RouteDecision> {
-    const response = await xaiClient.chat.completions.create({
+    const response = await getXaiClient().chat.completions.create({
       model: this.config.model,
       messages: [
         {
@@ -436,7 +452,7 @@ Return a JSON object with:
   async createPlan(objective: string, agents: AgentSelection[]): Promise<ExecutionPlan> {
     const planId = crypto.randomUUID();
 
-    const response = await xaiClient.chat.completions.create({
+    const response = await getXaiClient().chat.completions.create({
       model: this.config.model,
       messages: [
         {
@@ -780,7 +796,7 @@ Steps in later groups wait for earlier groups to complete.`
     }
 
     try {
-      const response = await xaiClient.chat.completions.create({
+      const response = await getXaiClient().chat.completions.create({
         model: this.config.model,
         messages: [
           {

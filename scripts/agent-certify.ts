@@ -74,13 +74,14 @@ function runTest(suiteId: TestSuiteId): CertificationResult {
   });
 
   output = (result.stdout || '') + (result.stderr || '');
-  passed = result.status === 0;
 
   const passMatch = output.match(/(\d+)\s+passed/);
   const failMatch = output.match(/(\d+)\s+failed/);
   
   if (passMatch) testsPassed = parseInt(passMatch[1], 10);
   if (failMatch) testsFailed = parseInt(failMatch[1], 10);
+
+  passed = result.status === 0 && testsFailed === 0;
 
   const duration = Date.now() - startTime;
   const statusIcon = passed ? '✅' : '❌';
@@ -121,7 +122,7 @@ async function runCertification() {
   const totalTestsPassed = results.reduce((sum, r) => sum + r.testsPassed, 0);
   const totalTestsFailed = results.reduce((sum, r) => sum + r.testsFailed, 0);
   const totalDuration = results.reduce((sum, r) => sum + r.duration, 0);
-  const allPassed = totalFailed === 0;
+  const allPassed = totalFailed === 0 && totalTestsFailed === 0;
 
   let report = `# Agent Certification Report\n\n`;
   report += `**Generated**: ${new Date().toISOString()}\n`;
