@@ -1,15 +1,50 @@
 /**
- * RAG (Retrieval Augmented Generation) Service
- * Enhanced with deep document chunking, hybrid search, and OpenAI embeddings
- * Inspired by RAGFlow's approach to document understanding
+ * RAG++ (Retrieval Augmented Generation) Service
+ * Enhanced with query rewriting, LLM-based reranking, evidence packs with citations,
+ * freshness/TTL scoring, and multi-hop retrieval
  */
 
 import { db } from "../db";
 import { sql } from "drizzle-orm";
+import { llmGateway } from "../lib/llmGateway";
 
 const EMBEDDING_DIM = 256;
 const CHUNK_SIZE = 800;
 const CHUNK_OVERLAP = 200;
+const FRESHNESS_HALF_LIFE_MS = 7 * 24 * 60 * 60 * 1000;
+const MULTI_HOP_MIN_SCORE = 0.35;
+const MULTI_HOP_MAX_ROUNDS = 3;
+const RERANK_MODEL = process.env.RAG_RERANK_MODEL || "gpt-4o-mini";
+
+export interface EvidenceCitation {
+  sourceDoc: string | null;
+  sourceUrl: string | null;
+  chunkIndex: number;
+  relevanceScore: number;
+  contentSnippet: string;
+  timestamp: number | null;
+  parentDocId: string | null;
+  contentType: string;
+}
+
+export interface EvidencePack {
+  query: string;
+  subQueries: string[];
+  citations: EvidenceCitation[];
+  totalResults: number;
+  hopsUsed: number;
+  rerankApplied: boolean;
+}
+
+export interface EnhancedSearchResult {
+  content: string;
+  score: number;
+  chatId: string;
+  metadata?: any;
+  contentType?: string;
+  citation: EvidenceCitation;
+  freshnessFactor: number;
+}
 
 function localEmbed(text: string): number[] {
   const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 1);
@@ -129,6 +164,129 @@ function bm25Score(query: string, doc: string): number {
   return score;
 }
 
+function computeFreshnessFactor(timestamp: number | null): number {
+  if (!timestamp) return 0.5;
+  const ageMs = Date.now() - timestamp;
+  if (ageMs <= 0) return 1.0;
+  return Math.pow(0.5, ageMs / FRESHNESS_HALF_LIFE_MS);
+}
+
+function rewriteQueryLocal(query: string): string[] {
+  const subQueries: string[] = [query];
+
+  const conjunctions = /\b(and|y|also|además|as well as|junto con)\b/i;
+  if (conjunctions.test(query)) {
+    const parts = query.split(conjunctions).filter(p => p.trim().length > 3 && !conjunctions.test(p));
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (trimmed.length > 5) subQueries.push(trimmed);
+    }
+  }
+
+  const synonymMap: Record<string, string[]> = {
+    "error": ["bug", "issue", "problem", "fallo", "problema"],
+    "bug": ["error", "issue", "defect", "fallo"],
+    "create": ["make", "build", "generate", "crear", "generar"],
+    "crear": ["create", "make", "construir", "generar"],
+    "delete": ["remove", "drop", "eliminar", "borrar"],
+    "eliminar": ["delete", "remove", "borrar", "quitar"],
+    "search": ["find", "look", "query", "buscar"],
+    "buscar": ["search", "find", "encontrar", "hallar"],
+    "update": ["modify", "change", "edit", "actualizar", "modificar"],
+    "actualizar": ["update", "modify", "cambiar", "editar"],
+    "file": ["document", "archivo", "documento"],
+    "archivo": ["file", "document", "fichero"],
+    "function": ["method", "procedure", "función"],
+    "función": ["function", "method", "procedimiento"],
+    "database": ["db", "store", "base de datos"],
+    "api": ["endpoint", "service", "servicio"],
+    "config": ["configuration", "settings", "configuración"],
+    "install": ["setup", "deploy", "instalar"],
+    "test": ["spec", "check", "verify", "prueba", "verificar"],
+  };
+
+  const queryLower = query.toLowerCase();
+  const queryWords = queryLower.split(/\s+/);
+  const expanded: string[] = [];
+  for (const word of queryWords) {
+    if (synonymMap[word]) {
+      for (const syn of synonymMap[word].slice(0, 2)) {
+        expanded.push(query.replace(new RegExp(`\\b${word}\\b`, 'i'), syn));
+      }
+    }
+  }
+  if (expanded.length > 0) {
+    subQueries.push(...expanded.slice(0, 3));
+  }
+
+  return [...new Set(subQueries)].slice(0, 5);
+}
+
+async function rewriteQueryWithLLM(query: string): Promise<string[]> {
+  try {
+    const response = await llmGateway.chat(
+      [
+        {
+          role: "system" as const,
+          content: `You are a query rewriting assistant for a RAG system. Given a user query, output a JSON array of 2-4 alternative search queries that capture the same intent but use different terms, decompose compound questions, or expand abbreviations. Be concise. Output ONLY a JSON array of strings, no explanation.`
+        },
+        {
+          role: "user" as const,
+          content: query
+        }
+      ],
+      { model: RERANK_MODEL, temperature: 0.3, maxTokens: 200, timeout: 5000 }
+    );
+
+    const parsed = JSON.parse(response.content.trim().replace(/^```json?\s*/, '').replace(/\s*```$/, ''));
+    if (Array.isArray(parsed)) {
+      return [query, ...parsed.map((q: any) => String(q)).filter((q: string) => q.length > 3)].slice(0, 5);
+    }
+  } catch {
+  }
+  return rewriteQueryLocal(query);
+}
+
+async function rerankWithLLM(
+  query: string,
+  results: Array<{ content: string; score: number; index: number }>
+): Promise<number[]> {
+  if (results.length <= 1) return results.map(r => r.index);
+
+  try {
+    const candidates = results.slice(0, 10).map((r, i) => `[${i}] ${r.content.substring(0, 300)}`).join('\n\n');
+
+    const response = await llmGateway.chat(
+      [
+        {
+          role: "system" as const,
+          content: `You are a relevance judge. Given a query and candidate passages, rank them by relevance. Output ONLY a JSON array of passage indices (the [N] numbers) ordered from most to least relevant. No explanation.`
+        },
+        {
+          role: "user" as const,
+          content: `Query: ${query}\n\nPassages:\n${candidates}`
+        }
+      ],
+      { model: RERANK_MODEL, temperature: 0, maxTokens: 100, timeout: 8000 }
+    );
+
+    const parsed = JSON.parse(response.content.trim().replace(/^```json?\s*/, '').replace(/\s*```$/, ''));
+    if (Array.isArray(parsed)) {
+      const validIndices = parsed
+        .map((i: any) => Number(i))
+        .filter((i: number) => !isNaN(i) && i >= 0 && i < results.length);
+      if (validIndices.length > 0) {
+        const remaining = results
+          .map((_, i) => i)
+          .filter(i => !validIndices.includes(i));
+        return [...validIndices, ...remaining].map(i => results[i].index);
+      }
+    }
+  } catch {
+  }
+  return results.map(r => r.index);
+}
+
 const ensureTables = async () => {
   try {
     await db.execute(sql`
@@ -178,7 +336,6 @@ const ensureTables = async () => {
       )
     `);
   } catch (e) {
-    // Tables might exist
   }
 };
 
@@ -258,13 +415,13 @@ export class RAGService {
 
     const result = chatId
       ? await db.execute(sql`
-          SELECT content, chat_id, embedding, metadata, key_phrases, content_type FROM rag_documents
+          SELECT content, chat_id, embedding, metadata, key_phrases, content_type, chunk_index, parent_doc_id, created_at FROM rag_documents
           WHERE user_id = ${userId} AND (chat_id IS NULL OR chat_id != ${chatId})
           ORDER BY created_at DESC
           LIMIT 200
         `)
       : await db.execute(sql`
-          SELECT content, chat_id, embedding, metadata, key_phrases, content_type FROM rag_documents
+          SELECT content, chat_id, embedding, metadata, key_phrases, content_type, chunk_index, parent_doc_id, created_at FROM rag_documents
           WHERE user_id = ${userId}
           ORDER BY created_at DESC
           LIMIT 200
@@ -293,14 +450,22 @@ export class RAGService {
           query.toLowerCase().includes(p.toLowerCase())
         ) ? 0.15 : 0;
 
-        const hybridScore = (vectorScore * 0.5) + (Math.min(textScore / 5, 0.5) * 0.35) + phraseBoost;
+        const meta = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata || {});
+        const docTimestamp = meta.timestamp || (row.created_at ? new Date(row.created_at).getTime() : null);
+        const freshness = computeFreshnessFactor(docTimestamp);
+
+        const baseScore = (vectorScore * 0.45) + (Math.min(textScore / 5, 0.5) * 0.3) + phraseBoost;
+        const hybridScore = baseScore * (0.85 + 0.15 * freshness);
 
         return {
           content: row.content,
           chatId: row.chat_id,
           score: hybridScore,
-          metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata,
+          metadata: meta,
           contentType: row.content_type,
+          freshnessFactor: freshness,
+          chunkIndex: row.chunk_index || 0,
+          parentDocId: row.parent_doc_id || null,
         };
       })
       .filter(r => r.score >= minScore)
@@ -310,29 +475,239 @@ export class RAGService {
     return scored;
   }
 
+  async enhancedSearch(
+    userId: string,
+    query: string,
+    options: {
+      limit?: number;
+      chatId?: string;
+      minScore?: number;
+      contentTypes?: string[];
+      enableRewriting?: boolean;
+      enableReranking?: boolean;
+      enableMultiHop?: boolean;
+      useLLMRewrite?: boolean;
+    } = {}
+  ): Promise<{ results: EnhancedSearchResult[]; evidencePack: EvidencePack }> {
+    const {
+      limit = 5,
+      chatId,
+      minScore = 0.2,
+      contentTypes,
+      enableRewriting = true,
+      enableReranking = true,
+      enableMultiHop = true,
+      useLLMRewrite = false,
+    } = options;
+
+    let subQueries: string[];
+    if (enableRewriting) {
+      subQueries = useLLMRewrite ? await rewriteQueryWithLLM(query) : rewriteQueryLocal(query);
+    } else {
+      subQueries = [query];
+    }
+
+    const allResultsMap = new Map<string, any>();
+    let hopsUsed = 1;
+
+    for (const sq of subQueries) {
+      const results = await this.search(userId, sq, {
+        limit: limit * 2,
+        chatId,
+        minScore: minScore * 0.8,
+        contentTypes,
+      });
+      for (const r of results) {
+        const key = r.content.substring(0, 100);
+        const existing = allResultsMap.get(key);
+        if (!existing || existing.score < r.score) {
+          allResultsMap.set(key, r);
+        }
+      }
+    }
+
+    if (enableMultiHop) {
+      const currentResults = Array.from(allResultsMap.values());
+      const avgScore = currentResults.length > 0
+        ? currentResults.reduce((s, r) => s + r.score, 0) / currentResults.length
+        : 0;
+
+      if (avgScore < MULTI_HOP_MIN_SCORE && currentResults.length < limit) {
+        for (let hop = 1; hop < MULTI_HOP_MAX_ROUNDS; hop++) {
+          hopsUsed++;
+          const topContent = currentResults
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 2)
+            .map(r => r.content.substring(0, 100));
+
+          const refinedQueries = topContent.map(c => {
+            const words = c.split(/\s+/).filter(w => w.length > 3).slice(0, 5);
+            return `${query} ${words.join(' ')}`;
+          });
+
+          for (const rq of refinedQueries) {
+            const moreResults = await this.search(userId, rq, {
+              limit: limit,
+              chatId,
+              minScore: minScore * 0.7,
+              contentTypes,
+            });
+            for (const r of moreResults) {
+              const key = r.content.substring(0, 100);
+              const existing = allResultsMap.get(key);
+              if (!existing || existing.score < r.score) {
+                allResultsMap.set(key, r);
+              }
+            }
+          }
+
+          const updatedResults = Array.from(allResultsMap.values());
+          const newAvg = updatedResults.length > 0
+            ? updatedResults.reduce((s, r) => s + r.score, 0) / updatedResults.length
+            : 0;
+          if (newAvg >= MULTI_HOP_MIN_SCORE || updatedResults.length >= limit) break;
+        }
+      }
+    }
+
+    let finalResults = Array.from(allResultsMap.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit * 2);
+
+    let rerankApplied = false;
+    if (enableReranking && finalResults.length > 2) {
+      try {
+        const indexed = finalResults.map((r, i) => ({ content: r.content, score: r.score, index: i }));
+        const rerankedOrder = await rerankWithLLM(query, indexed);
+        const reranked = rerankedOrder.map(idx => finalResults[idx]).filter(Boolean);
+        if (reranked.length > 0) {
+          finalResults = reranked;
+          rerankApplied = true;
+        }
+      } catch {
+      }
+    }
+
+    const topResults = finalResults.slice(0, limit);
+
+    const enhancedResults: EnhancedSearchResult[] = topResults.map(r => ({
+      content: r.content,
+      score: r.score,
+      chatId: r.chatId,
+      metadata: r.metadata,
+      contentType: r.contentType,
+      freshnessFactor: r.freshnessFactor || computeFreshnessFactor(r.metadata?.timestamp),
+      citation: {
+        sourceDoc: r.metadata?.fileName || null,
+        sourceUrl: r.metadata?.sourceUrl || null,
+        chunkIndex: r.chunkIndex || r.metadata?.chunkIndex || 0,
+        relevanceScore: r.score,
+        contentSnippet: r.content.substring(0, 200),
+        timestamp: r.metadata?.timestamp || null,
+        parentDocId: r.parentDocId || r.metadata?.docId || null,
+        contentType: r.contentType || 'unknown',
+      },
+    }));
+
+    const evidencePack: EvidencePack = {
+      query,
+      subQueries,
+      citations: enhancedResults.map(r => r.citation),
+      totalResults: allResultsMap.size,
+      hopsUsed,
+      rerankApplied,
+    };
+
+    return { results: enhancedResults, evidencePack };
+  }
+
   async getContextForMessage(
     userId: string,
     message: string,
     currentChatId?: string
   ): Promise<string> {
-    const results = await this.search(userId, message, {
-      limit: 5,
-      chatId: currentChatId,
-      minScore: 0.25
-    });
+    try {
+      const { results, evidencePack } = await this.enhancedSearch(userId, message, {
+        limit: 5,
+        chatId: currentChatId,
+        minScore: 0.25,
+        enableRewriting: true,
+        enableReranking: false,
+        enableMultiHop: true,
+        useLLMRewrite: false,
+      });
 
-    if (results.length === 0) return "";
+      if (results.length === 0) return "";
 
-    const contextParts = results.map((r, i) => {
-      const source = r.metadata?.fileName
-        ? ` (de: ${r.metadata.fileName})`
-        : r.metadata?.sourceUrl
-          ? ` (fuente: ${r.metadata.sourceUrl})`
-          : '';
-      return `[Contexto ${i + 1}${source}]: ${r.content.substring(0, 500)}`;
-    });
+      const contextParts = results.map((r, i) => {
+        const citation = r.citation;
+        const sourceLabel = citation.sourceDoc
+          ? ` (doc: ${citation.sourceDoc})`
+          : citation.sourceUrl
+            ? ` (fuente: ${citation.sourceUrl})`
+            : '';
+        const freshnessLabel = r.freshnessFactor > 0.8 ? ' 🟢' : r.freshnessFactor > 0.4 ? ' 🟡' : ' 🔴';
+        const scoreLabel = ` [score: ${r.score.toFixed(3)}]`;
+        return `[Evidencia ${i + 1}${sourceLabel}${scoreLabel}${freshnessLabel}]: ${r.content.substring(0, 500)}`;
+      });
 
-    return `\n\n[Contexto RAG - ${results.length} fragmentos relevantes]\n${contextParts.join("\n\n")}\n`;
+      const stats = `hops=${evidencePack.hopsUsed}, queries=${evidencePack.subQueries.length}, total_candidates=${evidencePack.totalResults}`;
+      return `\n\n[RAG++ - ${results.length} evidencias | ${stats}]\n${contextParts.join("\n\n")}\n`;
+    } catch {
+      const results = await this.search(userId, message, {
+        limit: 5,
+        chatId: currentChatId,
+        minScore: 0.25
+      });
+
+      if (results.length === 0) return "";
+
+      const contextParts = results.map((r, i) => {
+        const source = r.metadata?.fileName
+          ? ` (de: ${r.metadata.fileName})`
+          : r.metadata?.sourceUrl
+            ? ` (fuente: ${r.metadata.sourceUrl})`
+            : '';
+        return `[Contexto ${i + 1}${source}]: ${r.content.substring(0, 500)}`;
+      });
+
+      return `\n\n[Contexto RAG - ${results.length} fragmentos relevantes]\n${contextParts.join("\n\n")}\n`;
+    }
+  }
+
+  async getContextWithEvidence(
+    userId: string,
+    message: string,
+    currentChatId?: string
+  ): Promise<{ context: string; evidencePack: EvidencePack | null }> {
+    try {
+      const { results, evidencePack } = await this.enhancedSearch(userId, message, {
+        limit: 5,
+        chatId: currentChatId,
+        minScore: 0.25,
+        enableRewriting: true,
+        enableReranking: true,
+        enableMultiHop: true,
+        useLLMRewrite: false,
+      });
+
+      if (results.length === 0) return { context: "", evidencePack: null };
+
+      const contextParts = results.map((r, i) => {
+        const citation = r.citation;
+        const sourceLabel = citation.sourceDoc
+          ? ` (doc: ${citation.sourceDoc})`
+          : citation.sourceUrl
+            ? ` (fuente: ${citation.sourceUrl})`
+            : '';
+        return `[Evidencia ${i + 1}${sourceLabel} | relevancia: ${r.score.toFixed(3)}]: ${r.content.substring(0, 500)}`;
+      });
+
+      const context = `\n\n[RAG++ Evidence Pack - ${results.length} resultados]\n${contextParts.join("\n\n")}\n`;
+      return { context, evidencePack };
+    } catch {
+      return { context: "", evidencePack: null };
+    }
   }
 
   async getDocumentChunks(docId: string): Promise<Array<{ content: string; chunkIndex: number }>> {
@@ -560,4 +935,19 @@ export async function buildEnhancedContext(
   ]);
 
   return personalContext + ragContext + workspaceContext;
+}
+
+export async function buildEnhancedContextWithEvidence(
+  userId: string,
+  message: string,
+  chatId?: string
+): Promise<{ context: string; evidencePack: EvidencePack | null }> {
+  const [ragResult, personalContext, workspaceContext] = await Promise.all([
+    ragService.getContextWithEvidence(userId, message, chatId),
+    personalizationService.getPersonalizationContext(userId),
+    workspaceContextService.getWorkspaceContext(userId, message)
+  ]);
+
+  const context = personalContext + ragResult.context + workspaceContext;
+  return { context, evidencePack: ragResult.evidencePack };
 }

@@ -105,9 +105,12 @@ async function retryWithBackoff<T>(
 }
 
 import { type FunctionDeclaration, AGENT_TOOLS } from "../config/agentTools";
+import { runCerebroPipeline, shouldUseCerebro, type SubtaskNode, type CerebroWorldModel } from "./cerebro";
+import { BudgetManager } from "./budgetManager";
 
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { BUNDLED_SKILL_TOOLS } from "./tools/bundledSkillTools";
+import { modelRouter } from "./modelRouter";
 
 const dynamicSkillTools: FunctionDeclaration[] = BUNDLED_SKILL_TOOLS.map(t => {
   const schema = zodToJsonSchema(t.inputSchema, { target: "jsonSchema7" }) as any;
@@ -488,6 +491,9 @@ export async function executeAgentLoop(
   const circuitBreaker = new CircuitBreaker(3);
   let totalTokensUsed = 0;
 
+  const defaultModel = process.env.AGENT_MODEL || "minimax/minimax-m2.5";
+  const budgetMgr = new BudgetManager(runId, defaultModel, { maxIterations: maxIterations });
+
   const recentUserText = collectRecentUserText(messages) || requestSpec.rawMessage || "";
   const isLocalFsRequest = LOCAL_FILESYSTEM_SIGNAL_REGEX.test(recentUserText || requestSpec.rawMessage || "");
 
@@ -662,34 +668,170 @@ MANDATORY RULES:
     const openclawToolNames = OPENCLAW_TOOLS.map(t => t.function.name).join(", ");
     conversationHistory.unshift({
       role: "system",
-      content: `YOU ARE AN AGENTIC AI ASSISTANT WITH REAL TOOL EXECUTION CAPABILITIES.
+      content: `YOU ARE AGENTOS-ASI — an advanced neuro-symbolic agentic operating system. You think deliberately, act precisely, and verify rigorously.
 
-You have access to powerful tools that let you interact with the real environment:
-- **bash**: Execute ANY shell command (ls, cat, grep, curl, python, node, pip, npm, git, etc.)
-- **run_code**: Execute Python or JavaScript code safely with output capture
-- **read_file / write_file / edit_file / list_files**: Full filesystem access to read, create, modify, and browse files
-- **web_fetch**: Fetch and read any URL or API endpoint
+## CORE IDENTITY
+You are a hierarchical agent with planning, execution, self-critique, and judgment capabilities. You decompose complex tasks into subtask DAGs, execute them methodically, and verify each result before proceeding.
+
+## CHAIN-OF-THOUGHT PROTOCOL
+Before every action, follow this reasoning sequence:
+1. **Understand**: Restate the user's intent in your own words. Identify constraints, edge cases, and implicit requirements.
+2. **Plan**: Break the task into ordered steps. Identify dependencies between steps. State which tools you will use and why.
+3. **Execute**: Carry out each step by calling the appropriate tool. Never skip directly to conclusions.
+4. **Verify**: After each tool result, assess: Did this succeed? Is the output valid and complete? Does it match expectations?
+5. **Adjust**: If a step fails or returns unexpected results, revise your plan. Do not repeat the same failing approach more than twice.
+6. **Synthesize**: Combine verified results into a coherent, grounded response.
+
+## WORLD MODEL AWARENESS
+Maintain a mental model of the current state throughout your execution:
+- Track which files you have read, created, or modified.
+- Remember what commands you have run and their outcomes.
+- Record key discoveries and facts as you encounter them.
+- Note errors and adjust strategy accordingly.
+- Reference your accumulated state when making decisions — do not re-read files you already have in context.
+
+## SELF-EVALUATION
+After each tool result, perform a micro-assessment:
+- "Did this tool call succeed?" — Check for errors, empty results, or unexpected output.
+- "Am I on track toward the objective?" — Confirm progress against the original plan.
+- "Should I adjust my approach?" — If two consecutive attempts fail, change strategy rather than retrying blindly.
+- "Is the data I received trustworthy?" — Cross-reference when possible, flag uncertainty.
+
+## EVIDENCE GROUNDING
+- Cite sources for all factual claims. When using web_search or fetch_url results, include the source URL.
+- Verify tool output before building on it — do not assume a command succeeded without checking its result.
+- Distinguish between verified facts (from tool output) and inferences (your reasoning). Label each clearly.
+- When presenting data or statistics, state where the numbers came from.
+- If you cannot verify a claim, say so explicitly rather than presenting it as fact.
+
+## ETHICAL GUARDRAILS
+- Never attempt unauthorized access to systems, accounts, or data.
+- Respect terms of service for all websites and APIs you interact with.
+- Do not execute destructive operations (rm -rf, DROP TABLE, etc.) without explicit user confirmation.
+- If a request involves potentially harmful, illegal, or privacy-violating actions, explain the concern and ask the user how to proceed.
+- Escalate risky or ambiguous actions to the user rather than making assumptions.
+- Protect sensitive data: never log, expose, or transmit API keys, passwords, or personal information.
+
+## CAPABILITY DISCOVERY
+- You have access to a rich set of tools. Before telling the user "I can't do that," check all available tools creatively.
+- Combine tools to achieve tasks no single tool can handle (e.g., web_search → fetch_url → analyze_data → generate_chart).
+- If you genuinely lack a tool for a specific task, inform the user clearly and suggest alternatives or workarounds.
+- Prefer tool execution over verbal instructions — DO things rather than telling the user how to do them.
+
+## AVAILABLE TOOLS
+- **bash**: Execute shell commands (ls, cat, grep, curl, python, node, pip, npm, git, etc.)
+- **run_code**: Execute Python or JavaScript code with output capture
+- **read_file / write_file / edit_file / list_files**: Full filesystem access
 - **web_search**: Search the web for current information
-- **browse_and_act**: Control a real browser to interact with websites
-- **process_list / port_check**: Inspect running processes and port usage
+- **fetch_url**: Fetch and read any URL or API endpoint
+- **browse_and_act**: Control a real browser for web interaction
+- **process_list / port_check**: System process and port inspection
 - **analyze_data / generate_chart**: Statistical analysis and visualization
 - **openclaw_rag_search / rag_index_document**: Knowledge base search and indexing
+- Additional tools: ${openclawToolNames}, ${tools.map(t => t.name).join(", ")}
 
-CRITICAL RULES:
+## EXECUTION RULES
 1. ALWAYS prefer calling tools over asking the user to do things manually.
-2. When the user asks you to do something, DO IT by calling the appropriate tool — don't just explain how.
-3. For multi-step tasks, chain tool calls: execute one, read the result, then execute the next.
-4. Use "bash" for: running commands, checking system info, installing packages, running scripts, processing data.
-5. Use "read_file"/"write_file" for: reading code, creating files, modifying configurations.
-6. Use "web_search" + "web_fetch" for: researching topics, reading documentation, checking APIs.
-7. You can combine multiple tools in sequence to accomplish complex tasks.
-8. Show results clearly after each tool execution.
-
-Available tools: ${openclawToolNames}, ${tools.map(t => t.name).join(", ")}`
+2. When the user asks you to do something, DO IT by calling the appropriate tool.
+3. For multi-step tasks, chain tool calls: execute one, verify the result, then execute the next.
+4. Show results clearly after each tool execution with relevant context.
+5. If a tool call fails, diagnose the error and retry with a corrected approach before giving up.
+6. When multiple independent subtasks exist, execute them in parallel where possible.
+7. Conclude every response with a brief summary of what was accomplished, what remains, and any caveats.`
     });
   }
 
   console.log(`[AgentExecutor] Starting loop: intent=${requestSpec.intent}, tools=[${tools.map(t => t.name).join(', ')}], messages=${conversationHistory.length}, systemMsgs=${conversationHistory.filter(m => m.role === 'system').length}, toolDeclarations=${tools.length}`);
+
+  const useCerebro = shouldUseCerebro(requestSpec.intent, recentUserText || requestSpec.rawMessage || "");
+  if (useCerebro) {
+    try {
+      sse.write("thinking", {
+        runId,
+        step: "cerebro_pipeline",
+        message: "Activando pipeline Cerebro: Planner → Executor → Critic → Judge",
+        timestamp: Date.now(),
+      });
+
+      const cerebroExecutor = async (subtask: SubtaskNode, wm: CerebroWorldModel): Promise<string> => {
+        const subtaskMessages = [
+          ...conversationHistory,
+          { role: "user", content: `Execute this subtask: ${subtask.label}\nDescription: ${subtask.description}${subtask.toolHint ? `\nSuggested tool: ${subtask.toolHint}` : ''}` },
+        ];
+
+        const geminiTools = tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+        }));
+
+        const response = await retryWithBackoff(() =>
+          ai.models.generateContent({
+            model: process.env.AGENT_MODEL || "gemini-2.5-flash",
+            contents: subtaskMessages.filter(m => m.role !== "system").map(m => ({
+              role: m.role === "assistant" ? "model" : "user",
+              parts: [{ text: m.content }],
+            })),
+            config: {
+              systemInstruction: subtaskMessages.filter(m => m.role === "system").map(m => m.content).join("\n"),
+              tools: [{ functionDeclarations: geminiTools }],
+              temperature: 0.4,
+              maxOutputTokens: 4000,
+            },
+          })
+        );
+
+        const candidate = response.candidates?.[0];
+        const parts = candidate?.content?.parts || [];
+        const textParts: string[] = [];
+
+        for (const part of parts) {
+          if (part.functionCall) {
+            const toolName = part.functionCall.name || "";
+            const toolArgs = (part.functionCall.args || {}) as Record<string, any>;
+            const { result } = await executeToolCall(toolName, toolArgs, toolContext, runId, res);
+            wm.updateFromToolResult(toolName, toolArgs, result);
+            textParts.push(`[Tool: ${toolName}] ${JSON.stringify(result).substring(0, 1000)}`);
+          } else if (part.text) {
+            textParts.push(part.text);
+          }
+        }
+
+        return textParts.join("\n");
+      };
+
+      const cerebroResult = await runCerebroPipeline(
+        recentUserText || requestSpec.rawMessage || "",
+        conversationHistory.filter(m => m.role === "user").slice(-3).map(m => m.content).join("\n"),
+        cerebroExecutor,
+        runId,
+        res,
+      );
+
+      sse.write("thinking", {
+        runId,
+        step: "cerebro_complete",
+        message: `Cerebro: ${cerebroResult.judgeVerdict.approved ? 'Aprobado' : 'Parcial'} (confianza: ${cerebroResult.judgeVerdict.confidence.toFixed(2)})`,
+        timestamp: Date.now(),
+      });
+
+      const cerebroSummary = cerebroResult.subtaskResults
+        .map(r => r.result)
+        .filter(Boolean)
+        .join("\n\n");
+
+      if (cerebroSummary.length > 0) {
+        conversationHistory.push({
+          role: "system",
+          content: `[Cerebro Pipeline Results]\nObjective: ${cerebroResult.objective}\nJudge verdict: ${cerebroResult.judgeVerdict.approved ? 'APPROVED' : 'PARTIAL'} (confidence: ${cerebroResult.judgeVerdict.confidence.toFixed(2)})\nReasoning: ${cerebroResult.judgeVerdict.reasoning}\n\nSubtask outputs:\n${cerebroSummary.substring(0, 4000)}`,
+        });
+      }
+
+      console.log(`[AgentExecutor] Cerebro pipeline completed: ${cerebroResult.subtaskResults.length} subtasks, judge=${cerebroResult.judgeVerdict.approved}`);
+    } catch (cerebroErr: any) {
+      console.warn(`[AgentExecutor] Cerebro pipeline failed (non-fatal), falling back to standard loop:`, cerebroErr?.message);
+    }
+  }
 
   await emitTraceEvent(runId, "progress_update", {
     progress: {
@@ -722,6 +864,30 @@ Available tools: ${openclawToolNames}, ${tools.map(t => t.name).join(", ")}`
     });
 
     try {
+      budgetMgr.recordIteration();
+
+      if (budgetMgr.isExceeded) {
+        const exceededMsg = budgetMgr.buildExceededMessage();
+        console.warn(`[AgentExecutor] ${exceededMsg}`);
+        budgetMgr.emitBudgetUpdate(sse.write);
+        if (!fullResponse) {
+          fullResponse = exceededMsg;
+          sse.write("chunk", { content: exceededMsg, sequence: 1, runId });
+        }
+        break;
+      }
+
+      if (budgetMgr.shouldWarn) {
+        budgetMgr.markWarningIssued();
+        const warnMsg = budgetMgr.buildWarningMessage();
+        console.warn(`[AgentExecutor] ${warnMsg}`);
+        budgetMgr.emitBudgetUpdate(sse.write);
+        conversationHistory.push({
+          role: "system",
+          content: `${warnMsg}. Wrap up your current task and provide a summary. Avoid starting new tool calls unless essential.`,
+        });
+      }
+
       const openaiClient = new OpenAI({
         apiKey: process.env.OPENAI_API_KEY,
         baseURL: process.env.OPENAI_BASE_URL || "https://openrouter.ai/api/v1",
@@ -768,7 +934,26 @@ Available tools: ${openclawToolNames}, ${tools.map(t => t.name).join(", ")}`
         return true;
       });
 
-      const agentModel = process.env.AGENT_MODEL || "minimax/minimax-m2.5";
+      const routeResult = modelRouter.route(
+        requestSpec.intent,
+        recentUserText.length,
+        tools.length,
+      );
+      const agentModel = routeResult.modelId;
+      console.log(`[AgentExecutor] Model routed: ${agentModel} (reason: ${routeResult.reason})`);
+
+      const budgetWarning = modelRouter.getBudgetWarning();
+      if (budgetWarning) {
+        console.warn(`[AgentExecutor] ${budgetWarning}`);
+        sse.write("budget_update", { runId, warning: budgetWarning, cost: modelRouter.getCostSummary() });
+      }
+      if (modelRouter.isBudgetExceeded()) {
+        console.warn(`[AgentExecutor] Cost budget exceeded, halting agent loop`);
+        sse.write("budget_update", { runId, exceeded: true, cost: modelRouter.getCostSummary() });
+        fullResponse = "He alcanzado el límite de presupuesto para esta ejecución. Por favor, inicia una nueva solicitud.";
+        sse.write("chunk", { content: fullResponse, sequence: 1, runId });
+        break;
+      }
 
       const response = await retryWithBackoff(async () => {
         const completionPromise = openaiClient.chat.completions.create({
@@ -789,6 +974,18 @@ Available tools: ${openclawToolNames}, ${tools.map(t => t.name).join(", ")}`
 
       if (response.usage) {
         totalTokensUsed += (response.usage.total_tokens || 0);
+        modelRouter.trackUsage(
+          agentModel,
+          response.usage.prompt_tokens || 0,
+          response.usage.completion_tokens || 0,
+        );
+        modelRouter.recordSuccess(agentModel);
+        budgetMgr.recordUsage({
+          prompt_tokens: response.usage.prompt_tokens,
+          completion_tokens: response.usage.completion_tokens,
+          total_tokens: response.usage.total_tokens,
+        });
+        budgetMgr.emitBudgetUpdate(sse.write);
       }
 
       const choice = response.choices?.[0];
@@ -1147,6 +1344,9 @@ Please rewrite your response addressing these issues.`
     } catch (error: any) {
       console.error(`[AgentExecutor] Error in iteration ${iteration}:`, error?.message || error);
 
+      const failedModel = process.env.AGENT_MODEL || "minimax/minimax-m2.5";
+      modelRouter.recordFailure(failedModel);
+
       await emitTraceEvent(runId, "error", {
         error: {
           code: "AGENT_EXECUTION_ERROR",
@@ -1213,6 +1413,8 @@ Please rewrite your response addressing these issues.`
     });
   }
 
+  budgetMgr.emitBudgetUpdate(sse.write);
+
   await emitTraceEvent(runId, "agent_completed", {
     agent: {
       name: requestSpec.primaryAgent,
@@ -1223,6 +1425,11 @@ Please rewrite your response addressing these issues.`
     artifactsGenerated: artifacts.length,
     totalTokensUsed,
     circuitBreakerStatus: circuitBreaker.getStatus(),
+    modelRouting: {
+      costSummary: modelRouter.getCostSummary(),
+      healthStatus: modelRouter.getHealthStatus(),
+    },
+    budget: budgetMgr.snapshot(),
   });
 
   try {

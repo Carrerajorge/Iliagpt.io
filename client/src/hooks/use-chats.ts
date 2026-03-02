@@ -118,6 +118,26 @@ export interface Message {
   uncertaintyReason?: string;
   metadata?: Record<string, any>;
   retrievalSteps?: { id: string; label: string; status: "pending" | "active" | "complete" | "error"; detail?: string }[];
+  cerebroTimeline?: {
+    subtasks: Array<{
+      id: string;
+      title: string;
+      description?: string;
+      status: "pending" | "running" | "done" | "failed" | "retrying";
+      priority?: number;
+      dependencies?: string[];
+      toolCalls?: Array<{ toolName: string; status: "running" | "done" | "failed"; durationMs?: number }>;
+      criticResult?: { verdict: "accept" | "retry" | "backtrack"; reason: string; scores?: { grounding: number; completeness: number; coherence: number } };
+      startedAt?: number;
+      completedAt?: number;
+      retryCount?: number;
+    }>;
+    judgeResult?: { verdict: "pass" | "fail" | "partial"; confidence: number; reason: string; subtaskResults?: Array<{ subtaskId: string; satisfied: boolean }> } | null;
+    evidence?: Array<{ id: string; source: string; chunkIndex?: number; relevanceScore: number; snippet: string; url?: string }>;
+    budget?: { tokensUsed: number; tokenLimit: number; estimatedCost: number; costCeiling?: number; budgetRemainingPercent: number; duration?: number; toolsUsedCount?: number } | null;
+    planTitle?: string;
+    isActive?: boolean;
+  };
 }
 
 export interface Chat {

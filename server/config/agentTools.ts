@@ -310,3 +310,38 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
         }
     }
 ];
+
+export const CAPABILITY_REGISTRY: Record<string, { tools: string[]; description: string }> = {
+    research: {
+        tools: ["web_search", "fetch_url", "openclaw_rag_search", "analyze_data"],
+        description: "Information gathering, fact-checking, and research tasks",
+    },
+    "file-ops": {
+        tools: ["list_files", "read_file", "bash"],
+        description: "File system operations: reading, writing, listing, moving files",
+    },
+    "web-automation": {
+        tools: ["browse_and_act", "fetch_url", "web_search"],
+        description: "Browser-based interactions: forms, bookings, purchases, scraping",
+    },
+    "code-analysis": {
+        tools: ["read_file", "run_code", "bash", "edit_file"],
+        description: "Code reading, execution, debugging, and modification",
+    },
+    "data-processing": {
+        tools: ["analyze_data", "generate_chart", "run_code", "read_file", "create_spreadsheet"],
+        description: "Data analysis, visualization, and statistical computation",
+    },
+    "document-creation": {
+        tools: ["create_presentation", "create_document", "create_spreadsheet"],
+        description: "Creating Office documents: presentations, reports, spreadsheets",
+    },
+    "system-ops": {
+        tools: ["process_list", "port_check", "bash"],
+        description: "System administration: process management, ports, services",
+    },
+    "memory-retrieval": {
+        tools: ["memory_search", "openclaw_rag_search"],
+        description: "Retrieving stored knowledge, prior conversations, and documents",
+    },
+};

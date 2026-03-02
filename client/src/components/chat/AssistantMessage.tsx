@@ -49,6 +49,7 @@ import {
     DocumentBlock
 } from "./MessageParts";
 import { AgentRunContent } from "./AgentRunContent";
+import { AgentRunTimeline } from "./AgentRunTimeline";
 import { AgentStateIndicator } from "./AgentStateIndicator";
 import { type AIState } from "@/components/chat-interface/types";
 
@@ -206,6 +207,18 @@ export const AssistantMessage = memo(function AssistantMessage({
                     onArtifactPreview={onAgentArtifactPreview}
                     onToolConfirm={onToolConfirm ? (toolName, stepIndex) => onToolConfirm(message.id, toolName, stepIndex) : undefined}
                     onToolDeny={onToolDeny ? (toolName, stepIndex) => onToolDeny(message.id, toolName, stepIndex) : undefined}
+                />
+            )}
+
+            {/* Cerebro Timeline - DAG execution timeline with evidence & stats */}
+            {message.cerebroTimeline && message.cerebroTimeline.subtasks && message.cerebroTimeline.subtasks.length > 0 && (
+                <AgentRunTimeline
+                    subtasks={message.cerebroTimeline.subtasks}
+                    judgeResult={message.cerebroTimeline.judgeResult}
+                    evidence={message.cerebroTimeline.evidence}
+                    budget={message.cerebroTimeline.budget}
+                    isActive={message.cerebroTimeline.isActive}
+                    planTitle={message.cerebroTimeline.planTitle}
                 />
             )}
 

@@ -5,6 +5,7 @@ import { agentEventBus } from "./eventBus";
 import { createRequestSpec, detectIntent, AttachmentSpecSchema, SessionStateSchema, RequestSpecSchema } from "./requestSpec";
 import type { z } from "zod";
 import { AgentTask } from "./contracts";
+import { sanitizeMessages, sanitizeOutput, wrapWithBoundaries, type SanitizationResult } from "./security/inputSanitizer";
 
 type RequestSpec = z.infer<typeof RequestSpecSchema>;
 type AttachmentSpec = z.infer<typeof AttachmentSpecSchema>;
@@ -573,12 +574,55 @@ export async function executeUnifiedChat(
     // In fast lane, cap maxTokens for quick responses
     const fastLaneMaxTokens = resolvedLane === 'fast' ? 400 : undefined;
 
+    const rawMessages = request.messages.map(m => ({
+      role: m.role as "user" | "assistant" | "system",
+      content: m.content
+    }));
+
+    const { messages: sanitizedUserMessages, result: sanitizationResult } = sanitizeMessages(rawMessages);
+
+    if (sanitizationResult.detected) {
+      console.warn(
+        `[InputSanitizer] Injection detected in run ${runId} — severity: ${sanitizationResult.severity}, patterns: ${sanitizationResult.patterns.join(', ')}`,
+      );
+
+      await emitTraceEvent(runId, 'thinking', {
+        content: `Input sanitization: severity=${sanitizationResult.severity}, patterns=${sanitizationResult.patterns.join(', ')}`,
+        phase: 'security',
+      });
+    }
+
+    if (sanitizationResult.blocked) {
+      writeSse(res, 'chunk', {
+        content: 'Your request was blocked because it contains content that violates our security policies. Please rephrase your message.',
+        sequence: 1,
+        runId,
+        timestamp: Date.now(),
+      });
+
+      writeSse(res, 'done', {
+        runId,
+        totalChunks: 1,
+        durationMs: Date.now() - context.startTime,
+        intent: requestSpec.intent,
+        blocked: true,
+        timestamp: Date.now(),
+      });
+
+      await db.update(agentModeRuns)
+        .set({ status: 'failed' })
+        .where(eq(agentModeRuns.id, runId))
+        .catch(err => console.error('[UnifiedChat] Failed to update run status:', err));
+
+      if (!(res as any).writableEnded) {
+        res.end();
+      }
+      return;
+    }
+
     const formattedMessages = [
       { role: "system" as const, content: systemContent },
-      ...request.messages.map(m => ({
-        role: m.role as "user" | "assistant" | "system",
-        content: m.content
-      }))
+      ...sanitizedUserMessages
     ];
 
     let fullResponse = '';
@@ -623,13 +667,14 @@ export async function executeUnifiedChat(
 
       for await (const chunk of streamGenerator) {
         if (chunk.content) {
-          fullResponse += chunk.content;
+          const { sanitizedOutput } = sanitizeOutput(chunk.content);
+          fullResponse += sanitizedOutput;
           chunkCount++;
 
-          writer.pushDelta(chunk.content);
+          writer.pushDelta(sanitizedOutput);
 
           if (options.onChunk) {
-            options.onChunk(chunk.content);
+            options.onChunk(sanitizedOutput);
           }
 
           if (chunkCount % 50 === 0) {

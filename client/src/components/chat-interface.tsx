@@ -6057,6 +6057,7 @@ IMPORTANTE:
               const streamArtifactMimeTypes = new Map<string, string>();
               let streamWebSources: any[] | undefined;
               let isProductionStream = false;
+              let cerebroTimeline: any = { subtasks: [], judgeResult: null, evidence: [], budget: null, planTitle: "", isActive: false };
 
               const setAiStateForStream = (value: React.SetStateAction<AiState>) =>
                 setAiStateForChat(value, effectiveStreamChatId);
@@ -6294,6 +6295,67 @@ IMPORTANTE:
                   if (eventType === "intent") {
                     console.log('[SSE] Intent:', data?.intent, data?.confidence);
                   }
+
+                  if (eventType === "plan_update") {
+                    cerebroTimeline.isActive = true;
+                    if (data?.title) cerebroTimeline.planTitle = data.title;
+                    if (data?.subtasks) {
+                      cerebroTimeline.subtasks = data.subtasks.map((st: any) => ({
+                        id: st.id, title: st.title, description: st.description,
+                        status: st.status || "pending", priority: st.priority,
+                        dependencies: st.dependencies, toolCalls: st.toolCalls || [],
+                        retryCount: st.retryCount || 0,
+                      }));
+                    }
+                    return;
+                  }
+                  if (eventType === "subtask_start") {
+                    cerebroTimeline.subtasks = cerebroTimeline.subtasks.map((s: any) =>
+                      s.id === data?.subtaskId ? { ...s, status: "running", startedAt: Date.now() } : s
+                    );
+                    return;
+                  }
+                  if (eventType === "subtask_complete") {
+                    cerebroTimeline.subtasks = cerebroTimeline.subtasks.map((s: any) =>
+                      s.id === data?.subtaskId ? { ...s, status: data?.success ? "done" : "failed", completedAt: Date.now(), toolCalls: data?.toolCalls || s.toolCalls } : s
+                    );
+                    return;
+                  }
+                  if (eventType === "critic_result") {
+                    cerebroTimeline.subtasks = cerebroTimeline.subtasks.map((s: any) =>
+                      s.id === data?.subtaskId ? {
+                        ...s,
+                        criticResult: { verdict: data.verdict, reason: data.reason, scores: data.scores },
+                        status: data.verdict === "retry" ? "retrying" : data.verdict === "backtrack" ? "failed" : s.status,
+                        retryCount: data.verdict === "retry" ? (s.retryCount || 0) + 1 : s.retryCount,
+                      } : s
+                    );
+                    return;
+                  }
+                  if (eventType === "judge_verdict") {
+                    cerebroTimeline.judgeResult = { verdict: data.verdict, confidence: data.confidence, reason: data.reason, subtaskResults: data.subtaskResults };
+                    cerebroTimeline.isActive = false;
+                    return;
+                  }
+                  if (eventType === "budget_update") {
+                    cerebroTimeline.budget = {
+                      tokensUsed: data?.tokensUsed || 0, tokenLimit: data?.tokenLimit || 100000,
+                      estimatedCost: data?.estimatedCost || 0, costCeiling: data?.costCeiling,
+                      budgetRemainingPercent: data?.budgetRemainingPercent ?? 100,
+                      duration: data?.duration, toolsUsedCount: data?.toolsUsedCount,
+                    };
+                    return;
+                  }
+                  if (eventType === "evidence_update") {
+                    if (Array.isArray(data?.citations)) {
+                      cerebroTimeline.evidence = data.citations.map((c: any) => ({
+                        id: c.id || String(Math.random()), source: c.source,
+                        chunkIndex: c.chunkIndex, relevanceScore: c.relevanceScore ?? 0,
+                        snippet: c.snippet || "", url: c.url,
+                      }));
+                    }
+                    return;
+                  }
                 },
                 onChunk: (chunk, _chunkEventData, fullContent) => {
                   if (isPptMode && shouldWriteToDoc) {
@@ -6409,7 +6471,7 @@ IMPORTANTE:
                     };
                   }
 
-                  return {
+                  const finalMsg: any = {
                     id: messageId || `assistant-${Date.now()}`,
                     role: "assistant",
                     content: fullContent || "No se recibió respuesta del servidor.",
@@ -6420,6 +6482,10 @@ IMPORTANTE:
                     uncertaintyReason: uncertainty?.reason,
                     webSources: data?.webSources || streamWebSources,
                   };
+                  if (cerebroTimeline.subtasks.length > 0 || cerebroTimeline.judgeResult || cerebroTimeline.budget) {
+                    finalMsg.cerebroTimeline = { ...cerebroTimeline };
+                  }
+                  return finalMsg;
                 },
                 buildErrorMessage: (error, messageId) => ({
                   id: messageId || `error-${Date.now()}`,
