@@ -2,7 +2,7 @@ import { Router } from "express";
 import { AuthenticatedRequest } from "../../types/express";
 import { storage } from "../../storage";
 import { checkApiKeyExists } from "./utils";
-import { syncModelsForProvider, getAvailableProviders, getModelStats } from "../../services/aiModelSyncService";
+import { syncModelsForProvider, getAvailableProviders, getModelStats, fetchOpenRouterModels, syncFromOpenRouter } from "../../services/aiModelSyncService";
 import { auditLog, AuditActions } from "../../services/auditLogger";
 import {
     getIntegratedModelProviderIds,
@@ -323,6 +323,101 @@ modelsRouter.post("/sync", async (req, res) => {
             scope,
             results,
             summary: { totalAdded, totalUpdated },
+        });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+modelsRouter.get("/openrouter/catalog", async (req, res) => {
+    try {
+        const { provider, free, search } = req.query as any;
+        const models = await fetchOpenRouterModels();
+
+        let filtered = models;
+        if (provider) {
+            const pf = provider.toLowerCase();
+            filtered = filtered.filter((m: any) => m.id.toLowerCase().startsWith(pf + "/"));
+        }
+        if (free === "true") {
+            filtered = filtered.filter((m: any) => {
+                const p = m.pricing || {};
+                return parseFloat(p.prompt || "0") === 0 &&
+                       parseFloat(p.completion || "0") === 0 &&
+                       parseFloat(p.request || "0") === 0 &&
+                       parseFloat(p.image || "0") === 0;
+            });
+        }
+        if (search) {
+            const q = search.toLowerCase();
+            filtered = filtered.filter((m: any) =>
+                m.id.toLowerCase().includes(q) ||
+                m.name.toLowerCase().includes(q) ||
+                (m.description || "").toLowerCase().includes(q)
+            );
+        }
+
+        const providers = [...new Set(models.map((m: any) => {
+            const slash = m.id.indexOf("/");
+            return slash > 0 ? m.id.substring(0, slash) : "openrouter";
+        }))].sort();
+
+        res.json({
+            total: models.length,
+            filtered: filtered.length,
+            providers,
+            providerCount: providers.length,
+            models: filtered.map((m: any) => ({
+                id: m.id,
+                name: m.name,
+                description: m.description,
+                contextLength: m.context_length,
+                modality: m.architecture?.modality,
+                inputModalities: m.architecture?.input_modalities,
+                outputModalities: m.architecture?.output_modalities,
+                pricing: m.pricing,
+                maxCompletionTokens: m.top_provider?.max_completion_tokens,
+                isModerated: m.top_provider?.is_moderated,
+                supportedParameters: m.supported_parameters,
+                created: m.created,
+                expirationDate: m.expiration_date,
+            })),
+        });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+modelsRouter.post("/openrouter/sync", async (req, res) => {
+    try {
+        const { provider, onlyFree, dryRun } = req.body || {};
+        const result = await syncFromOpenRouter({
+            providerFilter: provider,
+            onlyFree: onlyFree === true,
+            dryRun: dryRun === true,
+        });
+
+        await auditLog(req, {
+            action: AuditActions.MODELS_SYNC,
+            resource: "ai_models",
+            details: {
+                source: "openrouter-live-api",
+                providerFilter: provider || "all",
+                fetched: result.fetched,
+                added: result.added,
+                updated: result.updated,
+                skipped: result.skipped,
+                errors: result.errors.length,
+                providers: result.providers,
+            },
+            category: "admin",
+            severity: "info",
+        });
+
+        res.json({
+            success: true,
+            source: "openrouter-live-api",
+            ...result,
         });
     } catch (error: any) {
         res.status(500).json({ error: error.message });

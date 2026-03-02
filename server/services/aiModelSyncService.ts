@@ -364,6 +364,232 @@ export async function syncAllProviders(): Promise<Record<string, SyncResult>> {
   return results;
 }
 
+// ============================================================================
+// LIVE OPENROUTER API SYNC
+// ============================================================================
+
+interface OpenRouterModel {
+  id: string;
+  name: string;
+  description?: string;
+  context_length?: number;
+  architecture?: {
+    modality?: string;
+    input_modalities?: string[];
+    output_modalities?: string[];
+  };
+  pricing?: {
+    prompt?: string;
+    completion?: string;
+    image?: string;
+    request?: string;
+  };
+  top_provider?: {
+    context_length?: number;
+    max_completion_tokens?: number;
+    is_moderated?: boolean;
+  };
+  per_request_limits?: Record<string, string> | null;
+  supported_parameters?: string[];
+  created?: number;
+  expiration_date?: string | null;
+}
+
+function inferModelType(model: OpenRouterModel): "TEXT" | "IMAGE" | "MULTIMODAL" | "AUDIO" | "VIDEO" | "EMBEDDING" {
+  const modality = model.architecture?.modality || "";
+  const inputs = model.architecture?.input_modalities || [];
+  const outputs = model.architecture?.output_modalities || [];
+  if (outputs.includes("image") && !inputs.includes("text")) return "IMAGE";
+  if (inputs.includes("image") || inputs.includes("video") || modality.includes("image") || modality.includes("video")) return "MULTIMODAL";
+  if (inputs.includes("audio") || outputs.includes("audio") || modality.includes("audio")) return "AUDIO";
+  const id = model.id.toLowerCase();
+  if (id.includes("embed") || id.includes("embedding")) return "EMBEDDING";
+  if (id.includes("image") || id.includes("dall-e") || id.includes("stable-diffusion") || id.includes("flux")) return "IMAGE";
+  return "TEXT";
+}
+
+function extractProvider(modelId: string): string {
+  const slash = modelId.indexOf("/");
+  if (slash > 0) return modelId.substring(0, slash);
+  return "openrouter";
+}
+
+export async function fetchOpenRouterModels(): Promise<OpenRouterModel[]> {
+  const apiKey = process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY || "";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+  const res = await fetch("https://openrouter.ai/api/v1/models", { headers, signal: AbortSignal.timeout(30000) });
+  if (!res.ok) {
+    throw new Error(`OpenRouter API error: ${res.status} ${res.statusText}`);
+  }
+  const data = (await res.json()) as { data?: OpenRouterModel[] };
+  return data.data || [];
+}
+
+export async function syncFromOpenRouter(options: {
+  providerFilter?: string;
+  onlyFree?: boolean;
+  dryRun?: boolean;
+} = {}): Promise<{
+  fetched: number;
+  added: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+  providers: string[];
+  models: Array<{ id: string; name: string; provider: string; type: string; contextLength: number; promptCost: string; completionCost: string }>;
+}> {
+  logSync("info", "Starting live OpenRouter sync", { options });
+
+  const models = await fetchOpenRouterModels();
+  logSync("info", `Fetched ${models.length} models from OpenRouter API`);
+
+  const result = {
+    fetched: models.length,
+    added: 0,
+    updated: 0,
+    skipped: 0,
+    errors: [] as string[],
+    providers: [] as string[],
+    models: [] as Array<{ id: string; name: string; provider: string; type: string; contextLength: number; promptCost: string; completionCost: string }>,
+  };
+
+  const providerSet = new Set<string>();
+  let filtered = models;
+
+  if (options.providerFilter) {
+    const pf = options.providerFilter.toLowerCase();
+    filtered = filtered.filter(m => extractProvider(m.id).toLowerCase() === pf);
+  }
+
+  if (options.onlyFree) {
+    filtered = filtered.filter(m => {
+      const p = m.pricing || {};
+      return parseFloat(p.prompt || "0") === 0 &&
+             parseFloat(p.completion || "0") === 0 &&
+             parseFloat(p.request || "0") === 0 &&
+             parseFloat(p.image || "0") === 0;
+    });
+  }
+
+  for (const model of filtered) {
+    const provider = extractProvider(model.id);
+    providerSet.add(provider);
+
+    const modelType = inferModelType(model);
+    const promptCost = model.pricing?.prompt || "0";
+    const completionCost = model.pricing?.completion || "0";
+    const promptPer1k = (parseFloat(promptCost) * 1000).toFixed(6);
+    const completionPer1k = (parseFloat(completionCost) * 1000).toFixed(6);
+    const maxOutput = model.top_provider?.max_completion_tokens || 4096;
+    const contextLength = model.context_length || model.top_provider?.context_length || 0;
+
+    result.models.push({
+      id: model.id,
+      name: model.name,
+      provider,
+      type: modelType,
+      contextLength,
+      promptCost: promptPer1k,
+      completionCost: completionPer1k,
+    });
+
+    if (options.dryRun) {
+      result.skipped++;
+      continue;
+    }
+  }
+
+  if (options.dryRun) {
+    result.providers = Array.from(providerSet).sort();
+    return result;
+  }
+
+  const allExisting = await storage.getAiModels();
+  const existingByModelId = new Map(allExisting.map(m => [m.modelId, m]));
+
+  for (const model of filtered) {
+    const provider = extractProvider(model.id);
+    const modelType = inferModelType(model);
+    const promptCost = model.pricing?.prompt || "0";
+    const completionCost = model.pricing?.completion || "0";
+    const promptPer1k = (parseFloat(promptCost) * 1000).toFixed(6);
+    const completionPer1k = (parseFloat(completionCost) * 1000).toFixed(6);
+    const maxOutput = model.top_provider?.max_completion_tokens || 4096;
+    const contextLength = model.context_length || model.top_provider?.context_length || 0;
+
+    try {
+      const existing = existingByModelId.get(model.id);
+
+      if (existing) {
+        await storage.updateAiModel(existing.id, {
+          name: model.name,
+          modelType: modelType,
+          contextWindow: contextLength,
+          maxOutputTokens: maxOutput,
+          inputCostPer1k: promptPer1k,
+          outputCostPer1k: completionPer1k,
+          description: model.description || existing.description,
+          isDeprecated: model.expiration_date ? "true" : "false",
+          lastSyncAt: new Date(),
+          capabilities: {
+            modality: model.architecture?.modality,
+            inputModalities: model.architecture?.input_modalities,
+            outputModalities: model.architecture?.output_modalities,
+            supportedParameters: model.supported_parameters,
+            isModerated: model.top_provider?.is_moderated,
+          },
+        });
+        result.updated++;
+      } else {
+        await storage.createAiModel({
+          name: model.name,
+          provider: provider,
+          modelId: model.id,
+          modelType: modelType,
+          contextWindow: contextLength,
+          maxOutputTokens: maxOutput,
+          inputCostPer1k: promptPer1k,
+          outputCostPer1k: completionPer1k,
+          costPer1k: promptPer1k,
+          description: model.description,
+          isDeprecated: model.expiration_date ? "true" : "false",
+          status: "active",
+          isEnabled: "false",
+          lastSyncAt: new Date(),
+          capabilities: {
+            modality: model.architecture?.modality,
+            inputModalities: model.architecture?.input_modalities,
+            outputModalities: model.architecture?.output_modalities,
+            supportedParameters: model.supported_parameters,
+            isModerated: model.top_provider?.is_moderated,
+          },
+        });
+        result.added++;
+      }
+    } catch (error: unknown) {
+      const msg = `Error syncing ${model.id}: ${error instanceof Error ? error.message : String(error)}`;
+      result.errors.push(msg);
+      if (result.errors.length >= MAX_ERRORS_PER_SYNC) break;
+    }
+  }
+
+  result.providers = Array.from(providerSet).sort();
+  logSync("info", `OpenRouter sync complete`, {
+    fetched: result.fetched,
+    added: result.added,
+    updated: result.updated,
+    skipped: result.skipped,
+    errors: result.errors.length,
+    providers: result.providers.length,
+  });
+
+  return result;
+}
+
 export function getModelStats(): { totalKnown: number; byProvider: Record<string, number>; byType: Record<string, number> } {
   const byProvider: Record<string, number> = {};
   const byType: Record<string, number> = {};

@@ -964,6 +964,83 @@ export async function registerRoutes(
     }
   });
 
+  const openRouterCache: { data: any[] | null; fetchedAt: number } = { data: null, fetchedAt: 0 };
+  const OR_CACHE_TTL = 5 * 60 * 1000;
+
+  app.get("/api/openrouter/models", async (req: Request, res: Response) => {
+    try {
+      const { fetchOpenRouterModels } = await import("./services/aiModelSyncService");
+      const { provider, free, search, page, limit } = req.query as Record<string, string>;
+
+      const now = Date.now();
+      if (!openRouterCache.data || now - openRouterCache.fetchedAt > OR_CACHE_TTL) {
+        openRouterCache.data = await fetchOpenRouterModels();
+        openRouterCache.fetchedAt = now;
+      }
+      const models = openRouterCache.data;
+
+      let filtered = models;
+      if (provider) {
+        const pf = provider.toLowerCase();
+        filtered = filtered.filter((m: any) => m.id.toLowerCase().startsWith(pf + "/"));
+      }
+      if (free === "true") {
+        filtered = filtered.filter((m: any) => {
+          const p = m.pricing || {};
+          return parseFloat(p.prompt || "0") === 0 &&
+                 parseFloat(p.completion || "0") === 0 &&
+                 parseFloat(p.request || "0") === 0 &&
+                 parseFloat(p.image || "0") === 0;
+        });
+      }
+      if (search) {
+        const q = search.toLowerCase();
+        filtered = filtered.filter((m: any) =>
+          m.id.toLowerCase().includes(q) ||
+          m.name.toLowerCase().includes(q) ||
+          (m.description || "").toLowerCase().includes(q)
+        );
+      }
+
+      const providers = [...new Set(models.map((m: any) => {
+        const slash = m.id.indexOf("/");
+        return slash > 0 ? m.id.substring(0, slash) : "openrouter";
+      }))].sort();
+
+      const pageNum = parseInt(page || "1");
+      const limitNum = Math.min(parseInt(limit || "50"), 200);
+      const start = (pageNum - 1) * limitNum;
+      const paginated = filtered.slice(start, start + limitNum);
+
+      res.json({
+        total: models.length,
+        filtered: filtered.length,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(filtered.length / limitNum),
+        providers,
+        providerCount: providers.length,
+        models: paginated.map((m: any) => ({
+          id: m.id,
+          name: m.name,
+          description: m.description,
+          contextLength: m.context_length,
+          modality: m.architecture?.modality,
+          inputModalities: m.architecture?.input_modalities,
+          outputModalities: m.architecture?.output_modalities,
+          pricing: m.pricing,
+          maxCompletionTokens: m.top_provider?.max_completion_tokens,
+          isModerated: m.top_provider?.is_moderated,
+          supportedParameters: m.supported_parameters,
+          created: m.created,
+          expirationDate: m.expiration_date,
+        })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/files/list", async (req: Request, res: Response) => {
     try {
       const { secureFileGateway } = await import("./agent/filePlane");
