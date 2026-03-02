@@ -19,7 +19,7 @@ const isProduction = process.env.NODE_ENV === "production";
 
 // Configure Pino instance
 const pinoLogger = pino({
-  level: process.env.LOG_LEVEL || (isProduction ? "info" : "debug"),
+  level: process.env.LOG_LEVEL || "info",
   redact: {
     paths: SENSITIVE_KEYS.flatMap(key => [key, `*.${key}`, `*.*.${key}`]),
     remove: true,

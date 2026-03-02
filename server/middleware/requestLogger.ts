@@ -73,9 +73,11 @@ export function getTraceId(): string | undefined {
 }
 
 const DEV_SKIP_LOG_PREFIXES = ['/src/', '/node_modules/', '/@', '/@vite/', '/@replit/', '/__vite'];
+const QUIET_API_PATHS = ['/api/settings/public', '/api/models/available', '/health'];
 const isDev = process.env.NODE_ENV !== 'production';
 
 function shouldSkipLogging(path: string): boolean {
+  if (QUIET_API_PATHS.includes(path)) return true;
   if (!isDev) return false;
   return DEV_SKIP_LOG_PREFIXES.some(prefix => path.startsWith(prefix));
 }

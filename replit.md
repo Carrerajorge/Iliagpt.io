@@ -53,6 +53,8 @@ Infrastructure security includes bcrypt, multi-tenant validation, authentication
 
 PostgreSQL with Drizzle ORM is used for persistent data storage. Client-side persistence uses `localStorage` and IndexedDB.
 
+**Performance Optimizations (2026-03-02)**: Frontend polling reduced — `/api/settings/public` refetch every 120s (staleTime 60s), `/api/models/available` refetch every 120s (staleTime 60s, gcTime 5min). Server-side in-memory caching (30s TTL) for both endpoints. Quiet logging for high-frequency polling routes (`/api/settings/public`, `/api/models/available`, `/health`) — skipped in both `requestLogger` and `requestTracer`. Default log level set to `info` (was `debug` in dev). Vite build uses manual chunks (vendor, ui) and optimizeDeps for faster cold starts.
+
 ## External Dependencies
 ### AI Services
 - **OpenRouter**: Active AI model endpoint.

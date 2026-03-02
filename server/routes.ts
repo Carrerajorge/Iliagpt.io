@@ -2724,23 +2724,26 @@ export async function registerRoutes(
   });
 
   // ===== Public Models Endpoint (for user-facing selector) =====
+  let modelsCache: { data: any; ts: number } | null = null;
+  const MODELS_CACHE_TTL = 30_000;
+
   app.get("/api/models/available", async (req: Request, res: Response) => {
-    res.set({
-      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-      "Pragma": "no-cache",
-      "Expires": "0"
-    });
+    res.set({ "Cache-Control": "public, max-age=30" });
     try {
+      const now = Date.now();
+      if (modelsCache && (now - modelsCache.ts) < MODELS_CACHE_TTL) {
+        return res.json(modelsCache.data);
+      }
       const allModels = await storage.getAiModels();
       const models = allModels
         .map((m: any) => ({ ...m, isEnabled: "true", status: "active" }))
         .sort((a: any, b: any) => (a.displayOrder || 0) - (b.displayOrder || 0))
         .map((m: any) => toPublicModelSummary(m));
-      res.json({ models });
+      const result = { models };
+      modelsCache = { data: result, ts: now };
+      res.json(result);
     } catch (error: any) {
       console.error("[Models] Error fetching available models:", error);
-      // Defensive fallback for production when DB schema is temporarily behind code.
-      // Keep app shell functional (especially after logout) instead of surfacing 500.
       res.json({ models: PUBLIC_MODEL_FALLBACKS });
     }
   });

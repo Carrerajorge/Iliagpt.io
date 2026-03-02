@@ -4,13 +4,19 @@ import { getPublicSettings } from "../services/settingsConfigService";
 export function createSettingsRouter() {
   const router = Router();
 
-  // Public, non-authenticated settings consumed by the client.
-  // NOTE: keep the payload shape in sync with client/src/contexts/PlatformSettingsContext.tsx
+  let settingsCache: { data: any; ts: number } | null = null;
+  const SETTINGS_CACHE_TTL = 30_000;
+
   router.get("/api/settings/public", async (_req, res) => {
     try {
+      const now = Date.now();
+      if (settingsCache && (now - settingsCache.ts) < SETTINGS_CACHE_TTL) {
+        res.setHeader("Cache-Control", "public, max-age=30");
+        return res.json(settingsCache.data);
+      }
       const result = await getPublicSettings();
-      // Avoid caching stale admin-managed settings in proxies/CDNs.
-      res.setHeader("Cache-Control", "no-store");
+      settingsCache = { data: result, ts: now };
+      res.setHeader("Cache-Control", "public, max-age=30");
       res.json(result);
     } catch (err: any) {
       res.status(500).json({
