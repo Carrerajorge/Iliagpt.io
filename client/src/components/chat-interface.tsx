@@ -3010,6 +3010,7 @@ export function ChatInterface({
       ].includes(file.type) || !!file.name.match(/\.(xlsx|xls|csv)$/i);
 
       let dataUrl: string | undefined;
+      const isPdfFile = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
       if (isImage && file.size <= MAX_IMAGE_PREVIEW_BYTES) {
         try {
           dataUrl = await compressImageToDataUrl(file);
@@ -3020,6 +3021,17 @@ export function ChatInterface({
             reader.onloadend = () => resolve(reader.result as string);
             reader.readAsDataURL(file);
           });
+        }
+      } else if (isPdfFile && file.size <= 20 * 1024 * 1024) {
+        try {
+          dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+        } catch (e) {
+          console.warn("Failed to read PDF as dataUrl for preview", e);
         }
       }
 
@@ -7709,9 +7721,23 @@ IMPORTANTE:
           const fileTheme = getFileTheme(previewUploadedFile.name, previewUploadedFile.mimeType);
           const isPdf = previewUploadedFile.mimeType?.includes("pdf") || previewUploadedFile.name?.toLowerCase().endsWith(".pdf");
           const isImg = previewUploadedFile.mimeType?.startsWith("image/");
-          const previewUrl = previewUploadedFile.fileId
-            ? `/api/files/${previewUploadedFile.fileId}/content`
-            : previewUploadedFile.dataUrl;
+          const previewUrl = previewUploadedFile.dataUrl
+            ? previewUploadedFile.dataUrl
+            : previewUploadedFile.fileId
+              ? `/api/files/${previewUploadedFile.fileId}/content`
+              : undefined;
+          let pdfBlobUrl: string | undefined;
+          if (isPdf && previewUploadedFile.dataUrl?.startsWith("data:")) {
+            try {
+              const byteString = atob(previewUploadedFile.dataUrl.split(",")[1]);
+              const mimeString = previewUploadedFile.dataUrl.split(",")[0].split(":")[1].split(";")[0];
+              const ab = new ArrayBuffer(byteString.length);
+              const ia = new Uint8Array(ab);
+              for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+              pdfBlobUrl = URL.createObjectURL(new Blob([ab], { type: mimeString }));
+            } catch {}
+          }
+          const effectivePdfUrl = pdfBlobUrl || (isPdf && previewUploadedFile.fileId ? `/api/files/${previewUploadedFile.fileId}/content` : undefined);
           return (
             <motion.div
               initial={{ opacity: 0 }}
@@ -7746,9 +7772,9 @@ IMPORTANTE:
                   </button>
                 </div>
                 <div className="flex-1 overflow-auto min-h-[300px]">
-                  {isPdf && previewUrl ? (
+                  {isPdf && effectivePdfUrl ? (
                     <iframe
-                      src={previewUrl}
+                      src={effectivePdfUrl}
                       className="w-full h-[75vh] border-0"
                       title={previewUploadedFile.name}
                     />
