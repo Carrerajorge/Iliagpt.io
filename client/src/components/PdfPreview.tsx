@@ -276,7 +276,7 @@ export function PdfPreview({
                             <Download className="h-4 w-4" />
                         </Button>
 
-                        {onClose && (
+                        {onClose && embedded && (
                             <Button
                                 variant="ghost"
                                 size="icon"
