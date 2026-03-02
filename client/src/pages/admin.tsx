@@ -98,8 +98,12 @@ import DataPlaneExplorer from "@/components/admin/DataPlaneExplorer";
 import TerminalPlane from "@/components/admin/TerminalPlane";
 import FilePlane from "@/components/admin/FilePlane";
 import SuperOrchestratorDashboard from "@/components/admin/SuperOrchestrator";
+import BrowserPlaneDashboard from "@/components/admin/BrowserPlane";
+import DeepResearchDashboard from "@/components/admin/DeepResearch";
+import ObservabilityDashboard from "@/components/admin/ObservabilityDashboard";
+import ChaosTestingDashboard from "@/components/admin/ChaosTestingDashboard";
 
-type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard" | "experiments" | "voice" | "data-plane" | "files" | "orchestrator";
+type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard" | "experiments" | "voice" | "data-plane" | "files" | "orchestrator" | "browser" | "research" | "observability" | "chaos";
 
 const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -127,6 +131,10 @@ const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] =
   { id: "data-plane", label: "Data Plane", icon: Database },
   { id: "files", label: "File Plane", icon: FolderOpen },
   { id: "orchestrator", label: "SuperOrchestrator", icon: Network },
+  { id: "browser", label: "Browser Plane", icon: Globe },
+  { id: "research", label: "Deep Research", icon: Brain },
+  { id: "observability", label: "Observability", icon: Eye },
+  { id: "chaos", label: "Chaos Testing", icon: Zap },
 ];
 
 function DashboardSection() {
@@ -6326,6 +6334,14 @@ export default function AdminPage() {
         return <FilePlane />;
       case "orchestrator":
         return <SuperOrchestratorDashboard />;
+      case "browser":
+        return <BrowserPlaneDashboard />;
+      case "research":
+        return <DeepResearchDashboard />;
+      case "observability":
+        return <ObservabilityDashboard />;
+      case "chaos":
+        return <ChaosTestingDashboard />;
       default:
         return <DashboardSection />;
     }

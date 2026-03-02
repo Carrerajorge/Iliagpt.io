@@ -648,6 +648,15 @@ class BrowserSessionManager {
     return this.sessions.size;
   }
 
+  listSessions(): Array<{ id: string; status: string; url: string; createdAt: string }> {
+    return Array.from(this.sessions.entries()).map(([id, session]) => ({
+      id,
+      status: session.status,
+      url: session.page?.url() || "about:blank",
+      createdAt: session.createdAt.toISOString(),
+    }));
+  }
+
   async cleanup(): Promise<void> {
     const sessionIds = Array.from(this.sessions.keys());
     for (const id of sessionIds) {

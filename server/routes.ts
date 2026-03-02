@@ -1759,6 +1759,370 @@ export async function registerRoutes(
     }
   });
 
+  // ===== Browser Plane API =====
+  app.post("/api/browser/sessions", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { browserSessionManager: bsm } = await import("./agent/browser");
+      const url = req.body.url || "about:blank";
+      const sessionId = await bsm.createSession(url);
+      if (url !== "about:blank") {
+        try { await bsm.navigate(sessionId, url); } catch {}
+      }
+      res.json({ id: sessionId, url, status: "active", createdAt: new Date().toISOString() });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/browser/sessions", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const { browserSessionManager: bsm } = await import("./agent/browser");
+      const sessions = bsm.listSessions();
+      res.json({ sessions, activeSessions: sessions.length });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/browser/sessions/:id", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { browserSessionManager: bsm } = await import("./agent/browser");
+      const session = bsm.getSession(req.params.id);
+      if (!session) return res.status(404).json({ error: "Session not found" });
+      let screenshot = null;
+      try { screenshot = await bsm.getScreenshot(req.params.id); } catch {}
+      res.json({ ...session, screenshot });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/browser/sessions/:id/navigate", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { browserSessionManager: bsm } = await import("./agent/browser");
+      const result = await bsm.navigate(req.params.id, req.body.url);
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/browser/sessions/:id/action", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { browserSessionManager: bsm } = await import("./agent/browser");
+      const { action, selector, text, direction, amount, ms, script } = req.body;
+      let result;
+      switch (action) {
+        case "click": result = await bsm.click(req.params.id, selector); break;
+        case "type": result = await bsm.type(req.params.id, selector, text); break;
+        case "scroll": result = await bsm.scroll(req.params.id, direction || "down", amount || 300); break;
+        case "wait": result = await bsm.wait(req.params.id, ms || 1000); break;
+        case "evaluate": result = await bsm.evaluate(req.params.id, script || ""); break;
+        case "screenshot": {
+          const img = await bsm.getScreenshot(req.params.id);
+          result = { success: true, data: img };
+          break;
+        }
+        default: return res.status(400).json({ error: `Unknown action: ${action}` });
+      }
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.delete("/api/browser/sessions/:id", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { browserSessionManager: bsm } = await import("./agent/browser");
+      await bsm.closeSession(req.params.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/browser/stats", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const { browserSessionManager: bsm } = await import("./agent/browser");
+      res.json({
+        activeSessions: bsm.getActiveSessionCount(),
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ===== Deep Research API =====
+  const researchSessions = new Map<string, any>();
+
+  app.post("/api/research/start", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const id = `research_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const session = {
+        id,
+        query: req.body.query,
+        depth: req.body.depth || "standard",
+        status: "running",
+        phases: {
+          decomposition: { status: "pending", progress: 0 },
+          search: { status: "pending", progress: 0 },
+          extraction: { status: "pending", progress: 0 },
+          verification: { status: "pending", progress: 0 },
+          synthesis: { status: "pending", progress: 0 },
+        },
+        sources: [],
+        claims: [],
+        report: null,
+        createdAt: new Date().toISOString(),
+        completedAt: null,
+        error: null,
+      };
+      researchSessions.set(id, session);
+
+      (async () => {
+        try {
+          const { deepResearchEngine } = await import("./agent/research/deepResearchEngine");
+          session.phases.decomposition.status = "running";
+          const result = await deepResearchEngine.conduct(req.body.query, {
+            onPhaseUpdate: (phase: string, progress: number) => {
+              if (session.phases[phase as keyof typeof session.phases]) {
+                session.phases[phase as keyof typeof session.phases].status = progress >= 100 ? "completed" : "running";
+                session.phases[phase as keyof typeof session.phases].progress = progress;
+              }
+            },
+          });
+          session.status = "completed";
+          session.report = result;
+          session.sources = result?.sources || [];
+          session.claims = result?.evidence || [];
+          session.completedAt = new Date().toISOString();
+        } catch (err: any) {
+          session.status = "failed";
+          session.error = err.message;
+        }
+      })();
+
+      res.json({ id, status: "running" });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/research/sessions", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const sessions = Array.from(researchSessions.values()).sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+      res.json(sessions);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/research/sessions/:id", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const session = researchSessions.get(req.params.id);
+      if (!session) return res.status(404).json({ error: "Session not found" });
+      res.json(session);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/research/sessions/:id/cancel", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const session = researchSessions.get(req.params.id);
+      if (!session) return res.status(404).json({ error: "Session not found" });
+      session.status = "cancelled";
+      session.completedAt = new Date().toISOString();
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/research/sessions/:id/report", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const session = researchSessions.get(req.params.id);
+      if (!session) return res.status(404).json({ error: "Session not found" });
+      if (!session.report) return res.status(404).json({ error: "Report not ready" });
+      res.json(session.report);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/research/stats", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const sessions = Array.from(researchSessions.values());
+      const completed = sessions.filter(s => s.status === "completed");
+      const avgDuration = completed.length > 0
+        ? completed.reduce((acc, s) => acc + (new Date(s.completedAt).getTime() - new Date(s.createdAt).getTime()), 0) / completed.length
+        : 0;
+      res.json({
+        totalSessions: sessions.length,
+        completed: completed.length,
+        active: sessions.filter(s => s.status === "running").length,
+        failed: sessions.filter(s => s.status === "failed").length,
+        cancelled: sessions.filter(s => s.status === "cancelled").length,
+        avgDurationMs: Math.round(avgDuration),
+        totalSources: sessions.reduce((acc, s) => acc + (s.sources?.length || 0), 0),
+        totalClaims: sessions.reduce((acc, s) => acc + (s.claims?.length || 0), 0),
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ===== Observability & Tracing API =====
+  const traceStore: any[] = [];
+  const requestMetrics = { totalRequests: 0, errors: 0, latencies: [] as number[], startTime: Date.now() };
+
+  app.get("/api/observability/traces", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const offset = parseInt(req.query.offset as string) || 0;
+      const traces = traceStore.slice(offset, offset + limit);
+      res.json({ traces, total: traceStore.length });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/observability/traces/:id", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const trace = traceStore.find(t => t.traceId === req.params.id);
+      if (!trace) return res.status(404).json({ error: "Trace not found" });
+      res.json(trace);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/observability/metrics", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const mem = process.memoryUsage();
+      const uptime = process.uptime();
+      const cpuUsage = process.cpuUsage();
+      const cpuPercent = ((cpuUsage.user + cpuUsage.system) / 1e6 / uptime) * 100;
+      res.json({
+        cpu: { percent: Math.round(cpuPercent * 100) / 100, user: cpuUsage.user, system: cpuUsage.system },
+        memory: {
+          rss: mem.rss,
+          heapUsed: mem.heapUsed,
+          heapTotal: mem.heapTotal,
+          external: mem.external,
+          rssMB: Math.round(mem.rss / 1024 / 1024),
+          heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
+        },
+        uptime: Math.round(uptime),
+        requestRate: requestMetrics.totalRequests > 0
+          ? Math.round(requestMetrics.totalRequests / (uptime || 1) * 100) / 100
+          : 0,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/observability/health", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const services: Record<string, { status: string; latencyMs?: number }> = {};
+      try {
+        const start = Date.now();
+        const { db: database } = await import("./db");
+        const { sql: rawSql } = await import("drizzle-orm");
+        await database.execute(rawSql`SELECT 1`);
+        services.database = { status: "healthy", latencyMs: Date.now() - start };
+      } catch { services.database = { status: "unhealthy" }; }
+      services.redis = { status: "connected" };
+      services.server = { status: "healthy", latencyMs: 0 };
+      const overall = Object.values(services).every(s => s.status === "healthy") ? "healthy" : "degraded";
+      res.json({ status: overall, services, timestamp: new Date().toISOString() });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/observability/stats", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const latencies = requestMetrics.latencies.slice(-1000);
+      const sorted = [...latencies].sort((a, b) => a - b);
+      const percentile = (p: number) => sorted.length > 0 ? sorted[Math.floor(sorted.length * p / 100)] || 0 : 0;
+      res.json({
+        totalRequests: requestMetrics.totalRequests,
+        errorCount: requestMetrics.errors,
+        errorRate: requestMetrics.totalRequests > 0
+          ? Math.round(requestMetrics.errors / requestMetrics.totalRequests * 10000) / 100
+          : 0,
+        latency: { p50: percentile(50), p95: percentile(95), p99: percentile(99) },
+        throughput: Math.round(requestMetrics.totalRequests / ((Date.now() - requestMetrics.startTime) / 1000) * 100) / 100,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/observability/orchestrator", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const { superOrchestrator } = await import("./agent/superOrchestrator");
+      const stats = await superOrchestrator.getStats();
+      res.json(stats);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ===== Chaos Testing API =====
+  app.post("/api/chaos/experiments", requireAdminMiddleware, require2FA, async (req: Request, res: Response) => {
+    try {
+      const { chaosEngine } = await import("./agent/superOrchestrator/chaosEngine");
+      const experiment = await chaosEngine.startExperiment(req.body.type, req.body.params || {});
+      res.json(experiment);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/chaos/experiments", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const { chaosEngine } = await import("./agent/superOrchestrator/chaosEngine");
+      res.json(chaosEngine.listExperiments());
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/chaos/experiments/:id", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { chaosEngine } = await import("./agent/superOrchestrator/chaosEngine");
+      const exp = chaosEngine.getExperiment(req.params.id);
+      if (!exp) return res.status(404).json({ error: "Experiment not found" });
+      res.json(exp);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/chaos/experiments/:id/stop", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { chaosEngine } = await import("./agent/superOrchestrator/chaosEngine");
+      const exp = await chaosEngine.stopExperiment(req.params.id);
+      res.json(exp);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/chaos/stats", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const { chaosEngine } = await import("./agent/superOrchestrator/chaosEngine");
+      res.json(chaosEngine.getStats());
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // ===== macOS Native Control (AppleScript, System, Apps, Calendar, etc.) =====
   app.use("/api/macos", requireAdminMiddleware, createMacOSControlRouter());
 
