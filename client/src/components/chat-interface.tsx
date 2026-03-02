@@ -4563,9 +4563,12 @@ export function ChatInterface({
           clearDraft(chatId);
         }
 
-        // Add user message to chat
+        // Start integrity computation immediately (parallel with render)
+        const genIntegrityPromise = computePromptIntegrity(generationInput);
         const userMsgId = `temp-gen-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-        const genIntegrity = await computePromptIntegrity(generationInput);
+        const genEncoder = new TextEncoder();
+        const genPromptBytes = genEncoder.encode(generationInput);
+        const genPromptMessageId = crypto.randomUUID?.() ?? `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
         const userMsg: Message = {
           id: userMsgId,
           clientTempId: userMsgId,
@@ -4577,12 +4580,18 @@ export function ChatInterface({
           status: "pending",
           deliveryStatus: "sending",
           deliveryError: undefined,
-          clientPromptLen: genIntegrity.clientPromptLen,
-          clientPromptHash: genIntegrity.clientPromptHash,
-          promptMessageId: genIntegrity.messageId,
+          clientPromptLen: genPromptBytes.byteLength,
+          clientPromptHash: "",
+          promptMessageId: genPromptMessageId,
         } as any;
-        // Show message immediately (optimistic update)
+        // Show message immediately (optimistic update) — ZERO async delay
         setOptimisticMessages((prev: Message[]) => [...prev, userMsg]);
+        // Await hash (was computing in parallel) before server send
+        try {
+          const genIntegrity = await genIntegrityPromise;
+          (userMsg as any).clientPromptHash = genIntegrity.clientPromptHash;
+          (userMsg as any).clientPromptLen = genIntegrity.clientPromptLen;
+        } catch {}
         const persistGenerationUserMessagePromise = onSendMessage(userMsg).catch((err) => {
           console.warn("[handleSubmit] Failed to persist generation user message:", err);
           return undefined;
@@ -5289,29 +5298,34 @@ export function ChatInterface({
           spreadsheetData: f.spreadsheetData,
         }));
 
-      // Compute prompt integrity metadata (SHA-256 hash + byte length)
-      const promptIntegrity = await computePromptIntegrity(userInput);
+      // Start integrity computation IMMEDIATELY (non-blocking promise)
+      // but don't await it yet — render the optimistic message first
+      const integrityPromise = computePromptIntegrity(userInput);
 
-      // Construct the User Message object
+      // Construct the User Message object SYNCHRONOUSLY for instant render
+      const msgRequestId = generateRequestId();
+      const msgClientRequestId = generateClientRequestId();
+      const encoder = new TextEncoder();
+      const promptBytes = encoder.encode(userInput);
+      const promptMessageId = crypto.randomUUID?.() ?? `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
       const userMsg: Message = {
         id: userMsgId,
         clientTempId: userMsgId,
         role: "user",
         content: userInput,
         timestamp: new Date(),
-        requestId: generateRequestId(),
-        clientRequestId: generateClientRequestId(),
+        requestId: msgRequestId,
+        clientRequestId: msgClientRequestId,
         status: 'pending',
         deliveryStatus: "sending",
         deliveryError: undefined,
         attachments: attachments.length > 0 ? attachments : undefined,
-        // Prompt integrity fields — server validates these to detect data loss
-        clientPromptLen: promptIntegrity.clientPromptLen,
-        clientPromptHash: promptIntegrity.clientPromptHash,
-        promptMessageId: promptIntegrity.messageId,
+        clientPromptLen: promptBytes.byteLength,
+        clientPromptHash: "",
+        promptMessageId,
       } as any;
 
-      // Apply Optimistic Update IMMEDIATELY
+      // Apply Optimistic Update IMMEDIATELY — ZERO async delay
       const optimisticStart = import.meta.env.DEV && typeof performance !== "undefined" ? performance.now() : null;
       setOptimisticMessages((prev: Message[]) => [...prev, userMsg]);
       if (optimisticStart !== null) {
@@ -5326,6 +5340,14 @@ export function ChatInterface({
       setAiStateForChat("thinking", submitConversationId);
       streamingContentRef.current = "";
       setStreamingContent("");
+
+      // Now await the integrity hash (was computing in parallel during the render)
+      // and patch the message BEFORE it gets sent to the server
+      try {
+        const integrity = await integrityPromise;
+        (userMsg as any).clientPromptHash = integrity.clientPromptHash;
+        (userMsg as any).clientPromptLen = integrity.clientPromptLen;
+      } catch {}
 
       // Track document attachments for analysis (declared here to avoid TDZ with later reassignment)
       let hasDocumentAttachments = false;
