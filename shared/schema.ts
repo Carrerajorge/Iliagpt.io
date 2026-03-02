@@ -3229,3 +3229,5 @@ export { workspaceInvitations } from "./schema/workspaceMembers";
 export type { WorkspaceInvitation, InsertWorkspaceInvitation } from "./schema/workspaceMembers";
 export { workspaceRoles } from "./schema/workspaceRoles";
 export type { WorkspaceRole, InsertWorkspaceRole } from "./schema/workspaceRoles";
+export { orchestratorRuns, orchestratorTasks, orchestratorApprovals, orchestratorArtifacts, insertOrchestratorRunSchema, insertOrchestratorTaskSchema, insertOrchestratorApprovalSchema, insertOrchestratorArtifactSchema } from "./schema/orchestrator";
+export type { OrchestratorRun, InsertOrchestratorRun, OrchestratorTask, InsertOrchestratorTask, OrchestratorApproval, InsertOrchestratorApproval, OrchestratorArtifact, InsertOrchestratorArtifact } from "./schema/orchestrator";

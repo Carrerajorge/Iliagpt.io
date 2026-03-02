@@ -11,6 +11,7 @@ import {
   type UserPlan,
   type ConversationMessage,
 } from "../agent/openclaw";
+import { requireAuth } from "../middleware/auth";
 
 export function createOpenClawRouter(): Router {
   const router = Router();
@@ -51,7 +52,7 @@ export function createOpenClawRouter(): Router {
     });
   });
 
-  router.post("/check-tool", (req: Request, res: Response) => {
+  router.post("/check-tool", requireAuth, (req: Request, res: Response) => {
     const { toolName, plan } = req.body || {};
     if (!toolName || !plan) {
       return res.status(400).json({ error: "toolName and plan are required" });
@@ -64,7 +65,7 @@ export function createOpenClawRouter(): Router {
     });
   });
 
-  router.post("/compact", async (req: Request, res: Response) => {
+  router.post("/compact", requireAuth, async (req: Request, res: Response) => {
     try {
       const { messages, overrides } = req.body || {};
       if (!Array.isArray(messages)) {

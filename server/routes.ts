@@ -128,7 +128,8 @@ import { getActiveAlerts, getAlertHistory, getAlertStats, resolveAlert } from ".
 import { recordConnectorUsage, getConnectorStats, getAllConnectorStats, resetConnectorStats, isValidConnector, type ConnectorName } from "./lib/connectorMetrics";
 import { checkConnectorHealth, checkAllConnectorsHealth, getHealthSummary, startPeriodicHealthCheck } from "./lib/connectorAlerting";
 import { getExecutionIntentGuardStatus, preExecutionIntentGuard } from "./middleware/preExecutionIntentGuard";
-import { require2FA } from "./middleware/auth";
+import { requireAuth, require2FA } from "./middleware/auth";
+import { getSecureUserId } from "./lib/anonUserHelper";
 import {
   runAgent, getTools, healthCheck as pythonAgentHealthCheck, isServiceAvailable, PythonAgentClientError,
   browse as pythonAgentBrowse, search as pythonAgentSearch, createDocument as pythonAgentCreateDocument,
@@ -1093,25 +1094,27 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/files/list", async (req: Request, res: Response) => {
+  app.get("/api/files/list", requireAuth, async (req: Request, res: Response) => {
     try {
       const { secureFileGateway } = await import("./agent/filePlane");
       const dir = (req.query.dir as string) || ".";
       const workspace = (req.query.workspace as string) || "project";
-      const result = await secureFileGateway.list(dir, workspace, "system");
+      const userId = getSecureUserId(req) || "system";
+      const result = await secureFileGateway.list(dir, workspace, userId);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.post("/api/files/read", async (req: Request, res: Response) => {
+  app.post("/api/files/read", requireAuth, async (req: Request, res: Response) => {
     try {
       const { secureFileGateway, parseFile, generateChunks } = await import("./agent/filePlane");
       const { filePath, parse, chunks, workspace } = req.body;
       if (!filePath) return res.status(400).json({ error: "filePath is required" });
       const ws = workspace || "project";
-      const content = await secureFileGateway.read(filePath, ws, "system");
+      const userId = getSecureUserId(req) || "system";
+      const content = await secureFileGateway.read(filePath, ws, userId);
       const result: any = { content };
       if (parse && typeof content === "object" && "content" in content) {
         result.parsed = parseFile(content.content, filePath);
@@ -1125,67 +1128,72 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/files/write", async (req: Request, res: Response) => {
+  app.post("/api/files/write", requireAuth, requireAdminMiddleware, require2FA, async (req: Request, res: Response) => {
     try {
       const { secureFileGateway } = await import("./agent/filePlane");
       const { filePath, content, workspace } = req.body;
       if (!filePath || content === undefined) return res.status(400).json({ error: "filePath and content are required" });
-      const result = await secureFileGateway.write(filePath, content, workspace || "default", "system");
+      const userId = getSecureUserId(req) || "system";
+      const result = await secureFileGateway.write(filePath, content, workspace || "default", userId);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.post("/api/files/search", async (req: Request, res: Response) => {
+  app.post("/api/files/search", requireAuth, async (req: Request, res: Response) => {
     try {
       const { secureFileGateway } = await import("./agent/filePlane");
       const { query, workspace } = req.body;
       if (!query) return res.status(400).json({ error: "query is required" });
-      const result = await secureFileGateway.search(query, workspace || "project", "system");
+      const userId = getSecureUserId(req) || "system";
+      const result = await secureFileGateway.search(query, workspace || "project", userId);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.post("/api/files/delete", async (req: Request, res: Response) => {
+  app.post("/api/files/delete", requireAuth, requireAdminMiddleware, require2FA, async (req: Request, res: Response) => {
     try {
       const { secureFileGateway } = await import("./agent/filePlane");
       const { filePath, workspace } = req.body;
       if (!filePath) return res.status(400).json({ error: "filePath is required" });
-      const result = await secureFileGateway.delete(filePath, workspace || "default", "system");
+      const userId = getSecureUserId(req) || "system";
+      const result = await secureFileGateway.delete(filePath, workspace || "default", userId);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.post("/api/files/stat", async (req: Request, res: Response) => {
+  app.post("/api/files/stat", requireAuth, async (req: Request, res: Response) => {
     try {
       const { secureFileGateway } = await import("./agent/filePlane");
       const { filePath, workspace } = req.body;
       if (!filePath) return res.status(400).json({ error: "filePath is required" });
-      const result = await secureFileGateway.stat(filePath, workspace || "project", "system");
+      const userId = getSecureUserId(req) || "system";
+      const result = await secureFileGateway.stat(filePath, workspace || "project", userId);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.post("/api/files/hash", async (req: Request, res: Response) => {
+  app.post("/api/files/hash", requireAuth, async (req: Request, res: Response) => {
     try {
       const { secureFileGateway } = await import("./agent/filePlane");
       const { filePath, workspace } = req.body;
       if (!filePath) return res.status(400).json({ error: "filePath is required" });
-      const result = await secureFileGateway.hash(filePath, workspace || "project", "system");
+      const userId = getSecureUserId(req) || "system";
+      const result = await secureFileGateway.hash(filePath, workspace || "project", userId);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.get("/api/files/stats", async (_req: Request, res: Response) => {
+  app.get("/api/files/stats", requireAuth, async (_req: Request, res: Response) => {
     try {
       const { secureFileGateway } = await import("./agent/filePlane");
       res.json(secureFileGateway.getStats());
@@ -1194,7 +1202,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/files/audit", async (req: Request, res: Response) => {
+  app.get("/api/files/audit", requireAuth, async (req: Request, res: Response) => {
     try {
       const { secureFileGateway } = await import("./agent/filePlane");
       const limit = parseInt(req.query.limit as string) || 100;
@@ -1606,6 +1614,146 @@ export async function registerRoutes(
         event = computerControlPlane.disarmKillSwitch(userId, reason || "Disarmed via admin API");
       }
       res.json({ success: true, event });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ===== SuperOrchestrator API =====
+  app.get("/api/orchestrator/stats", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const { superOrchestrator } = await import("./agent/superOrchestrator");
+      const stats = await superOrchestrator.getStats();
+      res.json(stats);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/orchestrator/roles", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const { superOrchestrator } = await import("./agent/superOrchestrator");
+      const roles = superOrchestrator.getRoles();
+      res.json(roles);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/orchestrator/runs", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { superOrchestrator } = await import("./agent/superOrchestrator");
+      const authReq = req as AuthenticatedRequest;
+      const userId = String(authReq.user?.claims?.sub || authReq.user?.id || (req.session as any)?.authUserId || "admin");
+      const result = await superOrchestrator.submitRun({
+        ...req.body,
+        createdBy: userId,
+      });
+      res.json(result);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/orchestrator/runs", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { superOrchestrator } = await import("./agent/superOrchestrator");
+      const result = await superOrchestrator.listRuns({
+        userId: req.query.userId as string,
+        status: req.query.status as string,
+        limit: parseInt(req.query.limit as string) || 50,
+        offset: parseInt(req.query.offset as string) || 0,
+      });
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/orchestrator/runs/:id", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { superOrchestrator } = await import("./agent/superOrchestrator");
+      const result = await superOrchestrator.getRunStatus(req.params.id);
+      if (!result) return res.status(404).json({ error: "Run not found" });
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/orchestrator/runs/:id/cancel", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { superOrchestrator } = await import("./agent/superOrchestrator");
+      const ok = await superOrchestrator.cancelRun(req.params.id);
+      res.json({ success: ok });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/orchestrator/runs/:id/pause", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { superOrchestrator } = await import("./agent/superOrchestrator");
+      const ok = await superOrchestrator.pauseRun(req.params.id);
+      res.json({ success: ok });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/orchestrator/runs/:id/resume", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { superOrchestrator } = await import("./agent/superOrchestrator");
+      const ok = await superOrchestrator.resumeRun(req.params.id);
+      res.json({ success: ok });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/orchestrator/tasks/:id/approve", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { governanceEngine } = await import("./agent/superOrchestrator");
+      const authReq = req as AuthenticatedRequest;
+      const userId = String(authReq.user?.claims?.sub || authReq.user?.id || (req.session as any)?.authUserId || "admin");
+      const ok = await governanceEngine.approveTask(req.params.id, userId);
+      res.json({ success: ok });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/orchestrator/tasks/:id/deny", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { governanceEngine } = await import("./agent/superOrchestrator");
+      const authReq = req as AuthenticatedRequest;
+      const userId = String(authReq.user?.claims?.sub || authReq.user?.id || (req.session as any)?.authUserId || "admin");
+      const ok = await governanceEngine.denyTask(req.params.id, userId);
+      res.json({ success: ok });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/orchestrator/kill-switch", requireAdminMiddleware, async (_req: Request, res: Response) => {
+    try {
+      const { governanceEngine } = await import("./agent/superOrchestrator");
+      res.json(governanceEngine.getKillSwitchStatus());
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/orchestrator/kill-switch", requireAdminMiddleware, require2FA, async (req: Request, res: Response) => {
+    try {
+      const { governanceEngine } = await import("./agent/superOrchestrator");
+      if (req.body.arm) {
+        const result = await governanceEngine.armKillSwitch();
+        res.json(result);
+      } else {
+        governanceEngine.disarmKillSwitch();
+        res.json({ armed: false });
+      }
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

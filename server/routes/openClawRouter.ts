@@ -27,6 +27,7 @@ import {
   generateOpenClaw1000Report,
   getOpenClaw1000ExecutionRoadmap,
 } from "../services/openClaw1000Service";
+import { requireAuth } from "../middleware/auth";
 
 
 const router = Router();
@@ -136,7 +137,7 @@ router.get("/gaps", (req: Request, res: Response) => {
  * POST /api/openclaw/verify/:id
  * Run verification for a single capability.
  */
-router.post("/verify/:id", async (req: Request, res: Response) => {
+router.post("/verify/:id", requireAuth, async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -156,7 +157,7 @@ router.post("/verify/:id", async (req: Request, res: Response) => {
  * Run batch verification.
  * Body: { ids?: number[], category?: string }
  */
-router.post("/verify/batch", async (req: Request, res: Response) => {
+router.post("/verify/batch", requireAuth, async (req: Request, res: Response) => {
   try {
     const { ids, category } = req.body || {};
 
@@ -286,7 +287,7 @@ router.get("/stats-1000", (_req: Request, res: Response) => {
   }
 });
 
-router.post("/verify-1000/:id([0-9]+)", async (req: Request, res: Response) => {
+router.post("/verify-1000/:id([0-9]+)", requireAuth, async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -301,7 +302,7 @@ router.post("/verify-1000/:id([0-9]+)", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/verify-1000/batch", async (req: Request, res: Response) => {
+router.post("/verify-1000/batch", requireAuth, async (req: Request, res: Response) => {
   try {
     const { ids, category } = req.body || {};
     const results = await verifyOpenClaw1000Batch({

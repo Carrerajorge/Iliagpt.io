@@ -97,8 +97,9 @@ import VoicePlane from "@/components/admin/VoicePlane";
 import DataPlaneExplorer from "@/components/admin/DataPlaneExplorer";
 import TerminalPlane from "@/components/admin/TerminalPlane";
 import FilePlane from "@/components/admin/FilePlane";
+import SuperOrchestratorDashboard from "@/components/admin/SuperOrchestrator";
 
-type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard" | "experiments" | "voice" | "data-plane" | "files";
+type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard" | "experiments" | "voice" | "data-plane" | "files" | "orchestrator";
 
 const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -125,6 +126,7 @@ const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] =
   { id: "voice", label: "Voice Plane", icon: Phone },
   { id: "data-plane", label: "Data Plane", icon: Database },
   { id: "files", label: "File Plane", icon: FolderOpen },
+  { id: "orchestrator", label: "SuperOrchestrator", icon: Network },
 ];
 
 function DashboardSection() {
@@ -6322,6 +6324,8 @@ export default function AdminPage() {
         return <DataPlaneExplorer />;
       case "files":
         return <FilePlane />;
+      case "orchestrator":
+        return <SuperOrchestratorDashboard />;
       default:
         return <DashboardSection />;
     }
