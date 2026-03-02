@@ -276,7 +276,7 @@ export function PdfPreview({
                             <Download className="h-4 w-4" />
                         </Button>
 
-                        {onClose && embedded && (
+                        {onClose && (
                             <Button
                                 variant="ghost"
                                 size="icon"
@@ -359,7 +359,7 @@ export function PdfPreview({
 
     return (
         <Dialog open={true} onOpenChange={() => onClose?.()}>
-            <DialogContent className="max-w-5xl max-h-[90vh] p-0">
+            <DialogContent className="max-w-5xl max-h-[90vh] p-0" hideCloseButton>
                 {Viewer}
             </DialogContent>
         </Dialog>
