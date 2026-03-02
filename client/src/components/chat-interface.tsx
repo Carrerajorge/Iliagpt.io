@@ -7725,18 +7725,6 @@ IMPORTANTE:
             ? `/api/files/${previewUploadedFile.fileId}/raw`
             : undefined;
           const previewUrl = previewUploadedFile.dataUrl || rawUrl;
-          let pdfBlobUrl: string | undefined;
-          if (isPdf && previewUploadedFile.dataUrl?.startsWith("data:")) {
-            try {
-              const byteString = atob(previewUploadedFile.dataUrl.split(",")[1]);
-              const mimeString = previewUploadedFile.dataUrl.split(",")[0].split(":")[1].split(";")[0];
-              const ab = new ArrayBuffer(byteString.length);
-              const ia = new Uint8Array(ab);
-              for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-              pdfBlobUrl = URL.createObjectURL(new Blob([ab], { type: mimeString }));
-            } catch {}
-          }
-          const effectivePdfUrl = pdfBlobUrl || rawUrl;
           return (
             <motion.div
               initial={{ opacity: 0 }}
@@ -7771,9 +7759,9 @@ IMPORTANTE:
                   </button>
                 </div>
                 <div className="flex-1 overflow-auto min-h-[300px]">
-                  {isPdf && effectivePdfUrl ? (
+                  {isPdf && rawUrl ? (
                     <iframe
-                      src={effectivePdfUrl}
+                      src={rawUrl}
                       className="w-full h-[75vh] border-0"
                       title={previewUploadedFile.name}
                     />
