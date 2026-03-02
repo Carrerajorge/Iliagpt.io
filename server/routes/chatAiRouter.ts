@@ -5826,6 +5826,15 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       let systemContent = answerFirstPrompt.fullPrompt;
 
+      try {
+        const { AgentIdentity } = await import("../agent/soul/agentIdentity");
+        const soul = new AgentIdentity();
+        const soulFragment = soul.getSystemPromptFragment();
+        if (soulFragment) {
+          systemContent += `\n\n## PERSONALIDAD\n${soulFragment}`;
+        }
+      } catch {}
+
       if (shouldRunModel && skillSeedForModel) {
         systemContent += `\n\n[CONTEXTO SKILL] Ya existe una respuesta parcial: "${skillSeedForModel.slice(0, 2200)}".\n` +
           "Continúa desde ese punto, evitando repetir contenido ya emitido por la Skill, y completa sólo lo faltante con precisión.";
