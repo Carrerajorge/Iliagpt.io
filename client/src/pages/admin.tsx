@@ -67,7 +67,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
   FileSpreadsheet,
   Table,
   FolderOpen,
-  Gauge
+  Gauge,
+  FlaskConical
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
@@ -90,8 +91,9 @@ import BudgetDashboard from "@/components/admin/BudgetDashboard";
 import SREPanel from "@/components/admin/SREPanel";
 import GovernanceConsole from "@/components/admin/GovernanceConsole";
 import SecurityDashboard from "@/components/admin/SecurityDashboard";
+import ModelExperiments from "@/components/admin/ModelExperiments";
 
-type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard";
+type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard" | "experiments";
 
 const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -114,6 +116,7 @@ const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] =
   { id: "sre", label: "SRE Panel", icon: Gauge },
   { id: "governance", label: "Governance", icon: ShieldCheck },
   { id: "security-dashboard", label: "Security Monitor", icon: ShieldAlert },
+  { id: "experiments", label: "Model Experiments", icon: FlaskConical },
 ];
 
 function DashboardSection() {
@@ -6308,6 +6311,8 @@ export default function AdminPage() {
         return <GovernanceConsole />;
       case "security-dashboard":
         return <SecurityDashboard />;
+      case "experiments":
+        return <ModelExperiments />;
       default:
         return <DashboardSection />;
     }

@@ -274,6 +274,7 @@
     "react-virtualized-auto-sizer": "^2.0.3",
     "react-virtuoso": "^4.18.1",
     "react-window": "^2.2.3",
+    "reactflow": "^11.11.4",
     "recharts": "^2.15.4",
     "rehype-highlight": "^7.0.2",
     "rehype-katex": "^7.0.1",

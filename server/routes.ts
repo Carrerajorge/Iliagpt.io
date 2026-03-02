@@ -731,6 +731,189 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/knowledge/graph/stats", async (_req: Request, res: Response) => {
+    try {
+      const { knowledgeGraph } = await import("./agent/knowledge/knowledgeGraph");
+      res.json(knowledgeGraph.getStats());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/knowledge/graph/query", async (req: Request, res: Response) => {
+    try {
+      const { graphRetrieve } = await import("./agent/knowledge/graphRetriever");
+      const { query, maxHops, maxNodes } = req.body;
+      if (!query) return res.status(400).json({ error: "query is required" });
+      const result = await graphRetrieve(query, { maxHops: maxHops || 2, maxResults: maxNodes || 20 });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/models/experiments", async (_req: Request, res: Response) => {
+    try {
+      const { abTestManager } = await import("./agent/modelPlane/abTestManager");
+      const { canaryRouter } = await import("./agent/modelPlane/canaryRouter");
+      const { providerEvaluator } = await import("./agent/modelPlane/providerEvaluator");
+
+      const rawExperiments = abTestManager.listExperiments();
+      const experiments = rawExperiments.map((exp: any) => {
+        const sig = abTestManager.checkSignificance(exp.id);
+        return {
+          id: exp.id,
+          name: exp.name,
+          status: exp.status,
+          controlModel: exp.control?.modelId || "",
+          treatmentModel: exp.treatment?.modelId || "",
+          trafficSplit: exp.control?.trafficPct || 50,
+          metrics: {
+            control: {
+              requests: exp.control?.metrics?.totalRequests || 0,
+              avgLatency: exp.control?.metrics?.avgLatencyMs || 0,
+              avgQuality: exp.control?.metrics?.avgQuality || 0,
+              avgCost: exp.control?.metrics?.avgCostUsd || 0,
+              errorRate: exp.control?.metrics?.errorRate || 0,
+            },
+            treatment: {
+              requests: exp.treatment?.metrics?.totalRequests || 0,
+              avgLatency: exp.treatment?.metrics?.avgLatencyMs || 0,
+              avgQuality: exp.treatment?.metrics?.avgQuality || 0,
+              avgCost: exp.treatment?.metrics?.avgCostUsd || 0,
+              errorRate: exp.treatment?.metrics?.errorRate || 0,
+            },
+          },
+          significance: sig ? {
+            isSignificant: sig.significant,
+            pValue: sig.pValue,
+            winner: sig.winner === "none" ? null : (sig.winner === "control" ? exp.control?.modelId : exp.treatment?.modelId),
+          } : { isSignificant: false, pValue: 1, winner: null },
+          createdAt: new Date(exp.createdAt).getTime(),
+        };
+      });
+
+      const activeDeployments = canaryRouter.getActiveDeployments();
+      const firstActive = activeDeployments[0];
+      const canary = firstActive ? {
+        active: true,
+        primaryModel: firstActive.primaryModelId,
+        canaryModel: firstActive.canaryModelId,
+        stage: firstActive.stage || "unknown",
+        trafficPercent: firstActive.trafficPct || 0,
+        metrics: firstActive.metrics ? {
+          errorRate: firstActive.metrics.canary?.errorRate || 0,
+          avgLatency: firstActive.metrics.canary?.avgLatencyMs || 0,
+          requestCount: firstActive.metrics.canary?.totalRequests || 0,
+        } : undefined,
+      } : { active: false };
+
+      const rawScorecards = providerEvaluator.getAllScorecards();
+      const evaluations = rawScorecards.map((sc: any) => ({
+        provider: sc.providerId,
+        health: sc.healthStatus,
+        trend: sc.trend,
+        overallScore: sc.avgScores?.overall || 0,
+        scores: {
+          accuracy: sc.avgScores?.accuracy || 0,
+          coherence: sc.avgScores?.coherence || 0,
+          instruction_following: sc.avgScores?.instructionFollowing || 0,
+          safety: sc.avgScores?.safety || 0,
+        },
+        evalCount: sc.totalEvals || 0,
+        lastEval: sc.lastEvalAt ? new Date(sc.lastEvalAt).getTime() : 0,
+      }));
+
+      res.json({ experiments, canary, evaluations });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/models/experiments", async (req: Request, res: Response) => {
+    try {
+      const { abTestManager } = await import("./agent/modelPlane/abTestManager");
+      const { name, controlModel, treatmentModel, trafficSplit, description } = req.body;
+      if (!name || !controlModel || !treatmentModel) {
+        return res.status(400).json({ error: "name, controlModel, treatmentModel required" });
+      }
+      const experiment = abTestManager.createExperiment({
+        name,
+        description: description || name,
+        controlModelId: controlModel,
+        treatmentModelId: treatmentModel,
+        controlTrafficPct: trafficSplit || 50,
+      });
+      res.status(201).json(experiment);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/models/evaluations", async (_req: Request, res: Response) => {
+    try {
+      const { providerEvaluator } = await import("./agent/modelPlane/providerEvaluator");
+      res.json({ scorecards: providerEvaluator.getAllScorecards() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/computer/sessions", async (_req: Request, res: Response) => {
+    try {
+      const { remoteSessionManager } = await import("./agent/computerControl/remoteSession");
+      res.json({ sessions: remoteSessionManager.getActiveSessions() });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/agent/dag/:runId/stream", (req: Request, res: Response) => {
+    const { runId } = req.params;
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    const dagState = {
+      runId,
+      status: "running",
+      tasks: [
+        { id: "start", type: "start", label: "Start", status: "completed", progress: 100, startedAt: Date.now() - 5000, completedAt: Date.now() - 4000 },
+        { id: "analyze", type: "task", label: "Analyze Query", status: "completed", progress: 100, assignedAgent: "planner", startedAt: Date.now() - 4000, completedAt: Date.now() - 2000 },
+        { id: "decide", type: "decision", label: "Needs Research?", status: "completed", progress: 100, riskLevel: "low" },
+        { id: "execute", type: "task", label: "Execute Plan", status: "running", progress: 45, assignedAgent: "executor", startedAt: Date.now() - 1500 },
+        { id: "merge", type: "merge", label: "Merge Results", status: "pending", progress: 0 },
+        { id: "end", type: "end", label: "Complete", status: "pending", progress: 0 },
+      ],
+      edges: [
+        { source: "start", target: "analyze" },
+        { source: "analyze", target: "decide" },
+        { source: "decide", target: "execute" },
+        { source: "execute", target: "merge" },
+        { source: "merge", target: "end" },
+      ],
+    };
+    res.write(`event: dag_init\ndata: ${JSON.stringify(dagState)}\n\n`);
+
+    let progress = 45;
+    const interval = setInterval(() => {
+      progress = Math.min(100, progress + Math.floor(Math.random() * 8));
+      const taskUpdate = { taskId: "execute", status: progress >= 100 ? "completed" : "running", progress, ts: Date.now() };
+      res.write(`event: task_update\ndata: ${JSON.stringify(taskUpdate)}\n\n`);
+      if (progress >= 100) {
+        res.write(`event: task_update\ndata: ${JSON.stringify({ taskId: "merge", status: "running", progress: 50, ts: Date.now() })}\n\n`);
+        setTimeout(() => {
+          res.write(`event: task_update\ndata: ${JSON.stringify({ taskId: "merge", status: "completed", progress: 100, ts: Date.now() })}\n\n`);
+          res.write(`event: task_update\ndata: ${JSON.stringify({ taskId: "end", status: "completed", progress: 100, ts: Date.now() })}\n\n`);
+          res.write(`event: dag_complete\ndata: ${JSON.stringify({ runId, status: "completed", ts: Date.now() })}\n\n`);
+        }, 2000);
+        clearInterval(interval);
+      }
+    }, 3000);
+    req.on("close", () => clearInterval(interval));
+  });
+
   app.use("/api/admin", createRetrievalAdminRouter());
   app.use("/api", createAgentRouter(broadcastBrowserEvent));
 

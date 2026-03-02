@@ -158,6 +158,7 @@ const DownloadPage = lazyWithRetry(() => import("@/pages/download"));
 const PowerPage = lazyWithRetry(() => import("@/pages/power"));
 const MemoryPage = lazyWithRetry(() => import("@/pages/memory"));
 const RunReplayPage = lazyWithRetry(() => import("@/pages/agent/RunReplayPage"));
+const OrchestrationDAGPage = lazyWithRetry(() => import("@/pages/agent/OrchestrationDAGPage"));
 
 const ProtectedProfilePage = requireAuth(ProfilePage);
 const ProtectedBillingPage = requireAuth(BillingPage);
@@ -173,6 +174,7 @@ const ProtectedMemoryPage = requireAuth(MemoryPage);
 const ProtectedSpreadsheetAnalyzerPage = requireAuth(SpreadsheetAnalyzerPage);
 const ProtectedMonitoringDashboard = requireAuth(MonitoringDashboard);
 const ProtectedRunReplayPage = requireAuth(RunReplayPage);
+const ProtectedOrchestrationDAGPage = requireAuth(OrchestrationDAGPage);
 
 function GlobalKeyboardShortcuts() {
   const [, setLocation] = useLocation();
@@ -311,6 +313,7 @@ function Router() {
             <Route path="/admin/security" component={ProtectedAdminPage} />
             <Route path="/admin/health" component={ProtectedSystemHealthPage} />
             <Route path="/admin/sre" component={ProtectedAdminPage} />
+            <Route path="/admin/experiments" component={ProtectedAdminPage} />
             <Route path="/workspace-settings" component={ProtectedWorkspaceSettingsPage} />
             <Route path="/workspace" component={ProtectedWorkspacePage} />
             <Route path="/skills" component={ProtectedSkillsPage} />
@@ -319,6 +322,7 @@ function Router() {
             <Route path="/spreadsheet-analyzer" component={ProtectedSpreadsheetAnalyzerPage} />
             <Route path="/monitoring" component={ProtectedMonitoringDashboard} />
             <Route path="/agent/replay/:runId" component={ProtectedRunReplayPage} />
+            <Route path="/agent/dag/:runId" component={ProtectedOrchestrationDAGPage} />
             <Route path="/about" component={AboutPage} />
             <Route path="/learn" component={LearnPage} />
             <Route path="/pricing" component={PricingPage} />
