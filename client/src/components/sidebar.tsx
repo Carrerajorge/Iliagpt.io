@@ -669,10 +669,10 @@ export function Sidebar({
           </kbd>
         </button>
 
-        <div className="space-y-1 mt-2">
+        <div className="space-y-0.5 mt-1">
           <Button
             variant="ghost"
-            className="w-full justify-start gap-3 px-3 py-5 text-sm font-medium rounded-xl hover:bg-muted/60 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group"
+            className="w-full justify-start gap-3 px-3 py-2.5 text-sm font-medium rounded-xl hover:bg-muted/60 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group"
             onClick={onOpenLibrary}
             data-testid="button-library"
           >
@@ -683,7 +683,7 @@ export function Sidebar({
           </Button>
           <Button
             variant="ghost"
-            className="w-full justify-start gap-3 px-3 py-5 text-sm font-medium rounded-xl hover:bg-muted/60 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group"
+            className="w-full justify-start gap-3 px-3 py-2.5 text-sm font-medium rounded-xl hover:bg-muted/60 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group"
             onClick={onOpenGpts}
             data-testid="button-gpts"
           >
@@ -694,7 +694,7 @@ export function Sidebar({
           </Button>
           <Button
             variant="ghost"
-            className="w-full justify-start gap-3 px-3 py-5 text-sm font-medium rounded-xl hover:bg-muted/60 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group h-auto"
+            className="w-full justify-start gap-3 px-3 py-2.5 text-sm font-medium rounded-xl hover:bg-muted/60 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group h-auto"
             onClick={onOpenSkills}
             data-testid="button-skills"
           >
@@ -708,18 +708,18 @@ export function Sidebar({
           </Button>
           <Button
             variant="ghost"
-            className="w-full justify-start gap-3 px-3 py-5 text-sm font-medium rounded-xl hover:bg-muted/60 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group"
+            className="w-full justify-start gap-3 px-3 py-2.5 text-sm font-medium rounded-xl hover:bg-muted/60 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group"
             onClick={onOpenApps}
             data-testid="button-apps"
           >
             <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white transition-colors">
               <PremiumIcons.Apps className="h-4 w-4" />
             </div>
-            Aplicaciones
+            Apps
           </Button>
           <Button
             variant="ghost"
-            className="w-full justify-start gap-3 px-3 py-5 text-sm font-medium rounded-xl hover:bg-muted/60 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group"
+            className="w-full justify-start gap-3 px-3 py-2.5 text-sm font-medium rounded-xl hover:bg-muted/60 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group"
             onClick={onOpenWhatsAppConnect}
             data-testid="button-whatsapp-connect"
           >
@@ -739,7 +739,7 @@ export function Sidebar({
           </Button>
           <Button
             variant="ghost"
-            className="w-full justify-start gap-3 px-3 py-5 text-sm font-medium rounded-xl hover:bg-blue-50/80 dark:hover:bg-blue-500/10 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group text-blue-600 dark:text-blue-400 mt-1"
+            className="w-full justify-start gap-3 px-3 py-2.5 text-sm font-medium rounded-xl hover:bg-blue-50/80 dark:hover:bg-blue-500/10 hover:shadow-sm hover:-translate-y-0.5 transition-all duration-300 group text-blue-600 dark:text-blue-400 mt-0.5"
             onClick={onOpenCodex}
             data-testid="button-codex"
           >
