@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
+import { trackMediaCost } from "./mediaGenerationCostTracker";
 
 // Keep env var resolution consistent with the rest of the codebase (chat uses GEMINI_API_KEY or GOOGLE_API_KEY).
 const geminiApiKey =
@@ -76,6 +77,7 @@ export async function generateImage(prompt: string): Promise<ImageGenerationResu
             if (part.inlineData && part.inlineData.data) {
               const durationMs = Date.now() - startTime;
               console.log(`[ImageGeneration] Success with Gemini ${model} in ${durationMs}ms`);
+              trackMediaCost("image", `gemini/${model}`, prompt.length);
               return {
                 imageBase64: part.inlineData.data,
                 mimeType: part.inlineData.mimeType || "image/png",
@@ -107,6 +109,7 @@ export async function generateImage(prompt: string): Promise<ImageGenerationResu
       if (response.data && response.data[0]?.b64_json) {
         const durationMs = Date.now() - startTime;
         console.log(`[ImageGeneration] Success with xAI Grok Image in ${durationMs}ms`);
+        trackMediaCost("image", "xai/grok-2-image-1212", prompt.length);
         return {
           imageBase64: response.data[0].b64_json,
           mimeType: "image/png",
@@ -119,7 +122,113 @@ export async function generateImage(prompt: string): Promise<ImageGenerationResu
     }
   }
 
+  const orResult = await generateImageViaOpenRouter(prompt);
+  if (orResult) {
+    const durationMs = Date.now() - startTime;
+    console.log(`[ImageGeneration] Success with OpenRouter ${orResult.model} in ${durationMs}ms`);
+    trackMediaCost("image", orResult.model || "unknown", prompt.length);
+    return orResult;
+  }
+
   throw new Error("Image generation failed: No working image generation service available");
+}
+
+async function generateImageViaOpenRouter(prompt: string): Promise<ImageGenerationResult | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "";
+  if (!apiKey) return null;
+
+  const IMAGE_MODELS = [
+    "google/gemini-2.5-flash-image",
+    "google/gemini-3.1-flash-image-preview",
+    "openai/gpt-5-image-mini",
+    "openai/gpt-5-image",
+    "google/gemini-3-pro-image-preview",
+  ];
+
+  for (const model of IMAGE_MODELS) {
+    try {
+      console.log(`[ImageGeneration] Trying OpenRouter model: ${model}`);
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": process.env.REPLIT_DEV_DOMAIN ? `https://${process.env.REPLIT_DEV_DOMAIN}` : "https://iliagpt.com",
+          "X-Title": "IliaGPT",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: `Generate an image: ${prompt}` }],
+          max_tokens: 4096,
+        }),
+        signal: AbortSignal.timeout(60000),
+      });
+
+      if (!res.ok) {
+        console.error(`[ImageGeneration] OpenRouter ${model} HTTP ${res.status}`);
+        continue;
+      }
+
+      const data = await res.json() as any;
+      const content = data.choices?.[0]?.message?.content;
+
+      if (data.choices?.[0]?.message?.image) {
+        return {
+          imageBase64: data.choices[0].message.image,
+          mimeType: "image/png",
+          prompt,
+          model,
+        };
+      }
+
+      if (content && typeof content === "string") {
+        const base64Match = content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
+        if (base64Match) {
+          return {
+            imageBase64: base64Match[1],
+            mimeType: "image/png",
+            prompt,
+            model,
+          };
+        }
+
+        if (content.includes("![") || content.includes("http")) {
+          const urlMatch = content.match(/https?:\/\/[^\s)"\]]+\.(png|jpg|jpeg|webp|gif)[^\s)"\]]*/i);
+          if (urlMatch) {
+            try {
+              const imgRes = await fetch(urlMatch[0], { signal: AbortSignal.timeout(15000) });
+              if (imgRes.ok) {
+                const buf = Buffer.from(await imgRes.arrayBuffer());
+                return {
+                  imageBase64: buf.toString("base64"),
+                  mimeType: imgRes.headers.get("content-type") || "image/png",
+                  prompt,
+                  model,
+                };
+              }
+            } catch {}
+          }
+        }
+      }
+
+      if (Array.isArray(data.choices?.[0]?.message?.content)) {
+        for (const part of data.choices[0].message.content) {
+          if (part.type === "image_url" && part.image_url?.url) {
+            const dataUrl = part.image_url.url;
+            const b64Match = dataUrl.match(/data:image\/[^;]+;base64,(.+)/);
+            if (b64Match) {
+              return { imageBase64: b64Match[1], mimeType: "image/png", prompt, model };
+            }
+          }
+        }
+      }
+
+      console.warn(`[ImageGeneration] OpenRouter ${model}: no image in response`);
+    } catch (error: any) {
+      console.error(`[ImageGeneration] OpenRouter ${model} failed:`, error.message);
+    }
+  }
+  return null;
 }
 
 export interface ImageEditResult extends ImageGenerationResult {

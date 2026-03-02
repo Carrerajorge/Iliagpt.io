@@ -1041,6 +1041,58 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/video/generate", async (req: Request, res: Response) => {
+    try {
+      const { generateVideo } = await import("./services/videoGeneration");
+      const { prompt, duration, style, aspectRatio } = req.body;
+      if (!prompt) return res.status(400).json({ error: "prompt is required" });
+      const result = await generateVideo(prompt, { duration, style, aspectRatio });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/media/cost/stats", async (_req: Request, res: Response) => {
+    try {
+      const { mediaCostTracker } = await import("./services/mediaGenerationCostTracker");
+      res.json(mediaCostTracker.getStats());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/media/cost/budget", async (req: Request, res: Response) => {
+    try {
+      const { mediaCostTracker } = await import("./services/mediaGenerationCostTracker");
+      const updated = mediaCostTracker.updateBudget(req.body);
+      res.json({ success: true, budget: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/media/cost/check", async (req: Request, res: Response) => {
+    try {
+      const { checkMediaBudget } = await import("./services/mediaGenerationCostTracker");
+      const { type, model } = req.body;
+      const result = checkMediaBudget(type || "image", model || "default-image");
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/openrouter/sync-all", async (_req: Request, res: Response) => {
+    try {
+      const { syncFromOpenRouter } = await import("./services/aiModelSyncService");
+      const result = await syncFromOpenRouter();
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/files/list", async (req: Request, res: Response) => {
     try {
       const { secureFileGateway } = await import("./agent/filePlane");

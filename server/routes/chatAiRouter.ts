@@ -4,6 +4,7 @@ import { chatService, AVAILABLE_MODELS, DEFAULT_PROVIDER, DEFAULT_MODEL } from "
 import { llmGateway } from "../lib/llmGateway";
 import { getOrCreateSession, getEnforcedModel, getSessionById, type GptSessionContract } from "../services/gptSessionService";
 import { generateImage, detectImageRequest, extractImagePrompt } from "../services/imageGeneration";
+import { generateVideo, detectVideoRequest, extractVideoPrompt } from "../services/videoGeneration";
 import { runETLAgent, getAvailableCountries, getAvailableIndicators } from "../etl";
 import { extractAllAttachmentsContent, extractAttachmentContent, formatAttachmentsAsContext, type Attachment } from "../services/attachmentService";
 import { pareOrchestrator, type RobustRouteResult, type SimpleAttachment } from "../services/pare";
@@ -3983,6 +3984,40 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
     const extractedPrompt = isImageRequest ? extractImagePrompt(message) : null;
 
     res.json({ isImageRequest, extractedPrompt });
+  });
+
+  router.post("/video/generate", async (req, res) => {
+    try {
+      const { prompt, duration, style, aspectRatio } = req.body;
+      if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+      console.log(`[API] Video generation request: "${prompt.slice(0, 60)}..."`);
+      const result = await generateVideo(prompt, { duration, style, aspectRatio });
+      res.json(result);
+    } catch (error: any) {
+      console.error("[API] Video generation error:", error);
+      res.status(500).json({ error: "Failed to generate video", details: error.message });
+    }
+  });
+
+  router.post("/video/detect", (req, res) => {
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: "Message is required" });
+    const isVideoRequest = detectVideoRequest(message);
+    const extractedPrompt = isVideoRequest ? extractVideoPrompt(message) : null;
+    res.json({ isVideoRequest, extractedPrompt });
+  });
+
+  router.post("/media/detect", (req, res) => {
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: "Message is required" });
+    const isImageReq = detectImageRequest(message);
+    const isVideoReq = detectVideoRequest(message);
+    res.json({
+      isImageRequest: isImageReq,
+      isVideoRequest: isVideoReq,
+      mediaType: isVideoReq ? "video" : isImageReq ? "image" : "none",
+      extractedPrompt: isVideoReq ? extractVideoPrompt(message) : isImageReq ? extractImagePrompt(message) : null,
+    });
   });
 
   router.get("/etl/config", async (req, res) => {
