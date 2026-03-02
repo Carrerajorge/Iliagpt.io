@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { X, Download, FileText, Loader2 } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { X, Download, FileText, Loader2, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { getFileTheme } from "@/lib/fileTypeTheme";
+import { PdfPreview } from "@/components/PdfPreview";
 
 interface FilePreviewModalProps {
   file: {
@@ -21,10 +22,11 @@ interface FilePreviewModalProps {
 }
 
 export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
-  const [content, setContent] = useState<string | null>(null);
+  const [textContent, setTextContent] = useState<string | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
 
   const mime = file.mimeType || file.type || "";
   const isImage = mime.startsWith("image/");
@@ -34,40 +36,49 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
   const fileId = file.fileId || file.id;
   const theme = getFileTheme(file.name, mime);
 
-  const fetchContent = useCallback(async () => {
-    if (!fileId) {
-      setLoading(false);
-      if (file.dataUrl) return;
-      if (file.content) { setContent(file.content); return; }
-      setError("No file ID available");
-      return;
-    }
+  const rawUrl = fileId ? `/api/files/${fileId}/raw` : undefined;
 
+  const fetchContent = useCallback(async () => {
     try {
       setLoading(true);
+      setError(null);
+
+      if (file.dataUrl && isImage) {
+        setLoading(false);
+        return;
+      }
 
       if (isPdf) {
-        const res = await fetch(`/api/files/${fileId}/content`);
-        if (!res.ok) throw new Error("Failed to fetch file");
+        setLoading(false);
+        return;
+      }
+
+      if (!fileId) {
+        if (file.content) {
+          setTextContent(file.content);
+        } else if (!file.dataUrl) {
+          setError("No hay ID de archivo disponible");
+        }
+        setLoading(false);
+        return;
+      }
+
+      if (isImage) {
+        const res = await fetch(`/api/files/${fileId}/raw`);
+        if (!res.ok) throw new Error(`Error al cargar archivo (${res.status})`);
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
-        setBlobUrl(url);
-      } else if (isImage) {
-        const res = await fetch(`/api/files/${fileId}/content`);
-        if (!res.ok) throw new Error("Failed to fetch image");
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
+        if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = url;
         setBlobUrl(url);
       } else if (isText) {
-        const res = await fetch(`/api/files/${fileId}/content`);
-        if (!res.ok) throw new Error("Failed to fetch file");
+        const res = await fetch(`/api/files/${fileId}/raw`);
+        if (!res.ok) throw new Error(`Error al cargar archivo (${res.status})`);
         const text = await res.text();
-        setContent(text);
-      } else {
-        setContent(null);
+        setTextContent(text);
       }
     } catch (err: any) {
-      setError(err.message || "Failed to load file");
+      setError(err.message || "Error al cargar el archivo");
     } finally {
       setLoading(false);
     }
@@ -76,7 +87,10 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
   useEffect(() => {
     fetchContent();
     return () => {
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
     };
   }, [fetchContent]);
 
@@ -89,20 +103,29 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
   }, [onClose]);
 
   const handleDownload = () => {
-    if (fileId) {
-      const a = document.createElement("a");
-      a.href = `/api/files/${fileId}/content`;
-      a.download = file.name || "download";
-      a.click();
+    const a = document.createElement("a");
+    if (rawUrl) {
+      a.href = rawUrl;
     } else if (file.dataUrl) {
-      const a = document.createElement("a");
       a.href = file.dataUrl;
-      a.download = file.name || "download";
-      a.click();
+    } else {
+      return;
     }
+    a.download = file.name || "download";
+    a.click();
   };
 
   const imageSource = file.dataUrl || file.imageUrl || blobUrl;
+
+  if (isPdf) {
+    return (
+      <PdfPreview
+        url={rawUrl || file.dataUrl || ""}
+        title={file.name}
+        onClose={onClose}
+      />
+    );
+  }
 
   return (
     <div
@@ -136,7 +159,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
               variant="ghost"
               size="icon"
               onClick={handleDownload}
-              title="Download"
+              title="Descargar"
               data-testid="button-download-file"
             >
               <Download className="h-4 w-4" />
@@ -145,7 +168,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
               variant="ghost"
               size="icon"
               onClick={onClose}
-              title="Close"
+              title="Cerrar"
               data-testid="button-close-preview"
             >
               <X className="h-4 w-4" />
@@ -153,7 +176,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto p-4">
+        <div className="flex-1 overflow-auto">
           {loading && (
             <div className="flex items-center justify-center h-64" data-testid="preview-loading">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -161,17 +184,17 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
           )}
 
           {error && !loading && (
-            <div className="flex flex-col items-center justify-center h-64 gap-3 text-muted-foreground">
+            <div className="flex flex-col items-center justify-center h-64 gap-3 text-muted-foreground p-4">
               <FileText className="h-12 w-12" />
               <p className="text-sm">{error}</p>
               <Button variant="outline" size="sm" onClick={handleDownload}>
-                <Download className="h-4 w-4 mr-2" /> Download instead
+                <Download className="h-4 w-4 mr-2" /> Descargar archivo
               </Button>
             </div>
           )}
 
           {!loading && !error && isImage && imageSource && (
-            <div className="flex items-center justify-center">
+            <div className="flex items-center justify-center p-4">
               <img
                 src={imageSource}
                 alt={file.name}
@@ -181,33 +204,24 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
             </div>
           )}
 
-          {!loading && !error && isPdf && blobUrl && (
-            <iframe
-              src={blobUrl}
-              className="w-full h-[70vh] rounded-lg border border-border"
-              title={file.name}
-              data-testid="preview-pdf"
-            />
-          )}
-
-          {!loading && !error && isText && content !== null && (
+          {!loading && !error && isText && textContent !== null && (
             <pre
-              className="text-sm font-mono whitespace-pre-wrap break-words bg-muted/50 rounded-lg p-4 max-h-[70vh] overflow-auto"
+              className="text-sm font-mono whitespace-pre-wrap break-words bg-muted/50 rounded-lg p-4 m-4 max-h-[70vh] overflow-auto"
               data-testid="preview-text"
             >
-              {content}
+              {textContent}
             </pre>
           )}
 
           {!loading && !error && !isImage && !isPdf && !isText && (
-            <div className="flex flex-col items-center justify-center h-64 gap-3 text-muted-foreground">
+            <div className="flex flex-col items-center justify-center h-64 gap-3 text-muted-foreground p-4">
               <div className={cn("flex items-center justify-center w-20 h-20 rounded-2xl", theme.bgColor)}>
                 <span className="text-white text-2xl font-bold">{theme.icon}</span>
               </div>
               <p className="text-sm font-medium">{file.name}</p>
-              <p className="text-xs">Preview not available for this file type</p>
+              <p className="text-xs">Vista previa no disponible para este tipo de archivo</p>
               <Button variant="outline" size="sm" onClick={handleDownload}>
-                <Download className="h-4 w-4 mr-2" /> Download file
+                <Download className="h-4 w-4 mr-2" /> Descargar archivo
               </Button>
             </div>
           )}

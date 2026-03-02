@@ -235,11 +235,14 @@ export function securityHeaders(req: Request, res: Response, next: NextFunction)
     "font-src 'self' https://fonts.gstatic.com; " +
     "img-src 'self' data: https: blob:; " +
     "connect-src 'self' https:; " +
-    "frame-ancestors 'none';"
+    "frame-src 'self' blob:; " +
+    "object-src 'self' blob:; " +
+    "worker-src 'self' blob: https://cdnjs.cloudflare.com; " +
+    "frame-ancestors 'self';"
   );
   
   // Prevent clickjacking
-  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
   
   // Prevent MIME sniffing
   res.setHeader("X-Content-Type-Options", "nosniff");

@@ -37,9 +37,10 @@ const cspDirectives: NonNullable<ContentSecurityPolicyOptions["directives"]> = {
     ...(isProduction ? [] : ["ws:", "http:"]),
   ],
   fontSrc: ["'self'", "https://fonts.gstatic.com", "https://cdnjs.cloudflare.com", "https://cdn.jsdelivr.net", "data:"],
-  frameSrc: ["'self'", "https://accounts.google.com"],
+  workerSrc: ["'self'", "blob:", "https://cdnjs.cloudflare.com"],
+  frameSrc: ["'self'", "blob:", "https://accounts.google.com"],
   frameAncestors: ["'self'"],
-  objectSrc: ["'none'"],
+  objectSrc: ["'self'", "blob:"],
   baseUri: ["'self'"],
   formAction: ["'self'", "https://accounts.google.com"],
 };

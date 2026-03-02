@@ -47,12 +47,12 @@ const DEFAULT_CSP_DIRECTIVES: Record<string, string[]> = {
   // Security: removed blanket "https:" - only allow specific trusted image sources
   "img-src": ["'self'", "data:", "blob:", "https://lh3.googleusercontent.com", "https://*.googleusercontent.com", "https://replit.com", "https://files.stripe.com"],
   "connect-src": ["'self'", "https://api.x.ai", "https://generativelanguage.googleapis.com", "https://accounts.google.com", "wss:", ...(isProductionEnv ? [] : ["ws:"])],
-  "frame-src": ["'self'", "https://accounts.google.com"],
+  "frame-src": ["'self'", "blob:", "https://accounts.google.com"],
   "frame-ancestors": ["'self'"],
   "base-uri": ["'self'"],
   "form-action": ["'self'", "https://accounts.google.com"],
-  "object-src": ["'none'"],
-  "worker-src": ["'self'", "blob:"],
+  "object-src": ["'self'", "blob:"],
+  "worker-src": ["'self'", "blob:", "https://cdnjs.cloudflare.com"],
   "manifest-src": ["'self'"],
   "upgrade-insecure-requests": [],
 };

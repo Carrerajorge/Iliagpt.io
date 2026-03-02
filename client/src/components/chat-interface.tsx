@@ -172,6 +172,7 @@ import { DataTableWrapper, CleanDataTableComponents, downloadTableAsExcel, copyT
 import { StreamingIndicator } from "./chat-interface/StreamingIndicator";
 import { EditableDocumentPreview, type TextSelection } from "./chat-interface/EditableDocumentPreview";
 import { extractTextFromChildren, isNumericValue } from "./chat-interface/utils";
+import { PdfPreview } from "@/components/PdfPreview";
 
 function AvatarWithFallback({
   src,
@@ -7725,6 +7726,17 @@ IMPORTANTE:
             ? `/api/files/${previewUploadedFile.fileId}/raw`
             : undefined;
           const previewUrl = previewUploadedFile.dataUrl || rawUrl;
+
+          if (isPdf && (rawUrl || previewUploadedFile.dataUrl)) {
+            return (
+              <PdfPreview
+                url={rawUrl || previewUploadedFile.dataUrl || ""}
+                title={previewUploadedFile.name}
+                onClose={() => setPreviewUploadedFile(null)}
+              />
+            );
+          }
+
           return (
             <motion.div
               initial={{ opacity: 0 }}
@@ -7759,13 +7771,7 @@ IMPORTANTE:
                   </button>
                 </div>
                 <div className="flex-1 overflow-auto min-h-[300px]">
-                  {isPdf && rawUrl ? (
-                    <iframe
-                      src={rawUrl}
-                      className="w-full h-[75vh] border-0"
-                      title={previewUploadedFile.name}
-                    />
-                  ) : isImg && previewUrl ? (
+                  {isImg && previewUrl ? (
                     <div className="flex items-center justify-center p-8 bg-muted/30">
                       <img
                         src={previewUrl}
