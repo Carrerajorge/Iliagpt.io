@@ -562,7 +562,7 @@ export async function executeUnifiedChat(
 
       await emitTraceEvent(runId, "thinking", {
         content: "Native agentic fusion context attached",
-        phase: "fusion",
+        phase: "executing",
         modules: nativeFusion.appliedModules,
       });
     }

@@ -2666,11 +2666,22 @@ export function createTraceEvent(
   runId: string,
   options?: Partial<Omit<TraceEvent, 'event_type' | 'runId' | 'timestamp'>>
 ): TraceEvent {
-  return TraceEventSchema.parse({
+  const raw = {
     event_type,
     runId,
     timestamp: Date.now(),
     ...options,
+  };
+  const result = TraceEventSchema.safeParse(raw);
+  if (result.success) {
+    return result.data;
+  }
+  const { phase, ...safeOptions } = (options || {}) as any;
+  return TraceEventSchema.parse({
+    event_type,
+    runId,
+    timestamp: Date.now(),
+    ...safeOptions,
   });
 }
 

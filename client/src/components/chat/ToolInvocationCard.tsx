@@ -15,7 +15,15 @@ import {
     HardDrive,
     MessageSquare,
     Github,
-    Database
+    Database,
+    FileText,
+    FileEdit,
+    FolderOpen,
+    Link,
+    Search,
+    BarChart3,
+    Brain,
+    BookOpen
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -57,10 +65,18 @@ export function ToolInvocationCard({
         if (lowerName.includes("github")) return { icon: <Github className="h-4 w-4" />, color: "text-zinc-700 dark:text-zinc-300", bg: "bg-zinc-500/10", border: "border-zinc-500/20" };
         if (lowerName.includes("notion")) return { icon: <img src="https://upload.wikimedia.org/wikipedia/commons/4/45/Notion_app_logo.png" className="w-4 h-4 object-contain opacity-80" alt="Notion" />, color: "text-zinc-800 dark:text-zinc-200", bg: "bg-zinc-500/10", border: "border-zinc-500/20" };
         if (lowerName.includes("hubspot")) return { icon: <Database className="h-4 w-4" />, color: "text-orange-500", bg: "bg-orange-500/10", border: "border-orange-500/20" };
-        if (lowerName.includes("search") || lowerName.includes("web")) return { icon: <Globe className="h-4 w-4" />, color: "text-indigo-500", bg: "bg-indigo-500/10", border: "border-indigo-500/20" };
+        if (lowerName.includes("web_search") || lowerName === "search") return { icon: <Search className="h-4 w-4" />, color: "text-indigo-500", bg: "bg-indigo-500/10", border: "border-indigo-500/20" };
+        if (lowerName.includes("web_fetch") || lowerName.includes("fetch_url")) return { icon: <Link className="h-4 w-4" />, color: "text-cyan-500", bg: "bg-cyan-500/10", border: "border-cyan-500/20" };
         if (lowerName.includes("shell") || lowerName.includes("bash")) return { icon: <TerminalSquare className="h-4 w-4" />, color: "text-zinc-500", bg: "bg-zinc-500/10", border: "border-zinc-500/20" };
+        if (lowerName.includes("read_file")) return { icon: <FileText className="h-4 w-4" />, color: "text-sky-500", bg: "bg-sky-500/10", border: "border-sky-500/20" };
+        if (lowerName.includes("write_file")) return { icon: <FileText className="h-4 w-4" />, color: "text-emerald-500", bg: "bg-emerald-500/10", border: "border-emerald-500/20" };
+        if (lowerName.includes("edit_file")) return { icon: <FileEdit className="h-4 w-4" />, color: "text-amber-500", bg: "bg-amber-500/10", border: "border-amber-500/20" };
+        if (lowerName.includes("list_files")) return { icon: <FolderOpen className="h-4 w-4" />, color: "text-violet-500", bg: "bg-violet-500/10", border: "border-violet-500/20" };
+        if (lowerName.includes("rag_index") || lowerName.includes("rag_search")) return { icon: <BookOpen className="h-4 w-4" />, color: "text-rose-500", bg: "bg-rose-500/10", border: "border-rose-500/20" };
+        if (lowerName.includes("analyze_data")) return { icon: <BarChart3 className="h-4 w-4" />, color: "text-teal-500", bg: "bg-teal-500/10", border: "border-teal-500/20" };
+        if (lowerName.includes("browse")) return { icon: <Globe className="h-4 w-4" />, color: "text-blue-500", bg: "bg-blue-500/10", border: "border-blue-500/20" };
+        if (lowerName.includes("search") || lowerName.includes("web")) return { icon: <Globe className="h-4 w-4" />, color: "text-indigo-500", bg: "bg-indigo-500/10", border: "border-indigo-500/20" };
 
-        // Default Lavanda
         return { icon: <Play className="h-4 w-4" />, color: "text-[#A7A3FF]", bg: "bg-[#A7A3FF]/10", border: "border-[#A7A3FF]/20" };
     };
 

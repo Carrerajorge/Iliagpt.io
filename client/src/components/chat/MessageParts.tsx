@@ -17,7 +17,13 @@ import {
     ListPlus,
     Minus,
     Globe,
-    MoreHorizontal
+    MoreHorizontal,
+    FileText,
+    FileSpreadsheet,
+    Presentation,
+    FileCode,
+    File,
+    Eye
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -572,30 +578,31 @@ export const AttachmentList = memo(function AttachmentList({
                     <div
                         key={i}
                         className={cn(
-                            "flex items-center gap-2 px-3 py-2 rounded-xl text-sm border bg-card border-border cursor-pointer hover:bg-accent transition-colors"
+                            "group flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm border bg-card border-border cursor-pointer hover:bg-accent/80 hover:border-accent transition-all duration-200 shadow-sm hover:shadow-md"
                         )}
                         onClick={() => onOpenPreview?.(att)}
                         data-testid={`attachment-document-${i}`}
                     >
                         <div
                             className={cn(
-                                "flex items-center justify-center w-8 h-8 rounded-lg",
+                                "flex items-center justify-center w-9 h-9 rounded-lg shrink-0",
                                 att.documentType === "word" && "bg-blue-600",
                                 att.documentType === "excel" && "bg-green-600",
                                 att.documentType === "ppt" && "bg-orange-500",
                                 att.documentType === "pdf" && "bg-red-600"
                             )}
                         >
-                            <span className="text-white text-xs font-bold">
-                                {att.documentType === "word" ? "W" : att.documentType === "excel" ? "E" : att.documentType === "ppt" ? "P" : "PDF"}
-                            </span>
+                            {att.documentType === "word" ? <FileText className="h-4 w-4 text-white" /> :
+                             att.documentType === "excel" ? <FileSpreadsheet className="h-4 w-4 text-white" /> :
+                             att.documentType === "ppt" ? <Presentation className="h-4 w-4 text-white" /> :
+                             <FileText className="h-4 w-4 text-white" />}
                         </div>
-                        <div className="flex flex-col min-w-0">
+                        <div className="flex flex-col min-w-0 flex-1">
                             <span className="max-w-[200px] truncate font-medium">
                                 {att.title || att.name}
                             </span>
-                            <span className="text-xs text-muted-foreground">
-                                Clic para previsualizar
+                            <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                <Eye className="h-3 w-3" /> Click to preview
                             </span>
                         </div>
                     </div>
@@ -603,7 +610,7 @@ export const AttachmentList = memo(function AttachmentList({
                     <div
                         key={i}
                         className={cn(
-                            "flex items-center gap-2 px-3 py-2 rounded-xl text-sm border bg-card border-border cursor-pointer hover:bg-accent transition-colors"
+                            "group flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm border bg-card border-border cursor-pointer hover:bg-accent/80 hover:border-accent transition-all duration-200 shadow-sm hover:shadow-md"
                         )}
                         onClick={() => onReopenDocument?.({
                             type: att.documentType as "word" | "excel" | "ppt",
@@ -614,23 +621,24 @@ export const AttachmentList = memo(function AttachmentList({
                     >
                         <div
                             className={cn(
-                                "flex items-center justify-center w-8 h-8 rounded-lg",
+                                "flex items-center justify-center w-9 h-9 rounded-lg shrink-0",
                                 att.documentType === "word" && "bg-blue-600",
                                 att.documentType === "excel" && "bg-green-600",
                                 att.documentType === "ppt" && "bg-orange-500",
                                 att.documentType === "pdf" && "bg-red-600"
                             )}
                         >
-                            <span className="text-white text-xs font-bold">
-                                {att.documentType === "word" ? "W" : att.documentType === "excel" ? "E" : att.documentType === "ppt" ? "P" : "PDF"}
-                            </span>
+                            {att.documentType === "word" ? <FileText className="h-4 w-4 text-white" /> :
+                             att.documentType === "excel" ? <FileSpreadsheet className="h-4 w-4 text-white" /> :
+                             att.documentType === "ppt" ? <Presentation className="h-4 w-4 text-white" /> :
+                             <FileText className="h-4 w-4 text-white" />}
                         </div>
-                        <div className="flex flex-col min-w-0">
+                        <div className="flex flex-col min-w-0 flex-1">
                             <span className="max-w-[200px] truncate font-medium">
                                 {att.title || att.name}
                             </span>
                             <span className="text-xs text-muted-foreground">
-                                Documento guardado - Clic para abrir
+                                Saved document - Click to open
                             </span>
                         </div>
                     </div>

@@ -93,49 +93,11 @@ function getToolsForIntent(
   const toolPool = [...AGENT_TOOLS, ...getRelevantDynamicSkillTools(rawPrompt)];
   let matchedTools = toolPool;
 
-  switch (intent) {
-    case "research":
-      matchedTools = withToolSubset(toolPool, ["web_search", "fetch_url", "memory_search", "openclaw_rag_search"]);
-      break;
-    case "presentation_creation":
-      matchedTools = withToolSubset(toolPool, ["create_presentation", "web_search", "fetch_url"]);
-      break;
-    case "document_generation":
-      matchedTools = withToolSubset(toolPool, ["create_document", "web_search", "fetch_url", "memory_search"]);
-      break;
-    case "spreadsheet_creation":
-      matchedTools = withToolSubset(toolPool, ["create_spreadsheet", "analyze_data", "generate_chart"]);
-      break;
-    case "data_analysis":
-      matchedTools = withToolSubset(toolPool, ["analyze_data", "generate_chart", "create_spreadsheet", "read_file"]);
-      break;
-    case "web_automation":
-      matchedTools = withToolSubset(toolPool, ["web_search", "fetch_url", "browse_and_act"]);
-      break;
-    default:
-      matchedTools = toolPool;
-      break;
-  }
-
-  // For local computer/folder requests, force local read-only tools into the set.
-  if (LOCAL_FILESYSTEM_SIGNAL_REGEX.test(rawPrompt)) {
-    const mustHave = new Set(["list_files", "read_file", "memory_search", "openclaw_clawi_status"]);
-    const byName = new Map(matchedTools.map((tool) => [tool.name, tool]));
-    for (const tool of AGENT_TOOLS) {
-      if (mustHave.has(tool.name)) {
-        byName.set(tool.name, tool);
-      }
-    }
-    matchedTools = Array.from(byName.values());
-  }
-
-  // Filter out sensitive tools if user is not the owner
   if (accessLevel !== 'owner') {
     const sensitiveToolPatterns = ["browse_and_act", "skill_shell", "skill_run_command", "skill_system", "skill_file", "openclaw_clawi_exec"];
     matchedTools = matchedTools.filter(t => !sensitiveToolPatterns.some(pattern => t.name.includes(pattern)));
   }
 
-  // Restrict completely unknown users to safe, read-only tools
   if (accessLevel === 'unknown') {
     const safeToolPatterns = ["web_search", "fetch_url", "analyze_data", "list_files", "read_file", "memory_search"];
     matchedTools = matchedTools.filter(t => safeToolPatterns.some(pattern => t.name.includes(pattern)));
@@ -213,8 +175,38 @@ async function executeToolCall(
         break;
       }
 
+      case "rag_index_document": {
+        try {
+          const { ragService } = await import("../services/ragService");
+          const userId = context.userId || "anonymous";
+          const indexResult = await ragService.indexDocument(userId, args.content, {
+            fileName: args.fileName,
+            fileType: args.fileType,
+            chatId: context.chatId,
+            sourceUrl: args.sourceUrl,
+          });
+          result = { success: true, chunks: indexResult.chunks, docId: indexResult.docId };
+        } catch (err: any) {
+          result = { error: err.message };
+        }
+        break;
+      }
 
-
+      case "openclaw_rag_search": {
+        try {
+          const { ragService } = await import("../services/ragService");
+          const userId = context.userId || "anonymous";
+          const searchResults = await ragService.search(userId, args.query, {
+            limit: args.limit || 5,
+            chatId: args.chatId,
+            minScore: args.minScore || 0.2,
+          });
+          result = { results: searchResults, count: searchResults.length };
+        } catch (err: any) {
+          result = { error: err.message };
+        }
+        break;
+      }
 
 
       case "analyze_data": {
@@ -435,7 +427,7 @@ export async function executeAgentLoop(
       userPlan: "free",
     });
 
-    writeSse(res, "brief", {
+    sse.write("brief", {
       runId,
       brief: requestBrief,
     });
@@ -446,7 +438,7 @@ export async function executeAgentLoop(
         "Necesito una aclaración para ejecutar la solicitud con seguridad.";
       fullResponse = question;
 
-      writeSse(res, "clarification", {
+      sse.write("clarification", {
         runId,
         question,
         blocker: "intent_requirements",
@@ -454,7 +446,7 @@ export async function executeAgentLoop(
 
       const chunks = question.match(/.{1,100}/g) || [question];
       for (let i = 0; i < chunks.length; i++) {
-        writeSse(res, "chunk", {
+        sse.write("chunk", {
           content: chunks[i],
           sequence: i + 1,
           runId,
@@ -507,14 +499,14 @@ export async function executeAgentLoop(
     if (missingFields.length > 0) {
       const clarificationQuestion = buildReservationClarificationQuestion(reservationDetails, missingFields);
       fullResponse = clarificationQuestion;
-      writeSse(res, "clarification", {
+      sse.write("clarification", {
         runId,
         question: clarificationQuestion,
         missingFields,
       });
       const chunks = clarificationQuestion.match(/.{1,100}/g) || [clarificationQuestion];
       for (let i = 0; i < chunks.length; i++) {
-        writeSse(res, "chunk", {
+        sse.write("chunk", {
           content: chunks[i],
           sequence: i + 1,
           runId
@@ -621,12 +613,26 @@ Available tools: ${openclawToolNames}, ${tools.map(t => t.name).join(", ")}`
     }
   });
 
+  const keepaliveInterval = setInterval(() => {
+    sse.write("keepalive", { runId, timestamp: Date.now() });
+  }, 10000);
+
+  try {
+
   while (iteration < maxIterations) {
     iteration++;
 
+    sse.write("thinking", {
+      runId,
+      step: "iteration",
+      message: `Iteración ${iteration}/${maxIterations}: Analizando...`,
+      iteration,
+      timestamp: Date.now(),
+    });
+
     await emitTraceEvent(runId, "thinking", {
       content: `Iteration ${iteration}: Analyzing and planning next action...`,
-      phase: "execution"
+      phase: "executing"
     });
 
     try {
@@ -1077,12 +1083,11 @@ Please rewrite your response addressing these issues.`
     artifactsGenerated: artifacts.length
   });
 
-  // Ensure deterministic termination signal is sent when the agent finishes,
-  // preventing the frontend from getting stuck in an infinite polling loop.
-  sse.write("done", { runId, status: "completed", isFallback: true });
-  sse.end();
-
   return fullResponse;
+
+  } finally {
+    clearInterval(keepaliveInterval);
+  }
 }
 
 export {

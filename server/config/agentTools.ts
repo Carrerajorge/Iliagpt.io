@@ -180,16 +180,30 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
     },
     {
         name: "openclaw_rag_search",
-        description: "Run native OpenClaw/Clawi RAG search over user memory/context.",
+        description: "Search user documents, memory, and conversation history using hybrid RAG (semantic + keyword). Returns relevant text fragments with similarity scores.",
         parameters: {
             type: "object",
             properties: {
-                query: { type: "string", description: "Search query." },
+                query: { type: "string", description: "Search query for document/memory retrieval." },
                 limit: { type: "number", description: "Maximum results (1-20)." },
                 minScore: { type: "number", description: "Minimum semantic score (0-1)." },
                 chatId: { type: "string", description: "Optional chat scope filter." }
             },
             required: ["query"]
+        }
+    },
+    {
+        name: "rag_index_document",
+        description: "Index a document into the RAG knowledge base for future semantic retrieval. Automatically chunks the document and creates searchable embeddings. Use this when the user uploads or provides a document to remember.",
+        parameters: {
+            type: "object",
+            properties: {
+                content: { type: "string", description: "Full text content of the document to index." },
+                fileName: { type: "string", description: "Name of the document file." },
+                fileType: { type: "string", description: "Type of document (pdf, docx, txt, etc.)." },
+                sourceUrl: { type: "string", description: "Source URL if the document was fetched from the web." }
+            },
+            required: ["content"]
         }
     },
     {

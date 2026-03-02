@@ -124,16 +124,14 @@ class AgentEventBus extends EventEmitter {
   }
 
   private async persistEvent(event: TraceEvent): Promise<void> {
-    const insert = (db as any)?.insert;
-    if (typeof insert !== "function") {
+    if (!db || typeof (db as any).insert !== "function") {
       return;
     }
 
     try {
-      // Generate correlationId if not provided (required by DB schema)
       const correlationId = event.stepId || randomUUID();
 
-      await insert(agentModeEvents).values({
+      await (db as any).insert(agentModeEvents).values({
         id: randomUUID(),
         runId: event.runId,
         stepIndex: event.stepIndex ?? null,
