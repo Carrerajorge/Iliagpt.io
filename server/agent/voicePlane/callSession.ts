@@ -133,12 +133,20 @@ export class CallSessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Call session ${sessionId} not found`);
 
+    if (!session.identifiedAsAI) {
+      this.identifyAsAI(sessionId);
+    }
+
     if (session.state === "idle") {
       this.transition(sessionId, "ringing");
     }
 
     this.transition(sessionId, "active");
     session.startedAt = Date.now();
+
+    if (!session.consentVerified && session.governanceMode !== "AUTONOMOUS") {
+      this.emit("consentRequired", { sessionId, reason: "Call started without consent" });
+    }
 
     this.emit("callStarted", session);
     return session;
@@ -231,6 +239,20 @@ export class CallSessionManager extends EventEmitter {
       throw new Error(`Cannot execute script step in ${session.state} state`);
     }
 
+    if (!session.identifiedAsAI) {
+      this.identifyAsAI(sessionId);
+    }
+
+    const consentCheck = voiceGuardrails.verifyConsent(
+      sessionId,
+      session.consentVerified,
+      session.consentTimestamp
+    );
+    if (!consentCheck.verified && session.governanceMode === "SUPERVISED") {
+      this.emit("scriptBlocked", { sessionId, reason: "Consent not verified" });
+      throw new Error("Cannot execute script: consent not verified in supervised mode");
+    }
+
     if (session.currentStepIndex >= session.script.length) {
       return null;
     }
@@ -238,7 +260,13 @@ export class CallSessionManager extends EventEmitter {
     const step = session.script[session.currentStepIndex];
 
     if (step.content) {
-      const validation = voiceGuardrails.validateScriptContent(step.content);
+      const impersonationCheck = voiceGuardrails.checkAntiImpersonation(step.content, sessionId);
+      if (!impersonationCheck.safe) {
+        this.emit("scriptBlocked", { sessionId, step, reasons: impersonationCheck.issues });
+        throw new Error(`Script step blocked (impersonation): ${impersonationCheck.issues.join(", ")}`);
+      }
+
+      const validation = voiceGuardrails.validateScriptContent(step.content, sessionId);
       if (!validation.safe) {
         this.emit("scriptBlocked", { sessionId, step, reasons: validation.issues });
         throw new Error(`Script step blocked: ${validation.issues.join(", ")}`);

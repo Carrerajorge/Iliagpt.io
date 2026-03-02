@@ -371,8 +371,7 @@ export async function createUnifiedRun(
   const hasAgenticSignal = hasNativeAgenticSignal(lastUserMessage);
   const isAgenticMode: boolean =
     latencyMode !== 'fast' && (
-      requestSpec.intent !== 'chat' ||
-      requestSpec.intentConfidence > 0.7 ||
+      (requestSpec.intent !== 'chat' && requestSpec.intentConfidence > 0.5) ||
       hasAttachments ||
       hasAgenticSignal
     );

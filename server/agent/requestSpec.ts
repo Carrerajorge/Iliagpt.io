@@ -180,7 +180,12 @@ const INTENT_PATTERNS: Record<IntentType, RegExp[]> = {
   ],
   multi_step_task: [
     /\b(paso a paso|step by step|primero.*luego|first.*then)\b/i,
-    /\b(complejo|complex|múltiples|multiple)\b.*\b(pasos|steps|tareas|tasks)\b/i
+    /\b(complejo|complex|múltiples|multiple)\b.*\b(pasos|steps|tareas|tasks)\b/i,
+    /\b(lee|leer|read|abre|abrir|open|muestra|show|lista|list|explora|explore|revisa|check)\b.*\b(archivos?|files?|carpetas?|folders?|directorios?|directories?)\b/i,
+    /\b(ejecuta|execute|run|corre|lanza|launch)\b.*\b(comando|command|terminal|shell|script|programa|program)\b/i,
+    /\b(instala|install|configura|configure|setup|despliega|deploy)\b.*\b/i,
+    /\b(piensa|think|analiza|analyze|razona|reason|reflexiona|reflect)\b.*\b(profund|deep|detall|detail|completo|complete|a fondo)\b/i,
+    /\b(investiga|research)\b.*\b(profund|deep|exhaustiv|comprehensive|a fondo|thoroughly|sobre|about)\b/i,
   ],
   chat: [],
   unknown: []
@@ -286,8 +291,16 @@ export function detectIntent(message: string, attachments: AttachmentSpec[] = []
     }
   }
   
-  if (message.length < 50 && !message.includes("?")) {
+  const imperativeActionPattern = /^(?:por favor\s+)?(?:haz|hazme|ejecuta|corre|lee|leer|escribe|crea|instala|busca|analiza|investiga|muestra|lista|abre|configura|despliega|piensa|explica|revisa|arregla|mejora|optimiza|construye|genera|borra|elimina|run|execute|read|write|create|install|search|find|analyze|show|list|open|configure|deploy|think|fix|improve|build|generate|delete|remove|check)\b/i;
+  const actionWithObjectPattern = /\b(haz|hazme|ejecuta|corre|lee|leer|escribe|crea|instala|busca|analiza|investiga|muestra|lista|abre|configura|despliega|piensa|revisa|arregla|mejora|optimiza|construye|genera|borra|elimina|run|execute|read|write|create|install|search|find|analyze|show|list|open|configure|deploy|think|fix|improve|build|generate|delete|remove|check)\b\s+(?:el|la|los|las|un|una|unos|unas|mi|mis|este|esta|estos|estas|the|a|an|my|this|these|that|those)\b/i;
+  const excludeConversational = /\b(do you|does it|did you|can you|could you|would you|should|what do|how do|make sense|i run|i do|i think|you think|you know|you make)\b/i;
+  
+  if (message.length < 50 && !message.includes("?") && !imperativeActionPattern.test(message)) {
     return { intent: "chat", confidence: 0.6 };
+  }
+
+  if (!excludeConversational.test(message) && (imperativeActionPattern.test(message) || actionWithObjectPattern.test(message))) {
+    return { intent: "multi_step_task", confidence: 0.75 };
   }
   
   return { intent: "chat", confidence: 0.5 };

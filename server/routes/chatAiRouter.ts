@@ -4656,12 +4656,16 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       const userQuery = extractUserText(lastUserMsg?.content);
       const earlyQuestionClassification = questionClassifier.classifyQuestion(userQuery || "");
 
-      // Auto: decide based on complexity signals (simple vs complex).
+      const { hasNativeAgenticSignal: checkAgenticSignal } = await import("../agent/nativeAgenticFusion");
+      const hasActionSignal = checkAgenticSignal(userQuery || "");
+
       if (latencyMode === 'auto') {
         if (
-          earlyQuestionClassification.type === 'greeting' ||
-          earlyQuestionClassification.type === 'factual_simple' ||
-          earlyQuestionClassification.type === 'yes_no'
+          !hasActionSignal && (
+            earlyQuestionClassification.type === 'greeting' ||
+            earlyQuestionClassification.type === 'factual_simple' ||
+            earlyQuestionClassification.type === 'yes_no'
+          )
         ) {
           latencyMode = 'fast';
         } else if (
@@ -4871,8 +4875,6 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       const skipSkillShortcuts = !!skillExecutionResult && skillExecutionResult.status !== 'skipped';
 
-      // Ultra-fast path for greetings: avoid expensive intent routing, context hydration,
-      // and LLM calls entirely.
       if (
         earlyQuestionClassification.type === 'greeting' &&
         !hasAnyAttachments &&
@@ -4880,7 +4882,8 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         !forceWebSearch &&
         !webSearchAuto &&
         !isConnectionClosed &&
-        !skipSkillShortcuts
+        !skipSkillShortcuts &&
+        !hasActionSignal
       ) {
         const isThanks = /\b(gracias|muchas\s+gracias|te\s+agradezco)\b/i.test(userQuery);
         const content = isThanks
@@ -4906,11 +4909,9 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         return res.end();
       }
 
-      // Simple QA fast-path: avoid heavy intent routing/history hydration for single-turn
-      // factual/yes-no questions. Use a short timeout + provider fallback so users don't
-      // wait ~30s for trivial prompts.
       if (
         latencyMode === 'fast' &&
+        !hasActionSignal &&
         (earlyQuestionClassification.type === 'factual_simple' || earlyQuestionClassification.type === 'yes_no') &&
         !hasAnyAttachments &&
         !docTool &&

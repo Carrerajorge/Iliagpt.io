@@ -17,6 +17,10 @@ const channelsSignalRegex =
   /\b(channel|channels|canal|canales|telegram|whatsapp|slack|discord|imessage|line|signal|matrix|teams|googlechat|feishu|mattermost|irc|twitch)\b/i;
 const localFsSignalRegex =
   /\b(?:carpetas?|caprteas?|careptas?|carpteas?|folders?|directorios?|directories?|archivos?|files?)\b.*\b(?:mac|computadora|pc|laptop|sistema|escritorio|desktop|descargas|downloads|documentos|documents|home|disco)\b|\b(?:analiza|explora|listar|list|revisa|cuenta|count|cu[aá]ntas?)\b.*\b(?:mi\s+(?:mac|computadora|pc)|desktop|escritorio|home)\b|\b(?:cu[aá]ntas?|how\s+many|cantidad(?:\s+de)?|n[uú]mero(?:\s+de)?)\s+(?:carpetas?|caprteas?|careptas?|carpteas?|folders?|directorios?|directories?|archivos?|files?)\b/i;
+const actionSignalRegex =
+  /^(?:por favor\s+)?(?:ejecuta|execute|run|corre|haz|hazme|instala|install|configura|configure|despliega|deploy|arregla|fix|mejora|improve|optimiza|optimize|construye|build|automatiza|automate)\b|\b(investiga\w*\s+profund|deep\s+research|piensa\s+profund|think\s+deep|analiza\s+a\s+fondo|analyze\s+thorough)\b/i;
+const fileTerminalSignalRegex =
+  /\b(?:abre|open|usa|use|ejecuta|run|corre|lanza|launch|inicia|start)\b.*\b(?:terminal|bash|shell|consola|console|cli|ssh)\b|\b(?:lee|read|lista|list|muestra|show|explora|explore|revisa|check)\b.*\b(?:archivos?|files?|carpetas?|folders?|directorios?|directories?)\b|\b(?:ejecuta|run|corre)\b.*\b(?:comando|command|script|programa|program)\b/i;
 
 const MAX_PROMPT_APPENDIX_CHARS = 8000;
 const MAX_SKILL_PROMPT_CHARS = 2400;
@@ -38,12 +42,14 @@ function normalizeComplexity(objective: string): number {
 
 export function hasNativeAgenticSignal(rawMessage: string): boolean {
   const message = String(rawMessage || "").trim();
-  if (message.length < 12) return false;
+  if (message.length < 8) return false;
   return (
     planningSignalRegex.test(message) ||
     memorySignalRegex.test(message) ||
     skillsSignalRegex.test(message) ||
-    localFsSignalRegex.test(message)
+    localFsSignalRegex.test(message) ||
+    actionSignalRegex.test(message) ||
+    fileTerminalSignalRegex.test(message)
   );
 }
 

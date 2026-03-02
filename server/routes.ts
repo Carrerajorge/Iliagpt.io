@@ -938,6 +938,7 @@ export async function registerRoutes(
     try {
       const { voiceEngine } = await import("./agent/voicePlane/voiceEngine");
       const { callSessionManager } = await import("./agent/voicePlane/callSession");
+      const { voiceGuardrails } = await import("./agent/voicePlane/voiceGuardrails");
       const rawEngine = voiceEngine.getStats();
       const engine = {
         ...rawEngine,
@@ -946,6 +947,8 @@ export async function registerRoutes(
       res.json({
         engine,
         calls: callSessionManager.getStats(),
+        guardrails: voiceGuardrails.getStats(),
+        guardrailEvents: voiceGuardrails.getEvents(20),
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

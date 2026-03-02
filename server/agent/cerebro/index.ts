@@ -239,6 +239,8 @@ export function shouldUseCerebro(intent: string, rawMessage: string): boolean {
     'data_analysis',
     'code_generation',
     'multi_step_task',
+    'web_automation',
+    'document_analysis',
   ];
 
   if (complexIntents.includes(intent)) return true;
@@ -247,6 +249,12 @@ export function shouldUseCerebro(intent: string, rawMessage: string): boolean {
     /\b(step by step|multi.?step|first.*then|analyze.*and.*create)\b/i,
     /\b(research|investigate|compare|evaluate)\b.*\b(and|then|also)\b/i,
     /\b(create|generate|build)\b.*\b(with|including|and)\b.*\b(also|then|after)\b/i,
+    /\b(profund|deep|exhaustiv|comprehensive|a fondo|thoroughly|detallad|detailed)\b/i,
+    /\b(investiga|research)\b.*\b(sobre|about|profund|deep)\b/i,
+    /\b(analiza|analyze)\b.*\b(profund|deep|completo|complete|detalle|detail|a fondo)\b/i,
+    /\b(piensa|think|razona|reason)\b.*\b(profund|deep|crítico|critical)\b/i,
+    /\b(lee|read|lista|list|explora|explore)\b.*\b(archivos?|files?|carpetas?|folders?)\b/i,
+    /\b(ejecuta|execute|run|corre)\b.*\b(comando|command|script|terminal|bash)\b/i,
   ];
 
   return complexSignals.some(pattern => pattern.test(rawMessage));

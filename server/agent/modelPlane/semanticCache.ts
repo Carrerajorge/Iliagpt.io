@@ -100,6 +100,7 @@ export class SemanticCache extends EventEmitter {
   private modelIndex: Map<string, Set<string>> = new Map();
   private config: SemanticCacheConfig;
   private stats: CacheStats;
+  private evictionTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config?: Partial<SemanticCacheConfig>) {
     super();
@@ -123,6 +124,35 @@ export class SemanticCache extends EventEmitter {
       entriesByModel: {},
       memoryUsageEstimate: 0,
     };
+
+    this.evictionTimer = setInterval(() => this.backgroundEvict(), 60_000);
+  }
+
+  private backgroundEvict(): void {
+    const now = Date.now();
+    let evicted = 0;
+    for (const [key, entry] of this.entries) {
+      if (now - entry.createdAt > entry.ttlMs) {
+        this.removeEntry(key, entry);
+        evicted++;
+      }
+    }
+
+    while (this.entries.size > this.config.maxSize) {
+      this.evict();
+      evicted++;
+    }
+
+    if (evicted > 0 && this.config.enableTelemetry) {
+      this.emit("cache:background_evict", { evicted, remaining: this.entries.size });
+    }
+  }
+
+  destroy(): void {
+    if (this.evictionTimer) {
+      clearInterval(this.evictionTimer);
+      this.evictionTimer = null;
+    }
   }
 
   lookup(prompt: string, modelId?: string): CacheLookupResult {

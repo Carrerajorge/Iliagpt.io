@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Phone, PhoneOff, PhoneIncoming, Mic, Volume2, Shield, Activity } from "lucide-react";
+import { Loader2, Phone, PhoneOff, PhoneIncoming, Mic, Volume2, Shield, Activity, AlertTriangle, ShieldAlert, Eye } from "lucide-react";
 
 interface CallSession {
   id: string;
@@ -13,6 +13,14 @@ interface CallSession {
   createdAt: number;
   consentGiven: boolean;
   aiDisclosed: boolean;
+}
+
+interface GuardrailEvent {
+  id: string;
+  type: string;
+  sessionId: string;
+  timestamp: number;
+  details: Record<string, unknown>;
 }
 
 interface VoiceStats {
@@ -30,6 +38,15 @@ interface VoiceStats {
     avgDurationMs: number;
     consentRate: number;
   };
+  guardrails?: {
+    totalChecks: number;
+    blockedAttempts: number;
+    piiDetections: number;
+    consentViolations: number;
+    impersonationAttempts: number;
+    contentViolations: number;
+  };
+  guardrailEvents?: GuardrailEvent[];
 }
 
 const stateColors: Record<string, string> = {
@@ -48,6 +65,14 @@ const stateIcons: Record<string, typeof Phone> = {
   ended: PhoneOff,
 };
 
+const guardrailEventColors: Record<string, string> = {
+  impersonation_blocked: "bg-red-500/20 text-red-400",
+  consent_missing: "bg-yellow-500/20 text-yellow-400",
+  content_unsafe: "bg-red-500/20 text-red-400",
+  pii_detected: "bg-orange-500/20 text-orange-400",
+  pii_redacted: "bg-blue-500/20 text-blue-400",
+};
+
 export default function VoicePlane() {
   const { data: sessionsData, isLoading: sessionsLoading } = useQuery({
     queryKey: ["/api/voice/sessions"],
@@ -63,7 +88,12 @@ export default function VoicePlane() {
   const stats: VoiceStats = (statsData as any) || {
     engine: { totalTranscriptions: 0, totalSyntheses: 0, activeSessions: 0, avgConfidence: 0, totalCharactersSynthesized: 0 },
     calls: { totalCalls: 0, activeCalls: 0, completedCalls: 0, avgDurationMs: 0, consentRate: 0 },
+    guardrails: { totalChecks: 0, blockedAttempts: 0, piiDetections: 0, consentViolations: 0, impersonationAttempts: 0, contentViolations: 0 },
+    guardrailEvents: [],
   };
+
+  const guardrails = stats.guardrails || { totalChecks: 0, blockedAttempts: 0, piiDetections: 0, consentViolations: 0, impersonationAttempts: 0, contentViolations: 0 };
+  const guardrailEvents = stats.guardrailEvents || [];
 
   if (sessionsLoading || statsLoading) {
     return (
@@ -125,6 +155,69 @@ export default function VoicePlane() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <ShieldAlert className="h-4 w-4" />
+            Voice Guardrails
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            <div className="p-3 rounded-lg border">
+              <div className="flex items-center gap-2 mb-1">
+                <Eye className="h-3 w-3 text-blue-400" />
+                <span className="text-[10px] text-muted-foreground uppercase">Total Checks</span>
+              </div>
+              <div className="text-lg font-bold" data-testid="stat-guardrail-checks">{guardrails.totalChecks}</div>
+            </div>
+            <div className="p-3 rounded-lg border">
+              <div className="flex items-center gap-2 mb-1">
+                <AlertTriangle className="h-3 w-3 text-red-400" />
+                <span className="text-[10px] text-muted-foreground uppercase">Blocked</span>
+              </div>
+              <div className="text-lg font-bold text-red-400" data-testid="stat-guardrail-blocked">{guardrails.blockedAttempts}</div>
+              <div className="text-[10px] text-muted-foreground">
+                {guardrails.impersonationAttempts} impersonation · {guardrails.contentViolations} content
+              </div>
+            </div>
+            <div className="p-3 rounded-lg border">
+              <div className="flex items-center gap-2 mb-1">
+                <Shield className="h-3 w-3 text-orange-400" />
+                <span className="text-[10px] text-muted-foreground uppercase">PII / Consent</span>
+              </div>
+              <div className="text-lg font-bold text-orange-400" data-testid="stat-guardrail-pii">{guardrails.piiDetections}</div>
+              <div className="text-[10px] text-muted-foreground">
+                {guardrails.consentViolations} consent violations
+              </div>
+            </div>
+          </div>
+
+          {guardrailEvents.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground mb-2">Recent Guardrail Events</div>
+              {guardrailEvents.slice(0, 10).map((event) => (
+                <div key={event.id} className="flex items-center justify-between p-2 rounded border" data-testid={`guardrail-event-${event.id}`}>
+                  <div className="flex items-center gap-2">
+                    <Badge className={guardrailEventColors[event.type] || "bg-muted text-muted-foreground"}>
+                      {event.type.replace(/_/g, " ")}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground font-mono">{event.sessionId.slice(0, 8)}...</span>
+                  </div>
+                  <span className="text-[10px] text-muted-foreground">{new Date(event.timestamp).toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {guardrailEvents.length === 0 && (
+            <div className="text-center py-4 text-muted-foreground text-xs">
+              No guardrail events recorded yet
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
