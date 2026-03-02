@@ -620,7 +620,7 @@ export function Sidebar({
 
   return (
     <nav
-      className={cn("flex h-screen w-[280px] flex-col bg-background/80 backdrop-blur-xl border-r border-border/50 shadow-[4px_0_24px_-12px_rgba(0,0,0,0.1)] text-sidebar-foreground transition-all duration-300", className)}
+      className={cn("flex h-screen w-[260px] flex-col bg-background/80 backdrop-blur-xl border-r border-border/50 shadow-[4px_0_24px_-12px_rgba(0,0,0,0.1)] text-sidebar-foreground transition-all duration-300", className)}
       aria-label="Navegación principal y chats"
       role="navigation"
     >
