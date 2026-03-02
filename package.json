@@ -374,11 +374,8 @@
   "overrides": {
     "xlsx": "npm:@e965/xlsx@^0.20.3",
     "fast-xml-parser": "^5.3.6",
-    "readdir-glob": {
-      "minimatch": "^10.2.1"
-    },
-    "glob@10": {
-      "minimatch": "^10.2.1"
-    }
+    "minimatch": "^10.2.3",
+    "serialize-javascript": "^7.0.3",
+    "rollup": "^4.59.0"
   }
 }
