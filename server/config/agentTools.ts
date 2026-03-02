@@ -262,6 +262,42 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
         }
     },
     {
+        name: "run_code",
+        description: "Execute Python or Node.js code in an isolated environment. Safer than raw bash for computation, data analysis, and scripting tasks. Captures stdout, stderr, and exit code.",
+        parameters: {
+            type: "object",
+            properties: {
+                language: { type: "string", enum: ["python", "javascript"], description: "Programming language to execute" },
+                code: { type: "string", description: "The source code to execute" },
+                timeout: { type: "number", description: "Timeout in seconds (default 30, max 120)" }
+            },
+            required: ["language", "code"]
+        }
+    },
+    {
+        name: "process_list",
+        description: "List running processes on the system. Can filter by name. Returns PID, CPU%, MEM%, and command for each process.",
+        parameters: {
+            type: "object",
+            properties: {
+                filter: { type: "string", description: "Optional filter to match process names (case-insensitive)" },
+                sortBy: { type: "string", enum: ["cpu", "mem", "pid"], description: "Sort by CPU, memory, or PID (default: cpu)" },
+                limit: { type: "number", description: "Maximum processes to return (default 30, max 100)" }
+            }
+        }
+    },
+    {
+        name: "port_check",
+        description: "Check which process is using a specific port, or list all listening ports.",
+        parameters: {
+            type: "object",
+            properties: {
+                port: { type: "number", description: "Specific port number to check. If omitted, lists all listening ports." },
+                protocol: { type: "string", enum: ["tcp", "udp", "all"], description: "Protocol filter (default: tcp)" }
+            }
+        }
+    },
+    {
         name: "openclaw_clawi_exec",
         description: "Execute native Clawi/OpenClaw CLI commands locally (no external API).",
         parameters: {

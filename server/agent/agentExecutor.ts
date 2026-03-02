@@ -24,6 +24,86 @@ export interface AgentExecutorOptions {
   accessLevel?: 'owner' | 'trusted' | 'unknown';
 }
 
+const HIGH_RISK_PATTERNS: Array<{ tool: string; pattern: RegExp; reason: string }> = [
+  { tool: "bash", pattern: /\brm\s+(-rf?\s+)?\/(?:etc|usr|var|boot|sys|proc)\b/, reason: "Deleting system directories" },
+  { tool: "bash", pattern: /\bmv\s+.*\s+\/(?:dev\/null|tmp)\b/, reason: "Moving files to destructive targets" },
+  { tool: "bash", pattern: /\bcurl\b.*\|\s*(?:bash|sh)\b/, reason: "Piping remote script to shell" },
+  { tool: "bash", pattern: /\bwget\b.*\|\s*(?:bash|sh)\b/, reason: "Piping remote script to shell" },
+  { tool: "bash", pattern: /\bnpm\s+publish\b/, reason: "Publishing package to registry" },
+  { tool: "bash", pattern: /\bgit\s+push\s+.*--force\b/, reason: "Force pushing to git" },
+  { tool: "write_file", pattern: /^\/etc\/|^\/usr\/|^\/var\//, reason: "Writing to system directory" },
+  { tool: "edit_file", pattern: /^\/etc\/|^\/usr\/|^\/var\//, reason: "Editing system file" },
+];
+
+function isHighRiskAction(toolName: string, args: Record<string, any>): { risky: boolean; reason: string } {
+  const checkValue = toolName === "bash" ? (args.command || "") : (args.file_path || args.filepath || "");
+  for (const rule of HIGH_RISK_PATTERNS) {
+    if (rule.tool === toolName && rule.pattern.test(checkValue)) {
+      return { risky: true, reason: rule.reason };
+    }
+  }
+  return { risky: false, reason: "" };
+}
+
+class CircuitBreaker {
+  private failures: Map<string, number> = new Map();
+  private tripped: Set<string> = new Set();
+  private threshold: number;
+
+  constructor(threshold = 3) {
+    this.threshold = threshold;
+  }
+
+  recordFailure(toolName: string): void {
+    const count = (this.failures.get(toolName) || 0) + 1;
+    this.failures.set(toolName, count);
+    if (count >= this.threshold) {
+      this.tripped.add(toolName);
+      console.warn(`[CircuitBreaker] Tool "${toolName}" tripped after ${count} failures`);
+    }
+  }
+
+  recordSuccess(toolName: string): void {
+    this.failures.set(toolName, 0);
+  }
+
+  isTripped(toolName: string): boolean {
+    return this.tripped.has(toolName);
+  }
+
+  getStatus(): Record<string, { failures: number; tripped: boolean }> {
+    const status: Record<string, { failures: number; tripped: boolean }> = {};
+    for (const [name, count] of this.failures) {
+      status[name] = { failures: count, tripped: this.tripped.has(name) };
+    }
+    return status;
+  }
+}
+
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  baseDelayMs = 1000
+): Promise<T> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      const status = err?.status || err?.statusCode || 0;
+      const isRetryable = status === 429 || status === 503 || status === 502 || err?.code === "ECONNRESET" || err?.code === "ETIMEDOUT";
+      if (!isRetryable || attempt === maxRetries) {
+        throw err;
+      }
+      const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 500;
+      console.log(`[RetryBackoff] Attempt ${attempt + 1} failed (${status || err.code}), retrying in ${Math.round(delay)}ms...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw lastError;
+}
+
 import { type FunctionDeclaration, AGENT_TOOLS } from "../config/agentTools";
 
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -405,6 +485,8 @@ export async function executeAgentLoop(
   let iteration = 0;
   let conversationHistory = [...messages];
   let fullResponse = "";
+  const circuitBreaker = new CircuitBreaker(3);
+  let totalTokensUsed = 0;
 
   const recentUserText = collectRecentUserText(messages) || requestSpec.rawMessage || "";
   const isLocalFsRequest = LOCAL_FILESYSTEM_SIGNAL_REGEX.test(recentUserText || requestSpec.rawMessage || "");
@@ -584,10 +666,14 @@ MANDATORY RULES:
 
 You have access to powerful tools that let you interact with the real environment:
 - **bash**: Execute ANY shell command (ls, cat, grep, curl, python, node, pip, npm, git, etc.)
+- **run_code**: Execute Python or JavaScript code safely with output capture
 - **read_file / write_file / edit_file / list_files**: Full filesystem access to read, create, modify, and browse files
 - **web_fetch**: Fetch and read any URL or API endpoint
 - **web_search**: Search the web for current information
 - **browse_and_act**: Control a real browser to interact with websites
+- **process_list / port_check**: Inspect running processes and port usage
+- **analyze_data / generate_chart**: Statistical analysis and visualization
+- **openclaw_rag_search / rag_index_document**: Knowledge base search and indexing
 
 CRITICAL RULES:
 1. ALWAYS prefer calling tools over asking the user to do things manually.
@@ -683,20 +769,27 @@ Available tools: ${openclawToolNames}, ${tools.map(t => t.name).join(", ")}`
       });
 
       const agentModel = process.env.AGENT_MODEL || "minimax/minimax-m2.5";
-      const completionPromise = openaiClient.chat.completions.create({
-        model: agentModel,
-        messages: openaiMessages,
-        temperature: 0.7,
-        max_tokens: 4096,
-        tools: dedupedTools.length > 0 ? dedupedTools : undefined,
-        tool_choice: dedupedTools.length > 0 ? "auto" : undefined,
-      });
 
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Agent LLM call timed out after 60s")), 60000)
-      );
+      const response = await retryWithBackoff(async () => {
+        const completionPromise = openaiClient.chat.completions.create({
+          model: agentModel,
+          messages: openaiMessages,
+          temperature: 0.7,
+          max_tokens: 4096,
+          tools: dedupedTools.length > 0 ? dedupedTools : undefined,
+          tool_choice: dedupedTools.length > 0 ? "auto" : undefined,
+        });
 
-      const response = await Promise.race([completionPromise, timeoutPromise]);
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Agent LLM call timed out after 90s")), 90000)
+        );
+
+        return Promise.race([completionPromise, timeoutPromise]);
+      }, 2, 1500);
+
+      if (response.usage) {
+        totalTokensUsed += (response.usage.total_tokens || 0);
+      }
 
       const choice = response.choices?.[0];
       if (!choice) {
@@ -722,52 +815,99 @@ Available tools: ${openclawToolNames}, ${tools.map(t => t.name).join(", ")}`
         } as any);
       }
 
-      for (const tc of toolCalls) {
+      const executeOneTool = async (tc: OpenAI.ChatCompletionMessageToolCall) => {
         const name = tc.function.name;
         let args: Record<string, any> = {};
         try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
 
+        if (circuitBreaker.isTripped(name)) {
+          console.warn(`[AgentExecutor] Skipping tripped tool: ${name}`);
+          return {
+            tc,
+            name,
+            args,
+            result: { error: `Tool "${name}" disabled: too many consecutive failures` },
+            artifact: undefined as { type: string; url: string; name: string } | undefined,
+            skipped: true,
+          };
+        }
+
+        const riskCheck = isHighRiskAction(name, args);
+        if (riskCheck.risky && accessLevel !== 'owner') {
+          console.warn(`[AgentExecutor] HIGH RISK blocked for non-owner: ${name} - ${riskCheck.reason}`);
+          return {
+            tc, name, args,
+            result: { error: `Action blocked: ${riskCheck.reason}. Requires owner approval.` },
+            artifact: undefined as { type: string; url: string; name: string } | undefined,
+            skipped: true,
+          };
+        }
+
+        if (riskCheck.risky) {
+          sse.write("tool_requires_confirmation", {
+            runId, toolName: name, args, reason: riskCheck.reason, iteration,
+          });
+          console.warn(`[AgentExecutor] HIGH RISK action detected: ${name} - ${riskCheck.reason}. Proceeding with caution for owner.`);
+          await emitTraceEvent(runId, "high_risk_action", {
+            toolName: name, args, reason: riskCheck.reason, accessLevel,
+          });
+        }
+
         sse.write("tool_start", {
-          runId,
-          toolName: name,
-          args,
-          iteration
+          runId, toolName: name, args, iteration,
         });
 
         let result: any;
         let artifact: { type: string; url: string; name: string } | undefined;
+        const toolStartTime = Date.now();
 
-        const isOpenClawTool = OPENCLAW_TOOLS.some(t => t.function.name === name);
-        if (isOpenClawTool) {
-          const toolResult = await executeOpenClawToolCall(
-            { id: tc.id, type: "function", function: { name, arguments: tc.function.arguments } },
-            (msg) => sse.write("tool_status", { runId, toolName: name, status: msg, iteration })
-          );
-          try { result = JSON.parse(toolResult.content); } catch { result = toolResult.content; }
-        } else {
-          const execResult = await executeToolCall(
-            name,
-            args,
-            toolContext,
-            runId,
-            res,
-            reservationDetails
-          );
-          result = execResult.result;
-          artifact = execResult.artifact;
+        try {
+          const isOpenClawTool = OPENCLAW_TOOLS.some(t => t.function.name === name);
+          if (isOpenClawTool) {
+            const toolResult = await executeOpenClawToolCall(
+              { id: tc.id, type: "function", function: { name, arguments: tc.function.arguments } },
+              (msg) => sse.write("tool_status", { runId, toolName: name, status: msg, iteration })
+            );
+            try { result = JSON.parse(toolResult.content); } catch { result = toolResult.content; }
+          } else {
+            const execResult = await executeToolCall(
+              name, args, toolContext, runId, res, reservationDetails
+            );
+            result = execResult.result;
+            artifact = execResult.artifact;
+          }
+
+          const hasError = result && typeof result === "object" && "error" in result;
+          if (hasError) {
+            circuitBreaker.recordFailure(name);
+          } else {
+            circuitBreaker.recordSuccess(name);
+          }
+        } catch (toolErr: any) {
+          circuitBreaker.recordFailure(name);
+          result = { error: toolErr.message || "Tool execution failed" };
         }
+
+        const toolDurationMs = Date.now() - toolStartTime;
 
         if (artifact) {
           artifacts.push(artifact);
         }
 
         sse.write("tool_result", {
-          runId,
-          toolName: name,
-          result,
-          artifact,
-          iteration
+          runId, toolName: name, result, artifact, iteration, durationMs: toolDurationMs,
         });
+
+        return { tc, name, args, result, artifact, skipped: false };
+      };
+
+      const toolResults = toolCalls.length > 1
+        ? await Promise.all(toolCalls.map(tc => executeOneTool(tc)))
+        : toolCalls.length === 1
+          ? [await executeOneTool(toolCalls[0])]
+          : [];
+
+      for (const { tc, name, result, artifact } of toolResults) {
 
         let resultSummary: string;
         if (name === "browse_and_act") {
@@ -1080,8 +1220,39 @@ Please rewrite your response addressing these issues.`
       status: "completed"
     },
     iterations: iteration,
-    artifactsGenerated: artifacts.length
+    artifactsGenerated: artifacts.length,
+    totalTokensUsed,
+    circuitBreakerStatus: circuitBreaker.getStatus(),
   });
+
+  try {
+    const { ragService } = await import("../services/ragService");
+    if (fullResponse && fullResponse.length > 50) {
+      const toolsUsed = conversationHistory
+        .filter((m: any) => m.tool_calls)
+        .flatMap((m: any) => m.tool_calls?.map((tc: any) => tc.function?.name) || []);
+      const uniqueTools = [...new Set(toolsUsed)];
+
+      await ragService.indexMessage(userId, chatId, fullResponse, "assistant");
+
+      if (artifacts.length > 0 || uniqueTools.length > 0) {
+        const memoryNote = [
+          `Agent run ${runId}: ${requestSpec.intent}`,
+          uniqueTools.length > 0 ? `Tools used: ${uniqueTools.join(", ")}` : "",
+          artifacts.length > 0 ? `Artifacts: ${artifacts.map(a => a.name).join(", ")}` : "",
+          `Iterations: ${iteration}, Tokens: ${totalTokensUsed}`,
+          fullResponse.substring(0, 500),
+        ].filter(Boolean).join("\n");
+        await ragService.indexDocument(userId, memoryNote, {
+          chatId,
+          fileName: `agent_run_${runId}.md`,
+          fileType: "agent_memory",
+        });
+      }
+    }
+  } catch (memErr: any) {
+    console.warn(`[AgentExecutor] Memory persistence failed (non-fatal):`, memErr?.message);
+  }
 
   return fullResponse;
 

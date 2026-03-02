@@ -4792,6 +4792,13 @@ export function ChatInterface({
                       }];
                     }, effectiveChatIdForStream);
                   }
+                } else if (eventType === "tool_status") {
+                  if (data.toolName && data.status) {
+                    setAiProcessStepsForChat((prev: any[]) =>
+                      prev.map((s: any) =>
+                        s.id?.startsWith(`tool-${data.toolName}`) ? { ...s, message: data.status, statusDetail: data.status } : s
+                      ), effectiveChatIdForStream);
+                  }
                 } else if (eventType === "tool_result") {
                   const agenticTools = ["bash", "web_fetch", "web_search", "read_file", "write_file", "edit_file", "list_files", "rag_index_document", "openclaw_rag_search", "fetch_url", "analyze_data", "generate_chart"];
                   if (agenticTools.includes(data.toolName)) {

@@ -5,6 +5,11 @@ import {
   readFileToolSchema, writeFileToolSchema, editFileToolSchema, listFilesToolSchema,
   executeReadFile, executeWriteFile, executeEditFile, executeListFiles
 } from "./tools/fsTool";
+import {
+  processListToolSchema, portCheckToolSchema,
+  executeProcessList, executePortCheck
+} from "./tools/processTool";
+import { codeToolSchema, executeCodeTool } from "./tools/codeTool";
 
 export interface ToolCall {
   id: string;
@@ -29,6 +34,9 @@ export const AGENT_TOOLS = [
   writeFileToolSchema,
   editFileToolSchema,
   listFilesToolSchema,
+  codeToolSchema,
+  processListToolSchema,
+  portCheckToolSchema,
 ];
 
 export const MAX_TOOL_ITERATIONS = 15;
@@ -87,6 +95,21 @@ export async function executeToolCall(
       case "list_files":
         onStatus?.(`Listing: ${args.directory || "."}`);
         result = await executeListFiles(args);
+        break;
+
+      case "run_code":
+        onStatus?.(`Running ${args.language || "code"}...`);
+        result = await executeCodeTool(args);
+        break;
+
+      case "process_list":
+        onStatus?.(`Listing processes${args.filter ? ` matching "${args.filter}"` : ""}...`);
+        result = await executeProcessList(args);
+        break;
+
+      case "port_check":
+        onStatus?.(`Checking ${args.port ? `port ${args.port}` : "all ports"}...`);
+        result = await executePortCheck(args);
         break;
 
       default:

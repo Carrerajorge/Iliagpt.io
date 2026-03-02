@@ -770,6 +770,10 @@ export function useStreamChat(deps: StreamChatDeps) {
                 onAiStateChange?.("agent_working");
               }
 
+              if (!isStaleConversation && (currentEventType === "tool_status" || currentEventType === "tool_start" || currentEventType === "tool_result")) {
+                onEvent?.(currentEventType, data);
+              }
+
               if (currentEventType === "done" || currentEventType === "finish") {
                 clearTokenTimeouts();
                 streamDone = true;

@@ -481,11 +481,14 @@ export const AgentRunContent = memo(function AgentRunContent({
                                         key={idx}
                                         toolName={step.toolName}
                                         status={status}
-                                        input={step.output?.input || step.output /* fallback depending on structure */}
+                                        input={step.output?.input || step.output}
                                         output={step.status === "succeeded" ? step.output : undefined}
                                         error={step.error}
                                         onConfirm={() => onToolConfirm?.(step.toolName, step.stepIndex)}
                                         onDeny={() => onToolDeny?.(step.toolName, step.stepIndex)}
+                                        streamingOutput={(step as any).streamingOutput}
+                                        statusMessage={(step as any).statusMessage}
+                                        startedAt={(step as any).startedAt}
                                     />
                                 );
                             })}
