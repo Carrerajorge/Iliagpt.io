@@ -23,7 +23,7 @@ async function testArticleSearch() {
     console.log(`  - PubMed: ${isPubMedConfigured() ? "✅ Ready (free)" : "❌ Not configured"}`);
     console.log(`  - SciELO: ${isSciELOConfigured() ? "✅ Ready (free)" : "❌ Not configured"}`);
     console.log(`  - Redalyc: ${isRedalycConfigured() ? "✅ Ready (free/token optional)" : "❌ Not configured"}`);
-    console.log(`  - Scopus: ${isScopusConfigured() ? "✅ Ready (API key configured)" : "⚠️ API key required"}`);
+    console.log(`  - Scopus: ${isScopusConfigured() ? "✅ Ready" : "⚠️ Not configured"}`);
     console.log();
 
     const query = "embarazo";
