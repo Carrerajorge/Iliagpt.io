@@ -584,6 +584,33 @@ MANDATORY RULES:
     });
   }
 
+  if (requestSpec.intent !== "web_automation" && !isLocalFsRequest) {
+    const openclawToolNames = OPENCLAW_TOOLS.map(t => t.function.name).join(", ");
+    conversationHistory.unshift({
+      role: "system",
+      content: `YOU ARE AN AGENTIC AI ASSISTANT WITH REAL TOOL EXECUTION CAPABILITIES.
+
+You have access to powerful tools that let you interact with the real environment:
+- **bash**: Execute ANY shell command (ls, cat, grep, curl, python, node, pip, npm, git, etc.)
+- **read_file / write_file / edit_file / list_files**: Full filesystem access to read, create, modify, and browse files
+- **web_fetch**: Fetch and read any URL or API endpoint
+- **web_search**: Search the web for current information
+- **browse_and_act**: Control a real browser to interact with websites
+
+CRITICAL RULES:
+1. ALWAYS prefer calling tools over asking the user to do things manually.
+2. When the user asks you to do something, DO IT by calling the appropriate tool — don't just explain how.
+3. For multi-step tasks, chain tool calls: execute one, read the result, then execute the next.
+4. Use "bash" for: running commands, checking system info, installing packages, running scripts, processing data.
+5. Use "read_file"/"write_file" for: reading code, creating files, modifying configurations.
+6. Use "web_search" + "web_fetch" for: researching topics, reading documentation, checking APIs.
+7. You can combine multiple tools in sequence to accomplish complex tasks.
+8. Show results clearly after each tool execution.
+
+Available tools: ${openclawToolNames}, ${tools.map(t => t.name).join(", ")}`
+    });
+  }
+
   console.log(`[AgentExecutor] Starting loop: intent=${requestSpec.intent}, tools=[${tools.map(t => t.name).join(', ')}], messages=${conversationHistory.length}, systemMsgs=${conversationHistory.filter(m => m.role === 'system').length}, toolDeclarations=${tools.length}`);
 
   await emitTraceEvent(runId, "progress_update", {
@@ -608,10 +635,27 @@ MANDATORY RULES:
         baseURL: process.env.OPENAI_BASE_URL || "https://openrouter.ai/api/v1",
       });
 
-      const openaiMessages: OpenAI.ChatCompletionMessageParam[] = conversationHistory.map(m => ({
-        role: m.role as "system" | "user" | "assistant",
-        content: m.content,
-      }));
+      const openaiMessages: OpenAI.ChatCompletionMessageParam[] = conversationHistory.map(m => {
+        const msg = m as any;
+        if (msg.role === "tool") {
+          return {
+            role: "tool" as const,
+            tool_call_id: msg.tool_call_id,
+            content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+          };
+        }
+        if (msg.role === "assistant" && msg.tool_calls) {
+          return {
+            role: "assistant" as const,
+            content: msg.content || null,
+            tool_calls: msg.tool_calls,
+          };
+        }
+        return {
+          role: msg.role as "system" | "user" | "assistant",
+          content: msg.content,
+        };
+      });
 
       const openaiTools: OpenAI.ChatCompletionTool[] = [
         ...tools.map(t => ({

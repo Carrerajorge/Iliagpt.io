@@ -568,7 +568,38 @@ export const AttachmentList = memo(function AttachmentList({
             )}
         >
             {attachments.map((att, i) =>
-                att.type === "document" && att.documentType ? (
+                att.type === "document" && att.documentType && att.fileId ? (
+                    <div
+                        key={i}
+                        className={cn(
+                            "flex items-center gap-2 px-3 py-2 rounded-xl text-sm border bg-card border-border cursor-pointer hover:bg-accent transition-colors"
+                        )}
+                        onClick={() => onOpenPreview?.(att)}
+                        data-testid={`attachment-document-${i}`}
+                    >
+                        <div
+                            className={cn(
+                                "flex items-center justify-center w-8 h-8 rounded-lg",
+                                att.documentType === "word" && "bg-blue-600",
+                                att.documentType === "excel" && "bg-green-600",
+                                att.documentType === "ppt" && "bg-orange-500",
+                                att.documentType === "pdf" && "bg-red-600"
+                            )}
+                        >
+                            <span className="text-white text-xs font-bold">
+                                {att.documentType === "word" ? "W" : att.documentType === "excel" ? "E" : att.documentType === "ppt" ? "P" : "PDF"}
+                            </span>
+                        </div>
+                        <div className="flex flex-col min-w-0">
+                            <span className="max-w-[200px] truncate font-medium">
+                                {att.title || att.name}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                                Clic para previsualizar
+                            </span>
+                        </div>
+                    </div>
+                ) : att.type === "document" && att.documentType ? (
                     <div
                         key={i}
                         className={cn(

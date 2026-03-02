@@ -2372,6 +2372,7 @@ export function ChatInterface({
     imageUrl?: string;
     storagePath?: string;
     fileId?: string;
+    documentType?: string;
   }) => {
     if (att.type === "image" && att.imageUrl) {
       setLightboxImage(att.imageUrl);
@@ -2384,7 +2385,7 @@ export function ChatInterface({
     }
 
     const mime = att.mimeType || "";
-    const isPdf = mime.includes("pdf") || att.name?.toLowerCase().endsWith(".pdf");
+    const isPdf = mime.includes("pdf") || att.name?.toLowerCase().endsWith(".pdf") || (att as any).documentType === "pdf";
     const isImage = mime.startsWith("image/");
 
     if (isPdf && att.fileId) {

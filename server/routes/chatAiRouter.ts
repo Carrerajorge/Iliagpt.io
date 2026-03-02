@@ -6308,7 +6308,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           userMessageText || "",
         );
       const agentLoopIntents = new Set(["web_automation", "multi_step_task", "research", "data_analysis", "document_analysis", "coding", "file_management", "system_admin"]);
-      const agenticKeywordSignal = /\b(?:busca(?:r|me)?|search|investiga|fetch|navega|browse|ejecuta|run|terminal|command|consola|instala|install|crea\s+(?:un?\s+)?(?:archivo|carpeta|file|folder)|escribe?\s+(?:en|un)|lee|read|edita|edit|abre|open|descarga|download)\b/i.test(userMessageText || "");
+      const agenticKeywordSignal = /\b(?:busca(?:r|me)?|search|investiga|fetch|navega|browse|ejecuta|run|terminal|command|consola|instala|install|crea\s+(?:un?\s+)?(?:archivo|carpeta|file|folder)|escribe?\s+(?:en|un)|lee|read|edita|edit|abre|open|descarga|download|analiza|analyze|escanea|scan|compila|compile|genera|generate|construye|build|despliega|deploy|clona|clone|muestra|show|encuentra|find|verifica|check|prueba|test|lista|list|dame|give me|hazme|make me|configura|configure|actualiza|update|modifica|modify|elimina|delete|mueve|move|copia|copy|renombra|rename|extrae|extract|convierte|convert|procesa|process|calcula|calculate|resuelve|solve|programa|program|script|código|code|archivo|file|carpeta|folder|directorio|directory|servidor|server|base de datos|database|api|endpoint|web|página|page|sitio|site|url|http|curl|wget|pip|npm|git|python|node|docker)\b/i.test(userMessageText || "");
       const shouldRouteThroughAgentLoop =
         shouldRunModel &&
         (
