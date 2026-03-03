@@ -5259,6 +5259,36 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           intentResult = await routeIntent(userMessageText);
           console.log(`[Stream] IntentRouter: intent=${intentResult.intent}, confidence=${intentResult.confidence.toFixed(2)}, format=${intentResult.output_format || 'none'}`);
 
+          // IMAGE GENERATION INTERCEPT - Must check BEFORE production mode to prevent
+          // "crea una imagen de X" from being routed to document generation
+          const isImageGenRequest = detectImageRequest(userMessageText);
+          if (isImageGenRequest) {
+            console.log(`[Stream] 🖼️ IMAGE GENERATION DETECTED: "${userMessageText.slice(0, 60)}..." - bypassing production pipeline`);
+            const imagePrompt = extractImagePrompt(userMessageText);
+            try {
+              const imageResult = await generateImage(imagePrompt);
+              if (imageResult && imageResult.imageBase64) {
+                const imageDataUrl = `data:${imageResult.mimeType || 'image/png'};base64,${imageResult.imageBase64}`;
+                const markdownResponse = `![${imagePrompt}](${imageDataUrl})\n\n*Imagen generada: "${imagePrompt}"*`;
+                
+                res.setHeader("Content-Type", "text/event-stream");
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+                res.setHeader("X-Accel-Buffering", "no");
+
+                res.write(`data: ${JSON.stringify({ type: "token", content: markdownResponse })}\n\n`);
+                if (sessionMetadata) {
+                  res.write(`data: ${JSON.stringify({ type: "session_metadata", ...sessionMetadata })}\n\n`);
+                }
+                res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+                res.end();
+                return;
+              }
+            } catch (imgError: any) {
+              console.error('[Stream] Image generation failed, falling back to chat:', imgError?.message);
+            }
+          }
+
           // PRODUCTION MODE INTERCEPT - Check immediately after intent detection
           // Pass userMessageText to detect if user wants to search for articles first
           if (featureFlags.canvasEnabled && isProductionIntent(intentResult, userMessageText) && intentResult.confidence >= 0.5) {
@@ -5527,7 +5557,8 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         console.log(`🔥🔥🔥 [Stream] PRODUCTION CHECK END 🔥🔥🔥\n\n`);
 
         // Pass userMessageText to detect if user wants to search for articles first
-        if (featureFlags.canvasEnabled && isProductionIntent(intentResult, userMessageText) && intentResult.confidence >= 0.5) {
+        // Skip production mode if this is an image generation request
+        if (featureFlags.canvasEnabled && !detectImageRequest(userMessageText) && isProductionIntent(intentResult, userMessageText) && intentResult.confidence >= 0.5) {
           const effectiveChatId = chatId || conversationId || streamConversationId;
 
           console.log(`[Stream] 🚀 PRODUCTION MODE ACTIVATED: intent=${intentResult.intent}, topic=${intentResult.slots.topic}`);
