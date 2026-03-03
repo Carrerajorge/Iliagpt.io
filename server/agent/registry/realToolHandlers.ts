@@ -23,30 +23,49 @@ export async function realWebSearch(input: { query: string; maxResults?: number 
   const { query, maxResults = 5 } = input;
 
   try {
+    const { searchWeb } = await import("../../services/webSearch");
+    const webResults = await searchWeb(query, maxResults);
+
+    if (webResults.results && webResults.results.length > 0) {
+      const results = webResults.results
+        .filter(r => r.url && (r.url.startsWith("http://") || r.url.startsWith("https://")))
+        .slice(0, maxResults)
+        .map(r => ({
+          title: r.title,
+          url: r.url,
+          snippet: r.snippet || "",
+        }));
+
+      return {
+        success: true,
+        data: {
+          query,
+          resultsCount: results.length,
+          results,
+          source: "duckduckgo",
+          searchPerformed: true,
+          timestamp: new Date().toISOString(),
+        },
+        message: `Found ${results.length} web results for "${query}"`,
+        validationPassed: results.length > 0,
+      };
+    }
+
+    console.log(`[realWebSearch] DuckDuckGo returned no results, falling back to Wikipedia for: "${query}"`);
     const wikiUrl = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=${maxResults}&format=json&origin=*`;
     const response = await fetch(wikiUrl, {
-      headers: {
-        "User-Agent": "IliaGPT/1.0 (https://replit.com; E2E Testing)",
-      },
+      headers: { "User-Agent": "IliaGPT/1.0 (https://replit.com)" },
     });
 
     const data = await response.json();
-
     const titles = data[1] || [];
     const snippets = data[2] || [];
     const urls = data[3] || [];
 
     const results: Array<{ title: string; url: string; snippet: string }> = [];
-
     for (let i = 0; i < Math.min(titles.length, maxResults); i++) {
-      results.push({
-        title: titles[i],
-        url: urls[i],
-        snippet: snippets[i] || "",
-      });
+      results.push({ title: titles[i], url: urls[i], snippet: snippets[i] || "" });
     }
-
-    const isValid = results.length > 0 && results.every(r => r.url && r.url.startsWith("http"));
 
     return {
       success: true,
@@ -59,9 +78,10 @@ export async function realWebSearch(input: { query: string; maxResults?: number 
         timestamp: new Date().toISOString(),
       },
       message: `Found ${results.length} results for "${query}"`,
-      validationPassed: isValid,
+      validationPassed: results.length > 0,
     };
   } catch (error) {
+    console.error(`[realWebSearch] Search failed for "${query}":`, error);
     return {
       success: false,
       data: { query, error: String(error) },

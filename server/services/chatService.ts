@@ -145,54 +145,62 @@ interface AgenticContext {
 }
 
 function shouldUseAgenticPipeline(message: string, context: AgenticContext): boolean {
-  const lowerMessage = message.toLowerCase();
-
-  const COMPLEX_PATTERNS = [
-    /\b(investiga|research|analiza\s+a\s+fondo|deep\s+dive)\b/i,
-    /\b(crea|genera|build|create)\b.*\b(y|and|then|luego|después)\b/i,
-    /\b(primero|segundo|tercero|step\s+\d+|paso\s+\d+)\b/i,
-    /\b(compara|compare)\b.*\b(con|with|and|y)\b/i,
-    /\b(recopila|gather|collect)\b.*\b(información|datos|data|info)\b/i,
-    /\b(multi-?step|múltiples?\s+pasos?|varios?\s+tareas?)\b/i,
-    /\b(planifica|plan|diseña|design)\b.*\b(estrategia|strategy|proyecto|project)\b/i,
-    /\b(resume|summarize)\b.*\b(y|and)\b.*\b(crea|genera|create)\b/i,
-    /\b(busca|search|find)\b.*\b(y|and|then)\b.*\b(crea|genera|create)\b/i,
-    // NEW: Research + artifact generation combinations (Spanish/English)
-    /\b(busca(me)?|encuentra(me)?|dame)\b.*\d+\s*(art[ií]culos?|tesis|papers?|informaci[oó]n).*\b(excel|hoja\s+de\s+c[aá]lculo|spreadsheet|documento|word|pdf|pptx?|presentaci[oó]n)\b/i,
-    /\b(busca(me)?|encuentra(me)?|dame|search|find|get)\b.*\b(y|and)\b.*\b(col[oó]ca(lo)?|pon(lo)?|exporta|genera|crea|guarda)\b.*\b(excel|documento|word|spreadsheet)\b/i,
-    /\b(col[oó]ca(lo)?|pon(lo|erlo)?|exporta(lo)?|guarda(lo)?)\b.*\b(en\s+)?(un\s+)?(excel|hoja\s+de\s+c[aá]lculo|spreadsheet|documento|word)\b/i,
-    /\b(genera|crea|build|create)\b.*\b(excel|spreadsheet|documento|word|pdf)\b.*\b(con|with)\b.*\d+/i,
-    /\b\d+\s*(art[ií]culos?|tesis|papers?|items?|elementos?)\b.*\b(tabla|table|lista|list|excel|spreadsheet)\b/i,
-  ];
+  const trimmed = message.trim();
+  const lowerMessage = trimmed.toLowerCase();
 
   const SIMPLE_PATTERNS = [
-    /^(hola|hello|hi|hey|buenos?\s+d[ií]as?|buenas?\s+tardes?|buenas?\s+noches?)$/i,
-    /^(gracias|thanks|ok|sí|no|claro|vale|perfecto)$/i,
-    /^(qué|cuál|quién|dónde|cuándo|what|who|where|when|how)\s+\w{1,20}(\?)?$/i,
+    /^(hola|hello|hi|hey|buenos?\s+d[ií]as?|buenas?\s+tardes?|buenas?\s+noches?)[.!?\s]*$/i,
+    /^(gracias|thanks|thank you|ok|okay|sí|si|no|claro|vale|perfecto|de nada|okey|bien|genial|cool|sure|got it|entendido)[.!?\s]*$/i,
+    /^(adiós|adios|bye|chao|nos vemos|hasta luego)[.!?\s]*$/i,
   ];
 
-  if (SIMPLE_PATTERNS.some(p => p.test(message.trim()))) {
+  if (SIMPLE_PATTERNS.some(p => p.test(trimmed))) {
+    console.log(`[ChatService:AgenticPipeline] Simple pattern matched, skipping pipeline for: "${trimmed.slice(0, 40)}"`);
     return false;
   }
 
   if (context.hasActiveDocuments && context.hasAttachments) {
+    console.log(`[ChatService:AgenticPipeline] Has documents+attachments, skipping pipeline`);
     return false;
   }
 
+  const COMPLEX_PATTERNS = [
+    /\b(investiga|research|analiza|analyze|examina|examine|explica|explain)\b/i,
+    /\b(crea|genera|build|create|make|haz|hazme|escribe|write)\b/i,
+    /\b(busca|search|find|look\s+up|dame|dime|tell\s+me|cuéntame)\b/i,
+    /\b(compara|compare|contrasta|contrast)\b/i,
+    /\b(resume|summarize|sintetiza|synthesize)\b/i,
+    /\b(planifica|plan|diseña|design|organiza|organize)\b/i,
+    /\b(recopila|gather|collect|list|enumera|lista)\b/i,
+    /\b(qué\s+(es|son|significa|quiere\s+decir)|what\s+(is|are|does))\b/i,
+    /\b(cómo|cómo\s+funciona|how\s+(does|do|to|can))\b/i,
+    /\b(por\s+qué|why\s+(is|are|do|does|did))\b/i,
+    /\b(ayúda|help|asiste|assist)\b/i,
+    /\b(calcula|calculate|compute|evalúa|evaluate)\b/i,
+    /\b(traduce|translate|convierte|convert)\b/i,
+    /\b(recomienda|recommend|sugiere|suggest)\b/i,
+    /\b(necesito|I\s+need|quiero|I\s+want)\b/i,
+    /\b(puedes|can\s+you|podrías|could\s+you|would\s+you)\b/i,
+    /\b(excel|spreadsheet|documento|document|pdf|presentaci[oó]n|pptx?|word)\b/i,
+    /\b(primero|segundo|tercero|step\s+\d+|paso\s+\d+)\b/i,
+    /\b(multi-?step|múltiples?\s+pasos?|varios?\s+tareas?)\b/i,
+    /\b(ventajas|desventajas|pros|cons|advantages|disadvantages)\b/i,
+    /\?(.*\?)+/,
+  ];
+
   if (COMPLEX_PATTERNS.some(p => p.test(lowerMessage))) {
-    console.log(`[ChatService:AgenticPipeline] Complex pattern matched for: "${message.slice(0, 50)}..."`);
+    console.log(`[ChatService:AgenticPipeline] Pattern matched for: "${trimmed.slice(0, 60)}..."`);
     return true;
   }
 
-  const wordCount = message.split(/\s+/).filter(w => w.length > 0).length;
-  const hasMultipleClauses = (message.match(/[,;]/g) || []).length >= 2;
-  const hasListMarkers = /(\d+\.|[-•])\s+/g.test(message);
+  const wordCount = trimmed.split(/\s+/).filter(w => w.length > 0).length;
 
-  if (wordCount > 50 && (hasMultipleClauses || hasListMarkers)) {
-    console.log(`[ChatService:AgenticPipeline] Complex message structure detected: ${wordCount} words, clauses: ${hasMultipleClauses}, lists: ${hasListMarkers}`);
+  if (wordCount >= 8) {
+    console.log(`[ChatService:AgenticPipeline] Long message (${wordCount} words), activating pipeline`);
     return true;
   }
 
+  console.log(`[ChatService:AgenticPipeline] No pattern matched for: "${trimmed.slice(0, 40)}" (${wordCount} words)`);
   return false;
 }
 
@@ -1128,8 +1136,6 @@ ${excelPlan ? `**📊 Estructura Excel:** ${excelPlan.sheets.length} hojas` : ""
       }
     }
 
-    // AGENTIC PIPELINE: Route complex requests through AgentLoopFacade when feature flag is enabled
-    // This provides multi-agent orchestration, QA verification, and SSE streaming for complex tasks
     if (isAgenticEnabled() && lastUserMessage && !documentMode && !figmaMode && !hasImages) {
       const agenticContext: AgenticContext = {
         hasAttachments: hasRawAttachments || (attachmentContext?.length > 0) || false,
@@ -1137,8 +1143,10 @@ ${excelPlan ? `**📊 Estructura Excel:** ${excelPlan.sheets.length} hojas` : ""
         conversationLength: messages.length
       };
 
+      console.log(`[ChatService:AgenticPipeline] Checking pipeline eligibility: enabled=${isAgenticEnabled()}, msg="${lastUserMessage.content.slice(0,40)}...", docMode=${documentMode}, figma=${figmaMode}, imgs=${hasImages}`);
+
       if (shouldUseAgenticPipeline(lastUserMessage.content, agenticContext)) {
-        console.log(`[ChatService:AgenticPipeline] Routing to AgentLoopFacade for complex task`);
+        console.log(`[ChatService:AgenticPipeline] ✓ Routing to AgentLoopFacade for: "${lastUserMessage.content.slice(0,60)}..."`);
 
         try {
           const pipelineResult = await agentLoopFacade.execute(

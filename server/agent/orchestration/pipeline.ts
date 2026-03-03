@@ -213,8 +213,10 @@ export class AgentLoopFacade extends EventEmitter {
         runId,
       };
 
+      console.log(`[AgentLoopFacade] Starting analysis for run ${runId}: "${message.slice(0, 80)}..."`);
       const analysis = await this.promptAnalyzer.analyze(message, conversationContext);
       activeRun.analysis = analysis;
+      console.log(`[AgentLoopFacade] Analysis complete: intent=${analysis.intent}, complexity=${analysis.complexity}, deliverables=${analysis.deliverables.length}`);
 
       this.emitPipelineEvent("analysis_completed", runId, {
         intent: analysis.intent,
@@ -228,6 +230,7 @@ export class AgentLoopFacade extends EventEmitter {
 
       const route = await this.intentRouter.route(analysis);
       activeRun.route = route;
+      console.log(`[AgentLoopFacade] Route decided: path=${route.path}, agents=[${route.agents.map(a => a.agentName).join(",")}], steps=${route.estimatedSteps}`);
 
       this.emitPipelineEvent("routing_completed", runId, {
         path: route.path,

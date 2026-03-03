@@ -57,6 +57,8 @@ PostgreSQL with Drizzle ORM is used for persistent data storage. Client-side per
 
 **Agentic Pipeline Activation (2026-03-02)**: Set `AGENTIC_CHAT_ENABLED=true` as shared env var to enable the agentic pipeline in chat. Feature flag flow: `server/config/features.ts` → `isAgenticEnabled()` → `shouldUseAgenticPipeline()` (pattern matching) → `AgentLoopFacade.execute()` → `SupervisorAgent` → `toolRegistry`. The agentic tool registry (`server/agent/registry/`) is independent from OpenClaw modules — no `ENABLE_OPENCLAW_*` vars needed. Requires `XAI_API_KEY` (already configured). Startup log added in `features.ts` to confirm flag values.
 
+**Agentic Pipeline Fixes (2026-03-03)**: (1) `shouldUseAgenticPipeline()` patterns significantly expanded — now matches most substantive queries (search, explain, create, help, compare, analyze, recommend, etc.) and any message ≥8 words, with only simple greetings/acknowledgments excluded. (2) `realWebSearch` upgraded from Wikipedia-only to DuckDuckGo via `searchWeb()` with Wikipedia fallback. (3) Detailed console logging added at every pipeline decision point (`[ChatService:AgenticPipeline]` and `[AgentLoopFacade]` prefixes) for diagnosing activation and execution issues. Pipeline evaluation order: Gmail → Document Analysis → DeterministicPipeline → AgenticPipeline → ImmediateSearch → ProductionWorkflow → MultiIntent → LegacyRouter.
+
 ## External Dependencies
 ### AI Services
 - **OpenRouter**: Active AI model endpoint.
