@@ -49,6 +49,7 @@ export async function generateImage(prompt: string): Promise<ImageGenerationResu
   const ai = getGeminiClient();
   if (ai) {
     const GEMINI_IMAGE_MODELS = [
+      "gemini-3.1-flash-image-preview",
       "imagen-3.0-generate-002",
       "gemini-2.0-flash-exp-image-generation",
     ];
@@ -138,8 +139,8 @@ async function generateImageViaOpenRouter(prompt: string): Promise<ImageGenerati
   if (!apiKey) return null;
 
   const IMAGE_MODELS = [
-    "google/gemini-2.5-flash-image",
     "google/gemini-3.1-flash-image-preview",
+    "google/gemini-2.5-flash-image",
     "openai/gpt-5-image-mini",
     "openai/gpt-5-image",
     "google/gemini-3-pro-image-preview",
@@ -148,6 +149,15 @@ async function generateImageViaOpenRouter(prompt: string): Promise<ImageGenerati
   for (const model of IMAGE_MODELS) {
     try {
       console.log(`[ImageGeneration] Trying OpenRouter model: ${model}`);
+      const isGoogleModel = model.startsWith("google/");
+      const requestBody: Record<string, unknown> = {
+        model,
+        messages: [{ role: "user", content: `Generate an image: ${prompt}` }],
+        max_tokens: 4096,
+      };
+      if (isGoogleModel) {
+        requestBody.modalities = ["text", "image"];
+      }
       const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -156,11 +166,7 @@ async function generateImageViaOpenRouter(prompt: string): Promise<ImageGenerati
           "HTTP-Referer": process.env.REPLIT_DEV_DOMAIN ? `https://${process.env.REPLIT_DEV_DOMAIN}` : "https://iliagpt.com",
           "X-Title": "IliaGPT",
         },
-        body: JSON.stringify({
-          model,
-          messages: [{ role: "user", content: `Generate an image: ${prompt}` }],
-          max_tokens: 4096,
-        }),
+        body: JSON.stringify(requestBody),
         signal: AbortSignal.timeout(60000),
       });
 
@@ -170,15 +176,75 @@ async function generateImageViaOpenRouter(prompt: string): Promise<ImageGenerati
       }
 
       const data = await res.json() as any;
-      const content = data.choices?.[0]?.message?.content;
+      const message = data.choices?.[0]?.message;
+      const content = message?.content;
 
-      if (data.choices?.[0]?.message?.image) {
+      console.log(`[ImageGeneration] OpenRouter ${model} response keys:`, JSON.stringify({
+        hasImage: !!message?.image,
+        contentType: typeof content,
+        isArray: Array.isArray(content),
+        messageKeys: message ? Object.keys(message) : [],
+        contentPreview: typeof content === "string" ? content.slice(0, 100) : Array.isArray(content) ? JSON.stringify(content.map((p: any) => ({ type: p.type, hasData: !!p.inline_data?.data, hasUrl: !!p.image_url?.url }))).slice(0, 300) : "null",
+        imagesCount: Array.isArray(message?.images) ? message.images.length : 0,
+        imagesPreview: Array.isArray(message?.images) && message.images.length > 0 ? JSON.stringify(typeof message.images[0] === "string" ? { type: "string", len: message.images[0].length, prefix: message.images[0].slice(0, 80) } : { type: typeof message.images[0], keys: message.images[0] ? Object.keys(message.images[0]) : [] }).slice(0, 300) : "none"
+      }));
+
+      if (message?.image) {
         return {
-          imageBase64: data.choices[0].message.image,
+          imageBase64: message.image,
           mimeType: "image/png",
           prompt,
           model,
         };
+      }
+
+      if (Array.isArray(message?.images) && message.images.length > 0) {
+        const img = message.images[0];
+        if (typeof img === "string") {
+          const b64Match = img.match(/^data:image\/[^;]+;base64,(.+)/);
+          if (b64Match) {
+            return { imageBase64: b64Match[1], mimeType: "image/png", prompt, model };
+          }
+          if (img.startsWith("http")) {
+            try {
+              const imgRes = await fetch(img, { signal: AbortSignal.timeout(15000) });
+              if (imgRes.ok) {
+                const buf = Buffer.from(await imgRes.arrayBuffer());
+                return { imageBase64: buf.toString("base64"), mimeType: imgRes.headers.get("content-type") || "image/png", prompt, model };
+              }
+            } catch {}
+          }
+          if (img.length > 100 && /^[A-Za-z0-9+/=]+$/.test(img.slice(0, 100))) {
+            return { imageBase64: img, mimeType: "image/png", prompt, model };
+          }
+        } else if (img?.b64_json) {
+          return { imageBase64: img.b64_json, mimeType: img.content_type || "image/png", prompt, model };
+        } else if (img?.image_url) {
+          const imgUrl = typeof img.image_url === "string" ? img.image_url : img.image_url?.url;
+          if (imgUrl) {
+            const dataMatch = imgUrl.match(/^data:image\/([^;]+);base64,(.+)/);
+            if (dataMatch) {
+              return { imageBase64: dataMatch[2], mimeType: `image/${dataMatch[1]}`, prompt, model };
+            }
+            if (imgUrl.startsWith("http")) {
+              try {
+                const imgRes = await fetch(imgUrl, { signal: AbortSignal.timeout(15000) });
+                if (imgRes.ok) {
+                  const buf = Buffer.from(await imgRes.arrayBuffer());
+                  return { imageBase64: buf.toString("base64"), mimeType: imgRes.headers.get("content-type") || "image/png", prompt, model };
+                }
+              } catch {}
+            }
+          }
+        } else if (img?.url) {
+          try {
+            const imgRes = await fetch(img.url, { signal: AbortSignal.timeout(15000) });
+            if (imgRes.ok) {
+              const buf = Buffer.from(await imgRes.arrayBuffer());
+              return { imageBase64: buf.toString("base64"), mimeType: imgRes.headers.get("content-type") || "image/png", prompt, model };
+            }
+          } catch {}
+        }
       }
 
       if (content && typeof content === "string") {
@@ -219,11 +285,24 @@ async function generateImageViaOpenRouter(prompt: string): Promise<ImageGenerati
             if (b64Match) {
               return { imageBase64: b64Match[1], mimeType: "image/png", prompt, model };
             }
+            if (part.image_url.url.startsWith("http")) {
+              try {
+                const imgRes = await fetch(part.image_url.url, { signal: AbortSignal.timeout(15000) });
+                if (imgRes.ok) {
+                  const buf = Buffer.from(await imgRes.arrayBuffer());
+                  return { imageBase64: buf.toString("base64"), mimeType: imgRes.headers.get("content-type") || "image/png", prompt, model };
+                }
+              } catch {}
+            }
+          }
+          if (part.inline_data?.data) {
+            return { imageBase64: part.inline_data.data, mimeType: part.inline_data.mime_type || "image/png", prompt, model };
           }
         }
       }
 
-      console.warn(`[ImageGeneration] OpenRouter ${model}: no image in response`);
+      const responsePreview = typeof content === "string" ? content.slice(0, 200) : JSON.stringify(content)?.slice(0, 200);
+      console.warn(`[ImageGeneration] OpenRouter ${model}: no image in response. Preview: ${responsePreview}`);
     } catch (error: any) {
       console.error(`[ImageGeneration] OpenRouter ${model} failed:`, error.message);
     }
@@ -247,6 +326,7 @@ export async function editImage(
   const ai = getGeminiClient();
   if (ai) {
     const EDIT_MODELS = [
+      "gemini-3.1-flash-image-preview",
       "gemini-2.0-flash",
       "gemini-2.5-flash",
     ];
