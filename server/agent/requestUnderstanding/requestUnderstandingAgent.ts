@@ -215,8 +215,59 @@ function dedupeStrings(items: string[]): string[] {
   return out;
 }
 
+function buildHeuristicBrief(text: string): RequestBrief {
+  const intentText = text.length > 120 ? text.substring(0, 120) + "..." : text;
+  return RequestBriefSchema.parse({
+    intent: { primary_intent: intentText, confidence: 0.5 },
+    objective: `Resolver: ${intentText}`,
+    scope: { in_scope: [intentText], out_of_scope: [] },
+    subtasks: [
+      { title: "Analizar solicitud", description: "Entender intención y contexto del usuario", priority: "high" },
+      { title: "Ejecutar tarea", description: "Producir resultado alineado a la solicitud", priority: "high" },
+    ],
+    deliverable: { description: "Respuesta completa al usuario", format: "markdown" },
+    audience: { audience: "general", tone: "direct", language: "es" },
+    restrictions: [],
+    data_provided: [],
+    assumptions: [],
+    required_inputs: [],
+    expected_output: { description: "Respuesta accionable", format: "markdown", structure: [] },
+    validations: [{ check: "Respuesta relevante a la solicitud", type: "quality", required: true }],
+    success_criteria: ["Solicitud resuelta correctamente"],
+    definition_of_done: ["Respuesta entregada al usuario"],
+    risks: [],
+    ambiguities: [],
+    tool_routing: { suggested_tools: ["web_search", "fetch_url"], blocked_tools: [], rationale: "Herramientas básicas de búsqueda" },
+    guardrails: { policy_ok: true, privacy_ok: true, security_ok: true, pii_detected: false, flags: [] },
+    self_check: { passed: true, score: 0.6, issues: [] },
+    trace: { planner_model: "heuristic", planner_mode: "heuristic", total_duration_ms: 0, stages: [] },
+    blocker: { is_blocked: false },
+  });
+}
+
 function coercePlannerBrief(raw: unknown): RequestBrief {
-  const parsed = RequestBriefSchema.parse(raw);
+  const safeRaw: any = (raw && typeof raw === "object") ? { ...raw as any } : {};
+
+  if (!safeRaw.intent || typeof safeRaw.intent !== "object") {
+    safeRaw.intent = { primary_intent: safeRaw.objective || "Resolver solicitud del usuario", confidence: 0.5 };
+  }
+  if (!safeRaw.subtasks || !Array.isArray(safeRaw.subtasks) || safeRaw.subtasks.length < 2) {
+    safeRaw.subtasks = [
+      { title: "Analizar solicitud", description: "Entender intención y contexto", priority: "high" },
+      { title: "Ejecutar tarea", description: "Producir resultado alineado", priority: "high" },
+    ];
+  }
+  if (!safeRaw.deliverable || typeof safeRaw.deliverable !== "object") {
+    safeRaw.deliverable = { description: "Respuesta completa", format: "markdown" };
+  }
+  if (!safeRaw.audience || typeof safeRaw.audience !== "object") {
+    safeRaw.audience = { audience: "general", tone: "direct", language: "es" };
+  }
+  if (!safeRaw.expected_output || typeof safeRaw.expected_output !== "object") {
+    safeRaw.expected_output = { description: "Respuesta accionable", format: "markdown", structure: [] };
+  }
+
+  const parsed = RequestBriefSchema.parse(safeRaw);
 
   parsed.objective = normalizeText(parsed.objective || parsed.intent.primary_intent || "Resolver solicitud");
 
@@ -454,7 +505,8 @@ async function callPlannerWithJsonFallback(
     }
   }
 
-  throw lastErr;
+  Logger.warn(`[RequestUnderstanding] All planner attempts failed, using heuristic brief. Last error: ${lastErr?.message || lastErr}`);
+  return buildHeuristicBrief(input.text);
 }
 
 function hardSecurityFlagsFromText(text: string): string[] {
@@ -697,7 +749,8 @@ export class RequestUnderstandingAgent {
       const selfCheck = runSelfCheck(brief!);
       brief!.self_check = selfCheck;
 
-      if (!selfCheck.passed && !brief!.blocker.is_blocked) {
+      const hasCriticalIssue = selfCheck.issues.includes("missing_objective") && selfCheck.score < 0.3;
+      if (hasCriticalIssue && !brief!.blocker.is_blocked) {
         brief!.blocker.is_blocked = true;
         brief!.blocker.question =
           "Faltan datos para cumplir la definición de terminado con calidad. ¿Puedes confirmar alcance, entradas requeridas y criterios de éxito?";

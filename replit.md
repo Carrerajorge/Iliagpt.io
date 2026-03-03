@@ -33,6 +33,13 @@ A Governance Mode System defines explicit modes (SAFE, SUPERVISED, AUTOPILOT, RE
 
 **SuperOrchestrator v1 (EXPERIMENTAL)** (`server/agent/superOrchestrator/`): Distributed agent execution with DAG scheduling and BullMQ persistent queue. Auto-initializes on first submitRun() call. Default task handler is a stub (returns stub_executed status). task:inline fallback executes tasks synchronously when queue unavailable. Core files: `index.ts` (main orchestrator class — submitRun, cancelRun, pauseRun, resumeRun, getStats), `dagScheduler.ts` (DAG execution engine with dependency resolution, concurrency limits, failure cascading), `taskExecutor.ts` (per-task execution with retry, cost tracking, artifact storage), `queue.ts` (BullMQ queue with exponential backoff, dead letter), `governance.ts` (global kill switch <2s, per-run budget auto-pause, time limits, risk approval gating for dangerous/critical tasks), `agentRoles.ts` (100 agent roles across 10 categories with risk levels safe/moderate/dangerous/critical). DB schema: `shared/schema/orchestrator.ts` — 4 tables: `orchestrator_runs`, `orchestrator_tasks`, `orchestrator_approvals`, `orchestrator_artifacts`. Admin dashboard: `client/src/components/admin/SuperOrchestrator.tsx`. API routes: `/api/orchestrator/*` (runs CRUD, cancel/pause/resume, stats, roles, kill-switch, approve/deny).
 
+**Critical Fixes Applied (2026-03-03)**:
+- RequestUnderstanding: `coercePlannerBrief()` now pre-populates missing required fields (`intent`, `subtasks`, `deliverable`, `audience`, `expected_output`) via `buildHeuristicBrief()` before Zod parse, preventing Zod validation crashes on sparse LLM responses.
+- RequestUnderstanding: `callPlannerWithJsonFallback()` returns heuristic brief instead of throwing when all LLM retries fail.
+- Orchestrator: `buildBrief()` wrapped in try-catch with inline heuristic fallback brief.
+- Critic stage: Only blocks execution when `missing_objective && score < 0.3` (was blocking on any self-check failure, preventing simple search queries from executing).
+- Note: xAI API key is blocked (403 "API key leak") — affects `LLMExtractor` but heuristic fallback works. Key rotation recommended.
+
 **Critical Fixes Applied (2026-03-02)**:
 - OpenClaw routes: Verification API at `/api/openclaw`, Runtime API at `/api/openclaw/runtime` (previously both at `/api/openclaw` causing route shadowing)
 - QA Pipeline: Verification crashes now return `passed: false, score: 0` instead of false-positive `passed: true, score: 1`. Pipeline `success` reflects QA result.

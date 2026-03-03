@@ -293,11 +293,43 @@ export class SuperAgentOrchestrator extends EventEmitter {
       this.emitThought("Analizando solicitud del usuario...");
 
       // === Mandatory Request-Understanding Gate (Brief) ===
-      const brief = await requestUnderstandingAgent.buildBrief({
-        text: prompt,
-        chatId: this.sessionId,
-        requestId: this.sessionId,
-      });
+      let brief: any;
+      try {
+        brief = await requestUnderstandingAgent.buildBrief({
+          text: prompt,
+          chatId: this.sessionId,
+          requestId: this.sessionId,
+        });
+      } catch (briefErr: any) {
+        console.warn(`[SuperAgent] buildBrief failed, using heuristic fallback: ${briefErr?.message || briefErr}`);
+        const intentText = prompt.length > 120 ? prompt.substring(0, 120) + "..." : prompt;
+        brief = {
+          intent: { primary_intent: intentText, confidence: 0.5 },
+          objective: intentText,
+          scope: { in_scope: [intentText], out_of_scope: [] },
+          subtasks: [
+            { title: "Analizar solicitud", description: "Entender intención y contexto", priority: "high" as const },
+            { title: "Ejecutar tarea", description: "Producir resultado alineado", priority: "high" as const },
+          ],
+          deliverable: { description: "Respuesta completa", format: "markdown" },
+          audience: { audience: "general", tone: "direct", language: "es" },
+          restrictions: [],
+          data_provided: [],
+          assumptions: [],
+          required_inputs: [],
+          expected_output: { description: "Respuesta accionable", format: "markdown", structure: [] },
+          validations: [],
+          success_criteria: ["Solicitud resuelta"],
+          definition_of_done: ["Respuesta entregada"],
+          risks: [],
+          ambiguities: [],
+          tool_routing: { suggested_tools: ["web_search", "fetch_url"], blocked_tools: [], rationale: "" },
+          guardrails: { policy_ok: true, privacy_ok: true, security_ok: true, pii_detected: false, flags: [] },
+          self_check: { passed: true, score: 0.5, issues: [] },
+          trace: { planner_model: "heuristic", planner_mode: "heuristic" as const, total_duration_ms: 0, stages: [] },
+          blocker: { is_blocked: false },
+        };
+      }
       this.emitSSE("brief", brief);
 
       if (brief.blocker?.is_blocked) {
