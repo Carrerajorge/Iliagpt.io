@@ -83,3 +83,12 @@ PostgreSQL with Drizzle ORM is used for persistent data storage. Client-side per
 - **Piston API**: Multi-language code execution.
 - **World Bank API V2**: Economic data retrieval.
 - **Gmail API**: Gmail chat integration.
+
+## Navigation Flow
+- **`/`** → `ProjectsDashboard` — Replit-style homepage with greeting, project input, quick-start options, recent projects grid (Spanish UI)
+- **`/chat/new`** → `Home` (new chat mode) — Opens chat interface in new conversation mode
+- **`/chat/:id`** → `Home` (existing chat) — Opens chat interface with a specific conversation loaded
+- **Sidebar logo click** → navigates to `/` (dashboard)
+- **"Nuevo chat" button** (sidebar & dashboard) → navigates to `/chat/new`
+- **Ctrl/Cmd+N** → navigates to `/chat/new`
+- **Project card click** (dashboard) → navigates to `/chat/:id`

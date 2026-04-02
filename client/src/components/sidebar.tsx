@@ -39,6 +39,7 @@ import {
   Brain,
   MessageCircle,
   SlidersHorizontal,
+  Home,
 } from "lucide-react";
 import { IliaGPTLogo } from "@/components/iliagpt-logo";
 import { cn } from "@/lib/utils";
@@ -532,7 +533,7 @@ export function Sidebar({
       role="navigation"
     >
       <div className="flex items-center justify-between px-3 py-3">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 cursor-pointer" onClick={() => setLocation("/")} data-testid="button-go-home">
           <IliaGPTLogo size={28} className="shrink-0" />
           <div className="flex flex-col min-w-0">
             <span className="text-sm font-bold tracking-tight truncate">{appName}</span>

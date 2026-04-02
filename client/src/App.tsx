@@ -84,8 +84,8 @@ function RootRoute(props: any) {
   // Local experiments can run from chat without forcing login on localhost.
   if (!(isAuthenticated || isLocalDevHost())) return <LandingPage />;
   
-  // If viewing a specific chat, show the chat interface
-  if (location.startsWith("/chat/")) return <Home />;
+  // If viewing a chat or creating new chat, show the chat interface
+  if (location.startsWith("/chat")) return <Home />;
   
   // Otherwise show the projects dashboard
   return <ProjectsDashboard />;
@@ -196,8 +196,7 @@ function GlobalKeyboardShortcuts() {
   const { settings } = useSettingsContext();
 
   const handleNewChat = useCallback(() => {
-    setLocation("/");
-    window.dispatchEvent(new CustomEvent("new-chat-requested"));
+    setLocation("/chat/new");
     void trackWorkspaceEvent({
       eventType: "action",
       action: "new_chat_requested",

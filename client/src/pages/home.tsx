@@ -77,15 +77,18 @@ export default function Home() {
   }, []);
 
 
-  // Parse chat id from URL: /chat/:id
+  // Parse chat id from URL: /chat/:id (exclude /chat/new which means new chat mode)
 
   const chatIdFromUrl = useMemo(() => {
 
     const m = location.match(/^\/chat\/([^/?#]+)/);
-
-    return m ? decodeURIComponent(m[1]) : null;
+    if (!m) return null;
+    const id = decodeURIComponent(m[1]);
+    if (id === "new") return null;
+    return id;
 
   }, [location]);
+
 
 
 
@@ -144,6 +147,14 @@ export default function Home() {
     removeChatFromFolder,
     getFolderForChat
   } = useChatFolders();
+
+  // Auto-enter new chat mode when navigating to /chat/new or /chat
+  useEffect(() => {
+    if (location === "/chat/new" || location === "/chat") {
+      setIsNewChatMode(true);
+      setActiveChatId(null);
+    }
+  }, [location, setActiveChatId]);
 
   const handleMoveToFolder = useCallback((chatId: string, folderId: string | null) => {
     if (folderId === null) {
@@ -443,7 +454,8 @@ export default function Home() {
 
     // Close any open dialogs
     setIsAppsDialogOpen(false);
-    setLocation("/");
+    // Navigate to new chat URL
+    setLocation("/chat/new");
   };
 
   const handleSelectProject = useCallback((projectId: string) => {
