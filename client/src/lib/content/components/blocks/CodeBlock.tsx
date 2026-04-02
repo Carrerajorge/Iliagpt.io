@@ -12,6 +12,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import DOMPurify from 'dompurify';
 import Prism from 'prismjs';
 import 'prismjs/components/prism-javascript';
 import 'prismjs/components/prism-typescript';
@@ -411,7 +412,7 @@ export default function CodeBlock({ block, context }: Props) {
                                                 className="flex-1 px-4"
                                                 style={{ color: '#cdd6f4' }}
                                                 dangerouslySetInnerHTML={{
-                                                    __html: highlightLine(line, language) || '&nbsp;'
+                                                    __html: DOMPurify.sanitize(highlightLine(line, language) || '&nbsp;')
                                                 }}
                                             />
                                         </div>
