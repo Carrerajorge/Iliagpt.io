@@ -3,30 +3,31 @@ import { drizzle } from "drizzle-orm/node-postgres"; import { migrate } from "dr
 
 const { Pool } = pkg;
 
+const isProd = env.NODE_ENV === 'production';
+
 const pool = new Pool({
   connectionString: env.DATABASE_URL,
-  max: env.DB_POOL_MAX || (env.NODE_ENV === 'production' ? 25 : 5), // Pool Size of at least 20 for pg_bouncer
-  min: env.DB_POOL_MIN || 0, // Pg_bouncer handles underlying pool, allow 0 at app level
-  idleTimeoutMillis: 3000,   // Close idle connections very fast (3s) to rely on pg_bouncer
-  connectionTimeoutMillis: 3000, // Fail extremely fast (3s)
+  max: env.DB_POOL_MAX || (isProd ? 100 : 5),
+  min: env.DB_POOL_MIN || (isProd ? 10 : 0),
+  idleTimeoutMillis: isProd ? 10000 : 3000,
+  connectionTimeoutMillis: isProd ? 5000 : 3000,
   allowExitOnIdle: false,
-  keepAlive: true,           // Required for stability behind TCP load balancing
+  keepAlive: true,
   application_name: 'iliagpt_server_write',
-  // Ensure predictable table resolution and add strict statement timeout for heavy AI traffic
   options: '-c search_path=public -c statement_timeout=15000',
 });
 
-// Read Replica Pool (Optional)
 const poolRead = env.DATABASE_READ_URL ? new Pool({
   connectionString: env.DATABASE_READ_URL,
-  max: env.DB_POOL_MAX || (env.NODE_ENV === 'production' ? 20 : 5),
-  min: env.DB_POOL_MIN || 2,
-  idleTimeoutMillis: 10000,
-  connectionTimeoutMillis: 5000,
+  max: env.DB_READ_POOL_MAX || (isProd ? 150 : 5),
+  min: env.DB_READ_POOL_MIN || (isProd ? 20 : 2),
+  idleTimeoutMillis: isProd ? 15000 : 10000,
+  connectionTimeoutMillis: isProd ? 5000 : 5000,
   allowExitOnIdle: false,
+  keepAlive: true,
   application_name: 'iliagpt_server_read',
-  options: '-c search_path=public',
-}) : pool; // Fallback to primary pool if no read replica
+  options: '-c search_path=public -c statement_timeout=30000',
+}) : pool;
 
 pool.on('error', (err: any) => {
   if (err.code === '57P01') {

@@ -63,6 +63,16 @@ PostgreSQL with Drizzle ORM is used for persistent data storage. Client-side per
 
 **Performance Optimizations (2026-03-02)**: Frontend polling reduced — `/api/settings/public` refetch every 120s (staleTime 60s), `/api/models/available` refetch every 120s (staleTime 60s, gcTime 5min). Server-side in-memory caching (30s TTL) for both endpoints. Quiet logging for high-frequency polling routes (`/api/settings/public`, `/api/models/available`, `/health`) — skipped in both `requestLogger` and `requestTracer`. Default log level set to `info` (was `debug` in dev). Vite build uses manual chunks (vendor, ui) and optimizeDeps for faster cold starts.
 
+**Scalability Architecture (2026-04-02)**: Designed for 100M simultaneous users.
+- **DB Pools**: Write pool max=100 (prod), Read pool max=150 (prod) with keepAlive and tuned timeouts. Config in `server/config/scalability.ts`.
+- **Rate Limiting**: Global 600 req/min, AI 120 req/min, Auth 15/15min with 5min block. Redis-backed with in-memory fallback. Config in `server/middleware/rateLimiter.ts`.
+- **Redis**: connectTimeout=5s, commandTimeout=3s, keepAlive=30s, enableOfflineQueue=true. Config in `server/lib/redis.ts`.
+- **Compression**: Level 6, threshold 512B, memLevel 8. Skips SSE/octet-stream/x-no-compression. Config in `server/index.ts`.
+- **Response Cache**: TTL 120s (prod), max cacheable 10MB, stale-while-revalidate 60s (prod). Config in `server/middleware/responseCache.ts`.
+- **Static Assets**: `/assets/*` served with 1-year immutable cache. HTML served with no-cache. Config in `server/static.ts`.
+- **Socket Hardening**: maxConnectionsPerIP=500 (prod), requestTimeout=300s (prod), cleanup every 30s. Config in `server/middleware/socketHardening.ts`.
+- **Vite Build**: 8-way manual chunk splitting (react-dom, react-core, ui-radix, ui-icons, ui-motion, charts, editor, vendor). Terser with drop_console, 2 passes. Config in `vite.config.ts`.
+
 **Agentic Pipeline Activation (2026-03-02)**: Set `AGENTIC_CHAT_ENABLED=true` as shared env var to enable the agentic pipeline in chat. Feature flag flow: `server/config/features.ts` → `isAgenticEnabled()` → `shouldUseAgenticPipeline()` (pattern matching) → `AgentLoopFacade.execute()` → `SupervisorAgent` → `toolRegistry`. The agentic tool registry (`server/agent/registry/`) is independent from OpenClaw modules — no `ENABLE_OPENCLAW_*` vars needed. Requires `XAI_API_KEY` (already configured). Startup log added in `features.ts` to confirm flag values.
 
 **Agentic Pipeline Fixes (2026-03-03)**: (1) `shouldUseAgenticPipeline()` patterns significantly expanded — now matches most substantive queries (search, explain, create, help, compare, analyze, recommend, etc.) and any message ≥8 words, with only simple greetings/acknowledgments excluded. (2) `realWebSearch` upgraded from Wikipedia-only to DuckDuckGo via `searchWeb()` with Wikipedia fallback. (3) Detailed console logging added at every pipeline decision point (`[ChatService:AgenticPipeline]` and `[AgentLoopFacade]` prefixes) for diagnosing activation and execution issues. Pipeline evaluation order: Gmail → Document Analysis → DeterministicPipeline → AgenticPipeline → ImmediateSearch → ProductionWorkflow → MultiIntent → LegacyRouter.

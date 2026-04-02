@@ -78,6 +78,8 @@ const envSchema = z.object({
 
   DB_POOL_MAX: z.string().transform(Number).default("20"),
   DB_POOL_MIN: z.string().transform(Number).default("2"),
+  DB_READ_POOL_MAX: z.string().transform(Number).optional(),
+  DB_READ_POOL_MIN: z.string().transform(Number).optional(),
 
   // Channels (Telegram / WhatsApp Cloud)
   TELEGRAM_BOT_TOKEN: z.string().optional(),

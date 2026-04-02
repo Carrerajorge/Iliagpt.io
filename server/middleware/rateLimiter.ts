@@ -86,25 +86,28 @@ const initLimiterPromise = (async () => {
       rateLimiterGlobal = new RateLimiterRedis({
         storeClient: redisClient,
         keyPrefix: "middleware_global",
-        points: 200, // 200 requests
-        duration: 60, // per 60 seconds per IP
-        insuranceLimiter: new RateLimiterMemory({ points: 200, duration: 60 }),
+        points: 600,
+        duration: 60,
+        blockDuration: 0,
+        insuranceLimiter: new RateLimiterMemory({ points: 600, duration: 60 }),
       });
 
       rateLimiterAuth = new RateLimiterRedis({
         storeClient: redisClient,
         keyPrefix: "middleware_auth",
-        points: 10, // 10 attempts
-        duration: 60 * 15, // per 15 minutes (brute force protection)
-        insuranceLimiter: new RateLimiterMemory({ points: 10, duration: 60 * 15 }),
+        points: 15,
+        duration: 60 * 15,
+        blockDuration: 60 * 5,
+        insuranceLimiter: new RateLimiterMemory({ points: 15, duration: 60 * 15 }),
       });
 
       rateLimiterAi = new RateLimiterRedis({
         storeClient: redisClient,
         keyPrefix: "middleware_ai",
-        points: 60, // 60 AI requests
-        duration: 60, // per minute
-        insuranceLimiter: new RateLimiterMemory({ points: 60, duration: 60 }),
+        points: 120,
+        duration: 60,
+        blockDuration: 0,
+        insuranceLimiter: new RateLimiterMemory({ points: 120, duration: 60 }),
       });
 
       rateLimiterBackend = "redis";
@@ -116,15 +119,15 @@ const initLimiterPromise = (async () => {
     console.warn(`[RateLimiter] Redis connection failed, falling back to in-memory rate limiting: ${reason}`);
     // Fallback to memory — better to have per-process rate limits than no site at all
     rateLimiterGlobal = new RateLimiterMemory({
-      points: 200,
+      points: 600,
       duration: 60,
     });
     rateLimiterAuth = new RateLimiterMemory({
-      points: 10,
+      points: 15,
       duration: 60 * 15,
     });
     rateLimiterAi = new RateLimiterMemory({
-      points: 60,
+      points: 120,
       duration: 60,
     });
     rateLimiterBackend = "memory";

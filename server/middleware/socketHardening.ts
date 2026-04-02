@@ -34,13 +34,15 @@ export interface SocketHardeningConfig {
   cleanupIntervalMs?: number;
 }
 
+const isProd = process.env.NODE_ENV === 'production';
+
 const DEFAULT_CONFIG: Required<SocketHardeningConfig> = {
-  headersTimeout: 10_000,
-  keepAliveTimeout: 65_000,
-  requestTimeout: 120_000,
-  maxConnectionsPerIP: 100,
-  minBytesPerSecond: 100,
-  cleanupIntervalMs: 60_000,
+  headersTimeout: isProd ? 15_000 : 10_000,
+  keepAliveTimeout: isProd ? 65_000 : 65_000,
+  requestTimeout: isProd ? 300_000 : 120_000,
+  maxConnectionsPerIP: isProd ? 500 : 100,
+  minBytesPerSecond: 50,
+  cleanupIntervalMs: 30_000,
 };
 
 // Per-IP connection tracking

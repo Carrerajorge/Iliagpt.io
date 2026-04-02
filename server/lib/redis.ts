@@ -35,22 +35,24 @@ function buildRedisClient(): Redis {
     return Math.min(times * 500, 3000);
   };
 
-  // Prefer REDIS_URL when available (docker-compose sets this in production).
+  const sharedOpts = {
+    maxRetriesPerRequest: null,
+    lazyConnect: true,
+    enableReadyCheck: true,
+    retryStrategy,
+    connectTimeout: 5000,
+    commandTimeout: 3000,
+    keepAlive: 30000,
+    enableOfflineQueue: true,
+  };
+
   const client = redisUrl
-    ? new Redis(redisUrl, {
-      maxRetriesPerRequest: null,
-      lazyConnect: true,
-      enableReadyCheck: true,
-      retryStrategy,
-    })
+    ? new Redis(redisUrl, sharedOpts)
     : new Redis({
       host: host || '127.0.0.1',
       port: port || 6379,
       password: process.env.REDIS_PASSWORD || undefined,
-      maxRetriesPerRequest: null,
-      lazyConnect: true,
-      enableReadyCheck: true,
-      retryStrategy,
+      ...sharedOpts,
     });
 
   let errorLoggedOnce = false;

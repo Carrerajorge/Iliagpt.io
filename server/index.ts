@@ -65,13 +65,14 @@ function clampConfigNumber(value: string | undefined, fallback: number, min: num
   return Math.min(Math.max(Math.trunc(parsed), min), max);
 }
 
+const isProdEnv = process.env.NODE_ENV === 'production';
 const stopSocketHardening = hardenServer(httpServer, {
-  headersTimeout: Number(process.env.SOCKET_HEADERS_TIMEOUT_MS) || 60_000, // 1 min (was 10_000)
-  keepAliveTimeout: Number(process.env.SOCKET_KEEP_ALIVE_TIMEOUT_MS) || 605_000, // 10 min 5 sec (was 65_000)
-  requestTimeout: Number(process.env.SOCKET_REQUEST_TIMEOUT_MS) || 600_000, // 10 min (was 120_000)
-  maxConnectionsPerIP: Number(process.env.SOCKET_MAX_CONNECTIONS_PER_IP) || 300, // accommodate higher traffic
-  minBytesPerSecond: Number(process.env.SOCKET_MIN_BYTES_PER_SEC) || 100, // Prevent slowloris but allow slow streams
-  cleanupIntervalMs: Number(process.env.SOCKET_CLEANUP_INTERVAL_MS) || 60_000,
+  headersTimeout: Number(process.env.SOCKET_HEADERS_TIMEOUT_MS) || (isProdEnv ? 15_000 : 60_000),
+  keepAliveTimeout: Number(process.env.SOCKET_KEEP_ALIVE_TIMEOUT_MS) || (isProdEnv ? 65_000 : 605_000),
+  requestTimeout: Number(process.env.SOCKET_REQUEST_TIMEOUT_MS) || (isProdEnv ? 300_000 : 600_000),
+  maxConnectionsPerIP: Number(process.env.SOCKET_MAX_CONNECTIONS_PER_IP) || (isProdEnv ? 500 : 300),
+  minBytesPerSecond: Number(process.env.SOCKET_MIN_BYTES_PER_SEC) || 50,
+  cleanupIntervalMs: Number(process.env.SOCKET_CLEANUP_INTERVAL_MS) || 30_000,
 });
 
 const telemetryPipelineController = startTelemetryPipeline({
@@ -97,16 +98,19 @@ app.use(requestLoggerMiddleware);
 // Canonical URL redirect (www -> non-www) - must be before CORS and sessions
 app.use(canonicalUrlMiddleware);
 
-// Compression middleware - skip SSE streams (text/event-stream) to prevent buffering.
-// compression() buffers output to build compression blocks, which breaks real-time SSE.
 app.use(
   compression({
+    level: 6,
+    threshold: 512,
+    memLevel: 8,
     filter: (req, res) => {
       if (
         req.url?.includes("/chat/stream") ||
         req.url?.includes("/super/stream") ||
         req.headers.accept === "text/event-stream" ||
-        res.getHeader("Content-Type")?.toString().includes("text/event-stream")
+        req.headers['x-no-compression'] ||
+        res.getHeader("Content-Type")?.toString().includes("text/event-stream") ||
+        res.getHeader("Content-Type")?.toString().includes("application/octet-stream")
       ) {
         return false;
       }
@@ -358,10 +362,13 @@ export function log(message: string, source = "express") {
       log("[Schedules] Skipping schedule runner start because DB is not connected");
     }
 
-    // Advanced 1 Million Tokens Hyperparametrizations - Deep Scaling
-    // Keeps connection alive for up to 6 minutes for massive O(N^2) context generations
-    server.keepAliveTimeout = 360000;
-    server.headersTimeout = 361000;
+    if (isProdEnv) {
+      server.keepAliveTimeout = 65000;
+      server.headersTimeout = 66000;
+    } else {
+      server.keepAliveTimeout = 360000;
+      server.headersTimeout = 361000;
+    }
 
     // Setup graceful shutdown with connection draining
     setupGracefulShutdown(httpServer, {

@@ -39,15 +39,32 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    target: "es2022",
+    cssCodeSplit: true,
+    sourcemap: false,
+    minify: "terser",
+    terserOptions: {
+      compress: {
+        drop_console: true,
+        drop_debugger: true,
+        passes: 2,
+      },
+    },
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ["react", "react-dom"],
-          ui: ["@radix-ui/react-dialog", "@radix-ui/react-dropdown-menu", "@radix-ui/react-tooltip"],
+        manualChunks(id) {
+          if (id.includes("node_modules/react-dom")) return "react-dom";
+          if (id.includes("node_modules/react")) return "react-core";
+          if (id.includes("@radix-ui")) return "ui-radix";
+          if (id.includes("lucide-react")) return "ui-icons";
+          if (id.includes("framer-motion")) return "ui-motion";
+          if (id.includes("recharts") || id.includes("d3-")) return "charts";
+          if (id.includes("codemirror") || id.includes("@lezer")) return "editor";
+          if (id.includes("node_modules/")) return "vendor";
         },
       },
     },
-    chunkSizeWarningLimit: 1000,
+    chunkSizeWarningLimit: 800,
   },
   optimizeDeps: {
     include: ["react", "react-dom", "wouter"],

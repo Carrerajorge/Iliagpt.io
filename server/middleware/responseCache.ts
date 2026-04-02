@@ -9,9 +9,10 @@ import { requestDedup } from "../lib/requestDedup";
 import * as crypto from "crypto";
 
 const CACHE_NAMESPACE = "response";
-const DEFAULT_TTL_MS = parseInt(process.env.RESPONSE_CACHE_TTL_MS || "60000", 10);
-const MAX_CACHEABLE_SIZE = parseInt(process.env.RESPONSE_CACHE_MAX_SIZE || "5242880", 10);
-const STALE_WHILE_REVALIDATE_MS = parseInt(process.env.RESPONSE_CACHE_SWR_MS || "30000", 10);
+const isProd = process.env.NODE_ENV === 'production';
+const DEFAULT_TTL_MS = parseInt(process.env.RESPONSE_CACHE_TTL_MS || (isProd ? "120000" : "60000"), 10);
+const MAX_CACHEABLE_SIZE = parseInt(process.env.RESPONSE_CACHE_MAX_SIZE || "10485760", 10);
+const STALE_WHILE_REVALIDATE_MS = parseInt(process.env.RESPONSE_CACHE_SWR_MS || (isProd ? "60000" : "30000"), 10);
 
 // Use the singleton cache service
 const cacheService = getCacheService();
