@@ -344,7 +344,7 @@ export function Sidebar({
       key={chat.id}
       className={cn(
         "group relative flex w-full items-center px-2 py-2.5 rounded-xl cursor-pointer liquid-hover hover:bg-accent transition-all duration-300",
-        activeChatId === chat.id && "bg-accent shadow-sm",
+        activeChatId === chat.id && "bg-[#A5A0FF]/15 shadow-sm text-foreground ring-1 ring-[#A5A0FF]/20",
         chat.archived && "opacity-70",
         indented && "ml-4"
       )}
@@ -575,13 +575,16 @@ export function Sidebar({
       aria-label="Navegación principal y chats"
       role="navigation"
     >
-      <div className="flex h-14 items-center justify-between px-4 py-2">
-        <div className="flex items-center gap-2">
-          <IliaGPTLogo size={32} />
+      <div className="flex h-16 items-center justify-between px-4 py-3 border-b border-border/30">
+        <div className="flex items-center gap-3">
+          <div className="relative group">
+            <div className="absolute -inset-1 bg-gradient-to-r from-violet-500/20 to-blue-500/20 rounded-xl blur opacity-0 group-hover:opacity-100 transition duration-500"></div>
+            <IliaGPTLogo size={36} className="drop-shadow-sm relative z-10" />
+          </div>
           <div className="flex flex-col min-w-0">
-            <span className="text-sm font-semibold leading-none liquid-text-gradient">{appName}</span>
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="text-[10px] text-muted-foreground truncate">{appDescription}</span>
+            <span className="text-sm font-bold tracking-tight leading-none bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">{appName}</span>
+            <div className="flex items-center gap-2 min-w-0 mt-0.5">
+              <span className="text-[10px] text-muted-foreground font-medium truncate">{appDescription}</span>
               {isAdmin && platformSettings.maintenance_mode ? (
                 <span className="shrink-0 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-[10px] font-medium">
                   Mantenimiento
@@ -599,93 +602,142 @@ export function Sidebar({
         </Button>
       </div>
 
-      <div className="px-2 py-2">
+      <div className="px-3 py-2">
         <NewChatButton onNewChat={onNewChat} variant="full" showTooltip={false} />
         <Button
           ref={searchButtonRef}
           variant="ghost"
-          className="w-full justify-start gap-2 px-2 text-sm font-medium liquid-button"
+          className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg"
           onClick={() => setIsSearchModalOpen(true)}
           data-testid="button-search-chats"
         >
-          <Search className="h-4 w-4" />
+          <Search className="h-4 w-4 text-muted-foreground" />
           Buscar chats
-        </Button>
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-2 px-2 text-sm font-medium liquid-button"
-          onClick={onOpenLibrary}
-          data-testid="button-library"
-        >
-          <Library className="h-4 w-4" />
-          Biblioteca
-        </Button>
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-2 px-2 text-sm font-medium liquid-button"
-          onClick={onOpenGpts}
-          data-testid="button-gpts"
-        >
-          <Bot className="h-4 w-4" />
-          GPTs
-        </Button>
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-2 px-2 text-sm font-medium liquid-button"
-          onClick={onOpenSkills}
-          data-testid="button-skills"
-        >
-          <Zap className="h-4 w-4" />
-          Skills
-        </Button>
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-2 px-2 text-sm font-medium liquid-button"
-          onClick={onOpenApps}
-          data-testid="button-apps"
-        >
-          <LayoutGrid className="h-4 w-4" />
-          Aplicaciones
-        </Button>
-
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-2 px-2 text-sm font-medium liquid-button"
-          onClick={onOpenWhatsAppConnect}
-          data-testid="button-whatsapp-connect"
-        >
-          <MessageSquare className="h-4 w-4" />
-          <span className="flex-1 text-left">WhatsApp (QR)</span>
-          <span
-            className={cn(
-              "h-2.5 w-2.5 rounded-full",
-              waStatus.state === 'connected' && 'bg-green-500',
-              (waStatus.state === 'connecting' || waStatus.state === 'qr' || waStatus.state === 'pairing_code') && 'bg-amber-500',
-              waStatus.state === 'disconnected' && 'bg-red-500'
-            )}
-            title={`WhatsApp: ${waStatus.state}`}
-          />
-        </Button>
-
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-2 px-2 text-sm font-medium liquid-button text-blue-500 hover:text-blue-600 hover:bg-blue-50/50"
-          onClick={onOpenCodex}
-          data-testid="button-codex"
-        >
-          <Code className="h-4 w-4" />
-          Codex
         </Button>
       </div>
 
-      <Separator className="mx-4 my-2 w-auto" />
+      <div className="px-3 pt-1 pb-1">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-3 mb-1.5">Herramientas</h3>
+        <div className="flex flex-col gap-0.5">
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg hover:bg-[#A5A0FF]/10 transition-all"
+            onClick={onOpenLibrary}
+            data-testid="button-library"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-violet-500">
+              <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
+              <path d="M8 7h6" />
+              <path d="M8 11h8" />
+            </svg>
+            Biblioteca
+          </Button>
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg hover:bg-[#A5A0FF]/10 transition-all"
+            onClick={onOpenGpts}
+            data-testid="button-gpts"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-amber-500">
+              <path d="M9.88 3.2a1 1 0 0 0-1.76 0L5.3 8.3c-.3.56-.74 1-1.3 1.3L1.2 11.2a1 1 0 0 0 0 1.76l2.8 1.6c.56.3 1 .74 1.3 1.3l1.6 2.8c.2.36.72.36.92 0l1.6-2.8c.3-.56.74-1 1.3-1.3l2.8-1.6c.36-.2.36-.72 0-.92l-2.8-1.6c-.56-.3-1-.74-1.3-1.3l-1.6-2.8Z" />
+              <path d="M19.2 4.2a.6.6 0 0 0-1.1 0l-.8 1.4c-.1.2-.3.3-.5.4l-1.4.8a.6.6 0 0 0 0 1.1l1.4.8c.2.1.4.3.5.5l.8 1.4a.6.6 0 0 0 1.1 0l.8-1.4c.1-.2.3-.3.5-.5l1.4-.8a.6.6 0 0 0 0-1.1l-1.4-.8c-.2-.1-.4-.3-.5-.4l-.8-1.4Z" opacity="0.6" />
+            </svg>
+            GPTs
+          </Button>
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg hover:bg-[#A5A0FF]/10 transition-all"
+            onClick={onOpenSkills}
+            data-testid="button-skills"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-blue-500">
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+            </svg>
+            Skills
+          </Button>
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg hover:bg-[#A5A0FF]/10 transition-all"
+            onClick={onOpenApps}
+            data-testid="button-apps"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-emerald-500">
+              <rect x="3" y="3" width="7" height="7" rx="1.5" />
+              <rect x="14" y="3" width="7" height="7" rx="1.5" opacity="0.5" />
+              <rect x="14" y="14" width="7" height="7" rx="1.5" />
+              <path d="M6.5 17.5h.01" strokeWidth="3" strokeLinecap="round" />
+            </svg>
+            Aplicaciones
+          </Button>
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg hover:bg-[#A5A0FF]/10 transition-all"
+            onClick={onOpenWhatsAppConnect}
+            data-testid="button-whatsapp-connect"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-green-500">
+              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+              <rect x="8" y="8" width="3" height="3" rx="0.5" />
+              <rect x="13" y="8" width="3" height="3" rx="0.5" />
+              <rect x="8" y="13" width="3" height="3" rx="0.5" />
+              <rect x="13" y="13" width="3" height="3" rx="0.5" fill="currentColor" />
+            </svg>
+            <span className="flex-1 text-left">AppsWebChat</span>
+            <span
+              className={cn(
+                "h-2 w-2 rounded-full ring-2 ring-background",
+                waStatus.state === 'connected' && 'bg-green-500',
+                (waStatus.state === 'connecting' || waStatus.state === 'qr' || waStatus.state === 'pairing_code') && 'bg-amber-500',
+                waStatus.state === 'disconnected' && 'bg-red-400'
+              )}
+              title={`WhatsApp: ${waStatus.state}`}
+            />
+          </Button>
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg text-blue-500 hover:text-blue-600 hover:bg-blue-500/10 transition-all"
+            onClick={onOpenCodex}
+            data-testid="button-codex"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <polyline points="8 10 12 14 8 18" />
+              <line x1="16" y1="18" x2="16" y2="18" strokeWidth="2.5" />
+            </svg>
+            Codex
+          </Button>
+        </div>
+      </div>
+
+      <div className="px-5 py-2">
+        <div className="h-px bg-gradient-to-r from-transparent via-border/60 to-transparent" />
+      </div>
 
       <ScrollArea className="flex-1 px-2 liquid-scroll [&_[data-radix-scroll-area-viewport]]:scrollbar-thin [&_[data-radix-scroll-area-viewport]]:scrollbar-thumb-muted-foreground/30 [&_[data-radix-scroll-area-viewport]]:scrollbar-track-transparent hover:[&_[data-radix-scroll-area-viewport]]:scrollbar-thumb-muted-foreground/50">
-        <div className="flex flex-col gap-4 pb-4">
+        <div className="flex flex-col gap-3 pb-4">
+          <div className="flex items-center justify-between px-3 pt-2 pb-0.5">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">Hilos</h3>
+            <div className="flex items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-5 w-5 rounded"
+                    onClick={() => setIsCreatingFolder(true)}
+                    data-testid="button-new-folder-header"
+                  >
+                    <FolderPlus className="h-3 w-3 text-muted-foreground" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">Nueva carpeta</TooltipContent>
+              </Tooltip>
+            </div>
+          </div>
           {folders.length > 0 && (
             <div className="flex flex-col gap-0.5">
-              <div className="px-2 py-1.5">
-                <h3 className="text-xs font-medium text-muted-foreground">Carpetas</h3>
+              <div className="px-2 py-0.5">
+                <h3 className="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-wide">Carpetas</h3>
               </div>
               {folders.map((folder) => {
                 const folderChats = chats.filter(chat => folder.chatIds.includes(chat.id));
@@ -1077,27 +1129,33 @@ export function Sidebar({
         )
       }
 
-      <div className="mt-auto border-t p-4">
-        <div className="flex w-full items-center gap-3 rounded-lg p-2">
+      <div className="mt-auto p-3">
+        <div className="h-px bg-gradient-to-r from-transparent via-border/40 to-transparent mb-3" />
+        <div className="flex w-full items-center gap-3 rounded-xl p-2 hover:bg-accent/50 transition-colors">
           <Popover open={isUserMenuOpen} onOpenChange={setIsUserMenuOpen}>
             <PopoverTrigger asChild>
               <button className="flex flex-1 items-center gap-3 liquid-button cursor-pointer" data-testid="button-user-menu">
                 <div className="relative">
-                  <Avatar className="h-10 w-10">
-                    <AvatarFallback className="bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300">
+                  <Avatar className="h-9 w-9 ring-2 ring-violet-500/20">
+                    <AvatarFallback className="bg-gradient-to-br from-violet-500 to-blue-500 text-white text-sm font-bold">
                       {isAdmin ? "A" : (user?.firstName?.[0] || user?.email?.[0] || "U").toUpperCase()}
                     </AvatarFallback>
                   </Avatar>
-                  {/* Online status indicator */}
                   <span className="absolute bottom-0 right-0 block h-2.5 w-2.5 rounded-full bg-green-500 ring-2 ring-background" title="En línea" />
                 </div>
                 <div className="flex flex-1 flex-col overflow-hidden text-left">
-                  <span className="truncate text-sm font-medium">
-                    {isAdmin ? "Admin" : (user?.firstName || user?.email?.split("@")[0] || "Usuario")}
-                  </span>
-                  <span className="truncate text-xs text-muted-foreground">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-sm font-semibold">
+                      {isAdmin ? "Admin" : (user?.firstName || user?.email?.split("@")[0] || "Usuario")}
+                    </span>
+                    {isAdmin && (
+                      <span className="shrink-0 rounded-md bg-violet-500/15 text-violet-600 dark:text-violet-400 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide">
+                        Admin
+                      </span>
+                    )}
+                  </div>
+                  <span className="truncate text-[11px] text-muted-foreground">
                     {(() => {
-                      // Avoid hardcoding plan by email. Use server-provided plan when available.
                       const plan = ((user as any)?.plan || "free").toString().toLowerCase();
                       return plan === "free" ? "Cuenta personal" : plan.toUpperCase();
                     })()}
