@@ -479,5 +479,82 @@ router.post("/model/switch", requireAuth, (req: Request, res: Response) => {
   }
 });
 
-export { createOpenClawRouter } from "./openclawRouter";
+export function createOpenClawRouter(): Router {
+  const runtimeRouter = Router();
+
+  try {
+    const openclaw = require("../agent/openclaw");
+    const { requireAuth } = require("../middleware/auth");
+
+    openclaw.initializeOpenClawTools();
+
+    runtimeRouter.get("/status", (_req: Request, res: Response) => {
+      res.json(openclaw.getOpenClawStatus());
+    });
+
+    runtimeRouter.get("/tools", (req: Request, res: Response) => {
+      const plan = (req.query.plan as string) || "free";
+      const tools = openclaw.getOpenClawToolsForUser(plan);
+      res.json({
+        plan,
+        count: tools.length,
+        tools: tools.map((t: any) => ({
+          name: t.name,
+          description: t.description,
+        })),
+      });
+    });
+
+    runtimeRouter.get("/catalog", (_req: Request, res: Response) => {
+      res.json({
+        sections: openclaw.getCatalogSections(),
+      });
+    });
+
+    runtimeRouter.get("/system-prompt", (req: Request, res: Response) => {
+      const tier = (req.query.tier as any) || "pro";
+      const citations = req.query.citations !== "false";
+      res.json({
+        prompt: openclaw.buildOpenClawSystemPromptSection({
+          tier,
+          citationsEnabled: citations,
+        }),
+      });
+    });
+
+    runtimeRouter.post("/check-tool", requireAuth, (req: Request, res: Response) => {
+      const { toolName, plan } = req.body || {};
+      if (!toolName || !plan) {
+        return res.status(400).json({ error: "toolName and plan are required" });
+      }
+      res.json({
+        toolName,
+        plan,
+        allowed: openclaw.isToolAvailableForPlan(toolName, plan),
+        allTools: openclaw.getToolsForPlan(plan),
+      });
+    });
+
+    runtimeRouter.post("/compact", requireAuth, async (req: Request, res: Response) => {
+      try {
+        const { messages, overrides } = req.body || {};
+        if (!Array.isArray(messages)) {
+          return res.status(400).json({ error: "messages array is required" });
+        }
+        const result = await openclaw.handleCompaction(messages, overrides);
+        res.json(result);
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+  } catch (err: any) {
+    console.warn(`[OpenClaw Runtime] Failed to initialize: ${err.message}`);
+    runtimeRouter.use((_req: Request, res: Response) => {
+      res.status(503).json({ error: "OpenClaw runtime not available" });
+    });
+  }
+
+  return runtimeRouter;
+}
+
 export default router;
