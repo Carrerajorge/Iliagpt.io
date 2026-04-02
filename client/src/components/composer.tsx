@@ -1112,19 +1112,7 @@ export function Composer({
 
 
         <div className="flex flex-col relative">
-          {/* Inner input contour (thin, minimalist, silver) */}
-          <div
-            className={cn(
-              "rounded-[20px] bg-white/40 dark:bg-zinc-950/10 backdrop-blur-sm",
-              SILVER_HAIRLINE,
-              "border-[#c7c7c7]/80 dark:border-white/20",
-              SILVER_HOVER_BORDER_INNER,
-              "px-3 py-1",
-              "transition-colors duration-150",
-              "focus-within:border-[#b0b0b0]/95 dark:focus-within:border-white/35"
-            )}
-          >
-            <Textarea
+          <Textarea
               ref={textareaRef}
               value={input}
               onChange={handleInputChange}
@@ -1148,10 +1136,9 @@ export function Composer({
               placeholder={placeholder}
               aria-label="Message input"
               aria-describedby="composer-hint"
-              className="min-h-[22px] max-h-[180px] w-full resize-none border-0 bg-transparent p-0 shadow-none outline-none focus-visible:!outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 text-[15px] text-zinc-800 dark:text-zinc-100 placeholder:text-zinc-400/70 dark:placeholder:text-zinc-500/60 leading-[1.4] overflow-y-auto scrollbar-none"
+              className="min-h-[22px] max-h-[180px] w-full resize-none border-0 bg-transparent p-0 shadow-none outline-none focus-visible:!outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 text-[15px] text-zinc-800 dark:text-zinc-100 placeholder:text-zinc-400/70 dark:placeholder:text-zinc-500/60 leading-[1.4] overflow-y-auto scrollbar-none px-3 py-1"
               rows={1}
             />
-          </div>
 
           <div className={cn("flex items-center justify-between mt-0.5 pt-0.5 border-t-[0.5px]", SILVER_BORDER_DIVIDER)}>
             <div className="flex items-center gap-1.5">
