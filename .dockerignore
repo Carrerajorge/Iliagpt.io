@@ -1,0 +1,57 @@
+# Version control
+.git
+.gitignore
+
+# Rust build artifacts (881 MB, dev-only)
+native/target/
+
+# Python dev libraries (215 MB, Python service is development-only)
+.pythonlibs/
+__pycache__/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Development assets and downloads not needed in production
+attached_assets/
+Downloads/
+sandbox_workspace/
+generated_reports/
+artifacts/
+
+# Test directories and reports
+e2e/
+e2e-reports/
+playwright-report/
+test-results/
+test_results/
+coverage/
+.nyc_output/
+
+# Documentation (not needed at runtime)
+docs/
+
+# Desktop / Electron build artifacts
+desktop/build/
+daemon/
+
+# Local agent/cache state
+.local/
+.cache/
+.agents/
+
+# Dev tool config files
+.husky/
+.semgrepignore
+commitlint.config.js
+lint-staged.config.js
+playwright.config.ts
+playwright.prod.config.ts
+vitest.config.ts
+vitest.client.config.ts
+eslint.config.js
+
+# Editor artifacts
+.DS_Store
+*.tar.gz
+Shimmer
