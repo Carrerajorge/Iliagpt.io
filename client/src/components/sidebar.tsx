@@ -37,6 +37,7 @@ import {
   Download,
   MoveRight,
   Brain,
+  Megaphone,
   MessageCircle,
   SlidersHorizontal,
   Home,
@@ -879,6 +880,10 @@ export function Sidebar({
                 <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/memory"); }} data-testid="button-memory">
                   <Brain className="h-4 w-4" />
                   Mis Memorias
+                </Button>
+                <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/ads"); }} data-testid="button-ilia-ads">
+                  <Megaphone className="h-4 w-4" />
+                  IliaADS
                 </Button>
 
                 {isAdmin && (

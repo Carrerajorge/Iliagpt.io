@@ -102,6 +102,8 @@ PostgreSQL with Drizzle ORM is used for persistent data storage. Client-side per
 - **World Bank API V2**: Economic data retrieval.
 - **Gmail API**: Gmail chat integration.
 
+**IliaADS** (`server/routes/adsRouter.ts`, `client/src/pages/ilia-ads.tsx`, `client/src/components/ilia-ad-banner.tsx`): Contextual advertising system for monetizing free users. Ads are matched against user queries/response content using keyword scoring and displayed below the copy/like/dislike action toolbar on AI messages. Features: ad creation/management dashboard at `/ads`, keyword-based contextual matching (`GET /api/ads/match?q=...`), impression/click tracking, budget controls (cost per impression, daily/total budgets), geographic targeting (country, min age), Advantage+ audience mode. DB tables: `ilia_ads`, `ad_impressions`. Routes: `/api/ads/match` (public), `/api/ads/impression`, `/api/ads/click` (anonymous tracking), `/api/ads/list`, `/api/ads/create`, `/api/ads/stats`, `PATCH/DELETE /api/ads/:id` (all require auth). Sidebar entry below "Mis Memorias" as "IliaADS".
+
 ## Navigation Flow
 - **`/`** → `ProjectsDashboard` — Replit-style homepage with greeting, project input, quick-start options, recent projects grid (Spanish UI)
 - **`/chat/new`** → `Home` (new chat mode) — Opens chat interface in new conversation mode
@@ -110,3 +112,4 @@ PostgreSQL with Drizzle ORM is used for persistent data storage. Client-side per
 - **"Nuevo chat" button** (sidebar & dashboard) → navigates to `/chat/new`
 - **Ctrl/Cmd+N** → navigates to `/chat/new`
 - **Project card click** (dashboard) → navigates to `/chat/:id`
+- **`/ads`** → `IliaAdsPage` — IliaADS ad management dashboard (requires auth)

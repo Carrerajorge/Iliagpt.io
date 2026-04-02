@@ -167,6 +167,7 @@ const BusinessPage = lazyWithRetry(() => import("@/pages/business"));
 const DownloadPage = lazyWithRetry(() => import("@/pages/download"));
 const PowerPage = lazyWithRetry(() => import("@/pages/power"));
 const MemoryPage = lazyWithRetry(() => import("@/pages/memory"));
+const IliaAdsPage = lazyWithRetry(() => import("@/pages/ilia-ads"));
 const RunReplayPage = lazyWithRetry(() => import("@/pages/agent/RunReplayPage"));
 const OrchestrationDAGPage = lazyWithRetry(() => import("@/pages/agent/OrchestrationDAGPage"));
 
@@ -181,6 +182,7 @@ const ProtectedWorkspacePage = requireAuth(WorkspacePage);
 const ProtectedSkillsPage = requireAuth(SkillsPage);
 const ProtectedCodexPage = requireAuth(CodexPage);
 const ProtectedMemoryPage = requireAuth(MemoryPage);
+const ProtectedIliaAdsPage = requireAuth(IliaAdsPage);
 const ProtectedSpreadsheetAnalyzerPage = requireAuth(SpreadsheetAnalyzerPage);
 const ProtectedMonitoringDashboard = requireAuth(MonitoringDashboard);
 const ProtectedRunReplayPage = requireAuth(RunReplayPage);
@@ -332,6 +334,7 @@ function Router() {
             <Route path="/skills" component={ProtectedSkillsPage} />
             <Route path="/codex" component={ProtectedCodexPage} />
             <Route path="/memory" component={ProtectedMemoryPage} />
+            <Route path="/ads" component={ProtectedIliaAdsPage} />
             <Route path="/spreadsheet-analyzer" component={ProtectedSpreadsheetAnalyzerPage} />
             <Route path="/monitoring" component={ProtectedMonitoringDashboard} />
             <Route path="/agent/replay/:runId" component={ProtectedRunReplayPage} />

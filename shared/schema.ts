@@ -3254,3 +3254,5 @@ export { nodes, nodePairings, nodeJobs } from "./schema/nodes";
 export type { Node, InsertNode, NodePairing, InsertNodePairing, NodeJob, InsertNodeJob } from "./schema/nodes";
 export { oauthTokensGlobal, oauthTokensUser } from "./schema/oauthProviderTokens";
 export type { OAuthTokenGlobal, InsertOAuthTokenGlobal, OAuthTokenUser, InsertOAuthTokenUser } from "./schema/oauthProviderTokens";
+export { iliaAds, adImpressions, insertIliaAdSchema, insertAdImpressionSchema } from "./schema/ads";
+export type { IliaAd, InsertIliaAd, AdImpression, InsertAdImpression } from "./schema/ads";
