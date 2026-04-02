@@ -343,59 +343,29 @@ export function Sidebar({
     <div
       key={chat.id}
       className={cn(
-        "group relative flex w-full items-center px-2 py-2.5 rounded-xl cursor-pointer liquid-hover hover:bg-accent transition-all duration-300",
-        activeChatId === chat.id && "bg-[#A5A0FF]/15 shadow-sm text-foreground ring-1 ring-[#A5A0FF]/20",
-        chat.archived && "opacity-70",
-        indented && "ml-4"
+        "group relative flex w-full items-center px-1.5 py-1 rounded-md cursor-pointer hover:bg-accent/40 transition-colors",
+        activeChatId === chat.id && "bg-accent text-accent-foreground",
+        chat.archived && "opacity-60",
+        indented && "ml-0"
       )}
       onClick={() => !editingChatId && onSelectChat(chat.id)}
-      data-testid={`chat - item - ${chat.id} `}
+      data-testid={`chat-item-${chat.id}`}
     >
       {editingChatId === chat.id ? (
         <div className="flex w-full items-center gap-1" onClick={(e) => e.stopPropagation()}>
-          <Input
-            value={editTitle}
-            onChange={(e) => setEditTitle(e.target.value)}
-            className="h-7 text-sm flex-1"
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleSaveEdit(chat.id);
-              if (e.key === "Escape") handleCancelEdit();
-            }}
-            data-testid={`input - edit - chat - ${chat.id} `}
-          />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={() => handleSaveEdit(chat.id)}
-            data-testid={`button - save - edit - ${chat.id} `}
-          >
-            <Check className="h-3 w-3 text-green-500" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={handleCancelEdit}
-            data-testid={`button - cancel - edit - ${chat.id} `}
-          >
-            <X className="h-3 w-3 text-red-500" />
-          </Button>
+          <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className="h-6 text-xs flex-1" autoFocus
+            onKeyDown={(e) => { if (e.key === "Enter") handleSaveEdit(chat.id); if (e.key === "Escape") handleCancelEdit(); }}
+            data-testid={`input-edit-chat-${chat.id}`} />
+          <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleSaveEdit(chat.id)} data-testid={`button-save-edit-${chat.id}`}><Check className="h-2.5 w-2.5 text-green-500" /></Button>
+          <Button variant="ghost" size="icon" className="h-5 w-5" onClick={handleCancelEdit} data-testid={`button-cancel-edit-${chat.id}`}><X className="h-2.5 w-2.5 text-red-500" /></Button>
         </div>
       ) : (
         <>
-          {/* 3-dot menu on the LEFT */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="Chat options"
-                className="flex-shrink-0 h-7 w-7 flex items-center justify-center rounded-md opacity-100 hover:bg-muted transition-colors mr-1"
-                onClick={(e) => e.stopPropagation()}
-                data-testid={`button - chat - menu - ${chat.id} `}
-              >
-                <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
+              <button type="button" aria-label="Chat options" className="shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity mr-0.5"
+                onClick={(e) => e.stopPropagation()} data-testid={`button-chat-menu-${chat.id}`}>
+                <MoreHorizontal className="h-3 w-3 text-muted-foreground" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52" sideOffset={5}>
@@ -531,28 +501,13 @@ export function Sidebar({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          {/* Chat title and indicators */}
-          <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
-            {chat.archived && <Archive className="h-3 w-3 text-muted-foreground flex-shrink-0" />}
-            {chat.id.startsWith('wa_') && <MessageCircle className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />}
-            <TooltipProvider delayDuration={500}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="truncate text-sm font-medium cursor-default">{chat.title}</span>
-                </TooltipTrigger>
-                <TooltipContent side="right" className="max-w-xs">
-                  <p className="text-xs">{chat.title}</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-            {processingChatIds.includes(chat.id) && (
-              <StreamingProgressIndicator chatId={chat.id} />
-            )}
+          <div className="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
+            {chat.archived && <Archive className="h-2.5 w-2.5 text-muted-foreground shrink-0" />}
+            {chat.id.startsWith('wa_') && <MessageCircle className="h-3 w-3 text-green-500 shrink-0" />}
+            <span className="truncate text-[12px] cursor-default">{chat.title}</span>
+            {processingChatIds.includes(chat.id) && <StreamingProgressIndicator chatId={chat.id} />}
             {!processingChatIds.includes(chat.id) && pendingResponseCounts[chat.id] > 0 && (
-              <span
-                className="flex items-center justify-center h-5 min-w-5 px-1.5 rounded-full bg-blue-600 text-white text-xs font-medium flex-shrink-0"
-                data-testid={`badge - pending - ${chat.id} `}
-              >
+              <span className="flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-blue-600 text-white text-[9px] font-medium shrink-0" data-testid={`badge-pending-${chat.id}`}>
                 {pendingResponseCounts[chat.id]}
               </span>
             )}
@@ -571,492 +526,241 @@ export function Sidebar({
 
   return (
     <nav
-      className={cn("flex h-screen w-[280px] flex-col liquid-sidebar-light dark:liquid-sidebar text-sidebar-foreground", className)}
+      className={cn("flex h-screen w-[260px] flex-col bg-[#fafafa] dark:bg-[#111113] border-r border-border/40 text-sidebar-foreground", className)}
       aria-label="Navegación principal y chats"
       role="navigation"
     >
-      <div className="flex h-16 items-center justify-between px-4 py-3 border-b border-border/30">
-        <div className="flex items-center gap-3">
-          <div className="relative group">
-            <div className="absolute -inset-1 bg-gradient-to-r from-violet-500/20 to-blue-500/20 rounded-xl blur opacity-0 group-hover:opacity-100 transition duration-500"></div>
-            <IliaGPTLogo size={36} className="drop-shadow-sm relative z-10" />
-          </div>
-          <div className="flex flex-col min-w-0">
-            <span className="text-sm font-bold tracking-tight leading-none bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">{appName}</span>
-            <div className="flex items-center gap-2 min-w-0 mt-0.5">
-              <span className="text-[10px] text-muted-foreground font-medium truncate">{appDescription}</span>
-              {isAdmin && platformSettings.maintenance_mode ? (
-                <span className="shrink-0 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-[10px] font-medium">
-                  Mantenimiento
-                </span>
-              ) : null}
-            </div>
-          </div>
+      <div className="flex h-11 items-center justify-between px-3 border-b border-border/20">
+        <div className="flex items-center gap-2 min-w-0">
+          <IliaGPTLogo size={24} className="shrink-0" />
+          <span className="text-[13px] font-semibold tracking-tight truncate">{appName}</span>
+          {isAdmin && platformSettings.maintenance_mode && (
+            <span className="shrink-0 rounded bg-amber-500/15 text-amber-600 px-1 py-px text-[9px] font-medium">MAINT</span>
+          )}
         </div>
-        <Button variant="ghost" size="icon" className="h-8 w-8 liquid-button" onClick={onToggle}>
-          <svg className="h-5 w-5 text-muted-foreground" viewBox="0 0 24 24" fill="none">
-            <rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="1.5" />
-            <line x1="9" y1="3" x2="9" y2="21" stroke="currentColor" strokeWidth="1.5" />
-            <path d="M14 9L17 12L14 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </Button>
+        <div className="flex items-center gap-0.5">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md" onClick={onNewChat} data-testid="button-new-chat-header">
+                <SquarePen className="h-3.5 w-3.5 text-muted-foreground" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">Nuevo chat</TooltipContent>
+          </Tooltip>
+          <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md" onClick={onToggle}>
+            <PanelLeftClose className="h-3.5 w-3.5 text-muted-foreground" />
+          </Button>
+        </div>
       </div>
 
-      <div className="px-3 py-2">
-        <NewChatButton onNewChat={onNewChat} variant="full" showTooltip={false} />
+      <div className="px-2 pt-2 pb-1">
         <Button
           ref={searchButtonRef}
           variant="ghost"
-          className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg"
+          className="w-full justify-start gap-2 px-2 py-1.5 h-8 text-xs text-muted-foreground hover:text-foreground rounded-md border border-border/30 bg-background/50"
           onClick={() => setIsSearchModalOpen(true)}
           data-testid="button-search-chats"
         >
-          <Search className="h-4 w-4 text-muted-foreground" />
-          Buscar chats
+          <Search className="h-3 w-3" />
+          Buscar...
+          <span className="ml-auto text-[10px] text-muted-foreground/50 font-mono">Ctrl+K</span>
         </Button>
       </div>
 
-      <div className="px-3 pt-1 pb-1">
-        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 px-3 mb-1.5">Herramientas</h3>
-        <div className="flex flex-col gap-0.5">
-          <Button
-            variant="ghost"
-            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg hover:bg-[#A5A0FF]/10 transition-all"
-            onClick={onOpenLibrary}
-            data-testid="button-library"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-violet-500">
-              <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
-              <path d="M8 7h6" />
-              <path d="M8 11h8" />
-            </svg>
-            Biblioteca
-          </Button>
-          <Button
-            variant="ghost"
-            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg hover:bg-[#A5A0FF]/10 transition-all"
-            onClick={onOpenGpts}
-            data-testid="button-gpts"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-amber-500">
-              <path d="M9.88 3.2a1 1 0 0 0-1.76 0L5.3 8.3c-.3.56-.74 1-1.3 1.3L1.2 11.2a1 1 0 0 0 0 1.76l2.8 1.6c.56.3 1 .74 1.3 1.3l1.6 2.8c.2.36.72.36.92 0l1.6-2.8c.3-.56.74-1 1.3-1.3l2.8-1.6c.36-.2.36-.72 0-.92l-2.8-1.6c-.56-.3-1-.74-1.3-1.3l-1.6-2.8Z" />
-              <path d="M19.2 4.2a.6.6 0 0 0-1.1 0l-.8 1.4c-.1.2-.3.3-.5.4l-1.4.8a.6.6 0 0 0 0 1.1l1.4.8c.2.1.4.3.5.5l.8 1.4a.6.6 0 0 0 1.1 0l.8-1.4c.1-.2.3-.3.5-.5l1.4-.8a.6.6 0 0 0 0-1.1l-1.4-.8c-.2-.1-.4-.3-.5-.4l-.8-1.4Z" opacity="0.6" />
-            </svg>
-            GPTs
-          </Button>
-          <Button
-            variant="ghost"
-            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg hover:bg-[#A5A0FF]/10 transition-all"
-            onClick={onOpenSkills}
-            data-testid="button-skills"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-blue-500">
-              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
-            </svg>
-            Skills
-          </Button>
-          <Button
-            variant="ghost"
-            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg hover:bg-[#A5A0FF]/10 transition-all"
-            onClick={onOpenApps}
-            data-testid="button-apps"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-emerald-500">
-              <rect x="3" y="3" width="7" height="7" rx="1.5" />
-              <rect x="14" y="3" width="7" height="7" rx="1.5" opacity="0.5" />
-              <rect x="14" y="14" width="7" height="7" rx="1.5" />
-              <path d="M6.5 17.5h.01" strokeWidth="3" strokeLinecap="round" />
-            </svg>
-            Aplicaciones
-          </Button>
-          <Button
-            variant="ghost"
-            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg hover:bg-[#A5A0FF]/10 transition-all"
-            onClick={onOpenWhatsAppConnect}
-            data-testid="button-whatsapp-connect"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-green-500">
-              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-              <rect x="8" y="8" width="3" height="3" rx="0.5" />
-              <rect x="13" y="8" width="3" height="3" rx="0.5" />
-              <rect x="8" y="13" width="3" height="3" rx="0.5" />
-              <rect x="13" y="13" width="3" height="3" rx="0.5" fill="currentColor" />
-            </svg>
-            <span className="flex-1 text-left">AppsWebChat</span>
-            <span
-              className={cn(
-                "h-2 w-2 rounded-full ring-2 ring-background",
-                waStatus.state === 'connected' && 'bg-green-500',
-                (waStatus.state === 'connecting' || waStatus.state === 'qr' || waStatus.state === 'pairing_code') && 'bg-amber-500',
-                waStatus.state === 'disconnected' && 'bg-red-400'
-              )}
-              title={`WhatsApp: ${waStatus.state}`}
-            />
-          </Button>
-          <Button
-            variant="ghost"
-            className="w-full justify-start gap-2.5 px-3 py-2 text-sm font-medium liquid-button rounded-lg text-blue-500 hover:text-blue-600 hover:bg-blue-500/10 transition-all"
-            onClick={onOpenCodex}
-            data-testid="button-codex"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <polyline points="8 10 12 14 8 18" />
-              <line x1="16" y1="18" x2="16" y2="18" strokeWidth="2.5" />
-            </svg>
-            Codex
-          </Button>
+      <div className="px-2 pt-1.5 pb-0.5">
+        <div className="flex items-center justify-between px-1.5 mb-1">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/50">Herramientas</span>
+        </div>
+        <div className="grid grid-cols-3 gap-1">
+          <button onClick={onOpenLibrary} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group" data-testid="button-library">
+            <Library className="h-3.5 w-3.5 text-violet-500 group-hover:text-violet-600 transition-colors" />
+            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">Biblioteca</span>
+          </button>
+          <button onClick={onOpenGpts} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group" data-testid="button-gpts">
+            <Bot className="h-3.5 w-3.5 text-amber-500 group-hover:text-amber-600 transition-colors" />
+            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">GPTs</span>
+          </button>
+          <button onClick={onOpenSkills} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group" data-testid="button-skills">
+            <Zap className="h-3.5 w-3.5 text-blue-500 group-hover:text-blue-600 transition-colors" />
+            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">Skills</span>
+          </button>
+          <button onClick={onOpenApps} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group" data-testid="button-apps">
+            <LayoutGrid className="h-3.5 w-3.5 text-emerald-500 group-hover:text-emerald-600 transition-colors" />
+            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">Apps</span>
+          </button>
+          <button onClick={onOpenWhatsAppConnect} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group relative" data-testid="button-whatsapp-connect">
+            <MessageSquare className="h-3.5 w-3.5 text-green-500 group-hover:text-green-600 transition-colors" />
+            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">WebChat</span>
+            <span className={cn("absolute top-1 right-1.5 h-1.5 w-1.5 rounded-full", waStatus.state === 'connected' ? 'bg-green-500' : waStatus.state === 'disconnected' ? 'bg-red-400' : 'bg-amber-500')} />
+          </button>
+          <button onClick={onOpenCodex} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group" data-testid="button-codex">
+            <Code className="h-3.5 w-3.5 text-cyan-500 group-hover:text-cyan-600 transition-colors" />
+            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">Codex</span>
+          </button>
         </div>
       </div>
 
-      <div className="px-5 py-2">
-        <div className="h-px bg-gradient-to-r from-transparent via-border/60 to-transparent" />
+      <div className="px-3 py-1.5">
+        <div className="h-px bg-border/20" />
       </div>
 
-      <ScrollArea className="flex-1 px-2 liquid-scroll [&_[data-radix-scroll-area-viewport]]:scrollbar-thin [&_[data-radix-scroll-area-viewport]]:scrollbar-thumb-muted-foreground/30 [&_[data-radix-scroll-area-viewport]]:scrollbar-track-transparent hover:[&_[data-radix-scroll-area-viewport]]:scrollbar-thumb-muted-foreground/50">
-        <div className="flex flex-col gap-3 pb-4">
-          <div className="flex items-center justify-between px-3 pt-2 pb-0.5">
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70">Hilos</h3>
-            <div className="flex items-center gap-1">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-5 w-5 rounded"
-                    onClick={() => setIsCreatingFolder(true)}
-                    data-testid="button-new-folder-header"
-                  >
-                    <FolderPlus className="h-3 w-3 text-muted-foreground" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top" className="text-xs">Nueva carpeta</TooltipContent>
-              </Tooltip>
-            </div>
+      <ScrollArea className="flex-1 px-1 [&_[data-radix-scroll-area-viewport]]:scrollbar-thin [&_[data-radix-scroll-area-viewport]]:scrollbar-thumb-muted-foreground/20 [&_[data-radix-scroll-area-viewport]]:scrollbar-track-transparent">
+        <div className="flex flex-col gap-0.5 pb-2">
+          <div className="flex items-center justify-between px-2 pt-1 pb-0.5">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/50">Hilos</span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-5 w-5 rounded" onClick={() => setIsCreateProjectOpen(true)} data-testid="button-new-folder-header">
+                  <Plus className="h-3 w-3 text-muted-foreground" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right" className="text-xs">Nuevo proyecto</TooltipContent>
+            </Tooltip>
           </div>
+
+          {projects.length > 0 && (
+            <div className="flex flex-col gap-px px-1">
+              {projects.map((project) => {
+                const projectChats = chats.filter(chat => project.chatIds.includes(chat.id));
+                const isExpanded = expandedFolders.has(project.id);
+                const isSelected = selectedProjectId === project.id;
+                return (
+                  <Collapsible key={project.id} open={isExpanded} onOpenChange={() => toggleFolder(project.id)}>
+                    <div className={cn(
+                      "group flex items-center gap-1 px-1.5 py-1 rounded-md transition-colors",
+                      isSelected ? "bg-accent text-accent-foreground" : "hover:bg-accent/40"
+                    )}>
+                      <CollapsibleTrigger asChild>
+                        <button className="p-0.5 rounded shrink-0 hover:bg-accent">
+                          <ChevronRight className={cn("h-3 w-3 text-muted-foreground transition-transform duration-150", isExpanded && "rotate-90")} />
+                        </button>
+                      </CollapsibleTrigger>
+                      <div
+                        className="flex items-center gap-1.5 flex-1 min-w-0 cursor-pointer"
+                        onClick={(e) => { e.stopPropagation(); onSelectProject?.(project.id); }}
+                        data-testid={`project-${project.id}`}
+                      >
+                        {isExpanded ? <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" /> : <Folder className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+                        <span className="h-1.5 w-1.5 rounded-full shrink-0" ref={(el) => { if (el) el.style.backgroundColor = project.color; }} />
+                        <span className="text-[12px] font-medium truncate flex-1">{project.name}</span>
+                        {project.files.length > 0 && <span className="text-[9px] text-muted-foreground/60 tabular-nums">{project.files.length}f</span>}
+                        <span className="text-[9px] text-muted-foreground/60 tabular-nums">{projectChats.length}</span>
+                      </div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity" onClick={(e) => e.stopPropagation()} data-testid={`project-menu-${project.id}`}>
+                            <MoreHorizontal className="h-3 w-3 text-muted-foreground" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-44" sideOffset={4}>
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setEditingProject(project); }} data-testid={`project-edit-${project.id}`}>
+                            <Pencil className="h-3.5 w-3.5 mr-2" /> Editar
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setMemoriesProject(project); }} data-testid={`project-memories-${project.id}`}>
+                            <Brain className="h-3.5 w-3.5 mr-2" /> Memorias
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setShareProject(project); }} data-testid={`project-share-${project.id}`}>
+                            <MoveRight className="h-3.5 w-3.5 mr-2" /> Compartir
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={(e) => {
+                            e.stopPropagation();
+                            const exportData = { ...project, exportedAt: new Date().toISOString(), version: "1.0" };
+                            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a"); a.href = url; a.download = `${project.name.replace(/[^a-z0-9]/gi, "_")}_project.json`;
+                            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+                          }} data-testid={`project-export-${project.id}`}>
+                            <Download className="h-3.5 w-3.5 mr-2" /> Exportar
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setDeletingProject(project); }} className="text-red-500 focus:text-red-500" data-testid={`project-delete-${project.id}`}>
+                            <Trash2 className="h-3.5 w-3.5 mr-2" /> Eliminar
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                    <CollapsibleContent>
+                      <div className="flex flex-col gap-px ml-3 pl-2 border-l border-border/20 mt-0.5">
+                        {projectChats.length > 0 ? projectChats.map((chat) => renderChatItem(chat, true)) : (
+                          <p className="text-[10px] text-muted-foreground/50 px-2 py-1 italic">Sin conversaciones</p>
+                        )}
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
+                );
+              })}
+            </div>
+          )}
+
           {folders.length > 0 && (
-            <div className="flex flex-col gap-0.5">
-              <div className="px-2 py-0.5">
-                <h3 className="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-wide">Carpetas</h3>
-              </div>
+            <div className="flex flex-col gap-px px-1">
               {folders.map((folder) => {
                 const folderChats = chats.filter(chat => folder.chatIds.includes(chat.id));
                 const isExpanded = expandedFolders.has(folder.id);
                 return (
                   <Collapsible key={folder.id} open={isExpanded} onOpenChange={() => toggleFolder(folder.id)}>
                     <CollapsibleTrigger asChild>
-                      <div
-                        className="flex items-center gap-2 px-2 py-2 rounded-xl cursor-pointer hover:bg-accent transition-all duration-300"
-                        data-testid={`folder - ${folder.id} `}
-                      >
-                        {isExpanded ? (
-                          <FolderOpen className="h-4 w-4 text-muted-foreground" />
-                        ) : (
-                          <Folder className="h-4 w-4 text-muted-foreground" />
-                        )}
-                        <span
-                          className="h-2.5 w-2.5 rounded-full flex-shrink-0"
-                          ref={(el) => { if (el) el.style.backgroundColor = folder.color; }}
-                        />
-                        <span className="text-sm font-medium flex-1">{folder.name}</span>
-                        <span className="text-xs text-muted-foreground">{folderChats.length}</span>
-                        <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform", isExpanded && "rotate-90")} />
+                      <div className="flex items-center gap-1.5 px-1.5 py-1 rounded-md cursor-pointer hover:bg-accent/40 transition-colors" data-testid={`folder-${folder.id}`}>
+                        <ChevronRight className={cn("h-3 w-3 text-muted-foreground transition-transform duration-150", isExpanded && "rotate-90")} />
+                        {isExpanded ? <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" /> : <Folder className="h-3.5 w-3.5 text-muted-foreground" />}
+                        <span className="h-1.5 w-1.5 rounded-full shrink-0" ref={(el) => { if (el) el.style.backgroundColor = folder.color; }} />
+                        <span className="text-[12px] font-medium flex-1 truncate">{folder.name}</span>
+                        <span className="text-[9px] text-muted-foreground/60 tabular-nums">{folderChats.length}</span>
                       </div>
                     </CollapsibleTrigger>
                     <CollapsibleContent>
-                      <div className="flex flex-col gap-0.5 mt-0.5">
+                      <div className="flex flex-col gap-px ml-3 pl-2 border-l border-border/20 mt-0.5">
                         {folderChats.map((chat) => renderChatItem(chat, true))}
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
                 );
               })}
-              {isCreatingFolder ? (
-                <div className="flex items-center gap-1 px-2 py-1">
-                  <Input
-                    value={newFolderName}
-                    onChange={(e) => setNewFolderName(e.target.value)}
-                    placeholder="Nombre de carpeta"
-                    className="h-7 text-sm flex-1"
-                    autoFocus
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleCreateFolder();
-                      if (e.key === "Escape") {
-                        setIsCreatingFolder(false);
-                        setNewFolderName("");
-                      }
-                    }}
-                    data-testid="input-new-folder-name"
-                  />
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6"
-                    onClick={handleCreateFolder}
-                    data-testid="button-save-folder"
-                  >
-                    <Check className="h-3 w-3 text-green-500" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6"
-                    onClick={() => {
-                      setIsCreatingFolder(false);
-                      setNewFolderName("");
-                    }}
-                    data-testid="button-cancel-folder"
-                  >
-                    <X className="h-3 w-3 text-red-500" />
-                  </Button>
-                </div>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="w-full justify-start gap-2 px-2 text-sm text-muted-foreground hover:text-foreground"
-                  onClick={() => setIsCreateProjectOpen(true)}
-                  data-testid="button-new-folder"
-                >
-                  <FolderPlus className="h-4 w-4" />
-                  Nueva Carpeta
-                </Button>
-              )}
             </div>
           )}
 
-          {folders.length === 0 && (
-            <div className="px-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="w-full justify-start gap-2 px-2 text-sm text-muted-foreground hover:text-foreground"
-                onClick={() => setIsCreateProjectOpen(true)}
-                data-testid="button-new-folder"
-              >
-                <FolderPlus className="h-4 w-4" />
-                Nueva Carpeta
-              </Button>
-
-              {/* Projects List */}
-              {projects.length > 0 && (
-                <div className="flex flex-col gap-0.5 mt-2">
-                  {projects.map((project) => {
-                    const projectChats = chats.filter(chat => project.chatIds.includes(chat.id));
-                    const isExpanded = expandedFolders.has(project.id);
-                    return (
-                      <Collapsible key={project.id} open={isExpanded} onOpenChange={() => toggleFolder(project.id)}>
-                        <div className="group flex items-center gap-1 px-2 py-2 rounded-xl hover:bg-accent transition-all duration-300">
-                          <CollapsibleTrigger asChild>
-                            <button
-                              aria-label="Expand project"
-                              className="p-1 hover:bg-muted rounded cursor-pointer shrink-0">
-                              <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform", isExpanded && "rotate-90")} />
-                            </button>
-                          </CollapsibleTrigger>
-
-                          {/* Three dots menu - ON THE LEFT */}
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <button
-                                type="button"
-                                aria-label="Project options"
-                                className="flex-shrink-0 h-7 w-7 flex items-center justify-center rounded-md opacity-100 hover:bg-muted transition-colors"
-                                onClick={(e) => e.stopPropagation()}
-                                data-testid={`project - menu - ${project.id} `}
-                              >
-                                <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
-                              </button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="start" className="w-48" sideOffset={5}>
-                              <DropdownMenuItem
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setEditingProject(project);
-                                }}
-                                data-testid={`project - edit - ${project.id} `}
-                              >
-                                <Pencil className="h-4 w-4 mr-2" />
-                                Edit
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setMemoriesProject(project);
-                                }}
-                                data-testid={`project - memories - ${project.id} `}
-                              >
-                                <Library className="h-4 w-4 mr-2" />
-                                Memories
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setShareProject(project);
-                                }}
-                                data-testid={`project - share - ${project.id} `}
-                              >
-                                <MoveRight className="h-4 w-4 mr-2" />
-                                Share
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  // Export project as JSON
-                                  const exportData = {
-                                    ...project,
-                                    exportedAt: new Date().toISOString(),
-                                    version: "1.0"
-                                  };
-                                  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
-                                  const url = URL.createObjectURL(blob);
-                                  const a = document.createElement("a");
-                                  a.href = url;
-                                  a.download = `${project.name.replace(/[^a-z0-9]/gi, "_")} _project.json`;
-                                  document.body.appendChild(a);
-                                  a.click();
-                                  document.body.removeChild(a);
-                                  URL.revokeObjectURL(url);
-                                }}
-                                data-testid={`project -export -${project.id} `}
-                              >
-                                <Download className="h-4 w-4 mr-2" />
-                                Export
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setDeletingProject(project);
-                                }}
-                                className="text-red-500 focus:text-red-500"
-                                data-testid={`project - delete -${project.id} `}
-                              >
-                                <Trash2 className="h-4 w-4 mr-2" />
-                                Delete
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-
-                          {/* Project content */}
-                          <div
-                            className={cn(
-                              "flex items-center gap-2 flex-1 min-w-0 cursor-pointer p-1 rounded-md transition-colors",
-                              selectedProjectId === project.id ? "bg-accent/50 text-accent-foreground" : "hover:bg-muted/50"
-                            )}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              onSelectProject?.(project.id);
-                            }}
-                            data-testid={`project - ${project.id} `}
-                          >
-                            {project.backgroundImage ? (
-                              <div
-                                className="h-5 w-5 rounded flex-shrink-0 bg-cover bg-center"
-                                ref={(el) => { if (el) el.style.backgroundImage = `url(${project.backgroundImage})`; }}
-                              />
-                            ) : isExpanded ? (
-                              <FolderOpen className="h-4 w-4 text-muted-foreground" />
-                            ) : (
-                              <Folder className="h-4 w-4 text-muted-foreground" />
-                            )}
-                            <span
-                              className="h-2.5 w-2.5 rounded-full flex-shrink-0"
-                              ref={(el) => { if (el) el.style.backgroundColor = project.color; }}
-                            />
-                            <span className="text-sm font-medium flex-1 truncate">{project.name}</span>
-                            {project.systemPrompt && (
-                              <span className="text-xs text-muted-foreground" title="Has system prompt">📝</span>
-                            )}
-                            {project.files.length > 0 && (
-                              <span className="text-xs text-muted-foreground" title={`${project.files.length} files`}>📎{project.files.length}</span>
-                            )}
-                            <span className="text-xs text-muted-foreground">{projectChats.length}</span>
-                          </div>
-                        </div>
-                        <CollapsibleContent>
-                          <div className="flex flex-col gap-0.5 mt-0.5">
-                            {projectChats.length > 0 ? (
-                              projectChats.map((chat) => renderChatItem(chat, true))
-                            ) : (
-                              <p className="text-xs text-muted-foreground px-6 py-2 italic">
-                                No hay chats. Mueve chats aquí.
-                              </p>
-                            )}
-                          </div>
-                        </CollapsibleContent>
-                      </Collapsible>
-                    );
-                  })}
-                </div>
-              )}
+          {isCreatingFolder && (
+            <div className="flex items-center gap-1 px-2 py-0.5">
+              <Input value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)} placeholder="Nombre" className="h-6 text-xs flex-1" autoFocus
+                onKeyDown={(e) => { if (e.key === "Enter") handleCreateFolder(); if (e.key === "Escape") { setIsCreatingFolder(false); setNewFolderName(""); } }}
+                data-testid="input-new-folder-name" />
+              <Button variant="ghost" size="icon" className="h-5 w-5" onClick={handleCreateFolder} data-testid="button-save-folder"><Check className="h-2.5 w-2.5 text-green-500" /></Button>
+              <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => { setIsCreatingFolder(false); setNewFolderName(""); }} data-testid="button-cancel-folder"><X className="h-2.5 w-2.5 text-red-500" /></Button>
             </div>
           )}
 
-          {/* Pinned Chats Section */}
           {pinnedChats.length > 0 && (
-            <div className="flex flex-col gap-0.5">
-              <div className="px-2 py-1.5">
-                <h3 className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                  <Pin className="h-3 w-3" />
-                  Fijados
-                </h3>
+            <div className="flex flex-col gap-px px-1">
+              <div className="flex items-center gap-1 px-1.5 py-0.5">
+                <Pin className="h-2.5 w-2.5 text-muted-foreground/40" />
+                <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/50">Fijados</span>
               </div>
               {pinnedChats.map((chat) => renderChatItem(chat))}
             </div>
           )}
 
-          {/* Pinned GPTs Section */}
           {pinnedGpts.length > 0 && (
-            <div className="flex flex-col gap-0.5">
-              <div className="px-2 py-1.5">
-                <h3 className="text-xs font-medium text-muted-foreground">GPTs</h3>
+            <div className="flex flex-col gap-px px-1">
+              <div className="px-1.5 py-0.5">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/50">GPTs</span>
               </div>
               {pinnedGpts.map((pinned) => (
-                <div
-                  key={pinned.gptId}
-                  className="group flex w-full items-center justify-between px-2 py-2 rounded-xl cursor-pointer hover:bg-accent transition-all duration-300"
-                  onClick={() => setLocation(`/ gpts / ${pinned.gpt.slug || pinned.gptId} `)}
-                  data-testid={`pinned - gpt - ${pinned.gptId} `}
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    {pinned.gpt.avatar ? (
-                      <img
-                        src={pinned.gpt.avatar}
-                        alt={pinned.gpt.name}
-                        className="h-6 w-6 rounded-md object-cover flex-shrink-0"
-                      />
-                    ) : (
-                      <div className="h-6 w-6 rounded-md bg-muted flex items-center justify-center flex-shrink-0">
-                        <Bot className="h-4 w-4 text-muted-foreground" />
-                      </div>
-                    )}
-                    <span className="truncate text-sm">{pinned.gpt.name}</span>
+                <div key={pinned.gptId} className="group flex items-center justify-between px-1.5 py-1 rounded-md cursor-pointer hover:bg-accent/40 transition-colors"
+                  onClick={() => setLocation(`/gpts/${pinned.gpt.slug || pinned.gptId}`)} data-testid={`pinned-gpt-${pinned.gptId}`}>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    {pinned.gpt.avatar ? <img src={pinned.gpt.avatar} alt={pinned.gpt.name} className="h-4 w-4 rounded object-cover shrink-0" /> : <Bot className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+                    <span className="truncate text-[12px]">{pinned.gpt.name}</span>
                   </div>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 flex-shrink-0"
-                        data-testid={`button - pinned - gpt - menu - ${pinned.gptId} `}
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
+                      <button className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-accent" data-testid={`button-pinned-gpt-menu-${pinned.gptId}`}>
+                        <MoreHorizontal className="h-3 w-3 text-muted-foreground" />
+                      </button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-48">
-                      <DropdownMenuItem
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          unpinGpt(pinned.gptId);
-                        }}
-                        className="flex items-center gap-2"
-                        data-testid={`button - unpin - gpt - ${pinned.gptId} `}
-                      >
-                        <Pin className="h-4 w-4" />
-                        <span>Desfijar</span>
+                    <DropdownMenuContent align="end" className="w-40">
+                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); unpinGpt(pinned.gptId); }} data-testid={`button-unpin-gpt-${pinned.gptId}`}>
+                        <Pin className="h-3.5 w-3.5 mr-2" /> Desfijar
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -1068,11 +772,10 @@ export function Sidebar({
           {groupOrder.map((group) => {
             const groupChats = groupedChats[group];
             if (!groupChats || groupChats.length === 0) return null;
-
             return (
-              <div key={group} className="flex flex-col gap-0.5">
-                <div className="px-2 py-1.5">
-                  <h3 className="text-xs font-medium text-muted-foreground">{group}</h3>
+              <div key={group} className="flex flex-col gap-px px-1">
+                <div className="px-1.5 py-0.5">
+                  <span className="text-[10px] font-medium text-muted-foreground/50">{group}</span>
                 </div>
                 {groupChats.map((chat) => renderChatItem(chat))}
               </div>
@@ -1081,88 +784,54 @@ export function Sidebar({
         </div>
       </ScrollArea>
 
-      {/* Hidden Chats Section */}
-      {
-        hiddenChats.length > 0 && (
-          <div className="px-2 border-t">
-            <Button
-              variant="ghost"
-              className="w-full justify-between px-2 py-2 text-sm font-medium text-muted-foreground liquid-button"
-              onClick={() => setShowHidden(!showHidden)}
-              data-testid="button-toggle-hidden"
-            >
-              <div className="flex items-center gap-2">
-                <EyeOff className="h-4 w-4" />
-                <span>Ocultos ({hiddenChats.length})</span>
-              </div>
-              <ChevronDown className={cn("h-4 w-4 transition-transform", showHidden && "rotate-180")} />
-            </Button>
-            {showHidden && (
-              <div className="flex flex-col gap-0.5 pb-2">
-                {hiddenChats.map((chat) => (
-                  <div
-                    key={chat.id}
-                    className="group flex w-full items-center justify-between px-2 py-2 rounded-md cursor-pointer hover:bg-accent transition-colors opacity-70"
-                    onClick={() => onSelectChat(chat.id)}
-                    data-testid={`hidden - chat - item - ${chat.id} `}
-                  >
-                    <span className="truncate" dir="ltr">
-                      {chat.title}
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6 opacity-0 group-hover:opacity-80"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onHideChat?.(chat.id, e);
-                      }}
-                      data-testid={`button - unhide - ${chat.id} `}
-                    >
-                      <Eye className="h-3 w-3" />
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )
-      }
+      {hiddenChats.length > 0 && (
+        <div className="px-1.5 border-t border-border/20">
+          <Button variant="ghost" className="w-full justify-between px-2 py-1 h-7 text-[11px] text-muted-foreground" onClick={() => setShowHidden(!showHidden)} data-testid="button-toggle-hidden">
+            <div className="flex items-center gap-1.5">
+              <EyeOff className="h-3 w-3" />
+              <span>Ocultos ({hiddenChats.length})</span>
+            </div>
+            <ChevronDown className={cn("h-3 w-3 transition-transform", showHidden && "rotate-180")} />
+          </Button>
+          {showHidden && (
+            <div className="flex flex-col gap-px pb-1">
+              {hiddenChats.map((chat) => (
+                <div key={chat.id} className="group flex items-center justify-between px-2 py-1 rounded-md cursor-pointer hover:bg-accent/40 transition-colors opacity-60"
+                  onClick={() => onSelectChat(chat.id)} data-testid={`hidden-chat-item-${chat.id}`}>
+                  <span className="truncate text-[12px]" dir="ltr">{chat.title}</span>
+                  <Button variant="ghost" size="icon" className="h-5 w-5 opacity-0 group-hover:opacity-80" onClick={(e) => { e.stopPropagation(); onHideChat?.(chat.id, e); }} data-testid={`button-unhide-${chat.id}`}>
+                    <Eye className="h-2.5 w-2.5" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
-      <div className="mt-auto p-3">
-        <div className="h-px bg-gradient-to-r from-transparent via-border/40 to-transparent mb-3" />
-        <div className="flex w-full items-center gap-3 rounded-xl p-2 hover:bg-accent/50 transition-colors">
-          <Popover open={isUserMenuOpen} onOpenChange={setIsUserMenuOpen}>
-            <PopoverTrigger asChild>
-              <button className="flex flex-1 items-center gap-3 liquid-button cursor-pointer" data-testid="button-user-menu">
-                <div className="relative">
-                  <Avatar className="h-9 w-9 ring-2 ring-violet-500/20">
-                    <AvatarFallback className="bg-gradient-to-br from-violet-500 to-blue-500 text-white text-sm font-bold">
-                      {isAdmin ? "A" : (user?.firstName?.[0] || user?.email?.[0] || "U").toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="absolute bottom-0 right-0 block h-2.5 w-2.5 rounded-full bg-green-500 ring-2 ring-background" title="En línea" />
-                </div>
-                <div className="flex flex-1 flex-col overflow-hidden text-left">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-sm font-semibold">
-                      {isAdmin ? "Admin" : (user?.firstName || user?.email?.split("@")[0] || "Usuario")}
-                    </span>
-                    {isAdmin && (
-                      <span className="shrink-0 rounded-md bg-violet-500/15 text-violet-600 dark:text-violet-400 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide">
-                        Admin
-                      </span>
-                    )}
-                  </div>
-                  <span className="truncate text-[11px] text-muted-foreground">
-                    {(() => {
-                      const plan = ((user as any)?.plan || "free").toString().toLowerCase();
-                      return plan === "free" ? "Cuenta personal" : plan.toUpperCase();
-                    })()}
+      <div className="mt-auto border-t border-border/20 p-2">
+        <Popover open={isUserMenuOpen} onOpenChange={setIsUserMenuOpen}>
+          <PopoverTrigger asChild>
+            <button className="flex w-full items-center gap-2 p-1.5 rounded-md hover:bg-accent/40 transition-colors cursor-pointer" data-testid="button-user-menu">
+              <Avatar className="h-7 w-7">
+                <AvatarFallback className="bg-gradient-to-br from-violet-500 to-blue-500 text-white text-[10px] font-bold">
+                  {isAdmin ? "A" : (user?.firstName?.[0] || user?.email?.[0] || "U").toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex flex-1 flex-col overflow-hidden text-left">
+                <div className="flex items-center gap-1">
+                  <span className="truncate text-[12px] font-medium">
+                    {isAdmin ? "Admin" : (user?.firstName || user?.email?.split("@")[0] || "Usuario")}
                   </span>
+                  {isAdmin && <span className="shrink-0 rounded bg-violet-500/15 text-violet-500 px-1 py-px text-[8px] font-bold uppercase">PRO</span>}
                 </div>
-              </button>
-            </PopoverTrigger>
+                <span className="truncate text-[10px] text-muted-foreground/60">
+                  {(() => { const plan = ((user as any)?.plan || "free").toString().toLowerCase(); return plan === "free" ? "Plan personal" : plan.toUpperCase(); })()}
+                </span>
+              </div>
+              <Settings className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+            </button>
+          </PopoverTrigger>
             <PopoverContent className="w-auto min-w-56 p-2" align="start" side="top">
               <div className="flex flex-col">
                 {/* Profile section */}
@@ -1215,7 +884,6 @@ export function Sidebar({
               </div>
             </PopoverContent>
           </Popover>
-        </div>
       </div>
 
       <SearchModal
