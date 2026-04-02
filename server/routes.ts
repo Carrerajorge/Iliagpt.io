@@ -145,7 +145,7 @@ import { createTerminalControlRouter, terminalClients } from "./routes/terminalC
 import { createWorkflowRouter } from "./routes/workflowRouter";
 import { createDeviceControlRouter } from "./routes/deviceControlRouter";
 import openClawRouter from "./routes/openClawRouter";
-import { createOpenClawRouter } from "./routes/openclawRouter";
+import { createOpenClawRouter } from "./routes/openClawRouter";
 import adsRouter from "./routes/adsRouter";
 
 import { createSkillPlatformRouter } from "./routes/skillPlatformRouter";

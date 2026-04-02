@@ -479,4 +479,5 @@ router.post("/model/switch", requireAuth, (req: Request, res: Response) => {
   }
 });
 
+export { createOpenClawRouter } from "./openclawRouter";
 export default router;
