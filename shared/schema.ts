@@ -2328,6 +2328,25 @@ export const insertAgentModeEventSchema = createInsertSchema(agentModeEvents).om
 export type InsertAgentModeEvent = z.infer<typeof insertAgentModeEventSchema>;
 export type AgentModeEvent = typeof agentModeEvents.$inferSelect;
 
+export const agentModeArtifacts = pgTable("agent_mode_artifacts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  runId: varchar("run_id").notNull(),
+  stepId: varchar("step_id").notNull(),
+  stepIndex: integer("step_index"),
+  artifactKey: varchar("artifact_key").notNull(),
+  type: varchar("type").notNull(),
+  name: varchar("name").notNull(),
+  url: text("url"),
+  payload: jsonb("payload"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("agent_mode_artifacts_run_idx").on(table.runId),
+  index("agent_mode_artifacts_step_idx").on(table.stepId),
+]);
+export type AgentModeArtifact = typeof agentModeArtifacts.$inferSelect;
+
 export const agentWorkspaces = pgTable("agent_workspaces", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   runId: varchar("run_id").notNull().references(() => agentModeRuns.id, { onDelete: "cascade" }),
@@ -3231,3 +3250,7 @@ export { workspaceRoles } from "./schema/workspaceRoles";
 export type { WorkspaceRole, InsertWorkspaceRole } from "./schema/workspaceRoles";
 export { orchestratorRuns, orchestratorTasks, orchestratorApprovals, orchestratorArtifacts, insertOrchestratorRunSchema, insertOrchestratorTaskSchema, insertOrchestratorApprovalSchema, insertOrchestratorArtifactSchema } from "./schema/orchestrator";
 export type { OrchestratorRun, InsertOrchestratorRun, OrchestratorTask, InsertOrchestratorTask, OrchestratorApproval, InsertOrchestratorApproval, OrchestratorArtifact, InsertOrchestratorArtifact } from "./schema/orchestrator";
+export { nodes, nodePairings, nodeJobs } from "./schema/nodes";
+export type { Node, InsertNode, NodePairing, InsertNodePairing, NodeJob, InsertNodeJob } from "./schema/nodes";
+export { oauthTokensGlobal, oauthTokensUser } from "./schema/oauthProviderTokens";
+export type { OAuthTokenGlobal, InsertOAuthTokenGlobal, OAuthTokenUser, InsertOAuthTokenUser } from "./schema/oauthProviderTokens";

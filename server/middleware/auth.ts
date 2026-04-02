@@ -4,6 +4,7 @@ import { storage } from "../storage";
 import { getSecureUserId } from "../lib/anonUserHelper";
 import { is2FAEnabled } from "../services/twoFactorAuth";
 import { getSettingValue } from "../services/settingsConfigService";
+export { optionalAuth } from "./optionalAuth";
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
     const userId = getSecureUserId(req);

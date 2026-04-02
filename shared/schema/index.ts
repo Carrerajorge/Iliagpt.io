@@ -4,6 +4,8 @@ export * from "./common"; export * from "./auth"; export * from "./admin"; expor
     from "./billingCredits"; export * from "./rag"; export * from "./packageManager"; export * from "./telemetry";
 export * from "./iam";
 export * from "./finops";
+export * from "./nodes";
+export * from "./oauthProviderTokens";
 
 // Legacy compatibility exports required by current server runtime.
 // TODO: remove after fully migrating server imports to modular schema files.
@@ -30,6 +32,8 @@ export {
   type AgentModeRun,
   agentModeSteps,
   type AgentModeStep,
+  agentModeArtifacts,
+  type AgentModeArtifact,
   // agentModeEvents exists in modular schema; avoid re-exporting duplicate symbol from legacy
   agentMemoryStore,
   type AgentMemoryStore,

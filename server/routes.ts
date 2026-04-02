@@ -2255,6 +2255,36 @@ export async function registerRoutes(
   // ===== Run Detail Endpoints =====
   app.use("/api/runs", createRunRouter());
 
+  // ===== GitHub Merge: New Routes from Carrerajorge/Hola =====
+  const lazyRoutes: Array<{ path: string; mod: string; exportName?: string; isFactory?: boolean }> = [
+    { path: "/api/agent-ecosystem", mod: "./routes/agentEcosystemRouter", exportName: "createAgentEcosystemRouter", isFactory: true },
+    { path: "/api/auth/gemini-cli", mod: "./routes/googleGeminiCliOAuthRouter" },
+    { path: "/api/telemetry/hardware", mod: "./routes/hardwareTelemetryRouter", exportName: "createHardwareTelemetryRouter", isFactory: true },
+    { path: "/api/livekit", mod: "./routes/livekitRouter" },
+    { path: "/api/messages", mod: "./routes/messageLifecycleRouter", exportName: "messageLifecycleRouter" },
+    { path: "/api/nodes", mod: "./routes/nodesRouter", exportName: "createNodesRouter", isFactory: true },
+    { path: "/api/auth/openai-codex", mod: "./routes/openAICodexOAuthRouter" },
+    { path: "/api/auth/provider", mod: "./routes/providerOAuthRouter" },
+    { path: "/api/ragflow", mod: "./routes/ragflowRouter" },
+    { path: "/api/programming-agent", mod: "./routes/superProgrammingAgentRouter", exportName: "createSuperProgrammingAgentRouter", isFactory: true },
+    { path: "/api/workflow-traces", mod: "./routes/workflowTraceRoutes", exportName: "createWorkflowTraceRouter", isFactory: true },
+  ];
+  const lazyResults = await Promise.allSettled(
+    lazyRoutes.map(async ({ path: routePath, mod, exportName, isFactory }) => {
+      const m = await import(mod);
+      const exported = exportName ? m[exportName] : (m.default || m);
+      const router = isFactory && typeof exported === "function" ? exported() : exported;
+      app.use(routePath, router);
+      console.log(`[Routes] ✅ ${routePath} loaded`);
+    })
+  );
+  for (let i = 0; i < lazyResults.length; i++) {
+    const r = lazyResults[i];
+    if (r.status === "rejected") {
+      console.warn(`[Routes] ⚠️ ${lazyRoutes[i].path} skipped: ${String(r.reason?.message || r.reason).split('\n')[0]}`);
+    }
+  }
+
   initializeEventStore().catch(console.error);
 
   // ===== Start Persistent Trigger Engine =====
