@@ -74,14 +74,17 @@ export const DEFAULT_GEMINI_VISION_MODEL = GEMINI_MODELS_REGISTRY.FLASH_31;
 /** Default provider (app-level). Routes through OpenRouter via OPENAI_BASE_URL. */
 export const DEFAULT_PROVIDER = "openai" as const;
 
+/** The model ID available to all users (free tier). */
+export const FREE_MODEL_ID = "google/gemma-4-31b-it";
+
 /** Default model for general text completion (app-level). */
-export const DEFAULT_TEXT_MODEL = "google/gemma-3-12b-it:free";
+export const DEFAULT_TEXT_MODEL = FREE_MODEL_ID;
 
 /** Default model for reasoning / planning tasks (app-level). */
-export const DEFAULT_REASONING_MODEL = "google/gemma-3-12b-it:free";
+export const DEFAULT_REASONING_MODEL = FREE_MODEL_ID;
 
 /** Default model for vision tasks (app-level). */
-export const DEFAULT_VISION_MODEL = "google/gemma-3-12b-it:free";
+export const DEFAULT_VISION_MODEL = FREE_MODEL_ID;
 
 // ============================================================================
 // Known Model Sets (for provider detection in llmGateway)

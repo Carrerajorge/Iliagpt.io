@@ -1,3 +1,5 @@
+export const FREE_MODEL_ID = "google/gemma-4-31b-it";
+
 export type UserPlan = {
   plan?: string | null;
   role?: string | null;
@@ -52,4 +54,9 @@ export function getPlanLabel(user?: UserPlan | null): string {
 export function isPaidPlan(user?: UserPlan | null): boolean {
   const plan = getEffectivePlan(user);
   return plan !== "free" && plan !== "admin";
+}
+
+export function isFreeTierUser(user?: UserPlan | null): boolean {
+  const plan = getEffectivePlan(user);
+  return plan === "free";
 }

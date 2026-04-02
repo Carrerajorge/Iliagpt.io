@@ -180,6 +180,8 @@ export function ChatHeader({
                         modelChangeDisabled={isChatProcessing}
                         modelsByProvider={modelsByProvider}
                         activeGptName={activeGpt?.name === 'iliagpt' ? undefined : activeGpt?.name}
+                        userPlanInfo={userPlanInfo}
+                        onUpgradeClick={() => setIsUpgradeDialogOpen(true)}
                     />
                 )}
             </div>

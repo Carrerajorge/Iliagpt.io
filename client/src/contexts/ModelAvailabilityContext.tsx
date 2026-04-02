@@ -4,6 +4,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useSettingsContext } from "@/contexts/SettingsContext";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { apiFetch } from "@/lib/apiClient";
+import { useAuth } from "@/hooks/use-auth";
+import { FREE_MODEL_ID, isFreeTierUser } from "@/lib/planUtils";
 
 export interface AvailableModel {
   id: string;
@@ -41,6 +43,7 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
   const [selectedModelId, setSelectedModelIdState] = useState<string | null>(null);
   const { settings, updateSetting } = useSettingsContext();
   const { settings: platformSettings } = usePlatformSettings();
+  const { user } = useAuth();
 
   const { data: modelsData, isLoading, refetch } = useQuery<{ models: AvailableModel[] }>({
     queryKey: ["/api/models/available"],
@@ -143,6 +146,19 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
       updateSetting("defaultModel", model.modelId);
     }
   }, [enabledModels, selectedModelId, settings.defaultModel, updateSetting]);
+
+  const isFreeUser = isFreeTierUser(user ? { plan: (user as any).plan, role: (user as any).role, subscriptionStatus: (user as any).subscriptionStatus, subscriptionPlan: (user as any).subscriptionPlan } : null);
+
+  useEffect(() => {
+    if (!isFreeUser || !selectedModelId || enabledModels.length === 0) return;
+    const current = enabledModels.find(m => m.id === selectedModelId || m.modelId === selectedModelId);
+    if (current && current.modelId !== FREE_MODEL_ID && current.id !== FREE_MODEL_ID) {
+      const freeModel = enabledModels.find(m => m.modelId === FREE_MODEL_ID || m.id === FREE_MODEL_ID);
+      if (freeModel) {
+        setSelectedModelIdState(freeModel.id);
+      }
+    }
+  }, [isFreeUser, selectedModelId, enabledModels]);
 
   const prevDefaultModelRef = useRef(settings.defaultModel);
 

@@ -3,6 +3,7 @@ import { ChevronDown, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AvailableModel } from "@/contexts/ModelAvailabilityContext";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
+import { FREE_MODEL_ID, isFreeTierUser } from "@/lib/planUtils";
 
 interface StandardModelSelectorProps {
     availableModels: AvailableModel[];
@@ -13,6 +14,12 @@ interface StandardModelSelectorProps {
     onModelChange?: (id: string) => void;
     modelChangeDisabled?: boolean;
     onAddModel?: () => void;
+    userPlanInfo?: { plan: string; isAdmin?: boolean; isPaid?: boolean } | null;
+    onUpgradeClick?: () => void;
+}
+
+function isModelFree(model: AvailableModel): boolean {
+    return model.modelId === FREE_MODEL_ID || model.id === FREE_MODEL_ID;
 }
 
 export function StandardModelSelector({
@@ -23,12 +30,15 @@ export function StandardModelSelector({
     activeGptName,
     onModelChange,
     modelChangeDisabled = false,
-    onAddModel
+    onAddModel,
+    userPlanInfo,
+    onUpgradeClick,
 }: StandardModelSelectorProps) {
     const isAnyModelAvailable = availableModels.length > 0;
     const isDisabled = !!activeGptName || modelChangeDisabled;
 
-    // Derived selected model data
+    const isFreeUser = isFreeTierUser(userPlanInfo ? { plan: userPlanInfo.plan, role: userPlanInfo.isAdmin ? "admin" : undefined } : null);
+
     const selectedModelData = React.useMemo(() => {
         if (!selectedModelId) return availableModels[0] || null;
         return availableModels.find(m => m.id === selectedModelId || m.modelId === selectedModelId) || availableModels[0] || null;
@@ -37,8 +47,26 @@ export function StandardModelSelector({
     const providerLabel = (provider: string) => {
         if (provider === "xai") return "xAI";
         if (provider === "google" || provider === "gemini") return "Google Gemini";
+        if (provider === "openrouter") return "OpenRouter";
         return provider;
     };
+
+    const handleChange = React.useCallback((newId: string) => {
+        if (isDisabled) return;
+
+        if (isFreeUser) {
+            const target = availableModels.find(m => m.id === newId || m.modelId === newId);
+            if (target && !isModelFree(target)) {
+                if (onUpgradeClick) {
+                    onUpgradeClick();
+                }
+                return;
+            }
+        }
+
+        const handler = onModelChange ?? setSelectedModelId;
+        handler(newId);
+    }, [isDisabled, isFreeUser, availableModels, onModelChange, setSelectedModelId, onUpgradeClick]);
 
     if (!isAnyModelAvailable) {
         return (
@@ -76,21 +104,25 @@ export function StandardModelSelector({
                         isDisabled && "pointer-events-none"
                     )}
                     value={selectedModelData?.id || ""}
-                    onChange={(e) => {
-                        if (isDisabled) return;
-                        const handler = onModelChange ?? setSelectedModelId;
-                        handler(e.target.value);
-                    }}
+                    onChange={(e) => handleChange(e.target.value)}
                     disabled={isDisabled}
                     aria-label="Selector de modelo"
                 >
                     {Object.entries(modelsByProvider).map(([provider, models]) => (
                         <optgroup key={provider} label={providerLabel(provider)}>
-                            {models.map((model) => (
-                                <option key={model.id} value={model.id}>
-                                    {model.name}
-                                </option>
-                            ))}
+                            {models.map((model) => {
+                                const locked = isFreeUser && !isModelFree(model);
+                                return (
+                                    <option
+                                        key={model.id}
+                                        value={model.id}
+                                        disabled={locked}
+                                        data-testid={`option-model-${model.modelId}`}
+                                    >
+                                        {locked ? `\u{1F512} ${model.name}` : model.name}
+                                    </option>
+                                );
+                            })}
                         </optgroup>
                     ))}
                 </select>
@@ -126,5 +158,4 @@ export function StandardModelSelector({
     );
 }
 
-// Ensure default export compatibility if needed, but named is preferred
 export default StandardModelSelector;
