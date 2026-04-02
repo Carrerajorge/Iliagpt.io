@@ -193,7 +193,7 @@ export default function LandingPage() {
             <Menu className="h-5 w-5" />
           </Button>
           <IliaGPTLogo size={30} className="shadow-sm" />
-          <span className="font-extrabold tracking-tight text-black text-lg select-none">ILIAGPT</span>
+          <span className="font-extrabold tracking-tight text-black text-lg select-none">iliagpt</span>
         </div>
 
         <nav className="hidden md:flex items-center gap-7 text-[13px] font-medium tracking-wide uppercase">
@@ -365,7 +365,7 @@ export default function LandingPage() {
                   </span>
                   <h3 className="text-2xl font-bold text-white mb-2 tracking-tight">Control Autónomo de tu PC</h3>
                   <p className="text-sm text-neutral-400 mb-6 leading-relaxed max-w-md">
-                    Descubre un paradigma superior. ILIAGPT ahora puede operar tu sistema operativo local de forma segura: navegar directorios, correr scripts, y manipular tu entorno de desarrollo al instante.
+                    Descubre un paradigma superior. iliagpt ahora puede operar tu sistema operativo local de forma segura: navegar directorios, correr scripts, y manipular tu entorno de desarrollo al instante.
                   </p>
                   <Button className="rounded-full bg-white text-black hover:bg-neutral-200 transition-all font-semibold shadow-lg hover:shadow-xl hover:scale-105"
                     onClick={() => setLocation("/login")} data-testid="button-try-agent"
@@ -456,7 +456,7 @@ export default function LandingPage() {
             El futuro de la productividad<br />empieza aquí
           </h2>
           <p className="text-lg text-white/60 mb-10 max-w-xl mx-auto font-medium">
-            Únete a más de 10 millones de personas que ya amplifican su potencial con ILIAGPT. Gratis, para siempre.
+            Únete a más de 10 millones de personas que ya amplifican su potencial con iliagpt. Gratis, para siempre.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <Button className="rounded-full bg-white text-black hover:bg-neutral-100 transition-all h-13 px-8 text-base font-bold shadow-lg"
@@ -480,7 +480,7 @@ export default function LandingPage() {
             <div className="col-span-2 md:col-span-1">
               <div className="flex items-center gap-2 mb-4">
                 <IliaGPTLogo size={24} />
-                <span className="font-black text-black">ILIAGPT</span>
+                <span className="font-black text-black">iliagpt</span>
               </div>
               <p className="text-sm text-neutral-500 leading-relaxed max-w-[240px]">
                 La plataforma de inteligencia artificial más avanzada del mundo hispanohablante.
@@ -536,10 +536,10 @@ export default function LandingPage() {
 
           <div className="pt-8 border-t border-neutral-200 flex flex-col md:flex-row items-center justify-between gap-4">
             <p className="text-xs text-neutral-400 font-medium">
-              &copy; {new Date().getFullYear()} ILIAGPT. Todos los derechos reservados.
+              &copy; {new Date().getFullYear()} iliagpt. Todos los derechos reservados.
             </p>
             <p className="text-[11px] text-neutral-400 text-center md:text-right max-w-md leading-relaxed">
-              Al enviar un mensaje a ILIAGPT aceptas nuestros{" "}
+              Al enviar un mensaje a iliagpt aceptas nuestros{" "}
               <Link href="/terms" className="underline hover:text-black transition-colors">Términos</Link>{" "}
               y reconoces nuestra{" "}
               <Link href="/privacy-policy" className="underline hover:text-black transition-colors">Política de privacidad</Link>.

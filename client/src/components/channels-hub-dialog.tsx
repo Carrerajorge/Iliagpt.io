@@ -1091,7 +1091,7 @@ export function ChannelsHubDialog({
                 )}
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                Con tu permiso, ILIAGPT puede responder automáticamente a tus contactos en los canales conectados.
+                Con tu permiso, iliagpt puede responder automáticamente a tus contactos en los canales conectados.
                 Para responder adecuadamente, usará el historial reciente de cada conversación.
               </p>
               <div className="text-[11px] text-muted-foreground mt-2">
@@ -1151,7 +1151,7 @@ export function ChannelsHubDialog({
                 )}
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                Si está desactivado, ILIAGPT solo te responderá a ti mismo (Modo Espejo). Actívalo para que responda a cualquier persona que te escriba.
+                Si está desactivado, iliagpt solo te responderá a ti mismo (Modo Espejo). Actívalo para que responda a cualquier persona que te escriba.
               </p>
             </div>
             <Switch
@@ -1224,7 +1224,7 @@ export function ChannelsHubDialog({
             <AlertDialogHeader>
               <AlertDialogTitle>¿Permitir respuestas automáticas?</AlertDialogTitle>
               <AlertDialogDescription>
-                Si lo activas, ILIAGPT podrá responder a tus contactos en los canales conectados.
+                Si lo activas, iliagpt podrá responder a tus contactos en los canales conectados.
                 Para responder con contexto, usará el historial reciente de cada conversación.
                 Puedes desactivarlo en cualquier momento.
               </AlertDialogDescription>

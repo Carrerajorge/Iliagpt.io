@@ -161,7 +161,7 @@ export default function ReleasesManager() {
                             <Input
                                 value={formData.fileName || ""}
                                 onChange={(e) => setFormData({ ...formData, fileName: e.target.value })}
-                                placeholder="IliaGPT-2.1.0-arm64.dmg"
+                                placeholder="iliagpt-2.1.0-arm64.dmg"
                                 className="bg-zinc-900 border-zinc-800"
                                 required
                             />
@@ -171,7 +171,7 @@ export default function ReleasesManager() {
                             <Input
                                 value={formData.downloadUrl || ""}
                                 onChange={(e) => setFormData({ ...formData, downloadUrl: e.target.value })}
-                                placeholder="https://github.com/.../IliaGPT-2.1.0-arm64.dmg"
+                                placeholder="https://github.com/.../iliagpt-2.1.0-arm64.dmg"
                                 className="bg-zinc-900 border-zinc-800"
                                 required
                             />

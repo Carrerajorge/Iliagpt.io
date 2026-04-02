@@ -142,7 +142,7 @@ export default function LoginApprovePage() {
 
             <div className="inline-flex items-center gap-2 text-sm text-muted-foreground">
               <ShieldCheck className="h-4 w-4" />
-              ILIAGPT
+              iliagpt
             </div>
           </div>
 

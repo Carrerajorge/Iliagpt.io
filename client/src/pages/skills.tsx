@@ -534,7 +534,7 @@ export default function SkillsPage() {
               </div>
               <div>
                 <h1 className="text-lg font-semibold">Skills</h1>
-                <p className="text-xs text-muted-foreground">Capacidades modulares de IliaGPT</p>
+                <p className="text-xs text-muted-foreground">Capacidades modulares de iliagpt</p>
               </div>
             </div>
           </div>

@@ -328,7 +328,7 @@ export function WhatsAppConnectDialog({
               </div>
               {testSent && (
                 <div className="text-xs text-green-600 dark:text-green-400 text-center font-medium">
-                  Mensaje de prueba enviado a tu WhatsApp. Responde desde tu celular para chatear con ILIAGPT.
+                  Mensaje de prueba enviado a tu WhatsApp. Responde desde tu celular para chatear con iliagpt.
                 </div>
               )}
               {/* Auto-reply toggle */}

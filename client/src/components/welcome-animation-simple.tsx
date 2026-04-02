@@ -152,7 +152,7 @@ export function WelcomeAnimation() {
           <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-foreground">
             ¡Bienvenido a{" "}
             <span className="inline-flex items-baseline rounded-lg bg-muted px-2 py-0.5 font-bold">
-              ILIAGPT
+              iliagpt
             </span>
             !
           </h1>

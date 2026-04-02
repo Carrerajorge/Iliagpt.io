@@ -1,5 +1,5 @@
 /**
- * Code Playground Component - ILIAGPT PRO 3.0
+ * Code Playground Component - iliagpt PRO 3.0
  * 
  * Interactive code editor with live execution.
  * Supports multiple languages and real-time output.
@@ -63,7 +63,7 @@ function greet(name) {
   return \`Hello, \${name}!\`;
 }
 
-console.log(greet("ILIAGPT"));`,
+console.log(greet("iliagpt"));`,
     },
     typescript: {
         name: "TypeScript",
@@ -76,7 +76,7 @@ interface User {
 }
 
 const user: User = {
-  name: "ILIAGPT",
+  name: "iliagpt",
   age: 1
 };
 
@@ -90,7 +90,7 @@ console.log(\`User: \${user.name}\`);`,
 def greet(name):
     return f"Hello, {name}!"
 
-print(greet("ILIAGPT"))`,
+print(greet("iliagpt"))`,
     },
     html: {
         name: "HTML",
@@ -110,7 +110,7 @@ print(greet("ILIAGPT"))`,
   </style>
 </head>
 <body>
-  <h1>ILIAGPT Playground</h1>
+  <h1>iliagpt Playground</h1>
   <p>Edit this HTML and see the preview!</p>
 </body>
 </html>`,
@@ -140,7 +140,7 @@ print(greet("ILIAGPT"))`,
         icon: "📋",
         runnable: true,
         template: `{
-  "name": "ILIAGPT",
+  "name": "iliagpt",
   "version": "3.0.0",
   "features": [
     "Multi-model AI",

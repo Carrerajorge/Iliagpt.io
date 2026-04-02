@@ -71,7 +71,7 @@ export default function ProjectsDashboard() {
         <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <IliaGPTLogo size={28} />
-            <span className="text-sm font-bold text-foreground">IliaGPT</span>
+            <span className="text-sm font-bold text-foreground">iliagpt</span>
           </div>
           <div className="flex items-center gap-3">
             <Button

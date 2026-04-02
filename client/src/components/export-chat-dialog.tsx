@@ -175,7 +175,7 @@ function formatAsTxt(title: string, messages: Message[], opts: { timeZone: strin
   lines.push("");
 
   for (const msg of messages) {
-    const role = msg.role === "user" ? "Tú" : "IliaGPT";
+    const role = msg.role === "user" ? "Tú" : "iliagpt";
     const time = msg.timestamp ? formatZonedTime(msg.timestamp, { timeZone: opts.timeZone, includeSeconds: false }) : "";
     lines.push(`[${role}] ${time}`);
     lines.push(msg.content);
@@ -211,7 +211,7 @@ function formatAsMarkdown(title: string, messages: Message[], opts: { timeZone: 
   lines.push("");
 
   for (const msg of messages) {
-    const role = msg.role === "user" ? "**Tú**" : "**IliaGPT**";
+    const role = msg.role === "user" ? "**Tú**" : "**iliagpt**";
     lines.push(`### ${role}`);
     lines.push("");
     lines.push(msg.content);

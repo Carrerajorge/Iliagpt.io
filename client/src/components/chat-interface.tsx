@@ -2501,7 +2501,7 @@ export function ChatInterface({
     if (navigator.share) {
       try {
         await navigator.share({
-          title: "ILIAGPT Response",
+          title: "iliagpt Response",
           text: content
         });
       } catch (e) {
@@ -6816,7 +6816,7 @@ IMPORTANTE:
           chatId={chatId || null}
           activeGpt={activeGpt || {
             id: 'default',
-            name: 'ILIAGPT',
+            name: 'iliagpt',
             description: 'Asistente IA',
             systemPrompt: '',
             model: 'gpt-4o',
@@ -7386,7 +7386,7 @@ IMPORTANTE:
                               <span className="font-semibold text-foreground">{selectedProject.name}</span> lista para empezar a chartear con esta carpeta. Sirven para organizar proyectos, mantener contexto, usar archivos específicos y trabajar de forma ordenada.
                             </span>
                           )
-                          : "Soy ILIAGPT, tu asistente de IA. Explora capacidades avanzadas como generación de código, diseño, análisis de documentos y control autónomo."
+                          : "Soy iliagpt, tu asistente de IA. Explora capacidades avanzadas como generación de código, diseño, análisis de documentos y control autónomo."
                       }
                     </motion.p>
 

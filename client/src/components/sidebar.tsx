@@ -243,7 +243,7 @@ export function Sidebar({
   const { settings: platformSettings } = usePlatformSettings();
   const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
   const platformDateFormat = platformSettings.date_format;
-  const appName = platformSettings.app_name || "ILIAGPT";
+  const appName = platformSettings.app_name || "iliagpt";
   const appDescription = platformSettings.app_description || "AI Platform";
   const { pinnedGpts, unpinGpt } = usePinnedGpts();
   const { status: waStatus } = useWhatsAppWebStatus(true);

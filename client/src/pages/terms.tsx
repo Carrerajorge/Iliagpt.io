@@ -28,15 +28,15 @@ const highlights = [
 const sections = [
   {
     title: "Aceptación de los términos",
-    body: "Al acceder a ILIAGPT o crear una cuenta, aceptas estos términos y cualquier política vinculada.",
+    body: "Al acceder a iliagpt o crear una cuenta, aceptas estos términos y cualquier política vinculada.",
   },
   {
     title: "Uso permitido",
-    body: "Te comprometes a usar ILIAGPT de forma legal, ética y respetando la seguridad de otros usuarios.",
+    body: "Te comprometes a usar iliagpt de forma legal, ética y respetando la seguridad de otros usuarios.",
   },
   {
     title: "Propiedad intelectual",
-    body: "ILIAGPT conserva sus marcas y tecnología. Tu contenido sigue siendo tuyo, sujeto a la licencia necesaria para prestar el servicio.",
+    body: "iliagpt conserva sus marcas y tecnología. Tu contenido sigue siendo tuyo, sujeto a la licencia necesaria para prestar el servicio.",
   },
   {
     title: "Disponibilidad del servicio",
@@ -74,10 +74,10 @@ export default function TermsPage() {
               <span>Términos de servicio</span>
             </div>
             <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight text-zinc-950 mb-4">
-              Uso de ILIAGPT
+              Uso de iliagpt
             </h1>
             <p className="text-zinc-600 max-w-2xl mx-auto leading-relaxed">
-              Estos términos describen las reglas básicas para usar ILIAGPT de forma segura y responsable.
+              Estos términos describen las reglas básicas para usar iliagpt de forma segura y responsable.
             </p>
           </section>
 
@@ -115,7 +115,7 @@ export default function TermsPage() {
       </main>
 
       <footer className="py-6 text-center border-t border-black/10 bg-white">
-        <p className="text-zinc-500 text-sm">© 2026 ILIAGPT. Todos los derechos reservados.</p>
+        <p className="text-zinc-500 text-sm">© 2026 iliagpt. Todos los derechos reservados.</p>
       </footer>
     </div>
   );

@@ -50,7 +50,7 @@ const OAUTH_ERROR_MESSAGES: Record<string, string> = {
 export default function LoginPage() {
   const [, setLocation] = useLocation();
   const { settings: platformSettings } = usePlatformSettings();
-  const appName = platformSettings.app_name || "ILIAGPT";
+  const appName = platformSettings.app_name || "iliagpt";
   const allowRegistration = platformSettings.allow_registration;
   const supportEmail = (platformSettings.support_email || "").trim();
   const [email, setEmail] = useState("");

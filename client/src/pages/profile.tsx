@@ -321,7 +321,7 @@ export default function ProfilePage() {
 
         <div className="text-center py-4">
           <p className="text-xs text-muted-foreground">
-            IliaGPT v1.0 ·{" "}
+            iliagpt v1.0 ·{" "}
             <button className="underline hover:text-foreground" onClick={() => setLocation("/terms")} type="button">
               Términos
             </button>{" "}

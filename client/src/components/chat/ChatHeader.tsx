@@ -126,9 +126,9 @@ export function ChatHeader({
         // Strict Check: Valid context requires explicit userId presence.
         // System models / Standard chat usually lack userId or have specific system IDs.
 
-        // SPECIAL CASE: 'ILIAGPT' is the default system app wrapper, treat as Standard Chat.
+        // SPECIAL CASE: 'iliagpt' is the default system app wrapper, treat as Standard Chat.
         // This prevents the GPT Actions menu from appearing in the main chat interface.
-        if (activeGpt?.name === 'ILIAGPT') return false;
+        if (activeGpt?.name === 'iliagpt') return false;
 
         const isCustom = activeGpt && !!activeGpt.userId && !!activeGpt.id;
 
@@ -179,7 +179,7 @@ export function ChatHeader({
                         onModelChange={handleModelChange}
                         modelChangeDisabled={isChatProcessing}
                         modelsByProvider={modelsByProvider}
-                        activeGptName={activeGpt?.name === 'ILIAGPT' ? undefined : activeGpt?.name}
+                        activeGptName={activeGpt?.name === 'iliagpt' ? undefined : activeGpt?.name}
                     />
                 )}
             </div>

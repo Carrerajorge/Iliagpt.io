@@ -1,5 +1,5 @@
 /**
- * Diagram Generator Component - ILIAGPT PRO 3.0
+ * Diagram Generator Component - iliagpt PRO 3.0
  * 
  * Visual diagram creation from text descriptions.
  * Supports flowcharts, sequence diagrams, ERD.
@@ -67,7 +67,7 @@ const TEMPLATES: Record<DiagramType, string> = {
         string content
     }`,
     mindmap: `mindmap
-    root((ILIAGPT PRO))
+    root((iliagpt PRO))
         Features
             AI Chat
             Document Analysis
@@ -326,7 +326,7 @@ function generateMockSvg(config: DiagramConfig): string {
     `,
         mindmap: `
       <ellipse cx="150" cy="100" rx="60" ry="30" fill="${primaryColor}"/>
-      <text x="150" y="105" text-anchor="middle" fill="white" font-weight="bold">ILIAGPT</text>
+      <text x="150" y="105" text-anchor="middle" fill="white" font-weight="bold">iliagpt</text>
       <line x1="90" y1="100" x2="50" y2="60" stroke="${primaryColor}" stroke-width="2"/>
       <rect x="10" y="45" width="80" height="25" rx="12" fill="${primaryColor}" opacity="0.7"/>
       <text x="50" y="62" text-anchor="middle" fill="white" font-size="10">Features</text>

@@ -79,7 +79,7 @@ export function UpgradePromptModal({
               {/* Subtitle */}
               <p className="text-center text-gray-300 mb-6">
                 Has realizado <span className="font-semibold text-purple-400">{queryCount} consultas</span>. 
-                Desbloquea todo el potencial de IliaGPT con un plan premium.
+                Desbloquea todo el potencial de iliagpt con un plan premium.
               </p>
 
               {/* Benefits */}

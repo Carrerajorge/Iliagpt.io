@@ -186,7 +186,7 @@ export default function PowerPage() {
       <div className="power-page-container">
         <div className="power-hero">
           <div className="power-logo">⚡</div>
-          <h1 className="power-hero-title">ILIAGPT Power Mode</h1>
+          <h1 className="power-hero-title">iliagpt Power Mode</h1>
           <p className="power-hero-subtitle">
             {stats?.codename || 'El poder de la IA en tus manos'}
           </p>

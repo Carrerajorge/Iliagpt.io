@@ -238,7 +238,7 @@ export function GoogleFormsDialog({
             <div className="text-center space-y-2">
               <h3 className="font-semibold text-lg">Inicia sesión primero</h3>
               <p className="text-muted-foreground text-sm max-w-sm">
-                Para conectar Google Forms, primero necesitas iniciar sesión en IliaGPT
+                Para conectar Google Forms, primero necesitas iniciar sesión en iliagpt
               </p>
             </div>
 

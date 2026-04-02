@@ -308,7 +308,7 @@ export function WelcomeExplosion({ onComplete }: { onComplete?: () => void }) {
         <div className={`text-center space-y-4 transition-all duration-700 ${phase !== 'explosion' ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'}`}>
           <p className="text-xs uppercase tracking-[0.4em] text-white/60">Bienvenido</p>
           <h1 className="text-4xl md:text-6xl font-semibold tracking-tight">
-            <span className="text-white/90">ILIAGPT</span>
+            <span className="text-white/90">iliagpt</span>
           </h1>
           <p className={`text-base md:text-lg text-white/70 transition-all duration-500 delay-300 ${phase === 'welcome' || phase === 'features' || phase === 'ready' ? 'opacity-100' : 'opacity-0'}`}>
             Un asistente de IA premium para trabajo serio y creativo.

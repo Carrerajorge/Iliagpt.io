@@ -9,13 +9,13 @@ export function IliaGPTLogo({ size = 32, className = "" }: IliaGPTLogoProps) {
   return (
     <img 
       src={siraLogoSrc} 
-      alt="IliaGPT Logo" 
+      alt="iliagpt logo" 
       width={size} 
       height={size}
       className={`${className} dark:invert dark:brightness-200 dark:contrast-200`}
       style={{ 
         objectFit: "contain",
-        borderRadius: "6px"
+        mixBlendMode: "multiply",
       }}
     />
   );

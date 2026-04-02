@@ -423,7 +423,7 @@ function OverviewStep({
         </h3>
         <p className="text-sm text-muted-foreground max-w-md mx-auto">
           Conecta tus servicios favoritos para acceder a ellos directamente
-          desde ILIAGPT. Gestiona correos, calendario, mensajes y más sin
+          desde iliagpt. Gestiona correos, calendario, mensajes y más sin
           cambiar de aplicación.
         </p>
       </div>

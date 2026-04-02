@@ -23,7 +23,7 @@ const highlights = [
 const sections = [
   {
     title: "Datos que recopilamos",
-    body: "Podemos recopilar datos de cuenta, uso de la aplicación y contenido que compartes con ILIAGPT.",
+    body: "Podemos recopilar datos de cuenta, uso de la aplicación y contenido que compartes con iliagpt.",
   },
   {
     title: "Cómo usamos la información",
@@ -110,7 +110,7 @@ export default function PrivacyPolicyPage() {
       </main>
 
       <footer className="py-6 text-center border-t border-black/10 bg-white">
-        <p className="text-zinc-500 text-sm">© 2026 ILIAGPT. Todos los derechos reservados.</p>
+        <p className="text-zinc-500 text-sm">© 2026 iliagpt. Todos los derechos reservados.</p>
       </footer>
     </div>
   );

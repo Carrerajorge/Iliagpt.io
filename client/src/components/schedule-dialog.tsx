@@ -226,7 +226,7 @@ export function ScheduleDialog(props: {
         <DialogHeader>
           <DialogTitle>{isEdit ? "Editar programación" : "Programar ejecución"}</DialogTitle>
           <DialogDescription>
-            ILIAGPT ejecutará esta tarea automáticamente en este chat. Zona horaria:{" "}
+            iliagpt ejecutará esta tarea automáticamente en este chat. Zona horaria:{" "}
             <span className="font-medium">{timeZone}</span>
           </DialogDescription>
         </DialogHeader>
@@ -285,7 +285,7 @@ export function ScheduleDialog(props: {
               <Textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Escribe lo que ILIAGPT debe hacer cuando se ejecute..."
+                placeholder="Escribe lo que iliagpt debe hacer cuando se ejecute..."
                 rows={5}
               />
             </div>

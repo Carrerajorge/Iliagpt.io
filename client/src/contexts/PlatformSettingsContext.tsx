@@ -31,7 +31,7 @@ type PublicSettingsResponse = {
 };
 
 const FALLBACK_SETTINGS: PlatformSettings = {
-  app_name: "ILIAGPT",
+  app_name: "iliagpt",
   app_description: "AI Platform",
   support_email: "",
   timezone_default: "UTC",

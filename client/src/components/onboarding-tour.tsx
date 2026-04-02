@@ -27,7 +27,7 @@ interface TourStep {
 const TOUR_STEPS: TourStep[] = [
   {
     id: "welcome",
-    title: "¡Bienvenido a IliaGPT!",
+    title: "¡Bienvenido a iliagpt!",
     description: "Tu asistente de IA para investigación, documentos y más. Te mostraremos lo básico en 30 segundos.",
     icon: Sparkles,
   },

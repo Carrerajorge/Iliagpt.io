@@ -37,7 +37,7 @@ export default function DownloadPage() {
   };
 
   const features = [
-    "Conectado directamente al panel administrativo de ILIAGPT",
+    "Conectado directamente al panel administrativo de iliagpt",
     "Auto-actualizaciones automáticas via GitHub Releases",
     "Control nativo del sistema operativo (teclado, ratón, pantalla)",
     "Overlay HUD transparente para monitorear el agente",
@@ -70,7 +70,7 @@ export default function DownloadPage() {
               Lleva el Agente <span className="text-cyan-400">a tu SO</span>
             </h1>
             <p className="text-lg text-zinc-400 max-w-2xl mx-auto leading-relaxed">
-              Descarga el cliente nativo de ILIAGPT. Se conecta automáticamente a tu panel administrativo para controlar tu sistema operativo de forma segura.
+              Descarga el cliente nativo de iliagpt. Se conecta automáticamente a tu panel administrativo para controlar tu sistema operativo de forma segura.
             </p>
           </section>
 
@@ -166,7 +166,7 @@ export default function DownloadPage() {
 
               <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-sm">
                 <div className="flex items-center justify-between mb-4">
-                  <div className="text-sm font-semibold text-cyan-400">ILIAGPT Desktop Node</div>
+                  <div className="text-sm font-semibold text-cyan-400">iliagpt Desktop Node</div>
                   <div className="text-xs text-zinc-500">{FALLBACK_VERSION}</div>
                 </div>
                 <div className="space-y-3 text-xs font-mono text-zinc-500">

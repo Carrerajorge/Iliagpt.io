@@ -8,7 +8,7 @@ export default function LearnPage() {
     const tutorials = [
         {
             title: "Primeros Pasos",
-            desc: "Domina lo básico de ILIAGPT en menos de 5 minutos.",
+            desc: "Domina lo básico de iliagpt en menos de 5 minutos.",
             icon: BookOpen,
         },
         {
@@ -78,7 +78,7 @@ export default function LearnPage() {
                             <span className="inline-flex items-center rounded-full border border-border bg-muted/30 px-3 py-1 text-xs font-semibold tracking-wide text-foreground">
                                 VIDEO DESTACADO
                             </span>
-                            <h3 className="mt-3 text-2xl font-semibold text-foreground">Introducción a ILIAGPT</h3>
+                            <h3 className="mt-3 text-2xl font-semibold text-foreground">Introducción a iliagpt</h3>
                             <p className="mt-1 text-muted-foreground">Un recorrido completo por las funcionalidades principales.</p>
                         </div>
                     </div>

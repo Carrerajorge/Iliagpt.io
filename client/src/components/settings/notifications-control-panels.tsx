@@ -28,7 +28,7 @@ type NotificationsControlPanelsProps = {
 };
 
 const channelOptions: Array<{ value: NotificationChannel; label: string; description: string }> = [
-  { value: "push", label: "Push", description: "Notificaciones dentro de ILIAGPT" },
+  { value: "push", label: "Push", description: "Notificaciones dentro de iliagpt" },
   { value: "email", label: "Email", description: "Correos (si está disponible)" },
   { value: "push_email", label: "Push y Email", description: "Ambos canales" },
   { value: "none", label: "Ninguna", description: "No recibir notificaciones" },
@@ -143,7 +143,7 @@ export function NotificationsControlPanels({ onOpenSchedules }: NotificationsCon
     if (settings.notifDesktop && pushEnabled && desktopSupported) {
       if (Notification.permission === "granted") {
         try {
-          new Notification("ILIAGPT", { body: "Notificación de prueba", icon: "/favicon.png" });
+          new Notification("iliagpt", { body: "Notificación de prueba", icon: "/favicon.png" });
         } catch {
           // Ignore
         }
@@ -330,7 +330,7 @@ export function NotificationsControlPanels({ onOpenSchedules }: NotificationsCon
                     <Bell className="h-4 w-4 text-muted-foreground" />
                     <div className="min-w-0">
                       <div className="text-sm font-medium">En la app</div>
-                      <div className="text-xs text-muted-foreground">Toasts dentro de ILIAGPT</div>
+                      <div className="text-xs text-muted-foreground">Toasts dentro de iliagpt</div>
                     </div>
                   </div>
                   <Switch
