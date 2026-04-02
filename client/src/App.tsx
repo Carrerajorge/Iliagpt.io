@@ -46,6 +46,7 @@ const lazyWithRetry = <T extends React.ComponentType<any>>(
   });
 
 const Home = lazyWithRetry(() => import("@/pages/home"));
+const ProjectsDashboard = lazyWithRetry(() => import("@/pages/projects-dashboard"));
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { PlatformSettingsProvider, usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { isAdminUser } from "@/lib/admin";
@@ -74,11 +75,20 @@ const isLocalDevHost = () => {
   return false;
 };
 
-function RootRoute() {
+function RootRoute(props: any) {
   const { isReady, isAuthenticated } = useAuth();
+  const [location] = useLocation();
+  
   if (!isReady) return <PageLoader />;
+  
   // Local experiments can run from chat without forcing login on localhost.
-  return (isAuthenticated || isLocalDevHost()) ? <Home /> : <LandingPage />;
+  if (!(isAuthenticated || isLocalDevHost())) return <LandingPage />;
+  
+  // If viewing a specific chat, show the chat interface
+  if (location.startsWith("/chat/")) return <Home />;
+  
+  // Otherwise show the projects dashboard
+  return <ProjectsDashboard />;
 }
 
 // Wouter passes RouteComponentProps to route components; pages typically ignore them.
