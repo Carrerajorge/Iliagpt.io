@@ -14,15 +14,16 @@ import { toolRegistry, ToolExecutionResult } from "../registry/toolRegistry";
 import { activityStreamPublisher } from "./activityStream";
 import { agentEventBus } from "../eventBus";
 
-function createXaiClient(): OpenAI {
-  const apiKey = process.env.XAI_API_KEY;
+function createLlmClient(): OpenAI {
+  const apiKey = process.env.OPENROUTER_API_KEY || process.env.XAI_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "[SupervisorAgent] XAI_API_KEY environment variable is required but not set. " +
-      "Set XAI_API_KEY before initializing SupervisorAgent."
+      "[SupervisorAgent] OPENROUTER_API_KEY or XAI_API_KEY environment variable is required but not set."
     );
   }
-  const baseURL = process.env.XAI_BASE_URL || "https://api.x.ai/v1";
+  const baseURL = process.env.OPENROUTER_API_KEY
+    ? "https://openrouter.ai/api/v1"
+    : (process.env.XAI_BASE_URL || "https://api.x.ai/v1");
   return new OpenAI({ baseURL, apiKey });
 }
 
@@ -30,12 +31,14 @@ let xaiClient: OpenAI | null = null;
 
 function getXaiClient(): OpenAI {
   if (!xaiClient) {
-    xaiClient = createXaiClient();
+    xaiClient = createLlmClient();
   }
   return xaiClient;
 }
 
-const DEFAULT_MODEL = "grok-4-1-fast-non-reasoning";
+const DEFAULT_MODEL = process.env.OPENROUTER_API_KEY
+  ? "google/gemma-3-12b-it:free"
+  : "grok-4-1-fast-non-reasoning";
 
 export const PlanStepSchema = z.object({
   id: z.string(),

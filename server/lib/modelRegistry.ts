@@ -75,13 +75,13 @@ export const DEFAULT_GEMINI_VISION_MODEL = GEMINI_MODELS_REGISTRY.FLASH_31;
 export const DEFAULT_PROVIDER = "openai" as const;
 
 /** Default model for general text completion (app-level). */
-export const DEFAULT_TEXT_MODEL = "minimax/minimax-m2.5";
+export const DEFAULT_TEXT_MODEL = "google/gemma-3-12b-it:free";
 
 /** Default model for reasoning / planning tasks (app-level). */
-export const DEFAULT_REASONING_MODEL = "minimax/minimax-m2.5";
+export const DEFAULT_REASONING_MODEL = "google/gemma-3-12b-it:free";
 
 /** Default model for vision tasks (app-level). */
-export const DEFAULT_VISION_MODEL = "minimax/minimax-m2.5";
+export const DEFAULT_VISION_MODEL = "google/gemma-3-12b-it:free";
 
 // ============================================================================
 // Known Model Sets (for provider detection in llmGateway)

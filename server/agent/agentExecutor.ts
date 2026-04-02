@@ -852,7 +852,7 @@ MANDATORY RULES:
       }
 
       const openaiClient = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
+        apiKey: process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY,
         baseURL: process.env.OPENAI_BASE_URL || "https://openrouter.ai/api/v1",
       });
 

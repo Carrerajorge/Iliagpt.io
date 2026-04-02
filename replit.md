@@ -25,7 +25,7 @@ The core Agent Infrastructure features a modular plugin architecture, StateMachi
 
 **Image Generation** (`server/services/imageGeneration.ts`): Multi-provider image generation with priority cascade: Gemini (gemini-3.1-flash-image-preview, imagen-3.0, gemini-2.0-flash-exp) → xAI Grok (grok-2-image-1212) → OpenRouter (gemini-3.1-flash-image-preview, gemini-2.5-flash-image, gpt-5-image-mini, gpt-5-image, gemini-3-pro-image-preview). OpenRouter response parsing handles: `message.image`, `message.images[]` (objects with `{type, image_url}` format — the actual OpenRouter image return format), `content` base64 data URLs, and content array parts with `inline_data`/`image_url`. All providers track costs via `mediaGenerationCostTracker`. APIs: `POST /api/image/generate`, `POST /api/image/detect`, `POST /api/video/generate`, `POST /api/video/detect`, `POST /api/media/detect`.
 
-**Video Generation** (`server/services/videoGeneration.ts`): LLM-powered video storyboard generation using OpenRouter models (gemini-2.5-flash-preview, gemini-2.5-pro-preview). Generates structured JSON storyboards with scenes, camera movements, audio cues, color palettes, and production notes. Budget-checked before execution. Detects video requests in ES/EN (genera video, create video, animate, etc.).
+**Video Generation** (`server/services/videoGeneration.ts`): LLM-powered video storyboard generation using OpenRouter models (google/gemini-2.5-flash, google/gemini-2.5-flash-lite). Generates structured JSON storyboards with scenes, camera movements, audio cues, color palettes, and production notes. Budget-checked before execution. Detects video requests in ES/EN (genera video, create video, animate, etc.).
 
 **Media Cost Tracker** (`server/services/mediaGenerationCostTracker.ts`): Unified cost tracking for all media generation (image/video/audio). Per-model pricing registry. Budget enforcement: daily ($10), monthly ($100), per-request ($2) limits with configurable thresholds. APIs: `GET /api/media/cost/stats`, `POST /api/media/cost/budget` (update limits), `POST /api/media/cost/check` (pre-flight budget check). Emits `media_cost` and `budget_warning` events.
 
@@ -79,9 +79,17 @@ PostgreSQL with Drizzle ORM is used for persistent data storage. Client-side per
 
 **GitHub Merge: Carrerajorge/Hola (2026-04-02)**: Merged 87+ new files including: `server/cognitive_kernel/` (9 files — bootloader, kernel, stitcher, session manager), `server/workflow/` (workflow runner), 33 new services (agentEcosystem, browser-use, browserAutomation, cognitiveKernel, dataVisualization, deepComposer, documentParser, googleGeminiCliOAuth, hardwareTelemetry, livekit, messageLifecycle, nodes, o3Reasoner, openAICodexOAuth, oracleDecisionTree, providerOAuth, ragflow, superProgrammingAgent, tenaga, workflowTrace, etc.), 11 new route files (agentEcosystemRouter, googleGeminiCliOAuthRouter, hardwareTelemetryRouter, livekitRouter, messageLifecycleRouter, nodesRouter, openAICodexOAuthRouter, providerOAuthRouter, ragflowRouter, superProgrammingAgentRouter, workflowTraceRoutes), 10 shared files, 2 new DB schemas (nodes.ts, oauthProviderTokens.ts), 5 new client components, agent subdirectories (advancedOrchestrator, context, runtime, selfExpand, tenaga). New routes use lazy dynamic `import()` to avoid crashing the app when deeper OpenClaw dependencies are missing — they log warnings and skip gracefully.
 
+**OpenRouter Integration Fixes (2026-04-02)**:
+- **API Key Priority**: When `OPENAI_BASE_URL` points to OpenRouter, `OPENROUTER_API_KEY` is now used first (over stale `OPENAI_API_KEY`). Fixed in `getOpenAICompatibleClient()`.
+- **Default Model**: Changed from `minimax/minimax-m2.5` to `google/gemma-3-12b-it:free` (free tier, no credits needed). All default models (text, reasoning, vision) use this.
+- **Model Names Fixed**: `google/gemini-2.5-flash-preview` → `google/gemini-2.5-flash` (valid OpenRouter ID). Video models updated similarly.
+- **Provider Detection**: Slash-format models (e.g. `google/gemini-2.5-flash`) route to "openai" provider (OpenRouter). All unknowns default to "openai".
+- **Max Tokens**: Fast lane capped at 800 tokens (was 1200) for cost efficiency.
+- **Broken Providers**: xAI (403 blocked), Gemini (key expired). Only OpenRouter works.
+
 ## External Dependencies
 ### AI Services
-- **OpenRouter**: Active AI model endpoint.
+- **OpenRouter**: Primary AI provider. Key: `OPENROUTER_API_KEY`. Default model: `google/gemma-3-12b-it:free`.
 - **Redis**: Caching, SSE streaming, and conversation memory.
 - **LangGraph + LangChain**: Agent orchestration and workflow management.
 

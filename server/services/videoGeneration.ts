@@ -13,8 +13,8 @@ export interface VideoGenerationResult {
 }
 
 const OPENROUTER_VIDEO_MODELS = [
-  "google/gemini-2.5-flash-preview-05-20",
-  "google/gemini-2.5-pro-preview-05-06",
+  "google/gemini-2.5-flash",
+  "google/gemini-2.5-flash-lite",
 ];
 
 function getOpenRouterKey(): string {

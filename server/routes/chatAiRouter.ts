@@ -6363,7 +6363,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
       const laneMaxTokens = hasWebSearchContext
         ? safeMaxTokens // Web search results need full token budget regardless of lane
         : resolvedLane === 'fast'
-          ? Math.min(safeMaxTokens, 1200) // Was 400 — too restrictive, caused mid-sentence truncation
+          ? Math.min(safeMaxTokens, 800) // Balanced between quality and cost
           : safeMaxTokens;
 
       // Emit thinking event so user sees we're about to generate

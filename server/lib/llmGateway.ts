@@ -164,6 +164,10 @@ function detectProviderFromModel(model: string | undefined): LLMProvider | null 
 
   const normalizedModel = model.toLowerCase();
 
+  if (normalizedModel.includes("/")) {
+    return "openai";
+  }
+
   if (KNOWN_GEMINI_MODELS.has(normalizedModel)) {
     return "gemini";
   }
@@ -174,7 +178,6 @@ function detectProviderFromModel(model: string | undefined): LLMProvider | null 
     return "deepseek";
   }
 
-  // Si es un modelo local (llama3, mistral), lo ruteamos via SDK OpenAI compatible
   if (KNOWN_LOCAL_MODEL_IDS.has(normalizedModel) || normalizedModel.includes("llama") || normalizedModel.includes("mistral")) {
     return "openai";
   }
@@ -198,7 +201,7 @@ function detectProviderFromModel(model: string | undefined): LLMProvider | null 
     return "openai";
   }
 
-  return null;
+  return "openai";
 }
 
 class LLMGateway {
@@ -684,8 +687,8 @@ class LLMGateway {
       case "gemini":
         return Boolean(this.getGeminiApiKey() && this.getGeminiApiKey()!.trim());
       case "openai":
-        // Si hay un BASE_URL customizado, está preconfigurado para Local Host (Ollama/LM Studio)
         if (Boolean(process.env.OPENAI_BASE_URL)) return true;
+        if (Boolean(process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY.trim())) return true;
         return Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim());
       case "anthropic":
         return Boolean(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim());
@@ -1031,10 +1034,16 @@ class LLMGateway {
 
     if (provider === "openai") {
       if (!this.openaiClient) {
-        this.openaiClient = new OpenAI({
-          apiKey: process.env.OPENAI_BASE_URL ? (process.env.OPENAI_API_KEY || "dummy-key") : secretManager.getLLMProviderKey("openai"),
-          baseURL: process.env.OPENAI_BASE_URL || undefined,
-        });
+        const hasOpenRouter = Boolean(process.env.OPENROUTER_API_KEY?.trim());
+        const baseURL = process.env.OPENAI_BASE_URL || (hasOpenRouter ? "https://openrouter.ai/api/v1" : undefined);
+        const isOpenRouterURL = baseURL?.includes("openrouter.ai");
+        const apiKey = isOpenRouterURL
+          ? (process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || "dummy-key")
+          : process.env.OPENAI_BASE_URL
+            ? (process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY || "dummy-key")
+            : (hasOpenRouter ? process.env.OPENROUTER_API_KEY! : secretManager.getLLMProviderKey("openai"));
+        console.log(`[LLMGateway] Creating OpenAI client: baseURL=${baseURL}, keyLen=${apiKey?.length}`);
+        this.openaiClient = new OpenAI({ apiKey, baseURL });
       }
       return this.openaiClient;
     }
