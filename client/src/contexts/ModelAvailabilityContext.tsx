@@ -69,7 +69,7 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
       isEnabled: "true",
       enabledAt: new Date().toISOString(),
       enabledByAdminId: "system",
-      displayOrder: -1,
+      displayOrder: 10,
       icon: null,
       modelType: "chat",
       contextWindow: 128000

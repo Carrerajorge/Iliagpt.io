@@ -2780,10 +2780,17 @@ export async function registerRoutes(
         return res.json(modelsCache.data);
       }
       const allModels = await storage.getAiModels();
-      const models = allModels
+      const dbModels = allModels
         .map((m: any) => ({ ...m, isEnabled: "true", status: "active" }))
-        .sort((a: any, b: any) => (a.displayOrder || 0) - (b.displayOrder || 0))
         .map((m: any) => toPublicModelSummary(m));
+
+      const existingModelIds = new Set(dbModels.map((m: PublicModelSummary) => m.modelId));
+      const missingFallbacks = PUBLIC_MODEL_FALLBACKS.filter(
+        (fb) => !existingModelIds.has(fb.modelId)
+      );
+      const models = [...missingFallbacks, ...dbModels]
+        .sort((a: any, b: any) => (a.displayOrder || 0) - (b.displayOrder || 0));
+
       const result = { models };
       modelsCache = { data: result, ts: now };
       res.json(result);
