@@ -1,7 +1,8 @@
 import React from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AvailableModel } from "@/contexts/ModelAvailabilityContext";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 
 interface StandardModelSelectorProps {
     availableModels: AvailableModel[];
@@ -11,6 +12,7 @@ interface StandardModelSelectorProps {
     activeGptName?: string;
     onModelChange?: (id: string) => void;
     modelChangeDisabled?: boolean;
+    onAddModel?: () => void;
 }
 
 export function StandardModelSelector({
@@ -20,7 +22,8 @@ export function StandardModelSelector({
     modelsByProvider,
     activeGptName,
     onModelChange,
-    modelChangeDisabled = false
+    modelChangeDisabled = false,
+    onAddModel
 }: StandardModelSelectorProps) {
     const isAnyModelAvailable = availableModels.length > 0;
     const isDisabled = !!activeGptName || modelChangeDisabled;
@@ -58,39 +61,67 @@ export function StandardModelSelector({
     }
 
     return (
-        <div
-            className={cn(
-                "relative flex items-center gap-1 sm:gap-2 rounded-md transition-colors mt-[-5px] mb-[-5px] pt-[8px] pb-[8px] pl-[7px] pr-[7px]",
-                isDisabled ? "cursor-not-allowed opacity-60" : "hover:bg-muted/50"
-            )}
-            data-testid="button-model-selector"
-            title={activeGptName ? `Modelo fijado por GPT: ${activeGptName}` : modelChangeDisabled ? "Respuesta en curso" : "Seleccionar modelo"}
-        >
-            <select
+        <div className="flex items-center gap-0.5">
+            <div
                 className={cn(
-                    "appearance-none bg-transparent pr-6 font-semibold text-xs sm:text-sm truncate max-w-[160px] sm:max-w-none outline-none",
-                    isDisabled && "pointer-events-none"
+                    "relative flex items-center gap-1 sm:gap-2 rounded-md transition-colors mt-[-5px] mb-[-5px] pt-[8px] pb-[8px] pl-[7px] pr-[7px]",
+                    isDisabled ? "cursor-not-allowed opacity-60" : "hover:bg-muted/50"
                 )}
-                value={selectedModelData?.id || ""}
-                onChange={(e) => {
-                    if (isDisabled) return;
-                    const handler = onModelChange ?? setSelectedModelId;
-                    handler(e.target.value);
-                }}
-                disabled={isDisabled}
-                aria-label="Selector de modelo"
+                data-testid="button-model-selector"
+                title={activeGptName ? `Modelo fijado por GPT: ${activeGptName}` : modelChangeDisabled ? "Respuesta en curso" : "Seleccionar modelo"}
             >
-                {Object.entries(modelsByProvider).map(([provider, models]) => (
-                    <optgroup key={provider} label={providerLabel(provider)}>
-                        {models.map((model) => (
-                            <option key={model.id} value={model.id}>
-                                {model.name}
-                            </option>
-                        ))}
-                    </optgroup>
-                ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2 h-3 w-3 text-muted-foreground flex-shrink-0" />
+                <select
+                    className={cn(
+                        "appearance-none bg-transparent pr-6 font-semibold text-xs sm:text-sm truncate max-w-[160px] sm:max-w-none outline-none",
+                        isDisabled && "pointer-events-none"
+                    )}
+                    value={selectedModelData?.id || ""}
+                    onChange={(e) => {
+                        if (isDisabled) return;
+                        const handler = onModelChange ?? setSelectedModelId;
+                        handler(e.target.value);
+                    }}
+                    disabled={isDisabled}
+                    aria-label="Selector de modelo"
+                >
+                    {Object.entries(modelsByProvider).map(([provider, models]) => (
+                        <optgroup key={provider} label={providerLabel(provider)}>
+                            {models.map((model) => (
+                                <option key={model.id} value={model.id}>
+                                    {model.name}
+                                </option>
+                            ))}
+                        </optgroup>
+                    ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-2 h-3 w-3 text-muted-foreground flex-shrink-0" />
+            </div>
+            {onAddModel && (
+                <TooltipProvider>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <button
+                                type="button"
+                                onClick={onAddModel}
+                                className={cn(
+                                    "flex items-center justify-center h-7 w-7 rounded-md",
+                                    "text-muted-foreground hover:text-foreground",
+                                    "hover:bg-muted/70 transition-colors",
+                                    "border border-dashed border-muted-foreground/30 hover:border-blue-400",
+                                    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                )}
+                                data-testid="button-add-gemini-oauth"
+                                aria-label="Vincular cuenta de Google para Gemini"
+                            >
+                                <Plus className="h-3.5 w-3.5" />
+                            </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">
+                            <p>Vincular Google Gemini CLI OAuth</p>
+                        </TooltipContent>
+                    </Tooltip>
+                </TooltipProvider>
+            )}
         </div>
     );
 }
