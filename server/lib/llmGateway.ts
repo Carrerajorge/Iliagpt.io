@@ -1762,38 +1762,72 @@ class LLMGateway {
     }
 
     const client = this.getOpenAICompatibleClient(provider);
-    const controller = new AbortController();
-    const totalTimeoutMs = options.timeout ?? DEFAULT_STREAM_TIMEOUT_MS;
-    let abortedReason: "timeout" | "idle" | null = null;
-    const totalTimeoutId = setTimeout(() => {
-      abortedReason = "timeout";
-      controller.abort();
-    }, totalTimeoutMs);
 
-    let idleTimeoutId: NodeJS.Timeout | null = setTimeout(() => {
-      abortedReason = "idle";
-      controller.abort();
-    }, STREAM_IDLE_TIMEOUT_MS);
+    const isFreeModel = model.endsWith(":free");
+    const effectiveMaxTokens = isFreeModel ? undefined : options.maxTokens;
 
-    const resetIdle = () => {
-      if (idleTimeoutId) clearTimeout(idleTimeoutId);
-      idleTimeoutId = setTimeout(() => {
+    console.log(`[LLMGateway] ${requestId} streaming model=${model}, provider=${provider}, isFree=${isFreeModel}, maxTokens=${effectiveMaxTokens ?? 'auto'}`);
+
+    const attemptStream = async (maxTokensOverride?: number | undefined) => {
+      const controller = new AbortController();
+      const totalTimeoutMs = options.timeout ?? DEFAULT_STREAM_TIMEOUT_MS;
+      let abortedReason: "timeout" | "idle" | null = null;
+      const totalTimeoutId = setTimeout(() => {
+        abortedReason = "timeout";
+        controller.abort();
+      }, totalTimeoutMs);
+
+      let idleTimeoutId: NodeJS.Timeout | null = setTimeout(() => {
         abortedReason = "idle";
         controller.abort();
       }, STREAM_IDLE_TIMEOUT_MS);
-    };
 
-    const stream = await client.chat.completions.create(
-      {
+      const resetIdle = () => {
+        if (idleTimeoutId) clearTimeout(idleTimeoutId);
+        idleTimeoutId = setTimeout(() => {
+          abortedReason = "idle";
+          controller.abort();
+        }, STREAM_IDLE_TIMEOUT_MS);
+      };
+
+      const createParams: any = {
         model,
         messages,
         temperature: options.temperature ?? 0.7,
         top_p: options.topP ?? 1,
-        max_tokens: options.maxTokens,
         stream: true,
-      },
-      { signal: controller.signal }
-    );
+      };
+      if (maxTokensOverride !== undefined) {
+        createParams.max_tokens = maxTokensOverride;
+      }
+
+      const stream = await client.chat.completions.create(
+        createParams,
+        { signal: controller.signal }
+      );
+
+      return { stream, controller, totalTimeoutId, idleTimeoutId, resetIdle, abortedReason: () => abortedReason, totalTimeoutMs };
+    };
+
+    let streamCtx: Awaited<ReturnType<typeof attemptStream>>;
+    try {
+      streamCtx = await attemptStream(effectiveMaxTokens);
+    } catch (error: any) {
+      if (error?.status === 402 && effectiveMaxTokens) {
+        const match = error?.error?.message?.match(/can only afford (\d+)/);
+        const affordable = match ? Math.max(parseInt(match[1], 10) - 10, 50) : 150;
+        console.log(`[LLMGateway] ${requestId} 402 credit limit hit, retrying with maxTokens=${affordable}`);
+        streamCtx = await attemptStream(affordable);
+      } else if (error?.status === 402) {
+        console.log(`[LLMGateway] ${requestId} 402 credit limit on free model, retrying without maxTokens`);
+        streamCtx = await attemptStream(undefined);
+      } else {
+        throw error;
+      }
+    }
+
+    const { stream, totalTimeoutId, resetIdle, abortedReason, totalTimeoutMs } = streamCtx;
+    let { idleTimeoutId } = streamCtx;
 
     let buffer = "";
     const flushThreshold = 50;
@@ -1812,7 +1846,7 @@ class LLMGateway {
       }
     } catch (error: any) {
       if (error?.name === "AbortError") {
-        if (abortedReason === "idle") {
+        if (abortedReason() === "idle") {
           throw new Error(`Stream idle timeout after ${STREAM_IDLE_TIMEOUT_MS}ms`);
         }
         throw new Error(`Stream timeout after ${totalTimeoutMs}ms`);

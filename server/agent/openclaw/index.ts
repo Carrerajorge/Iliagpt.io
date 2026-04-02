@@ -827,7 +827,7 @@ export function initializeOpenClawTools(): void {
   }
 
   initialized = true;
-  console.log(`[OpenClaw] Initialized ${openclawTools.length} agentic tools from OpenClaw v2026.2.23 source`);
+  console.log(`[OpenClaw] Initialized ${openclawTools.length} agentic tools from OpenClaw v2026.4.1 source`);
 }
 
 export function getOpenClawToolsForUser(plan: UserPlan): ToolDefinition[] {
@@ -912,7 +912,7 @@ export function buildOpenClawSystemPromptSection(options: {
 }): string {
   const sections: string[] = [];
 
-  sections.push("You are an AI assistant powered by IliaGPT with OpenClaw v2026.2.23 agentic capabilities.");
+  sections.push("You are an AI assistant powered by IliaGPT with OpenClaw v2026.4.1 agentic capabilities.");
   sections.push("");
 
   sections.push("## Tooling");

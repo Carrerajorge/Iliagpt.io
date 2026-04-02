@@ -6755,7 +6755,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         }
 
         emitTraceEvent(errorRunId, 'error', {
-          error: { message: error.message, code: error.code || 'UNKNOWN' }
+          error: { message: error.message, code: String(error.code || 'UNKNOWN') }
         }).catch(() => { });
       }
     } finally {

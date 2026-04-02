@@ -1,6 +1,9 @@
 import type { Server as HttpServer } from 'http';
 import { getOpenClawConfig } from './config';
 import { Logger } from '../lib/logger';
+import { OPENCLAW_VERSION, initializeV2026_4_1 } from './fusion/v2026_4_1';
+
+export { OPENCLAW_VERSION };
 
 export async function initializeOpenClaw(httpServer: HttpServer): Promise<void> {
   const config = getOpenClawConfig();
@@ -35,6 +38,11 @@ export async function initializeOpenClaw(httpServer: HttpServer): Promise<void> 
     const { initStreaming } = await import('./streaming/adapter');
     initStreaming(config);
     enabledModules.push('streaming');
+  }
+
+  const fusionFeatures = await initializeV2026_4_1(config);
+  if (fusionFeatures.length > 0) {
+    enabledModules.push(`fusion-v${OPENCLAW_VERSION}(${fusionFeatures.length})`);
   }
 
   if (enabledModules.length > 0) {

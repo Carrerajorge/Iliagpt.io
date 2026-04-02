@@ -379,4 +379,104 @@ router.get("/roadmap-1000", (req: Request, res: Response) => {
   }
 });
 
+import { OPENCLAW_VERSION, getEnabledFeatures } from "../openclaw/fusion/v2026_4_1";
+import { getTaskBoard } from "../openclaw/fusion/v2026_4_1/taskBoard";
+import { getGatewayResilience } from "../openclaw/fusion/v2026_4_1/gatewayResilience";
+import { getModelSwitchQueue } from "../openclaw/fusion/v2026_4_1/modelSwitchQueue";
+
+router.get("/version", (_req: Request, res: Response) => {
+  res.json({
+    version: OPENCLAW_VERSION,
+    features: getEnabledFeatures(),
+    commit: 'da64a97',
+    releaseDate: '2026-04-01T16:58:00Z',
+  });
+});
+
+router.get("/tasks", requireAuth, (req: Request, res: Response) => {
+  try {
+    const sessionId = (req as any).sessionID || 'default';
+    const limit = Math.min(Number(req.query.limit) || 20, 50);
+    const board = getTaskBoard();
+    const tasks = board.getRecentTasks(sessionId, limit);
+    const stats = board.getStats();
+    const fallbackCount = board.getAgentFallbackCount(sessionId);
+
+    res.json({
+      success: true,
+      tasks,
+      stats,
+      fallbackCount,
+      sessionId,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/tasks", requireAuth, (req: Request, res: Response) => {
+  try {
+    const sessionId = (req as any).sessionID || 'default';
+    const { title, agentId } = req.body;
+    if (!title) {
+      return res.status(400).json({ success: false, error: 'title is required' });
+    }
+    const board = getTaskBoard();
+    const task = board.createTask(sessionId, title, agentId);
+    res.json({ success: true, task });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch("/tasks/:taskId", requireAuth, (req: Request, res: Response) => {
+  try {
+    const { taskId } = req.params;
+    const { status, result, error, progress, metadata } = req.body;
+    const board = getTaskBoard();
+    const task = board.updateTask(taskId, { status, result, error, progress, metadata });
+    if (!task) {
+      return res.status(404).json({ success: false, error: 'Task not found' });
+    }
+    res.json({ success: true, task });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete("/tasks/:taskId", requireAuth, (req: Request, res: Response) => {
+  try {
+    const { taskId } = req.params;
+    const board = getTaskBoard();
+    const cancelled = board.cancelTask(taskId);
+    res.json({ success: true, cancelled });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/gateway/health", (_req: Request, res: Response) => {
+  try {
+    const resilience = getGatewayResilience();
+    const report = resilience.getHealthReport();
+    res.json({ success: true, facades: report });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/model/switch", requireAuth, (req: Request, res: Response) => {
+  try {
+    const { sessionId, fromModel, toModel } = req.body;
+    if (!sessionId || !toModel) {
+      return res.status(400).json({ success: false, error: 'sessionId and toModel are required' });
+    }
+    const queue = getModelSwitchQueue();
+    const request = queue.queueModelSwitch(sessionId, fromModel || 'unknown', toModel);
+    res.json({ success: true, request, busy: queue.isRunBusy(sessionId) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 export default router;

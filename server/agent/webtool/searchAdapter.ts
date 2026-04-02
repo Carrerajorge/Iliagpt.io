@@ -103,4 +103,43 @@ export class DuckDuckGoSearchAdapter implements ISearchAdapter {
   }
 }
 
-export const searchAdapter = new DuckDuckGoSearchAdapter();
+export class SearxngSearchAdapter implements ISearchAdapter {
+  private readonly defaultMaxResults: number;
+
+  constructor(defaultMaxResults: number = 20) {
+    this.defaultMaxResults = defaultMaxResults;
+  }
+
+  async search(query: string, maxResults?: number): Promise<WebSearchResult[]> {
+    const { searxngSearch, isSearxngAvailable } = await import("../../openclaw/fusion/v2026_4_1/searxngSearch");
+    if (!isSearxngAvailable()) {
+      return new DuckDuckGoSearchAdapter(this.defaultMaxResults).search(query, maxResults);
+    }
+
+    try {
+      const rawResults = await searxngSearch(query, { maxResults: maxResults ?? this.defaultMaxResults });
+      if (!rawResults || rawResults.length === 0) {
+        console.warn(`[SearxngAdapter] SearXNG returned empty results, falling back to DuckDuckGo`);
+        return new DuckDuckGoSearchAdapter(this.defaultMaxResults).search(query, maxResults);
+      }
+      return rawResults.map(r => ({
+        url: r.url,
+        canonicalUrl: canonicalizeUrl(r.url),
+        title: r.title,
+        snippet: r.content,
+      }));
+    } catch (error) {
+      console.warn(`[SearxngAdapter] SearXNG failed, falling back to DuckDuckGo:`, error);
+      return new DuckDuckGoSearchAdapter(this.defaultMaxResults).search(query, maxResults);
+    }
+  }
+}
+
+function createSearchAdapter(): ISearchAdapter {
+  if (process.env.SEARXNG_HOST || process.env.SEARXNG_URL) {
+    return new SearxngSearchAdapter();
+  }
+  return new DuckDuckGoSearchAdapter();
+}
+
+export const searchAdapter = createSearchAdapter();
