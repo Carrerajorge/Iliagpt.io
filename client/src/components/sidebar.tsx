@@ -38,6 +38,7 @@ import {
   MoveRight,
   Brain,
   MessageCircle,
+  SlidersHorizontal,
 } from "lucide-react";
 import { IliaGPTLogo } from "@/components/iliagpt-logo";
 import { cn } from "@/lib/utils";
@@ -363,9 +364,9 @@ export function Sidebar({
         <>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button type="button" aria-label="Chat options" className="shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity mr-0.5"
+              <button type="button" aria-label="Chat options" className="shrink-0 p-0.5 rounded hover:bg-accent transition-opacity mr-1"
                 onClick={(e) => e.stopPropagation()} data-testid={`button-chat-menu-${chat.id}`}>
-                <MoreHorizontal className="h-3 w-3 text-muted-foreground" />
+                <span className="text-muted-foreground/60 text-xs leading-none">···</span>
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52" sideOffset={5}>
@@ -530,92 +531,101 @@ export function Sidebar({
       aria-label="Navegación principal y chats"
       role="navigation"
     >
-      <div className="flex h-11 items-center justify-between px-3 border-b border-border/20">
+      <div className="flex items-center justify-between px-3 py-3">
         <div className="flex items-center gap-2 min-w-0">
-          <IliaGPTLogo size={24} className="shrink-0" />
-          <span className="text-[13px] font-semibold tracking-tight truncate">{appName}</span>
+          <IliaGPTLogo size={28} className="shrink-0" />
+          <div className="flex flex-col min-w-0">
+            <span className="text-sm font-bold tracking-tight truncate">{appName}</span>
+            <span className="text-[10px] text-muted-foreground/60 leading-none">AI Platform</span>
+          </div>
           {isAdmin && platformSettings.maintenance_mode && (
             <span className="shrink-0 rounded bg-amber-500/15 text-amber-600 px-1 py-px text-[9px] font-medium">MAINT</span>
           )}
         </div>
-        <div className="flex items-center gap-0.5">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md" onClick={onNewChat} data-testid="button-new-chat-header">
-                <SquarePen className="h-3.5 w-3.5 text-muted-foreground" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-xs">Nuevo chat</TooltipContent>
-          </Tooltip>
-          <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md" onClick={onToggle}>
-            <PanelLeftClose className="h-3.5 w-3.5 text-muted-foreground" />
-          </Button>
-        </div>
-      </div>
-
-      <div className="px-2 pt-2 pb-1">
-        <Button
-          ref={searchButtonRef}
-          variant="ghost"
-          className="w-full justify-start gap-2 px-2 py-1.5 h-8 text-xs text-muted-foreground hover:text-foreground rounded-md border border-border/30 bg-background/50"
-          onClick={() => setIsSearchModalOpen(true)}
-          data-testid="button-search-chats"
-        >
-          <Search className="h-3 w-3" />
-          Buscar...
-          <span className="ml-auto text-[10px] text-muted-foreground/50 font-mono">Ctrl+K</span>
+        <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md" onClick={onToggle} data-testid="button-toggle-sidebar">
+          <PanelLeftClose className="h-4 w-4 text-muted-foreground" />
         </Button>
       </div>
 
-      <div className="px-2 pt-1.5 pb-0.5">
-        <div className="flex items-center justify-between px-1.5 mb-1">
-          <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/50">Herramientas</span>
-        </div>
-        <div className="grid grid-cols-3 gap-1">
-          <button onClick={onOpenLibrary} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group" data-testid="button-library">
-            <Library className="h-3.5 w-3.5 text-violet-500 group-hover:text-violet-600 transition-colors" />
-            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">Biblioteca</span>
-          </button>
-          <button onClick={onOpenGpts} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group" data-testid="button-gpts">
-            <Bot className="h-3.5 w-3.5 text-amber-500 group-hover:text-amber-600 transition-colors" />
-            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">GPTs</span>
-          </button>
-          <button onClick={onOpenSkills} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group" data-testid="button-skills">
-            <Zap className="h-3.5 w-3.5 text-blue-500 group-hover:text-blue-600 transition-colors" />
-            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">Skills</span>
-          </button>
-          <button onClick={onOpenApps} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group" data-testid="button-apps">
-            <LayoutGrid className="h-3.5 w-3.5 text-emerald-500 group-hover:text-emerald-600 transition-colors" />
-            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">Apps</span>
-          </button>
-          <button onClick={onOpenWhatsAppConnect} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group relative" data-testid="button-whatsapp-connect">
-            <MessageSquare className="h-3.5 w-3.5 text-green-500 group-hover:text-green-600 transition-colors" />
-            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">WebChat</span>
-            <span className={cn("absolute top-1 right-1.5 h-1.5 w-1.5 rounded-full", waStatus.state === 'connected' ? 'bg-green-500' : waStatus.state === 'disconnected' ? 'bg-red-400' : 'bg-amber-500')} />
-          </button>
-          <button onClick={onOpenCodex} className="flex flex-col items-center gap-0.5 p-1.5 rounded-md hover:bg-accent/60 transition-colors group" data-testid="button-codex">
-            <Code className="h-3.5 w-3.5 text-cyan-500 group-hover:text-cyan-600 transition-colors" />
-            <span className="text-[9px] font-medium text-muted-foreground group-hover:text-foreground">Codex</span>
-          </button>
-        </div>
+      <div className="px-3 pb-2">
+        <Button
+          className="w-full justify-start gap-2 h-9 text-sm font-medium bg-gradient-to-r from-violet-500 to-blue-500 hover:from-violet-600 hover:to-blue-600 text-white rounded-lg shadow-sm"
+          onClick={onNewChat}
+          data-testid="button-new-chat"
+        >
+          <SquarePen className="h-4 w-4" />
+          Nuevo chat
+          <span className="ml-auto text-[10px] bg-white/20 rounded px-1 py-0.5 font-mono">KN</span>
+        </Button>
       </div>
 
-      <div className="px-3 py-1.5">
-        <div className="h-px bg-border/20" />
+      <div className="px-3 pb-2">
+        <Button
+          ref={searchButtonRef}
+          variant="ghost"
+          className="w-full justify-start gap-2 px-2.5 h-8 text-xs text-muted-foreground hover:text-foreground rounded-md border border-border/30 bg-background/50"
+          onClick={() => setIsSearchModalOpen(true)}
+          data-testid="button-search-chats"
+        >
+          <Search className="h-3.5 w-3.5" />
+          Buscar chats...
+          <span className="ml-auto text-[10px] text-muted-foreground/50 font-mono">⌘ K</span>
+        </Button>
+      </div>
+
+      <div className="px-3 pb-1">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/50">Herramientas</span>
+      </div>
+      <div className="flex flex-col gap-0.5 px-2 pb-2">
+        <button onClick={onOpenLibrary} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 transition-colors text-sm text-foreground/80 hover:text-foreground" data-testid="button-library">
+          <Library className="h-4 w-4 text-violet-500 shrink-0" />
+          <span>Biblioteca</span>
+        </button>
+        <button onClick={onOpenGpts} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 transition-colors text-sm text-foreground/80 hover:text-foreground" data-testid="button-gpts">
+          <Bot className="h-4 w-4 text-amber-500 shrink-0" />
+          <span>GPTs</span>
+        </button>
+        <button onClick={onOpenSkills} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 transition-colors text-sm text-foreground/80 hover:text-foreground" data-testid="button-skills">
+          <Zap className="h-4 w-4 text-blue-500 shrink-0" />
+          <span>Skills</span>
+        </button>
+        <button onClick={onOpenApps} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 transition-colors text-sm text-foreground/80 hover:text-foreground" data-testid="button-apps">
+          <LayoutGrid className="h-4 w-4 text-emerald-500 shrink-0" />
+          <span>Aplicaciones</span>
+        </button>
+        <button onClick={onOpenWhatsAppConnect} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 transition-colors text-sm text-foreground/80 hover:text-foreground relative" data-testid="button-whatsapp-connect">
+          <MessageSquare className="h-4 w-4 text-green-500 shrink-0" />
+          <span>AppsWebChat (QR)</span>
+          <span className={cn("ml-auto h-2 w-2 rounded-full shrink-0", waStatus.state === 'connected' ? 'bg-green-500' : waStatus.state === 'disconnected' ? 'bg-red-500' : 'bg-amber-500')} />
+        </button>
+      </div>
+
+      <div className="px-3 py-1">
+        <div className="h-px bg-gradient-to-r from-transparent via-border/30 to-transparent" />
       </div>
 
       <ScrollArea className="flex-1 px-1 [&_[data-radix-scroll-area-viewport]]:scrollbar-thin [&_[data-radix-scroll-area-viewport]]:scrollbar-thumb-muted-foreground/20 [&_[data-radix-scroll-area-viewport]]:scrollbar-track-transparent">
         <div className="flex flex-col gap-0.5 pb-2">
-          <div className="flex items-center justify-between px-2 pt-1 pb-0.5">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/50">Hilos</span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-5 w-5 rounded" onClick={() => setIsCreateProjectOpen(true)} data-testid="button-new-folder-header">
-                  <Plus className="h-3 w-3 text-muted-foreground" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="right" className="text-xs">Nuevo proyecto</TooltipContent>
-            </Tooltip>
+          <div className="flex items-center justify-between px-2 pt-2 pb-1">
+            <span className="text-base font-semibold text-foreground">Hilos</span>
+            <div className="flex items-center gap-0.5">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-6 w-6 rounded" data-testid="button-filter-hilos">
+                    <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">Filtrar</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-6 w-6 rounded" onClick={() => setIsCreateProjectOpen(true)} data-testid="button-new-folder-header">
+                    <FolderPlus className="h-3.5 w-3.5 text-muted-foreground" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">Nuevo proyecto</TooltipContent>
+              </Tooltip>
+            </div>
           </div>
 
           {projects.length > 0 && (
@@ -775,7 +785,7 @@ export function Sidebar({
             return (
               <div key={group} className="flex flex-col gap-px px-1">
                 <div className="px-1.5 py-0.5">
-                  <span className="text-[10px] font-medium text-muted-foreground/50">{group}</span>
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/50">{group}</span>
                 </div>
                 {groupChats.map((chat) => renderChatItem(chat))}
               </div>
@@ -809,27 +819,27 @@ export function Sidebar({
         </div>
       )}
 
-      <div className="mt-auto border-t border-border/20 p-2">
+      <div className="mt-auto border-t border-border/20 p-3">
         <Popover open={isUserMenuOpen} onOpenChange={setIsUserMenuOpen}>
           <PopoverTrigger asChild>
-            <button className="flex w-full items-center gap-2 p-1.5 rounded-md hover:bg-accent/40 transition-colors cursor-pointer" data-testid="button-user-menu">
-              <Avatar className="h-7 w-7">
-                <AvatarFallback className="bg-gradient-to-br from-violet-500 to-blue-500 text-white text-[10px] font-bold">
-                  {isAdmin ? "A" : (user?.firstName?.[0] || user?.email?.[0] || "U").toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
+            <button className="flex w-full items-center gap-2.5 p-1 rounded-md hover:bg-accent/40 transition-colors cursor-pointer" data-testid="button-user-menu">
+              <div className="relative shrink-0">
+                <Avatar className="h-8 w-8">
+                  <AvatarFallback className="bg-gradient-to-br from-violet-500 to-blue-500 text-white text-xs font-bold">
+                    {isAdmin ? "A" : (user?.firstName?.[0] || user?.email?.[0] || "U").toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-green-500 border-2 border-[#fafafa] dark:border-[#111113]" />
+              </div>
               <div className="flex flex-1 flex-col overflow-hidden text-left">
-                <div className="flex items-center gap-1">
-                  <span className="truncate text-[12px] font-medium">
-                    {isAdmin ? "Admin" : (user?.firstName || user?.email?.split("@")[0] || "Usuario")}
-                  </span>
-                  {isAdmin && <span className="shrink-0 rounded bg-violet-500/15 text-violet-500 px-1 py-px text-[8px] font-bold uppercase">PRO</span>}
-                </div>
-                <span className="truncate text-[10px] text-muted-foreground/60">
-                  {(() => { const plan = ((user as any)?.plan || "free").toString().toLowerCase(); return plan === "free" ? "Plan personal" : plan.toUpperCase(); })()}
+                <span className="truncate text-sm font-medium">
+                  {isAdmin ? "Admin" : (user?.firstName || user?.email?.split("@")[0] || "Usuario")}
+                </span>
+                <span className="truncate text-[10px] text-muted-foreground/60 uppercase tracking-wide">
+                  Cuenta personal
                 </span>
               </div>
-              <Settings className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+              <Settings className="h-4 w-4 text-muted-foreground/50 shrink-0" />
             </button>
           </PopoverTrigger>
             <PopoverContent className="w-auto min-w-56 p-2" align="start" side="top">
