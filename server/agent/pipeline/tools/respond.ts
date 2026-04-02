@@ -53,7 +53,7 @@ export const respondTool: ToolDefinition = {
         messages: [
           {
             role: "system",
-            content: `You are Sira GPT, an intelligent assistant. Generate a helpful, comprehensive response.
+            content: `You are iliagpt, an intelligent assistant. Generate a helpful, comprehensive response.
 
 Tone: ${tone}
 ${languageInstruction}

@@ -215,7 +215,7 @@ class AgentOrchestrator {
         messages: [
           {
             role: "system",
-            content: `You are Sira GPT, an AI assistant that has just browsed the web and extracted information. 
+            content: `You are iliagpt, an AI assistant that has just browsed the web and extracted information. 
 Based on the extracted content below, provide a comprehensive response to the user's objective.
 Cite your sources when referencing specific information.
 Respond in the same language as the user's objective.`

@@ -3,7 +3,7 @@ import { getUncachableStripeClient } from './stripeClient';
 async function createProducts() {
   const stripe = await getUncachableStripeClient();
 
-  console.log('Creating Sira GPT subscription plans...');
+  console.log('Creating iliagpt subscription plans...');
 
   // Plan Go - $5/month
   const goProduct = await stripe.products.create({

@@ -61,7 +61,7 @@ export async function sendShareNotificationEmail(params: ShareNotificationParams
     : 'https://siragpt.app';
   const shareUrl = `${baseUrl}/chat/${chatId}`;
   
-  const subject = `${inviterEmail} te ha compartido una conversación en Sira GPT`;
+  const subject = `${inviterEmail} te ha compartido una conversación en iliagpt`;
   
   const htmlBody = `
 <!DOCTYPE html>
@@ -81,7 +81,7 @@ export async function sendShareNotificationEmail(params: ShareNotificationParams
 <body>
   <div class="container">
     <div class="header">
-      <h1>🤖 Sira GPT</h1>
+      <h1>🤖 iliagpt</h1>
       <p>Tienes una nueva invitación</p>
     </div>
     <div class="content">
@@ -97,7 +97,7 @@ export async function sendShareNotificationEmail(params: ShareNotificationParams
       <a href="${shareUrl}" class="button">Ver conversación</a>
       
       <div class="footer">
-        <p>Sira GPT - Tu asistente de IA</p>
+        <p>iliagpt - Tu asistente de IA</p>
       </div>
     </div>
   </div>
@@ -108,7 +108,7 @@ export async function sendShareNotificationEmail(params: ShareNotificationParams
   const textBody = `
 ¡Hola!
 
-${inviterEmail} te ha invitado a participar en una conversación en Sira GPT.
+${inviterEmail} te ha invitado a participar en una conversación en iliagpt.
 
 📝 Conversación: "${chatTitle}"
 👤 Tu rol: ${roleLabel}
@@ -117,14 +117,14 @@ ${inviterEmail} te ha invitado a participar en una conversación en Sira GPT.
 Haz clic en el enlace para acceder a la conversación.
 
 ---
-Sira GPT - Tu asistente de IA
+iliagpt - Tu asistente de IA
 `;
 
   try {
     const { client, fromEmail } = await getResendClient();
     
     const result = await client.emails.send({
-      from: fromEmail || 'Sira GPT <noreply@resend.dev>',
+      from: fromEmail || 'iliagpt <noreply@resend.dev>',
       to: toEmail,
       subject: subject,
       html: htmlBody,

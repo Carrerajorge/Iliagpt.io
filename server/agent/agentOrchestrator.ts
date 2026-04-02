@@ -855,7 +855,7 @@ Respond with ONLY valid JSON:
     const messages: ChatCompletionMessageParam[] = [
       {
         role: "system",
-        content: `Eres Sira, un asistente de IA amigable y servicial. Responde de manera natural y conversacional en español. ${voiceStyleLine}
+        content: `Eres iliagpt, un asistente de IA amigable y servicial. Responde de manera natural y conversacional en español. ${voiceStyleLine}
 Si el usuario te saluda, salúdalo de vuelta. Si te pregunta quién eres, explica de forma breve quién eres y cómo puedes ayudar. ${capabilitiesLine}
 Mantén tus respuestas concisas (2-4 oraciones) y fáciles de leer.
 No uses markdown ni emojis.${userProfileLine ? `\n${userProfileLine}` : ""}${customInstructions ? `\n\nInstrucciones personalizadas del usuario:\n${customInstructions}` : ""}`
@@ -876,7 +876,7 @@ No uses markdown ni emojis.${userProfileLine ? `\n${userProfileLine}` : ""}${cus
       return response.content;
     } catch (error: any) {
       console.error(`[AgentOrchestrator] Failed to generate conversational response:`, error.message);
-      return "¡Hola! Soy Sira, tu asistente de IA. ¿En qué puedo ayudarte hoy?";
+      return "¡Hola! Soy iliagpt, tu asistente de IA. ¿En qué puedo ayudarte hoy?";
     }
   }
 

@@ -3891,7 +3891,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
       const result = await llmGateway.chat([
         {
           role: "system",
-          content: `Eres Sira, un asistente de voz amigable y conversacional. 
+          content: `Eres iliagpt, un asistente de voz amigable y conversacional. 
 Responde de manera natural y concisa, como si estuvieras hablando directamente con el usuario.
 ${featureFlags.voiceAdvanced ? "Puedes dar respuestas un poco más completas (hasta 5 oraciones) cuando haga falta." : "Mantén las respuestas cortas (2-3 oraciones máximo) para que sean fáciles de escuchar."}
 Usa un tono cálido y conversacional en español. ${voiceStyleLine}

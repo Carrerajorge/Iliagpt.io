@@ -2575,7 +2575,7 @@ export class MemStorage implements IStorage {
 
   async seedDefaultSettings(): Promise<void> {
     const defaultSettings: InsertSettingsConfig[] = [
-      { category: "general", key: "app_name", value: "ILIAGPT", defaultValue: "ILIAGPT", valueType: "string", description: "Application name" },
+      { category: "general", key: "app_name", value: "iliagpt", defaultValue: "iliagpt", valueType: "string", description: "Application name" },
       { category: "general", key: "app_description", value: "AI Platform", defaultValue: "AI Platform", valueType: "string", description: "Application description" },
       { category: "general", key: "support_email", value: "", defaultValue: "", valueType: "string", description: "Support email address" },
       { category: "general", key: "timezone_default", value: "UTC", defaultValue: "UTC", valueType: "string", description: "Default timezone" },

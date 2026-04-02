@@ -35,7 +35,7 @@ Este archivo ZIP contiene dos archivos Excel:
    - Gráfico nativo de Excel con resumen por país
    - Abre en Excel para ver el gráfico de columnas
 
-Generado por Sira GPT ETL Agent
+Generado por iliagpt ETL Agent
 ${new Date().toISOString()}
 `);
 
@@ -45,7 +45,7 @@ ${new Date().toISOString()}
 
 async function generateChartWorkbook(clean: NormalizedRecord[], dashboard: WorkbookSheets['dashboard']): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Sira GPT ETL Agent';
+  workbook.creator = 'iliagpt ETL Agent';
   workbook.created = new Date();
 
   const sheet = workbook.addWorksheet('Chart Data');
@@ -93,7 +93,7 @@ async function generateChartWorkbook(clean: NormalizedRecord[], dashboard: Workb
 
 async function generateDataWorkbook(sheets: WorkbookSheets): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Sira GPT ETL Agent';
+  workbook.creator = 'iliagpt ETL Agent';
   workbook.created = new Date();
 
   buildReadmeSheet(workbook, sheets.readme);
