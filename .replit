@@ -9,7 +9,7 @@ packages = ["alsa-lib", "at-spi2-atk", "atk", "cairo", "cups", "dbus", "expat", 
 [deployment]
 deploymentTarget = "vm"
 build = ["npm", "run", "build"]
-run = ["npm", "run", "start"]
+run = ["node", "dist/index.cjs"]
 
 [[ports]]
 localPort = 5000
