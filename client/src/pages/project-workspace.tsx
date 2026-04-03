@@ -205,16 +205,25 @@ export default function ProjectWorkspace() {
 
       <div className="flex-1 flex flex-col bg-[#1a1a2e] overflow-hidden">
         <div className="h-10 flex items-center justify-between px-4 border-b border-white/10 shrink-0">
-          <span className="text-sm font-medium text-white/80">Nuevo hilo</span>
+          <div className="flex items-center gap-1">
+            <button
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-white/10 text-white/90"
+              data-testid="tab-preview"
+            >
+              <Globe className="h-3.5 w-3.5" />
+              Preview
+            </button>
+            <button className="px-2 py-1.5 text-xs text-white/40 hover:text-white/60 transition-colors" data-testid="tab-add">
+              +
+            </button>
+          </div>
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 bg-white/10 rounded-md px-2 py-1">
-              <div className="w-4 h-4 rounded bg-gradient-to-br from-violet-500 to-blue-500 flex items-center justify-center text-[9px] font-bold">A</div>
-              <ChevronDown className="h-3 w-3 text-white/50" />
-            </div>
-            <button className="flex items-center gap-1.5 bg-white/10 rounded-md px-3 py-1 text-xs text-white/80 hover:bg-white/15 transition-colors" data-testid="button-confirm">
-              <Settings className="h-3 w-3" />
-              <span>Confirmar</span>
-              <ChevronDown className="h-3 w-3 text-white/50" />
+            <button
+              className="flex items-center gap-1.5 bg-green-600 hover:bg-green-500 rounded-md px-3 py-1 text-xs text-white font-medium transition-colors"
+              data-testid="button-publish"
+            >
+              <Globe className="h-3 w-3" />
+              Publish
             </button>
           </div>
         </div>
