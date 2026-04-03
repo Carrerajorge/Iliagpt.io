@@ -138,27 +138,6 @@ export default function ProjectWorkspace() {
             </div>
           </div>
 
-          <div className="flex items-center justify-end mb-2">
-            <button className="text-[11px] text-white/35 hover:text-white/55 flex items-center gap-1 transition-colors">
-              Explore more
-              <X className="h-2.5 w-2.5" />
-            </button>
-          </div>
-          <div className="grid grid-cols-3 gap-2 mb-4">
-            {suggestions.map((s, i) => (
-              <button
-                key={i}
-                onClick={() => setPrompt(s.text)}
-                className="flex flex-col gap-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-3 text-left transition-all active:scale-[0.98]"
-                style={{ touchAction: "manipulation" }}
-                data-testid={`suggestion-card-${i}`}
-              >
-                <span className="text-base">{s.emoji}</span>
-                <span className="text-[12px] text-white/60 leading-snug">{s.text}</span>
-              </button>
-            ))}
-          </div>
-
           <div className="rounded-2xl border border-amber-500/60 bg-[#1e1e30] overflow-hidden shadow-[0_0_15px_rgba(245,158,11,0.08)]">
             <div className="px-4 pt-3 pb-2">
               <textarea
