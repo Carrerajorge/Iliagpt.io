@@ -2255,20 +2255,23 @@ REGLAS OBLIGATORIAS:
         webSources: webSources.length > 0 ? webSources : undefined
       };
     } else {
-      const { performOCR } = await import("./ocrService");
-      const ocrTexts: string[] = [];
-      for (const img of images!) {
+      const { batchOCR } = await import("./ocrService");
+      const imageBuffers: Array<{ buffer: Buffer; id?: string }> = [];
+      for (let i = 0; i < images!.length; i++) {
+        const base64Match = images![i].match(/^data:image\/\w+;base64,(.+)$/);
+        if (base64Match) {
+          imageBuffers.push({ buffer: Buffer.from(base64Match[1], "base64"), id: `img_${i}` });
+        }
+      }
+
+      let ocrTexts: string[] = [];
+      if (imageBuffers.length > 0) {
         try {
-          const base64Match = img.match(/^data:image\/\w+;base64,(.+)$/);
-          if (base64Match) {
-            const buffer = Buffer.from(base64Match[1], "base64");
-            const result = await performOCR(buffer);
-            if (result.text.trim()) {
-              ocrTexts.push(result.text.trim());
-            }
-          }
+          const results = await batchOCR(imageBuffers);
+          ocrTexts = results.filter(r => r.text.trim().length > 0).map(r => r.text.trim());
+          console.log(`[ChatService] OCR batch: ${results.length} images → ${ocrTexts.length} with text, avg confidence=${(results.reduce((s, r) => s + r.confidence, 0) / Math.max(results.length, 1)).toFixed(1)}%`);
         } catch (e) {
-          console.warn("[ChatService] OCR failed for image:", e);
+          console.warn("[ChatService] OCR batch failed:", e);
         }
       }
 

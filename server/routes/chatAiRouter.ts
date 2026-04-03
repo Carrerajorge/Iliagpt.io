@@ -5839,22 +5839,25 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       const isModelVisionCapable = !effectiveModel?.includes("gpt-oss") && !effectiveModel?.includes("gemma");
 
       if (imagePartsForVision.length > 0 && !isModelVisionCapable) {
-        const { performOCR } = await import("../services/ocrService");
-        const ocrTexts: string[] = [];
-        for (const imgPart of imagePartsForVision) {
+        const { batchOCR } = await import("../services/ocrService");
+        const imageBuffers: Array<{ buffer: Buffer; id?: string }> = [];
+        for (let idx = 0; idx < imagePartsForVision.length; idx++) {
+          const url = imagePartsForVision[idx].image_url.url;
+          const base64Match = url.match(/^data:image\/\w+;base64,(.+)$/);
+          if (base64Match) {
+            imageBuffers.push({ buffer: Buffer.from(base64Match[1], "base64"), id: `stream_img_${idx}` });
+          }
+        }
+
+        let ocrTexts: string[] = [];
+        if (imageBuffers.length > 0) {
           try {
-            const url = imgPart.image_url.url;
-            const base64Match = url.match(/^data:image\/\w+;base64,(.+)$/);
-            if (base64Match) {
-              const buffer = Buffer.from(base64Match[1], "base64");
-              const result = await performOCR(buffer);
-              if (result.text.trim()) {
-                ocrTexts.push(result.text.trim());
-                console.log(`[Stream] OCR: extracted ${result.text.length} chars (confidence: ${result.confidence}%)`);
-              }
-            }
+            const results = await batchOCR(imageBuffers);
+            ocrTexts = results.filter(r => r.text.trim().length > 0).map(r => r.text.trim());
+            const avgConf = results.reduce((s, r) => s + r.confidence, 0) / Math.max(results.length, 1);
+            console.log(`[Stream] OCR batch: ${results.length} images → ${ocrTexts.length} with text, avg confidence=${avgConf.toFixed(1)}%, passes=${results.map(r => r.passUsed || 'default').join(',')}`);
           } catch (e: any) {
-            console.warn(`[Stream] OCR failed for image:`, e?.message);
+            console.warn(`[Stream] OCR batch failed:`, e?.message);
           }
         }
 
