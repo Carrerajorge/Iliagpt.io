@@ -917,7 +917,7 @@ export function Composer({
       "p-4 sm:p-6 w-full max-w-3xl mx-auto relative bg-background z-10",
       isDraggingOver && cn("ring-2 rounded-2xl", SILVER_RING_SOFT)
     )
-    : "shrink-0 w-full px-4 pb-4 pt-2 bg-background/70 backdrop-blur-xl";
+    : "shrink-0 w-full px-4 pb-6 pt-3 bg-background/70 backdrop-blur-xl";
 
   const inputContainerClass = cn(
     isDocumentMode
