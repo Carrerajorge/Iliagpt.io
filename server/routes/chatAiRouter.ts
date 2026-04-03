@@ -6428,17 +6428,19 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         /\b(?:carpetas?|caprteas?|careptas?|carpteas?|folders?|directorios?|directories?|archivos?|files?)\b.*\b(?:mac|computadora|pc|laptop|sistema|escritorio|desktop|descargas|downloads|documentos|documents|home|disco)\b|\b(?:analiza|explora|listar|list|revisa|cuenta|count|cu[aá]ntas?)\b.*\b(?:mi\s+(?:mac|computadora|pc)|desktop|escritorio|home)\b/i.test(
           userMessageText || "",
         );
-      const agentLoopIntents = new Set(["web_automation", "multi_step_task", "research", "data_analysis", "document_analysis", "coding", "file_management", "system_admin"]);
-      const agenticKeywordSignal = /\b(?:busca(?:r|me)?|search|investiga|fetch|navega|browse|ejecuta|run|terminal|command|consola|instala|install|crea\s+(?:un?\s+)?(?:archivo|carpeta|file|folder)|escribe?\s+(?:en|un)|lee|read|edita|edit|abre|open|descarga|download|analiza|analyze|escanea|scan|compila|compile|genera|generate|construye|build|despliega|deploy|clona|clone|muestra|show|encuentra|find|verifica|check|prueba|test|lista|list|dame|give me|hazme|make me|configura|configure|actualiza|update|modifica|modify|elimina|delete|mueve|move|copia|copy|renombra|rename|extrae|extract|convierte|convert|procesa|process|calcula|calculate|resuelve|solve|programa|program|script|código|code|archivo|file|carpeta|folder|directorio|directory|servidor|server|base de datos|database|api|endpoint|web|página|page|sitio|site|url|http|curl|wget|pip|npm|git|python|node|docker)\b/i.test(userMessageText || "");
+      const agentLoopIntents = new Set(["web_automation", "multi_step_task", "research", "data_analysis", "document_analysis", "coding", "file_management", "system_admin", "creative_coding", "automation", "devops", "scraping"]);
+      const agenticKeywordSignal = /\b(?:busca(?:r|me)?|search|investiga|fetch|navega|browse|ejecuta|run|terminal|command|consola|instala|install|crea\s+(?:un[ao]?\s+)?(?:archivo|carpeta|file|folder|script|programa|app|aplicación|proyecto|project)|escribe?\s+(?:en|un)|edita|edit|descarga|download|analiza|analyze|escanea|scan|compila|compile|construye|build|despliega|deploy|clona|clone|encuentra|find|verifica|check|prueba|test|configura|configure|actualiza|update|modifica|modify|elimina|delete|mueve|move|copia|copy|renombra|rename|extrae|extract|convierte|convert|procesa|process|calcula|calculate|resuelve|solve|programa|program|script|código|code|archivo|file|carpeta|folder|directorio|directory|servidor|server|base de datos|database|api|endpoint|url|http|curl|wget|pip|npm|git|python|node|docker|scrape|crawl|automate|schedule|benchmark|optimize|refactor|migrate|publish)\b/i.test(userMessageText || "");
+      const complexitySignal = (userMessageText || "").length > 120 &&
+        /\b(?:step|steps|first|then|next|after|finally|también|luego|después|además)\b/i.test(userMessageText || "");
       const shouldRouteThroughAgentLoop =
         shouldRunModel &&
+        !!unifiedContext?.requestSpec &&
         (
-          Boolean(unifiedContext?.isAgenticMode) &&
-          (
-            agentLoopIntents.has(unifiedContext!.requestSpec.intent) ||
-            localFsSignal
-          )
-          || agenticKeywordSignal
+          agenticKeywordSignal
+          || (Boolean(unifiedContext.isAgenticMode) && (
+            agentLoopIntents.has(unifiedContext.requestSpec.intent) || localFsSignal
+          ))
+          || (complexitySignal && agentLoopIntents.has(unifiedContext.requestSpec.intent))
         );
 
       if (shouldRouteThroughAgentLoop) {

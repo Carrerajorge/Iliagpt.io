@@ -13,6 +13,7 @@ import {
   executeToolCall as executeOpenClawToolCall,
   type ToolCall as OpenClawToolCall,
 } from "../agents/toolEngine";
+import { parseToolCallsFromText, buildToolCallingSystemPrompt, stripToolCallsFromText } from "./toolCallParser";
 
 export interface AgentExecutorOptions {
   maxIterations?: number;
@@ -482,6 +483,73 @@ async function executeToolCall(
           }
         } catch (err: any) {
           result = { port: args.port, listening: false, details: "Port not in use or command failed" };
+        }
+        break;
+      }
+
+      case "read_file": {
+        try {
+          const fs = await import("fs");
+          const pathMod = await import("path");
+          const filepath = String(args.filepath || args.path || args.file || "");
+          if (!filepath) { result = { error: "No filepath provided" }; break; }
+          const resolved = pathMod.resolve(filepath);
+          const cwd = process.cwd();
+          const home = process.env.HOME || "/home/runner";
+          const allowedRoots = [cwd, home, "/tmp"];
+          const denyPatterns = ["/etc/shadow", "/etc/passwd", "/.env", "/node_modules/", "/.git/"];
+          const realResolved = fs.existsSync(resolved) ? fs.realpathSync(resolved) : resolved;
+          const inAllowed = allowedRoots.some(r => realResolved.startsWith(r));
+          const isDenied = denyPatterns.some(p => realResolved.includes(p));
+          if (!inAllowed || isDenied) { result = { error: `Access denied: ${filepath}` }; break; }
+          if (!fs.existsSync(resolved)) { result = { error: `File not found: ${resolved}` }; break; }
+          const stat = fs.statSync(resolved);
+          if (stat.isDirectory()) { result = { error: `Path is a directory, use list_files instead: ${resolved}` }; break; }
+          if (stat.size > 5 * 1024 * 1024) { result = { error: "File too large (max 5MB for reading)" }; break; }
+          const content = fs.readFileSync(resolved, "utf8");
+          const maxLines = Math.max(1, Math.min(args.maxLines || 500, 2000));
+          const lines = content.split("\n");
+          const truncated = lines.length > maxLines;
+          result = { 
+            success: true, filepath: resolved, 
+            content: truncated ? lines.slice(0, maxLines).join("\n") + `\n... [truncated, ${lines.length - maxLines} more lines]` : content,
+            lines: lines.length, size: stat.size 
+          };
+        } catch (err: any) {
+          result = { error: err.message };
+        }
+        break;
+      }
+
+      case "list_files": {
+        try {
+          const fs = await import("fs");
+          const pathMod = await import("path");
+          const dirPath = String(args.directory || args.path || args.dir || ".");
+          const resolved = pathMod.resolve(dirPath);
+          const cwd = process.cwd();
+          const home = process.env.HOME || "/home/runner";
+          const allowedRoots = [cwd, home, "/tmp"];
+          const denyPatterns = ["/etc/shadow", "/.env", "/.git/"];
+          const realResolved = fs.existsSync(resolved) ? fs.realpathSync(resolved) : resolved;
+          const inAllowed = allowedRoots.some(r => realResolved.startsWith(r));
+          const isDenied = denyPatterns.some(p => realResolved.includes(p));
+          if (!inAllowed || isDenied) { result = { error: `Access denied: ${dirPath}` }; break; }
+          if (!fs.existsSync(resolved)) { result = { error: `Directory not found: ${resolved}` }; break; }
+          const entries = fs.readdirSync(resolved, { withFileTypes: true });
+          const maxEntries = Math.max(1, Math.min(args.maxEntries || 200, 500));
+          const files = entries.slice(0, maxEntries).map(entry => ({
+            name: entry.name,
+            type: entry.isDirectory() ? "directory" : "file",
+            path: pathMod.join(resolved, entry.name),
+          }));
+          result = { 
+            success: true, directory: resolved, 
+            entries: files, count: entries.length,
+            truncated: entries.length > maxEntries
+          };
+        } catch (err: any) {
+          result = { error: err.message };
         }
         break;
       }
@@ -1032,21 +1100,73 @@ MANDATORY RULES:
         break;
       }
 
+      let usedNativeTools = true;
       const response = await retryWithBackoff(async () => {
-        const completionPromise = openaiClient.chat.completions.create({
-          model: agentModel,
-          messages: openaiMessages,
-          temperature: 0.7,
-          max_tokens: 4096,
-          tools: dedupedTools.length > 0 ? dedupedTools : undefined,
-          tool_choice: dedupedTools.length > 0 ? "auto" : undefined,
-        });
+        try {
+          const completionPromise = openaiClient.chat.completions.create({
+            model: agentModel,
+            messages: openaiMessages,
+            temperature: 0.7,
+            max_tokens: 4096,
+            tools: dedupedTools.length > 0 ? dedupedTools : undefined,
+            tool_choice: dedupedTools.length > 0 ? "auto" : undefined,
+          });
 
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Agent LLM call timed out after 90s")), 90000)
-        );
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("Agent LLM call timed out after 90s")), 90000)
+          );
 
-        return Promise.race([completionPromise, timeoutPromise]);
+          return await Promise.race([completionPromise, timeoutPromise]);
+        } catch (nativeErr: any) {
+          const errMsg = String(nativeErr?.message || nativeErr?.error?.message || "").toLowerCase();
+          const isToolUnsupported = errMsg.includes("tool") || errMsg.includes("function") ||
+            errMsg.includes("not supported") || errMsg.includes("does not support") ||
+            errMsg.includes("invalid") || nativeErr?.status === 400;
+          if (!isToolUnsupported) throw nativeErr;
+
+          console.log(`[AgentExecutor] Model ${agentModel} doesn't support native tools, falling back to prompt-based tool calling`);
+          usedNativeTools = false;
+
+          const toolSchemas = dedupedTools.map(t => ({
+            name: t.function.name,
+            description: t.function.description || "",
+            parameters: t.function.parameters || {},
+          }));
+          const toolPrompt = buildToolCallingSystemPrompt(toolSchemas);
+
+          const fallbackMessages: OpenAI.ChatCompletionMessageParam[] = [
+            { role: "system", content: toolPrompt },
+          ];
+          for (const m of openaiMessages) {
+            if (m.role === "tool") {
+              const toolName = (m as any).tool_call_id || "tool";
+              fallbackMessages.push({
+                role: "user",
+                content: `[Tool Result (${toolName})]\n${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`,
+              });
+            } else if (m.role === "assistant" && (m as any).tool_calls) {
+              const tc = (m as any).tool_calls;
+              const toolSummary = tc.map((t: any) => `${t.function.name}(${t.function.arguments})`).join(", ");
+              fallbackMessages.push({
+                role: "assistant",
+                content: ((m as any).content || "") + `\n[Called tools: ${toolSummary}]`,
+              });
+            } else {
+              fallbackMessages.push(m as OpenAI.ChatCompletionMessageParam);
+            }
+          }
+
+          const fallbackPromise = openaiClient.chat.completions.create({
+            model: agentModel,
+            messages: fallbackMessages,
+            temperature: 0.7,
+            max_tokens: 4096,
+          });
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("Agent LLM call timed out after 90s")), 90000)
+          );
+          return await Promise.race([fallbackPromise, timeoutPromise]);
+        }
       }, 2, 1500);
 
       if (response.usage) {
@@ -1070,18 +1190,34 @@ MANDATORY RULES:
         throw new Error("No response from model");
       }
 
-      const toolCalls = choice.message?.tool_calls || [];
+      let toolCalls = choice.message?.tool_calls || [];
       let hasToolCall = toolCalls.length > 0;
       let textContent = choice.message?.content || "";
       let shouldExitAgentLoop = false;
 
-      console.log(`[AgentExecutor] Iteration ${iteration}: LLM returned ${toolCalls.length} tool_calls, text=${textContent.slice(0, 80)}...`);
+      if (!hasToolCall && textContent && !usedNativeTools) {
+        const allToolNameSet = new Set<string>();
+        for (const t of dedupedTools) allToolNameSet.add(t.function.name);
+        const parsedCalls = parseToolCallsFromText(textContent, allToolNameSet);
+        if (parsedCalls.length > 0) {
+          console.log(`[AgentExecutor] Parsed ${parsedCalls.length} tool call(s) from text (prompt-based fallback)`);
+          toolCalls = parsedCalls.map(pc => ({
+            id: pc.id,
+            type: "function" as const,
+            function: { name: pc.name, arguments: pc.arguments },
+          })) as any;
+          hasToolCall = true;
+          textContent = stripToolCallsFromText(textContent);
+        }
+      }
+
+      console.log(`[AgentExecutor] Iteration ${iteration}: ${toolCalls.length} tool_calls, text=${textContent.slice(0, 80)}...`);
 
       if (hasToolCall) {
         conversationHistory.push({
           role: "assistant",
-          content: choice.message.content || null,
-          tool_calls: toolCalls.map(tc => ({
+          content: textContent || null,
+          tool_calls: toolCalls.map((tc: any) => ({
             id: tc.id,
             type: "function" as const,
             function: { name: tc.function.name, arguments: tc.function.arguments },
