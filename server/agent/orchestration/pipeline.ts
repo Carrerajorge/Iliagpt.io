@@ -162,7 +162,7 @@ export class AgentLoopFacade extends EventEmitter {
     this.options = {
       enableQA: options.enableQA ?? true,
       maxExecutionTimeMs: options.maxExecutionTimeMs ?? 300000,
-      defaultModel: options.defaultModel ?? "openai/gpt-oss-120b:free",
+      defaultModel: options.defaultModel ?? "google/gemma-4-31b-it",
       enableSSE: options.enableSSE ?? true,
       qaConfig: {
         minScore: options.qaConfig?.minScore ?? 0.7,

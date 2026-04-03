@@ -37,7 +37,7 @@ function getXaiClient(): OpenAI {
 }
 
 const DEFAULT_MODEL = process.env.OPENROUTER_API_KEY
-  ? "openai/gpt-oss-120b:free"
+  ? "google/gemma-4-31b-it"
   : "grok-4-1-fast-non-reasoning";
 
 export const PlanStepSchema = z.object({

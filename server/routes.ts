@@ -175,10 +175,10 @@ type PublicModelSummary = {
 
 const PUBLIC_MODEL_FALLBACKS: ReadonlyArray<PublicModelSummary> = Object.freeze([
   {
-    id: "fallback-gpt-oss-120b-free",
-    name: "GPT-OSS 120B",
+    id: "fallback-gemma-4-31b-it",
+    name: "Gemma 4 31B IT",
     provider: "openrouter",
-    modelId: "openai/gpt-oss-120b:free",
+    modelId: "google/gemma-4-31b-it",
     description: "Modelo gratuito predeterminado via OpenRouter",
     isEnabled: "true",
     enabledAt: null,

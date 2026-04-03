@@ -27,7 +27,7 @@ export function getOpenAICompatibleDefaultModel(env: NodeJS.ProcessEnv = process
   return (
     trimEnvValue(env.OPENAI_MODEL) ||
     trimEnvValue(env.CEREBRAS_MODEL) ||
-    (isCerebrasBaseUrl(getOpenAICompatibleBaseUrl(env)) ? "gpt-oss-120b" : "gpt-4o-mini")
+    (isCerebrasBaseUrl(getOpenAICompatibleBaseUrl(env)) ? "gpt-oss-120b" : "google/gemma-4-31b-it")
   );
 }
 
