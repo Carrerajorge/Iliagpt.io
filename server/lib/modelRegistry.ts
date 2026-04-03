@@ -75,7 +75,7 @@ export const DEFAULT_GEMINI_VISION_MODEL = GEMINI_MODELS_REGISTRY.FLASH_31;
 export const DEFAULT_PROVIDER = "openai" as const;
 
 /** The model ID available to all users (free tier). */
-export const FREE_MODEL_ID = "google/gemma-3-27b-it:free";
+export const FREE_MODEL_ID = "openai/gpt-oss-120b:free";
 
 /** Default model for general text completion (app-level). */
 export const DEFAULT_TEXT_MODEL = FREE_MODEL_ID;

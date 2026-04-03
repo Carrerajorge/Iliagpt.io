@@ -1,4 +1,4 @@
-export const FREE_MODEL_ID = "google/gemma-3-27b-it:free";
+export const FREE_MODEL_ID = "openai/gpt-oss-120b:free";
 
 export type UserPlan = {
   plan?: string | null;
