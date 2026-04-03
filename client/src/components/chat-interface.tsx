@@ -7299,6 +7299,7 @@ IMPORTANTE:
                         uiPhase={uiPhase}
                         aiProcessSteps={aiProcessSteps}
                       />
+                      <div className="shrink-0" style={{ height: 'calc(var(--composer-height, 120px) + 80px)' }} aria-hidden="true" />
                       <div ref={messagesEndRef} />
                     </>
                   )}
