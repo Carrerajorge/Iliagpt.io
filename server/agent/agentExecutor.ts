@@ -1064,6 +1064,21 @@ MANDATORY RULES:
     }
   });
 
+  const intentToSteps: Record<string, string[]> = {
+    web_automation: ["Analizando la solicitud", "Abriendo navegador", "Ejecutando acciones web", "Verificando resultados"],
+    code_generation: ["Analizando requerimientos", "Buscando contexto en archivos", "Generando código", "Verificando resultado"],
+    research: ["Analizando la pregunta", "Buscando información", "Sintetizando resultados"],
+    document_analysis: ["Leyendo documentos", "Extrayendo información clave", "Preparando resumen"],
+    chat: ["Procesando solicitud", "Preparando respuesta"],
+  };
+  const planSteps = intentToSteps[requestSpec?.intent || "chat"] || intentToSteps.chat;
+  sse.write("plan", {
+    runId,
+    steps: planSteps.map((label, i) => ({ id: `step_${i}`, label, status: i === 0 ? "active" : "pending" })),
+    intent: requestSpec?.intent || "chat",
+    timestamp: Date.now(),
+  });
+
   const keepaliveInterval = setInterval(() => {
     sse.write("keepalive", { runId, timestamp: Date.now() });
   }, 10000);
@@ -1073,10 +1088,20 @@ MANDATORY RULES:
   while (iteration < maxIterations) {
     iteration++;
 
+    const stepIdx = Math.min(iteration - 1, planSteps.length - 1);
+    sse.write("exec_plan_update", {
+      runId,
+      stepId: `step_${stepIdx}`,
+      status: "active",
+      previousStepId: stepIdx > 0 ? `step_${stepIdx - 1}` : undefined,
+      previousStatus: "done",
+      timestamp: Date.now(),
+    });
+
     sse.write("thinking", {
       runId,
       step: "iteration",
-      message: `Iteración ${iteration}/${maxIterations}: Analizando...`,
+      message: `Iteración ${iteration}/${maxIterations}: ${planSteps[stepIdx] || "Analizando"}...`,
       iteration,
       timestamp: Date.now(),
     });
@@ -1188,8 +1213,30 @@ MANDATORY RULES:
 
       let usedNativeTools = true;
       const hasUsedAnyTool = conversationHistory.some(m => (m as any).role === "tool");
-      const shouldForceToolUse = iteration <= 2 && !hasUsedAnyTool && dedupedTools.length > 0;
+      const isActionIntent = requestSpec?.intent !== "chat" || recentUserText.length > 30;
+      const shouldForceToolUse = iteration <= 2 && !hasUsedAnyTool && isActionIntent && dedupedTools.length > 0;
       const toolChoiceValue = shouldForceToolUse ? "required" as const : "auto" as const;
+
+      const inferenceProgressMessages = [
+        "Analizando tu solicitud...",
+        "Evaluando herramientas disponibles...",
+        "Decidiendo plan de acción...",
+        "Preparando ejecución...",
+      ];
+      let inferenceProgressIdx = 0;
+      let inferenceProgressInterval: ReturnType<typeof setInterval> | null = setInterval(() => {
+        if (inferenceProgressIdx < inferenceProgressMessages.length) {
+          sse.write("thinking", {
+            runId,
+            step: `inference_${inferenceProgressIdx}`,
+            message: inferenceProgressMessages[inferenceProgressIdx],
+            iteration,
+            timestamp: Date.now(),
+          });
+          inferenceProgressIdx++;
+        }
+      }, 2500);
+
       const response = await retryWithBackoff(async () => {
         try {
           const completionPromise = openaiClient.chat.completions.create({
@@ -1257,6 +1304,8 @@ MANDATORY RULES:
           return await Promise.race([fallbackPromise, timeoutPromise]);
         }
       }, 2, 1500);
+
+      if (inferenceProgressInterval) { clearInterval(inferenceProgressInterval); inferenceProgressInterval = null; }
 
       if (response.usage) {
         totalTokensUsed += (response.usage.total_tokens || 0);
@@ -1636,7 +1685,7 @@ MANDATORY RULES:
             continue; // retry the iteration
           }
 
-          if (iteration <= 2 && !hasUsedAnyTool && textContent.length > 20) {
+          if (iteration <= 2 && !hasUsedAnyTool && textContent.length > 20 && isActionIntent) {
             console.log(`[AgentExecutor] Agentic nudge: LLM returned text without tools on iteration ${iteration}, forcing tool use...`);
             conversationHistory.push({
               role: "assistant",
@@ -1717,6 +1766,7 @@ Please rewrite your response addressing these issues.`
       });
 
     } catch (error: any) {
+      if (inferenceProgressInterval) { clearInterval(inferenceProgressInterval); inferenceProgressInterval = null; }
       console.error(`[AgentExecutor] Error in iteration ${iteration}:`, error?.message || error);
       consecutiveLoopErrors++;
 
@@ -1795,6 +1845,16 @@ Please rewrite your response addressing these issues.`
         throw error;
       }
     }
+  }
+
+  const finalStepIdx = Math.min(iteration - 1, planSteps.length - 1);
+  for (let si = 0; si <= finalStepIdx; si++) {
+    sse.write("exec_plan_update", {
+      runId,
+      stepId: `step_${si}`,
+      status: si <= finalStepIdx ? "done" : "pending",
+      timestamp: Date.now(),
+    });
   }
 
   if (!fullResponse && iteration >= maxIterations) {

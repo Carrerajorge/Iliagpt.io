@@ -369,13 +369,7 @@ export async function createUnifiedRun(
 
   const hasAttachments = !!(request.attachments && request.attachments.length > 0);
   const hasAgenticSignal = hasNativeAgenticSignal(lastUserMessage);
-  const isAgenticMode: boolean =
-    latencyMode !== 'fast' && (
-      lastUserMessage.length >= 5 ||
-      hasAttachments ||
-      hasAgenticSignal ||
-      (requestSpec.intent !== 'chat' && requestSpec.intentConfidence > 0.3)
-    );
+  const isAgenticMode: boolean = true;
 
   let resolvedLane = resolveLatencyLane(
     latencyMode,

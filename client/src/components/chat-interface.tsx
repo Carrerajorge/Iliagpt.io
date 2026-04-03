@@ -6233,6 +6233,29 @@ IMPORTANTE:
                     return;
                   }
 
+                  if (eventType === "plan") {
+                    setAiStateForStream("agent_working");
+                    if (Array.isArray(data?.steps)) {
+                      setAiProcessStepsForStream(data.steps.map((s: any) => ({
+                        id: s.id,
+                        message: s.label,
+                        status: s.status || "pending",
+                      })));
+                    }
+                    return;
+                  }
+
+                  if (eventType === "exec_plan_update") {
+                    setAiProcessStepsForStream((prev: any[]) =>
+                      prev.map((s: any) => {
+                        if (s.id === data?.stepId) return { ...s, status: data.status };
+                        if (s.id === data?.previousStepId && data?.previousStatus) return { ...s, status: data.previousStatus };
+                        return s;
+                      })
+                    );
+                    return;
+                  }
+
                   if (eventType === "tool_start" && data?.toolName === "browse_and_act") {
                     setAiStateForStream("agent_working");
                     setIsBrowserOpen(true);
@@ -6320,17 +6343,29 @@ IMPORTANTE:
                   }
 
                   if (eventType === "thinking") {
+                    setAiStateForStream("agent_working");
                     if (data?.step && data?.message) {
-                      setAiProcessStepsForStream((prev: any[]) => {
-                        const exists = prev.find((s: any) => s.id === data.step);
-                        if (exists) return prev;
-                        return [...prev, {
-                          id: data.step,
-                          step: data.step,
-                          title: data.message,
-                          status: "pending",
-                        }];
-                      });
+                      const isInferenceStep = String(data.step).startsWith("inference_");
+                      if (isInferenceStep) {
+                        setAiProcessStepsForStream((prev: any[]) => {
+                          const filtered = prev.filter((s: any) => !s.id?.startsWith("inference_"));
+                          return [...filtered, {
+                            id: data.step,
+                            message: data.message,
+                            status: "active",
+                          }];
+                        });
+                      } else {
+                        setAiProcessStepsForStream((prev: any[]) => {
+                          const exists = prev.find((s: any) => s.id === data.step);
+                          if (exists) return prev.map((s: any) => s.id === data.step ? { ...s, message: data.message, status: "active" } : s);
+                          return [...prev, {
+                            id: data.step,
+                            message: data.message,
+                            status: "active",
+                          }];
+                        });
+                      }
                     }
                     return;
                   }
