@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Plus,
   Upload,
@@ -24,6 +24,7 @@ import {
   Sparkles,
   Presentation,
   Clock,
+  Link2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -291,6 +292,27 @@ export function Composer({
     setRecentTemplates(newRecent);
     localStorage.setItem("recentQuickTemplates", JSON.stringify(newRecent));
   }, [setInput, textareaRef, recentTemplates]);
+
+  const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
+
+  const detectedUrls = useMemo(() => {
+    if (!input) return [];
+    const matches = input.match(URL_REGEX);
+    return matches || [];
+  }, [input]);
+
+  const highlightedHtml = useMemo(() => {
+    if (!input || detectedUrls.length === 0) return null;
+    const escaped = input
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    const highlighted = escaped.replace(
+      /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi,
+      (match) => `<span style="color:#3b82f6;text-decoration:underline">${match}</span>`
+    );
+    return highlighted + "\n";
+  }, [input, detectedUrls]);
 
   const { connectedSources, getSourceActive, setSourceActive } = useConnectedSources();
   const { addToHistory, navigateUp, navigateDown, resetNavigation } = useCommandHistory();
@@ -1112,6 +1134,13 @@ export function Composer({
 
 
         <div className="flex flex-col relative">
+          {highlightedHtml && (
+            <div
+              aria-hidden="true"
+              className="absolute inset-0 pointer-events-none min-h-[22px] max-h-[180px] w-full whitespace-pre-wrap break-words text-[15px] leading-[1.4] px-3 py-1 text-transparent overflow-hidden"
+              dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+            />
+          )}
           <Textarea
               ref={textareaRef}
               value={input}
@@ -1136,9 +1165,23 @@ export function Composer({
               placeholder={placeholder}
               aria-label="Message input"
               aria-describedby="composer-hint"
-              className="min-h-[22px] max-h-[180px] w-full resize-none border-0 bg-transparent p-0 shadow-none outline-none focus-visible:!outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 text-[15px] text-zinc-800 dark:text-zinc-100 placeholder:text-zinc-400/70 dark:placeholder:text-zinc-500/60 leading-[1.4] overflow-y-auto scrollbar-none px-3 py-1"
+              className={cn(
+                "min-h-[22px] max-h-[180px] w-full resize-none border-0 bg-transparent p-0 shadow-none outline-none focus-visible:!outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 text-[15px] leading-[1.4] overflow-y-auto scrollbar-none px-3 py-1 relative z-[1]",
+                highlightedHtml
+                  ? "text-transparent caret-zinc-800 dark:caret-zinc-100"
+                  : "text-zinc-800 dark:text-zinc-100",
+                "placeholder:text-zinc-400/70 dark:placeholder:text-zinc-500/60"
+              )}
               rows={1}
             />
+          {detectedUrls.length > 0 && (
+            <div className="flex items-center gap-1 px-3 py-0.5" data-testid="link-detected-indicator">
+              <Link2 className="w-3 h-3 text-blue-500" />
+              <span className="text-[11px] text-blue-500 font-medium">
+                {detectedUrls.length === 1 ? "Link detectado" : `${detectedUrls.length} links detectados`}
+              </span>
+            </div>
+          )}
 
           <div className={cn("flex items-center justify-between mt-0.5 pt-0.5 border-t-[0.5px]", SILVER_BORDER_DIVIDER)}>
             <div className="flex items-center gap-1.5">

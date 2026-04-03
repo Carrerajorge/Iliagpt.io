@@ -6895,7 +6895,7 @@ IMPORTANTE:
         <WelcomeExplosion onComplete={completeWelcome} />
       )}
 
-      <div className="flex h-full flex-col bg-transparent relative">
+      <div className="flex h-full flex-col bg-transparent relative overflow-hidden">
         {/* Header */}
         <ChatHeader
           chatId={chatId || null}
