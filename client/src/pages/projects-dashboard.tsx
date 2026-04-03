@@ -3,7 +3,6 @@ import { useChats } from "@/hooks/use-chats";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { IliaGPTLogo } from "@/components/iliagpt-logo";
 import {
   Plus,
   ArrowRight,
@@ -15,7 +14,6 @@ import {
   MessageSquare,
   Clock,
   ChevronRight,
-  SquarePen,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -67,33 +65,6 @@ export default function ProjectsDashboard() {
 
   return (
     <div className="min-h-screen bg-[#f5f5f0] dark:bg-[#0a0a0f]">
-      <header className="sticky top-0 z-50 bg-white/90 dark:bg-[#111115]/90 backdrop-blur-lg border-b border-slate-200/60 dark:border-slate-800/60">
-        <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <IliaGPTLogo size={28} />
-            <span className="text-sm font-bold text-foreground">iliagpt</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 gap-2 text-xs"
-              onClick={handleStartNewChat}
-              data-testid="button-new-chat-dashboard"
-            >
-              <SquarePen className="h-3.5 w-3.5" />
-              Nuevo chat
-            </Button>
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800 text-xs text-slate-600 dark:text-slate-300">
-              <div className="w-5 h-5 rounded-full bg-gradient-to-br from-violet-500 to-blue-500 flex items-center justify-center text-white text-[10px] font-bold">
-                {userName[0].toUpperCase()}
-              </div>
-              {userName}
-            </div>
-          </div>
-        </div>
-      </header>
-
       <main className="max-w-5xl mx-auto px-6">
         <div className="pt-16 pb-8 text-center">
           <h1 className="text-3xl md:text-4xl font-bold text-slate-900 dark:text-white mb-2" data-testid="text-welcome">
