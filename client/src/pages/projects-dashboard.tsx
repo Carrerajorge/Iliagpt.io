@@ -68,14 +68,14 @@ export default function ProjectsDashboard() {
     <div className="min-h-screen bg-[#f5f5f0] dark:bg-[#0a0a0f]">
       <div className="max-w-5xl mx-auto px-6 pt-4">
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
-          className="h-8 gap-2 text-xs text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+          className="h-9 gap-2 text-sm font-medium border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
           onClick={() => setLocation("/chat/new")}
           data-testid="button-back-to-chat"
         >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Volver al chat
+          <ArrowLeft className="h-4 w-4" />
+          Atrás
         </Button>
       </div>
       <main className="max-w-5xl mx-auto px-6">
