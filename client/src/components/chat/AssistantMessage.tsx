@@ -183,7 +183,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         !imageData;
 
     return (
-        <div className="flex flex-col gap-1.5 w-full min-w-0">
+        <div className="flex flex-col gap-0.5 w-full min-w-0">
             {/* Uncertainty Badge */}
             {message.confidence && message.confidence !== 'high' && (
                 <div className="flex justify-start mb-1">
@@ -536,7 +536,7 @@ export const AssistantMessage = memo(function AssistantMessage({
             )}
             {message.content && !message.isThinking && (
                 <>
-                    <div className="inline-flex items-center gap-1 mt-0.5">
+                    <div className="inline-flex items-center gap-0.5 mt-0">
                         {message.timestamp && (
                             <span className="text-[10px] text-muted-foreground/60">
                                 {formatMessageTime(message.timestamp, platformSettings.timezone_default)}
