@@ -6,7 +6,7 @@
 import { Request, Response, NextFunction } from 'express';
 
 // Canonical domain - must match Google Cloud Console OAuth configuration
-const CANONICAL_DOMAIN = process.env.CANONICAL_DOMAIN || 'iliagpt.com';
+const CANONICAL_DOMAIN = process.env.CANONICAL_DOMAIN || 'iliagpt.io';
 
 // Domains to redirect to canonical (e.g., www.iliagpt.com -> iliagpt.com)
 const REDIRECT_DOMAINS = [

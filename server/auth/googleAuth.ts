@@ -11,7 +11,7 @@ const router = Router();
 
 // CANONICAL URL for OAuth redirects (avoid www/non-www mismatch)
 // This MUST match exactly what's registered in Google Cloud Console
-const CANONICAL_DOMAIN = process.env.CANONICAL_DOMAIN || "iliagpt.com";
+const CANONICAL_DOMAIN = process.env.CANONICAL_DOMAIN || "iliagpt.io";
 
 // Helper to get canonical redirect URI (production uses HTTPS + canonical domain)
 const getCanonicalRedirectUri = (req: Request, path: string): string => {
