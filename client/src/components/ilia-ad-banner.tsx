@@ -76,7 +76,7 @@ export const IliaAdBanner = memo(function IliaAdBanner({
   return (
     <div
       className={cn(
-        "mt-2.5 rounded-xl border border-border/30 bg-muted/20 p-2.5 max-w-lg transition-all hover:bg-muted/35 group/ad",
+        "mt-8 rounded-xl border border-border/30 bg-muted/20 p-2.5 max-w-lg transition-all hover:bg-muted/35 group/ad",
         className
       )}
       data-testid={`ad-banner-${messageId}`}

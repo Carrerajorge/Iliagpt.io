@@ -58,6 +58,7 @@ export interface AssistantMessageProps {
     message: Message;
     msgIndex: number;
     totalMessages: number;
+    assistantMsgNumber: number;
     variant: "compact" | "default";
     copiedMessageId: string | null;
     messageFeedback: Record<string, "up" | "down" | null>;
@@ -92,6 +93,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     message,
     msgIndex,
     totalMessages,
+    assistantMsgNumber,
     variant,
     copiedMessageId,
     messageFeedback,
@@ -577,7 +579,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                             onViewSources={() => setSourcesPanelOpen(true)}
                         />
                     </div>
-                    {aiState === "idle" && msgIndex === totalMessages - 1 && (
+                    {assistantMsgNumber > 0 && assistantMsgNumber % 3 === 0 && (
                         <IliaAdBanner
                             query={message.content.slice(0, 300)}
                             messageId={message.id}
@@ -603,6 +605,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         prevProps.message.webSources === nextProps.message.webSources &&
         prevProps.msgIndex === nextProps.msgIndex &&
         prevProps.totalMessages === nextProps.totalMessages &&
+        prevProps.assistantMsgNumber === nextProps.assistantMsgNumber &&
         prevProps.variant === nextProps.variant &&
         prevProps.copiedMessageId === nextProps.copiedMessageId &&
         prevProps.messageFeedback[prevProps.message.id] === nextProps.messageFeedback[nextProps.message.id] &&

@@ -12,6 +12,7 @@ export interface MessageItemProps {
     message: Message;
     msgIndex: number;
     totalMessages: number;
+    assistantMsgNumber: number;
     variant: "compact" | "default";
     editingMessageId: string | null;
     editContent: string;
@@ -54,6 +55,7 @@ export const MessageItem = memo(function MessageItem({
     message,
     msgIndex,
     totalMessages,
+    assistantMsgNumber,
     variant,
     editingMessageId,
     editContent,
@@ -142,6 +144,7 @@ export const MessageItem = memo(function MessageItem({
                         message={message}
                         msgIndex={msgIndex}
                         totalMessages={totalMessages}
+                        assistantMsgNumber={assistantMsgNumber}
                         variant={variant}
                         copiedMessageId={copiedMessageId}
                         messageFeedback={messageFeedback}
@@ -188,6 +191,7 @@ export const MessageItem = memo(function MessageItem({
         prevProps.message.documentAnalysis === nextProps.message.documentAnalysis &&
         prevProps.msgIndex === nextProps.msgIndex &&
         prevProps.totalMessages === nextProps.totalMessages &&
+        prevProps.assistantMsgNumber === nextProps.assistantMsgNumber &&
         prevProps.variant === nextProps.variant &&
         prevProps.editingMessageId === nextProps.editingMessageId &&
         prevProps.editContent === nextProps.editContent &&

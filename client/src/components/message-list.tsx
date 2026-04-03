@@ -96,7 +96,7 @@ import { detectClientIntent } from "@/lib/clientIntentDetector";
 import { useSettingsContext } from "@/contexts/SettingsContext";
 import { RetrievalVis } from "@/components/retrieval-vis";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
-import { IliaAdBanner } from "@/components/ilia-ad-banner";
+
 import { formatZonedTime, normalizeTimeZone } from "@/lib/platformDateTime";
 
 const formatMessageTime = (timestamp: Date | undefined, timeZone: string): string => {
@@ -2177,12 +2177,7 @@ const AssistantMessage = memo(function AssistantMessage({
         </div>
       )}
 
-      {message.content && !message.isThinking && aiState === "idle" && (
-        <IliaAdBanner
-          query={message.content.slice(0, 200)}
-          messageId={message.id}
-        />
-      )}
+      
 
       {message.webSources && message.webSources.length > 0 && (
         <SourcesPanel

@@ -184,6 +184,18 @@ export function ChatMessageList({
         return messages;
     }, [messages, streamingContent, variant, effectiveStreamingId]);
 
+    const assistantIndexMap = useMemo(() => {
+        const map = new Map<number, number>();
+        let count = 0;
+        mergedMessages.forEach((msg, i) => {
+            if (msg.role === "assistant") {
+                count++;
+                map.set(i, count);
+            }
+        });
+        return map;
+    }, [mergedMessages]);
+
     const isLastMessageAssistant = mergedMessages.length > 0 && mergedMessages[mergedMessages.length - 1].role === "assistant";
     const isIdleLike = aiState === "idle" || aiState === "done";
     const showSuggestedReplies = variant === "default" && isIdleLike && isLastMessageAssistant && lastAssistantMessage && !streamingContent;
@@ -281,6 +293,7 @@ export function ChatMessageList({
                     message={msg}
                     msgIndex={index}
                     totalMessages={mergedMessages.length}
+                    assistantMsgNumber={assistantIndexMap.get(index) ?? 0}
                     variant={variant}
                     onUserRetrySend={onUserRetrySend}
                     editingMessageId={editingMessageId}
@@ -321,7 +334,7 @@ export function ChatMessageList({
             </div>
         );
     }, [
-        mergedMessages.length, variant, editingMessageId, editContent,
+        mergedMessages.length, variant, assistantIndexMap, editingMessageId, editContent,
         copiedMessageId, messageFeedback, speakingMessageId, isGeneratingImage,
         pendingGeneratedImage, latestGeneratedImageRef, aiState, regeneratingMsgIndex,
         handleCopyMessage, handleStartEdit, handleCancelEdit, handleSendEdit,
