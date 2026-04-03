@@ -204,9 +204,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryKey: ["/api/auth/user"],
     queryFn: fetchUser,
     retry: false,
-    staleTime: 1000 * 30, // 30 seconds (reduced from 5 minutes for faster OAuth updates)
-    initialData: getStoredUser, // Hydrate from local storage initially
-    refetchOnMount: "always",
+    staleTime: 1000 * 60,
+    initialData: getStoredUser,
+    refetchOnMount: false,
     refetchOnWindowFocus: true,
   });
 

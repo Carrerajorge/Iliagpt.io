@@ -52,11 +52,11 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
       if (!res.ok) throw new Error("Failed to fetch models");
       return res.json();
     },
-    refetchInterval: 120_000,
-    staleTime: 60_000,
-    gcTime: 300_000,
-    refetchOnMount: true,
-    refetchOnWindowFocus: true,
+    refetchInterval: 300_000,
+    staleTime: 180_000,
+    gcTime: 600_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 
   const localMockModels: AvailableModel[] = [

@@ -131,9 +131,9 @@ export function PlatformSettingsProvider({ children }: { children: ReactNode }) 
       if (!res.ok) throw new Error(`Failed to load public settings: ${res.status}`);
       return (await res.json()) as PublicSettingsResponse;
     },
-    staleTime: 60_000,
-    refetchInterval: 120_000,
-    refetchOnWindowFocus: true,
+    staleTime: 300_000,
+    refetchInterval: 600_000,
+    refetchOnWindowFocus: false,
     retry: 1,
   });
 
