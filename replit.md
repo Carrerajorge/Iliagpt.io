@@ -112,10 +112,13 @@ PostgreSQL with Drizzle ORM is used for persistent data storage. Client-side per
 
 **Frontend Performance Optimization** (`vite.config.ts`, contexts): Vite build splits the monolithic vendor chunk (~6.7MB) into granular chunks: `react-core`, `react-dom`, `ui-radix`, `ui-icons`, `ui-motion`, `charts`, `editor`, `query` (@tanstack/react-query), `router` (wouter), `rendering` (marked/highlight.js/katex), `schema` (zod/drizzle), `utils` (date-fns/lodash/clsx/cva/tailwind-merge), `forms` (react-hook-form), `network` (axios/ky/socket.io), `i18n`, `security` (dompurify), plus a remaining `vendor` catch-all. React Query contexts use extended staleTime/refetchInterval to reduce API call waterfall on load: auth (60s stale, focus refetch), models (180s stale, 5min interval), platform settings (5min stale, 10min interval). Terser minification with `pure_funcs` for console removal.
 
+**Workspace Agent System** (`server/routes/workspaceAgentRouter.ts`, `client/src/pages/project-workspace.tsx`): Agentic coding engine for the Codex VC workspace. Backend provides SSE-streaming endpoint (`POST /api/workspace-agent/chat`) that connects to `executeAgentLoop` with full tool access (bash, file_read/write/edit, web_search, browse_and_act, run_code, OpenClaw toolkit). Thread management: `GET /api/workspace-agent/threads`, `GET /api/workspace-agent/threads/:id`, `DELETE /api/workspace-agent/threads/:id`. Security: per-user thread ownership via session/header auth, bounded threads (50/user) and messages (200/thread), `trusted` access level (not `owner`), client disconnect cancellation. Frontend: full workspace UI with SSE parser handling events (chunk, thinking, brief, tool_call, error, clarification, thread_info), message bubbles with expandable tool call traces (input/output), thinking indicator, abort/stop generation, thread list with delete, responsive amber-themed chat input. System prompt instructs the agent to build immediately upon user description.
+
 ## Navigation Flow
 - **`/`** → `ProjectsDashboard` — Replit-style homepage with greeting, project input, quick-start options, recent projects grid (Spanish UI)
 - **`/chat/new`** → `Home` (new chat mode) — Opens chat interface in new conversation mode
 - **`/chat/:id`** → `Home` (existing chat) — Opens chat interface with a specific conversation loaded
+- **`/project/:type`** → `ProjectWorkspace` — Codex VC workspace with agentic coding engine, chat + preview panels
 - **Sidebar logo click** → navigates to `/` (dashboard)
 - **"Nuevo chat" button** (sidebar & dashboard) → navigates to `/chat/new`
 - **Ctrl/Cmd+N** → navigates to `/chat/new`

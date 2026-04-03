@@ -2283,6 +2283,7 @@ export async function registerRoutes(
     { path: "/api/ragflow", mod: "./routes/ragflowRouter" },
     { path: "/api/programming-agent", mod: "./routes/superProgrammingAgentRouter", exportName: "createSuperProgrammingAgentRouter", isFactory: true },
     { path: "/api/workflow-traces", mod: "./routes/workflowTraceRoutes", exportName: "createWorkflowTraceRouter", isFactory: true },
+    { path: "/api/workspace-agent", mod: "./routes/workspaceAgentRouter", exportName: "createWorkspaceAgentRouter", isFactory: true },
   ];
   const lazyResults = await Promise.allSettled(
     lazyRoutes.map(async ({ path: routePath, mod, exportName, isFactory }) => {
