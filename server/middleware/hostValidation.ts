@@ -65,6 +65,15 @@ function buildAllowedHosts(): Set<string> {
     }
   }
 
+  // Auto-include Replit deployment domains
+  const replitDomains = process.env.REPLIT_DOMAINS;
+  if (replitDomains) {
+    for (const d of replitDomains.split(",")) {
+      const trimmed = d.trim().toLowerCase();
+      if (trimmed) hosts.add(trimmed);
+    }
+  }
+
   return hosts;
 }
 
