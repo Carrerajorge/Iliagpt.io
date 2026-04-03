@@ -23,7 +23,6 @@ import {
   ArrowUp,
   Sparkles,
   Square,
-  PanelLeft,
   CircleDot,
   Loader2,
   CheckCircle2,
@@ -459,9 +458,6 @@ export default function ProjectWorkspace() {
       <div className="w-[420px] shrink-0 flex flex-col border-r border-white/10 bg-[#12121e]">
         <div className="h-10 flex items-center justify-between px-3 border-b border-white/10 shrink-0">
           <div className="flex items-center gap-2">
-            <button className="p-0.5 rounded hover:bg-white/10 text-white/50" data-testid="button-toggle-sidebar">
-              <PanelLeft className="h-3.5 w-3.5" />
-            </button>
             <button onClick={() => setLocation("/")} className="p-0.5 rounded hover:bg-white/10 text-white/50" data-testid="button-back-workspace">
               <ArrowLeft className="h-3.5 w-3.5" />
             </button>
