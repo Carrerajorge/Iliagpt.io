@@ -346,11 +346,12 @@ export function Sidebar({
     <div
       key={chat.id}
       className={cn(
-        "group relative flex w-full items-center px-1.5 py-1 rounded-md cursor-pointer hover:bg-accent/40 transition-colors",
+        "group relative flex w-full items-center px-1.5 py-1 rounded-md cursor-pointer hover:bg-accent/40 active:bg-accent active:scale-[0.98] transition-all duration-75 select-none",
         activeChatId === chat.id && "bg-accent text-accent-foreground",
         chat.archived && "opacity-60",
         indented && "ml-0"
       )}
+      style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
       onClick={() => !editingChatId && onSelectChat(chat.id)}
       data-testid={`chat-item-${chat.id}`}
     >
@@ -579,30 +580,30 @@ export function Sidebar({
         <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/50">Herramientas</span>
       </div>
       <div className="flex flex-col gap-0.5 px-2 pb-2">
-        <button onClick={onOpenLibrary} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 transition-colors text-sm text-foreground/80 hover:text-foreground" data-testid="button-library">
-          <Library className="h-4 w-4 text-violet-500 shrink-0" />
-          <span>Biblioteca</span>
+        <button onClick={onOpenLibrary} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-library">
+          <Library className="h-4 w-4 text-violet-500 shrink-0 pointer-events-none" />
+          <span className="pointer-events-none">Biblioteca</span>
         </button>
-        <button onClick={onOpenGpts} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 transition-colors text-sm text-foreground/80 hover:text-foreground" data-testid="button-gpts">
-          <Bot className="h-4 w-4 text-amber-500 shrink-0" />
-          <span>GPTs</span>
+        <button onClick={onOpenGpts} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-gpts">
+          <Bot className="h-4 w-4 text-amber-500 shrink-0 pointer-events-none" />
+          <span className="pointer-events-none">GPTs</span>
         </button>
-        <button onClick={onOpenSkills} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 transition-colors text-sm text-foreground/80 hover:text-foreground" data-testid="button-skills">
-          <Zap className="h-4 w-4 text-blue-500 shrink-0" />
-          <span>Skills</span>
+        <button onClick={onOpenSkills} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-skills">
+          <Zap className="h-4 w-4 text-blue-500 shrink-0 pointer-events-none" />
+          <span className="pointer-events-none">Skills</span>
         </button>
-        <button onClick={onOpenApps} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 transition-colors text-sm text-foreground/80 hover:text-foreground" data-testid="button-apps">
-          <LayoutGrid className="h-4 w-4 text-emerald-500 shrink-0" />
-          <span>Aplicaciones</span>
+        <button onClick={onOpenApps} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-apps">
+          <LayoutGrid className="h-4 w-4 text-emerald-500 shrink-0 pointer-events-none" />
+          <span className="pointer-events-none">Aplicaciones</span>
         </button>
-        <button onClick={onOpenWhatsAppConnect} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 transition-colors text-sm text-foreground/80 hover:text-foreground relative" data-testid="button-whatsapp-connect">
-          <MessageSquare className="h-4 w-4 text-green-500 shrink-0" />
-          <span>AppsWebChat (QR)</span>
-          <span className={cn("ml-auto h-2 w-2 rounded-full shrink-0", waStatus.state === 'connected' ? 'bg-green-500' : waStatus.state === 'disconnected' ? 'bg-red-500' : 'bg-amber-500')} />
+        <button onClick={onOpenWhatsAppConnect} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none relative" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-whatsapp-connect">
+          <MessageSquare className="h-4 w-4 text-green-500 shrink-0 pointer-events-none" />
+          <span className="pointer-events-none">AppsWebChat (QR)</span>
+          <span className={cn("ml-auto h-2 w-2 rounded-full shrink-0 pointer-events-none", waStatus.state === 'connected' ? 'bg-green-500' : waStatus.state === 'disconnected' ? 'bg-red-500' : 'bg-amber-500')} />
         </button>
-        <button className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 transition-colors text-sm text-foreground/80 hover:text-foreground" data-testid="button-codex-vc">
-          <Code className="h-4 w-4 text-cyan-500 shrink-0" />
-          <span>Codex VC</span>
+        <button onClick={onOpenCodex} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-codex-vc">
+          <Code className="h-4 w-4 text-cyan-500 shrink-0 pointer-events-none" />
+          <span className="pointer-events-none">Codex VC</span>
         </button>
       </div>
 
