@@ -459,7 +459,8 @@ export function ChatInterface({
   const { toast } = useToast();
 
   // First visit explosion
-  const { showExplosion, completeWelcome } = useFirstVisit();
+  const { completeWelcome } = useFirstVisit();
+  const showExplosion = false;
 
   const userPlanInfo = useMemo(() => {
     if (!user) return null;
