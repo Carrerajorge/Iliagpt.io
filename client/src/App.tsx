@@ -47,6 +47,7 @@ const lazyWithRetry = <T extends React.ComponentType<any>>(
 
 const Home = lazyWithRetry(() => import("@/pages/home"));
 const ProjectsDashboard = lazyWithRetry(() => import("@/pages/projects-dashboard"));
+const ProjectWorkspace = lazyWithRetry(() => import("@/pages/project-workspace"));
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { PlatformSettingsProvider, usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { isAdminUser } from "@/lib/admin";
@@ -309,6 +310,7 @@ function Router() {
         <main id="main-content" className="flex-1 outline-none" tabIndex={-1}>
           <Switch>
             <Route path={HOME_ROUTE_REGEX} component={RootRoute} />
+            <Route path="/project/:type" component={ProjectWorkspace} />
             <Route path="/welcome" component={LandingPage} />
             <Route path="/login" component={LoginPage} />
             <Route path="/login/approve" component={LoginApprovePage} />

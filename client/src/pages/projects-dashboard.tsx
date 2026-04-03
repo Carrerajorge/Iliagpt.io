@@ -66,6 +66,10 @@ export default function ProjectsDashboard() {
     setLocation("/chat/new");
   };
 
+  const handleStartProject = (label: string) => {
+    setLocation(`/project/${encodeURIComponent(label.toLowerCase())}`);
+  };
+
   const handleSelectChat = (chatId: string) => {
     setLocation(`/chat/${chatId}`);
   };
@@ -116,12 +120,12 @@ export default function ProjectsDashboard() {
               placeholder="Describe tu idea, el Agente la hará realidad..."
               value={newProjectDesc}
               onChange={(e) => setNewProjectDesc(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleStartNewChat()}
+              onKeyDown={(e) => e.key === "Enter" && handleStartProject("website")}
               className="h-12 text-sm border-0 shadow-none focus-visible:ring-0 bg-transparent"
               data-testid="input-new-project"
             />
             <Button
-              onClick={handleStartNewChat}
+              onClick={() => handleStartProject("website")}
               size="sm"
               className="mr-2 h-8 px-4 bg-gradient-to-r from-violet-500 to-blue-500 hover:from-violet-600 hover:to-blue-600 text-white text-xs font-medium rounded-lg shrink-0"
               data-testid="button-create-project"
@@ -152,7 +156,7 @@ export default function ProjectsDashboard() {
               return (
                 <button
                   key={option.label}
-                  onClick={handleStartNewChat}
+                  onClick={() => handleStartProject(option.label)}
                   className={`flex flex-col items-center justify-center gap-2 min-w-[100px] py-4 rounded-xl border ${option.bg} transition-all hover:shadow-md hover:scale-[1.02] active:scale-[0.97] active:shadow-sm select-none shrink-0`}
                   style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
                   data-testid={`quick-start-${option.label.toLowerCase()}`}
