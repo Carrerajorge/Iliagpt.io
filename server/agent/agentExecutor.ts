@@ -759,7 +759,7 @@ export async function executeAgentLoop(
   let totalTokensUsed = 0;
   let consecutiveLoopErrors = 0;
 
-  const defaultModel = process.env.AGENT_MODEL || "google/gemma-4-31b-it";
+  const defaultModel = process.env.AGENT_MODEL || "google/gemini-2.5-flash";
   const budgetMgr = new BudgetManager(runId, defaultModel, { maxIterations: maxIterations });
 
   const recentUserText = collectRecentUserText(messages) || requestSpec.rawMessage || "";
@@ -812,45 +812,37 @@ export async function executeAgentLoop(
     });
 
     if (requestBrief.blocker?.is_blocked) {
-      const question =
-        normalizeSpaces(requestBrief.blocker.question || "") ||
-        "Necesito una aclaración para ejecutar la solicitud con seguridad.";
-      fullResponse = question;
+      const blockerReason = String(requestBrief.blocker.question || "").toLowerCase();
+      const blockerSeverity = String((requestBrief.blocker as any).severity || "").toLowerCase();
+      const isCriticalBySeverity = ["high", "critical"].includes(blockerSeverity);
+      const isCriticalByKeyword = /destruc|eliminar|delete|peligro|irreversible|drop\s+table|rm\s+-rf|format|wipe|purge|credential|password|secret|sudo|admin|root|payment|transfer|money|dinero|pago/.test(blockerReason);
+      const isCriticalBlocker = isCriticalBySeverity || isCriticalByKeyword;
+      
+      if (isCriticalBlocker) {
+        const question =
+          normalizeSpaces(requestBrief.blocker.question || "") ||
+          "Necesito una aclaración para ejecutar la solicitud con seguridad.";
+        fullResponse = question;
 
-      sse.write("clarification", {
-        runId,
-        question,
-        blocker: "intent_requirements",
-      });
-
-      const chunks = question.match(/.{1,100}/g) || [question];
-      for (let i = 0; i < chunks.length; i++) {
-        sse.write("chunk", {
-          content: chunks[i],
-          sequence: i + 1,
+        sse.write("clarification", {
           runId,
+          question,
+          blocker: "intent_requirements",
         });
-        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        const chunks = question.match(/.{1,100}/g) || [question];
+        for (let i = 0; i < chunks.length; i++) {
+          sse.write("chunk", {
+            content: chunks[i],
+            sequence: i + 1,
+            runId,
+          });
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+
+        return fullResponse;
       }
-
-      await emitTraceEvent(runId, "progress_update", {
-        progress: {
-          current: 0,
-          total: maxIterations,
-          message: "Waiting for required clarification before tool execution",
-        },
-      });
-      await emitTraceEvent(runId, "agent_completed", {
-        agent: {
-          name: requestSpec.primaryAgent,
-          role: "primary",
-          status: "completed",
-        },
-        iterations: 0,
-        artifactsGenerated: 0,
-      });
-
-      return fullResponse;
+      console.log(`[AgentExecutor] Non-critical blocker bypassed: ${blockerReason.slice(0, 100)}`);
     }
 
     conversationHistory.unshift({
@@ -1195,6 +1187,9 @@ MANDATORY RULES:
       }
 
       let usedNativeTools = true;
+      const hasUsedAnyTool = conversationHistory.some(m => (m as any).role === "tool");
+      const shouldForceToolUse = iteration <= 2 && !hasUsedAnyTool && dedupedTools.length > 0;
+      const toolChoiceValue = shouldForceToolUse ? "required" as const : "auto" as const;
       const response = await retryWithBackoff(async () => {
         try {
           const completionPromise = openaiClient.chat.completions.create({
@@ -1203,7 +1198,7 @@ MANDATORY RULES:
             temperature: 0.7,
             max_tokens: 4096,
             tools: dedupedTools.length > 0 ? dedupedTools : undefined,
-            tool_choice: dedupedTools.length > 0 ? "auto" : undefined,
+            tool_choice: dedupedTools.length > 0 ? toolChoiceValue : undefined,
           });
 
           const timeoutPromise = new Promise<never>((_, reject) =>
@@ -1641,12 +1636,22 @@ MANDATORY RULES:
             continue; // retry the iteration
           }
 
-          // A1: Agent Verifier - Quality Gate
+          if (iteration <= 2 && !hasUsedAnyTool && textContent.length > 20) {
+            console.log(`[AgentExecutor] Agentic nudge: LLM returned text without tools on iteration ${iteration}, forcing tool use...`);
+            conversationHistory.push({
+              role: "assistant",
+              content: textContent,
+            });
+            conversationHistory.push({
+              role: "user",
+              content: `SYSTEM: You responded with text only. As an autonomous agent, you MUST use your tools to gather real information before answering. Call web_search, bash, read_file, or another appropriate tool NOW to verify and enrich your response. Do NOT just talk — ACT first, then summarize findings.`,
+            });
+            textContent = "";
+            fullResponse = "";
+            continue;
+          }
+
           try {
-            // Dynamic import to avoid circular dependencies if any, though explicit import is better. 
-            // Since I can't add top-level imports easily with replace_file_content if I don't target the top, I'll use dynamic import or just hope for the best? 
-            // Actually, I should use multi_replace to add the import.
-            // But wait, I can use dynamic import here to be safe and localized.
             const { validateResponse } = await import("../services/responseValidator");
             const validation = validateResponse(textContent);
 

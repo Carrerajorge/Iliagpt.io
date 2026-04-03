@@ -119,11 +119,11 @@ function getFallbackChain(): string[] {
     return envChain.split(',').map(m => m.trim()).filter(Boolean);
   }
   return [
-    'google/gemma-4-31b-it',
-    'minimax/minimax-m2.5',
+    'google/gemini-2.5-flash',
     'openai/gpt-4o-mini',
     'deepseek/deepseek-chat',
-    'google/gemini-2.5-flash',
+    'google/gemma-4-31b-it',
+    'minimax/minimax-m2.5',
     'openai/gpt-4o',
   ];
 }
@@ -210,11 +210,11 @@ export class ModelRouter {
       }
     }
 
-    const defaultModel = 'google/gemma-4-31b-it';
+    const defaultModel = 'google/gemini-2.5-flash';
     return {
       modelId: defaultModel,
       reason: 'last_resort',
-      estimatedCostPer1kTokens: 0,
+      estimatedCostPer1kTokens: 0.000375,
     };
   }
 

@@ -4788,22 +4788,29 @@ export function ChatInterface({
                   if (data.toolName === "browse_and_act") {
                     setAiStateForChat("agent_working", effectiveChatIdForStream);
                   }
-                  const agenticTools = ["bash", "web_fetch", "web_search", "read_file", "write_file", "edit_file", "list_files", "rag_index_document", "openclaw_rag_search", "fetch_url", "analyze_data", "generate_chart"];
-                  if (agenticTools.includes(data.toolName)) {
-                    setAiStateForChat("agent_working", effectiveChatIdForStream);
+                  setAiStateForChat("agent_working", effectiveChatIdForStream);
+                  {
                     const toolLabels: Record<string, string> = {
-                      bash: "Running command...",
-                      web_fetch: "Fetching web page...",
-                      web_search: "Searching the web...",
-                      read_file: "Reading file...",
-                      write_file: "Writing file...",
-                      edit_file: "Editing file...",
-                      list_files: "Listing files...",
-                      rag_index_document: "Indexing document...",
-                      openclaw_rag_search: "Searching knowledge base...",
-                      fetch_url: "Fetching URL...",
-                      analyze_data: "Analyzing data...",
-                      generate_chart: "Generating chart...",
+                      bash: "Ejecutando comando...",
+                      web_fetch: "Obteniendo página web...",
+                      web_search: "Buscando en internet...",
+                      read_file: "Leyendo archivo...",
+                      write_file: "Escribiendo archivo...",
+                      edit_file: "Editando archivo...",
+                      list_files: "Listando archivos...",
+                      grep_search: "Buscando en archivos...",
+                      run_code: "Ejecutando código...",
+                      browse_and_act: "Navegando en la web...",
+                      process_list: "Listando procesos...",
+                      port_check: "Verificando puertos...",
+                      rag_index_document: "Indexando documento...",
+                      openclaw_rag_search: "Buscando en base de conocimiento...",
+                      fetch_url: "Obteniendo URL...",
+                      analyze_data: "Analizando datos...",
+                      generate_chart: "Generando gráfico...",
+                      create_presentation: "Creando presentación...",
+                      create_document: "Creando documento...",
+                      memory_search: "Buscando en memoria...",
                     };
                     setAiProcessStepsForChat((prev: any[]) => {
                       const stepId = `tool-${data.toolName}-${data.iteration || Date.now()}`;
@@ -4824,13 +4831,10 @@ export function ChatInterface({
                       ), effectiveChatIdForStream);
                   }
                 } else if (eventType === "tool_result") {
-                  const agenticTools = ["bash", "web_fetch", "web_search", "read_file", "write_file", "edit_file", "list_files", "rag_index_document", "openclaw_rag_search", "fetch_url", "analyze_data", "generate_chart"];
-                  if (agenticTools.includes(data.toolName)) {
-                    setAiProcessStepsForChat((prev: any[]) =>
-                      prev.map((s: any) =>
-                        s.id?.startsWith(`tool-${data.toolName}`) ? { ...s, status: "done" } : s
-                      ), effectiveChatIdForStream);
-                  }
+                  setAiProcessStepsForChat((prev: any[]) =>
+                    prev.map((s: any) =>
+                      s.id?.startsWith(`tool-${data.toolName}`) ? { ...s, status: "done" } : s
+                    ), effectiveChatIdForStream);
                 }
               },
               onAiStateChange: (nextState) => {
@@ -6260,45 +6264,47 @@ IMPORTANTE:
                   }
 
                   if (eventType === "tool_start") {
-                    const agenticTools = ["bash", "web_fetch", "web_search", "read_file", "write_file", "edit_file", "list_files", "rag_index_document", "openclaw_rag_search", "fetch_url", "analyze_data", "generate_chart"];
-                    if (agenticTools.includes(data?.toolName)) {
-                      setAiStateForStream("agent_working");
-                      const toolLabels: Record<string, string> = {
-                        bash: "Running command...",
-                        web_fetch: "Fetching web page...",
-                        web_search: "Searching the web...",
-                        read_file: "Reading file...",
-                        write_file: "Writing file...",
-                        edit_file: "Editing file...",
-                        list_files: "Listing files...",
-                        rag_index_document: "Indexing document...",
-                        openclaw_rag_search: "Searching knowledge base...",
-                        fetch_url: "Fetching URL...",
-                        analyze_data: "Analyzing data...",
-                        generate_chart: "Generating chart...",
-                      };
-                      setAiProcessStepsForStream((prev: any[]) => {
-                        const stepId = `tool-${data.toolName}-${data.iteration || Date.now()}`;
-                        const exists = prev.find((s: any) => s.id === stepId);
-                        if (exists) return prev;
-                        return [...prev, {
-                          id: stepId,
-                          message: toolLabels[data.toolName] || `Using ${data.toolName}...`,
-                          status: "active"
-                        }];
-                      });
-                    }
+                    setAiStateForStream("agent_working");
+                    const toolLabels: Record<string, string> = {
+                      bash: "Ejecutando comando...",
+                      web_fetch: "Obteniendo página web...",
+                      web_search: "Buscando en internet...",
+                      read_file: "Leyendo archivo...",
+                      write_file: "Escribiendo archivo...",
+                      edit_file: "Editando archivo...",
+                      list_files: "Listando archivos...",
+                      grep_search: "Buscando en archivos...",
+                      run_code: "Ejecutando código...",
+                      browse_and_act: "Navegando en la web...",
+                      process_list: "Listando procesos...",
+                      port_check: "Verificando puertos...",
+                      rag_index_document: "Indexando documento...",
+                      openclaw_rag_search: "Buscando en base de conocimiento...",
+                      fetch_url: "Obteniendo URL...",
+                      analyze_data: "Analizando datos...",
+                      generate_chart: "Generando gráfico...",
+                      create_presentation: "Creando presentación...",
+                      create_document: "Creando documento...",
+                      memory_search: "Buscando en memoria...",
+                    };
+                    setAiProcessStepsForStream((prev: any[]) => {
+                      const stepId = `tool-${data.toolName}-${data.iteration || Date.now()}`;
+                      const exists = prev.find((s: any) => s.id === stepId);
+                      if (exists) return prev;
+                      return [...prev, {
+                        id: stepId,
+                        message: data?.message || toolLabels[data?.toolName] || `Usando ${data?.toolName}...`,
+                        status: "active"
+                      }];
+                    });
                     return;
                   }
 
                   if (eventType === "tool_result") {
-                    const agenticTools = ["bash", "web_fetch", "web_search", "read_file", "write_file", "edit_file", "list_files", "rag_index_document", "openclaw_rag_search", "fetch_url", "analyze_data", "generate_chart"];
-                    if (agenticTools.includes(data?.toolName)) {
-                      setAiProcessStepsForStream((prev: any[]) =>
-                        prev.map((s: any) =>
-                          s.id?.startsWith(`tool-${data.toolName}`) ? { ...s, status: "done" } : s
-                        ));
-                    }
+                    setAiProcessStepsForStream((prev: any[]) =>
+                      prev.map((s: any) =>
+                        s.id?.startsWith(`tool-${data?.toolName}`) ? { ...s, status: "done" } : s
+                      ));
                     return;
                   }
 
