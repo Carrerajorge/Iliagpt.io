@@ -24,27 +24,18 @@ const pinoLogger = pino({
     paths: SENSITIVE_KEYS.flatMap(key => [key, `*.${key}`, `*.*.${key}`]),
     remove: true,
   },
-  // In development, use pino-pretty for readability
-  // In production, keep JSON and rotate daily using pino-roll
-  transport: !isProduction
-    ? {
-      target: "pino-pretty",
-      options: {
-        colorize: true,
-        ignore: "pid,hostname",
-        translateTime: "HH:MM:ss",
-      },
-    }
+  ...(isProduction
+    ? {}
     : {
-      target: "pino-roll",
-      options: {
-        file: "logs/app",
-        size: "10m",
-        frequency: "daily",
-        extension: ".log",
-        mkdir: true
-      }
-    },
+      transport: {
+        target: "pino-pretty",
+        options: {
+          colorize: true,
+          ignore: "pid,hostname",
+          translateTime: "HH:MM:ss",
+        },
+      },
+    }),
   base: {
     env: process.env.NODE_ENV,
   },
