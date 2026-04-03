@@ -9,6 +9,8 @@ import {
     Archive,
     Download,
     Share2,
+    Volume2,
+    VolumeX,
     Maximize2,
     Minimize2,
     Check,
@@ -923,6 +925,51 @@ export const ActionToolbar = memo(function ActionToolbar({
                         </div>
                     </PopoverContent>
                 </Popover>
+
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className={cn(
+                                "h-6 w-6",
+                                speakingMessageId === messageId
+                                    ? "text-primary"
+                                    : "text-muted-foreground/70 hover:text-foreground"
+                            )}
+                            onClick={() => onReadAloud(messageId, content)}
+                            data-testid={`button-read-aloud-${testIdSuffix}`}
+                            aria-label="Leer en voz alta"
+                        >
+                            {speakingMessageId === messageId ? (
+                                <VolumeX className="h-3.5 w-3.5" />
+                            ) : (
+                                <Volume2 className="h-3.5 w-3.5" />
+                            )}
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                        <p>{speakingMessageId === messageId ? "Detener" : "Leer en voz alta"}</p>
+                    </TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-muted-foreground/70 hover:text-foreground"
+                            onClick={() => onShare(content)}
+                            data-testid={`button-share-${testIdSuffix}`}
+                            aria-label="Compartir"
+                        >
+                            <Share2 className="h-3.5 w-3.5" />
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                        <p>Compartir</p>
+                    </TooltipContent>
+                </Tooltip>
 
                 {/* Sources / Fuentes button - only when webSources exist */}
                 {webSources && webSources.length > 0 && onViewSources && (
