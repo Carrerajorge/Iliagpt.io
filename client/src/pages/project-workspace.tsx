@@ -22,7 +22,6 @@ import {
   ChevronDown,
   Mic,
   ArrowUp,
-  Send,
   Sparkles,
   X,
   Square,
@@ -68,42 +67,46 @@ export default function ProjectWorkspace() {
   };
 
   const suggestions = [
-    { emoji: "🎮", text: `Build a classic Snake game in this repo.` },
-    { emoji: "📄", text: `Create a one-page $pdf that summarizes this app.` },
-    { emoji: "📝", text: `Create a plan to...` },
+    { emoji: "🎮", text: "Build a classic Snake game in this repo." },
+    { emoji: "📄", text: "Create a one-page $pdf that summarizes this app." },
+    { emoji: "📝", text: "Create a plan to..." },
   ];
 
   return (
     <div className="h-screen flex bg-[#1a1a2e] text-white overflow-hidden">
-      <div className="w-[200px] shrink-0 flex flex-col border-r border-white/10 bg-[#12121e]">
-        <div className="h-10 flex items-center gap-2 px-3 border-b border-white/10 shrink-0">
-          <button className="p-0.5 rounded hover:bg-white/10 text-white/50" data-testid="button-toggle-sidebar">
-            <PanelLeft className="h-3.5 w-3.5" />
-          </button>
-          <button onClick={() => setLocation("/")} className="p-0.5 rounded hover:bg-white/10 text-white/50" data-testid="button-back-workspace">
-            <ArrowLeft className="h-3.5 w-3.5" />
-          </button>
-          <button className="p-0.5 rounded hover:bg-white/10 text-white/50">
-            <ArrowRight className="h-3.5 w-3.5" />
-          </button>
+
+      <div className="w-[420px] shrink-0 flex flex-col border-r border-white/10 bg-[#12121e]">
+
+        <div className="h-10 flex items-center justify-between px-3 border-b border-white/10 shrink-0">
+          <div className="flex items-center gap-2">
+            <button className="p-0.5 rounded hover:bg-white/10 text-white/50" data-testid="button-toggle-sidebar">
+              <PanelLeft className="h-3.5 w-3.5" />
+            </button>
+            <button onClick={() => setLocation("/")} className="p-0.5 rounded hover:bg-white/10 text-white/50" data-testid="button-back-workspace">
+              <ArrowLeft className="h-3.5 w-3.5" />
+            </button>
+            <button className="p-0.5 rounded hover:bg-white/10 text-white/50">
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
 
-        <div className="flex flex-col gap-0.5 px-2 pt-3">
-          <button className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/10 text-sm text-white/80 transition-colors" data-testid="button-new-thread">
+        <div className="flex flex-col gap-0.5 px-3 pt-3">
+          <button className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-white/10 text-sm text-white/80 transition-colors" data-testid="button-new-thread">
             <Plus className="h-3.5 w-3.5" />
             <span>Nuevo hilo</span>
           </button>
-          <button className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/10 text-sm text-white/80 transition-colors" data-testid="button-skills-apps">
+          <button className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-white/10 text-sm text-white/80 transition-colors" data-testid="button-skills-apps">
             <Zap className="h-3.5 w-3.5" />
             <span>Habilidades y aplicaciones</span>
           </button>
-          <button className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/10 text-sm text-white/80 transition-colors" data-testid="button-automations">
+          <button className="flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-white/10 text-sm text-white/80 transition-colors" data-testid="button-automations">
             <RefreshCw className="h-3.5 w-3.5" />
             <span>Automatizaciones</span>
           </button>
         </div>
 
-        <div className="mt-6 px-2">
+        <div className="mt-5 px-3">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[11px] font-medium text-white/40 uppercase tracking-wider">Hilos</span>
             <div className="flex items-center gap-1">
@@ -122,7 +125,109 @@ export default function ProjectWorkspace() {
           <p className="text-[11px] text-white/30 mt-2 px-2">No hay hilos</p>
         </div>
 
-        <div className="mt-auto border-t border-white/10 px-2 py-2">
+        <div className="flex-1 flex flex-col justify-end px-3 pb-3 overflow-hidden">
+
+          <div className="flex flex-col items-center mb-6">
+            <div className="mb-4">
+              <Sparkles className="h-10 w-10 text-white/25" />
+            </div>
+            <h2 className="text-xl font-semibold text-white/90 mb-0.5">Vamos a crear</h2>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xl font-semibold text-white/35">{projectName}</span>
+              <ChevronDown className="h-3.5 w-3.5 text-white/25" />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end mb-2">
+            <button className="text-[11px] text-white/35 hover:text-white/55 flex items-center gap-1 transition-colors">
+              Explore more
+              <X className="h-2.5 w-2.5" />
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            {suggestions.map((s, i) => (
+              <button
+                key={i}
+                onClick={() => setPrompt(s.text)}
+                className="flex flex-col gap-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-3 text-left transition-all active:scale-[0.98]"
+                style={{ touchAction: "manipulation" }}
+                data-testid={`suggestion-card-${i}`}
+              >
+                <span className="text-base">{s.emoji}</span>
+                <span className="text-[12px] text-white/60 leading-snug">{s.text}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="rounded-2xl border border-amber-500/60 bg-[#1e1e30] overflow-hidden shadow-[0_0_15px_rgba(245,158,11,0.08)]">
+            <div className="px-4 pt-3 pb-2">
+              <textarea
+                ref={textareaRef}
+                value={prompt}
+                onChange={handleAutoResize}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                  }
+                }}
+                placeholder="Ask Codex anything, @ to add files, / for commands, $ for skills"
+                className="w-full bg-transparent border-0 outline-none text-[14px] text-white/70 placeholder-white/35 resize-none min-h-[24px] max-h-[120px]"
+                rows={1}
+                data-testid="input-workspace-prompt"
+              />
+            </div>
+            <div className="flex items-center justify-between px-3 pb-2.5">
+              <div className="flex items-center gap-2.5">
+                <button className="text-white/40 hover:text-white/60 transition-colors" data-testid="button-plus-attach">
+                  <Plus className="h-4 w-4" />
+                </button>
+                <button className="flex items-center gap-1.5 text-[12px] text-white/50 hover:text-white/70 transition-colors">
+                  <Zap className="h-3.5 w-3.5 text-amber-500" />
+                  <span>GPT-5.4</span>
+                  <ChevronDown className="h-2.5 w-2.5" />
+                </button>
+                <button className="flex items-center gap-1 text-[12px] text-white/50 hover:text-white/70 transition-colors">
+                  <span>Extra alto</span>
+                  <ChevronDown className="h-2.5 w-2.5" />
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button className="text-white/40 hover:text-white/60 transition-colors" data-testid="button-mic">
+                  <Mic className="h-4 w-4" />
+                </button>
+                <button
+                  className="w-7 h-7 rounded-lg bg-amber-500 hover:bg-amber-400 text-black flex items-center justify-center transition-colors active:scale-95"
+                  style={{ touchAction: "manipulation" }}
+                  data-testid="button-send"
+                >
+                  <ArrowUp className="h-4 w-4 stroke-[2.5]" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between mt-2.5 px-1">
+            <div className="flex items-center gap-3">
+              <button className="flex items-center gap-1.5 text-[11px] text-white/40 hover:text-white/60 transition-colors">
+                <Square className="h-3 w-3" />
+                <span>Local</span>
+                <ChevronDown className="h-2.5 w-2.5" />
+              </button>
+              <button className="flex items-center gap-1.5 text-[11px] text-amber-500 hover:text-amber-400 transition-colors">
+                <CircleDot className="h-3 w-3" />
+                <span>Acceso completo</span>
+                <ChevronDown className="h-2.5 w-2.5" />
+              </button>
+            </div>
+            <button className="flex items-center gap-1.5 text-[11px] text-white/40 hover:text-white/60 transition-colors">
+              <span>⑂</span>
+              <span>deploy-temp</span>
+              <ChevronDown className="h-2.5 w-2.5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="border-t border-white/10 px-3 py-2 shrink-0">
           <button className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/10 text-sm text-white/60 w-full transition-colors" data-testid="button-config">
             <Settings className="h-3.5 w-3.5" />
             <span>Configuración</span>
@@ -146,108 +251,7 @@ export default function ProjectWorkspace() {
           </div>
         </div>
 
-        <div className="flex-1 flex flex-col items-center justify-center px-6 overflow-y-auto">
-          <div className="flex flex-col items-center mb-16 max-w-2xl w-full">
-            <div className="mb-6">
-              <Sparkles className="h-12 w-12 text-white/30" />
-            </div>
-            <h1 className="text-2xl font-semibold text-white/90 mb-1">Vamos a crear</h1>
-            <div className="flex items-center gap-1.5">
-              <span className="text-2xl font-semibold text-white/40">{projectName}</span>
-              <ChevronDown className="h-4 w-4 text-white/30" />
-            </div>
-          </div>
-
-          <div className="w-full max-w-2xl">
-            <div className="flex items-center justify-end mb-2">
-              <button className="text-xs text-white/40 hover:text-white/60 flex items-center gap-1 transition-colors">
-                Explore more
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-            <div className="grid grid-cols-3 gap-3 mb-6">
-              {suggestions.map((s, i) => (
-                <button
-                  key={i}
-                  onClick={() => setPrompt(s.text)}
-                  className="flex flex-col gap-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-4 text-left transition-all active:scale-[0.98]"
-                  style={{ touchAction: 'manipulation' }}
-                  data-testid={`suggestion-card-${i}`}
-                >
-                  <span className="text-lg">{s.emoji}</span>
-                  <span className="text-sm text-white/70 leading-snug">{s.text}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="rounded-2xl border border-amber-500/60 bg-[#1e1e30] overflow-hidden shadow-[0_0_15px_rgba(245,158,11,0.08)]">
-              <div className="px-5 pt-4 pb-3">
-                <textarea
-                  ref={textareaRef}
-                  value={prompt}
-                  onChange={handleAutoResize}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                    }
-                  }}
-                  placeholder="Ask Codex anything, @ to add files, / for commands, $ for skills"
-                  className="w-full bg-transparent border-0 outline-none text-[15px] text-white/70 placeholder-white/35 resize-none min-h-[24px] max-h-[150px]"
-                  rows={1}
-                  data-testid="input-workspace-prompt"
-                />
-              </div>
-              <div className="flex items-center justify-between px-4 pb-3">
-                <div className="flex items-center gap-3">
-                  <button className="text-white/40 hover:text-white/60 transition-colors" data-testid="button-plus-attach">
-                    <Plus className="h-[18px] w-[18px]" />
-                  </button>
-                  <button className="flex items-center gap-1.5 text-[13px] text-white/50 hover:text-white/70 transition-colors">
-                    <Zap className="h-3.5 w-3.5 text-amber-500" />
-                    <span>GPT-5.4</span>
-                    <ChevronDown className="h-3 w-3" />
-                  </button>
-                  <button className="flex items-center gap-1 text-[13px] text-white/50 hover:text-white/70 transition-colors">
-                    <span>Extra alto</span>
-                    <ChevronDown className="h-3 w-3" />
-                  </button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button className="text-white/40 hover:text-white/60 transition-colors" data-testid="button-mic">
-                    <Mic className="h-[18px] w-[18px]" />
-                  </button>
-                  <button
-                    className="w-8 h-8 rounded-lg bg-amber-500 hover:bg-amber-400 text-black flex items-center justify-center transition-colors active:scale-95"
-                    style={{ touchAction: 'manipulation' }}
-                    data-testid="button-send"
-                  >
-                    <ArrowUp className="h-[18px] w-[18px] stroke-[2.5]" />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between mt-3 px-2">
-              <div className="flex items-center gap-4">
-                <button className="flex items-center gap-1.5 text-[12px] text-white/40 hover:text-white/60 transition-colors">
-                  <Square className="h-3.5 w-3.5" />
-                  <span>Local</span>
-                  <ChevronDown className="h-2.5 w-2.5" />
-                </button>
-                <button className="flex items-center gap-1.5 text-[12px] text-amber-500 hover:text-amber-400 transition-colors">
-                  <CircleDot className="h-3.5 w-3.5" />
-                  <span>Acceso completo</span>
-                  <ChevronDown className="h-2.5 w-2.5" />
-                </button>
-              </div>
-              <button className="flex items-center gap-1.5 text-[12px] text-white/40 hover:text-white/60 transition-colors">
-                <span>⑂</span>
-                <span>deploy-temp</span>
-                <ChevronDown className="h-2.5 w-2.5" />
-              </button>
-            </div>
-          </div>
-        </div>
+        <div className="flex-1" />
       </div>
     </div>
   );
