@@ -183,7 +183,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         !imageData;
 
     return (
-        <div className="flex flex-col gap-2 w-full min-w-0">
+        <div className="flex flex-col gap-2 w-full min-w-0 mt-[100px] mb-[100px] pt-[0px] pb-[0px] pl-[1px] pr-[1px] ml-[0px] mr-[0px]">
             {/* Uncertainty Badge */}
             {message.confidence && message.confidence !== 'high' && (
                 <div className="flex justify-start mb-1">
@@ -193,14 +193,12 @@ export const AssistantMessage = memo(function AssistantMessage({
                     />
                 </div>
             )}
-
             {/* Verification Badge - Visualizes A1 (Agent Verifier) status */}
             <VerificationBadge
                 verified={!!message.metadata?.verified}
                 attempts={message.metadata?.verificationAttempts}
                 className="mb-2"
             />
-
             {/* Agent run content - show progress and events */}
             {message.agentRun && (
                 <AgentRunContent
@@ -212,7 +210,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                     onToolDeny={onToolDeny ? (toolName, stepIndex) => onToolDeny(message.id, toolName, stepIndex) : undefined}
                 />
             )}
-
             {/* Cerebro Timeline - DAG execution timeline with evidence & stats */}
             {message.cerebroTimeline && message.cerebroTimeline.subtasks && message.cerebroTimeline.subtasks.length > 0 && (
                 <AgentRunTimeline
@@ -224,7 +221,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                     planTitle={message.cerebroTimeline.planTitle}
                 />
             )}
-
             {/* Super Agent display - show research progress with sources */}
             {superAgentState && (
                 <SuperAgentDisplay
@@ -233,7 +229,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                     onCancel={onSuperAgentCancel ? () => onSuperAgentCancel(message.id) : undefined}
                 />
             )}
-
             {message.steps && message.steps.length > 0 && (
                 <div className={cn(
                     "rounded-lg border p-4 space-y-3 w-full",
@@ -278,17 +273,14 @@ export const AssistantMessage = memo(function AssistantMessage({
                     ))}
                 </div>
             )}
-
             {message.retrievalSteps && message.retrievalSteps.length > 0 && (
                 <div className="mb-3 w-full max-w-sm">
                     <RetrievalVis steps={message.retrievalSteps} />
                 </div>
             )}
-
             {message.webSources && message.webSources.length > 0 && !message.isThinking && (
                 <NewsCards sources={message.webSources} maxDisplay={5} />
             )}
-
             {message.content && !message.isThinking && !message.agentRun && (
                 <>
                     {contentBlocks.map((block, blockIdx) =>
@@ -341,7 +333,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                     )}
                 </>
             )}
-
             {message.documentAnalysis &&
                 message.ui_components &&
                 message.ui_components.length > 0 &&
@@ -353,7 +344,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                         />
                     </div>
                 )}
-
             {showSkeleton && (
                 <div className="mt-3">
                     <div className="w-64 h-64 rounded-lg animate-pulse bg-gradient-to-br from-muted/80 via-muted to-muted/80 flex flex-col items-center justify-center gap-3">
@@ -365,7 +355,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                     </div>
                 </div>
             )}
-
             {imageData && (
                 <div className="mt-3">
                     <ArtifactViewer
@@ -381,7 +370,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                     />
                 </div>
             )}
-
             {minimizedDocument && minimizedDocument.messageId === message.id && onRestoreDocument && (
                 <motion.div
                     initial={{ opacity: 0, scale: 0.8, y: -20 }}
@@ -407,13 +395,11 @@ export const AssistantMessage = memo(function AssistantMessage({
                     </div>
                 </motion.div>
             )}
-
             {message.figmaDiagram && (
                 <div className="mt-3 w-full">
                     <FigmaBlock diagram={message.figmaDiagram} />
                 </div>
             )}
-
             {message.artifact && (
                 <div className="mt-3 w-full">
                     {message.artifact.type === "image" ? (
@@ -521,7 +507,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                     )}
                 </div>
             )}
-
             {message.googleFormPreview && (
                 <div className="mt-3 w-full">
                     <InlineGoogleFormPreview
@@ -531,7 +516,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                     />
                 </div>
             )}
-
             {message.gmailPreview && (
                 <div className="mt-3 w-full">
                     <InlineGmailPreview
@@ -541,7 +525,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                     />
                 </div>
             )}
-
             {message.attachments && message.attachments.some(a => a.type === "document") && (
                 <div className="mt-3">
                     <AttachmentList
@@ -551,7 +534,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                     />
                 </div>
             )}
-
             {message.content && !message.isThinking && (
                 <>
                     <div className="flex items-center gap-3 mt-4">
@@ -587,7 +569,6 @@ export const AssistantMessage = memo(function AssistantMessage({
                     )}
                 </>
             )}
-
             {message.webSources && message.webSources.length > 0 && (
                 <SourcesPanel
                     open={sourcesPanelOpen}
