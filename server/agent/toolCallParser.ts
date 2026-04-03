@@ -4,6 +4,35 @@ interface ParsedToolCall {
   arguments: string;
 }
 
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  "fetch_url": "web_fetch",
+  "search": "web_search",
+  "search_web": "web_search",
+  "execute_bash": "bash",
+  "shell": "bash",
+  "terminal": "bash",
+  "file_read": "read_file",
+  "file_write": "write_file",
+  "file_edit": "edit_file",
+  "file_list": "list_files",
+  "dir_list": "list_files",
+  "code_run": "run_code",
+  "execute_code": "run_code",
+  "grep": "grep_search",
+  "search_files": "grep_search",
+};
+
+function resolveToolName(name: string, availableTools: Set<string>): string | null {
+  if (availableTools.has(name)) return name;
+  const aliased = TOOL_NAME_ALIASES[name];
+  if (aliased && availableTools.has(aliased)) return aliased;
+  const lower = name.toLowerCase();
+  for (const t of availableTools) {
+    if (t.toLowerCase() === lower) return t;
+  }
+  return null;
+}
+
 const TOOL_CALL_PATTERNS = [
   /```(?:json)?\s*\{[\s\S]*?"(?:name|function|tool)"[\s\S]*?\}[\s\S]*?```/gi,
   /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi,
@@ -49,13 +78,13 @@ export function parseToolCallsFromText(
 
   const actionRegex = /Action:\s*(\w+)\s*\nAction Input:\s*(\{[\s\S]*?\})/gi;
   while ((match = actionRegex.exec(text)) !== null) {
-    const toolName = match[1].trim();
-    if (availableTools.has(toolName)) {
+    const resolved = resolveToolName(match[1].trim(), availableTools);
+    if (resolved) {
       const parsed = tryParseJSON(match[2]);
       if (parsed) {
         results.push({
           id: `parsed_tc_${idCounter++}`,
-          name: toolName,
+          name: resolved,
           arguments: JSON.stringify(parsed),
         });
       }
@@ -65,12 +94,12 @@ export function parseToolCallsFromText(
 
   const inlineJsonRegex = /\{\s*"(?:name|function|tool)"\s*:\s*"([^"]+)"[^}]*"(?:arguments|parameters|params|input)"\s*:\s*(\{[^}]*\})/gi;
   while ((match = inlineJsonRegex.exec(text)) !== null) {
-    const toolName = match[1].trim();
-    if (availableTools.has(toolName)) {
+    const resolved = resolveToolName(match[1].trim(), availableTools);
+    if (resolved) {
       const parsed = tryParseJSON(match[2]);
       results.push({
         id: `parsed_tc_${idCounter++}`,
-        name: toolName,
+        name: resolved,
         arguments: parsed ? JSON.stringify(parsed) : match[2],
       });
     }
@@ -85,8 +114,10 @@ function extractToolCall(
   results: ParsedToolCall[],
   idCounter: number
 ): boolean {
-  const name = parsed.name || parsed.function || parsed.tool || parsed.tool_call || parsed.function_call;
-  if (!name || !availableTools.has(name)) return false;
+  const rawName = parsed.name || parsed.function || parsed.tool || parsed.tool_call || parsed.function_call;
+  if (!rawName) return false;
+  const name = resolveToolName(rawName, availableTools);
+  if (!name) return false;
 
   const args = parsed.arguments || parsed.parameters || parsed.params || parsed.input || parsed.args || {};
   const argsStr = typeof args === "string" ? args : JSON.stringify(args);

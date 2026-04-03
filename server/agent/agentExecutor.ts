@@ -1226,27 +1226,67 @@ MANDATORY RULES:
       }
 
       const executeOneTool = async (tc: OpenAI.ChatCompletionMessageToolCall) => {
-        const name = tc.function.name;
+        const TOOL_NAME_ALIASES: Record<string, string> = {
+          "fetch_url": "web_fetch",
+          "search": "web_search",
+          "search_web": "web_search",
+          "execute_bash": "bash",
+          "shell": "bash",
+          "terminal": "bash",
+          "file_read": "read_file",
+          "file_write": "write_file",
+          "file_edit": "edit_file",
+          "file_list": "list_files",
+          "dir_list": "list_files",
+          "code_run": "run_code",
+          "execute_code": "run_code",
+          "grep": "grep_search",
+          "search_files": "grep_search",
+        };
+
+        const rawName = tc.function.name;
+        const name = TOOL_NAME_ALIASES[rawName] || rawName;
         let args: Record<string, any> = {};
         try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
+
+        const PARAM_NORMALIZERS: Record<string, (a: Record<string, any>) => Record<string, any>> = {
+          "write_file": (a) => ({ file_path: a.file_path || a.filepath || a.path, content: a.content }),
+          "edit_file": (a) => {
+            const fp = a.file_path || a.filepath || a.path;
+            const hasOldNew = a.old_string || a.oldString || a.old;
+            if (hasOldNew) {
+              return {
+                file_path: fp,
+                old_string: a.old_string || a.oldString || a.old || "",
+                new_string: a.new_string !== undefined ? a.new_string : (a.newString !== undefined ? a.newString : (a.new !== undefined ? a.new : "")),
+              };
+            }
+            return { file_path: fp, content: a.content || "" };
+          },
+          "read_file": (a) => ({ file_path: a.file_path || a.filepath || a.path || a.file, offset: a.offset, limit: a.limit }),
+          "list_files": (a) => ({ directory: a.directory || a.dir || a.path || ".", recursive: a.recursive, maxEntries: a.maxEntries || a.max_entries }),
+          "web_fetch": (a) => ({ url: a.url, extract_mode: a.extract_mode || a.extractMode || (a.extractText === false ? "html" : "text") }),
+        };
+
+        const normalizedArgs = PARAM_NORMALIZERS[name]?.(args) || args;
 
         if (circuitBreaker.isTripped(name)) {
           console.warn(`[AgentExecutor] Skipping tripped tool: ${name}`);
           return {
             tc,
             name,
-            args,
+            args: normalizedArgs,
             result: { error: `Tool "${name}" disabled: too many consecutive failures` },
             artifact: undefined as { type: string; url: string; name: string } | undefined,
             skipped: true,
           };
         }
 
-        const riskCheck = isHighRiskAction(name, args);
+        const riskCheck = isHighRiskAction(name, normalizedArgs);
         if (riskCheck.risky && accessLevel !== 'owner') {
           console.warn(`[AgentExecutor] HIGH RISK blocked for non-owner: ${name} - ${riskCheck.reason}`);
           return {
-            tc, name, args,
+            tc, name, args: normalizedArgs,
             result: { error: `Action blocked: ${riskCheck.reason}. Requires owner approval.` },
             artifact: undefined as { type: string; url: string; name: string } | undefined,
             skipped: true,
@@ -1255,16 +1295,16 @@ MANDATORY RULES:
 
         if (riskCheck.risky) {
           sse.write("tool_requires_confirmation", {
-            runId, toolName: name, args, reason: riskCheck.reason, iteration,
+            runId, toolName: name, args: normalizedArgs, reason: riskCheck.reason, iteration,
           });
           console.warn(`[AgentExecutor] HIGH RISK action detected: ${name} - ${riskCheck.reason}. Proceeding with caution for owner.`);
           await emitTraceEvent(runId, "high_risk_action", {
-            toolName: name, args, reason: riskCheck.reason, accessLevel,
+            toolName: name, args: normalizedArgs, reason: riskCheck.reason, accessLevel,
           });
         }
 
         sse.write("tool_start", {
-          runId, toolName: name, args, iteration,
+          runId, toolName: name, args: normalizedArgs, iteration,
         });
 
         let result: any;
@@ -1275,13 +1315,13 @@ MANDATORY RULES:
           const isOpenClawTool = OPENCLAW_TOOLS.some(t => t.function.name === name);
           if (isOpenClawTool) {
             const toolResult = await executeOpenClawToolCall(
-              { id: tc.id, type: "function", function: { name, arguments: tc.function.arguments } },
+              { id: tc.id, type: "function", function: { name: resolvedName, arguments: JSON.stringify(normalizedArgs) } },
               (msg) => sse.write("tool_status", { runId, toolName: name, status: msg, iteration })
             );
             try { result = JSON.parse(toolResult.content); } catch { result = toolResult.content; }
           } else {
             const execResult = await executeToolCall(
-              name, args, toolContext, runId, res, reservationDetails
+              resolvedName, normalizedArgs, toolContext, runId, res, reservationDetails
             );
             result = execResult.result;
             artifact = execResult.artifact;

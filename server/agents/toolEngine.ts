@@ -2,8 +2,8 @@ import { bashToolSchema, executeBashTool } from "./tools/bashTool";
 import { webFetchToolSchema, executeWebFetchTool } from "./tools/webFetchTool";
 import { webSearchToolSchema, executeWebSearchTool } from "./tools/webSearchTool";
 import {
-  readFileToolSchema, writeFileToolSchema, editFileToolSchema, listFilesToolSchema,
-  executeReadFile, executeWriteFile, executeEditFile, executeListFiles
+  readFileToolSchema, writeFileToolSchema, editFileToolSchema, listFilesToolSchema, grepSearchToolSchema,
+  executeReadFile, executeWriteFile, executeEditFile, executeListFiles, executeGrepSearch
 } from "./tools/fsTool";
 import {
   processListToolSchema, portCheckToolSchema,
@@ -34,6 +34,7 @@ export const AGENT_TOOLS = [
   writeFileToolSchema,
   editFileToolSchema,
   listFilesToolSchema,
+  grepSearchToolSchema,
   codeToolSchema,
   processListToolSchema,
   portCheckToolSchema,
@@ -100,6 +101,11 @@ export async function executeToolCall(
       case "run_code":
         onStatus?.(`Running ${args.language || "code"}...`);
         result = await executeCodeTool(args);
+        break;
+
+      case "grep_search":
+        onStatus?.(`Searching: "${(args.pattern || "").slice(0, 60)}"${args.directory ? ` in ${args.directory}` : ""}`);
+        result = await executeGrepSearch(args);
         break;
 
       case "process_list":

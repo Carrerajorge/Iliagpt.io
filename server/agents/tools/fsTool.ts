@@ -98,6 +98,36 @@ export const listFilesToolSchema = {
   }
 };
 
+export const grepSearchToolSchema = {
+  type: "function" as const,
+  function: {
+    name: "grep_search",
+    description: "Search for a pattern in files. Uses regex matching to find text across files in a directory. Returns matching lines with file paths and line numbers. Essential for code navigation and finding references.",
+    parameters: {
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description: "Search pattern (regex supported)"
+        },
+        directory: {
+          type: "string",
+          description: "Directory to search in (defaults to project root)"
+        },
+        include: {
+          type: "string",
+          description: "File glob pattern to include (e.g., '*.ts', '*.py')"
+        },
+        max_results: {
+          type: "number",
+          description: "Maximum results to return (default 50)"
+        }
+      },
+      required: ["pattern"]
+    }
+  }
+};
+
 const PROJECT_ROOT = process.cwd();
 
 function resolveSafePath(filePath: string): string {
@@ -200,5 +230,51 @@ export async function executeListFiles(params: {
     return { entries };
   } catch (err: any) {
     return { entries: [], error: err.message };
+  }
+}
+
+export async function executeGrepSearch(params: {
+  pattern: string;
+  directory?: string;
+  include?: string;
+  max_results?: number;
+}): Promise<{ matches: Array<{ file: string; line: number; text: string }>; count: number; error?: string }> {
+  const { execFileSync } = await import("child_process");
+  try {
+    const dir = resolveSafePath(params.directory || ".");
+    const maxResults = Math.min(Math.max(params.max_results || 50, 1), 200);
+
+    const grepArgs: string[] = ["-rn", "--max-count", String(maxResults), "-E"];
+
+    if (params.include && /^[\w.*?{},\-\/]+$/.test(params.include)) {
+      grepArgs.push(`--include=${params.include}`);
+    } else {
+      const defaultExts = ["ts","tsx","js","jsx","py","json","md","css","html","yaml","yml","toml","sh","sql","go","rs","java","c","cpp","h"];
+      for (const ext of defaultExts) grepArgs.push(`--include=*.${ext}`);
+    }
+
+    grepArgs.push("--", params.pattern, dir);
+
+    let output: string;
+    try {
+      output = execFileSync("grep", grepArgs, { encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024 });
+    } catch (e: any) {
+      if (e.status === 1) return { matches: [], count: 0 };
+      throw e;
+    }
+
+    const lines = output.trim().split("\n").filter(Boolean);
+    const matches = lines.slice(0, maxResults).map(line => {
+      const colonIdx1 = line.indexOf(":");
+      const colonIdx2 = line.indexOf(":", colonIdx1 + 1);
+      if (colonIdx1 === -1 || colonIdx2 === -1) return { file: "", line: 0, text: line };
+      const file = path.relative(PROJECT_ROOT, line.slice(0, colonIdx1));
+      const lineNum = parseInt(line.slice(colonIdx1 + 1, colonIdx2), 10);
+      const text = line.slice(colonIdx2 + 1).trim();
+      return { file, line: lineNum || 0, text: text.slice(0, 500) };
+    }).filter(m => m.file);
+    return { matches, count: matches.length };
+  } catch (err: any) {
+    return { matches: [], count: 0, error: err.message };
   }
 }

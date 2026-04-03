@@ -160,9 +160,11 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
         parameters: {
             type: "object",
             properties: {
-                filepath: { type: "string", description: "Path to the file to read." }
+                file_path: { type: "string", description: "Path to the file to read." },
+                offset: { type: "number", description: "Line offset to start reading from (0-indexed)." },
+                limit: { type: "number", description: "Maximum number of lines to read." }
             },
-            required: ["filepath"]
+            required: ["file_path"]
         }
     },
     {
@@ -279,22 +281,23 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
         parameters: {
             type: "object",
             properties: {
-                filepath: { type: "string", description: "Path to the file to create/overwrite" },
+                file_path: { type: "string", description: "Path to the file to create/overwrite" },
                 content: { type: "string", description: "Content to write to the file" }
             },
-            required: ["filepath", "content"]
+            required: ["file_path", "content"]
         }
     },
     {
         name: "edit_file",
-        description: "Edit/modify a file by replacing its content. For creating new files or full rewrites.",
+        description: "Make a precise text replacement in a file. Finds the exact old_string and replaces it with new_string. For targeted edits without rewriting the entire file. If old_string is not found, the edit fails — use read_file first to see the exact content.",
         parameters: {
             type: "object",
             properties: {
-                filepath: { type: "string", description: "Path to the file to edit" },
-                content: { type: "string", description: "New content for the file" }
+                file_path: { type: "string", description: "Path to the file to edit" },
+                old_string: { type: "string", description: "The exact text to find and replace (must match exactly including whitespace)" },
+                new_string: { type: "string", description: "The replacement text" }
             },
-            required: ["filepath", "content"]
+            required: ["file_path", "old_string", "new_string"]
         }
     },
     {
@@ -334,6 +337,20 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
         }
     },
     {
+        name: "grep_search",
+        description: "Search for a text pattern across files in the project. Returns matching lines with file paths and line numbers. Essential for finding code references, function definitions, imports, and configuration values.",
+        parameters: {
+            type: "object",
+            properties: {
+                pattern: { type: "string", description: "Search pattern (regex supported, e.g., 'function\\s+myFunc', 'TODO', 'import.*from')" },
+                directory: { type: "string", description: "Directory to search in (defaults to project root)" },
+                include: { type: "string", description: "File glob pattern to filter (e.g., '*.ts', '*.py', '*.json')" },
+                max_results: { type: "number", description: "Maximum results (default 50, max 200)" }
+            },
+            required: ["pattern"]
+        }
+    },
+    {
         name: "openclaw_clawi_exec",
         description: "Execute native Clawi/OpenClaw CLI commands locally (no external API).",
         parameters: {
@@ -361,7 +378,7 @@ export const CAPABILITY_REGISTRY: Record<string, { tools: string[]; description:
         description: "Browser-based interactions: forms, bookings, purchases, scraping",
     },
     "code-analysis": {
-        tools: ["read_file", "run_code", "bash", "edit_file"],
+        tools: ["read_file", "run_code", "bash", "edit_file", "grep_search"],
         description: "Code reading, execution, debugging, and modification",
     },
     "data-processing": {
