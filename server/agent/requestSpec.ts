@@ -125,9 +125,10 @@ export type RequestSpecResult = z.infer<typeof RequestSpecResultSchema>;
 const INTENT_PATTERNS: Record<IntentType, RegExp[]> = {
   research: [
     /\b(investiga|busca|encuentra|search|find|research|look up|investigar)\b/i,
+    /\b(búscame|buscame|encuéntrame|encuentrame|consígueme|consigueme)\b/i,
+    /\b(busca|búscame|buscame|encuentra)\b.*\b(artículos?|articulos?|noticias|papers?|estudios|información|info)\b/i,
     /\b(qué es|what is|cuál es|who is|quién es)\b/i,
     /\b(información sobre|info about)\b/i,
-    // "datos de" tends to collide with data_analysis. Avoid obvious analysis contexts.
     /\b(datos de|datos sobre)\b(?!.*\b(ventas|sales|presupuesto|budget|cálculo|calculo|usuarios|users|estadísticas|estadisticas|statistics)\b)/i
   ],
   document_analysis: [
@@ -135,8 +136,7 @@ const INTENT_PATTERNS: Record<IntentType, RegExp[]> = {
     /\b(resume|summarize|extrae|extract)\b.*\b(de|from)\b/i
   ],
   document_generation: [
-    /\b(crea|create|genera|generate|escribe|write|redacta|draft)\b.*\b(documento|document|informe|report|carta|letter)\b/i,
-    // Broad, but avoid stealing obvious presentation/spreadsheet/image requests.
+    /\b(crea|create|genera|generate|escribe|write|redacta|draft)\b.*\b(documento|document|informe|report|carta|letter|artículo|articulo|article|ensayo|essay)\b/i,
     /\b(hazme|make me|prepara|prepare)\b.*\b(un|a)\b(?!.*\b(presentación|presentation|ppt|powerpoint|slides|diapositivas|excel|spreadsheet|hoja de cálculo|hoja de calculo|tabla|table|imagen|image|foto|illustration|ilustración|ilustracion)\b)/i
   ],
   presentation_creation: [

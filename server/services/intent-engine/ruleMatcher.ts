@@ -13,7 +13,7 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
     CREATE_DOCUMENT: [
       "doc", "docx", "word", "documento", "informe", "reporte",
       "crear documento", "generar documento", "hacer documento", "escribir documento",
-      "elaborar informe", "redactar", "carta", "ensayo", "articulo", "manual", "guia",
+      "elaborar informe", "redactar", "carta", "ensayo", "manual", "guia",
       "creame", "creame un", "creame una", "solicitud", "permiso", "oficio", "memorial",
       "hazme un documento", "genera un documento", "escribe un documento"
     ],
@@ -34,7 +34,10 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
     SEARCH_WEB: [
       "busca en internet", "buscar en web", "busca online", "google",
       "investigar", "buscar informacion", "encuentra informacion",
-      "consultar", "averiguar", "indagar", "explorar web"
+      "consultar", "averiguar", "indagar", "explorar web",
+      "buscame", "búscame", "encuentrame", "encuéntrame",
+      "busca articulos", "busca artículos", "buscar articulos",
+      "encuentra articulos", "buscar noticias", "busca noticias"
     ],
     ANALYZE_DOCUMENT: [
       "analiza", "analizar", "análisis", "analisis", "revisa", "revisar",
@@ -570,7 +573,7 @@ const FORMAT_KEYWORDS: Record<NonNullable<OutputFormat>, string[]> = {
   docx: [
     "docx", "doc", "word", "documento", "document", "informe", "reporte", "report",
     "dokument", "relatorio", "مستند", "दस्तावेज़", "ドキュメント", "문서", "文档", "документ", "belge", "dokumen",
-    "ensayo", "articulo", "paper", "resumen ejecutivo", "executive summary", "briefing", "guia", "guide", "manual",
+    "ensayo", "paper", "resumen ejecutivo", "executive summary", "briefing", "guia", "guide", "manual",
     "carta", "letter", "propuesta", "proposal"
   ],
   xlsx: [
@@ -975,12 +978,48 @@ export function ruleBasedMatch(
     }
   }
 
+  const SEARCH_VERBS_STRICT: Record<string, string[]> = {
+    es: ["busca", "buscar", "búscame", "buscame", "encuentra", "encontrar", "encuéntrame", "encuentrame", "averigua", "investiga", "consulta"],
+    en: ["search", "find", "look up", "lookup"],
+    pt: ["busca", "buscar", "encontre", "encontrar", "pesquise", "pesquisar"],
+    fr: ["cherche", "chercher", "trouve", "trouver", "recherche", "rechercher"],
+    de: ["suche", "suchen", "finde", "finden"],
+    it: ["cerca", "cercare", "trova", "trovare"],
+    ar: ["ابحث", "أوجد"], hi: ["खोज", "ढूंढ"], ja: ["探して", "検索"], ko: ["찾아", "검색"],
+    zh: ["搜索", "查找"], ru: ["найди", "найти", "ищи"], tr: ["bul", "ara"], id: ["cari", "temukan"]
+  };
+  const searchVerbs = [...(SEARCH_VERBS_STRICT[locale] || SEARCH_VERBS_STRICT.es), ...SEARCH_VERBS_STRICT.en];
+  const hasSearchVerb = searchVerbs.some(v => normalizedText.includes(v.toLowerCase()));
+
+  const AMBIGUOUS_CONTENT_NOUNS = /\b(articulos?|artículos?|noticias|papers?|estudios|publicaciones|posts?|entradas)\b/i;
+  const hasAmbiguousNoun = AMBIGUOUS_CONTENT_NOUNS.test(normalizedText);
+
+  if (hasSearchVerb && !hasCreation) {
+    scores.SEARCH_WEB.score += 2.5;
+    scores.SEARCH_WEB.patterns.push("[+search_verb_boost]");
+    if (hasAmbiguousNoun) {
+      for (const createIntent of ["CREATE_DOCUMENT", "CREATE_PRESENTATION", "CREATE_SPREADSHEET"] as IntentType[]) {
+        if (scores[createIntent].score > 0) {
+          scores[createIntent].score = Math.max(0, scores[createIntent].score - 3);
+          scores[createIntent].patterns.push("[-search_ambiguous_noun_penalty]");
+        }
+      }
+    }
+  }
+
+  if (hasCreation && /\b(articulo|artículo|article)\b/i.test(normalizedText)) {
+    scores.CREATE_DOCUMENT.score += 2;
+    scores.CREATE_DOCUMENT.patterns.push("[+creation_verb_with_article]");
+  }
+
   const outputFormat = detectOutputFormat(normalizedText);
   if (outputFormat) {
     if (["pptx"].includes(outputFormat)) {
       scores.CREATE_PRESENTATION.score += 2;
     } else if (["docx", "pdf", "txt"].includes(outputFormat)) {
-      scores.CREATE_DOCUMENT.score += 2;
+      if (!hasSearchVerb || hasCreation) {
+        scores.CREATE_DOCUMENT.score += 2;
+      }
     } else if (["xlsx", "csv"].includes(outputFormat)) {
       scores.CREATE_SPREADSHEET.score += 2;
     }
