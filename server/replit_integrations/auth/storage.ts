@@ -179,13 +179,15 @@ class AuthStorage implements IAuthStorage {
 
   async getUserByEmail(email: string): Promise<User | undefined> {
     const canonical = canonicalizeEmail(email);
+    const SELECT_COLS = `id, email, password, username, first_name, last_name, role, status,
+               auth_provider, email_verified, created_at, updated_at, last_login_at,
+               last_ip, user_agent, login_count, org_id`;
     try {
       const result = await db.execute(sql`
-        SELECT id, email, password, username, first_name, last_name, role, status,
-               auth_provider, email_verified, created_at, updated_at, last_login_at,
-               last_ip, user_agent, login_count, org_id
+        SELECT ${sql.raw(SELECT_COLS)}
         FROM users
         WHERE email_canonical = ${canonical}
+           OR (email_canonical IS NULL AND email ILIKE ${canonical})
         LIMIT 1
       `);
       const row = (result as any)?.rows?.[0];
@@ -196,9 +198,7 @@ class AuthStorage implements IAuthStorage {
       if (sqlCode === "42703") {
         try {
           const result = await db.execute(sql`
-            SELECT id, email, password, username, first_name, last_name, role, status,
-                   auth_provider, email_verified, created_at, updated_at, last_login_at,
-                   last_ip, user_agent, login_count, org_id
+            SELECT ${sql.raw(SELECT_COLS)}
             FROM users WHERE email ILIKE ${canonical} LIMIT 1
           `);
           const row = (result as any)?.rows?.[0];
@@ -316,7 +316,7 @@ class AuthStorage implements IAuthStorage {
         }
       }
 
-      // Step 4: Create new user + identity
+      // Step 4: Create new user + identity (with duplicate email fallback)
       const baseValues: Record<string, any> = {
         id: userData.id,
         orgId: userData.id,
@@ -349,6 +349,34 @@ class AuthStorage implements IAuthStorage {
             .insert(users)
             .values(baseValues as any)
             .returning(RETURNING_COLUMNS);
+        } else if (getSqlCode(insertErr) === "23505" && userData.email) {
+          console.warn("[AuthStorage] Duplicate key on insert, falling back to update by email");
+          const existingByDirectEmail = await db.execute(sql`
+            SELECT id FROM users WHERE email ILIKE ${userData.email} LIMIT 1
+          `);
+          const existingRow = (existingByDirectEmail as any)?.rows?.[0];
+          if (existingRow) {
+            const [updatedUser] = await db
+              .update(users)
+              .set({
+                username: userData.username,
+                fullName: userData.fullName,
+                firstName: userData.firstName,
+                lastName: userData.lastName,
+                profileImageUrl: userData.profileImageUrl,
+                authProvider: userData.authProvider,
+                emailVerified: userData.emailVerified,
+                emailCanonical: canonical,
+                updatedAt: new Date(),
+              })
+              .where(eq(users.id, existingRow.id))
+              .returning(RETURNING_COLUMNS);
+            await ensureIdentityLink(updatedUser.id, provider, providerSubject, userData.email, userData.emailVerified === "true");
+            authEventBus.publish("IDENTITY_LINKED", updatedUser.id, { provider, resolvedBy: "duplicate_email_fallback" });
+            this.bestEffortPostLogin(updatedUser.id);
+            return updatedUser;
+          }
+          throw insertErr;
         } else {
           throw insertErr;
         }
