@@ -1043,7 +1043,16 @@ class LLMGateway {
             ? (process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY || "dummy-key")
             : (hasOpenRouter ? process.env.OPENROUTER_API_KEY! : secretManager.getLLMProviderKey("openai"));
         console.log(`[LLMGateway] Creating OpenAI client: baseURL=${baseURL}, keyLen=${apiKey?.length}`);
-        this.openaiClient = new OpenAI({ apiKey, baseURL });
+        this.openaiClient = new OpenAI({
+          apiKey,
+          baseURL,
+          ...(isOpenRouterURL ? {
+            defaultHeaders: {
+              "HTTP-Referer": process.env.APP_URL || "https://iliagpt.io",
+              "X-Title": "IliaGPT",
+            },
+          } : {}),
+        });
       }
       return this.openaiClient;
     }
@@ -1069,14 +1078,19 @@ class LLMGateway {
 
     try {
       const client = this.getOpenAICompatibleClient(provider);
+      const isOpenRouter = Boolean(process.env.OPENROUTER_API_KEY?.trim() || process.env.OPENAI_BASE_URL?.includes("openrouter.ai"));
+      const createParams: any = {
+        model,
+        messages,
+        temperature: options.temperature ?? 0.7,
+        top_p: options.topP ?? 1,
+        max_tokens: options.maxTokens,
+      };
+      if (isOpenRouter && provider === "openai") {
+        createParams.provider = { data_collection: "deny", require_parameters: false };
+      }
       const response = await client.chat.completions.create(
-        {
-          model,
-          messages,
-          temperature: options.temperature ?? 0.7,
-          top_p: options.topP ?? 1,
-          max_tokens: options.maxTokens,
-        },
+        createParams,
         { signal: controller.signal }
       );
 
@@ -1790,6 +1804,7 @@ class LLMGateway {
         }, STREAM_IDLE_TIMEOUT_MS);
       };
 
+      const isOpenRouter = Boolean(process.env.OPENROUTER_API_KEY?.trim() || process.env.OPENAI_BASE_URL?.includes("openrouter.ai"));
       const createParams: any = {
         model,
         messages,
@@ -1799,6 +1814,9 @@ class LLMGateway {
       };
       if (maxTokensOverride !== undefined) {
         createParams.max_tokens = maxTokensOverride;
+      }
+      if (isOpenRouter) {
+        createParams.provider = { data_collection: "deny", require_parameters: false };
       }
 
       const stream = await client.chat.completions.create(
