@@ -27,7 +27,8 @@ import {
     Trash2,
     Check,
     X,
-    PanelLeftOpen
+    PanelLeftOpen,
+    Plus
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ActiveGpt } from "@/types/chat";
@@ -201,6 +202,16 @@ export function ChatHeader({
                         <span className="sm:hidden">Go</span>
                     </Button>
                 )}
+
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full"
+                    onClick={() => setIsUpgradeDialogOpen(true)}
+                    data-testid="button-plus-header"
+                >
+                    <Plus className="h-4 w-4 text-muted-foreground" />
+                </Button>
 
                 {chatId && !chatId.startsWith("pending-") ? (
                     <ShareChatDialog chatId={chatId} chatTitle={messages[0]?.content?.slice(0, 30) || "Chat"}>
