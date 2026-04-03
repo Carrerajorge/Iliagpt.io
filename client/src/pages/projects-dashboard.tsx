@@ -15,6 +15,11 @@ import {
   MessageSquare,
   Clock,
   ChevronRight,
+  Play,
+  Presentation,
+  Box,
+  FileText,
+  Table2,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -28,11 +33,16 @@ export default function ProjectsDashboard() {
   const recentChats = chats.slice(0, 6);
 
   const quickStartOptions = [
+    { icon: Play, label: "Animación", color: "text-red-600 dark:text-red-400", bg: "bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800" },
     { icon: Globe, label: "Sitio Web", color: "text-blue-600 dark:text-blue-400", bg: "bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-800" },
     { icon: Smartphone, label: "Móvil", color: "text-purple-600 dark:text-purple-400", bg: "bg-purple-50 dark:bg-purple-950/40 border-purple-200 dark:border-purple-800" },
     { icon: Palette, label: "Diseño", color: "text-pink-600 dark:text-pink-400", bg: "bg-pink-50 dark:bg-pink-950/40 border-pink-200 dark:border-pink-800" },
+    { icon: Presentation, label: "Slides", color: "text-teal-600 dark:text-teal-400", bg: "bg-teal-50 dark:bg-teal-950/40 border-teal-200 dark:border-teal-800" },
+    { icon: BarChart3, label: "Data Viz", color: "text-emerald-600 dark:text-emerald-400", bg: "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800" },
+    { icon: Box, label: "3D Game", color: "text-indigo-600 dark:text-indigo-400", bg: "bg-indigo-50 dark:bg-indigo-950/40 border-indigo-200 dark:border-indigo-800" },
     { icon: LayoutGrid, label: "Dashboard", color: "text-orange-600 dark:text-orange-400", bg: "bg-orange-50 dark:bg-orange-950/40 border-orange-200 dark:border-orange-800" },
-    { icon: BarChart3, label: "Análisis", color: "text-emerald-600 dark:text-emerald-400", bg: "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800" },
+    { icon: FileText, label: "Documento", color: "text-slate-600 dark:text-slate-400", bg: "bg-slate-50 dark:bg-slate-950/40 border-slate-200 dark:border-slate-700" },
+    { icon: Table2, label: "Hoja de Cálculo", color: "text-green-600 dark:text-green-400", bg: "bg-green-50 dark:bg-green-950/40 border-green-200 dark:border-green-800" },
   ];
 
   const examplePrompts = [
@@ -111,18 +121,19 @@ export default function ProjectsDashboard() {
           </div>
         </div>
 
-        <div className="flex items-center justify-center gap-3 mb-2 overflow-x-auto pb-2">
+        <div className="flex flex-wrap items-center justify-center gap-3 mb-2 max-w-3xl mx-auto">
           {quickStartOptions.map((option) => {
             const Icon = option.icon;
             return (
               <button
                 key={option.label}
                 onClick={handleStartNewChat}
-                className={`flex flex-col items-center justify-center gap-2 px-5 py-4 rounded-xl border ${option.bg} transition-all hover:shadow-md hover:scale-[1.02] flex-shrink-0`}
+                className={`flex flex-col items-center justify-center gap-2 w-[100px] py-4 rounded-xl border ${option.bg} transition-all hover:shadow-md hover:scale-[1.02] active:scale-[0.97] active:shadow-sm select-none`}
+                style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
                 data-testid={`quick-start-${option.label.toLowerCase()}`}
               >
-                <Icon className={`h-5 w-5 ${option.color}`} />
-                <span className={`text-xs font-medium ${option.color}`}>{option.label}</span>
+                <Icon className={`h-5 w-5 ${option.color} pointer-events-none`} />
+                <span className={`text-[11px] font-medium ${option.color} pointer-events-none leading-tight text-center`}>{option.label}</span>
               </button>
             );
           })}
