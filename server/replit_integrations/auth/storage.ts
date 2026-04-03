@@ -38,6 +38,7 @@ export interface IAuthStorage {
 const RETURNING_COLUMNS = {
   id: users.id,
   email: users.email,
+  emailCanonical: users.emailCanonical,
   username: users.username,
   fullName: users.fullName,
   firstName: users.firstName,

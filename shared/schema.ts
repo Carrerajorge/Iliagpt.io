@@ -32,6 +32,7 @@ export const users = pgTable("users", {
   username: text("username"),
   password: text("password"),
   email: text("email").unique(),
+  emailCanonical: text("email_canonical"),
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
   fullName: varchar("full_name"),

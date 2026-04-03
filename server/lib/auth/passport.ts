@@ -71,18 +71,27 @@ if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
                         return done(new Error("No email found in Google profile"));
                     }
 
-                    // Generate or retrieve user
+                    const googleId = profile.id;
+                    if (!googleId) {
+                        return done(new Error("No Google ID found in profile"));
+                    }
+                    const displayName = profile.displayName || email.split("@")[0];
+                    const givenName = profile.name?.givenName || null;
+                    const familyName = profile.name?.familyName || null;
+                    const photoUrl = profile.photos?.[0]?.value || null;
+                    const verified = profile._json?.email_verified ? "true" : "false";
+
                     let user = await authStorage.getUserByEmail(email);
                     const userData = {
-                        id: `google_${profile.id}`,
+                        id: `google_${googleId}`,
                         email,
                         username: email.split("@")[0],
-                        fullName: profile.displayName,
-                        firstName: profile.name?.givenName,
-                        lastName: profile.name?.familyName,
-                        profileImageUrl: profile.photos?.[0]?.value,
-                        authProvider: "google",
-                        emailVerified: profile._json.email_verified ? "true" : "false",
+                        fullName: displayName,
+                        firstName: givenName,
+                        lastName: familyName,
+                        profileImageUrl: photoUrl,
+                        authProvider: "google" as const,
+                        emailVerified: verified,
                     };
 
                     if (!user) {
