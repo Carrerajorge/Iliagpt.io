@@ -93,6 +93,7 @@ router.get("/google", (req: Request, res: Response) => {
     console.log("[Google Auth] Using redirect_uri:", redirectUri);
     console.log("[Google Auth] Request host:", req.get("host"));
     console.log("[Google Auth] Canonical domain:", CANONICAL_DOMAIN);
+    console.log("[Google Auth] Client ID prefix:", config.clientId?.substring(0, 20) + "...");
 
     const params = new URLSearchParams({
         client_id: config.clientId,
