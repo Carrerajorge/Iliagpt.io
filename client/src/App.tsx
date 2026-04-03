@@ -46,7 +46,6 @@ const lazyWithRetry = <T extends React.ComponentType<any>>(
   });
 
 const Home = lazyWithRetry(() => import("@/pages/home"));
-const ProjectsDashboard = lazyWithRetry(() => import("@/pages/projects-dashboard"));
 const ProjectWorkspace = lazyWithRetry(() => import("@/pages/project-workspace"));
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { PlatformSettingsProvider, usePlatformSettings } from "@/contexts/PlatformSettingsContext";
@@ -88,8 +87,8 @@ function RootRoute(props: any) {
   // If viewing a chat or creating new chat, show the chat interface
   if (location.startsWith("/chat")) return <Home />;
   
-  // Otherwise show the projects dashboard
-  return <ProjectsDashboard />;
+  // Default: redirect to chat
+  return <Home />;
 }
 
 // Wouter passes RouteComponentProps to route components; pages typically ignore them.
