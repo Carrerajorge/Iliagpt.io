@@ -11,15 +11,32 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
   "execute_bash": "bash",
   "shell": "bash",
   "terminal": "bash",
+  "run_command": "bash",
+  "exec": "bash",
+  "execute": "bash",
+  "cmd": "bash",
   "file_read": "read_file",
   "file_write": "write_file",
   "file_edit": "edit_file",
   "file_list": "list_files",
   "dir_list": "list_files",
+  "ls": "list_files",
   "code_run": "run_code",
   "execute_code": "run_code",
+  "python": "run_code",
+  "javascript": "run_code",
   "grep": "grep_search",
   "search_files": "grep_search",
+  "find_in_files": "grep_search",
+  "ripgrep": "grep_search",
+  "browse": "browse_and_act",
+  "browser": "browse_and_act",
+  "open_url": "browse_and_act",
+  "navigate": "browse_and_act",
+  "web_browse": "browse_and_act",
+  "search_memory": "memory_search",
+  "recall": "memory_search",
+  "remember": "memory_search",
 };
 
 function resolveToolName(name: string, availableTools: Set<string>): string | null {
@@ -30,21 +47,47 @@ function resolveToolName(name: string, availableTools: Set<string>): string | nu
   for (const t of availableTools) {
     if (t.toLowerCase() === lower) return t;
   }
+  const underscored = lower.replace(/[-\s]/g, "_");
+  for (const t of availableTools) {
+    if (t.toLowerCase().replace(/[-\s]/g, "_") === underscored) return t;
+  }
   return null;
 }
 
-const TOOL_CALL_PATTERNS = [
-  /```(?:json)?\s*\{[\s\S]*?"(?:name|function|tool)"[\s\S]*?\}[\s\S]*?```/gi,
-  /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi,
-  /\{\s*"(?:name|function_call|tool_call)"\s*:\s*"([^"]+)"[\s\S]*?\}/gi,
-];
+function repairJSON(text: string): any | null {
+  let cleaned = text
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/gi, "")
+    .replace(/,\s*([}\]])/g, "$1")
+    .replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":')
+    .replace(/:\s*'([^']*)'/g, ':"$1"')
+    .replace(/\n/g, "\\n")
+    .trim();
+
+  try { return JSON.parse(cleaned); } catch {}
+
+  cleaned = text.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
+  const braceStart = cleaned.indexOf("{");
+  const braceEnd = cleaned.lastIndexOf("}");
+  if (braceStart >= 0 && braceEnd > braceStart) {
+    const extracted = cleaned.slice(braceStart, braceEnd + 1);
+    try { return JSON.parse(extracted); } catch {}
+    try {
+      const fixed = extracted
+        .replace(/,\s*([}\]])/g, "$1")
+        .replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":');
+      return JSON.parse(fixed);
+    } catch {}
+  }
+  return null;
+}
 
 function tryParseJSON(text: string): any | null {
   try {
     const cleaned = text.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
     return JSON.parse(cleaned);
   } catch {
-    return null;
+    return repairJSON(text);
   }
 }
 
@@ -67,8 +110,8 @@ export function parseToolCallsFromText(
   }
   if (results.length > 0) return results;
 
-  const xmlRegex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
-  while ((match = xmlRegex.exec(text)) !== null) {
+  const hermesRegex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
+  while ((match = hermesRegex.exec(text)) !== null) {
     const parsed = tryParseJSON(match[1]);
     if (parsed && extractToolCall(parsed, availableTools, results, idCounter)) {
       idCounter++;
@@ -76,8 +119,73 @@ export function parseToolCallsFromText(
   }
   if (results.length > 0) return results;
 
-  const actionRegex = /Action:\s*(\w+)\s*\nAction Input:\s*(\{[\s\S]*?\})/gi;
+  const deepseekRegex = /✿FUNCTION✿\s*(\S+)\s*✿\s*([\s\S]*?)(?:✿|$)/gi;
+  while ((match = deepseekRegex.exec(text)) !== null) {
+    const toolName = match[1].trim();
+    const resolved = resolveToolName(toolName, availableTools);
+    if (resolved) {
+      const parsed = tryParseJSON(match[2].trim());
+      results.push({
+        id: `parsed_tc_${idCounter++}`,
+        name: resolved,
+        arguments: parsed ? JSON.stringify(parsed) : match[2].trim(),
+      });
+    }
+  }
+  if (results.length > 0) return results;
+
+  const functionaryRegex = />>>\s*(\w[\w.-]*)\s*\n\s*(\{[\s\S]*?\})/gi;
+  while ((match = functionaryRegex.exec(text)) !== null) {
+    const resolved = resolveToolName(match[1].trim(), availableTools);
+    if (resolved) {
+      const parsed = tryParseJSON(match[2]);
+      if (parsed) {
+        results.push({
+          id: `parsed_tc_${idCounter++}`,
+          name: resolved,
+          arguments: JSON.stringify(parsed),
+        });
+      }
+    }
+  }
+  if (results.length > 0) return results;
+
+  const functionCallRegex = /<\|function_call\|>\s*(\{[\s\S]*?\})\s*(?:<\|\/function_call\|>|$)/gi;
+  while ((match = functionCallRegex.exec(text)) !== null) {
+    const parsed = tryParseJSON(match[1]);
+    if (parsed && extractToolCall(parsed, availableTools, results, idCounter)) {
+      idCounter++;
+    }
+  }
+  if (results.length > 0) return results;
+
+  const mistralRegex = /\[TOOL_CALLS?\]\s*\[?\s*(\{[\s\S]*?\})\s*\]?/gi;
+  while ((match = mistralRegex.exec(text)) !== null) {
+    const parsed = tryParseJSON(match[1]);
+    if (parsed && extractToolCall(parsed, availableTools, results, idCounter)) {
+      idCounter++;
+    }
+  }
+  if (results.length > 0) return results;
+
+  const actionRegex = /Action:\s*(\w[\w.-]*)\s*\n\s*(?:Action\s*Input|Input|Parameters?):\s*(\{[\s\S]*?\})/gi;
   while ((match = actionRegex.exec(text)) !== null) {
+    const resolved = resolveToolName(match[1].trim(), availableTools);
+    if (resolved) {
+      const parsed = tryParseJSON(match[2]);
+      if (parsed) {
+        results.push({
+          id: `parsed_tc_${idCounter++}`,
+          name: resolved,
+          arguments: JSON.stringify(parsed),
+        });
+      }
+    }
+  }
+  if (results.length > 0) return results;
+
+  const llamaToolRegex = /<function=(\w[\w.-]*)>\s*(\{[\s\S]*?\})\s*(?:<\/function>|$)/gi;
+  while ((match = llamaToolRegex.exec(text)) !== null) {
     const resolved = resolveToolName(match[1].trim(), availableTools);
     if (resolved) {
       const parsed = tryParseJSON(match[2]);
@@ -104,6 +212,22 @@ export function parseToolCallsFromText(
       });
     }
   }
+  if (results.length > 0) return results;
+
+  const bareToolCallRegex = /\b(\w[\w_-]*)\s*\(\s*(\{[\s\S]*?\})\s*\)/g;
+  while ((match = bareToolCallRegex.exec(text)) !== null) {
+    const resolved = resolveToolName(match[1].trim(), availableTools);
+    if (resolved) {
+      const parsed = tryParseJSON(match[2]);
+      if (parsed) {
+        results.push({
+          id: `parsed_tc_${idCounter++}`,
+          name: resolved,
+          arguments: JSON.stringify(parsed),
+        });
+      }
+    }
+  }
 
   return results;
 }
@@ -114,12 +238,12 @@ function extractToolCall(
   results: ParsedToolCall[],
   idCounter: number
 ): boolean {
-  const rawName = parsed.name || parsed.function || parsed.tool || parsed.tool_call || parsed.function_call;
+  const rawName = parsed.name || parsed.function || parsed.tool || parsed.tool_call || parsed.function_call || parsed.action;
   if (!rawName) return false;
   const name = resolveToolName(rawName, availableTools);
   if (!name) return false;
 
-  const args = parsed.arguments || parsed.parameters || parsed.params || parsed.input || parsed.args || {};
+  const args = parsed.arguments || parsed.parameters || parsed.params || parsed.input || parsed.args || parsed.action_input || {};
   const argsStr = typeof args === "string" ? args : JSON.stringify(args);
 
   results.push({
@@ -149,6 +273,11 @@ export function buildToolCallingSystemPrompt(toolSchemas: Array<{ name: string; 
 
 You can call multiple tools by including multiple JSON blocks. After each tool executes, you will receive the results and can continue reasoning or call more tools.
 
+Alternative formats also accepted:
+- <tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>
+- Action: tool_name\\nAction Input: {...}
+- <function=tool_name>{...}</function>
+
 IMPORTANT: Always use the exact tool names listed below. Always include required parameters.
 
 Available tools:
@@ -161,6 +290,20 @@ export function stripToolCallsFromText(text: string): string {
   let cleaned = text;
   cleaned = cleaned.replace(/```(?:json)?\s*\{[\s\S]*?"(?:name|function|tool)"[\s\S]*?\}\s*```/gi, "");
   cleaned = cleaned.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "");
-  cleaned = cleaned.replace(/Action:\s*\w+\s*\nAction Input:\s*\{[\s\S]*?\}/gi, "");
+  cleaned = cleaned.replace(/Action:\s*\w[\w.-]*\s*\n\s*(?:Action\s*Input|Input|Parameters?):\s*\{[\s\S]*?\}/gi, "");
+  cleaned = cleaned.replace(/✿FUNCTION✿[\s\S]*?(?:✿|$)/gi, "");
+  cleaned = cleaned.replace(/>>>\s*\w[\w.-]*\s*\n\s*\{[\s\S]*?\}/gi, "");
+  cleaned = cleaned.replace(/<\|function_call\|>[\s\S]*?(?:<\|\/function_call\|>|$)/gi, "");
+  cleaned = cleaned.replace(/\[TOOL_CALLS?\]\s*\[?\s*\{[\s\S]*?\}\s*\]?/gi, "");
+  cleaned = cleaned.replace(/<function=\w[\w.-]*>[\s\S]*?(?:<\/function>|$)/gi, "");
+  cleaned = cleaned.replace(/\b\w[\w_-]*\s*\(\s*\{[\s\S]*?\}\s*\)/g, (match) => {
+    const nameMatch = match.match(/^(\w[\w_-]*)\s*\(/);
+    if (nameMatch) {
+      const name = nameMatch[1].toLowerCase();
+      const toolLikeNames = ["bash","web_search","fetch_url","read_file","write_file","edit_file","list_files","run_code","grep_search","browse_and_act","analyze_data","generate_chart","process_list","port_check","memory_search","openclaw_rag_search","rag_index_document","shell","terminal","search","browse"];
+      if (toolLikeNames.includes(name)) return "";
+    }
+    return match;
+  });
   return cleaned.trim();
 }

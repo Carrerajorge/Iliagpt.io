@@ -14,6 +14,13 @@ import {
   type ToolCall as OpenClawToolCall,
 } from "../agents/toolEngine";
 import { parseToolCallsFromText, buildToolCallingSystemPrompt, stripToolCallsFromText } from "./toolCallParser";
+import {
+  ToolHealthTracker,
+  smartTruncate,
+  buildToolProgressMessage,
+  categorizeError,
+  buildContextPruningStrategy,
+} from "./toolExecutionEngine";
 
 export interface AgentExecutorOptions {
   maxIterations?: number;
@@ -748,7 +755,9 @@ export async function executeAgentLoop(
   let conversationHistory = [...messages];
   let fullResponse = "";
   const circuitBreaker = new CircuitBreaker(3);
+  const toolHealth = new ToolHealthTracker();
   let totalTokensUsed = 0;
+  let consecutiveLoopErrors = 0;
 
   const defaultModel = process.env.AGENT_MODEL || "google/gemma-4-31b-it";
   const budgetMgr = new BudgetManager(runId, defaultModel, { maxIterations: maxIterations });
@@ -1110,6 +1119,14 @@ MANDATORY RULES:
         });
       }
 
+      if (iteration > 5) {
+        const pruneResult = buildContextPruningStrategy(conversationHistory as any, 80000);
+        if (pruneResult.removed > 0) {
+          conversationHistory = pruneResult.pruned as typeof conversationHistory;
+          console.log(`[AgentExecutor] Context pruned: ${pruneResult.removed} messages trimmed to fit context window`);
+        }
+      }
+
       const openaiClient = new OpenAI({
         apiKey: process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY,
         baseURL: process.env.OPENAI_BASE_URL || "https://openrouter.ai/api/v1",
@@ -1380,39 +1397,59 @@ MANDATORY RULES:
           });
         }
 
+        const progressMsg = buildToolProgressMessage(name, normalizedArgs);
         sse.write("tool_start", {
-          runId, toolName: name, args: normalizedArgs, iteration,
+          runId, toolName: name, args: normalizedArgs, iteration, message: progressMsg,
         });
 
         let result: any;
         let artifact: { type: string; url: string; name: string } | undefined;
         const toolStartTime = Date.now();
+        const adaptiveTimeout = toolHealth.getAdaptiveTimeout(name);
 
         try {
-          const isOpenClawTool = OPENCLAW_TOOLS.some(t => t.function.name === name);
-          if (isOpenClawTool) {
-            const toolResult = await executeOpenClawToolCall(
-              { id: tc.id, type: "function", function: { name, arguments: JSON.stringify(normalizedArgs) } },
-              (msg) => sse.write("tool_status", { runId, toolName: name, status: msg, iteration })
-            );
-            try { result = JSON.parse(toolResult.content); } catch { result = toolResult.content; }
-          } else {
-            const execResult = await executeToolCall(
-              name, normalizedArgs, toolContext, runId, res, reservationDetails
-            );
-            result = execResult.result;
-            artifact = execResult.artifact;
-          }
+          const toolPromise = (async () => {
+            const isOpenClawTool = OPENCLAW_TOOLS.some(t => t.function.name === name);
+            if (isOpenClawTool) {
+              const toolResult = await executeOpenClawToolCall(
+                { id: tc.id, type: "function", function: { name, arguments: JSON.stringify(normalizedArgs) } },
+                (msg) => sse.write("tool_status", { runId, toolName: name, status: msg, iteration })
+              );
+              try { return { result: JSON.parse(toolResult.content) }; } catch { return { result: toolResult.content }; }
+            } else {
+              return await executeToolCall(
+                name, normalizedArgs, toolContext, runId, res, reservationDetails
+              );
+            }
+          })();
+
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Tool "${name}" timed out after ${Math.round(adaptiveTimeout / 1000)}s`)), adaptiveTimeout)
+          );
+
+          const execResult = await Promise.race([toolPromise, timeoutPromise]);
+          result = execResult.result;
+          artifact = (execResult as any).artifact;
 
           const hasError = result && typeof result === "object" && "error" in result;
+          const durationMs = Date.now() - toolStartTime;
+          toolHealth.record(name, durationMs, !hasError, hasError ? String(result.error) : undefined);
+
           if (hasError) {
             circuitBreaker.recordFailure(name);
           } else {
             circuitBreaker.recordSuccess(name);
           }
         } catch (toolErr: any) {
+          const durationMs = Date.now() - toolStartTime;
+          const errInfo = categorizeError(toolErr);
           circuitBreaker.recordFailure(name);
-          result = { error: toolErr.message || "Tool execution failed" };
+          toolHealth.record(name, durationMs, false, errInfo.message);
+          result = {
+            error: errInfo.message,
+            errorCategory: errInfo.category,
+            retryable: errInfo.retryable,
+          };
         }
 
         const toolDurationMs = Date.now() - toolStartTime;
@@ -1423,6 +1460,7 @@ MANDATORY RULES:
 
         sse.write("tool_result", {
           runId, toolName: name, result, artifact, iteration, durationMs: toolDurationMs,
+          degraded: toolHealth.isDegraded(name),
         });
 
         return { tc, name, args, result, artifact, skipped: false };
@@ -1448,8 +1486,8 @@ MANDATORY RULES:
             ),
           });
         } else {
-          const raw = JSON.stringify(result);
-          resultSummary = raw.length > 2000 ? raw.slice(0, 2000) + "... [truncated]" : raw;
+          const { text: truncatedText } = smartTruncate(result, 2500);
+          resultSummary = truncatedText;
         }
 
         conversationHistory.push({
@@ -1554,6 +1592,8 @@ MANDATORY RULES:
       if (shouldExitAgentLoop) {
         break;
       }
+
+      consecutiveLoopErrors = 0;
 
       if (textContent) {
         fullResponse += textContent;
@@ -1673,6 +1713,7 @@ Please rewrite your response addressing these issues.`
 
     } catch (error: any) {
       console.error(`[AgentExecutor] Error in iteration ${iteration}:`, error?.message || error);
+      consecutiveLoopErrors++;
 
       const failedModel = process.env.AGENT_MODEL || "minimax/minimax-m2.5";
       modelRouter.recordFailure(failedModel);
@@ -1681,9 +1722,37 @@ Please rewrite your response addressing these issues.`
         error: {
           code: "AGENT_EXECUTION_ERROR",
           message: error.message,
-          retryable: iteration < maxIterations
+          retryable: iteration < maxIterations,
+          consecutiveErrors: consecutiveLoopErrors,
         }
       });
+
+      if (consecutiveLoopErrors >= 2 && iteration < maxIterations - 1) {
+        console.log(`[AgentExecutor] Auto-strategy adjustment after ${consecutiveLoopErrors} consecutive errors`);
+        sse.write("thinking", {
+          runId,
+          step: "strategy_adjustment",
+          message: `Ajustando estrategia después de ${consecutiveLoopErrors} errores consecutivos...`,
+          timestamp: Date.now(),
+        });
+
+        const degradedTools = Object.entries(toolHealth.getSummary())
+          .filter(([_, v]) => v.degraded)
+          .map(([name]) => name);
+
+        if (degradedTools.length > 0) {
+          conversationHistory.push({
+            role: "system",
+            content: `STRATEGY ADJUSTMENT: The following tools are degraded and should be avoided: ${degradedTools.join(", ")}. Use alternative approaches. If you've been trying the same tool repeatedly, try a different tool or approach entirely.`,
+          });
+        } else {
+          conversationHistory.push({
+            role: "system",
+            content: `STRATEGY ADJUSTMENT: Previous attempts failed. Try a simpler, more direct approach. If a complex tool chain isn't working, try using fewer tools or a single tool. Focus on completing the core task.`,
+          });
+        }
+        consecutiveLoopErrors = 0;
+      }
 
       // If browse_and_act already ran successfully and the follow-up LLM call
       // failed (timeout, too-large context, etc.), generate a fallback summary
@@ -1755,6 +1824,7 @@ Please rewrite your response addressing these issues.`
     artifactsGenerated: artifacts.length,
     totalTokensUsed,
     circuitBreakerStatus: circuitBreaker.getStatus(),
+    toolHealthSummary: toolHealth.getSummary(),
     modelRouting: {
       costSummary: modelRouter.getCostSummary(),
       healthStatus: modelRouter.getHealthStatus(),
