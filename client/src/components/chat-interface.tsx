@@ -7244,7 +7244,7 @@ IMPORTANTE:
                   ref={messagesContainerRef}
                   onScroll={handleScroll}
                   className={cn(
-                    "absolute inset-0 overflow-y-auto p-4 sm:p-6 md:p-10 pb-[calc(var(--composer-height,120px)+80px)] space-y-6 bg-background",
+                    "absolute inset-0 overflow-y-auto p-4 sm:p-6 md:p-10 pb-[calc(var(--composer-height,120px)+140px)] space-y-6 bg-background",
                     !hasMessages && "invisible"
                   )}
                 >
