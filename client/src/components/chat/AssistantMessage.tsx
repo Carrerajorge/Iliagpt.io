@@ -536,6 +536,18 @@ export const AssistantMessage = memo(function AssistantMessage({
             )}
             {message.content && !message.isThinking && (
                 <>
+                    {message.webSources && message.webSources.length > 0 && (
+                        <button
+                            onClick={() => setSourcesPanelOpen(true)}
+                            className="inline-flex items-center gap-1 mt-1 mb-0.5 text-sm text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 transition-colors cursor-pointer group"
+                            data-testid={`button-sources-link-${message.id}`}
+                        >
+                            <span className="text-base">🔗</span>
+                            <span className="text-xs font-medium opacity-0 group-hover:opacity-100 transition-opacity">
+                                Ver {message.webSources.length} fuentes
+                            </span>
+                        </button>
+                    )}
                     <div className="inline-flex items-center gap-0.5 mt-0">
                         {message.timestamp && (
                             <span className="text-[10px] text-muted-foreground/60">

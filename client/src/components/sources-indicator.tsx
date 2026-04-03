@@ -1,7 +1,5 @@
 import React, { memo } from "react";
-import { Globe, ChevronRight } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Globe } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { WebSource } from "@/hooks/use-chats";
 
@@ -20,72 +18,49 @@ export const SourcesIndicator = memo(function SourcesIndicator({
 
   const uniqueDomains = sources.reduce((acc, s) => {
     const domain = s.domain?.replace(/^www\./, "") || "";
-    if (domain && !acc.includes(domain)) acc.push(domain);
+    if (domain && !acc.find(x => x.domain?.replace(/^www\./, "") === domain)) acc.push(s);
     return acc;
-  }, [] as string[]);
+  }, [] as WebSource[]);
 
-  const displayedSources = sources.slice(0, 5);
-  const remainingCount = Math.max(0, uniqueDomains.length - displayedSources.length);
+  const displayLogos = uniqueDomains.slice(0, 4);
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 gap-1.5 text-muted-foreground hover:text-foreground group"
-          onClick={onViewSources}
-          data-testid="button-sources"
-        >
-          <div className="flex items-center">
-            {displayedSources.map((source, idx) => (
-              <div
-                key={`${source.domain}-${idx}`}
-                className={cn(
-                  "w-5 h-5 rounded-full bg-background border border-border overflow-hidden flex items-center justify-center shadow-sm",
-                  idx > 0 && "-ml-2 ring-1 ring-background"
-                )}
-                style={{ zIndex: 10 - idx }}
-              >
-                {source.favicon ? (
-                  <img
-                    src={source.favicon}
-                    alt={source.domain}
-                    className="w-3.5 h-3.5 object-contain"
-                    onError={(e) => {
-                      const target = e.target as HTMLImageElement;
-                      target.style.display = 'none';
-                      const fallback = target.nextElementSibling as HTMLElement;
-                      if (fallback) fallback.style.display = 'flex';
-                    }}
-                  />
-                ) : (
-                  <Globe className="w-2.5 h-2.5 text-muted-foreground" />
-                )}
-                <Globe className="w-2.5 h-2.5 text-muted-foreground hidden" />
-              </div>
-            ))}
-            {remainingCount > 0 && (
-              <div
-                className="w-5 h-5 rounded-full bg-muted border border-border flex items-center justify-center text-[9px] font-medium text-muted-foreground -ml-2 ring-1 ring-background shadow-sm"
-                style={{ zIndex: 4 }}
-              >
-                +{remainingCount}
-              </div>
-            )}
-          </div>
-          <span className="text-xs font-medium">{sources.length} fuentes</span>
-          {totalSearches != null && totalSearches > 0 && (
-            <span className="text-[10px] text-muted-foreground/70">
-              ({totalSearches} búsquedas)
-            </span>
-          )}
-          <ChevronRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom">
-        <p>Ver {sources.length} fuentes de {uniqueDomains.length} sitios</p>
-      </TooltipContent>
-    </Tooltip>
+    <button
+      onClick={onViewSources}
+      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted/60 hover:bg-muted border border-border/40 hover:border-border/70 transition-all cursor-pointer group"
+      data-testid="button-sources"
+    >
+      <div className="flex items-center" style={{ marginRight: displayLogos.length > 1 ? `${(displayLogos.length - 1) * 4}px` : 0 }}>
+        {displayLogos.map((source, idx) => {
+          const domain = source.domain?.replace(/^www\./, "") || "";
+          return (
+            <div
+              key={`${domain}-${idx}`}
+              className={cn(
+                "w-6 h-6 rounded-full bg-white dark:bg-zinc-800 border-2 border-white dark:border-zinc-800 overflow-hidden flex items-center justify-center shadow-sm",
+                idx > 0 && "-ml-2.5"
+              )}
+              style={{ zIndex: displayLogos.length - idx }}
+            >
+              <img
+                src={`https://www.google.com/s2/favicons?domain=${domain}&sz=64`}
+                alt={domain}
+                className="w-4 h-4 rounded-full object-contain"
+                onError={(e) => {
+                  const target = e.target as HTMLImageElement;
+                  target.style.display = 'none';
+                  const fallback = target.nextElementSibling as HTMLElement;
+                  if (fallback) fallback.style.display = 'flex';
+                }}
+              />
+              <Globe className="w-3 h-3 text-muted-foreground hidden items-center justify-center" />
+            </div>
+          );
+        })}
+      </div>
+      <span className="text-sm font-semibold text-foreground/80 group-hover:text-foreground transition-colors whitespace-nowrap">
+        {sources.length} sources
+      </span>
+    </button>
   );
 });

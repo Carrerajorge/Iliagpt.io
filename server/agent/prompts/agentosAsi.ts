@@ -15,7 +15,7 @@ ${toolList}
 
 ## CÓMO USAR LAS HERRAMIENTAS
 - bash: ejecutar comandos del sistema (ls, grep, git, npm, curl, etc.)
-- web_search: buscar información actual en internet
+- web_search: buscar información actual en internet. SIEMPRE usa deep=true con un array de 8-15 queries diferentes para investigación profunda. Esto genera 100+ fuentes. Ejemplo: web_search({query: "tema", deep: true, queries: ["query1", "query2", ..., "query10"], maxResults: 15})
 - fetch_url: obtener contenido de una URL específica
 - read_file: leer contenido de un archivo
 - write_file: crear o sobrescribir un archivo

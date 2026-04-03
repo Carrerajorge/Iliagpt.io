@@ -237,7 +237,23 @@ async function executeToolCall(
         try {
           const { searchWeb } = await import("../services/webSearch");
           const isDeepSearch = args.deep === true || (args.maxResults && args.maxResults > 20);
-          const maxResults = args.maxResults || (isDeepSearch ? 50 : 10);
+          const maxResults = args.maxResults || (isDeepSearch ? 20 : 10);
+
+          if (isDeepSearch && (!args.queries || !Array.isArray(args.queries) || args.queries.length === 0)) {
+            const baseQuery = args.query || "search";
+            args.queries = [
+              baseQuery,
+              `${baseQuery} latest news`,
+              `${baseQuery} analysis`,
+              `${baseQuery} research`,
+              `${baseQuery} overview`,
+              `${baseQuery} details`,
+              `${baseQuery} explained`,
+              `${baseQuery} facts`,
+              `${baseQuery} report`,
+              `${baseQuery} comparison`,
+            ];
+          }
 
           if (isDeepSearch && args.queries && Array.isArray(args.queries)) {
             const allResults: any[] = [];

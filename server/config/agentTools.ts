@@ -11,12 +11,14 @@ export interface FunctionDeclaration {
 export const AGENT_TOOLS: FunctionDeclaration[] = [
     {
         name: "web_search",
-        description: "Search the web for current information on any topic",
+        description: "Search the web for current information on any topic. For thorough research, use deep mode with multiple queries to gather 100+ sources across different angles. Always prefer deep mode for factual, research, or complex questions.",
         parameters: {
             type: "object",
             properties: {
-                query: { type: "string", description: "The search query" },
-                maxResults: { type: "number", description: "Maximum results (default 5)" }
+                query: { type: "string", description: "Single search query (used when deep=false)" },
+                deep: { type: "boolean", description: "Enable deep research mode to search multiple queries and gather 100+ sources. ALWAYS use deep=true for research, factual, or complex questions." },
+                queries: { type: "array", items: { type: "string" }, description: "Array of 8-15 diverse search queries covering different angles of the topic. Required when deep=true. Use varied keywords, synonyms, and perspectives to maximize coverage." },
+                maxResults: { type: "number", description: "Maximum results per query (default 10, max 20)" }
             },
             required: ["query"]
         }

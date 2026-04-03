@@ -971,53 +971,45 @@ export const ActionToolbar = memo(function ActionToolbar({
                     </TooltipContent>
                 </Tooltip>
 
-                {/* Sources / Fuentes button - only when webSources exist */}
+                {/* Sources stacked logos - only when webSources exist */}
                 {webSources && webSources.length > 0 && onViewSources && (
                     <>
                         <div className="w-px h-4 bg-border/50 mx-1" />
-                        {/* Source favicon badges */}
-                        <div className="flex items-center gap-0.5">
-                            {webSources
-                                .reduce((acc: WebSource[], s) => {
-                                    const d = s.domain?.replace(/^www\./, "") || "";
-                                    if (!acc.find(x => (x.domain?.replace(/^www\./, "") || "") === d)) acc.push(s);
-                                    return acc;
-                                }, [])
-                                .slice(0, 3)
-                                .map((source, idx) => (
-                                    <Tooltip key={`src-badge-${idx}`}>
-                                        <TooltipTrigger asChild>
-                                            <button
-                                                onClick={onViewSources}
-                                                className="w-5 h-5 rounded-full border border-border bg-muted hover:border-primary transition-all flex items-center justify-center overflow-hidden"
-                                            >
-                                                <img
-                                                    src={`https://www.google.com/s2/favicons?domain=${source.domain?.replace(/^www\./, "")}&sz=32`}
-                                                    alt=""
-                                                    className="w-3.5 h-3.5 rounded-full"
-                                                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                                />
-                                            </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent side="bottom" className="text-xs">
-                                            {source.domain?.replace(/^www\./, "")}
-                                        </TooltipContent>
-                                    </Tooltip>
-                                ))}
-                        </div>
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <button
-                                    onClick={onViewSources}
-                                    className="flex items-center gap-1 px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded hover:bg-muted"
-                                >
-                                    Fuentes
-                                </button>
-                            </TooltipTrigger>
-                            <TooltipContent side="bottom">
-                                <p>Ver fuentes ({webSources.length})</p>
-                            </TooltipContent>
-                        </Tooltip>
+                        <button
+                            onClick={onViewSources}
+                            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-muted/50 hover:bg-muted border border-border/30 hover:border-border/60 transition-all cursor-pointer group"
+                            data-testid={`button-sources-stacked-${testIdSuffix}`}
+                        >
+                            <div className="flex items-center">
+                                {webSources
+                                    .reduce((acc: WebSource[], s) => {
+                                        const d = s.domain?.replace(/^www\./, "") || "";
+                                        if (!acc.find(x => (x.domain?.replace(/^www\./, "") || "") === d)) acc.push(s);
+                                        return acc;
+                                    }, [])
+                                    .slice(0, 4)
+                                    .map((source, idx) => (
+                                        <div
+                                            key={`stk-${idx}`}
+                                            className={cn(
+                                                "w-5 h-5 rounded-full bg-white dark:bg-zinc-800 border-2 border-white dark:border-zinc-800 overflow-hidden flex items-center justify-center shadow-sm",
+                                                idx > 0 && "-ml-2"
+                                            )}
+                                            style={{ zIndex: 10 - idx }}
+                                        >
+                                            <img
+                                                src={`https://www.google.com/s2/favicons?domain=${source.domain?.replace(/^www\./, "")}&sz=64`}
+                                                alt=""
+                                                className="w-3.5 h-3.5 rounded-full object-contain"
+                                                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                            />
+                                        </div>
+                                    ))}
+                            </div>
+                            <span className="text-xs font-semibold text-foreground/70 group-hover:text-foreground transition-colors whitespace-nowrap">
+                                {webSources.length} sources
+                            </span>
+                        </button>
                     </>
                 )}
             </div>
