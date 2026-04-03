@@ -279,7 +279,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                 </div>
             )}
             {message.webSources && message.webSources.length > 0 && !message.isThinking && (
-                <NewsCards sources={message.webSources} maxDisplay={5} />
+                <NewsCards sources={message.webSources} maxDisplay={5} searchQueries={message.searchQueries} totalSearches={message.totalSearches} />
             )}
             {message.content && !message.isThinking && !message.agentRun && (
                 <>
@@ -574,6 +574,8 @@ export const AssistantMessage = memo(function AssistantMessage({
                     open={sourcesPanelOpen}
                     onOpenChange={setSourcesPanelOpen}
                     sources={message.webSources}
+                    searchQueries={message.searchQueries}
+                    totalSearches={message.totalSearches}
                 />
             )}
         </div>

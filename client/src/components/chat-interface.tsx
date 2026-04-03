@@ -3628,8 +3628,6 @@ export function ChatInterface({
 
     const urls = uniq([...urlsFromUriList, ...urlsFromBareText]);
     if (urls.length > 0) {
-      e.preventDefault();
-      importUrlsForUpload(urls);
       return;
     }
 
@@ -6097,6 +6095,8 @@ IMPORTANTE:
               }> = [];
               const streamArtifactMimeTypes = new Map<string, string>();
               let streamWebSources: any[] | undefined;
+              let streamSearchQueries: Array<{ query: string; resultCount: number; status: string }> = [];
+              let streamTotalSearches = 0;
               let isProductionStream = false;
               let cerebroTimeline: any = { subtasks: [], judgeResult: null, evidence: [], budget: null, planTitle: "", isActive: false };
 
@@ -6342,6 +6342,33 @@ IMPORTANTE:
                     return;
                   }
 
+                  if (eventType === "search_progress") {
+                    const current = data?.current || 0;
+                    const total = data?.total || 0;
+                    const sourcesFound = data?.sourcesFound || 0;
+                    streamTotalSearches = total;
+                    if (data?.completed && Array.isArray(data?.queryLog)) {
+                      streamSearchQueries = data.queryLog;
+                    }
+                    setAiProcessStepsForStream((prev: any[]) => {
+                      const searchStepId = "deep-search-progress";
+                      const existing = prev.find((s: any) => s.id === searchStepId);
+                      const label = data?.completed
+                        ? `✓ ${sourcesFound} fuentes encontradas en ${total} búsquedas`
+                        : `Buscando: ${current} de ${total} consultas (${sourcesFound} fuentes)`;
+                      const step = {
+                        id: searchStepId,
+                        step: label,
+                        status: data?.completed ? "done" : "active",
+                      };
+                      if (existing) {
+                        return prev.map((s: any) => s.id === searchStepId ? step : s);
+                      }
+                      return [...prev, step];
+                    });
+                    return;
+                  }
+
                   if (eventType === "thinking") {
                     setAiStateForStream("agent_working");
                     if (data?.step && data?.message) {
@@ -6559,6 +6586,8 @@ IMPORTANTE:
                     confidence: uncertainty?.confidence,
                     uncertaintyReason: uncertainty?.reason,
                     webSources: data?.webSources || streamWebSources,
+                    searchQueries: streamSearchQueries.length > 0 ? streamSearchQueries : undefined,
+                    totalSearches: streamTotalSearches > 0 ? streamTotalSearches : undefined,
                   };
                   if (cerebroTimeline.subtasks.length > 0 || cerebroTimeline.judgeResult || cerebroTimeline.budget) {
                     finalMsg.cerebroTimeline = { ...cerebroTimeline };

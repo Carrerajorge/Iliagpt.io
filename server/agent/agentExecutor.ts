@@ -235,14 +235,64 @@ async function executeToolCall(
     switch (toolName) {
       case "web_search": {
         try {
-          // Use DuckDuckGo search directly (avoids toolRegistry network policy blocks)
           const { searchWeb } = await import("../services/webSearch");
-          const searchResult = await searchWeb(args.query, args.maxResults || 5);
-          result = searchResult.results?.length > 0
-            ? searchResult.results.map((r: any) => ({ title: r.title, url: r.url, snippet: r.snippet }))
-            : { message: "No results found", query: args.query };
+          const isDeepSearch = args.deep === true || (args.maxResults && args.maxResults > 20);
+          const maxResults = args.maxResults || (isDeepSearch ? 50 : 10);
+
+          if (isDeepSearch && args.queries && Array.isArray(args.queries)) {
+            const allResults: any[] = [];
+            const queryLog: any[] = [];
+            const seenUrls = new Set<string>();
+
+            for (let i = 0; i < args.queries.length; i++) {
+              const q = args.queries[i];
+              try {
+                if (context.res) {
+                  const sseWrite = (context.res as any).sseWrite || ((event: string, data: any) => {
+                    try { (context.res as any).write?.(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
+                  });
+                  sseWrite("search_progress", {
+                    runId: context.runId || "",
+                    current: i + 1,
+                    total: args.queries.length,
+                    query: q,
+                    sourcesFound: allResults.length,
+                  });
+                }
+                const sr = await searchWeb(q, Math.min(maxResults, 20));
+                const newResults = (sr.results || []).filter((r: any) => !seenUrls.has(r.url));
+                newResults.forEach((r: any) => seenUrls.add(r.url));
+                allResults.push(...newResults.map((r: any) => ({ title: r.title, url: r.url, snippet: r.snippet, query: q })));
+                queryLog.push({ query: q, resultCount: newResults.length, status: "completed" });
+              } catch {
+                queryLog.push({ query: q, resultCount: 0, status: "failed" });
+              }
+            }
+
+            if (context.res) {
+              const sseWrite = (context.res as any).sseWrite || ((event: string, data: any) => {
+                try { (context.res as any).write?.(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
+              });
+              sseWrite("search_progress", {
+                runId: context.runId || "",
+                current: args.queries.length,
+                total: args.queries.length,
+                sourcesFound: allResults.length,
+                completed: true,
+                queryLog,
+              });
+            }
+
+            result = allResults.length > 0
+              ? { results: allResults, totalSearches: args.queries.length, queryLog }
+              : { message: "No results found", queries: args.queries };
+          } else {
+            const searchResult = await searchWeb(args.query, maxResults);
+            result = searchResult.results?.length > 0
+              ? searchResult.results.map((r: any) => ({ title: r.title, url: r.url, snippet: r.snippet }))
+              : { message: "No results found", query: args.query };
+          }
         } catch (err: any) {
-          // Fallback to toolRegistry
           const searchResult = await toolRegistry.execute("search", {
             query: args.query,
             maxResults: args.maxResults || 5

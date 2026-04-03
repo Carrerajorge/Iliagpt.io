@@ -108,6 +108,8 @@ export interface Message {
   agentRun?: AgentRunData;
   artifact?: MessageArtifact; // Generated artifact from ProductionWorkflowRunner
   webSources?: WebSource[]; // Web search sources for citations
+  searchQueries?: Array<{ query: string; resultCount: number; status: string }>;
+  totalSearches?: number;
   documentAnalysis?: {
     documentModel: any; // DocumentSemanticModel
     insights: any[];

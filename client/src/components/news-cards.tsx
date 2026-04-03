@@ -1,19 +1,22 @@
 import React, { memo, useState, useRef, useCallback } from "react";
-import { ExternalLink, Globe, ChevronRight, ChevronLeft, Copy, ThumbsUp, ThumbsDown, Share2, RefreshCw, X } from "lucide-react";
+import { ExternalLink, Globe, ChevronRight, ChevronLeft, X, Search, BookOpen, FileText, GraduationCap, CheckCircle2, Clock, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { WebSource } from "@/hooks/use-chats";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { diffZonedDays, formatZonedDate, normalizeTimeZone, type PlatformDateFormat } from "@/lib/platformDateTime";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface NewsCardsProps {
   sources: WebSource[];
   maxDisplay?: number;
   onRefresh?: () => void;
+  searchLabel?: string;
+  searchQueries?: Array<{ query: string; resultCount: number; status: string }>;
+  totalSearches?: number;
 }
 
-// Source logo mapping for known domains
 const SOURCE_LOGOS: Record<string, string> = {
   "elpais.com": "https://logo.clearbit.com/elpais.com",
   "bbc.com": "https://logo.clearbit.com/bbc.com",
@@ -28,7 +31,21 @@ const SOURCE_LOGOS: Record<string, string> = {
   "elcomercio.pe": "https://logo.clearbit.com/elcomercio.pe",
   "rpp.pe": "https://logo.clearbit.com/rpp.pe",
   "gestion.pe": "https://logo.clearbit.com/gestion.pe",
+  "scholar.google.com": "https://logo.clearbit.com/scholar.google.com",
+  "pubmed.ncbi.nlm.nih.gov": "https://logo.clearbit.com/pubmed.gov",
+  "scielo.org": "https://logo.clearbit.com/scielo.org",
+  "jstor.org": "https://logo.clearbit.com/jstor.org",
+  "researchgate.net": "https://logo.clearbit.com/researchgate.net",
+  "arxiv.org": "https://logo.clearbit.com/arxiv.org",
 };
+
+const ACADEMIC_DOMAINS = new Set([
+  "scholar.google.com", "pubmed.ncbi.nlm.nih.gov", "scielo.org", "jstor.org",
+  "researchgate.net", "arxiv.org", "doi.org", "scopus.com", "webofscience.com",
+  "semanticscholar.org", "academia.edu", "springer.com", "wiley.com",
+  "nature.com", "science.org", "ieee.org", "acm.org", "elsevier.com",
+  "tandfonline.com", "sagepub.com", "nih.gov", "plos.org",
+]);
 
 const getSourceLogo = (domain: string): string | null => {
   const cleanDomain = domain.replace(/^www\./, "").toLowerCase();
@@ -53,6 +70,36 @@ const getGradientForDomain = (domain: string): string => {
   return colors[Math.abs(hash) % colors.length];
 };
 
+const isAcademicSource = (source: WebSource): boolean => {
+  const domain = (source.domain || "").replace(/^www\./, "").toLowerCase();
+  return ACADEMIC_DOMAINS.has(domain) || 
+    /\b(doi|issn|isbn|pmid|arxiv)\b/i.test(source.snippet || "") ||
+    /\b(journal|peer.?review|abstract|methodology|findings)\b/i.test(source.snippet || "");
+};
+
+function inferSearchLabel(sources: WebSource[], explicitLabel?: string): string {
+  if (explicitLabel) return explicitLabel;
+  
+  const academicCount = sources.filter(isAcademicSource).length;
+  const totalSources = sources.length;
+  
+  if (academicCount > totalSources * 0.4) return "Artículos académicos encontrados";
+  
+  const newsKeywords = /\b(noticias?|news|breaking|última hora|today|hoy)\b/i;
+  const hasNewsSources = sources.some(s => 
+    newsKeywords.test(s.title || "") || newsKeywords.test(s.snippet || "")
+  );
+  if (hasNewsSources) return "Noticias encontradas";
+  
+  return "Resultados de búsqueda";
+}
+
+function getSearchIcon(label: string) {
+  if (label.includes("académico") || label.includes("Artículo")) return GraduationCap;
+  if (label.includes("Noticia")) return FileText;
+  return Search;
+}
+
 const formatRelativeDate = (
   dateStr: string | undefined,
   opts: { timeZone: string; dateFormat: PlatformDateFormat }
@@ -75,7 +122,83 @@ const formatRelativeDate = (
   }
 };
 
-// Individual news card component
+const AcademicCitation = memo(function AcademicCitation({ source }: { source: WebSource }) {
+  const meta = source.metadata || {};
+  const authors = meta.authors || meta.author;
+  const year = meta.year || meta.publishedYear;
+  const journal = meta.journal || meta.publication || meta.publisher;
+  const doi = meta.doi;
+  const citations = meta.citations || meta.citationCount;
+  const sourceType = meta.sourceType || (isAcademicSource(source) ? "Artículo académico" : "Fuente web");
+  const database = meta.database || inferDatabase(source.domain || "");
+  
+  return (
+    <div className="mt-1.5 space-y-0.5" data-testid="academic-citation">
+      {authors && (
+        <p className="text-[11px] text-muted-foreground">
+          <span className="font-medium text-foreground/70">Autores:</span> {authors}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        {year && (
+          <span className="text-[11px] text-muted-foreground">
+            <span className="font-medium text-foreground/70">Año:</span> {year}
+          </span>
+        )}
+        {journal && (
+          <span className="text-[11px] text-muted-foreground">
+            <span className="font-medium text-foreground/70">Revista:</span> {journal}
+          </span>
+        )}
+        {database && (
+          <span className="text-[11px] text-muted-foreground">
+            <span className="font-medium text-foreground/70">Base:</span> {database}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        {doi && (
+          <a
+            href={`https://doi.org/${doi}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[11px] text-primary hover:underline"
+          >
+            DOI: {doi}
+          </a>
+        )}
+        {citations != null && (
+          <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
+            {citations} citas
+          </span>
+        )}
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+          {sourceType}
+        </span>
+      </div>
+    </div>
+  );
+});
+
+function inferDatabase(domain: string): string {
+  const d = domain.replace(/^www\./, "").toLowerCase();
+  if (d.includes("scholar.google")) return "Google Scholar";
+  if (d.includes("pubmed") || d.includes("nih.gov")) return "PubMed";
+  if (d.includes("scielo")) return "SciELO";
+  if (d.includes("jstor")) return "JSTOR";
+  if (d.includes("arxiv")) return "arXiv";
+  if (d.includes("scopus")) return "Scopus";
+  if (d.includes("researchgate")) return "ResearchGate";
+  if (d.includes("semanticscholar")) return "Semantic Scholar";
+  if (d.includes("ieee")) return "IEEE";
+  if (d.includes("springer")) return "Springer";
+  if (d.includes("nature.com")) return "Nature";
+  if (d.includes("science.org")) return "Science";
+  if (d.includes("elsevier")) return "Elsevier";
+  if (d.includes("wiley")) return "Wiley";
+  return "";
+}
+
 const NewsCard = memo(function NewsCard({
   source,
   index,
@@ -92,6 +215,7 @@ const NewsCard = memo(function NewsCard({
   const hasImage = source.imageUrl && !imageError;
   const domain = source.domain?.replace(/^www\./, "") || "unknown";
   const sourceLogo = !logoError ? getSourceLogo(domain) : null;
+  const academic = isAcademicSource(source);
 
   return (
     <a
@@ -102,8 +226,10 @@ const NewsCard = memo(function NewsCard({
       data-testid={`news-card-${index}`}
       aria-label={`Leer: ${source.title || domain}`}
     >
-      <div className="rounded-xl overflow-hidden border border-border bg-card hover:border-primary/50 transition-all duration-200 hover:shadow-lg h-full">
-        {/* Image container with 16:9 aspect ratio */}
+      <div className={cn(
+        "rounded-xl overflow-hidden border bg-card hover:border-primary/50 transition-all duration-200 hover:shadow-lg h-full",
+        academic ? "border-amber-300/50 dark:border-amber-600/30" : "border-border"
+      )}>
         <div className={cn(
           "relative overflow-hidden",
           "aspect-[16/9]",
@@ -123,23 +249,32 @@ const NewsCard = memo(function NewsCard({
             <>
               <div className="absolute inset-0 bg-black/10" />
               <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-white/80 text-4xl font-bold uppercase">
-                  {domain.slice(0, 2)}
-                </span>
+                {academic ? (
+                  <GraduationCap className="w-10 h-10 text-white/80" />
+                ) : (
+                  <span className="text-white/80 text-4xl font-bold uppercase">
+                    {domain.slice(0, 2)}
+                  </span>
+                )}
               </div>
             </>
           )}
-          {/* External link indicator on hover */}
           <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
             <div className="bg-black/50 backdrop-blur-sm rounded-full p-1.5">
               <ExternalLink className="w-3 h-3 text-white" />
             </div>
           </div>
+          {academic && (
+            <div className="absolute top-2 left-2">
+              <div className="bg-amber-500/90 backdrop-blur-sm rounded-full px-2 py-0.5 flex items-center gap-1">
+                <GraduationCap className="w-3 h-3 text-white" />
+                <span className="text-[10px] font-medium text-white">Académico</span>
+              </div>
+            </div>
+          )}
         </div>
         
-        {/* Card content */}
         <div className="p-3 space-y-2">
-          {/* Source info with logo */}
           <div className="flex items-center gap-2">
             {sourceLogo ? (
               <img
@@ -177,17 +312,17 @@ const NewsCard = memo(function NewsCard({
             )}
           </div>
           
-          {/* Title */}
           <h4 className="text-sm font-medium leading-tight line-clamp-2 group-hover:text-primary transition-colors min-h-[2.5rem]">
             {source.title || domain}
           </h4>
+
+          {academic && <AcademicCitation source={source} />}
         </div>
       </div>
     </a>
   );
 });
 
-// Source badge component for the sources panel
 const SourceBadge = memo(function SourceBadge({ 
   source, 
   onClick 
@@ -211,7 +346,7 @@ const SourceBadge = memo(function SourceBadge({
               window.open(source.url, "_blank", "noopener,noreferrer");
             }}
             className="w-6 h-6 rounded-full border border-border bg-background hover:border-primary hover:scale-110 transition-all flex items-center justify-center overflow-hidden focus:outline-none focus:ring-2 focus:ring-primary/50"
-            aria-label={`Ver noticias de ${name}`}
+            aria-label={`Ver fuente: ${name}`}
           >
             {sourceLogo ? (
               <img
@@ -239,19 +374,23 @@ const SourceBadge = memo(function SourceBadge({
   );
 });
 
-// Sources panel component (appears on the right)
-const SourcesPanel = memo(function SourcesPanel({ 
+const FullSourcesPanel = memo(function FullSourcesPanel({ 
   sources, 
+  searchQueries,
+  totalSearches,
   isOpen, 
   onClose 
 }: { 
   sources: WebSource[]; 
+  searchQueries?: Array<{ query: string; resultCount: number; status: string }>;
+  totalSearches?: number;
   isOpen: boolean; 
   onClose: () => void;
 }) {
+  const [showAllQueries, setShowAllQueries] = useState(false);
+
   if (!isOpen) return null;
 
-  // Get unique sources by domain
   const uniqueSources = sources.reduce((acc, source) => {
     const domain = source.domain?.replace(/^www\./, "") || "unknown";
     if (!acc.find(s => s.domain?.replace(/^www\./, "") === domain)) {
@@ -260,54 +399,166 @@ const SourcesPanel = memo(function SourcesPanel({
     return acc;
   }, [] as WebSource[]);
 
+  const displayQueries = searchQueries || [];
+  const visibleQueries = showAllQueries ? displayQueries : displayQueries.slice(0, 5);
+
   return (
-    <div className="fixed right-0 top-0 h-full w-80 bg-background border-l border-border shadow-xl z-50 overflow-y-auto animate-in slide-in-from-right duration-300">
-      <div className="sticky top-0 bg-background border-b border-border p-4 flex items-center justify-between">
+    <div className="fixed right-0 top-0 h-full w-96 bg-background border-l border-border shadow-xl z-50 overflow-hidden animate-in slide-in-from-right duration-300 flex flex-col" data-testid="full-sources-panel">
+      <div className="sticky top-0 bg-background border-b border-border p-4 flex items-center justify-between flex-shrink-0">
         <div>
-          <h3 className="font-semibold">Fuentes</h3>
-          <p className="text-xs text-muted-foreground">
-            {sources.length} resultados / {uniqueSources.length} fuentes
+          <h3 className="font-semibold text-sm">Fuentes consultadas</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {sources.length} resultados de {uniqueSources.length} fuentes
+            {totalSearches != null && totalSearches > 0 && (
+              <> · {totalSearches} búsquedas realizadas</>
+            )}
           </p>
         </div>
-        <Button variant="ghost" size="icon" onClick={onClose}>
+        <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8">
           <X className="w-4 h-4" />
         </Button>
       </div>
       
-      <div className="p-4 space-y-3">
-        {uniqueSources.map((source, idx) => {
-          const domain = source.domain?.replace(/^www\./, "") || "unknown";
-          const name = source.source?.name || source.siteName || domain;
-          const count = sources.filter(s => s.domain?.replace(/^www\./, "") === domain).length;
-          
-          return (
-            <a
-              key={`source-panel-${idx}`}
-              href={source.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-3 p-3 rounded-lg border border-border hover:border-primary/50 hover:bg-accent/50 transition-all group"
-            >
-              <SourceBadge source={source} />
-              <div className="flex-1 min-w-0">
-                <span className="text-sm font-medium group-hover:text-primary transition-colors">
-                  {name}
-                </span>
-                <span className="text-xs text-muted-foreground ml-2">
-                  ({count} {count === 1 ? "artículo" : "artículos"})
-                </span>
-              </div>
-              <ExternalLink className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-            </a>
-          );
-        })}
-      </div>
+      <ScrollArea className="flex-1">
+        {displayQueries.length > 0 && (
+          <div className="p-4 border-b border-border">
+            <div className="flex items-center gap-2 mb-3">
+              <Search className="w-3.5 h-3.5 text-muted-foreground" />
+              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Consultas ejecutadas
+              </h4>
+            </div>
+            <div className="space-y-1.5">
+              {visibleQueries.map((q, idx) => (
+                <div key={`query-${idx}`} className="flex items-center gap-2 text-xs py-1 px-2 rounded-md bg-muted/50">
+                  <CheckCircle2 className={cn(
+                    "w-3 h-3 flex-shrink-0",
+                    q.status === "completed" ? "text-green-500" : "text-amber-500"
+                  )} />
+                  <span className="flex-1 truncate text-foreground/80">{q.query}</span>
+                  <span className="text-muted-foreground flex-shrink-0">{q.resultCount} res.</span>
+                </div>
+              ))}
+            </div>
+            {displayQueries.length > 5 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full mt-2 h-7 text-xs"
+                onClick={() => setShowAllQueries(!showAllQueries)}
+                data-testid="button-toggle-queries"
+              >
+                {showAllQueries ? (
+                  <><ChevronUp className="w-3 h-3 mr-1" /> Mostrar menos</>
+                ) : (
+                  <><ChevronDown className="w-3 h-3 mr-1" /> Ver {displayQueries.length - 5} consultas más</>
+                )}
+              </Button>
+            )}
+          </div>
+        )}
+
+        <div className="p-4 space-y-2">
+          <div className="flex items-center gap-2 mb-3">
+            <BookOpen className="w-3.5 h-3.5 text-muted-foreground" />
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Fuentes por origen
+            </h4>
+          </div>
+          {uniqueSources.map((source, idx) => {
+            const domain = source.domain?.replace(/^www\./, "") || "unknown";
+            const name = source.source?.name || source.siteName || domain;
+            const count = sources.filter(s => s.domain?.replace(/^www\./, "") === domain).length;
+            const academic = isAcademicSource(source);
+            
+            return (
+              <a
+                key={`source-panel-${idx}`}
+                href={source.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={cn(
+                  "flex items-center gap-3 p-2.5 rounded-lg border hover:border-primary/50 hover:bg-accent/50 transition-all group",
+                  academic ? "border-amber-200/50 dark:border-amber-700/30" : "border-border/50"
+                )}
+                data-testid={`source-panel-item-${idx}`}
+              >
+                <SourceBadge source={source} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-medium group-hover:text-primary transition-colors truncate">
+                      {name}
+                    </span>
+                    {academic && <GraduationCap className="w-3 h-3 text-amber-500 flex-shrink-0" />}
+                  </div>
+                  <span className="text-[11px] text-muted-foreground">
+                    {count} {count === 1 ? "resultado" : "resultados"}
+                    {inferDatabase(domain) && <> · {inferDatabase(domain)}</>}
+                  </span>
+                </div>
+                <ExternalLink className="w-3.5 h-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+              </a>
+            );
+          })}
+        </div>
+
+        <div className="p-4 border-t border-border">
+          <div className="flex items-center gap-2 mb-3">
+            <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Todos los resultados
+            </h4>
+          </div>
+          <div className="space-y-1.5">
+            {sources.map((source, idx) => {
+              const domain = source.domain?.replace(/^www\./, "") || "";
+              const academic = isAcademicSource(source);
+              return (
+                <a
+                  key={`all-source-${idx}`}
+                  href={source.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-start gap-2 px-2 py-1.5 rounded-md hover:bg-muted/60 transition-colors group text-left"
+                  data-testid={`source-all-${idx}`}
+                >
+                  <span className="text-[10px] text-muted-foreground/60 font-mono mt-0.5 w-4 flex-shrink-0 text-right">
+                    {idx + 1}
+                  </span>
+                  <img
+                    src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`}
+                    alt=""
+                    className="w-4 h-4 rounded-full mt-0.5 flex-shrink-0"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1 min-w-0">
+                      <span className="text-xs font-medium text-foreground truncate group-hover:text-primary transition-colors min-w-0">
+                        {source.title || domain}
+                      </span>
+                      {academic && <GraduationCap className="w-3 h-3 text-amber-500 flex-shrink-0" />}
+                    </div>
+                    {source.snippet && (
+                      <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">
+                        {source.snippet}
+                      </p>
+                    )}
+                    <span className="text-[10px] text-muted-foreground/60">
+                      {domain}
+                      {source.date && ` · ${source.date}`}
+                    </span>
+                  </div>
+                </a>
+              );
+            })}
+          </div>
+        </div>
+      </ScrollArea>
     </div>
   );
 });
 
-// Main NewsCards component
-export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRefresh }: NewsCardsProps) {
+export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRefresh, searchLabel, searchQueries, totalSearches }: NewsCardsProps) {
   const { settings: platformSettings } = usePlatformSettings();
   const platformTimeZone = normalizeTimeZone(platformSettings.timezone_default);
   const platformDateFormat = platformSettings.date_format;
@@ -339,8 +590,9 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
   if (!sources || sources.length === 0) return null;
 
   const displaySources = sources.slice(0, maxDisplay);
+  const label = inferSearchLabel(sources, searchLabel);
+  const SearchIcon = getSearchIcon(label);
   
-  // Get unique sources for the badges
   const uniqueSources = sources.reduce((acc, source) => {
     const domain = source.domain?.replace(/^www\./, "") || "unknown";
     if (!acc.find(s => s.domain?.replace(/^www\./, "") === domain)) {
@@ -352,19 +604,56 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
   return (
     <>
       <div className="relative my-4" data-testid="news-cards-container">
-        {/* Header */}
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-sm font-medium text-foreground">
-            Noticias relacionadas
-          </span>
-          <span className="text-xs text-muted-foreground">
-            ({sources.length} resultados)
-          </span>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <SearchIcon className="w-4 h-4 text-primary" />
+            <span className="text-sm font-medium text-foreground" data-testid="text-search-label">
+              {label}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              ({sources.length} resultados)
+            </span>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => setShowSourcesPanel(true)}
+            data-testid="button-view-all-sources"
+          >
+            <div className="flex items-center -space-x-1.5 mr-1">
+              {uniqueSources.slice(0, 4).map((source, idx) => {
+                const domain = source.domain?.replace(/^www\./, "") || "unknown";
+                return (
+                  <div
+                    key={`stack-${idx}`}
+                    className={cn(
+                      "w-5 h-5 rounded-full bg-background border border-border overflow-hidden flex items-center justify-center",
+                      idx > 0 && "ring-1 ring-background -ml-2"
+                    )}
+                    style={{ zIndex: 10 - idx }}
+                  >
+                    <img
+                      src={getSourceLogo(domain) || `https://www.google.com/s2/favicons?domain=${domain}&sz=32`}
+                      alt={domain}
+                      className="w-full h-full object-cover"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  </div>
+                );
+              })}
+              {uniqueSources.length > 4 && (
+                <div className="w-5 h-5 rounded-full bg-muted border border-border flex items-center justify-center text-[9px] font-medium text-muted-foreground ring-1 ring-background -ml-2" style={{ zIndex: 5 }}>
+                  +{uniqueSources.length - 4}
+                </div>
+              )}
+            </div>
+            <span>{uniqueSources.length} fuentes</span>
+            <ChevronRight className="w-3 h-3" />
+          </Button>
         </div>
         
-        {/* Horizontal scrollable cards container */}
         <div className="relative group">
-          {/* Left scroll button */}
           {canScrollLeft && (
             <button
               onClick={() => scroll('left')}
@@ -375,7 +664,6 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
             </button>
           )}
           
-          {/* Cards container */}
           <div
             ref={scrollRef}
             className="flex gap-4 overflow-x-auto scrollbar-hide pb-2 px-1"
@@ -393,7 +681,6 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
             ))}
           </div>
           
-          {/* Right scroll button */}
           {canScrollRight && displaySources.length > 2 && (
             <button
               onClick={() => scroll('right')}
@@ -405,10 +692,10 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
           )}
         </div>
 
-        {/* News summary with direct links */}
         <div className="mt-3 space-y-1.5">
           {displaySources.map((source, idx) => {
             const domain = source.domain?.replace(/^www\./, "") || "";
+            const academic = isAcademicSource(source);
             return (
               <a
                 key={`summary-${idx}`}
@@ -416,7 +703,11 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-start gap-2 px-2 py-1.5 rounded-md hover:bg-muted/60 transition-colors group text-left"
+                data-testid={`source-link-${idx}`}
               >
+                <span className="text-[10px] text-muted-foreground/50 font-mono mt-0.5 w-4 flex-shrink-0 text-right">
+                  {idx + 1}
+                </span>
                 <img
                   src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`}
                   alt=""
@@ -428,14 +719,8 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
                     <span className="text-xs font-medium text-foreground truncate group-hover:text-primary transition-colors min-w-0">
                       {source.title || domain}
                     </span>
-                    <a
-                      href={source.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex-shrink-0 text-sm leading-none hover:scale-110 transition-transform"
-                      title={source.url}
-                      onClick={(e) => e.stopPropagation()}
-                    >🔗</a>
+                    {academic && <GraduationCap className="w-3 h-3 text-amber-500 flex-shrink-0" />}
+                    <ExternalLink className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
                   </div>
                   {source.snippet && (
                     <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">
@@ -446,6 +731,7 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
                     {domain}
                     {source.date && ` · ${formatRelativeDate(source.date, { timeZone: platformTimeZone, dateFormat: platformDateFormat })}`}
                   </span>
+                  {academic && <AcademicCitation source={source} />}
                 </div>
               </a>
             );
@@ -453,15 +739,16 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
         </div>
       </div>
 
-      {/* Sources panel overlay */}
       {showSourcesPanel && (
         <>
           <div 
             className="fixed inset-0 bg-black/50 z-40"
             onClick={() => setShowSourcesPanel(false)}
           />
-          <SourcesPanel 
-            sources={sources} 
+          <FullSourcesPanel 
+            sources={sources}
+            searchQueries={searchQueries}
+            totalSearches={totalSearches}
             isOpen={showSourcesPanel} 
             onClose={() => setShowSourcesPanel(false)} 
           />
@@ -471,7 +758,6 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
   );
 });
 
-// Legacy SourcesList component for backwards compatibility
 export const SourcesList = memo(function SourcesList({ sources }: { sources: WebSource[] }) {
   if (!sources || sources.length === 0) return null;
 
