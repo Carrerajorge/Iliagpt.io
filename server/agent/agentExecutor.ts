@@ -372,6 +372,120 @@ async function executeToolCall(
         break;
       }
 
+      case "run_code": {
+        try {
+          const { execSync } = await import("child_process");
+          const { randomUUID: genId } = await import("crypto");
+          const lang = args.language || "javascript";
+          const timeout = Math.min((args.timeout || 30) * 1000, 120000);
+          const code = String(args.code || "");
+          if (code.length > 100000) { result = { error: "Code too large (max 100KB)" }; break; }
+          let stdout: string;
+          const uniqueId = genId().replace(/-/g, "");
+          if (lang === "python") {
+            const fs = await import("fs");
+            const tmpFile = `/tmp/agent_code_${uniqueId}.py`;
+            fs.writeFileSync(tmpFile, code);
+            try {
+              stdout = execSync(`python3 ${tmpFile}`, { timeout, encoding: "utf8", maxBuffer: 1024 * 1024 });
+            } finally { try { fs.unlinkSync(tmpFile); } catch {} }
+          } else {
+            const fs = await import("fs");
+            const tmpFile = `/tmp/agent_code_${uniqueId}.js`;
+            fs.writeFileSync(tmpFile, code);
+            try {
+              stdout = execSync(`node ${tmpFile}`, { timeout, encoding: "utf8", maxBuffer: 1024 * 1024 });
+            } finally { try { fs.unlinkSync(tmpFile); } catch {} }
+          }
+          result = { success: true, stdout: stdout.slice(0, 10000), exitCode: 0 };
+        } catch (err: any) {
+          result = { success: false, stdout: (err.stdout || "").slice(0, 5000), stderr: (err.stderr || err.message || "").slice(0, 5000), exitCode: err.status || 1 };
+        }
+        break;
+      }
+
+      case "bash": {
+        const BASH_BLOCKLIST = /\b(rm\s+-rf\s+\/|dd\s+if=|mkfs|shutdown|reboot|chmod\s+777|curl\s*\|.*bash|wget\s*\|.*sh|>\s*\/etc\/|>\s*\/dev\/|kill\s+-9\s+1\b|init\s+0)/i;
+        try {
+          const { execSync } = await import("child_process");
+          const timeout = Math.min((args.timeout || 30) * 1000, 120000);
+          const cmd = String(typeof args === "string" ? args : (args.command || args.cmd || ""));
+          if (!cmd.trim()) { result = { error: "Empty command" }; break; }
+          if (BASH_BLOCKLIST.test(cmd)) { result = { error: "Command blocked by security policy" }; break; }
+          const stdout = execSync(cmd, { timeout, encoding: "utf8", maxBuffer: 1024 * 1024, cwd: process.cwd() });
+          result = { success: true, stdout: stdout.slice(0, 10000), exitCode: 0 };
+        } catch (err: any) {
+          result = { success: false, stdout: (err.stdout || "").slice(0, 5000), stderr: (err.stderr || err.message || "").slice(0, 5000), exitCode: err.status || 1 };
+        }
+        break;
+      }
+
+      case "write_file":
+      case "edit_file": {
+        try {
+          const fs = await import("fs");
+          const pathMod = await import("path");
+          const filepath = String(args.filepath || args.path || args.file || "");
+          if (!filepath) { result = { error: "No filepath provided" }; break; }
+          const resolved = pathMod.resolve(filepath);
+          const BLOCKED_PREFIXES = ["/etc/", "/dev/", "/proc/", "/sys/", "/boot/", "/usr/", "/sbin/", "/bin/"];
+          if (BLOCKED_PREFIXES.some(p => resolved.startsWith(p))) {
+            result = { error: `Write to ${resolved} blocked by security policy` }; break;
+          }
+          const content = String(args.content || "");
+          if (Buffer.byteLength(content) > 10 * 1024 * 1024) { result = { error: "Content too large (max 10MB)" }; break; }
+          const dir = pathMod.dirname(resolved);
+          if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+          }
+          fs.writeFileSync(resolved, content, "utf8");
+          result = { success: true, filepath: resolved, bytesWritten: Buffer.byteLength(content) };
+        } catch (err: any) {
+          result = { error: err.message };
+        }
+        break;
+      }
+
+      case "process_list": {
+        try {
+          const { execSync } = await import("child_process");
+          const sortCol = args.sortBy === "mem" ? "-k4" : args.sortBy === "pid" ? "-k1" : "-k3";
+          const limit = Math.min(Math.max(parseInt(String(args.limit || "30"), 10) || 30, 1), 100);
+          const raw = execSync(`ps aux --sort=${sortCol}r | head -n ${limit + 1}`, { encoding: "utf8", timeout: 10000 });
+          const lines = raw.trim().split("\n");
+          const processes = lines.slice(1).map(line => {
+            const parts = line.trim().split(/\s+/);
+            return { user: parts[0], pid: parts[1], cpu: parts[2], mem: parts[3], command: parts.slice(10).join(" ") };
+          });
+          const filterStr = String(args.filter || "");
+          const filtered = filterStr ? processes.filter(p => p.command.toLowerCase().includes(filterStr.toLowerCase())) : processes;
+          result = { processes: filtered, count: filtered.length };
+        } catch (err: any) {
+          result = { error: err.message };
+        }
+        break;
+      }
+
+      case "port_check": {
+        try {
+          const { execSync } = await import("child_process");
+          const portNum = parseInt(String(args.port || "0"), 10);
+          if (args.port && (isNaN(portNum) || portNum < 1 || portNum > 65535)) {
+            result = { error: "Invalid port number (must be 1-65535)" }; break;
+          }
+          if (portNum > 0) {
+            const raw = execSync(`ss -tlnp | grep ':${portNum} '`, { encoding: "utf8", timeout: 5000 }).trim();
+            result = { port: portNum, listening: raw.length > 0, details: raw || "Port not in use" };
+          } else {
+            const raw = execSync(`ss -tlnp`, { encoding: "utf8", timeout: 5000 }).trim();
+            result = { ports: raw.split("\n").slice(1).map(l => l.trim()).filter(Boolean) };
+          }
+        } catch (err: any) {
+          result = { port: args.port, listening: false, details: "Port not in use or command failed" };
+        }
+        break;
+      }
+
       default: {
         const toolResult = await toolRegistry.execute(toolName, args, context);
         result = toolResult.success ? toolResult.output : { error: toolResult.error?.message };
@@ -491,7 +605,7 @@ export async function executeAgentLoop(
   const circuitBreaker = new CircuitBreaker(3);
   let totalTokensUsed = 0;
 
-  const defaultModel = process.env.AGENT_MODEL || "minimax/minimax-m2.5";
+  const defaultModel = process.env.AGENT_MODEL || "google/gemma-4-31b-it";
   const budgetMgr = new BudgetManager(runId, defaultModel, { maxIterations: maxIterations });
 
   const recentUserText = collectRecentUserText(messages) || requestSpec.rawMessage || "";

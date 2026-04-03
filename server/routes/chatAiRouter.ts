@@ -6455,7 +6455,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             userId: userId || streamConversationId || "anonymous",
             chatId: effectiveChatIdForPersistence,
             requestSpec: unifiedContext.requestSpec,
-            maxIterations: 10
+            maxIterations: 25
           });
 
           // Use the real response from the agent loop (not a placeholder)

@@ -262,6 +262,42 @@ export const AGENT_TOOLS: FunctionDeclaration[] = [
         }
     },
     {
+        name: "bash",
+        description: "Execute a shell command and return stdout/stderr. Use for system operations, installing packages, running scripts, git commands, etc.",
+        parameters: {
+            type: "object",
+            properties: {
+                command: { type: "string", description: "The shell command to execute" },
+                timeout: { type: "number", description: "Timeout in seconds (default 30, max 120)" }
+            },
+            required: ["command"]
+        }
+    },
+    {
+        name: "write_file",
+        description: "Create or overwrite a file with the given content. Creates parent directories automatically.",
+        parameters: {
+            type: "object",
+            properties: {
+                filepath: { type: "string", description: "Path to the file to create/overwrite" },
+                content: { type: "string", description: "Content to write to the file" }
+            },
+            required: ["filepath", "content"]
+        }
+    },
+    {
+        name: "edit_file",
+        description: "Edit/modify a file by replacing its content. For creating new files or full rewrites.",
+        parameters: {
+            type: "object",
+            properties: {
+                filepath: { type: "string", description: "Path to the file to edit" },
+                content: { type: "string", description: "New content for the file" }
+            },
+            required: ["filepath", "content"]
+        }
+    },
+    {
         name: "run_code",
         description: "Execute Python or Node.js code in an isolated environment. Safer than raw bash for computation, data analysis, and scripting tasks. Captures stdout, stderr, and exit code.",
         parameters: {

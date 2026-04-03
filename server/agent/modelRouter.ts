@@ -39,6 +39,15 @@ export interface RouteResult {
 }
 
 const MODEL_TIERS: Record<string, ModelTier> = {
+  'google/gemma-4-31b-it': {
+    id: 'google/gemma-4-31b-it',
+    provider: 'openrouter',
+    costPer1kInput: 0,
+    costPer1kOutput: 0,
+    maxContextTokens: 131072,
+    strengths: ['chat', 'code', 'reasoning', 'creative', 'research', 'data_analysis', 'web_automation', 'document_generation'],
+    speed: 'fast',
+  },
   'minimax/minimax-m2.5': {
     id: 'minimax/minimax-m2.5',
     provider: 'openrouter',
@@ -110,6 +119,7 @@ function getFallbackChain(): string[] {
     return envChain.split(',').map(m => m.trim()).filter(Boolean);
   }
   return [
+    'google/gemma-4-31b-it',
     'minimax/minimax-m2.5',
     'openai/gpt-4o-mini',
     'deepseek/deepseek-chat',
@@ -200,11 +210,11 @@ export class ModelRouter {
       }
     }
 
-    const defaultModel = 'minimax/minimax-m2.5';
+    const defaultModel = 'google/gemma-4-31b-it';
     return {
       modelId: defaultModel,
       reason: 'last_resort',
-      estimatedCostPer1kTokens: 0.0002,
+      estimatedCostPer1kTokens: 0,
     };
   }
 
