@@ -12,6 +12,13 @@
 
 @custom-variant dark (&:is(.dark *));
 
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
 /* Floating Label Input Styles */
 .floating-label {
   position: relative;
