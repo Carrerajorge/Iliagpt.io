@@ -9,6 +9,8 @@ const PRODUCTION_ORIGINS = [
     'https://iliagpt.com',
     'https://www.iliagpt.com',
     'https://app.iliagpt.com',
+    'https://iliagpt.io',
+    'https://www.iliagpt.io',
 ];
 
 // Development origins (only in non-production)
