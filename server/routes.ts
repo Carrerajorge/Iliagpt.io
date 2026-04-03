@@ -255,23 +255,66 @@ export async function registerRoutes(
 
   // Passport Auth Routes
   // Google (only register if credentials are configured)
+  const crypto = await import("crypto");
+  const OAUTH_STATE_SECRET = process.env.SESSION_SECRET || "oauth-state-fallback-key";
+
+  function generateOAuthState(): string {
+    const nonce = crypto.randomBytes(16).toString("hex");
+    const ts = Date.now().toString(36);
+    const payload = `${nonce}.${ts}`;
+    const hmac = crypto.createHmac("sha256", OAUTH_STATE_SECRET).update(payload).digest("hex").slice(0, 16);
+    return `${payload}.${hmac}`;
+  }
+
+  function verifyOAuthState(state: string): boolean {
+    if (!state) return false;
+    const parts = state.split(".");
+    if (parts.length !== 3) return false;
+    const [nonce, ts, hmac] = parts;
+    const payload = `${nonce}.${ts}`;
+    const expected = crypto.createHmac("sha256", OAUTH_STATE_SECRET).update(payload).digest("hex").slice(0, 16);
+    if (hmac !== expected) return false;
+    const age = Date.now() - parseInt(ts, 36);
+    return age < 10 * 60 * 1000;
+  }
+
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
     app.get("/api/auth/google", (req, res, next) => {
-      console.log("[Auth] Google auth initiated:", {
-        sessionID: req.sessionID?.slice(0, 12),
-        hasSession: !!req.session,
-        baseUrl: env.BASE_URL,
+      const state = generateOAuthState();
+      console.log("[Auth] Google auth initiated with custom state");
+
+      res.cookie("__oauth_state", state, {
+        httpOnly: true,
+        secure: !!(process.env.REPL_SLUG || process.env.NODE_ENV === "production"),
+        sameSite: "lax",
+        maxAge: 10 * 60 * 1000,
+        path: "/api/auth/google/callback",
       });
-      (req.session as any).__oauth_init = Date.now();
 
       passport.authenticate("google", {
         scope: ["openid", "email", "profile"],
         accessType: "offline",
         prompt: "consent select_account",
+        state,
       })(req, res, next);
     });
     app.get("/api/auth/google/callback",
       (req, res, next) => {
+        if (!req.cookies && req.headers.cookie) {
+          const { parse: parseCookie } = require("cookie");
+          req.cookies = parseCookie(req.headers.cookie);
+        }
+        const queryState = req.query?.state as string | undefined;
+        const cookieState = req.cookies?.["__oauth_state"];
+        if (queryState && cookieState) {
+          if (queryState !== cookieState || !verifyOAuthState(queryState)) {
+            console.error("[Auth] Custom OAuth state verification failed");
+            res.clearCookie("__oauth_state", { path: "/api/auth/google/callback" });
+            return res.redirect("/login?error=google_state_mismatch");
+          }
+        }
+        res.clearCookie("__oauth_state", { path: "/api/auth/google/callback" });
+
         passport.authenticate("google", { failureRedirect: "/login?error=google_failed" }, (err: any, user: any, info: any) => {
           (async () => {
             if (err || !user) {
@@ -285,8 +328,7 @@ export async function registerRoutes(
                 hasCode: !!req.query?.code,
                 hasState: !!req.query?.state,
               });
-              const errorParam = err?.message?.includes("state") ? "google_state_mismatch" : "google_failed";
-              return res.redirect(`/login?error=${errorParam}`);
+              return res.redirect("/login?error=google_failed");
             }
 
             const userId = user?.claims?.sub || user?.id;
