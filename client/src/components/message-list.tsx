@@ -2652,32 +2652,8 @@ export function MessageList({
           </motion.div>
         )}
 
-        {/* Super Agent Live Execution Console - show when uiPhase is 'console' (virtualized) */}
-        {uiPhase === 'console' && activeRunId && variant === "default" && (
-          <motion.div
-            key={`execution-console-${activeRunId}`}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="flex w-full max-w-3xl mx-auto gap-4 justify-start"
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              transform: `translateY(${virtualizer.getTotalSize()}px)`,
-            }}
-          >
-            <LiveExecutionConsole
-              key={activeRunId}
-              runId={activeRunId}
-              onComplete={onRunComplete}
-              className="flex-1"
-            />
-          </motion.div>
-        )}
-
-        {/* Phase narrator - ultra minimal thinking indicator (virtualized) */}
-        {aiState !== "idle" && !streamingContent && variant === "default" && uiPhase !== 'console' && (
+        {/* Simple thinking indicator (virtualized) */}
+        {aiState !== "idle" && !streamingContent && variant === "default" && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -2691,11 +2667,13 @@ export function MessageList({
               transform: `translateY(${virtualizer.getTotalSize()}px)`,
             }}
           >
-            <PhaseNarrator
-              autoProgress={!realTimePhase}
-              phase={realTimePhase}
-              intent={detectedIntent}
-            />
+            <div className="flex items-center gap-2 py-3">
+              <div className="flex gap-1">
+                <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+            </div>
           </motion.div>
         )}
       </div>
@@ -2776,36 +2754,21 @@ export function MessageList({
         </motion.div>
       )}
 
-      {/* Super Agent Live Execution Console - show when uiPhase is 'console' */}
-      {uiPhase === 'console' && activeRunId && variant === "default" && (
-        <motion.div
-          key={`execution-console-std-${activeRunId}`}
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex w-full max-w-3xl mx-auto gap-4 justify-start"
-        >
-          <LiveExecutionConsole
-            key={`std-${activeRunId}`}
-            runId={activeRunId}
-            onComplete={onRunComplete}
-            className="flex-1"
-          />
-        </motion.div>
-      )}
-
-      {/* Phase narrator - ultra minimal thinking indicator (standard) */}
-      {aiState !== "idle" && !streamingContent && variant === "default" && uiPhase !== 'console' && (
+      {/* Simple thinking indicator (standard) */}
+      {aiState !== "idle" && !streamingContent && variant === "default" && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           data-testid="thinking-indicator-standard"
           className="flex w-full max-w-3xl mx-auto gap-4 justify-start px-4"
         >
-          <PhaseNarrator
-            autoProgress={!realTimePhase}
-            phase={realTimePhase}
-            intent={detectedIntent}
-          />
+          <div className="flex items-center gap-2 py-3">
+            <div className="flex gap-1">
+              <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '0ms' }} />
+              <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '150ms' }} />
+              <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '300ms' }} />
+            </div>
+          </div>
         </motion.div>
       )}
     </>

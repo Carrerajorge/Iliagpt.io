@@ -222,34 +222,20 @@ export function ChatMessageList({
                     </motion.div>
                 )}
 
-                {uiPhase === 'console' && activeRunId && variant === "default" && (
-                    <motion.div
-                        key={`execution-console-virt-${activeRunId}`}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="flex w-full max-w-3xl mx-auto gap-4 justify-start pb-4"
-                    >
-                        <LiveExecutionConsole
-                            key={`virt-${activeRunId}`}
-                            runId={activeRunId}
-                            onComplete={onRunComplete}
-                            className="flex-1"
-                        />
-                    </motion.div>
-                )}
-
-                {isAiBusyState(aiState) && !streamingContent && variant === "default" && uiPhase !== 'console' && (
+                {isAiBusyState(aiState) && !streamingContent && variant === "default" && (
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         data-testid="thinking-indicator-virt"
                         className="flex w-full max-w-3xl mx-auto gap-4 justify-start px-4 pb-4"
                     >
-                        <PhaseNarrator
-                            autoProgress={!realTimePhase}
-                            phase={realTimePhase}
-                            intent={detectedIntent}
-                        />
+                        <div className="flex items-center gap-2 py-3">
+                            <div className="flex gap-1">
+                                <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '0ms' }} />
+                                <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '150ms' }} />
+                                <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '300ms' }} />
+                            </div>
+                        </div>
                     </motion.div>
                 )}
             </>

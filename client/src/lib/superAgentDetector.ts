@@ -101,6 +101,8 @@ const WEB_AUTOMATION_PATTERNS = [
 ];
 
 export function shouldUseSuperAgent(prompt: string): SuperAgentDetectionResult {
+  return { use: false };
+
   if (!prompt || typeof prompt !== "string") {
     return { use: false };
   }

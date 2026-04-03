@@ -199,36 +199,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                 attempts={message.metadata?.verificationAttempts}
                 className="mb-2"
             />
-            {/* Agent run content - show progress and events */}
-            {message.agentRun && (
-                <AgentRunContent
-                    agentRun={message.agentRun}
-                    onCancel={onAgentCancel ? () => onAgentCancel(message.id, message.agentRun!.runId || "") : undefined}
-                    onRetry={onAgentRetry ? () => onAgentRetry(message.id, message.agentRun?.userMessage || "") : undefined}
-                    onArtifactPreview={onAgentArtifactPreview}
-                    onToolConfirm={onToolConfirm ? (toolName, stepIndex) => onToolConfirm(message.id, toolName, stepIndex) : undefined}
-                    onToolDeny={onToolDeny ? (toolName, stepIndex) => onToolDeny(message.id, toolName, stepIndex) : undefined}
-                />
-            )}
-            {/* Cerebro Timeline - DAG execution timeline with evidence & stats */}
-            {message.cerebroTimeline && message.cerebroTimeline.subtasks && message.cerebroTimeline.subtasks.length > 0 && (
-                <AgentRunTimeline
-                    subtasks={message.cerebroTimeline.subtasks}
-                    judgeResult={message.cerebroTimeline.judgeResult}
-                    evidence={message.cerebroTimeline.evidence}
-                    budget={message.cerebroTimeline.budget}
-                    isActive={message.cerebroTimeline.isActive}
-                    planTitle={message.cerebroTimeline.planTitle}
-                />
-            )}
-            {/* Super Agent display - show research progress with sources */}
-            {superAgentState && (
-                <SuperAgentDisplay
-                    state={superAgentState}
-                    onRetry={onSuperAgentRetry ? () => onSuperAgentRetry(message.id) : undefined}
-                    onCancel={onSuperAgentCancel ? () => onSuperAgentCancel(message.id) : undefined}
-                />
-            )}
+            
             {message.steps && message.steps.length > 0 && (
                 <div className={cn(
                     "rounded-lg border p-4 space-y-3 w-full",

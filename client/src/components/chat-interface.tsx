@@ -7124,22 +7124,7 @@ IMPORTANTE:
                       </div>
                     )}
 
-                    {/* Execution Console - Show UniversalExecutionConsole when state is available, fallback to LiveExecutionConsole */}
-                    {uiPhase === 'console' && activeRunId && (
-                      <div className="flex w-full max-w-3xl mx-auto flex-col gap-3 justify-start">
-                        {executionRunState ? (
-                          <UniversalExecutionConsole
-                            runState={executionRunState as any}
-                            className="mb-4"
-                          />
-                        ) : (
-                          <LiveExecutionConsole
-                            runId={activeRunId}
-                            forceShow={true}
-                          />
-                        )}
-                      </div>
-                    )}
+                    
 
                     <div ref={bottomRef} />
                   </div>
