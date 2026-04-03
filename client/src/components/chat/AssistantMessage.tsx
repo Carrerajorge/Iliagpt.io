@@ -52,6 +52,7 @@ import { AgentRunContent } from "./AgentRunContent";
 import { AgentRunTimeline } from "./AgentRunTimeline";
 import { AgentStateIndicator } from "./AgentStateIndicator";
 import { type AIState } from "@/components/chat-interface/types";
+import { IliaAdBanner } from "@/components/ilia-ad-banner";
 
 export interface AssistantMessageProps {
     message: Message;
@@ -550,31 +551,39 @@ export const AssistantMessage = memo(function AssistantMessage({
             )}
 
             {message.content && !message.isThinking && (
-                <div className="flex items-center gap-3 mt-4">
-                    {message.timestamp && (
-                        <span className="text-[10px] text-muted-foreground/60">
-                            {formatMessageTime(message.timestamp, platformSettings.timezone_default)}
-                        </span>
+                <>
+                    <div className="flex items-center gap-3 mt-4">
+                        {message.timestamp && (
+                            <span className="text-[10px] text-muted-foreground/60">
+                                {formatMessageTime(message.timestamp, platformSettings.timezone_default)}
+                            </span>
+                        )}
+                        <ActionToolbar
+                            messageId={message.id}
+                            content={message.content}
+                            msgIndex={msgIndex}
+                            copiedMessageId={copiedMessageId}
+                            messageFeedback={messageFeedback}
+                            speakingMessageId={speakingMessageId}
+                            aiState={aiState as "idle" | "agent_working" | "thinking" | "responding"}
+                            isRegenerating={isRegenerating}
+                            variant={variant}
+                            webSources={message.webSources}
+                            onCopy={onCopyMessage}
+                            onFeedback={onFeedback}
+                            onRegenerate={onRegenerate}
+                            onShare={onShare}
+                            onReadAloud={onReadAloud}
+                            onViewSources={() => setSourcesPanelOpen(true)}
+                        />
+                    </div>
+                    {aiState === "idle" && msgIndex === totalMessages - 1 && (
+                        <IliaAdBanner
+                            query={message.content.slice(0, 300)}
+                            messageId={message.id}
+                        />
                     )}
-                    <ActionToolbar
-                        messageId={message.id}
-                        content={message.content}
-                        msgIndex={msgIndex}
-                        copiedMessageId={copiedMessageId}
-                        messageFeedback={messageFeedback}
-                        speakingMessageId={speakingMessageId}
-                        aiState={aiState as "idle" | "agent_working" | "thinking" | "responding"}
-                        isRegenerating={isRegenerating}
-                        variant={variant}
-                        webSources={message.webSources}
-                        onCopy={onCopyMessage}
-                        onFeedback={onFeedback}
-                        onRegenerate={onRegenerate}
-                        onShare={onShare}
-                        onReadAloud={onReadAloud}
-                        onViewSources={() => setSourcesPanelOpen(true)}
-                    />
-                </div>
+                </>
             )}
 
             {message.webSources && message.webSources.length > 0 && (
