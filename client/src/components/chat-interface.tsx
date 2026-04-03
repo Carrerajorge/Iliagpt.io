@@ -7231,7 +7231,7 @@ IMPORTANTE:
             </Panel>
           </PanelGroup>
         ) : (
-          <div className="flex-1 flex flex-col min-w-0 min-h-0 h-full overflow-hidden bg-background">
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 h-full overflow-hidden bg-background relative">
             {/* Content Area - conditional based on whether we have messages */}
             {showConversationSkeleton ? (
               <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 md:p-10 space-y-6 bg-background">
@@ -7448,12 +7448,13 @@ IMPORTANTE:
               </div>
             )}
 
-            {/* Input Bar - flex shrink-0, stays at bottom */}
-            {/* Sync Status Indicator */}
-            <div className="flex justify-end px-4 py-1">
-              <SyncStatusIndicator />
-            </div>
-            <Composer
+            {/* Input Bar - floating overlay at bottom */}
+            <div className="absolute bottom-0 left-0 right-0 z-30 pointer-events-none">
+              <div className="pointer-events-auto">
+                <div className="flex justify-end px-4 py-1">
+                  <SyncStatusIndicator />
+                </div>
+                <Composer
               input={input}
               setInput={setInput}
               textareaRef={textareaRef}
@@ -7512,6 +7513,8 @@ IMPORTANTE:
               latencyMode={latencyMode}
               setLatencyMode={setLatencyMode}
             />
+              </div>
+            </div>
           </div>
         )}
         <ETLDialog

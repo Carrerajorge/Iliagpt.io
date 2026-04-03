@@ -410,7 +410,7 @@ export function Composer({
 
     if (isDocumentMode) {
       return (
-        <div className="flex flex-wrap gap-2 mb-2 px-1" data-testid="inline-attachments-container">
+        <div className="flex flex-wrap gap-2 mb-2 px-1 max-h-32 overflow-y-auto" data-testid="inline-attachments-container">
           {uploadedFiles.map((file, index) => (
             <div
               key={file.id || index}
@@ -497,7 +497,7 @@ export function Composer({
     }
 
     return (
-      <div className="flex items-center gap-1.5 pl-1">
+      <div className="flex items-center gap-1.5 pl-1 max-h-28 overflow-x-auto overflow-y-hidden flex-nowrap">
         {uploadedFiles.map((file, index) => {
           const theme = getFileTheme(file.name, file.mimeType);
           const isImage = file.type?.startsWith("image/") || file.mimeType?.startsWith("image/");
@@ -917,7 +917,7 @@ export function Composer({
       "p-4 sm:p-6 w-full max-w-3xl mx-auto relative bg-background z-10",
       isDraggingOver && cn("ring-2 rounded-2xl", SILVER_RING_SOFT)
     )
-    : "shrink-0 w-full px-4 pb-2.5 pt-1.5 bg-background";
+    : "shrink-0 w-full px-4 pb-4 pt-2 bg-background/70 backdrop-blur-xl";
 
   const inputContainerClass = cn(
     isDocumentMode
