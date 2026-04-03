@@ -601,10 +601,10 @@ export function Sidebar({
           <span className="pointer-events-none">AppsWebChat (QR)</span>
           <span className={cn("ml-auto h-2 w-2 rounded-full shrink-0 pointer-events-none", waStatus.state === 'connected' ? 'bg-green-500' : waStatus.state === 'disconnected' ? 'bg-red-500' : 'bg-amber-500')} />
         </button>
-        <button onClick={onOpenCodex} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-codex-vc">
+        <a href="/" onClick={(e) => { e.preventDefault(); window.location.href = '/'; }} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none no-underline" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-codex-vc">
           <Code className="h-4 w-4 text-cyan-500 shrink-0 pointer-events-none" />
           <span className="pointer-events-none">Codex VC</span>
-        </button>
+        </a>
       </div>
 
       <div className="px-3 py-1">
