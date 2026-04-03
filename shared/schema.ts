@@ -61,6 +61,8 @@ export const users = pgTable("users", {
   dailyRequestsUsed: integer("daily_requests_used").default(0),
   dailyRequestsLimit: integer("daily_requests_limit").default(3),
   dailyRequestsResetAt: timestamp("daily_requests_reset_at"),
+  orgId: varchar("org_id"),
+  loginCount: integer("login_count").default(0),
   stripeCustomerId: text("stripe_customer_id"),
   stripeSubscriptionId: text("stripe_subscription_id"),
   createdAt: timestamp("created_at").defaultNow(),

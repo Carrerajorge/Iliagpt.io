@@ -14,6 +14,37 @@ import { autoAcceptWorkspaceInvitationForUser } from "../../services/workspaceIn
 import { canonicalizeEmail } from "../../lib/emailCanon";
 import { authEventBus } from "../../services/authEventBus";
 
+let _columnsReady = false;
+async function ensureAuthColumns(): Promise<void> {
+  if (_columnsReady) return;
+  try {
+    await db.execute(sql`
+      ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS email_canonical TEXT,
+        ADD COLUMN IF NOT EXISTS org_id VARCHAR,
+        ADD COLUMN IF NOT EXISTS login_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS full_name VARCHAR,
+        ADD COLUMN IF NOT EXISTS profile_image_url VARCHAR
+    `);
+    _columnsReady = true;
+  } catch (e: any) {
+    if (e?.code === "42701") { _columnsReady = true; return; }
+    console.warn("[AuthStorage] Column migration failed, trying individually:", e?.message);
+    const cols = [
+      "ADD COLUMN IF NOT EXISTS email_canonical TEXT",
+      "ADD COLUMN IF NOT EXISTS org_id VARCHAR",
+      "ADD COLUMN IF NOT EXISTS login_count INTEGER DEFAULT 0",
+      "ADD COLUMN IF NOT EXISTS full_name VARCHAR",
+      "ADD COLUMN IF NOT EXISTS profile_image_url VARCHAR",
+    ];
+    for (const col of cols) {
+      try { await db.execute(sql.raw(`ALTER TABLE users ${col}`)); } catch {}
+    }
+    _columnsReady = true;
+  }
+}
+ensureAuthColumns().catch(() => {});
+
 export type UpsertUser = {
   id: string;
   email?: string | null;
@@ -38,7 +69,6 @@ export interface IAuthStorage {
 const RETURNING_COLUMNS = {
   id: users.id,
   email: users.email,
-  emailCanonical: users.emailCanonical,
   username: users.username,
   fullName: users.fullName,
   firstName: users.firstName,
@@ -287,26 +317,42 @@ class AuthStorage implements IAuthStorage {
       }
 
       // Step 4: Create new user + identity
-      const [newUser] = await db
-        .insert(users)
-        .values({
-          id: userData.id,
-          orgId: userData.id,
-          email: userData.email,
-          emailCanonical: canonical,
-          username: userData.username ?? (userData.email ? userData.email.split("@")[0] : null),
-          fullName: userData.fullName,
-          firstName: userData.firstName,
-          lastName: userData.lastName,
-          profileImageUrl: userData.profileImageUrl,
-          authProvider: userData.authProvider ?? "email",
-          emailVerified: userData.emailVerified ?? "false",
-          role: userData.role ?? "user",
-          plan: "free",
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .returning(RETURNING_COLUMNS);
+      const baseValues: Record<string, any> = {
+        id: userData.id,
+        orgId: userData.id,
+        email: userData.email,
+        username: userData.username ?? (userData.email ? userData.email.split("@")[0] : null),
+        fullName: userData.fullName,
+        firstName: userData.firstName,
+        lastName: userData.lastName,
+        profileImageUrl: userData.profileImageUrl,
+        authProvider: userData.authProvider ?? "email",
+        emailVerified: userData.emailVerified ?? "false",
+        role: userData.role ?? "user",
+        plan: "free",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      if (_columnsReady && canonical) {
+        baseValues.emailCanonical = canonical;
+      }
+      let newUser: any;
+      try {
+        [newUser] = await db
+          .insert(users)
+          .values(baseValues as any)
+          .returning(RETURNING_COLUMNS);
+      } catch (insertErr: any) {
+        if (insertErr?.message?.includes("email_canonical") || getSqlCode(insertErr) === "42703") {
+          delete baseValues.emailCanonical;
+          [newUser] = await db
+            .insert(users)
+            .values(baseValues as any)
+            .returning(RETURNING_COLUMNS);
+        } else {
+          throw insertErr;
+        }
+      }
 
       await ensureIdentityLink(newUser.id, provider, providerSubject, userData.email, userData.emailVerified === "true");
       authEventBus.publish("USER_REGISTERED", newUser.id, { email: newUser.email, provider });
