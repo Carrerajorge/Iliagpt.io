@@ -15,19 +15,30 @@ import {
   MessageSquare,
   Clock,
   ChevronRight,
+  ChevronLeft,
   Play,
   Presentation,
   Box,
   FileText,
   Table2,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 
 export default function ProjectsDashboard() {
   const [, setLocation] = useLocation();
   const { chats } = useChats();
   const { user } = useAuth();
   const [newProjectDesc, setNewProjectDesc] = useState("");
+  const carouselRef = useRef<HTMLDivElement>(null);
+
+  const scrollCarousel = useCallback((direction: "left" | "right") => {
+    if (!carouselRef.current) return;
+    const scrollAmount = 220;
+    carouselRef.current.scrollBy({
+      left: direction === "left" ? -scrollAmount : scrollAmount,
+      behavior: "smooth",
+    });
+  }, []);
 
   const userName = user?.firstName || user?.email?.split("@")[0] || "Usuario";
   const recentChats = chats.slice(0, 6);
@@ -121,22 +132,46 @@ export default function ProjectsDashboard() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-center gap-3 mb-2 max-w-3xl mx-auto">
-          {quickStartOptions.map((option) => {
-            const Icon = option.icon;
-            return (
-              <button
-                key={option.label}
-                onClick={handleStartNewChat}
-                className={`flex flex-col items-center justify-center gap-2 w-[100px] py-4 rounded-xl border ${option.bg} transition-all hover:shadow-md hover:scale-[1.02] active:scale-[0.97] active:shadow-sm select-none`}
-                style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
-                data-testid={`quick-start-${option.label.toLowerCase()}`}
-              >
-                <Icon className={`h-5 w-5 ${option.color} pointer-events-none`} />
-                <span className={`text-[11px] font-medium ${option.color} pointer-events-none leading-tight text-center`}>{option.label}</span>
-              </button>
-            );
-          })}
+        <div className="relative max-w-2xl mx-auto mb-2">
+          <button
+            onClick={() => scrollCarousel("left")}
+            className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-5 z-10 w-8 h-8 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center shadow-sm hover:shadow-md hover:bg-slate-50 dark:hover:bg-slate-700 active:scale-95 transition-all select-none"
+            style={{ touchAction: 'manipulation' }}
+            data-testid="button-carousel-left"
+          >
+            <ChevronLeft className="h-4 w-4 text-slate-500 dark:text-slate-400 pointer-events-none" />
+          </button>
+
+          <div
+            ref={carouselRef}
+            className="flex items-center gap-3 overflow-x-auto scrollbar-none px-4 py-1 scroll-smooth"
+            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          >
+            {quickStartOptions.map((option) => {
+              const Icon = option.icon;
+              return (
+                <button
+                  key={option.label}
+                  onClick={handleStartNewChat}
+                  className={`flex flex-col items-center justify-center gap-2 min-w-[100px] py-4 rounded-xl border ${option.bg} transition-all hover:shadow-md hover:scale-[1.02] active:scale-[0.97] active:shadow-sm select-none shrink-0`}
+                  style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
+                  data-testid={`quick-start-${option.label.toLowerCase()}`}
+                >
+                  <Icon className={`h-5 w-5 ${option.color} pointer-events-none`} />
+                  <span className={`text-[11px] font-medium ${option.color} pointer-events-none leading-tight text-center`}>{option.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            onClick={() => scrollCarousel("right")}
+            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-5 z-10 w-8 h-8 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center shadow-sm hover:shadow-md hover:bg-slate-50 dark:hover:bg-slate-700 active:scale-95 transition-all select-none"
+            style={{ touchAction: 'manipulation' }}
+            data-testid="button-carousel-right"
+          >
+            <ChevronRight className="h-4 w-4 text-slate-500 dark:text-slate-400 pointer-events-none" />
+          </button>
         </div>
 
         <div className="flex items-center justify-center gap-2 mb-12 mt-4">
