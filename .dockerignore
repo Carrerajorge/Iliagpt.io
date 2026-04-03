@@ -2,17 +2,20 @@
 .git
 .gitignore
 
-# Rust build artifacts (881 MB, dev-only)
+# Rust build artifacts (~881 MB, dev-only)
 native/target/
+native/src/
+native/Cargo.toml
+native/Cargo.lock
 
-# Python dev libraries (215 MB, Python service is development-only)
+# Python dev libraries (~215 MB)
 .pythonlibs/
 __pycache__/
 **/__pycache__/
 **/*.pyc
 **/*.pyo
 
-# Development assets and downloads not needed in production
+# Development assets and downloads
 attached_assets/
 Downloads/
 sandbox_workspace/
@@ -28,17 +31,23 @@ test_results/
 coverage/
 .nyc_output/
 
-# Documentation (not needed at runtime)
+# Documentation
 docs/
+README.md
+CHANGELOG.md
+CONTRIBUTING.md
 
 # Desktop / Electron build artifacts
-desktop/build/
+desktop/
 daemon/
 
 # Local agent/cache state
 .local/
 .cache/
 .agents/
+.upm/
+.npm/
+.config/
 
 # Dev tool config files
 .husky/
@@ -50,8 +59,23 @@ playwright.prod.config.ts
 vitest.config.ts
 vitest.client.config.ts
 eslint.config.js
+eslint.config.mjs
 
 # Editor artifacts
 .DS_Store
 *.tar.gz
 Shimmer
+
+# node_modules caches (pruned by build, but ensure caches excluded)
+node_modules/.cache
+node_modules/.vite
+node_modules/.package-lock.json
+
+# Frontend source (already built into dist/public/)
+client/src/
+
+# Build scripts (not needed at runtime)
+script/
+
+# Large dev-only files
+*.map

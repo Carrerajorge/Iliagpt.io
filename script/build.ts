@@ -84,7 +84,15 @@ import(pathToFileURL(join(__dirname, "index.mjs")).href).catch(err => {
   await writeFile("dist/index.cjs", startWrapper, "utf-8");
 }
 
-buildAll().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function pruneDevDeps() {
+  console.log("pruning dev dependencies for production...");
+  const { execSync } = await import("child_process");
+  execSync("npm prune --omit=dev", { stdio: "inherit" });
+}
+
+buildAll()
+  .then(() => pruneDevDeps())
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
