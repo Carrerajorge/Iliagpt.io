@@ -42,7 +42,8 @@ function normalizeComplexity(objective: string): number {
 
 export function hasNativeAgenticSignal(rawMessage: string): boolean {
   const message = String(rawMessage || "").trim();
-  if (message.length < 8) return false;
+  if (message.length < 3) return false;
+  if (message.length >= 15) return true;
   return (
     planningSignalRegex.test(message) ||
     memorySignalRegex.test(message) ||

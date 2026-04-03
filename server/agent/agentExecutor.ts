@@ -421,12 +421,11 @@ async function executeToolCall(
         break;
       }
 
-      case "write_file":
-      case "edit_file": {
+      case "write_file": {
         try {
           const fs = await import("fs");
           const pathMod = await import("path");
-          const filepath = String(args.filepath || args.path || args.file || "");
+          const filepath = String(args.file_path || args.filepath || args.path || args.file || "");
           if (!filepath) { result = { error: "No filepath provided" }; break; }
           const resolved = pathMod.resolve(filepath);
           const BLOCKED_PREFIXES = ["/etc/", "/dev/", "/proc/", "/sys/", "/boot/", "/usr/", "/sbin/", "/bin/"];
@@ -441,6 +440,42 @@ async function executeToolCall(
           }
           fs.writeFileSync(resolved, content, "utf8");
           result = { success: true, filepath: resolved, bytesWritten: Buffer.byteLength(content) };
+        } catch (err: any) {
+          result = { error: err.message };
+        }
+        break;
+      }
+
+      case "edit_file": {
+        try {
+          const fs = await import("fs");
+          const pathMod = await import("path");
+          const filepath = String(args.file_path || args.filepath || args.path || args.file || "");
+          if (!filepath) { result = { error: "No filepath provided" }; break; }
+          const resolved = pathMod.resolve(filepath);
+          const BLOCKED_PREFIXES = ["/etc/", "/dev/", "/proc/", "/sys/", "/boot/", "/usr/", "/sbin/", "/bin/"];
+          if (BLOCKED_PREFIXES.some(p => resolved.startsWith(p))) {
+            result = { error: `Edit of ${resolved} blocked by security policy` }; break;
+          }
+          if (!fs.existsSync(resolved)) {
+            result = { error: `File not found: ${resolved}` }; break;
+          }
+          const oldString = args.old_string || args.oldString || args.old;
+          const newString = args.new_string !== undefined ? args.new_string : (args.newString !== undefined ? args.newString : args.new);
+          if (oldString !== undefined && oldString !== null) {
+            const existingContent = fs.readFileSync(resolved, "utf8");
+            if (!existingContent.includes(oldString)) {
+              result = { error: `old_string not found in file. The exact text to replace was not found. Use read_file to see current content.` }; break;
+            }
+            const updatedContent = existingContent.replace(oldString, newString ?? "");
+            fs.writeFileSync(resolved, updatedContent, "utf8");
+            result = { success: true, filepath: resolved, replacements: 1 };
+          } else if (args.content !== undefined) {
+            fs.writeFileSync(resolved, String(args.content), "utf8");
+            result = { success: true, filepath: resolved, bytesWritten: Buffer.byteLength(String(args.content)) };
+          } else {
+            result = { error: "edit_file requires either (old_string + new_string) or content" };
+          }
         } catch (err: any) {
           result = { error: err.message };
         }
@@ -554,6 +589,48 @@ async function executeToolCall(
         break;
       }
 
+      case "grep_search": {
+        try {
+          const { execFileSync } = await import("child_process");
+          const pathMod = await import("path");
+          const pattern = String(args.pattern || "");
+          if (!pattern) { result = { error: "No search pattern provided" }; break; }
+          const rawDir = String(args.directory || process.cwd());
+          const resolvedDir = pathMod.resolve(rawDir);
+          const BLOCKED_SEARCH_PREFIXES = ["/etc/", "/dev/", "/proc/", "/sys/", "/boot/", "/usr/", "/sbin/", "/bin/"];
+          if (BLOCKED_SEARCH_PREFIXES.some(p => resolvedDir.startsWith(p))) {
+            result = { error: `Search in ${resolvedDir} blocked by security policy` }; break;
+          }
+          const maxResults = Math.min(args.max_results || 50, 200);
+          const grepArgs: string[] = ["-rn", "--color=never", `-m`, String(maxResults)];
+          if (args.include) {
+            const includeVal = String(args.include).replace(/[^a-zA-Z0-9.*?_\-\/]/g, "");
+            if (includeVal) grepArgs.push(`--include=${includeVal}`);
+          }
+          grepArgs.push("--", pattern, resolvedDir);
+          let stdout = "";
+          try {
+            stdout = execFileSync("grep", grepArgs, { timeout: 15000, encoding: "utf8", maxBuffer: 2 * 1024 * 1024 });
+          } catch (e: any) {
+            stdout = e.stdout || "";
+          }
+          const lines = stdout.trim().split("\n").filter(Boolean).slice(0, maxResults);
+          const matches = lines.map(line => {
+            const colonIdx = line.indexOf(":");
+            const secondColon = line.indexOf(":", colonIdx + 1);
+            return {
+              file: line.substring(0, colonIdx),
+              line: parseInt(line.substring(colonIdx + 1, secondColon), 10) || 0,
+              content: line.substring(secondColon + 1).trim(),
+            };
+          });
+          result = { success: true, matches, count: matches.length, pattern };
+        } catch (err: any) {
+          result = { error: err.message };
+        }
+        break;
+      }
+
       default: {
         const toolResult = await toolRegistry.execute(toolName, args, context);
         result = toolResult.success ? toolResult.output : { error: toolResult.error?.message };
@@ -635,7 +712,7 @@ export async function executeAgentLoop(
   options: AgentExecutorOptions
 ): Promise<string> {
   const ai = getGeminiClientOrThrow();
-  const { runId, userId, chatId, requestSpec, maxIterations = 10, accessLevel = 'owner' } = options;
+  const { runId, userId, chatId, requestSpec, maxIterations = 25, accessLevel = 'owner' } = options;
 
   const writeSse = (event: string, payload: Record<string, unknown>) => {
     try {
@@ -1315,13 +1392,13 @@ MANDATORY RULES:
           const isOpenClawTool = OPENCLAW_TOOLS.some(t => t.function.name === name);
           if (isOpenClawTool) {
             const toolResult = await executeOpenClawToolCall(
-              { id: tc.id, type: "function", function: { name: resolvedName, arguments: JSON.stringify(normalizedArgs) } },
+              { id: tc.id, type: "function", function: { name, arguments: JSON.stringify(normalizedArgs) } },
               (msg) => sse.write("tool_status", { runId, toolName: name, status: msg, iteration })
             );
             try { result = JSON.parse(toolResult.content); } catch { result = toolResult.content; }
           } else {
             const execResult = await executeToolCall(
-              resolvedName, normalizedArgs, toolContext, runId, res, reservationDetails
+              name, normalizedArgs, toolContext, runId, res, reservationDetails
             );
             result = execResult.result;
             artifact = execResult.artifact;
