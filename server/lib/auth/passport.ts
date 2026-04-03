@@ -51,21 +51,23 @@ passport.deserializeUser(async (id: string, done) => {
 
 // --- Google Strategy ---
 if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
+    const googleCallbackURL = `${env.BASE_URL}/api/auth/google/callback`;
+    Logger.info(`[Passport] Google OAuth callbackURL: ${googleCallbackURL}`);
     passport.use(
         new GoogleStrategy(
             {
                 clientID: env.GOOGLE_CLIENT_ID,
                 clientSecret: env.GOOGLE_CLIENT_SECRET,
-                callbackURL: `${env.BASE_URL}/api/auth/google/callback`,
+                callbackURL: googleCallbackURL,
                 scope: ["openid", "email", "profile"],
-                // Request refresh tokens (Google often only returns refresh_token on the first consent)
                 accessType: "offline",
                 prompt: "consent",
-                state: true,
+                state: false,
                 passReqToCallback: true,
             },
             async (req, accessToken, refreshToken, profile, done) => {
                 try {
+                    Logger.info(`[Passport] Google callback received profile: ${profile?.id}, email: ${profile?.emails?.[0]?.value}`);
                     const email = profile.emails?.[0]?.value;
                     if (!email) {
                         return done(new Error("No email found in Google profile"));

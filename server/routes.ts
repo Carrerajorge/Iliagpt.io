@@ -237,22 +237,52 @@ export async function registerRoutes(
 ): Promise<Server> {
   // Session + Passport are initialized in server/index.ts (before csrf/rateLimiter).
 
+  app.get("/api/auth/google/check", (req, res) => {
+    const forwardedProto = req.get("x-forwarded-proto")?.split(",")[0]?.trim() || req.protocol;
+    const forwardedHost = req.get("x-forwarded-host")?.split(",")[0]?.trim() || req.get("host");
+    res.json({
+      configured: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
+      baseUrl: env.BASE_URL,
+      callbackUrl: `${env.BASE_URL}/api/auth/google/callback`,
+      detectedOrigin: `${forwardedProto}://${forwardedHost}`,
+      sessionActive: !!req.session,
+      sessionID: req.sessionID ? `${req.sessionID.slice(0, 8)}...` : null,
+    });
+  });
+
   // Passport Auth Routes
   // Google (only register if credentials are configured)
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
-    app.get("/api/auth/google", passport.authenticate("google", {
-      scope: ["openid", "email", "profile"],
-      // Ensure Google issues a refresh_token (needed for long-lived access).
-      // Note: Google may still only return refresh_token on first consent unless prompt includes "consent".
-      accessType: "offline",
-      prompt: "consent select_account",
-    }));
+    app.get("/api/auth/google", (req, res, next) => {
+      console.log("[Auth] Google auth initiated:", {
+        sessionID: req.sessionID?.slice(0, 12),
+        hasSession: !!req.session,
+        baseUrl: env.BASE_URL,
+        origin: req.get("origin"),
+        referer: req.get("referer"),
+      });
+      passport.authenticate("google", {
+        scope: ["openid", "email", "profile"],
+        accessType: "offline",
+        prompt: "consent select_account",
+      })(req, res, next);
+    });
     app.get("/api/auth/google/callback",
       (req, res, next) => {
-        passport.authenticate("google", { failureRedirect: "/login?error=google_failed" }, (err: any, user: any) => {
+        passport.authenticate("google", { failureRedirect: "/login?error=google_failed" }, (err: any, user: any, info: any) => {
           (async () => {
             if (err || !user) {
-              return res.redirect("/login?error=google_failed");
+              console.error("[Auth] Google callback failed:", {
+                error: err?.message || err,
+                errorStack: err?.stack?.split("\n").slice(0, 3),
+                hasUser: !!user,
+                info: info,
+                sessionID: req.sessionID,
+                hasSession: !!req.session,
+                query: req.query,
+              });
+              const errorParam = err?.message?.includes("state") ? "google_state_mismatch" : "google_failed";
+              return res.redirect(`/login?error=${errorParam}`);
             }
 
             const userId = user?.claims?.sub || user?.id;

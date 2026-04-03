@@ -42,6 +42,7 @@ const OAUTH_ERROR_MESSAGES: Record<string, string> = {
   session_error: "Error al crear la sesión. Por favor intenta de nuevo.",
   verification_failed: "Error al verificar el enlace. Por favor intenta de nuevo.",
   google_failed: "Error al iniciar sesión con Google. Por favor intenta de nuevo.",
+  google_state_mismatch: "La sesión expiró durante la autenticación con Google. Por favor intenta de nuevo.",
   microsoft_failed: "Error al iniciar sesión con Microsoft. Por favor intenta de nuevo.",
   auth0_failed: "Error al iniciar sesión con Auth0. Por favor intenta de nuevo.",
   replit_disabled: "El inicio de sesión con Replit fue desactivado. Usa Google, teléfono o correo.",
