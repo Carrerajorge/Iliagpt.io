@@ -253,8 +253,9 @@ function GlobalKeyboardShortcuts() {
   const handleSelectChat = useCallback((chatId: string) => {
     setSearchOpen(false);
     setCommandPaletteOpen(false);
+    setLocation(`/chat/${chatId}`);
     window.dispatchEvent(new CustomEvent("select-chat", { detail: { chatId } }));
-  }, []);
+  }, [setLocation]);
 
   const handleSelectTool = useCallback((tool: { name: string; description: string }) => {
     window.dispatchEvent(new CustomEvent("tool-selected", { detail: { tool } }));
