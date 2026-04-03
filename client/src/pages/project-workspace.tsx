@@ -66,11 +66,6 @@ export default function ProjectWorkspace() {
     ta.style.height = Math.min(ta.scrollHeight, 150) + "px";
   };
 
-  const suggestions = [
-    { emoji: "🎮", text: "Build a classic Snake game in this repo." },
-    { emoji: "📄", text: "Create a one-page $pdf that summarizes this app." },
-    { emoji: "📝", text: "Create a plan to..." },
-  ];
 
   return (
     <div className="h-screen flex bg-[#1a1a2e] text-white overflow-hidden">
