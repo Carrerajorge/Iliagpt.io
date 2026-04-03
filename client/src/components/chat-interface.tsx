@@ -7244,7 +7244,7 @@ IMPORTANTE:
                   ref={messagesContainerRef}
                   onScroll={handleScroll}
                   className={cn(
-                    "absolute inset-0 overflow-y-auto p-4 sm:p-6 md:p-10 pb-[calc(var(--composer-height,120px)+220px)] space-y-6 bg-background",
+                    "absolute inset-0 overflow-y-auto p-4 sm:p-6 md:p-8 pb-[calc(var(--composer-height,120px)+120px)] space-y-3 bg-background",
                     !hasMessages && "invisible"
                   )}
                 >
@@ -7299,7 +7299,7 @@ IMPORTANTE:
                         uiPhase={uiPhase}
                         aiProcessSteps={aiProcessSteps}
                       />
-                      <div className="shrink-0" style={{ height: 'calc(var(--composer-height, 120px) + 80px)' }} aria-hidden="true" />
+                      <div className="shrink-0" style={{ height: 'calc(var(--composer-height, 120px) + 40px)' }} aria-hidden="true" />
                       <div ref={messagesEndRef} />
                     </>
                   )}

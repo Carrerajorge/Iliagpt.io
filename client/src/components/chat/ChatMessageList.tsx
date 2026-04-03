@@ -213,7 +213,7 @@ export function ChatMessageList({
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: 0.2 }}
-                        className="flex w-full max-w-3xl mx-auto gap-4 justify-start mt-2 pb-4"
+                        className="flex w-full max-w-3xl mx-auto gap-4 justify-start mt-1 pb-2"
                     >
                         <SuggestedReplies
                             suggestions={suggestions}
@@ -268,9 +268,9 @@ export function ChatMessageList({
         // finalize the same ID may be used for the real MessageItem.
         if (msg.id === effectiveStreamingId && !!streamingContent) {
             return (
-                <div className="pb-4 px-2">
-                    <div className="flex w-full max-w-3xl mx-auto gap-4 justify-start">
-                        <div className="flex flex-col gap-2 max-w-[85%] items-start min-w-0">
+                <div className="pb-2 px-2">
+                    <div className="flex w-full max-w-3xl mx-auto gap-2 justify-start">
+                        <div className="flex flex-col gap-1.5 max-w-[85%] items-start min-w-0">
                             <div className="text-sm prose prose-sm dark:prose-invert max-w-none leading-relaxed min-w-0 animate-in fade-in duration-150">
                                 <MarkdownErrorBoundary key={`stream-inline-${msg.content.length}`} fallbackContent={msg.content}>
                                     <MarkdownRenderer
@@ -288,7 +288,7 @@ export function ChatMessageList({
 
         // Regular message
         return (
-            <div className="pb-4 px-2">
+            <div className="pb-2 px-2">
                 <MessageItem
                     message={msg}
                     msgIndex={index}

@@ -103,7 +103,7 @@ export const MessageItem = memo(function MessageItem({
                         message.role === "user" ? "justify-end" : "justify-start"
                     )
                     : cn(
-                        "w-full max-w-3xl mx-auto gap-4",
+                        "w-full max-w-3xl mx-auto gap-2",
                         message.role === "user" ? "justify-end" : "justify-start"
                     )
             )}
