@@ -775,7 +775,7 @@ export const ActionToolbar = memo(function ActionToolbar({
     return (
         <TooltipProvider delayDuration={300}>
             <div
-                className="flex items-center gap-0.5"
+                className="inline-flex items-center gap-0"
                 data-testid={`message-actions-${testIdSuffix}`}
             >
                 <Tooltip>
@@ -783,15 +783,15 @@ export const ActionToolbar = memo(function ActionToolbar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                            className="h-6 w-6 text-muted-foreground/70 hover:text-foreground"
                             onClick={() => onCopy(content, messageId)}
                             data-testid={`button-copy-${testIdSuffix}`}
                             aria-label="Copiar respuesta"
                         >
                             {copiedMessageId === messageId ? (
-                                <CheckCircle2 className="h-4 w-4 text-green-500" />
+                                <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
                             ) : (
-                                <Copy className="h-4 w-4" />
+                                <Copy className="h-3.5 w-3.5" />
                             )}
                         </Button>
                     </TooltipTrigger>
@@ -806,16 +806,16 @@ export const ActionToolbar = memo(function ActionToolbar({
                             variant="ghost"
                             size="icon"
                             className={cn(
-                                "h-7 w-7",
+                                "h-6 w-6",
                                 messageFeedback[messageId] === "up"
                                     ? "text-green-500"
-                                    : "text-muted-foreground hover:text-foreground"
+                                    : "text-muted-foreground/70 hover:text-foreground"
                             )}
                             onClick={() => onFeedback(messageId, "up")}
                             data-testid={`button-like-${testIdSuffix}`}
                             aria-label="Me gusta"
                         >
-                            <ThumbsUp className="h-4 w-4" />
+                            <ThumbsUp className="h-3.5 w-3.5" />
                         </Button>
                     </TooltipTrigger>
                     <TooltipContent side="bottom">
@@ -829,16 +829,16 @@ export const ActionToolbar = memo(function ActionToolbar({
                             variant="ghost"
                             size="icon"
                             className={cn(
-                                "h-7 w-7",
+                                "h-6 w-6",
                                 messageFeedback[messageId] === "down"
                                     ? "text-red-500"
-                                    : "text-muted-foreground hover:text-foreground"
+                                    : "text-muted-foreground/70 hover:text-foreground"
                             )}
                             onClick={() => onFeedback(messageId, "down")}
                             data-testid={`button-dislike-${testIdSuffix}`}
                             aria-label="No me gusta"
                         >
-                            <ThumbsDown className="h-4 w-4" />
+                            <ThumbsDown className="h-3.5 w-3.5" />
                         </Button>
                     </TooltipTrigger>
                     <TooltipContent side="bottom">
@@ -853,13 +853,13 @@ export const ActionToolbar = memo(function ActionToolbar({
                                 <Button
                                     variant="ghost"
                                     size="icon"
-                                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                    className="h-6 w-6 text-muted-foreground/70 hover:text-foreground"
                                     disabled={aiState !== "idle"}
                                     data-testid={`button-regenerate-${testIdSuffix}`}
                                     aria-label="Regenerar respuesta"
                                 >
                                     <RefreshCw
-                                        className={cn("h-4 w-4", isRegenerating && "animate-spin")}
+                                        className={cn("h-3.5 w-3.5", isRegenerating && "animate-spin")}
                                     />
                                 </Button>
                             </PopoverTrigger>
