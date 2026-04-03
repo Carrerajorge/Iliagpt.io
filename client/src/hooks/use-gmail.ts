@@ -87,7 +87,9 @@ export function useGmailConnection() {
         hasFullPermissions: data.hasFullPermissions ?? false
       };
     },
-    staleTime: 60 * 1000,
+    staleTime: 300_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     retry: 1
   });
 

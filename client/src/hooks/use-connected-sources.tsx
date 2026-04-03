@@ -84,7 +84,10 @@ export function useConnectedSources() {
   const query = useQuery<ConnectedSource[]>({
     queryKey: ["connected-sources"],
     queryFn: fetchConnectedSources,
-    staleTime: 60 * 1000,
+    staleTime: 600_000,
+    gcTime: 900_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     retry: 1,
   });
 

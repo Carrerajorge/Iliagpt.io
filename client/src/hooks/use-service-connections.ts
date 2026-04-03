@@ -212,10 +212,11 @@ export function useServiceConnections() {
       return res.json();
     },
     enabled: !!userId,
-    staleTime: 30_000,
+    staleTime: 300_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 
-  // Fetch Gmail-specific status
   const { data: gmailStatus } = useQuery<{ connected: boolean; email?: string }>({
     queryKey: ["gmail-status"],
     queryFn: async () => {
@@ -226,7 +227,9 @@ export function useServiceConnections() {
       return res.json();
     },
     enabled: !!userId,
-    staleTime: 30_000,
+    staleTime: 300_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 
   // Connect mutation

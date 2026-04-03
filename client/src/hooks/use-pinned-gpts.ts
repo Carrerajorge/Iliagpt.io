@@ -32,6 +32,9 @@ export function usePinnedGpts() {
       return res.json();
     },
     enabled: !!user?.id,
+    staleTime: 300_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 
   const pinMutation = useMutation({

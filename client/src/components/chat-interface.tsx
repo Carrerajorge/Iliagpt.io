@@ -642,19 +642,26 @@ export function ChatInterface({
   }, [settings.canvas]);
 
   useEffect(() => {
+    const cacheKey = `_planCache_${user?.id || "anon"}`;
+    const cached = (window as any)[cacheKey];
+    if (cached && Date.now() - cached.ts < 300_000) {
+      setUserPlanState(cached.data);
+      return;
+    }
     const fetchUserPlanInfo = async () => {
       try {
         const response = await apiFetch("/api/user/usage", { credentials: "include" });
         if (response.ok) {
           const data = await response.json();
-          setUserPlanState({
+          const state = {
             plan: data.plan,
             isAdmin: data.isAdmin,
             isPaid: data.plan !== "free"
-          });
+          };
+          (window as any)[cacheKey] = { data: state, ts: Date.now() };
+          setUserPlanState(state);
         }
       } catch (error) {
-        console.error("Failed to fetch user plan info:", error);
       }
     };
     fetchUserPlanInfo();
@@ -1308,27 +1315,34 @@ export function ChatInterface({
 
   // Check Figma connection status and handle OAuth callback
   useEffect(() => {
-    const checkFigmaStatus = async () => {
-      try {
-        const response = await apiFetch("/api/figma/status");
-        const data = await response.json();
-        setIsFigmaConnected(data.connected);
-      } catch (error) {
-        console.error("Error checking Figma status:", error);
-      }
-    };
-
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get("figma_connected") === "true") {
       setIsFigmaConnected(true);
       setIsFigmaConnecting(false);
+      (window as any)._figmaCache = { connected: true, ts: Date.now() };
       window.history.replaceState({}, "", window.location.pathname);
+      return;
     }
     if (urlParams.get("figma_error")) {
       setIsFigmaConnecting(false);
       window.history.replaceState({}, "", window.location.pathname);
     }
 
+    const cached = (window as any)._figmaCache;
+    if (cached && Date.now() - cached.ts < 600_000) {
+      setIsFigmaConnected(cached.connected);
+      return;
+    }
+
+    const checkFigmaStatus = async () => {
+      try {
+        const response = await apiFetch("/api/figma/status");
+        const data = await response.json();
+        setIsFigmaConnected(data.connected);
+        (window as any)._figmaCache = { connected: data.connected, ts: Date.now() };
+      } catch (error) {
+      }
+    };
     checkFigmaStatus();
   }, []);
 
