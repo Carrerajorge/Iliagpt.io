@@ -5836,7 +5836,49 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       console.log(`[Stream] Vision: total imagePartsForVision=${imagePartsForVision.length}`);
 
-      // If we have images, convert the last user message to multimodal format
+      const isModelVisionCapable = !effectiveModel?.includes("gpt-oss") && !effectiveModel?.includes("gemma");
+
+      if (imagePartsForVision.length > 0 && !isModelVisionCapable) {
+        const { performOCR } = await import("../services/ocrService");
+        const ocrTexts: string[] = [];
+        for (const imgPart of imagePartsForVision) {
+          try {
+            const url = imgPart.image_url.url;
+            const base64Match = url.match(/^data:image\/\w+;base64,(.+)$/);
+            if (base64Match) {
+              const buffer = Buffer.from(base64Match[1], "base64");
+              const result = await performOCR(buffer);
+              if (result.text.trim()) {
+                ocrTexts.push(result.text.trim());
+                console.log(`[Stream] OCR: extracted ${result.text.length} chars (confidence: ${result.confidence}%)`);
+              }
+            }
+          } catch (e: any) {
+            console.warn(`[Stream] OCR failed for image:`, e?.message);
+          }
+        }
+
+        const ocrContext = ocrTexts.length > 0
+          ? `\n\n[TEXTO EXTRAÍDO DE IMAGEN(ES) VÍA OCR]\n${ocrTexts.join("\n---\n")}\n[FIN DEL TEXTO EXTRAÍDO]`
+          : "\n\n[Se adjuntó una imagen pero no se pudo extraer texto. El modelo actual no soporta visión directa.]";
+
+        for (let i = formattedMessages.length - 1; i >= 0; i--) {
+          if (formattedMessages[i].role === "user") {
+            const textContent = typeof formattedMessages[i].content === "string"
+              ? formattedMessages[i].content
+              : JSON.stringify(formattedMessages[i].content);
+            formattedMessages[i] = {
+              role: "user",
+              content: textContent + ocrContext,
+            };
+            console.log(`[Stream] OCR: injected OCR text into user message[${i}] (${ocrTexts.length} images processed)`);
+            break;
+          }
+        }
+        imagePartsForVision.length = 0;
+        console.log(`[Stream] OCR: cleared imagePartsForVision — using text-only path for non-vision model`);
+      }
+
       if (imagePartsForVision.length > 0) {
         for (let i = formattedMessages.length - 1; i >= 0; i--) {
           if (formattedMessages[i].role === "user") {

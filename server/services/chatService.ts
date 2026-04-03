@@ -2216,41 +2216,92 @@ REGLAS OBLIGATORIAS:
       webSources: webSources.length > 0 ? webSources : undefined
     };
   } else if (hasImages) {
-    const imageContents = images!.map((img: string) => ({
-      type: "image_url" as const,
-      image_url: { url: img }
-    }));
+    const isVisionCapable = !model?.includes("gpt-oss") && !model?.includes("gemma");
+    
+    if (isVisionCapable) {
+      const imageContents = images!.map((img: string) => ({
+        type: "image_url" as const,
+        image_url: { url: img }
+      }));
 
-    const lastUserIdx = messages.findLastIndex(m => m.role === "user");
-    const messagesWithImages = messages.map((msg, idx) => {
-      if (idx === lastUserIdx) {
-        return {
-          role: msg.role,
-          content: [
-            ...imageContents,
-            { type: "text" as const, text: msg.content || "Analiza esta imagen" }
-          ]
-        };
+      const lastUserIdx = messages.findLastIndex(m => m.role === "user");
+      const messagesWithImages = messages.map((msg, idx) => {
+        if (idx === lastUserIdx) {
+          return {
+            role: msg.role,
+            content: [
+              ...imageContents,
+              { type: "text" as const, text: msg.content || "Analiza esta imagen" }
+            ]
+          };
+        }
+        return msg;
+      });
+
+      response = await openai.chat.completions.create({
+        model: MODELS.VISION,
+        messages: [systemMessage, ...messagesWithImages] as OpenAI.Chat.ChatCompletionMessageParam[],
+        max_tokens: 4096,
+        temperature,
+        top_p: topP,
+      });
+
+      const content = response.choices[0]?.message?.content || "No response generated";
+
+      return {
+        content,
+        role: "assistant",
+        sources,
+        webSources: webSources.length > 0 ? webSources : undefined
+      };
+    } else {
+      const { performOCR } = await import("./ocrService");
+      const ocrTexts: string[] = [];
+      for (const img of images!) {
+        try {
+          const base64Match = img.match(/^data:image\/\w+;base64,(.+)$/);
+          if (base64Match) {
+            const buffer = Buffer.from(base64Match[1], "base64");
+            const result = await performOCR(buffer);
+            if (result.text.trim()) {
+              ocrTexts.push(result.text.trim());
+            }
+          }
+        } catch (e) {
+          console.warn("[ChatService] OCR failed for image:", e);
+        }
       }
-      return msg;
-    });
 
-    response = await openai.chat.completions.create({
-      model: MODELS.VISION,
-      messages: [systemMessage, ...messagesWithImages] as OpenAI.Chat.ChatCompletionMessageParam[],
-      max_tokens: 4096,
-      temperature,
-      top_p: topP,
-    });
+      const ocrContext = ocrTexts.length > 0
+        ? `\n\n[TEXTO EXTRAÍDO DE IMAGEN(ES) VÍA OCR]\n${ocrTexts.join("\n---\n")}\n[FIN DEL TEXTO EXTRAÍDO]`
+        : "\n\n[Se adjuntó una imagen pero no se pudo extraer texto. El modelo actual no soporta visión directa.]";
 
-    const content = response.choices[0]?.message?.content || "No response generated";
+      const lastUserIdx = messages.findLastIndex(m => m.role === "user");
+      const messagesWithOCR = messages.map((msg, idx) => {
+        if (idx === lastUserIdx) {
+          return { ...msg, content: (msg.content || "Analiza esta imagen") + ocrContext };
+        }
+        return msg;
+      });
 
-    return {
-      content,
-      role: "assistant",
-      sources,
-      webSources: webSources.length > 0 ? webSources : undefined
-    };
+      const gatewayResponse = await llmGateway.chat(
+        [systemMessage, ...messagesWithOCR],
+        {
+          model: model || MODELS.TEXT,
+          temperature,
+          topP,
+          userId: userId || conversationId || "anonymous",
+          requestId: `chat_ocr_${Date.now()}`,
+        }
+      );
+
+      return {
+        content: gatewayResponse.content,
+        role: "assistant",
+        sources,
+        webSources: webSources.length > 0 ? webSources : undefined
+      };
+    }
   } else {
     const gatewayResponse = await llmGateway.chat(
       [systemMessage, ...messages],
