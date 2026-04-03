@@ -28,7 +28,7 @@ interface RateLimitState {
   lastRefill: number;
 }
 
-type LLMProvider = "xai" | "gemini" | "openai" | "anthropic" | "deepseek";
+type LLMProvider = "xai" | "gemini" | "openai" | "anthropic" | "deepseek" | "cerebras";
 type LLMProviderOrAuto = LLMProvider | "auto";
 
 interface LLMRequestOptions {
@@ -164,6 +164,10 @@ function detectProviderFromModel(model: string | undefined): LLMProvider | null 
 
   const normalizedModel = model.toLowerCase();
 
+  if (normalizedModel.includes("gpt-oss") && process.env.CEREBRAS_API_KEY?.trim()) {
+    return "cerebras";
+  }
+
   if (normalizedModel.includes("/")) {
     return "openai";
   }
@@ -208,6 +212,7 @@ class LLMGateway {
   private xaiClient: OpenAI | null = null;
   private openaiClient: OpenAI | null = null;
   private deepseekClient: OpenAI | null = null;
+  private cerebrasClient: OpenAI | null = null;
   private cleanupIntervals: ReturnType<typeof setInterval>[] = [];
   private anthropicClient: Anthropic | null = null;
 
@@ -694,6 +699,8 @@ class LLMGateway {
         return Boolean(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim());
       case "deepseek":
         return Boolean(process.env.DEEPSEEK_API_KEY && process.env.DEEPSEEK_API_KEY.trim());
+      case "cerebras":
+        return Boolean(process.env.CEREBRAS_API_KEY && process.env.CEREBRAS_API_KEY.trim());
     }
   }
 
@@ -703,7 +710,7 @@ class LLMGateway {
     if (process.env.OPENAI_BASE_URL?.includes("openrouter.ai")) {
       return ["openai"];
     }
-    const configured: LLMProvider[] = ["gemini", "deepseek", "xai", "openai", "anthropic"];
+    const configured: LLMProvider[] = ["cerebras", "gemini", "deepseek", "xai", "openai", "anthropic"];
     const active = configured.filter((p) => this.isProviderConfigured(p));
 
     return active.sort((a, b) => {
@@ -1021,7 +1028,7 @@ class LLMGateway {
     throw new Error("Max retries exceeded");
   }
 
-  private getOpenAICompatibleClient(provider: "xai" | "openai" | "deepseek"): OpenAI {
+  private getOpenAICompatibleClient(provider: "xai" | "openai" | "deepseek" | "cerebras"): OpenAI {
     if (provider === "xai") {
       if (!this.xaiClient) {
         this.xaiClient = new OpenAI({
@@ -1057,6 +1064,17 @@ class LLMGateway {
       return this.openaiClient;
     }
 
+    if (provider === "cerebras") {
+      if (!this.cerebrasClient) {
+        console.log(`[LLMGateway] Creating Cerebras client: baseURL=https://api.cerebras.ai/v1`);
+        this.cerebrasClient = new OpenAI({
+          baseURL: "https://api.cerebras.ai/v1",
+          apiKey: process.env.CEREBRAS_API_KEY || "",
+        });
+      }
+      return this.cerebrasClient;
+    }
+
     if (!this.deepseekClient) {
       this.deepseekClient = new OpenAI({
         baseURL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1",
@@ -1067,7 +1085,7 @@ class LLMGateway {
   }
 
   private async executeOpenAICompatible(
-    provider: "xai" | "openai" | "deepseek",
+    provider: "xai" | "openai" | "deepseek" | "cerebras",
     messages: ChatCompletionMessageParam[],
     options: LLMRequestOptions & { requestId: string; timeout: number },
     model: string,
@@ -1079,8 +1097,12 @@ class LLMGateway {
     try {
       const client = this.getOpenAICompatibleClient(provider);
       const isOpenRouter = Boolean(process.env.OPENROUTER_API_KEY?.trim() || process.env.OPENAI_BASE_URL?.includes("openrouter.ai"));
+      let effectiveModel = model;
+      if (provider === "cerebras") {
+        effectiveModel = model.replace(/^openai\//, "").replace(/:free$/, "");
+      }
       const createParams: any = {
-        model,
+        model: effectiveModel,
         messages,
         temperature: options.temperature ?? 0.7,
         top_p: options.topP ?? 1,
@@ -1759,7 +1781,7 @@ class LLMGateway {
   }
 
   private async * streamOpenAICompatible(
-    provider: "xai" | "openai" | "deepseek",
+    provider: "xai" | "openai" | "deepseek" | "cerebras",
     messages: ChatCompletionMessageParam[],
     options: LLMRequestOptions,
     requestId: string
@@ -1769,6 +1791,8 @@ class LLMGateway {
     let model: string;
     if (provider === "xai") {
       model = modelProvider === "xai" ? options.model! : MODELS.TEXT;
+    } else if (provider === "cerebras") {
+      model = (options.model || "gpt-oss-120b").replace(/^openai\//, "").replace(/:free$/, "");
     } else if (provider === "openai") {
       model = modelProvider === "openai" ? options.model! : (process.env.OPENAI_MODEL || "gpt-4o-mini");
     } else {
