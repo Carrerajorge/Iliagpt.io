@@ -238,6 +238,10 @@ export async function registerRoutes(
   // Session + Passport are initialized in server/index.ts (before csrf/rateLimiter).
 
   app.get("/api/auth/google/check", (req, res) => {
+    const user = (req as any).user;
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required" });
+    }
     const forwardedProto = req.get("x-forwarded-proto")?.split(",")[0]?.trim() || req.protocol;
     const forwardedHost = req.get("x-forwarded-host")?.split(",")[0]?.trim() || req.get("host");
     res.json({
@@ -246,7 +250,6 @@ export async function registerRoutes(
       callbackUrl: `${env.BASE_URL}/api/auth/google/callback`,
       detectedOrigin: `${forwardedProto}://${forwardedHost}`,
       sessionActive: !!req.session,
-      sessionID: req.sessionID ? `${req.sessionID.slice(0, 8)}...` : null,
     });
   });
 
@@ -258,9 +261,9 @@ export async function registerRoutes(
         sessionID: req.sessionID?.slice(0, 12),
         hasSession: !!req.session,
         baseUrl: env.BASE_URL,
-        origin: req.get("origin"),
-        referer: req.get("referer"),
       });
+      (req.session as any).__oauth_init = Date.now();
+
       passport.authenticate("google", {
         scope: ["openid", "email", "profile"],
         accessType: "offline",
@@ -277,9 +280,10 @@ export async function registerRoutes(
                 errorStack: err?.stack?.split("\n").slice(0, 3),
                 hasUser: !!user,
                 info: info,
-                sessionID: req.sessionID,
+                sessionID: req.sessionID?.slice(0, 12),
                 hasSession: !!req.session,
-                query: req.query,
+                hasCode: !!req.query?.code,
+                hasState: !!req.query?.state,
               });
               const errorParam = err?.message?.includes("state") ? "google_state_mismatch" : "google_failed";
               return res.redirect(`/login?error=${errorParam}`);

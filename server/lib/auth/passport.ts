@@ -62,7 +62,7 @@ if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
                 scope: ["openid", "email", "profile"],
                 accessType: "offline",
                 prompt: "consent",
-                state: false,
+                state: true,
                 passReqToCallback: true,
             },
             async (req, accessToken, refreshToken, profile, done) => {
