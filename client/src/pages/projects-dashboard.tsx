@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import {
   Plus,
   ArrowRight,
+  ArrowLeft,
   Globe,
   Smartphone,
   Palette,
@@ -65,8 +66,20 @@ export default function ProjectsDashboard() {
 
   return (
     <div className="min-h-screen bg-[#f5f5f0] dark:bg-[#0a0a0f]">
+      <div className="max-w-5xl mx-auto px-6 pt-4">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 gap-2 text-xs text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+          onClick={() => setLocation("/chat/new")}
+          data-testid="button-back-to-chat"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Volver al chat
+        </Button>
+      </div>
       <main className="max-w-5xl mx-auto px-6">
-        <div className="pt-16 pb-8 text-center">
+        <div className="pt-8 pb-8 text-center">
           <h1 className="text-3xl md:text-4xl font-bold text-slate-900 dark:text-white mb-2" data-testid="text-welcome">
             Hola {userName}, ¿qué quieres crear?
           </h1>
