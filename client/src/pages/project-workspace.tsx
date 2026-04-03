@@ -227,12 +227,6 @@ export default function ProjectWorkspace() {
           </div>
         </div>
 
-        <div className="border-t border-white/10 px-3 py-2 shrink-0">
-          <button className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/10 text-sm text-white/60 w-full transition-colors" data-testid="button-config">
-            <Settings className="h-3.5 w-3.5" />
-            <span>Configuración</span>
-          </button>
-        </div>
       </div>
 
       <div className="flex-1 flex flex-col bg-[#1a1a2e] overflow-hidden">
