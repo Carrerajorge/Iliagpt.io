@@ -64,3 +64,6 @@ ALLOWED_HOSTS = "iliagpt.io,www.iliagpt.io"
 [userenv.development]
 START_PYTHON_SERVICE = "true"
 PYTHON_TOOLS_PORT = "8001"
+
+[objectStorage]
+defaultBucketID = "replit-objstore-8cdb9c3b-9e44-4c99-9aed-500e8b41061c"

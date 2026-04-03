@@ -180,8 +180,8 @@ export default function ProjectWorkspace() {
               ))}
             </div>
 
-            <div className="bg-white/5 border border-white/10 rounded-xl overflow-hidden">
-              <div className="px-4 pt-3 pb-2">
+            <div className="rounded-2xl border border-amber-500/60 bg-[#1e1e30] overflow-hidden shadow-[0_0_15px_rgba(245,158,11,0.08)]">
+              <div className="px-5 pt-4 pb-3">
                 <textarea
                   ref={textareaRef}
                   value={prompt}
@@ -192,55 +192,55 @@ export default function ProjectWorkspace() {
                     }
                   }}
                   placeholder="Ask Codex anything, @ to add files, / for commands, $ for skills"
-                  className="w-full bg-transparent border-0 outline-none text-sm text-white/80 placeholder-white/30 resize-none min-h-[24px] max-h-[150px]"
+                  className="w-full bg-transparent border-0 outline-none text-[15px] text-white/70 placeholder-white/35 resize-none min-h-[24px] max-h-[150px]"
                   rows={1}
                   data-testid="input-workspace-prompt"
                 />
               </div>
-              <div className="flex items-center justify-between px-3 pb-2">
-                <div className="flex items-center gap-2">
-                  <button className="p-1 rounded hover:bg-white/10 text-white/40" data-testid="button-plus-attach">
-                    <Plus className="h-4 w-4" />
+              <div className="flex items-center justify-between px-4 pb-3">
+                <div className="flex items-center gap-3">
+                  <button className="text-white/40 hover:text-white/60 transition-colors" data-testid="button-plus-attach">
+                    <Plus className="h-[18px] w-[18px]" />
                   </button>
-                  <button className="flex items-center gap-1 text-xs text-white/50 hover:text-white/70 transition-colors">
-                    <Zap className="h-3 w-3" />
+                  <button className="flex items-center gap-1.5 text-[13px] text-white/50 hover:text-white/70 transition-colors">
+                    <Zap className="h-3.5 w-3.5 text-amber-500" />
                     <span>GPT-5.4</span>
                     <ChevronDown className="h-3 w-3" />
                   </button>
-                  <button className="text-xs text-white/50 hover:text-white/70 flex items-center gap-1 transition-colors">
+                  <button className="flex items-center gap-1 text-[13px] text-white/50 hover:text-white/70 transition-colors">
                     <span>Extra alto</span>
                     <ChevronDown className="h-3 w-3" />
                   </button>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <button className="p-1.5 rounded hover:bg-white/10 text-white/40" data-testid="button-mic">
-                    <Mic className="h-4 w-4" />
+                <div className="flex items-center gap-2">
+                  <button className="text-white/40 hover:text-white/60 transition-colors" data-testid="button-mic">
+                    <Mic className="h-[18px] w-[18px]" />
                   </button>
                   <button
-                    className="p-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black transition-colors active:scale-95"
+                    className="w-8 h-8 rounded-lg bg-amber-500 hover:bg-amber-400 text-black flex items-center justify-center transition-colors active:scale-95"
                     style={{ touchAction: 'manipulation' }}
                     data-testid="button-send"
                   >
-                    <ArrowUp className="h-4 w-4" />
+                    <ArrowUp className="h-[18px] w-[18px] stroke-[2.5]" />
                   </button>
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center justify-between mt-3 px-1">
-              <div className="flex items-center gap-3">
-                <button className="flex items-center gap-1 text-[11px] text-white/40 hover:text-white/60 transition-colors">
-                  <Square className="h-3 w-3" />
+            <div className="flex items-center justify-between mt-3 px-2">
+              <div className="flex items-center gap-4">
+                <button className="flex items-center gap-1.5 text-[12px] text-white/40 hover:text-white/60 transition-colors">
+                  <Square className="h-3.5 w-3.5" />
                   <span>Local</span>
                   <ChevronDown className="h-2.5 w-2.5" />
                 </button>
-                <button className="flex items-center gap-1 text-[11px] text-amber-500 hover:text-amber-400 transition-colors">
-                  <CircleDot className="h-3 w-3" />
+                <button className="flex items-center gap-1.5 text-[12px] text-amber-500 hover:text-amber-400 transition-colors">
+                  <CircleDot className="h-3.5 w-3.5" />
                   <span>Acceso completo</span>
                   <ChevronDown className="h-2.5 w-2.5" />
                 </button>
               </div>
-              <button className="flex items-center gap-1 text-[11px] text-white/40 hover:text-white/60 transition-colors">
+              <button className="flex items-center gap-1.5 text-[12px] text-white/40 hover:text-white/60 transition-colors">
                 <span>⑂</span>
                 <span>deploy-temp</span>
                 <ChevronDown className="h-2.5 w-2.5" />
