@@ -1,5 +1,5 @@
 import React, { memo, useState, useRef, useCallback } from "react";
-import { ExternalLink, Globe, ChevronRight, ChevronLeft, GraduationCap } from "lucide-react";
+import { ExternalLink, Globe, ChevronRight, ChevronLeft, GraduationCap, FileText, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { WebSource } from "@/hooks/use-chats";
 import { Button } from "@/components/ui/button";
