@@ -1,452 +1,348 @@
 /**
- * ConversationMemoryGraph — real-time knowledge graph built from conversation.
- * Nodes: named entities (people, places, concepts, technologies).
- * Edges: typed relationships extracted by LLM.
- * Persists per-user via pgVectorMemoryStore. Queryable by entity or relationship.
+ * ConversationMemoryGraph
+ *
+ * Builds an in-memory knowledge graph from the live conversation.
+ *
+ * Nodes  — entities: people, projects, files, concepts, URLs, dates
+ * Edges  — typed relationships: works_on, depends_on, causes, solves,
+ *           mentioned_with, references, contradicts
+ *
+ * The graph is updated after every user message and every assistant response.
+ * Callers can query the graph for context enrichment and disambiguation.
+ *
+ * Persistence: graph state is serialised to a plain JSON Map per userId;
+ * in production swap `persist()` / `load()` for a real store (Redis, DB).
  */
 
-import { EventEmitter } from "events";
-import Anthropic from "@anthropic-ai/sdk";
-import { createLogger } from "../utils/logger";
+import { randomUUID }   from 'crypto';
+import { Logger }       from '../lib/logger';
+import { llmGateway }   from '../lib/llmGateway';
 
-const logger = createLogger("ConversationMemoryGraph");
+// ─── Graph types ──────────────────────────────────────────────────────────────
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+export type EntityType =
+  | 'person' | 'project' | 'file' | 'concept' | 'url'
+  | 'date' | 'organization' | 'technology' | 'error' | 'unknown';
 
-export type EntityType = "person" | "organization" | "place" | "technology" | "concept" | "event" | "product" | "unknown";
+export type RelationType =
+  | 'works_on' | 'depends_on' | 'causes' | 'solves'
+  | 'mentioned_with' | 'references' | 'contradicts' | 'related_to'
+  | 'created_by' | 'part_of';
 
 export interface GraphNode {
-  id: string;
-  label: string;                        // normalized entity name
-  type: EntityType;
-  aliases: string[];                    // alternative mentions
-  mentions: number;
-  firstSeen: Date;
-  lastSeen: Date;
-  attributes: Record<string, string>;   // key facts about this entity
-  conversationIds: string[];
+  id          : string;
+  label       : string;          // Canonical name
+  type        : EntityType;
+  aliases     : string[];        // Alternative spellings / abbreviations
+  firstSeenAt : number;          // Turn index
+  lastSeenAt  : number;
+  mentionCount: number;
+  metadata    : Record<string, unknown>;
 }
 
-export type RelationshipType =
-  | "is_a" | "part_of" | "created_by" | "uses" | "related_to"
-  | "works_at" | "located_in" | "opposed_to" | "depends_on"
-  | "caused_by" | "leads_to" | "similar_to" | "mentioned_with";
-
 export interface GraphEdge {
-  id: string;
-  sourceId: string;
-  targetId: string;
-  relationship: RelationshipType;
-  confidence: number;                   // 0.0-1.0
-  evidence: string;                     // sentence that established this
-  createdAt: Date;
+  id       : string;
+  fromId   : string;
+  toId     : string;
+  relation : RelationType;
+  weight   : number;             // Increments with each co-mention
+  firstSeen: number;
+}
+
+export interface GraphQuery {
+  node?    : string;             // Label or alias to look up
+  relation?: RelationType;
+  maxDepth?: number;             // BFS depth for neighbours
 }
 
 export interface GraphQueryResult {
-  entity: GraphNode;
-  related: Array<{
-    node: GraphNode;
-    edge: GraphEdge;
-    direction: "outgoing" | "incoming";
-  }>;
-  facts: string[];
+  node?      : GraphNode;
+  neighbours : GraphNode[];
+  edges      : GraphEdge[];
 }
 
-export interface ExtractionResult {
-  entities: Array<{ label: string; type: EntityType; attributes?: Record<string, string> }>;
-  relationships: Array<{ source: string; target: string; relationship: RelationshipType; confidence: number; evidence: string }>;
+// ─── LLM entity extraction ────────────────────────────────────────────────────
+
+interface ExtractedEntity {
+  label   : string;
+  type    : EntityType;
+  aliases?: string[];
 }
 
-// ─── Normalization ────────────────────────────────────────────────────────────
-
-function normalizeLabel(label: string): string {
-  return label.toLowerCase().trim().replace(/\s+/g, " ");
+interface ExtractedRelation {
+  from    : string;
+  to      : string;
+  relation: RelationType;
 }
 
-function makeNodeId(label: string): string {
-  return `node_${normalizeLabel(label).replace(/[^a-z0-9]/g, "_")}`;
+interface ExtractionResult {
+  entities  : ExtractedEntity[];
+  relations : ExtractedRelation[];
 }
 
-function makeEdgeId(sourceId: string, targetId: string, rel: string): string {
-  return `edge_${sourceId}_${rel}_${targetId}`;
-}
+async function extractEntitiesAndRelations(
+  text     : string,
+  requestId: string,
+  model    : string,
+): Promise<ExtractionResult> {
+  const res = await llmGateway.chat(
+    [
+      {
+        role   : 'system',
+        content: `Extract entities and relationships from text.
+Return JSON: {"entities":[{"label":"...","type":"person|project|file|concept|url|date|organization|technology|error|unknown","aliases":["..."]}],
+"relations":[{"from":"entity_label","to":"entity_label","relation":"works_on|depends_on|causes|solves|mentioned_with|references|contradicts|related_to|created_by|part_of"}]}
+Keep entities specific and meaningful. Skip pronouns and articles.`,
+      },
+      { role: 'user', content: text.slice(0, 1000) },
+    ],
+    { model, requestId, temperature: 0.1, maxTokens: 500 },
+  );
 
-// ─── LLM Extraction ───────────────────────────────────────────────────────────
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-async function extractFromText(text: string): Promise<ExtractionResult> {
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: `Extract entities and relationships from this text for a knowledge graph.
-
-Text: "${text.slice(0, 2000)}"
-
-Return JSON only:
-{
-  "entities": [{"label": "string", "type": "person|organization|place|technology|concept|event|product|unknown", "attributes": {"key": "value"}}],
-  "relationships": [{"source": "entity_label", "target": "entity_label", "relationship": "is_a|part_of|created_by|uses|related_to|works_at|located_in|opposed_to|depends_on|caused_by|leads_to|similar_to|mentioned_with", "confidence": 0.0-1.0, "evidence": "sentence"}]
-}
-
-Only include entities mentioned explicitly. Skip pronouns and generic nouns.`,
-        },
-      ],
-    });
-
-    const rawText = response.content[0]?.type === "text" ? response.content[0].text : "{}";
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(jsonMatch?.[0] ?? "{}") as ExtractionResult;
-
-    return {
-      entities: Array.isArray(parsed.entities) ? parsed.entities : [],
-      relationships: Array.isArray(parsed.relationships) ? parsed.relationships : [],
-    };
-  } catch (err) {
-    logger.warn(`Entity extraction failed: ${(err as Error).message}`);
-    return { entities: [], relationships: [] };
+    const match  = res.content.match(/\{[\s\S]*\}/);
+    const parsed = match ? JSON.parse(match[0]) as ExtractionResult : null;
+    return parsed ?? { entities: [], relations: [] };
+  } catch {
+    return { entities: [], relations: [] };
   }
-}
-
-// Heuristic fallback: regex-based entity detection
-function extractEntitiesHeuristic(text: string): Array<{ label: string; type: EntityType }> {
-  const entities: Array<{ label: string; type: EntityType }> = [];
-
-  // Capitalized multi-word phrases (likely named entities)
-  const namedEntityPattern = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/g;
-  for (const match of text.matchAll(namedEntityPattern)) {
-    const label = match[1]!;
-    if (label.split(" ").length === 1 && label.length < 4) continue; // skip short single words
-
-    let type: EntityType = "unknown";
-    if (/\b(Inc|Corp|Ltd|LLC|Company|University|Institute|Foundation)\b/.test(label)) type = "organization";
-    else if (/\b(City|Country|Street|Avenue|Mountain|River|Lake)\b/.test(label)) type = "place";
-
-    entities.push({ label, type });
-  }
-
-  // Technology keywords
-  const techPattern = /\b(React|Node\.?js|Python|TypeScript|JavaScript|PostgreSQL|Redis|Docker|Kubernetes|AWS|GCP|Azure|GraphQL|REST|API|AI|ML|LLM|GPT|Claude)\b/gi;
-  for (const match of text.matchAll(techPattern)) {
-    entities.push({ label: match[0], type: "technology" });
-  }
-
-  return entities;
 }
 
 // ─── ConversationMemoryGraph ──────────────────────────────────────────────────
 
-export class ConversationMemoryGraph extends EventEmitter {
-  private nodes = new Map<string, GraphNode>();          // nodeId -> GraphNode
-  private edges = new Map<string, GraphEdge>();          // edgeId -> GraphEdge
-  private labelIndex = new Map<string, string>();        // normalized label -> nodeId
-  private userGraphs = new Map<string, Set<string>>();   // userId -> Set<nodeId>
+class ConversationMemoryGraph {
+  private readonly nodes = new Map<string, GraphNode>();
+  private readonly edges = new Map<string, GraphEdge>();
+  /** Map from lowercase label/alias → node id. */
+  private readonly index = new Map<string, string>();
 
-  // ── Node Management ──────────────────────────────────────────────────────
+  private turnIndex = 0;
 
-  private upsertNode(
-    label: string,
-    type: EntityType,
-    conversationId: string,
-    attributes: Record<string, string> = {}
-  ): GraphNode {
-    const normalized = normalizeLabel(label);
-    const existingId = this.labelIndex.get(normalized);
+  // ── Node management ─────────────────────────────────────────────────────────
+
+  private upsertNode(entity: ExtractedEntity): GraphNode {
+    const key = entity.label.toLowerCase();
+    const existingId = this.index.get(key);
 
     if (existingId) {
       const node = this.nodes.get(existingId)!;
-      node.mentions++;
-      node.lastSeen = new Date();
-      if (!node.conversationIds.includes(conversationId)) {
-        node.conversationIds.push(conversationId);
+      node.mentionCount++;
+      node.lastSeenAt = this.turnIndex;
+      for (const alias of (entity.aliases ?? [])) {
+        node.aliases.push(alias);
+        this.index.set(alias.toLowerCase(), node.id);
       }
-      Object.assign(node.attributes, attributes);
       return node;
     }
 
-    const id = makeNodeId(normalized);
     const node: GraphNode = {
-      id,
-      label,
-      type,
-      aliases: [label],
-      mentions: 1,
-      firstSeen: new Date(),
-      lastSeen: new Date(),
-      attributes,
-      conversationIds: [conversationId],
+      id          : randomUUID(),
+      label       : entity.label,
+      type        : entity.type,
+      aliases     : entity.aliases ?? [],
+      firstSeenAt : this.turnIndex,
+      lastSeenAt  : this.turnIndex,
+      mentionCount: 1,
+      metadata    : {},
     };
-
-    this.nodes.set(id, node);
-    this.labelIndex.set(normalized, id);
-    this.emit("nodeAdded", node);
+    this.nodes.set(node.id, node);
+    this.index.set(key, node.id);
+    for (const alias of node.aliases) {
+      this.index.set(alias.toLowerCase(), node.id);
+    }
     return node;
   }
 
-  private upsertEdge(
-    sourceLabel: string,
-    targetLabel: string,
-    relationship: RelationshipType,
-    confidence: number,
-    evidence: string
-  ): GraphEdge | null {
-    const sourceId = this.labelIndex.get(normalizeLabel(sourceLabel));
-    const targetId = this.labelIndex.get(normalizeLabel(targetLabel));
-    if (!sourceId || !targetId) return null;
-
-    const edgeId = makeEdgeId(sourceId, targetId, relationship);
-    const existing = this.edges.get(edgeId);
-
+  private upsertEdge(fromId: string, toId: string, relation: RelationType): void {
+    const key = `${fromId}:${relation}:${toId}`;
+    const existing = this.edges.get(key);
     if (existing) {
-      existing.confidence = Math.max(existing.confidence, confidence);
-      return existing;
+      existing.weight++;
+      return;
     }
-
-    const edge: GraphEdge = {
-      id: edgeId,
-      sourceId,
-      targetId,
-      relationship,
-      confidence,
-      evidence,
-      createdAt: new Date(),
-    };
-
-    this.edges.set(edgeId, edge);
-    this.emit("edgeAdded", edge);
-    return edge;
+    this.edges.set(key, {
+      id      : randomUUID(),
+      fromId,
+      toId,
+      relation,
+      weight  : 1,
+      firstSeen: this.turnIndex,
+    });
   }
 
-  // ── Ingestion ────────────────────────────────────────────────────────────
+  private lookupNode(label: string): GraphNode | undefined {
+    const id = this.index.get(label.toLowerCase());
+    return id ? this.nodes.get(id) : undefined;
+  }
+
+  // ── Public API ──────────────────────────────────────────────────────────────
 
   /**
-   * Process a conversation message and update the graph.
-   * Uses LLM extraction if API key available, falls back to heuristics.
+   * Process a new turn (user message or assistant response) and update the graph.
    */
-  async ingestMessage(
-    text: string,
-    conversationId: string,
-    userId?: string,
-    useLLM = true
+  async processTurn(
+    text     : string,
+    role     : 'user' | 'assistant',
+    opts     : { requestId?: string; model?: string } = {},
   ): Promise<{ nodesAdded: number; edgesAdded: number }> {
-    if (text.trim().length < 10) return { nodesAdded: 0, edgesAdded: 0 };
+    const requestId = opts.requestId ?? randomUUID();
+    const model     = opts.model     ?? 'auto';
 
-    const prevNodeCount = this.nodes.size;
-    const prevEdgeCount = this.edges.size;
+    const { entities, relations } = await extractEntitiesAndRelations(
+      text, `${requestId}-extract`, model,
+    );
 
-    let extraction: ExtractionResult;
+    const nodesBefore = this.nodes.size;
+    const edgesBefore = this.edges.size;
 
-    if (useLLM && process.env.ANTHROPIC_API_KEY) {
-      extraction = await extractFromText(text);
-    } else {
-      const heuristicEntities = extractEntitiesHeuristic(text);
-      extraction = {
-        entities: heuristicEntities,
-        relationships: [],
-      };
+    // Upsert all entities
+    const upserted: GraphNode[] = [];
+    for (const e of entities) {
+      upserted.push(this.upsertNode(e));
     }
 
-    // Add nodes
-    for (const entity of extraction.entities) {
-      const node = this.upsertNode(entity.label, entity.type, conversationId, entity.attributes ?? {});
-      if (userId) {
-        const userSet = this.userGraphs.get(userId) ?? new Set();
-        userSet.add(node.id);
-        this.userGraphs.set(userId, userSet);
+    // Add explicit relations
+    for (const rel of relations) {
+      const from = this.lookupNode(rel.from);
+      const to   = this.lookupNode(rel.to);
+      if (from && to) this.upsertEdge(from.id, to.id, rel.relation);
+    }
+
+    // Add co-mention edges for entities appearing in the same turn
+    for (let i = 0; i < upserted.length; i++) {
+      for (let j = i + 1; j < upserted.length; j++) {
+        this.upsertEdge(upserted[i]!.id, upserted[j]!.id, 'mentioned_with');
       }
     }
 
-    // Add edges
-    for (const rel of extraction.relationships) {
-      this.upsertEdge(rel.source, rel.target, rel.relationship, rel.confidence, rel.evidence);
-    }
+    this.turnIndex++;
 
-    const nodesAdded = this.nodes.size - prevNodeCount;
-    const edgesAdded = this.edges.size - prevEdgeCount;
+    const nodesAdded = this.nodes.size - nodesBefore;
+    const edgesAdded = this.edges.size - edgesBefore;
 
-    if (nodesAdded > 0 || edgesAdded > 0) {
-      logger.info(`Graph updated: +${nodesAdded} nodes, +${edgesAdded} edges (conv: ${conversationId})`);
-    }
+    Logger.debug('[ConversationMemoryGraph] turn processed', {
+      role, nodesAdded, edgesAdded, totalNodes: this.nodes.size,
+    });
 
     return { nodesAdded, edgesAdded };
   }
 
-  // ── Querying ─────────────────────────────────────────────────────────────
-
-  findNode(label: string): GraphNode | null {
-    const id = this.labelIndex.get(normalizeLabel(label));
-    return id ? (this.nodes.get(id) ?? null) : null;
-  }
-
-  queryEntity(label: string): GraphQueryResult | null {
-    const node = this.findNode(label);
-    if (!node) return null;
-
-    const related: GraphQueryResult["related"] = [];
-
-    for (const edge of this.edges.values()) {
-      if (edge.sourceId === node.id) {
-        const targetNode = this.nodes.get(edge.targetId);
-        if (targetNode) related.push({ node: targetNode, edge, direction: "outgoing" });
-      } else if (edge.targetId === node.id) {
-        const sourceNode = this.nodes.get(edge.sourceId);
-        if (sourceNode) related.push({ node: sourceNode, edge, direction: "incoming" });
-      }
-    }
-
-    related.sort((a, b) => b.edge.confidence - a.edge.confidence);
-
-    const facts = this.getFactsAbout(node);
-
-    return { entity: node, related, facts };
-  }
-
   /**
-   * Natural language query: "how is X related to Y?"
+   * Look up a node and its neighbours up to `maxDepth` hops.
    */
-  queryRelationship(labelA: string, labelB: string): GraphEdge[] {
-    const nodeA = this.findNode(labelA);
-    const nodeB = this.findNode(labelB);
-    if (!nodeA || !nodeB) return [];
+  query(input: GraphQuery): GraphQueryResult {
+    const node = input.node ? this.lookupNode(input.node) : undefined;
+    if (!node) return { neighbours: [], edges: [] };
 
-    return [...this.edges.values()].filter(
-      (e) =>
-        (e.sourceId === nodeA.id && e.targetId === nodeB.id) ||
-        (e.sourceId === nodeB.id && e.targetId === nodeA.id)
-    );
-  }
+    const depth     = input.maxDepth ?? 1;
+    const visited   = new Set<string>([node.id]);
+    const frontier  = [node.id];
+    const resultEdges: GraphEdge[] = [];
+    const resultNodes = new Map<string, GraphNode>();
 
-  /**
-   * Search nodes by partial label match.
-   */
-  searchNodes(query: string, limit = 10): GraphNode[] {
-    const q = query.toLowerCase();
-    return [...this.nodes.values()]
-      .filter((n) => n.label.toLowerCase().includes(q) || n.aliases.some((a) => a.toLowerCase().includes(q)))
-      .sort((a, b) => b.mentions - a.mentions)
-      .slice(0, limit);
-  }
-
-  /**
-   * Get all nodes for a specific user's conversations.
-   */
-  getUserNodes(userId: string): GraphNode[] {
-    const nodeIds = this.userGraphs.get(userId) ?? new Set();
-    return [...nodeIds].map((id) => this.nodes.get(id)).filter(Boolean) as GraphNode[];
-  }
-
-  private getFactsAbout(node: GraphNode): string[] {
-    const facts: string[] = [];
-
-    facts.push(`${node.label} is a ${node.type}`);
-    facts.push(`Mentioned ${node.mentions} time${node.mentions !== 1 ? "s" : ""}`);
-
-    for (const [key, val] of Object.entries(node.attributes)) {
-      facts.push(`${node.label} ${key}: ${val}`);
-    }
-
-    // Outgoing edges as facts
-    for (const edge of this.edges.values()) {
-      if (edge.sourceId === node.id && edge.confidence >= 0.6) {
-        const target = this.nodes.get(edge.targetId);
-        if (target) facts.push(`${node.label} ${edge.relationship.replace(/_/g, " ")} ${target.label}`);
+    for (let d = 0; d < depth; d++) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        for (const edge of this.edges.values()) {
+          if (input.relation && edge.relation !== input.relation) continue;
+          if (edge.fromId === id && !visited.has(edge.toId)) {
+            visited.add(edge.toId);
+            next.push(edge.toId);
+            resultEdges.push(edge);
+            const n = this.nodes.get(edge.toId);
+            if (n) resultNodes.set(n.id, n);
+          }
+          if (edge.toId === id && !visited.has(edge.fromId)) {
+            visited.add(edge.fromId);
+            next.push(edge.fromId);
+            resultEdges.push(edge);
+            const n = this.nodes.get(edge.fromId);
+            if (n) resultNodes.set(n.id, n);
+          }
+        }
       }
+      frontier.length = 0;
+      frontier.push(...next);
     }
 
-    return facts.slice(0, 10);
-  }
-
-  /**
-   * Natural language answer generator for "what about X?" queries.
-   */
-  async answerQuery(query: string): Promise<string | null> {
-    // Detect entity references in query
-    const entityMatch = query.match(/about\s+(.+?)(\?|$)/i) ??
-      query.match(/what\s+is\s+(.+?)(\?|$)/i) ??
-      query.match(/tell me about\s+(.+?)(\?|$)/i);
-
-    if (!entityMatch) return null;
-
-    const entityLabel = entityMatch[1]!.trim();
-    const result = this.queryEntity(entityLabel);
-
-    if (!result) {
-      // Try fuzzy search
-      const candidates = this.searchNodes(entityLabel, 3);
-      if (candidates.length === 0) return null;
-      const best = candidates[0]!;
-      const bestResult = this.queryEntity(best.label)!;
-      return this.formatQueryResult(bestResult);
-    }
-
-    return this.formatQueryResult(result);
-  }
-
-  private formatQueryResult(result: GraphQueryResult): string {
-    const { entity, related, facts } = result;
-    let response = `**${entity.label}** (${entity.type})\n\n`;
-
-    if (facts.length > 0) {
-      response += "**Known facts:**\n" + facts.map((f) => `- ${f}`).join("\n") + "\n\n";
-    }
-
-    if (related.length > 0) {
-      response += "**Relationships:**\n";
-      for (const r of related.slice(0, 5)) {
-        const dir = r.direction === "outgoing" ? "→" : "←";
-        response += `- ${entity.label} ${dir} [${r.edge.relationship.replace(/_/g, " ")}] ${r.node.label}\n`;
-      }
-    }
-
-    return response.trim();
-  }
-
-  // ── Persistence Helpers ──────────────────────────────────────────────────
-
-  exportGraph(userId?: string): { nodes: GraphNode[]; edges: GraphEdge[] } {
-    let nodes: GraphNode[];
-
-    if (userId) {
-      nodes = this.getUserNodes(userId);
-    } else {
-      nodes = [...this.nodes.values()];
-    }
-
-    const nodeIds = new Set(nodes.map((n) => n.id));
-    const edges = [...this.edges.values()].filter(
-      (e) => nodeIds.has(e.sourceId) && nodeIds.has(e.targetId)
-    );
-
-    return { nodes, edges };
-  }
-
-  importGraph(data: { nodes: GraphNode[]; edges: GraphEdge[] }, userId?: string): void {
-    for (const node of data.nodes) {
-      this.nodes.set(node.id, node);
-      this.labelIndex.set(normalizeLabel(node.label), node.id);
-      if (userId) {
-        const userSet = this.userGraphs.get(userId) ?? new Set();
-        userSet.add(node.id);
-        this.userGraphs.set(userId, userSet);
-      }
-    }
-    for (const edge of data.edges) {
-      this.edges.set(edge.id, edge);
-    }
-    logger.info(`Graph imported: ${data.nodes.length} nodes, ${data.edges.length} edges`);
-  }
-
-  getStats(): { nodes: number; edges: number; users: number } {
     return {
-      nodes: this.nodes.size,
-      edges: this.edges.size,
-      users: this.userGraphs.size,
+      node,
+      neighbours: [...resultNodes.values()],
+      edges     : resultEdges,
     };
+  }
+
+  /**
+   * Return the top N most-mentioned entities (useful for building context).
+   */
+  topEntities(n = 10, type?: EntityType): GraphNode[] {
+    return [...this.nodes.values()]
+      .filter(node => !type || node.type === type)
+      .sort((a, b) => b.mentionCount - a.mentionCount)
+      .slice(0, n);
+  }
+
+  /**
+   * Build a compact context snippet for prompt injection.
+   * "Known entities: UserAuth (project, 5 mentions), React (technology, 3 mentions)…"
+   */
+  buildContextSnippet(maxEntities = 8): string {
+    const top = this.topEntities(maxEntities);
+    if (top.length === 0) return '';
+    const items = top.map(n => `${n.label} (${n.type}, ${n.mentionCount}×)`).join(', ');
+    return `Known entities: ${items}.`;
+  }
+
+  /** Serialise graph state (for persistence). */
+  serialise(): string {
+    return JSON.stringify({
+      nodes     : [...this.nodes.entries()],
+      edges     : [...this.edges.entries()],
+      index     : [...this.index.entries()],
+      turnIndex : this.turnIndex,
+    });
+  }
+
+  /** Restore graph state from serialised form. */
+  deserialise(raw: string): void {
+    const data = JSON.parse(raw) as {
+      nodes: [string, GraphNode][];
+      edges: [string, GraphEdge][];
+      index: [string, string][];
+      turnIndex: number;
+    };
+    this.nodes.clear();
+    this.edges.clear();
+    this.index.clear();
+    data.nodes.forEach(([k, v]) => this.nodes.set(k, v));
+    data.edges.forEach(([k, v]) => this.edges.set(k, v));
+    data.index.forEach(([k, v]) => this.index.set(k, v));
+    this.turnIndex = data.turnIndex;
+  }
+
+  get stats() {
+    return { nodes: this.nodes.size, edges: this.edges.size, turns: this.turnIndex };
   }
 }
 
-export const conversationMemoryGraph = new ConversationMemoryGraph();
+// ─── Per-session graph store ──────────────────────────────────────────────────
+
+class ConversationMemoryGraphStore {
+  private readonly graphs = new Map<string, ConversationMemoryGraph>();
+
+  for(sessionId: string): ConversationMemoryGraph {
+    if (!this.graphs.has(sessionId)) {
+      this.graphs.set(sessionId, new ConversationMemoryGraph());
+    }
+    return this.graphs.get(sessionId)!;
+  }
+
+  clear(sessionId: string): void { this.graphs.delete(sessionId); }
+  activeSessions(): number       { return this.graphs.size; }
+}
+
+// ─── Singleton export ─────────────────────────────────────────────────────────
+
+export const memoryGraphStore = new ConversationMemoryGraphStore();
+
+export { ConversationMemoryGraph };

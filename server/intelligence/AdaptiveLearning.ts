@@ -1,387 +1,302 @@
 /**
- * AdaptiveLearning — learn from interactions via explicit/implicit feedback.
- * Adjusts temperature, verbosity, and formality per user.
- * Tracks model performance per task type. Minimal A/B testing support.
+ * AdaptiveLearning
+ *
+ * Learns from every interaction to improve future responses.
+ *
+ * What it tracks:
+ *   - Response ratings (explicit thumbs up/down + implicit signals)
+ *   - Per-user preferences: verbosity, formality, technical depth
+ *   - A/B test outcomes: which strategy worked better for which task type
+ *   - Model performance: which model produced better outcomes per intent
+ *   - Failure patterns: common question types where responses fell short
+ *
+ * All state is in-memory per-user (Map-backed).
+ * Persistence: call `serialise()` and store externally (Redis, DB).
+ *
+ * Privacy: no raw message text is stored — only aggregate signals.
  */
 
-import { createLogger } from "../utils/logger";
-
-const logger = createLogger("AdaptiveLearning");
+import { z }      from 'zod';
+import { Logger } from '../lib/logger';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type FeedbackSignal = "positive" | "negative" | "neutral";
-export type TaskType = "coding" | "analysis" | "creative" | "research" | "conversation" | "math" | "other";
+export const FeedbackSignalSchema = z.object({
+  requestId  : z.string(),
+  userId     : z.string(),
+  intent     : z.string(),
+  strategyName: z.string(),
+  model      : z.string(),
+  rating     : z.enum(['positive', 'negative', 'neutral']),
+  implicit   : z.boolean(),   // True = inferred from behaviour, false = explicit
+  qualityScore: z.number().min(0).max(1),
+  durationMs : z.number().nonneg(),
+  timestamp  : z.number(),
+});
+export type FeedbackSignal = z.infer<typeof FeedbackSignalSchema>;
 
-export interface FeedbackEvent {
-  userId: string;
-  conversationId: string;
-  messageId: string;
-  signal: FeedbackSignal;
-  taskType: TaskType;
-  model: string;
-  temperature: number;
-  verbosity: number;
-  formality: number;
-  responseLength: number;
-  timestamp: Date;
-  metadata?: Record<string, unknown>;
+export interface UserAdaptation {
+  userId           : string;
+  /** Inferred preferred verbosity 0–1. 0 = very brief, 1 = detailed. */
+  verbosity        : number;
+  /** Inferred formality 0–1. 0 = casual, 1 = formal. */
+  formality        : number;
+  /** Inferred technical depth 0–1. */
+  technicalDepth   : number;
+  /** Interaction count — adaptation becomes more confident over time. */
+  interactionCount : number;
+  /** Per-intent average quality scores from this user's feedback. */
+  intentScores     : Record<string, number>;
+  /** Preferred model per intent (based on positive feedback). */
+  modelPreferences : Record<string, string>;
+  lastUpdated      : number;
 }
 
-export interface UserPreferences {
-  userId: string;
-  temperature: number;            // 0.0-1.0 preferred temperature
-  verbosity: number;              // 0-10 (0=terse, 10=verbose)
-  formality: number;              // 0-10 (0=casual, 10=formal)
-  preferredModel?: string;
-  feedbackCount: number;
-  positiveRate: number;           // 0.0-1.0
-  lastUpdated: Date;
-  taskPreferences: Record<TaskType, { temperature: number; verbosity: number; sampleCount: number }>;
-}
-
-export interface ModelPerformance {
-  model: string;
-  taskType: TaskType;
-  positiveCount: number;
-  totalCount: number;
-  avgResponseLength: number;
-  avgTemperature: number;
-  successRate: number;
+export interface ModelPerformanceRecord {
+  model     : string;
+  intent    : string;
+  totalCalls: number;
+  avgQuality: number;
+  positives : number;
+  negatives : number;
 }
 
 export interface ABTestVariant {
-  id: string;
-  name: string;
+  variantId : string;
+  strategyName: string;
+  model     : string;
   temperature: number;
-  model: string;
-  systemPromptVariant?: string;
-  weight: number;                 // traffic allocation 0.0-1.0
+  positives : number;
+  negatives : number;
+  totalCalls: number;
 }
 
 export interface ABTest {
-  id: string;
-  name: string;
-  variants: ABTestVariant[];
-  startedAt: Date;
-  endedAt?: Date;
-  taskType?: TaskType;
-  results: Record<string, { positive: number; total: number }>;
+  testId    : string;
+  intent    : string;
+  variants  : ABTestVariant[];
+  startedAt : number;
+  active    : boolean;
 }
 
-// ─── Task Classifier ──────────────────────────────────────────────────────────
+// ─── User adaptation store ────────────────────────────────────────────────────
 
-const TASK_PATTERNS: Array<[TaskType, RegExp]> = [
-  ["coding", /\b(code|function|class|debug|implement|program|script|algorithm|typescript|python|javascript|sql|api)\b/i],
-  ["math", /\b(calculate|equation|formula|integral|derivative|sum|probability|statistics|solve|proof|theorem)\b/i],
-  ["research", /\b(research|find|search|study|literature|evidence|paper|analyze|investigate|compare)\b/i],
-  ["creative", /\b(write|story|poem|create|design|imagine|brainstorm|invent|draft|compose)\b/i],
-  ["analysis", /\b(analyze|explain|understand|why|how|implications|impact|evaluation|assessment|review)\b/i],
-  ["conversation", /^(hi|hello|hey|thanks|thank you|how are|what do you think|tell me|can you|please)\b/i],
-];
-
-export function classifyTask(message: string): TaskType {
-  for (const [type, pattern] of TASK_PATTERNS) {
-    if (pattern.test(message)) return type;
-  }
-  return "other";
-}
-
-// ─── Defaults ─────────────────────────────────────────────────────────────────
-
-const DEFAULT_PREFS: Omit<UserPreferences, "userId" | "lastUpdated"> = {
-  temperature: 0.7,
-  verbosity: 5,
-  formality: 5,
-  feedbackCount: 0,
-  positiveRate: 0.5,
-  taskPreferences: {
-    coding: { temperature: 0.15, verbosity: 6, sampleCount: 0 },
-    analysis: { temperature: 0.5, verbosity: 7, sampleCount: 0 },
-    creative: { temperature: 0.9, verbosity: 7, sampleCount: 0 },
-    research: { temperature: 0.3, verbosity: 8, sampleCount: 0 },
-    conversation: { temperature: 0.8, verbosity: 4, sampleCount: 0 },
-    math: { temperature: 0.1, verbosity: 6, sampleCount: 0 },
-    other: { temperature: 0.7, verbosity: 5, sampleCount: 0 },
-  },
+const DEFAULT_ADAPTATION: Omit<UserAdaptation, 'userId' | 'lastUpdated'> = {
+  verbosity       : 0.5,
+  formality       : 0.4,
+  technicalDepth  : 0.5,
+  interactionCount: 0,
+  intentScores    : {},
+  modelPreferences: {},
 };
 
-// ─── Learning Rate & Update Logic ─────────────────────────────────────────────
+// ─── Signal interpretation ────────────────────────────────────────────────────
 
-const LEARNING_RATE = 0.1;      // how fast preferences shift per feedback
-const MIN_SAMPLES = 5;          // minimum samples before adjusting model selection
-
-function updateEMA(current: number, newVal: number, alpha: number): number {
-  return current * (1 - alpha) + newVal * alpha;
+/** Infer verbosity preference from response quality signals. */
+function adjustVerbosity(current: number, signal: FeedbackSignal): number {
+  // If a short response (high quality score on short) got positive → user likes brevity
+  const directionHint = signal.qualityScore > 0.75 && signal.rating === 'positive' ? -0.02 : 0.02;
+  const delta = signal.rating === 'positive'
+    ? directionHint
+    : signal.rating === 'negative' ? -directionHint : 0;
+  return Math.max(0, Math.min(1, current + delta));
 }
 
-function clamp(val: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, val));
+function adjustTechnicalDepth(current: number, signal: FeedbackSignal): number {
+  const techIntents = ['code', 'analysis'];
+  if (!techIntents.includes(signal.intent)) return current;
+  const delta = signal.rating === 'positive' ? 0.03 : -0.03;
+  return Math.max(0, Math.min(1, current + delta));
 }
 
-// ─── AdaptiveLearning ─────────────────────────────────────────────────────────
+// ─── Main class ───────────────────────────────────────────────────────────────
 
-export class AdaptiveLearning {
-  private userPreferences = new Map<string, UserPreferences>();
-  private feedbackHistory: FeedbackEvent[] = [];
-  private modelPerformance = new Map<string, ModelPerformance>();
-  private activeTests = new Map<string, ABTest>();
+export class AdaptiveLearningEngine {
+  private readonly users         = new Map<string, UserAdaptation>();
+  private readonly modelPerf     = new Map<string, ModelPerformanceRecord>();
+  private readonly abTests       = new Map<string, ABTest>();
+  private readonly history       : FeedbackSignal[] = [];
 
-  // ── Feedback Recording ────────────────────────────────────────────────────
+  // ── Feedback ingestion ──────────────────────────────────────────────────────
 
-  recordFeedback(event: FeedbackEvent): void {
-    this.feedbackHistory.push(event);
-    if (this.feedbackHistory.length > 10_000) {
-      this.feedbackHistory.splice(0, 1000); // trim oldest
-    }
+  /** Record a feedback signal and update all relevant models. */
+  recordFeedback(signal: FeedbackSignal): void {
+    this.history.push(signal);
+    if (this.history.length > 10_000) this.history.shift(); // bounded history
 
-    this.updateUserPreferences(event);
-    this.updateModelPerformance(event);
+    this._updateUserAdaptation(signal);
+    this._updateModelPerformance(signal);
+    this._updateABTests(signal);
 
-    // Update AB test results
-    for (const test of this.activeTests.values()) {
-      if (test.taskType && test.taskType !== event.taskType) continue;
-      if (!test.results[event.model]) {
-        test.results[event.model] = { positive: 0, total: 0 };
-      }
-      test.results[event.model]!.total++;
-      if (event.signal === "positive") test.results[event.model]!.positive++;
-    }
-
-    logger.info(`Feedback recorded: user=${event.userId}, signal=${event.signal}, task=${event.taskType}`);
-  }
-
-  /**
-   * Implicit feedback from message length (if user immediately rephrases → negative signal proxy).
-   */
-  recordImplicitFeedback(
-    userId: string,
-    conversationId: string,
-    previousMessageId: string,
-    rephrased: boolean,
-    taskType: TaskType,
-    model: string
-  ): void {
-    if (!rephrased) return;
-
-    this.recordFeedback({
-      userId,
-      conversationId,
-      messageId: previousMessageId,
-      signal: "negative",
-      taskType,
-      model,
-      temperature: 0.7,
-      verbosity: 5,
-      formality: 5,
-      responseLength: 0,
-      timestamp: new Date(),
-      metadata: { implicit: true, reason: "immediate_rephrase" },
+    Logger.debug('[AdaptiveLearning] feedback recorded', {
+      userId  : signal.userId,
+      intent  : signal.intent,
+      rating  : signal.rating,
+      model   : signal.model,
     });
   }
 
-  // ── User Preference Updates ────────────────────────────────────────────────
+  // ── User adaptation ─────────────────────────────────────────────────────────
 
-  private updateUserPreferences(event: FeedbackEvent): void {
-    const prefs = this.getOrCreatePreferences(event.userId);
-    const isPositive = event.signal === "positive";
-    const isNegative = event.signal === "negative";
-
-    prefs.feedbackCount++;
-
-    // Update positive rate with EMA
-    const posSignal = isPositive ? 1.0 : isNegative ? 0.0 : 0.5;
-    prefs.positiveRate = updateEMA(prefs.positiveRate, posSignal, LEARNING_RATE);
-
-    if (isPositive) {
-      // Move preferences toward what worked
-      prefs.temperature = updateEMA(prefs.temperature, event.temperature, LEARNING_RATE);
-      prefs.verbosity = updateEMA(prefs.verbosity, event.verbosity, LEARNING_RATE);
-      prefs.formality = updateEMA(prefs.formality, event.formality, LEARNING_RATE);
-
-      // Update task-specific preferences
-      const taskPref = prefs.taskPreferences[event.taskType];
-      taskPref.temperature = updateEMA(taskPref.temperature, event.temperature, LEARNING_RATE * 1.5);
-      taskPref.verbosity = updateEMA(taskPref.verbosity, event.verbosity, LEARNING_RATE * 1.5);
-      taskPref.sampleCount++;
-    } else if (isNegative) {
-      // Move preferences away from what didn't work
-      const nudge = (val: number, target: number) =>
-        clamp(val - (target - val) * LEARNING_RATE * 0.5, 0, 10);
-
-      prefs.verbosity = nudge(prefs.verbosity, event.verbosity);
-      prefs.formality = nudge(prefs.formality, event.formality);
-    }
-
-    prefs.lastUpdated = new Date();
-  }
-
-  // ── Model Performance Tracking ─────────────────────────────────────────────
-
-  private updateModelPerformance(event: FeedbackEvent): void {
-    const key = `${event.model}:${event.taskType}`;
-    const existing = this.modelPerformance.get(key);
-
-    if (!existing) {
-      this.modelPerformance.set(key, {
-        model: event.model,
-        taskType: event.taskType,
-        positiveCount: event.signal === "positive" ? 1 : 0,
-        totalCount: 1,
-        avgResponseLength: event.responseLength,
-        avgTemperature: event.temperature,
-        successRate: event.signal === "positive" ? 1 : 0,
-      });
-      return;
-    }
-
-    existing.totalCount++;
-    if (event.signal === "positive") existing.positiveCount++;
-    existing.avgResponseLength = updateEMA(existing.avgResponseLength, event.responseLength, 0.1);
-    existing.avgTemperature = updateEMA(existing.avgTemperature, event.temperature, 0.1);
-    existing.successRate = existing.positiveCount / existing.totalCount;
-  }
-
-  // ── Preference Retrieval ──────────────────────────────────────────────────
-
-  getUserPreferences(userId: string): UserPreferences {
-    return this.getOrCreatePreferences(userId);
-  }
-
-  private getOrCreatePreferences(userId: string): UserPreferences {
-    if (!this.userPreferences.has(userId)) {
-      this.userPreferences.set(userId, {
+  private _ensureUser(userId: string): UserAdaptation {
+    if (!this.users.has(userId)) {
+      this.users.set(userId, {
+        ...DEFAULT_ADAPTATION,
         userId,
-        ...DEFAULT_PREFS,
-        taskPreferences: JSON.parse(JSON.stringify(DEFAULT_PREFS.taskPreferences)) as UserPreferences["taskPreferences"],
-        lastUpdated: new Date(),
+        lastUpdated    : Date.now(),
+        intentScores   : {},
+        modelPreferences: {},
       });
     }
-    return this.userPreferences.get(userId)!;
+    return this.users.get(userId)!;
   }
 
-  /**
-   * Get recommended parameters for a user + task combination.
-   */
-  getRecommendedParams(
-    userId: string,
-    taskType: TaskType,
-    baseTemperature?: number
-  ): { temperature: number; maxTokens: number; systemPromptHint: string } {
-    const prefs = this.getOrCreatePreferences(userId);
-    const taskPref = prefs.taskPreferences[taskType];
+  private _updateUserAdaptation(signal: FeedbackSignal): void {
+    const user = this._ensureUser(signal.userId);
 
-    // Only use learned task preferences if we have enough samples
-    const temperature = taskPref.sampleCount >= MIN_SAMPLES
-      ? clamp(taskPref.temperature, 0, 1)
-      : (baseTemperature ?? prefs.temperature);
+    user.verbosity        = adjustVerbosity(user.verbosity, signal);
+    user.technicalDepth   = adjustTechnicalDepth(user.technicalDepth, signal);
+    user.interactionCount++;
+    user.lastUpdated      = Date.now();
 
-    // Verbosity → max tokens (5=1024, 10=4096, 0=256)
-    const verbosity = taskPref.sampleCount >= MIN_SAMPLES ? taskPref.verbosity : prefs.verbosity;
-    const maxTokens = Math.round(256 + (verbosity / 10) * (4096 - 256));
+    // Running average quality per intent
+    const prev = user.intentScores[signal.intent] ?? signal.qualityScore;
+    user.intentScores[signal.intent] = prev * 0.9 + signal.qualityScore * 0.1;
 
-    // Build system prompt hint
-    const hints: string[] = [];
-    if (verbosity < 3) hints.push("Be very concise.");
-    else if (verbosity > 7) hints.push("Be thorough and detailed.");
-    if (prefs.formality < 3) hints.push("Use casual, conversational tone.");
-    else if (prefs.formality > 7) hints.push("Maintain professional, formal tone.");
-
-    return {
-      temperature: clamp(temperature, 0, 1),
-      maxTokens,
-      systemPromptHint: hints.join(" "),
-    };
-  }
-
-  // ── Best Model Recommendation ─────────────────────────────────────────────
-
-  getBestModel(taskType: TaskType, availableModels: string[]): string | null {
-    let best: { model: string; score: number } | null = null;
-
-    for (const model of availableModels) {
-      const key = `${model}:${taskType}`;
-      const perf = this.modelPerformance.get(key);
-
-      if (!perf || perf.totalCount < MIN_SAMPLES) continue;
-
-      if (!best || perf.successRate > best.score) {
-        best = { model, score: perf.successRate };
-      }
+    // Track model preference (update when positive feedback on a specific model)
+    if (signal.rating === 'positive' && signal.model !== 'auto') {
+      user.modelPreferences[signal.intent] = signal.model;
     }
-
-    return best?.model ?? null;
   }
 
-  // ── A/B Testing ───────────────────────────────────────────────────────────
+  /** Get adaptation profile for a user. */
+  getUserAdaptation(userId: string): UserAdaptation {
+    return this._ensureUser(userId);
+  }
 
-  createABTest(test: Omit<ABTest, "startedAt" | "results">): ABTest {
-    const newTest: ABTest = {
-      ...test,
-      startedAt: new Date(),
-      results: {},
+  /** Build a system-prompt addendum based on user's learned preferences. */
+  buildUserHint(userId: string): string {
+    const user = this.users.get(userId);
+    if (!user || user.interactionCount < 3) return ''; // Not enough data
+
+    const parts: string[] = [];
+    if (user.verbosity < 0.3) parts.push('Keep responses brief.');
+    if (user.verbosity > 0.7) parts.push('Provide detailed explanations.');
+    if (user.formality > 0.7) parts.push('Use formal language.');
+    if (user.formality < 0.3) parts.push('Use casual, friendly language.');
+    if (user.technicalDepth > 0.7) parts.push('Assume technical expertise.');
+    if (user.technicalDepth < 0.3) parts.push('Avoid jargon; explain technical terms.');
+
+    return parts.length > 0 ? parts.join(' ') : '';
+  }
+
+  /** Suggest the best model for a given user and intent. */
+  suggestModel(userId: string, intent: string): string | undefined {
+    const user = this.users.get(userId);
+    return user?.modelPreferences[intent];
+  }
+
+  // ── Model performance ───────────────────────────────────────────────────────
+
+  private _updateModelPerformance(signal: FeedbackSignal): void {
+    const key = `${signal.model}:${signal.intent}`;
+    const rec = this.modelPerf.get(key) ?? {
+      model: signal.model, intent: signal.intent,
+      totalCalls: 0, avgQuality: 0, positives: 0, negatives: 0,
     };
-    this.activeTests.set(test.id, newTest);
-    logger.info(`A/B test created: ${test.id} (${test.variants.length} variants)`);
-    return newTest;
+
+    rec.totalCalls++;
+    rec.avgQuality = rec.avgQuality * 0.9 + signal.qualityScore * 0.1;
+    if (signal.rating === 'positive') rec.positives++;
+    if (signal.rating === 'negative') rec.negatives++;
+
+    this.modelPerf.set(key, rec);
   }
 
-  selectVariant(testId: string, userId: string): ABTestVariant | null {
-    const test = this.activeTests.get(testId);
-    if (!test || test.endedAt) return null;
-
-    // Deterministic assignment based on userId hash
-    const hash = userId.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0);
-    let cumulative = 0;
-
-    for (const variant of test.variants) {
-      cumulative += variant.weight;
-      if ((hash % 100) / 100 < cumulative) return variant;
+  /** Return the best-performing model for a given intent based on feedback history. */
+  bestModelForIntent(intent: string): string | undefined {
+    let best: ModelPerformanceRecord | undefined;
+    for (const rec of this.modelPerf.values()) {
+      if (rec.intent !== intent || rec.totalCalls < 5) continue;
+      if (!best || rec.avgQuality > best.avgQuality) best = rec;
     }
-
-    return test.variants[test.variants.length - 1] ?? null;
+    return best?.model;
   }
 
-  endABTest(testId: string): ABTest | null {
-    const test = this.activeTests.get(testId);
-    if (!test) return null;
-    test.endedAt = new Date();
+  /** Return model performance leaderboard for an intent. */
+  modelLeaderboard(intent: string): ModelPerformanceRecord[] {
+    return [...this.modelPerf.values()]
+      .filter(r => r.intent === intent && r.totalCalls >= 3)
+      .sort((a, b) => b.avgQuality - a.avgQuality);
+  }
+
+  // ── A/B testing ─────────────────────────────────────────────────────────────
+
+  private _updateABTests(signal: FeedbackSignal): void {
+    for (const test of this.abTests.values()) {
+      if (!test.active || test.intent !== signal.intent) continue;
+      const variant = test.variants.find(v => v.strategyName === signal.strategyName);
+      if (!variant) continue;
+      variant.totalCalls++;
+      if (signal.rating === 'positive') variant.positives++;
+      if (signal.rating === 'negative') variant.negatives++;
+    }
+  }
+
+  /** Create an A/B test comparing two strategy variants. */
+  createABTest(testId: string, intent: string, variants: Omit<ABTestVariant, 'positives' | 'negatives' | 'totalCalls'>[]): ABTest {
+    const test: ABTest = {
+      testId,
+      intent,
+      variants: variants.map(v => ({ ...v, positives: 0, negatives: 0, totalCalls: 0 })),
+      startedAt: Date.now(),
+      active   : true,
+    };
+    this.abTests.set(testId, test);
+    Logger.info('[AdaptiveLearning] A/B test created', { testId, intent, variants: variants.length });
     return test;
   }
 
-  getABTestResults(testId: string): Record<string, { successRate: number; total: number }> | null {
-    const test = this.activeTests.get(testId);
+  /** Return the winning variant for a test (minimum 20 calls to declare winner). */
+  abTestWinner(testId: string): ABTestVariant | null {
+    const test = this.abTests.get(testId);
     if (!test) return null;
-
-    return Object.fromEntries(
-      Object.entries(test.results).map(([model, r]) => [
-        model,
-        { successRate: r.total > 0 ? r.positive / r.total : 0, total: r.total },
-      ])
+    const eligible = test.variants.filter(v => v.totalCalls >= 20);
+    if (eligible.length === 0) return null;
+    return eligible.reduce((best, v) =>
+      v.positives / v.totalCalls > best.positives / best.totalCalls ? v : best
     );
   }
 
-  // ── Analytics ─────────────────────────────────────────────────────────────
+  // ── Serialisation ────────────────────────────────────────────────────────────
 
-  getModelLeaderboard(taskType?: TaskType): ModelPerformance[] {
-    const perfs = [...this.modelPerformance.values()];
-    const filtered = taskType ? perfs.filter((p) => p.taskType === taskType) : perfs;
-    return filtered
-      .filter((p) => p.totalCount >= MIN_SAMPLES)
-      .sort((a, b) => b.successRate - a.successRate);
+  serialise(): string {
+    return JSON.stringify({
+      users    : [...this.users.entries()],
+      modelPerf: [...this.modelPerf.entries()],
+      abTests  : [...this.abTests.entries()],
+    });
   }
 
-  getUserStats(userId: string): { feedbackCount: number; positiveRate: number; topTaskType: TaskType } {
-    const prefs = this.getOrCreatePreferences(userId);
-    const topTask = Object.entries(prefs.taskPreferences)
-      .sort((a, b) => b[1].sampleCount - a[1].sampleCount)[0]?.[0] as TaskType ?? "other";
+  deserialise(raw: string): void {
+    const data = JSON.parse(raw) as {
+      users    : [string, UserAdaptation][];
+      modelPerf: [string, ModelPerformanceRecord][];
+      abTests  : [string, ABTest][];
+    };
+    data.users.forEach(([k, v])     => this.users.set(k, v));
+    data.modelPerf.forEach(([k, v]) => this.modelPerf.set(k, v));
+    data.abTests.forEach(([k, v])   => this.abTests.set(k, v));
+  }
 
+  get stats() {
     return {
-      feedbackCount: prefs.feedbackCount,
-      positiveRate: prefs.positiveRate,
-      topTaskType: topTask,
+      users  : this.users.size,
+      models : this.modelPerf.size,
+      abTests: this.abTests.size,
+      signals: this.history.length,
     };
   }
 }
 
-export const adaptiveLearning = new AdaptiveLearning();
+export const adaptiveLearning = new AdaptiveLearningEngine();

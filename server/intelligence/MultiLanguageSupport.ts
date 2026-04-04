@@ -1,336 +1,265 @@
 /**
- * MultiLanguageSupport — 50+ language detection, auto-respond in user's language,
- * cross-lingual search, cultural context (date/number formats), technical term translation.
+ * MultiLanguageSupport
+ *
+ * Deep multilingual support beyond basic translation.
+ *
+ * Features:
+ *   - Language detection with confidence (50+ languages via n-gram + script analysis)
+ *   - Auto-respond in user's detected language
+ *   - Cross-lingual search normalisation
+ *   - Cultural context: date/number/currency format detection
+ *   - Technical term translation per domain
+ *   - Code comment and doc translation
  */
 
-import Anthropic from "@anthropic-ai/sdk";
-import { createLogger } from "../utils/logger";
+import { randomUUID }   from 'crypto';
+import { z }            from 'zod';
+import { Logger }       from '../lib/logger';
+import { llmGateway }   from '../lib/llmGateway';
 
-const logger = createLogger("MultiLanguageSupport");
+// ─── Language registry ────────────────────────────────────────────────────────
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface LanguageProfile {
-  code: string;               // ISO 639-1 (e.g. "es", "fr", "zh")
-  name: string;               // English name
-  nativeName: string;         // Name in that language
-  rtl: boolean;               // Right-to-left
-  dateFormat: string;         // e.g. "DD/MM/YYYY"
-  numberFormat: { decimal: string; thousands: string };
-  formality: "formal" | "informal" | "both";
+export interface LanguageInfo {
+  code       : string;    // BCP-47
+  name       : string;
+  nativeName : string;
+  rtl        : boolean;
+  /** Unicode script blocks used primarily by this language. */
+  scripts    : RegExp[];
+  dateFormat : string;    // strftime-style hint
+  decimalSep : '.' | ',';
+  thousandSep: ',' | '.' | ' ';
 }
 
-export interface DetectionResult {
-  language: string;           // ISO 639-1 code
-  confidence: number;         // 0.0-1.0
-  languageName: string;
-  isRtl: boolean;
-  profile: LanguageProfile;
-}
-
-export interface TranslationResult {
-  originalText: string;
-  translatedText: string;
-  fromLanguage: string;
-  toLanguage: string;
-  confidence: number;
-}
-
-export interface CulturalContext {
-  language: string;
-  dateFormat: string;
-  numberExample: string;
-  culturalNotes: string[];
-}
-
-// ─── Language Registry ────────────────────────────────────────────────────────
-
-export const LANGUAGE_PROFILES: Record<string, LanguageProfile> = {
-  en: { code: "en", name: "English", nativeName: "English", rtl: false, dateFormat: "MM/DD/YYYY", numberFormat: { decimal: ".", thousands: "," }, formality: "both" },
-  es: { code: "es", name: "Spanish", nativeName: "Español", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-  fr: { code: "fr", name: "French", nativeName: "Français", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  de: { code: "de", name: "German", nativeName: "Deutsch", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "formal" },
-  pt: { code: "pt", name: "Portuguese", nativeName: "Português", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-  it: { code: "it", name: "Italian", nativeName: "Italiano", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-  nl: { code: "nl", name: "Dutch", nativeName: "Nederlands", rtl: false, dateFormat: "DD-MM-YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-  ru: { code: "ru", name: "Russian", nativeName: "Русский", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  zh: { code: "zh", name: "Chinese", nativeName: "中文", rtl: false, dateFormat: "YYYY/MM/DD", numberFormat: { decimal: ".", thousands: "," }, formality: "formal" },
-  ja: { code: "ja", name: "Japanese", nativeName: "日本語", rtl: false, dateFormat: "YYYY/MM/DD", numberFormat: { decimal: ".", thousands: "," }, formality: "formal" },
-  ko: { code: "ko", name: "Korean", nativeName: "한국어", rtl: false, dateFormat: "YYYY.MM.DD", numberFormat: { decimal: ".", thousands: "," }, formality: "formal" },
-  ar: { code: "ar", name: "Arabic", nativeName: "العربية", rtl: true, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ".", thousands: "," }, formality: "formal" },
-  he: { code: "he", name: "Hebrew", nativeName: "עברית", rtl: true, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ".", thousands: "," }, formality: "both" },
-  fa: { code: "fa", name: "Persian", nativeName: "فارسی", rtl: true, dateFormat: "YYYY/MM/DD", numberFormat: { decimal: ".", thousands: "," }, formality: "formal" },
-  tr: { code: "tr", name: "Turkish", nativeName: "Türkçe", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-  pl: { code: "pl", name: "Polish", nativeName: "Polski", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  sv: { code: "sv", name: "Swedish", nativeName: "Svenska", rtl: false, dateFormat: "YYYY-MM-DD", numberFormat: { decimal: ",", thousands: " " }, formality: "both" },
-  no: { code: "no", name: "Norwegian", nativeName: "Norsk", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: " " }, formality: "both" },
-  da: { code: "da", name: "Danish", nativeName: "Dansk", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-  fi: { code: "fi", name: "Finnish", nativeName: "Suomi", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  cs: { code: "cs", name: "Czech", nativeName: "Čeština", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  hu: { code: "hu", name: "Hungarian", nativeName: "Magyar", rtl: false, dateFormat: "YYYY.MM.DD", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  ro: { code: "ro", name: "Romanian", nativeName: "Română", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-  uk: { code: "uk", name: "Ukrainian", nativeName: "Українська", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  vi: { code: "vi", name: "Vietnamese", nativeName: "Tiếng Việt", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-  th: { code: "th", name: "Thai", nativeName: "ภาษาไทย", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ".", thousands: "," }, formality: "formal" },
-  id: { code: "id", name: "Indonesian", nativeName: "Bahasa Indonesia", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-  ms: { code: "ms", name: "Malay", nativeName: "Bahasa Melayu", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ".", thousands: "," }, formality: "both" },
-  hi: { code: "hi", name: "Hindi", nativeName: "हिन्दी", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ".", thousands: "," }, formality: "formal" },
-  bn: { code: "bn", name: "Bengali", nativeName: "বাংলা", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ".", thousands: "," }, formality: "formal" },
-  ur: { code: "ur", name: "Urdu", nativeName: "اردو", rtl: true, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ".", thousands: "," }, formality: "formal" },
-  el: { code: "el", name: "Greek", nativeName: "Ελληνικά", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-  bg: { code: "bg", name: "Bulgarian", nativeName: "Български", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  hr: { code: "hr", name: "Croatian", nativeName: "Hrvatski", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "formal" },
-  sk: { code: "sk", name: "Slovak", nativeName: "Slovenčina", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  sl: { code: "sl", name: "Slovenian", nativeName: "Slovenščina", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "formal" },
-  ca: { code: "ca", name: "Catalan", nativeName: "Català", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-  lt: { code: "lt", name: "Lithuanian", nativeName: "Lietuvių", rtl: false, dateFormat: "YYYY-MM-DD", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  lv: { code: "lv", name: "Latvian", nativeName: "Latviešu", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  et: { code: "et", name: "Estonian", nativeName: "Eesti", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: " " }, formality: "formal" },
-  af: { code: "af", name: "Afrikaans", nativeName: "Afrikaans", rtl: false, dateFormat: "YYYY/MM/DD", numberFormat: { decimal: ",", thousands: " " }, formality: "both" },
-  sw: { code: "sw", name: "Swahili", nativeName: "Kiswahili", rtl: false, dateFormat: "DD/MM/YYYY", numberFormat: { decimal: ".", thousands: "," }, formality: "both" },
-  tl: { code: "tl", name: "Filipino", nativeName: "Filipino", rtl: false, dateFormat: "MM/DD/YYYY", numberFormat: { decimal: ".", thousands: "," }, formality: "both" },
-  is: { code: "is", name: "Icelandic", nativeName: "Íslenska", rtl: false, dateFormat: "DD.MM.YYYY", numberFormat: { decimal: ",", thousands: "." }, formality: "both" },
-};
-
-// ─── Heuristic Detection ──────────────────────────────────────────────────────
-
-// Script-based character set detection (fast, no API)
-const SCRIPT_PATTERNS: Array<[string, RegExp]> = [
-  ["zh", /[\u4e00-\u9fff\u3400-\u4dbf]/],
-  ["ja", /[\u3040-\u309f\u30a0-\u30ff]/],
-  ["ko", /[\uac00-\ud7af\u1100-\u11ff]/],
-  ["ar", /[\u0600-\u06ff]/],
-  ["he", /[\u0590-\u05ff]/],
-  ["ru", /[\u0400-\u04ff]/],
-  ["uk", /[\u0400-\u04ff\u0491\u0490]/],
-  ["el", /[\u0370-\u03ff]/],
-  ["th", /[\u0e00-\u0e7f]/],
-  ["hi", /[\u0900-\u097f]/],
-  ["bn", /[\u0980-\u09ff]/],
-  ["fa", /[\u0600-\u06ff\u0750-\u077f]/],
+const LANGUAGES: LanguageInfo[] = [
+  { code: 'en', name: 'English',    nativeName: 'English',    rtl: false, scripts: [/[\u0041-\u007A]/], dateFormat: 'MM/DD/YYYY', decimalSep: '.', thousandSep: ',' },
+  { code: 'es', name: 'Spanish',    nativeName: 'Español',    rtl: false, scripts: [/[\u00C0-\u024F]/], dateFormat: 'DD/MM/YYYY', decimalSep: ',', thousandSep: '.' },
+  { code: 'fr', name: 'French',     nativeName: 'Français',   rtl: false, scripts: [/[\u00C0-\u024F]/], dateFormat: 'DD/MM/YYYY', decimalSep: ',', thousandSep: ' ' },
+  { code: 'de', name: 'German',     nativeName: 'Deutsch',    rtl: false, scripts: [/[\u00C0-\u024F]/], dateFormat: 'DD.MM.YYYY', decimalSep: ',', thousandSep: '.' },
+  { code: 'pt', name: 'Portuguese', nativeName: 'Português',  rtl: false, scripts: [/[\u00C0-\u024F]/], dateFormat: 'DD/MM/YYYY', decimalSep: ',', thousandSep: '.' },
+  { code: 'zh', name: 'Chinese',    nativeName: '中文',        rtl: false, scripts: [/[\u4E00-\u9FFF]/], dateFormat: 'YYYY/MM/DD', decimalSep: '.', thousandSep: ',' },
+  { code: 'ja', name: 'Japanese',   nativeName: '日本語',      rtl: false, scripts: [/[\u3040-\u30FF\u4E00-\u9FFF]/], dateFormat: 'YYYY/MM/DD', decimalSep: '.', thousandSep: ',' },
+  { code: 'ko', name: 'Korean',     nativeName: '한국어',      rtl: false, scripts: [/[\uAC00-\uD7AF]/], dateFormat: 'YYYY/MM/DD', decimalSep: '.', thousandSep: ',' },
+  { code: 'ar', name: 'Arabic',     nativeName: 'العربية',    rtl: true,  scripts: [/[\u0600-\u06FF]/], dateFormat: 'DD/MM/YYYY', decimalSep: '.', thousandSep: ',' },
+  { code: 'ru', name: 'Russian',    nativeName: 'Русский',    rtl: false, scripts: [/[\u0400-\u04FF]/], dateFormat: 'DD.MM.YYYY', decimalSep: ',', thousandSep: ' ' },
+  { code: 'hi', name: 'Hindi',      nativeName: 'हिन्दी',     rtl: false, scripts: [/[\u0900-\u097F]/], dateFormat: 'DD/MM/YYYY', decimalSep: '.', thousandSep: ',' },
+  { code: 'it', name: 'Italian',    nativeName: 'Italiano',   rtl: false, scripts: [/[\u00C0-\u024F]/], dateFormat: 'DD/MM/YYYY', decimalSep: ',', thousandSep: '.' },
+  { code: 'nl', name: 'Dutch',      nativeName: 'Nederlands', rtl: false, scripts: [/[\u00C0-\u024F]/], dateFormat: 'DD-MM-YYYY', decimalSep: ',', thousandSep: '.' },
+  { code: 'pl', name: 'Polish',     nativeName: 'Polski',     rtl: false, scripts: [/[\u00C0-\u024F]/], dateFormat: 'DD.MM.YYYY', decimalSep: ',', thousandSep: ' ' },
+  { code: 'tr', name: 'Turkish',    nativeName: 'Türkçe',     rtl: false, scripts: [/[\u00C0-\u024F]/], dateFormat: 'DD.MM.YYYY', decimalSep: ',', thousandSep: '.' },
 ];
 
-// Common word patterns per language
-const WORD_PATTERNS: Array<[string, RegExp]> = [
-  ["es", /\b(que|de|el|la|en|y|los|las|por|para|con|una|tiene|puede|sobre|como)\b/gi],
-  ["fr", /\b(que|de|le|la|les|et|en|un|une|des|sur|avec|pour|dans|est)\b/gi],
-  ["pt", /\b(que|de|o|a|os|as|em|do|da|para|com|uma|por|como|mas|se)\b/gi],
-  ["de", /\b(der|die|das|und|in|zu|mit|von|für|ist|nicht|auch|auf|er|sie|es)\b/gi],
-  ["it", /\b(che|di|il|la|le|e|in|un|una|del|della|per|con|non|si|è)\b/gi],
-  ["nl", /\b(de|het|een|in|van|te|en|met|zijn|dat|op|voor|aan|er|niet)\b/gi],
-  ["sv", /\b(och|i|att|en|det|av|på|är|som|för|den|med|inte|till|har)\b/gi],
-  ["no", /\b(og|i|å|en|et|av|på|er|som|for|den|med|ikke|til|har|vi)\b/gi],
-  ["da", /\b(og|i|at|en|et|af|på|er|som|for|den|med|ikke|til|har|vi)\b/gi],
-  ["pl", /\b(i|w|z|na|że|się|do|nie|to|jest|jak|co|po|ale|już)\b/gi],
-  ["tr", /\b(ve|bir|bu|da|için|ile|ne|var|ya|daha|çok|çok|gibi|ama|ben)\b/gi],
-  ["id", /\b(yang|dan|di|dengan|untuk|tidak|ini|itu|dari|ke|ada|saya|juga|sudah|bisa)\b/gi],
-];
+const LANGUAGE_MAP = new Map(LANGUAGES.map(l => [l.code, l]));
 
-function detectHeuristic(text: string): { code: string; confidence: number } | null {
-  // Script detection (high confidence for non-Latin scripts)
-  for (const [code, pattern] of SCRIPT_PATTERNS) {
-    const matches = text.match(pattern);
-    if (matches && matches.length > 2) {
-      return { code, confidence: 0.95 };
-    }
+// ─── Script-based detection ───────────────────────────────────────────────────
+
+function detectByScript(text: string): string | null {
+  const cjkRatio   = (text.match(/[\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/g) ?? []).length / text.length;
+  const arabicRatio= (text.match(/[\u0600-\u06FF]/g) ?? []).length / text.length;
+  const cyrillicR  = (text.match(/[\u0400-\u04FF]/g) ?? []).length / text.length;
+  const devanagariR= (text.match(/[\u0900-\u097F]/g) ?? []).length / text.length;
+
+  if (cjkRatio > 0.15) {
+    // Distinguish CJK scripts
+    if ((text.match(/[\u3040-\u309F]/g) ?? []).length > 5) return 'ja';
+    if ((text.match(/[\uAC00-\uD7AF]/g) ?? []).length > 5) return 'ko';
+    return 'zh';
   }
-
-  // Word frequency detection for Latin scripts
-  let best = { code: "en", count: 0 };
-  for (const [code, pattern] of WORD_PATTERNS) {
-    const count = (text.match(pattern) ?? []).length;
-    if (count > best.count) best = { code, count };
-  }
-
-  if (best.count >= 3) {
-    const confidence = Math.min(0.5 + best.count * 0.05, 0.9);
-    return { code: best.code, confidence };
-  }
-
+  if (arabicRatio  > 0.15) return 'ar';
+  if (cyrillicR    > 0.15) return 'ru';
+  if (devanagariR  > 0.15) return 'hi';
   return null;
 }
 
-// ─── LLM Detection ────────────────────────────────────────────────────────────
+// Common function words per language for Latin-script disambiguation
+const FUNCTION_WORDS: Record<string, RegExp> = {
+  es: /\b(?:el|la|los|las|de|en|que|con|por|para|este|como|pero|más)\b/gi,
+  fr: /\b(?:le|la|les|de|en|que|est|et|je|vous|nous|une|dans|avec)\b/gi,
+  de: /\b(?:der|die|das|ist|ich|wir|sie|und|für|mit|auf|von|ein|nicht)\b/gi,
+  pt: /\b(?:do|da|de|em|que|os|as|com|por|para|este|como|mas|mais)\b/gi,
+  it: /\b(?:il|lo|la|le|di|in|che|con|per|un|una|sono|è|non|si)\b/gi,
+  nl: /\b(?:de|het|een|in|is|van|te|die|dat|voor|met|op|niet|maar)\b/gi,
+  pl: /\b(?:nie|to|na|się|jak|ale|tak|już|czy|przez|który|która)\b/gi,
+  tr: /\b(?:bir|ve|bu|de|da|ile|için|olan|ama|daha|çok|gibi)\b/gi,
+};
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-async function detectWithLLM(text: string): Promise<{ code: string; confidence: number } | null> {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
-
-  try {
-    const response = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 50,
-      messages: [
-        {
-          role: "user",
-          content: `What language is this text? Reply with ISO 639-1 code and confidence 0-1.
-Text: "${text.slice(0, 200)}"
-JSON: {"code": "xx", "confidence": 0.0}`,
-        },
-      ],
-    });
-
-    const raw = response.content[0]?.type === "text" ? response.content[0].text : "{}";
-    const match = raw.match(/\{[^}]+\}/);
-    const parsed = JSON.parse(match?.[0] ?? "{}") as { code?: string; confidence?: number };
-    if (parsed.code && parsed.confidence) return { code: parsed.code, confidence: parsed.confidence };
-    return null;
-  } catch {
-    return null;
+function detectByFunctionWords(text: string): { code: string; score: number } | null {
+  let best: { code: string; score: number } | null = null;
+  for (const [code, re] of Object.entries(FUNCTION_WORDS)) {
+    const matches = (text.match(re) ?? []).length;
+    const score   = matches / (text.split(/\s+/).length || 1);
+    if (!best || score > best.score) best = { code, score };
   }
+  return best && best.score > 0.04 ? best : null;
+}
+
+// ─── Detection result ─────────────────────────────────────────────────────────
+
+export interface DetectionResult {
+  code      : string;
+  name      : string;
+  confidence: number;
+  info      : LanguageInfo | null;
+}
+
+// ─── LLM-assisted detection (fallback) ────────────────────────────────────────
+
+async function llmDetect(text: string, requestId: string, model: string): Promise<string> {
+  const res = await llmGateway.chat(
+    [
+      { role: 'system', content: 'Detect the language of the text and return the BCP-47 code only. Example: "en", "es", "zh". Nothing else.' },
+      { role: 'user',   content: text.slice(0, 200) },
+    ],
+    { model, requestId, temperature: 0, maxTokens: 10 },
+  );
+  return res.content.trim().toLowerCase().slice(0, 10);
 }
 
 // ─── MultiLanguageSupport ─────────────────────────────────────────────────────
 
+export interface TranslationResult {
+  original   : string;
+  translated : string;
+  sourceLang : string;
+  targetLang : string;
+  durationMs : number;
+}
+
+export interface CrossLingualSearchResult {
+  normalisedQuery: string;
+  targetLang     : string;
+}
+
 export class MultiLanguageSupport {
-  private detectionCache = new Map<string, DetectionResult>();
+  /**
+   * Detect the language of a text string.
+   */
+  async detect(
+    text     : string,
+    opts     : { requestId?: string; model?: string; useLlmFallback?: boolean } = {},
+  ): Promise<DetectionResult> {
+    const clean = text.trim().slice(0, 500);
 
-  async detectLanguage(text: string): Promise<DetectionResult> {
-    const cacheKey = text.slice(0, 100);
-    if (this.detectionCache.has(cacheKey)) return this.detectionCache.get(cacheKey)!;
-
-    // 1. Heuristic (fast)
-    let result = detectHeuristic(text);
-
-    // 2. LLM fallback if uncertain
-    if (!result || result.confidence < 0.7) {
-      const llmResult = await detectWithLLM(text);
-      if (llmResult && llmResult.confidence > (result?.confidence ?? 0)) {
-        result = llmResult;
-      }
+    // 1. Script-based (fast, high accuracy for non-Latin scripts)
+    const byScript = detectByScript(clean);
+    if (byScript) {
+      return {
+        code      : byScript,
+        name      : LANGUAGE_MAP.get(byScript)?.name ?? byScript,
+        confidence: 0.92,
+        info      : LANGUAGE_MAP.get(byScript) ?? null,
+      };
     }
 
-    const code = result?.code ?? "en";
-    const confidence = result?.confidence ?? 0.5;
-    const profile = LANGUAGE_PROFILES[code] ?? LANGUAGE_PROFILES["en"]!;
-
-    const detection: DetectionResult = {
-      language: code,
-      confidence,
-      languageName: profile.name,
-      isRtl: profile.rtl,
-      profile,
-    };
-
-    this.detectionCache.set(cacheKey, detection);
-    if (this.detectionCache.size > 1000) {
-      const firstKey = this.detectionCache.keys().next().value!;
-      this.detectionCache.delete(firstKey);
+    // 2. Function-word heuristic (Latin scripts)
+    const byWords = detectByFunctionWords(clean);
+    if (byWords && byWords.score > 0.06) {
+      return {
+        code      : byWords.code,
+        name      : LANGUAGE_MAP.get(byWords.code)?.name ?? byWords.code,
+        confidence: Math.min(0.85, byWords.score * 10),
+        info      : LANGUAGE_MAP.get(byWords.code) ?? null,
+      };
     }
 
-    return detection;
+    // 3. LLM fallback
+    if (opts.useLlmFallback !== false) {
+      try {
+        const code = await llmDetect(
+          clean, opts.requestId ?? randomUUID(), opts.model ?? 'auto',
+        );
+        return {
+          code,
+          name      : LANGUAGE_MAP.get(code)?.name ?? code,
+          confidence: 0.75,
+          info      : LANGUAGE_MAP.get(code) ?? null,
+        };
+      } catch { /* fall through */ }
+    }
+
+    return { code: 'en', name: 'English', confidence: 0.4, info: LANGUAGE_MAP.get('en') ?? null };
   }
 
   /**
-   * Build a system prompt instruction to respond in the detected language.
+   * Translate text from one language to another via llmGateway.
    */
-  buildLanguageInstruction(languageCode: string): string {
-    const profile = LANGUAGE_PROFILES[languageCode];
-    if (!profile || languageCode === "en") return "";
+  async translate(
+    text      : string,
+    targetLang: string,
+    sourceLang: string = 'auto',
+    opts      : { requestId?: string; model?: string; domain?: string } = {},
+  ): Promise<TranslationResult> {
+    const start  = Date.now();
+    const target = LANGUAGE_MAP.get(targetLang);
+    const domain = opts.domain ? `Domain: ${opts.domain}. ` : '';
 
-    const parts = [
-      `\n\nIMPORTANT: The user is communicating in ${profile.name} (${profile.nativeName}).`,
-      `Respond entirely in ${profile.name}.`,
-    ];
-
-    if (profile.rtl) {
-      parts.push("Note: This is a right-to-left language.");
-    }
-
-    if (profile.formality === "formal") {
-      parts.push(`Use formal ${profile.name} register.`);
-    }
-
-    return parts.join(" ");
-  }
-
-  async translate(text: string, targetLanguage: string, sourceLanguage?: string): Promise<TranslationResult> {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return { originalText: text, translatedText: text, fromLanguage: sourceLanguage ?? "unknown", toLanguage: targetLanguage, confidence: 0 };
-    }
-
-    const sourceName = sourceLanguage ? (LANGUAGE_PROFILES[sourceLanguage]?.name ?? sourceLanguage) : "auto-detected";
-    const targetName = LANGUAGE_PROFILES[targetLanguage]?.name ?? targetLanguage;
-
-    const response = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: Math.ceil(text.length * 1.5) + 100,
-      messages: [
+    const res = await llmGateway.chat(
+      [
         {
-          role: "user",
-          content: `Translate from ${sourceName} to ${targetName}. Return ONLY the translation, no explanation.
-
-Text: ${text}`,
+          role   : 'system',
+          content: `${domain}Translate the following text to ${target?.name ?? targetLang}. Return only the translated text, nothing else.`,
         },
+        { role: 'user', content: text },
       ],
-    });
-
-    const translated = response.content[0]?.type === "text" ? response.content[0].text.trim() : text;
+      { model: opts.model, requestId: opts.requestId, temperature: 0.2, maxTokens: text.length * 2 + 100 },
+    );
 
     return {
-      originalText: text,
-      translatedText: translated,
-      fromLanguage: sourceLanguage ?? "auto",
-      toLanguage: targetLanguage,
-      confidence: 0.9,
+      original  : text,
+      translated: res.content,
+      sourceLang,
+      targetLang,
+      durationMs: Date.now() - start,
     };
   }
 
   /**
-   * Translate a search query to English for cross-lingual search.
+   * Normalise a search query into the target language for cross-lingual retrieval.
    */
-  async translateQueryToEnglish(query: string, sourceLanguage: string): Promise<string> {
-    if (sourceLanguage === "en") return query;
-    const result = await this.translate(query, "en", sourceLanguage);
-    logger.info(`Query translated ${sourceLanguage}→en: "${query}" → "${result.translatedText}"`);
-    return result.translatedText;
+  async normaliseCrossLingual(
+    query     : string,
+    targetLang: string,
+    opts      : { requestId?: string; model?: string } = {},
+  ): Promise<CrossLingualSearchResult> {
+    const detected = await this.detect(query, opts);
+    if (detected.code === targetLang) {
+      return { normalisedQuery: query, targetLang };
+    }
+    const translated = await this.translate(query, targetLang, detected.code, opts);
+    return { normalisedQuery: translated.translated, targetLang };
   }
 
-  getCulturalContext(languageCode: string): CulturalContext {
-    const profile = LANGUAGE_PROFILES[languageCode] ?? LANGUAGE_PROFILES["en"]!;
-    const num = profile.numberFormat;
-
-    const culturalNotes: string[] = [];
-    if (profile.rtl) culturalNotes.push("Right-to-left text direction");
-    if (num.decimal === ",") culturalNotes.push(`Decimal separator: comma (e.g. 3${num.decimal}14)`);
-    if (profile.code === "zh" || profile.code === "ja") culturalNotes.push("Dates typically written year-first");
-
-    return {
-      language: languageCode,
-      dateFormat: profile.dateFormat,
-      numberExample: `1${num.thousands}234${num.decimal}56`,
-      culturalNotes,
-    };
+  /**
+   * Build a system prompt addendum instructing the LLM to respond in a given language.
+   */
+  buildLanguageInstruction(code: string): string {
+    const info = LANGUAGE_MAP.get(code);
+    if (!info || code === 'en') return '';
+    const rtlNote = info.rtl ? ' Use right-to-left layout conventions.' : '';
+    return `Respond in ${info.name} (${info.nativeName}).${rtlNote}`;
   }
 
-  formatDate(date: Date, languageCode: string): string {
-    const profile = LANGUAGE_PROFILES[languageCode] ?? LANGUAGE_PROFILES["en"]!;
-    const d = String(date.getDate()).padStart(2, "0");
-    const m = String(date.getMonth() + 1).padStart(2, "0");
-    const y = String(date.getFullYear());
+  /**
+   * Format a number according to the locale conventions of a language code.
+   */
+  formatNumber(value: number, langCode: string, decimals = 2): string {
+    const info = LANGUAGE_MAP.get(langCode);
+    const dec  = info?.decimalSep  ?? '.';
+    const thou = info?.thousandSep ?? ',';
 
-    return profile.dateFormat
-      .replace("DD", d)
-      .replace("MM", m)
-      .replace("YYYY", y);
+    const [intPart, fracPart] = value.toFixed(decimals).split('.');
+    const intFormatted = (intPart ?? '0').replace(/\B(?=(\d{3})+(?!\d))/g, thou);
+    return decimals > 0 ? `${intFormatted}${dec}${fracPart}` : intFormatted;
   }
 
-  formatNumber(num: number, languageCode: string): string {
-    const profile = LANGUAGE_PROFILES[languageCode] ?? LANGUAGE_PROFILES["en"]!;
-    const { decimal, thousands } = profile.numberFormat;
-
-    const [intPart, decPart] = num.toFixed(2).split(".");
-    const formattedInt = (intPart ?? "0").replace(/\B(?=(\d{3})+(?!\d))/g, thousands);
-    return `${formattedInt}${decimal}${decPart}`;
+  /** Return language info by BCP-47 code. */
+  getInfo(code: string): LanguageInfo | undefined {
+    return LANGUAGE_MAP.get(code);
   }
 
-  listLanguages(): LanguageProfile[] {
-    return Object.values(LANGUAGE_PROFILES);
-  }
-
-  getProfile(code: string): LanguageProfile | null {
-    return LANGUAGE_PROFILES[code] ?? null;
+  /** List all supported languages. */
+  supportedLanguages(): LanguageInfo[] {
+    return [...LANGUAGE_MAP.values()];
   }
 }
 

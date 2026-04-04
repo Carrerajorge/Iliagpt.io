@@ -1,417 +1,356 @@
 /**
- * ContextualActions — suggests actionable buttons based on conversation state.
- * After code: "Run / Test / Deploy". After analysis: "Dig Deeper / Export".
- * After search: "Read Full / Save". Dynamic — changes with each response.
+ * ContextualActions
+ *
+ * Generates context-sensitive action buttons/shortcuts to show in the UI
+ * after each assistant response.
+ *
+ * Action categories:
+ *   - Code    → "Run", "Test", "Explain", "Refactor", "Copy"
+ *   - Analysis → "Dig Deeper", "Compare with...", "Export as PDF", "Summarise"
+ *   - Search   → "Read Full Article", "Find Related", "Save to Memory"
+ *   - Error    → "Fix It", "Explain Error", "Try Alternative"
+ *   - Creative → "Make it longer", "Change tone", "Write a sequel"
+ *   - General  → "Translate", "Simplify", "Follow up"
+ *
+ * Each action carries:
+ *   - id, label, icon (emoji), category, priority
+ *   - promptTemplate: the message to send when user clicks the action
+ *   - enabled: whether the action makes sense right now
  */
 
-import { createLogger } from "../utils/logger";
-
-const logger = createLogger("ContextualActions");
+import { z }      from 'zod';
+import { Logger } from '../lib/logger';
+import type { Intent } from '../pipeline/MessagePreprocessor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ActionCategory =
-  | "code"
-  | "document"
-  | "search"
-  | "analysis"
-  | "memory"
-  | "workflow"
-  | "navigation"
-  | "export"
-  | "share";
+export const ActionCategorySchema = z.enum([
+  'code', 'analysis', 'search', 'error', 'creative', 'general', 'memory',
+]);
+export type ActionCategory = z.infer<typeof ActionCategorySchema>;
 
-export interface ContextualAction {
-  id: string;
-  label: string;
-  icon?: string;                       // emoji or icon name
-  category: ActionCategory;
-  payload: Record<string, unknown>;
-  primary?: boolean;                   // highlight as main CTA
-  description?: string;                // tooltip text
-  shortcut?: string;                   // keyboard shortcut hint
+export const ContextualActionSchema = z.object({
+  id              : z.string(),
+  label           : z.string(),
+  icon            : z.string(),
+  category        : ActionCategorySchema,
+  priority        : z.number().int().min(1).max(10),
+  promptTemplate  : z.string(),
+  enabled         : z.boolean(),
+  requiresContext : z.boolean(),
+  tooltip         : z.string().optional(),
+});
+export type ContextualAction = z.infer<typeof ContextualActionSchema>;
+
+export interface ConversationState {
+  intent?          : Intent;
+  hasCode?         : boolean;
+  hasError?        : boolean;
+  hasUrls?         : boolean;
+  isCreative?      : boolean;
+  isAnalysis?      : boolean;
+  lastResponseLen? : number;
+  language?        : string;
+  userQuestion?    : string;
 }
 
-export interface ActionGroup {
-  id: string;
-  title: string;
-  actions: ContextualAction[];
-  collapseAfter?: number;              // show N actions, hide rest
+// ─── Action templates ─────────────────────────────────────────────────────────
+
+type ActionTemplate = Omit<ContextualAction, 'enabled'>;
+
+const CODE_ACTIONS: ActionTemplate[] = [
+  {
+    id             : 'run_code',
+    label          : 'Run',
+    icon           : '▶',
+    category       : 'code',
+    priority       : 1,
+    promptTemplate : 'Run the code from your last response and show the output.',
+    requiresContext: true,
+    tooltip        : 'Execute the code and show output',
+  },
+  {
+    id             : 'add_tests',
+    label          : 'Add Tests',
+    icon           : '✓',
+    category       : 'code',
+    priority       : 2,
+    promptTemplate : 'Write unit tests for the code in your last response.',
+    requiresContext: true,
+    tooltip        : 'Generate unit tests',
+  },
+  {
+    id             : 'explain_code',
+    label          : 'Explain',
+    icon           : '📖',
+    category       : 'code',
+    priority       : 3,
+    promptTemplate : 'Explain line by line how the code in your last response works.',
+    requiresContext: true,
+    tooltip        : 'Get a line-by-line explanation',
+  },
+  {
+    id             : 'refactor',
+    label          : 'Refactor',
+    icon           : '♻',
+    category       : 'code',
+    priority       : 4,
+    promptTemplate : 'Refactor the code in your last response for better readability and performance.',
+    requiresContext: true,
+    tooltip        : 'Clean up and optimise the code',
+  },
+  {
+    id             : 'add_types',
+    label          : 'Add Types',
+    icon           : 'T',
+    category       : 'code',
+    priority       : 5,
+    promptTemplate : 'Add TypeScript type annotations to the code in your last response.',
+    requiresContext: true,
+    tooltip        : 'Add TypeScript types',
+  },
+];
+
+const ANALYSIS_ACTIONS: ActionTemplate[] = [
+  {
+    id             : 'dig_deeper',
+    label          : 'Dig Deeper',
+    icon           : '🔍',
+    category       : 'analysis',
+    priority       : 1,
+    promptTemplate : 'Go into more depth on the most important point from your last response.',
+    requiresContext: true,
+    tooltip        : 'Explore the most important aspect further',
+  },
+  {
+    id             : 'compare',
+    label          : 'Compare Alternatives',
+    icon           : '⇄',
+    category       : 'analysis',
+    priority       : 2,
+    promptTemplate : 'Compare the approach in your last response with 2–3 alternative approaches.',
+    requiresContext: true,
+    tooltip        : 'See alternative approaches',
+  },
+  {
+    id             : 'summarise',
+    label          : 'Summarise',
+    icon           : '≡',
+    category       : 'analysis',
+    priority       : 3,
+    promptTemplate : 'Give me a 3-bullet summary of your last response.',
+    requiresContext: true,
+    tooltip        : 'Get a brief summary',
+  },
+  {
+    id             : 'pros_cons',
+    label          : 'Pros & Cons',
+    icon           : '±',
+    category       : 'analysis',
+    priority       : 4,
+    promptTemplate : 'List the pros and cons of what was discussed in your last response.',
+    requiresContext: true,
+    tooltip        : 'See advantages and disadvantages',
+  },
+];
+
+const ERROR_ACTIONS: ActionTemplate[] = [
+  {
+    id             : 'fix_error',
+    label          : 'Fix It',
+    icon           : '🔧',
+    category       : 'error',
+    priority       : 1,
+    promptTemplate : 'Fix the error described in my last message and explain what was wrong.',
+    requiresContext: true,
+    tooltip        : 'Automatically fix the error',
+  },
+  {
+    id             : 'explain_error',
+    label          : 'Explain Error',
+    icon           : '?',
+    category       : 'error',
+    priority       : 2,
+    promptTemplate : 'Explain in plain English what this error means and its most common causes.',
+    requiresContext: true,
+    tooltip        : 'Understand the error',
+  },
+  {
+    id             : 'try_alternative',
+    label          : 'Try Alternative',
+    icon           : '↺',
+    category       : 'error',
+    priority       : 3,
+    promptTemplate : 'Suggest a completely different approach that avoids this error entirely.',
+    requiresContext: true,
+    tooltip        : 'Find a different solution',
+  },
+];
+
+const CREATIVE_ACTIONS: ActionTemplate[] = [
+  {
+    id             : 'make_longer',
+    label          : 'Expand',
+    icon           : '↕',
+    category       : 'creative',
+    priority       : 1,
+    promptTemplate : 'Expand your last response with more detail and depth.',
+    requiresContext: true,
+    tooltip        : 'Make it longer and more detailed',
+  },
+  {
+    id             : 'change_tone',
+    label          : 'Change Tone',
+    icon           : '🎨',
+    category       : 'creative',
+    priority       : 2,
+    promptTemplate : 'Rewrite your last response in a different tone (more formal, casual, humorous, or poetic).',
+    requiresContext: true,
+    tooltip        : 'Adjust the writing style',
+  },
+  {
+    id             : 'write_sequel',
+    label          : 'Continue',
+    icon           : '→',
+    category       : 'creative',
+    priority       : 3,
+    promptTemplate : 'Continue from where your last response left off.',
+    requiresContext: true,
+    tooltip        : 'Write what comes next',
+  },
+];
+
+const GENERAL_ACTIONS: ActionTemplate[] = [
+  {
+    id             : 'translate',
+    label          : 'Translate',
+    icon           : '🌐',
+    category       : 'general',
+    priority       : 1,
+    promptTemplate : 'Translate your last response to {language}.',
+    requiresContext: false,
+    tooltip        : 'Translate to another language',
+  },
+  {
+    id             : 'simplify',
+    label          : 'Simplify',
+    icon           : '◎',
+    category       : 'general',
+    priority       : 2,
+    promptTemplate : 'Rewrite your last response in simpler language, as if explaining to a beginner.',
+    requiresContext: true,
+    tooltip        : 'Make it easier to understand',
+  },
+  {
+    id             : 'save_to_memory',
+    label          : 'Save to Memory',
+    icon           : '💾',
+    category       : 'memory',
+    priority       : 3,
+    promptTemplate : 'Save the key information from your last response to memory for future reference.',
+    requiresContext: true,
+    tooltip        : 'Remember this for later',
+  },
+  {
+    id             : 'follow_up',
+    label          : 'Follow Up',
+    icon           : '+',
+    category       : 'general',
+    priority       : 5,
+    promptTemplate : 'What should I ask next to learn more about this topic?',
+    requiresContext: false,
+    tooltip        : 'Get suggested follow-up questions',
+  },
+];
+
+const ALL_TEMPLATES: ActionTemplate[] = [
+  ...CODE_ACTIONS,
+  ...ANALYSIS_ACTIONS,
+  ...ERROR_ACTIONS,
+  ...CREATIVE_ACTIONS,
+  ...GENERAL_ACTIONS,
+];
+
+// ─── Selector logic ───────────────────────────────────────────────────────────
+
+function shouldEnable(template: ActionTemplate, state: ConversationState): boolean {
+  switch (template.category) {
+    case 'code'    : return !!(state.hasCode || state.intent === 'code');
+    case 'error'   : return !!(state.hasError);
+    case 'analysis': return !!(state.isAnalysis || state.intent === 'analysis' || state.intent === 'question');
+    case 'creative': return !!(state.isCreative || state.intent === 'creative');
+    case 'memory'  : return true;
+    case 'general' : return true;
+    case 'search'  : return !!(state.hasUrls);
+    default        : return true;
+  }
 }
 
-export interface ConversationSnapshot {
-  lastMessage: string;
-  lastResponse: string;
-  detectedLanguage?: string;
-  hasCodeBlock: boolean;
-  codeLanguages: string[];
-  hasSearch: boolean;
-  hasDocument: boolean;
-  hasMath: boolean;
-  hasError: boolean;
-  isLongResponse: boolean;
-  turnCount: number;
-  topics: string[];
+function buildActions(state: ConversationState, maxActions = 6): ContextualAction[] {
+  return ALL_TEMPLATES
+    .map(t => ({
+      ...t,
+      enabled: shouldEnable(t, state),
+    }))
+    .filter(a => a.enabled)
+    .sort((a, b) => a.priority - b.priority)
+    .slice(0, maxActions);
 }
 
-// ─── Response Analyzer ────────────────────────────────────────────────────────
+// ─── Main class ───────────────────────────────────────────────────────────────
 
-function analyzeResponse(message: string, response: string): ConversationSnapshot {
-  const codeBlockMatches = [...response.matchAll(/```(\w+)?\n/g)];
-  const codeLanguages = codeBlockMatches
-    .map((m) => m[1]?.toLowerCase() ?? "")
-    .filter((l) => l.length > 0);
-
-  const hasError = /\b(error|exception|traceback|failed|undefined|null)\b/i.test(message) ||
-    /\b(error|exception|failed)\b/i.test(response);
-
-  // Extract topic words from message
-  const stopwords = new Set(["the", "a", "an", "i", "you", "we", "and", "or", "is", "in", "to"]);
-  const topics = message
-    .toLowerCase()
-    .split(/\W+/)
-    .filter((w) => w.length > 4 && !stopwords.has(w))
-    .slice(0, 5);
-
-  return {
-    lastMessage: message,
-    lastResponse: response,
-    hasCodeBlock: codeBlockMatches.length > 0,
-    codeLanguages,
-    hasSearch: /\b(search|found|results|sources|websites|articles)\b/i.test(response),
-    hasDocument: /\b(document|pdf|file|upload|attachment)\b/i.test(message + response),
-    hasMath: /\b(formula|equation|\$[^$]+\$|\\frac|integral|sum|∑|∫|√)\b/.test(response),
-    hasError,
-    isLongResponse: response.length > 2000,
-    turnCount: 1,
-    topics,
-    detectedLanguage: undefined,
-  };
+export interface ContextualActionsOptions {
+  maxActions?     : number;
+  includeDisabled?: boolean;
+  language?       : string;
 }
 
-// ─── Action Generators ────────────────────────────────────────────────────────
+export class ContextualActionsEngine {
+  /**
+   * Generate contextual actions for the current conversation state.
+   */
+  generate(
+    state: ConversationState,
+    opts : ContextualActionsOptions = {},
+  ): ContextualAction[] {
+    const maxActions = opts.maxActions ?? 6;
+    const actions    = buildActions(state, maxActions);
 
-function getCodeActions(snapshot: ConversationSnapshot): ContextualAction[] {
-  const actions: ContextualAction[] = [];
-  const lang = snapshot.codeLanguages[0] ?? "code";
+    // Personalise translate action with detected language
+    if (opts.language && opts.language !== 'en') {
+      const translate = actions.find(a => a.id === 'translate');
+      if (translate) {
+        translate.promptTemplate = `Translate your last response to English.`;
+        translate.label = 'Translate to English';
+      }
+    }
 
-  actions.push({
-    id: "run_code",
-    label: "Run",
-    icon: "▶",
-    category: "code",
-    primary: true,
-    payload: { action: "execute_code", language: lang },
-    description: `Execute the ${lang} code`,
-    shortcut: "Ctrl+Enter",
-  });
-
-  if (["python", "javascript", "typescript", "js", "ts"].includes(lang)) {
-    actions.push({
-      id: "test_code",
-      label: "Generate Tests",
-      icon: "🧪",
-      category: "code",
-      payload: { action: "generate_tests", language: lang },
-      description: "Generate unit tests for this code",
+    Logger.debug('[ContextualActions] generated actions', {
+      intent : state.intent,
+      count  : actions.length,
+      actions: actions.map(a => a.id),
     });
-  }
 
-  actions.push({
-    id: "explain_code",
-    label: "Explain",
-    icon: "💡",
-    category: "code",
-    payload: { action: "explain_code" },
-    description: "Step-by-step explanation of this code",
-  });
-
-  actions.push({
-    id: "optimize_code",
-    label: "Optimize",
-    icon: "⚡",
-    category: "code",
-    payload: { action: "optimize_code", language: lang },
-    description: "Suggest performance improvements",
-  });
-
-  if (snapshot.hasError) {
-    actions.unshift({
-      id: "fix_error",
-      label: "Fix Error",
-      icon: "🔧",
-      category: "code",
-      primary: true,
-      payload: { action: "fix_error" },
-      description: "Auto-diagnose and fix the error",
-    });
-  }
-
-  return actions;
-}
-
-function getSearchActions(snapshot: ConversationSnapshot): ContextualAction[] {
-  return [
-    {
-      id: "search_deeper",
-      label: "Search More",
-      icon: "🔍",
-      category: "search",
-      primary: true,
-      payload: { action: "search", query: snapshot.topics.join(" "), maxResults: 20 },
-      description: "Search for more results on this topic",
-    },
-    {
-      id: "save_results",
-      label: "Save to Memory",
-      icon: "💾",
-      category: "memory",
-      payload: { action: "save_memory", content: snapshot.lastResponse.slice(0, 1000) },
-      description: "Save these findings for future reference",
-    },
-    {
-      id: "academic_search",
-      label: "Academic Sources",
-      icon: "📚",
-      category: "search",
-      payload: { action: "academic_search", query: snapshot.topics.join(" ") },
-      description: "Search academic papers and journals",
-    },
-  ];
-}
-
-function getAnalysisActions(snapshot: ConversationSnapshot): ContextualAction[] {
-  return [
-    {
-      id: "dig_deeper",
-      label: "Dig Deeper",
-      icon: "🔬",
-      category: "analysis",
-      primary: true,
-      payload: { action: "follow_up", prompt: `Go deeper on: ${snapshot.topics.slice(0, 2).join(", ")}` },
-      description: "Request a more detailed analysis",
-    },
-    {
-      id: "export_analysis",
-      label: "Export",
-      icon: "📄",
-      category: "export",
-      payload: { action: "export", format: "markdown", content: snapshot.lastResponse },
-      description: "Export this analysis as a document",
-    },
-    {
-      id: "verify_facts",
-      label: "Verify Facts",
-      icon: "✓",
-      category: "analysis",
-      payload: { action: "verify_facts", content: snapshot.lastResponse },
-      description: "Check factual claims in this response",
-    },
-    {
-      id: "visualize",
-      label: "Visualize",
-      icon: "📊",
-      category: "analysis",
-      payload: { action: "create_chart", data: snapshot.lastResponse },
-      description: "Create a visualization from this data",
-    },
-  ];
-}
-
-function getDocumentActions(snapshot: ConversationSnapshot): ContextualAction[] {
-  return [
-    {
-      id: "summarize_doc",
-      label: "Summarize",
-      icon: "📝",
-      category: "document",
-      primary: true,
-      payload: { action: "summarize" },
-      description: "Generate a concise summary",
-    },
-    {
-      id: "extract_key_points",
-      label: "Key Points",
-      icon: "🔑",
-      category: "document",
-      payload: { action: "extract_key_points" },
-      description: "Extract the most important points",
-    },
-    {
-      id: "translate_doc",
-      label: "Translate",
-      icon: "🌐",
-      category: "document",
-      payload: { action: "translate" },
-      description: "Translate document to English",
-    },
-  ];
-}
-
-function getShareExportActions(snapshot: ConversationSnapshot): ContextualAction[] {
-  return [
-    {
-      id: "copy_response",
-      label: "Copy",
-      icon: "📋",
-      category: "share",
-      payload: { action: "copy", content: snapshot.lastResponse },
-      description: "Copy response to clipboard",
-    },
-    {
-      id: "save_memory",
-      label: "Remember This",
-      icon: "🧠",
-      category: "memory",
-      payload: { action: "save_memory", content: snapshot.lastResponse, topics: snapshot.topics },
-      description: "Save to long-term memory",
-    },
-  ];
-}
-
-function getLongResponseActions(snapshot: ConversationSnapshot): ContextualAction[] {
-  return [
-    {
-      id: "tldr",
-      label: "TL;DR",
-      icon: "⚡",
-      category: "analysis",
-      primary: true,
-      payload: { action: "summarize_short", content: snapshot.lastResponse },
-      description: "Get a one-paragraph summary",
-    },
-    {
-      id: "outline",
-      label: "Outline",
-      icon: "📑",
-      category: "analysis",
-      payload: { action: "create_outline", content: snapshot.lastResponse },
-      description: "Create a structured outline",
-    },
-  ];
-}
-
-// ─── ContextualActions ────────────────────────────────────────────────────────
-
-export class ContextualActions {
-  /**
-   * Generate contextually appropriate action groups for a conversation state.
-   */
-  generateActions(
-    userMessage: string,
-    assistantResponse: string,
-    options: { turnCount?: number; userId?: string } = {}
-  ): ActionGroup[] {
-    const snapshot = analyzeResponse(userMessage, assistantResponse);
-    snapshot.turnCount = options.turnCount ?? 1;
-
-    const groups: ActionGroup[] = [];
-
-    // Code-related actions
-    if (snapshot.hasCodeBlock) {
-      groups.push({
-        id: "code_actions",
-        title: "Code",
-        actions: getCodeActions(snapshot),
-        collapseAfter: 3,
-      });
-    }
-
-    // Search-related actions
-    if (snapshot.hasSearch) {
-      groups.push({
-        id: "search_actions",
-        title: "Sources",
-        actions: getSearchActions(snapshot),
-        collapseAfter: 2,
-      });
-    }
-
-    // Document actions
-    if (snapshot.hasDocument) {
-      groups.push({
-        id: "document_actions",
-        title: "Document",
-        actions: getDocumentActions(snapshot),
-        collapseAfter: 2,
-      });
-    }
-
-    // Long response actions
-    if (snapshot.isLongResponse) {
-      groups.push({
-        id: "length_actions",
-        title: "Simplify",
-        actions: getLongResponseActions(snapshot),
-      });
-    }
-
-    // Analysis actions (for substantive responses)
-    if (assistantResponse.length > 500 && !snapshot.hasCodeBlock) {
-      groups.push({
-        id: "analysis_actions",
-        title: "Explore",
-        actions: getAnalysisActions(snapshot),
-        collapseAfter: 2,
-      });
-    }
-
-    // Always show share/export for longer responses
-    if (assistantResponse.length > 300 || snapshot.hasCodeBlock) {
-      groups.push({
-        id: "share_actions",
-        title: "Save & Share",
-        actions: getShareExportActions(snapshot),
-      });
-    }
-
-    const totalActions = groups.reduce((s, g) => s + g.actions.length, 0);
-    logger.info(`Generated ${totalActions} contextual actions in ${groups.length} groups`);
-
-    return groups;
+    return actions;
   }
 
   /**
-   * Get flat list of primary (highlighted) actions only.
+   * Look up a specific action by ID and fill in its prompt template.
    */
-  getPrimaryActions(groups: ActionGroup[]): ContextualAction[] {
-    return groups
-      .flatMap((g) => g.actions)
-      .filter((a) => a.primary);
-  }
-
-  /**
-   * Serialize action groups to a format suitable for frontend rendering.
-   */
-  serializeForUI(groups: ActionGroup[]): Array<{
-    id: string;
-    title: string;
-    actions: Array<{ id: string; label: string; icon?: string; primary?: boolean; shortcut?: string }>;
-  }> {
-    return groups.map((g) => ({
-      id: g.id,
-      title: g.title,
-      actions: (g.collapseAfter ? g.actions.slice(0, g.collapseAfter) : g.actions).map((a) => ({
-        id: a.id,
-        label: a.label,
-        icon: a.icon,
-        primary: a.primary,
-        shortcut: a.shortcut,
-        description: a.description,
-      })),
-    }));
-  }
-
-  /**
-   * Find and return the full payload for a given action ID.
-   */
-  resolveAction(groups: ActionGroup[], actionId: string): ContextualAction | null {
-    for (const group of groups) {
-      const action = group.actions.find((a) => a.id === actionId);
-      if (action) return action;
+  buildPrompt(actionId: string, context: Record<string, string> = {}): string | null {
+    const template = ALL_TEMPLATES.find(t => t.id === actionId);
+    if (!template) return null;
+    let prompt = template.promptTemplate;
+    for (const [key, value] of Object.entries(context)) {
+      prompt = prompt.replace(`{${key}}`, value);
     }
-    return null;
+    return prompt;
+  }
+
+  /** Return all available action templates. */
+  allTemplates(): ActionTemplate[] {
+    return ALL_TEMPLATES;
   }
 }
 
-export const contextualActions = new ContextualActions();
+export const contextualActions = new ContextualActionsEngine();
