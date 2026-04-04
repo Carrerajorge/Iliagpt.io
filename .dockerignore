@@ -83,10 +83,28 @@ eslint.config.mjs
 Shimmer
 *.log
 
-# node_modules caches (pruned by build, but ensure caches excluded)
+# node_modules: dev-only large packages (~800 MB)
 node_modules/.cache
 node_modules/.vite
 node_modules/.package-lock.json
+node_modules/electron/
+node_modules/electron-builder/
+node_modules/app-builder-bin/
+node_modules/app-builder-lib/
+node_modules/@opentelemetry/
+node_modules/happy-dom/
+node_modules/drizzle-kit/
+node_modules/eslint/
+node_modules/typescript/
+node_modules/typescript-eslint/
+node_modules/@typescript-eslint/
+node_modules/husky/
+node_modules/lint-staged/
+node_modules/fast-check/
+node_modules/wait-on/
+node_modules/@types/
+node_modules/three/
+node_modules/3d-force-graph/
 
 # Frontend source (already built into dist/public/)
 client/src/
