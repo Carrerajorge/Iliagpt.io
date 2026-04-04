@@ -163,6 +163,10 @@ export class ToolRegistry {
     return this.tools.has(name);
   }
 
+  getTool(name: string): ToolDefinition | undefined {
+    return this.tools.get(name);
+  }
+
   // ── Permissions ──────────────────────────────────────────────────────────────
 
   setProfile(profile: PermissionProfile): void {
