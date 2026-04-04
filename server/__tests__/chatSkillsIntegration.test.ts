@@ -19,7 +19,7 @@ vi.mock("../lib/llmGateway", () => ({
     chat: llmChatMock,
     // Defensive stub: some paths use streamChat; tests for skill-context injection should never hit it.
     streamChat: vi.fn(async () => {
-      throw new Error("llmGateway.streamChat should be mocked in tests");
+      throw new Error("simulated stream bootstrap failure");
     }),
   },
 }));
@@ -132,12 +132,15 @@ vi.mock("../agent/unifiedChatHandler", () => ({
     },
   })),
   hydrateSessionState: vi.fn(async () => null),
-  emitTraceEvent: vi.fn(async () => {}),
+  emitTraceEvent: vi.fn(() => undefined),
   SseBufferedWriter: class {
     constructor() {}
+    pushDelta() {}
     write() {}
     flush() {}
+    finalize() { return 0; }
     close() {}
+    destroy() {}
   },
   resolveLatencyLane: vi.fn(() => "fast"),
 }));
@@ -157,6 +160,29 @@ vi.mock("../services/conversationStateService", () => ({
     appendMessage: vi.fn(async () => null),
   },
 }));
+
+function parseSsePayloads(raw: string): Array<{ event: string; data: any }> {
+  return raw
+    .split("\n\n")
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => {
+      const eventMatch = block.match(/^event:\s*(.+)$/m);
+      const dataMatch = block.match(/^data:\s*(.+)$/m);
+      if (!eventMatch || !dataMatch) {
+        return null;
+      }
+      try {
+        return {
+          event: eventMatch[1].trim(),
+          data: JSON.parse(dataMatch[1]),
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter((item): item is { event: string; data: any } => !!item);
+}
 
 async function makeApp() {
   const { createChatAiRouter } = await import("../routes/chatAiRouter");
@@ -228,7 +254,40 @@ describe("chat skill integration", () => {
       expect(outboundMessages[0].content).toContain("[SKILL_CONTEXT]");
       }
 
-      expect(res.text.includes("event: done") || res.text.includes("event: error")).toBe(true);
+      expect(llmChatMock).toHaveBeenCalled();
+      expect(res.text.includes("event: done")).toBe(true);
+      expect(res.text.includes("event: complete")).toBe(true);
+      expect(res.text.includes("event: error")).toBe(false);
+    } finally {
+      await close();
+    }
+  }, 60000);
+
+  it("emits done and complete after a terminal model failure", async () => {
+    llmChatMock.mockRejectedValueOnce(new Error("provider unavailable"));
+
+    const app = await makeApp();
+    const { client, close } = await createHttpTestClient(app);
+    try {
+      const res = await client
+        .post("/api/chat/stream")
+        .send({
+          messages: [{ role: "user", content: "resume este texto" }],
+          latencyMode: "fast",
+        });
+
+      expect(res.status).toBe(200);
+
+      const events = parseSsePayloads(res.text);
+      expect(events.some((event) => event.event === "error")).toBe(true);
+      expect(events.some((event) => event.event === "done")).toBe(true);
+      expect(events.some((event) => event.event === "complete")).toBe(true);
+
+      const doneEvent = events.find((event) => event.event === "done");
+      const completeEvent = events.find((event) => event.event === "complete");
+
+      expect(doneEvent?.data?.error).toBe(true);
+      expect(completeEvent?.data?.status).toBe("error");
     } finally {
       await close();
     }

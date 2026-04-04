@@ -345,4 +345,88 @@ describe("useStreamChat conversation isolation", () => {
 
     vi.useRealTimers();
   });
+
+  it("waits for terminal done after a server error event and finalizes once", async () => {
+    const sentMessages: any[] = [];
+    const seenEvents: string[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const payload = JSON.parse(String(init?.body || "{}"));
+
+        return makeSseResponse([
+          {
+            event: "error",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              error: "provider stream failed",
+            },
+          },
+          {
+            event: "done",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              error: true,
+            },
+          },
+        ]);
+      })
+    );
+
+    const { result } = renderHook(() => {
+      const [optimisticMessages, setOptimisticMessages] = useState<any[]>([]);
+      const [streamingContent, setStreamingContent] = useState("");
+      const [aiState, setAiState] = useState<any>("idle");
+      const [steps, setAiProcessSteps] = useState<any[]>([]);
+      const streamingContentRef = useRef("");
+
+      const hook = useStreamChat({
+        setOptimisticMessages,
+        onSendMessage: async (message) => {
+          sentMessages.push(message);
+          return undefined;
+        },
+        setStreamingContent,
+        streamingContentRef,
+        setAiState,
+        setAiProcessSteps,
+        getActiveConversationId: () => "chat_err",
+      });
+
+      return { hook, optimisticMessages, streamingContent, aiState, steps };
+    });
+
+    let streamResult: any;
+    await act(async () => {
+      streamResult = await result.current.hook.stream("/api/chat/stream", {
+        conversationId: "chat_err",
+        chatId: "chat_err",
+        body: {
+          messages: [{ role: "user", content: "hola" }],
+          conversationId: "chat_err",
+          requestId: "req_err",
+        },
+        onEvent: (eventType) => {
+          seenEvents.push(eventType);
+        },
+        buildErrorMessage: (error, messageId) => ({
+          id: messageId || "assistant_err",
+          role: "assistant" as const,
+          content: `ERR:${error.message}`,
+          timestamp: new Date(),
+          requestId: "req_err",
+        }),
+      });
+    });
+
+    expect(streamResult.ok).toBe(false);
+    expect(streamResult.error?.message).toBe("provider stream failed");
+    expect(seenEvents).toEqual(["error", "done"]);
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].content).toBe("ERR:provider stream failed");
+    expect(result.current.optimisticMessages).toHaveLength(1);
+  });
 });

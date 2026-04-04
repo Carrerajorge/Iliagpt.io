@@ -30,3 +30,6 @@ jobs:
 
       - name: Run stable chat suite
         run: npm run test:ci:chat-core
+
+      - name: Run client stream contract test
+        run: npm run test:ci:chat-client-contracts
