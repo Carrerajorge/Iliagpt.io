@@ -242,67 +242,8 @@ export function OpenClawPanel({ open, onOpenChange }: { open: boolean; onOpenCha
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[85vh] p-0 gap-0 overflow-hidden" data-testid="openclaw-panel">
-        <DialogHeader className="px-6 pt-5 pb-4 border-b bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-950/20 dark:to-amber-950/20">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <OpenClawLogo className="h-10 w-10" />
-              <div>
-                <DialogTitle className="text-lg font-bold flex items-center gap-2">
-                  OpenClaw
-                  {status && (
-                    <Badge variant="outline" className="text-[10px] font-mono border-orange-300 text-orange-600">
-                      v{status.version}
-                    </Badge>
-                  )}
-                </DialogTitle>
-                <p className="text-xs text-muted-foreground mt-0.5">Motor agentico de codigo abierto</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 gap-1.5 text-xs"
-                    onClick={handleCheckUpdate}
-                    disabled={updating}
-                    data-testid="button-check-update"
-                  >
-                    <RefreshCw className={cn("h-3.5 w-3.5", updating && "animate-spin")} />
-                    {updating ? "Verificando..." : "Actualizar"}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Verificar actualizaciones disponibles</TooltipContent>
-              </Tooltip>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 gap-1.5 text-xs"
-                onClick={() => window.open("https://github.com/nicobrave/openclaw/releases/tag/v2026.4.2", "_blank")}
-                data-testid="button-github-releases"
-              >
-                <ExternalLink className="h-3.5 w-3.5" />
-                GitHub
-              </Button>
-            </div>
-          </div>
-          {hasUpdate && (
-            <div className="mt-3 flex items-center gap-2 p-2.5 rounded-lg bg-orange-100 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800/40">
-              <Download className="h-4 w-4 text-orange-600 shrink-0" />
-              <span className="text-xs text-orange-700 dark:text-orange-300">
-                Nueva version disponible: <strong>v{status?.latestVersion}</strong>
-              </span>
-              <Button
-                size="sm"
-                className="ml-auto h-6 text-[10px] bg-orange-600 hover:bg-orange-700"
-                onClick={() => window.open("https://github.com/nicobrave/openclaw/releases/tag/v2026.4.2", "_blank")}
-                data-testid="button-update-now"
-              >
-                Ver changelog
-              </Button>
-            </div>
-          )}
+        <DialogHeader className="sr-only">
+          <DialogTitle>OpenClaw</DialogTitle>
         </DialogHeader>
 
         <ScrollArea className="flex-1 max-h-[calc(85vh-140px)]">
