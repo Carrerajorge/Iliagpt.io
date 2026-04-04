@@ -1717,7 +1717,6 @@ export function ChatInterface({
     attachments: any[];
     sourceLabel?: string;
   }): Promise<void> => {
-    const clientSendTs = Date.now();
     const normalizedConversationId = (opts.conversationId && !opts.conversationId.startsWith("pending-"))
       ? opts.conversationId
       : `temp_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
@@ -1732,73 +1731,55 @@ export function ChatInterface({
       return;
     }
 
-    const analysisMessageId = `analysis-${opts.userMessageId}`;
     const userFriendlySource = opts.sourceLabel || "envío";
     const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
 
-    const placeholder: Message = {
-      id: analysisMessageId,
-      clientTempId: analysisMessageId,
-      role: "assistant",
-      content: "Analizando documentos adjuntos…",
-      timestamp: new Date(),
-      requestId: generateRequestId(),
-      userMessageId: opts.userMessageId,
-      deliveryStatus: "sending",
-      deliveryError: undefined,
-    };
+    let analyzeMetadata: any = {};
 
-    setOptimisticMessages((prev) => {
-      const hasPlaceholder = prev.some((m: Message) => m.id === analysisMessageId || m.clientTempId === analysisMessageId);
-      if (hasPlaceholder) {
-        return prev.map((m: Message) => {
-          if (m.id !== analysisMessageId && m.clientTempId !== analysisMessageId) return m;
-          return { ...m, ...placeholder, deliveryError: undefined, deliveryStatus: "sending" };
-        });
-      }
-      return [...prev, placeholder];
-    });
-
-    analysisAbortControllerRef.current = new AbortController();
     try {
-      const response = await apiFetch("/api/analyze", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-client-send-ts": String(clientSendTs),
-        },
-        body: JSON.stringify({
+      const result = await streamChat.stream("/api/analyze", {
+        body: {
           messages: opts.history,
           attachments: analysisAttachmentPayload,
           conversationId: normalizedConversationId,
+        },
+        chatId: analysisConversationId,
+        conversationId: normalizedConversationId,
+        timeoutMs: 180_000,
+        firstTokenTimeoutMs: 60_000,
+        doneTimeoutMs: 60_000,
+        onEvent: (eventType, data) => {
+          if (eventType === "error") {
+            const errMsg = data?.message || "Error durante el análisis";
+            console.error("[DocumentAnalysis] SSE error:", errMsg);
+          }
+          if (eventType === "done") {
+            analyzeMetadata = data || {};
+          }
+        },
+        buildFinalMessage: (fullContent, lastEventData, messageId) => {
+          const finalText = lastEventData?.answer_text || fullContent || "No se pudo analizar el documento.";
+          return {
+            id: messageId || `analysis-${opts.userMessageId}`,
+            role: "assistant" as const,
+            content: finalText,
+            timestamp: new Date(),
+            requestId: generateRequestId(),
+            userMessageId: opts.userMessageId,
+            deliveryStatus: "sent" as const,
+            ui_components: lastEventData?.ui_components || analyzeMetadata?.ui_components || [],
+          };
+        },
+        buildErrorMessage: (error, messageId) => ({
+          id: messageId || `analysis-${opts.userMessageId}`,
+          role: "assistant" as const,
+          content: `No se pudo analizar el documento. ${error.message}`,
+          timestamp: new Date(),
+          requestId: generateRequestId(),
+          userMessageId: opts.userMessageId,
+          deliveryStatus: "error" as const,
+          deliveryError: error.message,
         }),
-        signal: analysisAbortControllerRef.current.signal,
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-        const message = errorData?.error?.message || errorData?.message || errorData?.error || `Analyze failed: ${response.status}`;
-        throw new Error(message);
-      }
-
-      const analyzeResult = await response.json();
-      const analysisResultMsg: Message = {
-        id: analysisMessageId,
-        clientTempId: analysisMessageId,
-        role: "assistant",
-        content: analyzeResult.answer_text || "No se pudo analizar el documento.",
-        timestamp: new Date(),
-        requestId: generateRequestId(),
-        userMessageId: opts.userMessageId,
-        deliveryStatus: "sent",
-        ui_components: analyzeResult.ui_components || [],
-        
-      };
-
-      // Persist final analysis result and replace placeholder.
-      onSendMessage(analysisResultMsg).catch((err) => {
-        const errorMessage = err instanceof Error ? err.message : "No se pudo guardar el resultado del análisis.";
-        markMessageDeliveryError(analysisMessageId, errorMessage);
       });
 
       if (import.meta.env.DEV) {
@@ -1807,47 +1788,37 @@ export function ChatInterface({
           userMessageId: opts.userMessageId,
           conversationId: normalizedConversationId,
           totalMs: typeof performance !== "undefined" ? Math.max(0, performance.now() - startedAt).toFixed(1) : null,
+          ok: result.ok,
         });
       }
 
-      setOptimisticMessages((prev) => prev.map((m: Message) =>
-        (m.id === opts.userMessageId || m.clientTempId === opts.userMessageId)
-          ? { ...m, deliveryStatus: "sent", deliveryError: undefined }
-          : m
-      ));
-      setAiStateForChat("idle", analysisConversationId);
-      setAiProcessStepsForChat([], analysisConversationId);
+      if (!result.ok && result.error) {
+        markMessageDeliveryError(opts.userMessageId, result.error.message);
+      } else {
+        setOptimisticMessages((prev) => prev.map((m: Message) =>
+          (m.id === opts.userMessageId || m.clientTempId === opts.userMessageId)
+            ? { ...m, deliveryStatus: "sent", deliveryError: undefined }
+            : m
+        ));
+      }
     } catch (analysisError: any) {
       if (analysisError?.name === "AbortError") {
         return;
       }
       const errorMessage = analysisError?.message || "No se pudo analizar el documento.";
       markMessageDeliveryError(opts.userMessageId, errorMessage);
-      setOptimisticMessages((prev) => prev.map((m: Message) => {
-        if (m.id !== analysisMessageId && m.clientTempId !== analysisMessageId) return m;
-        return {
-          ...m,
-          deliveryStatus: "error",
-          deliveryError: errorMessage,
-          content: `No se pudo analizar el documento. ${errorMessage}`,
-        };
-      }));
       setAiStateForChat("idle", analysisConversationId);
       setAiProcessStepsForChat([], analysisConversationId);
       console.error(`[Document Analysis] (${userFriendlySource}) failed for userMessage ${opts.userMessageId}:`, analysisError);
       throw analysisError;
-    } finally {
-      if (analysisAbortControllerRef.current) {
-        analysisAbortControllerRef.current = null;
-      }
     }
   }, [
     markMessageDeliveryError,
-    onSendMessage,
     setAiProcessStepsForChat,
     setAiStateForChat,
     setOptimisticMessages,
     chatId,
+    streamChat,
   ]);
 
   // Measure composer height and set CSS variable for proper layout

@@ -6937,6 +6937,20 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           : null;
         const userQuery = lastUserMessage?.content || "Analiza el contenido de los documentos.";
 
+        // --- SSE STREAMING: Set up early so ALL paths (including clarification) use SSE ---
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+        res.setHeader("X-Accel-Buffering", "no");
+        res.flushHeaders();
+
+        (res as any).locals = (res as any).locals || {};
+        (res as any).locals.streamMeta = {
+          conversationId,
+          requestId,
+          getAssistantMessageId: () => `analyze-${requestId}`,
+        };
+
         // ===================================================================================
         // AGENTIC IMPROVEMENT #1: Use Intent Router to understand user's request
         // ===================================================================================
@@ -6956,9 +6970,9 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           // AGENTIC IMPROVEMENT #3: Clarification Loop when confidence is low
           if (intentResult.confidence < 0.7 && intentResult.clarification_question) {
             console.log(`[Analyze] LOW CONFIDENCE (${intentResult.confidence?.toFixed(2)}) - Returning clarification question`);
-            return res.status(200).json({
+            writeSse(res, "done", {
               needs_clarification: true,
-              clarification_question: intentResult.clarification_question,
+              answer_text: intentResult.clarification_question,
               detected_intent: intentResult.intent,
               confidence: intentResult.confidence,
               suggested_actions: [
@@ -6967,8 +6981,9 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
                 { label: "Extraer información", action: "extrae la información principal" }
               ],
               requestId,
-              answer_text: intentResult.clarification_question
             });
+            res.end();
+            return;
           }
         } catch (intentError: any) {
           console.warn(`[Analyze] Intent routing failed, continuing with default analysis:`, intentError.message);
@@ -7000,6 +7015,10 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
         // Initialize ObjectStorageService for downloading files
         const objectStorageService = new ObjectStorageService();
+
+        const sseActive = true;
+
+        writeSse(res, "thinking", { step: "download", message: `Procesando ${resolvedAttachments.length === 1 ? 'documento' : resolvedAttachments.length + ' documentos'}…` });
 
         // Process each attachment using normalizeDocument for structured extraction
         const documentModels: DocumentSemanticModel[] = [];
@@ -7067,6 +7086,15 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
             const parseTimeMs = Date.now() - parseStartTime;
             const tokensEstimate = Math.ceil(buffer.length / 4); // Rough token estimate
+
+            const docType = docModel.documentMeta.documentType;
+            const rows = docModel.sheets?.[0]?.rowCount;
+            const cols = docModel.sheets?.[0]?.columnCount;
+            const tables = docModel.tables.length;
+            const parseLabel = docType === 'csv' || docType === 'excel'
+              ? `Documento procesado${rows ? ` (${rows} filas` : ''}${cols ? ` × ${cols} columnas)` : rows ? ')' : ''}`
+              : `Documento procesado (${docType}${docModel.documentMeta.pageCount ? `, ${docModel.documentMeta.pageCount} páginas` : ''})`;
+            writeSse(res, "thinking", { step: "parse_done", message: parseLabel });
 
             processingStats.push({
               filename,
@@ -7239,23 +7267,24 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         // COVERAGE CHECK: If user asked to analyze "all", verify complete coverage
         if (requiresFullCoverage && batchResult.processedFiles !== batchResult.attachmentsCount) {
           const failedList = batchResult.failedFiles.map(f => `${f.filename}: ${f.error}`).join('; ');
-          return res.status(422).json({
+          writeSse(res, "error", {
             error: "COVERAGE_CHECK_FAILED",
             message: `No se pudieron procesar todos los archivos. Procesados: ${batchResult.processedFiles}/${batchResult.attachmentsCount}`,
-            failedFiles: failedList,
-            progressReport,
-            requestId
+            requestId,
           });
+          res.end();
+          return;
         }
 
         // TOKENS CHECK: Ensure we extracted something
         if (batchResult.totalTokens === 0) {
-          return res.status(422).json({
+          writeSse(res, "error", {
             error: "PARSE_FAILED",
             message: "No se pudo extraer texto de los documentos adjuntos.",
-            progressReport,
-            requestId
+            requestId,
           });
+          res.end();
+          return;
         }
 
         // Build rich document context from DocumentSemanticModel
@@ -7457,6 +7486,8 @@ ${documentText}`;
         const user = (req as AuthenticatedRequest).user;
         const userId = user?.claims?.sub;
 
+        writeSse(res, "thinking", { step: "llm", message: "Generando análisis…" });
+
         const streamGenerator = llmGateway.streamChat(llmMessages, {
           userId: userId || conversationId || "anonymous",
           requestId,
@@ -7466,6 +7497,9 @@ ${documentText}`;
         let answerText = "";
         for await (const chunk of streamGenerator) {
           answerText += chunk.content;
+          if (chunk.content) {
+            writeSse(res, "chunk", { content: chunk.content });
+          }
         }
 
         // POST-PROCESS: Remove any filename references the model might have included
@@ -7765,26 +7799,18 @@ ${documentText}`;
           contractValidation.violations.forEach((v, i) => {
             console.error(`[Analyze] [${i + 1}] ${v.code}: ${v.message}`);
           });
-
-          res.setHeader('Content-Type', 'application/json; charset=utf-8');
-          return res.status(500).json({
+          writeSse(res, "error", {
             error: "RESPONSE_CONTRACT_VIOLATION",
             message: "La respuesta no cumple con el contrato de respuesta PARE Phase 2",
-            violations: contractValidation.violations,
-            coverageInfo: {
-              documentsWithCitations: contractValidation.documentsWithCitations,
-              documentsWithoutCitations: contractValidation.documentsWithoutCitations,
-              coverageRatio: contractValidation.coverageRatio,
-              meetsCoverageRequirement: contractValidation.meetsCoverageRequirement
-            },
             requestId,
-            progressReport
           });
+          res.end();
+          return;
         }
 
         // Enhanced DATA_MODE validation with all checks
         const validationResult = validateDataModeResponseEnhanced(responsePayload, requestId, {
-          contentType: 'application/json',
+          contentType: 'text/event-stream',
           attachmentNames,
           requireFullCoverage: requiresFullCoverage,
           userQuery
@@ -7794,16 +7820,13 @@ ${documentText}`;
           console.error(`[Analyze] ========== DATA_MODE_OUTPUT_VIOLATION ${requestId} ==========`);
           console.error(`[Analyze] Violations: ${validationResult.violations.join('; ')}`);
           console.error(`[Analyze] Stack: ${validationResult.stack}`);
-
-          res.setHeader('Content-Type', 'application/json; charset=utf-8');
-          return res.status(500).json({
+          writeSse(res, "error", {
             error: "DATA_MODE_OUTPUT_VIOLATION",
-            message: "La respuesta contiene elementos prohibidos en DATA_MODE (imágenes/artefactos)",
-            violations: validationResult.violations,
-            violationDetails: validationResult.violationDetails,
+            message: "La respuesta contiene elementos prohibidos en DATA_MODE",
             requestId,
-            progressReport
           });
+          res.end();
+          return;
         }
 
         // Return structured response (progressReport key matches test expectations)
@@ -7820,9 +7843,15 @@ ${documentText}`;
           }
         }
 
-        // Set Content-Type header explicitly for PARE Phase 2 compliance
-        res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.json(responsePayload);
+        writeSse(res, "done", {
+          answer_text: responsePayload.answer_text,
+          ui_components: responsePayload.ui_components,
+          enrichmentEnabled: responsePayload.enrichmentEnabled,
+          insights: responsePayload.insights,
+          suggestedQuestions: responsePayload.suggestedQuestions,
+          metadata: responsePayload.metadata,
+        });
+        res.end();
 
       } catch (error: any) {
         // Mark idempotency key as failed
@@ -7852,12 +7881,6 @@ ${documentText}`;
             details: { errorType: "DATA_MODE_OUTPUT_VIOLATION" },
             outcome: "failure"
           });
-          return res.status(500).json({
-            error: "DATA_MODE_OUTPUT_VIOLATION",
-            message: error.message,
-            violations: error.violations,
-            requestId
-          });
         }
 
         logger.logAudit({
@@ -7867,11 +7890,20 @@ ${documentText}`;
           outcome: "failure"
         });
 
-        res.status(500).json({
-          error: "ANALYSIS_FAILED",
-          message: error.message || "Error durante el análisis de documentos",
-          requestId
-        });
+        if (res.headersSent) {
+          writeSse(res, "error", {
+            error: error.name === 'DataModeOutputViolationError' ? "DATA_MODE_OUTPUT_VIOLATION" : "ANALYSIS_FAILED",
+            message: error.message || "Error durante el análisis de documentos",
+            requestId,
+          });
+          res.end();
+        } else {
+          res.status(500).json({
+            error: "ANALYSIS_FAILED",
+            message: error.message || "Error durante el análisis de documentos",
+            requestId
+          });
+        }
       }
     });
 
