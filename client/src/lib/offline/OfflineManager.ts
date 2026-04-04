@@ -1,399 +1,396 @@
 /**
  * OfflineManager.ts
- * Network state detection, offline/online mode switching, and reconnect logic.
+ *
+ * Central offline state management singleton for IliaGPT.
+ * Detects network quality, manages status transitions (ONLINE / DEGRADED / OFFLINE),
+ * integrates with the ServiceWorker registration, and notifies subscribers via a
+ * simple EventEmitter-style API.
+ *
+ * Usage:
+ *   const mgr = OfflineManager.getInstance();
+ *   const unsub = mgr.subscribe(({ status }) => console.log(status));
+ *   unsub(); // later
  */
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type NetworkStatus = 'online' | 'offline' | 'slow';
-
-export type NetworkQuality = 'unknown' | '2g' | '3g' | '4g' | 'wifi';
-
-export interface NetworkInfo {
-  status: NetworkStatus;
-  quality: NetworkQuality;
-  /** Round-trip time in ms from last connectivity check */
-  rtt: number | null;
-  /** Effective downlink in Mbps (from Network Information API) */
-  downlink: number | null;
-  /** Timestamp of last successful connectivity check */
-  lastChecked: number | null;
+export enum NetworkStatus {
+  ONLINE = 'ONLINE',
+  DEGRADED = 'DEGRADED',
+  OFFLINE = 'OFFLINE',
 }
 
-export type OfflineManagerEvent =
-  | 'statusChange'
-  | 'online'
-  | 'offline'
-  | 'slow'
-  | 'reconnecting'
-  | 'reconnectFailed'
-  | 'qualityChange';
+export interface NetworkQuality {
+  /** Effective connection type as reported by navigator.connection */
+  effectiveType: '4g' | '3g' | '2g' | 'slow-2g' | 'unknown';
+  /** Downlink bandwidth in Mbps (may be 0 if unavailable) */
+  downlink: number;
+  /** Round-trip time in ms measured by the last ping test */
+  rtt: number;
+  /** True when data saver is active */
+  saveData: boolean;
+}
 
-export type EventListener<T = unknown> = (payload: T) => void;
+export interface OfflineStateChangeEvent {
+  status: NetworkStatus;
+  quality: NetworkQuality;
+  previousStatus: NetworkStatus;
+  timestamp: number;
+}
 
-export interface StatusChangePayload {
-  previous: NetworkStatus;
-  current: NetworkStatus;
-  networkInfo: NetworkInfo;
+export type OfflineSubscriber = (event: OfflineStateChangeEvent) => void;
+
+// Navigator Connection API (not fully typed in lib.dom.d.ts)
+interface NavigatorConnection extends EventTarget {
+  readonly effectiveType?: '4g' | '3g' | '2g' | 'slow-2g';
+  readonly downlink?: number;
+  readonly rtt?: number;
+  readonly saveData?: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Endpoint used for connectivity probes (small, cacheless resource). */
-const PROBE_URL = '/favicon.ico';
-const PROBE_TIMEOUT_MS = 5_000;
-const SLOW_RTT_THRESHOLD_MS = 1_500;
-
-/** Reconnect schedule: base delay, multiplier, max delay (all in ms). */
-const BACKOFF_BASE_MS = 1_000;
-const BACKOFF_MULTIPLIER = 2;
-const BACKOFF_MAX_MS = 60_000;
-const BACKOFF_JITTER_RATIO = 0.2;
-
-/** How often (ms) to poll when online to detect degraded connections. */
-const ONLINE_POLL_INTERVAL_MS = 30_000;
-/** How often (ms) to poll when offline for reconnect probing. */
-const OFFLINE_POLL_INTERVAL_MS = 5_000;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function jittered(value: number, ratio: number): number {
-  const jitter = value * ratio * (Math.random() * 2 - 1);
-  return Math.max(0, Math.round(value + jitter));
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
+const PING_ENDPOINT = '/api/health';
+const PING_TIMEOUT_MS = 4_000;
+const PING_INTERVAL_ONLINE_MS = 30_000;
+const PING_INTERVAL_OFFLINE_MS = 8_000;
+const STATUS_DEBOUNCE_MS = 1_200;
+/** RTT threshold above which we treat the connection as DEGRADED */
+const DEGRADED_RTT_THRESHOLD_MS = 1_500;
+/** Downlink threshold (Mbps) below which we treat as DEGRADED */
+const DEGRADED_DOWNLINK_THRESHOLD_MBPS = 0.15;
 
 // ---------------------------------------------------------------------------
 // OfflineManager
 // ---------------------------------------------------------------------------
 
-class OfflineManager {
-  // -- Internal state -------------------------------------------------------
+export class OfflineManager {
+  private static instance: OfflineManager | null = null;
 
-  private _networkInfo: NetworkInfo = {
-    status: navigator.onLine ? 'online' : 'offline',
-    quality: 'unknown',
-    rtt: null,
-    downlink: null,
-    lastChecked: null,
+  private _status: NetworkStatus = NetworkStatus.ONLINE;
+  private _quality: NetworkQuality = {
+    effectiveType: 'unknown',
+    downlink: 0,
+    rtt: 0,
+    saveData: false,
   };
 
-  /** Registered event listeners keyed by event name. */
-  private _listeners: Map<OfflineManagerEvent, Set<EventListener<unknown>>> =
-    new Map();
+  private readonly subscribers = new Set<OfflineSubscriber>();
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private swRegistration: ServiceWorkerRegistration | null = null;
 
-  /** Timer handle for periodic connectivity polls. */
-  private _pollTimer: ReturnType<typeof setTimeout> | null = null;
+  // Pending status that has been proposed but not yet committed after debounce
+  private pendingStatus: NetworkStatus | null = null;
 
-  /** Whether the manager has been started. */
-  private _started = false;
+  // ---------------------------------------------------------------------------
+  // Singleton
+  // ---------------------------------------------------------------------------
 
-  /** Number of consecutive reconnect failures (used for exponential backoff). */
-  private _reconnectAttempts = 0;
+  private constructor() {
+    // Set initial status from browser state
+    this._status = navigator.onLine ? NetworkStatus.ONLINE : NetworkStatus.OFFLINE;
+    this.attachBrowserListeners();
+    this.attachConnectionListeners();
+    this.schedulePing();
+  }
 
-  /** Whether a probe is currently in flight. */
-  private _probing = false;
+  static getInstance(): OfflineManager {
+    if (!OfflineManager.instance) {
+      OfflineManager.instance = new OfflineManager();
+    }
+    return OfflineManager.instance;
+  }
 
-  // -- Lifecycle ------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
+
+  getStatus(): NetworkStatus {
+    return this._status;
+  }
+
+  getQuality(): NetworkQuality {
+    return { ...this._quality };
+  }
+
+  isOnline(): boolean {
+    return this._status !== NetworkStatus.OFFLINE;
+  }
 
   /**
-   * Initialise network listeners and start polling.
-   * Safe to call multiple times — subsequent calls are no-ops.
+   * Subscribe to status-change events.
+   * Returns an unsubscribe function for convenience.
    */
-  start(): void {
-    if (this._started) return;
-    this._started = true;
-
-    // Browser online/offline events give us fast signals (not always accurate).
-    window.addEventListener('online', this._handleBrowserOnline);
-    window.addEventListener('offline', this._handleBrowserOffline);
-
-    // Network Information API (Chrome/Android).
-    const conn = this._getConnection();
-    if (conn) {
-      conn.addEventListener('change', this._handleConnectionChange);
-    }
-
-    // Seed with an immediate probe.
-    void this._probe();
+  subscribe(callback: OfflineSubscriber): () => void {
+    this.subscribers.add(callback);
+    return () => this.unsubscribe(callback);
   }
 
-  /** Tear down all listeners and timers. */
-  stop(): void {
-    if (!this._started) return;
-    this._started = false;
-
-    window.removeEventListener('online', this._handleBrowserOnline);
-    window.removeEventListener('offline', this._handleBrowserOffline);
-
-    const conn = this._getConnection();
-    if (conn) {
-      conn.removeEventListener('change', this._handleConnectionChange);
-    }
-
-    this._clearPollTimer();
+  unsubscribe(callback: OfflineSubscriber): void {
+    this.subscribers.delete(callback);
   }
 
-  // -- Public API -----------------------------------------------------------
-
-  /** Current snapshot of network information. */
-  get networkInfo(): Readonly<NetworkInfo> {
-    return { ...this._networkInfo };
+  /**
+   * Attach the app's ServiceWorker registration so the manager can
+   * coordinate background-sync and SW-driven offline/online events.
+   */
+  setServiceWorkerRegistration(reg: ServiceWorkerRegistration): void {
+    this.swRegistration = reg;
+    this.listenToSWMessages();
   }
 
-  get status(): NetworkStatus {
-    return this._networkInfo.status;
-  }
-
-  get isOnline(): boolean {
-    return this._networkInfo.status !== 'offline';
-  }
-
-  get isOffline(): boolean {
-    return this._networkInfo.status === 'offline';
-  }
-
-  /** Manually trigger an immediate connectivity check. */
+  /**
+   * Trigger an immediate network check (useful after user-driven actions).
+   */
   async checkNow(): Promise<NetworkStatus> {
-    await this._probe();
-    return this._networkInfo.status;
+    await this.runPingTest();
+    return this._status;
   }
 
-  // -- EventEmitter pattern -------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Browser event listeners
+  // ---------------------------------------------------------------------------
 
-  on<T = unknown>(event: OfflineManagerEvent, listener: EventListener<T>): () => void {
-    if (!this._listeners.has(event)) {
-      this._listeners.set(event, new Set());
-    }
-    this._listeners.get(event)!.add(listener as EventListener<unknown>);
-
-    // Return an unsubscribe function.
-    return () => this.off(event, listener);
+  private attachBrowserListeners(): void {
+    window.addEventListener('online', this.handleBrowserOnline);
+    window.addEventListener('offline', this.handleBrowserOffline);
   }
 
-  off<T = unknown>(event: OfflineManagerEvent, listener: EventListener<T>): void {
-    this._listeners.get(event)?.delete(listener as EventListener<unknown>);
-  }
-
-  once<T = unknown>(event: OfflineManagerEvent, listener: EventListener<T>): () => void {
-    const wrapper: EventListener<T> = (payload) => {
-      listener(payload);
-      this.off(event, wrapper);
-    };
-    return this.on(event, wrapper);
-  }
-
-  private _emit<T>(event: OfflineManagerEvent, payload: T): void {
-    this._listeners.get(event)?.forEach((fn) => {
-      try {
-        fn(payload);
-      } catch (err) {
-        console.error(`[OfflineManager] Error in "${event}" listener:`, err);
-      }
+  private readonly handleBrowserOnline = (): void => {
+    // Browser says we're online – verify with a ping before committing
+    this.runPingTest().catch(() => {
+      this.proposeStatus(NetworkStatus.OFFLINE);
     });
+  };
+
+  private readonly handleBrowserOffline = (): void => {
+    this.proposeStatus(NetworkStatus.OFFLINE);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Network Information API (navigator.connection)
+  // ---------------------------------------------------------------------------
+
+  private attachConnectionListeners(): void {
+    const conn = this.getConnection();
+    if (!conn) return;
+    conn.addEventListener('change', this.handleConnectionChange);
+    this.syncQualityFromConnection(conn);
   }
 
-  // -- Browser event handlers -----------------------------------------------
-
-  private _handleBrowserOnline = (): void => {
-    // Browser thinks we're online — probe to confirm.
-    void this._probe();
+  private readonly handleConnectionChange = (): void => {
+    const conn = this.getConnection();
+    if (!conn) return;
+    this.syncQualityFromConnection(conn);
+    this.evaluateStatusFromQuality();
   };
 
-  private _handleBrowserOffline = (): void => {
-    this._applyStatus('offline');
-    this._scheduleReconnectPoll();
-  };
+  private getConnection(): NavigatorConnection | null {
+    return (navigator as unknown as { connection?: NavigatorConnection }).connection ?? null;
+  }
 
-  private _handleConnectionChange = (): void => {
-    void this._probe();
-  };
+  private syncQualityFromConnection(conn: NavigatorConnection): void {
+    this._quality = {
+      effectiveType: conn.effectiveType ?? 'unknown',
+      downlink: conn.downlink ?? 0,
+      rtt: conn.rtt ?? 0,
+      saveData: conn.saveData ?? false,
+    };
+  }
 
-  // -- Connectivity probing -------------------------------------------------
-
-  private async _probe(): Promise<void> {
-    if (this._probing) return;
-    this._probing = true;
-
-    try {
-      const result = await this._fetchProbe();
-
-      const previousStatus = this._networkInfo.status;
-
-      // Determine status from RTT.
-      let newStatus: NetworkStatus;
-      if (result === null) {
-        newStatus = 'offline';
-      } else if (result > SLOW_RTT_THRESHOLD_MS) {
-        newStatus = 'slow';
-      } else {
-        newStatus = 'online';
-      }
-
-      // Update RTT and quality from Network Information API.
-      const conn = this._getConnection();
-      const downlink = conn?.downlink ?? null;
-      const quality = this._resolveQuality(conn);
-
-      const qualityChanged = quality !== this._networkInfo.quality;
-
-      this._networkInfo = {
-        ...this._networkInfo,
-        status: newStatus,
-        quality,
-        rtt: result,
-        downlink,
-        lastChecked: Date.now(),
-      };
-
-      if (qualityChanged) {
-        this._emit('qualityChange', { quality, networkInfo: this.networkInfo });
-      }
-
-      this._applyStatus(newStatus, previousStatus);
-
-      if (newStatus !== 'offline') {
-        // Successful probe — reset backoff counter.
-        this._reconnectAttempts = 0;
-        this._schedulePoll(ONLINE_POLL_INTERVAL_MS);
-      } else {
-        this._scheduleReconnectPoll();
-      }
-    } finally {
-      this._probing = false;
+  /** Evaluate status purely from connection quality metrics (no ping). */
+  private evaluateStatusFromQuality(): void {
+    if (!navigator.onLine) {
+      this.proposeStatus(NetworkStatus.OFFLINE);
+      return;
     }
+
+    const isDegraded =
+      this._quality.rtt > DEGRADED_RTT_THRESHOLD_MS ||
+      (this._quality.downlink > 0 &&
+        this._quality.downlink < DEGRADED_DOWNLINK_THRESHOLD_MBPS) ||
+      this._quality.effectiveType === 'slow-2g' ||
+      this._quality.effectiveType === '2g';
+
+    this.proposeStatus(isDegraded ? NetworkStatus.DEGRADED : NetworkStatus.ONLINE);
   }
 
-  /**
-   * Fetch the probe URL and return the RTT in ms, or null on failure.
-   */
-  private async _fetchProbe(): Promise<number | null> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  // ---------------------------------------------------------------------------
+  // Ping / latency test
+  // ---------------------------------------------------------------------------
 
+  private schedulePing(): void {
+    if (this.pingTimer !== null) {
+      clearInterval(this.pingTimer);
+    }
+    const interval =
+      this._status === NetworkStatus.OFFLINE
+        ? PING_INTERVAL_OFFLINE_MS
+        : PING_INTERVAL_ONLINE_MS;
+
+    this.pingTimer = setInterval(() => {
+      this.runPingTest().catch(() => {
+        /* swallow – proposeStatus handles it */
+      });
+    }, interval);
+  }
+
+  private async runPingTest(): Promise<void> {
     const start = performance.now();
+
     try {
-      const response = await fetch(`${PROBE_URL}?_=${Date.now()}`, {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), PING_TIMEOUT_MS);
+
+      const response = await fetch(PING_ENDPOINT, {
         method: 'HEAD',
         cache: 'no-store',
         signal: controller.signal,
       });
+
+      clearTimeout(timeout);
+
       const rtt = Math.round(performance.now() - start);
-      return response.ok ? rtt : null;
+      this._quality = {
+        ...this._quality,
+        rtt,
+      };
+
+      if (!response.ok) {
+        this.proposeStatus(NetworkStatus.DEGRADED);
+        return;
+      }
+
+      const isDegraded = rtt > DEGRADED_RTT_THRESHOLD_MS;
+      this.proposeStatus(isDegraded ? NetworkStatus.DEGRADED : NetworkStatus.ONLINE);
     } catch {
-      return null;
+      if (!navigator.onLine) {
+        this.proposeStatus(NetworkStatus.OFFLINE);
+      } else {
+        // Fetch failed but browser thinks we're online – treat as degraded
+        this.proposeStatus(NetworkStatus.DEGRADED);
+      }
     } finally {
-      clearTimeout(timeoutId);
+      // Re-schedule with interval appropriate to new status
+      this.schedulePing();
     }
   }
 
-  // -- Status application ---------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Status transitions with debounce
+  // ---------------------------------------------------------------------------
 
-  private _applyStatus(
-    newStatus: NetworkStatus,
-    previousStatus: NetworkStatus = this._networkInfo.status
-  ): void {
-    if (newStatus === previousStatus) return;
+  /**
+   * Propose a new status. The actual transition is debounced to avoid
+   * rapid flapping between states on flaky connections.
+   */
+  private proposeStatus(proposed: NetworkStatus): void {
+    this.pendingStatus = proposed;
 
-    this._networkInfo = { ...this._networkInfo, status: newStatus };
+    if (this.debounceTimer !== null) {
+      clearTimeout(this.debounceTimer);
+    }
 
-    const payload: StatusChangePayload = {
-      previous: previousStatus,
-      current: newStatus,
-      networkInfo: this.networkInfo,
+    this.debounceTimer = setTimeout(() => {
+      this.commitStatus(this.pendingStatus!);
+      this.pendingStatus = null;
+      this.debounceTimer = null;
+    }, STATUS_DEBOUNCE_MS);
+  }
+
+  private commitStatus(newStatus: NetworkStatus): void {
+    if (newStatus === this._status) return;
+
+    const previousStatus = this._status;
+    this._status = newStatus;
+
+    const event: OfflineStateChangeEvent = {
+      status: newStatus,
+      quality: { ...this._quality },
+      previousStatus,
+      timestamp: Date.now(),
     };
 
-    this._emit('statusChange', payload);
-    this._emit(newStatus, payload);
-
-    if (newStatus !== 'offline' && previousStatus === 'offline') {
-      this._reconnectAttempts = 0;
-    }
+    this.notifySubscribers(event);
+    this.notifyServiceWorker(newStatus);
+    this.schedulePing(); // reset ping interval for new status
   }
 
-  // -- Polling helpers ------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Subscriber notification
+  // ---------------------------------------------------------------------------
 
-  private _scheduleReconnectPoll(): void {
-    this._clearPollTimer();
+  private notifySubscribers(event: OfflineStateChangeEvent): void {
+    this.subscribers.forEach((cb) => {
+      try {
+        cb(event);
+      } catch (err) {
+        console.error('[OfflineManager] Subscriber threw an error:', err);
+      }
+    });
+  }
 
-    const delay = this._nextBackoffDelay();
-    this._emit('reconnecting', {
-      attempt: this._reconnectAttempts,
-      nextRetryMs: delay,
+  // ---------------------------------------------------------------------------
+  // ServiceWorker integration
+  // ---------------------------------------------------------------------------
+
+  private notifyServiceWorker(status: NetworkStatus): void {
+    if (!this.swRegistration?.active) return;
+
+    this.swRegistration.active.postMessage({
+      type: 'NETWORK_STATUS_CHANGE',
+      payload: { status },
     });
 
-    this._reconnectAttempts += 1;
-    this._schedulePoll(delay);
-  }
-
-  private _schedulePoll(delayMs: number): void {
-    this._clearPollTimer();
-    this._pollTimer = setTimeout(() => {
-      void this._probe();
-    }, delayMs);
-  }
-
-  private _clearPollTimer(): void {
-    if (this._pollTimer !== null) {
-      clearTimeout(this._pollTimer);
-      this._pollTimer = null;
+    // When back online, request a background sync flush
+    if (status === NetworkStatus.ONLINE) {
+      this.requestBackgroundSync();
     }
   }
 
-  private _nextBackoffDelay(): number {
-    const raw = BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, this._reconnectAttempts);
-    const clamped = clamp(raw, BACKOFF_BASE_MS, BACKOFF_MAX_MS);
-    return jittered(clamped, BACKOFF_JITTER_RATIO);
+  private requestBackgroundSync(): void {
+    if (!this.swRegistration) return;
+    const reg = this.swRegistration as ServiceWorkerRegistration & {
+      sync?: { register: (tag: string) => Promise<void> };
+    };
+    reg.sync?.register('message-queue-sync').catch((err) => {
+      console.warn('[OfflineManager] Background sync registration failed:', err);
+    });
   }
 
-  // -- Network Information API helpers --------------------------------------
+  private listenToSWMessages(): void {
+    if (!('serviceWorker' in navigator)) return;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private _getConnection(): any {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const nav = navigator as any;
-    return nav.connection ?? nav.mozConnection ?? nav.webkitConnection ?? null;
+    navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
+      const { type, payload } = event.data ?? {};
+
+      if (type === 'NETWORK_STATUS_FROM_SW') {
+        const swStatus: NetworkStatus = payload?.status ?? NetworkStatus.ONLINE;
+        this.proposeStatus(swStatus);
+      }
+    });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private _resolveQuality(conn: any): NetworkQuality {
-    if (!conn) return 'unknown';
-    const effectiveType: string = conn.effectiveType ?? '';
-    switch (effectiveType) {
-      case '2g':
-        return '2g';
-      case '3g':
-        return '3g';
-      case '4g':
-        return '4g';
-      default:
-        // If downlink is high enough, treat as wifi-equivalent.
-        if (typeof conn.downlink === 'number' && conn.downlink > 5) {
-          return 'wifi';
-        }
-        return 'unknown';
-    }
+  // ---------------------------------------------------------------------------
+  // Cleanup (useful in tests)
+  // ---------------------------------------------------------------------------
+
+  destroy(): void {
+    window.removeEventListener('online', this.handleBrowserOnline);
+    window.removeEventListener('offline', this.handleBrowserOffline);
+
+    const conn = this.getConnection();
+    conn?.removeEventListener('change', this.handleConnectionChange);
+
+    if (this.pingTimer !== null) clearInterval(this.pingTimer);
+    if (this.debounceTimer !== null) clearTimeout(this.debounceTimer);
+
+    this.subscribers.clear();
+    OfflineManager.instance = null;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Singleton export
-// ---------------------------------------------------------------------------
-
-export const offlineManager = new OfflineManager();
-
-// Auto-start when this module is imported in a browser context.
-if (typeof window !== 'undefined') {
-  offlineManager.start();
-}
-
-export default offlineManager;

@@ -1,328 +1,290 @@
-/**
- * PresenceManager.ts
- * Tracks active collaborators: status, avatars, cursor positions, colors.
- * Integrates with CollaborationClient events and provides a
- * subscribe/unsubscribe pattern suitable for React components.
- */
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { logger } from '@/lib/logger';
+import {
+  CollaborationClient,
+  CollaborationUser,
+  ActivityState,
+} from './CollaborationClient';
 
-import type { CursorPosition, CollaborationClient, PresenceUpdateMessage, CursorMoveMessage } from "./CollaborationClient";
+// ─── Constants ───────────────────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+const INACTIVITY_TIMEOUT_MS = 30_000; // 30 s → remove user
+const IDLE_TIMEOUT_MS = 10_000;       // 10 s without activity → IDLE
+const AWAY_TIMEOUT_MS = 20_000;       // 20 s → AWAY
+const MAX_UPDATES_PER_SEC = 10;
+const THROTTLE_INTERVAL_MS = 1000 / MAX_UPDATES_PER_SEC;
 
-export type UserStatus = "online" | "away" | "offline";
-
-export interface UserPresence {
-  userId: string;
-  name: string;
-  /** Absolute URL or data-URI for the avatar image */
-  avatar: string;
-  /** Hex or CSS color string assigned to this user */
-  color: string;
-  status: UserStatus;
-  /** Unix ms timestamp of the last received event */
-  lastSeen: number;
-  cursorPosition?: CursorPosition;
-}
-
-export type PresenceChangeListener = (users: Map<string, UserPresence>) => void;
-
-// ---------------------------------------------------------------------------
-// Color palette – visually distinct, accessible on both light and dark bg
-// ---------------------------------------------------------------------------
-
-const COLOR_PALETTE: string[] = [
-  "#3B82F6", // blue-500
-  "#10B981", // emerald-500
-  "#F59E0B", // amber-500
-  "#EF4444", // red-500
-  "#8B5CF6", // violet-500
-  "#EC4899", // pink-500
-  "#06B6D4", // cyan-500
-  "#84CC16", // lime-500
-  "#F97316", // orange-500
-  "#6366F1", // indigo-500
-  "#14B8A6", // teal-500
-  "#A855F7", // purple-500
-];
-
-// ---------------------------------------------------------------------------
-// PresenceManager
-// ---------------------------------------------------------------------------
-
-export interface PresenceManagerOptions {
-  /** Local user's ID — kept out of the remote map */
-  localUserId: string;
-  /** Seconds of silence before a user is marked "away". Default: 30 */
-  awayAfterSeconds?: number;
-  /** Seconds of silence before a user is marked "offline" and removed. Default: 120 */
-  offlineAfterSeconds?: number;
-  /** Polling interval (ms) for checking inactivity. Default: 10000 */
-  inactivityCheckInterval?: number;
-}
+// ─── PresenceManager ─────────────────────────────────────────────────────────
 
 export class PresenceManager {
-  private users = new Map<string, UserPresence>();
-  private listeners = new Set<PresenceChangeListener>();
-  private colorAssignments = new Map<string, string>();
-  private colorIndex = 0;
-  private inactivityTimer: ReturnType<typeof setInterval> | null = null;
-  private unsubscribeCallbacks: (() => void)[] = [];
+  /** chatId → userId → CollaborationUser */
+  private rooms = new Map<string, Map<string, CollaborationUser>>();
 
-  private readonly localUserId: string;
-  private readonly awayAfterMs: number;
-  private readonly offlineAfterMs: number;
-  private readonly inactivityCheckInterval: number;
+  /** Subscribers per chatId */
+  private subscribers = new Map<string, Set<() => void>>();
 
-  constructor(options: PresenceManagerOptions) {
-    this.localUserId = options.localUserId;
-    this.awayAfterMs = (options.awayAfterSeconds ?? 30) * 1000;
-    this.offlineAfterMs = (options.offlineAfterSeconds ?? 120) * 1000;
-    this.inactivityCheckInterval = options.inactivityCheckInterval ?? 10_000;
+  /** Per-user cleanup timers */
+  private cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /** Throttle state per chatId per userId */
+  private throttleState = new Map<string, { lastUpdate: number; pending?: ReturnType<typeof setTimeout> }>();
+
+  private client: CollaborationClient | null = null;
+
+  // ─── Client Binding ────────────────────────────────────────────────────
+
+  bindClient(client: CollaborationClient): void {
+    this.client = client;
+
+    client.on('CHAT_JOIN', ({ user }) => {
+      this.updatePresence(user.id.split(':')[0] ?? '', user);
+    });
+
+    client.on('CHAT_LEAVE', ({ userId }) => {
+      if (!this.client) return;
+      // We don't know chatId here; scan all rooms
+      for (const [chatId, room] of this.rooms) {
+        if (room.has(userId)) {
+          this.removeUser(chatId, userId);
+        }
+      }
+    });
+
+    client.on('PRESENCE_UPDATE', (user) => {
+      // server echoes back with chatId embedded in user or we extract from context
+      // For flexibility, scan rooms for the userId
+      for (const [chatId, room] of this.rooms) {
+        if (room.has(user.id)) {
+          this.upsertUser(chatId, user);
+          break;
+        }
+      }
+    });
+
+    client.on('TYPING_START', ({ userId }) => {
+      this.setTyping(userId, true);
+    });
+
+    client.on('TYPING_STOP', ({ userId }) => {
+      this.setTyping(userId, false);
+    });
+
+    client.on('CURSOR_MOVE', ({ userId, x, y }) => {
+      this.setCursor(userId, x, y);
+    });
+
+    client.on('CURSOR_STOP', ({ userId }) => {
+      this.clearCursor(userId);
+    });
   }
 
-  // ---------------------------------------------------------------------------
-  // Lifecycle
-  // ---------------------------------------------------------------------------
+  // ─── Presence CRUD ─────────────────────────────────────────────────────
 
   /**
-   * Wire the PresenceManager to a live CollaborationClient.
-   * Returns a cleanup function that removes all listeners.
+   * Throttled update – emits at most MAX_UPDATES_PER_SEC per chatId+userId pair.
    */
-  attachClient(client: CollaborationClient): () => void {
-    const offPresence = client.on("presence_update", (msg: PresenceUpdateMessage) => {
-      this.handlePresenceUpdate(msg);
-    });
+  updatePresence(chatId: string, user: CollaborationUser): void {
+    const key = `${chatId}:${user.id}`;
+    const now = Date.now();
+    let state = this.throttleState.get(key);
 
-    const offCursor = client.on("cursor_move", (msg: CursorMoveMessage) => {
-      this.handleCursorMove(msg);
-    });
+    if (!state) {
+      state = { lastUpdate: 0 };
+      this.throttleState.set(key, state);
+    }
 
-    this.startInactivityCheck();
+    const elapsed = now - state.lastUpdate;
 
-    const cleanup = () => {
-      offPresence();
-      offCursor();
-      this.stopInactivityCheck();
+    if (elapsed >= THROTTLE_INTERVAL_MS) {
+      state.lastUpdate = now;
+      this.upsertUser(chatId, user);
+    } else {
+      // Schedule a deferred update
+      if (state.pending) clearTimeout(state.pending);
+      state.pending = setTimeout(() => {
+        state!.lastUpdate = Date.now();
+        state!.pending = undefined;
+        this.upsertUser(chatId, user);
+      }, THROTTLE_INTERVAL_MS - elapsed);
+    }
+  }
+
+  getPresence(chatId: string): CollaborationUser[] {
+    const room = this.rooms.get(chatId);
+    if (!room) return [];
+    return Array.from(room.values()).filter(
+      (u) => u.activityState !== 'OFFLINE',
+    );
+  }
+
+  removeUser(chatId: string, userId: string): void {
+    const room = this.rooms.get(chatId);
+    if (!room) return;
+    room.delete(userId);
+    this.cancelCleanupTimer(`${chatId}:${userId}`);
+    this.notify(chatId);
+    logger.debug({ chatId, userId }, '[PresenceManager] user removed');
+  }
+
+  // ─── Subscribe ────────────────────────────────────────────────────────
+
+  subscribe(chatId: string, callback: () => void): () => void {
+    if (!this.subscribers.has(chatId)) {
+      this.subscribers.set(chatId, new Set());
+    }
+    this.subscribers.get(chatId)!.add(callback);
+    return () => {
+      this.subscribers.get(chatId)?.delete(callback);
     };
+  }
 
-    this.unsubscribeCallbacks.push(cleanup);
-    return cleanup;
+  // ─── Private Helpers ──────────────────────────────────────────────────
+
+  private upsertUser(chatId: string, user: CollaborationUser): void {
+    if (!this.rooms.has(chatId)) {
+      this.rooms.set(chatId, new Map());
+    }
+    const room = this.rooms.get(chatId)!;
+    const existing = room.get(user.id);
+    const merged: CollaborationUser = {
+      ...(existing ?? {}),
+      ...user,
+      lastSeen: Date.now(),
+    };
+    room.set(user.id, merged);
+    this.scheduleCleanup(chatId, user.id);
+    this.computeActivityState(chatId, user.id);
+    this.notify(chatId);
+  }
+
+  private setTyping(userId: string, isTyping: boolean): void {
+    for (const [chatId, room] of this.rooms) {
+      const user = room.get(userId);
+      if (user) {
+        room.set(userId, { ...user, isTyping, lastSeen: Date.now() });
+        this.scheduleCleanup(chatId, userId);
+        this.notify(chatId);
+        break;
+      }
+    }
+  }
+
+  private setCursor(userId: string, x: number, y: number): void {
+    for (const [chatId, room] of this.rooms) {
+      const user = room.get(userId);
+      if (user) {
+        room.set(userId, { ...user, cursor: { x, y }, lastSeen: Date.now() });
+        this.scheduleCleanup(chatId, userId);
+        this.notify(chatId);
+        break;
+      }
+    }
+  }
+
+  private clearCursor(userId: string): void {
+    for (const [chatId, room] of this.rooms) {
+      const user = room.get(userId);
+      if (user) {
+        const { cursor: _cursor, ...rest } = user;
+        room.set(userId, { ...rest, lastSeen: Date.now() });
+        this.notify(chatId);
+        break;
+      }
+    }
+  }
+
+  private computeActivityState(chatId: string, userId: string): void {
+    const room = this.rooms.get(chatId);
+    if (!room) return;
+    const user = room.get(userId);
+    if (!user) return;
+
+    const elapsed = Date.now() - user.lastSeen;
+    let activityState: ActivityState = 'ACTIVE';
+    if (elapsed >= INACTIVITY_TIMEOUT_MS) activityState = 'OFFLINE';
+    else if (elapsed >= AWAY_TIMEOUT_MS) activityState = 'AWAY';
+    else if (elapsed >= IDLE_TIMEOUT_MS) activityState = 'IDLE';
+
+    if (activityState !== user.activityState) {
+      room.set(userId, { ...user, activityState });
+      this.notify(chatId);
+    }
+  }
+
+  private scheduleCleanup(chatId: string, userId: string): void {
+    const key = `${chatId}:${userId}`;
+    this.cancelCleanupTimer(key);
+    this.cleanupTimers.set(
+      key,
+      setTimeout(() => {
+        this.removeUser(chatId, userId);
+      }, INACTIVITY_TIMEOUT_MS),
+    );
+  }
+
+  private cancelCleanupTimer(key: string): void {
+    const timer = this.cleanupTimers.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this.cleanupTimers.delete(key);
+    }
+  }
+
+  private notify(chatId: string): void {
+    const set = this.subscribers.get(chatId);
+    if (!set) return;
+    for (const cb of set) {
+      try {
+        cb();
+      } catch (err) {
+        logger.error({ err }, '[PresenceManager] subscriber error');
+      }
+    }
   }
 
   destroy(): void {
-    this.stopInactivityCheck();
-    for (const unsub of this.unsubscribeCallbacks) unsub();
-    this.unsubscribeCallbacks = [];
-    this.listeners.clear();
-    this.users.clear();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Public queries
-  // ---------------------------------------------------------------------------
-
-  getUsers(): Map<string, UserPresence> {
-    return new Map(this.users);
-  }
-
-  getUsersArray(): UserPresence[] {
-    return Array.from(this.users.values());
-  }
-
-  getUser(userId: string): UserPresence | undefined {
-    return this.users.get(userId);
-  }
-
-  getOnlineCount(): number {
-    let count = 0;
-    for (const u of this.users.values()) {
-      if (u.status !== "offline") count++;
+    for (const timer of this.cleanupTimers.values()) clearTimeout(timer);
+    for (const state of this.throttleState.values()) {
+      if (state.pending) clearTimeout(state.pending);
     }
-    return count;
+    this.cleanupTimers.clear();
+    this.throttleState.clear();
+    this.rooms.clear();
+    this.subscribers.clear();
   }
+}
 
-  // ---------------------------------------------------------------------------
-  // Subscribe / unsubscribe (React-friendly)
-  // ---------------------------------------------------------------------------
+// ─── Singleton ────────────────────────────────────────────────────────────────
 
-  subscribe(listener: PresenceChangeListener): () => void {
-    this.listeners.add(listener);
-    // Immediately deliver current state
-    listener(this.getUsers());
-    return () => {
-      this.listeners.delete(listener);
-    };
-  }
+export const presenceManager = new PresenceManager();
 
-  // ---------------------------------------------------------------------------
-  // Color assignment
-  // ---------------------------------------------------------------------------
+// ─── React Hook ───────────────────────────────────────────────────────────────
 
-  assignColor(userId: string): string {
-    if (this.colorAssignments.has(userId)) {
-      return this.colorAssignments.get(userId)!;
-    }
-    const color = COLOR_PALETTE[this.colorIndex % COLOR_PALETTE.length];
-    this.colorIndex++;
-    this.colorAssignments.set(userId, color);
-    return color;
-  }
+export function usePresence(chatId: string): CollaborationUser[] {
+  const [users, setUsers] = useState<CollaborationUser[]>(() =>
+    presenceManager.getPresence(chatId),
+  );
+  const chatIdRef = useRef(chatId);
+  chatIdRef.current = chatId;
 
-  getUserColor(userId: string): string {
-    return this.colorAssignments.get(userId) ?? COLOR_PALETTE[0];
-  }
+  const refresh = useCallback(() => {
+    setUsers(presenceManager.getPresence(chatIdRef.current));
+  }, []);
 
-  // ---------------------------------------------------------------------------
-  // Avatar helpers
-  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    // Immediately sync
+    setUsers(presenceManager.getPresence(chatId));
 
-  /**
-   * Returns an avatar URL. If the provided URL is empty/undefined,
-   * falls back to an initials-based SVG data URI.
-   */
-  static resolveAvatar(name: string, providedUrl?: string): string {
-    if (providedUrl && providedUrl.trim().length > 0) return providedUrl;
-    return PresenceManager.generateInitialsAvatar(name);
-  }
+    const unsubscribe = presenceManager.subscribe(chatId, refresh);
+    return unsubscribe;
+  }, [chatId, refresh]);
 
-  static generateInitialsAvatar(name: string, bgColor = "#6366F1"): string {
-    const initials = name
-      .split(" ")
-      .map((part) => part.charAt(0).toUpperCase())
-      .slice(0, 2)
-      .join("");
+  return users;
+}
 
-    const svg = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
-        <circle cx="20" cy="20" r="20" fill="${bgColor}"/>
-        <text
-          x="20" y="20"
-          text-anchor="middle"
-          dominant-baseline="central"
-          font-family="system-ui, sans-serif"
-          font-size="15"
-          font-weight="600"
-          fill="#ffffff"
-        >${initials}</text>
-      </svg>
-    `.trim();
+// ─── Convenience: useTypingUsers ─────────────────────────────────────────────
 
-    return `data:image/svg+xml;base64,${btoa(svg)}`;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Internal handlers
-  // ---------------------------------------------------------------------------
-
-  private handlePresenceUpdate(msg: PresenceUpdateMessage): void {
-    const { userId, name, avatar, color, status } = msg.payload;
-
-    // Never add the local user to the remote map
-    if (userId === this.localUserId) return;
-
-    const resolvedColor = this.ensureColor(userId, color);
-    const resolvedAvatar = PresenceManager.resolveAvatar(name, avatar);
-
-    const existing = this.users.get(userId);
-    const updated: UserPresence = {
-      userId,
-      name,
-      avatar: resolvedAvatar,
-      color: resolvedColor,
-      status: status === "offline" ? "offline" : status,
-      lastSeen: msg.timestamp,
-      cursorPosition: existing?.cursorPosition,
-    };
-
-    if (status === "offline") {
-      this.users.delete(userId);
-    } else {
-      this.users.set(userId, updated);
-    }
-
-    this.notify();
-  }
-
-  private handleCursorMove(msg: CursorMoveMessage): void {
-    const { senderId, payload } = msg;
-    if (senderId === this.localUserId) return;
-
-    const user = this.users.get(senderId);
-    if (!user) return;
-
-    this.users.set(senderId, {
-      ...user,
-      cursorPosition: payload.position,
-      lastSeen: msg.timestamp,
-    });
-
-    this.notify();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Inactivity check
-  // ---------------------------------------------------------------------------
-
-  private startInactivityCheck(): void {
-    if (this.inactivityTimer) return;
-    this.inactivityTimer = setInterval(() => {
-      this.checkInactivity();
-    }, this.inactivityCheckInterval);
-  }
-
-  private stopInactivityCheck(): void {
-    if (this.inactivityTimer) {
-      clearInterval(this.inactivityTimer);
-      this.inactivityTimer = null;
-    }
-  }
-
-  private checkInactivity(): void {
-    const now = Date.now();
-    let changed = false;
-
-    for (const [userId, user] of this.users.entries()) {
-      const silence = now - user.lastSeen;
-
-      if (silence >= this.offlineAfterMs && user.status !== "offline") {
-        // Remove silently offline users from the map
-        this.users.delete(userId);
-        changed = true;
-      } else if (
-        silence >= this.awayAfterMs &&
-        silence < this.offlineAfterMs &&
-        user.status === "online"
-      ) {
-        this.users.set(userId, { ...user, status: "away" });
-        changed = true;
-      }
-    }
-
-    if (changed) this.notify();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
-
-  private ensureColor(userId: string, preferredColor?: string): string {
-    if (preferredColor && !this.colorAssignments.has(userId)) {
-      this.colorAssignments.set(userId, preferredColor);
-      return preferredColor;
-    }
-    return this.assignColor(userId);
-  }
-
-  private notify(): void {
-    const snapshot = this.getUsers();
-    for (const listener of this.listeners) {
-      try {
-        listener(snapshot);
-      } catch (err) {
-        console.error("[PresenceManager] Error in listener:", err);
-      }
-    }
-  }
+export function useTypingUsers(chatId: string): CollaborationUser[] {
+  const users = usePresence(chatId);
+  return users.filter((u) => u.isTyping);
 }

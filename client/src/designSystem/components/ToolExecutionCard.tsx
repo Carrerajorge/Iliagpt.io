@@ -1,214 +1,175 @@
-import React, { useState, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import React, { useState, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Loader2,
+  CheckCircle,
+  XCircle,
+  Clock,
+  ChevronDown,
+  ChevronUp,
+  RefreshCw,
+  Wrench,
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type ToolStatus = "pending" | "running" | "success" | "error";
+type ToolStatus = 'pending' | 'running' | 'success' | 'failed';
 
-export interface ToolExecutionCardProps {
-  /** Unique identifier for the tool call */
-  id?: string;
-  /** Name of the tool being executed */
+interface ToolExecutionCardProps {
   toolName: string;
-  /** Current execution status */
   status: ToolStatus;
-  /** Input passed to the tool (will be JSON-formatted) */
-  input?: unknown;
-  /** Output returned by the tool (will be JSON-formatted) */
-  output?: unknown;
-  /** Execution duration in milliseconds */
-  duration?: number;
-  /** Error message if status === 'error' */
+  duration?: number;  // milliseconds
+  result?: unknown;
   error?: string;
-  /** Whether the card starts expanded */
-  defaultExpanded?: boolean;
+  onRetry?: () => void;
+  className?: string;
 }
 
 // ---------------------------------------------------------------------------
-// Tool icon map
+// Helpers
 // ---------------------------------------------------------------------------
 
-const TOOL_ICONS: Record<string, string> = {
-  // File system
-  read_file: "📄",
-  write_file: "💾",
-  create_file: "📝",
-  delete_file: "🗑️",
-  list_files: "📁",
-  glob: "🔍",
-  // Code execution
-  bash: "🖥️",
-  python: "🐍",
-  javascript: "⚡",
-  run_command: "⚙️",
-  // Search
-  grep: "🔎",
-  search: "🔍",
-  web_search: "🌐",
-  // Database
-  sql: "🗄️",
-  query: "📊",
-  // API
-  fetch: "🌍",
-  http: "📡",
-  api_call: "🔌",
-  // AI
-  llm: "🤖",
-  embed: "🧠",
-  // Git
-  git: "📦",
-  git_status: "📋",
-  git_commit: "✅",
-  // Default
-  default: "🔧",
-};
-
-function getToolIcon(toolName: string): string {
-  const lower = toolName.toLowerCase();
-  for (const [key, icon] of Object.entries(TOOL_ICONS)) {
-    if (lower.includes(key)) return icon;
+const STATUS_CONFIG: Record<
+  ToolStatus,
+  {
+    borderColor: string;
+    bgColor: string;
+    badgeColor: string;
+    badgeBg: string;
+    label: string;
   }
-  return TOOL_ICONS.default;
-}
-
-// ---------------------------------------------------------------------------
-// Status config
-// ---------------------------------------------------------------------------
-
-interface StatusConfig {
-  label: string;
-  badgeClass: string;
-  dotClass: string;
-}
-
-const STATUS_CONFIG: Record<ToolStatus, StatusConfig> = {
+> = {
   pending: {
-    label: "Pending",
-    badgeClass: "bg-gray-800 text-gray-400 border-gray-700",
-    dotClass: "bg-gray-500",
+    borderColor: 'border-l-amber-400',
+    bgColor:     'bg-amber-50/30 dark:bg-amber-950/20',
+    badgeColor:  'text-amber-700 dark:text-amber-300',
+    badgeBg:     'bg-amber-100 dark:bg-amber-900/50',
+    label:       'Pending',
   },
   running: {
-    label: "Running",
-    badgeClass: "bg-blue-950/60 text-blue-400 border-blue-800/60",
-    dotClass: "bg-blue-400",
+    borderColor: 'border-l-blue-500',
+    bgColor:     'bg-blue-50/30 dark:bg-blue-950/20',
+    badgeColor:  'text-blue-700 dark:text-blue-300',
+    badgeBg:     'bg-blue-100 dark:bg-blue-900/50',
+    label:       'Running',
   },
   success: {
-    label: "Success",
-    badgeClass: "bg-green-950/60 text-green-400 border-green-800/60",
-    dotClass: "bg-green-400",
+    borderColor: 'border-l-emerald-500',
+    bgColor:     'bg-emerald-50/30 dark:bg-emerald-950/20',
+    badgeColor:  'text-emerald-700 dark:text-emerald-300',
+    badgeBg:     'bg-emerald-100 dark:bg-emerald-900/50',
+    label:       'Success',
   },
-  error: {
-    label: "Error",
-    badgeClass: "bg-red-950/60 text-red-400 border-red-800/60",
-    dotClass: "bg-red-400",
+  failed: {
+    borderColor: 'border-l-red-500',
+    bgColor:     'bg-red-50/30 dark:bg-red-950/20',
+    badgeColor:  'text-red-700 dark:text-red-300',
+    badgeBg:     'bg-red-100 dark:bg-red-900/50',
+    label:       'Failed',
   },
 };
-
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
-
-function SpinnerIcon() {
-  return (
-    <svg
-      className="w-3.5 h-3.5 animate-spin text-blue-400"
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
-  );
-}
-
-function CheckCircleIcon() {
-  return (
-    <svg className="w-3.5 h-3.5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-  );
-}
-
-function XCircleIcon() {
-  return (
-    <svg className="w-3.5 h-3.5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-  );
-}
-
-function ClockIcon() {
-  return (
-    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-  );
-}
-
-function ChevronIcon({ expanded }: { expanded: boolean }) {
-  return (
-    <motion.svg
-      animate={{ rotate: expanded ? 180 : 0 }}
-      transition={{ duration: 0.2 }}
-      className="w-4 h-4 text-gray-500"
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={2}
-    >
-      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-    </motion.svg>
-  );
-}
-
-function StatusIndicator({ status }: { status: ToolStatus }) {
-  if (status === "running") return <SpinnerIcon />;
-  if (status === "success") return <CheckCircleIcon />;
-  if (status === "error") return <XCircleIcon />;
-  // pending
-  return <div className="w-3.5 h-3.5 rounded-full border-2 border-gray-600" />;
-}
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function JsonBlock({ data, label }: { data: unknown; label: string }) {
-  const [copied, setCopied] = useState(false);
-  const json = JSON.stringify(data, null, 2);
+function formatJson(value: unknown, maxLines = 5): { preview: string; full: string; truncated: boolean } {
+  const full = JSON.stringify(value, null, 2);
+  const lines = full.split('\n');
+  const truncated = lines.length > maxLines;
+  const preview = lines.slice(0, maxLines).join('\n') + (truncated ? '\n  …' : '');
+  return { preview, full, truncated };
+}
 
-  const handleCopy = useCallback(async () => {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(json);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  }, [json]);
+// ---------------------------------------------------------------------------
+// Status icon
+// ---------------------------------------------------------------------------
+
+function StatusIcon({ status }: { status: ToolStatus }) {
+  switch (status) {
+    case 'pending':
+      return (
+        <Clock
+          size={16}
+          className="text-amber-500 dark:text-amber-400 flex-shrink-0"
+        />
+      );
+    case 'running':
+      return (
+        <Loader2
+          size={16}
+          className="text-blue-500 dark:text-blue-400 flex-shrink-0 animate-spin"
+        />
+      );
+    case 'success':
+      return (
+        <CheckCircle
+          size={16}
+          className="text-emerald-500 dark:text-emerald-400 flex-shrink-0"
+        />
+      );
+    case 'failed':
+      return (
+        <XCircle
+          size={16}
+          className="text-red-500 dark:text-red-400 flex-shrink-0"
+        />
+      );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Result viewer
+// ---------------------------------------------------------------------------
+
+function ResultViewer({ result }: { result: unknown }) {
+  const [expanded, setExpanded] = useState(false);
+  const { preview, full, truncated } = useMemo(() => formatJson(result), [result]);
 
   return (
     <div className="mt-3">
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-          {label}
-        </span>
-        <button
-          onClick={handleCopy}
-          className="text-xs text-gray-500 hover:text-gray-300 transition-colors px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700"
-        >
-          {copied ? "Copied!" : "Copy"}
-        </button>
-      </div>
-      <pre className="text-xs font-mono text-gray-300 bg-gray-950/80 border border-gray-800 rounded-md p-3 overflow-x-auto max-h-64 leading-5">
-        {json}
-      </pre>
+      <button
+        onClick={() => setExpanded((p) => !p)}
+        className={cn(
+          'flex items-center gap-1.5 text-xs font-medium',
+          'text-slate-500 dark:text-slate-400',
+          'hover:text-slate-700 dark:hover:text-slate-200 transition-colors',
+          'mb-2',
+        )}
+      >
+        {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        {expanded ? 'Hide result' : 'Show result'}
+      </button>
+
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0, 0, 0.2, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="relative rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700">
+              <div className="flex items-center justify-between px-3 py-1.5 bg-slate-800 dark:bg-slate-900">
+                <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+                  Result JSON
+                </span>
+              </div>
+              <pre className="p-3 bg-slate-900 dark:bg-slate-950 text-xs font-mono text-slate-200 overflow-x-auto leading-relaxed max-h-64 overflow-y-auto">
+                {expanded && truncated ? full : preview}
+              </pre>
+              {truncated && !expanded && (
+                <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-slate-900 to-transparent pointer-events-none" />
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -220,130 +181,109 @@ function JsonBlock({ data, label }: { data: unknown; label: string }) {
 export function ToolExecutionCard({
   toolName,
   status,
-  input,
-  output,
   duration,
+  result,
   error,
-  defaultExpanded = false,
+  onRetry,
+  className,
 }: ToolExecutionCardProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
   const config = STATUS_CONFIG[status];
-  const icon = getToolIcon(toolName);
-  const hasDetails = input !== undefined || output !== undefined || error;
-
-  const borderColorMap: Record<ToolStatus, string> = {
-    pending: "border-gray-700/50",
-    running: "border-blue-800/40",
-    success: "border-green-800/30",
-    error: "border-red-800/40",
-  };
-
-  const headerBgMap: Record<ToolStatus, string> = {
-    pending: "bg-gray-900",
-    running: "bg-gray-900",
-    success: "bg-gray-900",
-    error: "bg-gray-900",
-  };
+  const hasResult = result !== undefined && result !== null;
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2 }}
-      className={`rounded-xl border ${borderColorMap[status]} overflow-hidden text-sm shadow-sm`}
+      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -4, scale: 0.98 }}
+      transition={{ duration: 0.2, ease: [0, 0, 0.2, 1] }}
+      className={cn(
+        'relative rounded-xl border border-l-4',
+        'border-slate-200 dark:border-slate-700',
+        config.borderColor,
+        config.bgColor,
+        'p-4',
+        'transition-colors duration-200',
+        className,
+      )}
     >
-      {/* Card header */}
-      <button
-        onClick={() => hasDetails && setExpanded((v) => !v)}
-        disabled={!hasDetails}
-        aria-expanded={expanded}
-        className={`
-          w-full flex items-center gap-3 px-4 py-3
-          ${headerBgMap[status]}
-          ${hasDetails ? "cursor-pointer hover:bg-gray-800/80" : "cursor-default"}
-          transition-colors duration-150 text-left
-        `}
-      >
-        {/* Tool emoji */}
-        <span className="text-base leading-none flex-shrink-0" aria-hidden>
-          {icon}
-        </span>
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <StatusIcon status={status} />
 
-        {/* Tool name */}
-        <span className="font-medium text-gray-100 flex-1 font-mono text-[0.8125rem]">
-          {toolName}
-        </span>
+          {/* Tool icon */}
+          <div className="flex-shrink-0 w-6 h-6 rounded-md bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+            <Wrench size={12} className="text-slate-500 dark:text-slate-400" />
+          </div>
 
-        {/* Duration badge */}
-        {duration !== undefined && (
-          <span className="flex items-center gap-1 text-xs text-gray-500 tabular-nums">
-            <ClockIcon />
-            {formatDuration(duration)}
+          {/* Tool name */}
+          <span className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate font-mono">
+            {toolName}
           </span>
-        )}
+        </div>
 
-        {/* Status badge */}
-        <span
-          className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-medium ${config.badgeClass}`}
-        >
-          <StatusIndicator status={status} />
-          {config.label}
-        </span>
+        {/* Right side badges */}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Duration badge */}
+          {duration !== undefined && (
+            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full">
+              {formatDuration(duration)}
+            </span>
+          )}
 
-        {/* Chevron */}
-        {hasDetails && <ChevronIcon expanded={expanded} />}
-      </button>
+          {/* Status badge */}
+          <span
+            className={cn(
+              'text-[11px] font-semibold px-2 py-0.5 rounded-full',
+              config.badgeColor,
+              config.badgeBg,
+            )}
+          >
+            {config.label}
+          </span>
+        </div>
+      </div>
 
-      {/* Running progress bar */}
-      {status === "running" && (
-        <div className="h-0.5 bg-gray-800 overflow-hidden">
+      {/* Running pulse indicator */}
+      {status === 'running' && (
+        <div className="mt-3 h-1 rounded-full bg-blue-100 dark:bg-blue-900/40 overflow-hidden">
           <motion.div
-            className="h-full bg-gradient-to-r from-blue-600 to-purple-600"
-            animate={{ x: ["-100%", "100%"] }}
-            transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
-            style={{ width: "50%" }}
+            className="h-full bg-blue-500 dark:bg-blue-400 rounded-full"
+            animate={{ x: ['-100%', '200%'] }}
+            transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+            style={{ width: '40%' }}
           />
         </div>
       )}
 
-      {/* Expandable details */}
-      <AnimatePresence initial={false}>
-        {expanded && hasDetails && (
-          <motion.div
-            key="details"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: "easeInOut" }}
-            className="overflow-hidden"
-          >
-            <div className="px-4 pb-4 pt-1 bg-gray-950/60 border-t border-gray-800/60">
-              {/* Error message */}
-              {error && (
-                <div className="mt-3 p-3 rounded-lg bg-red-950/40 border border-red-800/40">
-                  <div className="flex items-start gap-2">
-                    <XCircleIcon />
-                    <div>
-                      <p className="text-xs font-medium text-red-400 mb-0.5">Error</p>
-                      <p className="text-xs text-red-300 font-mono">{error}</p>
-                    </div>
-                  </div>
-                </div>
-              )}
+      {/* Error message */}
+      {status === 'failed' && error && (
+        <div className="mt-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 p-3">
+          <p className="text-xs text-red-700 dark:text-red-300 font-medium mb-1">Error</p>
+          <p className="text-xs text-red-600 dark:text-red-400 font-mono break-all leading-relaxed">
+            {error}
+          </p>
 
-              {/* Input */}
-              {input !== undefined && (
-                <JsonBlock data={input} label="Input" />
+          {onRetry && (
+            <button
+              onClick={onRetry}
+              className={cn(
+                'mt-2 flex items-center gap-1.5 text-xs font-medium',
+                'text-red-700 dark:text-red-300 hover:text-red-800 dark:hover:text-red-200',
+                'transition-colors',
               )}
+            >
+              <RefreshCw size={11} />
+              Retry
+            </button>
+          )}
+        </div>
+      )}
 
-              {/* Output */}
-              {output !== undefined && !error && (
-                <JsonBlock data={output} label="Output" />
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Result JSON viewer */}
+      {status === 'success' && hasResult && (
+        <ResultViewer result={result} />
+      )}
     </motion.div>
   );
 }

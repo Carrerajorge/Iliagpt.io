@@ -1,331 +1,233 @@
-/**
- * PresenceAvatars.tsx
- * Displays an overlapping avatar stack for active collaborators.
- * Supports tooltip, status dots, color-coded borders, and animated
- * entrance/exit via Framer Motion.
- */
+import React, { useId } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import * as Tooltip from '@radix-ui/react-tooltip';
+import { usePresence } from '@/lib/collaboration/PresenceManager';
+import { CollaborationUser, ActivityState } from '@/lib/collaboration/CollaborationClient';
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import type { UserPresence } from "../../lib/collaboration/PresenceManager";
+// ─── Props ────────────────────────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export type AvatarSize = "sm" | "md" | "lg";
-
-export interface PresenceAvatarsProps {
-  /** Array of remote users currently present */
-  users: UserPresence[];
-  /** Maximum number of avatars to show before "+N" overflow. Default: 5 */
+interface PresenceAvatarsProps {
+  chatId: string;
   maxVisible?: number;
-  /** Whether to render a tooltip on hover. Default: true */
-  showTooltip?: boolean;
-  /** Size variant. Default: 'md' */
-  size?: AvatarSize;
-  /** Extra Tailwind classes for the root container */
   className?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Size map
-// ---------------------------------------------------------------------------
+// ─── Status dot colors ────────────────────────────────────────────────────────
 
-const SIZE_MAP: Record<AvatarSize, { container: string; text: string; dot: string; offset: string }> = {
-  sm: {
-    container: "h-6 w-6 text-[10px]",
-    text: "text-[10px]",
-    dot: "h-1.5 w-1.5",
-    offset: "-ml-1.5",
-  },
-  md: {
-    container: "h-8 w-8 text-xs",
-    text: "text-xs",
-    dot: "h-2 w-2",
-    offset: "-ml-2",
-  },
-  lg: {
-    container: "h-10 w-10 text-sm",
-    text: "text-sm",
-    dot: "h-2.5 w-2.5",
-    offset: "-ml-2.5",
-  },
+const STATUS_COLOR: Record<ActivityState, string> = {
+  ACTIVE: 'bg-emerald-400',
+  IDLE: 'bg-yellow-400',
+  AWAY: 'bg-orange-400',
+  OFFLINE: 'bg-zinc-400',
 };
 
-// ---------------------------------------------------------------------------
-// Status dot color
-// ---------------------------------------------------------------------------
+const STATUS_LABEL: Record<ActivityState, string> = {
+  ACTIVE: 'Active',
+  IDLE: 'Idle',
+  AWAY: 'Away',
+  OFFLINE: 'Offline',
+};
 
-function statusDotClass(status: UserPresence["status"]): string {
-  switch (status) {
-    case "online":
-      return "bg-green-400";
-    case "away":
-      return "bg-amber-400";
-    case "offline":
-      return "bg-gray-400";
-  }
+// ─── Avatar helpers ───────────────────────────────────────────────────────────
+
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-function statusLabel(status: UserPresence["status"]): string {
-  switch (status) {
-    case "online":
-      return "Online";
-    case "away":
-      return "Away";
-    case "offline":
-      return "Offline";
-  }
-}
+// ─── Single Avatar ────────────────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// Tooltip
-// ---------------------------------------------------------------------------
-
-interface TooltipProps {
-  name: string;
-  status: UserPresence["status"];
-  color: string;
-}
-
-const Tooltip: React.FC<TooltipProps> = ({ name, status, color }) => (
-  <motion.div
-    initial={{ opacity: 0, y: 6, scale: 0.92 }}
-    animate={{ opacity: 1, y: 0, scale: 1 }}
-    exit={{ opacity: 0, y: 4, scale: 0.95 }}
-    transition={{ duration: 0.15, ease: "easeOut" }}
-    className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 pointer-events-none"
-  >
-    <div className="flex items-center gap-1.5 bg-gray-900 text-white text-xs rounded-md px-2.5 py-1.5 shadow-lg whitespace-nowrap">
-      {/* Color swatch */}
-      <span
-        className="inline-block h-2 w-2 rounded-full flex-shrink-0"
-        style={{ backgroundColor: color }}
-      />
-      <span className="font-medium">{name}</span>
-      <span className="text-gray-400">·</span>
-      <span className="text-gray-400 capitalize">{statusLabel(status)}</span>
-    </div>
-    {/* Arrow */}
-    <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-4 border-transparent border-t-gray-900" />
-  </motion.div>
-);
-
-// ---------------------------------------------------------------------------
-// Single avatar
-// ---------------------------------------------------------------------------
-
-interface AvatarItemProps {
-  user: UserPresence;
-  size: AvatarSize;
-  showTooltip: boolean;
+interface AvatarProps {
+  user: CollaborationUser;
   zIndex: number;
-  isFirst: boolean;
-  offsetClass: string;
+  /** Offset in pixels (negative = overlap) */
+  offset: number;
 }
 
-const AvatarItem: React.FC<AvatarItemProps> = ({
-  user,
-  size,
-  showTooltip,
-  zIndex,
-  isFirst,
-  offsetClass,
-}) => {
-  const [hovered, setHovered] = useState(false);
-  const sizes = SIZE_MAP[size];
+const AVATAR_SIZE = 32; // px
+const OVERLAP = 8;      // px
+
+const Avatar: React.FC<AvatarProps> = ({ user, zIndex, offset }) => {
+  const tooltipText = `${user.name} · ${STATUS_LABEL[user.activityState]}`;
 
   return (
-    <motion.div
-      key={user.userId}
-      layout
-      initial={{ opacity: 0, scale: 0.5 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.5 }}
-      transition={{ type: "spring", stiffness: 400, damping: 28 }}
-      className={`relative flex-shrink-0 ${isFirst ? "" : offsetClass}`}
-      style={{ zIndex }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      {/* Border ring using user color */}
-      <div
-        className={`${sizes.container} rounded-full p-[2px] cursor-default`}
-        style={{ backgroundColor: user.color }}
-      >
-        <img
-          src={user.avatar}
-          alt={user.name}
-          className="h-full w-full rounded-full object-cover bg-gray-200 select-none"
-          draggable={false}
-          onError={(e) => {
-            // Fallback: hide broken image — the parent bg color still shows
-            (e.currentTarget as HTMLImageElement).style.display = "none";
-          }}
-        />
-      </div>
+    <Tooltip.Provider delayDuration={250}>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
+          <motion.div
+            key={user.id}
+            initial={{ opacity: 0, scale: 0.5, x: -10 }}
+            animate={{ opacity: 1, scale: 1, x: 0 }}
+            exit={{ opacity: 0, scale: 0.5, x: -10 }}
+            transition={{ type: 'spring', stiffness: 380, damping: 28 }}
+            style={{
+              position: 'absolute',
+              left: offset,
+              zIndex,
+              width: AVATAR_SIZE,
+              height: AVATAR_SIZE,
+            }}
+            className="rounded-full cursor-pointer focus:outline-none"
+          >
+            {/* Colored ring */}
+            <div
+              className="rounded-full p-[2px]"
+              style={{ backgroundColor: user.color }}
+            >
+              <div
+                className="rounded-full overflow-hidden bg-zinc-800 flex items-center justify-center text-white font-semibold select-none"
+                style={{
+                  width: AVATAR_SIZE - 4,
+                  height: AVATAR_SIZE - 4,
+                  fontSize: 11,
+                }}
+              >
+                {user.avatar ? (
+                  <img
+                    src={user.avatar}
+                    alt={user.name}
+                    className="w-full h-full object-cover"
+                    draggable={false}
+                  />
+                ) : (
+                  <span>{getInitials(user.name)}</span>
+                )}
+              </div>
+            </div>
 
-      {/* Status dot */}
-      <span
-        className={`absolute bottom-0 right-0 ${sizes.dot} rounded-full border-2 border-white dark:border-gray-900 ${statusDotClass(user.status)}`}
-      />
+            {/* Status dot */}
+            <span
+              className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-zinc-900 ${STATUS_COLOR[user.activityState]}`}
+              aria-hidden
+            />
+          </motion.div>
+        </Tooltip.Trigger>
 
-      {/* Tooltip */}
-      <AnimatePresence>
-        {showTooltip && hovered && (
-          <Tooltip name={user.name} status={user.status} color={user.color} />
-        )}
-      </AnimatePresence>
-    </motion.div>
+        <Tooltip.Portal>
+          <Tooltip.Content
+            side="bottom"
+            sideOffset={6}
+            className="z-50 rounded-md bg-zinc-800 px-2.5 py-1.5 text-xs text-white shadow-lg select-none"
+          >
+            {tooltipText}
+            {user.isTyping && (
+              <span className="ml-1 text-zinc-400 italic">typing…</span>
+            )}
+            <Tooltip.Arrow className="fill-zinc-800" />
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </Tooltip.Provider>
   );
 };
 
-// ---------------------------------------------------------------------------
-// Overflow badge
-// ---------------------------------------------------------------------------
+// ─── Overflow Badge ───────────────────────────────────────────────────────────
 
 interface OverflowBadgeProps {
   count: number;
-  size: AvatarSize;
-  offsetClass: string;
-  hiddenUsers: UserPresence[];
-  showTooltip: boolean;
+  offset: number;
+  zIndex: number;
+  names: string[];
 }
 
 const OverflowBadge: React.FC<OverflowBadgeProps> = ({
   count,
-  size,
-  offsetClass,
-  hiddenUsers,
-  showTooltip,
+  offset,
+  zIndex,
+  names,
 }) => {
-  const [hovered, setHovered] = useState(false);
-  const sizes = SIZE_MAP[size];
+  const tooltipText = names.join(', ');
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, scale: 0.5 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.5 }}
-      transition={{ type: "spring", stiffness: 400, damping: 28 }}
-      className={`relative flex-shrink-0 ${offsetClass}`}
-      style={{ zIndex: 0 }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      <div
-        className={`${sizes.container} rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center font-semibold text-gray-600 dark:text-gray-300 cursor-default select-none border-2 border-white dark:border-gray-900`}
-      >
-        +{count}
-      </div>
-
-      {/* Tooltip listing hidden users */}
-      <AnimatePresence>
-        {showTooltip && hovered && (
+    <Tooltip.Provider delayDuration={250}>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
           <motion.div
-            initial={{ opacity: 0, y: 6, scale: 0.92 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 4, scale: 0.95 }}
-            transition={{ duration: 0.15, ease: "easeOut" }}
-            className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 pointer-events-none"
+            initial={{ opacity: 0, scale: 0.5 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.5 }}
+            transition={{ type: 'spring', stiffness: 380, damping: 28 }}
+            style={{
+              position: 'absolute',
+              left: offset,
+              zIndex,
+              width: AVATAR_SIZE,
+              height: AVATAR_SIZE,
+            }}
+            className="rounded-full cursor-default focus:outline-none"
           >
-            <div className="bg-gray-900 text-white text-xs rounded-md px-2.5 py-1.5 shadow-lg whitespace-nowrap space-y-1">
-              {hiddenUsers.map((u) => (
-                <div key={u.userId} className="flex items-center gap-1.5">
-                  <span
-                    className="inline-block h-2 w-2 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: u.color }}
-                  />
-                  <span className="font-medium">{u.name}</span>
-                  <span className="text-gray-400 capitalize">{statusLabel(u.status)}</span>
-                </div>
-              ))}
+            <div className="rounded-full bg-zinc-700 border-2 border-zinc-900 flex items-center justify-center text-white text-[10px] font-bold select-none"
+              style={{ width: AVATAR_SIZE, height: AVATAR_SIZE }}
+            >
+              +{count}
             </div>
-            <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-4 border-transparent border-t-gray-900" />
           </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
+        </Tooltip.Trigger>
+
+        <Tooltip.Portal>
+          <Tooltip.Content
+            side="bottom"
+            sideOffset={6}
+            className="z-50 rounded-md bg-zinc-800 px-2.5 py-1.5 text-xs text-white shadow-lg max-w-[200px] select-none"
+          >
+            {tooltipText}
+            <Tooltip.Arrow className="fill-zinc-800" />
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </Tooltip.Provider>
   );
 };
 
-// ---------------------------------------------------------------------------
-// PresenceAvatars (main export)
-// ---------------------------------------------------------------------------
+// ─── PresenceAvatars ──────────────────────────────────────────────────────────
 
 export const PresenceAvatars: React.FC<PresenceAvatarsProps> = ({
-  users,
-  maxVisible = 5,
-  showTooltip = true,
-  size = "md",
-  className = "",
+  chatId,
+  maxVisible = 4,
+  className = '',
 }) => {
-  const sizes = SIZE_MAP[size];
-
-  // Sort: online first, then away, then offline
-  const sorted = [...users].sort((a, b) => {
-    const order = { online: 0, away: 1, offline: 2 };
-    return order[a.status] - order[b.status];
-  });
-
-  const visible = sorted.slice(0, maxVisible);
-  const hidden = sorted.slice(maxVisible);
-  const overflowCount = hidden.length;
+  const users = usePresence(chatId);
+  const uid = useId();
 
   if (users.length === 0) return null;
 
+  const visible = users.slice(0, maxVisible);
+  const overflow = users.slice(maxVisible);
+
+  // Total width of the stack
+  const totalSlots = visible.length + (overflow.length > 0 ? 1 : 0);
+  const containerWidth = AVATAR_SIZE + (totalSlots - 1) * (AVATAR_SIZE - OVERLAP);
+
   return (
-    <div className={`flex items-center ${className}`} role="list" aria-label="Active collaborators">
+    <div
+      className={`relative flex items-center ${className}`}
+      style={{ width: containerWidth, height: AVATAR_SIZE }}
+      aria-label={`${users.length} collaborator${users.length !== 1 ? 's' : ''} online`}
+      role="group"
+    >
       <AnimatePresence mode="popLayout">
-        {visible.map((user, index) => (
-          <AvatarItem
-            key={user.userId}
+        {visible.map((user, idx) => (
+          <Avatar
+            key={`${uid}-${user.id}`}
             user={user}
-            size={size}
-            showTooltip={showTooltip}
-            zIndex={maxVisible - index}
-            isFirst={index === 0}
-            offsetClass={sizes.offset}
+            zIndex={visible.length - idx}
+            offset={idx * (AVATAR_SIZE - OVERLAP)}
           />
         ))}
 
-        {overflowCount > 0 && (
+        {overflow.length > 0 && (
           <OverflowBadge
-            key="__overflow__"
-            count={overflowCount}
-            size={size}
-            offsetClass={sizes.offset}
-            hiddenUsers={hidden}
-            showTooltip={showTooltip}
+            key={`${uid}-overflow`}
+            count={overflow.length}
+            offset={visible.length * (AVATAR_SIZE - OVERLAP)}
+            zIndex={0}
+            names={overflow.map((u) => u.name)}
           />
         )}
       </AnimatePresence>
     </div>
   );
 };
-
-// ---------------------------------------------------------------------------
-// usePresenceAvatars hook — convenience for consuming PresenceManager
-// ---------------------------------------------------------------------------
-
-import type { PresenceManager } from "../../lib/collaboration/PresenceManager";
-
-export function usePresenceUsers(manager: PresenceManager | null): UserPresence[] {
-  const [users, setUsers] = useState<UserPresence[]>([]);
-
-  const handleChange = useCallback((map: Map<string, UserPresence>) => {
-    setUsers(Array.from(map.values()));
-  }, []);
-
-  useEffect(() => {
-    if (!manager) return;
-    const unsubscribe = manager.subscribe(handleChange);
-    return unsubscribe;
-  }, [manager, handleChange]);
-
-  return users;
-}
 
 export default PresenceAvatars;

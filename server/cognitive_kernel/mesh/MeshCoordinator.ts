@@ -1,386 +1,290 @@
-import { EventEmitter } from 'events';
+import pino from 'pino';
+import { type CognitiveTask, type MeshNodeInfo } from './CognitiveMesh.js';
+import { type CognitiveTaskResult } from './MeshNode.js';
 
-// ─── Signal Types (discriminated union) ──────────────────────────────────────
+const logger = pino({ name: 'MeshCoordinator', level: process.env.LOG_LEVEL ?? 'info' });
 
-export interface QueryResultSignal {
-  kind: 'query_result';
-  taskId: string;
-  nodeId: string;
-  query: string;
-  result: unknown;
-}
-
-export interface ToolOutputSignal {
-  kind: 'tool_output';
-  toolName: string;
-  callId: string;
-  nodeId: string;
-  output: unknown;
-}
-
-export interface MemoryRetrievalSignal {
-  kind: 'memory_retrieval';
-  memoryId: string;
-  nodeId: string;
-  content: string;
-  relevanceScore: number;
-}
-
-export interface UserInputSignal {
-  kind: 'user_input';
-  sessionId: string;
-  text: string;
-  attachments?: string[];
-}
-
-export interface ErrorSignal {
-  kind: 'error';
-  nodeId: string;
-  taskId?: string;
-  message: string;
-  stack?: string;
-}
-
-export type CognitiveSignal =
-  | QueryResultSignal
-  | ToolOutputSignal
-  | MemoryRetrievalSignal
-  | UserInputSignal
-  | ErrorSignal;
-
-// ─── Attention & Workspace Types ─────────────────────────────────────────────
-
-export interface ScoredSignal {
-  signal: CognitiveSignal;
-  salience: number;
-  enteredWorkspaceAt: number;
-  broadcastCount: number;
-}
-
-export interface Coalition {
-  coalitionId: string;
-  taskId: string;
-  memberNodeIds: string[];
-  signals: ScoredSignal[];
-  formedAt: number;
-  lastUpdatedAt: number;
-}
-
-export interface AttentionSnapshot {
+export interface WorkspaceMessage {
+  id: string;
+  type: string;
+  content: unknown;
+  sourceNodeId: string;
+  priority: number;
   timestamp: number;
-  workspaceSize: number;
-  topSignals: Array<{ kind: string; salience: number }>;
-  activeCoalitions: number;
-  totalBroadcasts: number;
+  recipients?: string[];
 }
 
-// ─── Configuration ────────────────────────────────────────────────────────────
-
-const WORKSPACE_CAPACITY = 7;           // Miller's Law: 7 ± 2
-const CONSCIOUSNESS_THRESHOLD = 0.35;   // Minimum salience to enter workspace
-const BROADCAST_INTERVAL_MS = 500;      // How often winning signals are broadcast
-const SIGNAL_DECAY_RATE = 0.05;         // Salience decay per broadcast cycle
-const COALITION_TTL_MS = 60_000;        // Coalitions expire after 60 s
-
-// ─── Salience Scoring ─────────────────────────────────────────────────────────
-
-function computeSalience(signal: CognitiveSignal): number {
-  let base = 0;
-
-  switch (signal.kind) {
-    case 'user_input':
-      // User input is always high salience — it drives the interaction
-      base = 0.95;
-      if (signal.text.length < 5) base -= 0.1;
-      break;
-
-    case 'error':
-      // Errors demand attention
-      base = 0.85;
-      break;
-
-    case 'query_result':
-      base = 0.6;
-      break;
-
-    case 'tool_output':
-      base = 0.55;
-      break;
-
-    case 'memory_retrieval':
-      // Weight by relevance score from the retrieval system
-      base = 0.3 + signal.relevanceScore * 0.4;
-      break;
-  }
-
-  // Slight jitter to break ties
-  return Math.min(1, Math.max(0, base + (Math.random() - 0.5) * 0.05));
+interface AttentionRecord {
+  nodeId: string;
+  messageId: string;
+  timestamp: number;
 }
 
-// ─── Priority Queue (min-heap backed by sorted array for simplicity) ──────────
+const WORKSPACE_BUFFER_SIZE = 100;
+const BROADCAST_TIMEOUT_MS = 5_000;
+const TASK_EXECUTION_TIMEOUT_MS = 30_000;
 
-class SalienceQueue {
-  private items: ScoredSignal[] = [];
+export class MeshCoordinator {
+  public globalWorkspace: WorkspaceMessage[] = [];
 
-  push(item: ScoredSignal): void {
-    this.items.push(item);
-    this.items.sort((a, b) => b.salience - a.salience); // descending
+  private attendanceMap: Map<string, Set<string>> = new Map(); // messageId -> Set<nodeId>
+  private currentAttention: WorkspaceMessage | null = null;
+  private attendanceLog: AttentionRecord[] = [];
+  private getNodes: () => Map<string, MeshNodeInfo>;
+  private selectNodeForTask: (task: CognitiveTask) => MeshNodeInfo | null;
+
+  constructor(options: {
+    getNodes: () => Map<string, MeshNodeInfo>;
+    selectNodeForTask: (task: CognitiveTask) => MeshNodeInfo | null;
+  }) {
+    this.getNodes = options.getNodes;
+    this.selectNodeForTask = options.selectNodeForTask;
   }
 
-  peek(): ScoredSignal | undefined {
-    return this.items[0];
+  private generateId(): string {
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   }
 
-  popBelow(threshold: number): ScoredSignal[] {
-    const evicted: ScoredSignal[] = [];
-    this.items = this.items.filter((item) => {
-      if (item.salience < threshold) {
-        evicted.push(item);
-        return false;
-      }
-      return true;
-    });
-    return evicted;
-  }
+  async broadcast(message: WorkspaceMessage): Promise<void> {
+    // Add to ring buffer
+    this.pushToWorkspace(message);
 
-  top(n: number): ScoredSignal[] {
-    return this.items.slice(0, n);
-  }
+    const nodes = this.getNodes();
+    const targetNodeIds = message.recipients ?? Array.from(nodes.keys());
 
-  size(): number {
-    return this.items.length;
-  }
+    logger.info(
+      { messageId: message.id, type: message.type, priority: message.priority, targets: targetNodeIds.length },
+      'Broadcasting workspace message',
+    );
 
-  applyDecay(rate: number): void {
-    for (const item of this.items) {
-      item.salience = Math.max(0, item.salience - rate);
-    }
-  }
+    const broadcastPromises = targetNodeIds.map(async (nodeId) => {
+      const node = nodes.get(nodeId);
+      if (!node || !node.healthy || nodeId === message.sourceNodeId) return;
 
-  clear(): void {
-    this.items = [];
-  }
-}
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), BROADCAST_TIMEOUT_MS);
 
-// ─── MeshCoordinator ─────────────────────────────────────────────────────────
-
-export class MeshCoordinator extends EventEmitter {
-  private readonly coordinatorId: string;
-  private readonly globalWorkspace: ScoredSignal[] = [];
-  private readonly attentionQueue = new SalienceQueue();
-  private readonly coalitions = new Map<string, Coalition>();
-
-  private broadcastTimer?: NodeJS.Timeout;
-  private coalitionPruneTimer?: NodeJS.Timeout;
-  private totalBroadcasts = 0;
-  private isActive = false;
-
-  constructor(coordinatorId: string) {
-    super();
-    this.coordinatorId = coordinatorId;
-  }
-
-  // ─── Lifecycle ───────────────────────────────────────────────────────────────
-
-  start(): void {
-    this.isActive = true;
-    this.broadcastTimer = setInterval(() => this.broadcastCycle(), BROADCAST_INTERVAL_MS);
-    this.coalitionPruneTimer = setInterval(() => this.pruneCoalitions(), 10_000);
-    this.emit('coordinator_started', { coordinatorId: this.coordinatorId });
-  }
-
-  stop(): void {
-    this.isActive = false;
-    clearInterval(this.broadcastTimer);
-    clearInterval(this.coalitionPruneTimer);
-    this.attentionQueue.clear();
-    this.globalWorkspace.length = 0;
-    this.coalitions.clear();
-    this.emit('coordinator_stopped', { coordinatorId: this.coordinatorId });
-  }
-
-  // ─── Signal Ingestion ────────────────────────────────────────────────────────
-
-  receiveSignal(signal: CognitiveSignal): void {
-    if (!this.isActive) return;
-
-    const salience = computeSalience(signal);
-    const scored: ScoredSignal = {
-      signal,
-      salience,
-      enteredWorkspaceAt: 0,
-      broadcastCount: 0,
-    };
-
-    this.emit('signal_received', { kind: signal.kind, salience, coordinatorId: this.coordinatorId });
-
-    if (salience >= CONSCIOUSNESS_THRESHOLD) {
-      this.attentionQueue.push(scored);
-      this.tryEnterWorkspace(scored);
-    } else {
-      this.emit('signal_suppressed', { kind: signal.kind, salience, threshold: CONSCIOUSNESS_THRESHOLD });
-    }
-
-    // Automatically form or update coalition if signal carries a taskId
-    const taskId = this.extractTaskId(signal);
-    const nodeId = this.extractNodeId(signal);
-    if (taskId && nodeId) {
-      this.updateCoalition(taskId, nodeId, scored);
-    }
-  }
-
-  // ─── Global Workspace Management ─────────────────────────────────────────────
-
-  private tryEnterWorkspace(scored: ScoredSignal): void {
-    if (this.globalWorkspace.length < WORKSPACE_CAPACITY) {
-      scored.enteredWorkspaceAt = Date.now();
-      this.globalWorkspace.push(scored);
-      this.globalWorkspace.sort((a, b) => b.salience - a.salience);
-      this.emit('signal_entered_workspace', {
-        kind: scored.signal.kind,
-        salience: scored.salience,
-        workspaceSize: this.globalWorkspace.length,
-      });
-    } else {
-      // Evict lowest-salience item if the new one is more salient
-      const lowest = this.globalWorkspace[this.globalWorkspace.length - 1];
-      if (scored.salience > lowest.salience) {
-        this.globalWorkspace.pop();
-        this.emit('signal_evicted', { kind: lowest.signal.kind, salience: lowest.salience });
-        scored.enteredWorkspaceAt = Date.now();
-        this.globalWorkspace.push(scored);
-        this.globalWorkspace.sort((a, b) => b.salience - a.salience);
-        this.emit('signal_entered_workspace', {
-          kind: scored.signal.kind,
-          salience: scored.salience,
-          workspaceSize: this.globalWorkspace.length,
+      try {
+        const response = await fetch(`${node.url}/workspace/message`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(message),
+          signal: controller.signal,
         });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          logger.warn(
+            { nodeId, messageId: message.id, status: response.status },
+            'Broadcast to node returned non-OK status',
+          );
+        } else {
+          logger.debug({ nodeId, messageId: message.id }, 'Broadcast delivered');
+        }
+      } catch (err) {
+        clearTimeout(timeoutId);
+        logger.warn({ nodeId, messageId: message.id, err }, 'Broadcast to node failed');
       }
+    });
+
+    await Promise.allSettled(broadcastPromises);
+  }
+
+  compete(messages: WorkspaceMessage[]): WorkspaceMessage {
+    if (messages.length === 0) {
+      throw new Error('Cannot compete with empty message list');
+    }
+
+    // Sort by priority descending, then by recency for ties
+    const sorted = [...messages].sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return b.timestamp - a.timestamp;
+    });
+
+    const winner = sorted[0];
+    logger.debug(
+      { winnerId: winner.id, priority: winner.priority, candidates: messages.length },
+      'Attention competition resolved',
+    );
+    return winner;
+  }
+
+  attend(nodeId: string, messageId: string): void {
+    let attendees = this.attendanceMap.get(messageId);
+    if (!attendees) {
+      attendees = new Set();
+      this.attendanceMap.set(messageId, attendees);
+    }
+    attendees.add(nodeId);
+
+    this.attendanceLog.push({ nodeId, messageId, timestamp: Date.now() });
+
+    // Check if this message should take over attention
+    const message = this.globalWorkspace.find((m) => m.id === messageId);
+    if (!message) {
+      logger.warn({ nodeId, messageId }, 'Attend called for unknown message');
+      return;
+    }
+
+    // Higher priority displaces current attention
+    if (!this.currentAttention || message.priority > this.currentAttention.priority) {
+      const previous = this.currentAttention?.id;
+      this.currentAttention = message;
+      logger.info(
+        { nodeId, messageId, priority: message.priority, displacedMessage: previous },
+        'Attention shifted to higher priority message',
+      );
     }
   }
 
-  // ─── Broadcast Cycle (GWT) ───────────────────────────────────────────────────
-
-  private broadcastCycle(): void {
-    if (this.globalWorkspace.length === 0) return;
-
-    // Apply decay to all workspace signals
-    for (const item of this.globalWorkspace) {
-      item.salience = Math.max(0, item.salience - SIGNAL_DECAY_RATE);
-    }
-    this.attentionQueue.applyDecay(SIGNAL_DECAY_RATE);
-
-    // Evict signals that fell below threshold
-    const toEvict = this.globalWorkspace.filter((s) => s.salience < CONSCIOUSNESS_THRESHOLD);
-    for (const s of toEvict) {
-      const idx = this.globalWorkspace.indexOf(s);
-      if (idx !== -1) this.globalWorkspace.splice(idx, 1);
-      this.emit('signal_decayed_out', { kind: s.signal.kind });
-    }
-
-    // Broadcast top-N signals to all listeners
-    const winners = this.globalWorkspace.slice(0, WORKSPACE_CAPACITY);
-    for (const winner of winners) {
-      winner.broadcastCount++;
-      this.totalBroadcasts++;
-      this.emit('broadcast', {
-        signal: winner.signal,
-        salience: winner.salience,
-        broadcastNumber: winner.broadcastCount,
-        coordinatorId: this.coordinatorId,
-        timestamp: Date.now(),
-      });
-    }
+  getAttention(): WorkspaceMessage | null {
+    return this.currentAttention;
   }
 
-  // ─── Coalition Formation ─────────────────────────────────────────────────────
+  getAttendeeCount(messageId: string): number {
+    return this.attendanceMap.get(messageId)?.size ?? 0;
+  }
 
-  private updateCoalition(taskId: string, nodeId: string, scored: ScoredSignal): void {
-    let coalition = this.coalitions.get(taskId);
-    if (!coalition) {
-      coalition = {
-        coalitionId: `coalition-${taskId}`,
-        taskId,
-        memberNodeIds: [],
-        signals: [],
-        formedAt: Date.now(),
-        lastUpdatedAt: Date.now(),
+  async routeTask(task: CognitiveTask): Promise<CognitiveTaskResult> {
+    const targetNode = this.selectNodeForTask(task);
+
+    if (!targetNode) {
+      logger.error({ taskId: task.id, type: task.type }, 'No capable node available for task routing');
+      return {
+        taskId: task.id,
+        nodeId: 'coordinator',
+        result: null,
+        duration: 0,
+        error: `No capable healthy node available for capability: ${task.type}`,
       };
-      this.coalitions.set(taskId, coalition);
-      this.emit('coalition_formed', { coalitionId: coalition.coalitionId, taskId });
     }
 
-    if (!coalition.memberNodeIds.includes(nodeId)) {
-      coalition.memberNodeIds.push(nodeId);
-      this.emit('coalition_member_joined', { coalitionId: coalition.coalitionId, nodeId });
-    }
+    logger.info(
+      { taskId: task.id, type: task.type, targetNode: targetNode.id, nodeUrl: targetNode.url },
+      'Routing task to node',
+    );
 
-    coalition.signals.push(scored);
-    coalition.lastUpdatedAt = Date.now();
+    const start = Date.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), TASK_EXECUTION_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(`${targetNode.url}/node/task`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(task),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      const duration = Date.now() - start;
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '');
+        logger.warn({ taskId: task.id, targetNode: targetNode.id, status: response.status, errorBody }, 'Task routing failed');
+        return {
+          taskId: task.id,
+          nodeId: targetNode.id,
+          result: null,
+          duration,
+          error: `Node returned status ${response.status}: ${errorBody}`,
+        };
+      }
+
+      const result = (await response.json()) as CognitiveTaskResult;
+      logger.info({ taskId: task.id, targetNode: targetNode.id, duration }, 'Task routed and completed');
+
+      // Broadcast task completion as workspace message
+      const completionMsg: WorkspaceMessage = {
+        id: this.generateId(),
+        type: 'TASK_COMPLETE',
+        content: { taskId: task.id, result: result.result, duration },
+        sourceNodeId: targetNode.id,
+        priority: task.priority,
+        timestamp: Date.now(),
+      };
+      // Fire-and-forget broadcast of completion
+      this.broadcast(completionMsg).catch((err) => logger.warn({ err }, 'Completion broadcast failed'));
+
+      return result;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      const duration = Date.now() - start;
+      const errorMsg = err instanceof Error ? err.message : String(err);
+
+      logger.error({ taskId: task.id, targetNode: targetNode.id, err, duration }, 'Task routing threw exception');
+
+      return {
+        taskId: task.id,
+        nodeId: targetNode.id,
+        result: null,
+        duration,
+        error: errorMsg,
+      };
+    }
   }
 
-  private pruneCoalitions(): void {
-    const now = Date.now();
-    for (const [taskId, coalition] of this.coalitions) {
-      if (now - coalition.lastUpdatedAt > COALITION_TTL_MS) {
-        this.coalitions.delete(taskId);
-        this.emit('coalition_dissolved', { coalitionId: coalition.coalitionId, taskId });
+  getWorkspaceSnapshot(): WorkspaceMessage[] {
+    return this.globalWorkspace.slice(-10);
+  }
+
+  private pushToWorkspace(message: WorkspaceMessage): void {
+    this.globalWorkspace.push(message);
+
+    // Ring buffer: keep last WORKSPACE_BUFFER_SIZE messages
+    if (this.globalWorkspace.length > WORKSPACE_BUFFER_SIZE) {
+      const removed = this.globalWorkspace.splice(0, this.globalWorkspace.length - WORKSPACE_BUFFER_SIZE);
+
+      // If we removed the current attention message, reset attention to the next highest priority
+      if (this.currentAttention && removed.some((m) => m.id === this.currentAttention!.id)) {
+        if (this.globalWorkspace.length > 0) {
+          this.currentAttention = this.compete(this.globalWorkspace);
+          logger.debug({ newAttention: this.currentAttention.id }, 'Attention reset after workspace buffer trim');
+        } else {
+          this.currentAttention = null;
+        }
       }
     }
   }
 
-  // ─── Introspection ───────────────────────────────────────────────────────────
-
-  getAttentionSnapshot(): AttentionSnapshot {
-    return {
+  publishToWorkspace(message: Omit<WorkspaceMessage, 'id' | 'timestamp'>): WorkspaceMessage {
+    const full: WorkspaceMessage = {
+      ...message,
+      id: this.generateId(),
       timestamp: Date.now(),
-      workspaceSize: this.globalWorkspace.length,
-      topSignals: this.globalWorkspace.map((s) => ({ kind: s.signal.kind, salience: s.salience })),
-      activeCoalitions: this.coalitions.size,
-      totalBroadcasts: this.totalBroadcasts,
     };
+
+    this.pushToWorkspace(full);
+
+    logger.debug(
+      { messageId: full.id, type: full.type, priority: full.priority, sourceNodeId: full.sourceNodeId },
+      'Message published to global workspace',
+    );
+
+    return full;
   }
 
-  getCoalition(taskId: string): Coalition | undefined {
-    return this.coalitions.get(taskId);
-  }
+  getWorkspaceStats(): {
+    totalMessages: number;
+    currentAttentionId: string | null;
+    topPriority: number;
+    messageTypes: Record<string, number>;
+  } {
+    const typeCounts: Record<string, number> = {};
+    let topPriority = -Infinity;
 
-  getAllCoalitions(): Coalition[] {
-    return [...this.coalitions.values()];
-  }
-
-  getWorkspaceContents(): ScoredSignal[] {
-    return [...this.globalWorkspace];
-  }
-
-  getConsciousnessThreshold(): number {
-    return CONSCIOUSNESS_THRESHOLD;
-  }
-
-  // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-  private extractTaskId(signal: CognitiveSignal): string | null {
-    switch (signal.kind) {
-      case 'query_result':
-        return signal.taskId;
-      case 'tool_output':
-        return signal.callId;
-      case 'error':
-        return signal.taskId ?? null;
-      default:
-        return null;
+    for (const msg of this.globalWorkspace) {
+      typeCounts[msg.type] = (typeCounts[msg.type] ?? 0) + 1;
+      if (msg.priority > topPriority) topPriority = msg.priority;
     }
-  }
 
-  private extractNodeId(signal: CognitiveSignal): string | null {
-    switch (signal.kind) {
-      case 'query_result':
-      case 'tool_output':
-      case 'memory_retrieval':
-      case 'error':
-        return signal.nodeId;
-      default:
-        return null;
-    }
+    return {
+      totalMessages: this.globalWorkspace.length,
+      currentAttentionId: this.currentAttention?.id ?? null,
+      topPriority: isFinite(topPriority) ? topPriority : 0,
+      messageTypes: typeCounts,
+    };
   }
 }

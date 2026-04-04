@@ -1,505 +1,516 @@
 /**
  * IndexedDBStore.ts
- * Promise-based IndexedDB wrapper with versioned schema migrations,
- * typed object stores, and generic CRUD operations.
+ *
+ * Generic, fully-typed IndexedDB wrapper for IliaGPT offline storage.
+ *
+ * Supports the following named object stores:
+ *   chats | messages | drafts | preferences | cachedResponses | syncQueue
+ *
+ * Features:
+ *  - Automatic schema migrations (versions 1 → 3)
+ *  - Generic class: IndexedDBStore<T> keyed on T['id']
+ *  - Quota monitoring with LRU eviction
+ *  - Transactional bulk operations with rollback helpers
+ *  - Secondary index queries
  */
 
 // ---------------------------------------------------------------------------
-// Store names (typed union for safety)
+// Typed Store Schemas
 // ---------------------------------------------------------------------------
 
-export type StoreName =
-  | 'chats'
-  | 'messages'
-  | 'drafts'
-  | 'cached_responses'
-  | 'sync_queue';
-
-// ---------------------------------------------------------------------------
-// Record shape per store
-// ---------------------------------------------------------------------------
-
-export interface ChatRecord {
+export interface BaseRecord {
   id: string;
-  title: string;
   createdAt: number;
   updatedAt: number;
-  lastMessageAt: number | null;
-  messageCount: number;
-  modelId: string;
-  isArchived: boolean;
-  metadata: Record<string, unknown>;
 }
 
-export interface MessageRecord {
-  id: string;
+export interface ChatRecord extends BaseRecord {
+  title: string;
+  model: string;
+  messageCount: number;
+  lastMessageAt: number;
+  isPinned: boolean;
+  tags: string[];
+}
+
+export interface MessageRecord extends BaseRecord {
   chatId: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
-  createdAt: number;
-  tokenCount: number | null;
-  isStreaming: boolean;
-  metadata: Record<string, unknown>;
+  attachments: AttachmentRef[];
+  tokenCount: number;
+  cached: boolean;
 }
 
-export interface DraftRecord {
+export interface AttachmentRef {
   id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
+export interface DraftRecord extends BaseRecord {
   chatId: string;
   content: string;
-  savedAt: number;
-  attachments: string[]; // file IDs / URLs
+  attachments: AttachmentRef[];
 }
 
-export interface CachedResponseRecord {
-  id: string;
+export interface PreferenceRecord extends BaseRecord {
+  key: string;
+  value: unknown;
+}
+
+export interface CachedResponseRecord extends BaseRecord {
   promptHash: string;
-  modelId: string;
+  model: string;
   response: string;
-  cachedAt: number;
   expiresAt: number;
-  tokenCount: number;
+  hitCount: number;
+  lastHitAt: number;
 }
 
-export interface SyncQueueRecord {
-  id: string;
+export interface SyncQueueRecord extends BaseRecord {
+  type: string;
   operation: 'create' | 'update' | 'delete';
-  storeName: StoreName;
-  recordId: string;
   payload: unknown;
   priority: 'HIGH' | 'MEDIUM' | 'LOW';
-  enqueuedAt: number;
-  attempts: number;
-  lastAttemptAt: number | null;
-  error: string | null;
+  retries: number;
+  status: 'pending' | 'processing' | 'failed' | 'done';
+  vectorClock: Record<string, number>;
+  nextRetryAt: number;
 }
 
-// Map from store name to its record type (used for generic typing).
-export interface StoreRecordMap {
+// Map store names to their record types
+export interface StoreSchemas {
   chats: ChatRecord;
   messages: MessageRecord;
   drafts: DraftRecord;
-  cached_responses: CachedResponseRecord;
-  sync_queue: SyncQueueRecord;
+  preferences: PreferenceRecord;
+  cachedResponses: CachedResponseRecord;
+  syncQueue: SyncQueueRecord;
 }
 
-// ---------------------------------------------------------------------------
-// Error types
-// ---------------------------------------------------------------------------
-
-export class IDBError extends Error {
-  constructor(
-    message: string,
-    public readonly cause?: unknown
-  ) {
-    super(message);
-    this.name = 'IDBError';
-  }
-}
-
-export class IDBNotFoundError extends IDBError {
-  constructor(store: StoreName, key: IDBValidKey) {
-    super(`Record not found in "${store}" with key "${String(key)}"`);
-    this.name = 'IDBNotFoundError';
-  }
-}
-
-export class IDBTransactionError extends IDBError {
-  constructor(store: StoreName, operation: string, cause?: unknown) {
-    super(`Transaction failed on "${store}" during "${operation}"`, cause);
-    this.name = 'IDBTransactionError';
-  }
-}
+export type StoreName = keyof StoreSchemas;
 
 // ---------------------------------------------------------------------------
-// Query helpers
+// Constants
 // ---------------------------------------------------------------------------
 
-export interface QueryOptions {
-  index?: string;
-  range?: IDBKeyRange;
-  direction?: IDBCursorDirection;
-  limit?: number;
-  offset?: number;
-}
+const DB_NAME = 'iliagpt-offline-v2';
+const DB_VERSION = 3;
 
-// ---------------------------------------------------------------------------
-// Schema / migration definitions
-// ---------------------------------------------------------------------------
-
-interface StoreSchema {
-  name: StoreName;
-  keyPath: string;
-  autoIncrement?: boolean;
-  indexes: Array<{
-    name: string;
-    keyPath: string | string[];
-    unique?: boolean;
-    multiEntry?: boolean;
-  }>;
-}
-
-const SCHEMA: StoreSchema[] = [
-  {
-    name: 'chats',
-    keyPath: 'id',
-    indexes: [
-      { name: 'by_updatedAt', keyPath: 'updatedAt' },
-      { name: 'by_lastMessageAt', keyPath: 'lastMessageAt' },
-      { name: 'by_isArchived', keyPath: 'isArchived' },
-    ],
-  },
-  {
-    name: 'messages',
-    keyPath: 'id',
-    indexes: [
-      { name: 'by_chatId', keyPath: 'chatId' },
-      { name: 'by_chatId_createdAt', keyPath: ['chatId', 'createdAt'] },
-      { name: 'by_createdAt', keyPath: 'createdAt' },
-    ],
-  },
-  {
-    name: 'drafts',
-    keyPath: 'id',
-    indexes: [
-      { name: 'by_chatId', keyPath: 'chatId', unique: true },
-      { name: 'by_savedAt', keyPath: 'savedAt' },
-    ],
-  },
-  {
-    name: 'cached_responses',
-    keyPath: 'id',
-    indexes: [
-      { name: 'by_promptHash', keyPath: 'promptHash' },
-      { name: 'by_expiresAt', keyPath: 'expiresAt' },
-      { name: 'by_modelId_promptHash', keyPath: ['modelId', 'promptHash'] },
-    ],
-  },
-  {
-    name: 'sync_queue',
-    keyPath: 'id',
-    indexes: [
-      { name: 'by_priority', keyPath: 'priority' },
-      { name: 'by_enqueuedAt', keyPath: 'enqueuedAt' },
-      { name: 'by_storeName', keyPath: 'storeName' },
-      { name: 'by_recordId', keyPath: 'recordId' },
-    ],
-  },
+/** Indexes to create per store: [storeName, indexName, keyPath, options] */
+const STORE_INDEXES: Array<[StoreName, string, string | string[], IDBIndexParameters]> = [
+  ['chats', 'by_lastMessageAt', 'lastMessageAt', { unique: false }],
+  ['chats', 'by_isPinned', 'isPinned', { unique: false }],
+  ['messages', 'by_chatId', 'chatId', { unique: false }],
+  ['messages', 'by_chatId_createdAt', ['chatId', 'createdAt'], { unique: false }],
+  ['drafts', 'by_chatId', 'chatId', { unique: false }],
+  ['preferences', 'by_key', 'key', { unique: true }],
+  ['cachedResponses', 'by_promptHash', 'promptHash', { unique: false }],
+  ['cachedResponses', 'by_expiresAt', 'expiresAt', { unique: false }],
+  ['cachedResponses', 'by_lastHitAt', 'lastHitAt', { unique: false }],
+  ['syncQueue', 'by_status', 'status', { unique: false }],
+  ['syncQueue', 'by_priority_status', ['priority', 'status'], { unique: false }],
+  ['syncQueue', 'by_nextRetryAt', 'nextRetryAt', { unique: false }],
 ];
 
 // ---------------------------------------------------------------------------
-// IDBWrapper
+// DB lifecycle
 // ---------------------------------------------------------------------------
 
-export class IDBWrapper {
-  private _db: IDBDatabase | null = null;
-  private _opening: Promise<IDBDatabase> | null = null;
+let sharedDb: IDBDatabase | null = null;
+let openingPromise: Promise<IDBDatabase> | null = null;
 
-  constructor(
-    private readonly _dbName: string,
-    private readonly _version: number = 1
-  ) {}
+function openDatabase(): Promise<IDBDatabase> {
+  if (sharedDb) return Promise.resolve(sharedDb);
+  if (openingPromise) return openingPromise;
 
-  // -- Connection -----------------------------------------------------------
+  openingPromise = new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-  private _open(): Promise<IDBDatabase> {
-    if (this._db) return Promise.resolve(this._db);
-    if (this._opening) return this._opening;
+    request.onerror = () => {
+      openingPromise = null;
+      reject(request.error ?? new Error('Failed to open IndexedDB'));
+    };
 
-    this._opening = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(this._dbName, this._version);
+    request.onsuccess = () => {
+      sharedDb = request.result;
 
-      request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result;
-        const oldVersion = event.oldVersion;
-        this._migrate(db, oldVersion, this._version);
+      sharedDb.onclose = () => {
+        sharedDb = null;
+        openingPromise = null;
       };
 
-      request.onsuccess = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result;
-        this._db = db;
-
-        // Handle unexpected version changes (e.g., another tab upgraded).
-        db.onversionchange = () => {
-          db.close();
-          this._db = null;
-          this._opening = null;
-        };
-
-        resolve(db);
+      sharedDb.onversionchange = () => {
+        sharedDb?.close();
+        sharedDb = null;
+        openingPromise = null;
       };
 
-      request.onerror = () => {
-        this._opening = null;
-        reject(new IDBError('Failed to open database', request.error));
-      };
+      openingPromise = null;
+      resolve(sharedDb);
+    };
 
-      request.onblocked = () => {
-        console.warn('[IDBWrapper] Database upgrade blocked — close other tabs.');
-      };
-    });
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      const oldVersion = event.oldVersion;
 
-    return this._opening;
-  }
+      applyMigrations(db, oldVersion);
+    };
 
-  /** Close the database connection explicitly. */
-  close(): void {
-    this._db?.close();
-    this._db = null;
-    this._opening = null;
-  }
+    request.onblocked = () => {
+      console.warn('[IndexedDBStore] DB upgrade blocked by another tab. Please close other tabs.');
+    };
+  });
 
-  // -- Schema migrations ----------------------------------------------------
+  return openingPromise;
+}
 
-  private _migrate(db: IDBDatabase, oldVersion: number, newVersion: number): void {
-    // Version 1 — initial schema.
-    if (oldVersion < 1) {
-      for (const schema of SCHEMA) {
-        const store = db.createObjectStore(schema.name, {
-          keyPath: schema.keyPath,
-          autoIncrement: schema.autoIncrement ?? false,
-        });
-        for (const idx of schema.indexes) {
-          store.createIndex(idx.name, idx.keyPath, {
-            unique: idx.unique ?? false,
-            multiEntry: idx.multiEntry ?? false,
-          });
-        }
+/** Idempotent migration runner – applies changes incrementally by version. */
+function applyMigrations(db: IDBDatabase, fromVersion: number): void {
+  // ── Version 1: initial schema ──
+  if (fromVersion < 1) {
+    const baseStores: StoreName[] = ['chats', 'messages', 'drafts', 'preferences'];
+    for (const name of baseStores) {
+      if (!db.objectStoreNames.contains(name)) {
+        db.createObjectStore(name, { keyPath: 'id' });
       }
     }
-
-    // Placeholder for future version migrations.
-    // if (oldVersion < 2) { ... }
-    void newVersion; // suppress unused-variable lint warning
   }
 
-  // -- Transaction helper ---------------------------------------------------
-
-  private async _transaction<T>(
-    storeNames: StoreName | StoreName[],
-    mode: IDBTransactionMode,
-    callback: (tx: IDBTransaction) => Promise<T>
-  ): Promise<T> {
-    const db = await this._open();
-    const names = Array.isArray(storeNames) ? storeNames : [storeNames];
-
-    return new Promise<T>((resolve, reject) => {
-      const tx = db.transaction(names, mode);
-      let result: T;
-
-      tx.oncomplete = () => resolve(result);
-      tx.onerror = () =>
-        reject(
-          new IDBTransactionError(
-            names[0],
-            mode,
-            tx.error
-          )
-        );
-      tx.onabort = () =>
-        reject(new IDBTransactionError(names[0], `${mode} (aborted)`, tx.error));
-
-      callback(tx)
-        .then((r) => {
-          result = r;
-        })
-        .catch((err) => {
-          tx.abort();
-          reject(err);
-        });
-    });
+  // ── Version 2: add cachedResponses + syncQueue ──
+  if (fromVersion < 2) {
+    if (!db.objectStoreNames.contains('cachedResponses')) {
+      db.createObjectStore('cachedResponses', { keyPath: 'id' });
+    }
+    if (!db.objectStoreNames.contains('syncQueue')) {
+      db.createObjectStore('syncQueue', { keyPath: 'id' });
+    }
   }
 
-  // -- Low-level request wrapper -------------------------------------------
+  // ── Version 3: add all indexes ──
+  if (fromVersion < 3) {
+    // We need to access the object stores via the ongoing upgrade transaction.
+    // In onupgradeneeded the transaction is available on the request result.
+    // Unfortunately IDBDatabase.transaction() does not work here – we rely on
+    // the event.target.transaction which is the upgrade transaction.
+    for (const [storeName, indexName, keyPath, opts] of STORE_INDEXES) {
+      if (!db.objectStoreNames.contains(storeName)) continue;
+      // Access via the upgrade transaction stored on the event
+      // We'll use a trick: re-open via transaction parameter passed from event
+      // The IDBDatabase reference during onupgradeneeded does provide
+      // objectStore via the IDBVersionChangeEvent transaction:
+      //   (event.target as IDBOpenDBRequest).transaction!.objectStore(...)
+      // We handle this in the onupgradeneeded handler below by calling a
+      // helper that accepts the transaction.
+    }
+    // Indexes are actually added in onupgradeneeded via the tx helper below.
+    // This version guard is used as a signal.
+  }
+}
 
-  private _req<T>(request: IDBRequest<T>): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(new IDBError('IDB request failed', request.error));
-    });
+/** Called with the upgrade transaction to safely create all indexes. */
+function applyIndexes(
+  tx: IDBTransaction,
+  fromVersion: number,
+): void {
+  if (fromVersion >= 3) return; // Already done
+
+  for (const [storeName, indexName, keyPath, opts] of STORE_INDEXES) {
+    try {
+      const store = tx.objectStore(storeName);
+      if (!store.indexNames.contains(indexName)) {
+        store.createIndex(indexName, keyPath, opts);
+      }
+    } catch {
+      // Store may not exist yet in this upgrade path – skip gracefully
+    }
+  }
+}
+
+// Override openDatabase to wire up the index creation properly
+function openDatabaseFull(): Promise<IDBDatabase> {
+  if (sharedDb) return Promise.resolve(sharedDb);
+  if (openingPromise) return openingPromise;
+
+  openingPromise = new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+    request.onerror = () => {
+      openingPromise = null;
+      reject(request.error ?? new Error('Failed to open IndexedDB'));
+    };
+
+    request.onsuccess = () => {
+      sharedDb = request.result;
+      sharedDb.onclose = () => { sharedDb = null; openingPromise = null; };
+      sharedDb.onversionchange = () => { sharedDb?.close(); sharedDb = null; openingPromise = null; };
+      openingPromise = null;
+      resolve(sharedDb);
+    };
+
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      const tx = (event.target as IDBOpenDBRequest).transaction!;
+      const oldVersion = event.oldVersion;
+
+      applyMigrations(db, oldVersion);
+      applyIndexes(tx, oldVersion);
+    };
+
+    request.onblocked = () => {
+      console.warn('[IndexedDBStore] Upgrade blocked. Close other tabs and refresh.');
+    };
+  });
+
+  return openingPromise;
+}
+
+// ---------------------------------------------------------------------------
+// Utility: promise-wrap an IDBRequest
+// ---------------------------------------------------------------------------
+
+function promisify<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function txComplete(tx: IDBTransaction): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(new Error('Transaction aborted'));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// IndexedDBStore<T> – generic store accessor
+// ---------------------------------------------------------------------------
+
+export class IndexedDBStore<K extends StoreName> {
+  private readonly storeName: K;
+
+  constructor(storeName: K) {
+    this.storeName = storeName;
   }
 
-  // -- Generic CRUD ---------------------------------------------------------
+  // ── Low-level helpers ───────────────────────────────────────────────────
 
-  /** Retrieve a single record by primary key. */
-  async get<S extends StoreName>(
-    store: S,
-    key: IDBValidKey
-  ): Promise<StoreRecordMap[S] | undefined> {
-    return this._transaction(store, 'readonly', async (tx) => {
-      const result = await this._req<StoreRecordMap[S] | undefined>(
-        tx.objectStore(store).get(key)
-      );
-      return result;
-    });
+  private async getDb(): Promise<IDBDatabase> {
+    return openDatabaseFull();
   }
 
-  /** Retrieve a single record by primary key, throwing if absent. */
-  async getOrThrow<S extends StoreName>(
-    store: S,
-    key: IDBValidKey
-  ): Promise<StoreRecordMap[S]> {
-    const record = await this.get(store, key);
-    if (record === undefined) throw new IDBNotFoundError(store, key);
-    return record;
+  private async readStore(): Promise<IDBObjectStore> {
+    const db = await this.getDb();
+    return db.transaction(this.storeName, 'readonly').objectStore(this.storeName);
   }
 
-  /** Insert or update a record (upsert). */
-  async put<S extends StoreName>(
-    store: S,
-    record: StoreRecordMap[S]
-  ): Promise<IDBValidKey> {
-    return this._transaction(store, 'readwrite', async (tx) => {
-      return this._req<IDBValidKey>(tx.objectStore(store).put(record));
-    });
+  private async writeStore(): Promise<{ store: IDBObjectStore; tx: IDBTransaction }> {
+    const db = await this.getDb();
+    const tx = db.transaction(this.storeName, 'readwrite');
+    return { store: tx.objectStore(this.storeName), tx };
   }
 
-  /** Insert or update multiple records in a single transaction. */
-  async putMany<S extends StoreName>(
-    store: S,
-    records: StoreRecordMap[S][]
-  ): Promise<void> {
-    if (records.length === 0) return;
-    return this._transaction(store, 'readwrite', async (tx) => {
-      const os = tx.objectStore(store);
-      await Promise.all(records.map((r) => this._req(os.put(r))));
-    });
+  // ── CRUD ────────────────────────────────────────────────────────────────
+
+  async get(id: string): Promise<StoreSchemas[K] | undefined> {
+    const store = await this.readStore();
+    return promisify(store.get(id) as IDBRequest<StoreSchemas[K] | undefined>);
   }
 
-  /** Delete a record by primary key. Returns true if it existed. */
-  async delete<S extends StoreName>(store: S, key: IDBValidKey): Promise<void> {
-    return this._transaction(store, 'readwrite', async (tx) => {
-      await this._req(tx.objectStore(store).delete(key));
-    });
+  async getAll(): Promise<StoreSchemas[K][]> {
+    const store = await this.readStore();
+    return promisify(store.getAll() as IDBRequest<StoreSchemas[K][]>);
   }
 
-  /** Delete all records in a store. */
-  async clear<S extends StoreName>(store: S): Promise<void> {
-    return this._transaction(store, 'readwrite', async (tx) => {
-      await this._req(tx.objectStore(store).clear());
-    });
+  async put(item: StoreSchemas[K]): Promise<void> {
+    const { store, tx } = await this.writeStore();
+    const now = Date.now();
+    const record = { ...item, updatedAt: now } as StoreSchemas[K];
+    store.put(record);
+    return txComplete(tx);
   }
 
-  /** Retrieve all records (optionally via an index + range). */
-  async getAll<S extends StoreName>(
-    store: S,
-    options?: QueryOptions
-  ): Promise<StoreRecordMap[S][]> {
-    return this._transaction(store, 'readonly', async (tx) => {
-      const os = tx.objectStore(store);
-      const source = options?.index ? os.index(options.index) : os;
-      const records = await this._req<StoreRecordMap[S][]>(
-        source.getAll(options?.range, options?.limit)
-      );
-      return records;
-    });
+  async delete(id: string): Promise<void> {
+    const { store, tx } = await this.writeStore();
+    store.delete(id);
+    return txComplete(tx);
   }
 
-  /**
-   * Cursor-based query with offset, limit, direction support.
-   * More flexible than getAll but slightly more expensive.
-   */
-  async query<S extends StoreName>(
-    store: S,
-    options: QueryOptions = {}
-  ): Promise<StoreRecordMap[S][]> {
-    const { index, range, direction = 'next', limit, offset = 0 } = options;
-
-    return this._transaction(store, 'readonly', (tx) => {
-      return new Promise<StoreRecordMap[S][]>((resolve, reject) => {
-        const os = tx.objectStore(store);
-        const source = index ? os.index(index) : os;
-        const request = source.openCursor(range ?? null, direction);
-
-        const results: StoreRecordMap[S][] = [];
-        let skipped = 0;
-
-        request.onsuccess = () => {
-          const cursor = request.result;
-          if (!cursor) {
-            resolve(results);
-            return;
-          }
-
-          if (skipped < offset) {
-            skipped++;
-            cursor.advance(offset - skipped + 1);
-            return;
-          }
-
-          results.push(cursor.value as StoreRecordMap[S]);
-
-          if (limit !== undefined && results.length >= limit) {
-            resolve(results);
-            return;
-          }
-
-          cursor.continue();
-        };
-
-        request.onerror = () =>
-          reject(new IDBError('Cursor query failed', request.error));
-      });
-    });
-  }
-
-  /** Count records in a store (optionally scoped to an index + range). */
-  async count<S extends StoreName>(
-    store: S,
-    options?: { index?: string; range?: IDBKeyRange }
-  ): Promise<number> {
-    return this._transaction(store, 'readonly', async (tx) => {
-      const os = tx.objectStore(store);
-      const source = options?.index ? os.index(options.index) : os;
-      return this._req<number>(source.count(options?.range));
-    });
+  async clear(): Promise<void> {
+    const { store, tx } = await this.writeStore();
+    store.clear();
+    return txComplete(tx);
   }
 
   /**
-   * Run multiple operations across multiple stores in a single transaction.
-   * Useful for atomic cross-store writes.
+   * Atomically write multiple items. If any put fails the entire
+   * transaction is aborted and the promise rejects.
    */
-  async atomicWrite(
-    stores: StoreName[],
-    callback: (tx: IDBTransaction) => Promise<void>
-  ): Promise<void> {
-    return this._transaction(stores, 'readwrite', callback);
+  async bulkPut(items: StoreSchemas[K][]): Promise<void> {
+    if (items.length === 0) return;
+
+    const db = await this.getDb();
+    const tx = db.transaction(this.storeName, 'readwrite');
+    const store = tx.objectStore(this.storeName);
+    const now = Date.now();
+
+    for (const item of items) {
+      store.put({ ...item, updatedAt: now });
+    }
+
+    return txComplete(tx);
   }
 
-  /** Delete records matching a key range on an index. */
-  async deleteByIndex<S extends StoreName>(
-    store: S,
+  /**
+   * Query items using a named index.
+   * @param indexName  The index name (must exist in STORE_INDEXES for this store).
+   * @param value      The key or IDBKeyRange to query.
+   */
+  async query(
     indexName: string,
-    range: IDBKeyRange
-  ): Promise<number> {
-    return this._transaction(store, 'readwrite', (tx) => {
-      return new Promise<number>((resolve, reject) => {
-        const os = tx.objectStore(store);
-        const index = os.index(indexName);
-        const request = index.openCursor(range);
-        let count = 0;
+    value: IDBValidKey | IDBKeyRange,
+  ): Promise<StoreSchemas[K][]> {
+    const db = await this.getDb();
+    const tx = db.transaction(this.storeName, 'readonly');
+    const store = tx.objectStore(this.storeName);
+    const index = store.index(indexName);
+    return promisify(index.getAll(value) as IDBRequest<StoreSchemas[K][]>);
+  }
 
-        request.onsuccess = () => {
-          const cursor = request.result;
-          if (!cursor) {
-            resolve(count);
-            return;
-          }
-          cursor.delete();
-          count++;
-          cursor.continue();
-        };
+  /**
+   * Counts records optionally filtered by an index.
+   */
+  async count(indexName?: string, value?: IDBValidKey | IDBKeyRange): Promise<number> {
+    const db = await this.getDb();
+    const tx = db.transaction(this.storeName, 'readonly');
+    const store = tx.objectStore(this.storeName);
 
-        request.onerror = () =>
-          reject(new IDBError('deleteByIndex failed', request.error));
-      });
+    if (indexName && value !== undefined) {
+      const index = store.index(indexName);
+      return promisify(index.count(value));
+    }
+
+    return promisify(store.count());
+  }
+
+  /**
+   * Iterate all records sorted by the given index, calling predicate.
+   * Stops when predicate returns false.
+   */
+  async iterate(
+    indexName: string,
+    direction: IDBCursorDirection = 'next',
+    predicate?: (record: StoreSchemas[K]) => boolean,
+  ): Promise<StoreSchemas[K][]> {
+    const db = await this.getDb();
+    const tx = db.transaction(this.storeName, 'readonly');
+    const index = tx.objectStore(this.storeName).index(indexName);
+
+    return new Promise<StoreSchemas[K][]>((resolve, reject) => {
+      const results: StoreSchemas[K][] = [];
+      const request = index.openCursor(null, direction);
+
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          resolve(results);
+          return;
+        }
+
+        const record = cursor.value as StoreSchemas[K];
+        if (!predicate || predicate(record)) {
+          results.push(record);
+        } else {
+          resolve(results); // short-circuit
+          return;
+        }
+
+        cursor.continue();
+      };
+
+      request.onerror = () => reject(request.error);
     });
   }
 }
 
 // ---------------------------------------------------------------------------
-// Singleton store instance (shared across the app)
+// Storage quota management (shared utility)
 // ---------------------------------------------------------------------------
 
-export const idb = new IDBWrapper('iliagpt_offline', 1);
+export interface QuotaInfo {
+  usedBytes: number;
+  quotaBytes: number;
+  usedPercent: number;
+  available: boolean;
+}
 
-export default idb;
+export async function checkQuota(): Promise<QuotaInfo> {
+  if (!navigator.storage?.estimate) {
+    return { usedBytes: 0, quotaBytes: 0, usedPercent: 0, available: false };
+  }
+
+  const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+  return {
+    usedBytes: usage,
+    quotaBytes: quota,
+    usedPercent: quota > 0 ? (usage / quota) * 100 : 0,
+    available: true,
+  };
+}
+
+/**
+ * Evict oldest cached responses until at least `bytesToFree` bytes are recovered.
+ * Uses the `cachedResponses` store, sorted by `lastHitAt` (LRU order).
+ */
+export async function evictOldest(bytesToFree: number): Promise<number> {
+  const store = new IndexedDBStore('cachedResponses');
+  const records = await store.iterate('by_lastHitAt', 'next');
+
+  let freedEstimate = 0;
+  const toDelete: string[] = [];
+
+  for (const record of records) {
+    if (freedEstimate >= bytesToFree) break;
+    toDelete.push(record.id);
+    // Rough size estimate: JSON-serialised response string length × 2 bytes per char
+    freedEstimate += (record.response?.length ?? 0) * 2;
+  }
+
+  for (const id of toDelete) {
+    await store.delete(id);
+  }
+
+  return freedEstimate;
+}
+
+/**
+ * Evict expired cached responses (expiresAt < now).
+ */
+export async function evictExpired(): Promise<number> {
+  const store = new IndexedDBStore('cachedResponses');
+  const expired = await store.query(
+    'by_expiresAt',
+    IDBKeyRange.upperBound(Date.now()),
+  );
+
+  for (const record of expired) {
+    await store.delete(record.id);
+  }
+
+  return expired.length;
+}
+
+// ---------------------------------------------------------------------------
+// Convenience pre-built store instances (optional singletons)
+// ---------------------------------------------------------------------------
+
+export const chatStore = new IndexedDBStore('chats');
+export const messageStore = new IndexedDBStore('messages');
+export const draftStore = new IndexedDBStore('drafts');
+export const preferenceStore = new IndexedDBStore('preferences');
+export const cachedResponseStore = new IndexedDBStore('cachedResponses');
+export const syncQueueStore = new IndexedDBStore('syncQueue');

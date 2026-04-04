@@ -1,98 +1,139 @@
 /**
  * AdaptiveLayout.tsx
- *
- * Top-level layout wrapper that responds to UIAdaptationEngine suggestions.
- * Renders the appropriate mode component (CodeMode, ResearchMode, or the
- * default children) with Framer Motion cross-fade transitions, and shows
- * a dismissible toast banner whenever the layout mode switches.
+ * Main adaptive layout container that switches between UI modes.
  */
 
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
+import React, { useState, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import * as Tooltip from '@radix-ui/react-tooltip';
 import {
-  LayoutMode,
-  AdaptationSuggestion,
-  getUIAdaptationEngine,
-} from '../../lib/adaptiveUI/UIAdaptationEngine';
-import { Message } from '../../lib/adaptiveUI/ContextDetector';
+  MessageSquare,
+  Code2,
+  FileText,
+  Search,
+  BarChart2,
+  PenTool,
+  Sparkles,
+  Wand2,
+} from 'lucide-react';
+import { UIMode, useUIMode } from '@/lib/adaptiveUI/UIAdaptationEngine';
+import type { Message } from '@/types/chat';
 import CodeMode from './CodeMode';
+import DocumentMode from './DocumentMode';
 import ResearchMode from './ResearchMode';
+import DataMode from './DataMode';
 
-// ─── Context ──────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-interface UIAdaptationContextValue {
-  currentMode: LayoutMode;
-  setMode: (mode: LayoutMode) => void;
-  lastSuggestion: AdaptationSuggestion | null;
-  isManualOverride: boolean;
-  enableAutoAdaptation: () => void;
+interface AdaptiveLayoutProps {
+  children: React.ReactNode;
+  chatId?: string;
+  messages?: Message[];
 }
 
-const UIAdaptationContext = createContext<UIAdaptationContextValue>({
-  currentMode: 'default',
-  setMode: () => {},
-  lastSuggestion: null,
-  isManualOverride: false,
-  enableAutoAdaptation: () => {},
-});
-
-/** Access the current adaptive layout mode and control functions */
-export function useUIAdaptation(): UIAdaptationContextValue {
-  return useContext(UIAdaptationContext);
+interface ModeConfig {
+  mode: UIMode;
+  label: string;
+  icon: React.ReactNode;
+  description: string;
+  color: string;
 }
 
-// ─── Mode metadata ────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-const MODE_META: Record<LayoutMode, { label: string; icon: string; color: string }> = {
-  default:  { label: 'Default',   icon: '💬', color: 'bg-gray-700' },
-  code:     { label: 'Code',      icon: '⌨️', color: 'bg-indigo-700' },
-  research: { label: 'Research',  icon: '🔬', color: 'bg-emerald-700' },
-  data:     { label: 'Data',      icon: '📊', color: 'bg-amber-700' },
-  document: { label: 'Document',  icon: '📄', color: 'bg-sky-700' },
+const MODE_CONFIGS: ModeConfig[] = [
+  {
+    mode: UIMode.CHAT,
+    label: 'Chat',
+    icon: <MessageSquare className="w-4 h-4" />,
+    description: 'Standard chat interface',
+    color: 'text-blue-500',
+  },
+  {
+    mode: UIMode.CODE,
+    label: 'Code',
+    icon: <Code2 className="w-4 h-4" />,
+    description: 'Split view with code editor',
+    color: 'text-green-500',
+  },
+  {
+    mode: UIMode.DOCUMENT,
+    label: 'Document',
+    icon: <FileText className="w-4 h-4" />,
+    description: 'Document editing & preview',
+    color: 'text-purple-500',
+  },
+  {
+    mode: UIMode.RESEARCH,
+    label: 'Research',
+    icon: <Search className="w-4 h-4" />,
+    description: 'Three-panel research view',
+    color: 'text-amber-500',
+  },
+  {
+    mode: UIMode.DATA,
+    label: 'Data',
+    icon: <BarChart2 className="w-4 h-4" />,
+    description: 'Data visualization',
+    color: 'text-cyan-500',
+  },
+  {
+    mode: UIMode.CANVAS,
+    label: 'Canvas',
+    icon: <PenTool className="w-4 h-4" />,
+    description: 'Visual canvas mode',
+    color: 'text-pink-500',
+  },
+  {
+    mode: UIMode.CREATIVE,
+    label: 'Creative',
+    icon: <Sparkles className="w-4 h-4" />,
+    description: 'Creative writing mode',
+    color: 'text-orange-500',
+  },
+];
+
+const CONFIDENCE_LABELS: Record<string, string> = {
+  high: 'High confidence',
+  medium: 'Medium confidence',
+  low: 'Low confidence',
 };
 
-const ALL_MODES: LayoutMode[] = ['default', 'code', 'research', 'data', 'document'];
-
-// ─── Mode Switch Toast ────────────────────────────────────────────────────────
-
-interface ModeSwitchToastProps {
-  mode: LayoutMode;
-  onDismiss: () => void;
+function getConfidenceLabel(confidence: number): string {
+  if (confidence >= 0.7) return 'high';
+  if (confidence >= 0.4) return 'medium';
+  return 'low';
 }
 
-function ModeSwitchToast({ mode, onDismiss }: ModeSwitchToastProps) {
-  const meta = MODE_META[mode];
+// ─── Confidence Badge ─────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    const id = setTimeout(onDismiss, 4000);
-    return () => clearTimeout(id);
-  }, [mode, onDismiss]);
+interface ConfidenceBadgeProps {
+  mode: UIMode;
+  confidence: number;
+}
+
+function ConfidenceBadge({ mode, confidence }: ConfidenceBadgeProps) {
+  const config = MODE_CONFIGS.find((c) => c.mode === mode);
+  const label = getConfidenceLabel(confidence);
+  const pct = Math.round(confidence * 100);
+
+  const badgeColors: Record<string, string> = {
+    high: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+    medium: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+    low: 'bg-slate-500/15 text-slate-400 border-slate-500/30',
+  };
 
   return (
     <motion.div
-      key={`toast-${mode}`}
-      initial={{ opacity: 0, y: -24, scale: 0.95 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -16, scale: 0.95 }}
-      transition={{ duration: 0.25, ease: 'easeOut' }}
-      className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2 rounded-full text-white text-sm font-medium shadow-lg ${meta.color} backdrop-blur-sm`}
+      initial={{ opacity: 0, y: -4 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -4 }}
+      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${badgeColors[label]}`}
     >
-      <span>{meta.icon}</span>
-      <span>Switched to <strong>{meta.label} Mode</strong></span>
-      <button
-        onClick={onDismiss}
-        className="ml-2 opacity-70 hover:opacity-100 transition-opacity text-xs"
-        aria-label="Dismiss"
-      >
-        ✕
-      </button>
+      <Wand2 className="w-3 h-3" />
+      <span>
+        Auto: {config?.label ?? mode} · {pct}%
+      </span>
     </motion.div>
   );
 }
@@ -100,216 +141,211 @@ function ModeSwitchToast({ mode, onDismiss }: ModeSwitchToastProps) {
 // ─── Mode Toolbar ─────────────────────────────────────────────────────────────
 
 interface ModeToolbarProps {
-  currentMode: LayoutMode;
-  isManualOverride: boolean;
-  onSelectMode: (mode: LayoutMode) => void;
-  onEnableAuto: () => void;
+  currentMode: UIMode;
+  isAutoMode: boolean;
+  confidence: number;
+  onSelectMode: (mode: UIMode) => void;
+  onResetAuto: () => void;
 }
 
-function ModeToolbar({ currentMode, isManualOverride, onSelectMode, onEnableAuto }: ModeToolbarProps) {
-  const [open, setOpen] = useState(false);
-
+function ModeToolbar({
+  currentMode,
+  isAutoMode,
+  confidence,
+  onSelectMode,
+  onResetAuto,
+}: ModeToolbarProps) {
   return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium transition-colors border border-gray-600"
-        title="Switch layout mode"
-      >
-        <span>{MODE_META[currentMode].icon}</span>
-        <span>{MODE_META[currentMode].label}</span>
-        <span className="text-gray-400 ml-1">{open ? '▲' : '▼'}</span>
-        {isManualOverride && (
-          <span className="ml-1 w-1.5 h-1.5 rounded-full bg-amber-400" title="Manual override active" />
-        )}
-      </button>
-
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -8, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -8, scale: 0.95 }}
-            transition={{ duration: 0.15 }}
-            className="absolute right-0 top-full mt-1 z-40 bg-gray-800 border border-gray-600 rounded-xl shadow-xl overflow-hidden min-w-[160px]"
-          >
-            {ALL_MODES.map(m => (
-              <button
-                key={m}
-                onClick={() => { onSelectMode(m); setOpen(false); }}
-                className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left transition-colors ${
-                  m === currentMode
-                    ? 'bg-gray-700 text-white'
-                    : 'text-gray-300 hover:bg-gray-700'
-                }`}
-              >
-                <span>{MODE_META[m].icon}</span>
-                <span>{MODE_META[m].label}</span>
-                {m === currentMode && <span className="ml-auto text-gray-400">✓</span>}
-              </button>
-            ))}
-
-            {isManualOverride && (
-              <>
-                <div className="border-t border-gray-700 my-1" />
-                <button
-                  onClick={() => { onEnableAuto(); setOpen(false); }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-amber-400 hover:bg-gray-700 transition-colors"
-                >
-                  <span>↩</span>
-                  <span>Resume auto-detect</span>
-                </button>
-              </>
-            )}
-          </motion.div>
+    <div className="flex items-center gap-2 px-3 py-2 border-b border-white/8 bg-[#0f0f0f]/80 backdrop-blur-sm flex-shrink-0">
+      {/* Auto badge */}
+      <AnimatePresence mode="wait">
+        {isAutoMode && currentMode !== UIMode.CHAT && (
+          <ConfidenceBadge key={currentMode} mode={currentMode} confidence={confidence} />
         )}
       </AnimatePresence>
+
+      <div className="flex-1" />
+
+      {/* Mode buttons */}
+      <Tooltip.Provider delayDuration={300}>
+        <div className="flex items-center gap-0.5 rounded-lg bg-white/5 p-1">
+          {MODE_CONFIGS.map((config) => {
+            const isActive = currentMode === config.mode;
+            return (
+              <Tooltip.Root key={config.mode}>
+                <Tooltip.Trigger asChild>
+                  <button
+                    onClick={() => onSelectMode(config.mode)}
+                    className={`
+                      relative flex items-center justify-center w-7 h-7 rounded-md transition-all duration-150
+                      ${
+                        isActive
+                          ? 'bg-white/15 shadow-sm text-white'
+                          : 'text-white/40 hover:text-white/70 hover:bg-white/8'
+                      }
+                    `}
+                    aria-label={config.label}
+                    aria-pressed={isActive}
+                  >
+                    {config.icon}
+                    {isActive && (
+                      <motion.span
+                        layoutId="modeIndicator"
+                        className="absolute inset-0 rounded-md bg-white/10"
+                        transition={{ type: 'spring', bounce: 0.2, duration: 0.3 }}
+                      />
+                    )}
+                  </button>
+                </Tooltip.Trigger>
+                <Tooltip.Portal>
+                  <Tooltip.Content
+                    className="z-50 px-2.5 py-1.5 rounded-md bg-[#1a1a1a] border border-white/10 text-white text-xs shadow-xl"
+                    sideOffset={6}
+                  >
+                    <div className="font-medium">{config.label}</div>
+                    <div className="text-white/50 mt-0.5">{config.description}</div>
+                    <Tooltip.Arrow className="fill-[#1a1a1a]" />
+                  </Tooltip.Content>
+                </Tooltip.Portal>
+              </Tooltip.Root>
+            );
+          })}
+        </div>
+
+        {/* Auto-detect button */}
+        {!isAutoMode && (
+          <Tooltip.Root>
+            <Tooltip.Trigger asChild>
+              <button
+                onClick={onResetAuto}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-white/50 hover:text-white/80 hover:bg-white/8 transition-all"
+                aria-label="Reset to auto-detect"
+              >
+                <Wand2 className="w-3.5 h-3.5" />
+                <span>Auto</span>
+              </button>
+            </Tooltip.Trigger>
+            <Tooltip.Portal>
+              <Tooltip.Content
+                className="z-50 px-2.5 py-1.5 rounded-md bg-[#1a1a1a] border border-white/10 text-white text-xs shadow-xl"
+                sideOffset={6}
+              >
+                Reset to auto-detected mode
+                <Tooltip.Arrow className="fill-[#1a1a1a]" />
+              </Tooltip.Content>
+            </Tooltip.Portal>
+          </Tooltip.Root>
+        )}
+      </Tooltip.Provider>
     </div>
   );
 }
 
-// ─── Layout variants ──────────────────────────────────────────────────────────
+// ─── Fallback Canvas/Creative layouts ────────────────────────────────────────
 
-const layoutVariants = {
-  enter: { opacity: 0, scale: 0.985, filter: 'blur(2px)' },
-  center: { opacity: 1, scale: 1, filter: 'blur(0px)' },
-  exit: { opacity: 0, scale: 1.01, filter: 'blur(2px)' },
-};
-
-// ─── AdaptiveLayout ───────────────────────────────────────────────────────────
-
-export interface AdaptiveLayoutProps {
-  /** Messages driving the context detection */
-  messages?: Message[];
-  /** Default layout content (rendered when mode is 'default' or 'document') */
-  children: React.ReactNode;
-  /** Show the mode toolbar. Default: true */
-  showToolbar?: boolean;
-  /** Interval in ms for re-running analysis. Default: 2000 */
-  analysisInterval?: number;
-  /** Extra classes for the root wrapper */
-  className?: string;
+function CanvasMode({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex h-full">
+      <div className="w-1/3 border-r border-white/8 overflow-hidden flex flex-col">{children}</div>
+      <div className="flex-1 flex items-center justify-center bg-[#0a0a0a]">
+        <div className="text-center text-white/30">
+          <PenTool className="w-12 h-12 mx-auto mb-3 opacity-30" />
+          <p className="text-sm">Canvas coming soon</p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
+function CreativeMode({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex h-full">
+      <div className="w-1/3 border-r border-white/8 overflow-hidden flex flex-col">{children}</div>
+      <div className="flex-1 flex items-center justify-center bg-gradient-to-br from-orange-950/20 to-purple-950/20">
+        <div className="text-center text-white/30">
+          <Sparkles className="w-12 h-12 mx-auto mb-3 opacity-30" />
+          <p className="text-sm">Creative workspace coming soon</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
 export default function AdaptiveLayout({
-  messages = [],
   children,
-  showToolbar = true,
-  analysisInterval = 2000,
-  className = '',
+  chatId,
+  messages,
 }: AdaptiveLayoutProps) {
-  const engine = getUIAdaptationEngine();
+  const { mode, confidence, setMode, isAutoMode, resetToAuto } = useUIMode(messages);
+  const [isMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
 
-  const [currentMode, setCurrentModeState] = useState<LayoutMode>(engine.getCurrentMode());
-  const [toastMode, setToastMode] = useState<LayoutMode | null>(null);
-  const [isManualOverride, setIsManualOverride] = useState(false);
-  const [lastSuggestion, setLastSuggestion] = useState<AdaptationSuggestion | null>(null);
-  const prevModeRef = useRef<LayoutMode>(currentMode);
+  const handleSelectMode = useCallback(
+    (newMode: UIMode) => {
+      if (newMode === mode && !isAutoMode) return;
+      setMode(newMode);
+    },
+    [mode, isAutoMode, setMode]
+  );
 
-  // Subscribe to engine events
-  useEffect(() => {
-    const unsub = engine.on('suggestion', (suggestion) => {
-      setLastSuggestion(suggestion);
-      if (!isManualOverride && suggestion.mode !== prevModeRef.current) {
-        prevModeRef.current = suggestion.mode;
-        setCurrentModeState(suggestion.mode);
-        setToastMode(suggestion.mode);
-      }
-    });
-    return unsub;
-  }, [engine, isManualOverride]);
+  // Mobile: always show chat only
+  if (isMobile) {
+    return (
+      <div className="flex flex-col h-full w-full overflow-hidden">
+        {children}
+      </div>
+    );
+  }
 
-  // Periodic analysis
-  useEffect(() => {
-    if (isManualOverride || messages.length === 0) return;
-    const id = setInterval(() => {
-      engine.analyzeMessages(messages);
-    }, analysisInterval);
-    return () => clearInterval(id);
-  }, [engine, messages, analysisInterval, isManualOverride]);
+  const resolvedChatId = chatId ?? '';
 
-  // Also run immediately when messages change
-  useEffect(() => {
-    if (!isManualOverride && messages.length > 0) {
-      engine.analyzeMessages(messages);
+  const renderModeContent = () => {
+    switch (mode) {
+      case UIMode.CODE:
+        return <CodeMode chatId={resolvedChatId}>{children}</CodeMode>;
+      case UIMode.DOCUMENT:
+        return <DocumentMode chatId={resolvedChatId}>{children}</DocumentMode>;
+      case UIMode.RESEARCH:
+        return <ResearchMode chatId={resolvedChatId}>{children}</ResearchMode>;
+      case UIMode.DATA:
+        return <DataMode chatId={resolvedChatId}>{children}</DataMode>;
+      case UIMode.CANVAS:
+        return <CanvasMode>{children}</CanvasMode>;
+      case UIMode.CREATIVE:
+        return <CreativeMode>{children}</CreativeMode>;
+      case UIMode.CHAT:
+      default:
+        return (
+          <div className="flex-1 overflow-hidden flex flex-col">{children}</div>
+        );
     }
-  }, [messages, isManualOverride, engine]);
-
-  const setMode = useCallback((mode: LayoutMode) => {
-    setIsManualOverride(true);
-    engine.forceMode(mode);
-    prevModeRef.current = mode;
-    setCurrentModeState(mode);
-    setToastMode(mode);
-  }, [engine]);
-
-  const enableAutoAdaptation = useCallback(() => {
-    setIsManualOverride(false);
-    engine.reset();
-  }, [engine]);
-
-  const dismissToast = useCallback(() => setToastMode(null), []);
-
-  const contextValue: UIAdaptationContextValue = {
-    currentMode,
-    setMode,
-    lastSuggestion,
-    isManualOverride,
-    enableAutoAdaptation,
   };
 
   return (
-    <UIAdaptationContext.Provider value={contextValue}>
-      <div className={`relative flex flex-col h-full w-full bg-gray-900 text-gray-100 ${className}`}>
-        {/* Toolbar */}
-        {showToolbar && (
-          <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800 bg-gray-900/80 backdrop-blur-sm z-30">
-            <span className="text-xs text-gray-500 font-mono">
-              {isManualOverride ? 'Manual mode' : 'Auto-detecting…'}
-            </span>
-            <ModeToolbar
-              currentMode={currentMode}
-              isManualOverride={isManualOverride}
-              onSelectMode={setMode}
-              onEnableAuto={enableAutoAdaptation}
-            />
-          </div>
-        )}
+    <div className="flex flex-col h-full w-full overflow-hidden bg-[#0f0f0f]">
+      <ModeToolbar
+        currentMode={mode}
+        isAutoMode={isAutoMode}
+        confidence={confidence}
+        onSelectMode={handleSelectMode}
+        onResetAuto={resetToAuto}
+      />
 
-        {/* Toast notification */}
-        <AnimatePresence>
-          {toastMode !== null && (
-            <ModeSwitchToast key={toastMode} mode={toastMode} onDismiss={dismissToast} />
-          )}
+      <div className="flex-1 overflow-hidden relative">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={mode}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3, ease: 'easeInOut' }}
+            className="absolute inset-0 flex flex-col"
+          >
+            {renderModeContent()}
+          </motion.div>
         </AnimatePresence>
-
-        {/* Mode content with animated transitions */}
-        <div className="flex-1 overflow-hidden relative">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={currentMode}
-              variants={layoutVariants}
-              initial="enter"
-              animate="center"
-              exit="exit"
-              transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
-              className="absolute inset-0 flex flex-col"
-            >
-              {currentMode === 'code' ? (
-                <CodeMode>{children}</CodeMode>
-              ) : currentMode === 'research' ? (
-                <ResearchMode>{children}</ResearchMode>
-              ) : (
-                // Default, data, and document modes render the children as-is.
-                // (Data and document modes could get their own components in future.)
-                <div className="h-full w-full overflow-auto">
-                  {children}
-                </div>
-              )}
-            </motion.div>
-          </AnimatePresence>
-        </div>
       </div>
-    </UIAdaptationContext.Provider>
+    </div>
   );
 }

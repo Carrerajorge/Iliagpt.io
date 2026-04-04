@@ -1,262 +1,259 @@
 /**
  * ContextDetector.ts
- *
- * Analyzes conversation messages to detect the current context type
- * (code, research, data, document, or default) by scoring keyword
- * patterns, structural signals, and sliding-window recency weighting.
+ * Analyzes message content to detect the appropriate UI context/mode.
  */
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+export enum ContextType {
+  CHAT = 'CHAT',
+  CODE = 'CODE',
+  DOCUMENT = 'DOCUMENT',
+  RESEARCH = 'RESEARCH',
+  DATA = 'DATA',
+  CANVAS = 'CANVAS',
+  CREATIVE = 'CREATIVE',
+}
 
-export interface Message {
-  id: string;
+export interface ContextSignals {
+  type: ContextType;
+  confidence: number;
+  signals: string[];
+}
+
+interface PatternMap {
+  patterns: RegExp[];
+  keywords: string[];
+  weight: number;
+}
+
+interface MessageInput {
   role: 'user' | 'assistant' | 'system';
   content: string;
-  createdAt?: Date | string;
 }
 
-/**
- * Normalized confidence scores (0–1) for each context type.
- * All values sum to ≤ 1; the remainder represents ambiguity.
- */
-export interface ContextSignals {
-  code: number;
-  research: number;
-  data: number;
-  document: number;
-  /** Dominant context type determined by the highest score */
-  dominant: 'code' | 'research' | 'data' | 'document' | 'default';
-  /** Raw (un-normalized) scores before softmax */
-  raw: Record<string, number>;
-  /** Number of messages analyzed */
-  sampledMessages: number;
-}
+const CODE_PATTERNS: PatternMap = {
+  patterns: [
+    /```[\w]*\n[\s\S]+?```/g,
+    /import\s+[\w{},\s]+\s+from\s+['"`]/g,
+    /function\s+\w+\s*\(/g,
+    /const\s+\w+\s*=\s*(?:async\s+)?\(/g,
+    /class\s+\w+(?:\s+extends\s+\w+)?/g,
+    /def\s+\w+\s*\(/g,
+    /\bpublic\s+(?:static\s+)?(?:void|int|String|bool)\b/g,
+    /\b(?:let|var|const)\s+\w+\s*[:=]/g,
+    /\bif\s*\(.*\)\s*\{/g,
+    /\bfor\s*\(.*\)\s*\{/g,
+    /=>|->|\.\.\.|::/g,
+    /npm\s+(?:install|run|start|build)/g,
+    /git\s+(?:commit|push|pull|clone)/g,
+    /#include\s*<[\w.]+>/g,
+    /\bpip\s+install\b/g,
+  ],
+  keywords: [
+    'debug', 'error', 'exception', 'stack trace', 'compile', 'syntax',
+    'algorithm', 'recursion', 'loop', 'array', 'object', 'interface',
+    'typescript', 'javascript', 'python', 'java', 'rust', 'golang',
+    'api', 'endpoint', 'database', 'query', 'sql', 'regex', 'async',
+    'await', 'promise', 'callback', 'middleware', 'framework', 'library',
+    'package', 'module', 'component', 'hook', 'state', 'props',
+  ],
+  weight: 1.4,
+};
 
-export interface ContextDetectorConfig {
-  /** How many recent messages to analyze (default: 10) */
-  windowSize: number;
-  /** Weight multiplier for more-recent messages (default: 1.5) */
-  recencyBias: number;
-  /** Minimum raw score needed to register a signal (default: 0.05) */
-  noiseFloor: number;
-}
+const DOCUMENT_PATTERNS: PatternMap = {
+  patterns: [
+    /\b(?:write|draft|compose|create)\s+(?:a|an|the)\s+(?:document|report|letter|email|essay|article|proposal|memo|brief)/gi,
+    /\b(?:introduction|conclusion|abstract|summary|paragraph|section|chapter)\b/gi,
+    /\b(?:formal|professional|academic|technical)\s+(?:writing|document|report|letter)/gi,
+    /\b(?:proofread|edit|revise|rewrite|format)\b/gi,
+  ],
+  keywords: [
+    'essay', 'write', 'draft', 'document', 'report', 'letter', 'email',
+    'article', 'blog', 'proposal', 'memo', 'brief', 'paragraph',
+    'introduction', 'conclusion', 'outline', 'thesis', 'abstract',
+    'proofread', 'edit', 'revise', 'rewrite', 'format', 'structure',
+    'grammar', 'spelling', 'punctuation', 'tone', 'style',
+    'heading', 'bullet', 'section', 'chapter', 'citation', 'reference',
+  ],
+  weight: 1.2,
+};
 
-// ─── Keyword Dictionaries ─────────────────────────────────────────────────────
+const RESEARCH_PATTERNS: PatternMap = {
+  patterns: [
+    /\b(?:find|search|look up|look for|research|investigate)\s+(?:information|data|articles|papers|sources)\b/gi,
+    /\b(?:what is|what are|who is|who are|when did|where is|how does|why does)\b/gi,
+    /\b(?:compare|contrast|difference between|similarities between)\b/gi,
+    /\b(?:pros and cons|advantages and disadvantages|benefits and drawbacks)\b/gi,
+    /\b(?:overview|explanation|definition|history|background)\b/gi,
+  ],
+  keywords: [
+    'find', 'search', 'research', 'investigate', 'explore', 'discover',
+    'information', 'facts', 'evidence', 'source', 'citation', 'reference',
+    'compare', 'contrast', 'analyze', 'evaluate', 'assess', 'review',
+    'what is', 'explain', 'overview', 'history', 'background', 'context',
+    'definition', 'meaning', 'concept', 'theory', 'hypothesis',
+    'paper', 'study', 'journal', 'article', 'publication', 'academic',
+  ],
+  weight: 1.0,
+};
 
-const CODE_KEYWORDS: ReadonlyArray<[RegExp, number]> = [
-  [/\bfunction\b/gi, 1.2],
-  [/\bconst\b|\blet\b|\bvar\b/gi, 0.8],
-  [/\bimport\b|\bexport\b/gi, 1.0],
-  [/\bclass\b|\binterface\b|\btype\b/gi, 1.0],
-  [/\breturn\b|\basync\b|\bawait\b/gi, 0.9],
-  [/\bif\s*\(|\bfor\s*\(|\bwhile\s*\(/gi, 0.8],
-  [/\berror\b|\bexception\b|\bstack\s*trace\b/gi, 1.1],
-  [/\bdebug\b|\bconsole\.log\b|\bbreakpoint\b/gi, 1.0],
-  [/\bnpm\b|\byarn\b|\bpnpm\b/gi, 0.9],
-  [/\bgit\b|\bcommit\b|\bbranch\b/gi, 0.7],
-  [/\bapi\b|\bendpoint\b|\bhttp\b|\bfetch\b/gi, 0.8],
-  [/\bSQL\b|\bquery\b|\bdatabase\b/gi, 0.7],
-  [/\btypescript\b|\bjavascript\b|\bpython\b|\bjava\b|\brust\b|\bgo\b/gi, 1.0],
-  [/\bcomponent\b|\bhook\b|\bstate\b|\bprops\b/gi, 0.9],
-  [/\brefactor\b|\boptimize\b|\bperformance\b/gi, 0.8],
-  [/=>|===|!==|\?\?|&&|\|\|/g, 0.6],
-];
+const DATA_PATTERNS: PatternMap = {
+  patterns: [
+    /\b(?:chart|graph|plot|visualize|visualization)\b/gi,
+    /\b(?:csv|excel|spreadsheet|dataset|dataframe)\b/gi,
+    /\b(?:statistics|statistical|regression|correlation|variance|deviation)\b/gi,
+    /\b(?:analyze|analyse)\s+(?:data|results|metrics|numbers|figures)\b/gi,
+    /\b\d+(?:\.\d+)?%/g,
+    /\b(?:average|mean|median|mode|sum|total|count)\b/gi,
+  ],
+  keywords: [
+    'chart', 'graph', 'plot', 'visualize', 'visualization', 'diagram',
+    'csv', 'excel', 'spreadsheet', 'dataset', 'dataframe', 'table',
+    'statistics', 'statistical', 'regression', 'correlation', 'variance',
+    'analyze data', 'data analysis', 'metrics', 'kpi', 'dashboard',
+    'percentage', 'average', 'mean', 'median', 'trend', 'forecast',
+    'bar chart', 'pie chart', 'line graph', 'scatter plot', 'histogram',
+    'survey', 'results', 'findings', 'numbers', 'figures',
+  ],
+  weight: 1.3,
+};
 
-const RESEARCH_KEYWORDS: ReadonlyArray<[RegExp, number]> = [
-  [/\bstudy\b|\bstudies\b/gi, 1.0],
-  [/\bpaper\b|\bjournal\b|\barticle\b/gi, 1.1],
-  [/\banalysis\b|\banalyze\b/gi, 0.9],
-  [/\bsource[s]?\b|\bcitation[s]?\b|\breference[s]?\b/gi, 1.2],
-  [/\bresearch\b|\bfindings\b/gi, 1.0],
-  [/\bhypothesis\b|\btheory\b|\bevidence\b/gi, 1.1],
-  [/\bpublished\b|\bpeer.reviewed\b/gi, 1.2],
-  [/\bauthor[s]?\b|\bet al\b/gi, 1.0],
-  [/\bdoi\b|\barxiv\b|\bpubmed\b/gi, 1.3],
-  [/\bliterature\b|\bbibliograph/gi, 1.1],
-  [/\bsurvey\b|\bmeta.analysis\b/gi, 1.2],
-  [/\bhttps?:\/\//gi, 0.6],
-  [/\bconclusion[s]?\b|\babstract\b|\bmethodolog/gi, 1.0],
-  [/\bstatistical(ly)?\b|\bsignificant\b|\bp.value\b/gi, 0.9],
-];
+const CREATIVE_PATTERNS: PatternMap = {
+  patterns: [
+    /\b(?:write|create|compose)\s+(?:a|an)\s+(?:story|poem|song|script|novel|narrative|tale)\b/gi,
+    /\b(?:creative|fictional|imaginative|fantastical)\b/gi,
+    /\b(?:character|plot|setting|theme|conflict|resolution)\b/gi,
+    /\b(?:once upon a time|in a world where|imagine if)\b/gi,
+    /\b(?:rhyme|stanza|verse|chorus|metaphor|simile|alliteration)\b/gi,
+  ],
+  keywords: [
+    'story', 'poem', 'creative', 'imagine', 'fiction', 'narrative',
+    'novel', 'character', 'plot', 'setting', 'fantasy', 'sci-fi',
+    'screenplay', 'script', 'dialogue', 'monologue', 'verse', 'stanza',
+    'rhyme', 'metaphor', 'simile', 'imagery', 'tone', 'mood',
+    'protagonist', 'antagonist', 'conflict', 'resolution', 'climax',
+    'creative writing', 'storytelling', 'world-building', 'genre',
+  ],
+  weight: 1.1,
+};
 
-const DATA_KEYWORDS: ReadonlyArray<[RegExp, number]> = [
-  [/\bcsv\b|\bexcel\b|\bspreadsheet\b/gi, 1.3],
-  [/\btable\b|\brow[s]?\b|\bcolumn[s]?\b/gi, 0.9],
-  [/\bchart\b|\bgraph\b|\bplot\b|\bvisuali[sz]/gi, 1.1],
-  [/\bdataset\b|\bdataframe\b/gi, 1.3],
-  [/\bstatistic[s]?\b|\baverage\b|\bmedian\b|\bmode\b/gi, 1.0],
-  [/\bpercentage\b|\bproportion\b|\bratio\b/gi, 0.9],
-  [/\bmax\b|\bmin\b|\bsum\b|\bcount\b|\baggregate/gi, 0.8],
-  [/\bpandas\b|\bnumpy\b|\bmatplotlib\b|\bseaborn\b/gi, 1.3],
-  [/\bjson\b|\bxml\b|\bparquet\b|\bparquet\b/gi, 0.9],
-  [/\bregression\b|\bclustering\b|\bclassif/gi, 1.2],
-  [/\btrend\b|\bforecast\b|\bpredic/gi, 0.9],
-  [/\bkpi\b|\bmetric[s]?\b|\bdashboard\b/gi, 1.0],
-  [/\|\s*\w+\s*\|/g, 1.1], // markdown tables
-  [/\d+\.\d+%|\d+,\d{3}/g, 0.7],
-];
-
-const DOCUMENT_KEYWORDS: ReadonlyArray<[RegExp, number]> = [
-  [/\bdraft\b|\brevise\b|\bversion\b/gi, 1.1],
-  [/\bsection\b|\bchapter\b|\bparagraph\b/gi, 1.0],
-  [/\bedit\b|\bproofread\b|\bgrammar\b/gi, 1.1],
-  [/\bformat\b|\bstyle\b|\bfont\b|\bheading\b/gi, 0.9],
-  [/\breport\b|\bmemo\b|\bletter\b|\bemail\b/gi, 0.9],
-  [/\boutline\b|\bstructure\b|\btable of contents/gi, 1.0],
-  [/\bword\b|\bdocx\b|\bpdf\b|\bmarkdown\b/gi, 0.9],
-  [/\bwrite\b|\bwriting\b|\bauthor/gi, 0.7],
-  [/\bintroduction\b|\bconclusion\b|\bsummary\b/gi, 0.9],
-  [/\bbullet point[s]?\b|\bnumbered list\b/gi, 0.8],
-  [/\btone\b|\bvoice\b|\baudience\b/gi, 1.0],
-  [/\bparaphrase\b|\brephrase\b|\bsimplify\b/gi, 1.0],
-  [/\bcover letter\b|\bresume\b|\bcv\b/gi, 1.2],
-  [/\bproposal\b|\bpresentation\b|\bslide/gi, 1.0],
-];
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function countMatches(text: string, patterns: ReadonlyArray<[RegExp, number]>): number {
-  let total = 0;
-  for (const [regex, weight] of patterns) {
-    // Reset lastIndex for global regexes
-    regex.lastIndex = 0;
-    const matches = text.match(regex);
-    if (matches) {
-      total += matches.length * weight;
-    }
-  }
-  return total;
-}
-
-function hasCodeBlocks(text: string): boolean {
-  return /```[\s\S]*?```/g.test(text) || /`[^`]+`/.test(text);
-}
-
-function hasUrls(text: string): boolean {
-  return /https?:\/\/[^\s]+/g.test(text);
-}
-
-function hasCitations(text: string): boolean {
-  // Matches patterns like (Author, 2023), [1], [Author et al., 2023]
-  return /\(\s*[A-Z][a-z]+(?:\s+et\s+al\.?)?,\s*\d{4}\s*\)|\[\d+\]|\[\d{4}\]/g.test(text);
-}
-
-function hasMarkdownTable(text: string): boolean {
-  return /\|.+\|[\s\S]*\|[-: |]+\|/m.test(text);
-}
-
-/** Softmax-style normalization to map raw scores → [0, 1] range */
-function normalize(scores: Record<string, number>): Record<string, number> {
-  const values = Object.values(scores);
-  const total = values.reduce((a, b) => a + b, 0);
-  if (total === 0) return Object.fromEntries(Object.keys(scores).map(k => [k, 0]));
-  return Object.fromEntries(Object.entries(scores).map(([k, v]) => [k, v / total]));
-}
-
-// ─── ContextDetector ──────────────────────────────────────────────────────────
-
-const DEFAULT_CONFIG: ContextDetectorConfig = {
-  windowSize: 10,
-  recencyBias: 1.5,
-  noiseFloor: 0.05,
+const CANVAS_PATTERNS: PatternMap = {
+  patterns: [
+    /\b(?:draw|sketch|design|create)\s+(?:a|an)\s+(?:diagram|flowchart|wireframe|mockup|layout|canvas)\b/gi,
+    /\b(?:ui|ux|interface|wireframe|prototype|mockup)\b/gi,
+    /\b(?:flowchart|mind map|diagram|architecture|layout)\b/gi,
+  ],
+  keywords: [
+    'draw', 'sketch', 'diagram', 'flowchart', 'wireframe', 'mockup',
+    'canvas', 'design', 'layout', 'ui', 'ux', 'interface', 'prototype',
+    'mind map', 'architecture diagram', 'sequence diagram', 'class diagram',
+    'visual', 'illustration', 'graphic', 'whiteboard',
+  ],
+  weight: 1.1,
 };
 
 export class ContextDetector {
-  private config: ContextDetectorConfig;
+  private readonly patternMaps: Map<ContextType, PatternMap> = new Map([
+    [ContextType.CODE, CODE_PATTERNS],
+    [ContextType.DOCUMENT, DOCUMENT_PATTERNS],
+    [ContextType.RESEARCH, RESEARCH_PATTERNS],
+    [ContextType.DATA, DATA_PATTERNS],
+    [ContextType.CREATIVE, CREATIVE_PATTERNS],
+    [ContextType.CANVAS, CANVAS_PATTERNS],
+  ]);
 
-  constructor(config: Partial<ContextDetectorConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+  private scoreContext(
+    text: string,
+    patternMap: PatternMap,
+    contextType: ContextType
+  ): { score: number; signals: string[] } {
+    const lowerText = text.toLowerCase();
+    const signals: string[] = [];
+    let rawScore = 0;
+
+    // Pattern matching (higher weight)
+    for (const pattern of patternMap.patterns) {
+      const matches = text.match(pattern);
+      if (matches && matches.length > 0) {
+        rawScore += Math.min(matches.length * 0.15, 0.4);
+        signals.push(`pattern:${pattern.source.substring(0, 30)}...`);
+      }
+    }
+
+    // Keyword matching
+    let keywordHits = 0;
+    for (const keyword of patternMap.keywords) {
+      if (lowerText.includes(keyword.toLowerCase())) {
+        keywordHits++;
+        signals.push(`keyword:${keyword}`);
+      }
+    }
+
+    const keywordScore = (keywordHits / patternMap.keywords.length) * 0.8;
+    rawScore += keywordScore;
+
+    // Apply weight
+    const weightedScore = Math.min(rawScore * patternMap.weight, 1.0);
+
+    return { score: weightedScore, signals: signals.slice(0, 10) };
   }
 
-  /**
-   * Analyze a list of messages and return normalized confidence scores
-   * for each context type, plus the dominant context.
-   */
-  detectContext(messages: Message[]): ContextSignals {
+  detect(messages: MessageInput[]): ContextSignals {
     if (!messages || messages.length === 0) {
-      return this.emptySignals();
+      return {
+        type: ContextType.CHAT,
+        confidence: 0,
+        signals: [],
+      };
     }
 
-    // Take the most-recent N messages
-    const { windowSize, recencyBias, noiseFloor } = this.config;
-    const window = messages.slice(-windowSize);
-    const n = window.length;
+    // Prioritize recent messages (last 5), weight them more heavily
+    const recentMessages = messages.slice(-5);
+    const olderMessages = messages.slice(0, -5);
 
-    const raw: Record<string, number> = { code: 0, research: 0, data: 0, document: 0 };
+    const recentText = recentMessages.map((m) => m.content).join('\n');
+    const olderText = olderMessages.map((m) => m.content).join('\n');
+    const combinedText = `${recentText}\n\n${olderText}`;
 
-    window.forEach((msg, idx) => {
-      const text = msg.content ?? '';
-      // Recency weight: messages later in the window get higher weight
-      const recencyWeight = 1 + ((idx / Math.max(n - 1, 1)) * (recencyBias - 1));
-      // Role weight: user messages count slightly more
-      const roleWeight = msg.role === 'user' ? 1.1 : 1.0;
-      const w = recencyWeight * roleWeight;
+    const scores = new Map<ContextType, { score: number; signals: string[] }>();
 
-      // ── Keyword scoring ──────────────────────────────
-      raw.code     += countMatches(text, CODE_KEYWORDS)     * w;
-      raw.research += countMatches(text, RESEARCH_KEYWORDS) * w;
-      raw.data     += countMatches(text, DATA_KEYWORDS)     * w;
-      raw.document += countMatches(text, DOCUMENT_KEYWORDS) * w;
+    for (const [contextType, patternMap] of this.patternMaps) {
+      const recentResult = this.scoreContext(recentText, patternMap, contextType);
+      const olderResult = this.scoreContext(olderText, patternMap, contextType);
 
-      // ── Structural bonuses ───────────────────────────
-      if (hasCodeBlocks(text)) raw.code     += 5 * w;
-      if (hasUrls(text))       raw.research += 2 * w;
-      if (hasCitations(text))  raw.research += 4 * w;
-      if (hasMarkdownTable(text)) raw.data   += 4 * w;
-    });
+      // Recent messages weighted 70%, older 30%
+      const combinedScore = recentResult.score * 0.7 + olderResult.score * 0.3;
+      const allSignals = [...new Set([...recentResult.signals, ...olderResult.signals])];
 
-    // Apply noise floor — suppress very weak signals
-    for (const key of Object.keys(raw)) {
-      const max = Math.max(...Object.values(raw));
-      if (max > 0 && raw[key] / max < noiseFloor) {
-        raw[key] = 0;
+      scores.set(contextType, { score: Math.min(combinedScore, 1.0), signals: allSignals });
+    }
+
+    // Find the highest scoring context
+    let bestType = ContextType.CHAT;
+    let bestScore = 0;
+    let bestSignals: string[] = [];
+
+    for (const [contextType, result] of scores) {
+      if (result.score > bestScore) {
+        bestScore = result.score;
+        bestType = contextType;
+        bestSignals = result.signals;
       }
     }
 
-    const normalized = normalize(raw);
-
-    // Find dominant context
-    let dominant: ContextSignals['dominant'] = 'default';
-    let maxScore = 0;
-    for (const [key, score] of Object.entries(normalized)) {
-      if (score > maxScore) {
-        maxScore = score;
-        dominant = key as ContextSignals['dominant'];
-      }
-    }
-
-    // If even the highest normalized score is very low, fall back to default
-    if (maxScore < 0.25) {
-      dominant = 'default';
+    // Only switch from CHAT if confidence is above a threshold
+    const CONFIDENCE_THRESHOLD = 0.15;
+    if (bestScore < CONFIDENCE_THRESHOLD) {
+      return {
+        type: ContextType.CHAT,
+        confidence: 1 - bestScore,
+        signals: ['default:chat'],
+      };
     }
 
     return {
-      code:     normalized.code     ?? 0,
-      research: normalized.research ?? 0,
-      data:     normalized.data     ?? 0,
-      document: normalized.document ?? 0,
-      dominant,
-      raw: { ...raw },
-      sampledMessages: n,
-    };
-  }
-
-  /** Update configuration at runtime */
-  configure(config: Partial<ContextDetectorConfig>): void {
-    this.config = { ...this.config, ...config };
-  }
-
-  private emptySignals(): ContextSignals {
-    return {
-      code: 0,
-      research: 0,
-      data: 0,
-      document: 0,
-      dominant: 'default',
-      raw: { code: 0, research: 0, data: 0, document: 0 },
-      sampledMessages: 0,
+      type: bestType,
+      confidence: bestScore,
+      signals: bestSignals,
     };
   }
 }
-
-export default ContextDetector;

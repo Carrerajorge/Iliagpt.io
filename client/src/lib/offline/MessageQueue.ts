@@ -1,109 +1,173 @@
 /**
  * MessageQueue.ts
- * Persistent, ordered message queue with offline support.
- * Messages are stored in IndexedDB and processed when connectivity resumes.
+ *
+ * Durable message queue for IliaGPT offline mode.
+ *
+ * When the user sends a message while offline (or on a degraded connection)
+ * the message is persisted in IndexedDB and retried automatically once
+ * connectivity is restored.
+ *
+ * Features:
+ *  - Full persistence via IndexedDB (syncQueue store)
+ *  - Exponential backoff per item: 2s / 4s / 8s (max 3 retries)
+ *  - Event callbacks: onDelivered, onFailed, onQueueEmpty
+ *  - Integration with OfflineManager for automatic flush on reconnect
+ *  - Processes one message at a time to preserve chat ordering
  */
 
-import { idb } from './IndexedDBStore';
-import offlineManager, { NetworkStatus } from './OfflineManager';
+import { OfflineManager, NetworkStatus, type OfflineStateChangeEvent } from './OfflineManager';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type MessageStatus = 'pending' | 'sending' | 'sent' | 'failed';
+export enum QueueStatus {
+  PENDING = 'PENDING',
+  PROCESSING = 'PROCESSING',
+  FAILED = 'FAILED',
+  DELIVERED = 'DELIVERED',
+}
 
-export interface QueuedMessage {
-  /** Stable unique ID (generated on enqueue). */
+export interface AttachmentMeta {
   id: string;
-  /** Target chat session. */
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  url?: string;
+}
+
+export interface MessageQueueItem {
+  id: string;
   chatId: string;
-  /** Message content. */
   content: string;
-  /** Role of the author (always 'user' for queued messages). */
-  role: 'user' | 'system';
-  /** Monotonically increasing sequence number within a chat for ordered delivery. */
-  sequence: number;
-  /** Wall-clock timestamp when the message was created. */
+  attachments: AttachmentMeta[];
+  status: QueueStatus;
   createdAt: number;
-  /** Current processing status. */
-  status: MessageStatus;
-  /** Number of delivery attempts made. */
-  attempts: number;
-  /** Timestamp of the most recent attempt, or null. */
-  lastAttemptAt: number | null;
-  /** Error message from the last failed attempt, or null. */
-  lastError: string | null;
-  /** Optional metadata (attachments, model hints, etc.). */
-  metadata: Record<string, unknown>;
+  updatedAt: number;
+  retries: number;
+  nextRetryAt: number;
+  /** Populated after delivery */
+  serverMessageId?: string;
+  error?: string;
 }
 
-export type MessageQueueEvent =
-  | 'enqueue'
-  | 'statusChange'
-  | 'sent'
-  | 'failed'
-  | 'queueDrained'
-  | 'processingStart'
-  | 'processingStop';
-
-export type QueueEventListener<T = unknown> = (payload: T) => void;
-
-export interface StatusChangePayload {
-  messageId: string;
-  previous: MessageStatus;
-  current: MessageStatus;
-  message: QueuedMessage;
+export interface EnqueueOptions {
+  chatId: string;
+  content: string;
+  attachments?: AttachmentMeta[];
 }
 
-export interface QueueSnapshot {
-  total: number;
-  pending: number;
-  sending: number;
-  sent: number;
-  failed: number;
-  messages: QueuedMessage[];
-}
-
-// ---------------------------------------------------------------------------
-// Sender function type (provided by host application)
-// ---------------------------------------------------------------------------
-
-/**
- * The host application must supply a sender function.
- * It receives a QueuedMessage and should return a Promise that resolves
- * when the message has been accepted by the server, or rejects on failure.
- */
-export type MessageSender = (message: QueuedMessage) => Promise<void>;
+export type DeliveredCallback = (item: MessageQueueItem, serverMessageId: string) => void;
+export type FailedCallback = (item: MessageQueueItem, error: Error) => void;
+export type QueueEmptyCallback = () => void;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
+const DB_NAME = 'iliagpt-msg-queue';
+const DB_VERSION = 1;
+const STORE_NAME = 'message_queue';
 const MAX_RETRIES = 3;
-const RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
-const PROCESS_CONCURRENCY = 1; // Ordered delivery: process one at a time.
+const BACKOFF_BASE_MS = 2_000;
+const API_ENDPOINT = '/api/messages';
 
 // ---------------------------------------------------------------------------
-// Sequence counter (per-chat, in-memory; hydrated from IDB on init)
+// Minimal IndexedDB helpers (self-contained to avoid circular deps)
 // ---------------------------------------------------------------------------
 
-class SequenceCounter {
-  private _counters: Map<string, number> = new Map();
+let _db: IDBDatabase | null = null;
+let _dbOpenPromise: Promise<IDBDatabase> | null = null;
 
-  next(chatId: string): number {
-    const current = this._counters.get(chatId) ?? 0;
-    const next = current + 1;
-    this._counters.set(chatId, next);
-    return next;
-  }
+function openMsgDb(): Promise<IDBDatabase> {
+  if (_db) return Promise.resolve(_db);
+  if (_dbOpenPromise) return _dbOpenPromise;
 
-  seed(chatId: string, value: number): void {
-    const existing = this._counters.get(chatId) ?? 0;
-    if (value > existing) {
-      this._counters.set(chatId, value);
-    }
-  }
+  _dbOpenPromise = new Promise<IDBDatabase>((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+
+    req.onerror = () => { _dbOpenPromise = null; reject(req.error); };
+    req.onsuccess = () => {
+      _db = req.result;
+      _db.onclose = () => { _db = null; _dbOpenPromise = null; };
+      _dbOpenPromise = null;
+      resolve(_db);
+    };
+
+    req.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+        store.createIndex('by_status', 'status', { unique: false });
+        store.createIndex('by_chatId', 'chatId', { unique: false });
+        store.createIndex('by_createdAt', 'createdAt', { unique: false });
+      }
+    };
+  });
+
+  return _dbOpenPromise;
+}
+
+function dbGet(id: string): Promise<MessageQueueItem | undefined> {
+  return openMsgDb().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(id);
+        req.onsuccess = () => resolve(req.result as MessageQueueItem | undefined);
+        req.onerror = () => reject(req.error);
+      }),
+  );
+}
+
+function dbPut(item: MessageQueueItem): Promise<void> {
+  return openMsgDb().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        tx.objectStore(STORE_NAME).put(item);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      }),
+  );
+}
+
+function dbGetByStatus(status: QueueStatus): Promise<MessageQueueItem[]> {
+  return openMsgDb().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const req = db
+          .transaction(STORE_NAME, 'readonly')
+          .objectStore(STORE_NAME)
+          .index('by_status')
+          .getAll(IDBKeyRange.only(status));
+        req.onsuccess = () => resolve(req.result as MessageQueueItem[]);
+        req.onerror = () => reject(req.error);
+      }),
+  );
+}
+
+function dbGetAll(): Promise<MessageQueueItem[]> {
+  return openMsgDb().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const req = db
+          .transaction(STORE_NAME, 'readonly')
+          .objectStore(STORE_NAME)
+          .getAll();
+        req.onsuccess = () => resolve(req.result as MessageQueueItem[]);
+        req.onerror = () => reject(req.error);
+      }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Backoff helper
+// ---------------------------------------------------------------------------
+
+function backoffMs(retries: number): number {
+  const ms = BACKOFF_BASE_MS * Math.pow(2, retries);
+  const jitter = ms * 0.2 * Math.random();
+  return Math.round(ms + jitter);
 }
 
 // ---------------------------------------------------------------------------
@@ -111,429 +175,345 @@ class SequenceCounter {
 // ---------------------------------------------------------------------------
 
 export class MessageQueue {
-  private _sender: MessageSender | null = null;
-  private _isProcessing = false;
-  private _started = false;
-  private _unsubscribeNetwork: (() => void) | null = null;
-  private _retryTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
-  private _sequenceCounter = new SequenceCounter();
+  private static instance: MessageQueue | null = null;
 
-  private _listeners: Map<MessageQueueEvent, Set<QueueEventListener<unknown>>> =
-    new Map();
+  // Callbacks
+  onDelivered: DeliveredCallback | null = null;
+  onFailed: FailedCallback | null = null;
+  onQueueEmpty: QueueEmptyCallback | null = null;
 
-  // -- Lifecycle ------------------------------------------------------------
+  private isProcessing = false;
+  private unsubscribeOffline: (() => void) | null = null;
 
-  /**
-   * Attach a sender function and begin listening for network status changes.
-   * Calling start() will also attempt to drain any persisted pending messages.
-   */
-  async start(sender: MessageSender): Promise<void> {
-    if (this._started) return;
-    this._started = true;
-    this._sender = sender;
+  // ---------------------------------------------------------------------------
+  // Singleton
+  // ---------------------------------------------------------------------------
 
-    // Hydrate sequence counters from persisted messages.
-    await this._hydrateSequenceCounters();
-
-    // Listen for network status changes.
-    this._unsubscribeNetwork = offlineManager.on<{ current: NetworkStatus }>(
-      'statusChange',
-      (payload) => {
-        if (
-          typeof payload === 'object' &&
-          payload !== null &&
-          'current' in payload &&
-          (payload as { current: NetworkStatus }).current !== 'offline'
-        ) {
-          void this.processQueue();
-        }
-      }
-    );
-
-    // Try to drain immediately if we're already online.
-    if (offlineManager.isOnline) {
-      void this.processQueue();
-    }
+  private constructor() {
+    this.attachOfflineListener();
+    // Restore any pending messages from a previous session
+    this.restorePending().catch(console.error);
   }
 
-  /** Detach sender and stop background processing. */
-  stop(): void {
-    this._started = false;
-    this._sender = null;
-    this._unsubscribeNetwork?.();
-    this._unsubscribeNetwork = null;
-
-    // Cancel all pending retry timers.
-    for (const timer of this._retryTimers.values()) {
-      clearTimeout(timer);
+  static getInstance(): MessageQueue {
+    if (!MessageQueue.instance) {
+      MessageQueue.instance = new MessageQueue();
     }
-    this._retryTimers.clear();
+    return MessageQueue.instance;
   }
 
-  // -- Public API -----------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
 
   /**
-   * Add a message to the queue.
-   * The message is persisted to IndexedDB immediately.
-   * Returns the enqueued message (with its assigned id and sequence number).
+   * Add a new message to the queue.
+   * Returns the queue item immediately so the UI can track its status.
    */
-  async enqueue(
-    input: Pick<QueuedMessage, 'chatId' | 'content' | 'role' | 'metadata'>
-  ): Promise<QueuedMessage> {
-    const sequence = this._sequenceCounter.next(input.chatId);
-
-    const message: QueuedMessage = {
-      id: this._generateId(),
-      chatId: input.chatId,
-      content: input.content,
-      role: input.role,
-      metadata: input.metadata ?? {},
-      sequence,
-      createdAt: Date.now(),
-      status: 'pending',
-      attempts: 0,
-      lastAttemptAt: null,
-      lastError: null,
+  async enqueue(options: EnqueueOptions): Promise<MessageQueueItem> {
+    const now = Date.now();
+    const item: MessageQueueItem = {
+      id: this.generateId(),
+      chatId: options.chatId,
+      content: options.content,
+      attachments: options.attachments ?? [],
+      status: QueueStatus.PENDING,
+      createdAt: now,
+      updatedAt: now,
+      retries: 0,
+      nextRetryAt: 0,
     };
 
-    await this._persist(message);
-    this._emit('enqueue', { message });
+    await dbPut(item);
 
-    // Attempt immediate delivery if online.
-    if (offlineManager.isOnline && !this._isProcessing) {
-      void this.processQueue();
+    // Attempt immediate delivery if online
+    if (OfflineManager.getInstance().isOnline()) {
+      this.scheduleProcess();
     }
 
-    return message;
+    return item;
   }
 
   /**
-   * Dequeue (remove) a message by ID regardless of status.
-   * Cancels any pending retry timer for the message.
+   * Process the next pending message in FIFO order.
+   * Returns true if a message was processed.
    */
-  async dequeue(messageId: string): Promise<void> {
-    const timer = this._retryTimers.get(messageId);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      this._retryTimers.delete(messageId);
-    }
-    await idb.delete('sync_queue', messageId);
+  async processNext(): Promise<boolean> {
+    if (this.isProcessing) return false;
+    if (!OfflineManager.getInstance().isOnline()) return false;
+
+    const pending = await this.getReadyPendingItems();
+    if (pending.length === 0) return false;
+
+    const item = pending[0]; // FIFO
+    await this.deliverItem(item);
+    return true;
   }
 
   /**
-   * Process all pending messages in sequence (ordered delivery guarantee).
-   * If already processing, the call is a no-op.
+   * Flush all pending messages in FIFO order.
+   * Re-entrant calls are no-ops while flush is in progress.
    */
-  async processQueue(): Promise<void> {
-    if (this._isProcessing || !this._sender || offlineManager.isOffline) return;
+  async flush(): Promise<void> {
+    if (this.isProcessing) return;
 
-    this._isProcessing = true;
-    this._emit('processingStart', {});
-
+    this.isProcessing = true;
     try {
-      let hasMore = true;
+      while (true) {
+        if (!OfflineManager.getInstance().isOnline()) break;
 
-      while (hasMore) {
-        // Load the next batch of pending messages (ordered by chatId + sequence).
-        const pending = await this._loadPending(PROCESS_CONCURRENCY);
+        const pending = await this.getReadyPendingItems();
+        if (pending.length === 0) break;
 
-        if (pending.length === 0) {
-          hasMore = false;
-          break;
+        for (const item of pending) {
+          if (!OfflineManager.getInstance().isOnline()) break;
+          await this.deliverItem(item);
         }
+      }
 
-        for (const message of pending) {
-          await this._send(message);
-
-          // Re-check connectivity after each message.
-          if (offlineManager.isOffline) {
-            hasMore = false;
-            break;
-          }
-        }
+      const remaining = await this.getQueueLength();
+      if (remaining === 0) {
+        this.onQueueEmpty?.();
       }
     } finally {
-      this._isProcessing = false;
-      this._emit('processingStop', {});
-    }
-
-    // Check if queue is fully drained.
-    const remaining = await this.countByStatus('pending');
-    if (remaining === 0) {
-      this._emit('queueDrained', {});
+      this.isProcessing = false;
     }
   }
 
-  // -- Querying -------------------------------------------------------------
-
-  /** Get all queued messages across all chats. */
-  async getAll(): Promise<QueuedMessage[]> {
-    const records = await idb.getAll('sync_queue');
-    return records
-      .map((r) => this._deserialize(r.payload))
-      .filter((m): m is QueuedMessage => m !== null)
-      .sort((a, b) => a.createdAt - b.createdAt || a.sequence - b.sequence);
+  /**
+   * Total number of items in the queue (any status except DELIVERED).
+   */
+  async getQueueLength(): Promise<number> {
+    const items = await dbGetAll();
+    return items.filter((i) => i.status !== QueueStatus.DELIVERED).length;
   }
 
-  /** Get messages for a specific chat in order. */
-  async getByChat(chatId: string): Promise<QueuedMessage[]> {
-    const all = await this.getAll();
-    return all
-      .filter((m) => m.chatId === chatId)
-      .sort((a, b) => a.sequence - b.sequence);
+  /**
+   * Get the current status of a specific item by ID.
+   */
+  async getStatus(id: string): Promise<QueueStatus | null> {
+    const item = await dbGet(id);
+    return item?.status ?? null;
   }
 
-  /** Get a snapshot of queue stats. */
-  async snapshot(): Promise<QueueSnapshot> {
-    const all = await this.getAll();
-    return {
-      total: all.length,
-      pending: all.filter((m) => m.status === 'pending').length,
-      sending: all.filter((m) => m.status === 'sending').length,
-      sent: all.filter((m) => m.status === 'sent').length,
-      failed: all.filter((m) => m.status === 'failed').length,
-      messages: all,
-    };
+  /**
+   * Get all FAILED items.
+   */
+  async getFailedItems(): Promise<MessageQueueItem[]> {
+    return dbGetByStatus(QueueStatus.FAILED);
   }
 
-  /** Count messages in a given status. */
-  async countByStatus(status: MessageStatus): Promise<number> {
-    const all = await this.getAll();
-    return all.filter((m) => m.status === status).length;
-  }
+  /**
+   * Re-enqueue a failed item for another delivery attempt.
+   */
+  async retry(id: string): Promise<void> {
+    const item = await dbGet(id);
+    if (!item || item.status !== QueueStatus.FAILED) return;
 
-  /** Retry a failed message immediately. */
-  async retry(messageId: string): Promise<void> {
-    const records = await idb.getAll('sync_queue');
-    const record = records.find((r) => r.id === messageId);
-    if (!record) return;
-
-    const message = this._deserialize(record.payload);
-    if (!message || message.status !== 'failed') return;
-
-    // Reset attempts so it can be retried.
-    const reset: QueuedMessage = {
-      ...message,
-      status: 'pending',
-      attempts: 0,
-      lastError: null,
+    const reset: MessageQueueItem = {
+      ...item,
+      status: QueueStatus.PENDING,
+      retries: 0,
+      nextRetryAt: 0,
+      error: undefined,
+      updatedAt: Date.now(),
     };
 
-    await this._persist(reset);
+    await dbPut(reset);
 
-    if (offlineManager.isOnline) {
-      void this.processQueue();
+    if (OfflineManager.getInstance().isOnline()) {
+      this.scheduleProcess();
     }
   }
 
-  /** Remove all messages with status 'sent'. */
-  async pruneSent(): Promise<number> {
-    const records = await idb.getAll('sync_queue');
-    let count = 0;
-
-    for (const r of records) {
-      const msg = this._deserialize(r.payload);
-      if (msg?.status === 'sent') {
-        await idb.delete('sync_queue', r.id);
-        count++;
-      }
+  /**
+   * Retry all failed items.
+   */
+  async retryAll(): Promise<void> {
+    const failed = await this.getFailedItems();
+    for (const item of failed) {
+      await this.retry(item.id);
     }
-
-    return count;
   }
 
-  // -- Internal send logic --------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Delivery
+  // ---------------------------------------------------------------------------
 
-  private async _send(message: QueuedMessage): Promise<void> {
-    if (!this._sender) return;
-
-    const previous = message.status;
-    const sending: QueuedMessage = {
-      ...message,
-      status: 'sending',
-      lastAttemptAt: Date.now(),
+  private async deliverItem(item: MessageQueueItem): Promise<void> {
+    // Mark as PROCESSING
+    const processing: MessageQueueItem = {
+      ...item,
+      status: QueueStatus.PROCESSING,
+      updatedAt: Date.now(),
     };
-
-    await this._persist(sending);
-    this._emitStatusChange(sending.id, previous, 'sending', sending);
+    await dbPut(processing);
 
     try {
-      await this._sender(sending);
+      const response = await this.postMessage(processing);
 
-      const sent: QueuedMessage = { ...sending, status: 'sent', lastError: null };
-      await this._persist(sent);
-      this._emitStatusChange(sent.id, 'sending', 'sent', sent);
-      this._emit('sent', { message: sent });
+      const delivered: MessageQueueItem = {
+        ...processing,
+        status: QueueStatus.DELIVERED,
+        serverMessageId: response.id,
+        updatedAt: Date.now(),
+      };
+      await dbPut(delivered);
+
+      this.onDelivered?.(delivered, response.id);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      const attempts = sending.attempts + 1;
-
-      if (attempts >= MAX_RETRIES) {
-        const failed: QueuedMessage = {
-          ...sending,
-          status: 'failed',
-          attempts,
-          lastError: errorMessage,
-        };
-        await this._persist(failed);
-        this._emitStatusChange(failed.id, 'sending', 'failed', failed);
-        this._emit('failed', { message: failed, error: errorMessage });
-      } else {
-        // Schedule a retry with exponential backoff.
-        const retrying: QueuedMessage = {
-          ...sending,
-          status: 'pending',
-          attempts,
-          lastError: errorMessage,
-        };
-        await this._persist(retrying);
-        this._emitStatusChange(retrying.id, 'sending', 'pending', retrying);
-
-        const delayMs = RETRY_DELAYS_MS[attempts - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
-        this._scheduleRetry(retrying, delayMs);
-      }
+      await this.handleDeliveryError(processing, err instanceof Error ? err : new Error(String(err)));
     }
   }
 
-  private _scheduleRetry(message: QueuedMessage, delayMs: number): void {
-    // Cancel any existing timer.
-    const existing = this._retryTimers.get(message.id);
-    if (existing !== undefined) clearTimeout(existing);
+  private async postMessage(
+    item: MessageQueueItem,
+  ): Promise<{ id: string; [key: string]: unknown }> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
 
-    const timer = setTimeout(() => {
-      this._retryTimers.delete(message.id);
-      if (offlineManager.isOnline && !this._isProcessing) {
-        void this.processQueue();
-      }
-    }, delayMs);
-
-    this._retryTimers.set(message.id, timer);
-  }
-
-  // -- Persistence helpers --------------------------------------------------
-
-  private async _persist(message: QueuedMessage): Promise<void> {
-    await idb.put('sync_queue', {
-      id: message.id,
-      operation: 'create',
-      storeName: 'messages',
-      recordId: message.id,
-      payload: message,
-      priority: 'HIGH',
-      enqueuedAt: message.createdAt,
-      attempts: message.attempts,
-      lastAttemptAt: message.lastAttemptAt,
-      error: message.lastError,
-    });
-  }
-
-  private async _loadPending(limit: number): Promise<QueuedMessage[]> {
-    const records = await idb.getAll('sync_queue');
-
-    return records
-      .map((r) => this._deserialize(r.payload))
-      .filter((m): m is QueuedMessage => m !== null && m.status === 'pending')
-      .sort((a, b) => {
-        // Primary sort: chatId (group chat messages together).
-        if (a.chatId < b.chatId) return -1;
-        if (a.chatId > b.chatId) return 1;
-        // Secondary sort: sequence within chat.
-        return a.sequence - b.sequence;
-      })
-      .slice(0, limit);
-  }
-
-  private _deserialize(payload: unknown): QueuedMessage | null {
-    if (
-      typeof payload !== 'object' ||
-      payload === null ||
-      !('id' in payload) ||
-      !('chatId' in payload) ||
-      !('status' in payload)
-    ) {
-      return null;
-    }
-    return payload as QueuedMessage;
-  }
-
-  private async _hydrateSequenceCounters(): Promise<void> {
     try {
-      const records = await idb.getAll('sync_queue');
-      for (const r of records) {
-        const msg = this._deserialize(r.payload);
-        if (msg) {
-          this._sequenceCounter.seed(msg.chatId, msg.sequence);
-        }
+      const response = await fetch(API_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Queue-Item-Id': item.id,
+          'X-Idempotency-Key': item.id,
+        },
+        body: JSON.stringify({
+          chatId: item.chatId,
+          content: item.content,
+          attachments: item.attachments,
+          queuedAt: item.createdAt,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        throw new Error(`HTTP ${response.status}: ${body || response.statusText}`);
       }
-    } catch (err) {
-      console.warn('[MessageQueue] Failed to hydrate sequence counters:', err);
+
+      return response.json() as Promise<{ id: string }>;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
-  // -- EventEmitter ---------------------------------------------------------
+  private async handleDeliveryError(item: MessageQueueItem, error: Error): Promise<void> {
+    const retries = item.retries + 1;
 
-  on<T = unknown>(
-    event: MessageQueueEvent,
-    listener: QueueEventListener<T>
-  ): () => void {
-    if (!this._listeners.has(event)) this._listeners.set(event, new Set());
-    this._listeners.get(event)!.add(listener as QueueEventListener<unknown>);
-    return () => this.off(event, listener);
-  }
+    if (retries >= MAX_RETRIES) {
+      const failed: MessageQueueItem = {
+        ...item,
+        status: QueueStatus.FAILED,
+        retries,
+        error: error.message,
+        updatedAt: Date.now(),
+      };
+      await dbPut(failed);
+      this.onFailed?.(failed, error);
+      console.error(`[MessageQueue] Item ${item.id} permanently failed:`, error.message);
+      return;
+    }
 
-  off<T = unknown>(
-    event: MessageQueueEvent,
-    listener: QueueEventListener<T>
-  ): void {
-    this._listeners.get(event)?.delete(listener as QueueEventListener<unknown>);
-  }
-
-  once<T = unknown>(
-    event: MessageQueueEvent,
-    listener: QueueEventListener<T>
-  ): () => void {
-    const wrapper: QueueEventListener<T> = (payload) => {
-      listener(payload);
-      this.off(event, wrapper);
+    const delay = backoffMs(retries);
+    const pending: MessageQueueItem = {
+      ...item,
+      status: QueueStatus.PENDING,
+      retries,
+      nextRetryAt: Date.now() + delay,
+      error: error.message,
+      updatedAt: Date.now(),
     };
-    return this.on(event, wrapper);
+    await dbPut(pending);
+
+    console.warn(
+      `[MessageQueue] Item ${item.id} failed (attempt ${retries}/${MAX_RETRIES}). ` +
+      `Retrying in ${Math.round(delay / 1000)}s.`,
+    );
   }
 
-  private _emit<T>(event: MessageQueueEvent, payload: T): void {
-    this._listeners.get(event)?.forEach((fn) => {
-      try {
-        fn(payload);
-      } catch (err) {
-        console.error(`[MessageQueue] Error in "${event}" listener:`, err);
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  private async getReadyPendingItems(): Promise<MessageQueueItem[]> {
+    const pending = await dbGetByStatus(QueueStatus.PENDING);
+    const now = Date.now();
+    return pending
+      .filter((i) => i.nextRetryAt <= now)
+      .sort((a, b) => a.createdAt - b.createdAt); // FIFO
+  }
+
+  private scheduleProcess(): void {
+    // Defer slightly so the caller can receive the returned item first
+    setTimeout(() => {
+      this.flush().catch(console.error);
+    }, 50);
+  }
+
+  private generateId(): string {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  // ---------------------------------------------------------------------------
+  // OfflineManager integration
+  // ---------------------------------------------------------------------------
+
+  private attachOfflineListener(): void {
+    const mgr = OfflineManager.getInstance();
+    this.unsubscribeOffline = mgr.subscribe(this.handleNetworkChange);
+  }
+
+  private readonly handleNetworkChange = (event: OfflineStateChangeEvent): void => {
+    if (event.status === NetworkStatus.ONLINE) {
+      this.flush().catch(console.error);
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Session restore
+  // ---------------------------------------------------------------------------
+
+  /**
+   * On startup, re-queue any PROCESSING items (interrupted mid-delivery)
+   * and schedule a flush for pending items.
+   */
+  private async restorePending(): Promise<void> {
+    try {
+      const interrupted = await dbGetByStatus(QueueStatus.PROCESSING);
+      for (const item of interrupted) {
+        const reset: MessageQueueItem = {
+          ...item,
+          status: QueueStatus.PENDING,
+          nextRetryAt: Date.now() + 1_000, // brief delay
+          updatedAt: Date.now(),
+        };
+        await dbPut(reset);
       }
-    });
+
+      const pendingCount = (await dbGetByStatus(QueueStatus.PENDING)).length;
+      if (pendingCount > 0 && OfflineManager.getInstance().isOnline()) {
+        this.scheduleProcess();
+      }
+    } catch (err) {
+      console.warn('[MessageQueue] Failed to restore pending items:', err);
+    }
   }
 
-  private _emitStatusChange(
-    messageId: string,
-    previous: MessageStatus,
-    current: MessageStatus,
-    message: QueuedMessage
-  ): void {
-    const payload: StatusChangePayload = { messageId, previous, current, message };
-    this._emit('statusChange', payload);
-  }
+  // ---------------------------------------------------------------------------
+  // Cleanup
+  // ---------------------------------------------------------------------------
 
-  // -- Utility --------------------------------------------------------------
-
-  private _generateId(): string {
-    return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  }
-
-  get isProcessing(): boolean {
-    return this._isProcessing;
+  destroy(): void {
+    this.unsubscribeOffline?.();
+    this.onDelivered = null;
+    this.onFailed = null;
+    this.onQueueEmpty = null;
+    MessageQueue.instance = null;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Singleton export
-// ---------------------------------------------------------------------------
-
-export const messageQueue = new MessageQueue();
-
-export default messageQueue;

@@ -1,278 +1,371 @@
 /**
  * UIAdaptationEngine.ts
- *
- * Detects conversation context and suggests a layout mode for the UI.
- * Implements hysteresis to prevent rapid mode flapping: a mode is only
- * suggested after it has been the dominant context for N consecutive checks.
- *
- * Emits 'suggestion' events so consumers can react without polling.
+ * Singleton engine that manages adaptive UI mode detection and user preferences.
  */
 
-import { ContextDetector, ContextSignals, Message } from './ContextDetector';
+import { useState, useEffect, useCallback } from 'react';
+import { ContextDetector, ContextType } from './ContextDetector';
+import type { Message } from '@/types/chat';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+export enum UIMode {
+  CHAT = 'CHAT',
+  CODE = 'CODE',
+  DOCUMENT = 'DOCUMENT',
+  RESEARCH = 'RESEARCH',
+  DATA = 'DATA',
+  CANVAS = 'CANVAS',
+  CREATIVE = 'CREATIVE',
+}
 
-export type LayoutMode = 'default' | 'code' | 'research' | 'data' | 'document';
+// Map ContextType to UIMode (they share the same values)
+const contextTypeToUIMode = (ct: ContextType): UIMode =>
+  UIMode[ct as keyof typeof UIMode] ?? UIMode.CHAT;
 
-export interface AdaptationSuggestion {
-  mode: LayoutMode;
+export interface ModeSuggestion {
+  mode: UIMode;
   confidence: number;
-  reason: string;
-  signals: ContextSignals;
-  timestamp: number;
 }
 
-export interface UIAdaptationEngineConfig {
-  /**
-   * Minimum confidence score (0–1) that a context must reach before
-   * it is even considered as a candidate for suggestion. (default: 0.4)
-   */
-  confidenceThreshold: number;
-
-  /**
-   * Number of consecutive analyzeMessages() calls the candidate mode must
-   * remain dominant before the engine emits a suggestion. (default: 3)
-   */
-  hysteresisCount: number;
-
-  /**
-   * If the current mode's confidence drops below this value the engine
-   * will re-evaluate immediately, ignoring hysteresis. (default: 0.2)
-   */
-  dropoutThreshold: number;
-
-  /**
-   * Configuration passed through to the internal ContextDetector.
-   */
-  detectorConfig?: {
-    windowSize?: number;
-    recencyBias?: number;
-    noiseFloor?: number;
-  };
+export interface ModeChangeEvent {
+  mode: UIMode;
+  confidence: number;
+  isAuto: boolean;
 }
 
-type EventListener = (suggestion: AdaptationSuggestion) => void;
+type ModeChangeListener = (event: ModeChangeEvent) => void;
 
-// ─── Utility ──────────────────────────────────────────────────────────────────
+const STORAGE_KEY = 'iliaGPT_uiPrefs';
+const AUTO_REVERT_MS = 30 * 60 * 1000; // 30 minutes
 
-function buildReason(mode: LayoutMode, signals: ContextSignals): string {
-  switch (mode) {
-    case 'code':
-      return `Code patterns detected (score ${(signals.code * 100).toFixed(0)}%): code blocks, keywords, or error traces found in recent messages.`;
-    case 'research':
-      return `Research patterns detected (score ${(signals.research * 100).toFixed(0)}%): citations, URLs, academic keywords found.`;
-    case 'data':
-      return `Data patterns detected (score ${(signals.data * 100).toFixed(0)}%): tables, CSV references, statistical terms found.`;
-    case 'document':
-      return `Document patterns detected (score ${(signals.document * 100).toFixed(0)}%): editing, drafting, and formatting keywords found.`;
-    default:
-      return 'No strong context signals; using default layout.';
-  }
+interface StoredPreferences {
+  usageCounts: Record<string, number>;
+  manualMode: UIMode | null;
+  manualModeSetAt: number | null;
 }
 
-function dominantToLayoutMode(dominant: ContextSignals['dominant']): LayoutMode {
-  if (dominant === 'default') return 'default';
-  return dominant as LayoutMode;
-}
-
-// ─── UIAdaptationEngine ───────────────────────────────────────────────────────
-
-const DEFAULT_CONFIG: UIAdaptationEngineConfig = {
-  confidenceThreshold: 0.4,
-  hysteresisCount: 3,
-  dropoutThreshold: 0.2,
+const DEFAULT_PREFS: StoredPreferences = {
+  usageCounts: {},
+  manualMode: null,
+  manualModeSetAt: null,
 };
 
 export class UIAdaptationEngine {
-  private config: UIAdaptationEngineConfig;
+  private static instance: UIAdaptationEngine | null = null;
+
   private detector: ContextDetector;
+  private usageCounts: Map<UIMode, number>;
+  private manualMode: UIMode | null = null;
+  private manualModeSetAt: number | null = null;
+  private currentMode: UIMode = UIMode.CHAT;
+  private currentConfidence: number = 0;
+  private listeners: Set<ModeChangeListener> = new Set();
+  private autoRevertTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastActivity: number = Date.now();
 
-  /** Current active (committed) mode */
-  private currentMode: LayoutMode = 'default';
-
-  /** Candidate mode being tracked for hysteresis */
-  private candidateMode: LayoutMode = 'default';
-
-  /** How many consecutive checks the candidate has been dominant */
-  private candidateStreak: number = 0;
-
-  /** Last emitted suggestion */
-  private lastSuggestion: AdaptationSuggestion | null = null;
-
-  /** Event listeners */
-  private listeners: Map<string, Set<EventListener>> = new Map();
-
-  constructor(config: Partial<UIAdaptationEngineConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
-    this.detector = new ContextDetector(this.config.detectorConfig);
+  private constructor() {
+    this.detector = new ContextDetector();
+    this.usageCounts = new Map();
+    this.loadFromStorage();
+    this.scheduleAutoRevert();
   }
 
-  // ── Public API ─────────────────────────────────────────────────────────────
-
-  /**
-   * Analyze a list of conversation messages and return an adaptation suggestion.
-   * Internally applies hysteresis so the returned suggestion may reflect the
-   * *current committed mode* until the candidate has been stable for N checks.
-   */
-  analyzeMessages(messages: Message[]): AdaptationSuggestion {
-    const signals = this.detector.detectContext(messages);
-    const { confidenceThreshold, hysteresisCount, dropoutThreshold } = this.config;
-
-    const candidateLayoutMode = dominantToLayoutMode(signals.dominant);
-    const candidateScore = signals[signals.dominant === 'default' ? 'code' : signals.dominant] ?? 0;
-
-    // ── Early-exit: confidence too low → stay on current mode ──────────────
-    if (signals.dominant !== 'default' && candidateScore < confidenceThreshold) {
-      return this.buildSuggestion(this.currentMode, candidateScore, signals, 'Confidence below threshold; maintaining current mode.');
+  static getInstance(): UIAdaptationEngine {
+    if (!UIAdaptationEngine.instance) {
+      UIAdaptationEngine.instance = new UIAdaptationEngine();
     }
-
-    // ── Dropout: current mode confidence collapsed → reset hysteresis ──────
-    const currentModeScore = this.currentMode === 'default'
-      ? 0
-      : (signals[this.currentMode] ?? 0);
-
-    if (this.currentMode !== 'default' && currentModeScore < dropoutThreshold) {
-      // Immediately allow re-evaluation
-      this.candidateStreak = 0;
-      this.candidateMode = candidateLayoutMode;
-    }
-
-    // ── Hysteresis logic ───────────────────────────────────────────────────
-    if (candidateLayoutMode === this.candidateMode) {
-      this.candidateStreak++;
-    } else {
-      // A different mode has become dominant — reset streak
-      this.candidateMode = candidateLayoutMode;
-      this.candidateStreak = 1;
-    }
-
-    let suggestedMode: LayoutMode;
-    if (this.candidateStreak >= hysteresisCount) {
-      // Promote candidate to current mode
-      suggestedMode = this.candidateMode;
-      this.currentMode = suggestedMode;
-    } else {
-      // Not enough consecutive checks yet — hold the current mode
-      suggestedMode = this.currentMode;
-    }
-
-    const suggestion = this.buildSuggestion(suggestedMode, candidateScore, signals, buildReason(suggestedMode, signals));
-    this.lastSuggestion = suggestion;
-
-    // Emit event if mode changed
-    if (!this.lastSuggestion || this.lastSuggestion.mode !== suggestion.mode || this.lastSuggestion.timestamp !== suggestion.timestamp) {
-      this.emit('suggestion', suggestion);
-    }
-
-    return suggestion;
+    return UIAdaptationEngine.instance;
   }
 
-  /**
-   * Force a mode override, bypassing hysteresis.
-   * Useful when the user manually selects a mode via toolbar.
-   */
-  forceMode(mode: LayoutMode): AdaptationSuggestion {
-    this.currentMode = mode;
-    this.candidateMode = mode;
-    this.candidateStreak = this.config.hysteresisCount; // satisfy hysteresis immediately
+  // ─── Storage ─────────────────────────────────────────────────────────────
 
-    const emptySignals: ContextSignals = {
-      code: 0, research: 0, data: 0, document: 0,
-      dominant: mode === 'default' ? 'default' : mode,
-      raw: { code: 0, research: 0, data: 0, document: 0 },
-      sampledMessages: 0,
+  private loadFromStorage(): void {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const prefs: StoredPreferences = JSON.parse(raw);
+
+      // Restore usage counts
+      for (const [key, count] of Object.entries(prefs.usageCounts ?? {})) {
+        const mode = key as UIMode;
+        if (Object.values(UIMode).includes(mode)) {
+          this.usageCounts.set(mode, count);
+        }
+      }
+
+      // Restore manual mode if still valid (within 30 min)
+      if (prefs.manualMode && prefs.manualModeSetAt) {
+        const elapsed = Date.now() - prefs.manualModeSetAt;
+        if (elapsed < AUTO_REVERT_MS) {
+          this.manualMode = prefs.manualMode;
+          this.manualModeSetAt = prefs.manualModeSetAt;
+        }
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private saveToStorage(): void {
+    try {
+      const counts: Record<string, number> = {};
+      this.usageCounts.forEach((count, mode) => {
+        counts[mode] = count;
+      });
+
+      const prefs: StoredPreferences = {
+        usageCounts: counts,
+        manualMode: this.manualMode,
+        manualModeSetAt: this.manualModeSetAt,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  // ─── Auto-revert logic ────────────────────────────────────────────────────
+
+  private scheduleAutoRevert(): void {
+    if (this.autoRevertTimer) {
+      clearTimeout(this.autoRevertTimer);
+    }
+
+    if (!this.manualMode || !this.manualModeSetAt) return;
+
+    const elapsed = Date.now() - this.manualModeSetAt;
+    const remaining = AUTO_REVERT_MS - elapsed;
+
+    if (remaining <= 0) {
+      this.clearManualMode();
+      return;
+    }
+
+    this.autoRevertTimer = setTimeout(() => {
+      this.clearManualMode();
+    }, remaining);
+  }
+
+  private clearManualMode(): void {
+    this.manualMode = null;
+    this.manualModeSetAt = null;
+    this.saveToStorage();
+
+    // Emit event to notify subscribers that auto mode is restored
+    this.emit({
+      mode: this.currentMode,
+      confidence: this.currentConfidence,
+      isAuto: true,
+    });
+  }
+
+  // ─── Core API ─────────────────────────────────────────────────────────────
+
+  suggestMode(messages: Message[]): ModeSuggestion {
+    this.lastActivity = Date.now();
+
+    const messageDtos = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    const signals = this.detector.detect(messageDtos);
+    const mode = contextTypeToUIMode(signals.type);
+
+    // Increment usage count
+    const currentCount = this.usageCounts.get(mode) ?? 0;
+    this.usageCounts.set(mode, currentCount + 1);
+    this.saveToStorage();
+
+    return { mode, confidence: signals.confidence };
+  }
+
+  setMode(mode: UIMode): void {
+    this.manualMode = mode;
+    this.manualModeSetAt = Date.now();
+    this.lastActivity = Date.now();
+    this.saveToStorage();
+    this.scheduleAutoRevert();
+
+    this.emit({
+      mode,
+      confidence: 1.0,
+      isAuto: false,
+    });
+  }
+
+  /** Returns the mode that should be active given messages */
+  getActiveMode(messages: Message[]): ModeChangeEvent {
+    // Check if manual override is still valid
+    if (this.manualMode && this.manualModeSetAt) {
+      const elapsed = Date.now() - this.manualModeSetAt;
+      if (elapsed < AUTO_REVERT_MS) {
+        return {
+          mode: this.manualMode,
+          confidence: 1.0,
+          isAuto: false,
+        };
+      } else {
+        this.clearManualMode();
+      }
+    }
+
+    // Auto-detect
+    const suggestion = this.suggestMode(messages);
+    this.currentMode = suggestion.mode;
+    this.currentConfidence = suggestion.confidence;
+
+    return {
+      mode: suggestion.mode,
+      confidence: suggestion.confidence,
+      isAuto: true,
     };
-    const suggestion = this.buildSuggestion(mode, 1, emptySignals, `Mode manually overridden to '${mode}'.`);
-    this.lastSuggestion = suggestion;
-    this.emit('suggestion', suggestion);
-    return suggestion;
   }
 
-  /** Returns the current committed mode without running analysis */
-  getCurrentMode(): LayoutMode {
-    return this.currentMode;
+  isInManualMode(): boolean {
+    if (!this.manualMode || !this.manualModeSetAt) return false;
+    const elapsed = Date.now() - this.manualModeSetAt;
+    return elapsed < AUTO_REVERT_MS;
   }
 
-  /** Returns the last suggestion that was emitted */
-  getLastSuggestion(): AdaptationSuggestion | null {
-    return this.lastSuggestion;
+  getManualMode(): UIMode | null {
+    return this.isInManualMode() ? this.manualMode : null;
   }
 
-  /** Reset engine state (useful on conversation clear) */
-  reset(): void {
-    this.currentMode = 'default';
-    this.candidateMode = 'default';
-    this.candidateStreak = 0;
-    this.lastSuggestion = null;
+  getUsageCount(mode: UIMode): number {
+    return this.usageCounts.get(mode) ?? 0;
   }
 
-  /** Update engine configuration at runtime */
-  configure(config: Partial<UIAdaptationEngineConfig>): void {
-    this.config = { ...this.config, ...config };
-    if (config.detectorConfig) {
-      this.detector.configure(config.detectorConfig);
-    }
+  getMostUsedMode(): UIMode {
+    let best: UIMode = UIMode.CHAT;
+    let bestCount = 0;
+
+    this.usageCounts.forEach((count, mode) => {
+      if (count > bestCount) {
+        bestCount = count;
+        best = mode;
+      }
+    });
+
+    return best;
   }
 
-  // ── Event Emitter ──────────────────────────────────────────────────────────
+  // ─── Event subscription ───────────────────────────────────────────────────
 
-  on(event: 'suggestion', listener: EventListener): () => void {
-    if (!this.listeners.has(event)) {
-      this.listeners.set(event, new Set());
-    }
-    this.listeners.get(event)!.add(listener);
-    // Return unsubscribe function
-    return () => this.off(event, listener);
+  subscribe(listener: ModeChangeListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
-  off(event: 'suggestion', listener: EventListener): void {
-    this.listeners.get(event)?.delete(listener);
-  }
-
-  private emit(event: 'suggestion', suggestion: AdaptationSuggestion): void {
-    this.listeners.get(event)?.forEach(listener => {
+  private emit(event: ModeChangeEvent): void {
+    this.listeners.forEach((listener) => {
       try {
-        listener(suggestion);
-      } catch (err) {
-        console.error('[UIAdaptationEngine] Listener threw:', err);
+        listener(event);
+      } catch {
+        // Ignore listener errors
       }
     });
   }
 
-  // ── Private helpers ────────────────────────────────────────────────────────
+  // ─── Cleanup ──────────────────────────────────────────────────────────────
 
-  private buildSuggestion(
-    mode: LayoutMode,
-    confidence: number,
-    signals: ContextSignals,
-    reason: string,
-  ): AdaptationSuggestion {
+  destroy(): void {
+    if (this.autoRevertTimer) {
+      clearTimeout(this.autoRevertTimer);
+    }
+    this.listeners.clear();
+    UIAdaptationEngine.instance = null;
+  }
+}
+
+// ─── React hook ───────────────────────────────────────────────────────────────
+
+export interface UseUIModeReturn {
+  mode: UIMode;
+  confidence: number;
+  setMode: (mode: UIMode) => void;
+  isAutoMode: boolean;
+  resetToAuto: () => void;
+  suggestMode: (messages: Message[]) => ModeSuggestion;
+}
+
+export function useUIMode(messages?: Message[]): UseUIModeReturn {
+  const engine = UIAdaptationEngine.getInstance();
+
+  const [modeState, setModeState] = useState<{
+    mode: UIMode;
+    confidence: number;
+    isAuto: boolean;
+  }>(() => {
+    const isManual = engine.isInManualMode();
+    const manualMode = engine.getManualMode();
     return {
-      mode,
-      confidence: Math.min(1, Math.max(0, confidence)),
-      reason,
-      signals,
-      timestamp: Date.now(),
+      mode: manualMode ?? UIMode.CHAT,
+      confidence: isManual ? 1.0 : 0,
+      isAuto: !isManual,
     };
-  }
+  });
+
+  // Update mode when messages change
+  useEffect(() => {
+    if (!messages || messages.length === 0) return;
+
+    const event = engine.getActiveMode(messages);
+    setModeState({
+      mode: event.mode,
+      confidence: event.confidence,
+      isAuto: event.isAuto,
+    });
+  }, [messages, engine]);
+
+  // Subscribe to external mode changes (e.g., auto-revert)
+  useEffect(() => {
+    const unsubscribe = engine.subscribe((event) => {
+      setModeState({
+        mode: event.mode,
+        confidence: event.confidence,
+        isAuto: event.isAuto,
+      });
+    });
+    return unsubscribe;
+  }, [engine]);
+
+  const setMode = useCallback(
+    (mode: UIMode) => {
+      engine.setMode(mode);
+      setModeState({ mode, confidence: 1.0, isAuto: false });
+    },
+    [engine]
+  );
+
+  const resetToAuto = useCallback(() => {
+    // Force auto-detection by clearing manual mode via a private-like approach
+    // We re-suggest based on current messages
+    const currentMessages = messages ?? [];
+    if (currentMessages.length > 0) {
+      const suggestion = engine.suggestMode(currentMessages);
+      setModeState({
+        mode: suggestion.mode,
+        confidence: suggestion.confidence,
+        isAuto: true,
+      });
+    } else {
+      setModeState({ mode: UIMode.CHAT, confidence: 0, isAuto: true });
+    }
+  }, [engine, messages]);
+
+  const suggestModeFn = useCallback(
+    (msgs: Message[]) => engine.suggestMode(msgs),
+    [engine]
+  );
+
+  return {
+    mode: modeState.mode,
+    confidence: modeState.confidence,
+    setMode,
+    isAutoMode: modeState.isAuto,
+    resetToAuto,
+    suggestMode: suggestModeFn,
+  };
 }
-
-// ─── Singleton factory ────────────────────────────────────────────────────────
-
-let _instance: UIAdaptationEngine | null = null;
-
-/** Returns a shared singleton instance of UIAdaptationEngine */
-export function getUIAdaptationEngine(config?: Partial<UIAdaptationEngineConfig>): UIAdaptationEngine {
-  if (!_instance) {
-    _instance = new UIAdaptationEngine(config);
-  }
-  return _instance;
-}
-
-/** Replace the singleton (useful in tests or on settings change) */
-export function resetUIAdaptationEngine(config?: Partial<UIAdaptationEngineConfig>): UIAdaptationEngine {
-  _instance = new UIAdaptationEngine(config);
-  return _instance;
-}
-
-export default UIAdaptationEngine;
