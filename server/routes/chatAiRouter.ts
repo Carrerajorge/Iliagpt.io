@@ -7810,7 +7810,7 @@ ${documentText}`;
 
         // Enhanced DATA_MODE validation with all checks
         const validationResult = validateDataModeResponseEnhanced(responsePayload, requestId, {
-          contentType: 'text/event-stream',
+          contentType: 'application/json',
           attachmentNames,
           requireFullCoverage: requiresFullCoverage,
           userQuery
