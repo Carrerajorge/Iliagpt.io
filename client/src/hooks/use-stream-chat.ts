@@ -625,6 +625,7 @@ export function useStreamChat(deps: StreamChatDeps) {
           let sseBuffer = "";
           let currentEventType = "chunk";
           let streamDone = false;
+          let pendingTerminalError: Error | null = null;
 
           while (!streamDone) {
             if (combinedSignal.aborted) break;
@@ -779,6 +780,33 @@ export function useStreamChat(deps: StreamChatDeps) {
                 streamDone = true;
                 flushNow(conversationId);
 
+                if (pendingTerminalError || data.error === true) {
+                  const terminalError =
+                    pendingTerminalError ??
+                    new Error(
+                      typeof data.error === "string" && data.error.trim()
+                        ? data.error
+                        : "Stream error"
+                    );
+                  lastError = terminalError;
+                  lastResponse = response;
+                  lastContent = fullContent;
+
+                  const errorMsg = buildErrorMessage?.(terminalError, messageId) ?? {
+                    id: messageId,
+                    role: "assistant" as const,
+                    content: terminalError.message || "Error de conexión. Por favor, intenta de nuevo.",
+                    timestamp: new Date(),
+                    requestId: data.requestId || streamRequestId,
+                  };
+
+                  if (!session.finalizing) {
+                    finalize(errorMsg, conversationId, "error");
+                  }
+
+                  return { ok: false, content: fullContent, message: errorMsg, response, error: terminalError };
+                }
+
                 const msg = buildFinalMessage?.(fullContent, data, messageId) ?? {
                   id: messageId,
                   role: "assistant" as const,
@@ -795,9 +823,18 @@ export function useStreamChat(deps: StreamChatDeps) {
 
               if (currentEventType === "error" || currentEventType === "production_error") {
                 const errorMsg = data.message || data.error || "Stream error";
-                throw new Error(errorMsg);
+                pendingTerminalError = new Error(errorMsg);
+                if (!isStaleConversation) {
+                  setAiState("error", conversationId);
+                  onAiStateChange?.("error");
+                }
+                continue;
               }
             }
+          }
+
+          if (pendingTerminalError) {
+            throw pendingTerminalError;
           }
 
           if (!session.finalizing && fullContent) {

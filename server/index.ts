@@ -65,7 +65,65 @@ function clampConfigNumber(value: string | undefined, fallback: number, min: num
   return Math.min(Math.max(Math.trunc(parsed), min), max);
 }
 
+const BODY_LIMIT_RE = /^\s*(\d+)\s*(b|kb|mb|gb)?\s*$/i;
+const BODY_LIMIT_MULTIPLIERS: Record<string, number> = {
+  b: 1,
+  kb: 1024,
+  mb: 1024 * 1024,
+  gb: 1024 * 1024 * 1024,
+};
+
+function normalizeBodyLimit(value: string | undefined, fallback: string): string {
+  if (!value) {
+    return fallback;
+  }
+
+  const match = value.match(BODY_LIMIT_RE);
+  if (!match) {
+    Logger.warn(`[config] Invalid body limit "${value}", using fallback ${fallback}`);
+    return fallback;
+  }
+
+  const [, amount, rawUnit] = match;
+  const unit = (rawUnit || "b").toLowerCase();
+  return `${amount}${unit}`;
+}
+
+function parseBodyLimitBytes(value: string): number | null {
+  const match = value.match(BODY_LIMIT_RE);
+  if (!match) {
+    return null;
+  }
+
+  const amount = Number(match[1]);
+  const unit = (match[2] || "b").toLowerCase();
+  const multiplier = BODY_LIMIT_MULTIPLIERS[unit];
+
+  if (!Number.isFinite(amount) || amount <= 0 || !multiplier) {
+    return null;
+  }
+
+  return amount * multiplier;
+}
+
 const isProdEnv = process.env.NODE_ENV === 'production';
+const apiJsonBodyLimit = normalizeBodyLimit(
+  env.API_JSON_BODY_LIMIT,
+  isProdEnv ? "5mb" : "10mb",
+);
+const configuredChatStreamJsonBodyLimit = normalizeBodyLimit(
+  env.CHAT_STREAM_JSON_BODY_LIMIT,
+  isProdEnv ? "32mb" : "64mb",
+);
+const urlencodedBodyLimit = normalizeBodyLimit(
+  env.URLENCODED_BODY_LIMIT,
+  isProdEnv ? "2mb" : "5mb",
+);
+const chatStreamJsonBodyLimit =
+  (parseBodyLimitBytes(configuredChatStreamJsonBodyLimit) || 0) >= (parseBodyLimitBytes(apiJsonBodyLimit) || 0)
+    ? configuredChatStreamJsonBodyLimit
+    : apiJsonBodyLimit;
+
 const stopSocketHardening = hardenServer(httpServer, {
   headersTimeout: Number(process.env.SOCKET_HEADERS_TIMEOUT_MS) || (isProdEnv ? 15_000 : 60_000),
   keepAliveTimeout: Number(process.env.SOCKET_KEEP_ALIVE_TIMEOUT_MS) || (isProdEnv ? 65_000 : 605_000),
@@ -136,29 +194,29 @@ app.use("/api", apiSecurityHeaders());
 app.disable("x-powered-by");
 
 // Route-specific body limits (MUST come before global parser)
-// /api/chat/stream needs a higher limit to support inline image base64 for vision
+// /api/chat/stream needs a higher limit to support inline image base64 for vision,
+// but it should still be capped independently from the rest of the API surface.
 app.use("/api/chat/stream", express.json({
-  limit: "500mb", // Supports massive contexts > 1M tokens and heavy files
+  limit: chatStreamJsonBodyLimit,
   verify: (req: any, _res, buf) => {
     req.rawBody = buf.toString();
   },
   strict: true,
 }));
 
-// Global Body Limit: Reduced to 1MB to prevent DoS
-// For large file uploads, use specific routes with increased limits (e.g. Multer)
+// Global body parsing should stay significantly tighter than chat streaming.
+// Large uploads should go through dedicated upload routes instead of generic JSON.
 app.use(
   express.json({
-    limit: "500mb",
+    limit: apiJsonBodyLimit,
     verify: (req: any, res: any, buf: Buffer) => {
       req.rawBody = buf.toString();
     },
-    // SECURITY FIX #15: Strict JSON parsing to reject malformed JSON
     strict: true,
   }),
 );
 
-app.use(express.urlencoded({ extended: false, limit: '500mb', parameterLimit: 1000 }));
+app.use(express.urlencoded({ extended: false, limit: urlencodedBodyLimit, parameterLimit: 1000 }));
 
 // API hardening boundary: path/query/payload validation and canonicalization
 app.use("/api", requestBoundaryGuard);

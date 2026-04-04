@@ -6,6 +6,10 @@ import { sendShareNotificationEmail } from "../services/emailService";
 import { getSecureUserId, getOrCreateSecureUserId } from "../lib/anonUserHelper";
 import { sanitizeMessageContent } from "../lib/markdownSanitizer";
 import { isTitlePlaceholder } from "../lib/chatTitleGenerator";
+import {
+  MAX_CHAT_ATTACHMENTS,
+  MAX_CHAT_ATTACHMENT_SIZE_BYTES,
+} from "@shared/chatLimits";
 
 // Higher body limit middleware for message creation endpoints.
 // The global limit is 1MB, but messages with attachment metadata can be larger.
@@ -17,8 +21,8 @@ const messageBodyLimit = express.json({ limit: '100mb' });
 const MAX_MESSAGE_LENGTH = 5000000; // 5MB max message for 1M context window
 const MAX_TITLE_LENGTH = 200;
 const MAX_MESSAGES_PER_CREATE = 100;
-const MAX_ATTACHMENTS_PER_MESSAGE = 20;
-const MAX_ATTACHMENT_SIZE_BYTES = 15 * 1024 * 1024;
+const MAX_ATTACHMENTS_PER_MESSAGE = MAX_CHAT_ATTACHMENTS;
+const MAX_ATTACHMENT_SIZE_BYTES = MAX_CHAT_ATTACHMENT_SIZE_BYTES;
 const MAX_ATTACHMENT_NAME_LENGTH = 200;
 const MAX_SHARE_PARTICIPANTS = 50;
 const MAX_REQUEST_ID_LENGTH = 128;

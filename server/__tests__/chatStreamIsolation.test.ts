@@ -179,6 +179,7 @@ describe("chat stream isolation", () => {
         expect(events.length).toBeGreaterThan(0);
         expect(events.some((e) => e.event === "chunk")).toBe(true);
         expect(events.some((e) => e.event === "done")).toBe(true);
+        expect(events.some((e) => e.event === "complete")).toBe(true);
 
         for (const evt of events) {
           expect(evt.data?.conversationId).toBe(expectedConversationId);

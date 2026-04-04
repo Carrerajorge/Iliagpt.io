@@ -66,6 +66,10 @@ interface StreamChunk {
   done: boolean;
   requestId: string;
   provider?: LLMProvider;
+  providerSwitch?: {
+    fromProvider: LLMProvider;
+    toProvider: LLMProvider;
+  };
   checkpoint?: StreamCheckpoint;
 }
 
@@ -1560,6 +1564,7 @@ class LLMGateway {
     const enableFallback = options.enableFallback !== false;
     let sequenceId = 0;
     let accumulatedContent = "";
+    let pendingProviderSwitch: StreamChunk["providerSwitch"] | undefined;
     const configuredProviders = this.getSmartRoutedProviders();
     if (configuredProviders.length === 0) {
       throw new Error(
@@ -1630,6 +1635,7 @@ class LLMGateway {
             done: chunk.done,
             requestId,
             provider,
+            providerSwitch: pendingProviderSwitch,
             checkpoint: {
               requestId,
               sequenceId,
@@ -1637,6 +1643,7 @@ class LLMGateway {
               timestamp: Date.now(),
             },
           };
+          pendingProviderSwitch = undefined;
 
           // Save checkpoint periodically
           if (sequenceId % 10 === 0) {
@@ -1665,6 +1672,14 @@ class LLMGateway {
 
         if (!enableFallback || providers.indexOf(provider) === providers.length - 1) {
           throw error;
+        }
+
+        const nextProvider = providers[providers.indexOf(provider) + 1];
+        if (nextProvider && nextProvider !== provider) {
+          pendingProviderSwitch = {
+            fromProvider: provider,
+            toProvider: nextProvider,
+          };
         }
 
         console.log(`[LLMGateway] ${requestId} attempting stream fallback to next provider`);

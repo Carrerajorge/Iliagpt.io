@@ -527,6 +527,15 @@ export function ChatInterface({
     originalTokens: number;
     finalTokens: number;
     droppedMessages: number;
+    confidence?: number;
+    clarificationQuestions?: string[];
+    fromProvider?: string;
+    toProvider?: string;
+    originalMessageCount?: number;
+    finalMessageCount?: number;
+    summarizedMessages?: number;
+    relevantMessagesKept?: number;
+    recentMessagesKept?: number;
   } | null>(null);
   const [isBrowserOpen, setIsBrowserOpen] = useState(false);
   const [browserUrl, setBrowserUrl] = useState("https://www.google.com");
@@ -6191,6 +6200,33 @@ IMPORTANTE:
                     return;
                   }
 
+                  if (eventType === "notice" && data?.type === "provider_fallback") {
+                    setContextNotice({
+                      type: data.type,
+                      originalTokens: 0,
+                      finalTokens: 0,
+                      droppedMessages: 0,
+                      fromProvider: data.fromProvider,
+                      toProvider: data.toProvider,
+                    });
+                    return;
+                  }
+
+                  if (eventType === "notice" && data?.type === "memory_compacted") {
+                    setContextNotice({
+                      type: data.type,
+                      originalTokens: data.originalTokens ?? 0,
+                      finalTokens: data.finalTokens ?? 0,
+                      droppedMessages: 0,
+                      originalMessageCount: data.originalMessageCount,
+                      finalMessageCount: data.finalMessageCount,
+                      summarizedMessages: data.summarizedMessages,
+                      relevantMessagesKept: data.relevantMessagesKept,
+                      recentMessagesKept: data.recentMessagesKept,
+                    });
+                    return;
+                  }
+
                   if (eventType === "production_start") {
                     isProductionStream = true;
                     setAiStateForStream("agent_working");
@@ -7132,6 +7168,10 @@ IMPORTANTE:
                                 <>Contexto comprimido: {contextNotice.droppedMessages} mensaje{contextNotice.droppedMessages !== 1 ? 's' : ''} anterior{contextNotice.droppedMessages !== 1 ? 'es' : ''} omitido{contextNotice.droppedMessages !== 1 ? 's' : ''} para ajustar al límite del modelo ({contextNotice.originalTokens.toLocaleString()} &rarr; {contextNotice.finalTokens.toLocaleString()} tokens).</>
                               ) : contextNotice.type === "low_confidence_prompt" ? (
                                 <>Prompt ambiguo (confianza: {((contextNotice as any).confidence * 100).toFixed(0)}%). {(contextNotice as any).clarificationQuestions?.[0] || "Intenta ser más específico."}</>
+                              ) : contextNotice.type === "memory_compacted" ? (
+                                <>Memoria compactada antes de responder: {((contextNotice as any).originalMessageCount ?? 0).toLocaleString()} &rarr; {((contextNotice as any).finalMessageCount ?? 0).toLocaleString()} mensajes, {((contextNotice as any).summarizedMessages ?? 0).toLocaleString()} resumidos y {((contextNotice as any).relevantMessagesKept ?? 0).toLocaleString()} relevantes preservados.</>
+                              ) : contextNotice.type === "provider_fallback" ? (
+                                <>El sistema cambió el proveedor de respuesta de {(contextNotice as any).fromProvider || "uno anterior"} a {(contextNotice as any).toProvider || "otro disponible"} para mantener el stream estable.</>
                               ) : (
                                 <>Aviso del sistema.</>
                               )}
