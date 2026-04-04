@@ -3592,10 +3592,33 @@ export function ChatInterface({
 
     if (filesToUpload.length > 0) {
       if (hasTextContent && allFilesAreImages) {
+        const LONG_TEXT_THRESHOLD = 500;
+        if (pastedText.trim().length > LONG_TEXT_THRESHOLD) {
+          e.preventDefault();
+          const looksTabular = /\t/.test(pastedText) || pastedText.split("\n").length > 3;
+          const ext = looksTabular ? "csv" : "txt";
+          const mime = looksTabular ? "text/csv" : "text/plain";
+          const content = looksTabular ? pastedText.replace(/\t/g, ",") : pastedText;
+          const docFile = new File([content], `pasted-content-${Date.now()}.${ext}`, { type: mime });
+          await processFilesForUpload([normalizeFileForUpload(docFile)]);
+          return;
+        }
         return;
       }
       e.preventDefault();
       await processFilesForUpload(filesToUpload);
+      return;
+    }
+
+    const LONG_PASTE_THRESHOLD = 500;
+    if (pastedText.trim().length > LONG_PASTE_THRESHOLD) {
+      e.preventDefault();
+      const looksTabular = /\t/.test(pastedText) || (pastedText.split("\n").length > 5 && /[,;|]/.test(pastedText));
+      const ext = looksTabular ? "csv" : "txt";
+      const mime = looksTabular ? "text/csv" : "text/plain";
+      const content = looksTabular && /\t/.test(pastedText) ? pastedText.replace(/\t/g, ",") : pastedText;
+      const docFile = new File([content], `pasted-content-${Date.now()}.${ext}`, { type: mime });
+      await processFilesForUpload([normalizeFileForUpload(docFile)]);
       return;
     }
 
