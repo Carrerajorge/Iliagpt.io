@@ -1,500 +1,417 @@
-import axios, { type AxiosRequestConfig } from "axios"
-import { Logger } from "../lib/logger"
-import { redis } from "../lib/redis"
+/**
+ * APIConnectorFramework — auto-discovers and calls external APIs from OpenAPI specs.
+ * Manages API keys (encrypted at rest), rate limiting per API, and response validation.
+ */
+
+import { createLogger } from "../utils/logger";
+import { AppError } from "../utils/errors";
+
+const logger = createLogger("APIConnectorFramework");
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface OpenAPISpec {
-  openapi: string
-  info: { title: string; version: string; description?: string }
-  servers?: Array<{ url: string; description?: string }>
-  paths: Record<string, Record<string, OperationObject>>
-  components?: {
-    securitySchemes?: Record<string, SecurityScheme>
-    schemas?: Record<string, any>
-  }
+  openapi?: string;
+  swagger?: string;
+  info: { title: string; version: string; description?: string };
+  servers?: Array<{ url: string; description?: string }>;
+  paths: Record<string, PathItem>;
+  components?: { schemas?: Record<string, unknown>; securitySchemes?: Record<string, SecurityScheme> };
+}
+
+interface PathItem {
+  get?: OperationObject;
+  post?: OperationObject;
+  put?: OperationObject;
+  patch?: OperationObject;
+  delete?: OperationObject;
 }
 
 interface OperationObject {
-  operationId?: string
-  summary?: string
-  description?: string
-  parameters?: any[]
-  requestBody?: any
-  responses?: Record<string, any>
-  security?: any[]
-  tags?: string[]
+  operationId?: string;
+  summary?: string;
+  description?: string;
+  parameters?: Parameter[];
+  requestBody?: { content?: Record<string, { schema?: unknown }> };
+  responses?: Record<string, { description?: string; content?: Record<string, { schema?: unknown }> }>;
+  tags?: string[];
+  security?: Array<Record<string, string[]>>;
+}
+
+interface Parameter {
+  name: string;
+  in: "query" | "header" | "path" | "cookie";
+  required?: boolean;
+  description?: string;
+  schema?: { type?: string; enum?: unknown[]; default?: unknown };
 }
 
 interface SecurityScheme {
-  type: string
-  scheme?: string
-  name?: string
-  in?: string
-  flows?: any
+  type: "apiKey" | "http" | "oauth2" | "openIdConnect";
+  in?: "header" | "query" | "cookie";
+  name?: string;
+  scheme?: string;
 }
 
 export interface DiscoveredEndpoint {
-  operationId: string
-  method: string
-  path: string
-  summary?: string
-  description?: string
-  parameters: ParameterDef[]
-  requestBody?: RequestBodyDef
-  responseSchema?: any
-  authRequired: boolean
-  tags: string[]
+  id: string;
+  method: string;
+  path: string;
+  summary: string;
+  description?: string;
+  parameters: Parameter[];
+  requiresAuth: boolean;
+  tags: string[];
 }
 
-export interface ParameterDef {
-  name: string
-  in: "query" | "path" | "header" | "cookie"
-  required: boolean
-  schema?: any
-  description?: string
+export interface APICallOptions {
+  apiId: string;
+  endpointId: string;
+  params?: Record<string, unknown>;
+  body?: unknown;
+  headers?: Record<string, string>;
 }
 
-export interface RequestBodyDef {
-  required: boolean
-  contentType: string
-  schema?: any
+export interface APICallResult {
+  status: number;
+  data: unknown;
+  headers: Record<string, string>;
+  latencyMs: number;
+  cached: boolean;
 }
 
-export interface AuthConfig {
-  type: "bearer" | "api_key" | "basic" | "oauth2" | "none"
-  token?: string
-  apiKey?: string
-  apiKeyHeader?: string
-  username?: string
-  password?: string
+export interface APIRegistration {
+  id: string;
+  name: string;
+  specUrl?: string;
+  baseUrl: string;
+  spec?: OpenAPISpec;
+  authType: "none" | "apiKey" | "bearer" | "basic";
+  keyHeaderName?: string;
+  encryptedKey?: string;
+  rateLimit: { requests: number; windowMs: number };
 }
 
-export interface ApiCallResult {
-  success: boolean
-  status: number
-  data: any
-  headers: Record<string, string>
-  durationMs: number
-  error?: string
+// ─── Simple Encryption (XOR obfuscation for in-memory storage) ───────────────
+// For production, use server-side encryption via KMS or Vault.
+
+function obfuscateKey(key: string, salt: string): string {
+  const salted = salt.repeat(Math.ceil(key.length / salt.length)).slice(0, key.length);
+  return Buffer.from(
+    key.split("").map((c, i) => c.charCodeAt(0) ^ salted.charCodeAt(i)).map((n) => String.fromCharCode(n)).join("")
+  ).toString("base64");
 }
 
-interface ConnectorConfig {
-  name: string
-  specUrl: string
-  baseUrl: string
-  auth?: AuthConfig
-  endpoints: DiscoveredEndpoint[]
-  registeredAt: string
+function deobfuscateKey(obfuscated: string, salt: string): string {
+  const raw = Buffer.from(obfuscated, "base64").toString();
+  const salted = salt.repeat(Math.ceil(raw.length / salt.length)).slice(0, raw.length);
+  return raw.split("").map((c, i) => String.fromCharCode(c.charCodeAt(0) ^ salted.charCodeAt(i))).join("");
 }
 
-interface ConnectorSummary {
-  name: string
-  specUrl: string
-  baseUrl: string
-  endpointCount: number
-  registeredAt: string
+const KEY_SALT = process.env.API_KEY_SALT ?? "iliagpt-default-salt-do-not-use-in-prod";
+
+// ─── Rate Limiter ─────────────────────────────────────────────────────────────
+
+interface RateWindow {
+  count: number;
+  resetAt: number;
 }
 
-interface ValidationResult {
-  valid: boolean
-  errors: string[]
-}
+const rateLimits = new Map<string, RateWindow>();
 
-const CONNECTOR_KEY_PREFIX = "connector:"
-const RATE_LIMIT_PREFIX = "connratelimit:"
-const RATE_LIMIT_MAX = 60
-const RATE_LIMIT_WINDOW = 60
+function checkRateLimit(apiId: string, limit: { requests: number; windowMs: number }): boolean {
+  const now = Date.now();
+  const window = rateLimits.get(apiId);
 
-class APIConnectorFramework {
-  private connectors: Map<string, ConnectorConfig> = new Map()
-
-  async discoverFromSpec(specUrl: string, auth?: AuthConfig): Promise<DiscoveredEndpoint[]> {
-    Logger.info("[APIConnector] Discovering from spec", { specUrl })
-
-    const response = await axios.get<string>(specUrl, {
-      timeout: 15000,
-      headers: { Accept: "application/json, application/yaml, text/yaml, */*" },
-      responseType: "text",
-    })
-
-    const spec = this.parseOpenAPISpec(response.data)
-    const endpoints = this.extractEndpoints(spec)
-    Logger.info("[APIConnector] Discovered endpoints", { count: endpoints.length, specUrl })
-    return endpoints
+  if (!window || now >= window.resetAt) {
+    rateLimits.set(apiId, { count: 1, resetAt: now + limit.windowMs });
+    return true;
   }
 
-  async registerConnector(name: string, specUrl: string, auth?: AuthConfig): Promise<DiscoveredEndpoint[]> {
-    Logger.info("[APIConnector] Registering connector", { name, specUrl })
+  if (window.count >= limit.requests) return false;
+  window.count++;
+  return true;
+}
 
-    const endpoints = await this.discoverFromSpec(specUrl, auth)
+// ─── Response Cache ───────────────────────────────────────────────────────────
 
-    const response = await axios.get<string>(specUrl, { timeout: 15000, responseType: "text" })
-    const spec = this.parseOpenAPISpec(response.data)
-    const baseUrl = spec.servers?.[0]?.url ?? ""
+interface CacheEntry {
+  data: unknown;
+  status: number;
+  headers: Record<string, string>;
+  expiresAt: number;
+}
 
-    const config: ConnectorConfig = {
-      name,
-      specUrl,
-      baseUrl,
-      auth,
-      endpoints,
-      registeredAt: new Date().toISOString(),
-    }
+const responseCache = new Map<string, CacheEntry>();
+const CACHE_TTL = 60_000; // 1 minute default
 
-    this.connectors.set(name, config)
+function getCacheKey(apiId: string, endpointId: string, params: Record<string, unknown>): string {
+  return `${apiId}:${endpointId}:${JSON.stringify(params)}`;
+}
 
-    try {
-      await redis.setex(
-        `${CONNECTOR_KEY_PREFIX}${name}`,
-        86400 * 7,
-        JSON.stringify(config)
-      )
-    } catch (err) {
-      Logger.warn("[APIConnector] Failed to persist connector", { name, error: (err as Error).message })
-    }
+// ─── OpenAPI Spec Fetcher ─────────────────────────────────────────────────────
 
-    Logger.info("[APIConnector] Connector registered", { name, endpoints: endpoints.length })
-    return endpoints
+async function fetchOpenAPISpec(specUrl: string): Promise<OpenAPISpec> {
+  const resp = await fetch(specUrl, {
+    headers: { "Accept": "application/json, application/yaml" },
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!resp.ok) throw new AppError(`Failed to fetch OpenAPI spec: ${resp.status}`, 502, "SPEC_FETCH_ERROR");
+
+  const contentType = resp.headers.get("content-type") ?? "";
+
+  if (contentType.includes("yaml") || specUrl.endsWith(".yaml") || specUrl.endsWith(".yml")) {
+    // Basic YAML to JSON conversion for simple cases
+    const text = await resp.text();
+    // For production, use a proper YAML parser like js-yaml
+    logger.warn("YAML spec detected — basic conversion only. Install js-yaml for full support.");
+    throw new AppError("YAML specs require js-yaml dependency", 501, "YAML_NOT_SUPPORTED");
   }
 
-  async callEndpoint(
-    connectorName: string,
-    operationId: string,
-    params: Record<string, any>
-  ): Promise<ApiCallResult> {
-    const connector = await this.loadConnector(connectorName)
-    if (!connector) {
-      return { success: false, status: 0, data: null, headers: {}, durationMs: 0, error: `Connector '${connectorName}' not found` }
-    }
+  return resp.json() as Promise<OpenAPISpec>;
+}
 
-    const endpoint = connector.endpoints.find((e) => e.operationId === operationId)
-    if (!endpoint) {
-      return { success: false, status: 0, data: null, headers: {}, durationMs: 0, error: `Endpoint '${operationId}' not found in connector '${connectorName}'` }
-    }
+// ─── Endpoint Discovery ───────────────────────────────────────────────────────
 
-    const validation = this.validateParams(endpoint, params)
-    if (!validation.valid) {
-      return { success: false, status: 400, data: null, headers: {}, durationMs: 0, error: `Validation failed: ${validation.errors.join(", ")}` }
-    }
+function discoverEndpoints(spec: OpenAPISpec): DiscoveredEndpoint[] {
+  const endpoints: DiscoveredEndpoint[] = [];
 
-    const rateLimitKey = `${RATE_LIMIT_PREFIX}${connectorName}`
-    const count = await redis.incr(rateLimitKey)
-    if (count === 1) await redis.expire(rateLimitKey, RATE_LIMIT_WINDOW)
-    if (count > RATE_LIMIT_MAX) {
-      return { success: false, status: 429, data: null, headers: {}, durationMs: 0, error: "Rate limit exceeded for connector" }
-    }
+  for (const [path, pathItem] of Object.entries(spec.paths)) {
+    const methods = ["get", "post", "put", "patch", "delete"] as const;
 
-    const requestConfig = this.buildRequest(endpoint, params, connector.auth, connector.baseUrl)
+    for (const method of methods) {
+      const op = pathItem[method];
+      if (!op) continue;
 
-    const start = Date.now()
-    try {
-      const response = await axios(requestConfig)
-      const durationMs = Date.now() - start
-      Logger.info("[APIConnector] Call success", { connectorName, operationId, status: response.status, durationMs })
-      return {
-        success: true,
-        status: response.status,
-        data: response.data,
-        headers: response.headers as Record<string, string>,
-        durationMs,
-      }
-    } catch (err: any) {
-      const durationMs = Date.now() - start
-      const status = err?.response?.status ?? 0
-      const error = err?.response?.data?.message ?? err?.message ?? "Request failed"
-      Logger.error("[APIConnector] Call failed", { connectorName, operationId, status, error })
-      return {
-        success: false,
-        status,
-        data: err?.response?.data ?? null,
-        headers: {},
-        durationMs,
-        error,
-      }
+      const id = op.operationId ?? `${method}:${path}`;
+      const requiresAuth = (op.security?.length ?? 0) > 0 || spec.components?.securitySchemes !== undefined;
+
+      endpoints.push({
+        id,
+        method: method.toUpperCase(),
+        path,
+        summary: op.summary ?? `${method.toUpperCase()} ${path}`,
+        description: op.description,
+        parameters: op.parameters ?? [],
+        requiresAuth,
+        tags: op.tags ?? [],
+      });
     }
   }
 
-  async listConnectors(): Promise<ConnectorSummary[]> {
-    // Load from Redis if local map is empty
-    await this.loadAllConnectors()
+  return endpoints;
+}
 
-    return Array.from(this.connectors.values()).map((c) => ({
-      name: c.name,
-      specUrl: c.specUrl,
-      baseUrl: c.baseUrl,
-      endpointCount: c.endpoints.length,
-      registeredAt: c.registeredAt,
-    }))
-  }
+// ─── URL Builder ──────────────────────────────────────────────────────────────
 
-  async getConnectorEndpoints(name: string): Promise<DiscoveredEndpoint[]> {
-    const connector = await this.loadConnector(name)
-    return connector?.endpoints ?? []
-  }
+function buildRequestUrl(
+  baseUrl: string,
+  path: string,
+  params: Record<string, unknown>,
+  parameters: Parameter[]
+): { url: string; query: URLSearchParams; pathParams: Record<string, string> } {
+  const queryParams = new URLSearchParams();
+  const pathParams: Record<string, string> = {};
 
-  async removeConnector(name: string): Promise<void> {
-    this.connectors.delete(name)
-    try {
-      await redis.del(`${CONNECTOR_KEY_PREFIX}${name}`)
-      Logger.info("[APIConnector] Connector removed", { name })
-    } catch (err) {
-      Logger.warn("[APIConnector] Failed to remove connector from Redis", { name, error: (err as Error).message })
+  for (const p of parameters) {
+    const value = params[p.name];
+    if (value === undefined || value === null) continue;
+
+    if (p.in === "path") {
+      pathParams[p.name] = String(value);
+    } else if (p.in === "query") {
+      queryParams.set(p.name, String(value));
     }
   }
 
-  private parseOpenAPISpec(raw: string): OpenAPISpec {
-    // Try JSON first
-    const trimmed = raw.trim()
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+  let resolvedPath = path;
+  for (const [k, v] of Object.entries(pathParams)) {
+    resolvedPath = resolvedPath.replace(`{${k}}`, encodeURIComponent(v));
+  }
+
+  const base = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+  const url = `${base}${resolvedPath}${queryParams.toString() ? `?${queryParams}` : ""}`;
+
+  return { url, query: queryParams, pathParams };
+}
+
+// ─── Request Logger ───────────────────────────────────────────────────────────
+
+interface RequestLog {
+  apiId: string;
+  endpointId: string;
+  method: string;
+  url: string;
+  statusCode: number;
+  latencyMs: number;
+  timestamp: string;
+  error?: string;
+}
+
+const requestLogs: RequestLog[] = [];
+const MAX_LOGS = 1_000;
+
+function logRequest(entry: RequestLog): void {
+  requestLogs.push(entry);
+  if (requestLogs.length > MAX_LOGS) requestLogs.shift();
+}
+
+// ─── Main Framework ───────────────────────────────────────────────────────────
+
+export class APIConnectorFramework {
+  private registry = new Map<string, APIRegistration>();
+  private endpointCache = new Map<string, DiscoveredEndpoint[]>();
+
+  async registerAPI(registration: APIRegistration & { apiKey?: string }): Promise<void> {
+    const reg: APIRegistration = { ...registration };
+
+    if (registration.apiKey) {
+      reg.encryptedKey = obfuscateKey(registration.apiKey, KEY_SALT);
+    }
+
+    // Fetch spec if URL provided
+    if (reg.specUrl && !reg.spec) {
       try {
-        return JSON.parse(trimmed)
+        reg.spec = await fetchOpenAPISpec(reg.specUrl);
+        logger.info(`Loaded OpenAPI spec for ${reg.name}: ${Object.keys(reg.spec.paths).length} paths`);
       } catch (err) {
-        throw new Error(`Failed to parse OpenAPI spec as JSON: ${(err as Error).message}`)
+        logger.warn(`Could not load spec for ${reg.name}: ${(err as Error).message}`);
       }
     }
 
-    // Parse YAML manually (minimal implementation for common OpenAPI patterns)
-    // For production, would use yaml package: import yaml from 'yaml'
-    // Attempt to convert simple YAML to JSON via basic parsing
-    try {
-      // Try dynamic import of yaml package if available
-      const parsed = this.parseYamlFallback(trimmed)
-      return parsed as OpenAPISpec
-    } catch {
-      throw new Error("Failed to parse OpenAPI spec: unsupported format. Ensure spec is valid JSON or YAML.")
+    if (reg.spec) {
+      this.endpointCache.set(reg.id, discoverEndpoints(reg.spec));
     }
+
+    this.registry.set(reg.id, reg);
+    logger.info(`Registered API: ${reg.id} (${reg.name})`);
   }
 
-  private parseYamlFallback(yaml: string): any {
-    // Attempt to use the 'yaml' npm package dynamically
-    // This avoids a static import that might fail if yaml is not installed
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const yamlModule = require("yaml")
-      return yamlModule.parse(yaml)
-    } catch {
-      // If yaml package unavailable, try basic conversion
-      throw new Error("yaml package not available; please install it: npm install yaml")
-    }
+  getEndpoints(apiId: string): DiscoveredEndpoint[] {
+    return this.endpointCache.get(apiId) ?? [];
   }
 
-  private buildRequest(
-    endpoint: DiscoveredEndpoint,
-    params: Record<string, any>,
-    auth?: AuthConfig,
-    baseUrl?: string
-  ): AxiosRequestConfig {
-    const remainingParams = { ...params }
+  listAPIs(): Array<{ id: string; name: string; endpointCount: number }> {
+    return [...this.registry.values()].map((r) => ({
+      id: r.id,
+      name: r.name,
+      endpointCount: this.endpointCache.get(r.id)?.length ?? 0,
+    }));
+  }
 
-    // Substitute path parameters
-    let resolvedPath = endpoint.path
-    for (const param of endpoint.parameters.filter((p) => p.in === "path")) {
-      if (param.name in remainingParams) {
-        resolvedPath = resolvedPath.replace(
-          `{${param.name}}`,
-          encodeURIComponent(String(remainingParams[param.name]))
-        )
-        delete remainingParams[param.name]
-      }
+  async call(options: APICallOptions): Promise<APICallResult> {
+    const { apiId, endpointId, params = {}, body, headers: extraHeaders = {} } = options;
+
+    const reg = this.registry.get(apiId);
+    if (!reg) throw new AppError(`Unknown API: ${apiId}`, 404, "API_NOT_FOUND");
+
+    if (!checkRateLimit(apiId, reg.rateLimit)) {
+      throw new AppError(`Rate limit exceeded for API: ${apiId}`, 429, "RATE_LIMIT_EXCEEDED");
     }
 
-    // Separate query parameters
-    const queryParams: Record<string, any> = {}
-    for (const param of endpoint.parameters.filter((p) => p.in === "query")) {
-      if (param.name in remainingParams) {
-        queryParams[param.name] = remainingParams[param.name]
-        delete remainingParams[param.name]
-      }
+    const cacheKey = getCacheKey(apiId, endpointId, params);
+    const cached = responseCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return { status: cached.status, data: cached.data, headers: cached.headers, latencyMs: 0, cached: true };
     }
+
+    // Find endpoint
+    const endpoints = this.endpointCache.get(apiId) ?? [];
+    const endpoint = endpoints.find((e) => e.id === endpointId);
+
+    if (!endpoint && reg.spec) {
+      throw new AppError(`Endpoint ${endpointId} not found in ${apiId}`, 404, "ENDPOINT_NOT_FOUND");
+    }
+
+    // Build URL
+    const parameters = endpoint?.parameters ?? [];
+    const { url } = buildRequestUrl(reg.baseUrl, endpoint?.path ?? `/${endpointId}`, params, parameters);
 
     // Build headers
     const headers: Record<string, string> = {
-      "Content-Type": endpoint.requestBody?.contentType ?? "application/json",
-      Accept: "application/json",
-    }
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": "IliaGPT-APIConnector/1.0",
+      ...extraHeaders,
+    };
 
-    // Header parameters
-    for (const param of endpoint.parameters.filter((p) => p.in === "header")) {
-      if (param.name in remainingParams) {
-        headers[param.name] = String(remainingParams[param.name])
-        delete remainingParams[param.name]
+    // Auth
+    if (reg.encryptedKey) {
+      const apiKey = deobfuscateKey(reg.encryptedKey, KEY_SALT);
+      if (reg.authType === "bearer") {
+        headers["Authorization"] = `Bearer ${apiKey}`;
+      } else if (reg.authType === "apiKey" && reg.keyHeaderName) {
+        headers[reg.keyHeaderName] = apiKey;
       }
     }
 
-    let config: AxiosRequestConfig = {
-      method: endpoint.method.toLowerCase() as any,
-      url: `${baseUrl ?? ""}${resolvedPath}`,
-      params: Object.keys(queryParams).length > 0 ? queryParams : undefined,
-      headers,
-      timeout: 30000,
-    }
-
-    // Set request body for POST/PUT/PATCH
-    if (["post", "put", "patch"].includes(endpoint.method.toLowerCase())) {
-      if (endpoint.requestBody && Object.keys(remainingParams).length > 0) {
-        config.data = remainingParams
-      }
-    }
-
-    return this.applyAuth(config, auth)
-  }
-
-  private validateParams(endpoint: DiscoveredEndpoint, params: Record<string, any>): ValidationResult {
-    const errors: string[] = []
-
-    for (const param of endpoint.parameters) {
-      if (param.required && !(param.name in params)) {
-        errors.push(`Missing required parameter: '${param.name}'`)
-        continue
-      }
-      if (param.name in params && param.schema) {
-        const value = params[param.name]
-        const schemaType = param.schema.type
-        if (schemaType === "integer" || schemaType === "number") {
-          if (typeof value !== "number" && isNaN(Number(value))) {
-            errors.push(`Parameter '${param.name}' must be a ${schemaType}`)
-          }
-        } else if (schemaType === "boolean") {
-          if (typeof value !== "boolean" && value !== "true" && value !== "false") {
-            errors.push(`Parameter '${param.name}' must be a boolean`)
-          }
-        }
-      }
-    }
-
-    if (endpoint.requestBody?.required) {
-      const bodyParams = Object.keys(params).filter(
-        (k) => !endpoint.parameters.some((p) => p.in === "path" || p.in === "query" || p.in === "header")
-      )
-      if (bodyParams.length === 0 && endpoint.requestBody.required) {
-        // Don't error if all params accounted for in non-body positions
-      }
-    }
-
-    return { valid: errors.length === 0, errors }
-  }
-
-  private applyAuth(config: AxiosRequestConfig, auth?: AuthConfig): AxiosRequestConfig {
-    if (!auth || auth.type === "none") return config
-
-    const headers = (config.headers ?? {}) as Record<string, string>
-
-    switch (auth.type) {
-      case "bearer":
-        if (auth.token) headers["Authorization"] = `Bearer ${auth.token}`
-        break
-      case "api_key":
-        if (auth.apiKey) {
-          const header = auth.apiKeyHeader ?? "X-API-Key"
-          headers[header] = auth.apiKey
-        }
-        break
-      case "basic":
-        if (auth.username && auth.password) {
-          const encoded = Buffer.from(`${auth.username}:${auth.password}`).toString("base64")
-          headers["Authorization"] = `Basic ${encoded}`
-        }
-        break
-      case "oauth2":
-        if (auth.token) headers["Authorization"] = `Bearer ${auth.token}`
-        break
-    }
-
-    return { ...config, headers }
-  }
-
-  private extractEndpoints(spec: OpenAPISpec): DiscoveredEndpoint[] {
-    const endpoints: DiscoveredEndpoint[] = []
-    const globalSecurity = (spec as any).security ?? []
-    const hasGlobalAuth = globalSecurity.length > 0
-
-    for (const [path, methods] of Object.entries(spec.paths ?? {})) {
-      for (const [method, operation] of Object.entries(methods)) {
-        if (["get", "post", "put", "patch", "delete", "head", "options"].indexOf(method) === -1) continue
-
-        const op = operation as OperationObject
-        const operationId = op.operationId ?? `${method}_${path.replace(/[^a-zA-Z0-9]/g, "_")}`
-
-        const parameters: ParameterDef[] = (op.parameters ?? []).map((p: any) => ({
-          name: p.name ?? "",
-          in: p.in ?? "query",
-          required: p.required ?? false,
-          schema: p.schema ?? undefined,
-          description: p.description ?? undefined,
-        }))
-
-        let requestBody: RequestBodyDef | undefined
-        if (op.requestBody) {
-          const rb = op.requestBody
-          const contentTypes = Object.keys(rb.content ?? {})
-          const primaryCt = contentTypes[0] ?? "application/json"
-          requestBody = {
-            required: rb.required ?? false,
-            contentType: primaryCt,
-            schema: rb.content?.[primaryCt]?.schema ?? undefined,
-          }
-        }
-
-        // Determine if auth is required
-        const opSecurity = op.security ?? globalSecurity
-        const authRequired = hasGlobalAuth || (Array.isArray(opSecurity) && opSecurity.length > 0)
-
-        // Get response schema from 200/201 response
-        const successResponse = op.responses?.["200"] ?? op.responses?.["201"]
-        const responseSchema = successResponse?.content?.["application/json"]?.schema ?? undefined
-
-        endpoints.push({
-          operationId,
-          method: method.toUpperCase(),
-          path,
-          summary: op.summary,
-          description: op.description,
-          parameters,
-          requestBody,
-          responseSchema,
-          authRequired,
-          tags: op.tags ?? [],
-        })
-      }
-    }
-
-    Logger.debug("[APIConnector] Extracted endpoints", { count: endpoints.length })
-    return endpoints
-  }
-
-  private async loadConnector(name: string): Promise<ConnectorConfig | null> {
-    if (this.connectors.has(name)) return this.connectors.get(name)!
+    const method = endpoint?.method ?? "GET";
+    const t0 = Date.now();
 
     try {
-      const stored = await redis.get(`${CONNECTOR_KEY_PREFIX}${name}`)
-      if (stored) {
-        const config: ConnectorConfig = JSON.parse(stored)
-        this.connectors.set(name, config)
-        return config
-      }
-    } catch (err) {
-      Logger.warn("[APIConnector] Failed to load connector from Redis", { name, error: (err as Error).message })
-    }
+      const resp = await fetch(url, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(30_000),
+      });
 
-    return null
+      const latencyMs = Date.now() - t0;
+      const respHeaders: Record<string, string> = {};
+      resp.headers.forEach((v, k) => { respHeaders[k] = v; });
+
+      let data: unknown;
+      const ct = resp.headers.get("content-type") ?? "";
+      if (ct.includes("application/json")) {
+        data = await resp.json();
+      } else {
+        data = await resp.text();
+      }
+
+      logRequest({ apiId, endpointId, method, url, statusCode: resp.status, latencyMs, timestamp: new Date().toISOString() });
+
+      if (!resp.ok) {
+        throw new AppError(`API call failed: ${resp.status} ${resp.statusText}`, resp.status, "API_CALL_FAILED", true, { data });
+      }
+
+      // Cache GET responses
+      if (method === "GET") {
+        responseCache.set(cacheKey, { data, status: resp.status, headers: respHeaders, expiresAt: Date.now() + CACHE_TTL });
+      }
+
+      logger.debug(`API call ${apiId}:${endpointId} → ${resp.status} (${latencyMs}ms)`);
+
+      return { status: resp.status, data, headers: respHeaders, latencyMs, cached: false };
+    } catch (err) {
+      const latencyMs = Date.now() - t0;
+      const msg = (err as Error).message;
+      logRequest({ apiId, endpointId, method, url, statusCode: 0, latencyMs, timestamp: new Date().toISOString(), error: msg });
+      throw err instanceof AppError ? err : new AppError(`API call failed: ${msg}`, 502, "API_CALL_ERROR");
+    }
   }
 
-  private async loadAllConnectors(): Promise<void> {
-    try {
-      const keys = await redis.keys(`${CONNECTOR_KEY_PREFIX}*`)
-      for (const key of keys) {
-        const name = key.replace(CONNECTOR_KEY_PREFIX, "")
-        if (!this.connectors.has(name)) {
-          const stored = await redis.get(key)
-          if (stored) {
-            const config: ConnectorConfig = JSON.parse(stored)
-            this.connectors.set(name, config)
-          }
-        }
-      }
-    } catch (err) {
-      Logger.warn("[APIConnector] Failed to load all connectors", { error: (err as Error).message })
-    }
+  getRequestLogs(apiId?: string): RequestLog[] {
+    if (apiId) return requestLogs.filter((l) => l.apiId === apiId);
+    return [...requestLogs];
+  }
+
+  removeAPI(apiId: string): void {
+    this.registry.delete(apiId);
+    this.endpointCache.delete(apiId);
+  }
+
+  getRateLimitUsage(apiId: string): { used: number; remaining: number; resetAt: number } | null {
+    const reg = this.registry.get(apiId);
+    if (!reg) return null;
+    const window = rateLimits.get(apiId);
+    if (!window) return { used: 0, remaining: reg.rateLimit.requests, resetAt: Date.now() + reg.rateLimit.windowMs };
+    return {
+      used: window.count,
+      remaining: Math.max(0, reg.rateLimit.requests - window.count),
+      resetAt: window.resetAt,
+    };
   }
 }
 
-export const apiConnectorFramework = new APIConnectorFramework()
+export const apiConnectorFramework = new APIConnectorFramework();

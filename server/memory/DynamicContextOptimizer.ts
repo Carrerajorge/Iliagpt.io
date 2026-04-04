@@ -1,385 +1,299 @@
 /**
- * DynamicContextOptimizer — relevance-based context selection.
- * Blends recency + semantic similarity + memory importance into an optimal context window.
+ * DynamicContextOptimizer — replaces naive "last N messages" with relevance-based selection.
+ * Combines recent messages + semantically relevant historical messages within a token budget.
  */
 
-import { llmGateway } from "../lib/llmGateway"
-import { Logger } from "../lib/logger"
-import { pgVectorMemoryStore, type MemoryEntry } from "./PgVectorMemoryStore"
+import { createLogger } from "../utils/logger";
+import { pgVectorMemoryStore } from "./PgVectorMemoryStore";
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
+const logger = createLogger("DynamicContextOptimizer");
 
-export interface ContextCandidate {
-  content: string
-  role: "user" | "assistant" | "system"
-  timestamp: Date
-  relevanceScore: number
-  type: "recent" | "semantic" | "memory" | "system_prompt"
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface ChatMessage {
+  id?: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp?: Date;
+  tokenCount?: number;
 }
 
 export interface OptimizedContext {
-  messages: Array<{ role: string; content: string }>
-  tokenCount: number
-  memoriesIncluded: number
-  historicalMessagesIncluded: number
-  compressionApplied: boolean
+  messages: ChatMessage[];
+  systemMemories: string[];
+  tokenCount: number;
+  strategy: "recent_only" | "semantic_blend" | "full";
+  droppedMessages: number;
+  includedHistoricalMessages: number;
 }
 
-export interface ContextOptions {
-  maxTokens?: number
-  recentMessageCount?: number
-  semanticSearchLimit?: number
-  memoryTypes?: string[]
-  includeSystemPrompt?: boolean
-  userId?: string
-  conversationId?: string
+export interface ContextOptimizerConfig {
+  maxTotalTokens: number;
+  systemPromptTokenBudget: number; // fraction of total for system prompt
+  recentWindowSize: number;         // always include these last N messages
+  semanticWindowSize: number;       // additional relevant messages from history
+  minRelevanceSimilarity: number;
+  modelContextWindow?: number;
 }
 
-// ─── Optimizer ─────────────────────────────────────────────────────────────────
+// ─── Token Estimation ─────────────────────────────────────────────────────────
 
-class DynamicContextOptimizer {
-  private readonly store = pgVectorMemoryStore
+function estimateTokens(text: string): number {
+  // Approximation: ~4 characters per token for English
+  return Math.ceil(text.length / 4);
+}
 
-  // ── optimize ──────────────────────────────────────────────────────────────────
+function countMessageTokens(msg: ChatMessage): number {
+  if (msg.tokenCount) return msg.tokenCount;
+  return estimateTokens(msg.content) + 4; // 4 for role/format overhead
+}
+
+// ─── Model Context Sizes ──────────────────────────────────────────────────────
+
+const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "claude-sonnet-4-6": 200_000,
+  "claude-opus-4-6": 200_000,
+  "claude-haiku-4-5-20251001": 200_000,
+  "gpt-4o": 128_000,
+  "gpt-4-turbo": 128_000,
+  "gemini-1.5-pro": 1_000_000,
+  "gemini-1.5-flash": 1_000_000,
+};
+
+function getContextWindow(model?: string): number {
+  if (!model) return 128_000;
+  return MODEL_CONTEXT_WINDOWS[model] ?? 128_000;
+}
+
+// ─── Maximum Marginal Relevance ───────────────────────────────────────────────
+
+interface ScoredMessage {
+  message: ChatMessage;
+  relevance: number;
+  index: number;
+}
+
+function applyMMR(
+  candidates: ScoredMessage[],
+  selected: ScoredMessage[],
+  lambda: number = 0.7,
+  limit: number = 10
+): ScoredMessage[] {
+  // Simplified MMR without embeddings — uses keyword overlap as proxy for similarity
+  const result: ScoredMessage[] = [...selected];
+  const remaining = [...candidates];
+
+  while (result.length < limit && remaining.length > 0) {
+    let bestScore = -Infinity;
+    let bestIdx = 0;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const candidate = remaining[i]!;
+
+      // Relevance to query
+      const relevanceScore = candidate.relevance;
+
+      // Redundancy with already selected
+      let maxSimilarity = 0;
+      for (const sel of result) {
+        const sim = keywordSimilarity(candidate.message.content, sel.message.content);
+        maxSimilarity = Math.max(maxSimilarity, sim);
+      }
+
+      const mmrScore = lambda * relevanceScore - (1 - lambda) * maxSimilarity;
+
+      if (mmrScore > bestScore) {
+        bestScore = mmrScore;
+        bestIdx = i;
+      }
+    }
+
+    result.push(remaining[bestIdx]!);
+    remaining.splice(bestIdx, 1);
+  }
+
+  return result;
+}
+
+function keywordSimilarity(a: string, b: string): number {
+  const setA = new Set(a.toLowerCase().split(/\W+/).filter((w) => w.length > 3));
+  const setB = new Set(b.toLowerCase().split(/\W+/).filter((w) => w.length > 3));
+  if (setA.size === 0 || setB.size === 0) return 0;
+
+  let intersection = 0;
+  for (const w of setA) {
+    if (setB.has(w)) intersection++;
+  }
+
+  return intersection / Math.sqrt(setA.size * setB.size);
+}
+
+// ─── DynamicContextOptimizer ──────────────────────────────────────────────────
+
+export class DynamicContextOptimizer {
+  private config: ContextOptimizerConfig;
+
+  constructor(config: Partial<ContextOptimizerConfig> = {}) {
+    this.config = {
+      maxTotalTokens: config.maxTotalTokens ?? 100_000,
+      systemPromptTokenBudget: config.systemPromptTokenBudget ?? 0.15,
+      recentWindowSize: config.recentWindowSize ?? 6,
+      semanticWindowSize: config.semanticWindowSize ?? 8,
+      minRelevanceSimilarity: config.minRelevanceSimilarity ?? 0.55,
+      modelContextWindow: config.modelContextWindow,
+    };
+  }
 
   async optimize(
-    currentQuery: string,
-    recentMessages: Array<{ role: string; content: string; timestamp?: Date }>,
-    options: ContextOptions = {}
+    currentMessages: ChatMessage[],
+    conversationHistory: ChatMessage[],
+    options: {
+      userId?: string;
+      conversationId?: string;
+      newUserMessage?: string;
+      model?: string;
+      systemPromptTokens?: number;
+    } = {}
   ): Promise<OptimizedContext> {
-    const {
-      maxTokens = 8000,
-      recentMessageCount = 6,
-      semanticSearchLimit = 10,
-      memoryTypes,
-      includeSystemPrompt = true,
-      userId,
-      conversationId,
-    } = options
+    const contextWindow = options.model
+      ? getContextWindow(options.model)
+      : this.config.maxTotalTokens;
 
-    Logger.debug("[DynamicContextOptimizer] optimizing context", {
-      queryLen: currentQuery.length,
-      recentCount: recentMessages.length,
-    })
+    const systemBudget = Math.floor(contextWindow * this.config.systemPromptTokenBudget);
+    const availableForMessages = contextWindow - (options.systemPromptTokens ?? systemBudget) - 2_000; // reserve for response
 
-    // 1. Generate query embedding once
-    const queryEmbedding = this.store.generateEmbedding(currentQuery)
+    // If everything fits — no optimization needed
+    const allMessages = [...conversationHistory, ...currentMessages];
+    const totalTokens = allMessages.reduce((s, m) => s + countMessageTokens(m), 0);
 
-    // 2. Always include last N messages (recency window)
-    const recentWindow = recentMessages.slice(-recentMessageCount)
-    const recentCandidates: ContextCandidate[] = recentWindow.map((m, i) => ({
-      content: m.content,
-      role: m.role as ContextCandidate["role"],
-      timestamp: m.timestamp ?? new Date(Date.now() - (recentWindow.length - i) * 60_000),
-      relevanceScore: 1.0 - i * 0.02, // very slight decay for recency order
-      type: "recent",
-    }))
+    if (totalTokens <= availableForMessages) {
+      return {
+        messages: allMessages,
+        systemMemories: [],
+        tokenCount: totalTokens,
+        strategy: "full",
+        droppedMessages: 0,
+        includedHistoricalMessages: conversationHistory.length,
+      };
+    }
 
-    const candidates: ContextCandidate[] = [...recentCandidates]
-    let memoriesIncluded = 0
-    let historicalMessagesIncluded = 0
+    // ── Recent window — always include last N messages ─────────────────────
 
-    // 3. Retrieve relevant memories
-    if (userId) {
-      const memories = await this.selectMemories(queryEmbedding, {
-        userId,
-        conversationId,
-        maxTokens,
-        semanticSearchLimit,
-        memoryTypes,
-      })
-      for (const mem of memories) {
-        candidates.push({
-          content: `[Memory] ${mem.content}`,
-          role: "system",
-          timestamp: mem.metadata.createdAt,
-          relevanceScore: 0, // will be rescored below
-          type: "memory",
-        })
-        memoriesIncluded++
+    const recentMessages = currentMessages.slice(-this.config.recentWindowSize);
+    const recentTokens = recentMessages.reduce((s, m) => s + countMessageTokens(m), 0);
+    const remainingBudget = availableForMessages - recentTokens;
+
+    if (remainingBudget <= 500) {
+      return {
+        messages: recentMessages,
+        systemMemories: [],
+        tokenCount: recentTokens,
+        strategy: "recent_only",
+        droppedMessages: allMessages.length - recentMessages.length,
+        includedHistoricalMessages: 0,
+      };
+    }
+
+    // ── Semantic search for relevant historical context ────────────────────
+
+    const query = options.newUserMessage ?? currentMessages[currentMessages.length - 1]?.content ?? "";
+    let relevantHistorical: ChatMessage[] = [];
+
+    if (query && conversationHistory.length > 0) {
+      // Search stored memories first
+      const storedMemories = await pgVectorMemoryStore.search({
+        query,
+        userId: options.userId,
+        conversationId: options.conversationId,
+        limit: this.config.semanticWindowSize,
+        minSimilarity: this.config.minRelevanceSimilarity,
+      });
+
+      // Convert stored memories to chat-like messages for context
+      const memoryMessages: ChatMessage[] = storedMemories
+        .filter((m) => m.importance >= 0.4)
+        .map((m) => ({
+          role: "system" as const,
+          content: `[Memory: ${m.memoryType}] ${m.content}`,
+          tokenCount: estimateTokens(m.content) + 20,
+        }));
+
+      // Keyword-based relevance scoring for in-conversation history
+      const scored: ScoredMessage[] = conversationHistory
+        .filter((m) => m.role === "user") // prioritize user messages
+        .map((m, i) => ({
+          message: m,
+          relevance: keywordSimilarity(query, m.content),
+          index: i,
+        }))
+        .filter((s) => s.relevance > 0.15)
+        .sort((a, b) => b.relevance - a.relevance);
+
+      const selectedScored = applyMMR(scored, [], 0.7, this.config.semanticWindowSize);
+      const selectedMessages = selectedScored.map((s) => s.message);
+
+      // Combine memory messages and historical messages
+      const combined = [...memoryMessages, ...selectedMessages];
+      let usedTokens = 0;
+      const fitting: ChatMessage[] = [];
+
+      for (const msg of combined) {
+        const t = countMessageTokens(msg);
+        if (usedTokens + t <= remainingBudget) {
+          fitting.push(msg);
+          usedTokens += t;
+        } else break;
+      }
+
+      relevantHistorical = fitting;
+    }
+
+    // ── Retrieve system memories for the response ─────────────────────────
+
+    const systemMemories: string[] = [];
+    if (options.userId && query) {
+      const userMems = await pgVectorMemoryStore.search({
+        query,
+        userId: options.userId,
+        memoryType: "preference",
+        limit: 3,
+        minSimilarity: 0.5,
+      });
+      for (const mem of userMems) {
+        systemMemories.push(mem.content);
       }
     }
 
-    // 4. Retrieve relevant historical messages (older than recent window)
-    if (conversationId && recentMessages.length > recentMessageCount) {
-      const historical = await this.selectHistoricalMessages(
-        queryEmbedding,
-        conversationId,
-        recentMessageCount
-      )
-      for (const h of historical) {
-        candidates.push({
-          content: h.content,
-          role: h.role as ContextCandidate["role"],
-          timestamp: h.timestamp,
-          relevanceScore: h.score,
-          type: "semantic",
-        })
-        historicalMessagesIncluded++
-      }
-    }
+    // ── Combine final message list ─────────────────────────────────────────
 
-    // 5. Score all non-recent candidates
-    for (const c of candidates) {
-      if (c.type !== "recent") {
-        c.relevanceScore = this.scoreCandidate(c, queryEmbedding)
-      }
-    }
+    const finalMessages = [...relevantHistorical, ...recentMessages];
+    const finalTokens = finalMessages.reduce((s, m) => s + countMessageTokens(m), 0);
 
-    // 6. Fit within token budget
-    let finalCandidates = candidates
-    const totalTokens = candidates.reduce(
-      (sum, c) => sum + this.estimateTokenCount(c.content),
-      0
-    )
-    let compressionApplied = false
-
-    if (totalTokens > maxTokens) {
-      // Sort non-recent by relevance descending, keep recents always
-      const recent = finalCandidates.filter((c) => c.type === "recent")
-      const rest = finalCandidates
-        .filter((c) => c.type !== "recent")
-        .sort((a, b) => b.relevanceScore - a.relevanceScore)
-
-      let budget = maxTokens - recent.reduce((s, c) => s + this.estimateTokenCount(c.content), 0)
-      const selected: ContextCandidate[] = []
-      for (const c of rest) {
-        const t = this.estimateTokenCount(c.content)
-        if (budget - t >= 0) {
-          selected.push(c)
-          budget -= t
-        }
-      }
-
-      finalCandidates = [...recent, ...selected]
-
-      // If still over budget, try compression
-      const afterBudget = finalCandidates.reduce(
-        (s, c) => s + this.estimateTokenCount(c.content),
-        0
-      )
-      if (afterBudget > maxTokens) {
-        finalCandidates = await this.compressIfNeeded(finalCandidates, maxTokens)
-        compressionApplied = true
-      }
-    }
-
-    // 7. Sort chronologically
-    const sorted = this.chronologicalSort(finalCandidates)
-
-    // 8. Build system prompt additions for memories
-    const memoryBlock = sorted.filter((c) => c.type === "memory")
-    let systemContent = ""
-    if (includeSystemPrompt && memoryBlock.length > 0) {
-      systemContent = this.buildSystemPromptAdditions(
-        memoryBlock.map((c) => ({
-          content: c.content.replace("[Memory] ", ""),
-          type: "fact",
-        } as MemoryEntry))
-      )
-    }
-
-    // Assemble final messages array
-    const messages: Array<{ role: string; content: string }> = []
-    if (systemContent) {
-      messages.push({ role: "system", content: systemContent })
-    }
-    for (const c of sorted.filter((c) => c.type !== "memory" && c.type !== "system_prompt")) {
-      messages.push({ role: c.role, content: c.content })
-    }
-
-    const tokenCount = messages.reduce((s, m) => s + this.estimateTokenCount(m.content), 0)
-
-    Logger.debug("[DynamicContextOptimizer] context built", {
-      messageCount: messages.length,
-      tokenCount,
-      memoriesIncluded,
-      historicalMessagesIncluded,
-      compressionApplied,
-    })
+    logger.debug(
+      `Context optimizer: ${allMessages.length} total → ${finalMessages.length} selected ` +
+      `(${recentMessages.length} recent + ${relevantHistorical.length} historical), ${finalTokens} tokens`
+    );
 
     return {
-      messages,
-      tokenCount,
-      memoriesIncluded,
-      historicalMessagesIncluded,
-      compressionApplied,
-    }
+      messages: finalMessages,
+      systemMemories,
+      tokenCount: finalTokens,
+      strategy: "semantic_blend",
+      droppedMessages: allMessages.length - finalMessages.length,
+      includedHistoricalMessages: relevantHistorical.length,
+    };
   }
 
-  // ── selectMemories ────────────────────────────────────────────────────────────
-
-  async selectMemories(
-    queryEmbedding: number[],
-    options: ContextOptions
-  ): Promise<MemoryEntry[]> {
-    const {
-      userId,
-      conversationId,
-      semanticSearchLimit = 10,
-      memoryTypes,
-    } = options
-
-    try {
-      const results = await this.store.search(queryEmbedding, {
-        userId,
-        conversationId,
-        limit: semanticSearchLimit,
-        threshold: 0.65,
-        types: memoryTypes as MemoryEntry["type"][] | undefined,
-        minImportance: 0.2,
-      })
-      return results
-    } catch (err) {
-      Logger.warn("[DynamicContextOptimizer] memory retrieval failed", err)
-      return []
-    }
+  reconfigure(config: Partial<ContextOptimizerConfig>): void {
+    this.config = { ...this.config, ...config };
   }
 
-  // ── selectHistoricalMessages ──────────────────────────────────────────────────
-
-  async selectHistoricalMessages(
-    queryEmbedding: number[],
-    conversationId: string,
-    excludeRecentCount: number
-  ): Promise<Array<{ role: string; content: string; timestamp: Date; score: number }>> {
-    try {
-      const historicalMems = await this.store.search(queryEmbedding, {
-        conversationId,
-        threshold: 0.7,
-        limit: 8,
-        types: ["conversation"],
-      })
-
-      return historicalMems.map((m) => ({
-        role: (m.metadata.tags ?? []).includes("assistant") ? "assistant" : "user",
-        content: m.content,
-        timestamp: m.metadata.createdAt,
-        score: m.similarity,
-      }))
-    } catch (err) {
-      Logger.warn("[DynamicContextOptimizer] historical message retrieval failed", err)
-      return []
-    }
-  }
-
-  // ── compressIfNeeded ──────────────────────────────────────────────────────────
-
-  async compressIfNeeded(
-    messages: ContextCandidate[],
-    maxTokens: number
-  ): Promise<ContextCandidate[]> {
-    const current = messages.reduce((s, m) => s + this.estimateTokenCount(m.content), 0)
-    if (current <= maxTokens) return messages
-
-    Logger.info("[DynamicContextOptimizer] compressing context", { current, maxTokens })
-
-    // Identify low-relevance non-recent candidates to summarize
-    const recent = messages.filter((m) => m.type === "recent")
-    const compressible = messages
-      .filter((m) => m.type !== "recent" && m.type !== "system_prompt")
-      .sort((a, b) => a.relevanceScore - b.relevanceScore)
-      .slice(0, Math.ceil(messages.length * 0.4))
-
-    if (compressible.length === 0) return messages
-
-    const toCompress = compressible.map((m) => m.content).join("\n\n")
-
-    try {
-      const response = await llmGateway.chat(
-        [
-          {
-            role: "user",
-            content: `Summarize the following context into 2-3 key bullet points, preserving critical facts:\n\n${toCompress}`,
-          },
-        ],
-        { maxTokens: 200, temperature: 0 }
-      )
-
-      const summaryCandidate: ContextCandidate = {
-        content: `[Summarized context]\n${response.content}`,
-        role: "system",
-        timestamp: new Date(),
-        relevanceScore: 0.5,
-        type: "system_prompt",
-      }
-
-      const compressibleIds = new Set(compressible.map((m) => m.content))
-      const kept = messages.filter((m) => !compressibleIds.has(m.content))
-      return [...kept, summaryCandidate]
-    } catch (err) {
-      Logger.warn("[DynamicContextOptimizer] compression failed", err)
-      // Fall back: remove lowest-scoring entries
-      const excess = current - maxTokens
-      let removed = 0
-      const result: ContextCandidate[] = []
-      for (const m of [...messages].sort((a, b) => a.relevanceScore - b.relevanceScore)) {
-        if (removed < excess && m.type !== "recent") {
-          removed += this.estimateTokenCount(m.content)
-          continue
-        }
-        result.push(m)
-      }
-      return result
-    }
-  }
-
-  // ── estimateTokenCount ────────────────────────────────────────────────────────
-
-  estimateTokenCount(text: string): number {
-    return Math.ceil(text.length / 4)
-  }
-
-  // ── buildSystemPromptAdditions ────────────────────────────────────────────────
-
-  buildSystemPromptAdditions(memories: MemoryEntry[], userProfile?: unknown): string {
-    if (memories.length === 0) return ""
-
-    const lines: string[] = ["## What I know about you:"]
-    for (const mem of memories.slice(0, 15)) {
-      lines.push(`- ${mem.content}`)
-    }
-
-    if (userProfile) {
-      lines.push("\n## Your preferences:")
-      const profile = userProfile as Record<string, unknown>
-      if (profile.communicationStyle) {
-        const style = profile.communicationStyle as Record<string, unknown>
-        lines.push(`- Preferred length: ${style.preferredLength}`)
-        lines.push(`- Technical level: ${style.technicalLevel}/5`)
-      }
-    }
-
-    return lines.join("\n")
-  }
-
-  // ── scoreCandidate ────────────────────────────────────────────────────────────
-
-  private scoreCandidate(candidate: ContextCandidate, queryEmbedding: number[]): number {
-    const now = Date.now()
-    const ageMs = now - candidate.timestamp.getTime()
-    const ageDays = ageMs / (1000 * 60 * 60 * 24)
-
-    // Recency component (exponential decay, half-life 7 days)
-    const recencyScore = Math.exp(-0.1 * ageDays)
-
-    // Memory type gets a base boost
-    const typeBoost = candidate.type === "memory" ? 0.2 : 0
-
-    // Semantic score: approximate using simple text overlap with query embedding
-    // (true cosine would require keeping query text — we use relevanceScore from search)
-    const semanticScore = candidate.relevanceScore > 0 ? candidate.relevanceScore : 0.3
-
-    return Math.min(1, recencyScore * 0.3 + semanticScore * 0.5 + typeBoost + 0.2)
-  }
-
-  // ── chronologicalSort ─────────────────────────────────────────────────────────
-
-  private chronologicalSort(candidates: ContextCandidate[]): ContextCandidate[] {
-    return [...candidates].sort(
-      (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
-    )
+  estimateFit(messages: ChatMessage[], model?: string): { fits: boolean; tokenCount: number; overflowBy: number } {
+    const contextWindow = getContextWindow(model);
+    const tokenCount = messages.reduce((s, m) => s + countMessageTokens(m), 0);
+    const fits = tokenCount <= contextWindow * 0.85; // 85% to leave room for response
+    return { fits, tokenCount, overflowBy: Math.max(0, tokenCount - contextWindow) };
   }
 }
 
-export const dynamicContextOptimizer = new DynamicContextOptimizer()
+export const dynamicContextOptimizer = new DynamicContextOptimizer();

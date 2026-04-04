@@ -1,426 +1,336 @@
-import fs from "fs";
-import path from "path";
+/**
+ * AudioPipeline — transcription via Whisper API with speaker diarization,
+ * sentiment analysis per segment, summary generation, and SRT caption output.
+ */
+
+import { createLogger } from "../utils/logger";
+import { AppError } from "../utils/errors";
+import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import axios from "axios";
-import { Logger } from "../lib/logger";
-import { env } from "../config/env";
-import { llmGateway } from "../lib/llmGateway";
 
-// ─── Interfaces ──────────────────────────────────────────────────────────────
+const logger = createLogger("AudioPipeline");
 
-export interface TranscriptionRequest {
-  audioSource:
-    | { type: "url"; url: string }
-    | { type: "buffer"; buffer: Buffer; filename: string }
-    | { type: "filepath"; path: string };
-  language?: string;
-  tasks?: AudioTask[];
-  speakerCount?: number;
-}
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-export type AudioTask =
-  | "transcribe"
-  | "translate_to_english"
-  | "timestamps"
-  | "diarize"
-  | "sentiment"
-  | "srt"
-  | "vtt"
-  | "summary";
-
-export interface TranscriptSegment {
-  id: number;
-  start: number;
+export interface AudioSegment {
+  start: number; // seconds
   end: number;
   text: string;
   speaker?: string;
-  sentiment?: {
-    label: "positive" | "negative" | "neutral";
-    score: number;
-  };
-  confidence: number;
-}
-
-export interface SpeakerProfile {
-  id: string;
-  label: string;
-  totalDuration: number;
-  segments: number[];
-  estimatedGender?: "male" | "female" | "unknown";
+  sentiment?: "positive" | "neutral" | "negative";
+  confidence?: number;
+  language?: string;
 }
 
 export interface TranscriptionResult {
-  text: string;
+  fullText: string;
+  segments: AudioSegment[];
   language: string;
   duration: number;
-  segments: TranscriptSegment[];
-  speakers?: SpeakerProfile[];
+  model: string;
   summary?: string;
-  srt?: string;
-  vtt?: string;
-  processingTimeMs: number;
+  srtCaptions?: string;
+  speakers?: string[];
+  overallSentiment?: "positive" | "neutral" | "negative";
+  keywords?: string[];
+  tokensUsed: number;
 }
 
-// ─── Class ────────────────────────────────────────────────────────────────────
+export interface TranscriptionOptions {
+  language?: string;
+  generateSummary?: boolean;
+  generateSrt?: boolean;
+  analyzeSentiment?: boolean;
+  detectSpeakers?: boolean;
+  maxSpeakers?: number;
+  prompt?: string; // context hint for Whisper
+}
 
-class AudioPipeline {
-  private openai: OpenAI;
+// ─── SRT Generator ────────────────────────────────────────────────────────────
+
+function formatSrtTime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.round((seconds % 1) * 1000);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
+}
+
+function generateSrt(segments: AudioSegment[]): string {
+  return segments
+    .map((seg, i) => {
+      const speaker = seg.speaker ? `[${seg.speaker}] ` : "";
+      return `${i + 1}\n${formatSrtTime(seg.start)} --> ${formatSrtTime(seg.end)}\n${speaker}${seg.text}\n`;
+    })
+    .join("\n");
+}
+
+// ─── Sentiment Analysis ───────────────────────────────────────────────────────
+
+function analyzeSentimentSimple(text: string): "positive" | "neutral" | "negative" {
+  const pos = (text.match(/\b(good|great|excellent|amazing|love|happy|wonderful|fantastic|positive|success|well|better|best|glad|pleased|appreciate|thank|congratulations|nice)\b/gi) ?? []).length;
+  const neg = (text.match(/\b(bad|terrible|awful|hate|angry|frustrated|wrong|fail|failure|problem|issue|error|broken|slow|poor|worst|disappointed|unfortunately|concern|risk|difficult)\b/gi) ?? []).length;
+
+  if (pos > neg * 1.5) return "positive";
+  if (neg > pos * 1.5) return "negative";
+  return "neutral";
+}
+
+// ─── Speaker Diarization (heuristic without API) ──────────────────────────────
+
+function heuristicDiarization(segments: AudioSegment[], maxSpeakers: number): AudioSegment[] {
+  // Simple heuristic: alternate speakers based on silence gaps
+  const SILENCE_THRESHOLD = 0.8; // seconds
+  let currentSpeaker = 0;
+  const speakers = Array.from({ length: maxSpeakers }, (_, i) => `Speaker ${i + 1}`);
+
+  return segments.map((seg, i) => {
+    if (i > 0) {
+      const prevSeg = segments[i - 1]!;
+      const gap = seg.start - prevSeg.end;
+      if (gap >= SILENCE_THRESHOLD) {
+        // Switch speaker on significant gap
+        currentSpeaker = (currentSpeaker + 1) % maxSpeakers;
+      }
+    }
+    return { ...seg, speaker: speakers[currentSpeaker] };
+  });
+}
+
+// ─── Language Detection ───────────────────────────────────────────────────────
+
+function detectLanguageFromText(text: string): string {
+  const langPatterns: Array<[string, RegExp]> = [
+    ["es", /\b(que|de|el|la|en|y|los|las|por|para|con|una|tiene|puede|sobre)\b/gi],
+    ["fr", /\b(que|de|le|la|les|et|en|un|une|des|sur|avec|pour|dans)\b/gi],
+    ["pt", /\b(que|de|o|a|os|as|em|do|da|para|com|uma|por|como)\b/gi],
+    ["de", /\b(der|die|das|und|in|zu|mit|von|für|ist|nicht|auch|auf|er)\b/gi],
+  ];
+
+  let bestLang = "en";
+  let bestCount = 0;
+
+  for (const [lang, pattern] of langPatterns) {
+    const count = (text.match(pattern) ?? []).length;
+    if (count > bestCount) {
+      bestCount = count;
+      bestLang = lang;
+    }
+  }
+
+  return bestLang;
+}
+
+// ─── Summary Generation ───────────────────────────────────────────────────────
+
+async function generateSummary(fullText: string, duration: number): Promise<string> {
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+  const response = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 500,
+    messages: [
+      {
+        role: "user",
+        content: `Summarize this audio transcript (${Math.round(duration / 60)} minutes) in 3-5 bullet points:
+
+${fullText.slice(0, 4_000)}
+
+Format as bullet points starting with •`,
+      },
+    ],
+  });
+
+  return response.content[0]?.type === "text" ? response.content[0].text : "";
+}
+
+// ─── Keyword Extraction ───────────────────────────────────────────────────────
+
+function extractKeywords(text: string): string[] {
+  const stopwords = new Set([
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "as", "is", "was", "are", "were", "be",
+    "been", "being", "have", "has", "had", "do", "does", "did", "will",
+    "would", "could", "should", "may", "might", "shall", "can", "it",
+    "its", "this", "that", "these", "those", "i", "we", "you", "he", "she",
+    "they", "what", "which", "who", "when", "where", "how", "all", "each",
+  ]);
+
+  const wordFreq = new Map<string, number>();
+  const words = text.toLowerCase().split(/\W+/).filter((w) => w.length > 3 && !stopwords.has(w));
+
+  for (const word of words) {
+    wordFreq.set(word, (wordFreq.get(word) ?? 0) + 1);
+  }
+
+  return [...wordFreq.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([word]) => word);
+}
+
+// ─── AudioPipeline ────────────────────────────────────────────────────────────
+
+export class AudioPipeline {
+  private openai: OpenAI | null;
 
   constructor() {
-    this.openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
-    Logger.info("[AudioPipeline] Initialized");
+    this.openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
   }
 
-  // ── Public: main entry ───────────────────────────────────────────────────
-
-  async transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
-    const startMs = Date.now();
-    const tasks: AudioTask[] = request.tasks ?? ["transcribe", "timestamps"];
-    Logger.info("[AudioPipeline] transcribe", { tasks });
-
-    const { buffer, filename } = await this.prepareAudioBuffer(request.audioSource);
-
-    let text = "";
-    let language = request.language ?? "en";
-    let duration = 0;
-    let rawSegments: any[] = [];
-
-    // Core transcription
-    if (tasks.includes("translate_to_english")) {
-      text = await this.translateToEnglish(buffer, filename);
-      language = "en";
-    } else if (tasks.includes("transcribe") || tasks.includes("timestamps")) {
-      const whisperResult = await this.transcribeWithWhisper(buffer, filename, request.language);
-      text = whisperResult.text;
-      language = whisperResult.language;
-      duration = whisperResult.duration;
-      rawSegments = whisperResult.segments;
-    }
-
-    let segments: TranscriptSegment[] = this.mapWhisperSegments(rawSegments);
-
-    if (tasks.includes("diarize")) {
-      segments = await this.diarizeSpeakers(segments, request.speakerCount);
-    }
-
-    if (tasks.includes("sentiment")) {
-      segments = await this.analyzeSentiment(segments);
-    }
-
-    const result: TranscriptionResult = {
-      text,
-      language,
-      duration,
-      segments,
-      processingTimeMs: 0,
-    };
-
-    if (tasks.includes("diarize")) {
-      result.speakers = this.buildSpeakerProfiles(segments);
-    }
-
-    if (tasks.includes("summary")) {
-      result.summary = await this.summarizeTranscript(text, duration);
-    }
-
-    if (tasks.includes("srt")) {
-      result.srt = await this.generateSRT(segments);
-    }
-
-    if (tasks.includes("vtt")) {
-      result.vtt = await this.generateVTT(segments);
-    }
-
-    result.processingTimeMs = Date.now() - startMs;
-    Logger.info("[AudioPipeline] transcription complete", {
-      processingTimeMs: result.processingTimeMs,
-      language,
-      duration,
-      segmentCount: segments.length,
-    });
-
-    return result;
-  }
-
-  // ── Whisper transcription ────────────────────────────────────────────────
-
-  async transcribeWithWhisper(
+  async transcribe(
     audioBuffer: Buffer,
     filename: string,
-    language?: string
-  ): Promise<{ text: string; segments: any[]; language: string; duration: number }> {
-    Logger.debug("[AudioPipeline] calling Whisper API", { filename, language });
+    options: TranscriptionOptions = {}
+  ): Promise<TranscriptionResult> {
+    if (!this.openai) {
+      throw new AppError("OpenAI API key required for audio transcription", 400, "MISSING_API_KEY");
+    }
 
-    const file = new File([audioBuffer], filename);
+    logger.info(`Transcribing audio: ${filename} (${(audioBuffer.length / 1024).toFixed(0)}KB)`);
 
-    const response = await this.openai.audio.transcriptions.create({
-      file,
+    // Whisper API call
+    const transcription = await this.openai.audio.transcriptions.create({
+      file: new File([audioBuffer], filename, { type: this.getAudioMimeType(filename) }),
       model: "whisper-1",
       response_format: "verbose_json",
       timestamp_granularities: ["segment", "word"],
-      ...(language ? { language } : {}),
-    } as any);
+      language: options.language,
+      prompt: options.prompt,
+    });
 
-    const verbose = response as any;
+    const whisperData = transcription as unknown as {
+      text: string;
+      language: string;
+      duration: number;
+      segments: Array<{
+        id: number;
+        start: number;
+        end: number;
+        text: string;
+        avg_logprob: number;
+      }>;
+    };
+
+    const rawSegments: AudioSegment[] = (whisperData.segments ?? []).map((seg) => ({
+      start: seg.start,
+      end: seg.end,
+      text: seg.text.trim(),
+      confidence: Math.exp(seg.avg_logprob ?? -1),
+      language: whisperData.language,
+    }));
+
+    const fullText = whisperData.text;
+    const detectedLanguage = whisperData.language ?? detectLanguageFromText(fullText);
+    const duration = whisperData.duration ?? 0;
+
+    // Speaker diarization
+    let segments = rawSegments;
+    if (options.detectSpeakers && rawSegments.length > 2) {
+      segments = heuristicDiarization(rawSegments, options.maxSpeakers ?? 2);
+    }
+
+    // Sentiment analysis
+    if (options.analyzeSentiment) {
+      segments = segments.map((seg) => ({
+        ...seg,
+        sentiment: analyzeSentimentSimple(seg.text),
+      }));
+    }
+
+    const overallSentiment = options.analyzeSentiment
+      ? analyzeSentimentSimple(fullText)
+      : undefined;
+
+    // Summary
+    const summary = options.generateSummary
+      ? await generateSummary(fullText, duration)
+      : undefined;
+
+    // SRT
+    const srtCaptions = options.generateSrt ? generateSrt(segments) : undefined;
+
+    // Keywords
+    const keywords = extractKeywords(fullText);
+
+    // Unique speakers
+    const speakers = options.detectSpeakers
+      ? [...new Set(segments.map((s) => s.speaker).filter(Boolean))] as string[]
+      : undefined;
+
+    logger.info(`Transcription complete: ${fullText.split(/\s+/).length} words, ${segments.length} segments`);
+
     return {
-      text: verbose.text ?? "",
-      segments: verbose.segments ?? [],
-      language: verbose.language ?? language ?? "en",
-      duration: verbose.duration ?? 0,
+      fullText,
+      segments,
+      language: detectedLanguage,
+      duration,
+      model: "whisper-1",
+      summary,
+      srtCaptions,
+      speakers,
+      overallSentiment,
+      keywords,
+      tokensUsed: 0, // Whisper doesn't use tokens
     };
   }
 
-  // ── Translation ──────────────────────────────────────────────────────────
+  async transcribeFromUrl(url: string, options: TranscriptionOptions = {}): Promise<TranscriptionResult> {
+    logger.info(`Fetching audio from URL: ${url}`);
 
-  async translateToEnglish(audioBuffer: Buffer, filename: string): Promise<string> {
-    Logger.debug("[AudioPipeline] translating to English via Whisper");
-    const file = new File([audioBuffer], filename);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+    if (!resp.ok) throw new AppError(`Failed to fetch audio: ${resp.status}`, 502, "AUDIO_FETCH_ERROR");
 
-    const response = await this.openai.audio.translations.create({
-      file,
-      model: "whisper-1",
-      response_format: "text",
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    const filename = url.split("/").pop() ?? "audio.mp3";
+
+    return this.transcribe(buffer, filename, options);
+  }
+
+  getSegmentsBySpeaker(result: TranscriptionResult): Map<string, AudioSegment[]> {
+    const bySpeaker = new Map<string, AudioSegment[]>();
+    for (const seg of result.segments) {
+      const speaker = seg.speaker ?? "Unknown";
+      const existing = bySpeaker.get(speaker) ?? [];
+      existing.push(seg);
+      bySpeaker.set(speaker, existing);
+    }
+    return bySpeaker;
+  }
+
+  getSpeakerStats(result: TranscriptionResult): Array<{
+    speaker: string;
+    wordCount: number;
+    speakingTime: number;
+    percentage: number;
+  }> {
+    const bySpeaker = this.getSegmentsBySpeaker(result);
+    const totalTime = result.duration;
+
+    return [...bySpeaker.entries()].map(([speaker, segs]) => {
+      const wordCount = segs.reduce((s, seg) => s + seg.text.split(/\s+/).length, 0);
+      const speakingTime = segs.reduce((s, seg) => s + (seg.end - seg.start), 0);
+      return {
+        speaker,
+        wordCount,
+        speakingTime,
+        percentage: totalTime > 0 ? (speakingTime / totalTime) * 100 : 0,
+      };
     });
-
-    return typeof response === "string" ? response : (response as any).text ?? "";
   }
 
-  // ── Diarization ──────────────────────────────────────────────────────────
-
-  async diarizeSpeakers(
-    segments: TranscriptSegment[],
-    speakerCount?: number
-  ): Promise<TranscriptSegment[]> {
-    if (segments.length === 0) return segments;
-    Logger.debug("[AudioPipeline] diarizing speakers", { segmentCount: segments.length, speakerCount });
-
-    // Step 1: heuristic speaker change detection based on pauses > 1.5s
-    const PAUSE_THRESHOLD = 1.5;
-    let currentSpeaker = 1;
-    let lastEnd = 0;
-    const heuristic: TranscriptSegment[] = segments.map((seg) => {
-      if (seg.start - lastEnd > PAUSE_THRESHOLD) {
-        currentSpeaker++;
-      }
-      lastEnd = seg.end;
-      return { ...seg, speaker: `Speaker ${currentSpeaker}` };
-    });
-
-    // Step 2: If speakerCount provided, normalize to that count
-    if (speakerCount && speakerCount > 0) {
-      const totalSpeakers = currentSpeaker;
-      const normalized = heuristic.map((seg) => {
-        const n = parseInt(seg.speaker?.replace("Speaker ", "") ?? "1", 10);
-        const mapped = Math.ceil((n / totalSpeakers) * speakerCount);
-        return { ...seg, speaker: `Speaker ${mapped}` };
-      });
-      return normalized;
-    }
-
-    // Step 3: LLM refinement for conversation-style diarization
-    if (segments.length <= 50) {
-      try {
-        const transcript = heuristic.map((s) => `[${s.speaker}] ${s.text}`).join("\n");
-        const prompt = `You are a speaker diarization assistant. Below is a transcript with initial speaker labels based on pause detection.
-Reassign speaker labels to make the conversation more coherent. Use "Speaker 1", "Speaker 2", etc.
-Return ONLY a JSON array of objects: [{"id": <segment_id>, "speaker": "Speaker N"}, ...]
-
-Transcript:
-${transcript}
-
-Return ONLY valid JSON array.`;
-
-        const llmResult = await llmGateway.chat([{ role: "user", content: prompt }]);
-        const match = llmResult.content.match(/\[[\s\S]*\]/);
-        if (match) {
-          const assignments: Array<{ id: number; speaker: string }> = JSON.parse(match[0]);
-          const map = new Map(assignments.map((a) => [a.id, a.speaker]));
-          return heuristic.map((seg) => ({
-            ...seg,
-            speaker: map.get(seg.id) ?? seg.speaker,
-          }));
-        }
-      } catch (err) {
-        Logger.warn("[AudioPipeline] LLM diarization failed, using heuristic", err);
-      }
-    }
-
-    return heuristic;
-  }
-
-  // ── Sentiment analysis ───────────────────────────────────────────────────
-
-  async analyzeSentiment(segments: TranscriptSegment[]): Promise<TranscriptSegment[]> {
-    if (segments.length === 0) return segments;
-    Logger.debug("[AudioPipeline] analyzing sentiment", { segmentCount: segments.length });
-
-    // Simple keyword-based fast path
-    const POSITIVE_WORDS = /\b(great|good|excellent|amazing|happy|love|wonderful|fantastic|positive|success|congratulations|thank|thanks|perfect)\b/i;
-    const NEGATIVE_WORDS = /\b(bad|terrible|awful|hate|sad|poor|wrong|fail|failure|error|problem|issue|sorry|unfortunately|difficult)\b/i;
-
-    const keywordLabeled = segments.map((seg) => {
-      const positive = POSITIVE_WORDS.test(seg.text);
-      const negative = NEGATIVE_WORDS.test(seg.text);
-      let label: "positive" | "negative" | "neutral" = "neutral";
-      let score = 0.5;
-
-      if (positive && !negative) { label = "positive"; score = 0.75; }
-      else if (negative && !positive) { label = "negative"; score = 0.75; }
-      else if (positive && negative) { label = "neutral"; score = 0.5; }
-
-      return { ...seg, sentiment: { label, score } };
-    });
-
-    // LLM batch for longer transcripts where keywords may be insufficient
-    if (segments.length <= 30) {
-      try {
-        const texts = segments.map((s, i) => `${i}: ${s.text}`).join("\n");
-        const prompt = `Analyze the sentiment of each numbered line below.
-Return a JSON array: [{"index": 0, "label": "positive"|"negative"|"neutral", "score": 0.0-1.0}]
-
-Lines:
-${texts}
-
-Return ONLY valid JSON array.`;
-
-        const llmResult = await llmGateway.chat([{ role: "user", content: prompt }]);
-        const match = llmResult.content.match(/\[[\s\S]*\]/);
-        if (match) {
-          const sentiments: Array<{ index: number; label: "positive" | "negative" | "neutral"; score: number }> =
-            JSON.parse(match[0]);
-          return keywordLabeled.map((seg, i) => {
-            const s = sentiments.find((x) => x.index === i);
-            return s ? { ...seg, sentiment: { label: s.label, score: s.score } } : seg;
-          });
-        }
-      } catch (err) {
-        Logger.warn("[AudioPipeline] LLM sentiment failed, using keyword fallback", err);
-      }
-    }
-
-    return keywordLabeled;
-  }
-
-  // ── SRT generation ───────────────────────────────────────────────────────
-
-  async generateSRT(segments: TranscriptSegment[]): Promise<string> {
-    Logger.debug("[AudioPipeline] generating SRT");
-    return segments
-      .map(
-        (seg) =>
-          `${seg.id + 1}\n${this.formatTimestamp(seg.start, "srt")} --> ${this.formatTimestamp(seg.end, "srt")}\n${seg.speaker ? `[${seg.speaker}] ` : ""}${seg.text.trim()}\n`
-      )
-      .join("\n");
-  }
-
-  // ── VTT generation ───────────────────────────────────────────────────────
-
-  async generateVTT(segments: TranscriptSegment[]): Promise<string> {
-    Logger.debug("[AudioPipeline] generating VTT");
-    const body = segments
-      .map(
-        (seg) =>
-          `${this.formatTimestamp(seg.start, "vtt")} --> ${this.formatTimestamp(seg.end, "vtt")}\n${seg.speaker ? `<v ${seg.speaker}>` : ""}${seg.text.trim()}\n`
-      )
-      .join("\n");
-    return `WEBVTT\n\n${body}`;
-  }
-
-  // ── Summary ──────────────────────────────────────────────────────────────
-
-  async summarizeTranscript(text: string, duration: number): Promise<string> {
-    Logger.debug("[AudioPipeline] summarizing transcript");
-    const minutes = Math.round(duration / 60);
-    const prompt = `Summarize the following transcript (approximately ${minutes} minutes long) in 3-5 concise sentences.
-Focus on the main topics discussed, key decisions, and action items if any.
-
-Transcript:
-${text.slice(0, 8000)}`;
-
-    const result = await llmGateway.chat([{ role: "user", content: prompt }]);
-    return result.content;
-  }
-
-  // ── Private: timestamp formatter ─────────────────────────────────────────
-
-  private formatTimestamp(seconds: number, format: "srt" | "vtt"): string {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = Math.floor(seconds % 60);
-    const ms = Math.round((seconds - Math.floor(seconds)) * 1000);
-
-    const hh = String(h).padStart(2, "0");
-    const mm = String(m).padStart(2, "0");
-    const ss = String(s).padStart(2, "0");
-    const mmm = String(ms).padStart(3, "0");
-
-    return format === "srt" ? `${hh}:${mm}:${ss},${mmm}` : `${hh}:${mm}:${ss}.${mmm}`;
-  }
-
-  // ── Private: prepare audio buffer ────────────────────────────────────────
-
-  private async prepareAudioBuffer(
-    source: TranscriptionRequest["audioSource"]
-  ): Promise<{ buffer: Buffer; filename: string }> {
-    if (source.type === "buffer") {
-      return { buffer: source.buffer, filename: source.filename };
-    }
-
-    if (source.type === "filepath") {
-      Logger.debug("[AudioPipeline] reading audio from file", { path: source.path });
-      const buffer = await fs.promises.readFile(source.path);
-      const filename = path.basename(source.path);
-      return { buffer, filename };
-    }
-
-    // URL
-    Logger.debug("[AudioPipeline] downloading audio from URL", { url: source.url });
-    const response = await axios.get<ArrayBuffer>(source.url, {
-      responseType: "arraybuffer",
-      timeout: 60_000,
-    });
-
-    const buffer = Buffer.from(response.data);
-    const urlPath = new URL(source.url).pathname;
-    const filename = path.basename(urlPath) || "audio.mp3";
-    return { buffer, filename };
-  }
-
-  // ── Private: map Whisper segments ────────────────────────────────────────
-
-  private mapWhisperSegments(raw: any[]): TranscriptSegment[] {
-    if (!Array.isArray(raw)) return [];
-    return raw.map((seg, idx) => ({
-      id: seg.id ?? idx,
-      start: seg.start ?? 0,
-      end: seg.end ?? 0,
-      text: (seg.text ?? "").trim(),
-      confidence: seg.avg_logprob ? Math.exp(seg.avg_logprob) : 0.9,
-    }));
-  }
-
-  // ── Private: build speaker profiles ─────────────────────────────────────
-
-  private buildSpeakerProfiles(segments: TranscriptSegment[]): SpeakerProfile[] {
-    const speakerMap = new Map<string, SpeakerProfile>();
-
-    for (const seg of segments) {
-      const label = seg.speaker ?? "Unknown";
-      if (!speakerMap.has(label)) {
-        speakerMap.set(label, {
-          id: label.toLowerCase().replace(/\s+/g, "_"),
-          label,
-          totalDuration: 0,
-          segments: [],
-          estimatedGender: "unknown",
-        });
-      }
-      const profile = speakerMap.get(label)!;
-      profile.totalDuration += seg.end - seg.start;
-      profile.segments.push(seg.id);
-    }
-
-    return Array.from(speakerMap.values());
+  private getAudioMimeType(filename: string): string {
+    const ext = filename.split(".").pop()?.toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      mp3: "audio/mpeg",
+      wav: "audio/wav",
+      m4a: "audio/m4a",
+      mp4: "audio/mp4",
+      ogg: "audio/ogg",
+      flac: "audio/flac",
+      webm: "audio/webm",
+    };
+    return mimeTypes[ext ?? ""] ?? "audio/mpeg";
   }
 }
 

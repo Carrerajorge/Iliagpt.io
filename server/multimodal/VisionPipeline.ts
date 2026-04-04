@@ -1,440 +1,313 @@
-import crypto from "crypto";
+/**
+ * VisionPipeline — image analysis using Claude Vision API.
+ * Capabilities: describe, OCR, chart understanding, diagram-to-text, multi-image comparison.
+ * Falls back to Tesseract OCR when API unavailable.
+ */
+
 import Anthropic from "@anthropic-ai/sdk";
-import Tesseract from "tesseract.js";
-import axios from "axios";
-import { Logger } from "../lib/logger";
-import { env } from "../config/env";
+import { createLogger } from "../utils/logger";
+import { AppError } from "../utils/errors";
 
-// ─── Interfaces ──────────────────────────────────────────────────────────────
+const logger = createLogger("VisionPipeline");
 
-export interface VisionAnalysisRequest {
-  imageSource:
-    | { type: "url"; url: string }
-    | { type: "base64"; data: string; mediaType: string }
-    | { type: "buffer"; buffer: Buffer; mediaType?: string };
-  tasks: VisionTask[];
-  language?: string;
-}
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export type VisionTask =
   | "describe"
   | "ocr"
   | "chart_analysis"
   | "diagram_to_text"
-  | "object_detection"
-  | "table_extraction"
-  | "code_screenshot";
+  | "compare"
+  | "moderate"
+  | "structured_extract";
 
-export interface ChartData {
-  chartType: "bar" | "line" | "pie" | "scatter" | "table" | "other";
-  title?: string;
-  xAxis?: { label: string; values: string[] };
-  yAxis?: { label: string; values: number[] };
-  series?: Array<{ name: string; data: number[] }>;
-  summary: string;
+export interface ImageInput {
+  data: Buffer | string; // Buffer for raw bytes, string for URL or base64
+  mediaType?: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+  label?: string;
 }
 
-export interface DetectedObject {
-  label: string;
-  confidence: number;
-  location?: string; // e.g. "top-left", "center"
-}
-
-export interface VisionAnalysisResult {
-  imageId: string;
+export interface VisionResult {
+  task: VisionTask;
   description?: string;
   extractedText?: string;
-  chartData?: ChartData;
-  diagramDescription?: string;
-  detectedObjects?: DetectedObject[];
-  tableData?: Array<Record<string, string>>;
-  extractedCode?: string;
-  language?: string;
-  confidence: number;
-  processingTimeMs: number;
-  source: "claude_vision" | "tesseract_ocr" | "hybrid";
+  structuredData?: Record<string, unknown>;
+  objects?: Array<{ label: string; confidence: number; boundingBox?: BoundingBox }>;
+  colors?: Array<{ hex: string; name: string; percentage: number }>;
+  chartData?: ChartAnalysis;
+  moderationFlags?: ModerationResult;
+  comparison?: ComparisonResult;
+  model: string;
+  tokensUsed: number;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const VALID_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
-type ValidMediaType = (typeof VALID_MEDIA_TYPES)[number];
-
-function isValidMediaType(mt: string): mt is ValidMediaType {
-  return (VALID_MEDIA_TYPES as readonly string[]).includes(mt);
+export interface BoundingBox {
+  x: number; y: number; width: number; height: number;
 }
 
-function guessMimeFromUrl(url: string): ValidMediaType {
-  if (/\.png(\?|$)/i.test(url)) return "image/png";
-  if (/\.gif(\?|$)/i.test(url)) return "image/gif";
-  if (/\.webp(\?|$)/i.test(url)) return "image/webp";
-  return "image/jpeg";
+export interface ChartAnalysis {
+  chartType: string;
+  title?: string;
+  xAxis?: string;
+  yAxis?: string;
+  dataPoints: Array<{ label: string; value: string | number }>;
+  trend?: string;
+  insights: string[];
 }
 
-// ─── Class ────────────────────────────────────────────────────────────────────
+export interface ModerationResult {
+  safe: boolean;
+  flags: Array<{ category: string; severity: "low" | "medium" | "high" }>;
+}
 
-class VisionPipeline {
-  private anthropic: Anthropic;
-  private cache: Map<string, VisionAnalysisResult>;
+export interface ComparisonResult {
+  similarities: string[];
+  differences: string[];
+  preferredImage?: number;
+  analysisNotes: string;
+}
 
-  constructor() {
-    this.anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-    this.cache = new Map();
-    Logger.info("[VisionPipeline] Initialized");
-  }
+// ─── Task Prompts ─────────────────────────────────────────────────────────────
 
-  // ── Public: main entry ───────────────────────────────────────────────────
+const TASK_PROMPTS: Record<VisionTask, string> = {
+  describe: "Describe this image in detail. Include: what's shown, key elements, context, mood/tone, and any text visible.",
 
-  async analyze(request: VisionAnalysisRequest): Promise<VisionAnalysisResult> {
-    const startMs = Date.now();
-    Logger.info("[VisionPipeline] analyze", { tasks: request.tasks });
+  ocr: "Extract ALL text from this image exactly as it appears. Preserve formatting where possible. Return only the extracted text, nothing else.",
 
-    const { data: imageData, mediaType } = await this.prepareImageSource(request.imageSource);
-    const imageId = this.buildImageHash(imageData);
+  chart_analysis: `Analyze this chart/graph. Return a JSON object with:
+{
+  "chartType": "bar|line|pie|scatter|etc",
+  "title": "chart title or null",
+  "xAxis": "x axis label",
+  "yAxis": "y axis label",
+  "dataPoints": [{"label": "...", "value": "..."}],
+  "trend": "description of trend",
+  "insights": ["insight 1", "insight 2"]
+}`,
 
-    const cached = this.cache.get(imageId);
-    if (cached) {
-      Logger.debug("[VisionPipeline] cache hit", { imageId });
-      return cached;
+  diagram_to_text: "Convert this diagram/flowchart/architecture diagram into a clear textual description. Describe all nodes, connections, and flow. Use → for directed connections.",
+
+  compare: "Compare these images. Describe: similarities, differences, and which better achieves its apparent purpose. Be specific and objective.",
+
+  moderate: `Analyze this image for content moderation. Return JSON:
+{
+  "safe": true|false,
+  "flags": [{"category": "violence|nudity|hate|spam|...", "severity": "low|medium|high"}]
+}
+Return {"safe": true, "flags": []} if the image is appropriate.`,
+
+  structured_extract: `Extract structured information from this image. Return JSON with all key information found:
+{
+  "title": "...",
+  "main_content": "...",
+  "metadata": {},
+  "data_tables": [],
+  "key_points": []
+}`,
+};
+
+// ─── Image Preprocessing ──────────────────────────────────────────────────────
+
+async function prepareImageContent(
+  image: ImageInput
+): Promise<Anthropic.ImageBlockParam> {
+  if (typeof image.data === "string") {
+    if (image.data.startsWith("http://") || image.data.startsWith("https://")) {
+      // Fetch and convert to base64
+      const resp = await fetch(image.data, { signal: AbortSignal.timeout(15_000) });
+      if (!resp.ok) throw new AppError(`Failed to fetch image: ${resp.status}`, 502, "IMAGE_FETCH_ERROR");
+
+      const buf = Buffer.from(await resp.arrayBuffer());
+      const contentType = resp.headers.get("content-type") ?? "image/jpeg";
+      const mediaType = contentType.split(";")[0]?.trim() as Anthropic.Base64ImageSource["media_type"];
+
+      return {
+        type: "image",
+        source: { type: "base64", media_type: mediaType ?? "image/jpeg", data: buf.toString("base64") },
+      };
     }
 
-    const result: VisionAnalysisResult = {
-      imageId,
-      confidence: 0.9,
-      processingTimeMs: 0,
-      source: "claude_vision",
+    // Already base64
+    return {
+      type: "image",
+      source: { type: "base64", media_type: image.mediaType ?? "image/jpeg", data: image.data },
     };
-
-    const tasks = request.tasks;
-
-    try {
-      const promises: Promise<void>[] = [];
-
-      if (tasks.includes("describe")) {
-        promises.push(
-          (async () => {
-            result.description = await this.analyzeWithClaude(
-              imageData,
-              mediaType,
-              this.buildAnalysisPrompt(["describe"])
-            );
-          })()
-        );
-      }
-
-      if (tasks.includes("ocr")) {
-        promises.push(
-          (async () => {
-            const imageBuffer = Buffer.from(imageData, "base64");
-            result.extractedText = await this.extractTextOCR(imageBuffer);
-            result.source = "hybrid";
-          })()
-        );
-      }
-
-      if (tasks.includes("chart_analysis")) {
-        promises.push(
-          (async () => {
-            result.chartData = await this.analyzeChart(imageData, mediaType);
-          })()
-        );
-      }
-
-      if (tasks.includes("diagram_to_text")) {
-        promises.push(
-          (async () => {
-            result.diagramDescription = await this.describeDiagram(imageData, mediaType);
-          })()
-        );
-      }
-
-      if (tasks.includes("object_detection")) {
-        promises.push(
-          (async () => {
-            const raw = await this.analyzeWithClaude(
-              imageData,
-              mediaType,
-              this.buildAnalysisPrompt(["object_detection"])
-            );
-            result.detectedObjects = this.parseDetectedObjects(raw);
-          })()
-        );
-      }
-
-      if (tasks.includes("table_extraction")) {
-        promises.push(
-          (async () => {
-            result.tableData = await this.extractTableData(imageData, mediaType);
-          })()
-        );
-      }
-
-      if (tasks.includes("code_screenshot")) {
-        promises.push(
-          (async () => {
-            result.extractedCode = await this.extractCodeFromScreenshot(imageData, mediaType);
-          })()
-        );
-      }
-
-      await Promise.all(promises);
-    } catch (err) {
-      Logger.error("[VisionPipeline] analyze error", err);
-      throw err;
-    }
-
-    result.processingTimeMs = Date.now() - startMs;
-    this.cache.set(imageId, result);
-    Logger.info("[VisionPipeline] analysis complete", {
-      imageId,
-      processingTimeMs: result.processingTimeMs,
-    });
-    return result;
   }
 
-  // ── Claude Vision call ───────────────────────────────────────────────────
+  // Buffer
+  return {
+    type: "image",
+    source: {
+      type: "base64",
+      media_type: image.mediaType ?? "image/jpeg",
+      data: image.data.toString("base64"),
+    },
+  };
+}
 
-  async analyzeWithClaude(
-    imageData: string | Buffer,
-    mediaType: string,
-    prompt: string
-  ): Promise<string> {
-    const base64 =
-      Buffer.isBuffer(imageData) ? imageData.toString("base64") : imageData;
+// ─── Tesseract OCR Fallback ───────────────────────────────────────────────────
 
-    const validMediaType: ValidMediaType = isValidMediaType(mediaType)
-      ? mediaType
-      : "image/jpeg";
+async function ocrWithTesseract(image: ImageInput): Promise<string> {
+  try {
+    // Dynamic import to avoid loading Tesseract unless needed
+    const { createWorker } = await import("tesseract.js");
+    const worker = await createWorker("eng");
 
-    Logger.debug("[VisionPipeline] calling Claude Vision API");
+    let imageData: string | Buffer;
+    if (typeof image.data === "string" && !image.data.startsWith("http")) {
+      imageData = Buffer.from(image.data, "base64");
+    } else if (typeof image.data === "string") {
+      imageData = image.data;
+    } else {
+      imageData = image.data;
+    }
 
-    const response = await this.anthropic.messages.create({
-      model: "claude-opus-4-5",
-      max_tokens: 4096,
+    const { data: { text } } = await worker.recognize(imageData);
+    await worker.terminate();
+    return text;
+  } catch (err) {
+    throw new AppError(`Tesseract OCR failed: ${(err as Error).message}`, 500, "OCR_ERROR");
+  }
+}
+
+// ─── VisionPipeline ───────────────────────────────────────────────────────────
+
+export class VisionPipeline {
+  private client: Anthropic;
+  private model: string;
+
+  constructor(opts: { model?: string } = {}) {
+    this.client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    this.model = opts.model ?? "claude-sonnet-4-6";
+  }
+
+  async analyze(image: ImageInput, task: VisionTask = "describe"): Promise<VisionResult> {
+    logger.debug(`Running vision task: ${task}`);
+
+    // OCR fallback path if Claude unavailable
+    if (task === "ocr" && !process.env.ANTHROPIC_API_KEY) {
+      const text = await ocrWithTesseract(image);
+      return { task, extractedText: text, model: "tesseract", tokensUsed: 0 };
+    }
+
+    const imageContent = await prepareImageContent(image);
+    const prompt = TASK_PROMPTS[task];
+
+    const response = await this.client.messages.create({
+      model: this.model,
+      max_tokens: 2_048,
       messages: [
         {
           role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: validMediaType,
-                data: base64,
-              },
-            },
-            {
-              type: "text",
-              text: prompt,
-            },
-          ],
+          content: [imageContent, { type: "text", text: prompt }],
         },
       ],
     });
 
-    const textBlock = response.content.find((b) => b.type === "text");
-    return textBlock && textBlock.type === "text" ? textBlock.text : "";
+    const text = response.content[0]?.type === "text" ? response.content[0].text : "";
+    const tokensUsed = response.usage.input_tokens + response.usage.output_tokens;
+
+    return this.parseResponse(text, task, tokensUsed);
   }
 
-  // ── OCR via Tesseract ────────────────────────────────────────────────────
+  async compareImages(images: ImageInput[], comparisonPrompt?: string): Promise<VisionResult> {
+    if (images.length < 2) throw new AppError("Need at least 2 images to compare", 400, "INVALID_INPUT");
 
-  async extractTextOCR(imageBuffer: Buffer): Promise<string> {
-    Logger.debug("[VisionPipeline] running Tesseract OCR");
-    try {
-      const result = await Tesseract.recognize(imageBuffer, "eng");
-      return result.data.text.trim();
-    } catch (err) {
-      Logger.error("[VisionPipeline] Tesseract OCR failed", err);
-      return "";
-    }
-  }
+    const imageContents = await Promise.all(images.map(prepareImageContent));
+    const prompt = comparisonPrompt ?? TASK_PROMPTS.compare;
 
-  // ── Chart analysis ───────────────────────────────────────────────────────
+    const content: Anthropic.ContentBlockParam[] = [
+      ...imageContents.map((img, i) => ({
+        ...img,
+        source: { ...(img as Anthropic.ImageBlockParam).source },
+      } as Anthropic.ContentBlockParam)),
+      { type: "text" as const, text: prompt },
+    ];
 
-  async analyzeChart(imageData: string | Buffer, mediaType: string): Promise<ChartData> {
-    Logger.debug("[VisionPipeline] analyzeChart");
-    const prompt = `Analyze this chart or graph in detail.
-Return a JSON object with these fields:
-{
-  "chartType": "bar"|"line"|"pie"|"scatter"|"table"|"other",
-  "title": string or null,
-  "xAxis": { "label": string, "values": string[] } or null,
-  "yAxis": { "label": string, "values": number[] } or null,
-  "series": [ { "name": string, "data": number[] } ],
-  "summary": "one-sentence description"
-}
-Return ONLY valid JSON, no markdown fences.`;
-
-    const raw = await this.analyzeWithClaude(imageData, mediaType, prompt);
-    try {
-      const cleaned = raw.replace(/```json|```/g, "").trim();
-      return JSON.parse(cleaned) as ChartData;
-    } catch {
-      Logger.warn("[VisionPipeline] failed to parse chart JSON, returning fallback");
-      return { chartType: "other", summary: raw };
-    }
-  }
-
-  // ── Table extraction ─────────────────────────────────────────────────────
-
-  async extractTableData(
-    imageData: string | Buffer,
-    mediaType: string
-  ): Promise<Array<Record<string, string>>> {
-    Logger.debug("[VisionPipeline] extractTableData");
-    const prompt = `Extract the table from this image as a markdown table (pipe-separated).
-If there is no table, return an empty markdown table with just a header row.
-Return ONLY the markdown table, nothing else.`;
-
-    const raw = await this.analyzeWithClaude(imageData, mediaType, prompt);
-    return this.parseTableFromMarkdown(raw);
-  }
-
-  // ── Diagram description ──────────────────────────────────────────────────
-
-  async describeDiagram(imageData: string | Buffer, mediaType: string): Promise<string> {
-    Logger.debug("[VisionPipeline] describeDiagram");
-    const prompt = `This image shows a diagram, flowchart, architecture diagram, or similar visual.
-Provide a clear textual description that captures:
-1. The type of diagram
-2. All components/nodes
-3. The relationships and flow between components
-4. Any labels or annotations
-Be structured and thorough.`;
-    return this.analyzeWithClaude(imageData, mediaType, prompt);
-  }
-
-  // ── Code screenshot extraction ───────────────────────────────────────────
-
-  async extractCodeFromScreenshot(imageData: string | Buffer, mediaType: string): Promise<string> {
-    Logger.debug("[VisionPipeline] extractCodeFromScreenshot");
-    const prompt = `Extract all code visible in this screenshot.
-Return ONLY the code itself, preserving indentation and formatting.
-Do not include any explanation or markdown fences.`;
-    return this.analyzeWithClaude(imageData, mediaType, prompt);
-  }
-
-  // ── Batch analysis ───────────────────────────────────────────────────────
-
-  async batchAnalyze(requests: VisionAnalysisRequest[]): Promise<VisionAnalysisResult[]> {
-    Logger.info("[VisionPipeline] batchAnalyze", { count: requests.length });
-    const concurrencyLimit = 3;
-    const results: VisionAnalysisResult[] = [];
-
-    for (let i = 0; i < requests.length; i += concurrencyLimit) {
-      const batch = requests.slice(i, i + concurrencyLimit);
-      const batchResults = await Promise.all(batch.map((r) => this.analyze(r)));
-      results.push(...batchResults);
-    }
-
-    return results;
-  }
-
-  // ── Private: prepare image source ────────────────────────────────────────
-
-  private async prepareImageSource(
-    source: VisionAnalysisRequest["imageSource"]
-  ): Promise<{ data: string; mediaType: string }> {
-    if (source.type === "base64") {
-      const mt = isValidMediaType(source.mediaType) ? source.mediaType : "image/jpeg";
-      return { data: source.data, mediaType: mt };
-    }
-
-    if (source.type === "buffer") {
-      const mt =
-        source.mediaType && isValidMediaType(source.mediaType)
-          ? source.mediaType
-          : "image/jpeg";
-      return { data: source.buffer.toString("base64"), mediaType: mt };
-    }
-
-    // URL: download and convert
-    Logger.debug("[VisionPipeline] downloading image from URL", { url: source.url });
-    const response = await axios.get<ArrayBuffer>(source.url, {
-      responseType: "arraybuffer",
-      timeout: 30_000,
+    const response = await this.client.messages.create({
+      model: this.model,
+      max_tokens: 2_048,
+      messages: [{ role: "user", content }],
     });
 
-    const contentType = (response.headers["content-type"] as string | undefined) ?? "";
-    const detectedMt = isValidMediaType(contentType) ? contentType : guessMimeFromUrl(source.url);
-    const base64 = Buffer.from(response.data).toString("base64");
+    const text = response.content[0]?.type === "text" ? response.content[0].text : "";
+    const tokensUsed = response.usage.input_tokens + response.usage.output_tokens;
 
-    return { data: base64, mediaType: detectedMt };
+    // Parse comparison result
+    const similarities = [...text.matchAll(/similar(?:ities)?[:\s]+([^\n]+)/gi)].map((m) => m[1].trim());
+    const differences = [...text.matchAll(/differ(?:ences?)?[:\s]+([^\n]+)/gi)].map((m) => m[1].trim());
+
+    return {
+      task: "compare",
+      description: text,
+      comparison: { similarities, differences, analysisNotes: text },
+      model: this.model,
+      tokensUsed,
+    };
   }
 
-  // ── Private: image hash ──────────────────────────────────────────────────
-
-  private buildImageHash(imageData: string): string {
-    return crypto.createHash("sha256").update(imageData.slice(0, 1000)).digest("hex");
+  async moderate(image: ImageInput): Promise<ModerationResult> {
+    const result = await this.analyze(image, "moderate");
+    return result.moderationFlags ?? { safe: true, flags: [] };
   }
 
-  // ── Private: analysis prompt builder ────────────────────────────────────
-
-  private buildAnalysisPrompt(tasks: VisionTask[]): string {
-    const parts: string[] = [];
-
-    if (tasks.includes("describe")) {
-      parts.push("Provide a detailed general description of this image.");
-    }
-    if (tasks.includes("object_detection")) {
-      parts.push(
-        `List all distinct objects you can see in the image. For each object, provide:
-- label: the object name
-- location: approximate position (top-left, top-center, top-right, center-left, center, center-right, bottom-left, bottom-center, bottom-right)
-- confidence: your confidence level as a number 0.0-1.0
-Format as a JSON array: [{"label":"...","location":"...","confidence":0.9}]`
-      );
-    }
-    if (tasks.includes("ocr")) {
-      parts.push("Extract all visible text from the image, preserving line breaks where appropriate.");
-    }
-
-    return parts.join("\n\n");
+  async ocr(image: ImageInput): Promise<string> {
+    const result = await this.analyze(image, "ocr");
+    return result.extractedText ?? "";
   }
 
-  // ── Private: parse detected objects ─────────────────────────────────────
-
-  private parseDetectedObjects(raw: string): DetectedObject[] {
-    try {
-      const match = raw.match(/\[[\s\S]*\]/);
-      if (!match) return [];
-      return JSON.parse(match[0]) as DetectedObject[];
-    } catch {
-      Logger.warn("[VisionPipeline] could not parse detected objects JSON");
-      return [];
-    }
+  async describeImage(image: ImageInput): Promise<string> {
+    const result = await this.analyze(image, "describe");
+    return result.description ?? "";
   }
 
-  // ── Private: parse markdown table ────────────────────────────────────────
+  async analyzeChart(image: ImageInput): Promise<ChartAnalysis> {
+    const result = await this.analyze(image, "chart_analysis");
+    return result.chartData ?? { chartType: "unknown", dataPoints: [], insights: [] };
+  }
 
-  private parseTableFromMarkdown(markdown: string): Array<Record<string, string>> {
-    const lines = markdown
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.startsWith("|") && l.endsWith("|"));
+  private parseResponse(text: string, task: VisionTask, tokensUsed: number): VisionResult {
+    const base: VisionResult = { task, model: this.model, tokensUsed };
 
-    if (lines.length < 2) return [];
+    if (task === "ocr") {
+      return { ...base, extractedText: text };
+    }
 
-    // First line is headers, second line is separator, rest are data rows
-    const headers = lines[0]
-      .split("|")
-      .map((h) => h.trim())
-      .filter(Boolean);
+    if (task === "describe" || task === "diagram_to_text") {
+      return { ...base, description: text };
+    }
 
-    const dataLines = lines.slice(2); // skip separator row
+    if (task === "chart_analysis") {
+      try {
+        const jsonMatch = text.match(/```json\n?([\s\S]*?)\n?```/) ?? text.match(/\{[\s\S]*\}/);
+        const parsed = JSON.parse(jsonMatch?.[1] ?? jsonMatch?.[0] ?? "{}") as ChartAnalysis;
+        return { ...base, chartData: parsed, description: text };
+      } catch {
+        return { ...base, description: text, chartData: { chartType: "unknown", dataPoints: [], insights: [text] } };
+      }
+    }
 
-    return dataLines.map((line) => {
-      const cells = line
-        .split("|")
-        .map((c) => c.trim())
-        .filter(Boolean);
+    if (task === "moderate") {
+      try {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        const parsed = JSON.parse(jsonMatch?.[0] ?? "{}") as ModerationResult;
+        return { ...base, moderationFlags: parsed };
+      } catch {
+        return { ...base, moderationFlags: { safe: true, flags: [] } };
+      }
+    }
 
-      const row: Record<string, string> = {};
-      headers.forEach((h, i) => {
-        row[h] = cells[i] ?? "";
-      });
-      return row;
-    });
+    if (task === "structured_extract") {
+      try {
+        const jsonMatch = text.match(/```json\n?([\s\S]*?)\n?```/) ?? text.match(/\{[\s\S]*\}/);
+        const parsed = JSON.parse(jsonMatch?.[1] ?? jsonMatch?.[0] ?? "{}") as Record<string, unknown>;
+        return { ...base, structuredData: parsed, description: text };
+      } catch {
+        return { ...base, description: text, structuredData: {} };
+      }
+    }
+
+    return { ...base, description: text };
   }
 }
 

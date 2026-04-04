@@ -1,519 +1,363 @@
 /**
- * UserProfileLearner — learns user preferences, expertise, and style from conversations.
- * Profiles are cached in Redis and rebuilt from memory entries when missing.
+ * UserProfileLearner — automatically infers and updates user preferences from conversation patterns.
+ * Tracks expertise level, communication style, frequent topics, and explicit preferences.
  */
 
-import { redis } from "../lib/redis"
-import { llmGateway } from "../lib/llmGateway"
-import { Logger } from "../lib/logger"
-import { pgVectorMemoryStore } from "./PgVectorMemoryStore"
+import { createLogger } from "../utils/logger";
+import { pgVectorMemoryStore } from "./PgVectorMemoryStore";
+import { db } from "../db";
+import { sql } from "drizzle-orm";
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
+const logger = createLogger("UserProfileLearner");
 
-export interface ExpertiseMap {
-  programming: { level: number; languages: string[] }
-  science: { level: number; fields: string[] }
-  business: { level: number; areas: string[] }
-  creative: { level: number; domains: string[] }
-  general: number
-}
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface ImplicitSignal {
-  type:
-    | "follow_up_question"
-    | "correction"
-    | "appreciation"
-    | "complaint"
-    | "confusion"
-  context: string
-  timestamp: Date
-  weight: number
-}
+export type ExpertiseLevel = "beginner" | "intermediate" | "advanced" | "expert";
+export type CommunicationStyle = "concise" | "detailed" | "technical" | "casual" | "formal";
 
 export interface UserProfile {
-  userId: string
-  expertise: ExpertiseMap
-  communicationStyle: {
-    preferredLength: "concise" | "detailed" | "adaptive"
-    technicalLevel: 1 | 2 | 3 | 4 | 5
-    preferredFormat: "prose" | "bullets" | "code" | "mixed"
-    tone: "formal" | "casual" | "friendly"
-  }
-  topicInterests: Array<{ topic: string; weight: number; lastMentioned: Date }>
-  explicitPreferences: Record<string, string>
-  implicitSignals: ImplicitSignal[]
-  updatedAt: Date
+  userId: string;
+  expertiseLevel: ExpertiseLevel;
+  communicationStyle: CommunicationStyle;
+  preferredLanguage: string;
+  frequentTopics: Array<{ topic: string; count: number; lastSeen: Date }>;
+  explicitPreferences: Record<string, string>;
+  inferredAttributes: Record<string, { value: string; confidence: number; source: string }>;
+  totalInteractions: number;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
 }
 
-type PartialProfile = Partial<Omit<UserProfile, "userId" | "updatedAt">>
+export interface ConversationSignal {
+  userId: string;
+  conversationId: string;
+  userMessages: string[];
+  assistantMessages: string[];
+  topicsDiscussed?: string[];
+  feedbackGiven?: Array<{ positive: boolean; context: string }>;
+}
 
-// ─── Defaults ─────────────────────────────────────────────────────────────────
+export interface ExplicitPreference {
+  key: string;
+  value: string;
+  context: string;
+}
+
+// ─── Inference Heuristics ─────────────────────────────────────────────────────
+
+const EXPERTISE_SIGNALS = {
+  beginner: [
+    "what is", "how do i", "i don't understand", "can you explain", "what does it mean",
+    "i'm new to", "i'm learning", "beginner", "newbie", "first time",
+  ],
+  intermediate: [
+    "how to optimize", "best practice", "what's the difference", "which approach",
+    "i've been using", "i know how to",
+  ],
+  advanced: [
+    "time complexity", "design pattern", "architecture", "trade-off", "under the hood",
+    "internals", "performance bottleneck", "microservice", "distributed",
+  ],
+  expert: [
+    "rfc", "specification", "kernel", "assembly", "proof", "theorem", "formal verification",
+    "memory model", "consistency model", "byzantine fault",
+  ],
+} satisfies Record<ExpertiseLevel, string[]>;
+
+const STYLE_SIGNALS = {
+  concise: ["tldr", "brief", "short", "quick", "summarize", "in brief"],
+  detailed: ["explain in detail", "step by step", "walk me through", "comprehensive", "thorough"],
+  technical: ["code", "implementation", "algorithm", "function", "variable", "syntax", "api"],
+  casual: ["hey", "what's up", "cool", "awesome", "lol", "btw", "thanks"],
+  formal: ["please", "could you", "i would like", "kindly", "regarding"],
+} satisfies Record<CommunicationStyle, string[]>;
+
+const TOPIC_KEYWORDS: Record<string, string[]> = {
+  programming: ["code", "function", "variable", "class", "algorithm", "debug", "typescript", "python", "javascript"],
+  data_science: ["dataset", "model", "training", "neural network", "machine learning", "statistics", "regression"],
+  business: ["strategy", "revenue", "marketing", "customer", "stakeholder", "roi", "kpi", "growth"],
+  research: ["paper", "study", "literature", "hypothesis", "experiment", "findings", "citation"],
+  writing: ["draft", "essay", "article", "edit", "proofread", "grammar", "paragraph", "thesis"],
+  design: ["ui", "ux", "layout", "component", "wireframe", "figma", "color", "typography"],
+  devops: ["docker", "kubernetes", "deployment", "ci/cd", "pipeline", "infrastructure", "aws", "cloud"],
+};
+
+function detectTopics(text: string): string[] {
+  const lower = text.toLowerCase();
+  return Object.entries(TOPIC_KEYWORDS)
+    .filter(([, keywords]) => keywords.some((k) => lower.includes(k)))
+    .map(([topic]) => topic);
+}
+
+function scoreExpertiseLevel(messages: string[]): ExpertiseLevel {
+  const combined = messages.join(" ").toLowerCase();
+  const scores: Record<ExpertiseLevel, number> = { beginner: 0, intermediate: 0, advanced: 0, expert: 0 };
+
+  for (const [level, signals] of Object.entries(EXPERTISE_SIGNALS)) {
+    scores[level as ExpertiseLevel] = signals.filter((s) => combined.includes(s)).length;
+  }
+
+  // Expert overrides all if any signal found
+  if (scores.expert > 0) return "expert";
+  if (scores.advanced >= 2) return "advanced";
+  if (scores.intermediate >= 2) return "intermediate";
+  if (scores.beginner > 0) return "beginner";
+  return "intermediate"; // default
+}
+
+function scoreCommunicationStyle(messages: string[]): CommunicationStyle {
+  const combined = messages.join(" ").toLowerCase();
+  const scores: Record<CommunicationStyle, number> = {
+    concise: 0, detailed: 0, technical: 0, casual: 0, formal: 0,
+  };
+
+  for (const [style, signals] of Object.entries(STYLE_SIGNALS)) {
+    scores[style as CommunicationStyle] = signals.filter((s) => combined.includes(s)).length;
+  }
+
+  const winner = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
+  return (winner?.[1] ?? 0) > 0 ? (winner![0] as CommunicationStyle) : "detailed";
+}
+
+function detectLanguage(text: string): string {
+  // Basic heuristic using common words
+  const langPatterns: Array<[string, string[]]> = [
+    ["es", ["que", "de", "en", "el", "la", "los", "las", "por", "para", "con"]],
+    ["fr", ["que", "de", "le", "la", "les", "et", "en", "un", "une", "des"]],
+    ["pt", ["que", "de", "o", "a", "os", "as", "em", "do", "da", "por"]],
+    ["de", ["der", "die", "das", "und", "in", "zu", "mit", "von", "für", "ist"]],
+    ["zh", ["\u6211", "\u4e0d", "\u4e86", "\u4eba", "\u5927", "\u4e2d", "\u5c0f"]],
+    ["en", ["the", "is", "are", "was", "were", "have", "has", "that", "this", "with"]],
+  ];
+
+  const words = text.toLowerCase().split(/\s+/);
+  let bestLang = "en";
+  let bestScore = 0;
+
+  for (const [lang, patterns] of langPatterns) {
+    const score = patterns.filter((p) => words.includes(p)).length;
+    if (score > bestScore) {
+      bestScore = score;
+      bestLang = lang;
+    }
+  }
+
+  return bestLang;
+}
+
+function extractExplicitPreferences(text: string): ExplicitPreference[] {
+  const prefs: ExplicitPreference[] = [];
+  const patterns = [
+    { regex: /i prefer ([\w\s]+) (answers?|responses?|explanations?)/i, key: "response_style", valueIdx: 1 },
+    { regex: /please (always|never|don't) ([\w\s]+)/i, key: "instruction", valueIdx: 2 },
+    { regex: /i (like|want|need) ([\w\s]+) format/i, key: "output_format", valueIdx: 2 },
+    { regex: /my (role|job|title|profession) is ([\w\s]+)/i, key: "role", valueIdx: 2 },
+    { regex: /i (work|am working) (on|in|at|with) ([\w\s]+)/i, key: "work_context", valueIdx: 3 },
+  ];
+
+  for (const { regex, key, valueIdx } of patterns) {
+    const m = text.match(regex);
+    if (m?.[valueIdx]) {
+      prefs.push({ key, value: m[valueIdx].trim(), context: text.slice(0, 100) });
+    }
+  }
+
+  return prefs;
+}
+
+// ─── Profile Storage ──────────────────────────────────────────────────────────
+
+async function loadProfile(userId: string): Promise<UserProfile | null> {
+  const raw = await pgVectorMemoryStore.getUserMemory(userId, "__profile__");
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as UserProfile;
+  } catch {
+    return null;
+  }
+}
+
+async function saveProfile(profile: UserProfile): Promise<void> {
+  await pgVectorMemoryStore.storeUserMemory(profile.userId, "__profile__", JSON.stringify(profile), {
+    source: "UserProfileLearner",
+  });
+}
 
 function defaultProfile(userId: string): UserProfile {
   return {
     userId,
-    expertise: {
-      programming: { level: 3, languages: [] },
-      science: { level: 2, fields: [] },
-      business: { level: 2, areas: [] },
-      creative: { level: 2, domains: [] },
-      general: 3,
-    },
-    communicationStyle: {
-      preferredLength: "adaptive",
-      technicalLevel: 3,
-      preferredFormat: "mixed",
-      tone: "friendly",
-    },
-    topicInterests: [],
+    expertiseLevel: "intermediate",
+    communicationStyle: "detailed",
+    preferredLanguage: "en",
+    frequentTopics: [],
     explicitPreferences: {},
-    implicitSignals: [],
-    updatedAt: new Date(),
-  }
+    inferredAttributes: {},
+    totalInteractions: 0,
+    firstSeenAt: new Date(),
+    lastSeenAt: new Date(),
+  };
 }
 
-// ─── Keys ─────────────────────────────────────────────────────────────────────
+// ─── UserProfileLearner ───────────────────────────────────────────────────────
 
-const PROFILE_KEY = (userId: string) => `user_profile:v2:${userId}`
-const PROFILE_TTL = 60 * 60 * 24 * 7 // 7 days
+export class UserProfileLearner {
+  async processConversation(signal: ConversationSignal): Promise<UserProfile> {
+    let profile = await loadProfile(signal.userId) ?? defaultProfile(signal.userId);
 
-// ─── Class ────────────────────────────────────────────────────────────────────
+    profile.totalInteractions++;
+    profile.lastSeenAt = new Date();
 
-class UserProfileLearner {
-  // ── getProfile ───────────────────────────────────────────────────────────────
+    const userText = signal.userMessages.join(" ");
+
+    // Update expertise level
+    const detectedLevel = scoreExpertiseLevel(signal.userMessages);
+    profile = this.updateExpertise(profile, detectedLevel);
+
+    // Update communication style
+    const detectedStyle = scoreCommunicationStyle(signal.userMessages);
+    profile = this.updateStyle(profile, detectedStyle);
+
+    // Update language
+    const detectedLang = detectLanguage(userText);
+    if (detectedLang !== "en") {
+      profile.preferredLanguage = detectedLang;
+    }
+
+    // Update topic frequency
+    const topics = signal.topicsDiscussed ?? detectTopics(userText);
+    for (const topic of topics) {
+      const existing = profile.frequentTopics.find((t) => t.topic === topic);
+      if (existing) {
+        existing.count++;
+        existing.lastSeen = new Date();
+      } else {
+        profile.frequentTopics.push({ topic, count: 1, lastSeen: new Date() });
+      }
+    }
+
+    // Keep only top 20 topics
+    profile.frequentTopics.sort((a, b) => b.count - a.count);
+    profile.frequentTopics = profile.frequentTopics.slice(0, 20);
+
+    // Extract explicit preferences
+    const explicitPrefs = extractExplicitPreferences(userText);
+    for (const pref of explicitPrefs) {
+      profile.explicitPreferences[pref.key] = pref.value;
+      logger.debug(`Explicit preference detected for ${signal.userId}: ${pref.key} = ${pref.value}`);
+    }
+
+    // Process positive feedback signals
+    if (signal.feedbackGiven) {
+      for (const fb of signal.feedbackGiven) {
+        if (fb.positive) {
+          profile.inferredAttributes["liked_response_style"] = {
+            value: fb.context.slice(0, 100),
+            confidence: 0.7,
+            source: "feedback",
+          };
+        }
+      }
+    }
+
+    await saveProfile(profile);
+    logger.debug(`Updated profile for user ${signal.userId} (interactions: ${profile.totalInteractions})`);
+
+    return profile;
+  }
+
+  private updateExpertise(profile: UserProfile, detected: ExpertiseLevel): UserProfile {
+    const levels: ExpertiseLevel[] = ["beginner", "intermediate", "advanced", "expert"];
+    const currentIdx = levels.indexOf(profile.expertiseLevel);
+    const detectedIdx = levels.indexOf(detected);
+
+    // Blend: don't downgrade too aggressively, upgrade readily
+    if (detectedIdx > currentIdx) {
+      profile.expertiseLevel = detected;
+    } else if (detectedIdx < currentIdx && profile.totalInteractions > 5) {
+      // Only downgrade after enough evidence
+      const newIdx = Math.max(detectedIdx, currentIdx - 1);
+      profile.expertiseLevel = levels[newIdx]!;
+    }
+
+    profile.inferredAttributes["expertise_level"] = {
+      value: profile.expertiseLevel,
+      confidence: Math.min(0.9, 0.5 + profile.totalInteractions * 0.02),
+      source: "message_analysis",
+    };
+
+    return profile;
+  }
+
+  private updateStyle(profile: UserProfile, detected: CommunicationStyle): UserProfile {
+    // Moving average — new signal has 30% weight
+    if (profile.totalInteractions <= 3) {
+      profile.communicationStyle = detected;
+    } else if (detected !== profile.communicationStyle) {
+      // Only update if style appears multiple times
+      const currentCount = (profile.inferredAttributes["style_count"]?.value as string)?.split(",") ?? [];
+      currentCount.push(detected);
+      if (currentCount.filter((s) => s === detected).length >= 3) {
+        profile.communicationStyle = detected;
+      }
+      profile.inferredAttributes["style_count"] = {
+        value: currentCount.slice(-10).join(","),
+        confidence: 0.6,
+        source: "style_tracking",
+      };
+    }
+
+    return profile;
+  }
 
   async getProfile(userId: string): Promise<UserProfile> {
-    try {
-      const cached = await redis.get(PROFILE_KEY(userId))
-      if (cached) {
-        const parsed = JSON.parse(cached) as UserProfile
-        // Rehydrate Date fields
-        parsed.updatedAt = new Date(parsed.updatedAt)
-        parsed.topicInterests = parsed.topicInterests.map((t) => ({
-          ...t,
-          lastMentioned: new Date(t.lastMentioned),
-        }))
-        parsed.implicitSignals = parsed.implicitSignals.map((s) => ({
-          ...s,
-          timestamp: new Date(s.timestamp),
-        }))
-        return parsed
-      }
-    } catch (err) {
-      Logger.warn("[UserProfileLearner] Redis read failed, rebuilding profile", err)
-    }
-
-    return this.rebuildFromMemory(userId)
+    return await loadProfile(userId) ?? defaultProfile(userId);
   }
 
-  // ── rebuildFromMemory ────────────────────────────────────────────────────────
-
-  private async rebuildFromMemory(userId: string): Promise<UserProfile> {
-    const profile = defaultProfile(userId)
-
-    try {
-      const preferences = await pgVectorMemoryStore.getByUser(userId, { type: "preference", limit: 100 })
-      for (const mem of preferences) {
-        const text = mem.content.toLowerCase()
-        // Extract explicit preferences like "user prefers X"
-        const match = text.match(/(?:prefers?|wants?|likes?|always use|use only)\s+(.+)/i)
-        if (match) {
-          profile.explicitPreferences[`preference_${mem.id.slice(0, 8)}`] = match[1].trim()
-        }
-      }
-
-      const instructions = await pgVectorMemoryStore.getByUser(userId, { type: "instruction", limit: 50 })
-      for (const mem of instructions) {
-        profile.explicitPreferences[`instruction_${mem.id.slice(0, 8)}`] = mem.content
-      }
-    } catch (err) {
-      Logger.warn("[UserProfileLearner] rebuildFromMemory partial failure", err)
-    }
-
-    await this.persistProfile(profile)
-    return profile
-  }
-
-  // ── updateFromConversation ───────────────────────────────────────────────────
-
-  async updateFromConversation(
-    userId: string,
-    messages: Array<{ role: string; content: string }>
-  ): Promise<void> {
-    if (messages.length === 0) return
-
-    const profile = await this.getProfile(userId)
-    const userMessages = messages.filter((m) => m.role === "user").map((m) => m.content)
-
-    // Detect signals without LLM first (fast path)
-    const detectedLevel = this.detectExpertiseLevel(userMessages)
-    const detectedStyle = this.detectCommunicationStyle(userMessages)
-    const detectedTopics = this.extractTopics(userMessages)
-
-    // Smooth-update expertise (EMA with alpha=0.15)
-    const alpha = 0.15
-    profile.expertise.general =
-      alpha * detectedLevel + (1 - alpha) * profile.expertise.general
-    profile.communicationStyle = {
-      ...profile.communicationStyle,
-      ...detectedStyle,
-      technicalLevel: Math.round(
-        alpha * detectedLevel + (1 - alpha) * profile.communicationStyle.technicalLevel
-      ) as 1 | 2 | 3 | 4 | 5,
-    }
-
-    // Merge topics
-    const now = new Date()
-    for (const topic of detectedTopics) {
-      const existing = profile.topicInterests.find((t) => t.topic === topic)
-      if (existing) {
-        existing.weight = Math.min(1, existing.weight + 0.05)
-        existing.lastMentioned = now
-      } else {
-        profile.topicInterests.push({ topic, weight: 0.3, lastMentioned: now })
-      }
-    }
-    // Cap topic list at 50
-    profile.topicInterests = profile.topicInterests
-      .sort((a, b) => b.weight - a.weight)
-      .slice(0, 50)
-
-    // LLM-based deep extraction (best-effort, not blocking)
-    try {
-      const llmInsights = await this.extractInsightsWithLLM(messages)
-      if (llmInsights) {
-        await this.mergeProfiles(userId, llmInsights)
-        return // mergeProfiles calls persistProfile
-      }
-    } catch (err) {
-      Logger.warn("[UserProfileLearner] LLM extraction failed, using heuristics only", err)
-    }
-
-    profile.updatedAt = now
-    await this.persistProfile(profile)
-    Logger.debug("[UserProfileLearner] updated profile from conversation", { userId })
-  }
-
-  // ── extractInsightsWithLLM ───────────────────────────────────────────────────
-
-  private async extractInsightsWithLLM(
-    messages: Array<{ role: string; content: string }>
-  ): Promise<PartialProfile | null> {
-    const conversation = messages
-      .slice(-12) // limit context
-      .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
-      .join("\n")
-
-    const prompt = `Analyze this conversation and return a JSON object with these fields:
-- preferredLength: "concise" | "detailed" | "adaptive"
-- preferredFormat: "prose" | "bullets" | "code" | "mixed"
-- tone: "formal" | "casual" | "friendly"
-- technicalLevel: 1-5 integer
-- topics: string[] (max 5)
-- explicitPreferences: Record<string,string> (any explicit instructions from user)
-- programmingLanguages: string[]
-- signalType: "appreciation" | "complaint" | "confusion" | "correction" | null
-
-Respond with only valid JSON.
-
-CONVERSATION:
-${conversation}`
-
-    const response = await llmGateway.chat(
-      [{ role: "user", content: prompt }],
-      { maxTokens: 400, temperature: 0 }
-    )
-
-    try {
-      const jsonMatch = response.content.match(/\{[\s\S]*\}/)
-      if (!jsonMatch) return null
-      const data = JSON.parse(jsonMatch[0]) as Record<string, unknown>
-
-      const insights: PartialProfile = {}
-
-      if (data.preferredLength) {
-        insights.communicationStyle = {
-          preferredLength: data.preferredLength as "concise" | "detailed" | "adaptive",
-          technicalLevel: (parseInt(String(data.technicalLevel)) || 3) as 1 | 2 | 3 | 4 | 5,
-          preferredFormat: (data.preferredFormat as "prose" | "bullets" | "code" | "mixed") ?? "mixed",
-          tone: (data.tone as "formal" | "casual" | "friendly") ?? "friendly",
-        }
-      }
-
-      if (Array.isArray(data.topics) && data.topics.length > 0) {
-        insights.topicInterests = (data.topics as string[]).map((t: string) => ({
-          topic: t,
-          weight: 0.4,
-          lastMentioned: new Date(),
-        }))
-      }
-
-      if (data.explicitPreferences && typeof data.explicitPreferences === "object") {
-        insights.explicitPreferences = data.explicitPreferences as Record<string, string>
-      }
-
-      if (Array.isArray(data.programmingLanguages) && data.programmingLanguages.length > 0) {
-        insights.expertise = {
-          programming: { level: 3, languages: data.programmingLanguages as string[] },
-          science: { level: 2, fields: [] },
-          business: { level: 2, areas: [] },
-          creative: { level: 2, domains: [] },
-          general: 3,
-        }
-      }
-
-      if (data.signalType) {
-        insights.implicitSignals = [
-          {
-            type: data.signalType as ImplicitSignal["type"],
-            context: "conversation analysis",
-            timestamp: new Date(),
-            weight: 0.5,
-          },
-        ]
-      }
-
-      return insights
-    } catch {
-      return null
-    }
-  }
-
-  // ── recordExplicitPreference ─────────────────────────────────────────────────
-
-  async recordExplicitPreference(
-    userId: string,
-    key: string,
-    value: string
-  ): Promise<void> {
-    const profile = await this.getProfile(userId)
-    profile.explicitPreferences[key] = value
-    profile.updatedAt = new Date()
-    await this.persistProfile(profile)
-    Logger.info("[UserProfileLearner] explicit preference recorded", { userId, key })
-  }
-
-  // ── recordImplicitSignal ─────────────────────────────────────────────────────
-
-  async recordImplicitSignal(userId: string, signal: ImplicitSignal): Promise<void> {
-    const profile = await this.getProfile(userId)
-    profile.implicitSignals.unshift(signal)
-    // Keep last 100 signals
-    profile.implicitSignals = profile.implicitSignals.slice(0, 100)
-    profile.updatedAt = new Date()
-    await this.persistProfile(profile)
-  }
-
-  // ── getSystemPromptAdditions ──────────────────────────────────────────────────
-
-  async getSystemPromptAdditions(userId: string): Promise<string> {
-    const profile = await this.getProfile(userId)
-    const lines: string[] = []
-
-    const { communicationStyle, expertise, topicInterests, explicitPreferences } = profile
-
-    lines.push("## User Preferences")
-
-    // Communication style
-    lines.push(
-      `- Response length: ${communicationStyle.preferredLength}`
-    )
-    lines.push(
-      `- Technical level: ${communicationStyle.technicalLevel}/5`
-    )
-    lines.push(`- Preferred format: ${communicationStyle.preferredFormat}`)
-    lines.push(`- Tone: ${communicationStyle.tone}`)
-
-    // Expertise highlights
-    if (expertise.programming.languages.length > 0) {
-      lines.push(
-        `- Programming expertise: ${expertise.programming.languages.join(", ")} (level ${expertise.programming.level}/5)`
-      )
-    }
-    if (expertise.science.fields.length > 0) {
-      lines.push(`- Science fields: ${expertise.science.fields.join(", ")}`)
-    }
-
-    // Top interests
-    const topTopics = topicInterests
-      .filter((t) => t.weight > 0.3)
-      .slice(0, 5)
-      .map((t) => t.topic)
-    if (topTopics.length > 0) {
-      lines.push(`- Interests: ${topTopics.join(", ")}`)
-    }
-
-    // Explicit preferences
-    const explicitEntries = Object.entries(explicitPreferences).slice(0, 10)
-    if (explicitEntries.length > 0) {
-      lines.push("\n## Explicit Instructions from User")
-      for (const [, v] of explicitEntries) {
-        lines.push(`- ${v}`)
-      }
-    }
-
-    return lines.join("\n")
-  }
-
-  // ── mergeProfiles ────────────────────────────────────────────────────────────
-
-  async mergeProfiles(userId: string, newInsights: PartialProfile): Promise<UserProfile> {
-    const profile = await this.getProfile(userId)
-    const alpha = 0.2 // blend factor for numeric fields
-
-    if (newInsights.communicationStyle) {
-      const incoming = newInsights.communicationStyle
-      // Majority-wins for categorical, EMA for numeric
-      if (incoming.preferredLength) profile.communicationStyle.preferredLength = incoming.preferredLength
-      if (incoming.preferredFormat) profile.communicationStyle.preferredFormat = incoming.preferredFormat
-      if (incoming.tone) profile.communicationStyle.tone = incoming.tone
-      if (incoming.technicalLevel) {
-        profile.communicationStyle.technicalLevel = Math.round(
-          alpha * incoming.technicalLevel + (1 - alpha) * profile.communicationStyle.technicalLevel
-        ) as 1 | 2 | 3 | 4 | 5
-      }
-    }
-
-    if (newInsights.expertise) {
-      const inc = newInsights.expertise
-      const ex = profile.expertise
-      ex.general = alpha * inc.general + (1 - alpha) * ex.general
-      if (inc.programming.languages.length > 0) {
-        const merged = new Set([...ex.programming.languages, ...inc.programming.languages])
-        ex.programming.languages = Array.from(merged).slice(0, 20)
-      }
-      ex.programming.level =
-        alpha * inc.programming.level + (1 - alpha) * ex.programming.level
-    }
-
-    if (newInsights.topicInterests) {
-      for (const t of newInsights.topicInterests) {
-        const existing = profile.topicInterests.find((x) => x.topic === t.topic)
-        if (existing) {
-          existing.weight = Math.min(1, existing.weight + t.weight * alpha)
-          existing.lastMentioned = t.lastMentioned
-        } else {
-          profile.topicInterests.push(t)
-        }
-      }
-      profile.topicInterests = profile.topicInterests
-        .sort((a, b) => b.weight - a.weight)
-        .slice(0, 50)
-    }
-
-    if (newInsights.explicitPreferences) {
-      Object.assign(profile.explicitPreferences, newInsights.explicitPreferences)
-    }
-
-    if (newInsights.implicitSignals) {
-      profile.implicitSignals = [
-        ...newInsights.implicitSignals,
-        ...profile.implicitSignals,
-      ].slice(0, 100)
-    }
-
-    profile.updatedAt = new Date()
-    await this.persistProfile(profile)
-    return profile
-  }
-
-  // ── export / delete ──────────────────────────────────────────────────────────
-
-  async exportProfile(userId: string): Promise<UserProfile> {
-    return this.getProfile(userId)
+  async setExplicitPreference(userId: string, key: string, value: string): Promise<void> {
+    const profile = await this.getProfile(userId);
+    profile.explicitPreferences[key] = value;
+    await saveProfile(profile);
+    logger.info(`Explicit preference set for ${userId}: ${key} = ${value}`);
   }
 
   async deleteProfile(userId: string): Promise<void> {
-    await redis.del(PROFILE_KEY(userId))
-    Logger.info("[UserProfileLearner] profile deleted", { userId })
+    await pgVectorMemoryStore.storeUserMemory(userId, "__profile__", "", { deleted: true });
+    logger.info(`Profile deleted for user ${userId}`);
   }
 
-  // ── private helpers ──────────────────────────────────────────────────────────
+  async getSystemPromptAddons(userId: string): Promise<string> {
+    const profile = await this.getProfile(userId);
+    const lines: string[] = [];
 
-  private detectExpertiseLevel(messages: string[]): number {
-    const technicalTerms = [
-      /\b(algorithm|complexity|async|await|promise|mutex|semaphore|heap|stack|recursion)\b/gi,
-      /\b(neural network|gradient descent|regression|hypothesis|p-value|variance|entropy)\b/gi,
-      /\b(api|endpoint|rest|graphql|websocket|microservice|kubernetes|docker|ci\/cd)\b/gi,
-      /\b(derivative|integral|eigenvalue|manifold|topology|fourier|laplace)\b/gi,
-    ]
-    const combined = messages.join(" ")
-    let termCount = 0
-    for (const pattern of technicalTerms) {
-      termCount += (combined.match(pattern) ?? []).length
-    }
-    const codeBlocks = (combined.match(/```/g) ?? []).length / 2
-    const totalScore = termCount + codeBlocks * 2
-    if (totalScore >= 15) return 5
-    if (totalScore >= 8) return 4
-    if (totalScore >= 4) return 3
-    if (totalScore >= 1) return 2
-    return 1
-  }
-
-  private extractTopics(messages: string[]): string[] {
-    const topicKeywords: Record<string, RegExp> = {
-      programming: /\b(code|programming|javascript|python|typescript|rust|java|c\+\+|sql)\b/gi,
-      "machine learning": /\b(ml|ai|machine learning|deep learning|model|training|dataset)\b/gi,
-      business: /\b(startup|revenue|marketing|sales|product|strategy|market)\b/gi,
-      science: /\b(research|experiment|hypothesis|study|biology|chemistry|physics)\b/gi,
-      writing: /\b(essay|article|blog|writing|content|draft|edit)\b/gi,
-      finance: /\b(investment|stock|crypto|finance|budget|money|revenue)\b/gi,
-    }
-    const combined = messages.join(" ")
-    const found: string[] = []
-    for (const [topic, pattern] of Object.entries(topicKeywords)) {
-      if (pattern.test(combined)) found.push(topic)
-    }
-    return found
-  }
-
-  private detectCommunicationStyle(
-    messages: string[]
-  ): Partial<UserProfile["communicationStyle"]> {
-    const combined = messages.join(" ")
-    const wordCount = combined.split(/\s+/).length
-    const avgMessageLength = wordCount / Math.max(messages.length, 1)
-
-    const style: Partial<UserProfile["communicationStyle"]> = {}
-
-    // Length preference from user messages
-    if (/\b(brief|short|concise|quick|tldr)\b/i.test(combined)) {
-      style.preferredLength = "concise"
-    } else if (/\b(detail|explain|elaborate|thorough|comprehensive)\b/i.test(combined)) {
-      style.preferredLength = "detailed"
-    } else if (avgMessageLength < 10) {
-      style.preferredLength = "concise"
-    } else if (avgMessageLength > 40) {
-      style.preferredLength = "detailed"
+    if (profile.expertiseLevel === "beginner") {
+      lines.push("The user is a beginner — explain concepts clearly, avoid jargon, use simple examples.");
+    } else if (profile.expertiseLevel === "expert") {
+      lines.push("The user is an expert — be concise, use precise technical language, skip basic explanations.");
+    } else if (profile.expertiseLevel === "advanced") {
+      lines.push("The user has advanced knowledge — provide depth without over-explaining basics.");
     }
 
-    // Format preference
-    if (/\b(bullet|list|points?)\b/i.test(combined)) {
-      style.preferredFormat = "bullets"
-    } else if (/```/.test(combined)) {
-      style.preferredFormat = "code"
+    if (profile.communicationStyle === "concise") {
+      lines.push("Keep responses brief and to the point.");
+    } else if (profile.communicationStyle === "detailed") {
+      lines.push("Provide thorough, detailed explanations.");
     }
 
-    // Tone
-    if (/\b(please|thanks?|could you|would you mind)\b/i.test(combined)) {
-      style.tone = "friendly"
-    } else if (/\b(yo|hey|lol|haha|ngl|btw)\b/i.test(combined)) {
-      style.tone = "casual"
+    if (profile.preferredLanguage !== "en") {
+      lines.push(`The user prefers to communicate in language code: ${profile.preferredLanguage}.`);
     }
 
-    return style
-  }
-
-  // ── persistProfile ────────────────────────────────────────────────────────────
-
-  private async persistProfile(profile: UserProfile): Promise<void> {
-    try {
-      await redis.setex(PROFILE_KEY(profile.userId), PROFILE_TTL, JSON.stringify(profile))
-    } catch (err) {
-      Logger.warn("[UserProfileLearner] failed to persist profile to Redis", err)
+    for (const [key, value] of Object.entries(profile.explicitPreferences)) {
+      lines.push(`User preference — ${key}: ${value}.`);
     }
+
+    const topTopics = profile.frequentTopics.slice(0, 3).map((t) => t.topic);
+    if (topTopics.length > 0) {
+      lines.push(`User frequently discusses: ${topTopics.join(", ")}.`);
+    }
+
+    return lines.join("\n");
   }
 }
 
-export const userProfileLearner = new UserProfileLearner()
+export const userProfileLearner = new UserProfileLearner();

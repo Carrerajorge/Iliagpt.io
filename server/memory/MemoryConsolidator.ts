@@ -1,528 +1,349 @@
 /**
- * MemoryConsolidator — end-of-conversation extraction, deduplication, and storage.
- * Extracts facts, decisions, action items, and preferences; resolves conflicts.
+ * MemoryConsolidator — end-of-conversation memory extraction and compression.
+ * Extracts facts, action items, and decisions. Resolves conflicts with existing memories.
+ * Runs after each conversation and on a scheduled background pass.
  */
 
-import { llmGateway } from "../lib/llmGateway"
-import { Logger } from "../lib/logger"
-import { pgVectorMemoryStore, type MemoryEntry } from "./PgVectorMemoryStore"
+import { createLogger } from "../utils/logger";
+import { pgVectorMemoryStore, MemoryType } from "./PgVectorMemoryStore";
+import Anthropic from "@anthropic-ai/sdk";
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
+const logger = createLogger("MemoryConsolidator");
 
-export interface ConsolidationInput {
-  conversationId: string
-  userId: string
-  messages: Array<{ role: "user" | "assistant"; content: string; timestamp?: Date }>
-  existingMemories?: MemoryEntry[]
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface ConversationToConsolidate {
+  conversationId: string;
+  userId?: string;
+  agentId?: string;
+  messages: Array<{ role: "user" | "assistant"; content: string; timestamp?: Date }>;
 }
 
-export interface ExtractedFact {
-  content: string
-  confidence: number
-  type: "entity" | "relationship" | "event" | "property"
-  importance: number
-  conflictsWithId?: string
-}
-
-export interface ExtractedDecision {
-  content: string
-  confidence: number
-  rationale?: string
-  importance: number
-}
-
-export interface ActionItem {
-  description: string
-  dueDate?: Date
-  priority: "low" | "medium" | "high"
-  status: "pending"
-}
-
-export interface PreferenceSignal {
-  key: string
-  value: string
-  confidence: number
-  source: "explicit" | "inferred"
+export interface ExtractedMemory {
+  content: string;
+  summary?: string;
+  memoryType: MemoryType;
+  importance: number;
+  tags: string[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface ConsolidationResult {
-  facts: ExtractedFact[]
-  decisions: ExtractedDecision[]
-  actionItems: ActionItem[]
-  preferences: PreferenceSignal[]
-  consolidated: MemoryEntry[]
-  merged: number
-  deleted: number
+  conversationId: string;
+  extractedMemories: ExtractedMemory[];
+  actionItems: string[];
+  keyDecisions: string[];
+  factsLearned: string[];
+  stored: number;
+  skipped: number;
+  summary: string;
 }
 
-// ─── Consolidator ──────────────────────────────────────────────────────────────
+// ─── Importance Scoring ───────────────────────────────────────────────────────
 
-class MemoryConsolidator {
-  private readonly store = pgVectorMemoryStore
+function scoreImportance(content: string, memoryType: MemoryType): number {
+  let base = 0.5;
 
-  // ── consolidate ───────────────────────────────────────────────────────────────
+  // Boost for specific types
+  const typeBoosts: Record<MemoryType, number> = {
+    decision: 0.2,
+    action_item: 0.25,
+    fact: 0.1,
+    preference: 0.15,
+    entity: 0.05,
+    skill: 0.15,
+    ephemeral: -0.2,
+  };
+  base += typeBoosts[memoryType] ?? 0;
 
-  async consolidate(input: ConsolidationInput): Promise<ConsolidationResult> {
-    const { conversationId, userId, messages, existingMemories } = input
-    Logger.info("[MemoryConsolidator] starting consolidation", {
-      userId,
-      conversationId,
-      messageCount: messages.length,
-    })
+  // Boost for quantitative statements
+  if (/\d+%|\d+\s*(million|billion|thousand|users|times)/i.test(content)) base += 0.1;
 
-    // 1. Extract structured data from conversation
-    let extracted: Awaited<ReturnType<typeof this.extractFromMessages>>
-    try {
-      extracted = await this.extractFromMessages(messages)
-    } catch (err) {
-      Logger.error("[MemoryConsolidator] extraction failed", err)
-      return {
-        facts: [],
-        decisions: [],
-        actionItems: [],
-        preferences: [],
-        consolidated: [],
-        merged: 0,
-        deleted: 0,
+  // Boost for named entities
+  if (/[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}/.test(content)) base += 0.05;
+
+  // Boost for urgent language
+  if (/must|should|need to|important|critical|deadline|asap/i.test(content)) base += 0.15;
+
+  // Penalty for vague statements
+  if (/something|somehow|maybe|perhaps|possibly|might/i.test(content)) base -= 0.1;
+
+  return Math.min(1, Math.max(0, base));
+}
+
+// ─── Pattern-Based Extraction (fallback without LLM) ─────────────────────────
+
+function extractWithPatterns(messages: ConversationToConsolidate["messages"]): ExtractedMemory[] {
+  const memories: ExtractedMemory[] = [];
+  const allText = messages.map((m) => m.content).join("\n");
+
+  // Action items
+  const actionPatterns = [
+    /(?:will|going to|need to|should|must)\s+([\w\s]{10,80})/gi,
+    /TODO[:\s]+(.{10,80})/gi,
+    /action(?:\s+item)?[:\s]+(.{10,80})/gi,
+  ];
+
+  for (const pattern of actionPatterns) {
+    for (const m of [...allText.matchAll(pattern)]) {
+      if (m[1]) {
+        memories.push({
+          content: m[1].trim(),
+          memoryType: "action_item",
+          importance: scoreImportance(m[1], "action_item"),
+          tags: ["action_item"],
+        });
       }
-    }
-
-    // 2. Load existing memories if not provided
-    const existing =
-      existingMemories ??
-      (await this.store.getByUser(userId, { limit: 200 }))
-
-    const created: MemoryEntry[] = []
-    let merged = 0
-    let deleted = 0
-
-    // 3. Process facts
-    for (const fact of extracted.facts) {
-      const scored = await this.scoreImportance(fact.content, messages.map((m) => m.content).join(" "))
-      fact.importance = scored
-
-      const conflict = await this.detectConflicts(fact, existing)
-      if (conflict) {
-        const resolution = await this.resolveConflict(fact, conflict)
-        if (resolution === "keep_new") {
-          await this.store.delete(conflict.id)
-          deleted++
-          const stored = await this.storeMemory(fact, userId, conversationId)
-          created.push(stored)
-        } else if (resolution === "merge") {
-          const mergedContent = `${conflict.content} | Updated: ${fact.content}`
-          await this.store.updateImportance(conflict.id, Math.max(conflict.importance, fact.importance))
-          merged++
-        }
-        // keep_old: do nothing
-      } else {
-        const stored = await this.storeMemory(fact, userId, conversationId)
-        created.push(stored)
-      }
-    }
-
-    // 4. Process decisions
-    for (const decision of extracted.decisions) {
-      const scored = await this.scoreImportance(decision.content, "")
-      decision.importance = scored
-      const entry = await this.store.store({
-        userId,
-        conversationId,
-        content: decision.content,
-        type: "fact",
-        embedding: this.store.generateEmbedding(decision.content),
-        importance: decision.importance,
-        metadata: {
-          source: conversationId,
-          tags: ["decision"],
-          createdAt: new Date(),
-          lastAccessedAt: new Date(),
-          accessCount: 0,
-        },
-      })
-      created.push(entry)
-    }
-
-    // 5. Process action items (stored as notes)
-    for (const action of extracted.actions) {
-      const content = `ACTION: ${action.description}${action.dueDate ? ` (due: ${action.dueDate.toDateString()})` : ""} [priority: ${action.priority}]`
-      const entry = await this.store.store({
-        userId,
-        conversationId,
-        content,
-        type: "note",
-        embedding: this.store.generateEmbedding(content),
-        importance: action.priority === "high" ? 0.8 : action.priority === "medium" ? 0.6 : 0.4,
-        metadata: {
-          source: conversationId,
-          tags: ["action-item", action.priority],
-          createdAt: new Date(),
-          lastAccessedAt: new Date(),
-          accessCount: 0,
-        },
-      })
-      created.push(entry)
-    }
-
-    // 6. Process preferences (stored as preference type)
-    for (const pref of extracted.preferences) {
-      const existing = await this.store.searchByText(pref.key, {
-        userId,
-        types: ["preference"],
-        threshold: 0.85,
-        limit: 1,
-      })
-      if (existing.length > 0 && pref.source === "explicit") {
-        await this.store.updateImportance(existing[0].id, 0.9)
-        merged++
-      } else {
-        const content = `User preference: ${pref.key} = ${pref.value}`
-        const entry = await this.store.store({
-          userId,
-          conversationId,
-          content,
-          type: "preference",
-          embedding: this.store.generateEmbedding(content),
-          importance: pref.source === "explicit" ? 0.9 : 0.5,
-          metadata: {
-            source: pref.source,
-            tags: ["preference"],
-            createdAt: new Date(),
-            lastAccessedAt: new Date(),
-            accessCount: 0,
-          },
-        })
-        created.push(entry)
-      }
-    }
-
-    Logger.info("[MemoryConsolidator] consolidation complete", {
-      userId,
-      created: created.length,
-      merged,
-      deleted,
-    })
-
-    return {
-      facts: extracted.facts,
-      decisions: extracted.decisions,
-      actionItems: extracted.actions,
-      preferences: extracted.preferences,
-      consolidated: created,
-      merged,
-      deleted,
     }
   }
 
-  // ── extractFromMessages ───────────────────────────────────────────────────────
+  // Decisions
+  const decisionPatterns = [
+    /decided to\s+([\w\s]{10,80})/gi,
+    /decision[:\s]+(.{10,80})/gi,
+    /we('ll| will| are going to)\s+([\w\s]{10,80})/gi,
+  ];
 
-  async extractFromMessages(
-    messages: ConsolidationInput["messages"]
-  ): Promise<{
-    facts: ExtractedFact[]
-    decisions: ExtractedDecision[]
-    actions: ActionItem[]
-    preferences: PreferenceSignal[]
-  }> {
-    const formatted = this.formatMessagesForLLM(messages)
+  for (const pattern of decisionPatterns) {
+    for (const m of [...allText.matchAll(pattern)]) {
+      const text = m[2] ?? m[1];
+      if (text) {
+        memories.push({
+          content: text.trim(),
+          memoryType: "decision",
+          importance: scoreImportance(text, "decision"),
+          tags: ["decision"],
+        });
+      }
+    }
+  }
 
-    const prompt = `You are a memory extraction system. Analyze this conversation and extract structured information.
+  // Facts with statistics
+  const factPatterns = [
+    /[\d.]+\s*%\s+(?:of\s+)?[\w\s]{5,50}/gi,
+    /(?:according to|studies show|research indicates)\s+(.{20,100})/gi,
+    /the\s+[\w]+\s+(?:is|are|was|were)\s+[\w\s]{10,60}[.!?]/gi,
+  ];
 
-Return ONLY valid JSON with this exact structure:
-{
-  "facts": [
-    { "content": "string", "confidence": 0.0-1.0, "type": "entity|relationship|event|property", "importance": 0.0-1.0 }
-  ],
-  "decisions": [
-    { "content": "string", "confidence": 0.0-1.0, "rationale": "string", "importance": 0.0-1.0 }
-  ],
-  "actions": [
-    { "description": "string", "priority": "low|medium|high", "dueDateHint": "string or null" }
-  ],
-  "preferences": [
-    { "key": "string", "value": "string", "confidence": 0.0-1.0, "source": "explicit|inferred" }
-  ]
+  for (const pattern of factPatterns) {
+    for (const m of [...allText.matchAll(pattern)]) {
+      const text = m[1] ?? m[0];
+      if (text) {
+        memories.push({
+          content: text.trim().slice(0, 200),
+          memoryType: "fact",
+          importance: scoreImportance(text, "fact"),
+          tags: ["fact"],
+        });
+      }
+    }
+  }
+
+  return memories.slice(0, 20);
 }
 
-Rules:
-- facts: concrete, verifiable statements about entities, relationships, or properties
-- decisions: choices made during the conversation
-- actions: tasks the user needs to do or asked to track
-- preferences: user style/behavior preferences (explicit: stated directly; inferred: implied)
-- Only include items with confidence >= 0.5
-- Keep content concise (< 200 chars each)
+// ─── LLM-Based Extraction ─────────────────────────────────────────────────────
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+async function extractWithLLM(messages: ConversationToConsolidate["messages"]): Promise<{
+  memories: ExtractedMemory[];
+  summary: string;
+  actionItems: string[];
+  keyDecisions: string[];
+}> {
+  const transcript = messages
+    .slice(-30) // last 30 messages max
+    .map((m) => `${m.role.toUpperCase()}: ${m.content.slice(0, 500)}`)
+    .join("\n");
+
+  const response = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 1_500,
+    messages: [
+      {
+        role: "user",
+        content: `Analyze this conversation and extract key information to remember.
 
 CONVERSATION:
-${formatted}`
+${transcript}
 
-    const response = await llmGateway.chat(
-      [{ role: "user", content: prompt }],
-      { maxTokens: 1200, temperature: 0 }
-    )
+Return a JSON object with these fields:
+{
+  "summary": "2-3 sentence summary of the conversation",
+  "facts": ["fact 1", "fact 2", ...],
+  "actionItems": ["action 1", "action 2", ...],
+  "decisions": ["decision 1", "decision 2", ...],
+  "preferences": ["preference 1", ...],
+  "entities": ["entity 1", ...]
+}
 
-    try {
-      const jsonMatch = response.content.match(/\{[\s\S]*\}/)
-      if (!jsonMatch) throw new Error("No JSON in LLM response")
-      const data = JSON.parse(jsonMatch[0]) as {
-        facts?: Array<{ content: string; confidence: number; type: string; importance: number }>
-        decisions?: Array<{ content: string; confidence: number; rationale?: string; importance: number }>
-        actions?: Array<{ description: string; priority: string; dueDateHint?: string | null }>
-        preferences?: Array<{ key: string; value: string; confidence: number; source: string }>
-      }
-
-      const facts: ExtractedFact[] = (data.facts ?? [])
-        .filter((f) => f.confidence >= 0.5)
-        .map((f) => ({
-          content: f.content,
-          confidence: f.confidence,
-          type: (f.type as ExtractedFact["type"]) ?? "property",
-          importance: f.importance ?? 0.5,
-        }))
-
-      const decisions: ExtractedDecision[] = (data.decisions ?? [])
-        .filter((d) => d.confidence >= 0.5)
-        .map((d) => ({
-          content: d.content,
-          confidence: d.confidence,
-          rationale: d.rationale,
-          importance: d.importance ?? 0.6,
-        }))
-
-      const actions: ActionItem[] = (data.actions ?? []).map((a) => ({
-        description: a.description,
-        priority: (a.priority as ActionItem["priority"]) ?? "medium",
-        status: "pending" as const,
-        dueDate: a.dueDateHint ? this.parseDateHint(a.dueDateHint) : undefined,
-      }))
-
-      const preferences: PreferenceSignal[] = (data.preferences ?? [])
-        .filter((p) => p.confidence >= 0.5)
-        .map((p) => ({
-          key: p.key,
-          value: p.value,
-          confidence: p.confidence,
-          source: (p.source as PreferenceSignal["source"]) ?? "inferred",
-        }))
-
-      return { facts, decisions, actions, preferences }
-    } catch (err) {
-      Logger.warn("[MemoryConsolidator] failed to parse LLM extraction", err)
-      return { facts: [], decisions: [], actions: [], preferences: [] }
-    }
-  }
-
-  // ── scoreImportance ───────────────────────────────────────────────────────────
-
-  async scoreImportance(fact: string, context: string): Promise<number> {
-    let score = 0.4 // base
-
-    // Length as proxy for specificity
-    if (fact.length > 80) score += 0.05
-
-    // Frequency in context
-    const words = fact.toLowerCase().split(/\s+/).filter((w) => w.length > 4)
-    for (const word of words) {
-      if (context.toLowerCase().includes(word)) score += 0.02
-    }
-
-    // Named entity heuristic (capitalized words)
-    const namedEntities = (fact.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/g) ?? []).length
-    score += namedEntities * 0.03
-
-    // Numeric data present
-    if (/\d/.test(fact)) score += 0.05
-
-    // Explicit markers
-    if (/\b(important|critical|must|always|never|remember|key)\b/i.test(fact)) score += 0.15
-    if (/\b(maybe|perhaps|might|could)\b/i.test(fact)) score -= 0.1
-
-    return Math.max(0.1, Math.min(1.0, score))
-  }
-
-  // ── detectConflicts ───────────────────────────────────────────────────────────
-
-  async detectConflicts(
-    newFact: ExtractedFact,
-    existing: MemoryEntry[]
-  ): Promise<MemoryEntry | null> {
-    if (existing.length === 0) return null
-
-    const similar = await this.store.searchByText(newFact.content, {
-      threshold: 0.88,
-      limit: 3,
-    })
-
-    for (const candidate of similar) {
-      if (!existing.find((e) => e.id === candidate.id)) continue
-      // Check if they say contradictory things using simple heuristics
-      if (this.areContradictory(newFact.content, candidate.content)) {
-        return candidate
-      }
-    }
-    return null
-  }
-
-  private areContradictory(a: string, b: string): boolean {
-    // Simple heuristic: both mention the same subject but one contains negation
-    const negationPattern = /\b(not|never|no|isn't|aren't|wasn't|weren't|don't|doesn't|didn't)\b/i
-    const aHasNeg = negationPattern.test(a)
-    const bHasNeg = negationPattern.test(b)
-    if (aHasNeg !== bHasNeg) {
-      // One has negation, check word overlap
-      const aWords = new Set(a.toLowerCase().split(/\W+/).filter((w) => w.length > 4))
-      const bWords = b.toLowerCase().split(/\W+/).filter((w) => w.length > 4)
-      const overlap = bWords.filter((w) => aWords.has(w)).length
-      return overlap >= 2
-    }
-    return false
-  }
-
-  // ── resolveConflict ───────────────────────────────────────────────────────────
-
-  async resolveConflict(
-    newFact: ExtractedFact,
-    existing: MemoryEntry
-  ): Promise<"keep_new" | "keep_old" | "merge"> {
-    // Higher confidence + less accessed → replace
-    if (newFact.confidence > 0.8 && existing.metadata.accessCount < 3) {
-      return "keep_new"
-    }
-    // Well-accessed existing memory → merge
-    if (existing.metadata.accessCount >= 5) {
-      return "merge"
-    }
-    // Newer fact with higher importance → replace
-    if (newFact.importance > existing.importance * 1.2) {
-      return "keep_new"
-    }
-    // Default: keep old, preserve knowledge
-    return "keep_old"
-  }
-
-  // ── runBatchConsolidation ─────────────────────────────────────────────────────
-
-  async runBatchConsolidation(
-    userId: string,
-    dryRun: boolean = false
-  ): Promise<ConsolidationResult> {
-    Logger.info("[MemoryConsolidator] batch consolidation", { userId, dryRun })
-
-    // Fetch low-importance memories to consolidate
-    const entries = await this.store.getByUser(userId, { limit: 500 })
-    const lowImportance = entries.filter((e) => e.importance < 0.3 && e.type === "fact")
-
-    if (lowImportance.length < 5) {
-      return {
-        facts: [],
-        decisions: [],
-        actionItems: [],
-        preferences: [],
-        consolidated: [],
-        merged: 0,
-        deleted: 0,
-      }
-    }
-
-    if (dryRun) {
-      Logger.info("[MemoryConsolidator] dry run — would consolidate", { count: lowImportance.length })
-      return {
-        facts: [],
-        decisions: [],
-        actionItems: [],
-        preferences: [],
-        consolidated: [],
-        merged: 0,
-        deleted: lowImportance.length,
-      }
-    }
-
-    // Deduplicate by semantic similarity
-    const toDelete: string[] = []
-    const processed = new Set<string>()
-
-    for (let i = 0; i < lowImportance.length; i++) {
-      if (processed.has(lowImportance[i].id)) continue
-      const similar = await this.store.searchByText(lowImportance[i].content, {
-        userId,
-        threshold: 0.92,
-        limit: 5,
-      })
-      const duplicates = similar.filter(
-        (s) => s.id !== lowImportance[i].id && !processed.has(s.id)
-      )
-      for (const dup of duplicates) {
-        toDelete.push(dup.id)
-        processed.add(dup.id)
-      }
-      processed.add(lowImportance[i].id)
-    }
-
-    for (const id of toDelete) {
-      await this.store.delete(id)
-    }
-
-    Logger.info("[MemoryConsolidator] batch complete", { deleted: toDelete.length })
-    return {
-      facts: [],
-      decisions: [],
-      actionItems: [],
-      preferences: [],
-      consolidated: [],
-      merged: 0,
-      deleted: toDelete.length,
-    }
-  }
-
-  // ── private helpers ───────────────────────────────────────────────────────────
-
-  private async storeMemory(
-    fact: ExtractedFact,
-    userId: string,
-    conversationId: string
-  ): Promise<MemoryEntry> {
-    return this.store.store({
-      userId,
-      conversationId,
-      content: fact.content,
-      type: fact.type === "entity" ? "entity" : "fact",
-      embedding: this.store.generateEmbedding(fact.content),
-      importance: fact.importance,
-      metadata: {
-        source: conversationId,
-        tags: [fact.type],
-        createdAt: new Date(),
-        lastAccessedAt: new Date(),
-        accessCount: 0,
+Extract only genuinely important, specific information worth remembering in future conversations. Omit small talk and generic exchanges.`,
       },
-    })
+    ],
+  });
+
+  const text = response.content[0]?.type === "text" ? response.content[0].text : "";
+
+  // Extract JSON from response (handle markdown code blocks)
+  const jsonMatch = text.match(/```json\n?([\s\S]*?)\n?```/) ?? text.match(/\{[\s\S]*\}/);
+  const jsonStr = jsonMatch?.[1] ?? jsonMatch?.[0] ?? "{}";
+
+  let parsed: {
+    summary?: string;
+    facts?: string[];
+    actionItems?: string[];
+    decisions?: string[];
+    preferences?: string[];
+    entities?: string[];
+  } = {};
+
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    logger.warn("LLM returned invalid JSON for consolidation");
   }
 
-  private formatMessagesForLLM(messages: ConsolidationInput["messages"]): string {
-    return messages
-      .map((m) => `[${m.role.toUpperCase()}]: ${m.content}`)
-      .join("\n---\n")
+  const memories: ExtractedMemory[] = [];
+
+  for (const fact of parsed.facts ?? []) {
+    memories.push({ content: fact, memoryType: "fact", importance: scoreImportance(fact, "fact"), tags: ["fact"] });
+  }
+  for (const decision of parsed.decisions ?? []) {
+    memories.push({ content: decision, memoryType: "decision", importance: scoreImportance(decision, "decision"), tags: ["decision"] });
+  }
+  for (const pref of parsed.preferences ?? []) {
+    memories.push({ content: pref, memoryType: "preference", importance: scoreImportance(pref, "preference"), tags: ["preference"] });
+  }
+  for (const entity of parsed.entities ?? []) {
+    memories.push({ content: entity, memoryType: "entity", importance: scoreImportance(entity, "entity"), tags: ["entity"] });
   }
 
-  private parseDateHint(hint: string): Date | undefined {
-    if (!hint) return undefined
-    const parsed = new Date(hint)
-    if (!isNaN(parsed.getTime())) return parsed
-    // Relative hints
-    const now = new Date()
-    if (/tomorrow/i.test(hint)) {
-      now.setDate(now.getDate() + 1)
-      return now
+  return {
+    memories,
+    summary: parsed.summary ?? "",
+    actionItems: parsed.actionItems ?? [],
+    keyDecisions: parsed.decisions ?? [],
+  };
+}
+
+// ─── Conflict Resolution ──────────────────────────────────────────────────────
+
+async function checkForConflicts(
+  newMemory: ExtractedMemory,
+  userId: string | undefined
+): Promise<{ conflict: boolean; existingId?: string }> {
+  if (!userId) return { conflict: false };
+
+  const existing = await pgVectorMemoryStore.search({
+    query: newMemory.content,
+    userId,
+    memoryType: newMemory.memoryType,
+    limit: 3,
+    minSimilarity: 0.85,
+  });
+
+  if (existing.length > 0) {
+    return { conflict: true, existingId: existing[0]!.id };
+  }
+
+  return { conflict: false };
+}
+
+// ─── MemoryConsolidator ───────────────────────────────────────────────────────
+
+export class MemoryConsolidator {
+  private useLLM: boolean;
+
+  constructor(opts: { useLLM?: boolean } = {}) {
+    this.useLLM = opts.useLLM ?? !!process.env.ANTHROPIC_API_KEY;
+  }
+
+  async consolidate(conversation: ConversationToConsolidate): Promise<ConsolidationResult> {
+    logger.info(`Consolidating conversation ${conversation.conversationId}`);
+
+    let memories: ExtractedMemory[];
+    let summary = "";
+    let actionItems: string[] = [];
+    let keyDecisions: string[] = [];
+
+    if (this.useLLM && conversation.messages.length >= 4) {
+      try {
+        const llmResult = await extractWithLLM(conversation.messages);
+        memories = llmResult.memories;
+        summary = llmResult.summary;
+        actionItems = llmResult.actionItems;
+        keyDecisions = llmResult.keyDecisions;
+        logger.debug(`LLM extraction: ${memories.length} memories`);
+      } catch (err) {
+        logger.warn(`LLM extraction failed, using patterns: ${(err as Error).message}`);
+        memories = extractWithPatterns(conversation.messages);
+      }
+    } else {
+      memories = extractWithPatterns(conversation.messages);
     }
-    if (/next week/i.test(hint)) {
-      now.setDate(now.getDate() + 7)
-      return now
+
+    let stored = 0;
+    let skipped = 0;
+
+    for (const memory of memories) {
+      if (memory.importance < 0.3) {
+        skipped++;
+        continue;
+      }
+
+      const { conflict } = await checkForConflicts(memory, conversation.userId);
+      if (conflict) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        await pgVectorMemoryStore.store({
+          content: memory.content,
+          summary: memory.summary,
+          memoryType: memory.memoryType,
+          importance: memory.importance,
+          userId: conversation.userId,
+          conversationId: conversation.conversationId,
+          agentId: conversation.agentId,
+          tags: [...(memory.tags ?? []), "consolidated"],
+          metadata: { ...memory.metadata, conversationId: conversation.conversationId },
+        });
+        stored++;
+      } catch (err) {
+        logger.warn(`Failed to store memory: ${(err as Error).message}`);
+        skipped++;
+      }
     }
-    if (/next month/i.test(hint)) {
-      now.setMonth(now.getMonth() + 1)
-      return now
+
+    logger.info(`Consolidation complete: ${stored} stored, ${skipped} skipped`);
+
+    return {
+      conversationId: conversation.conversationId,
+      extractedMemories: memories,
+      actionItems,
+      keyDecisions,
+      factsLearned: memories.filter((m) => m.memoryType === "fact").map((m) => m.content),
+      stored,
+      skipped,
+      summary,
+    };
+  }
+
+  async runBatchConsolidation(conversations: ConversationToConsolidate[]): Promise<ConsolidationResult[]> {
+    const results: ConsolidationResult[] = [];
+
+    for (const conv of conversations) {
+      try {
+        results.push(await this.consolidate(conv));
+      } catch (err) {
+        logger.warn(`Failed to consolidate ${conv.conversationId}: ${(err as Error).message}`);
+      }
     }
-    return undefined
+
+    return results;
   }
 }
 
-export const memoryConsolidator = new MemoryConsolidator()
+export const memoryConsolidator = new MemoryConsolidator();

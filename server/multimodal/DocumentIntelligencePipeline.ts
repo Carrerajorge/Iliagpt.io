@@ -1,627 +1,419 @@
-import crypto from "crypto";
-import axios from "axios";
+/**
+ * DocumentIntelligencePipeline — deep understanding of PDF, DOCX, PPTX, HTML, and Markdown.
+ * Extracts structure, tables, figures, TOC, bibliography, and generates a knowledge graph.
+ */
+
+import { createLogger } from "../utils/logger";
+import { AppError } from "../utils/errors";
 import Anthropic from "@anthropic-ai/sdk";
-import { Logger } from "../lib/logger";
-import { env } from "../config/env";
-import { llmGateway } from "../lib/llmGateway";
+import * as fs from "fs/promises";
+import * as path from "path";
 
-// ─── Interfaces ──────────────────────────────────────────────────────────────
+const logger = createLogger("DocumentIntelligencePipeline");
 
-export interface DocumentIntelligenceRequest {
-  source:
-    | { type: "buffer"; buffer: Buffer; filename: string; mimeType: string }
-    | { type: "url"; url: string }
-    | { type: "text"; content: string };
-  tasks?: DocumentTask[];
-  extractionDepth?: "basic" | "standard" | "deep";
-}
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-export type DocumentTask =
-  | "structure"
-  | "tables"
-  | "figures"
-  | "entities"
-  | "relations"
-  | "summary"
-  | "key_facts"
-  | "citations"
-  | "action_items"
-  | "knowledge_graph";
+export type DocumentFormat = "pdf" | "docx" | "pptx" | "html" | "markdown" | "txt";
 
-export interface Section {
-  level: number; // 1=H1, 2=H2, etc.
+export interface DocumentSection {
+  level: number; // 1 = h1, 2 = h2, etc.
   title: string;
   content: string;
-  subsections: Section[];
+  pageStart?: number;
+  wordCount: number;
 }
 
-export interface TOCEntry {
-  level: number;
-  title: string;
-  position?: number; // character offset
-}
-
-export interface DocumentStructure {
-  title?: string;
-  sections: Section[];
-  tableOfContents: TOCEntry[];
-  pageCount?: number;
-  language: string;
-  docType:
-    | "report"
-    | "article"
-    | "contract"
-    | "email"
-    | "presentation"
-    | "code"
-    | "form"
-    | "other";
-}
-
-export interface ExtractedTable {
+export interface DocumentTable {
   caption?: string;
-  pageNumber?: number;
   headers: string[];
   rows: string[][];
-  summary: string;
-}
-
-export interface FigureDescription {
-  figureNumber?: string;
-  caption?: string;
-  description: string;
   pageNumber?: number;
+  dataTypes: Record<string, "text" | "number" | "date" | "boolean">;
 }
 
-export interface NamedEntity {
-  text: string;
-  type:
-    | "person"
-    | "organization"
-    | "date"
-    | "place"
-    | "currency"
-    | "percentage"
-    | "product"
-    | "event"
-    | "other";
-  context?: string;
-  count: number;
+export interface DocumentFigure {
+  caption?: string;
+  pageNumber?: number;
+  description?: string;
+  type: "chart" | "image" | "diagram" | "photo" | "unknown";
 }
 
-export interface EntityRelation {
-  subject: string;
-  predicate: string;
-  object: string;
-  confidence: number;
-}
-
-export interface Citation {
-  raw: string;
-  style?: "apa" | "mla" | "chicago" | "ieee" | "unknown";
-  authors?: string[];
-  year?: string;
-  title?: string;
-  journal?: string;
+export interface BibEntry {
+  key?: string;
+  authors: string[];
+  title: string;
+  year?: number;
+  venue?: string;
   doi?: string;
+  url?: string;
 }
 
-export interface DocumentIntelligenceResult {
-  documentId: string;
-  structure?: DocumentStructure;
-  tables?: ExtractedTable[];
-  figures?: FigureDescription[];
-  entities?: NamedEntity[];
-  relations?: EntityRelation[];
-  summary?: string;
-  keyFacts?: string[];
-  citations?: Citation[];
-  actionItems?: string[];
-  knowledgeGraph?: { entities: any[]; relationships: any[] };
-  processingTimeMs: number;
+export interface DocumentKnowledgeNode {
+  entity: string;
+  type: "concept" | "person" | "organization" | "place" | "technology" | "term";
+  mentions: number;
+  relatedEntities: string[];
 }
 
-// ─── Class ────────────────────────────────────────────────────────────────────
+export interface DocumentAnalysis {
+  format: DocumentFormat;
+  title?: string;
+  authors?: string[];
+  date?: string;
+  language?: string;
+  wordCount: number;
+  pageCount?: number;
+  sections: DocumentSection[];
+  tableOfContents: Array<{ level: number; title: string; page?: number }>;
+  tables: DocumentTable[];
+  figures: DocumentFigure[];
+  bibliography: BibEntry[];
+  knowledgeGraph: DocumentKnowledgeNode[];
+  keyTopics: string[];
+  summary: string;
+  fullText: string;
+}
 
-class DocumentIntelligencePipeline {
-  private anthropic: Anthropic;
+// ─── Format Detectors ─────────────────────────────────────────────────────────
 
-  constructor() {
-    this.anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-    Logger.info("[DocumentIntelligencePipeline] Initialized");
+function detectFormat(filePath: string): DocumentFormat {
+  const ext = path.extname(filePath).toLowerCase().slice(1);
+  const formats: Record<string, DocumentFormat> = {
+    pdf: "pdf", docx: "docx", doc: "docx",
+    pptx: "pptx", ppt: "pptx",
+    html: "html", htm: "html",
+    md: "markdown", markdown: "markdown",
+    txt: "txt",
+  };
+  return formats[ext] ?? "txt";
+}
+
+// ─── Text Extractors ──────────────────────────────────────────────────────────
+
+async function extractFromPdf(buffer: Buffer): Promise<string> {
+  try {
+    const { default: pdfParse } = await import("pdf-parse");
+    const data = await pdfParse(buffer);
+    return data.text;
+  } catch (err) {
+    throw new AppError(`PDF extraction failed: ${(err as Error).message}`, 500, "PDF_PARSE_ERROR");
   }
-
-  // ── Public: main entry ───────────────────────────────────────────────────
-
-  async process(request: DocumentIntelligenceRequest): Promise<DocumentIntelligenceResult> {
-    const startMs = Date.now();
-    const tasks: DocumentTask[] = request.tasks ?? ["structure", "summary", "key_facts"];
-    const depth = request.extractionDepth ?? "standard";
-    Logger.info("[DocumentIntelligencePipeline] process", { tasks, depth });
-
-    const { text, mimeType, filename } = await this.prepareContent(request.source);
-    const documentId = crypto.createHash("sha256").update(text.slice(0, 2000)).digest("hex").slice(0, 16);
-
-    Logger.debug("[DocumentIntelligencePipeline] content prepared", {
-      documentId,
-      textLength: text.length,
-      mimeType,
-      filename,
-    });
-
-    const result: DocumentIntelligenceResult = { documentId, processingTimeMs: 0 };
-    const chunks = this.chunkText(text, 12_000);
-
-    const runTask = async <T>(
-      taskName: DocumentTask,
-      fn: () => Promise<T>,
-      key: keyof DocumentIntelligenceResult
-    ) => {
-      if (tasks.includes(taskName)) {
-        try {
-          (result as any)[key] = await fn();
-        } catch (err) {
-          Logger.error(`[DocumentIntelligencePipeline] task '${taskName}' failed`, err);
-        }
-      }
-    };
-
-    await runTask("structure", () => this.extractStructure(text), "structure");
-    await runTask("tables", () => this.extractTables(text), "tables");
-    await runTask("figures", () => this.describeFigures(text), "figures");
-    await runTask("entities", () => this.extractEntities(chunks[0]), "entities");
-
-    if (tasks.includes("relations") && result.entities) {
-      await runTask("relations", () => this.extractRelations(text, result.entities!), "relations");
-    }
-
-    const summaryDepth = depth === "deep" ? "detailed" : depth === "basic" ? "brief" : "standard";
-    await runTask("summary", () => this.generateSummary(text, summaryDepth), "summary");
-    await runTask("key_facts", () => this.extractKeyFacts(chunks[0]), "keyFacts");
-    await runTask("citations", () => this.extractCitations(text), "citations");
-    await runTask("action_items", () => this.extractActionItems(text), "actionItems");
-
-    if (tasks.includes("knowledge_graph") && result.entities) {
-      await runTask(
-        "knowledge_graph",
-        () => this.buildKnowledgeGraph(text, result.entities!),
-        "knowledgeGraph"
-      );
-    }
-
-    result.processingTimeMs = Date.now() - startMs;
-    Logger.info("[DocumentIntelligencePipeline] processing complete", {
-      documentId,
-      processingTimeMs: result.processingTimeMs,
-    });
-
-    return result;
-  }
-
-  // ── Structure extraction ─────────────────────────────────────────────────
-
-  async extractStructure(text: string): Promise<DocumentStructure> {
-    Logger.debug("[DocumentIntelligencePipeline] extractStructure");
-
-    const excerpt = text.slice(0, 6000);
-    const prompt = `Analyze the structure of the following document.
-Return a JSON object:
-{
-  "title": string or null,
-  "language": "en" (ISO 639-1),
-  "docType": "report"|"article"|"contract"|"email"|"presentation"|"code"|"form"|"other",
-  "tableOfContents": [{"level": 1, "title": "Section Title"}],
-  "sections": [{"level": 1, "title": "...", "content": "first 100 chars...", "subsections": []}]
 }
-Return ONLY valid JSON.
 
-Document:
-${excerpt}`;
+async function extractFromDocx(buffer: Buffer): Promise<string> {
+  try {
+    const mammoth = await import("mammoth");
+    const result = await mammoth.extractRawText({ buffer });
+    return result.value;
+  } catch (err) {
+    throw new AppError(`DOCX extraction failed: ${(err as Error).message}`, 500, "DOCX_PARSE_ERROR");
+  }
+}
 
-    const llmResult = await llmGateway.chat([{ role: "user", content: prompt }]);
+async function extractFromPptx(buffer: Buffer): Promise<string> {
+  try {
+    const officeparser = await import("officeparser");
+    const text = await officeparser.parseOfficeAsync(buffer, { type: "Buffer" });
+    return String(text);
+  } catch (err) {
+    throw new AppError(`PPTX extraction failed: ${(err as Error).message}`, 500, "PPTX_PARSE_ERROR");
+  }
+}
 
-    try {
-      const cleaned = llmResult.content.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(cleaned);
-      return parsed as DocumentStructure;
-    } catch {
-      Logger.warn("[DocumentIntelligencePipeline] failed to parse structure JSON");
-      return {
-        title: undefined,
-        sections: [],
-        tableOfContents: [],
-        language: "en",
-        docType: "other",
+function extractFromHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+// ─── Structure Parsers ────────────────────────────────────────────────────────
+
+function parseMarkdownSections(markdown: string): DocumentSection[] {
+  const sections: DocumentSection[] = [];
+  const lines = markdown.split("\n");
+  let currentSection: DocumentSection | null = null;
+
+  for (const line of lines) {
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
+    if (headingMatch) {
+      if (currentSection) sections.push(currentSection);
+      currentSection = {
+        level: headingMatch[1].length,
+        title: headingMatch[2].trim(),
+        content: "",
+        wordCount: 0,
       };
+    } else if (currentSection) {
+      currentSection.content += line + "\n";
     }
   }
 
-  // ── Table extraction ─────────────────────────────────────────────────────
+  if (currentSection) sections.push(currentSection);
 
-  async extractTables(content: string): Promise<ExtractedTable[]> {
-    Logger.debug("[DocumentIntelligencePipeline] extractTables");
-
-    // First try regex-based markdown table parsing
-    const markdownTables = this.parseMarkdownTables(content);
-
-    // Then use LLM for complex or non-markdown tables
-    const prompt = `Extract ALL tables from the following text.
-For each table, return a JSON object:
-{
-  "caption": "table title or null",
-  "headers": ["col1", "col2"],
-  "rows": [["val1", "val2"]],
-  "summary": "one line description"
+  return sections.map((s) => ({
+    ...s,
+    wordCount: s.content.split(/\s+/).filter(Boolean).length,
+    content: s.content.trim(),
+  }));
 }
-Return a JSON array of these objects. If no tables exist, return [].
-Return ONLY valid JSON.
 
-Text:
-${content.slice(0, 8000)}`;
+function parseSectionsFromText(text: string): DocumentSection[] {
+  // Heuristic: lines that are ALL CAPS or match "Chapter/Section N" patterns
+  const sections: DocumentSection[] = [];
+  const lines = text.split("\n");
+  let current: DocumentSection | null = null;
 
-    try {
-      const llmResult = await llmGateway.chat([{ role: "user", content: prompt }]);
-      const match = llmResult.content.match(/\[[\s\S]*\]/);
-      if (match) {
-        const llmTables = JSON.parse(match[0]) as ExtractedTable[];
-        // Deduplicate: prefer LLM tables over regex if there's overlap
-        if (llmTables.length > 0) return llmTables;
-      }
-    } catch (err) {
-      Logger.warn("[DocumentIntelligencePipeline] LLM table extraction failed", err);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const isHeading =
+      /^(chapter|section|part|appendix)\s+\d+/i.test(trimmed) ||
+      (trimmed.length < 80 && trimmed === trimmed.toUpperCase() && trimmed.length > 5) ||
+      /^\d+\.\s+[A-Z]/.test(trimmed);
+
+    if (isHeading) {
+      if (current) sections.push(current);
+      current = { level: 1, title: trimmed, content: "", wordCount: 0 };
+    } else if (current) {
+      current.content += trimmed + " ";
     }
-
-    return markdownTables;
   }
 
-  // ── Figure description ───────────────────────────────────────────────────
+  if (current) sections.push(current);
 
-  async describeFigures(content: string): Promise<FigureDescription[]> {
-    Logger.debug("[DocumentIntelligencePipeline] describeFigures");
-
-    // Extract figure references via regex
-    const figureRefs = [...content.matchAll(/(?:Figure|Fig\.?|Chart|Diagram|Graph|Image)\s*(\d+\.?\d*)[:\s–-]+([^\n.]{10,120})/gi)];
-
-    if (figureRefs.length === 0) {
-      // Ask LLM to find implicit figure references
-      const prompt = `List all figures, charts, images, or diagrams referenced in this text.
-For each, return: {"figureNumber": "Fig 1" or null, "caption": string or null, "description": "what it likely shows based on context"}
-Return a JSON array. If none found, return [].
-Return ONLY valid JSON.
-
-Text:
-${content.slice(0, 6000)}`;
-
-      try {
-        const llmResult = await llmGateway.chat([{ role: "user", content: prompt }]);
-        const match = llmResult.content.match(/\[[\s\S]*\]/);
-        if (match) return JSON.parse(match[0]) as FigureDescription[];
-      } catch (err) {
-        Logger.warn("[DocumentIntelligencePipeline] figure description failed", err);
-      }
-      return [];
-    }
-
-    return figureRefs.map((m) => ({
-      figureNumber: m[1] ? `Figure ${m[1]}` : undefined,
-      caption: m[2]?.trim(),
-      description: `Referenced as: ${m[0].trim()}`,
-    }));
-  }
-
-  // ── Named entity extraction ──────────────────────────────────────────────
-
-  async extractEntities(text: string): Promise<NamedEntity[]> {
-    Logger.debug("[DocumentIntelligencePipeline] extractEntities");
-
-    const prompt = `Extract all named entities from the following text.
-Types: person, organization, date, place, currency, percentage, product, event, other.
-Return a JSON array:
-[{"text": "John Smith", "type": "person", "context": "brief surrounding context", "count": 1}]
-Merge duplicates and count occurrences.
-Return ONLY valid JSON array.
-
-Text:
-${text.slice(0, 8000)}`;
-
-    try {
-      const llmResult = await llmGateway.chat([{ role: "user", content: prompt }]);
-      const match = llmResult.content.match(/\[[\s\S]*\]/);
-      if (match) return JSON.parse(match[0]) as NamedEntity[];
-    } catch (err) {
-      Logger.error("[DocumentIntelligencePipeline] entity extraction failed", err);
-    }
-
-    return [];
-  }
-
-  // ── Relation extraction ──────────────────────────────────────────────────
-
-  async extractRelations(text: string, entities: NamedEntity[]): Promise<EntityRelation[]> {
-    Logger.debug("[DocumentIntelligencePipeline] extractRelations");
-
-    const entityNames = entities.slice(0, 30).map((e) => e.text).join(", ");
-    const prompt = `Given these entities: ${entityNames}
-
-Find relationships between them in the following text.
-Return a JSON array:
-[{"subject": "...", "predicate": "works for", "object": "...", "confidence": 0.9}]
-Return ONLY valid JSON array.
-
-Text:
-${text.slice(0, 6000)}`;
-
-    try {
-      const llmResult = await llmGateway.chat([{ role: "user", content: prompt }]);
-      const match = llmResult.content.match(/\[[\s\S]*\]/);
-      if (match) return JSON.parse(match[0]) as EntityRelation[];
-    } catch (err) {
-      Logger.warn("[DocumentIntelligencePipeline] relation extraction failed", err);
-    }
-
-    return [];
-  }
-
-  // ── Knowledge graph ──────────────────────────────────────────────────────
-
-  async buildKnowledgeGraph(
-    text: string,
-    entities: NamedEntity[]
-  ): Promise<{ entities: any[]; relationships: any[] }> {
-    Logger.debug("[DocumentIntelligencePipeline] buildKnowledgeGraph");
-
-    const entityNames = entities.slice(0, 20).map((e) => e.text).join(", ");
-    const prompt = `Build a mini knowledge graph from the following text.
-Known entities: ${entityNames}
-
-Return a JSON object:
-{
-  "entities": [{"id": "e1", "label": "John Smith", "type": "person", "properties": {}}],
-  "relationships": [{"source": "e1", "target": "e2", "type": "WORKS_FOR", "properties": {}}]
+  return sections.map((s) => ({
+    ...s,
+    wordCount: s.content.split(/\s+/).filter(Boolean).length,
+    content: s.content.trim().slice(0, 2_000),
+  }));
 }
-Return ONLY valid JSON.
 
-Text:
-${text.slice(0, 6000)}`;
+// ─── Table Extraction ─────────────────────────────────────────────────────────
 
-    try {
-      const llmResult = await llmGateway.chat([{ role: "user", content: prompt }]);
-      const cleaned = llmResult.content.replace(/```json|```/g, "").trim();
-      return JSON.parse(cleaned);
-    } catch (err) {
-      Logger.warn("[DocumentIntelligencePipeline] knowledge graph failed", err);
-      return { entities: [], relationships: [] };
-    }
-  }
+function extractTablesFromMarkdown(markdown: string): DocumentTable[] {
+  const tables: DocumentTable[] = [];
+  const tablePattern = /(\|.+\|[\s\S]*?)(?=\n\n|\n#|$)/g;
 
-  // ── Summary ──────────────────────────────────────────────────────────────
+  for (const match of [...markdown.matchAll(tablePattern)]) {
+    const block = match[1].trim();
+    const lines = block.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("|"));
 
-  async generateSummary(text: string, depth: "brief" | "standard" | "detailed"): Promise<string> {
-    Logger.debug("[DocumentIntelligencePipeline] generateSummary", { depth });
+    if (lines.length < 3) continue;
 
-    const lengthHint =
-      depth === "brief"
-        ? "2-3 sentences"
-        : depth === "standard"
-        ? "1 paragraph (4-6 sentences)"
-        : "3-5 paragraphs covering all major sections";
+    const headers = lines[0]!.split("|").map((h) => h.trim()).filter(Boolean);
+    const rows = lines.slice(2).map((l) => l.split("|").map((c) => c.trim()).filter(Boolean));
 
-    const prompt = `Write a ${lengthHint} summary of the following document.
-Focus on the main purpose, key findings, and conclusions.
-
-Document:
-${text.slice(0, 10_000)}`;
-
-    const result = await llmGateway.chat([{ role: "user", content: prompt }]);
-    return result.content;
-  }
-
-  // ── Key facts ────────────────────────────────────────────────────────────
-
-  async extractKeyFacts(text: string): Promise<string[]> {
-    Logger.debug("[DocumentIntelligencePipeline] extractKeyFacts");
-
-    const prompt = `Extract the 8-12 most important facts from this document.
-Return a JSON array of strings, each being a concise factual statement.
-Return ONLY valid JSON array.
-
-Document:
-${text.slice(0, 8000)}`;
-
-    try {
-      const result = await llmGateway.chat([{ role: "user", content: prompt }]);
-      const match = result.content.match(/\[[\s\S]*\]/);
-      if (match) return JSON.parse(match[0]) as string[];
-    } catch (err) {
-      Logger.warn("[DocumentIntelligencePipeline] key facts extraction failed", err);
+    // Infer data types
+    const dataTypes: Record<string, "text" | "number" | "date" | "boolean"> = {};
+    for (const header of headers) {
+      const sample = rows[0]?.[headers.indexOf(header)] ?? "";
+      if (/^\d+\.?\d*$/.test(sample)) dataTypes[header] = "number";
+      else if (/^\d{4}-\d{2}-\d{2}/.test(sample)) dataTypes[header] = "date";
+      else if (/^(true|false|yes|no)$/i.test(sample)) dataTypes[header] = "boolean";
+      else dataTypes[header] = "text";
     }
 
-    return [];
+    tables.push({ headers, rows, dataTypes });
   }
 
-  // ── Citations ────────────────────────────────────────────────────────────
+  return tables;
+}
 
-  async extractCitations(text: string): Promise<Citation[]> {
-    Logger.debug("[DocumentIntelligencePipeline] extractCitations");
+// ─── Bibliography Parser ──────────────────────────────────────────────────────
 
-    // Regex patterns for common citation formats
-    const apaPattern = /[A-Z][a-z]+(?:,?\s+(?:[A-Z]\.)+)+(?:,\s+&\s+[A-Z][a-z]+(?:,?\s+(?:[A-Z]\.)+)+)?\s+\(\d{4}\)/g;
-    const doiPattern = /doi:\s*10\.\d{4,}\/\S+/gi;
+function extractBibliography(text: string): BibEntry[] {
+  const entries: BibEntry[] = [];
+  const bibSection = text.match(/(?:references?|bibliography|works cited)[:\n]([\s\S]*?)(?:\n\n\n|$)/i)?.[1];
+  if (!bibSection) return entries;
 
-    const rawCitations: string[] = [];
-    for (const match of text.matchAll(apaPattern)) rawCitations.push(match[0]);
-    for (const match of text.matchAll(doiPattern)) rawCitations.push(match[0]);
+  const lines = bibSection.split("\n").filter((l) => l.trim().length > 20);
+  for (const line of lines.slice(0, 50)) {
+    const authorMatch = line.match(/^([A-Z][a-z]+(?:,\s+[A-Z][a-z.]+)+)/);
+    const yearMatch = line.match(/\((\d{4})\)/);
+    const doiMatch = line.match(/doi[:\s]+(\S+)/i);
 
-    if (rawCitations.length === 0) {
-      // LLM fallback for bibliography sections
-      const bibMatch = text.match(/(?:References|Bibliography|Works Cited)\n([\s\S]{100,3000})/i);
-      if (bibMatch) {
-        const prompt = `Parse these citations into structured JSON:
-[{"raw": "...", "style": "apa"|"mla"|"chicago"|"ieee"|"unknown", "authors": [], "year": "...", "title": "...", "journal": "...", "doi": "..."}]
-Return ONLY valid JSON array.
-
-Citations:
-${bibMatch[1].slice(0, 3000)}`;
-
-        try {
-          const result = await llmGateway.chat([{ role: "user", content: prompt }]);
-          const match2 = result.content.match(/\[[\s\S]*\]/);
-          if (match2) return JSON.parse(match2[0]) as Citation[];
-        } catch (err) {
-          Logger.warn("[DocumentIntelligencePipeline] citation parsing failed", err);
-        }
-      }
-      return [];
-    }
-
-    return rawCitations.map((raw) => ({
-      raw,
-      style: "unknown" as const,
-    }));
-  }
-
-  // ── Action items ─────────────────────────────────────────────────────────
-
-  async extractActionItems(text: string): Promise<string[]> {
-    Logger.debug("[DocumentIntelligencePipeline] extractActionItems");
-
-    const prompt = `Extract all action items, tasks, TODOs, and next steps from the following document.
-Return a JSON array of strings, each being a clear actionable item.
-If none found, return [].
-Return ONLY valid JSON array.
-
-Document:
-${text.slice(0, 8000)}`;
-
-    try {
-      const result = await llmGateway.chat([{ role: "user", content: prompt }]);
-      const match = result.content.match(/\[[\s\S]*\]/);
-      if (match) return JSON.parse(match[0]) as string[];
-    } catch (err) {
-      Logger.warn("[DocumentIntelligencePipeline] action items extraction failed", err);
-    }
-
-    return [];
-  }
-
-  // ── Private: prepare content ─────────────────────────────────────────────
-
-  private async prepareContent(
-    source: DocumentIntelligenceRequest["source"]
-  ): Promise<{ text: string; mimeType: string; filename?: string }> {
-    if (source.type === "text") {
-      return { text: source.content, mimeType: "text/plain" };
-    }
-
-    if (source.type === "url") {
-      Logger.debug("[DocumentIntelligencePipeline] downloading from URL", { url: source.url });
-      const response = await axios.get<string>(source.url, {
-        responseType: "text",
-        timeout: 30_000,
+    if (authorMatch) {
+      entries.push({
+        authors: [authorMatch[1]],
+        title: line.slice(authorMatch[0].length).replace(/\(\d{4}\)/, "").trim().slice(0, 100),
+        year: yearMatch ? parseInt(yearMatch[1], 10) : undefined,
+        doi: doiMatch?.[1],
       });
-      const mimeType = (response.headers["content-type"] as string | undefined) ?? "text/plain";
-      return { text: response.data, mimeType };
     }
-
-    // Buffer: try to extract text based on MIME type
-    const { buffer, filename, mimeType } = source;
-
-    if (mimeType === "text/plain" || mimeType.startsWith("text/")) {
-      return { text: buffer.toString("utf8"), mimeType, filename };
-    }
-
-    // For PDF, DOCX etc., try to extract plain text via dynamic import or basic parsing
-    if (mimeType === "application/pdf") {
-      try {
-        // Try pdf-parse if available
-        const pdfParse = await import("pdf-parse").catch(() => null);
-        if (pdfParse) {
-          const data = await pdfParse.default(buffer);
-          return { text: data.text, mimeType, filename };
-        }
-      } catch {
-        // Fall through
-      }
-    }
-
-    if (
-      mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-      filename?.endsWith(".docx")
-    ) {
-      try {
-        const officeParser = await import("officeparser").catch(() => null);
-        if (officeParser) {
-          const text = await officeParser.parseOfficeAsync(buffer);
-          return { text: String(text), mimeType, filename };
-        }
-      } catch {
-        // Fall through
-      }
-    }
-
-    // Last resort: treat as UTF-8 text
-    Logger.warn("[DocumentIntelligencePipeline] unrecognized MIME type, treating as text", { mimeType });
-    return { text: buffer.toString("utf8"), mimeType, filename };
   }
 
-  // ── Private: markdown table parser ──────────────────────────────────────
+  return entries;
+}
 
-  private parseMarkdownTables(text: string): ExtractedTable[] {
-    const tables: ExtractedTable[] = [];
-    const tableRegex = /(\|[^\n]+\|\n)((?:\|[-: ]+\|[-: |\n]+\n))((?:\|[^\n]+\|\n?)*)/g;
+// ─── Knowledge Graph Extraction ───────────────────────────────────────────────
 
-    for (const match of text.matchAll(tableRegex)) {
-      const headerLine = match[1];
-      const dataLines = match[3];
+function extractKnowledgeGraph(text: string): DocumentKnowledgeNode[] {
+  const entityCounts = new Map<string, number>();
+  const entityTypes = new Map<string, DocumentKnowledgeNode["type"]>();
 
-      const headers = headerLine
-        .split("|")
-        .map((h) => h.trim())
-        .filter(Boolean);
+  // Named entities: capitalized multi-word phrases
+  const entityMatches = [...text.matchAll(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b/g)];
+  for (const m of entityMatches) {
+    const entity = m[1];
+    entityCounts.set(entity, (entityCounts.get(entity) ?? 0) + 1);
 
-      const rows = dataLines
-        .trim()
-        .split("\n")
-        .filter((l) => l.trim().startsWith("|"))
-        .map((line) =>
-          line
-            .split("|")
-            .map((c) => c.trim())
-            .filter(Boolean)
-        );
-
-      if (headers.length > 0 && rows.length > 0) {
-        tables.push({
-          headers,
-          rows,
-          summary: `Table with ${headers.length} columns and ${rows.length} rows`,
-        });
-      }
+    // Classify type
+    if (/University|Institute|Corp|Inc|Ltd|Organization|Foundation/i.test(entity)) {
+      entityTypes.set(entity, "organization");
+    } else if (/Algorithm|Framework|Protocol|Model|System|Technology/i.test(entity)) {
+      entityTypes.set(entity, "technology");
+    } else {
+      entityTypes.set(entity, "concept");
     }
-
-    return tables;
   }
 
-  // ── Private: chunk text ──────────────────────────────────────────────────
+  // Keep entities mentioned 2+ times
+  return [...entityCounts.entries()]
+    .filter(([, count]) => count >= 2)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 30)
+    .map(([entity, mentions]) => ({
+      entity,
+      type: entityTypes.get(entity) ?? "concept",
+      mentions,
+      relatedEntities: [],
+    }));
+}
 
-  private chunkText(text: string, maxChars: number): string[] {
-    if (text.length <= maxChars) return [text];
+// ─── LLM Summary ─────────────────────────────────────────────────────────────
 
-    const chunks: string[] = [];
-    let offset = 0;
+async function generateDocumentSummary(text: string, title?: string): Promise<string> {
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-    while (offset < text.length) {
-      let end = offset + maxChars;
-      if (end < text.length) {
-        // Try to break at paragraph boundary
-        const boundary = text.lastIndexOf("\n\n", end);
-        if (boundary > offset + maxChars / 2) end = boundary;
-      }
-      chunks.push(text.slice(offset, end));
-      offset = end;
+  const response = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 800,
+    messages: [
+      {
+        role: "user",
+        content: `Summarize this document${title ? ` titled "${title}"` : ""} in 3-5 sentences:
+
+${text.slice(0, 5_000)}
+
+Focus on: main topic, key findings/arguments, and significance.`,
+      },
+    ],
+  });
+
+  return response.content[0]?.type === "text" ? response.content[0].text : "";
+}
+
+// ─── DocumentIntelligencePipeline ─────────────────────────────────────────────
+
+export class DocumentIntelligencePipeline {
+  async analyzeFile(filePath: string, options: { generateSummary?: boolean } = {}): Promise<DocumentAnalysis> {
+    const buffer = await fs.readFile(filePath);
+    const format = detectFormat(filePath);
+    return this.analyzeBuffer(buffer, format, options);
+  }
+
+  async analyzeBuffer(
+    buffer: Buffer,
+    format: DocumentFormat,
+    options: { generateSummary?: boolean } = {}
+  ): Promise<DocumentAnalysis> {
+    logger.info(`Analyzing document: format=${format}, size=${buffer.length} bytes`);
+
+    let rawText = "";
+
+    switch (format) {
+      case "pdf": rawText = await extractFromPdf(buffer); break;
+      case "docx": rawText = await extractFromDocx(buffer); break;
+      case "pptx": rawText = await extractFromPptx(buffer); break;
+      case "html": rawText = extractFromHtml(buffer.toString("utf-8")); break;
+      case "markdown": rawText = buffer.toString("utf-8"); break;
+      case "txt": rawText = buffer.toString("utf-8"); break;
     }
 
-    return chunks;
+    const wordCount = rawText.split(/\s+/).filter(Boolean).length;
+
+    // Structure extraction
+    const sections = format === "markdown"
+      ? parseMarkdownSections(rawText)
+      : parseSectionsFromText(rawText);
+
+    const toc = sections.map((s) => ({ level: s.level, title: s.title, page: s.pageStart }));
+
+    // Table extraction
+    const tables = format === "markdown" ? extractTablesFromMarkdown(rawText) : [];
+
+    // Figures (textual references)
+    const figureMatches = [...rawText.matchAll(/(?:figure|fig\.?|image|diagram)\s+(\d+)[:\s]+([^\n]{10,80})/gi)];
+    const figures: DocumentFigure[] = figureMatches.slice(0, 20).map((m) => ({
+      caption: m[2].trim(),
+      type: "unknown" as const,
+    }));
+
+    // Bibliography
+    const bibliography = extractBibliography(rawText);
+
+    // Knowledge graph
+    const knowledgeGraph = extractKnowledgeGraph(rawText);
+
+    // Key topics (most mentioned meaningful words)
+    const stopwords = new Set(["the", "a", "an", "and", "or", "but", "in", "on", "is", "was", "are"]);
+    const wordFreq = new Map<string, number>();
+    for (const word of rawText.toLowerCase().split(/\W+/).filter((w) => w.length > 4 && !stopwords.has(w))) {
+      wordFreq.set(word, (wordFreq.get(word) ?? 0) + 1);
+    }
+    const keyTopics = [...wordFreq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([w]) => w);
+
+    // Title detection
+    const firstLines = rawText.slice(0, 500).split("\n").filter((l) => l.trim().length > 5);
+    const title = firstLines[0]?.trim().slice(0, 100);
+
+    // Summary
+    let summary = "";
+    if (options.generateSummary && process.env.ANTHROPIC_API_KEY) {
+      try {
+        summary = await generateDocumentSummary(rawText, title);
+      } catch (err) {
+        logger.warn(`Summary generation failed: ${(err as Error).message}`);
+        summary = rawText.slice(0, 400) + "...";
+      }
+    } else {
+      summary = rawText.slice(0, 400) + (rawText.length > 400 ? "..." : "");
+    }
+
+    logger.info(`Document analysis complete: ${sections.length} sections, ${tables.length} tables, ${wordCount} words`);
+
+    return {
+      format,
+      title,
+      authors: [],
+      wordCount,
+      sections,
+      tableOfContents: toc,
+      tables,
+      figures,
+      bibliography,
+      knowledgeGraph,
+      keyTopics,
+      summary,
+      fullText: rawText.slice(0, 50_000),
+    };
+  }
+
+  extractText(analysis: DocumentAnalysis, maxTokens = 8_000): string {
+    const charLimit = maxTokens * 4;
+    if (analysis.fullText.length <= charLimit) return analysis.fullText;
+
+    // Prioritize: summary + section titles + first paragraph of each section
+    const parts: string[] = [analysis.summary ?? ""];
+    for (const section of analysis.sections) {
+      parts.push(`\n## ${section.title}\n${section.content.slice(0, 300)}`);
+    }
+
+    return parts.join("\n").slice(0, charLimit);
   }
 }
 
