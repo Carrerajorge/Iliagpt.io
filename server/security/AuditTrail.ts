@@ -1,25 +1,28 @@
-import crypto from "crypto";
-import type { Request, Response, NextFunction, RequestHandler } from "express";
-import Redis from "ioredis";
-import { db } from "../db";
-import { Logger } from "../lib/logger";
+import crypto from 'crypto';
+import { Request, RequestHandler, Response, NextFunction } from 'express';
+import Redis from 'ioredis';
+import { Pool } from 'pg';
+import { pool } from '../db';
+import logger from '../lib/logger';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+export type AuditOutcome = 'success' | 'failure' | 'error' | 'denied';
 
 export interface AuditEntry {
   id: string;
   timestamp: Date;
-  userId?: string;
-  tenantId?: string;
+  userId: string | null;
+  tenantId: string | null;
   action: string;
   resource: string;
-  resourceId?: string;
-  outcome: "success" | "failure" | "denied";
-  ipAddress?: string;
-  userAgent?: string;
-  details?: Record<string, any>;
-  hash: string;
+  resourceId: string | null;
+  ip: string | null;
+  userAgent: string | null;
+  outcome: AuditOutcome;
+  metadata: Record<string, unknown>;
   previousHash: string;
+  hash: string;
 }
 
 export interface AuditFilter {
@@ -27,318 +30,550 @@ export interface AuditFilter {
   tenantId?: string;
   action?: string;
   resource?: string;
-  outcome?: AuditEntry["outcome"];
-  fromDate?: Date;
-  toDate?: Date;
+  outcome?: AuditOutcome;
+  fromTime?: Date;
+  toTime?: Date;
   limit?: number;
   offset?: number;
 }
 
-export interface IntegrityReport {
-  valid: boolean;
-  checkedEntries: number;
-  firstBrokenEntry?: string;
-  details: string;
+export interface TimeRange {
+  from: Date;
+  to: Date;
 }
 
-export interface TamperReport {
-  tampered: boolean;
-  suspectEntries: string[];
-  checkedAt: Date;
+export interface VerificationResult {
+  valid: boolean;
+  totalChecked: number;
+  breaks: Array<{
+    entryId: string;
+    expectedHash: string;
+    actualHash: string;
+    timestamp: Date;
+  }>;
+}
+
+export interface AuditStats {
+  totalEvents: number;
+  byAction: Array<{ action: string; count: number }>;
+  byUser: Array<{ userId: string; count: number }>;
+  byResource: Array<{ resource: string; count: number }>;
+  byOutcome: Array<{ outcome: string; count: number }>;
+  timeRange: TimeRange;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const LAST_HASH_KEY = "audit:last_hash";
-const RECENT_ENTRIES_KEY = "audit:recent";
-const BUFFER_SIZE = 1000;
-const GENESIS_HASH = "0000000000000000000000000000000000000000000000000000000000000000";
+const GENESIS_HASH = '0000000000000000000000000000000000000000000000000000000000000000';
+const AUDIT_REDIS_CHANNEL = 'audit:events';
+const AUDIT_STREAM_MAX_LEN = 10_000; // cap stream length in Redis
+
+const HMAC_KEY = process.env.AUDIT_HMAC_KEY;
+if (!HMAC_KEY) {
+  throw new Error('AUDIT_HMAC_KEY environment variable is required');
+}
 
 // ─── AuditTrail ───────────────────────────────────────────────────────────────
 
-class AuditTrail {
-  private lastHashCache: string = GENESIS_HASH;
-  private redis: Redis;
-  private hashLock = false; // simple in-process mutex for hash chaining
+export class AuditTrail {
+  private readonly db: Pool;
+  private readonly redis: Redis;
+  private readonly hmacKey: string;
+  private initialized = false;
 
-  constructor() {
-    this.redis = new Redis(process.env.REDIS_URL || "redis://127.0.0.1:6379", {
-      maxRetriesPerRequest: 3,
-      retryStrategy: (times) => Math.min(times * 50, 2000),
-    });
-    this.redis.on("error", (err: Error) => {
-      Logger.warn("[AuditTrail] Redis error", { error: err.message });
-    });
+  constructor(db: Pool, redis: Redis) {
+    this.db = db;
+    this.redis = redis;
+    this.hmacKey = HMAC_KEY!;
   }
 
-  // ── Logging ──────────────────────────────────────────────────────────────────
+  // ── Schema bootstrap ─────────────────────────────────────────────────────────
+
+  async initialize(): Promise<void> {
+    if (this.initialized) return;
+
+    await this.db.query(`
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+        timestamp     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        user_id       TEXT,
+        tenant_id     TEXT,
+        action        TEXT        NOT NULL,
+        resource      TEXT        NOT NULL,
+        resource_id   TEXT,
+        ip            TEXT,
+        user_agent    TEXT,
+        outcome       TEXT        NOT NULL CHECK (outcome IN ('success','failure','error','denied')),
+        metadata      JSONB       NOT NULL DEFAULT '{}',
+        previous_hash TEXT        NOT NULL,
+        hash          TEXT        NOT NULL UNIQUE,
+        sequence_num  BIGSERIAL
+      );
+
+      CREATE INDEX IF NOT EXISTS audit_log_user_idx      ON audit_log (user_id);
+      CREATE INDEX IF NOT EXISTS audit_log_tenant_idx    ON audit_log (tenant_id);
+      CREATE INDEX IF NOT EXISTS audit_log_action_idx    ON audit_log (action);
+      CREATE INDEX IF NOT EXISTS audit_log_resource_idx  ON audit_log (resource);
+      CREATE INDEX IF NOT EXISTS audit_log_timestamp_idx ON audit_log (timestamp DESC);
+      CREATE INDEX IF NOT EXISTS audit_log_outcome_idx   ON audit_log (outcome);
+      CREATE INDEX IF NOT EXISTS audit_log_seq_idx       ON audit_log (sequence_num);
+    `);
+
+    this.initialized = true;
+    logger.info('audit_log table ensured');
+  }
+
+  // ── Hash chain ────────────────────────────────────────────────────────────────
+
+  private computeHash(entry: Omit<AuditEntry, 'hash'>): string {
+    const payload = JSON.stringify({
+      id: entry.id,
+      timestamp: entry.timestamp.toISOString(),
+      userId: entry.userId,
+      tenantId: entry.tenantId,
+      action: entry.action,
+      resource: entry.resource,
+      resourceId: entry.resourceId,
+      ip: entry.ip,
+      userAgent: entry.userAgent,
+      outcome: entry.outcome,
+      metadata: entry.metadata,
+      previousHash: entry.previousHash,
+    });
+
+    return crypto
+      .createHmac('sha256', this.hmacKey)
+      .update(payload)
+      .digest('hex');
+  }
+
+  private async getLastHash(): Promise<string> {
+    const result = await this.db.query(
+      `SELECT hash FROM audit_log ORDER BY sequence_num DESC LIMIT 1`,
+    );
+    return result.rows.length > 0 ? result.rows[0].hash : GENESIS_HASH;
+  }
+
+  // ── Core logging ──────────────────────────────────────────────────────────────
 
   async log(
-    entry: Omit<AuditEntry, "id" | "hash" | "previousHash" | "timestamp">
+    entry: Omit<AuditEntry, 'id' | 'timestamp' | 'previousHash' | 'hash'>,
   ): Promise<AuditEntry> {
-    // Wait for any concurrent hash computation to finish
-    while (this.hashLock) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    this.hashLock = true;
+    await this.initialize();
+
+    const id = crypto.randomUUID();
+    const timestamp = new Date();
+
+    // Serialize access to hash chain — use advisory lock per tenant or global
+    const client = await this.db.connect();
+    let fullEntry: AuditEntry;
 
     try {
-      const previousHash = await this.getLastHash();
-      const id = crypto.randomUUID();
-      const timestamp = new Date();
+      // Advisory lock (session-level) to serialize hash chain writes
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('audit_chain'))`);
+      await client.query('BEGIN');
 
-      const partial: Omit<AuditEntry, "hash"> = {
+      const previousHash = await this.getLastHash();
+
+      const partialEntry: Omit<AuditEntry, 'hash'> = {
         id,
         timestamp,
+        userId: entry.userId ?? null,
+        tenantId: entry.tenantId ?? null,
+        action: entry.action,
+        resource: entry.resource,
+        resourceId: entry.resourceId ?? null,
+        ip: entry.ip ?? null,
+        userAgent: entry.userAgent ?? null,
+        outcome: entry.outcome,
+        metadata: entry.metadata ?? {},
         previousHash,
-        ...entry,
       };
 
-      const hash = this.computeHash(previousHash, partial);
+      const hash = this.computeHash(partialEntry);
+      fullEntry = { ...partialEntry, hash };
 
-      const full: AuditEntry = { ...partial, hash };
-
-      // Update last hash in Redis
-      await this.redis.set(LAST_HASH_KEY, hash);
-      this.lastHashCache = hash;
-
-      // Buffer in Redis for recent queries
-      await this.redis.lpush(RECENT_ENTRIES_KEY, JSON.stringify(full));
-      await this.redis.ltrim(RECENT_ENTRIES_KEY, 0, BUFFER_SIZE - 1);
-
-      // Persist to DB via fire-and-forget (best effort)
-      this.persistToDB(full).catch((err) =>
-        Logger.error("[AuditTrail] DB persist failed", err)
+      await client.query(
+        `INSERT INTO audit_log
+           (id, timestamp, user_id, tenant_id, action, resource, resource_id,
+            ip, user_agent, outcome, metadata, previous_hash, hash)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [
+          fullEntry.id,
+          fullEntry.timestamp,
+          fullEntry.userId,
+          fullEntry.tenantId,
+          fullEntry.action,
+          fullEntry.resource,
+          fullEntry.resourceId,
+          fullEntry.ip,
+          fullEntry.userAgent,
+          fullEntry.outcome,
+          JSON.stringify(fullEntry.metadata),
+          fullEntry.previousHash,
+          fullEntry.hash,
+        ],
       );
 
-      return full;
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      logger.error({ err }, 'Failed to write audit log entry');
+      throw err;
     } finally {
-      this.hashLock = false;
+      client.release();
     }
+
+    // Stream to Redis for real-time monitoring (fire-and-forget)
+    this.streamToRedis(fullEntry).catch((err) =>
+      logger.error({ err }, 'Failed to stream audit entry to Redis'),
+    );
+
+    logger.info(
+      {
+        auditId: fullEntry.id,
+        action: fullEntry.action,
+        resource: fullEntry.resource,
+        outcome: fullEntry.outcome,
+        userId: fullEntry.userId,
+      },
+      'Audit event recorded',
+    );
+
+    return fullEntry;
   }
 
-  // ── Query ────────────────────────────────────────────────────────────────────
+  private async streamToRedis(entry: AuditEntry): Promise<void> {
+    const payload = JSON.stringify(entry);
+    const pipeline = this.redis.pipeline();
+    // Pub/Sub for real-time consumers
+    pipeline.publish(AUDIT_REDIS_CHANNEL, payload);
+    // Also append to a Redis Stream for replay capability
+    pipeline.xadd(
+      `audit:stream`,
+      'MAXLEN',
+      '~',
+      String(AUDIT_STREAM_MAX_LEN),
+      '*',
+      'entry',
+      payload,
+    );
+    await pipeline.exec();
+  }
+
+  // ── Verification ──────────────────────────────────────────────────────────────
+
+  async verify(fromId?: string): Promise<VerificationResult> {
+    await this.initialize();
+
+    let query: string;
+    let params: unknown[];
+
+    if (fromId) {
+      // Get the sequence number of the starting entry
+      const startResult = await this.db.query(
+        `SELECT sequence_num FROM audit_log WHERE id = $1`,
+        [fromId],
+      );
+      if (startResult.rows.length === 0) {
+        throw new Error(`Starting entry not found: ${fromId}`);
+      }
+      const startSeq = startResult.rows[0].sequence_num;
+      query = `
+        SELECT id, timestamp, user_id, tenant_id, action, resource, resource_id,
+               ip, user_agent, outcome, metadata, previous_hash, hash, sequence_num
+        FROM audit_log
+        WHERE sequence_num >= $1
+        ORDER BY sequence_num ASC
+      `;
+      params = [startSeq];
+    } else {
+      query = `
+        SELECT id, timestamp, user_id, tenant_id, action, resource, resource_id,
+               ip, user_agent, outcome, metadata, previous_hash, hash, sequence_num
+        FROM audit_log
+        ORDER BY sequence_num ASC
+      `;
+      params = [];
+    }
+
+    const result = await this.db.query(query, params);
+    const rows = result.rows;
+    const breaks: VerificationResult['breaks'] = [];
+
+    for (const row of rows) {
+      const entry: Omit<AuditEntry, 'hash'> = {
+        id: row.id,
+        timestamp: new Date(row.timestamp),
+        userId: row.user_id,
+        tenantId: row.tenant_id,
+        action: row.action,
+        resource: row.resource,
+        resourceId: row.resource_id,
+        ip: row.ip,
+        userAgent: row.user_agent,
+        outcome: row.outcome as AuditOutcome,
+        metadata: row.metadata ?? {},
+        previousHash: row.previous_hash,
+      };
+
+      const expectedHash = this.computeHash(entry);
+      if (expectedHash !== row.hash) {
+        breaks.push({
+          entryId: row.id,
+          expectedHash,
+          actualHash: row.hash,
+          timestamp: new Date(row.timestamp),
+        });
+      }
+    }
+
+    const valid = breaks.length === 0;
+    logger.info({ totalChecked: rows.length, valid, breaks: breaks.length }, 'Audit chain verified');
+
+    return { valid, totalChecked: rows.length, breaks };
+  }
+
+  // ── Query ─────────────────────────────────────────────────────────────────────
 
   async query(filter: AuditFilter): Promise<AuditEntry[]> {
-    const limit = filter.limit ?? 100;
+    await this.initialize();
+
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let p = 1;
+
+    if (filter.userId) {
+      conditions.push(`user_id = $${p++}`);
+      params.push(filter.userId);
+    }
+    if (filter.tenantId) {
+      conditions.push(`tenant_id = $${p++}`);
+      params.push(filter.tenantId);
+    }
+    if (filter.action) {
+      conditions.push(`action = $${p++}`);
+      params.push(filter.action);
+    }
+    if (filter.resource) {
+      conditions.push(`resource = $${p++}`);
+      params.push(filter.resource);
+    }
+    if (filter.outcome) {
+      conditions.push(`outcome = $${p++}`);
+      params.push(filter.outcome);
+    }
+    if (filter.fromTime) {
+      conditions.push(`timestamp >= $${p++}`);
+      params.push(filter.fromTime);
+    }
+    if (filter.toTime) {
+      conditions.push(`timestamp <= $${p++}`);
+      params.push(filter.toTime);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const limit = Math.min(filter.limit ?? 100, 1000);
     const offset = filter.offset ?? 0;
 
-    // Try to fetch from Redis buffer first (recent entries)
-    const raw = await this.redis.lrange(RECENT_ENTRIES_KEY, offset, offset + limit - 1);
-    let entries: AuditEntry[] = raw.map((r) => JSON.parse(r));
+    const result = await this.db.query(
+      `SELECT id, timestamp, user_id, tenant_id, action, resource, resource_id,
+              ip, user_agent, outcome, metadata, previous_hash, hash
+       FROM audit_log
+       ${where}
+       ORDER BY timestamp DESC
+       LIMIT $${p++} OFFSET $${p++}`,
+      [...params, limit, offset],
+    );
 
-    // Apply filters
-    entries = entries.filter((e) => {
-      if (filter.userId && e.userId !== filter.userId) return false;
-      if (filter.tenantId && e.tenantId !== filter.tenantId) return false;
-      if (filter.action && e.action !== filter.action) return false;
-      if (filter.resource && e.resource !== filter.resource) return false;
-      if (filter.outcome && e.outcome !== filter.outcome) return false;
-      if (filter.fromDate && new Date(e.timestamp) < filter.fromDate) return false;
-      if (filter.toDate && new Date(e.timestamp) > filter.toDate) return false;
-      return true;
-    });
-
-    return entries;
+    return result.rows.map((row) => ({
+      id: row.id,
+      timestamp: new Date(row.timestamp),
+      userId: row.user_id,
+      tenantId: row.tenant_id,
+      action: row.action,
+      resource: row.resource,
+      resourceId: row.resource_id,
+      ip: row.ip,
+      userAgent: row.user_agent,
+      outcome: row.outcome as AuditOutcome,
+      metadata: row.metadata ?? {},
+      previousHash: row.previous_hash,
+      hash: row.hash,
+    }));
   }
 
-  // ── Integrity verification ────────────────────────────────────────────────────
+  // ── Export ────────────────────────────────────────────────────────────────────
 
-  async verifyIntegrity(fromId?: string, toId?: string): Promise<IntegrityReport> {
-    const raw = await this.redis.lrange(RECENT_ENTRIES_KEY, 0, -1);
-    const entries: AuditEntry[] = raw.map((r) => JSON.parse(r)).reverse(); // oldest first
+  async export(filter: AuditFilter, format: 'json' | 'csv'): Promise<string> {
+    const entries = await this.query({ ...filter, limit: 10_000 });
 
-    let checkedEntries = 0;
-    let prevHash = GENESIS_HASH;
-
-    for (const entry of entries) {
-      if (fromId && entry.id === fromId) {
-        prevHash = entry.previousHash;
-      }
-
-      const { hash, ...partial } = entry;
-      const computed = this.computeHash(entry.previousHash, partial);
-
-      if (computed !== hash) {
-        return {
-          valid: false,
-          checkedEntries,
-          firstBrokenEntry: entry.id,
-          details: `Hash mismatch at entry ${entry.id}`,
-        };
-      }
-
-      if (prevHash !== GENESIS_HASH && entry.previousHash !== prevHash) {
-        return {
-          valid: false,
-          checkedEntries,
-          firstBrokenEntry: entry.id,
-          details: `Chain break at entry ${entry.id}`,
-        };
-      }
-
-      prevHash = hash;
-      checkedEntries++;
-
-      if (toId && entry.id === toId) break;
+    if (format === 'json') {
+      return JSON.stringify(entries, null, 2);
     }
 
-    return { valid: true, checkedEntries, details: "All entries verified" };
-  }
+    // CSV
+    const headers = [
+      'id', 'timestamp', 'userId', 'tenantId', 'action', 'resource',
+      'resourceId', 'ip', 'userAgent', 'outcome', 'metadata', 'hash',
+    ];
 
-  async detectTampering(): Promise<TamperReport> {
-    const report = await this.verifyIntegrity();
-    return {
-      tampered: !report.valid,
-      suspectEntries: report.firstBrokenEntry ? [report.firstBrokenEntry] : [],
-      checkedAt: new Date(),
-    };
-  }
-
-  // ── Compliance export ─────────────────────────────────────────────────────────
-
-  async exportCompliance(
-    format: "csv" | "json" | "pdf",
-    filter: AuditFilter
-  ): Promise<Buffer> {
-    const entries = await this.query({ ...filter, limit: 10000 });
-
-    if (format === "json") {
-      return Buffer.from(JSON.stringify(entries, null, 2), "utf8");
-    }
-
-    if (format === "csv") {
-      const headers = [
-        "id", "timestamp", "userId", "tenantId", "action", "resource",
-        "resourceId", "outcome", "ipAddress", "userAgent", "hash",
-      ].join(",");
-      const rows = entries.map((e) =>
-        [
-          e.id, e.timestamp.toString(), e.userId ?? "", e.tenantId ?? "",
-          e.action, e.resource, e.resourceId ?? "", e.outcome,
-          e.ipAddress ?? "", (e.userAgent ?? "").replace(/,/g, ";"), e.hash,
-        ]
-          .map((v) => `"${String(v).replace(/"/g, '""')}"`)
-          .join(",")
+    const escape = (val: unknown): string => {
+      const str = val === null || val === undefined ? '' : String(
+        typeof val === 'object' ? JSON.stringify(val) : val,
       );
-      return Buffer.from([headers, ...rows].join("\n"), "utf8");
-    }
+      return `"${str.replace(/"/g, '""')}"`;
+    };
 
-    // PDF: return simple text representation (full PDF generation requires external lib)
-    const text = entries
-      .map((e) => `[${e.timestamp}] ${e.outcome.toUpperCase()} ${e.action} on ${e.resource} by ${e.userId ?? "system"}`)
-      .join("\n");
-    return Buffer.from(text, "utf8");
+    const rows = entries.map((e) =>
+      [
+        e.id,
+        e.timestamp.toISOString(),
+        e.userId,
+        e.tenantId,
+        e.action,
+        e.resource,
+        e.resourceId,
+        e.ip,
+        e.userAgent,
+        e.outcome,
+        JSON.stringify(e.metadata),
+        e.hash,
+      ]
+        .map(escape)
+        .join(','),
+    );
+
+    return [headers.join(','), ...rows].join('\n');
   }
 
-  // ── Retention ────────────────────────────────────────────────────────────────
+  // ── Stats ─────────────────────────────────────────────────────────────────────
 
-  async applyRetentionPolicy(retainDays: number): Promise<number> {
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - retainDays);
+  async getStats(timeRange: TimeRange): Promise<AuditStats> {
+    await this.initialize();
 
-    const raw = await this.redis.lrange(RECENT_ENTRIES_KEY, 0, -1);
-    const toKeep: string[] = [];
-    let deleted = 0;
+    const [totalResult, byActionResult, byUserResult, byResourceResult, byOutcomeResult] =
+      await Promise.all([
+        this.db.query(
+          `SELECT COUNT(*) AS count FROM audit_log
+           WHERE timestamp BETWEEN $1 AND $2`,
+          [timeRange.from, timeRange.to],
+        ),
+        this.db.query(
+          `SELECT action, COUNT(*) AS count FROM audit_log
+           WHERE timestamp BETWEEN $1 AND $2
+           GROUP BY action ORDER BY count DESC LIMIT 20`,
+          [timeRange.from, timeRange.to],
+        ),
+        this.db.query(
+          `SELECT user_id, COUNT(*) AS count FROM audit_log
+           WHERE timestamp BETWEEN $1 AND $2 AND user_id IS NOT NULL
+           GROUP BY user_id ORDER BY count DESC LIMIT 20`,
+          [timeRange.from, timeRange.to],
+        ),
+        this.db.query(
+          `SELECT resource, COUNT(*) AS count FROM audit_log
+           WHERE timestamp BETWEEN $1 AND $2
+           GROUP BY resource ORDER BY count DESC LIMIT 20`,
+          [timeRange.from, timeRange.to],
+        ),
+        this.db.query(
+          `SELECT outcome, COUNT(*) AS count FROM audit_log
+           WHERE timestamp BETWEEN $1 AND $2
+           GROUP BY outcome`,
+          [timeRange.from, timeRange.to],
+        ),
+      ]);
 
-    for (const r of raw) {
-      const entry: AuditEntry = JSON.parse(r);
-      if (new Date(entry.timestamp) >= cutoff) {
-        toKeep.push(r);
-      } else {
-        deleted++;
-      }
-    }
-
-    if (deleted > 0) {
-      await this.redis.del(RECENT_ENTRIES_KEY);
-      if (toKeep.length > 0) {
-        await this.redis.rpush(RECENT_ENTRIES_KEY, ...toKeep);
-      }
-    }
-
-    Logger.info("[AuditTrail] Retention policy applied", { deleted, retainDays });
-    return deleted;
-  }
-
-  async getLastHash(): Promise<string> {
-    const stored = await this.redis.get(LAST_HASH_KEY);
-    return stored ?? GENESIS_HASH;
+    return {
+      totalEvents: Number(totalResult.rows[0].count),
+      byAction: byActionResult.rows.map((r) => ({ action: r.action, count: Number(r.count) })),
+      byUser: byUserResult.rows.map((r) => ({ userId: r.user_id, count: Number(r.count) })),
+      byResource: byResourceResult.rows.map((r) => ({
+        resource: r.resource,
+        count: Number(r.count),
+      })),
+      byOutcome: byOutcomeResult.rows.map((r) => ({
+        outcome: r.outcome,
+        count: Number(r.count),
+      })),
+      timeRange,
+    };
   }
 
   // ── Express middleware ────────────────────────────────────────────────────────
 
-  middleware(): RequestHandler {
-    return (req: Request, res: Response, next: NextFunction) => {
-      res.on("finish", () => {
-        const outcome: AuditEntry["outcome"] =
-          res.statusCode < 400 ? "success" : res.statusCode === 403 ? "denied" : "failure";
+  auditRequest(action: string, resource: string): RequestHandler {
+    return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      // Capture the original res.end to hook into response completion
+      const originalEnd = res.end.bind(res);
 
-        this.log({
-          userId: (req as any).userId,
-          tenantId: (req as any).tenantId,
-          action: `${req.method} ${req.route?.path ?? req.path}`,
-          resource: req.path,
-          outcome,
-          ipAddress: (req.ip || req.socket?.remoteAddress || "").replace(/^::ffff:/, ""),
-          userAgent: req.get("user-agent"),
-          details: { statusCode: res.statusCode },
-        }).catch((err) => Logger.error("[AuditTrail] Middleware log failed", err));
-      });
+      const started = Date.now();
+      const userId =
+        (req as Request & { user?: { userId?: string } }).user?.userId ?? null;
+      const tenantId =
+        (req as Request & { user?: { tenantId?: string } }).user?.tenantId ?? null;
+      const resourceId =
+        (req.params?.id ?? req.params?.resourceId ?? null) as string | null;
+      const ip = req.ip ?? req.socket?.remoteAddress ?? null;
+      const userAgent = req.headers['user-agent'] ?? null;
+
+      // Override res.end so we can log after response is sent
+      (res as unknown as { end: typeof res.end }).end = function (
+        this: Response,
+        ...args: Parameters<typeof res.end>
+      ) {
+        const outcome: AuditOutcome =
+          res.statusCode >= 500
+            ? 'error'
+            : res.statusCode === 403
+            ? 'denied'
+            : res.statusCode >= 400
+            ? 'failure'
+            : 'success';
+
+        // Fire-and-forget audit log
+        auditInstance
+          .log({
+            userId,
+            tenantId,
+            action,
+            resource,
+            resourceId,
+            ip,
+            userAgent,
+            outcome,
+            metadata: {
+              method: req.method,
+              path: req.path,
+              statusCode: res.statusCode,
+              durationMs: Date.now() - started,
+            },
+          })
+          .catch((err) => logger.error({ err }, 'auditRequest middleware log failed'));
+
+        return originalEnd(...args);
+      };
 
       next();
     };
   }
-
-  // ── Private helpers ───────────────────────────────────────────────────────────
-
-  private computeHash(previousHash: string, entry: Omit<AuditEntry, "hash">): string {
-    const canonical = this.serializeForHash(entry);
-    return crypto
-      .createHash("sha256")
-      .update(previousHash + canonical)
-      .digest("hex");
-  }
-
-  private serializeForHash(entry: any): string {
-    // Deterministic JSON: sort keys, exclude 'hash' field
-    const { hash: _omit, ...rest } = entry;
-    const sorted = Object.keys(rest)
-      .sort()
-      .reduce<Record<string, any>>((acc, k) => {
-        acc[k] = rest[k];
-        return acc;
-      }, {});
-    return JSON.stringify(sorted, (_key, value) => {
-      if (value instanceof Date) return value.toISOString();
-      return value;
-    });
-  }
-
-  private async persistToDB(entry: AuditEntry): Promise<void> {
-    // Attempt to insert into audit_logs table if it exists
-    try {
-      await (db as any).execute(
-        `INSERT INTO audit_logs (id, user_id, action, resource, resource_id, outcome, ip_address, user_agent, details, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         ON CONFLICT (id) DO NOTHING`,
-        [
-          entry.id,
-          entry.userId ?? null,
-          entry.action,
-          entry.resource,
-          entry.resourceId ?? null,
-          entry.outcome,
-          entry.ipAddress ?? null,
-          entry.userAgent ?? null,
-          JSON.stringify(entry.details ?? {}),
-          entry.timestamp,
-        ]
-      );
-    } catch {
-      // Silently swallow — table may not exist in all envs
-    }
-  }
 }
 
-export const auditTrail = new AuditTrail();
+// ── Singleton ─────────────────────────────────────────────────────────────────
+
+let _instance: AuditTrail | null = null;
+let auditInstance: AuditTrail; // reference for middleware closure
+
+export function getAuditTrail(redis?: Redis): AuditTrail {
+  if (!_instance) {
+    if (!redis) {
+      throw new Error('Redis instance required for first initialization of AuditTrail');
+    }
+    _instance = new AuditTrail(pool, redis);
+    auditInstance = _instance;
+  }
+  return _instance;
+}
+
+export default AuditTrail;
