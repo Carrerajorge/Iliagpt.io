@@ -110,11 +110,7 @@ export interface Message {
   webSources?: WebSource[]; // Web search sources for citations
   searchQueries?: Array<{ query: string; resultCount: number; status: string }>;
   totalSearches?: number;
-  documentAnalysis?: {
-    documentModel: any; // DocumentSemanticModel
-    insights: any[];
-    suggestedQuestions: any[];
-  };
+  
   ui_components?: string[]; // Components to render: 'executive_summary', 'suggested_questions', 'insights_panel'
   confidence?: 'high' | 'medium' | 'low';
   uncertaintyReason?: string;

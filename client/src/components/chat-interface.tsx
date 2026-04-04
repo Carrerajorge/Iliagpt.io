@@ -1792,11 +1792,7 @@ export function ChatInterface({
         userMessageId: opts.userMessageId,
         deliveryStatus: "sent",
         ui_components: analyzeResult.ui_components || [],
-        documentAnalysis: analyzeResult.documentModel ? {
-          documentModel: analyzeResult.documentModel,
-          insights: analyzeResult.insights || [],
-          suggestedQuestions: analyzeResult.suggestedQuestions || [],
-        } : undefined,
+        
       };
 
       // Persist final analysis result and replace placeholder.

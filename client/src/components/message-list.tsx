@@ -80,8 +80,7 @@ import { InlineGmailPreview } from "@/components/inline-gmail-preview";
 import { SuggestedReplies, generateSuggestions } from "@/components/suggested-replies";
 import { getFileTheme, getFileCategory } from "@/lib/fileTypeTheme";
 import { ChatSpreadsheetViewer } from "@/components/chat/ChatSpreadsheetViewer";
-import { DocumentAnalysisResults } from "@/components/chat/DocumentAnalysisResults";
-import { DocumentAnalysisResults as SemanticDocumentAnalysisResults } from "@/components/DocumentAnalysisResults";
+
 import { normalizeAgentEvent, hasPayloadDetails, type MappedAgentEvent } from "@/lib/agent-event-mapper";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { AgentStepsDisplay, type AgentArtifact } from "@/components/agent-steps-display";
@@ -547,14 +546,7 @@ const AttachmentList = memo(function AttachmentList({
               // FRONTEND FIX #39: Add noopener,noreferrer to prevent window.opener attacks
               onExpand={() => window.open(`/spreadsheet-analyzer?uploadId=${att.spreadsheetData!.uploadId}`, '_blank', 'noopener,noreferrer')}
             />
-            {att.spreadsheetData.analysisId && (
-              <DocumentAnalysisResults
-                uploadId={att.spreadsheetData.uploadId}
-                filename={att.name}
-                analysisId={att.spreadsheetData.analysisId}
-                sessionId={att.spreadsheetData.sessionId}
-              />
-            )}
+            
           </div>
         ) : (
           (() => {
@@ -1900,17 +1892,7 @@ const AssistantMessage = memo(function AssistantMessage({
         </>
       )}
 
-      {message.documentAnalysis &&
-        message.ui_components &&
-        message.ui_components.length > 0 &&
-        !message.isThinking && (
-          <div className="mt-3 w-full">
-            <SemanticDocumentAnalysisResults
-              documentModel={message.documentAnalysis.documentModel}
-              insights={message.ui_components.includes('insights_panel') ? (message.documentAnalysis.insights || []) : []}
-            />
-          </div>
-        )}
+      
 
       {showSkeleton && (
         <div className="mt-3">
@@ -2206,8 +2188,7 @@ const AssistantMessage = memo(function AssistantMessage({
     prevProps.isRegenerating === nextProps.isRegenerating &&
     prevProps.isGeneratingImage === nextProps.isGeneratingImage &&
     prevProps.pendingGeneratedImage === nextProps.pendingGeneratedImage &&
-    prevProps.minimizedDocument === nextProps.minimizedDocument &&
-    prevProps.message.documentAnalysis === nextProps.message.documentAnalysis
+    prevProps.minimizedDocument === nextProps.minimizedDocument
   );
 });
 
@@ -2376,7 +2357,6 @@ const MessageItem = memo(function MessageItem({
     prevProps.message.role === nextProps.message.role &&
     prevProps.message.agentRun?.status === nextProps.message.agentRun?.status &&
     prevProps.message.agentRun?.eventStream?.length === nextProps.message.agentRun?.eventStream?.length &&
-    prevProps.message.documentAnalysis === nextProps.message.documentAnalysis &&
     prevProps.msgIndex === nextProps.msgIndex &&
     prevProps.totalMessages === nextProps.totalMessages &&
     prevProps.variant === nextProps.variant &&

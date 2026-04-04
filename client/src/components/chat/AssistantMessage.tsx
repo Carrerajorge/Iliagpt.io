@@ -30,7 +30,7 @@ import { SuperAgentDisplay } from "@/components/super-agent-display";
 import { RetrievalVis } from "@/components/retrieval-vis";
 import { NewsCards } from "@/components/news-cards";
 import { CodeExecutionBlock } from "@/components/code-execution-block";
-import { DocumentAnalysisResults as SemanticDocumentAnalysisResults } from "@/components/DocumentAnalysisResults";
+
 import { ArtifactViewer } from "@/components/artifact-viewer";
 import { FigmaBlock } from "@/components/figma-block";
 import { InlineGoogleFormPreview } from "@/components/inline-google-form-preview";
@@ -256,17 +256,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                     )}
                 </>
             )}
-            {message.documentAnalysis &&
-                message.ui_components &&
-                message.ui_components.length > 0 &&
-                !message.isThinking && (
-                    <div className="mt-3 w-full">
-                        <SemanticDocumentAnalysisResults
-                            documentModel={message.documentAnalysis.documentModel}
-                            insights={message.ui_components.includes('insights_panel') ? (message.documentAnalysis.insights || []) : []}
-                        />
-                    </div>
-                )}
+            
             {showSkeleton && (
                 <div className="mt-3">
                     <div className="w-64 h-64 rounded-lg animate-pulse bg-gradient-to-br from-muted/80 via-muted to-muted/80 flex flex-col items-center justify-center gap-3">
@@ -532,7 +522,6 @@ export const AssistantMessage = memo(function AssistantMessage({
         prevProps.isRegenerating === nextProps.isRegenerating &&
         prevProps.isGeneratingImage === nextProps.isGeneratingImage &&
         prevProps.pendingGeneratedImage === nextProps.pendingGeneratedImage &&
-        prevProps.minimizedDocument === nextProps.minimizedDocument &&
-        prevProps.message.documentAnalysis === nextProps.message.documentAnalysis
+        prevProps.minimizedDocument === nextProps.minimizedDocument
     );
 });

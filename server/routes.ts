@@ -69,7 +69,7 @@ import { createAnalyticsRouter } from "./routes/analyticsRouter";
 import { createToolExecutionRouter } from "./routes/toolExecutionRouter";
 import agentPlanRouter from "./routes/agentPlanRouter";
 import scientificSearchRouter from "./routes/scientificSearchRouter";
-import documentAnalysisRouter from "./routes/documentAnalysisRouter";
+// documentAnalysisRouter removed
 import ragRouter from "./routes/ragRouter";
 import ragMemoryRouter from "./routes/ragMemoryRouter";
 import feedbackRouter from "./routes/feedbackRouter";
@@ -1555,7 +1555,7 @@ export async function registerRoutes(
   app.use("/api/execution", createToolExecutionRouter());
   app.use("/api/scientific", scientificSearchRouter);
   app.use("/api/planning", agentPlanRouter);
-  app.use("/api/document-analysis", documentAnalysisRouter);
+  // document-analysis route removed
   app.use("/api/rag", ragRouter);
   app.use("/api/rag/memory", ragMemoryRouter);
   app.use("/api/feedback", feedbackRouter);

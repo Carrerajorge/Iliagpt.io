@@ -44,7 +44,7 @@ import { z } from "zod";
 import { Message, WebSource } from "@/hooks/use-chats";
 import { getFileTheme } from "@/lib/fileTypeTheme";
 import { ChatSpreadsheetViewer } from "@/components/chat/ChatSpreadsheetViewer";
-import { DocumentAnalysisResults } from "@/components/chat/DocumentAnalysisResults";
+
 import { formatZonedTime, normalizeTimeZone } from "@/lib/platformDateTime";
 
 export const formatMessageTime = (timestamp: Date | number | undefined, timeZone: string): string => {
@@ -672,14 +672,7 @@ export const AttachmentList = memo(function AttachmentList({
                             onDownload={() => onOpenPreview?.(att)}
                             onExpand={() => window.open(`/spreadsheet-analyzer?uploadId=${att.spreadsheetData!.uploadId}`, '_blank')}
                         />
-                        {att.spreadsheetData.analysisId && (
-                            <DocumentAnalysisResults
-                                uploadId={att.spreadsheetData.uploadId}
-                                filename={att.name}
-                                analysisId={att.spreadsheetData.analysisId}
-                                sessionId={att.spreadsheetData.sessionId}
-                            />
-                        )}
+                        
                     </div>
                 ) : (
                     (() => {

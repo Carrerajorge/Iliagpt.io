@@ -188,7 +188,7 @@ export const MessageItem = memo(function MessageItem({
         prevProps.message.deliveryError === nextProps.message.deliveryError &&
         prevProps.message.agentRun?.status === nextProps.message.agentRun?.status &&
         prevProps.message.agentRun?.eventStream?.length === nextProps.message.agentRun?.eventStream?.length &&
-        prevProps.message.documentAnalysis === nextProps.message.documentAnalysis &&
+        
         prevProps.msgIndex === nextProps.msgIndex &&
         prevProps.totalMessages === nextProps.totalMessages &&
         prevProps.assistantMsgNumber === nextProps.assistantMsgNumber &&
