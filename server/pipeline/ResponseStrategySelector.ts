@@ -1,397 +1,298 @@
 /**
- * ResponseStrategySelector — Batch 1 Pipeline Stage
+ * ResponseStrategySelector
  *
- * Determines *how* to respond — not just what model to call, but what
- * strategy shapes the response: temperature, max_tokens, system prompt
- * additions, and output format. Adapts over time based on explicit
- * user feedback signals stored per-session.
+ * Third pipeline stage — maps the intent + gate decision to a concrete
+ * ResponseStrategy that controls how the LLM is invoked.
+ *
+ * Each strategy carries:
+ *   - temperature     (creativity vs determinism)
+ *   - maxTokens       (budget for the response)
+ *   - formatHint      (markdown, json, plain, code block)
+ *   - systemHint      (extra system-prompt snippet injected for this call)
+ *   - streamingEnabled
+ *   - model preference hint (e.g. prefer reasoning models for analysis)
+ *
+ * Strategies
+ * ──────────
+ *   DirectAnswer       Simple factual Q&A.  Low temperature, short.
+ *   StepByStep         Multi-part tasks.  Medium temperature, numbered steps.
+ *   CodeGeneration     Code output.  Low temperature, fenced code blocks.
+ *   AnalysisReport     Deep analysis.  Medium temperature, structured sections.
+ *   CreativeGeneration Story / poem / brainstorm.  High temperature, long.
+ *   Conversation       Small-talk.  High temperature, short.
+ *   ClarificationRequest  Ask the user to clarify before answering.
  */
 
-import { z } from "zod";
-import { createLogger } from "../utils/logger";
-import type { EnrichedMessage, Intent } from "./MessagePreprocessor";
+import { z }      from 'zod';
+import { Logger } from '../lib/logger';
+import type { Intent }         from './MessagePreprocessor';
+import type { RoutingDecision, AgentGateResult } from './AgentDecisionGate';
 
-const log = createLogger("ResponseStrategySelector");
+// ─── Public schemas ───────────────────────────────────────────────────────────
 
-// ─── Strategy Definitions ─────────────────────────────────────────────────────
-
-export const ResponseStrategySchema = z.enum([
-  "DirectAnswer",
-  "StepByStep",
-  "CodeGeneration",
-  "Analysis",
-  "Creative",
-  "Tutorial",
-  "Comparison",
-  "Summary",
+export const StrategyNameSchema = z.enum([
+  'DirectAnswer',
+  'StepByStep',
+  'CodeGeneration',
+  'AnalysisReport',
+  'CreativeGeneration',
+  'Conversation',
+  'ClarificationRequest',
 ]);
+export type StrategyName = z.infer<typeof StrategyNameSchema>;
+
+export const FormatHintSchema = z.enum([
+  'plain',       // No special formatting
+  'markdown',    // GitHub-flavoured markdown OK
+  'json',        // Structured JSON output
+  'code',        // Fenced code block as primary content
+  'numbered',    // Numbered steps / lists
+  'question',    // Ends with a clarifying question
+]);
+export type FormatHint = z.infer<typeof FormatHintSchema>;
+
+export const ResponseStrategySchema = z.object({
+  name            : StrategyNameSchema,
+  temperature     : z.number().min(0).max(2),
+  maxTokens       : z.number().int().positive(),
+  formatHint      : FormatHintSchema,
+  streamingEnabled: z.boolean(),
+  /**
+   * Short system-prompt addendum injected right before the user message.
+   * Keep under 100 tokens.
+   */
+  systemHint      : z.string(),
+  /**
+   * Optional model tag hint sent to llmGateway so it can prefer a model
+   * class (e.g. "reasoning", "fast", "code").
+   */
+  modelHint       : z.string().optional(),
+  /**
+   * If true, the pipeline should attempt to generate a structured JSON
+   * response validated against a schema.
+   */
+  jsonMode        : z.boolean().default(false),
+  /** Upper bound on thinking / planning tokens (for reasoning models). */
+  thinkingBudget  : z.number().int().nonneg().optional(),
+  /** Processing time to select this strategy in ms. */
+  selectionMs     : z.number().nonneg(),
+});
 export type ResponseStrategy = z.infer<typeof ResponseStrategySchema>;
 
-export type OutputFormat = "markdown" | "plain" | "json" | "code" | "numbered_list" | "bullet_list";
+// ─── Strategy definitions ─────────────────────────────────────────────────────
 
-export interface StrategyConfig {
-  temperature: number;
-  maxTokens: number;
-  systemPromptAddition: string;
-  outputFormat: OutputFormat;
-  reasoning: boolean;       // enable chain-of-thought before answering
-  citations: boolean;       // request source citations
-  structured: boolean;      // use JSON response format
-  streaming: boolean;       // always stream this strategy
-}
+type StrategyTemplate = Omit<ResponseStrategy, 'selectionMs'>;
 
-export const STRATEGY_CONFIGS: Record<ResponseStrategy, StrategyConfig> = {
+const STRATEGIES: Record<StrategyName, StrategyTemplate> = {
   DirectAnswer: {
-    temperature: 0.5,
-    maxTokens: 512,
-    systemPromptAddition: "Give a concise, direct answer. Avoid unnecessary preamble.",
-    outputFormat: "plain",
-    reasoning: false,
-    citations: false,
-    structured: false,
-    streaming: false,
+    name            : 'DirectAnswer',
+    temperature     : 0.3,
+    maxTokens       : 512,
+    formatHint      : 'plain',
+    streamingEnabled: true,
+    systemHint      : 'Answer concisely and accurately. Get to the point immediately.',
+    modelHint       : 'fast',
+    jsonMode        : false,
   },
+
   StepByStep: {
-    temperature: 0.4,
-    maxTokens: 2048,
-    systemPromptAddition:
-      "Break your answer into clear numbered steps. Each step should be actionable and self-contained.",
-    outputFormat: "numbered_list",
-    reasoning: true,
-    citations: false,
-    structured: false,
-    streaming: true,
+    name            : 'StepByStep',
+    temperature     : 0.4,
+    maxTokens       : 1536,
+    formatHint      : 'numbered',
+    streamingEnabled: true,
+    systemHint      : 'Break your response into clear numbered steps. Each step should be actionable and complete.',
+    modelHint       : 'balanced',
+    jsonMode        : false,
   },
+
   CodeGeneration: {
-    temperature: 0.2,
-    maxTokens: 4096,
-    systemPromptAddition:
-      "Generate production-quality code. Include type annotations. Add brief inline comments only where logic is non-obvious. Always wrap code in fenced code blocks with the language tag.",
-    outputFormat: "code",
-    reasoning: false,
-    citations: false,
-    structured: false,
-    streaming: true,
+    name            : 'CodeGeneration',
+    temperature     : 0.2,
+    maxTokens       : 2048,
+    formatHint      : 'code',
+    streamingEnabled: true,
+    systemHint      : 'Output production-quality code in a fenced code block. Include type annotations. Add brief inline comments only where logic is non-obvious.',
+    modelHint       : 'code',
+    jsonMode        : false,
   },
-  Analysis: {
-    temperature: 0.6,
-    maxTokens: 3072,
-    systemPromptAddition:
-      "Provide a thorough analysis. Structure your response with clear sections: Overview, Key Findings, Implications, and Recommendations.",
-    outputFormat: "markdown",
-    reasoning: true,
-    citations: true,
-    structured: false,
-    streaming: true,
+
+  AnalysisReport: {
+    name            : 'AnalysisReport',
+    temperature     : 0.5,
+    maxTokens       : 2048,
+    formatHint      : 'markdown',
+    streamingEnabled: true,
+    systemHint      : 'Structure your analysis with clear headings. Support claims with reasoning. Conclude with actionable insights.',
+    modelHint       : 'reasoning',
+    jsonMode        : false,
+    thinkingBudget  : 2000,
   },
-  Creative: {
-    temperature: 0.85,
-    maxTokens: 3072,
-    systemPromptAddition:
-      "Be imaginative and original. Prioritize voice, tone, and engagement over brevity.",
-    outputFormat: "markdown",
-    reasoning: false,
-    citations: false,
-    structured: false,
-    streaming: true,
+
+  CreativeGeneration: {
+    name            : 'CreativeGeneration',
+    temperature     : 0.9,
+    maxTokens       : 2048,
+    formatHint      : 'markdown',
+    streamingEnabled: true,
+    systemHint      : 'Be imaginative, engaging, and original. Vary sentence structure. Use vivid language.',
+    modelHint       : 'balanced',
+    jsonMode        : false,
   },
-  Tutorial: {
-    temperature: 0.45,
-    maxTokens: 4096,
-    systemPromptAddition:
-      "Write a practical tutorial. Include: an intro, prerequisites, step-by-step instructions with code examples where relevant, common pitfalls, and a summary.",
-    outputFormat: "markdown",
-    reasoning: true,
-    citations: false,
-    structured: false,
-    streaming: true,
+
+  Conversation: {
+    name            : 'Conversation',
+    temperature     : 0.8,
+    maxTokens       : 256,
+    formatHint      : 'plain',
+    streamingEnabled: true,
+    systemHint      : 'Respond naturally and warmly, as in a friendly conversation. Keep it brief.',
+    modelHint       : 'fast',
+    jsonMode        : false,
   },
-  Comparison: {
-    temperature: 0.5,
-    maxTokens: 2560,
-    systemPromptAddition:
-      "Compare and contrast the options systematically. Use a table where possible. Clearly state trade-offs and end with a recommendation.",
-    outputFormat: "markdown",
-    reasoning: true,
-    citations: false,
-    structured: false,
-    streaming: true,
-  },
-  Summary: {
-    temperature: 0.35,
-    maxTokens: 1024,
-    systemPromptAddition:
-      "Produce a concise summary that captures all key points. Preserve the most important details; omit redundant or peripheral content.",
-    outputFormat: "bullet_list",
-    reasoning: false,
-    citations: false,
-    structured: false,
-    streaming: false,
+
+  ClarificationRequest: {
+    name            : 'ClarificationRequest',
+    temperature     : 0.3,
+    maxTokens       : 128,
+    formatHint      : 'question',
+    streamingEnabled: false,
+    systemHint      : 'Politely ask the one most important clarifying question needed before you can answer. Do not attempt to answer yet.',
+    modelHint       : 'fast',
+    jsonMode        : false,
   },
 };
 
-// ─── Complexity Estimation ─────────────────────────────────────────────────────
+// ─── Selection logic ──────────────────────────────────────────────────────────
 
-export type ComplexityLevel = "trivial" | "simple" | "moderate" | "complex" | "expert";
-
-interface ComplexitySignal {
-  level: ComplexityLevel;
-  score: number; // contribution to complexity
+interface SelectionInput {
+  intent    : Intent;
+  gateResult: AgentGateResult;
+  /** True if the user has asked for JSON output explicitly. */
+  wantsJson?: boolean;
+  /** Rough estimate of how many tokens the conversation history occupies. */
+  historyTokens?: number;
 }
 
-function estimateComplexity(message: EnrichedMessage): { level: ComplexityLevel; score: number } {
-  let score = 0;
+function pickStrategyName(input: SelectionInput): StrategyName {
+  const { intent, gateResult, wantsJson } = input;
 
-  score += Math.min(0.3, message.wordCount / 300);
+  // Clarification always overrides
+  if (gateResult.decision === 'clarify') return 'ClarificationRequest';
 
-  if (message.hasCode) score += 0.25;
-  if (message.entities.filePaths.length > 0) score += 0.1;
-  if (message.entities.urls.length > 2) score += 0.1;
+  // JSON explicitly requested → DirectAnswer with JSON mode patched later
+  if (wantsJson) return 'DirectAnswer';
 
-  const technicalTerms =
-    /\b(algorithm|architecture|distributed|concurrent|asynchronous|optimization|complexity|protocol|schema|middleware|abstraction|polymorphism|recursion)\b/i;
-  if (technicalTerms.test(message.normalizedText)) score += 0.2;
+  // Primary mapping by intent
+  switch (intent) {
+    case 'code':
+      return 'CodeGeneration';
 
-  const multiQuestion = (message.normalizedText.match(/\?/g) ?? []).length;
-  if (multiQuestion > 1) score += Math.min(0.2, multiQuestion * 0.05);
+    case 'analysis':
+      return 'AnalysisReport';
 
-  const clamped = Math.max(0, Math.min(1, score));
+    case 'creative':
+      return 'CreativeGeneration';
 
-  let level: ComplexityLevel;
-  if (clamped < 0.15) level = "trivial";
-  else if (clamped < 0.35) level = "simple";
-  else if (clamped < 0.55) level = "moderate";
-  else if (clamped < 0.75) level = "complex";
-  else level = "expert";
+    case 'command':
+      // Commands that are multi-step get StepByStep treatment
+      return gateResult.isMultiStep ? 'StepByStep' : 'DirectAnswer';
 
-  return { level, score: clamped };
+    case 'question':
+      // Complex questions benefit from step-by-step; simple ones are direct
+      return gateResult.dimensions.complexity >= 0.5 ? 'AnalysisReport' : 'DirectAnswer';
+
+    case 'conversation':
+      return 'Conversation';
+
+    default:
+      return gateResult.isMultiStep ? 'StepByStep' : 'DirectAnswer';
+  }
 }
 
-// ─── Strategy Selection Rules ─────────────────────────────────────────────────
+function applyOverrides(
+  strategy: StrategyTemplate,
+  input: SelectionInput,
+): StrategyTemplate {
+  const s = { ...strategy };
 
-interface SelectionRule {
-  strategy: ResponseStrategy;
-  test: (msg: EnrichedMessage, complexity: ComplexityLevel) => boolean;
-  priority: number; // lower = checked first
+  // JSON mode override
+  if (input.wantsJson) {
+    s.jsonMode   = true;
+    s.formatHint = 'json';
+    s.systemHint += ' Respond with valid JSON only, no prose.';
+    s.maxTokens  = Math.min(s.maxTokens, 1024);
+  }
+
+  // Reduce maxTokens when history is already large (stay within context window)
+  if ((input.historyTokens ?? 0) > 6000) {
+    s.maxTokens = Math.min(s.maxTokens, 768);
+  }
+
+  // Boost maxTokens for agent path (tools may return large intermediate results)
+  if (input.gateResult.decision === 'agent') {
+    s.maxTokens = Math.min(s.maxTokens * 2, 4096);
+  }
+
+  return s;
 }
 
-const SELECTION_RULES: SelectionRule[] = [
-  {
-    strategy: "CodeGeneration",
-    priority: 1,
-    test: (msg) =>
-      msg.intent === "code" ||
-      /\b(code|function|class|script|program|snippet|implement|write.*function|generate.*code)\b/i.test(
-        msg.normalizedText,
-      ),
-  },
-  {
-    strategy: "Summary",
-    priority: 2,
-    test: (msg) =>
-      /\b(summarize|summarise|tldr|tl;dr|brief|overview|key points|main points|highlights)\b/i.test(
-        msg.normalizedText,
-      ),
-  },
-  {
-    strategy: "Comparison",
-    priority: 3,
-    test: (msg) =>
-      /\b(compare|vs\.?|versus|difference between|pros.*cons|which is better|trade.?offs?)\b/i.test(
-        msg.normalizedText,
-      ),
-  },
-  {
-    strategy: "Tutorial",
-    priority: 4,
-    test: (msg) =>
-      /\b(how to|tutorial|guide|step[- ]by[- ]step|walkthrough|learn|teach me|explain how)\b/i.test(
-        msg.normalizedText,
-      ),
-  },
-  {
-    strategy: "Analysis",
-    priority: 5,
-    test: (msg) =>
-      msg.intent === "analysis" ||
-      /\b(analyze|analyse|evaluate|assess|review|deep dive|examine|investigate)\b/i.test(
-        msg.normalizedText,
-      ),
-  },
-  {
-    strategy: "Creative",
-    priority: 6,
-    test: (msg) =>
-      msg.intent === "creative" ||
-      /\b(write.*story|write.*poem|write.*essay|compose|creative|fiction|imagine)\b/i.test(
-        msg.normalizedText,
-      ),
-  },
-  {
-    strategy: "StepByStep",
-    priority: 7,
-    test: (msg, complexity) =>
-      complexity === "complex" ||
-      complexity === "expert" ||
-      /\b(step[- ]by[- ]step|instructions|procedure|process|workflow)\b/i.test(msg.normalizedText),
-  },
-  {
-    strategy: "DirectAnswer",
-    priority: 99,
-    test: () => true, // fallback
-  },
-];
-
-// ─── User Preference Learning ─────────────────────────────────────────────────
-
-interface StrategyFeedback {
-  strategy: ResponseStrategy;
-  positiveVotes: number;
-  negativeVotes: number;
-  lastUpdated: number;
-}
-
-// Simple in-process per-session preference store
-// In production, persist to Redis/DB via a service
-const sessionPreferences = new Map<string, Map<ResponseStrategy, StrategyFeedback>>();
-
-function getPreferenceMultiplier(sessionId: string, strategy: ResponseStrategy): number {
-  const prefs = sessionPreferences.get(sessionId);
-  if (!prefs) return 1.0;
-  const fb = prefs.get(strategy);
-  if (!fb) return 1.0;
-
-  const total = fb.positiveVotes + fb.negativeVotes;
-  if (total === 0) return 1.0;
-
-  // Bayesian-style boost/penalty capped at ±30 %
-  const ratio = fb.positiveVotes / total;
-  return 0.7 + ratio * 0.6; // range [0.7, 1.3]
-}
-
-// ─── SelectionResult ──────────────────────────────────────────────────────────
-
-export interface SelectionResult {
-  strategy: ResponseStrategy;
-  config: StrategyConfig;
-  complexity: ComplexityLevel;
-  complexityScore: number;
-  confidence: number;
-  alternativeStrategies: ResponseStrategy[];
-  selectionMs: number;
-}
-
-// ─── ResponseStrategySelector ─────────────────────────────────────────────────
+// ─── Main class ───────────────────────────────────────────────────────────────
 
 export class ResponseStrategySelector {
-  select(message: EnrichedMessage, sessionId?: string): SelectionResult {
-    const t0 = Date.now();
+  /**
+   * Select and configure a ResponseStrategy for the current turn.
+   *
+   * @param input - Intent, gate result, and optional overrides
+   * @returns     - Fully configured ResponseStrategy
+   */
+  select(input: SelectionInput): ResponseStrategy {
+    const start = Date.now();
 
-    const { level: complexity, score: complexityScore } = estimateComplexity(message);
+    const name     = pickStrategyName(input);
+    const template = STRATEGIES[name];
+    const patched  = applyOverrides(template, input);
 
-    // Sort rules by priority
-    const sorted = [...SELECTION_RULES].sort((a, b) => a.priority - b.priority);
+    const selectionMs = Date.now() - start;
 
-    // Collect all matching strategies
-    const matches: ResponseStrategy[] = [];
-    for (const rule of sorted) {
-      if (rule.test(message, complexity)) {
-        matches.push(rule.strategy);
-      }
-    }
-
-    // Apply user preference multipliers to pick the winner
-    let bestStrategy: ResponseStrategy = matches[0] ?? "DirectAnswer";
-    let bestScore = -Infinity;
-
-    for (const strategy of matches.slice(0, 4)) {
-      const baseScore = 1 - sorted.find(r => r.strategy === strategy)!.priority / 100;
-      const prefMult = sessionId ? getPreferenceMultiplier(sessionId, strategy) : 1.0;
-      const total = baseScore * prefMult;
-      if (total > bestScore) {
-        bestScore = total;
-        bestStrategy = strategy;
-      }
-    }
-
-    // Adjust config for complexity
-    const baseConfig = STRATEGY_CONFIGS[bestStrategy];
-    const adjustedConfig = this.adjustForComplexity(baseConfig, complexity);
-
-    const alternatives = matches
-      .filter(s => s !== bestStrategy)
-      .slice(0, 2) as ResponseStrategy[];
-
-    const result: SelectionResult = {
-      strategy: bestStrategy,
-      config: adjustedConfig,
-      complexity,
-      complexityScore,
-      confidence: Math.min(0.95, 0.55 + complexityScore * 0.3),
-      alternativeStrategies: alternatives,
-      selectionMs: Date.now() - t0,
-    };
-
-    log.debug("strategy_selected", {
-      strategy: bestStrategy,
-      complexity,
-      sessionId,
-      selectionMs: result.selectionMs,
+    Logger.debug('[ResponseStrategySelector] strategy selected', {
+      strategy  : name,
+      intent    : input.intent,
+      decision  : input.gateResult.decision,
+      isMultiStep: input.gateResult.isMultiStep,
+      jsonMode  : patched.jsonMode,
+      maxTokens : patched.maxTokens,
+      selectionMs,
     });
 
-    return result;
+    return { ...patched, selectionMs };
   }
 
-  /** Record explicit user feedback to improve future selections */
-  recordFeedback(
-    sessionId: string,
-    strategy: ResponseStrategy,
-    positive: boolean,
-  ): void {
-    if (!sessionPreferences.has(sessionId)) {
-      sessionPreferences.set(sessionId, new Map());
-    }
-    const prefs = sessionPreferences.get(sessionId)!;
-    const existing = prefs.get(strategy) ?? {
-      strategy,
-      positiveVotes: 0,
-      negativeVotes: 0,
-      lastUpdated: Date.now(),
-    };
-
-    if (positive) existing.positiveVotes++;
-    else existing.negativeVotes++;
-    existing.lastUpdated = Date.now();
-    prefs.set(strategy, existing);
-
-    log.info("strategy_feedback_recorded", { sessionId, strategy, positive });
+  /**
+   * Return all available strategy templates (for introspection / testing).
+   */
+  allStrategies(): Record<StrategyName, StrategyTemplate> {
+    return { ...STRATEGIES };
   }
 
-  /** Return session preferences summary for debugging */
-  getSessionPreferences(sessionId: string): StrategyFeedback[] {
-    const prefs = sessionPreferences.get(sessionId);
-    return prefs ? [...prefs.values()] : [];
-  }
-
-  private adjustForComplexity(
-    base: StrategyConfig,
-    complexity: ComplexityLevel,
-  ): StrategyConfig {
-    const multipliers: Record<ComplexityLevel, { tokens: number; temp: number }> = {
-      trivial: { tokens: 0.5, temp: 0.9 },
-      simple:  { tokens: 0.75, temp: 1.0 },
-      moderate: { tokens: 1.0, temp: 1.0 },
-      complex:  { tokens: 1.4, temp: 0.95 },
-      expert:   { tokens: 1.8, temp: 0.85 },
-    };
-
-    const m = multipliers[complexity];
+  /**
+   * Build a custom strategy by merging overrides onto a base strategy.
+   * Useful for A/B tests or user-preference overrides.
+   */
+  buildCustom(
+    base: StrategyName,
+    overrides: Partial<Omit<ResponseStrategy, 'name' | 'selectionMs'>>,
+  ): ResponseStrategy {
+    const template = STRATEGIES[base];
     return {
-      ...base,
-      maxTokens: Math.min(8192, Math.round(base.maxTokens * m.tokens)),
-      temperature: Math.min(1.0, Math.round(base.temperature * m.temp * 100) / 100),
+      ...template,
+      ...overrides,
+      name       : base,
+      selectionMs: 0,
     };
   }
 }
+
+// ─── Singleton export ─────────────────────────────────────────────────────────
 
 export const responseStrategySelector = new ResponseStrategySelector();

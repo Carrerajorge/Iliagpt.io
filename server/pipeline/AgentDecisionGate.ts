@@ -1,306 +1,281 @@
 /**
- * AgentDecisionGate — Batch 1 Pipeline Stage
+ * AgentDecisionGate
  *
- * Decides whether a message should be handled by:
- *  a) A direct LLM call (fast-path, ~80 % of messages)
- *  b) Full agentic execution via the orchestrator (tool use, multi-step, file ops)
+ * Second pipeline stage — decides whether to route the message to the full
+ * agent executor (with tool calls, multi-step planning, memory retrieval) or
+ * short-circuit to a fast direct-answer path.
  *
- * Provides a confidence score and escalation rationale so callers
- * can log decisions and adjust thresholds without changing logic here.
+ * Decision is scored 0–1 along five dimensions:
+ *   - Tool requirement  (detected keywords, URLs, file paths, code execution)
+ *   - Multi-step need   (planning words, "then", "after that", numbered list)
+ *   - Complexity        (word count, nested questions, domain specificity)
+ *   - Context need      (references to previous turns, pronouns, "that")
+ *   - Ambiguity         (vague requests needing clarification)
+ *
+ * If agentScore >= AGENT_THRESHOLD (0.5) → route to agent executor.
+ * Otherwise → fast path (direct LLM completion, no tools).
+ *
+ * All logic is deterministic (no LLM calls) and runs in < 2 ms.
  */
 
-import { createLogger } from "../utils/logger";
-import type { EnrichedMessage, Intent } from "./MessagePreprocessor";
+import { z }       from 'zod';
+import { Logger }  from '../lib/logger';
+import type { PreprocessedMessage, Intent } from './MessagePreprocessor';
 
-const log = createLogger("AgentDecisionGate");
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+/** Minimum agentScore to activate the full agent executor. */
+const AGENT_THRESHOLD = 0.50;
 
-export type ExecutionMode = "direct" | "agent" | "orchestrator";
+/** Minimum agentScore to require clarification before answering. */
+const CLARIFICATION_THRESHOLD = 0.75;
 
-export interface GateDecision {
-  mode: ExecutionMode;
-  confidence: number;          // 0–1
-  reasons: string[];           // human-readable rationale
-  estimatedSteps: number;      // how many LLM calls the agent will need
-  requiresTools: string[];     // tool names the agent will likely invoke
-  fastPath: boolean;           // true → skip enrichment & just call LLM
-}
+// ─── Public schemas ───────────────────────────────────────────────────────────
 
-export interface GateConfig {
-  directConfidenceThreshold: number;   // below → escalate to agent
-  agentConfidenceThreshold: number;    // above → use orchestrator
-  maxDirectWords: number;              // longer messages → favour agent
-  enableWebSearch: boolean;
-  enableFileOps: boolean;
-  enableCodeExecution: boolean;
-}
+export const RoutingDecisionSchema = z.enum([
+  'fast_answer',     // Direct LLM completion, no tools
+  'agent',           // Full agent executor with tools + planning
+  'clarify',         // Ask the user for clarification before proceeding
+]);
+export type RoutingDecision = z.infer<typeof RoutingDecisionSchema>;
 
-// ─── Keyword Signals ──────────────────────────────────────────────────────────
+export const AgentGateResultSchema = z.object({
+  /** Routing decision. */
+  decision       : RoutingDecisionSchema,
+  /** Composite score 0–1 (higher = more likely needs agent). */
+  agentScore     : z.number().min(0).max(1),
+  /** Individual dimension scores for transparency / logging. */
+  dimensions     : z.object({
+    toolRequirement : z.number().min(0).max(1),
+    multiStep       : z.number().min(0).max(1),
+    complexity      : z.number().min(0).max(1),
+    contextNeed     : z.number().min(0).max(1),
+    ambiguity       : z.number().min(0).max(1),
+  }),
+  /** Tools that appear to be required (informational, not binding). */
+  likelyTools    : z.array(z.string()),
+  /** True if multiple sequential sub-tasks were detected. */
+  isMultiStep    : z.boolean(),
+  /** True when the request is too vague to answer without clarification. */
+  needsClarification: z.boolean(),
+  /** Reason for the decision (short human-readable string). */
+  reason         : z.string(),
+  /** Processing time in ms. */
+  processingMs   : z.number().nonneg(),
+});
+export type AgentGateResult = z.infer<typeof AgentGateResultSchema>;
 
-/** Tool-invocation keyword groups — each match adds signal toward agent mode */
-const TOOL_SIGNALS: Array<{ tool: string; patterns: RegExp[]; weight: number }> = [
-  {
-    tool: "web_search",
-    patterns: [
-      /\b(search|google|look up|find online|browse|latest news|current|today)\b/i,
-      /\b(what happened|recent|trending|up[- ]to[- ]date)\b/i,
-    ],
-    weight: 0.4,
-  },
-  {
-    tool: "file_read",
-    patterns: [
-      /\b(read|open|load|parse|check|show me)\b.*\b(file|document|pdf|csv|json|xml|txt)\b/i,
-      /\b(file|document|attachment)\b.*\b(content|text|data)\b/i,
-    ],
-    weight: 0.5,
-  },
-  {
-    tool: "file_write",
-    patterns: [
-      /\b(write|save|create|generate|export|output)\b.*\b(file|document|report|csv|json)\b/i,
-      /\b(download|store|persist)\b/i,
-    ],
-    weight: 0.5,
-  },
-  {
-    tool: "code_execution",
-    patterns: [
-      /\b(run|execute|eval|compile|test|calculate|compute)\b/i,
-      /\b(script|program|snippet)\b.*\b(run|execute)\b/i,
-    ],
-    weight: 0.6,
-  },
-  {
-    tool: "database",
-    patterns: [
-      /\b(query|select|insert|update|delete)\b.*\b(database|db|table|record)\b/i,
-      /\bSQL\b/i,
-    ],
-    weight: 0.55,
-  },
-  {
-    tool: "calendar",
-    patterns: [/\b(schedule|appointment|calendar|remind|reminder|meeting)\b/i],
-    weight: 0.35,
-  },
-  {
-    tool: "email",
-    patterns: [/\b(send|draft|compose|reply|forward)\b.*\b(email|mail|message)\b/i],
-    weight: 0.45,
-  },
-  {
-    tool: "image_gen",
-    patterns: [/\b(draw|paint|generate|create|make)\b.*\b(image|picture|photo|illustration|art)\b/i],
-    weight: 0.5,
-  },
-];
+// ─── Tool-requirement scoring ─────────────────────────────────────────────────
 
-/** Multi-step task patterns — strong signal toward agent orchestration */
-const MULTI_STEP_PATTERNS: RegExp[] = [
-  /\b(then|after that|next|finally|first|second|third|step \d)\b/i,
-  /\b(and then|followed by|once done|when finished)\b/i,
-  /\b(multiple|several|a few|many|all of the following)\b/i,
-  /^\s*\d+\.\s+/m,             // numbered list in message
-  /^\s*[-*•]\s+/m,             // bullet list in message
-];
-
-/** Direct-answer signals — the message is clearly a simple Q&A */
-const DIRECT_PATTERNS: RegExp[] = [
-  /^(what is|what are|who is|when was|where is|how do I|why does)\b/i,
-  /^(define|explain|describe|summarize|translate)\b/i,
-  /^(tell me|can you tell|could you tell)\b/i,
-];
-
-// ─── AgentDecisionGate ────────────────────────────────────────────────────────
-
-const DEFAULT_CONFIG: GateConfig = {
-  directConfidenceThreshold: 0.45,
-  agentConfidenceThreshold: 0.70,
-  maxDirectWords: 80,
-  enableWebSearch: true,
-  enableFileOps: true,
-  enableCodeExecution: true,
+/**
+ * Tool keyword map: maps tool names to their trigger patterns.
+ * These mirror the actual tools registered in agentTools.
+ */
+const TOOL_PATTERNS: Record<string, RegExp> = {
+  web_search      : /\b(?:search(?:ing)?|look(?:ing)?\s+up|google|find(?:ing)?\s+(?:online|on the web)|latest|current|news|today|recent|up.to.date)\b/i,
+  code_interpreter: /\b(?:run|execute|compute|calculate|plot|graph|visualize|simulate|benchmark|test(?:ing)?)\b.*\bcode\b|\bcode\b.*\b(?:run|execute|output|result)\b/i,
+  file_read       : /\b(?:read|open|load|parse|import|analyze|process)\b.*\bfile\b|\bfile\b.*\b(?:content|data|text)\b/i,
+  file_write      : /\b(?:write|save|create|export|generate)\b.*\bfile\b|\bfile\b.*\b(?:write|save|output)\b/i,
+  memory_retrieve : /\b(?:remember|recall|what did|what was|earlier|before|previous(?:ly)?|history|we discussed)\b/i,
+  image_analyze   : /\b(?:image|photo|picture|screenshot|diagram|chart|graph|logo|icon)\b/i,
+  calculator      : /\b(?:\d[\d\s+\-*\/^%()]*=|\bcompute\b|\bcalculate\b|\bmath\b|\bformula\b|\bequation\b)\b/i,
 };
 
-export class AgentDecisionGate {
-  private config: GateConfig;
+function scoreToolRequirement(
+  text: string,
+  hasUrls: boolean,
+  hasCode: boolean,
+  hasFilePaths: boolean,
+): { score: number; tools: string[] } {
+  const tools: string[] = [];
+  let matched = 0;
 
-  constructor(config: Partial<GateConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+  for (const [tool, pattern] of Object.entries(TOOL_PATTERNS)) {
+    if (pattern.test(text)) {
+      tools.push(tool);
+      matched++;
+    }
   }
 
-  evaluate(message: EnrichedMessage): GateDecision {
-    const t0 = Date.now();
-    const reasons: string[] = [];
-    const requiredTools: string[] = [];
-    let agentScore = 0;   // 0–1, higher → needs agent
+  if (hasUrls)      { tools.push('url_fetch'); matched++; }
+  if (hasCode)      { tools.push('code_interpreter'); }  // don't double-count
+  if (hasFilePaths) { tools.push('file_read');        }
 
-    // ── Fast-path bail-outs ──────────────────────────────────────────────────
+  const dedupedTools = [...new Set(tools)];
+  const score = Math.min(1, dedupedTools.length * 0.25);
+  return { score, tools: dedupedTools };
+}
 
-    if (message.isBlocked) {
-      return this.buildDecision("direct", 0.95, ["message_blocked"], [], false);
-    }
+// ─── Multi-step detection ─────────────────────────────────────────────────────
 
-    if (message.isDuplicate) {
-      reasons.push("duplicate_message_fast_path");
-      return this.buildDecision("direct", 0.9, reasons, [], true);
-    }
+const SEQUENTIAL_WORDS  = /\b(?:then|after(?:\s+that)?|next|finally|subsequently|afterwards|step\s+\d|first(?:ly)?|second(?:ly)?|third(?:ly)?|lastly|and\s+then)\b/i;
+const NUMBERED_LIST_RE  = /^\s*\d+[\.)]\s+/m;
+const MULTI_Q_RE        = /\?\s+(?:and|also|additionally|furthermore|moreover)/i;
 
-    // ── Conversational short-circuit ──────────────────────────────────────────
+function scoreMultiStep(text: string): number {
+  let score = 0;
+  if (SEQUENTIAL_WORDS.test(text))   score += 0.35;
+  if (NUMBERED_LIST_RE.test(text))   score += 0.30;
+  if (MULTI_Q_RE.test(text))         score += 0.25;
+  // Multiple sentences each ending in "?" or "." — suggests compound request
+  const sentences = text.split(/[.?!]+/).filter(s => s.trim().length > 10);
+  if (sentences.length >= 3)         score += 0.15;
+  return Math.min(1, score);
+}
 
-    if (
-      message.intent === "conversational" &&
-      message.wordCount <= 15
-    ) {
-      reasons.push("short_conversational");
-      return this.buildDecision("direct", 0.92, reasons, [], true);
-    }
+// ─── Complexity scoring ───────────────────────────────────────────────────────
 
-    // ── Direct-answer patterns (subtract from agent score) ───────────────────
+const DOMAIN_WORDS = /\b(?:algorithm|machine\s+learning|neural\s+network|derivative|integral|quantum|cryptocurrency|blockchain|legal|regulation|compliance|medical|diagnosis|pharmacology|financial|investment|portfolio|architecture|infrastructure|kubernetes|docker|microservice)\b/i;
 
-    let directBoost = 0;
-    for (const pat of DIRECT_PATTERNS) {
-      if (pat.test(message.normalizedText)) {
-        directBoost += 0.15;
-        reasons.push(`direct_pattern:${pat.source.slice(0, 30)}`);
-      }
-    }
-    agentScore -= Math.min(0.3, directBoost);
+function scoreComplexity(
+  text: string,
+  wordCount: number,
+  intent: Intent,
+): number {
+  let score = 0;
+  // Word count contribution (tops out at 200 words → 0.3)
+  score += Math.min(0.30, wordCount / 667);
+  // Domain specificity
+  if (DOMAIN_WORDS.test(text)) score += 0.25;
+  // Intent-based boost
+  if (intent === 'code' || intent === 'analysis') score += 0.20;
+  // Deeply nested parentheses / brackets → complex
+  const depth = (text.match(/[([{]/g) ?? []).length;
+  if (depth >= 3) score += 0.15;
+  return Math.min(1, score);
+}
 
-    // ── Intent signals ────────────────────────────────────────────────────────
+// ─── Context need scoring ─────────────────────────────────────────────────────
 
-    const intentWeights: Partial<Record<Intent, number>> = {
-      code: 0.25,
-      analysis: 0.2,
-      command: 0.3,
-      creative: 0.1,
-      question: -0.1,
-      conversational: -0.2,
+const PRONOUN_REFS  = /\b(?:it|that|this|these|those|they|he|she|him|her|them|the\s+(?:same|above|previous|latter|former))\b/i;
+const BACK_REF_WORDS = /\b(?:as\s+(?:I|we)\s+(?:said|mentioned|discussed|noted)|earlier|before|from\s+above|see\s+above|per\s+(?:our|the)\s+discussion)\b/i;
+
+function scoreContextNeed(text: string, isFollowUp: boolean): number {
+  let score = isFollowUp ? 0.30 : 0;
+  if (PRONOUN_REFS.test(text))  score += 0.20;
+  if (BACK_REF_WORDS.test(text)) score += 0.25;
+  return Math.min(1, score);
+}
+
+// ─── Ambiguity scoring ────────────────────────────────────────────────────────
+
+const VAGUE_WORDS = /\b(?:something|somehow|anything|whatever|whenever|wherever|someone|anyone|everyone|stuff|things|etc|various|several|some(?:\s+kind)?\s+of|a\s+bit)\b/i;
+const TOO_SHORT   = 15; // characters — single-word or very terse requests are often ambiguous
+
+function scoreAmbiguity(text: string, wordCount: number, intent: Intent): number {
+  let score = 0;
+  if (text.trim().length < TOO_SHORT)  score += 0.40;
+  if (wordCount < 4)                   score += 0.30;
+  if (VAGUE_WORDS.test(text))          score += 0.20;
+  // Greetings / small talk are often unambiguous
+  if (intent === 'conversation')       score = Math.max(0, score - 0.30);
+  return Math.min(1, score);
+}
+
+// ─── Main class ───────────────────────────────────────────────────────────────
+
+export class AgentDecisionGate {
+  /**
+   * Evaluate a preprocessed message and decide how to route it.
+   *
+   * @param msg   - Output from MessagePreprocessor.process()
+   * @returns     - AgentGateResult with decision, scores, and metadata
+   */
+  evaluate(msg: PreprocessedMessage): AgentGateResult {
+    const start = Date.now();
+    const { normalized, meta } = msg;
+
+    // ── 1. Score dimensions ─────────────────────────────────────────────────
+    const { score: toolScore, tools: likelyTools } = scoreToolRequirement(
+      normalized,
+      meta.hasUrls,
+      meta.hasCode,
+      meta.entities.some(e => e.type === 'file_path'),
+    );
+
+    const multiStepScore  = scoreMultiStep(normalized);
+    const complexityScore = scoreComplexity(normalized, meta.wordCount, meta.intent);
+    const contextScore    = scoreContextNeed(normalized, meta.isFollowUp);
+    const ambiguityScore  = scoreAmbiguity(normalized, meta.wordCount, meta.intent);
+
+    // ── 2. Composite score (weighted average) ───────────────────────────────
+    //   Tool requirement and multi-step are the strongest signals.
+    const weights = {
+      toolRequirement : 0.35,
+      multiStep       : 0.25,
+      complexity      : 0.20,
+      contextNeed     : 0.10,
+      ambiguity       : 0.10,
     };
-    const intentWeight = intentWeights[message.intent] ?? 0;
-    agentScore += intentWeight * message.intentConfidence;
-    if (intentWeight !== 0) {
-      reasons.push(`intent:${message.intent}(${message.intentConfidence.toFixed(2)})`);
-    }
 
-    // ── Tool invocation signals ───────────────────────────────────────────────
+    const agentScore =
+      toolScore      * weights.toolRequirement +
+      multiStepScore * weights.multiStep       +
+      complexityScore* weights.complexity      +
+      contextScore   * weights.contextNeed     +
+      ambiguityScore * weights.ambiguity;
 
-    for (const sig of TOOL_SIGNALS) {
-      if (
-        (!sig.tool.startsWith("file_") || this.config.enableFileOps) &&
-        (sig.tool !== "web_search" || this.config.enableWebSearch) &&
-        (sig.tool !== "code_execution" || this.config.enableCodeExecution)
-      ) {
-        for (const pat of sig.patterns) {
-          if (pat.test(message.normalizedText)) {
-            agentScore += sig.weight;
-            reasons.push(`tool_signal:${sig.tool}`);
-            if (!requiredTools.includes(sig.tool)) requiredTools.push(sig.tool);
-            break;
-          }
-        }
-      }
-    }
+    // ── 3. Routing decision ─────────────────────────────────────────────────
+    const isMultiStep          = multiStepScore >= 0.35;
+    const needsClarification   = ambiguityScore >= 0.60 && meta.wordCount < 6;
+    const agentScoreRounded    = Math.round(agentScore * 1000) / 1000;
 
-    // ── Multi-step detection ──────────────────────────────────────────────────
+    let decision: RoutingDecision;
+    let reason: string;
 
-    let multiStepCount = 0;
-    for (const pat of MULTI_STEP_PATTERNS) {
-      if (pat.test(message.normalizedText)) multiStepCount++;
-    }
-    if (multiStepCount >= 2) {
-      agentScore += 0.35;
-      reasons.push(`multi_step(${multiStepCount}_signals)`);
-    } else if (multiStepCount === 1) {
-      agentScore += 0.15;
-      reasons.push("single_step_sequence_hint");
-    }
-
-    // ── Message length heuristic ──────────────────────────────────────────────
-
-    if (message.wordCount > this.config.maxDirectWords) {
-      const lengthBoost = Math.min(0.2, (message.wordCount - this.config.maxDirectWords) / 200);
-      agentScore += lengthBoost;
-      reasons.push(`length_boost(${message.wordCount}_words)`);
-    }
-
-    // ── Entity richness ───────────────────────────────────────────────────────
-
-    const totalEntities =
-      message.entities.filePaths.length +
-      message.entities.urls.length +
-      message.entities.codeBlocks.length;
-
-    if (totalEntities > 2) {
-      agentScore += 0.15;
-      reasons.push(`entity_rich(${totalEntities})`);
-    }
-
-    // ── Code blocks in message ────────────────────────────────────────────────
-
-    if (message.hasCode) {
-      agentScore += 0.2;
-      reasons.push("contains_code_blocks");
-    }
-
-    // ── Clamp and decide ─────────────────────────────────────────────────────
-
-    const clamped = Math.max(0, Math.min(1, agentScore));
-    const estimatedSteps = this.estimateSteps(clamped, requiredTools);
-
-    let mode: ExecutionMode;
-    let confidence: number;
-
-    if (clamped < this.config.directConfidenceThreshold) {
-      mode = "direct";
-      confidence = 1 - clamped;
-    } else if (clamped >= this.config.agentConfidenceThreshold) {
-      mode = "orchestrator";
-      confidence = clamped;
+    if (needsClarification && agentScore < AGENT_THRESHOLD) {
+      decision = 'clarify';
+      reason   = `Request is too vague (ambiguity=${ambiguityScore.toFixed(2)}, wordCount=${meta.wordCount})`;
+    } else if (agentScoreRounded >= AGENT_THRESHOLD) {
+      decision = 'agent';
+      reason   = `agentScore=${agentScoreRounded} ≥ threshold=${AGENT_THRESHOLD}; tools=[${likelyTools.join(',')}]`;
     } else {
-      mode = "agent";
-      confidence = clamped;
+      decision = 'fast_answer';
+      reason   = `agentScore=${agentScoreRounded} < threshold=${AGENT_THRESHOLD}; fast path`;
     }
 
-    const decision = this.buildDecision(mode, confidence, reasons, requiredTools, false, estimatedSteps);
+    const processingMs = Date.now() - start;
 
-    log.debug("gate_decision", {
-      mode,
-      agentScore: clamped.toFixed(3),
-      confidence: confidence.toFixed(3),
-      requiredTools,
-      reasonCount: reasons.length,
-      evalMs: Date.now() - t0,
+    Logger.debug('[AgentDecisionGate] routing decision', {
+      decision, agentScore: agentScoreRounded, intent: meta.intent,
+      tools: likelyTools, isMultiStep, processingMs,
     });
 
-    return decision;
-  }
-
-  private estimateSteps(agentScore: number, tools: string[]): number {
-    if (agentScore < 0.3) return 1;
-    const base = 1 + tools.length;
-    return agentScore > 0.7 ? base + 2 : base;
-  }
-
-  private buildDecision(
-    mode: ExecutionMode,
-    confidence: number,
-    reasons: string[],
-    tools: string[],
-    fastPath: boolean,
-    estimatedSteps: number = 1,
-  ): GateDecision {
     return {
-      mode,
-      confidence: Math.round(confidence * 1000) / 1000,
-      reasons,
-      estimatedSteps,
-      requiresTools: tools,
-      fastPath,
+      decision,
+      agentScore     : agentScoreRounded,
+      dimensions     : {
+        toolRequirement : Math.round(toolScore      * 1000) / 1000,
+        multiStep       : Math.round(multiStepScore * 1000) / 1000,
+        complexity      : Math.round(complexityScore* 1000) / 1000,
+        contextNeed     : Math.round(contextScore   * 1000) / 1000,
+        ambiguity       : Math.round(ambiguityScore * 1000) / 1000,
+      },
+      likelyTools,
+      isMultiStep,
+      needsClarification,
+      reason,
+      processingMs,
+    };
+  }
+
+  /**
+   * Override the computed decision (e.g. from A/B test or feature flag).
+   * Returns a modified result with the forced decision and an updated reason.
+   */
+  forceDecision(
+    result: AgentGateResult,
+    forced: RoutingDecision,
+    reason: string,
+  ): AgentGateResult {
+    return {
+      ...result,
+      decision: forced,
+      reason  : `[FORCED] ${reason} (original: ${result.decision})`,
     };
   }
 }
+
+// ─── Singleton export ─────────────────────────────────────────────────────────
 
 export const agentDecisionGate = new AgentDecisionGate();

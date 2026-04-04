@@ -1,548 +1,375 @@
 /**
- * ConversationPlanner — Batch 1 Pipeline Stage
+ * ConversationPlanner
  *
- * Maintains a cross-message "conversation plan" to:
- *  - Predict likely follow-up topics and pre-load relevant context
- *  - Track conversation goals and measure progress
- *  - Suggest proactive information at natural moments
- *  - Detect topic shifts and reset context accordingly
- *  - Provide downstream pipeline stages with anticipatory metadata
+ * Multi-turn conversation planning and goal tracking.
+ *
+ * Responsibilities:
+ *   - Detect conversation goals from the current and previous turns
+ *   - Track whether goals have been satisfied
+ *   - Detect topic shifts (are we still in the same thread?)
+ *   - Predict likely follow-up intents so downstream stages can pre-load context
+ *   - Identify when the conversation has reached a natural conclusion
+ *   - Provide a ConversationPlan that downstream stages can query
+ *
+ * All planning is heuristic/rule-based to avoid adding LLM latency to every
+ * turn.  An optional LLM-assisted deep-plan is available for complex sessions.
  */
 
-import { createLogger } from "../utils/logger";
-import type { Intent } from "./MessagePreprocessor";
+import { randomUUID }   from 'crypto';
+import { z }            from 'zod';
+import { Logger }       from '../lib/logger';
+import { llmGateway }   from '../lib/llmGateway';
+import type { PreprocessedMessage, Intent } from './MessagePreprocessor';
 
-const log = createLogger("ConversationPlanner");
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+const TOPIC_SHIFT_THRESHOLD       = 0.35;   // Jaccard distance above this = topic shift
+const GOAL_SATISFIED_WINDOW       = 3;      // Look at last N turns for satisfaction signal
+const MAX_PREDICTED_FOLLOWUPS     = 3;
+const LLM_PLAN_HISTORY_THRESHOLD  = 5;      // Use LLM planner if history > N turns
 
-export type ConversationGoal =
-  | "learn_topic"
-  | "debug_code"
-  | "build_feature"
-  | "research"
-  | "get_advice"
-  | "creative_project"
-  | "data_analysis"
-  | "planning"
-  | "casual_chat"
-  | "unknown";
+// ─── Public schemas ───────────────────────────────────────────────────────────
 
-export interface ConversationTurn {
-  role: "user" | "assistant";
-  content: string;
-  intent?: Intent;
-  timestamp: number;
-  tokenEstimate: number;
+export const ConversationGoalSchema = z.object({
+  id         : z.string(),
+  description: z.string(),
+  intent     : z.string(),
+  /** Turn index when this goal was first detected. */
+  detectedAt : z.number().int().nonneg(),
+  satisfied  : z.boolean(),
+  /** Turn index when this goal was considered satisfied, or null. */
+  satisfiedAt: z.number().int().nonneg().nullable(),
+});
+export type ConversationGoal = z.infer<typeof ConversationGoalSchema>;
+
+export const TopicShiftSchema = z.object({
+  detected      : z.boolean(),
+  similarity    : z.number().min(0).max(1),
+  previousTopic : z.string().optional(),
+  currentTopic  : z.string().optional(),
+});
+export type TopicShift = z.infer<typeof TopicShiftSchema>;
+
+export const ConversationPlanSchema = z.object({
+  sessionId          : z.string(),
+  turnIndex          : z.number().int().nonneg(),
+  activeGoals        : z.array(ConversationGoalSchema),
+  satisfiedGoals     : z.array(ConversationGoalSchema),
+  topicShift         : TopicShiftSchema,
+  predictedFollowUps : z.array(z.string()),
+  /** True when the conversation seems to have reached a natural end. */
+  isClosing          : z.boolean(),
+  /** Hint to the response strategy: should we proactively offer more? */
+  shouldProactivelyExtend: z.boolean(),
+  planningMs         : z.number().nonneg(),
+});
+export type ConversationPlan = z.infer<typeof ConversationPlanSchema>;
+
+// ─── Turn history record ──────────────────────────────────────────────────────
+
+export interface TurnRecord {
+  index      : number;
+  role       : 'user' | 'assistant';
+  content    : string;
+  intent?    : Intent;
+  timestamp  : number;
 }
 
-export interface TopicNode {
-  topic: string;
-  confidence: number;     // 0–1
-  firstSeen: number;      // timestamp
-  lastSeen: number;
-  frequency: number;      // how many turns referenced this topic
+// ─── Topic similarity (word overlap / Jaccard) ────────────────────────────────
+
+function topicWords(text: string): Set<string> {
+  // Keep only "content" words (skip stop words)
+  const STOP = new Set(['a','an','the','is','are','was','were','be','been','have',
+    'has','had','do','does','did','will','would','could','should','can','may',
+    'i','you','he','she','it','we','they','me','him','her','us','them',
+    'in','on','at','to','for','of','with','by','from','up','as','into',
+    'and','or','but','not','if','this','that','these','those','what','when',
+    'where','who','how','why','please','thanks']);
+  return new Set(
+    (text.toLowerCase().match(/\b\w{3,}\b/g) ?? []).filter(w => !STOP.has(w)),
+  );
 }
 
-export interface ConversationPlan {
-  sessionId: string;
-  goal: ConversationGoal;
-  goalConfidence: number;
-  activeTopics: TopicNode[];
-  anticipatedFollowUps: string[];   // predicted next questions
-  suggestedProactiveInfo: string[]; // info to volunteer without being asked
-  topicShiftDetected: boolean;
-  goalProgressPct: number;          // 0–100 estimate
-  turnCount: number;
-  totalTokensEstimate: number;
-  lastUpdated: number;
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let shared = 0;
+  for (const w of a) if (b.has(w)) shared++;
+  return shared / (a.size + b.size - shared);
 }
-
-export interface PlannerConfig {
-  maxActiveTopics: number;
-  topicDecayTurns: number;         // topic dropped if not seen for N turns
-  topicShiftThreshold: number;     // 0–1 cosine-like similarity threshold
-  maxAnticipatedFollowUps: number;
-  maxProactiveSuggestions: number;
-}
-
-// ─── Goal Detection ───────────────────────────────────────────────────────────
-
-interface GoalPattern {
-  goal: ConversationGoal;
-  patterns: RegExp[];
-  weight: number;
-}
-
-const GOAL_PATTERNS: GoalPattern[] = [
-  {
-    goal: "debug_code",
-    patterns: [
-      /\b(bug|error|exception|crash|fails?|broken|doesn't work|not working)\b/i,
-      /\b(debug|fix|resolve|solve)\b.*\b(issue|problem|error)\b/i,
-    ],
-    weight: 1.5,
-  },
-  {
-    goal: "build_feature",
-    patterns: [
-      /\b(build|create|implement|add|develop|make)\b.*\b(feature|function|component|module|api|endpoint)\b/i,
-      /\b(new\s+)(page|screen|form|button|modal|widget)\b/i,
-    ],
-    weight: 1.4,
-  },
-  {
-    goal: "learn_topic",
-    patterns: [
-      /\b(explain|teach|learn|understand|how does|what is|why does)\b/i,
-      /\b(tutorial|guide|introduction|overview|basics|fundamentals)\b/i,
-    ],
-    weight: 1.2,
-  },
-  {
-    goal: "research",
-    patterns: [
-      /\b(research|investigate|find|look up|compare|survey|review)\b/i,
-      /\b(best practices|state of the art|latest|current|recent)\b/i,
-    ],
-    weight: 1.1,
-  },
-  {
-    goal: "data_analysis",
-    patterns: [
-      /\b(analyze|analyse|data|dataset|statistics|metrics|numbers|trends)\b/i,
-      /\b(chart|graph|plot|visualize|distribution|correlation)\b/i,
-    ],
-    weight: 1.3,
-  },
-  {
-    goal: "creative_project",
-    patterns: [
-      /\b(write|story|novel|poem|script|article|blog|essay|creative)\b/i,
-      /\b(character|plot|setting|scene|chapter|draft)\b/i,
-    ],
-    weight: 1.2,
-  },
-  {
-    goal: "planning",
-    patterns: [
-      /\b(plan|roadmap|timeline|schedule|strategy|steps|process)\b/i,
-      /\b(project|sprint|milestone|deadline|goal|objective)\b/i,
-    ],
-    weight: 1.1,
-  },
-  {
-    goal: "get_advice",
-    patterns: [
-      /\b(advice|recommend|suggest|should I|would you|best way|opinion)\b/i,
-      /\b(help me decide|what do you think|pros.*cons)\b/i,
-    ],
-    weight: 1.0,
-  },
-  {
-    goal: "casual_chat",
-    patterns: [
-      /^(hi|hello|hey|hola|how are you|what's up|good morning)\b/i,
-      /\b(joke|fun|interesting|cool|awesome|random)\b/i,
-    ],
-    weight: 0.9,
-  },
-];
-
-function detectGoal(turns: ConversationTurn[]): { goal: ConversationGoal; confidence: number } {
-  const recentText = turns
-    .filter(t => t.role === "user")
-    .slice(-5)
-    .map(t => t.content)
-    .join(" ");
-
-  const scores: Partial<Record<ConversationGoal, number>> = {};
-
-  for (const gp of GOAL_PATTERNS) {
-    let score = 0;
-    for (const pat of gp.patterns) {
-      if (pat.test(recentText)) score += gp.weight;
-    }
-    if (score > 0) scores[gp.goal] = (scores[gp.goal] ?? 0) + score;
-  }
-
-  const entries = Object.entries(scores) as [ConversationGoal, number][];
-  if (entries.length === 0) return { goal: "unknown", confidence: 0.4 };
-
-  entries.sort((a, b) => b[1] - a[1]);
-  const [topGoal, topScore] = entries[0];
-  const totalScore = entries.reduce((s, [, v]) => s + v, 0);
-  const confidence = Math.min(0.95, 0.4 + (topScore / Math.max(totalScore, 1)) * 0.6);
-
-  return { goal: topGoal, confidence };
-}
-
-// ─── Topic Extraction ──────────────────────────────────────────────────────────
-
-/** Extract noun-phrase–like topics from user messages using simple heuristics */
-function extractTopics(text: string): string[] {
-  const stopwords = new Set([
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "can", "shall", "this", "that", "these",
-    "those", "i", "you", "he", "she", "we", "they", "it", "my", "your",
-    "our", "their", "its", "me", "him", "her", "us", "them",
-  ]);
-
-  // Extract 1–3 word noun phrases (capitalized proper nouns or recurring technical terms)
-  const topics: string[] = [];
-
-  // Proper nouns / technical terms (capitalized after sentence start)
-  for (const m of text.matchAll(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b/g)) {
-    const term = m[1];
-    if (term.length > 2 && !stopwords.has(term.toLowerCase())) {
-      topics.push(term.toLowerCase());
-    }
-  }
-
-  // Technical identifiers (camelCase, snake_case, filenames)
-  for (const m of text.matchAll(/\b([a-z][a-zA-Z0-9_]{3,}(?:[A-Z][a-z]+)+)\b/g)) {
-    topics.push(m[1]);
-  }
-
-  // Words after "about", "regarding", "related to" (topic signals)
-  for (const m of text.matchAll(/\b(?:about|regarding|concerning|related to)\s+([a-z]+(?:\s+[a-z]+)?)\b/gi)) {
-    const term = (m[1] ?? "").trim();
-    if (term.length > 3) topics.push(term.toLowerCase());
-  }
-
-  return [...new Set(topics)].slice(0, 6);
-}
-
-// ─── Follow-up Prediction ─────────────────────────────────────────────────────
-
-const FOLLOWUP_TEMPLATES: Record<ConversationGoal, string[]> = {
-  learn_topic: [
-    "Can you give me an example?",
-    "What are the common pitfalls?",
-    "How does this compare to alternatives?",
-    "Where can I learn more?",
-  ],
-  debug_code: [
-    "What caused this error?",
-    "Are there other similar bugs I should check?",
-    "How can I write a test for this?",
-    "Can you show the fixed version?",
-  ],
-  build_feature: [
-    "What's the recommended architecture?",
-    "Can you show the implementation?",
-    "How do I test this?",
-    "What edge cases should I handle?",
-  ],
-  research: [
-    "What are the key takeaways?",
-    "How does this apply to my situation?",
-    "Are there more recent sources?",
-    "Can you summarize the findings?",
-  ],
-  data_analysis: [
-    "What patterns stand out?",
-    "Can you visualize this?",
-    "What does the data suggest?",
-    "Are there outliers I should investigate?",
-  ],
-  creative_project: [
-    "Can you continue the story?",
-    "What would happen if...?",
-    "Can you make it more dramatic?",
-    "How should I develop this character?",
-  ],
-  planning: [
-    "What should I prioritize first?",
-    "What risks should I plan for?",
-    "How long will each step take?",
-    "What resources do I need?",
-  ],
-  get_advice: [
-    "What would you do in my situation?",
-    "What are the risks?",
-    "Is there a third option?",
-    "What would an expert recommend?",
-  ],
-  casual_chat: [
-    "Tell me something interesting.",
-    "What do you think about...?",
-  ],
-  unknown: [
-    "Can you elaborate?",
-    "What else would you like to know?",
-  ],
-};
-
-function predictFollowUps(
-  goal: ConversationGoal,
-  activeTopics: TopicNode[],
-  maxCount: number,
-): string[] {
-  const templates = FOLLOWUP_TEMPLATES[goal] ?? FOLLOWUP_TEMPLATES.unknown;
-
-  // Personalise templates with top active topic if available
-  const topTopic = activeTopics[0]?.topic;
-  const personalised = topTopic
-    ? templates.map(t =>
-        t.includes("this") ? t.replace("this", topTopic) : t,
-      )
-    : templates;
-
-  return personalised.slice(0, maxCount);
-}
-
-// ─── Topic Shift Detection ────────────────────────────────────────────────────
 
 function detectTopicShift(
-  activeTopics: TopicNode[],
-  newTopics: string[],
-  threshold: number,
-): boolean {
-  if (activeTopics.length === 0 || newTopics.length === 0) return false;
-
-  const activeSet = new Set(activeTopics.map(t => t.topic));
-  const overlap = newTopics.filter(t => activeSet.has(t)).length;
-  const unionSize = activeSet.size + newTopics.filter(t => !activeSet.has(t)).length;
-
-  const jaccardSimilarity = overlap / Math.max(unionSize, 1);
-  return jaccardSimilarity < threshold;
-}
-
-// ─── ConversationPlanner ──────────────────────────────────────────────────────
-
-const DEFAULT_CONFIG: PlannerConfig = {
-  maxActiveTopics: 8,
-  topicDecayTurns: 6,
-  topicShiftThreshold: 0.15,
-  maxAnticipatedFollowUps: 3,
-  maxProactiveSuggestions: 2,
-};
-
-export class ConversationPlanner {
-  private config: PlannerConfig;
-  private plans: Map<string, ConversationPlan> = new Map();
-  private turnHistory: Map<string, ConversationTurn[]> = new Map();
-
-  constructor(config: Partial<PlannerConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+  currentText  : string,
+  previousTexts: string[],
+): TopicShift {
+  if (previousTexts.length === 0) {
+    return { detected: false, similarity: 1 };
   }
 
-  /** Call after each user message to update and retrieve the plan */
-  update(
-    sessionId: string,
-    userMessage: string,
-    intent?: Intent,
-    assistantResponse?: string,
-  ): ConversationPlan {
-    const turns = this.turnHistory.get(sessionId) ?? [];
-    const now = Date.now();
+  const currentWords  = topicWords(currentText);
+  const previousWords = new Set(previousTexts.flatMap(t => [...topicWords(t)]));
 
-    // Record user turn
-    turns.push({
-      role: "user",
-      content: userMessage,
-      intent,
-      timestamp: now,
-      tokenEstimate: Math.ceil(userMessage.length / 4),
-    });
+  const similarity = jaccardSimilarity(currentWords, previousWords);
 
-    if (assistantResponse) {
-      turns.push({
-        role: "assistant",
-        content: assistantResponse,
-        timestamp: now,
-        tokenEstimate: Math.ceil(assistantResponse.length / 4),
+  return {
+    detected     : similarity < (1 - TOPIC_SHIFT_THRESHOLD),
+    similarity   : Math.round(similarity * 1000) / 1000,
+    currentTopic : [...currentWords].slice(0, 5).join(', '),
+    previousTopic: [...previousWords].slice(0, 5).join(', '),
+  };
+}
+
+// ─── Goal detection ───────────────────────────────────────────────────────────
+
+const CLOSING_SIGNALS = /\b(?:thanks?(?:\s+you)?|thank\s+you|great|perfect|that['']s\s+(?:all|it|good|great)|bye|goodbye|no\s+more\s+questions?|done|finished|that\s+(?:helps?|works?|answers?))\b/i;
+const GOAL_PREFIXES   = /^(?:help\s+me|I\s+want\s+to|I\s+need\s+to|I['']m\s+trying\s+to|can\s+you|please|how\s+do\s+I|how\s+to)\b/i;
+
+function extractGoalDescription(text: string, intent: Intent): string {
+  const firstSentence = text.split(/[.!?]+/)[0]?.trim() ?? text;
+  if (GOAL_PREFIXES.test(firstSentence)) {
+    return firstSentence.slice(0, 120);
+  }
+  return `${intent}: ${firstSentence.slice(0, 80)}`;
+}
+
+function isSatisfied(turnHistory: TurnRecord[], goal: ConversationGoal): boolean {
+  // Look at assistant turns after the goal was set — if assistant provided
+  // a substantive response AND user replied with a closing signal, goal satisfied
+  const recent = turnHistory.slice(-(GOAL_SATISFIED_WINDOW * 2));
+
+  const hasSubstantiveAnswer = recent.some(
+    t => t.role === 'assistant' && t.content.trim().split(/\s+/).length > 20 && t.index > goal.detectedAt,
+  );
+  const hasClosingSignal = recent.some(
+    t => t.role === 'user' && CLOSING_SIGNALS.test(t.content) && t.index > goal.detectedAt,
+  );
+
+  return hasSubstantiveAnswer && hasClosingSignal;
+}
+
+// ─── Follow-up prediction (rule-based) ───────────────────────────────────────
+
+const FOLLOWUP_HINTS: Partial<Record<Intent, string[]>> = {
+  code       : ['Can you add tests?', 'How do I deploy this?', 'What edge cases should I handle?'],
+  analysis   : ['What are the trade-offs?', 'Can you go deeper on X?', 'What should I do next?'],
+  question   : ['Can you give an example?', 'Tell me more about this', 'What are the implications?'],
+  command    : ['Can you improve it?', 'Are there alternatives?', 'How does this work?'],
+  creative   : ['Can you make it longer?', 'Write a sequel', 'Change the tone'],
+  conversation: ['Tell me more', 'That\'s interesting, why?', 'What else?'],
+};
+
+function predictFollowUps(intent: Intent, text: string): string[] {
+  const hints = FOLLOWUP_HINTS[intent] ?? FOLLOWUP_HINTS['question'] ?? [];
+  return hints.slice(0, MAX_PREDICTED_FOLLOWUPS);
+}
+
+// ─── LLM-assisted deep planning ──────────────────────────────────────────────
+
+async function llmPlan(
+  sessionId  : string,
+  history    : TurnRecord[],
+  current    : string,
+  model      : string,
+): Promise<{ predictedFollowUps: string[]; goals: string[] }> {
+  const historyText = history
+    .slice(-8)
+    .map(t => `${t.role}: ${t.content.slice(0, 150)}`)
+    .join('\n');
+
+  const res = await llmGateway.chat(
+    [
+      {
+        role   : 'system',
+        content: 'Analyze this conversation and return JSON: {"goals":["goal1"],"predictedFollowUps":["question1","question2","question3"]}. Goals are what the user is trying to accomplish. PredictedFollowUps are the 3 most likely next questions.',
+      },
+      { role: 'user', content: `Conversation so far:\n${historyText}\n\nLatest message: ${current}` },
+    ],
+    {
+      model,
+      requestId  : `planner-${sessionId}`,
+      temperature: 0.3,
+      maxTokens  : 300,
+    },
+  );
+
+  try {
+    const match  = res.content.match(/\{[\s\S]*\}/);
+    const parsed = match ? JSON.parse(match[0]) as { goals: string[]; predictedFollowUps: string[] } : null;
+    return {
+      goals             : parsed?.goals             ?? [],
+      predictedFollowUps: parsed?.predictedFollowUps ?? [],
+    };
+  } catch {
+    return { goals: [], predictedFollowUps: [] };
+  }
+}
+
+// ─── Main class ───────────────────────────────────────────────────────────────
+
+export interface ConversationPlannerOptions {
+  model?       : string;
+  /** Disable LLM-assisted planning even for long conversations. */
+  disableLlmPlan?: boolean;
+}
+
+export class ConversationPlanner {
+  private readonly sessions = new Map<string, {
+    goals  : ConversationGoal[];
+    history: TurnRecord[];
+  }>();
+
+  /**
+   * Update the conversation plan for a new user turn.
+   *
+   * @param sessionId   - Stable session identifier
+   * @param msg         - The preprocessed current user message
+   * @param assistantPrevious - The previous assistant response (if any)
+   * @param opts        - Options
+   */
+  async plan(
+    sessionId        : string,
+    msg              : PreprocessedMessage,
+    assistantPrevious: string | undefined,
+    opts             : ConversationPlannerOptions = {},
+  ): Promise<ConversationPlan> {
+    const start  = Date.now();
+    const model  = opts.model ?? 'auto';
+
+    // ── 1. Retrieve or initialise session state ─────────────────────────────
+    if (!this.sessions.has(sessionId)) {
+      this.sessions.set(sessionId, { goals: [], history: [] });
+    }
+    const session = this.sessions.get(sessionId)!;
+
+    const turnIndex = session.history.filter(t => t.role === 'user').length;
+
+    // ── 2. Append previous assistant turn to history ─────────────────────────
+    if (assistantPrevious && session.history.length > 0) {
+      session.history.push({
+        index    : turnIndex - 1,
+        role     : 'assistant',
+        content  : assistantPrevious,
+        timestamp: Date.now(),
       });
     }
 
-    // Keep last 30 turns
-    const recentTurns = turns.slice(-30);
-    this.turnHistory.set(sessionId, recentTurns);
+    // ── 3. Append current user turn ──────────────────────────────────────────
+    session.history.push({
+      index    : turnIndex,
+      role     : 'user',
+      content  : msg.normalized,
+      intent   : msg.meta.intent,
+      timestamp: Date.now(),
+    });
 
-    // Detect goal
-    const { goal, confidence: goalConfidence } = detectGoal(recentTurns);
+    // ── 4. Topic shift detection ─────────────────────────────────────────────
+    const prevUserTexts = session.history
+      .filter(t => t.role === 'user' && t.index < turnIndex)
+      .slice(-3)
+      .map(t => t.content);
 
-    // Extract and merge topics
-    const newTopics = extractTopics(userMessage);
-    const existingPlan = this.plans.get(sessionId);
-    const existingTopics = existingPlan?.activeTopics ?? [];
+    const topicShift = detectTopicShift(msg.normalized, prevUserTexts);
 
-    const topicShiftDetected = detectTopicShift(
-      existingTopics,
-      newTopics,
-      this.config.topicShiftThreshold,
-    );
+    if (topicShift.detected) {
+      Logger.debug('[ConversationPlanner] topic shift detected', {
+        sessionId, similarity: topicShift.similarity,
+      });
+    }
 
-    // If topic shift detected, decay old topics aggressively
-    const decayMultiplier = topicShiftDetected ? 0.3 : 1.0;
+    // ── 5. Goal detection ────────────────────────────────────────────────────
+    const isClosing = CLOSING_SIGNALS.test(msg.normalized);
 
-    // Merge topics
-    const topicMap = new Map<string, TopicNode>(
-      existingTopics.map(t => [t.topic, t]),
-    );
+    if (!isClosing && msg.meta.intent !== 'conversation') {
+      // Add new goal if this looks like a new task
+      const existingGoal = session.goals.find(
+        g => !g.satisfied && jaccardSimilarity(topicWords(g.description), topicWords(msg.normalized)) > 0.4,
+      );
 
-    for (const topic of newTopics) {
-      if (topicMap.has(topic)) {
-        const existing = topicMap.get(topic)!;
-        topicMap.set(topic, {
-          ...existing,
-          lastSeen: now,
-          frequency: existing.frequency + 1,
-          confidence: Math.min(0.99, existing.confidence + 0.1),
-        });
-      } else {
-        topicMap.set(topic, {
-          topic,
-          confidence: 0.6,
-          firstSeen: now,
-          lastSeen: now,
-          frequency: 1,
+      if (!existingGoal) {
+        session.goals.push({
+          id         : randomUUID(),
+          description: extractGoalDescription(msg.normalized, msg.meta.intent),
+          intent     : msg.meta.intent,
+          detectedAt : turnIndex,
+          satisfied  : false,
+          satisfiedAt: null,
         });
       }
     }
 
-    // Decay and prune old topics
-    const currentTurn = recentTurns.length;
-    const prunedTopics = [...topicMap.values()]
-      .map(t => ({
-        ...t,
-        confidence: t.confidence * decayMultiplier,
-      }))
-      .filter(t => {
-        const turnsSinceSeen = currentTurn - recentTurns.filter(r => r.timestamp <= t.lastSeen).length;
-        return turnsSinceSeen < this.config.topicDecayTurns && t.confidence > 0.1;
-      })
-      .sort((a, b) => b.confidence * b.frequency - a.confidence * a.frequency)
-      .slice(0, this.config.maxActiveTopics);
+    // ── 6. Goal satisfaction check ───────────────────────────────────────────
+    for (const goal of session.goals) {
+      if (!goal.satisfied && isSatisfied(session.history, goal)) {
+        goal.satisfied  = true;
+        goal.satisfiedAt = turnIndex;
+        Logger.debug('[ConversationPlanner] goal satisfied', { sessionId, goal: goal.description });
+      }
+    }
 
-    // Predict follow-ups
-    const anticipatedFollowUps = predictFollowUps(
-      goal,
-      prunedTopics,
-      this.config.maxAnticipatedFollowUps,
-    );
+    const activeGoals    = session.goals.filter(g => !g.satisfied);
+    const satisfiedGoals = session.goals.filter(g =>  g.satisfied);
 
-    // Proactive suggestions based on goal and topic
-    const suggestedProactiveInfo = this.generateProactiveSuggestions(
-      goal,
-      prunedTopics,
-      recentTurns.length,
-    );
+    // ── 7. Follow-up prediction ──────────────────────────────────────────────
+    let predictedFollowUps = predictFollowUps(msg.meta.intent, msg.normalized);
 
-    // Goal progress estimation
-    const goalProgressPct = this.estimateGoalProgress(goal, recentTurns);
+    // Use LLM planner for longer conversations
+    if (!opts.disableLlmPlan && session.history.length >= LLM_PLAN_HISTORY_THRESHOLD) {
+      try {
+        const llmResult = await llmPlan(sessionId, session.history, msg.normalized, model);
+        if (llmResult.predictedFollowUps.length > 0) {
+          predictedFollowUps = llmResult.predictedFollowUps;
+        }
+      } catch (err) {
+        Logger.warn('[ConversationPlanner] LLM plan failed — using rule-based follow-ups', {
+          sessionId, error: (err as Error).message,
+        });
+      }
+    }
 
-    const totalTokens = recentTurns.reduce((s, t) => s + t.tokenEstimate, 0);
+    const shouldProactivelyExtend =
+      activeGoals.length > 0 &&
+      !isClosing &&
+      session.history.filter(t => t.role === 'assistant').length >= 1;
 
-    const plan: ConversationPlan = {
+    const planningMs = Date.now() - start;
+
+    Logger.debug('[ConversationPlanner] plan updated', {
       sessionId,
-      goal,
-      goalConfidence,
-      activeTopics: prunedTopics,
-      anticipatedFollowUps,
-      suggestedProactiveInfo,
-      topicShiftDetected,
-      goalProgressPct,
-      turnCount: recentTurns.filter(t => t.role === "user").length,
-      totalTokensEstimate: totalTokens,
-      lastUpdated: now,
-    };
-
-    this.plans.set(sessionId, plan);
-
-    log.debug("conversation_plan_updated", {
-      sessionId,
-      goal,
-      goalConfidence: goalConfidence.toFixed(2),
-      topicCount: prunedTopics.length,
-      topicShiftDetected,
-      goalProgressPct,
-      turnCount: plan.turnCount,
+      turnIndex,
+      activeGoals   : activeGoals.length,
+      satisfiedGoals: satisfiedGoals.length,
+      topicShift    : topicShift.detected,
+      isClosing,
+      planningMs,
     });
 
-    return plan;
-  }
-
-  /** Retrieve the current plan without modifying it */
-  getPlan(sessionId: string): ConversationPlan | undefined {
-    return this.plans.get(sessionId);
-  }
-
-  /** Evict session data on logout / session expiry */
-  evict(sessionId: string): void {
-    this.plans.delete(sessionId);
-    this.turnHistory.delete(sessionId);
-  }
-
-  /** Return recent turns as context messages for the LLM */
-  getContextWindow(
-    sessionId: string,
-    maxTokens: number,
-  ): Array<{ role: "user" | "assistant"; content: string }> {
-    const turns = this.turnHistory.get(sessionId) ?? [];
-    const result: typeof turns = [];
-    let tokens = 0;
-
-    for (let i = turns.length - 1; i >= 0; i--) {
-      const turn = turns[i];
-      if (tokens + turn.tokenEstimate > maxTokens) break;
-      result.unshift(turn);
-      tokens += turn.tokenEstimate;
-    }
-
-    return result.map(t => ({ role: t.role, content: t.content }));
-  }
-
-  private generateProactiveSuggestions(
-    goal: ConversationGoal,
-    topics: TopicNode[],
-    turnCount: number,
-  ): string[] {
-    const suggestions: string[] = [];
-
-    // Offer examples after explanation turns
-    if (goal === "learn_topic" && turnCount === 2) {
-      suggestions.push("Would you like a practical example?");
-    }
-
-    // Offer testing guidance after build turns
-    if (goal === "build_feature" && turnCount >= 3) {
-      suggestions.push("Want me to generate tests for this implementation?");
-    }
-
-    // Offer a summary after many research turns
-    if (goal === "research" && turnCount >= 5 && turnCount % 5 === 0) {
-      suggestions.push("Should I summarize what we've covered so far?");
-    }
-
-    return suggestions.slice(0, this.config.maxProactiveSuggestions);
-  }
-
-  private estimateGoalProgress(
-    goal: ConversationGoal,
-    turns: ConversationTurn[],
-  ): number {
-    const userTurns = turns.filter(t => t.role === "user").length;
-
-    // Rough heuristics per goal type
-    const goalLengths: Record<ConversationGoal, number> = {
-      learn_topic: 4,
-      debug_code: 3,
-      build_feature: 6,
-      research: 5,
-      data_analysis: 4,
-      creative_project: 8,
-      planning: 4,
-      get_advice: 2,
-      casual_chat: 1,
-      unknown: 3,
+    return {
+      sessionId,
+      turnIndex,
+      activeGoals,
+      satisfiedGoals,
+      topicShift,
+      predictedFollowUps,
+      isClosing,
+      shouldProactivelyExtend,
+      planningMs,
     };
+  }
 
-    const expectedTurns = goalLengths[goal] ?? 3;
-    return Math.min(100, Math.round((userTurns / expectedTurns) * 100));
+  /**
+   * Clear a session's state (call on session end / logout).
+   */
+  clearSession(sessionId: string): void {
+    this.sessions.delete(sessionId);
+  }
+
+  /**
+   * Return the number of active sessions tracked in memory.
+   */
+  get activeSessions(): number {
+    return this.sessions.size;
   }
 }
+
+// ─── Singleton export ─────────────────────────────────────────────────────────
 
 export const conversationPlanner = new ConversationPlanner();

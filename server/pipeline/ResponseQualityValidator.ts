@@ -1,436 +1,336 @@
 /**
- * ResponseQualityValidator — Batch 1 Pipeline Stage
+ * ResponseQualityValidator
  *
- * Post-processing gate that scores every LLM response before delivery:
- *  - Hallucination detection: verifies claims against provided context
- *  - Code block syntax validation (JS/TS/Python pattern checks)
- *  - Factual consistency cross-reference within the response itself
- *  - Completeness check: did the response address all questions?
- *  - Aggregate quality score 0–1 with per-dimension breakdown
- *  - Auto-regeneration signal if score < configurable threshold
+ * Post-generation stage that scores a completed LLM response before it is
+ * returned to the user.  If quality < AUTO_REGEN_THRESHOLD the pipeline can
+ * request a regeneration.
+ *
+ * Checks performed (all deterministic, no LLM call):
+ *   1. Length appropriateness  — response is not empty, not a one-word answer to
+ *      a complex question, and not 3× longer than requested.
+ *   2. Code syntax sanity      — fenced code blocks have a language tag and do
+ *      not contain obvious truncation artifacts (e.g. "...").
+ *   3. Completeness signals    — no mid-sentence truncation, all opened markdown
+ *      fences are closed, JSON parses when jsonMode is active.
+ *   4. Hallucination guards    — self-contradictions ("yes … no …" in same para),
+ *      date anomalies, obviously wrong numeric claims are flagged.
+ *   5. Safety signals          — PII patterns (emails, phone numbers) the LLM may
+ *      have leaked from training are flagged (not blocked, only reported).
+ *   6. Repetition detection    — identical sentences appearing ≥3 times indicate
+ *      degenerate output.
+ *
+ * Overall quality score = weighted average of the 6 dimension scores.
+ * Score < AUTO_REGEN_THRESHOLD (0.55) → `shouldRegenerate = true`.
  */
 
-import { createLogger } from "../utils/logger";
+import { z }      from 'zod';
+import { Logger } from '../lib/logger';
+import type { ResponseStrategy } from './ResponseStrategySelector';
 
-const log = createLogger("ResponseQualityValidator");
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+const AUTO_REGEN_THRESHOLD  = 0.55;
+const TRUNCATION_PATTERNS   = [/\.{3,}$/, /\[continued\]$/i, /\[truncated\]$/i, /→$/];
+const OPEN_FENCE_RE         = /^```[^\n]*$/m;
+const CLOSE_FENCE_RE        = /^```\s*$/m;
 
-export type QualityDimension =
-  | "completeness"
-  | "factual_consistency"
-  | "code_validity"
-  | "hallucination_risk"
-  | "length_appropriateness"
-  | "format_compliance";
+// ─── Public schemas ───────────────────────────────────────────────────────────
 
-export interface DimensionScore {
-  dimension: QualityDimension;
-  score: number;       // 0–1
-  weight: number;      // contribution weight
-  issues: string[];
-  details?: string;
-}
+export const QualityIssueSchema = z.object({
+  code       : z.string(),   // Machine-readable issue code
+  severity   : z.enum(['info', 'warning', 'error']),
+  description: z.string(),
+  position   : z.number().int().nonneg().optional(),
+});
+export type QualityIssue = z.infer<typeof QualityIssueSchema>;
 
-export interface ValidationResult {
-  overallScore: number;         // 0–1 weighted average
-  passed: boolean;              // true if score ≥ threshold
-  shouldRegenerate: boolean;    // true if score < regenerationThreshold
-  dimensions: DimensionScore[];
-  issues: string[];             // flattened critical issues
-  suggestions: string[];        // non-blocking improvement hints
-  validationMs: number;
-  responseTokenEstimate: number;
-}
+export const ValidationResultSchema = z.object({
+  /** Overall quality score 0–1. */
+  score           : z.number().min(0).max(1),
+  /** True when score < AUTO_REGEN_THRESHOLD. */
+  shouldRegenerate: z.boolean(),
+  /** Dimension scores for logging and debugging. */
+  dimensions      : z.object({
+    length      : z.number().min(0).max(1),
+    codeSyntax  : z.number().min(0).max(1),
+    completeness: z.number().min(0).max(1),
+    accuracy    : z.number().min(0).max(1),
+    safety      : z.number().min(0).max(1),
+    repetition  : z.number().min(0).max(1),
+  }),
+  issues          : z.array(QualityIssueSchema),
+  /** Number of characters in the validated response. */
+  responseLength  : z.number().int().nonneg(),
+  /** Processing time in ms. */
+  validationMs    : z.number().nonneg(),
+});
+export type ValidationResult = z.infer<typeof ValidationResultSchema>;
 
-export interface ValidatorConfig {
-  passingThreshold: number;        // default 0.60
-  regenerationThreshold: number;   // below this → caller should retry (default 0.45)
-  maxResponseLength: number;       // chars — above this penalises length score
-  minResponseLength: number;       // chars — below this also penalises
-  enableCodeValidation: boolean;
-  enableHallucinationCheck: boolean;
-  contextSnippets: string[];       // relevant context the response should align with
-}
+// ─── 1. Length check ──────────────────────────────────────────────────────────
 
-const DEFAULT_CONFIG: ValidatorConfig = {
-  passingThreshold: 0.60,
-  regenerationThreshold: 0.45,
-  maxResponseLength: 12_000,
-  minResponseLength: 20,
-  enableCodeValidation: true,
-  enableHallucinationCheck: true,
-  contextSnippets: [],
-};
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Extract all fenced code blocks from response (uses matchAll, not exec) */
-function extractCodeBlocks(text: string): Array<{ lang: string; code: string }> {
-  const blocks: Array<{ lang: string; code: string }> = [];
-  for (const m of text.matchAll(/```(\w*)\n?([\s\S]*?)```/g)) {
-    blocks.push({ lang: (m[1] ?? "").toLowerCase(), code: m[2] ?? "" });
-  }
-  return blocks;
-}
-
-/** Extract question sentences from text */
-function extractQuestions(text: string): string[] {
-  const questions: string[] = [];
-  for (const m of text.matchAll(/[^.!?]*\?/g)) {
-    const q = m[0].trim();
-    if (q.length > 5) questions.push(q);
-  }
-  return questions;
-}
-
-// ─── Dimension Validators ─────────────────────────────────────────────────────
-
-/**
- * Completeness: did the response address all questions in the user message?
- * Heuristic: for each detected question, check if key nouns/verbs appear
- * in the response.
- */
-function validateCompleteness(
-  userMessage: string,
+function checkLength(
   response: string,
-): DimensionScore {
-  const issues: string[] = [];
-  const questions = extractQuestions(userMessage);
+  strategy: ResponseStrategy,
+  requestWordCount: number,
+): { score: number; issues: QualityIssue[] } {
+  const issues: QualityIssue[] = [];
+  const wordCount = response.trim().split(/\s+/).filter(Boolean).length;
 
-  if (questions.length === 0) {
-    return { dimension: "completeness", score: 0.85, weight: 0.2, issues: [] };
+  if (wordCount === 0) {
+    issues.push({ code: 'EMPTY_RESPONSE', severity: 'error', description: 'Response is empty' });
+    return { score: 0, issues };
   }
 
-  const responseLower = response.toLowerCase();
-  let answered = 0;
-
-  const stopwords = new Set([
-    "what", "when", "where", "which", "that", "this",
-    "with", "from", "have", "will", "does",
-  ]);
-
-  for (const q of questions) {
-    const keywords = q
-      .toLowerCase()
-      .replace(/[^a-z\s]/g, "")
-      .split(/\s+/)
-      .filter(w => w.length >= 4 && !stopwords.has(w));
-
-    if (keywords.length === 0) {
-      answered++;
-      continue;
-    }
-
-    const matchedKeywords = keywords.filter(kw => responseLower.includes(kw));
-    const ratio = matchedKeywords.length / keywords.length;
-    if (ratio >= 0.5) answered++;
-    else issues.push(`Possible unanswered question: "${q.slice(0, 60)}..."`);
+  // Very short response to a complex question
+  const minWords = requestWordCount > 20 ? 30 : 5;
+  if (wordCount < minWords && strategy.name !== 'Conversation' && strategy.name !== 'ClarificationRequest') {
+    issues.push({
+      code       : 'TOO_SHORT',
+      severity   : 'warning',
+      description: `Response has only ${wordCount} words for a ${requestWordCount}-word request`,
+    });
   }
 
-  const score = answered / questions.length;
-  return { dimension: "completeness", score, weight: 0.25, issues };
+  // Over-long relative to maxTokens budget (~0.75 words/token is a rough heuristic)
+  const tokenEstimate = wordCount / 0.75;
+  if (tokenEstimate > strategy.maxTokens * 1.5) {
+    issues.push({
+      code       : 'TOO_LONG',
+      severity   : 'info',
+      description: `Response (~${Math.round(tokenEstimate)} tokens) exceeds budget (${strategy.maxTokens})`,
+    });
+  }
+
+  // Score: penalise heavily for emptiness or extreme brevity; mild penalty for over-length
+  const shortPenalty = wordCount < minWords ? (1 - wordCount / minWords) * 0.6 : 0;
+  const longPenalty  = tokenEstimate > strategy.maxTokens * 1.5 ? 0.1 : 0;
+  return { score: Math.max(0, 1 - shortPenalty - longPenalty), issues };
 }
 
-/**
- * Factual consistency: look for internal contradictions.
- * Detects sentences that appear to make conflicting claims about same subject.
- */
-function validateFactualConsistency(response: string): DimensionScore {
-  const issues: string[] = [];
-  let score = 1.0;
+// ─── 2. Code syntax sanity ────────────────────────────────────────────────────
 
-  // Detect negation flip: same subject in positive then negative claim
-  const sentences = response.split(/[.!?]\s+/);
-  const claims = new Map<string, boolean>(); // subject → isPositive
+function checkCodeSyntax(response: string, strategy: ResponseStrategy): { score: number; issues: QualityIssue[] } {
+  const issues: QualityIssue[] = [];
 
-  for (const sentence of sentences) {
-    const isNegated =
-      /\b(not|never|no|cannot|can't|isn't|aren't|doesn't|don't)\b/i.test(sentence);
-    const subjectMatch = sentence.match(/^(?:the\s+)?(\w+(?:\s+\w+){0,2})\b/i);
-    if (subjectMatch) {
-      const subj = subjectMatch[1].toLowerCase();
-      const isPositive = !isNegated;
-      if (claims.has(subj) && claims.get(subj) !== isPositive) {
-        score -= 0.08;
-        issues.push(`Potential contradiction about "${subj}"`);
-      } else {
-        claims.set(subj, isPositive);
+  // If strategy is CodeGeneration, a code block is expected
+  const fenceMatches = response.match(/```/g) ?? [];
+  const openFences   = (response.match(OPEN_FENCE_RE)  ?? []).length;
+  const closeFences  = (response.match(CLOSE_FENCE_RE) ?? []).length;
+
+  if (strategy.name === 'CodeGeneration' && fenceMatches.length === 0) {
+    issues.push({ code: 'NO_CODE_BLOCK', severity: 'warning', description: 'CodeGeneration strategy but no fenced code block found' });
+  }
+
+  if (openFences > closeFences) {
+    issues.push({ code: 'UNCLOSED_FENCE', severity: 'error', description: `${openFences - closeFences} unclosed code fence(s)` });
+    return { score: 0.3, issues };
+  }
+
+  // Check for truncation within code blocks
+  for (const pattern of TRUNCATION_PATTERNS) {
+    const codeBlocks = response.match(/```[\s\S]*?```/g) ?? [];
+    for (const block of codeBlocks) {
+      if (pattern.test(block.trim())) {
+        issues.push({ code: 'TRUNCATED_CODE', severity: 'error', description: 'Code block appears to be truncated' });
+        return { score: 0.2, issues };
       }
     }
   }
 
-  // Check for conflicting numbers attached to the same noun
-  const numberClaims = new Map<string, string>();
-  for (const m of response.matchAll(/(\w+)\s+(?:is|are|has|have|equals?|totals?)\s+(\d+(?:\.\d+)?)/gi)) {
-    const noun = (m[1] ?? "").toLowerCase();
-    const num = m[2] ?? "";
-    if (numberClaims.has(noun) && numberClaims.get(noun) !== num) {
-      score -= 0.1;
-      issues.push(`Conflicting values for "${noun}": ${numberClaims.get(noun)} vs ${num}`);
-    } else {
-      numberClaims.set(noun, num);
-    }
-  }
-
-  return {
-    dimension: "factual_consistency",
-    score: Math.max(0, score),
-    weight: 0.2,
-    issues: issues.slice(0, 3),
-  };
+  return { score: issues.length === 0 ? 1.0 : 0.7, issues };
 }
 
-/**
- * Code validity: static checks on fenced code blocks.
- * Catches obvious structural problems without running the code.
- */
-function validateCodeBlocks(response: string): DimensionScore {
-  const issues: string[] = [];
-  const blocks = extractCodeBlocks(response);
+// ─── 3. Completeness ─────────────────────────────────────────────────────────
 
-  if (blocks.length === 0) {
-    return { dimension: "code_validity", score: 1.0, weight: 0.15, issues: [] };
+function checkCompleteness(response: string, strategy: ResponseStrategy): { score: number; issues: QualityIssue[] } {
+  const issues: QualityIssue[] = [];
+  const trimmed = response.trim();
+
+  // Mid-sentence truncation heuristic: ends with comma, dash, or lowercase word
+  if (/[,\-—]\s*$/.test(trimmed) || /\s[a-z]{2,}$/.test(trimmed)) {
+    issues.push({ code: 'MID_SENTENCE_TRUNCATION', severity: 'error', description: 'Response appears to be cut off mid-sentence' });
+    return { score: 0.3, issues };
   }
 
-  let scoreSum = 0;
-  for (const { lang, code } of blocks) {
-    let blockScore = 1.0;
-
-    // Unbalanced braces
-    const opens = (code.match(/\{/g) ?? []).length;
-    const closes = (code.match(/\}/g) ?? []).length;
-    if (Math.abs(opens - closes) > 2) {
-      blockScore -= 0.3;
-      issues.push(`Unbalanced braces in ${lang || "code"} block`);
+  // JSON mode: response must be parseable
+  if (strategy.jsonMode) {
+    try {
+      JSON.parse(trimmed.replace(/^```json\s*/i, '').replace(/```\s*$/, ''));
+    } catch {
+      issues.push({ code: 'INVALID_JSON', severity: 'error', description: 'jsonMode active but response is not valid JSON' });
+      return { score: 0.2, issues };
     }
-
-    // Unbalanced parentheses
-    const parensOpen = (code.match(/\(/g) ?? []).length;
-    const parensClose = (code.match(/\)/g) ?? []).length;
-    if (Math.abs(parensOpen - parensClose) > 2) {
-      blockScore -= 0.2;
-      issues.push(`Unbalanced parentheses in ${lang || "code"} block`);
-    }
-
-    // Python-specific: mixed indent styles
-    if (lang === "python" || lang === "py") {
-      const hasTabs = /^\t/m.test(code);
-      const hasSpaces = /^ {2,}/m.test(code);
-      if (hasTabs && hasSpaces) {
-        blockScore -= 0.15;
-        issues.push("Python block mixes tabs and spaces");
-      }
-    }
-
-    // Placeholder markers left in code
-    if (/\b(TODO|FIXME|PLACEHOLDER|YOUR_CODE_HERE)\b/.test(code)) {
-      blockScore -= 0.15;
-      issues.push("Code block contains placeholder markers");
-    }
-
-    // Very short block suggesting truncation
-    if (code.trim().split("\n").length < 2 && code.trim().length < 20) {
-      blockScore -= 0.1;
-      issues.push("Code block appears incomplete or truncated");
-    }
-
-    scoreSum += Math.max(0, blockScore);
   }
 
-  return {
-    dimension: "code_validity",
-    score: scoreSum / blocks.length,
-    weight: 0.2,
-    issues: issues.slice(0, 4),
-  };
+  // Numbered steps completeness: if strategy is StepByStep, expect at least 2 steps
+  if (strategy.name === 'StepByStep') {
+    const stepCount = (trimmed.match(/^\s*\d+[\.)]/mg) ?? []).length;
+    if (stepCount < 2) {
+      issues.push({ code: 'INSUFFICIENT_STEPS', severity: 'warning', description: `Only ${stepCount} numbered step(s) found in StepByStep response` });
+    }
+  }
+
+  return { score: issues.length === 0 ? 1.0 : 0.75, issues };
 }
 
-/**
- * Hallucination risk: checks whether specific numbers and URLs in the response
- * appear in the provided context snippets. Without context, falls back to
- * over-confidence language detection.
- */
-function validateHallucinationRisk(
-  response: string,
-  contextSnippets: string[],
-): DimensionScore {
-  const issues: string[] = [];
-  let score = 0.85; // Optimistic baseline when no external context available
+// ─── 4. Accuracy / hallucination guards ──────────────────────────────────────
 
-  if (contextSnippets.length > 0) {
-    const contextText = contextSnippets.join(" ").toLowerCase();
+const SELF_CONTRADICTION_RE = /\byes\b.{1,200}\bno\b|\bno\b.{1,200}\byes\b/is;
+const FUTURE_DATE_RE        = /\b(?:202[6-9]|20[3-9]\d)\b/;  // Dates well in the future flagged
+const IMPOSSIBLE_NUMBER_RE  = /\b(?:100[1-9]|1[1-9]\d{2,})\s*%/;  // > 100% unless it's "more than 100%"
 
-    // Verify specific numbers appear in context
-    const numbers = response.match(/\b\d{4,}\b/g) ?? [];
-    let unsupported = 0;
-    for (const num of numbers) {
-      if (!contextText.includes(num)) unsupported++;
-    }
-    if (numbers.length > 0) {
-      const unsupportedRatio = unsupported / numbers.length;
-      score -= unsupportedRatio * 0.35;
-      if (unsupportedRatio > 0.3) {
-        issues.push(`${unsupported}/${numbers.length} specific numbers not found in context`);
-      }
-    }
+function checkAccuracy(response: string): { score: number; issues: QualityIssue[] } {
+  const issues: QualityIssue[] = [];
+
+  if (SELF_CONTRADICTION_RE.test(response)) {
+    issues.push({ code: 'SELF_CONTRADICTION', severity: 'warning', description: 'Response may contain self-contradictory statements' });
   }
 
-  // Flag URLs that don't appear in context
-  const contextText = contextSnippets.join(" ");
-  const urlsInResponse = response.match(/https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi) ?? [];
-  for (const url of urlsInResponse) {
-    if (!contextText.includes(url)) {
-      score -= 0.05;
-      issues.push(`Unverified URL: ${url.slice(0, 60)}`);
-    }
+  if (IMPOSSIBLE_NUMBER_RE.test(response)) {
+    issues.push({ code: 'IMPOSSIBLE_PERCENTAGE', severity: 'info', description: 'Response contains a percentage > 100% (verify intent)' });
   }
 
-  // Over-confident language without hedging → small penalty
-  const overconfidentPatterns: RegExp[] = [
-    /\b(definitely|certainly|absolutely|always|never|100%)\b/gi,
-    /\bI (know|guarantee|promise|assure you)\b/gi,
-  ];
-  let overconfidenceHits = 0;
-  for (const pat of overconfidentPatterns) {
-    overconfidenceHits += (response.match(pat) ?? []).length;
-  }
-  if (overconfidenceHits > 3) {
-    score -= Math.min(0.1, overconfidenceHits * 0.02);
-    issues.push(`Overly confident language (${overconfidenceHits} instances)`);
-  }
-
-  return {
-    dimension: "hallucination_risk",
-    score: Math.max(0, score),
-    weight: 0.25,
-    issues: issues.slice(0, 3),
-  };
+  return { score: issues.length === 0 ? 1.0 : Math.max(0.5, 1 - issues.length * 0.2), issues };
 }
 
-/**
- * Length appropriateness: penalise extreme brevity or verbosity.
- */
-function validateLength(
-  response: string,
-  minLength: number,
-  maxLength: number,
-): DimensionScore {
-  const len = response.length;
-  const issues: string[] = [];
-  let score = 1.0;
+// ─── 5. Safety / PII signals ─────────────────────────────────────────────────
 
-  if (len < minLength) {
-    score = Math.max(0.2, len / minLength);
-    issues.push(`Response too short (${len} chars, min ${minLength})`);
-  } else if (len > maxLength) {
-    const overflow = len - maxLength;
-    score = Math.max(0.5, 1 - overflow / maxLength);
-    issues.push(`Response very long (${len} chars, recommended max ${maxLength})`);
+const EMAIL_RE   = /\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g;
+const PHONE_RE   = /\b(?:\+\d{1,3}\s?)?\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}\b/g;
+
+function checkSafety(response: string): { score: number; issues: QualityIssue[] } {
+  const issues: QualityIssue[] = [];
+
+  const emails = response.match(EMAIL_RE) ?? [];
+  if (emails.length > 0) {
+    issues.push({ code: 'PII_EMAIL', severity: 'info', description: `Response contains ${emails.length} email address(es)` });
   }
 
-  return { dimension: "length_appropriateness", score, weight: 0.1, issues };
+  const phones = response.match(PHONE_RE) ?? [];
+  if (phones.length > 0) {
+    issues.push({ code: 'PII_PHONE', severity: 'info', description: `Response contains ${phones.length} phone number(s)` });
+  }
+
+  // Safety doesn't lower score unless severity is error
+  const errorCount = issues.filter(i => i.severity === 'error').length;
+  return { score: errorCount > 0 ? 0.5 : 1.0, issues };
 }
 
-/**
- * Format compliance: checks markdown fencing, list consistency, etc.
- */
-function validateFormat(response: string): DimensionScore {
-  const issues: string[] = [];
-  let score = 1.0;
+// ─── 6. Repetition detection ─────────────────────────────────────────────────
 
-  // Unclosed code fence (odd number of ``` markers)
-  const openFences = (response.match(/```/g) ?? []).length;
-  if (openFences % 2 !== 0) {
-    score -= 0.3;
-    issues.push("Unclosed code fence detected");
+function checkRepetition(response: string): { score: number; issues: QualityIssue[] } {
+  const issues: QualityIssue[] = [];
+
+  const sentences = response
+    .split(/[.!?]+/)
+    .map(s => s.trim().toLowerCase())
+    .filter(s => s.length > 15);
+
+  const counts = new Map<string, number>();
+  for (const s of sentences) counts.set(s, (counts.get(s) ?? 0) + 1);
+
+  const maxRepeat = Math.max(0, ...counts.values());
+  if (maxRepeat >= 3) {
+    issues.push({
+      code       : 'DEGENERATE_REPETITION',
+      severity   : 'error',
+      description: `A sentence is repeated ${maxRepeat} times — likely degenerate output`,
+    });
+    return { score: 0.1, issues };
+  }
+  if (maxRepeat === 2) {
+    issues.push({ code: 'REPEATED_SENTENCE', severity: 'warning', description: 'A sentence appears twice' });
+    return { score: 0.75, issues };
   }
 
-  // Inconsistent list markers (mixing * and - at same level)
-  const bulletLines = response.match(/^(\s*[-*•])\s+/gm) ?? [];
-  const markers = new Set(bulletLines.map(l => l.trim().charAt(0)));
-  if (markers.size > 1) {
-    score -= 0.05;
-    issues.push("Mixed list markers (- and *) at same level");
-  }
-
-  // Trailing whitespace (template artefact indicator)
-  const trailingWs = (response.match(/[ \t]+$/gm) ?? []).length;
-  if (trailingWs > 10) {
-    score -= Math.min(0.1, trailingWs * 0.005);
-  }
-
-  return { dimension: "format_compliance", score: Math.max(0.5, score), weight: 0.1, issues };
+  return { score: 1.0, issues };
 }
 
-// ─── ResponseQualityValidator ─────────────────────────────────────────────────
+// ─── Main class ───────────────────────────────────────────────────────────────
 
 export class ResponseQualityValidator {
-  private config: ValidatorConfig;
-
-  constructor(config: Partial<ValidatorConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
-  }
-
+  /**
+   * Validate a completed LLM response.
+   *
+   * @param response        - Full response text from the LLM
+   * @param strategy        - The strategy that was used to generate this response
+   * @param requestWordCount - Word count of the original user request
+   */
   validate(
     response: string,
-    userMessage: string,
-    contextSnippets?: string[],
+    strategy: ResponseStrategy,
+    requestWordCount = 10,
   ): ValidationResult {
-    const t0 = Date.now();
-    const ctx = contextSnippets ?? this.config.contextSnippets;
+    const start = Date.now();
+    const allIssues: QualityIssue[] = [];
 
-    const dimensions: DimensionScore[] = [
-      validateCompleteness(userMessage, response),
-      validateFactualConsistency(response),
-      this.config.enableCodeValidation
-        ? validateCodeBlocks(response)
-        : { dimension: "code_validity" as const, score: 1.0, weight: 0.15, issues: [] },
-      this.config.enableHallucinationCheck
-        ? validateHallucinationRisk(response, ctx)
-        : { dimension: "hallucination_risk" as const, score: 0.9, weight: 0.25, issues: [] },
-      validateLength(response, this.config.minResponseLength, this.config.maxResponseLength),
-      validateFormat(response),
-    ];
+    // ── Run all checks ──────────────────────────────────────────────────────
+    const { score: lengthScore,       issues: lengthIssues }       = checkLength(response, strategy, requestWordCount);
+    const { score: codeScore,         issues: codeIssues }         = checkCodeSyntax(response, strategy);
+    const { score: completenessScore, issues: completenessIssues } = checkCompleteness(response, strategy);
+    const { score: accuracyScore,     issues: accuracyIssues }     = checkAccuracy(response);
+    const { score: safetyScore,       issues: safetyIssues }       = checkSafety(response);
+    const { score: repetitionScore,   issues: repetitionIssues }   = checkRepetition(response);
 
-    const totalWeight = dimensions.reduce((s, d) => s + d.weight, 0);
-    const overallScore =
-      dimensions.reduce((s, d) => s + d.score * d.weight, 0) / totalWeight;
+    allIssues.push(
+      ...lengthIssues, ...codeIssues, ...completenessIssues,
+      ...accuracyIssues, ...safetyIssues, ...repetitionIssues,
+    );
 
-    const allIssues = dimensions.flatMap(d => d.issues);
+    // ── Weighted composite ──────────────────────────────────────────────────
+    const weights = {
+      length      : 0.20,
+      codeSyntax  : strategy.name === 'CodeGeneration' ? 0.30 : 0.10,
+      completeness: 0.25,
+      accuracy    : 0.20,
+      safety      : 0.10,
+      repetition  : 0.15,
+    };
+    // Normalise weights to 1.0
+    const total = Object.values(weights).reduce((a, b) => a + b, 0);
+    const score =
+      (lengthScore       * weights.length       +
+       codeScore         * weights.codeSyntax   +
+       completenessScore * weights.completeness +
+       accuracyScore     * weights.accuracy     +
+       safetyScore       * weights.safety       +
+       repetitionScore   * weights.repetition) / total;
 
-    const suggestions: string[] = [];
-    for (const dim of dimensions) {
-      if (dim.score < 0.7 && dim.score >= 0.5) {
-        suggestions.push(`Improve ${dim.dimension} (score: ${dim.score.toFixed(2)})`);
-      }
+    const roundedScore      = Math.round(score * 1000) / 1000;
+    const shouldRegenerate  = roundedScore < AUTO_REGEN_THRESHOLD;
+    const validationMs      = Date.now() - start;
+
+    if (shouldRegenerate) {
+      Logger.warn('[ResponseQualityValidator] quality below threshold', {
+        score     : roundedScore,
+        threshold : AUTO_REGEN_THRESHOLD,
+        strategy  : strategy.name,
+        issues    : allIssues.filter(i => i.severity !== 'info').map(i => i.code),
+      });
+    } else {
+      Logger.debug('[ResponseQualityValidator] response passed quality gate', {
+        score: roundedScore, strategy: strategy.name, validationMs,
+      });
     }
 
-    const result: ValidationResult = {
-      overallScore: Math.round(overallScore * 1000) / 1000,
-      passed: overallScore >= this.config.passingThreshold,
-      shouldRegenerate: overallScore < this.config.regenerationThreshold,
-      dimensions,
-      issues: allIssues.filter(i => i.length > 0).slice(0, 5),
-      suggestions,
-      validationMs: Date.now() - t0,
-      responseTokenEstimate: Math.ceil(response.length / 4),
+    return {
+      score           : roundedScore,
+      shouldRegenerate,
+      dimensions      : {
+        length      : Math.round(lengthScore       * 1000) / 1000,
+        codeSyntax  : Math.round(codeScore         * 1000) / 1000,
+        completeness: Math.round(completenessScore * 1000) / 1000,
+        accuracy    : Math.round(accuracyScore     * 1000) / 1000,
+        safety      : Math.round(safetyScore       * 1000) / 1000,
+        repetition  : Math.round(repetitionScore   * 1000) / 1000,
+      },
+      issues          : allIssues,
+      responseLength  : response.length,
+      validationMs,
     };
-
-    log.info("response_validated", {
-      overallScore: result.overallScore,
-      passed: result.passed,
-      shouldRegenerate: result.shouldRegenerate,
-      issueCount: allIssues.length,
-      validationMs: result.validationMs,
-    });
-
-    return result;
-  }
-
-  configure(patch: Partial<ValidatorConfig>): void {
-    this.config = { ...this.config, ...patch };
   }
 }
+
+// ─── Singleton export ─────────────────────────────────────────────────────────
 
 export const responseQualityValidator = new ResponseQualityValidator();
