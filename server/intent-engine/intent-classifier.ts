@@ -77,6 +77,42 @@ const INTENT_RULES: IntentRule[] = [
     patterns: [/(?:reescribe|modifica|cambia|edita)\s+(?:solo|solamente|únicamente)?\s*(?:la|el|esto)/i, /(?:cambia|reemplaza)\s+(?:la|el)\s+(?:variable|palabra|parte)/i],
     intent: 'CONSTRAINED_REWRITE',
     priority: 8
+  },
+  {
+    id: 'citation_format',
+    keywords: ['citar', 'cita', 'citación', 'cite', 'citation', 'apa', 'mla', 'chicago', 'vancouver', 'ieee', 'harvard', 'iso 690', 'bibliografía', 'bibliography', 'referencia', 'referencias', 'reference'],
+    patterns: [
+      /(?:cit[ae]r?|format(?:ea|o)?)\s+(?:en\s+)?(?:apa|mla|chicago|vancouver|ieee|harvard)/i,
+      /(?:formato|norma|estilo)\s+(?:apa|mla|chicago|vancouver|ieee|harvard)/i,
+      /(?:apa|mla|chicago|vancouver|ieee|harvard)\s+(?:\d+(?:ma|th|va|ta)?\s+)?(?:edici[oó]n|edition)/i,
+      /(?:genera|crea|haz|dame)\s+(?:la\s+)?(?:bibliografía|referencias|citas)/i,
+    ],
+    intent: 'CITATION_FORMAT',
+    priority: 11
+  },
+  {
+    id: 'academic_search',
+    keywords: ['artículo', 'artículos', 'paper', 'papers', 'estudio', 'estudios', 'publicación', 'publicaciones', 'journal', 'revista científica', 'scholar', 'pubmed', 'scopus', 'tesis', 'thesis', 'disertación', 'peer-review', 'peer review'],
+    patterns: [
+      /(?:busca|encuentra|investiga)\s+(?:artículos?|papers?|estudios?|publicaciones?)\s+(?:sobre|de|acerca)/i,
+      /(?:artículos?|papers?|estudios?)\s+(?:científicos?|académicos?|recientes?)/i,
+      /(?:en|de)\s+(?:scholar|pubmed|scopus|scielo|arxiv|jstor)/i,
+      /(?:base\s+de\s+datos\s+)?(?:académica|científica)/i,
+      /(?:literatura|revisión\s+(?:de\s+)?literatura|estado\s+del\s+arte)/i,
+    ],
+    intent: 'ACADEMIC_SEARCH',
+    priority: 10
+  },
+  {
+    id: 'fact_check',
+    keywords: ['verificar', 'verificación', 'verify', 'comprobar', 'fact-check', 'factcheck', 'cierto', 'verdad', 'falso', 'mito', 'confirmar'],
+    patterns: [
+      /(?:es\s+)?(?:cierto|verdad|falso|un\s+mito)\s+que/i,
+      /(?:verifica|comprueba|confirma)\s+(?:si|que|esto)/i,
+      /(?:fact.?check|verificación\s+de\s+(?:hechos|datos))/i,
+    ],
+    intent: 'FACT_CHECK',
+    priority: 9
   }
 ];
 

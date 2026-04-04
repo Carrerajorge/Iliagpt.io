@@ -22,7 +22,7 @@ export class ConstraintExtractor {
     const text = input.cleanedText;
     const lowerText = text.toLowerCase();
 
-    return {
+    const result: Constraints = {
       domain: input.entities.domain,
       task: intent.intent,
       n: input.entities.quantity,
@@ -33,8 +33,19 @@ export class ConstraintExtractor {
       language: input.language,
       format: this.detectFormat(lowerText, intent.intent),
       maxLength: this.extractMaxLength(text),
-      minLength: this.extractMinLength(text)
+      minLength: this.extractMinLength(text),
     };
+
+    if (intent.intent === 'CITATION_FORMAT' || intent.intent === 'ACADEMIC_SEARCH' || intent.intent === 'RESEARCH') {
+      result.citationStyle = this.detectCitationStyle(lowerText);
+      result.citationEdition = this.detectCitationEdition(lowerText);
+      result.academicDepth = this.detectAcademicDepth(lowerText);
+      if (intent.intent === 'CITATION_FORMAT' || intent.intent === 'ACADEMIC_SEARCH') {
+        result.tone = 'academic';
+      }
+    }
+
+    return result;
   }
 
   private extractMustKeep(text: string, fixedParts: string[]): string[] {
@@ -173,6 +184,31 @@ export class ConstraintExtractor {
     }
 
     return undefined;
+  }
+
+  private detectCitationStyle(text: string): Constraints['citationStyle'] {
+    if (/\bapa\s*7|apa\s*7ma/i.test(text)) return 'apa7';
+    if (/\bapa\s*6|apa\s*6ta/i.test(text)) return 'apa6';
+    if (/\bapa\b/i.test(text)) return 'apa7';
+    if (/\bmla\b/i.test(text)) return 'mla';
+    if (/\bchicago\b/i.test(text)) return 'chicago';
+    if (/\bvancouver\b/i.test(text)) return 'vancouver';
+    if (/\bieee\b/i.test(text)) return 'ieee';
+    if (/\bharvard\b/i.test(text)) return 'harvard';
+    if (/\biso[\s-]*690\b/i.test(text)) return 'iso690';
+    return undefined;
+  }
+
+  private detectCitationEdition(text: string): string | undefined {
+    const editionMatch = text.match(/(\d+)\s*(?:ma|va|ta|th|st|nd|rd)?\s*(?:edici[oó]n|edition)/i);
+    if (editionMatch) return editionMatch[1];
+    return undefined;
+  }
+
+  private detectAcademicDepth(text: string): Constraints['academicDepth'] {
+    if (/(?:profund[oa]|exhaustiv[oa]|completo|detallad[oa]|extenso|deep|thorough|comprehensive)/i.test(text)) return 'deep';
+    if (/(?:breve|rápid[oa]|resumen|overview|brief|quick)/i.test(text)) return 'surface';
+    return 'standard';
   }
 
   mergeWithPrevious(current: Constraints, previous: Constraints | null): Constraints {

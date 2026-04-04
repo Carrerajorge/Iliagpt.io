@@ -8,6 +8,9 @@ const resolverMap: Partial<Record<IntentType, BaseResolver<StructuredOutput>>> =
   'TITLE_IDEATION': titleResolver,
   'OUTLINE': outlineResolver,
   'SUMMARIZE': summarizeResolver,
+  'CITATION_FORMAT': summarizeResolver,
+  'ACADEMIC_SEARCH': summarizeResolver,
+  'FACT_CHECK': summarizeResolver,
 };
 
 export function getResolver(intent: IntentType): BaseResolver<StructuredOutput> | null {

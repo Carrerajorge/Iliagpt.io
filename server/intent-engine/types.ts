@@ -8,8 +8,11 @@ export type IntentType =
   | 'CODE_GENERATION'
   | 'DATA_ANALYSIS'
   | 'RESEARCH'
+  | 'ACADEMIC_SEARCH'
+  | 'CITATION_FORMAT'
   | 'COMPARISON'
   | 'CREATIVE_WRITING'
+  | 'FACT_CHECK'
   | 'GENERAL_CHAT';
 
 export type TaskDomain =
@@ -68,6 +71,9 @@ export interface Constraints {
   format: OutputFormat;
   maxLength?: number;
   minLength?: number;
+  citationStyle?: 'apa7' | 'apa6' | 'mla' | 'chicago' | 'vancouver' | 'ieee' | 'harvard' | 'iso690';
+  citationEdition?: string;
+  academicDepth?: 'surface' | 'standard' | 'deep';
 }
 
 export type ToneType =

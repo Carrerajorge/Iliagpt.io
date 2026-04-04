@@ -956,58 +956,146 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   const components = useMemo(() => ({
     code: CodeComponent,
     img: (props: any) => <LazyImage {...props} maxHeight={imageMaxHeight} />,
-    p: ({ children }: { children?: React.ReactNode }) => <p className="mb-3 leading-relaxed">{children}</p>,
+    p: ({ children }: { children?: React.ReactNode }) => <p className="mb-3 leading-[1.75] text-[15px]">{children}</p>,
     a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
-      // DEBUG LOGGING
-      // console.log("[MarkdownRenderer] 'a' tag children:", children, "href:", href);
-
       const childText = extractText(children).trim();
-
-      // console.log("[MarkdownRenderer] childText:", childText);
 
       const sourceMatch = childText.match(/^%%SOURCE%%(.+)%%SOURCE%%$/);
       if (sourceMatch && href) {
-        // console.log("[MarkdownRenderer] Match found:", sourceMatch[1]);
         return <InlineSourceBadge name={sourceMatch[1]} url={href} />;
       }
+
+      let domain = "";
+      try { if (href) domain = new URL(href).hostname.replace(/^www\./, ""); } catch {}
+
+      const isDOI = href?.includes("doi.org/");
 
       return (
         <a
           href={href}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-sky-500 hover:text-sky-600 hover:underline transition-colors"
+          className={cn(
+            "inline-flex items-center gap-1 transition-colors no-underline",
+            isDOI
+              ? "text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 font-mono text-[13px]"
+              : "text-sky-500 hover:text-sky-400 hover:underline"
+          )}
           data-testid="link-markdown"
         >
+          {isDOI && <ExternalLink className="w-3 h-3 flex-shrink-0" />}
           {children}
         </a>
       );
     },
     ul: ({ children }: { children?: React.ReactNode }) => (
-      <ul className="list-disc list-inside mb-3 space-y-1">{children}</ul>
+      <ul className="mb-4 space-y-1.5 pl-1">{children}</ul>
     ),
-    ol: ({ children }: { children?: React.ReactNode }) => (
-      <ol className="list-decimal list-inside mb-3 space-y-1">{children}</ol>
-    ),
-    li: ({ children }: { children?: React.ReactNode }) => <li className="ml-2">{children}</li>,
+    ol: ({ children, start }: { children?: React.ReactNode; start?: number }) => {
+      const text = extractText(children);
+      const signals = [
+        /\(\d{4}[a-z]?\)/.test(text),
+        /doi\.org/i.test(text),
+        /\bet\s+al\./i.test(text),
+        /https?:\/\/doi/i.test(text),
+      ].filter(Boolean).length;
+      const isCitation = signals >= 2;
+
+      if (isCitation) {
+        return (
+          <ol start={start} className="mb-4 space-y-3 pl-0 list-none" data-testid="citation-list">
+            {children}
+          </ol>
+        );
+      }
+
+      return (
+        <ol start={start} className="list-decimal mb-4 space-y-1.5 pl-6" data-testid="ordered-list">
+          {children}
+        </ol>
+      );
+    },
+    li: ({ children, node, ...props }: { children?: React.ReactNode; node?: any; ordered?: boolean; index?: number }) => {
+      const text = extractText(children);
+      const hasCitationSignals = [
+        /\(\d{4}[a-z]?\)/.test(text),
+        /doi\.org/i.test(text),
+        /\bet\s+al\./i.test(text),
+        /https?:\/\/doi/i.test(text),
+      ].filter(Boolean).length;
+      const isCitation = hasCitationSignals >= 2;
+
+      if (isCitation) {
+        const itemIndex = typeof props.index === 'number' ? props.index + 1 : null;
+        const yearMatch = text.match(/\((\d{4}[a-z]?)\)/);
+        const doiMatch = text.match(/https?:\/\/doi\.org\/[^\s)]+/);
+        const italicMatch = text.match(/\*([^*]+)\*/);
+
+        return (
+          <li className="relative flex gap-3 p-3 rounded-xl bg-muted/30 border border-border/50 hover:border-primary/30 hover:bg-muted/50 transition-all group list-none" data-testid="citation-item">
+            {itemIndex && (
+              <span className="flex-shrink-0 w-7 h-7 rounded-lg bg-primary/10 text-primary text-xs font-bold flex items-center justify-center mt-0.5">
+                {itemIndex}
+              </span>
+            )}
+            <div className="flex-1 min-w-0 space-y-1">
+              <div className="text-[14px] leading-relaxed text-foreground/90">{children}</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {yearMatch && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[11px] font-medium">
+                    {yearMatch[1]}
+                  </span>
+                )}
+                {doiMatch && (
+                  <a
+                    href={doiMatch[0]}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[11px] font-medium hover:bg-emerald-500/20 transition-colors no-underline"
+                  >
+                    <ExternalLink className="w-2.5 h-2.5" />
+                    DOI
+                  </a>
+                )}
+                {italicMatch && (
+                  <span className="text-[11px] text-muted-foreground italic truncate max-w-[200px]">
+                    {italicMatch[1]}
+                  </span>
+                )}
+              </div>
+            </div>
+          </li>
+        );
+      }
+
+      return (
+        <li className="text-[15px] leading-relaxed ml-2 pl-1 marker:text-primary/60">{children}</li>
+      );
+    },
     h1: ({ children }: { children?: React.ReactNode }) => (
-      <h1 className="text-xl font-bold mb-3 mt-4">{children}</h1>
+      <h1 className="text-2xl font-bold mb-4 mt-6 pb-2 border-b border-border/50 text-foreground">{children}</h1>
     ),
     h2: ({ children }: { children?: React.ReactNode }) => (
-      <h2 className="text-lg font-bold mb-2 mt-3">{children}</h2>
+      <h2 className="text-xl font-bold mb-3 mt-5 text-foreground">{children}</h2>
     ),
     h3: ({ children }: { children?: React.ReactNode }) => (
-      <h3 className="text-base font-semibold mb-2 mt-2">{children}</h3>
+      <h3 className="text-lg font-semibold mb-2 mt-4 text-foreground/90">{children}</h3>
     ),
     h4: ({ children }: { children?: React.ReactNode }) => (
-      <h4 className="text-sm font-semibold mb-2 mt-2">{children}</h4>
+      <h4 className="text-base font-semibold mb-2 mt-3 text-foreground/80">{children}</h4>
     ),
     blockquote: ({ children }: { children?: React.ReactNode }) => (
-      <blockquote className="border-l-4 border-muted-foreground/30 pl-4 italic my-3 text-muted-foreground">
+      <blockquote className="border-l-[3px] border-primary/40 pl-4 py-1 my-4 bg-primary/[0.03] rounded-r-lg text-muted-foreground italic">
         {children}
       </blockquote>
     ),
-    hr: () => <hr className="my-4 border-border" />,
+    strong: ({ children }: { children?: React.ReactNode }) => (
+      <strong className="font-semibold text-foreground">{children}</strong>
+    ),
+    em: ({ children }: { children?: React.ReactNode }) => (
+      <em className="italic text-foreground/80">{children}</em>
+    ),
+    hr: () => <hr className="my-6 border-border/50" />,
     ...tableComponents,
     ...customComponents,
   }), [imageMaxHeight, customComponents, CodeComponent]);
