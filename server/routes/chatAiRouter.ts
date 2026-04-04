@@ -6945,9 +6945,12 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         res.flushHeaders();
 
         (res as any).locals = (res as any).locals || {};
+        const clientRequestId = typeof req.body?.requestId === 'string' && req.body.requestId.trim()
+          ? req.body.requestId.trim()
+          : requestId;
         (res as any).locals.streamMeta = {
           conversationId,
-          requestId,
+          requestId: clientRequestId,
           getAssistantMessageId: () => `analyze-${requestId}`,
         };
 

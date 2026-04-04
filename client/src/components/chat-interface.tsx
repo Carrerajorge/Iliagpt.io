@@ -1773,12 +1773,12 @@ export function ChatInterface({
         buildErrorMessage: (error, messageId) => ({
           id: messageId || `analysis-${opts.userMessageId}`,
           role: "assistant" as const,
-          content: `No se pudo analizar el documento. ${error.message}`,
+          content: `No se pudo analizar el documento. ${error?.message || "Error de conexión con el servidor."}`,
           timestamp: new Date(),
           requestId: generateRequestId(),
           userMessageId: opts.userMessageId,
           deliveryStatus: "error" as const,
-          deliveryError: error.message,
+          deliveryError: error?.message || "Error de conexión con el servidor.",
         }),
       });
 
