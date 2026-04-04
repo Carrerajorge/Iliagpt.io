@@ -1,0 +1,129 @@
+2025-12-15 20:17:57.35
+18109f62
+User
+Embedding generation error: Ca [Error]: 404 "The model text-embedding-3-small does not exist or your team caf66fcb-88a5-4f9c-b8c6-d1a2b65e81af does not have access to it. Please ensure you're using the correct API key. If you believe this is a mistake, please contact support and quote your team ID and the model name."
+2025-12-15 20:17:57.35
+18109f62
+User
+status: 404,
+2025-12-15 20:17:57.35
+18109f62
+User
+headers: Headers {
+2025-12-15 20:17:57.35
+18109f62
+User
+at async rv (/home/runner/workspace/dist/index.cjs:100:14058)
+2025-12-15 20:17:57.35
+18109f62
+User
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+2025-12-15 20:17:57.35
+18109f62
+User
+'strict-transport-security': 'max-age=31536000',
+2025-12-15 20:17:57.35
+18109f62
+User
+at async /home/runner/workspace/dist/index.cjs:100:16077 {
+2025-12-15 20:17:57.35
+18109f62
+User
+'access-control-expose-headers': '*',
+2025-12-15 20:17:57.35
+18109f62
+User
+},
+2025-12-15 20:17:57.35
+18109f62
+User
+'transfer-encoding': 'chunked',
+2025-12-15 20:17:57.35
+18109f62
+User
+server: 'cloudflare',
+2025-12-15 20:17:57.35
+18109f62
+User
+'cf-cache-status': 'DYNAMIC',
+2025-12-15 20:17:57.35
+18109f62
+User
+requestID: null,
+2025-12-15 20:17:57.35
+18109f62
+User
+code: undefined,
+
+2025-12-15 20:17:57.35
+18109f62
+User
+at H.makeStatusError (/home/runner/workspace/dist/index.cjs:100:1172)
+2025-12-15 20:17:57.35
+18109f62
+User
+type: undefined
+2025-12-15 20:17:57.35
+18109f62
+User
+date: 'Tue, 16 Dec 2025 00:17:57 GMT',
+2025-12-15 20:17:57.35
+18109f62
+User
+vary: 'origin, access-control-request-method, access-control-request-headers',
+2025-12-15 20:17:57.35
+18109f62
+User
+'content-type': 'application/json',
+2025-12-15 20:17:57.35
+18109f62
+User
+'content-encoding': 'gzip',
+2025-12-15 20:17:57.35
+18109f62
+User
+'access-control-allow-origin': '*',
+2025-12-15 20:17:57.35
+18109f62
+User
+error: "The model text-embedding-3-small does not exist or your team caf66fcb-88a5-4f9c-b8c6-d1a2b65e81af does not have access to it. Please ensure you're using the correct API key. If you believe this is a mistake, please contact support and quote your team ID and the model name.",
+2025-12-15 20:17:57.35
+18109f62
+User
+'cf-ray': '9aea002d0deaaca6-ORD'
+2025-12-15 20:17:57.35
+18109f62
+User
+'set-cookie': '__cf_bm=raa0Kg9rjnBC72b9Zi5yHZ_p7pH7Z1c1KLi8_w0sr7k-1765844277-1.0.1.1-MESCPR531sadFFCy.EzGJiLXcIy4JnBeJ45nKB.PydeQjIaHLG.8Ee7VNIPDdBnEX4DjcJ9RfoKbWxEtrTrBC3unzRYuvUecp2Qd3Z3AniI; path=/; expires=Tue, 16-Dec-25 00:47:57 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None',
+2025-12-15 20:17:57.35
+18109f62
+User
+param: undefined,
+2025-12-15 20:17:57.35
+18109f62
+User
+connection: 'keep-alive',
+2025-12-15 20:17:57.35
+18109f62
+User
+at t.generate (/home/runner/workspace/dist/index.cjs:78:2136)
+2025-12-15 20:17:57.35
+18109f62
+User
+at H.makeRequest (/home/runner/workspace/dist/index.cjs:100:4487)
+2025-12-15 20:18:03.70
+18109f62
+User
+server: 'cloudflare',
+2025-12-15 20:18:03.70
+18109f62
+User
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+2025-12-15 20:18:03.70
+18109f62
+User
+code: undefined,
+2025-12-15 20:18:03.70
+18109f62
+User
+type: undefined

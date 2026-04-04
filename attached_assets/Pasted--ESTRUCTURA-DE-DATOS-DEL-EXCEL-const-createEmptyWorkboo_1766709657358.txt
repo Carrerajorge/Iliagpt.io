@@ -1,0 +1,616 @@
+// === ESTRUCTURA DE DATOS DEL EXCEL ===
+const createEmptyWorkbook = () => ({
+  sheets: [
+    {
+      id: 'sheet1',
+      name: 'Hoja 1',
+      data: createEmptyGrid(1000, 26), // 1000 filas x 26 columnas
+      charts: [],
+      conditionalFormats: []
+    }
+  ],
+  activeSheet: 'sheet1'
+});
+
+const createEmptyGrid = (rows, cols) => {
+  const grid = [];
+  for (let i = 0; i < rows; i++) {
+    const row = [];
+    for (let j = 0; j < cols; j++) {
+      row.push({ value: '', formula: null, format: {} });
+    }
+    grid.push(row);
+  }
+  return grid;
+};
+
+// === MOTOR DE FÓRMULAS ===
+const FormulaEngine = {
+  // Parsear referencia de celda (A1 -> {row: 0, col: 0})
+  parseRef: (ref) => {
+    const match = ref.match(/^([A-Z]+)(\d+)$/i);
+    if (!match) return null;
+    const col = match[1].toUpperCase().charCodeAt(0) - 65;
+    const row = parseInt(match[2]) - 1;
+    return { row, col };
+  },
+
+  // Parsear rango (A1:B10)
+  parseRange: (range) => {
+    const [start, end] = range.split(':');
+    return { start: FormulaEngine.parseRef(start), end: FormulaEngine.parseRef(end) };
+  },
+
+  // Obtener valores de un rango
+  getRangeValues: (grid, range) => {
+    const { start, end } = FormulaEngine.parseRange(range);
+    const values = [];
+    for (let r = start.row; r <= end.row; r++) {
+      for (let c = start.col; c <= end.col; c++) {
+        const val = parseFloat(grid[r]?.[c]?.value);
+        if (!isNaN(val)) values.push(val);
+      }
+    }
+    return values;
+  },
+
+  // Evaluar fórmula
+  evaluate: (formula, grid) => {
+    if (!formula || !formula.startsWith('=')) return formula;
+    
+    const expr = formula.substring(1).toUpperCase();
+    
+    try {
+      // SUM
+      if (expr.startsWith('SUM(')) {
+        const range = expr.match(/SUM\(([^)]+)\)/)?.[1];
+        const values = FormulaEngine.getRangeValues(grid, range);
+        return values.reduce((a, b) => a + b, 0);
+      }
+      
+      // AVERAGE
+      if (expr.startsWith('AVERAGE(')) {
+        const range = expr.match(/AVERAGE\(([^)]+)\)/)?.[1];
+        const values = FormulaEngine.getRangeValues(grid, range);
+        return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+      }
+      
+      // COUNT
+      if (expr.startsWith('COUNT(')) {
+        const range = expr.match(/COUNT\(([^)]+)\)/)?.[1];
+        const values = FormulaEngine.getRangeValues(grid, range);
+        return values.length;
+      }
+      
+      // MAX
+      if (expr.startsWith('MAX(')) {
+        const range = expr.match(/MAX\(([^)]+)\)/)?.[1];
+        const values = FormulaEngine.getRangeValues(grid, range);
+        return Math.max(...values);
+      }
+      
+      // MIN
+      if (expr.startsWith('MIN(')) {
+        const range = expr.match(/MIN\(([^)]+)\)/)?.[1];
+        const values = FormulaEngine.getRangeValues(grid, range);
+        return Math.min(...values);
+      }
+      
+      // IF
+      if (expr.startsWith('IF(')) {
+        const params = expr.match(/IF\(([^,]+),([^,]+),([^)]+)\)/);
+        if (params) {
+          const condition = FormulaEngine.evaluateCondition(params[1], grid);
+          return condition ? params[2].trim() : params[3].trim();
+        }
+      }
+      
+      // Referencia simple (=A1)
+      const ref = FormulaEngine.parseRef(expr);
+      if (ref) {
+        return grid[ref.row]?.[ref.col]?.value || 0;
+      }
+      
+      // Operación matemática simple (=A1*B1)
+      const mathExpr = expr.replace(/([A-Z]+\d+)/gi, (match) => {
+        const ref = FormulaEngine.parseRef(match);
+        return ref ? (parseFloat(grid[ref.row]?.[ref.col]?.value) || 0) : 0;
+      });
+      return eval(mathExpr);
+      
+    } catch (e) {
+      return '#ERROR';
+    }
+  },
+
+  evaluateCondition: (condition, grid) => {
+    const processed = condition.replace(/([A-Z]+\d+)/gi, (match) => {
+      const ref = FormulaEngine.parseRef(match);
+      return ref ? (parseFloat(grid[ref.row]?.[ref.col]?.value) || 0) : 0;
+    });
+    return eval(processed);
+  }
+};
+
+// === COMPONENTE PRINCIPAL DEL EXCEL ===
+const ExcelEditor = ({ workbook, setWorkbook }) => {
+  const [activeSheet, setActiveSheet] = useState(workbook.activeSheet);
+  const [selectedCell, setSelectedCell] = useState({ row: 0, col: 0 });
+  const [editingCell, setEditingCell] = useState(null);
+  const [scrollPosition, setScrollPosition] = useState({ top: 0, left: 0 });
+  
+  const VISIBLE_ROWS = 30;
+  const VISIBLE_COLS = 15;
+  const ROW_HEIGHT = 28;
+  const COL_WIDTH = 100;
+  
+  const currentSheet = workbook.sheets.find(s => s.id === activeSheet);
+  
+  // Virtual scrolling - solo renderizar celdas visibles
+  const startRow = Math.floor(scrollPosition.top / ROW_HEIGHT);
+  const startCol = Math.floor(scrollPosition.left / COL_WIDTH);
+  const visibleData = currentSheet.data.slice(startRow, startRow + VISIBLE_ROWS);
+  
+  // Agregar nueva hoja
+  const addSheet = () => {
+    const newSheet = {
+      id: `sheet${workbook.sheets.length + 1}`,
+      name: `Hoja ${workbook.sheets.length + 1}`,
+      data: createEmptyGrid(1000, 26),
+      charts: [],
+      conditionalFormats: []
+    };
+    setWorkbook(prev => ({
+      ...prev,
+      sheets: [...prev.sheets, newSheet]
+    }));
+  };
+  
+  // Actualizar celda
+  const updateCell = (row, col, value) => {
+    setWorkbook(prev => {
+      const newSheets = prev.sheets.map(sheet => {
+        if (sheet.id !== activeSheet) return sheet;
+        const newData = [...sheet.data];
+        newData[row] = [...newData[row]];
+        newData[row][col] = {
+          ...newData[row][col],
+          value: value.startsWith('=') ? FormulaEngine.evaluate(value, newData) : value,
+          formula: value.startsWith('=') ? value : null
+        };
+        return { ...sheet, data: newData };
+      });
+      return { ...prev, sheets: newSheets };
+    });
+  };
+  
+  // Aplicar formato condicional
+  const getCellStyle = (cell, row, col) => {
+    const styles = { ...cell.format };
+    
+    currentSheet.conditionalFormats?.forEach(cf => {
+      if (row >= cf.range.startRow && row <= cf.range.endRow &&
+          col >= cf.range.startCol && col <= cf.range.endCol) {
+        const numValue = parseFloat(cell.value);
+        if (cf.type === 'greaterThan' && numValue > cf.value) {
+          styles.backgroundColor = cf.color;
+        }
+        if (cf.type === 'lessThan' && numValue < cf.value) {
+          styles.backgroundColor = cf.color;
+        }
+      }
+    });
+    
+    return styles;
+  };
+  
+  const getColumnLetter = (index) => String.fromCharCode(65 + index);
+  
+  return (
+    <div className="excel-container">
+      {/* Barra de fórmulas */}
+      <div className="formula-bar">
+        <span className="cell-reference">
+          {getColumnLetter(selectedCell.col)}{selectedCell.row + 1}
+        </span>
+        <input
+          className="formula-input"
+          value={currentSheet.data[selectedCell.row]?.[selectedCell.col]?.formula || 
+                 currentSheet.data[selectedCell.row]?.[selectedCell.col]?.value || ''}
+          onChange={(e) => updateCell(selectedCell.row, selectedCell.col, e.target.value)}
+          placeholder="Ingresa un valor o fórmula"
+        />
+      </div>
+      
+      {/* Área de la hoja con scroll virtual */}
+      <div 
+        className="sheet-viewport"
+        onScroll={(e) => setScrollPosition({ 
+          top: e.target.scrollTop, 
+          left: e.target.scrollLeft 
+        })}
+      >
+        <div 
+          className="sheet-content"
+          style={{ 
+            height: currentSheet.data.length * ROW_HEIGHT,
+            width: 26 * COL_WIDTH 
+          }}
+        >
+          {/* Headers de columnas */}
+          <div className="column-headers" style={{ top: scrollPosition.top }}>
+            <div className="corner-cell"></div>
+            {Array.from({ length: VISIBLE_COLS }, (_, i) => (
+              <div key={i} className="column-header" style={{ width: COL_WIDTH }}>
+                {getColumnLetter(startCol + i)}
+              </div>
+            ))}
+          </div>
+          
+          {/* Filas */}
+          <div className="rows-container" style={{ marginTop: startRow * ROW_HEIGHT }}>
+            {visibleData.map((row, rowIndex) => (
+              <div key={startRow + rowIndex} className="sheet-row">
+                <div className="row-header">{startRow + rowIndex + 1}</div>
+                {row.slice(startCol, startCol + VISIBLE_COLS).map((cell, colIndex) => (
+                  <div
+                    key={colIndex}
+                    className={`cell ${selectedCell.row === startRow + rowIndex && 
+                                       selectedCell.col === startCol + colIndex ? 'selected' : ''}`}
+                    style={{ 
+                      width: COL_WIDTH, 
+                      height: ROW_HEIGHT,
+                      ...getCellStyle(cell, startRow + rowIndex, startCol + colIndex)
+                    }}
+                    onClick={() => setSelectedCell({ 
+                      row: startRow + rowIndex, 
+                      col: startCol + colIndex 
+                    })}
+                    onDoubleClick={() => setEditingCell({ 
+                      row: startRow + rowIndex, 
+                      col: startCol + colIndex 
+                    })}
+                  >
+                    {editingCell?.row === startRow + rowIndex && 
+                     editingCell?.col === startCol + colIndex ? (
+                      <input
+                        autoFocus
+                        className="cell-input"
+                        defaultValue={cell.formula || cell.value}
+                        onBlur={(e) => {
+                          updateCell(startRow + rowIndex, startCol + colIndex, e.target.value);
+                          setEditingCell(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            updateCell(startRow + rowIndex, startCol + colIndex, e.target.value);
+                            setEditingCell(null);
+                          }
+                        }}
+                      />
+                    ) : (
+                      <span className="cell-value">{cell.value}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      
+      {/* Gráficos embebidos */}
+      {currentSheet.charts?.map((chart, idx) => (
+        <ChartComponent key={idx} chart={chart} data={currentSheet.data} />
+      ))}
+      
+      {/* Tabs de hojas */}
+      <div className="sheet-tabs">
+        {workbook.sheets.map(sheet => (
+          <button
+            key={sheet.id}
+            className={`sheet-tab ${activeSheet === sheet.id ? 'active' : ''}`}
+            onClick={() => setActiveSheet(sheet.id)}
+          >
+            {sheet.name}
+          </button>
+        ))}
+        <button className="add-sheet-btn" onClick={addSheet}>+</button>
+      </div>
+    </div>
+  );
+};
+
+// === COMPONENTE DE GRÁFICOS ===
+import { BarChart, Bar, PieChart, Pie, LineChart, Line, XAxis, YAxis, Tooltip, Cell } from 'recharts';
+
+const ChartComponent = ({ chart, data }) => {
+  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+  
+  // Extraer datos del rango especificado
+  const chartData = useMemo(() => {
+    const { dataRange, labelRange } = chart;
+    // Parsear rangos y construir datos para el gráfico
+    const values = FormulaEngine.getRangeValues(data, dataRange);
+    // ... lógica para construir chartData
+    return values.map((v, i) => ({ name: `Item ${i+1}`, value: v }));
+  }, [data, chart]);
+  
+  if (chart.type === 'bar') {
+    return (
+      <div className="chart-container">
+        <h4>{chart.title}</h4>
+        <BarChart width={400} height={250} data={chartData}>
+          <XAxis dataKey="name" />
+          <YAxis />
+          <Tooltip />
+          <Bar dataKey="value" fill="#3b82f6" />
+        </BarChart>
+      </div>
+    );
+  }
+  
+  if (chart.type === 'pie') {
+    return (
+      <div className="chart-container">
+        <h4>{chart.title}</h4>
+        <PieChart width={300} height={300}>
+          <Pie data={chartData} dataKey="value" cx="50%" cy="50%" outerRadius={100}>
+            {chartData.map((_, idx) => (
+              <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
+            ))}
+          </Pie>
+          <Tooltip />
+        </PieChart>
+      </div>
+    );
+  }
+  
+  if (chart.type === 'line') {
+    return (
+      <div className="chart-container">
+        <h4>{chart.title}</h4>
+        <LineChart width={400} height={250} data={chartData}>
+          <XAxis dataKey="name" />
+          <YAxis />
+          <Tooltip />
+          <Line type="monotone" dataKey="value" stroke="#3b82f6" />
+        </LineChart>
+      </div>
+    );
+  }
+  
+  return null;
+};
+
+// === EXPORTAR A XLSX REAL ===
+import * as XLSX from 'xlsx';
+
+const exportToXlsx = (workbook) => {
+  const wb = XLSX.utils.book_new();
+  
+  workbook.sheets.forEach(sheet => {
+    // Convertir data a formato de array 2D
+    const wsData = sheet.data.map(row => 
+      row.map(cell => cell.formula || cell.value)
+    );
+    
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, sheet.name);
+  });
+  
+  XLSX.writeFile(wb, 'documento.xlsx');
+};
+
+// === GENERAR EXCEL CON DATOS DE EJEMPLO ===
+const generateSampleWorkbook = () => ({
+  sheets: [
+    {
+      id: 'ventas',
+      name: 'Ventas',
+      data: generateVentasSheet(),
+      charts: [],
+      conditionalFormats: []
+    },
+    {
+      id: 'resumen',
+      name: 'Resumen',
+      data: generateResumenSheet(),
+      charts: [],
+      conditionalFormats: []
+    },
+    {
+      id: 'graficos',
+      name: 'Gráficos',
+      data: createEmptyGrid(1000, 26),
+      charts: [
+        { type: 'bar', title: 'Ventas por Mes', dataRange: 'Ventas!E2:E13' },
+        { type: 'pie', title: 'Ventas por Producto', dataRange: 'Ventas!C2:C13' }
+      ],
+      conditionalFormats: []
+    },
+    {
+      id: 'analisis',
+      name: 'Análisis',
+      data: generateAnalisisSheet(),
+      charts: [],
+      conditionalFormats: [
+        { range: { startRow: 1, endRow: 12, startCol: 2, endCol: 2 }, 
+          type: 'greaterThan', value: 10, color: '#dcfce7' },
+        { range: { startRow: 1, endRow: 12, startCol: 2, endCol: 2 }, 
+          type: 'lessThan', value: 0, color: '#fee2e2' }
+      ]
+    }
+  ],
+  activeSheet: 'ventas'
+});
+
+// === CSS ===
+.excel-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.formula-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.cell-reference {
+  min-width: 60px;
+  padding: 4px 8px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.formula-input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.sheet-viewport {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+.sheet-content {
+  position: relative;
+}
+
+.column-headers {
+  display: flex;
+  position: sticky;
+  top: 0;
+  background: #f1f5f9;
+  z-index: 10;
+}
+
+.column-header, .row-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+}
+
+.row-header {
+  min-width: 50px;
+  position: sticky;
+  left: 0;
+  z-index: 5;
+}
+
+.corner-cell {
+  min-width: 50px;
+  height: 28px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+}
+
+.sheet-row {
+  display: flex;
+}
+
+.cell {
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  cursor: cell;
+  overflow: hidden;
+}
+
+.cell:hover {
+  background: #f8fafc;
+}
+
+.cell.selected {
+  outline: 2px solid #3b82f6;
+  outline-offset: -1px;
+  background: #eff6ff;
+}
+
+.cell-input {
+  width: 100%;
+  height: 100%;
+  border: none;
+  outline: none;
+  font-size: 13px;
+}
+
+.cell-value {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 8px;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+}
+
+.sheet-tab {
+  padding: 6px 16px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.sheet-tab.active {
+  background: #3b82f6;
+  color: white;
+  border-color: #3b82f6;
+}
+
+.add-sheet-btn {
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px dashed #cbd5e1;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #64748b;
+}
+
+.add-sheet-btn:hover {
+  background: #f1f5f9;
+}
+
+.chart-container {
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  margin: 16px;
+}
+
+.chart-container h4 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: #1e293b;
+}

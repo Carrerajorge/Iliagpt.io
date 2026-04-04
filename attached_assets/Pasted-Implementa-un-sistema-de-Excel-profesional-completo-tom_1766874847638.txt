@@ -1,0 +1,1178 @@
+Implementa un sistema de Excel profesional completo tomando las mejores prácticas de PlanillaPro. Este es un refactor completo que incluye todas las funcionalidades esenciales:
+
+=== PARTE 1: SISTEMA DE REFERENCIAS Y UTILIDADES ===
+
+1) Crear client/src/lib/spreadsheet-utils.ts:
+
+// ========== UTILIDADES DE REFERENCIA A1 ==========
+
+// Convertir número de columna a letra (1 -> A, 27 -> AA)
+export function colToName(col: number): string {
+  let name = "";
+  while (col > 0) {
+    const rem = (col - 1) % 26;
+    name = String.fromCharCode(65 + rem) + name;
+    col = Math.floor((col - 1) / 26);
+  }
+  return name;
+}
+
+// Convertir letra de columna a número (A -> 1, AA -> 27)
+export function nameToCol(name: string): number {
+  let col = 0;
+  for (const ch of name) {
+    const code = ch.toUpperCase().charCodeAt(0) - 64;
+    if (code < 1 || code > 26) return NaN;
+    col = col * 26 + code;
+  }
+  return col;
+}
+
+// Parsear referencia A1 -> { col, row, a1 }
+export function parseRef(ref: string): { col: number; row: number; a1: string } | null {
+  const m = String(ref).trim().toUpperCase().match(/^([A-Z]+)([1-9][0-9]*)$/);
+  if (!m) return null;
+  return { col: nameToCol(m[1]), row: parseInt(m[2], 10), a1: m[1] + m[2] };
+}
+
+// Crear referencia desde row y col
+export function makeRef(row: number, col: number): string {
+  return colToName(col) + String(row);
+}
+
+// Clamp un número entre min y max
+export function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, n));
+}
+
+// Convertir valor a número
+export function toNumber(v: any): number {
+  if (v === null || v === undefined) return 0;
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  const s = String(v).trim().replace(",", ".");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Verificar si parece número
+export function isLikelyNumberString(s: string): boolean {
+  const t = String(s).trim().replace(",", ".");
+  if (t === "") return false;
+  return /^[-+]?\d+(\.\d+)?$/.test(t);
+}
+
+// Formatear valor según estilo
+export function formatValue(value: any, style: CellStyle): string {
+  const fmt = style?.format || "general";
+  const decimals = Number.isFinite(style?.decimals) ? style.decimals : 2;
+
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && !Number.isFinite(value)) return String(value);
+
+  if (fmt === "text") return String(value);
+  if (typeof value !== "number") return String(value);
+
+  if (fmt === "general") {
+    if (Math.abs(value - Math.round(value)) < 1e-12) return String(Math.round(value));
+    return String(value);
+  }
+
+  if (fmt === "number") {
+    return value.toFixed(decimals);
+  }
+  
+  if (fmt === "currency") {
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals
+      }).format(value);
+    } catch {
+      return "$" + value.toFixed(decimals);
+    }
+  }
+  
+  if (fmt === "percent") {
+    return (value * 100).toFixed(decimals) + "%";
+  }
+
+  return String(value);
+}
+
+// Escape para CSV
+export function csvEscape(v: any): string {
+  const s = String(v ?? "");
+  if (/[",\n]/.test(s)) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+// Parser de CSV
+export function parseCSV(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (inQuotes) {
+      if (ch === '"' && next === '"') { cur += '"'; i++; continue; }
+      if (ch === '"') { inQuotes = false; continue; }
+      cur += ch;
+    } else {
+      if (ch === '"') { inQuotes = true; continue; }
+      if (ch === ",") { row.push(cur); cur = ""; continue; }
+      if (ch === "\n") {
+        row.push(cur); cur = "";
+        rows.push(row);
+        row = [];
+        continue;
+      }
+      if (ch === "\r") continue;
+      cur += ch;
+    }
+  }
+  row.push(cur);
+  rows.push(row);
+  return rows;
+}
+
+// ========== TIPOS ==========
+
+export interface CellStyle {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  align?: 'left' | 'center' | 'right';
+  fgColor?: string;
+  bgColor?: string;
+  format?: 'general' | 'number' | 'currency' | 'percent' | 'text';
+  decimals?: number;
+}
+
+export interface CellData {
+  raw: string;
+  style: CellStyle;
+}
+
+export interface Sheet {
+  name: string;
+  rows: number;
+  cols: number;
+  cells: Record<string, CellData>; // { "A1": { raw: "=1+2", style: {} } }
+}
+
+export interface Workbook {
+  version: number;
+  createdAt: string;
+  active: number;
+  sheets: Sheet[];
+}
+
+export interface Selection {
+  r1: number;
+  c1: number;
+  r2: number;
+  c2: number;
+}
+
+export interface NormalizedSelection {
+  rMin: number;
+  rMax: number;
+  cMin: number;
+  cMax: number;
+}
+
+// Normalizar selección
+export function normSel(sel: Selection): NormalizedSelection {
+  return {
+    rMin: Math.min(sel.r1, sel.r2),
+    rMax: Math.max(sel.r1, sel.r2),
+    cMin: Math.min(sel.c1, sel.c2),
+    cMax: Math.max(sel.c1, sel.c2)
+  };
+}
+
+// Label de selección (A1 o A1:C3)
+export function selectionLabel(sel: Selection): string {
+  const { rMin, rMax, cMin, cMax } = normSel(sel);
+  const a1 = makeRef(rMin, cMin);
+  const b1 = makeRef(rMax, cMax);
+  return a1 === b1 ? a1 : `${a1}:${b1}`;
+}
+
+// Crear nuevo workbook
+export function newWorkbook(): Workbook {
+  return {
+    version: 1,
+    createdAt: new Date().toISOString(),
+    active: 0,
+    sheets: [newSheet("Hoja1", 100, 26)]
+  };
+}
+
+// Crear nueva hoja
+export function newSheet(name: string = "Hoja1", rows: number = 100, cols: number = 26): Sheet {
+  return {
+    name,
+    rows,
+    cols,
+    cells: {}
+  };
+}
+
+=== PARTE 2: MOTOR DE FÓRMULAS ===
+
+2) Crear client/src/lib/formula-engine.ts:
+
+import { 
+  parseRef, makeRef, toNumber, clamp, 
+  CellData, Sheet 
+} from './spreadsheet-utils';
+
+// Identificadores permitidos en fórmulas
+const ALLOWED_IDENTIFIERS = new Set([
+  "V", "R", "SUMA", "SUM", "PROMEDIO", "AVG", "MIN", "MAX", 
+  "CONTAR", "COUNT", "SI", "IF", "TRUE", "FALSE", "AND", "OR", "NOT",
+  "ABS", "ROUND", "FLOOR", "CEIL", "SQRT", "POW", "MOD",
+  "CONCATENAR", "CONCAT", "IZQUIERDA", "LEFT", "DERECHA", "RIGHT",
+  "LARGO", "LEN", "MAYUSC", "UPPER", "MINUSC", "LOWER", "HOY", "TODAY"
+]);
+
+// Validar expresión
+function sanitizeAndValidate(expr: string): { ok: boolean; error?: string } {
+  // Bloquea accesos tipo ".constructor"
+  if (/\.[A-Za-z_]/.test(expr)) {
+    return { ok: false, error: "Acceso a propiedades no permitido." };
+  }
+  // Bloquea caracteres peligrosos
+  if (/[{}\[\]\\`$]/.test(expr)) {
+    return { ok: false, error: "Caracteres no permitidos." };
+  }
+
+  // Verificar identificadores
+  const ids = expr.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+  for (const id of ids) {
+    if (!ALLOWED_IDENTIFIERS.has(id.toUpperCase())) {
+      return { ok: false, error: `Identificador no permitido: ${id}` };
+    }
+  }
+  return { ok: true };
+}
+
+// Transformar fórmula del usuario a JavaScript evaluable
+function transformFormula(userExpr: string): string {
+  let expr = String(userExpr).trim();
+  
+  // Normaliza separador de argumentos (;) a coma
+  expr = expr.replace(/;/g, ",");
+  
+  // Reemplaza operador ^ por potencia JS (**)
+  expr = expr.replace(/\^/g, "**");
+  
+  // Reemplaza rangos A1:B3 => R("A1:B3")
+  expr = expr.replace(/\b([A-Z]+[1-9][0-9]*)\s*:\s*([A-Z]+[1-9][0-9]*)\b/gi, (m, a, b) => {
+    return `R("${a.toUpperCase()}:${b.toUpperCase()}")`;
+  });
+  
+  // Reemplaza referencias A1 => V("A1")
+  let out = "";
+  let inQuote = false;
+  
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i];
+    
+    if (ch === '"') {
+      inQuote = !inQuote;
+      out += ch;
+      continue;
+    }
+    
+    if (inQuote) {
+      out += ch;
+      continue;
+    }
+    
+    // Detecta referencia A1
+    const rest = expr.slice(i);
+    const m = rest.match(/^([A-Z]+)([1-9][0-9]*)/i);
+    
+    if (m) {
+      const full = (m[1] + m[2]).toUpperCase();
+      const before = i === 0 ? "" : expr[i - 1];
+      const after = expr[i + full.length] || "";
+      const isBoundaryBefore = !/[A-Za-z0-9_]/.test(before);
+      const isBoundaryAfter = !/[A-Za-z0-9_]/.test(after);
+      
+      if (isBoundaryBefore && isBoundaryAfter) {
+        out += `V("${full}")`;
+        i += full.length - 1;
+        continue;
+      }
+    }
+    
+    out += ch;
+  }
+  
+  // Normaliza nombres de funciones
+  out = out.replace(/\bSUMA\s*\(/gi, "SUMA(");
+  out = out.replace(/\bSUM\s*\(/gi, "SUM(");
+  out = out.replace(/\bPROMEDIO\s*\(/gi, "PROMEDIO(");
+  out = out.replace(/\bAVG\s*\(/gi, "AVG(");
+  out = out.replace(/\bCONTAR\s*\(/gi, "CONTAR(");
+  out = out.replace(/\bCOUNT\s*\(/gi, "COUNT(");
+  out = out.replace(/\bSI\s*\(/gi, "SI(");
+  out = out.replace(/\bIF\s*\(/gi, "IF(");
+  out = out.replace(/\bCONCATENAR\s*\(/gi, "CONCATENAR(");
+  out = out.replace(/\bCONCAT\s*\(/gi, "CONCAT(");
+  
+  return out;
+}
+
+// Evaluar fórmula
+export function evalFormula(
+  a1: string,
+  raw: string,
+  sheet: Sheet,
+  cache: Record<string, any>,
+  visiting: Set<string>
+): { value: any; error: string | null } {
+  const expr0 = raw.slice(1); // sin "="
+  const expr = transformFormula(expr0);
+  
+  const check = sanitizeAndValidate(expr);
+  if (!check.ok) return { value: "#ERROR", error: check.error || "Error de validación" };
+  
+  // Función V: obtener valor de celda
+  const V = (ref: string): any => {
+    const p = parseRef(ref);
+    if (!p) return 0;
+    if (p.row < 1 || p.row > sheet.rows || p.col < 1 || p.col > sheet.cols) return 0;
+    return computeValue(p.a1, sheet, cache, visiting);
+  };
+  
+  // Función R: obtener rango como array
+  const R = (range: string): any[] => {
+    const parts = String(range).toUpperCase().split(":");
+    if (parts.length !== 2) return [];
+    const a = parseRef(parts[0]);
+    const b = parseRef(parts[1]);
+    if (!a || !b) return [];
+    
+    const r1 = clamp(Math.min(a.row, b.row), 1, sheet.rows);
+    const r2 = clamp(Math.max(a.row, b.row), 1, sheet.rows);
+    const c1 = clamp(Math.min(a.col, b.col), 1, sheet.cols);
+    const c2 = clamp(Math.max(a.col, b.col), 1, sheet.cols);
+    
+    const out: any[] = [];
+    for (let r = r1; r <= r2; r++) {
+      for (let c = c1; c <= c2; c++) {
+        out.push(computeValue(makeRef(r, c), sheet, cache, visiting));
+      }
+    }
+    return out;
+  };
+  
+  // Funciones de hoja de cálculo
+  const flatten = (arr: any[]): any[] => arr.flat(Infinity);
+  
+  const SUMA = (...args: any[]) => flatten(args).reduce((acc, v) => acc + toNumber(v), 0);
+  const SUM = SUMA;
+  
+  const PROMEDIO = (...args: any[]) => {
+    const xs = flatten(args).map(toNumber).filter(x => Number.isFinite(x));
+    return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+  };
+  const AVG = PROMEDIO;
+  
+  const MIN = (...args: any[]) => {
+    const xs = flatten(args).map(toNumber).filter(x => Number.isFinite(x));
+    return xs.length ? Math.min(...xs) : 0;
+  };
+  
+  const MAX = (...args: any[]) => {
+    const xs = flatten(args).map(toNumber).filter(x => Number.isFinite(x));
+    return xs.length ? Math.max(...xs) : 0;
+  };
+  
+  const CONTAR = (...args: any[]) => {
+    return flatten(args).filter(v => String(v).trim() !== "").length;
+  };
+  const COUNT = CONTAR;
+  
+  const SI = (cond: boolean, a: any, b: any) => cond ? a : b;
+  const IF = SI;
+  
+  const TRUE = true;
+  const FALSE = false;
+  const AND = (...xs: any[]) => xs.every(Boolean);
+  const OR = (...xs: any[]) => xs.some(Boolean);
+  const NOT = (x: any) => !x;
+  
+  // Funciones matemáticas
+  const ABS = Math.abs;
+  const ROUND = (n: number, d: number = 0) => {
+    const factor = Math.pow(10, d);
+    return Math.round(n * factor) / factor;
+  };
+  const FLOOR = Math.floor;
+  const CEIL = Math.ceil;
+  const SQRT = Math.sqrt;
+  const POW = Math.pow;
+  const MOD = (a: number, b: number) => a % b;
+  
+  // Funciones de texto
+  const CONCATENAR = (...args: any[]) => args.join("");
+  const CONCAT = CONCATENAR;
+  const IZQUIERDA = (t: string, n: number) => String(t).slice(0, n);
+  const LEFT = IZQUIERDA;
+  const DERECHA = (t: string, n: number) => String(t).slice(-n);
+  const RIGHT = DERECHA;
+  const LARGO = (t: string) => String(t).length;
+  const LEN = LARGO;
+  const MAYUSC = (t: string) => String(t).toUpperCase();
+  const UPPER = MAYUSC;
+  const MINUSC = (t: string) => String(t).toLowerCase();
+  const LOWER = MINUSC;
+  
+  // Funciones de fecha
+  const HOY = () => new Date().toLocaleDateString('es-ES');
+  const TODAY = HOY;
+  
+  try {
+    const f = new Function(
+      "V", "R", "SUMA", "SUM", "PROMEDIO", "AVG", "MIN", "MAX", "CONTAR", "COUNT",
+      "SI", "IF", "TRUE", "FALSE", "AND", "OR", "NOT",
+      "ABS", "ROUND", "FLOOR", "CEIL", "SQRT", "POW", "MOD",
+      "CONCATENAR", "CONCAT", "IZQUIERDA", "LEFT", "DERECHA", "RIGHT",
+      "LARGO", "LEN", "MAYUSC", "UPPER", "MINUSC", "LOWER", "HOY", "TODAY",
+      `return (${expr});`
+    );
+    
+    const value = f(
+      V, R, SUMA, SUM, PROMEDIO, AVG, MIN, MAX, CONTAR, COUNT,
+      SI, IF, TRUE, FALSE, AND, OR, NOT,
+      ABS, ROUND, FLOOR, CEIL, SQRT, POW, MOD,
+      CONCATENAR, CONCAT, IZQUIERDA, LEFT, DERECHA, RIGHT,
+      LARGO, LEN, MAYUSC, UPPER, MINUSC, LOWER, HOY, TODAY
+    );
+    
+    return { value, error: null };
+  } catch (err: any) {
+    return { value: "#ERROR", error: err?.message || String(err) };
+  }
+}
+
+// Computar valor de celda (con cache y detección de ciclos)
+export function computeValue(
+  a1: string,
+  sheet: Sheet,
+  cache: Record<string, any>,
+  visiting: Set<string>
+): any {
+  if (cache.hasOwnProperty(a1)) return cache[a1];
+  
+  // Detectar ciclo
+  if (visiting.has(a1)) {
+    cache[a1] = "#CYCLE";
+    return cache[a1];
+  }
+  visiting.add(a1);
+  
+  const cell = sheet.cells[a1];
+  const raw = cell?.raw ?? "";
+  let value: any = "";
+  
+  if (raw && raw.startsWith("=")) {
+    const res = evalFormula(a1, raw, sheet, cache, visiting);
+    value = res.value;
+  } else {
+    // Si es número, convertir
+    if (raw && /^[-+]?\d+([.,]\d+)?$/.test(raw.trim())) {
+      value = toNumber(raw);
+    } else {
+      value = raw;
+    }
+  }
+  
+  visiting.delete(a1);
+  cache[a1] = value;
+  return value;
+}
+
+// Recalcular toda la hoja
+export function recalculateSheet(sheet: Sheet): Record<string, any> {
+  const cache: Record<string, any> = {};
+  const visiting = new Set<string>();
+  
+  for (let r = 1; r <= sheet.rows; r++) {
+    for (let c = 1; c <= sheet.cols; c++) {
+      const a1 = makeRef(r, c);
+      computeValue(a1, sheet, cache, visiting);
+    }
+  }
+  
+  return cache;
+}
+
+=== PARTE 3: HOOK PRINCIPAL DEL SPREADSHEET ===
+
+3) Crear client/src/hooks/useSpreadsheet.ts:
+
+import { useState, useCallback, useRef, useEffect } from 'react';
+import {
+  Workbook, Sheet, Selection, CellStyle, CellData,
+  newWorkbook, newSheet, normSel, makeRef, parseRef,
+  selectionLabel, clamp, formatValue, csvEscape, parseCSV,
+  colToName, isLikelyNumberString, toNumber
+} from '@/lib/spreadsheet-utils';
+import { computeValue, recalculateSheet } from '@/lib/formula-engine';
+
+const MAX_HISTORY = 200;
+
+interface HistoryAction {
+  type: string;
+  sheet: number;
+  [key: string]: any;
+}
+
+export function useSpreadsheet(initialRows = 100, initialCols = 26) {
+  // Estado principal
+  const [workbook, setWorkbook] = useState<Workbook>(() => newWorkbook());
+  const [selection, setSelection] = useState<Selection>({ r1: 1, c1: 1, r2: 1, c2: 1 });
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+  const [cache, setCache] = useState<Record<string, any>>({});
+  
+  // Historial
+  const undoStack = useRef<HistoryAction[]>([]);
+  const redoStack = useRef<HistoryAction[]>([]);
+  
+  // Clipboard interno
+  const [clipboard, setClipboard] = useState<{
+    data: string[][];
+    styles: CellStyle[][];
+    mode: 'copy' | 'cut';
+    source: Selection;
+  } | null>(null);
+  
+  // Hoja activa
+  const activeSheet = useCallback((): Sheet => {
+    return workbook.sheets[workbook.active];
+  }, [workbook]);
+  
+  // Obtener celda
+  const getCell = useCallback((a1: string): CellData | null => {
+    return activeSheet().cells[a1] || null;
+  }, [activeSheet]);
+  
+  // Obtener estilo de celda
+  const getCellStyle = useCallback((a1: string): CellStyle => {
+    const sheet = activeSheet();
+    if (!sheet.cells[a1]) {
+      sheet.cells[a1] = { raw: '', style: {} };
+    }
+    return sheet.cells[a1].style || {};
+  }, [activeSheet]);
+  
+  // Guardar en historial
+  const pushHistory = useCallback((action: HistoryAction) => {
+    undoStack.current.push(action);
+    if (undoStack.current.length > MAX_HISTORY) {
+      undoStack.current.shift();
+    }
+    redoStack.current = [];
+  }, []);
+  
+  // Establecer valor de celda
+  const setCellRaw = useCallback((a1: string, raw: string, push = true) => {
+    setWorkbook(prev => {
+      const newWb = { ...prev };
+      const sheet = { ...newWb.sheets[newWb.active] };
+      const prevRaw = sheet.cells[a1]?.raw ?? '';
+      
+      if (push && raw !== prevRaw) {
+        pushHistory({
+          type: 'cell',
+          sheet: newWb.active,
+          a1,
+          prev: prevRaw,
+          next: raw
+        });
+      }
+      
+      if (raw === '') {
+        if (sheet.cells[a1]) {
+          sheet.cells[a1] = { ...sheet.cells[a1], raw: '' };
+        }
+      } else {
+        sheet.cells[a1] = {
+          ...(sheet.cells[a1] || { style: {} }),
+          raw
+        };
+      }
+      
+      newWb.sheets[newWb.active] = sheet;
+      return newWb;
+    });
+  }, [pushHistory]);
+  
+  // Aplicar estilo a selección
+  const applyStyle = useCallback((patch: Partial<CellStyle>, push = true) => {
+    const { rMin, rMax, cMin, cMax } = normSel(selection);
+    const sheet = activeSheet();
+    const items: { a1: string; prev: CellStyle }[] = [];
+    
+    for (let r = rMin; r <= rMax; r++) {
+      for (let c = cMin; c <= cMax; c++) {
+        const a1 = makeRef(r, c);
+        items.push({ a1, prev: { ...getCellStyle(a1) } });
+      }
+    }
+    
+    if (push) {
+      pushHistory({
+        type: 'style',
+        sheet: workbook.active,
+        items,
+        patch
+      });
+    }
+    
+    setWorkbook(prev => {
+      const newWb = { ...prev };
+      const newSheet = { ...newWb.sheets[newWb.active] };
+      
+      items.forEach(({ a1 }) => {
+        if (!newSheet.cells[a1]) {
+          newSheet.cells[a1] = { raw: '', style: {} };
+        }
+        newSheet.cells[a1] = {
+          ...newSheet.cells[a1],
+          style: { ...newSheet.cells[a1].style, ...patch }
+        };
+      });
+      
+      newWb.sheets[newWb.active] = newSheet;
+      return newWb;
+    });
+  }, [selection, activeSheet, getCellStyle, pushHistory, workbook.active]);
+  
+  // Toggle estilo
+  const toggleStyle = useCallback((key: keyof CellStyle) => {
+    const { rMin, cMin } = normSel(selection);
+    const a1 = makeRef(rMin, cMin);
+    const current = getCellStyle(a1)[key];
+    applyStyle({ [key]: !current });
+  }, [selection, getCellStyle, applyStyle]);
+  
+  // Mover selección
+  const moveSelection = useCallback((dr: number, dc: number, extend = false) => {
+    const sheet = activeSheet();
+    const { rMin, cMin } = normSel(selection);
+    const baseR = extend ? selection.r2 : rMin;
+    const baseC = extend ? selection.c2 : cMin;
+    
+    const nr = clamp(baseR + dr, 1, sheet.rows);
+    const nc = clamp(baseC + dc, 1, sheet.cols);
+    
+    if (extend) {
+      setSelection(prev => ({ ...prev, r2: nr, c2: nc }));
+    } else {
+      setSelection({ r1: nr, c1: nc, r2: nr, c2: nc });
+    }
+  }, [selection, activeSheet]);
+  
+  // Iniciar edición
+  const startEditing = useCallback(() => {
+    if (editing) return;
+    const { rMin, cMin } = normSel(selection);
+    const a1 = makeRef(rMin, cMin);
+    const cell = getCell(a1);
+    setEditValue(cell?.raw || '');
+    setEditing(true);
+  }, [editing, selection, getCell]);
+  
+  // Finalizar edición
+  const finishEditing = useCallback((commit = true) => {
+    if (!editing) return;
+    
+    if (commit) {
+      const { rMin, cMin } = normSel(selection);
+      const a1 = makeRef(rMin, cMin);
+      setCellRaw(a1, editValue);
+    }
+    
+    setEditing(false);
+    setEditValue('');
+  }, [editing, selection, editValue, setCellRaw]);
+  
+  // Borrar contenido de selección
+  const clearSelection = useCallback(() => {
+    const { rMin, rMax, cMin, cMax } = normSel(selection);
+    
+    for (let r = rMin; r <= rMax; r++) {
+      for (let c = cMin; c <= cMax; c++) {
+        const a1 = makeRef(r, c);
+        setCellRaw(a1, '');
+      }
+    }
+  }, [selection, setCellRaw]);
+  
+  // Copiar selección
+  const copy = useCallback((cut = false) => {
+    const sheet = activeSheet();
+    const { rMin, rMax, cMin, cMax } = normSel(selection);
+    
+    const data: string[][] = [];
+    const styles: CellStyle[][] = [];
+    
+    for (let r = rMin; r <= rMax; r++) {
+      const rowData: string[] = [];
+      const rowStyles: CellStyle[] = [];
+      
+      for (let c = cMin; c <= cMax; c++) {
+        const a1 = makeRef(r, c);
+        const cell = getCell(a1);
+        rowData.push(cell?.raw || '');
+        rowStyles.push(cell?.style || {});
+      }
+      
+      data.push(rowData);
+      styles.push(rowStyles);
+    }
+    
+    setClipboard({
+      data,
+      styles,
+      mode: cut ? 'cut' : 'copy',
+      source: { ...selection }
+    });
+    
+    return { rows: data.length, cols: data[0]?.length || 0 };
+  }, [selection, activeSheet, getCell]);
+  
+  // Pegar
+  const paste = useCallback((type: 'all' | 'values' | 'formats' = 'all') => {
+    if (!clipboard) return;
+    
+    const { rMin, cMin } = normSel(selection);
+    const { data, styles, mode, source } = clipboard;
+    
+    // Guardar cambios previos para undo
+    const changes: { a1: string; prev: string; next: string }[] = [];
+    
+    for (let r = 0; r < data.length; r++) {
+      for (let c = 0; c < data[r].length; c++) {
+        const destR = rMin + r;
+        const destC = cMin + c;
+        const a1 = makeRef(destR, destC);
+        
+        if (type === 'all' || type === 'values') {
+          const prev = getCell(a1)?.raw || '';
+          const next = data[r][c];
+          changes.push({ a1, prev, next });
+          setCellRaw(a1, next, false);
+        }
+        
+        if (type === 'all' || type === 'formats') {
+          applyStyle(styles[r][c], false);
+        }
+      }
+    }
+    
+    if (changes.length) {
+      pushHistory({
+        type: 'paste',
+        sheet: workbook.active,
+        changes
+      });
+    }
+    
+    // Si fue cortar, limpiar origen
+    if (mode === 'cut') {
+      const { rMin: sr, rMax: srMax, cMin: sc, cMax: scMax } = normSel(source);
+      for (let r = sr; r <= srMax; r++) {
+        for (let c = sc; c <= scMax; c++) {
+          setCellRaw(makeRef(r, c), '', false);
+        }
+      }
+      setClipboard(null);
+    }
+  }, [clipboard, selection, getCell, setCellRaw, applyStyle, pushHistory, workbook.active]);
+  
+  // Undo
+  const undo = useCallback(() => {
+    const action = undoStack.current.pop();
+    if (!action) return;
+    
+    redoStack.current.push(action);
+    
+    setWorkbook(prev => {
+      const newWb = { ...prev };
+      
+      if (action.type === 'cell') {
+        const sheet = { ...newWb.sheets[action.sheet] };
+        sheet.cells[action.a1] = {
+          ...(sheet.cells[action.a1] || { style: {} }),
+          raw: action.prev
+        };
+        newWb.sheets[action.sheet] = sheet;
+      } else if (action.type === 'style') {
+        const sheet = { ...newWb.sheets[action.sheet] };
+        action.items.forEach((it: any) => {
+          sheet.cells[it.a1] = {
+            ...(sheet.cells[it.a1] || { raw: '' }),
+            style: it.prev
+          };
+        });
+        newWb.sheets[action.sheet] = sheet;
+      } else if (action.type === 'paste') {
+        const sheet = { ...newWb.sheets[action.sheet] };
+        action.changes.forEach((ch: any) => {
+          sheet.cells[ch.a1] = {
+            ...(sheet.cells[ch.a1] || { style: {} }),
+            raw: ch.prev
+          };
+        });
+        newWb.sheets[action.sheet] = sheet;
+      }
+      
+      newWb.active = action.sheet;
+      return newWb;
+    });
+  }, []);
+  
+  // Redo
+  const redo = useCallback(() => {
+    const action = redoStack.current.pop();
+    if (!action) return;
+    
+    undoStack.current.push(action);
+    
+    setWorkbook(prev => {
+      const newWb = { ...prev };
+      
+      if (action.type === 'cell') {
+        const sheet = { ...newWb.sheets[action.sheet] };
+        sheet.cells[action.a1] = {
+          ...(sheet.cells[action.a1] || { style: {} }),
+          raw: action.next
+        };
+        newWb.sheets[action.sheet] = sheet;
+      } else if (action.type === 'style') {
+        const sheet = { ...newWb.sheets[action.sheet] };
+        action.items.forEach((it: any) => {
+          if (!sheet.cells[it.a1]) {
+            sheet.cells[it.a1] = { raw: '', style: {} };
+          }
+          sheet.cells[it.a1].style = {
+            ...sheet.cells[it.a1].style,
+            ...action.patch
+          };
+        });
+        newWb.sheets[action.sheet] = sheet;
+      } else if (action.type === 'paste') {
+        const sheet = { ...newWb.sheets[action.sheet] };
+        action.changes.forEach((ch: any) => {
+          sheet.cells[ch.a1] = {
+            ...(sheet.cells[ch.a1] || { style: {} }),
+            raw: ch.next
+          };
+        });
+        newWb.sheets[action.sheet] = sheet;
+      }
+      
+      newWb.active = action.sheet;
+      return newWb;
+    });
+  }, []);
+  
+  // Añadir hoja
+  const addSheet = useCallback(() => {
+    setWorkbook(prev => {
+      const newWb = { ...prev };
+      const idx = newWb.sheets.length;
+      let n = idx + 1;
+      let name = `Hoja${n}`;
+      const existing = new Set(newWb.sheets.map(s => s.name));
+      while (existing.has(name)) {
+        n++;
+        name = `Hoja${n}`;
+      }
+      
+      const sheet = newSheet(name);
+      newWb.sheets.push(sheet);
+      
+      pushHistory({
+        type: 'sheet_add',
+        sheet: idx,
+        sheetObj: sheet,
+        prevActive: newWb.active
+      });
+      
+      newWb.active = idx;
+      return newWb;
+    });
+  }, [pushHistory]);
+  
+  // Renombrar hoja
+  const renameSheet = useCallback((newName: string) => {
+    if (!newName.trim()) return;
+    
+    setWorkbook(prev => {
+      const newWb = { ...prev };
+      const prevName = newWb.sheets[newWb.active].name;
+      
+      pushHistory({
+        type: 'sheet_rename',
+        sheet: newWb.active,
+        prevName,
+        nextName: newName
+      });
+      
+      newWb.sheets[newWb.active] = {
+        ...newWb.sheets[newWb.active],
+        name: newName
+      };
+      
+      return newWb;
+    });
+  }, [pushHistory]);
+  
+  // Eliminar hoja
+  const deleteSheet = useCallback(() => {
+    if (workbook.sheets.length <= 1) return false;
+    
+    setWorkbook(prev => {
+      const newWb = { ...prev };
+      const idx = newWb.active;
+      const sheetObj = newWb.sheets[idx];
+      
+      pushHistory({
+        type: 'sheet_delete',
+        sheet: idx,
+        sheetObj,
+        prevActive: idx
+      });
+      
+      newWb.sheets.splice(idx, 1);
+      newWb.active = clamp(idx, 0, newWb.sheets.length - 1);
+      
+      return newWb;
+    });
+    
+    return true;
+  }, [workbook.sheets.length, pushHistory]);
+  
+  // Cambiar hoja activa
+  const setActiveSheet = useCallback((index: number) => {
+    setWorkbook(prev => ({
+      ...prev,
+      active: clamp(index, 0, prev.sheets.length - 1)
+    }));
+    setSelection({ r1: 1, c1: 1, r2: 1, c2: 1 });
+  }, []);
+  
+  // Exportar a JSON
+  const exportJSON = useCallback(() => {
+    return JSON.stringify(workbook, null, 2);
+  }, [workbook]);
+  
+  // Importar desde JSON
+  const importJSON = useCallback((json: string) => {
+    try {
+      const obj = JSON.parse(json);
+      if (!obj || !Array.isArray(obj.sheets)) {
+        throw new Error("Formato no válido");
+      }
+      setWorkbook(obj);
+      undoStack.current = [];
+      redoStack.current = [];
+      setSelection({ r1: 1, c1: 1, r2: 1, c2: 1 });
+      return true;
+    } catch (err) {
+      console.error("Error importing JSON:", err);
+      return false;
+    }
+  }, []);
+  
+  // Exportar a CSV
+  const exportCSV = useCallback(() => {
+    const sheet = activeSheet();
+    const computed = recalculateSheet(sheet);
+    const rows: string[] = [];
+    
+    for (let r = 1; r <= sheet.rows; r++) {
+      const cols: string[] = [];
+      for (let c = 1; c <= sheet.cols; c++) {
+        const a1 = makeRef(r, c);
+        const value = computed[a1] ?? '';
+        const cell = getCell(a1);
+        const shown = formatValue(value, cell?.style || {});
+        cols.push(csvEscape(shown));
+      }
+      rows.push(cols.join(","));
+    }
+    
+    return rows.join("\n");
+  }, [activeSheet, getCell]);
+  
+  // Importar desde CSV
+  const importCSV = useCallback((csv: string) => {
+    const data = parseCSV(csv);
+    const { rMin, cMin } = normSel(selection);
+    const sheet = activeSheet();
+    
+    const changes: { a1: string; prev: string; next: string }[] = [];
+    
+    for (let i = 0; i < data.length; i++) {
+      for (let j = 0; j < data[i].length; j++) {
+        const r = rMin + i;
+        const c = cMin + j;
+        if (r > sheet.rows || c > sheet.cols) continue;
+        
+        const a1 = makeRef(r, c);
+        const prev = getCell(a1)?.raw ?? '';
+        const next = data[i][j];
+        changes.push({ a1, prev, next });
+      }
+    }
+    
+    if (changes.length) {
+      pushHistory({
+        type: 'paste',
+        sheet: workbook.active,
+        changes
+      });
+      
+      changes.forEach(ch => setCellRaw(ch.a1, ch.next, false));
+    }
+  }, [selection, activeSheet, getCell, pushHistory, workbook.active, setCellRaw]);
+  
+  // AutoSuma
+  const autoSum = useCallback(() => {
+    const sheet = activeSheet();
+    const { rMin, rMax, cMin, cMax } = normSel(selection);
+    
+    let targetR = rMax + 1;
+    let targetC = cMin;
+    
+    // Si es una fila, poner a la derecha
+    if (rMin === rMax && cMin !== cMax) {
+      targetR = rMin;
+      targetC = cMax + 1;
+    }
+    
+    targetR = clamp(targetR, 1, sheet.rows);
+    targetC = clamp(targetC, 1, sheet.cols);
+    
+    const target = makeRef(targetR, targetC);
+    const rng = `${makeRef(rMin, cMin)}:${makeRef(rMax, cMax)}`;
+    setCellRaw(target, `=SUMA(${rng})`);
+    
+    setSelection({ r1: targetR, c1: targetC, r2: targetR, c2: targetC });
+  }, [selection, activeSheet, setCellRaw]);
+  
+  // Recalcular cache
+  useEffect(() => {
+    const sheet = activeSheet();
+    const newCache = recalculateSheet(sheet);
+    setCache(newCache);
+  }, [workbook, activeSheet]);
+  
+  return {
+    // Estado
+    workbook,
+    selection,
+    editing,
+    editValue,
+    cache,
+    clipboard,
+    
+    // Setters
+    setSelection,
+    setEditValue,
+    setWorkbook,
+    
+    // Helpers
+    activeSheet,
+    getCell,
+    getCellStyle,
+    
+    // Acciones de celda
+    setCellRaw,
+    applyStyle,
+    toggleStyle,
+    clearSelection,
+    
+    // Selección
+    moveSelection,
+    
+    // Edición
+    startEditing,
+    finishEditing,
+    
+    // Clipboard
+    copy,
+    paste,
+    
+    // Historial
+    undo,
+    redo,
+    canUndo: undoStack.current.length > 0,
+    canRedo: redoStack.current.length > 0,
+    
+    // Hojas
+    addSheet,
+    renameSheet,
+    deleteSheet,
+    setActiveSheet,
+    
+    // Importar/Exportar
+    exportJSON,
+    importJSON,
+    exportCSV,
+    importCSV,
+    
+    // Utilidades
+    autoSum,
+    
+    // Utils exportados
+    formatValue,
+    makeRef,
+    normSel,
+    selectionLabel,
+    colToName
+  };
+}
+
+=== PARTE 4: COMPONENTE PRINCIPAL ===
+
+4) Crear client/src/components/spreadsheet/ProfessionalSpreadsheet.tsx con el grid, toolbar, formula bar, y tabs. (Este archivo sería muy largo, pero usa el hook useSpreadsheet y renderiza:
+- Menú superior con dropdowns
+- Toolbar con botones de formato
+- Barra de fórmulas con namebox e input
+- Grid virtual con selección
+- Tabs de hojas en el footer
+- Status bar)
+
+5) Verificar:
+- Edición instantánea sin lag
+- Selección múltiple funciona
+- Fórmulas se calculan correctamente
+- Autorrelleno inteligente funciona
+- Menú contextual completo
+- Undo/Redo funciona
+- Copiar/Pegar funciona
+- Múltiples hojas funcionan
+- Import/Export JSON y CSV funcionan
+
+Reportar resultados de cada verificación con ✅ o ❌.

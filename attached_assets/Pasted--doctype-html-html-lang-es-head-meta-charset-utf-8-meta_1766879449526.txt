@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ribbon tipo Excel</title>
+  <style>
+    :root{
+      --bg:#f3f5f7;
+      --panel:#ffffff;
+      --stroke:#d6dbe1;
+      --text:#1f2937;
+      --muted:#6b7280;
+      --accent:#2563eb;
+      --shadow: 0 10px 24px rgba(0,0,0,.12);
+    }
+
+    *{ box-sizing:border-box; }
+    body{
+      margin:0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color:var(--text);
+      background:#fff;
+    }
+
+    /* Ribbon container */
+    .ribbon{
+      border-bottom:1px solid var(--stroke);
+      background: linear-gradient(#ffffff, #fbfcfd);
+      padding:10px 12px 8px;
+    }
+
+    .ribbon-row{
+      display:flex;
+      align-items:flex-start;
+      gap:14px;
+      overflow-x:auto;
+      padding-bottom:6px;
+    }
+
+    .group{
+      display:flex;
+      gap:10px;
+      padding:6px 10px;
+      border:1px solid var(--stroke);
+      border-radius:10px;
+      background:var(--panel);
+      min-width:max-content;
+      position:relative;
+    }
+
+    .group-title{
+      position:absolute;
+      left:10px;
+      bottom:-20px;
+      font-size:11px;
+      color:var(--muted);
+    }
+
+    /* Large ribbon button */
+    .rbtn{
+      width:92px;
+      min-height:76px;
+      padding:8px 8px 6px;
+      border-radius:10px;
+      border:1px solid transparent;
+      background:transparent;
+      cursor:pointer;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:6px;
+      user-select:none;
+    }
+    .rbtn:hover{ background:var(--bg); border-color:var(--stroke); }
+    .rbtn:active{ transform: translateY(1px); }
+
+    .icon{
+      width:34px; height:34px;
+      display:grid;
+      place-items:center;
+      border-radius:8px;
+      background:#eef2ff;
+      border:1px solid #dbe3ff;
+      color:var(--accent);
+      font-weight:800;
+    }
+    .label{
+      font-size:12px;
+      text-align:center;
+      line-height:1.1;
+    }
+    .caret{
+      margin-top:2px;
+      width:0; height:0;
+      border-left:5px solid transparent;
+      border-right:5px solid transparent;
+      border-top:6px solid #6b7280;
+    }
+
+    /* Split button (button + dropdown) */
+    .split{
+      width:108px;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:6px;
+      padding:8px 8px 6px;
+      border-radius:10px;
+      border:1px solid transparent;
+      background:transparent;
+      cursor:pointer;
+      user-select:none;
+    }
+    .split:hover{ background:var(--bg); border-color:var(--stroke); }
+    .split-top{
+      display:flex;
+      align-items:center;
+      gap:8px;
+    }
+    .split .icon{ width:34px; height:34px; }
+    .split-bottom{
+      display:flex;
+      align-items:center;
+      gap:6px;
+      font-size:12px;
+      color:var(--text);
+    }
+    .split-bottom .caret{
+      border-top-color:#374151;
+      transform:translateY(1px);
+    }
+
+    /* Dropdown panels */
+    .menu{
+      position:absolute;
+      top:86px;
+      left:0;
+      width:380px;
+      background:var(--panel);
+      border:1px solid var(--stroke);
+      border-radius:12px;
+      box-shadow:var(--shadow);
+      padding:10px;
+      display:none;
+      z-index:50;
+    }
+    .menu.open{ display:block; }
+
+    .menu-section{
+      padding:6px 6px 10px;
+      border-radius:10px;
+      background:#f8fafc;
+      border:1px solid #edf2f7;
+      margin-bottom:10px;
+    }
+    .menu-section h4{
+      margin:0 0 8px;
+      font-size:12px;
+      color:#374151;
+      font-weight:700;
+      letter-spacing:.2px;
+    }
+
+    .thumb-grid{
+      display:grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap:10px;
+    }
+    .thumb{
+      border:1px solid var(--stroke);
+      border-radius:10px;
+      background:#fff;
+      height:78px;
+      cursor:pointer;
+      display:grid;
+      place-items:center;
+      position:relative;
+    }
+    .thumb:hover{
+      border-color:#bcd0ff;
+      box-shadow:0 0 0 3px rgba(37,99,235,.12);
+    }
+    .thumb svg{
+      width:62px;
+      height:52px;
+    }
+    .thumb small{
+      position:absolute;
+      bottom:6px;
+      left:8px;
+      right:8px;
+      font-size:10px;
+      color:var(--muted);
+      text-align:center;
+    }
+
+    /* Fake content area under ribbon */
+    .workspace{
+      padding:14px;
+      color:var(--muted);
+      font-size:14px;
+    }
+    .hint{
+      padding:10px 12px;
+      background:#f8fafc;
+      border:1px solid var(--stroke);
+      border-radius:10px;
+      max-width:980px;
+    }
+
+    /* Responsive: narrower dropdown */
+    @media (max-width:520px){
+      .menu{ width: calc(100vw - 24px); }
+      .thumb-grid{ grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="ribbon" id="ribbon">
+    <div class="ribbon-row">
+
+      <!-- Grupo: Hoja / Tablas -->
+      <div class="group">
+        <button class="rbtn" data-action="insert_sheet_table">
+          <div class="icon">▦</div>
+          <div class="label">Hoja de<br/>tabla</div>
+        </button>
+        <button class="rbtn" data-action="insert_table">
+          <div class="icon">▤</div>
+          <div class="label">Tabla</div>
+          <div class="caret"></div>
+        </button>
+        <div class="group-title">Hoja / Tablas</div>
+      </div>
+
+      <!-- Grupo: Gráficos -->
+      <div class="group" style="padding-right:18px;">
+        <!-- Columnas / Barras -->
+        <div class="split" data-menu="menu-cols">
+          <div class="split-top">
+            <div class="icon">▮</div>
+          </div>
+          <div class="split-bottom">
+            Gráfico
+            <div class="caret"></div>
+          </div>
+        </div>
+
+        <!-- Líneas / Áreas -->
+        <div class="split" data-menu="menu-lines">
+          <div class="split-top">
+            <div class="icon">〽</div>
+          </div>
+          <div class="split-bottom">
+            Líneas
+            <div class="caret"></div>
+          </div>
+        </div>
+
+        <!-- Dispersión / Burbujas -->
+        <div class="split" data-menu="menu-scatter">
+          <div class="split-top">
+            <div class="icon">∙∙</div>
+          </div>
+          <div class="split-bottom">
+            Dispersión
+            <div class="caret"></div>
+          </div>
+        </div>
+
+        <!-- Rectángulos / Radial -->
+        <div class="split" data-menu="menu-other">
+          <div class="split-top">
+            <div class="icon">◔</div>
+          </div>
+          <div class="split-bottom">
+            Otros
+            <div class="caret"></div>
+          </div>
+        </div>
+
+        <div class="group-title">Gráfico</div>
+
+        <!-- MENÚ: Columnas / Barras -->
+        <div class="menu" id="menu-cols">
+          <div class="menu-section">
+            <h4>Columnas 2D</h4>
+            <div class="thumb-grid">
+              <div class="thumb" data-chart="col_clustered">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <rect x="15" y="35" width="12" height="30" stroke="#111827" />
+                  <rect x="32" y="20" width="12" height="45" stroke="#111827" />
+                  <rect x="49" y="10" width="12" height="55" stroke="#111827" />
+                  <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+                </svg>
+                <small>Agrupadas</small>
+              </div>
+              <div class="thumb" data-chart="col_stacked">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <rect x="20" y="40" width="14" height="26" stroke="#111827" />
+                  <rect x="20" y="26" width="14" height="14" stroke="#111827" />
+                  <rect x="45" y="50" width="14" height="16" stroke="#111827" />
+                  <rect x="45" y="30" width="14" height="20" stroke="#111827" />
+                  <rect x="70" y="20" width="14" height="46" stroke="#111827" />
+                  <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+                </svg>
+                <small>Apiladas</small>
+              </div>
+              <div class="thumb" data-chart="col_100">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <rect x="22" y="16" width="16" height="50" stroke="#111827" />
+                  <rect x="22" y="40" width="16" height="26" fill="rgba(37,99,235,.18)" stroke="#111827" />
+                  <rect x="50" y="16" width="16" height="50" stroke="#111827" />
+                  <rect x="50" y="28" width="16" height="38" fill="rgba(37,99,235,.18)" stroke="#111827" />
+                  <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+                </svg>
+                <small>100% Apiladas</small>
+              </div>
+            </div>
+          </div>
+
+          <div class="menu-section" style="margin-bottom:0;">
+            <h4>Barras 2D</h4>
+            <div class="thumb-grid">
+              <div class="thumb" data-chart="bar_clustered">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <rect x="18" y="16" width="55" height="10" stroke="#111827" />
+                  <rect x="18" y="34" width="35" height="10" stroke="#111827" />
+                  <rect x="18" y="52" width="65" height="10" stroke="#111827" />
+                </svg>
+                <small>Agrupadas</small>
+              </div>
+              <div class="thumb" data-chart="bar_stacked">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <rect x="18" y="16" width="40" height="10" stroke="#111827" />
+                  <rect x="58" y="16" width="20" height="10" stroke="#111827" />
+                  <rect x="18" y="34" width="25" height="10" stroke="#111827" />
+                  <rect x="43" y="34" width="35" height="10" stroke="#111827" />
+                  <rect x="18" y="52" width="55" height="10" stroke="#111827" />
+                  <rect x="73" y="52" width="10" height="10" stroke="#111827" />
+                </svg>
+                <small>Apiladas</small>
+              </div>
+              <div class="thumb" data-chart="bar_100">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <rect x="18" y="16" width="70" height="10" stroke="#111827" />
+                  <rect x="18" y="16" width="40" height="10" fill="rgba(37,99,235,.18)" stroke="#111827" />
+                  <rect x="18" y="34" width="70" height="10" stroke="#111827" />
+                  <rect x="18" y="34" width="55" height="10" fill="rgba(37,99,235,.18)" stroke="#111827" />
+                  <rect x="18" y="52" width="70" height="10" stroke="#111827" />
+                  <rect x="18" y="52" width="25" height="10" fill="rgba(37,99,235,.18)" stroke="#111827" />
+                </svg>
+                <small>100% Apiladas</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- MENÚ: Líneas / Áreas -->
+        <div class="menu" id="menu-lines">
+          <div class="menu-section">
+            <h4>Líneas 2D</h4>
+            <div class="thumb-grid">
+              <div class="thumb" data-chart="line_basic">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <polyline points="12,56 34,36 56,46 86,20" stroke="#111827" stroke-width="2" fill="none"/>
+                  <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+                </svg>
+                <small>Línea</small>
+              </div>
+              <div class="thumb" data-chart="line_smooth">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <path d="M12 56 C 28 34, 42 44, 56 36 C 68 30, 74 44, 86 22" stroke="#111827" stroke-width="2" fill="none"/>
+                  <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+                </svg>
+                <small>Suavizada</small>
+              </div>
+              <div class="thumb" data-chart="line_markers">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <polyline points="12,54 34,38 56,50 86,22" stroke="#111827" stroke-width="2" fill="none"/>
+                  <circle cx="12" cy="54" r="3" fill="#111827"/>
+                  <circle cx="34" cy="38" r="3" fill="#111827"/>
+                  <circle cx="56" cy="50" r="3" fill="#111827"/>
+                  <circle cx="86" cy="22" r="3" fill="#111827"/>
+                  <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+                </svg>
+                <small>Con marcadores</small>
+              </div>
+            </div>
+          </div>
+
+          <div class="menu-section" style="margin-bottom:0;">
+            <h4>Áreas 2D</h4>
+            <div class="thumb-grid">
+              <div class="thumb" data-chart="area_basic">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <polygon points="12,56 34,36 56,46 86,20 86,66 12,66" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                  <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+                </svg>
+                <small>Área</small>
+              </div>
+              <div class="thumb" data-chart="area_stacked">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <polygon points="12,56 34,46 56,54 86,36 86,66 12,66" fill="rgba(37,99,235,.14)" stroke="#111827"/>
+                  <polygon points="12,46 34,30 56,40 86,20 86,36 12,56" fill="rgba(37,99,235,.22)" stroke="#111827"/>
+                  <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+                </svg>
+                <small>Apilada</small>
+              </div>
+              <div class="thumb" data-chart="area_100">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <polygon points="12,46 34,36 56,42 86,30 86,66 12,66" fill="rgba(37,99,235,.22)" stroke="#111827"/>
+                  <polygon points="12,22 34,18 56,26 86,16 86,30 12,46" fill="rgba(37,99,235,.14)" stroke="#111827"/>
+                  <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+                </svg>
+                <small>100% Área</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- MENÚ: Dispersión / Burbujas -->
+        <div class="menu" id="menu-scatter">
+          <div class="menu-section">
+            <h4>Dispersión</h4>
+            <div class="thumb-grid">
+              <div class="thumb" data-chart="scatter_points">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <circle cx="20" cy="50" r="4" fill="#111827"/>
+                  <circle cx="35" cy="30" r="4" fill="#111827"/>
+                  <circle cx="55" cy="44" r="4" fill="#111827"/>
+                  <circle cx="72" cy="26" r="4" fill="#111827"/>
+                  <circle cx="82" cy="48" r="4" fill="#111827"/>
+                  <line x1="10" y1="66" x2="92" y2="66" stroke="#111827"/>
+                </svg>
+                <small>Puntos</small>
+              </div>
+              <div class="thumb" data-chart="scatter_smooth">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <path d="M14 54 C 30 26, 44 40, 58 30 C 70 22, 78 36, 90 22" stroke="#111827" stroke-width="2" fill="none"/>
+                  <circle cx="20" cy="50" r="3" fill="#111827"/>
+                  <circle cx="35" cy="30" r="3" fill="#111827"/>
+                  <circle cx="55" cy="44" r="3" fill="#111827"/>
+                </svg>
+                <small>Curva</small>
+              </div>
+              <div class="thumb" data-chart="scatter_lines">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <polyline points="16,52 36,32 56,46 86,22" stroke="#111827" stroke-width="2" fill="none"/>
+                  <circle cx="16" cy="52" r="3" fill="#111827"/>
+                  <circle cx="36" cy="32" r="3" fill="#111827"/>
+                  <circle cx="56" cy="46" r="3" fill="#111827"/>
+                  <circle cx="86" cy="22" r="3" fill="#111827"/>
+                </svg>
+                <small>Líneas</small>
+              </div>
+            </div>
+          </div>
+
+          <div class="menu-section" style="margin-bottom:0;">
+            <h4>Burbujas</h4>
+            <div class="thumb-grid">
+              <div class="thumb" data-chart="bubble">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <circle cx="34" cy="46" r="16" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                  <circle cx="60" cy="30" r="10" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                  <circle cx="70" cy="52" r="12" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                </svg>
+                <small>Burbuja</small>
+              </div>
+              <div class="thumb" data-chart="bubble2">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <circle cx="30" cy="30" r="10" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                  <circle cx="52" cy="46" r="18" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                  <circle cx="76" cy="36" r="12" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                </svg>
+                <small>Variación</small>
+              </div>
+              <div class="thumb" data-chart="bubble3">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <circle cx="28" cy="52" r="14" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                  <circle cx="58" cy="32" r="12" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                  <circle cx="74" cy="52" r="8" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                </svg>
+                <small>Variación 2</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- MENÚ: Rectángulos / Radial -->
+        <div class="menu" id="menu-other">
+          <div class="menu-section" style="margin-bottom:0;">
+            <h4>Gráfico de rectángulos</h4>
+            <div class="thumb-grid">
+              <div class="thumb" data-chart="treemap">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <rect x="12" y="16" width="40" height="50" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                  <rect x="52" y="16" width="36" height="26" stroke="#111827"/>
+                  <rect x="52" y="42" width="18" height="24" stroke="#111827"/>
+                  <rect x="70" y="42" width="18" height="24" stroke="#111827"/>
+                </svg>
+                <small>Rectángulos</small>
+              </div>
+              <div class="thumb" data-chart="treemap2">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <rect x="12" y="16" width="76" height="18" stroke="#111827"/>
+                  <rect x="12" y="34" width="28" height="32" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                  <rect x="40" y="34" width="48" height="16" stroke="#111827"/>
+                  <rect x="40" y="50" width="24" height="16" stroke="#111827"/>
+                  <rect x="64" y="50" width="24" height="16" stroke="#111827"/>
+                </svg>
+                <small>Variación</small>
+              </div>
+              <div class="thumb" data-chart="treemap3">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <rect x="12" y="16" width="28" height="50" stroke="#111827"/>
+                  <rect x="40" y="16" width="48" height="20" fill="rgba(37,99,235,.18)" stroke="#111827"/>
+                  <rect x="40" y="36" width="22" height="30" stroke="#111827"/>
+                  <rect x="62" y="36" width="26" height="30" stroke="#111827"/>
+                </svg>
+                <small>Variación 2</small>
+              </div>
+            </div>
+
+            <h4 style="margin-top:14px;">Gráfico radial</h4>
+            <div class="thumb-grid" style="grid-template-columns: repeat(3, 1fr);">
+              <div class="thumb" data-chart="sunburst">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <circle cx="50" cy="40" r="8" fill="rgba(37,99,235,.22)" stroke="#111827"/>
+                  <circle cx="50" cy="40" r="18" fill="none" stroke="#111827"/>
+                  <circle cx="50" cy="40" r="28" fill="none" stroke="#111827"/>
+                  <path d="M50 12 A28 28 0 0 1 78 40" stroke="#2563eb" stroke-width="8" />
+                </svg>
+                <small>Radial</small>
+              </div>
+              <div class="thumb" data-chart="donut">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <circle cx="50" cy="40" r="22" stroke="#111827" stroke-width="10"/>
+                  <path d="M50 18 A22 22 0 0 1 72 40" stroke="#2563eb" stroke-width="10"/>
+                </svg>
+                <small>Dona</small>
+              </div>
+              <div class="thumb" data-chart="radial2">
+                <svg viewBox="0 0 100 80" fill="none">
+                  <circle cx="50" cy="40" r="24" fill="none" stroke="#111827" stroke-width="8"/>
+                  <path d="M50 16 A24 24 0 0 1 62 62" stroke="#2563eb" stroke-width="8"/>
+                </svg>
+                <small>Variación</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Grupo: Ilustraciones / Inserciones -->
+      <div class="group">
+        <button class="rbtn" data-action="insert_image">
+          <div class="icon">🖼</div>
+          <div class="label">Imagen</div>
+        </button>
+        <button class="rbtn" data-action="insert_shapes">
+          <div class="icon">◇</div>
+          <div class="label">Formas</div>
+          <div class="caret"></div>
+        </button>
+        <button class="rbtn" data-action="insert_snapshot">
+          <div class="icon">📷</div>
+          <div class="label">Instantánea<br/>de rango</div>
+        </button>
+        <button class="rbtn" data-action="insert_controls">
+          <div class="icon">🧰</div>
+          <div class="label">Controles</div>
+          <div class="caret"></div>
+        </button>
+        <div class="group-title">Ilustraciones</div>
+      </div>
+
+      <!-- Grupo: Vínculos / Texto -->
+      <div class="group">
+        <button class="rbtn" data-action="insert_link">
+          <div class="icon">🔗</div>
+          <div class="label">Hipervínculo</div>
+        </button>
+        <button class="rbtn" data-action="insert_textbox">
+          <div class="icon">A</div>
+          <div class="label">Cuadro de<br/>texto</div>
+        </button>
+        <div class="group-title">Texto</div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="workspace">
+    <div class="hint">
+      <b>Integración:</b> conecta los eventos <code>onRibbonAction</code> y <code>onChartPick</code> con tu lógica real (insertar gráfico, imagen, etc.).  
+      Abre la consola para ver los <i>callbacks</i>.
+    </div>
+  </div>
+
+  <script>
+    // === Hooks para conectar con tu software ===
+    function onRibbonAction(action) {
+      console.log("[Ribbon action]", action);
+      // TODO: aquí llamas tu lógica (ej: insertImage(), insertTable(), etc.)
+    }
+
+    function onChartPick(chartType) {
+      console.log("[Chart selected]", chartType);
+      // TODO: aquí llamas tu lógica real: createChart(chartType, selectionRange)
+    }
+
+    // === Control de menús (dropdowns) ===
+    const ribbon = document.getElementById("ribbon");
+    const menus = Array.from(document.querySelectorAll(".menu"));
+
+    function closeAllMenus() {
+      menus.forEach(m => m.classList.remove("open"));
+    }
+
+    // Abrir/cerrar menú al click en split buttons
+    ribbon.addEventListener("click", (e) => {
+      const split = e.target.closest("[data-menu]");
+      const btn = e.target.closest("[data-action]");
+
+      if (btn) {
+        onRibbonAction(btn.dataset.action);
+        return;
+      }
+
+      if (split) {
+        const id = split.dataset.menu;
+        const menu = document.getElementById(id);
+        const isOpen = menu.classList.contains("open");
+
+        closeAllMenus();
+        if (!isOpen) {
+          // posicionar debajo del botón
+          const rect = split.getBoundingClientRect();
+          const ribbonRect = ribbon.getBoundingClientRect();
+          menu.style.left = (rect.left - ribbonRect.left) + "px";
+          menu.classList.add("open");
+        }
+        e.stopPropagation();
+      }
+    });
+
+    // Selección de un tipo de gráfico
+    document.addEventListener("click", (e) => {
+      const thumb = e.target.closest(".thumb[data-chart]");
+      if (thumb) {
+        onChartPick(thumb.dataset.chart);
+        closeAllMenus();
+        return;
+      }
+
+      // Click fuera => cerrar menús
+      if (!e.target.closest(".menu") && !e.target.closest("[data-menu]")) {
+        closeAllMenus();
+      }
+    });
+
+    // Tecla ESC cierra menús
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeAllMenus();
+    });
+  </script>
+</body>
+</html>

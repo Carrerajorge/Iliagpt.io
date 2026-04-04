@@ -1,0 +1,695 @@
+// ============================================================
+// SISTEMA DE GRÁFICOS EMBEBIDOS PARA EXCEL
+// ============================================================
+
+// Instalar dependencia: npm install recharts
+
+import React, { useState, useMemo, useCallback } from 'react';
+import {
+  BarChart, Bar, 
+  PieChart, Pie, 
+  LineChart, Line,
+  AreaChart, Area,
+  XAxis, YAxis, 
+  CartesianGrid,
+  Tooltip, Legend, 
+  Cell, 
+  ResponsiveContainer 
+} from 'recharts';
+
+// === COLORES PARA GRÁFICOS ===
+const CHART_COLORS = [
+  '#3b82f6', '#10b981', '#f59e0b', '#ef4444', 
+  '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'
+];
+
+// === ESTRUCTURA DE UN GRÁFICO ===
+/*
+{
+  id: 'chart_123',
+  type: 'bar' | 'pie' | 'line' | 'area',
+  title: 'Ventas por Año',
+  dataRange: {
+    labels: { startRow: 1, endRow: 6, col: 0 },  // Columna A para etiquetas
+    values: { startRow: 1, endRow: 6, col: 1 }   // Columna B para valores
+  },
+  position: { row: 0, col: 4 },  // Posición en el grid (celda D1)
+  size: { width: 400, height: 300 },
+  options: {
+    showLegend: true,
+    showGrid: true,
+    colors: [...],
+  }
+}
+*/
+
+// === HOOK PARA EXTRAER DATOS DEL GRID PARA GRÁFICOS ===
+const useChartData = (grid, dataRange) => {
+  return useMemo(() => {
+    if (!dataRange || !grid) return [];
+    
+    const { labels, values } = dataRange;
+    const data = [];
+    
+    for (let r = labels.startRow; r <= labels.endRow; r++) {
+      const labelCell = grid.getCell(r, labels.col);
+      const valueCell = grid.getCell(r, values.col);
+      
+      const label = labelCell?.value || `Item ${r}`;
+      const value = parseFloat(valueCell?.value) || 0;
+      
+      if (label && !isNaN(value)) {
+        data.push({
+          name: String(label),
+          value: value
+        });
+      }
+    }
+    
+    return data;
+  }, [grid, dataRange]);
+};
+
+// === COMPONENTE DE GRÁFICO INDIVIDUAL ===
+const ExcelChart = ({ 
+  chart, 
+  grid, 
+  gridConfig,
+  onMove,
+  onResize,
+  onDelete,
+  isSelected,
+  onSelect
+}) => {
+  const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  
+  // Extraer datos del grid
+  const chartData = useChartData(grid, chart.dataRange);
+  
+  // Calcular posición en pixels
+  const pixelPosition = {
+    left: chart.position.col * gridConfig.COL_WIDTH + 60, // +60 por row headers
+    top: chart.position.row * gridConfig.ROW_HEIGHT + 60   // +60 por col headers + toolbar
+  };
+  
+  // Handlers para drag
+  const handleMouseDown = (e) => {
+    if (e.target.classList.contains('resize-handle')) return;
+    e.stopPropagation();
+    onSelect(chart.id);
+    setIsDragging(true);
+    setDragStart({ x: e.clientX - pixelPosition.left, y: e.clientY - pixelPosition.top });
+  };
+  
+  const handleMouseMove = useCallback((e) => {
+    if (isDragging && onMove) {
+      const newLeft = e.clientX - dragStart.x;
+      const newTop = e.clientY - dragStart.y;
+      
+      // Convertir pixels a row/col
+      const newCol = Math.max(0, Math.round((newLeft - 60) / gridConfig.COL_WIDTH));
+      const newRow = Math.max(0, Math.round((newTop - 60) / gridConfig.ROW_HEIGHT));
+      
+      onMove(chart.id, { row: newRow, col: newCol });
+    }
+  }, [isDragging, dragStart, onMove, chart.id, gridConfig]);
+  
+  const handleMouseUp = () => {
+    setIsDragging(false);
+    setIsResizing(false);
+  };
+  
+  // Registrar eventos globales cuando se arrastra
+  React.useEffect(() => {
+    if (isDragging || isResizing) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [isDragging, isResizing, handleMouseMove]);
+
+  // Renderizar el gráfico según su tipo
+  const renderChart = () => {
+    if (chartData.length === 0) {
+      return (
+        <div className="chart-no-data">
+          <span>📊</span>
+          <p>Sin datos para mostrar</p>
+          <small>Verifica el rango de datos</small>
+        </div>
+      );
+    }
+
+    const commonProps = {
+      data: chartData,
+      margin: { top: 20, right: 30, left: 20, bottom: 40 }
+    };
+
+    switch (chart.type) {
+      case 'bar':
+        return (
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart {...commonProps}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis 
+                dataKey="name" 
+                tick={{ fontSize: 11, fill: '#64748b' }}
+                angle={-45}
+                textAnchor="end"
+                height={60}
+              />
+              <YAxis tick={{ fontSize: 11, fill: '#64748b' }} />
+              <Tooltip 
+                contentStyle={{ 
+                  background: '#fff', 
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '8px',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+                }}
+              />
+              <Bar 
+                dataKey="value" 
+                radius={[4, 4, 0, 0]}
+                animationDuration={800}
+              >
+                {chartData.map((entry, index) => (
+                  <Cell 
+                    key={`cell-${index}`} 
+                    fill={CHART_COLORS[index % CHART_COLORS.length]} 
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        );
+
+      case 'line':
+        return (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart {...commonProps}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis 
+                dataKey="name" 
+                tick={{ fontSize: 11, fill: '#64748b' }}
+              />
+              <YAxis tick={{ fontSize: 11, fill: '#64748b' }} />
+              <Tooltip />
+              <Line 
+                type="monotone" 
+                dataKey="value" 
+                stroke={CHART_COLORS[0]}
+                strokeWidth={3}
+                dot={{ fill: CHART_COLORS[0], strokeWidth: 2, r: 5 }}
+                activeDot={{ r: 8 }}
+                animationDuration={800}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        );
+
+      case 'area':
+        return (
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart {...commonProps}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#64748b' }} />
+              <YAxis tick={{ fontSize: 11, fill: '#64748b' }} />
+              <Tooltip />
+              <Area 
+                type="monotone" 
+                dataKey="value" 
+                stroke={CHART_COLORS[0]}
+                fill={`${CHART_COLORS[0]}40`}
+                strokeWidth={2}
+                animationDuration={800}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        );
+
+      case 'pie':
+        return (
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={chartData}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                outerRadius={Math.min(chart.size.width, chart.size.height) / 3}
+                label={({ name, percent }) => 
+                  `${name}: ${(percent * 100).toFixed(0)}%`
+                }
+                labelLine={{ stroke: '#94a3b8' }}
+                animationDuration={800}
+              >
+                {chartData.map((entry, index) => (
+                  <Cell 
+                    key={`cell-${index}`} 
+                    fill={CHART_COLORS[index % CHART_COLORS.length]} 
+                  />
+                ))}
+              </Pie>
+              <Tooltip />
+              <Legend />
+            </PieChart>
+          </ResponsiveContainer>
+        );
+
+      default:
+        return <div>Tipo de gráfico no soportado: {chart.type}</div>;
+    }
+  };
+
+  return (
+    <div
+      className={`excel-chart-container ${isSelected ? 'selected' : ''} ${isDragging ? 'dragging' : ''}`}
+      style={{
+        position: 'absolute',
+        left: pixelPosition.left,
+        top: pixelPosition.top,
+        width: chart.size.width,
+        height: chart.size.height,
+        zIndex: isSelected ? 100 : 10
+      }}
+      onMouseDown={handleMouseDown}
+    >
+      {/* Header del gráfico */}
+      <div className="chart-header">
+        <span className="chart-title">{chart.title}</span>
+        <div className="chart-actions">
+          <button 
+            className="chart-action-btn"
+            onClick={(e) => { e.stopPropagation(); onDelete(chart.id); }}
+            title="Eliminar gráfico"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+      
+      {/* Cuerpo del gráfico */}
+      <div className="chart-body">
+        {renderChart()}
+      </div>
+      
+      {/* Handles de redimensionamiento */}
+      {isSelected && (
+        <>
+          <div className="resize-handle resize-se" />
+          <div className="resize-handle resize-e" />
+          <div className="resize-handle resize-s" />
+        </>
+      )}
+    </div>
+  );
+};
+
+// === CAPA DE GRÁFICOS (OVERLAY SOBRE EL GRID) ===
+const ChartLayer = ({ 
+  charts, 
+  grid, 
+  gridConfig, 
+  onUpdateChart, 
+  onDeleteChart 
+}) => {
+  const [selectedChartId, setSelectedChartId] = useState(null);
+
+  const handleMoveChart = (chartId, newPosition) => {
+    onUpdateChart(chartId, { position: newPosition });
+  };
+
+  const handleResizeChart = (chartId, newSize) => {
+    onUpdateChart(chartId, { size: newSize });
+  };
+
+  const handleSelectChart = (chartId) => {
+    setSelectedChartId(chartId);
+  };
+
+  // Click fuera para deseleccionar
+  const handleLayerClick = (e) => {
+    if (e.target.classList.contains('chart-layer')) {
+      setSelectedChartId(null);
+    }
+  };
+
+  if (!charts || charts.length === 0) return null;
+
+  return (
+    <div className="chart-layer" onClick={handleLayerClick}>
+      {charts.map(chart => (
+        <ExcelChart
+          key={chart.id}
+          chart={chart}
+          grid={grid}
+          gridConfig={gridConfig}
+          onMove={handleMoveChart}
+          onResize={handleResizeChart}
+          onDelete={onDeleteChart}
+          isSelected={selectedChartId === chart.id}
+          onSelect={handleSelectChart}
+        />
+      ))}
+    </div>
+  );
+};
+
+// === FUNCIÓN PARA CREAR GRÁFICO DESDE SELECCIÓN ===
+const createChartFromSelection = (type, title, selectedRange, grid) => {
+  return {
+    id: `chart_${Date.now()}`,
+    type: type, // 'bar', 'line', 'pie', 'area'
+    title: title || `Gráfico ${type}`,
+    dataRange: {
+      labels: { 
+        startRow: selectedRange.startRow, 
+        endRow: selectedRange.endRow, 
+        col: selectedRange.startCol 
+      },
+      values: { 
+        startRow: selectedRange.startRow, 
+        endRow: selectedRange.endRow, 
+        col: selectedRange.startCol + 1 
+      }
+    },
+    position: { 
+      row: selectedRange.startRow, 
+      col: selectedRange.endCol + 2 
+    },
+    size: { width: 400, height: 300 }
+  };
+};
+
+// === BARRA DE HERRAMIENTAS DE GRÁFICOS ===
+const ChartToolbar = ({ onInsertChart, hasSelection }) => {
+  const [showMenu, setShowMenu] = useState(false);
+
+  const chartTypes = [
+    { type: 'bar', icon: '📊', label: 'Gráfico de Barras' },
+    { type: 'line', icon: '📈', label: 'Gráfico de Líneas' },
+    { type: 'area', icon: '📉', label: 'Gráfico de Área' },
+    { type: 'pie', icon: '🥧', label: 'Gráfico Circular' }
+  ];
+
+  return (
+    <div className="chart-toolbar">
+      <div className="chart-insert-dropdown">
+        <button 
+          className="chart-insert-btn"
+          onClick={() => setShowMenu(!showMenu)}
+          disabled={!hasSelection}
+          title={hasSelection ? 'Insertar gráfico' : 'Selecciona un rango de datos primero'}
+        >
+          <span>📊</span>
+          Insertar Gráfico
+          <span className="dropdown-arrow">▼</span>
+        </button>
+        
+        {showMenu && (
+          <div className="chart-type-menu">
+            {chartTypes.map(({ type, icon, label }) => (
+              <button
+                key={type}
+                className="chart-type-option"
+                onClick={() => {
+                  onInsertChart(type);
+                  setShowMenu(false);
+                }}
+              >
+                <span className="chart-type-icon">{icon}</span>
+                <span className="chart-type-label">{label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// === INTEGRACIÓN CON EL COMPONENTE EXCEL PRINCIPAL ===
+const ExcelEditorWithCharts = () => {
+  const [workbook, setWorkbook] = useState(createWorkbook());
+  const [activeSheetId, setActiveSheetId] = useState('sheet1');
+  const [selectedRange, setSelectedRange] = useState(null);
+  
+  const activeSheet = workbook.sheets.find(s => s.id === activeSheetId);
+  const grid = activeSheet?.grid;
+
+  const GRID_CONFIG = {
+    ROW_HEIGHT: 28,
+    COL_WIDTH: 100
+  };
+
+  // Agregar gráfico a la hoja activa
+  const handleInsertChart = (chartType) => {
+    if (!selectedRange) {
+      alert('Por favor selecciona un rango de datos primero');
+      return;
+    }
+
+    const title = prompt('Título del gráfico:', `Gráfico de ${chartType}`);
+    if (!title) return;
+
+    const newChart = createChartFromSelection(chartType, title, selectedRange, grid);
+
+    setWorkbook(prev => ({
+      ...prev,
+      sheets: prev.sheets.map(sheet => {
+        if (sheet.id !== activeSheetId) return sheet;
+        return {
+          ...sheet,
+          charts: [...(sheet.charts || []), newChart]
+        };
+      })
+    }));
+  };
+
+  // Actualizar gráfico (posición, tamaño, etc.)
+  const handleUpdateChart = (chartId, updates) => {
+    setWorkbook(prev => ({
+      ...prev,
+      sheets: prev.sheets.map(sheet => {
+        if (sheet.id !== activeSheetId) return sheet;
+        return {
+          ...sheet,
+          charts: sheet.charts.map(chart => 
+            chart.id === chartId ? { ...chart, ...updates } : chart
+          )
+        };
+      })
+    }));
+  };
+
+  // Eliminar gráfico
+  const handleDeleteChart = (chartId) => {
+    if (!confirm('¿Eliminar este gráfico?')) return;
+    
+    setWorkbook(prev => ({
+      ...prev,
+      sheets: prev.sheets.map(sheet => {
+        if (sheet.id !== activeSheetId) return sheet;
+        return {
+          ...sheet,
+          charts: sheet.charts.filter(chart => chart.id !== chartId)
+        };
+      })
+    }));
+  };
+
+  return (
+    <div className="excel-with-charts">
+      {/* Toolbar con botón de insertar gráfico */}
+      <div className="excel-toolbar">
+        <ChartToolbar 
+          onInsertChart={handleInsertChart}
+          hasSelection={selectedRange !== null}
+        />
+        {/* ... otros botones del toolbar ... */}
+      </div>
+
+      {/* Contenedor del grid + gráficos */}
+      <div className="excel-workspace">
+        {/* Grid de celdas */}
+        <div className="excel-grid">
+          {/* ... renderizado del grid ... */}
+        </div>
+
+        {/* Capa de gráficos superpuesta */}
+        <ChartLayer
+          charts={activeSheet?.charts || []}
+          grid={grid}
+          gridConfig={GRID_CONFIG}
+          onUpdateChart={handleUpdateChart}
+          onDeleteChart={handleDeleteChart}
+        />
+      </div>
+
+      {/* Tabs de hojas */}
+      <div className="sheet-tabs">
+        {/* ... tabs ... */}
+      </div>
+    </div>
+  );
+};
+
+// === CSS PARA GRÁFICOS ===
+const chartStyles = `
+/* Capa de gráficos */
+.chart-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* Contenedor de cada gráfico */
+.excel-chart-container {
+  pointer-events: all;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: box-shadow 0.2s;
+}
+
+.excel-chart-container:hover {
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+}
+
+.excel-chart-container.selected {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3), 0 8px 30px rgba(0, 0, 0, 0.15);
+}
+
+.excel-chart-container.dragging {
+  opacity: 0.9;
+  cursor: grabbing;
+}
+
+/* Header del gráfico */
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border-bottom: 1px solid #e2e8f0;
+  cursor: grab;
+}
+
+.chart-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chart-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.chart-action-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.chart-action-btn:hover {
+  background: #fee2e2;
+  color: #ef4444;
+}
+
+/* Cuerpo del gráfico */
+.chart-body {
+  flex: 1;
+  padding: 12px;
+  min-height: 0;
+}
+
+/* Estado sin datos */
+.chart-no-data {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #94a3b8;
+  text-align: center;
+}
+
+.chart-no-data span {
+  font-size: 48px;
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+.chart-no-data p {
+  margin: 0 0 4px 0;
+  font-weight: 500;
+}
+
+.chart-no-data small {
+  font-size: 12px;
+}
+
+/* Handles de redimensionamiento */
+.resize-handle {
+  position: absolute;
+  background: #3b82f6;
+  border-radius: 2px;
+}
+
+.resize-handle.resize-se {
+  right: -4px;
+  bottom: -4px;
+  width: 12px;
+  height: 12px;
+  cursor: se-resize;
+  border-radius: 2px 2px 8px 2px;
+}
+
+.resize-handle.resize-e {
+  right: -4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 30px;
+  cursor: e-resize;
+}
+
+.resize-handle.resize-s {
+  bottom: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 30px;
+  height: 8px;
+  cursor: s-resize;
+}
+
+/* Toolbar de insertar gráfico */
+.

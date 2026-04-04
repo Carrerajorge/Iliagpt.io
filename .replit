@@ -19,10 +19,6 @@ externalPort = 80
 localPort = 8001
 externalPort = 3000
 
-[[ports]]
-localPort = 23636
-externalPort = 3001
-
 [env]
 PORT = "5000"
 
@@ -74,3 +70,7 @@ BASE_URL = "https://iliagpt.io"
 
 [objectStorage]
 defaultBucketID = "replit-objstore-8cdb9c3b-9e44-4c99-9aed-500e8b41061c"
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 120000

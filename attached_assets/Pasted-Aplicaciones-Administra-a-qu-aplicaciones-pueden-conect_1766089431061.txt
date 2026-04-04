@@ -1,0 +1,359 @@
+Aplicaciones
+Administra a qué aplicaciones pueden conectarse los usuarios de este espacio de trabajo. Obtener más información
+
+
+Filtros
+
+Crear
+Enabled (70)
+Directorio
+Drafts (0)
+Explorar directorio
+
+Adobe Acrobat
+Adobe Acrobat
+Trusted PDF editing tools
+
+
+Adobe Express
+Adobe Express
+Design flyers and invites
+
+
+Adobe Photoshop
+Adobe Photoshop
+Edit, stylize, refine images
+
+
+Agentforce Sales
+Agentforce Sales
+Sales insights to close deals
+
+
+Aha!
+Aha!
+Connect to sync Aha! product roadmaps and features for use in ChatGPT.
+
+
+Airtable
+Airtable
+Add structured data to ChatGPT
+
+
+Alpaca
+Alpaca
+Market data: stocks & crypto
+
+
+Apple Music
+Apple Music
+Build playlists and find music
+
+
+Asana
+Asana
+Convierte las tareas de Asana en actualizaciones y planes claros
+
+
+Atlassian Rovo
+Atlassian Rovo
+Manage Jira and Confluence fast
+
+
+Azure Boards
+Azure Boards
+Connect to sync Azure DevOps work items and repos for use in ChatGPT.
+
+
+Basecamp
+Basecamp
+Connect to sync Basecamp projects and to-dos for use in ChatGPT.
+
+
+BioRender
+BioRender
+Science visuals on demand
+
+
+Booking.com
+Booking.com
+Search stays worldwide
+
+
+Box
+Box
+Busca y consulta tus documentos
+
+
+Calendario de Outlook
+Calendario de Outlook
+Consulta eventos y disponibilidad.
+
+
+Canva
+Canva
+Search, create, edit designs
+
+
+Clay
+Clay
+Find and engage prospects
+
+
+ClickUp
+ClickUp
+Connect to sync ClickUp tasks and docs for use in ChatGPT.
+
+
+Cloudinary
+Cloudinary
+Manage, modify, and host your images & videos
+
+
+Conductor
+Conductor
+Track brand sentiment in AI
+
+
+Contactos de Google
+Contactos de Google
+Consulta detalles de contacto guardados.
+
+
+Correo electrónico de Outlook
+Correo electrónico de Outlook
+Busca y consulta tus correos electrónicos de Outlook.
+
+
+Coupler.io
+Coupler.io
+Unified business data access
+
+
+Coursera
+Coursera
+Skill-building course videos
+
+
+Coveo
+Coveo
+Search your enterprise content
+
+
+Daloopa
+Daloopa
+Financial KPIs with links
+
+
+Dropbox
+Dropbox
+Encuentra y accede a tus archivos almacenados.
+
+
+Egnyte
+Egnyte
+Explore and analyze your content
+
+
+Figma
+Figma
+Make diagrams, slides, assets
+
+
+Fireflies
+Fireflies
+Search meeting transcripts
+
+
+GitHub
+GitHub
+Accede a repositorios, problemas y solicitudes de extracción. Requerido para algunas características, como Codex.
+
+
+GitLab Issues
+GitLab Issues
+Connect to sync GitLab Issues and merge requests for use in ChatGPT.
+
+
+Gmail
+Gmail
+Busca y consulta correos electrónicos en tu bandeja de entrada.
+
+Google Drive
+CARGAS DE ARCHIVOS
+Upload Google Drive files in messages sent to ChatGPT.
+
+
+Google Calendar
+Google Calendar
+Consulta eventos y disponibilidad.
+
+
+Google Drive
+Google Drive
+Busca y consulta archivos de tu Drive.
+
+Habilitar sincronización
+
+
+Help Scout
+Help Scout
+Connect to sync Help Scout mailboxes and conversations for use in ChatGPT.
+
+
+Hex
+Hex
+Ask questions, run analyses
+
+
+HighLevel
+HighLevel
+Interact with your CRM business data
+
+
+HubSpot
+HubSpot
+Analiza datos de CRM y destaca insights
+
+
+Hugging Face
+Hugging Face
+Inspect models, datasets, Spaces, and research
+
+
+Intercom
+Intercom
+Look up past user chats and tickets.
+
+
+Jam
+Jam
+Screen record with context
+
+
+Jotform
+Jotform
+Build forms, analyze responses
+
+
+Klaviyo
+Klaviyo
+Marketing performance insights
+
+
+LSEG
+LSEG
+LSEG financial data access
+
+
+Linear
+Linear
+Busca y consulta incidencias y proyectos.
+
+
+Lovable
+Lovable
+Build apps and websites
+
+Microsoft OneDrive (personal)
+CARGAS DE ARCHIVOS
+Upload personal OneDrive files in messages sent to ChatGPT.
+
+Microsoft OneDrive (work/school)
+CARGAS DE ARCHIVOS
+Upload SharePoint and OneDrive for Business files in messages sent to ChatGPT.
+
+
+Monday.com
+Monday.com
+Manage work in monday.com
+
+
+Netlify
+Netlify
+Build and deploy on Netlify
+
+
+Notion
+Notion
+Busca y consulta tus páginas de Notion.
+
+
+OpenTable
+OpenTable
+Find restaurant reservations
+
+
+Pipedrive
+Pipedrive
+Connect to sync Pipedrive deals and contacts for use in ChatGPT.
+
+
+PitchBook
+PitchBook
+Faster workflows with market intelligence
+
+
+Replit
+Replit
+Build web apps with AI
+
+
+Semrush
+Semrush
+Site metrics and traffic data
+
+
+SharePoint
+SharePoint
+Busca y extrae datos de sitios compartidos y OneDrive.
+
+
+Slack
+Slack
+Consulta chats y mensajes.
+
+
+Spaceship
+Spaceship
+Search domain availability
+
+
+Stripe
+Stripe
+Payments and business tools
+
+
+Teams
+Teams
+Consulta chats y mensajes.
+
+
+Teamwork.com
+Teamwork.com
+Connect to sync Teamwork projects and tasks for use in ChatGPT.
+
+
+Tripadvisor
+Tripadvisor
+Book top-rated hotels
+
+
+Vercel
+Vercel
+Search docs and deploy apps
+
+
+Zoho
+Zoho
+Connect to sync Zoho CRM records and activities for use in ChatGPT.
+
+
+Zoho Desk
+Zoho Desk
+Connect to sync Zoho Desk tickets and customer conversations for use in ChatGPT.
+
+
+Zoom
+Zoom
+Smart meeting insights from Zoom

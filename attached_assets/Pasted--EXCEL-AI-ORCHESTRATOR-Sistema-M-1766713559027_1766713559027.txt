@@ -1,0 +1,1141 @@
+// ============================================================
+// EXCEL AI ORCHESTRATOR - Sistema Multi-Agente
+// ============================================================
+
+// === TIPOS DE ACCIONES DEL ORQUESTADOR ===
+const ACTIONS = {
+  CREATE_SHEET: 'CREATE_SHEET',
+  INSERT_DATA: 'INSERT_DATA',
+  INSERT_FORMULA: 'INSERT_FORMULA',
+  INSERT_BULK_FORMULAS: 'INSERT_BULK_FORMULAS',
+  CREATE_CHART: 'CREATE_CHART',
+  APPLY_CONDITIONAL_FORMAT: 'APPLY_CONDITIONAL_FORMAT',
+  APPLY_STYLE: 'APPLY_STYLE',
+  SET_COLUMN_WIDTH: 'SET_COLUMN_WIDTH',
+  MERGE_CELLS: 'MERGE_CELLS'
+};
+
+// === ORQUESTADOR PRINCIPAL ===
+class ExcelOrchestrator {
+  constructor(workbook, setWorkbook, streamingHook = null) {
+    this.workbook = workbook;
+    this.setWorkbook = setWorkbook;
+    this.streamingHook = streamingHook;
+    this.executionPlan = [];
+    this.executionLog = [];
+    this.agents = {
+      sheet: new SheetAgent(this),
+      data: new DataAgent(this),
+      formula: new FormulaAgent(this),
+      chart: new ChartAgent(this),
+      format: new FormatAgent(this)
+    };
+  }
+
+  // 1. ANALIZAR PROMPT Y GENERAR PLAN
+  async analyzeAndPlan(userPrompt) {
+    console.log('🤖 Analizando prompt:', userPrompt);
+    
+    const analysis = this.analyzePrompt(userPrompt);
+    this.executionPlan = this.generateExecutionPlan(analysis);
+    
+    console.log('📋 Plan de ejecución:', this.executionPlan);
+    return this.executionPlan;
+  }
+
+  // Análisis del prompt con NLP básico
+  analyzePrompt(prompt) {
+    const lowerPrompt = prompt.toLowerCase();
+    const analysis = {
+      sheets: [],
+      requiresCharts: false,
+      chartTypes: [],
+      requiresFormulas: false,
+      formulaTypes: [],
+      requiresConditionalFormat: false,
+      dataTheme: null
+    };
+
+    // Detectar hojas requeridas
+    const sheetPatterns = [
+      { regex: /hoja\s*\d*\s*["']?(\w+)["']?/gi, extract: 1 },
+      { regex: /sheet\s*\d*\s*["']?(\w+)["']?/gi, extract: 1 },
+      { regex: /(ventas|sales)/gi, name: 'Ventas' },
+      { regex: /(resumen|summary)/gi, name: 'Resumen' },
+      { regex: /(gráficos?|charts?)/gi, name: 'Gráficos' },
+      { regex: /(análisis|analysis)/gi, name: 'Análisis' }
+    ];
+
+    sheetPatterns.forEach(pattern => {
+      if (pattern.name && pattern.regex.test(lowerPrompt)) {
+        analysis.sheets.push(pattern.name);
+      }
+    });
+
+    // Detectar tipos de gráficos
+    if (/gráfico|chart|graph/i.test(lowerPrompt)) {
+      analysis.requiresCharts = true;
+      if (/barras?|columnas?|bar|column/i.test(lowerPrompt)) {
+        analysis.chartTypes.push('bar');
+      }
+      if (/circular|pie|pastel|torta/i.test(lowerPrompt)) {
+        analysis.chartTypes.push('pie');
+      }
+      if (/líneas?|line/i.test(lowerPrompt)) {
+        analysis.chartTypes.push('line');
+      }
+    }
+
+    // Detectar fórmulas
+    if (/fórmula|formula|sum|average|promedio|total|calcul/i.test(lowerPrompt)) {
+      analysis.requiresFormulas = true;
+      if (/sum|suma|total/i.test(lowerPrompt)) analysis.formulaTypes.push('SUM');
+      if (/average|promedio/i.test(lowerPrompt)) analysis.formulaTypes.push('AVERAGE');
+      if (/crecimiento|growth|porcentaje/i.test(lowerPrompt)) analysis.formulaTypes.push('GROWTH');
+      if (/max|máximo/i.test(lowerPrompt)) analysis.formulaTypes.push('MAX');
+      if (/min|mínimo/i.test(lowerPrompt)) analysis.formulaTypes.push('MIN');
+    }
+
+    // Detectar formato condicional
+    if (/formato condicional|conditional format|color.*según|highlight/i.test(lowerPrompt)) {
+      analysis.requiresConditionalFormat = true;
+    }
+
+    // Detectar tema de datos
+    if (/ventas|sales|productos?|products?/i.test(lowerPrompt)) {
+      analysis.dataTheme = 'sales';
+    } else if (/empleados?|employees?|nómina|payroll/i.test(lowerPrompt)) {
+      analysis.dataTheme = 'employees';
+    } else if (/inventario|inventory|stock/i.test(lowerPrompt)) {
+      analysis.dataTheme = 'inventory';
+    }
+
+    // Si no detectó hojas específicas pero pide Excel completo
+    if (analysis.sheets.length === 0 && /4 hojas|completo|complete/i.test(lowerPrompt)) {
+      analysis.sheets = ['Ventas', 'Resumen', 'Gráficos', 'Análisis'];
+    }
+
+    return analysis;
+  }
+
+  // Generar plan de ejecución basado en análisis
+  generateExecutionPlan(analysis) {
+    const plan = [];
+
+    // Si es el caso completo de 4 hojas con ventas
+    if (analysis.sheets.includes('Ventas') || analysis.dataTheme === 'sales') {
+      plan.push(...this.generateSalesWorkbookPlan());
+    } else {
+      // Plan genérico basado en análisis
+      analysis.sheets.forEach((sheetName, idx) => {
+        plan.push({
+          action: ACTIONS.CREATE_SHEET,
+          params: { name: sheetName, index: idx }
+        });
+      });
+    }
+
+    return plan;
+  }
+
+  // Plan específico para workbook de ventas completo
+  generateSalesWorkbookPlan() {
+    return [
+      // === HOJA 1: VENTAS ===
+      {
+        action: ACTIONS.CREATE_SHEET,
+        params: { name: 'Ventas', index: 0 }
+      },
+      {
+        action: ACTIONS.INSERT_DATA,
+        params: {
+          sheetName: 'Ventas',
+          startRow: 0,
+          startCol: 0,
+          data: [
+            ['Mes', 'Producto', 'Cantidad', 'Precio', 'Total'],
+            ['Enero', 'Laptop', 15, 1200, null],
+            ['Febrero', 'Mouse', 45, 25, null],
+            ['Marzo', 'Teclado', 30, 75, null],
+            ['Abril', 'Monitor', 12, 350, null],
+            ['Mayo', 'Laptop', 20, 1200, null],
+            ['Junio', 'Mouse', 60, 25, null],
+            ['Julio', 'Teclado', 40, 75, null],
+            ['Agosto', 'Monitor', 18, 350, null],
+            ['Septiembre', 'Laptop', 25, 1200, null],
+            ['Octubre', 'Mouse', 70, 25, null],
+            ['Noviembre', 'Teclado', 35, 75, null],
+            ['Diciembre', 'Monitor', 22, 350, null]
+          ],
+          headers: true
+        }
+      },
+      {
+        action: ACTIONS.INSERT_BULK_FORMULAS,
+        params: {
+          sheetName: 'Ventas',
+          formulas: [
+            { row: 1, col: 4, formula: '=C2*D2' },
+            { row: 2, col: 4, formula: '=C3*D3' },
+            { row: 3, col: 4, formula: '=C4*D4' },
+            { row: 4, col: 4, formula: '=C5*D5' },
+            { row: 5, col: 4, formula: '=C6*D6' },
+            { row: 6, col: 4, formula: '=C7*D7' },
+            { row: 7, col: 4, formula: '=C8*D8' },
+            { row: 8, col: 4, formula: '=C9*D9' },
+            { row: 9, col: 4, formula: '=C10*D10' },
+            { row: 10, col: 4, formula: '=C11*D11' },
+            { row: 11, col: 4, formula: '=C12*D12' },
+            { row: 12, col: 4, formula: '=C13*D13' }
+          ]
+        }
+      },
+      {
+        action: ACTIONS.APPLY_STYLE,
+        params: {
+          sheetName: 'Ventas',
+          range: { startRow: 0, endRow: 0, startCol: 0, endCol: 4 },
+          style: { fontWeight: 'bold', backgroundColor: '#3b82f6', color: '#ffffff' }
+        }
+      },
+
+      // === HOJA 2: RESUMEN ===
+      {
+        action: ACTIONS.CREATE_SHEET,
+        params: { name: 'Resumen', index: 1 }
+      },
+      {
+        action: ACTIONS.INSERT_DATA,
+        params: {
+          sheetName: 'Resumen',
+          startRow: 0,
+          startCol: 0,
+          data: [
+            ['RESUMEN DE VENTAS', '', ''],
+            ['', '', ''],
+            ['Métrica', 'Valor', 'Descripción'],
+            ['Total Unidades Vendidas', null, 'Suma de todas las cantidades'],
+            ['Venta Total ($)', null, 'Suma de todos los totales'],
+            ['Promedio por Venta ($)', null, 'Promedio de totales'],
+            ['Venta Máxima ($)', null, 'Mayor venta individual'],
+            ['Venta Mínima ($)', null, 'Menor venta individual'],
+            ['Cantidad de Transacciones', null, 'Número de registros'],
+            ['', '', ''],
+            ['RESUMEN POR PRODUCTO', '', ''],
+            ['Producto', 'Unidades', 'Ingresos'],
+            ['Laptop', null, null],
+            ['Mouse', null, null],
+            ['Teclado', null, null],
+            ['Monitor', null, null]
+          ]
+        }
+      },
+      {
+        action: ACTIONS.INSERT_BULK_FORMULAS,
+        params: {
+          sheetName: 'Resumen',
+          formulas: [
+            // Métricas generales (referencia a hoja Ventas)
+            { row: 3, col: 1, formula: '=SUM(Ventas!C2:C13)' },
+            { row: 4, col: 1, formula: '=SUM(Ventas!E2:E13)' },
+            { row: 5, col: 1, formula: '=AVERAGE(Ventas!E2:E13)' },
+            { row: 6, col: 1, formula: '=MAX(Ventas!E2:E13)' },
+            { row: 7, col: 1, formula: '=MIN(Ventas!E2:E13)' },
+            { row: 8, col: 1, formula: '=COUNT(Ventas!E2:E13)' },
+            // Por producto (fórmulas SUMIF simuladas con valores directos por ahora)
+            { row: 12, col: 1, formula: '=60' },  // Laptops: 15+20+25
+            { row: 12, col: 2, formula: '=72000' },
+            { row: 13, col: 1, formula: '=175' }, // Mouse: 45+60+70
+            { row: 13, col: 2, formula: '=4375' },
+            { row: 14, col: 1, formula: '=105' }, // Teclado: 30+40+35
+            { row: 14, col: 2, formula: '=7875' },
+            { row: 15, col: 1, formula: '=52' },  // Monitor: 12+18+22
+            { row: 15, col: 2, formula: '=18200' }
+          ]
+        }
+      },
+
+      // === HOJA 3: GRÁFICOS ===
+      {
+        action: ACTIONS.CREATE_SHEET,
+        params: { name: 'Gráficos', index: 2 }
+      },
+      {
+        action: ACTIONS.INSERT_DATA,
+        params: {
+          sheetName: 'Gráficos',
+          startRow: 0,
+          startCol: 0,
+          data: [
+            ['📊 DASHBOARD DE VENTAS', '', '', ''],
+            ['', '', '', ''],
+            ['Datos para Gráfico de Barras (Ventas por Mes)', '', '', ''],
+            ['Mes', 'Ventas ($)', '', ''],
+            ['Ene', 18000, '', ''],
+            ['Feb', 1125, '', ''],
+            ['Mar', 2250, '', ''],
+            ['Abr', 4200, '', ''],
+            ['May', 24000, '', ''],
+            ['Jun', 1500, '', ''],
+            ['Jul', 3000, '', ''],
+            ['Ago', 6300, '', ''],
+            ['Sep', 30000, '', ''],
+            ['Oct', 1750, '', ''],
+            ['Nov', 2625, '', ''],
+            ['Dic', 7700, '', ''],
+            ['', '', '', ''],
+            ['Datos para Gráfico Circular (Ventas por Producto)', '', '', ''],
+            ['Producto', 'Total Ventas ($)', 'Porcentaje', ''],
+            ['Laptop', 72000, null, ''],
+            ['Mouse', 4375, null, ''],
+            ['Teclado', 7875, null, ''],
+            ['Monitor', 18200, null, '']
+          ]
+        }
+      },
+      {
+        action: ACTIONS.INSERT_BULK_FORMULAS,
+        params: {
+          sheetName: 'Gráficos',
+          formulas: [
+            { row: 19, col: 2, formula: '=ROUND(B20/102450*100,1)' },
+            { row: 20, col: 2, formula: '=ROUND(B21/102450*100,1)' },
+            { row: 21, col: 2, formula: '=ROUND(B22/102450*100,1)' },
+            { row: 22, col: 2, formula: '=ROUND(B23/102450*100,1)' }
+          ]
+        }
+      },
+      {
+        action: ACTIONS.CREATE_CHART,
+        params: {
+          sheetName: 'Gráficos',
+          chartType: 'bar',
+          title: 'Ventas Mensuales ($)',
+          dataRange: { startRow: 4, endRow: 15, startCol: 0, endCol: 1 },
+          position: { row: 2, col: 5 },
+          size: { width: 450, height: 300 }
+        }
+      },
+      {
+        action: ACTIONS.CREATE_CHART,
+        params: {
+          sheetName: 'Gráficos',
+          chartType: 'pie',
+          title: 'Distribución por Producto',
+          dataRange: { startRow: 19, endRow: 22, startCol: 0, endCol: 1 },
+          position: { row: 18, col: 5 },
+          size: { width: 350, height: 300 }
+        }
+      },
+
+      // === HOJA 4: ANÁLISIS ===
+      {
+        action: ACTIONS.CREATE_SHEET,
+        params: { name: 'Análisis', index: 3 }
+      },
+      {
+        action: ACTIONS.INSERT_DATA,
+        params: {
+          sheetName: 'Análisis',
+          startRow: 0,
+          startCol: 0,
+          data: [
+            ['📈 ANÁLISIS DE CRECIMIENTO', '', '', '', ''],
+            ['', '', '', '', ''],
+            ['Mes', 'Ventas ($)', 'Mes Anterior', 'Crecimiento ($)', 'Crecimiento (%)'],
+            ['Enero', 18000, 0, null, null],
+            ['Febrero', 1125, 18000, null, null],
+            ['Marzo', 2250, 1125, null, null],
+            ['Abril', 4200, 2250, null, null],
+            ['Mayo', 24000, 4200, null, null],
+            ['Junio', 1500, 24000, null, null],
+            ['Julio', 3000, 1500, null, null],
+            ['Agosto', 6300, 3000, null, null],
+            ['Septiembre', 30000, 6300, null, null],
+            ['Octubre', 1750, 30000, null, null],
+            ['Noviembre', 2625, 1750, null, null],
+            ['Diciembre', 7700, 2625, null, null],
+            ['', '', '', '', ''],
+            ['ESTADÍSTICAS', '', '', '', ''],
+            ['Crecimiento Promedio (%)', null, '', '', ''],
+            ['Mayor Crecimiento (%)', null, '', '', ''],
+            ['Mayor Caída (%)', null, '', '', '']
+          ]
+        }
+      },
+      {
+        action: ACTIONS.INSERT_BULK_FORMULAS,
+        params: {
+          sheetName: 'Análisis',
+          formulas: [
+            // Crecimiento absoluto y porcentual
+            { row: 3, col: 3, formula: '=B4-C4' },
+            { row: 3, col: 4, formula: '=IF(C4=0,0,ROUND((B4-C4)/C4*100,1))' },
+            { row: 4, col: 3, formula: '=B5-C5' },
+            { row: 4, col: 4, formula: '=IF(C5=0,0,ROUND((B5-C5)/C5*100,1))' },
+            { row: 5, col: 3, formula: '=B6-C6' },
+            { row: 5, col: 4, formula: '=IF(C6=0,0,ROUND((B6-C6)/C6*100,1))' },
+            { row: 6, col: 3, formula: '=B7-C7' },
+            { row: 6, col: 4, formula: '=IF(C7=0,0,ROUND((B7-C7)/C7*100,1))' },
+            { row: 7, col: 3, formula: '=B8-C8' },
+            { row: 7, col: 4, formula: '=IF(C8=0,0,ROUND((B8-C8)/C8*100,1))' },
+            { row: 8, col: 3, formula: '=B9-C9' },
+            { row: 8, col: 4, formula: '=IF(C9=0,0,ROUND((B9-C9)/C9*100,1))' },
+            { row: 9, col: 3, formula: '=B10-C10' },
+            { row: 9, col: 4, formula: '=IF(C10=0,0,ROUND((B10-C10)/C10*100,1))' },
+            { row: 10, col: 3, formula: '=B11-C11' },
+            { row: 10, col: 4, formula: '=IF(C11=0,0,ROUND((B11-C11)/C11*100,1))' },
+            { row: 11, col: 3, formula: '=B12-C12' },
+            { row: 11, col: 4, formula: '=IF(C12=0,0,ROUND((B12-C12)/C12*100,1))' },
+            { row: 12, col: 3, formula: '=B13-C13' },
+            { row: 12, col: 4, formula: '=IF(C13=0,0,ROUND((B13-C13)/C13*100,1))' },
+            { row: 13, col: 3, formula: '=B14-C14' },
+            { row: 13, col: 4, formula: '=IF(C14=0,0,ROUND((B14-C14)/C14*100,1))' },
+            { row: 14, col: 3, formula: '=B15-C15' },
+            { row: 14, col: 4, formula: '=IF(C15=0,0,ROUND((B15-C15)/C15*100,1))' },
+            // Estadísticas
+            { row: 17, col: 1, formula: '=AVERAGE(E4:E15)' },
+            { row: 18, col: 1, formula: '=MAX(E4:E15)' },
+            { row: 19, col: 1, formula: '=MIN(E4:E15)' }
+          ]
+        }
+      },
+      {
+        action: ACTIONS.APPLY_CONDITIONAL_FORMAT,
+        params: {
+          sheetName: 'Análisis',
+          range: { startRow: 3, endRow: 14, startCol: 4, endCol: 4 },
+          rules: [
+            { condition: 'greaterThan', value: 0, style: { backgroundColor: '#dcfce7', color: '#166534' } },
+            { condition: 'lessThan', value: 0, style: { backgroundColor: '#fee2e2', color: '#991b1b' } },
+            { condition: 'equals', value: 0, style: { backgroundColor: '#fef3c7', color: '#92400e' } }
+          ]
+        }
+      }
+    ];
+  }
+
+  // 2. EJECUTAR PLAN
+  async executePlan(onProgress = null) {
+    console.log('🚀 Iniciando ejecución del plan...');
+    const totalTasks = this.executionPlan.length;
+
+    for (let i = 0; i < this.executionPlan.length; i++) {
+      const task = this.executionPlan[i];
+      
+      if (onProgress) {
+        onProgress({
+          current: i + 1,
+          total: totalTasks,
+          task: task.action,
+          params: task.params
+        });
+      }
+
+      try {
+        await this.executeTask(task);
+        this.executionLog.push({ task, status: 'success', timestamp: Date.now() });
+        
+        // Pequeña pausa para efecto visual de streaming
+        await this.sleep(50);
+      } catch (error) {
+        console.error(`Error en tarea ${task.action}:`, error);
+        this.executionLog.push({ task, status: 'error', error, timestamp: Date.now() });
+      }
+    }
+
+    // Actualizar workbook final
+    this.setWorkbook(prev => ({ ...prev }));
+    console.log('✅ Plan ejecutado completamente');
+    
+    return this.executionLog;
+  }
+
+  // Ejecutar tarea individual
+  async executeTask(task) {
+    const { action, params } = task;
+
+    switch (action) {
+      case ACTIONS.CREATE_SHEET:
+        await this.agents.sheet.createSheet(params);
+        break;
+      case ACTIONS.INSERT_DATA:
+        await this.agents.data.insertData(params);
+        break;
+      case ACTIONS.INSERT_FORMULA:
+        await this.agents.formula.insertFormula(params);
+        break;
+      case ACTIONS.INSERT_BULK_FORMULAS:
+        await this.agents.formula.insertBulkFormulas(params);
+        break;
+      case ACTIONS.CREATE_CHART:
+        await this.agents.chart.createChart(params);
+        break;
+      case ACTIONS.APPLY_CONDITIONAL_FORMAT:
+        await this.agents.format.applyConditionalFormat(params);
+        break;
+      case ACTIONS.APPLY_STYLE:
+        await this.agents.format.applyStyle(params);
+        break;
+      default:
+        console.warn(`Acción desconocida: ${action}`);
+    }
+  }
+
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  getSheet(name) {
+    return this.workbook.sheets.find(s => s.name === name);
+  }
+}
+
+// ============================================================
+// AGENTES ESPECIALIZADOS
+// ============================================================
+
+// === AGENTE DE HOJAS ===
+class SheetAgent {
+  constructor(orchestrator) {
+    this.orchestrator = orchestrator;
+  }
+
+  async createSheet({ name, index }) {
+    const { workbook, setWorkbook } = this.orchestrator;
+    
+    // Verificar si ya existe
+    if (workbook.sheets.find(s => s.name === name)) {
+      console.log(`Hoja "${name}" ya existe, omitiendo...`);
+      return;
+    }
+
+    const newSheet = {
+      id: `sheet_${Date.now()}_${index}`,
+      name: name,
+      grid: new SparseGrid(),
+      charts: [],
+      conditionalFormats: []
+    };
+
+    workbook.sheets.push(newSheet);
+    setWorkbook({ ...workbook });
+    console.log(`📄 Hoja creada: ${name}`);
+  }
+}
+
+// === AGENTE DE DATOS ===
+class DataAgent {
+  constructor(orchestrator) {
+    this.orchestrator = orchestrator;
+  }
+
+  async insertData({ sheetName, startRow, startCol, data, headers = false }) {
+    const sheet = this.orchestrator.getSheet(sheetName);
+    if (!sheet) {
+      console.error(`Hoja no encontrada: ${sheetName}`);
+      return;
+    }
+
+    const { streamingHook } = this.orchestrator;
+
+    for (let r = 0; r < data.length; r++) {
+      for (let c = 0; c < data[r].length; c++) {
+        const value = data[r][c];
+        if (value !== null && value !== undefined && value !== '') {
+          const cellData = {
+            value: value,
+            formula: null,
+            format: headers && r === 0 ? { fontWeight: 'bold' } : {}
+          };
+
+          if (streamingHook) {
+            // Con animación
+            streamingHook.queueCell(startRow + r, startCol + c, value, 30);
+          } else {
+            // Directo
+            sheet.grid.setCell(startRow + r, startCol + c, cellData);
+          }
+        }
+      }
+    }
+
+    if (streamingHook) {
+      await streamingHook.processStreamQueue();
+    }
+
+    console.log(`📝 Datos insertados en ${sheetName}: ${data.length} filas`);
+  }
+}
+
+// === AGENTE DE FÓRMULAS ===
+class FormulaAgent {
+  constructor(orchestrator) {
+    this.orchestrator = orchestrator;
+  }
+
+  async insertFormula({ sheetName, row, col, formula }) {
+    const sheet = this.orchestrator.getSheet(sheetName);
+    if (!sheet) return;
+
+    const evaluated = FormulaEngine.evaluate(formula, sheet.grid, this.orchestrator.workbook);
+    
+    sheet.grid.setCell(row, col, {
+      value: evaluated,
+      formula: formula,
+      format: {}
+    });
+
+    console.log(`🔢 Fórmula insertada: ${formula} = ${evaluated}`);
+  }
+
+  async insertBulkFormulas({ sheetName, formulas }) {
+    const sheet = this.orchestrator.getSheet(sheetName);
+    if (!sheet) return;
+
+    for (const { row, col, formula } of formulas) {
+      const evaluated = FormulaEngine.evaluate(formula, sheet.grid, this.orchestrator.workbook);
+      
+      sheet.grid.setCell(row, col, {
+        value: evaluated,
+        formula: formula,
+        format: {}
+      });
+    }
+
+    console.log(`🔢 ${formulas.length} fórmulas insertadas en ${sheetName}`);
+  }
+}
+
+// === MOTOR DE FÓRMULAS MEJORADO ===
+const FormulaEngine = {
+  evaluate(formula, grid, workbook = null) {
+    if (!formula?.startsWith('=')) return formula;
+    
+    let expr = formula.substring(1).toUpperCase().trim();
+
+    try {
+      // Detectar referencia a otra hoja (Hoja!Rango)
+      const sheetRefMatch = expr.match(/^(\w+)!(.+)$/);
+      if (sheetRefMatch && workbook) {
+        const [, refSheetName, range] = sheetRefMatch;
+        const refSheet = workbook.sheets.find(s => s.name === refSheetName);
+        if (refSheet) {
+          grid = refSheet.grid;
+          expr = range;
+        }
+      }
+
+      // Funciones soportadas
+      if (expr.startsWith('SUM(')) {
+        const range = expr.match(/SUM\(([^)]+)\)/)?.[1];
+        return this.sumRange(range, grid);
+      }
+      if (expr.startsWith('AVERAGE(')) {
+        const range = expr.match(/AVERAGE\(([^)]+)\)/)?.[1];
+        return this.averageRange(range, grid);
+      }
+      if (expr.startsWith('COUNT(')) {
+        const range = expr.match(/COUNT\(([^)]+)\)/)?.[1];
+        return this.countRange(range, grid);
+      }
+      if (expr.startsWith('MAX(')) {
+        const range = expr.match(/MAX\(([^)]+)\)/)?.[1];
+        return Math.max(...this.getRangeValues(range, grid));
+      }
+      if (expr.startsWith('MIN(')) {
+        const range = expr.match(/MIN\(([^)]+)\)/)?.[1];
+        return Math.min(...this.getRangeValues(range, grid));
+      }
+      if (expr.startsWith('ROUND(')) {
+        const match = expr.match(/ROUND\(([^,]+),(\d+)\)/);
+        if (match) {
+          const value = this.evaluateExpression(match[1], grid);
+          const decimals = parseInt(match[2]);
+          return Number(value.toFixed(decimals));
+        }
+      }
+      if (expr.startsWith('IF(')) {
+        return this.evaluateIf(expr, grid);
+      }
+
+      // Expresión matemática simple
+      return this.evaluateExpression(expr, grid);
+
+    } catch (e) {
+      console.error('Error en fórmula:', formula, e);
+      return '#ERROR';
+    }
+  },
+
+  getRangeValues(rangeStr, grid) {
+    const [start, end] = rangeStr.split(':');
+    const startRef = this.parseRef(start);
+    const endRef = end ? this.parseRef(end) : startRef;
+    
+    const values = [];
+    for (let r = startRef.row; r <= endRef.row; r++) {
+      for (let c = startRef.col; c <= endRef.col; c++) {
+        const val = parseFloat(grid.getCell(r, c).value);
+        if (!isNaN(val)) values.push(val);
+      }
+    }
+    return values;
+  },
+
+  sumRange(range, grid) {
+    return this.getRangeValues(range, grid).reduce((a, b) => a + b, 0);
+  },
+
+  averageRange(range, grid) {
+    const vals = this.getRangeValues(range, grid);
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+  },
+
+  countRange(range, grid) {
+    return this.getRangeValues(range, grid).length;
+  },
+
+  evaluateIf(expr, grid) {
+    // IF(condition, trueValue, falseValue)
+    const inner = expr.slice(3, -1);
+    const parts = this.splitIfArguments(inner);
+    
+    if (parts.length !== 3) return '#ERROR';
+    
+    const condition = this.evaluateCondition(parts[0], grid);
+    return condition 
+      ? this.evaluateExpression(parts[1], grid)
+      : this.evaluateExpression(parts[2], grid);
+  },
+
+  splitIfArguments(str) {
+    const args = [];
+    let depth = 0;
+    let current = '';
+    
+    for (const char of str) {
+      if (char === '(') depth++;
+      if (char === ')') depth--;
+      if (char === ',' && depth === 0) {
+        args.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    args.push(current.trim());
+    return args;
+  },
+
+  evaluateCondition(condition, grid) {
+    const resolved = this.resolveReferences(condition, grid);
+    return eval(resolved);
+  },
+
+  evaluateExpression(expr, grid) {
+    const resolved = this.resolveReferences(expr, grid);
+    return eval(resolved);
+  },
+
+  resolveReferences(expr, grid) {
+    return expr.replace(/([A-Z]+\d+)/gi, (match) => {
+      const ref = this.parseRef(match);
+      if (!ref) return 0;
+      const cell = grid.getCell(ref.row, ref.col);
+      const val = parseFloat(cell.value);
+      return isNaN(val) ? 0 : val;
+    });
+  },
+
+  parseRef(ref) {
+    const match = ref.match(/^([A-Z]+)(\d+)$/i);
+    if (!match) return null;
+    
+    let col = 0;
+    const letters = match[1].toUpperCase();
+    for (let i = 0; i < letters.length; i++) {
+      col = col * 26 + (letters.charCodeAt(i) - 64);
+    }
+    
+    return { row: parseInt(match[2]) - 1, col: col - 1 };
+  }
+};
+
+// === AGENTE DE GRÁFICOS ===
+class ChartAgent {
+  constructor(orchestrator) {
+    this.orchestrator = orchestrator;
+  }
+
+  async createChart({ sheetName, chartType, title, dataRange, position, size }) {
+    const sheet = this.orchestrator.getSheet(sheetName);
+    if (!sheet) return;
+
+    // Extraer datos del rango
+    const chartData = this.extractChartData(sheet.grid, dataRange);
+
+    const chart = {
+      id: `chart_${Date.now()}`,
+      type: chartType,
+      title: title,
+      data: chartData,
+      position: position,
+      size: size,
+      colors: this.getChartColors(chartType)
+    };
+
+    sheet.charts.push(chart);
+    console.log(`📊 Gráfico creado: ${title} (${chartType})`);
+  }
+
+  extractChartData(grid, range) {
+    const data = [];
+    for (let r = range.startRow; r <= range.endRow; r++) {
+      const label = grid.getCell(r, range.startCol).value;
+      const value = parseFloat(grid.getCell(r, range.startCol + 1).value) || 0;
+      if (label) {
+        data.push({ name: label, value: value });
+      }
+    }
+    return data;
+  }
+
+  getChartColors(type) {
+    const palettes = {
+      bar: ['#3b82f6', '#60a5fa', '#93c5fd'],
+      pie: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'],
+      line: ['#3b82f6']
+    };
+    return palettes[type] || palettes.bar;
+  }
+}
+
+// === AGENTE DE FORMATO ===
+class FormatAgent {
+  constructor(orchestrator) {
+    this.orchestrator = orchestrator;
+  }
+
+  async applyConditionalFormat({ sheetName, range, rules }) {
+    const sheet = this.orchestrator.getSheet(sheetName);
+    if (!sheet) return;
+
+    sheet.conditionalFormats.push({ range, rules });
+
+    // Aplicar formato a celdas existentes
+    for (let r = range.startRow; r <= range.endRow; r++) {
+      for (let c = range.startCol; c <= range.endCol; c++) {
+        const cell = sheet.grid.getCell(r, c);
+        const value = parseFloat(cell.value);
+        
+        if (!isNaN(value)) {
+          for (const rule of rules) {
+            if (this.matchesCondition(value, rule)) {
+              sheet.grid.setCell(r, c, {
+                ...cell,
+                format: { ...cell.format, ...rule.style }
+              });
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`🎨 Formato condicional aplicado en ${sheetName}`);
+  }
+
+  matchesCondition(value, rule) {
+    switch (rule.condition) {
+      case 'greaterThan': return value > rule.value;
+      case 'lessThan': return value < rule.value;
+      case 'equals': return value === rule.value;
+      case 'between': return value >= rule.min && value <= rule.max;
+      default: return false;
+    }
+  }
+
+  async applyStyle({ sheetName, range, style }) {
+    const sheet = this.orchestrator.getSheet(sheetName);
+    if (!sheet) return;
+
+    for (let r = range.startRow; r <= range.endRow; r++) {
+      for (let c = range.startCol; c <= range.endCol; c++) {
+        const cell = sheet.grid.getCell(r, c);
+        sheet.grid.setCell(r, c, {
+          ...cell,
+          format: { ...cell.format, ...style }
+        });
+      }
+    }
+
+    console.log(`🎨 Estilo aplicado en ${sheetName}`);
+  }
+}
+
+// ============================================================
+// COMPONENTE DE GRÁFICOS EMBEBIDOS
+// ============================================================
+import { BarChart, Bar, PieChart, Pie, LineChart, Line, XAxis, YAxis, Tooltip, Cell, ResponsiveContainer, Legend } from 'recharts';
+
+const EmbeddedChart = ({ chart }) => {
+  const { type, title, data, size, colors } = chart;
+
+  const renderChart = () => {
+    switch (type) {
+      case 'bar':
+        return (
+          <ResponsiveContainer width={size.width} height={size.height}>
+            <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+              <XAxis 
+                dataKey="name" 
+                angle={-45} 
+                textAnchor="end" 
+                height={60}
+                fontSize={11}
+              />
+              <YAxis fontSize={11} />
+              <Tooltip 
+                formatter={(value) => [`$${value.toLocaleString()}`, 'Ventas']}
+              />
+              <Bar dataKey="value" fill={colors[0]} radius={[4, 4, 0, 0]}>
+                {data.map((entry, index) => (
+                  <Cell key={index} fill={colors[index % colors.length]} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        );
+
+      case 'pie':
+        return (
+          <ResponsiveContainer width={size.width} height={size.height}>
+            <PieChart>
+              <Pie
+                data={data}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                outerRadius={80}
+                label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                labelLine={true}
+              >
+                {data.map((entry, index) => (
+                  <Cell key={index} fill={colors[index % colors.length]} />
+                ))}
+              </Pie>
+              <Tooltip formatter={(value) => `$${value.toLocaleString()}`} />
+              <Legend />
+            </PieChart>
+          </ResponsiveContainer>
+        );
+
+      case 'line':
+        return (
+          <ResponsiveContainer width={size.width} height={size.height}>
+            <LineChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+              <XAxis dataKey="name" angle={-45} textAnchor="end" height={60} />
+              <YAxis />
+              <Tooltip />
+              <Line 
+                type="monotone" 
+                dataKey="value" 
+                stroke={colors[0]} 
+                strokeWidth={2}
+                dot={{ fill: colors[0] }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        );
+
+      default:
+        return <div>Tipo de gráfico no soportado</div>;
+    }
+  };
+
+  return (
+    <div className="embedded-chart">
+      <div className="chart-title">{title}</div>
+      <div className="chart-body">
+        {renderChart()}
+      </div>
+    </div>
+  );
+};
+
+// ============================================================
+// INTEGRACIÓN CON EL COMPONENTE EXCEL
+// ============================================================
+const ExcelWithOrchestrator = () => {
+  const [workbook, setWorkbook] = useState(createWorkbook());
+  const [activeSheetId, setActiveSheetId] = useState('sheet1');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [progress, setProgress] = useState(null);
+  
+  const orchestratorRef = useRef(null);
+
+  // Inicializar orquestador
+  useEffect(() => {
+    orchestratorRef.current = new ExcelOrchestrator(workbook, setWorkbook);
+  }, []);
+
+  // Manejar prompt del usuario
+  const handleUserPrompt = async (prompt) => {
+    if (!orchestratorRef.current || isProcessing) return;
+
+    setIsProcessing(true);
+    
+    try {
+      // 1. Analizar y planificar
+      await orchestratorRef.current.analyzeAndPlan(prompt);
+      
+      // 2. Ejecutar plan con progreso
+      await orchestratorRef.current.executePlan((progressData) => {
+        setProgress(progressData);
+      });
+
+      // 3. Activar primera hoja con datos
+      if (workbook.sheets.length > 0) {
+        setActiveSheetId(workbook.sheets[0].id);
+      }
+
+    } catch (error) {
+      console.error('Error en orquestador:', error);
+    } finally {
+      setIsProcessing(false);
+      setProgress(null);
+    }
+  };
+
+  const activeSheet = workbook.sheets.find(s => s.id === activeSheetId);
+
+  return (
+    <div className="excel-orchestrated">
+      {/* Indicador de progreso */}
+      {isProcessing && progress && (
+        <div className="orchestrator-progress">
+          <div className="progress-header">
+            <span className="progress-icon">🤖</span>
+            <span>Construyendo Excel...</span>
+          </div>
+          <div className="progress-detail">
+            Tarea {progress.current}/{progress.total}: {progress.task}
+          </div>
+          <div className="progress-bar">
+            <div 
+              className="progress-fill" 
+              style={{ width: `${(progress.current / progress.total) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Grid del Excel */}
+      <div className="excel-grid">
+        {/* ... renderizado del grid ... */}
+      </div>
+
+      {/* Gráficos embebidos de la hoja activa */}
+      {activeSheet?.charts?.length > 0 && (
+        <div className="charts-container">
+          {activeSheet.charts.map(chart => (
+            <EmbeddedChart key={chart.id} chart={chart} />
+          ))}
+        </div>
+      )}
+
+      {/* Tabs de hojas */}
+      <div className="sheet-tabs">
+        {workbook.sheets.map(sheet => (
+          <button
+            key={sheet.id}
+            className={`tab ${activeSheetId === sheet.id ? 'active' : ''}`}
+            onClick={() => setActiveSheetId(sheet.id)}
+          >
+            {sheet.name}
+            {sheet.charts?.length > 0 && <span className="chart-badge">📊</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// === CSS ADICIONAL ===
+.embedded-chart {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+}
+
+.chart-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #1e293b;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.charts-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 16px;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+}
+
+.orchestrator-progress {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+  color: white;
+  padding: 16px 20px;
+  border-radius: 12px;
+  min-width: 280px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+  z-index: 1000;
+}
+
+.progress-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.progress-detail {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-bottom: 10px;
+}
+
+.progress-bar {
+  height: 4px;
+  background: #475569;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #10b981, #34d399);
+  transition: width 0.3s ease;
+}
+
+.chart-badge {
+  margin-left: 6px;
+  font-size: 12px;
+}
+
+/* Celdas con formato condicional */
+.cell[data-positive="true"] {
+  background-colo

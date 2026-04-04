@@ -1,0 +1,145 @@
+BUG CRÍTICO: El chat se desplaza hacia arriba durante respuestas largas
+
+PROBLEMA:
+Cuando el usuario hace una pregunta que requiere una respuesta larga (como ejercicios de matemáticas con fórmulas), el contenido del chat desaparece y se va hacia arriba. El usuario solo ve el input vacío y tiene que hacer scroll manualmente para ver la respuesta.
+
+Esto pasa porque:
+1. Durante el streaming, cada token nuevo dispara un auto-scroll
+2. El cálculo de la posición de scroll es incorrecto
+3. El contenedor de mensajes se comporta de manera errática con contenido matemático/LaTeX
+
+SOLUCIÓN:
+
+Busca en ChatInterface.tsx o en el componente de mensajes donde se hace el auto-scroll y aplica estos cambios:
+
+1. ENCONTRAR la función de auto-scroll (puede llamarse scrollToBottom, handleScroll, o estar en un useEffect)
+
+2. REEMPLAZAR con esta lógica corregida:
+```typescript
+// Estado para controlar si el usuario hizo scroll manual
+const [userScrolled, setUserScrolled] = useState(false);
+const messagesEndRef = useRef<HTMLDivElement>(null);
+const messagesContainerRef = useRef<HTMLDivElement>(null);
+
+// Detectar cuando el usuario hace scroll manual
+const handleScroll = useCallback(() => {
+  const container = messagesContainerRef.current;
+  if (!container) return;
+  
+  const { scrollTop, scrollHeight, clientHeight } = container;
+  const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+  
+  // Si el usuario está a más de 100px del fondo, está haciendo scroll manual
+  setUserScrolled(distanceFromBottom > 100);
+}, []);
+
+// Función de scroll suave al fondo
+const scrollToBottom = useCallback((force = false) => {
+  // Solo hacer scroll si el usuario no hizo scroll manual O si se fuerza
+  if (userScrolled && !force) return;
+  
+  // Usar requestAnimationFrame para evitar conflictos con el renderizado
+  requestAnimationFrame(() => {
+    messagesEndRef.current?.scrollIntoView({ 
+      behavior: 'smooth',
+      block: 'end'
+    });
+  });
+}, [userScrolled]);
+
+// Auto-scroll cuando llegan nuevos mensajes, pero con debounce
+const lastScrollTime = useRef(0);
+
+useEffect(() => {
+  // Debounce: no hacer scroll más de una vez cada 100ms durante streaming
+  const now = Date.now();
+  if (now - lastScrollTime.current < 100) return;
+  lastScrollTime.current = now;
+  
+  // Solo scroll automático si hay mensajes y el usuario no hizo scroll
+  if (messages.length > 0 && !userScrolled) {
+    scrollToBottom();
+  }
+}, [messages, messages[messages.length - 1]?.content?.length]); // También reaccionar al contenido
+
+// Forzar scroll cuando se envía un nuevo mensaje del usuario
+useEffect(() => {
+  if (isGenerating) {
+    setUserScrolled(false); // Reset cuando empieza a generar
+    scrollToBottom(true);   // Forzar scroll al inicio
+  }
+}, [isGenerating]);
+
+// Reset userScrolled cuando el usuario envía un mensaje
+const handleSendMessage = async () => {
+  setUserScrolled(false);
+  // ... resto de la lógica de envío
+};
+```
+
+3. EN EL JSX del contenedor de mensajes, agregar las refs y el listener:
+```tsx
+<div 
+  ref={messagesContainerRef}
+  onScroll={handleScroll}
+  className="flex-1 overflow-y-auto scroll-smooth"
+  style={{ 
+    scrollBehavior: 'smooth',
+    overscrollBehavior: 'contain' 
+  }}
+>
+  {messages.map((message, index) => (
+    <MessageComponent key={message.id || index} message={message} />
+  ))}
+  
+  {/* Elemento ancla al final - IMPORTANTE */}
+  <div ref={messagesEndRef} style={{ height: 1, width: '100%' }} />
+</div>
+```
+
+4. SI USAS UN COMPONENTE DE STREAMING (como para mostrar la respuesta mientras se genera), asegúrate de que el scroll solo ocurra al FINAL de cada chunk, no en cada caracter:
+```typescript
+// En el efecto de streaming
+useEffect(() => {
+  if (!streamingContent) return;
+  
+  // Solo hacer scroll cada 500ms máximo durante streaming
+  const scrollInterval = setInterval(() => {
+    if (!userScrolled) {
+      scrollToBottom();
+    }
+  }, 500);
+  
+  return () => clearInterval(scrollInterval);
+}, [streamingContent, userScrolled]);
+```
+
+5. ALTERNATIVA MÁS SIMPLE - Si el código actual es muy complejo, busca TODOS los lugares donde se hace scrollIntoView o scrollTo y envuélvelos con esta condición:
+```typescript
+// ANTES (problemático):
+messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+
+// DESPUÉS (seguro):
+const container = messagesContainerRef.current;
+if (container) {
+  const { scrollTop, scrollHeight, clientHeight } = container;
+  const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+  
+  if (isNearBottom) {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }
+}
+```
+
+PUNTOS CLAVE:
+- NO hacer scroll si el usuario ya hizo scroll hacia arriba
+- Usar debounce/throttle durante streaming para evitar scroll excesivo
+- Resetear el estado de "usuario hizo scroll" cuando envía un nuevo mensaje
+- El elemento ancla (messagesEndRef) debe estar DESPUÉS de todos los mensajes
+- Usar requestAnimationFrame para sincronizar con el renderizado
+
+VERIFICA estos archivos:
+- ChatInterface.tsx
+- MessageList.tsx (si existe)
+- useChat.ts o useChatScroll.ts (si existe un hook de scroll)
+- Cualquier componente que maneje el streaming de respuestas

@@ -1,0 +1,149 @@
+1) Estructura general de la pantalla (layout)
+Objetivo: 2 columnas fijas:
+Columna izquierda (sidebar): “Plantilla seleccionada” + bullets + panel flotante “AI Rewrite”.
+Columna derecha (workspace): barra superior de acciones + barra de herramientas (toolbar) + “página” tipo Word con contenido editable.
+Requisitos de layout (CSS/UX):
+Contenedor principal: display:flex; height:100vh;
+Sidebar izquierda: ancho fijo (ej. 380–480px), scroll si se llena.
+Workspace derecha: flex:1, con scroll vertical para las páginas.
+El “canvas” (la hoja) debe estar centrado y con margen amplio.
+2) Componente “Página” tipo Word (render como hoja)
+Objetivo: que se vea como un documento con hoja blanca/crema, con márgenes y tipografías.
+Especificaciones:
+Un contenedor “Page” con tamaño fijo (ej. A4):
+A4 a 96dpi aprox: 794 × 1123 px (pueden ajustar).
+Fondo del workspace: gris claro.
+La hoja con:
+background: #f7f4ef (similar a tu captura)
+border-radius: 8–12px
+box-shadow suave
+padding interno que simule márgenes (ej. 70px top, 70px bottom, 80px left/right)
+Debe soportar múltiples páginas (si el contenido crece, o paginación artificial).
+3) Editor WYSIWYG real (tipo Word)
+Recomendación técnica (para programador):
+Usar un editor robusto:
+TipTap (ProseMirror) (muy recomendado)
+o Slate.js
+o Quill
+Necesitas:
+Negrita, cursiva, subrayado, tachado
+Alineación y listas
+Tamaño de fuente
+Familia tipográfica
+Enlaces
+Imágenes
+Tablas (opcional)
+Deshacer/rehacer
+Requisito clave: el contenido NO debe ser “un HTML pintado”, debe ser un editor con:
+cursor real
+selección real
+edición por bloques (h1/h2/p/list)
+estilos aplicados al texto seleccionado
+4) “Plantilla” editable (lo que ves: Emily Anderson)
+Objetivo: la plantilla no es una imagen: es estructura editable.
+Cómo implementarlo (modo recomendado):
+La plantilla se define como un document model (JSON) con secciones:
+Header: Emily Anderson (H1)
+Linea divisora (hr)
+Columna izquierda: About, Education
+Columna derecha: Working Experience, entradas
+Renderiza ese JSON como nodos del editor (ProseMirror/TipTap) con estilos de la plantilla.
+Ejemplo de secciones (conceptual):
+title (H1)
+twoColumnLayout
+left:
+sectionTitle About
+paragraph
+sectionTitle Education
+items…
+right:
+sectionTitle Working Experience
+entries…
+Importante: que el usuario pueda clickear “About.” y editar ahí, o seleccionar un párrafo y reescribir.
+5) Estilos “de plantilla” aplicados como CSS (no inline sucio)
+Objetivo: que se vea idéntico siempre.
+Reglas:
+Definir una clase raíz por plantilla: .template-emily
+Todo lo de esa plantilla vive bajo esa clase.
+Tipografías (como tu captura):
+Título grande serif (ej. Playfair/Georgia)
+Cuerpo sans/serif según diseño
+Colores:
+Verde/teal del título y headings
+Texto gris oscuro
+Evitar: meter estilos inline por cada span. Mejor:
+marcas semánticas (h1, h2, p, strong, etc.)
+CSS consistente
+6) Toolbar como en la captura
+Objetivo: toolbar fija arriba del editor, con dropdowns y botones.
+Requisitos UI:
+Toolbar dentro del workspace, arriba del documento.
+Debe mantenerse visible aunque hagas scroll (sticky):
+position: sticky; top: 0; z-index: X;
+Botones:
+undo/redo
+dropdown estilo (Normal Text, Heading…)
+font family
+font size
+bold/italic/underline/strike
+align left/center/right/justify
+bullets/numbered
+link/image/table
+7) Panel “AI Rewrite” (el cuadro que aparece)
+Objetivo: cuadro flotante que aparece al seleccionar texto o al pedir reescritura, sin romper la selección.
+Requisitos:
+Renderizarlo como overlay (popover) anclado a la selección.
+Debe aparecer cerca del texto seleccionado, pero nunca tapar el cursor.
+Implementación recomendada:
+Usar “portal” (en React: createPortal) para montarlo al final del <body>.
+Posicionarlo con una librería tipo floating-ui usando el range.getBoundingClientRect() del texto seleccionado.
+8) El problema que mencionas: “cuando selecciono se sobrepone”
+Esto pasa típicamente por z-index/stacking context o porque el overlay está dentro del mismo contenedor con transform, overflow, etc.
+Causas comunes
+El editor/página tiene transform: scale() o transform y crea un nuevo stacking context.
+La hoja tiene overflow: hidden y corta el popover.
+Toolbar sticky y popover compiten por z-index.
+El popover “captura” el mouse y rompe la selección (pierdes el highlight).
+Solución “correcta”
+A) Toolbar y popovers con niveles claros
+Define una escala de capas:
+Documento (texto): z-index: 1
+Selección (nativa del navegador): no se toca
+Toolbar sticky: z-index: 50
+Popovers (AI Rewrite, dropdowns): z-index: 1000 (en portal al body)
+B) Montar popovers fuera del contenedor del editor
+El popover debe estar en <body> (portal), para no quedar “atrapado” por overflow o transform del canvas.
+C) No romper la selección al abrir el popover
+Al abrir “AI Rewrite”, guardar el rango:
+const savedRange = window.getSelection().getRangeAt(0).cloneRange();
+Si el usuario hace click dentro del popover, restaurar selección antes de aplicar cambios.
+D) Si usas zoom (scale del documento)
+Evitar transform: scale() en el contenedor padre del editor.
+Si necesitas zoom, hazlo con:
+un wrapper visual solo para pintura, o
+recalculando tamaños (mejor que transform para editores), o
+transformar solo la “vista” pero manteniendo el editor en escala 1 (más complejo).
+9) Comportamiento de edición “como Word” (detalles que deben quedar claros)
+Pídele esto tal cual al programador:
+Click en cualquier texto → aparece cursor y permite editar.
+Seleccionar texto → toolbar refleja estado (bold/size/font).
+Ctrl/Cmd+B/I/U funcionan.
+Enter crea párrafo; Shift+Enter salto de línea.
+Backspace en headings se comporta bien (no rompe estructura).
+Sección de 2 columnas mantiene flujo:
+Si crece el texto, debe seguir dentro de su columna.
+Exportar/guardar:
+guardar como JSON del editor (ProseMirror) + id de plantilla
+opcional: exportar HTML/PDF
+10) Checklist final (para que tu programador lo implemente sin dudas)
+Layout 2 columnas (sidebar + workspace).
+Página A4 centrada con estilo de plantilla.
+Editor TipTap/Slate/Quill funcionando en esa página.
+Plantilla definida como estructura (JSON) editable, no imagen.
+Toolbar sticky con controles (font, size, bold, align…).
+Popover AI Rewrite anclado a selección usando portal + floating-ui.
+Fix de superposición:
+z-index por niveles
+popovers en body (portal)
+evitar transform/overflow que recorte overlays
+guardar/restaurar selección

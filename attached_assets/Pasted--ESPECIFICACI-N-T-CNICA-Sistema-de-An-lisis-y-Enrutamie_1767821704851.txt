@@ -1,0 +1,2146 @@
+# ESPECIFICACIÓN TÉCNICA: Sistema de Análisis y Enrutamiento de Prompts
+
+## 🎯 PROBLEMA A RESOLVER
+
+Implementar un **Prompt Analysis & Routing Engine (PARE)** robusto que:
+1. Analice semánticamente el input del usuario
+2. Clasifique la intención (intent classification)
+3. Extraiga entidades y parámetros (NER + slot filling)
+4. Seleccione las herramientas/agentes apropiados (tool routing)
+5. Genere un plan de ejecución optimizado (DAG generation)
+
+---
+
+## 🏗️ ARQUITECTURA DEL SISTEMA
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         USER PROMPT                                  │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    1. CONTEXT MANAGER                                │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐     │
+│  │ Session State   │  │ Memory Retrieve │  │ Context Window  │     │
+│  │   Retrieval     │  │   (Semantic)    │  │   Compression   │     │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘     │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    2. INTENT CLASSIFIER                              │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐     │
+│  │  Embedding      │  │  Multi-label    │  │  Confidence     │     │
+│  │  Generation     │  │  Classification │  │  Scoring        │     │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘     │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    3. ENTITY EXTRACTOR                               │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐     │
+│  │  Named Entity   │  │  Slot Filling   │  │  Parameter      │     │
+│  │  Recognition    │  │  (Schema-based) │  │  Validation     │     │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘     │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    4. REASONING ENGINE                               │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐     │
+│  │  Chain-of-      │  │  Tree-of-       │  │  Backtracking   │     │
+│  │  Thought        │  │  Thought        │  │  Logic          │     │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘     │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    5. TOOL ROUTER                                    │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐     │
+│  │  Tool Matching  │  │  Capability     │  │  Dependency     │     │
+│  │  (Semantic)     │  │  Scoring        │  │  Resolution     │     │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘     │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    6. PLAN GENERATOR                                 │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐     │
+│  │  DAG Builder    │  │  Topological    │  │  Parallel       │     │
+│  │  (Task Graph)   │  │  Sorting        │  │  Optimization   │     │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘     │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    7. DECISION ENGINE                                │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐     │
+│  │  Multi-criteria │  │  Uncertainty    │  │  User Pref      │     │
+│  │  Analysis       │  │  Handling       │  │  Weighting      │     │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘     │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                         EXECUTION PLAN                               │
+│            (DAG de tareas listo para Orchestrator)                  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📦 IMPLEMENTACIÓN EN CÓDIGO
+
+### 1. Modelos de Datos Base
+
+```python
+# src/core/models/prompt_analysis.py
+
+from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional, Tuple
+from enum import Enum
+from dataclasses import dataclass
+import numpy as np
+
+
+class IntentCategory(str, Enum):
+    """Categorías principales de intención del usuario."""
+    QUERY = "query"                    # Pregunta/búsqueda de información
+    COMMAND = "command"                # Acción directa a ejecutar
+    CONVERSATION = "conversation"      # Conversación general
+    CREATION = "creation"              # Crear contenido/archivos
+    ANALYSIS = "analysis"              # Analizar datos/información
+    AUTOMATION = "automation"          # Automatizar tareas
+    RESEARCH = "research"              # Investigación profunda
+    CODE = "code"                      # Desarrollo de código
+    CLARIFICATION = "clarification"    # Necesita más contexto
+
+
+class EntityType(str, Enum):
+    """Tipos de entidades extraíbles."""
+    FILE_PATH = "file_path"
+    URL = "url"
+    CODE_SNIPPET = "code_snippet"
+    DATE_TIME = "date_time"
+    NUMBER = "number"
+    PERSON = "person"
+    ORGANIZATION = "organization"
+    TOOL_REFERENCE = "tool_reference"
+    DATA_FORMAT = "data_format"
+    PROGRAMMING_LANGUAGE = "programming_language"
+    ACTION_VERB = "action_verb"
+    DOMAIN_TERM = "domain_term"
+
+
+class Intent(BaseModel):
+    """Intención clasificada del prompt."""
+    category: IntentCategory
+    sub_intent: Optional[str] = None
+    confidence: float = Field(ge=0.0, le=1.0)
+    keywords: List[str] = []
+
+
+class Entity(BaseModel):
+    """Entidad extraída del prompt."""
+    type: EntityType
+    value: str
+    start_pos: int
+    end_pos: int
+    confidence: float = Field(ge=0.0, le=1.0)
+    normalized_value: Optional[str] = None
+    metadata: Dict[str, Any] = {}
+
+
+class ToolCandidate(BaseModel):
+    """Herramienta candidata para ejecución."""
+    tool_name: str
+    relevance_score: float = Field(ge=0.0, le=1.0)
+    capability_match: float = Field(ge=0.0, le=1.0)
+    required_params: Dict[str, Any] = {}
+    optional_params: Dict[str, Any] = {}
+    dependencies: List[str] = []
+
+
+class TaskNode(BaseModel):
+    """Nodo en el DAG de ejecución."""
+    id: str
+    tool: str
+    inputs: Dict[str, Any]
+    dependencies: List[str] = []
+    priority: int = 5
+    can_fail: bool = False
+    timeout_ms: int = 60000
+    retry_count: int = 3
+
+
+class ExecutionPlan(BaseModel):
+    """Plan de ejecución completo."""
+    plan_id: str
+    objective: str
+    nodes: List[TaskNode]
+    edges: List[Tuple[str, str]]  # (from_id, to_id)
+    estimated_duration_ms: int
+    parallel_groups: List[List[str]]  # Grupos que pueden ejecutarse en paralelo
+    fallback_plan: Optional['ExecutionPlan'] = None
+
+
+class PromptAnalysisResult(BaseModel):
+    """Resultado completo del análisis de prompt."""
+    original_prompt: str
+    normalized_prompt: str
+    intents: List[Intent]
+    entities: List[Entity]
+    tool_candidates: List[ToolCandidate]
+    execution_plan: ExecutionPlan
+    requires_clarification: bool = False
+    clarification_questions: List[str] = []
+    context_used: Dict[str, Any] = {}
+    analysis_metadata: Dict[str, Any] = {}
+```
+
+---
+
+### 2. Intent Classifier (Clasificador de Intenciones)
+
+```python
+# src/core/analysis/intent_classifier.py
+
+from typing import Dict, List, Optional, Tuple
+import numpy as np
+from pydantic import BaseModel
+import re
+from src.core.models.prompt_analysis import Intent, IntentCategory
+from src.integrations.llm_router import LLMRouter
+from src.core.tools.embeddings import EmbeddingsTool
+
+
+class IntentPattern(BaseModel):
+    """Patrón para detección de intenciones basada en reglas."""
+    category: IntentCategory
+    patterns: List[str]  # Regex patterns
+    keywords: List[str]
+    weight: float = 1.0
+
+
+class IntentClassifier:
+    """
+    Clasificador de intenciones multi-estrategia.
+    
+    Combina:
+    1. Rule-based matching (patrones regex + keywords)
+    2. Semantic similarity (embeddings)
+    3. LLM-based classification (para casos ambiguos)
+    """
+    
+    # Patrones predefinidos por categoría
+    INTENT_PATTERNS: List[IntentPattern] = [
+        IntentPattern(
+            category=IntentCategory.QUERY,
+            patterns=[
+                r"^(qué|cuál|cómo|dónde|cuándo|por qué|quién)\s",
+                r"^(what|which|how|where|when|why|who)\s",
+                r"\?$",
+                r"^(busca|encuentra|search|find|lookup)\s",
+            ],
+            keywords=["qué", "cuál", "cómo", "what", "how", "explain", "tell me"],
+            weight=1.0
+        ),
+        IntentPattern(
+            category=IntentCategory.COMMAND,
+            patterns=[
+                r"^(ejecuta|run|exec|haz|do|perform|execute)\s",
+                r"^(crea|create|make|genera|generate)\s",
+                r"^(elimina|delete|remove|borra)\s",
+                r"^(actualiza|update|modifica|modify|edit)\s",
+            ],
+            keywords=["ejecuta", "run", "create", "delete", "update", "send", "move"],
+            weight=1.2
+        ),
+        IntentPattern(
+            category=IntentCategory.CREATION,
+            patterns=[
+                r"(crea|create|genera|generate|escribe|write|diseña|design)\s.*(archivo|file|documento|document|imagen|image|código|code)",
+                r"(hazme|make me|build|construye)\s",
+            ],
+            keywords=["crear", "generar", "escribir", "diseñar", "build", "make", "produce"],
+            weight=1.1
+        ),
+        IntentPattern(
+            category=IntentCategory.ANALYSIS,
+            patterns=[
+                r"(analiza|analyze|examina|examine|evalúa|evaluate)\s",
+                r"(resume|summarize|sintetiza)\s",
+                r"(compara|compare|contrasta|contrast)\s",
+            ],
+            keywords=["analizar", "analyze", "examine", "evaluate", "summarize", "compare"],
+            weight=1.0
+        ),
+        IntentPattern(
+            category=IntentCategory.CODE,
+            patterns=[
+                r"(código|code|script|función|function|clase|class|programa|program)\s",
+                r"(debug|debuggea|fix|arregla|refactor)\s.*(código|code|error|bug)",
+                r"(python|javascript|typescript|java|c\+\+|rust|go|ruby)\s",
+            ],
+            keywords=["código", "code", "debug", "function", "class", "script", "python", "javascript"],
+            weight=1.0
+        ),
+        IntentPattern(
+            category=IntentCategory.RESEARCH,
+            patterns=[
+                r"(investiga|research|busca información|find information)\s",
+                r"(profundiza|deep dive|explora|explore)\s",
+                r"(reporte|report|informe|study)\s.*(sobre|about|on)",
+            ],
+            keywords=["investigar", "research", "explore", "study", "report"],
+            weight=1.0
+        ),
+        IntentPattern(
+            category=IntentCategory.AUTOMATION,
+            patterns=[
+                r"(automatiza|automate|programa|schedule|agenda)\s",
+                r"(cada|every|diario|daily|semanal|weekly)\s",
+                r"(workflow|flujo|pipeline|proceso automático)",
+            ],
+            keywords=["automatizar", "schedule", "recurring", "workflow", "cron"],
+            weight=1.0
+        ),
+    ]
+    
+    # Embeddings de referencia para cada categoría (se inicializan en runtime)
+    CATEGORY_EMBEDDINGS: Dict[IntentCategory, np.ndarray] = {}
+    
+    # Ejemplos de referencia para embeddings
+    CATEGORY_EXAMPLES = {
+        IntentCategory.QUERY: [
+            "¿Cuál es la capital de Francia?",
+            "How does photosynthesis work?",
+            "What is the meaning of life?",
+            "Explain quantum computing",
+        ],
+        IntentCategory.COMMAND: [
+            "Run the test suite",
+            "Delete all temporary files",
+            "Send an email to John",
+            "Execute the backup script",
+        ],
+        IntentCategory.CREATION: [
+            "Create a presentation about AI",
+            "Generate a Python script for data cleaning",
+            "Write a blog post about machine learning",
+            "Design a logo for my company",
+        ],
+        IntentCategory.ANALYSIS: [
+            "Analyze the sales data from Q3",
+            "Compare these two documents",
+            "Summarize this research paper",
+            "Evaluate the performance metrics",
+        ],
+        IntentCategory.CODE: [
+            "Write a function to sort an array",
+            "Debug this Python error",
+            "Refactor this class for better performance",
+            "Create unit tests for the API",
+        ],
+        IntentCategory.RESEARCH: [
+            "Research the latest trends in renewable energy",
+            "Find information about competitors",
+            "Deep dive into blockchain technology",
+            "Compile a report on market trends",
+        ],
+        IntentCategory.AUTOMATION: [
+            "Schedule a daily backup at 3 AM",
+            "Automate the deployment process",
+            "Set up a workflow for email notifications",
+            "Create a cron job for data sync",
+        ],
+    }
+    
+    def __init__(
+        self,
+        llm_client: LLMRouter,
+        embeddings_tool: EmbeddingsTool,
+        confidence_threshold: float = 0.7,
+        use_llm_fallback: bool = True
+    ):
+        self.llm = llm_client
+        self.embeddings = embeddings_tool
+        self.confidence_threshold = confidence_threshold
+        self.use_llm_fallback = use_llm_fallback
+        self._initialized = False
+    
+    async def initialize(self):
+        """Inicializa embeddings de categorías de referencia."""
+        if self._initialized:
+            return
+            
+        for category, examples in self.CATEGORY_EXAMPLES.items():
+            # Generar embedding promedio de los ejemplos
+            embeddings_list = []
+            for example in examples:
+                emb = await self.embeddings.generate(example)
+                embeddings_list.append(emb)
+            
+            # Promedio de embeddings
+            self.CATEGORY_EMBEDDINGS[category] = np.mean(embeddings_list, axis=0)
+        
+        self._initialized = True
+    
+    async def classify(
+        self, 
+        prompt: str,
+        context: Optional[Dict] = None
+    ) -> List[Intent]:
+        """
+        Clasifica la intención del prompt usando múltiples estrategias.
+        
+        Args:
+            prompt: Texto del usuario
+            context: Contexto adicional (conversación previa, etc.)
+            
+        Returns:
+            Lista de intenciones ordenadas por confianza
+        """
+        await self.initialize()
+        
+        intents: List[Intent] = []
+        
+        # 1. Clasificación basada en reglas (rápida, determinística)
+        rule_intents = self._classify_by_rules(prompt)
+        
+        # 2. Clasificación semántica (embeddings)
+        semantic_intents = await self._classify_by_embeddings(prompt)
+        
+        # 3. Fusionar resultados
+        merged_intents = self._merge_intents(rule_intents, semantic_intents)
+        
+        # 4. Si la confianza es baja, usar LLM como fallback
+        max_confidence = max([i.confidence for i in merged_intents], default=0)
+        
+        if max_confidence < self.confidence_threshold and self.use_llm_fallback:
+            llm_intents = await self._classify_by_llm(prompt, context)
+            merged_intents = self._merge_intents(merged_intents, llm_intents)
+        
+        # 5. Ordenar por confianza y retornar
+        merged_intents.sort(key=lambda x: x.confidence, reverse=True)
+        
+        return merged_intents
+    
+    def _classify_by_rules(self, prompt: str) -> List[Intent]:
+        """Clasificación basada en patrones regex y keywords."""
+        intents = []
+        prompt_lower = prompt.lower()
+        
+        for pattern in self.INTENT_PATTERNS:
+            score = 0.0
+            matched_keywords = []
+            
+            # Verificar patrones regex
+            for regex in pattern.patterns:
+                if re.search(regex, prompt_lower, re.IGNORECASE):
+                    score += 0.3 * pattern.weight
+            
+            # Verificar keywords
+            for keyword in pattern.keywords:
+                if keyword.lower() in prompt_lower:
+                    score += 0.15 * pattern.weight
+                    matched_keywords.append(keyword)
+            
+            # Normalizar score a [0, 1]
+            score = min(score, 1.0)
+            
+            if score > 0.1:  # Threshold mínimo
+                intents.append(Intent(
+                    category=pattern.category,
+                    confidence=score,
+                    keywords=matched_keywords
+                ))
+        
+        return intents
+    
+    async def _classify_by_embeddings(self, prompt: str) -> List[Intent]:
+        """Clasificación semántica usando embeddings."""
+        intents = []
+        
+        # Generar embedding del prompt
+        prompt_embedding = await self.embeddings.generate(prompt)
+        
+        # Calcular similitud con cada categoría
+        for category, category_embedding in self.CATEGORY_EMBEDDINGS.items():
+            similarity = self._cosine_similarity(prompt_embedding, category_embedding)
+            
+            # Convertir similitud a confianza (ajustar escala)
+            confidence = (similarity + 1) / 2  # De [-1, 1] a [0, 1]
+            
+            if confidence > 0.3:
+                intents.append(Intent(
+                    category=category,
+                    confidence=confidence,
+                    keywords=[]
+                ))
+        
+        return intents
+    
+    async def _classify_by_llm(
+        self, 
+        prompt: str,
+        context: Optional[Dict] = None
+    ) -> List[Intent]:
+        """Clasificación usando LLM para casos ambiguos."""
+        
+        system_prompt = """Eres un clasificador de intenciones. Analiza el mensaje del usuario y clasifica su intención principal.
+
+Categorías disponibles:
+- QUERY: Pregunta o búsqueda de información
+- COMMAND: Acción directa a ejecutar
+- CREATION: Crear contenido, archivos o código
+- ANALYSIS: Analizar datos o información
+- CODE: Desarrollo, debugging o refactoring de código
+- RESEARCH: Investigación profunda de un tema
+- AUTOMATION: Automatizar o programar tareas
+- CONVERSATION: Conversación general
+- CLARIFICATION: El mensaje es ambiguo y necesita más contexto
+
+Responde SOLO con un JSON:
+{
+    "primary_intent": "CATEGORY",
+    "confidence": 0.0-1.0,
+    "sub_intent": "descripción breve",
+    "secondary_intents": [{"category": "CATEGORY", "confidence": 0.0-1.0}]
+}"""
+
+        response = await self.llm.complete(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Mensaje: {prompt}"}
+            ],
+            temperature=0.1,
+            max_tokens=200
+        )
+        
+        # Parsear respuesta JSON
+        try:
+            import json
+            result = json.loads(response)
+            
+            intents = [
+                Intent(
+                    category=IntentCategory(result["primary_intent"].lower()),
+                    sub_intent=result.get("sub_intent"),
+                    confidence=result["confidence"],
+                    keywords=[]
+                )
+            ]
+            
+            for secondary in result.get("secondary_intents", []):
+                intents.append(Intent(
+                    category=IntentCategory(secondary["category"].lower()),
+                    confidence=secondary["confidence"],
+                    keywords=[]
+                ))
+            
+            return intents
+            
+        except Exception as e:
+            # Fallback si el parsing falla
+            return [Intent(
+                category=IntentCategory.CLARIFICATION,
+                confidence=0.5,
+                keywords=[]
+            )]
+    
+    def _merge_intents(
+        self, 
+        intents_a: List[Intent], 
+        intents_b: List[Intent]
+    ) -> List[Intent]:
+        """Fusiona dos listas de intenciones, promediando confianzas duplicadas."""
+        merged: Dict[IntentCategory, Intent] = {}
+        
+        for intent in intents_a + intents_b:
+            if intent.category in merged:
+                existing = merged[intent.category]
+                # Promedio ponderado de confianzas
+                new_confidence = (existing.confidence + intent.confidence) / 2
+                merged[intent.category] = Intent(
+                    category=intent.category,
+                    sub_intent=intent.sub_intent or existing.sub_intent,
+                    confidence=new_confidence,
+                    keywords=list(set(existing.keywords + intent.keywords))
+                )
+            else:
+                merged[intent.category] = intent
+        
+        return list(merged.values())
+    
+    @staticmethod
+    def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+        """Calcula similitud coseno entre dos vectores."""
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+```
+
+---
+
+### 3. Entity Extractor (Extractor de Entidades)
+
+```python
+# src/core/analysis/entity_extractor.py
+
+from typing import Dict, List, Optional, Any, Tuple
+import re
+from datetime import datetime
+from pydantic import BaseModel
+from src.core.models.prompt_analysis import Entity, EntityType
+from src.integrations.llm_router import LLMRouter
+
+
+class ExtractionPattern(BaseModel):
+    """Patrón de extracción de entidades."""
+    entity_type: EntityType
+    patterns: List[str]  # Regex patterns con grupos de captura
+    normalizer: Optional[str] = None  # Nombre de función normalizadora
+
+
+class EntityExtractor:
+    """
+    Extractor de entidades multi-estrategia.
+    
+    Combina:
+    1. Regex-based extraction (patrones predefinidos)
+    2. LLM-based NER (para entidades complejas)
+    3. Schema-based slot filling (para parámetros de herramientas)
+    """
+    
+    # Patrones de extracción predefinidos
+    EXTRACTION_PATTERNS: List[ExtractionPattern] = [
+        # Rutas de archivos
+        ExtractionPattern(
+            entity_type=EntityType.FILE_PATH,
+            patterns=[
+                r'["\']?([/\\]?(?:[\w.-]+[/\\])*[\w.-]+\.[\w]+)["\']?',
+                r'["\']?(~?/[\w/.-]+)["\']?',
+                r'["\']?([A-Z]:\\[\w\\.-]+)["\']?',  # Windows paths
+            ],
+            normalizer="normalize_path"
+        ),
+        # URLs
+        ExtractionPattern(
+            entity_type=EntityType.URL,
+            patterns=[
+                r'(https?://[^\s<>"{}|\\^`\[\]]+)',
+                r'(www\.[^\s<>"{}|\\^`\[\]]+)',
+            ],
+            normalizer="normalize_url"
+        ),
+        # Fechas y tiempos
+        ExtractionPattern(
+            entity_type=EntityType.DATE_TIME,
+            patterns=[
+                r'(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)',  # ISO format
+                r'(\d{1,2}/\d{1,2}/\d{2,4})',  # MM/DD/YYYY
+                r'((?:hoy|mañana|ayer|today|tomorrow|yesterday))',
+                r'((?:lunes|martes|miércoles|jueves|viernes|sábado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday))',
+                r'((?:en|at|a las?)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)',
+            ],
+            normalizer="normalize_datetime"
+        ),
+        # Números
+        ExtractionPattern(
+            entity_type=EntityType.NUMBER,
+            patterns=[
+                r'(\d+(?:\.\d+)?(?:\s*(?:GB|MB|KB|TB|bytes|segundos|minutos|horas|días))?)',
+                r'(\$?\d+(?:,\d{3})*(?:\.\d{2})?)',  # Currency
+            ],
+            normalizer="normalize_number"
+        ),
+        # Lenguajes de programación
+        ExtractionPattern(
+            entity_type=EntityType.PROGRAMMING_LANGUAGE,
+            patterns=[
+                r'\b(python|javascript|typescript|java|c\+\+|cpp|c#|csharp|ruby|go|golang|rust|php|swift|kotlin|scala|r|sql|bash|shell|powershell)\b',
+            ],
+            normalizer="normalize_language"
+        ),
+        # Formatos de datos
+        ExtractionPattern(
+            entity_type=EntityType.DATA_FORMAT,
+            patterns=[
+                r'\b(json|xml|csv|yaml|yml|html|markdown|md|pdf|docx|xlsx|pptx|png|jpg|jpeg|gif|svg|mp3|mp4|wav)\b',
+            ],
+            normalizer="normalize_format"
+        ),
+        # Código inline
+        ExtractionPattern(
+            entity_type=EntityType.CODE_SNIPPET,
+            patterns=[
+                r'`([^`]+)`',  # Inline code
+                r'```[\w]*\n?([\s\S]*?)```',  # Code blocks
+            ],
+            normalizer=None
+        ),
+    ]
+    
+    # Verbos de acción comunes
+    ACTION_VERBS = {
+        "crear": "create", "create": "create", "make": "create", "generate": "create",
+        "eliminar": "delete", "delete": "delete", "remove": "delete", "borrar": "delete",
+        "actualizar": "update", "update": "update", "modify": "update", "edit": "update",
+        "buscar": "search", "search": "search", "find": "search", "lookup": "search",
+        "enviar": "send", "send": "send", "email": "send",
+        "analizar": "analyze", "analyze": "analyze", "examine": "analyze",
+        "ejecutar": "execute", "run": "execute", "exec": "execute",
+        "descargar": "download", "download": "download", "fetch": "download",
+        "subir": "upload", "upload": "upload",
+    }
+    
+    def __init__(
+        self,
+        llm_client: LLMRouter,
+        tool_schemas: Dict[str, Dict] = None
+    ):
+        self.llm = llm_client
+        self.tool_schemas = tool_schemas or {}
+        self._compiled_patterns: Dict[EntityType, List[re.Pattern]] = {}
+        self._compile_patterns()
+    
+    def _compile_patterns(self):
+        """Pre-compila patrones regex para eficiencia."""
+        for pattern_def in self.EXTRACTION_PATTERNS:
+            compiled = [
+                re.compile(p, re.IGNORECASE) 
+                for p in pattern_def.patterns
+            ]
+            self._compiled_patterns[pattern_def.entity_type] = compiled
+    
+    async def extract(
+        self, 
+        prompt: str,
+        expected_entities: Optional[List[EntityType]] = None
+    ) -> List[Entity]:
+        """
+        Extrae entidades del prompt.
+        
+        Args:
+            prompt: Texto del usuario
+            expected_entities: Tipos de entidad esperados (opcional)
+            
+        Returns:
+            Lista de entidades extraídas
+        """
+        entities: List[Entity] = []
+        
+        # 1. Extracción basada en regex
+        regex_entities = self._extract_by_regex(prompt)
+        entities.extend(regex_entities)
+        
+        # 2. Extracción de verbos de acción
+        action_entities = self._extract_action_verbs(prompt)
+        entities.extend(action_entities)
+        
+        # 3. Si hay tipos esperados no cubiertos, usar LLM
+        covered_types = {e.type for e in entities}
+        if expected_entities:
+            missing_types = set(expected_entities) - covered_types
+            if missing_types:
+                llm_entities = await self._extract_by_llm(prompt, list(missing_types))
+                entities.extend(llm_entities)
+        
+        # 4. Deduplicar y ordenar
+        entities = self._deduplicate_entities(entities)
+        entities.sort(key=lambda e: e.start_pos)
+        
+        return entities
+    
+    def _extract_by_regex(self, prompt: str) -> List[Entity]:
+        """Extrae entidades usando patrones regex."""
+        entities = []
+        
+        for pattern_def in self.EXTRACTION_PATTERNS:
+            patterns = self._compiled_patterns.get(pattern_def.entity_type, [])
+            
+            for pattern in patterns:
+                for match in pattern.finditer(prompt):
+                    value = match.group(1) if match.lastindex else match.group(0)
+                    
+                    # Normalizar si hay normalizador
+                    normalized = None
+                    if pattern_def.normalizer:
+                        normalizer = getattr(self, pattern_def.normalizer, None)
+                        if normalizer:
+                            normalized = normalizer(value)
+                    
+                    entities.append(Entity(
+                        type=pattern_def.entity_type,
+                        value=value,
+                        start_pos=match.start(),
+                        end_pos=match.end(),
+                        confidence=0.9,  # Alta confianza para regex matches
+                        normalized_value=normalized
+                    ))
+        
+        return entities
+    
+    def _extract_action_verbs(self, prompt: str) -> List[Entity]:
+        """Extrae verbos de acción del prompt."""
+        entities = []
+        prompt_lower = prompt.lower()
+        
+        for verb, normalized in self.ACTION_VERBS.items():
+            # Buscar el verbo con word boundaries
+            pattern = rf'\b{re.escape(verb)}\b'
+            for match in re.finditer(pattern, prompt_lower):
+                entities.append(Entity(
+                    type=EntityType.ACTION_VERB,
+                    value=verb,
+                    start_pos=match.start(),
+                    end_pos=match.end(),
+                    confidence=0.95,
+                    normalized_value=normalized
+                ))
+        
+        return entities
+    
+    async def _extract_by_llm(
+        self,
+        prompt: str,
+        entity_types: List[EntityType]
+    ) -> List[Entity]:
+        """Extrae entidades usando LLM para casos complejos."""
+        
+        types_str = ", ".join([et.value for et in entity_types])
+        
+        system_prompt = f"""Extrae entidades del texto del usuario.
+
+Tipos de entidad a buscar: {types_str}
+
+Responde SOLO con JSON:
+{{
+    "entities": [
+        {{
+            "type": "tipo_de_entidad",
+            "value": "valor extraído",
+            "normalized": "valor normalizado (opcional)"
+        }}
+    ]
+}}
+
+Si no encuentras entidades de los tipos solicitados, responde: {{"entities": []}}"""
+
+        response = await self.llm.complete(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=500
+        )
+        
+        try:
+            import json
+            result = json.loads(response)
+            
+            entities = []
+            for e in result.get("entities", []):
+                try:
+                    entity_type = EntityType(e["type"])
+                except ValueError:
+                    continue
+                    
+                entities.append(Entity(
+                    type=entity_type,
+                    value=e["value"],
+                    start_pos=prompt.lower().find(e["value"].lower()),
+                    end_pos=prompt.lower().find(e["value"].lower()) + len(e["value"]),
+                    confidence=0.7,  # Menor confianza para LLM
+                    normalized_value=e.get("normalized")
+                ))
+            
+            return entities
+            
+        except Exception:
+            return []
+    
+    async def fill_slots(
+        self,
+        prompt: str,
+        tool_name: str,
+        entities: List[Entity]
+    ) -> Dict[str, Any]:
+        """
+        Rellena slots de parámetros de una herramienta.
+        
+        Args:
+            prompt: Texto original
+            tool_name: Nombre de la herramienta
+            entities: Entidades ya extraídas
+            
+        Returns:
+            Diccionario de parámetros para la herramienta
+        """
+        schema = self.tool_schemas.get(tool_name, {})
+        if not schema:
+            return {}
+        
+        params = {}
+        required_params = schema.get("required", [])
+        all_params = schema.get("properties", {})
+        
+        # Mapear entidades a parámetros según tipo
+        for param_name, param_def in all_params.items():
+            param_type = param_def.get("type")
+            entity_type_hint = param_def.get("entity_type")
+            
+            # Buscar entidad que coincida
+            for entity in entities:
+                if entity_type_hint and entity.type.value == entity_type_hint:
+                    params[param_name] = entity.normalized_value or entity.value
+                    break
+                elif self._type_matches(entity.type, param_type):
+                    params[param_name] = entity.normalized_value or entity.value
+                    break
+        
+        # Si faltan parámetros requeridos, usar LLM
+        missing = [p for p in required_params if p not in params]
+        if missing:
+            llm_params = await self._fill_missing_slots(prompt, tool_name, missing, schema)
+            params.update(llm_params)
+        
+        return params
+    
+    async def _fill_missing_slots(
+        self,
+        prompt: str,
+        tool_name: str,
+        missing_params: List[str],
+        schema: Dict
+    ) -> Dict[str, Any]:
+        """Usa LLM para extraer parámetros faltantes."""
+        
+        params_desc = []
+        for param in missing_params:
+            param_def = schema.get("properties", {}).get(param, {})
+            params_desc.append(f"- {param}: {param_def.get('description', 'sin descripción')}")
+        
+        system_prompt = f"""Extrae los siguientes parámetros del mensaje del usuario para la herramienta '{tool_name}':
+
+{chr(10).join(params_desc)}
+
+Responde SOLO con JSON:
+{{
+    "param_name": "valor extraído",
+    ...
+}}
+
+Si no puedes determinar un valor, usa null."""
+
+        response = await self.llm.complete(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=300
+        )
+        
+        try:
+            import json
+            return json.loads(response)
+        except Exception:
+            return {}
+    
+    def _deduplicate_entities(self, entities: List[Entity]) -> List[Entity]:
+        """Elimina entidades duplicadas, manteniendo la de mayor confianza."""
+        seen: Dict[Tuple[EntityType, str], Entity] = {}
+        
+        for entity in entities:
+            key = (entity.type, entity.value.lower())
+            if key not in seen or entity.confidence > seen[key].confidence:
+                seen[key] = entity
+        
+        return list(seen.values())
+    
+    def _type_matches(self, entity_type: EntityType, param_type: str) -> bool:
+        """Verifica si un tipo de entidad coincide con un tipo de parámetro."""
+        mapping = {
+            EntityType.FILE_PATH: ["string", "path"],
+            EntityType.URL: ["string", "url"],
+            EntityType.NUMBER: ["number", "integer", "float"],
+            EntityType.DATE_TIME: ["string", "datetime"],
+            EntityType.PROGRAMMING_LANGUAGE: ["string", "language"],
+            EntityType.DATA_FORMAT: ["string", "format"],
+        }
+        return param_type in mapping.get(entity_type, [])
+    
+    # Normalizadores
+    @staticmethod
+    def normalize_path(value: str) -> str:
+        """Normaliza rutas de archivos."""
+        return value.strip('"\'').replace('\\', '/')
+    
+    @staticmethod
+    def normalize_url(value: str) -> str:
+        """Normaliza URLs."""
+        if not value.startswith(('http://', 'https://')):
+            return f"https://{value}"
+        return value
+    
+    @staticmethod
+    def normalize_datetime(value: str) -> str:
+        """Normaliza fechas/horas a ISO format."""
+        value_lower = value.lower()
+        if 'hoy' in value_lower or 'today' in value_lower:
+            return datetime.now().strftime('%Y-%m-%d')
+        if 'mañana' in value_lower or 'tomorrow' in value_lower:
+            from datetime import timedelta
+            return (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+        if 'ayer' in value_lower or 'yesterday' in value_lower:
+            from datetime import timedelta
+            return (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        return value
+    
+    @staticmethod
+    def normalize_number(value: str) -> str:
+        """Normaliza números."""
+        return value.replace(',', '').replace('$', '').strip()
+    
+    @staticmethod
+    def normalize_language(value: str) -> str:
+        """Normaliza nombres de lenguajes de programación."""
+        mapping = {
+            'cpp': 'c++',
+            'csharp': 'c#',
+            'golang': 'go',
+        }
+        return mapping.get(value.lower(), value.lower())
+    
+    @staticmethod
+    def normalize_format(value: str) -> str:
+        """Normaliza formatos de archivo."""
+        mapping = {
+            'yml': 'yaml',
+            'md': 'markdown',
+        }
+        return mapping.get(value.lower(), value.lower())
+```
+
+---
+
+### 4. Tool Router (Enrutador de Herramientas)
+
+```python
+# src/core/analysis/tool_router.py
+
+from typing import Dict, List, Optional, Any, Tuple
+import numpy as np
+from pydantic import BaseModel
+from src.core.models.prompt_analysis import (
+    Intent, IntentCategory, Entity, EntityType, ToolCandidate
+)
+from src.core.tool_registry import ToolRegistry
+from src.core.tools.base import BaseTool, ToolCategory
+from src.core.tools.embeddings import EmbeddingsTool
+
+
+class ToolCapability(BaseModel):
+    """Descripción de capacidades de una herramienta."""
+    tool_name: str
+    description: str
+    input_types: List[EntityType] = []
+    output_types: List[str] = []
+    intent_affinity: Dict[IntentCategory, float] = {}
+    keywords: List[str] = []
+    embedding: Optional[List[float]] = None
+
+
+class ToolRouter:
+    """
+    Enrutador de herramientas basado en intenciones y entidades.
+    
+    Estrategias de matching:
+    1. Intent-based affinity (qué categoría de intención soporta)
+    2. Entity-based matching (qué tipos de entrada/salida maneja)
+    3. Semantic similarity (embedding de descripción vs prompt)
+    4. Keyword matching (palabras clave en prompt)
+    """
+    
+    # Afinidad predefinida: IntentCategory -> [herramientas]
+    INTENT_TO_TOOLS: Dict[IntentCategory, List[str]] = {
+        IntentCategory.QUERY: [
+            "search_web", "search_semantic", "memory_retrieve", 
+            "fetch_url", "file_read"
+        ],
+        IntentCategory.COMMAND: [
+            "shell", "code_execute", "file_manage", "email_manage",
+            "calendar_manage", "api_call"
+        ],
+        IntentCategory.CREATION: [
+            "file_write", "doc_create", "slides_create", "spreadsheet_create",
+            "generate_text", "generate_image", "code_generate"
+        ],
+        IntentCategory.ANALYSIS: [
+            "data_analyze", "data_visualize", "summarize", "reason",
+            "vision_analyze", "verify"
+        ],
+        IntentCategory.CODE: [
+            "code_generate", "code_execute", "code_review", "code_debug",
+            "code_test", "code_refactor", "shell", "git_manage"
+        ],
+        IntentCategory.RESEARCH: [
+            "search_web", "fetch_url", "research_deep", "summarize",
+            "memory_store", "verify"
+        ],
+        IntentCategory.AUTOMATION: [
+            "schedule_cron", "schedule_once", "trigger_event", 
+            "workflow", "queue_manage", "webhook_send"
+        ],
+        IntentCategory.CONVERSATION: [
+            "message", "clarify", "summarize", "explain"
+        ],
+        IntentCategory.CLARIFICATION: [
+            "clarify", "context_manage"
+        ],
+    }
+    
+    # Mapeo de EntityType a herramientas relevantes
+    ENTITY_TO_TOOLS: Dict[EntityType, List[str]] = {
+        EntityType.FILE_PATH: ["file_read", "file_write", "file_manage", "file_convert"],
+        EntityType.URL: ["fetch_url", "browser_navigate", "search_web"],
+        EntityType.CODE_SNIPPET: ["code_execute", "code_review", "code_debug"],
+        EntityType.DATE_TIME: ["schedule_cron", "schedule_once", "calendar_manage"],
+        EntityType.PROGRAMMING_LANGUAGE: ["code_generate", "code_execute", "code_review"],
+        EntityType.DATA_FORMAT: ["file_convert", "data_transform", "file_read"],
+    }
+    
+    def __init__(
+        self,
+        tool_registry: ToolRegistry,
+        embeddings_tool: EmbeddingsTool,
+        similarity_threshold: float = 0.5
+    ):
+        self.registry = tool_registry
+        self.embeddings = embeddings_tool
+        self.similarity_threshold = similarity_threshold
+        self._tool_capabilities: Dict[str, ToolCapability] = {}
+        self._tool_embeddings: Dict[str, np.ndarray] = {}
+        self._initialized = False
+    
+    async def initialize(self):
+        """Inicializa capacidades y embeddings de herramientas."""
+        if self._initialized:
+            return
+        
+        tools = self.registry.list_tools()
+        
+        for tool_info in tools:
+            tool_name = tool_info["name"]
+            
+            # Obtener herramienta completa
+            tool = await self.registry.get(tool_name)
+            
+            # Construir capability
+            capability = ToolCapability(
+                tool_name=tool_name,
+                description=tool.description,
+                keywords=self._extract_keywords(tool.description),
+                intent_affinity=self._compute_intent_affinity(tool_name, tool.category)
+            )
+            
+            # Generar embedding de descripción
+            embedding = await self.embeddings.generate(
+                f"{tool_name}: {tool.description}"
+            )
+            
+            self._tool_capabilities[tool_name] = capability
+            self._tool_embeddings[tool_name] = np.array(embedding)
+        
+        self._initialized = True
+    
+    async def route(
+        self,
+        prompt: str,
+        intents: List[Intent],
+        entities: List[Entity],
+        max_candidates: int = 5
+    ) -> List[ToolCandidate]:
+        """
+        Determina las herramientas más apropiadas para el prompt.
+        
+        Args:
+            prompt: Texto del usuario
+            intents: Intenciones clasificadas
+            entities: Entidades extraídas
+            max_candidates: Número máximo de candidatos
+            
+        Returns:
+            Lista de herramientas candidatas ordenadas por relevancia
+        """
+        await self.initialize()
+        
+        candidates: Dict[str, ToolCandidate] = {}
+        
+        # 1. Scoring por intención
+        intent_scores = self._score_by_intent(intents)
+        
+        # 2. Scoring por entidades
+        entity_scores = self._score_by_entities(entities)
+        
+        # 3. Scoring semántico
+        semantic_scores = await self._score_by_semantics(prompt)
+        
+        # 4. Scoring por keywords
+        keyword_scores = self._score_by_keywords(prompt)
+        
+        # 5. Combinar scores
+        all_tools = set(intent_scores.keys()) | set(entity_scores.keys()) | \
+                    set(semantic_scores.keys()) | set(keyword_scores.keys())
+        
+        for tool_name in all_tools:
+            # Pesos de combinación
+            intent_weight = 0.35
+            entity_weight = 0.25
+            semantic_weight = 0.25
+            keyword_weight = 0.15
+            
+            combined_score = (
+                intent_scores.get(tool_name, 0) * intent_weight +
+                entity_scores.get(tool_name, 0) * entity_weight +
+                semantic_scores.get(tool_name, 0) * semantic_weight +
+                keyword_scores.get(tool_name, 0) * keyword_weight
+            )
+            
+            if combined_score > 0.1:  # Threshold mínimo
+                candidates[tool_name] = ToolCandidate(
+                    tool_name=tool_name,
+                    relevance_score=combined_score,
+                    capability_match=semantic_scores.get(tool_name, 0),
+                    dependencies=self._get_dependencies(tool_name)
+                )
+        
+        # 6. Ordenar y retornar top candidatos
+        sorted_candidates = sorted(
+            candidates.values(),
+            key=lambda c: c.relevance_score,
+            reverse=True
+        )
+        
+        return sorted_candidates[:max_candidates]
+    
+    def _score_by_intent(self, intents: List[Intent]) -> Dict[str, float]:
+        """Calcula scores de herramientas basado en intenciones."""
+        scores: Dict[str, float] = {}
+        
+        for intent in intents:
+            tools = self.INTENT_TO_TOOLS.get(intent.category, [])
+            for tool in tools:
+                if tool not in scores:
+                    scores[tool] = 0
+                # Ponderar por confianza de la intención
+                scores[tool] += intent.confidence
+        
+        # Normalizar
+        if scores:
+            max_score = max(scores.values())
+            scores = {k: v / max_score for k, v in scores.items()}
+        
+        return scores
+    
+    def _score_by_entities(self, entities: List[Entity]) -> Dict[str, float]:
+        """Calcula scores basado en entidades detectadas."""
+        scores: Dict[str, float] = {}
+        
+        for entity in entities:
+            tools = self.ENTITY_TO_TOOLS.get(entity.type, [])
+            for tool in tools:
+                if tool not in scores:
+                    scores[tool] = 0
+                scores[tool] += entity.confidence
+        
+        # Normalizar
+        if scores:
+            max_score = max(scores.values())
+            scores = {k: v / max_score for k, v in scores.items()}
+        
+        return scores
+    
+    async def _score_by_semantics(self, prompt: str) -> Dict[str, float]:
+        """Calcula similitud semántica entre prompt y herramientas."""
+        scores: Dict[str, float] = {}
+        
+        prompt_embedding = np.array(await self.embeddings.generate(prompt))
+        
+        for tool_name, tool_embedding in self._tool_embeddings.items():
+            similarity = self._cosine_similarity(prompt_embedding, tool_embedding)
+            # Convertir de [-1, 1] a [0, 1]
+            normalized_sim = (similarity + 1) / 2
+            
+            if normalized_sim > self.similarity_threshold:
+                scores[tool_name] = normalized_sim
+        
+        return scores
+    
+    def _score_by_keywords(self, prompt: str) -> Dict[str, float]:
+        """Calcula scores basado en coincidencia de keywords."""
+        scores: Dict[str, float] = {}
+        prompt_lower = prompt.lower()
+        
+        for tool_name, capability in self._tool_capabilities.items():
+            matches = sum(
+                1 for keyword in capability.keywords
+                if keyword.lower() in prompt_lower
+            )
+            if matches > 0:
+                # Normalizar por número de keywords
+                scores[tool_name] = min(matches / len(capability.keywords), 1.0)
+        
+        return scores
+    
+    def _compute_intent_affinity(
+        self, 
+        tool_name: str, 
+        category: ToolCategory
+    ) -> Dict[IntentCategory, float]:
+        """Calcula afinidad de herramienta con categorías de intención."""
+        affinity = {}
+        
+        for intent_cat, tools in self.INTENT_TO_TOOLS.items():
+            if tool_name in tools:
+                affinity[intent_cat] = 1.0
+            else:
+                # Afinidad parcial basada en categoría de herramienta
+                category_mapping = {
+                    ToolCategory.ORCHESTRATION: [IntentCategory.COMMAND],
+                    ToolCategory.MEMORY: [IntentCategory.QUERY, IntentCategory.RESEARCH],
+                    ToolCategory.REASONING: [IntentCategory.ANALYSIS, IntentCategory.QUERY],
+                    ToolCategory.COMMUNICATION: [IntentCategory.CONVERSATION],
+                    ToolCategory.SYSTEM: [IntentCategory.COMMAND, IntentCategory.CODE],
+                    ToolCategory.FILES: [IntentCategory.CREATION, IntentCategory.COMMAND],
+                    ToolCategory.RESEARCH: [IntentCategory.RESEARCH, IntentCategory.QUERY],
+                    ToolCategory.WEB: [IntentCategory.RESEARCH, IntentCategory.AUTOMATION],
+                    ToolCategory.GENERATION: [IntentCategory.CREATION],
+                    ToolCategory.DATA: [IntentCategory.ANALYSIS],
+                    ToolCategory.AUTOMATION: [IntentCategory.AUTOMATION],
+                }
+                
+                related_intents = category_mapping.get(category, [])
+                if intent_cat in related_intents:
+                    affinity[intent_cat] = 0.5
+        
+        return affinity
+    
+    def _extract_keywords(self, description: str) -> List[str]:
+        """Extrae keywords de la descripción de una herramienta."""
+        # Stopwords básicas
+        stopwords = {
+            "de", "la", "el", "en", "y", "a", "para", "con", "que", "del",
+            "the", "a", "an", "and", "or", "for", "with", "to", "of", "in"
+        }
+        
+        words = description.lower().split()
+        keywords = [w for w in words if len(w) > 3 and w not in stopwords]
+        
+        return list(set(keywords))
+    
+    def _get_dependencies(self, tool_name: str) -> List[str]:
+        """Obtiene dependencias de una herramienta."""
+        try:
+            tool = self.registry._tools.get(tool_name)
+            return tool.dependencies if tool else []
+        except Exception:
+            return []
+    
+    @staticmethod
+    def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+        """Similitud coseno entre vectores."""
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+```
+
+---
+
+### 5. Plan Generator (Generador de Planes DAG)
+
+```python
+# src/core/analysis/plan_generator.py
+
+from typing import Dict, List, Optional, Any, Set, Tuple
+from collections import defaultdict
+import uuid
+import asyncio
+from pydantic import BaseModel
+from src.core.models.prompt_analysis import (
+    Intent, Entity, ToolCandidate, TaskNode, ExecutionPlan
+)
+from src.core.tool_registry import ToolRegistry
+from src.integrations.llm_router import LLMRouter
+
+
+class DependencyGraph:
+    """Grafo de dependencias para ordenamiento topológico."""
+    
+    def __init__(self):
+        self.nodes: Dict[str, TaskNode] = {}
+        self.edges: List[Tuple[str, str]] = []
+        self.adj: Dict[str, List[str]] = defaultdict(list)
+        self.in_degree: Dict[str, int] = defaultdict(int)
+    
+    def add_node(self, node: TaskNode):
+        """Añade un nodo al grafo."""
+        self.nodes[node.id] = node
+        if node.id not in self.in_degree:
+            self.in_degree[node.id] = 0
+    
+    def add_edge(self, from_id: str, to_id: str):
+        """Añade una dependencia (from_id debe completarse antes de to_id)."""
+        self.edges.append((from_id, to_id))
+        self.adj[from_id].append(to_id)
+        self.in_degree[to_id] += 1
+    
+    def topological_sort(self) -> List[TaskNode]:
+        """Ordena nodos topológicamente (Kahn's algorithm)."""
+        result = []
+        queue = [nid for nid, deg in self.in_degree.items() if deg == 0]
+        in_degree = dict(self.in_degree)
+        
+        while queue:
+            node_id = queue.pop(0)
+            if node_id in self.nodes:
+                result.append(self.nodes[node_id])
+            
+            for neighbor in self.adj[node_id]:
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
+        
+        # Verificar ciclos
+        if len(result) != len(self.nodes):
+            raise ValueError("Ciclo detectado en el grafo de dependencias")
+        
+        return result
+    
+    def get_parallel_groups(self) -> List[List[str]]:
+        """Identifica grupos de tareas que pueden ejecutarse en paralelo."""
+        groups = []
+        remaining = set(self.nodes.keys())
+        completed = set()
+        
+        while remaining:
+            # Nodos sin dependencias pendientes
+            ready = [
+                nid for nid in remaining
+                if all(dep not in remaining for dep in self._get_dependencies(nid))
+            ]
+            
+            if not ready:
+                break
+            
+            groups.append(ready)
+            for nid in ready:
+                remaining.remove(nid)
+                completed.add(nid)
+        
+        return groups
+    
+    def _get_dependencies(self, node_id: str) -> List[str]:
+        """Obtiene las dependencias de un nodo."""
+        return [from_id for from_id, to_id in self.edges if to_id == node_id]
+
+
+class PlanGenerator:
+    """
+    Generador de planes de ejecución (DAGs).
+    
+    Estrategias:
+    1. Template-based: Usa templates predefinidos para patrones comunes
+    2. LLM-based: Genera plan dinámico para tareas complejas
+    3. Dependency resolution: Resuelve automáticamente dependencias entre herramientas
+    """
+    
+    # Templates de planes para patrones comunes
+    PLAN_TEMPLATES = {
+        "simple_search": [
+            {"tool": "search_web", "inputs": {"query": "$query"}},
+            {"tool": "summarize", "inputs": {"content": "$search_results"}}
+        ],
+        "deep_research": [
+            {"tool": "search_web", "inputs": {"query": "$query"}},
+            {"tool": "fetch_url", "inputs": {"urls": "$search_results.urls"}},
+            {"tool": "summarize", "inputs": {"content": "$fetched_content"}},
+            {"tool": "verify", "inputs": {"claims": "$summary"}},
+            {"tool": "memory_store", "inputs": {"content": "$verified_summary"}}
+        ],
+        "code_generation": [
+            {"tool": "reason", "inputs": {"task": "$objective"}},
+            {"tool": "code_generate", "inputs": {"spec": "$reasoning_result"}},
+            {"tool": "code_review", "inputs": {"code": "$generated_code"}},
+            {"tool": "code_execute", "inputs": {"code": "$reviewed_code"}}
+        ],
+        "file_processing": [
+            {"tool": "file_read", "inputs": {"path": "$file_path"}},
+            {"tool": "data_analyze", "inputs": {"data": "$file_content"}},
+            {"tool": "file_write", "inputs": {"path": "$output_path", "content": "$analysis"}}
+        ],
+        "email_automation": [
+            {"tool": "email_manage", "inputs": {"action": "search", "query": "$query"}},
+            {"tool": "summarize", "inputs": {"content": "$emails"}},
+            {"tool": "email_manage", "inputs": {"action": "reply", "content": "$summary"}}
+        ],
+    }
+    
+    def __init__(
+        self,
+        tool_registry: ToolRegistry,
+        llm_client: LLMRouter
+    ):
+        self.registry = tool_registry
+        self.llm = llm_client
+    
+    async def generate(
+        self,
+        objective: str,
+        intents: List[Intent],
+        entities: List[Entity],
+        tool_candidates: List[ToolCandidate],
+        context: Optional[Dict] = None
+    ) -> ExecutionPlan:
+        """
+        Genera un plan de ejecución para el objetivo dado.
+        
+        Args:
+            objective: Objetivo del usuario
+            intents: Intenciones clasificadas
+            entities: Entidades extraídas
+            tool_candidates: Herramientas candidatas
+            context: Contexto adicional
+            
+        Returns:
+            Plan de ejecución con DAG de tareas
+        """
+        # 1. Intentar usar template si hay match
+        template_plan = self._match_template(intents, tool_candidates)
+        
+        if template_plan:
+            return await self._instantiate_template(
+                template_plan, objective, entities, tool_candidates
+            )
+        
+        # 2. Generar plan dinámico con LLM
+        return await self._generate_dynamic_plan(
+            objective, intents, entities, tool_candidates, context
+        )
+    
+    def _match_template(
+        self,
+        intents: List[Intent],
+        tools: List[ToolCandidate]
+    ) -> Optional[List[Dict]]:
+        """Busca un template que coincida con el patrón de la solicitud."""
+        
+        primary_intent = intents[0].category if intents else None
+        primary_tool = tools[0].tool_name if tools else None
+        
+        # Mapeo de patrones a templates
+        pattern_mapping = {
+            (IntentCategory.QUERY, "search_web"): "simple_search",
+            (IntentCategory.RESEARCH, "search_web"): "deep_research",
+            (IntentCategory.RESEARCH, "research_deep"): "deep_research",
+            (IntentCategory.CODE, "code_generate"): "code_generation",
+            (IntentCategory.ANALYSIS, "file_read"): "file_processing",
+            (IntentCategory.AUTOMATION, "email_manage"): "email_automation",
+        }
+        
+        template_name = pattern_mapping.get((primary_intent, primary_tool))
+        
+        if template_name:
+            return self.PLAN_TEMPLATES.get(template_name)
+        
+        return None
+    
+    async def _instantiate_template(
+        self,
+        template: List[Dict],
+        objective: str,
+        entities: List[Entity],
+        tools: List[ToolCandidate]
+    ) -> ExecutionPlan:
+        """Instancia un template con valores concretos."""
+        
+        graph = DependencyGraph()
+        entity_map = self._build_entity_map(entities)
+        
+        prev_node_id = None
+        variable_context = {"objective": objective}
+        variable_context.update(entity_map)
+        
+        for i, step in enumerate(template):
+            node_id = f"task_{i}_{uuid.uuid4().hex[:8]}"
+            
+            # Resolver inputs
+            resolved_inputs = self._resolve_template_vars(
+                step["inputs"], 
+                variable_context
+            )
+            
+            node = TaskNode(
+                id=node_id,
+                tool=step["tool"],
+                inputs=resolved_inputs,
+                dependencies=[prev_node_id] if prev_node_id else [],
+                priority=len(template) - i  # Mayor prioridad para primeros pasos
+            )
+            
+            graph.add_node(node)
+            
+            if prev_node_id:
+                graph.add_edge(prev_node_id, node_id)
+            
+            prev_node_id = node_id
+        
+        # Ordenar y construir plan
+        sorted_nodes = graph.topological_sort()
+        parallel_groups = graph.get_parallel_groups()
+        
+        return ExecutionPlan(
+            plan_id=f"plan_{uuid.uuid4().hex[:12]}",
+            objective=objective,
+            nodes=sorted_nodes,
+            edges=graph.edges,
+            estimated_duration_ms=self._estimate_duration(sorted_nodes),
+            parallel_groups=parallel_groups
+        )
+    
+    async def _generate_dynamic_plan(
+        self,
+        objective: str,
+        intents: List[Intent],
+        entities: List[Entity],
+        tools: List[ToolCandidate],
+        context: Optional[Dict]
+    ) -> ExecutionPlan:
+        """Genera un plan dinámico usando LLM."""
+        
+        # Preparar información para el LLM
+        tools_info = "\n".join([
+            f"- {t.tool_name}: relevance={t.relevance_score:.2f}"
+            for t in tools[:10]
+        ])
+        
+        entities_info = "\n".join([
+            f"- {e.type.value}: {e.value}"
+            for e in entities
+        ])
+        
+        intents_info = "\n".join([
+            f"- {i.category.value}: confidence={i.confidence:.2f}"
+            for i in intents
+        ])
+        
+        system_prompt = """Eres un planificador de tareas. Genera un plan de ejecución óptimo.
+
+REGLAS:
+1. Cada tarea debe tener: id, tool, inputs, dependencies
+2. Las dependencias son IDs de tareas que deben completarse antes
+3. Minimiza el número de pasos
+4. Aprovecha el paralelismo cuando sea posible
+5. Los inputs pueden referenciar outputs anteriores con $task_id.field
+
+Responde SOLO con JSON:
+{
+    "tasks": [
+        {
+            "id": "task_1",
+            "tool": "nombre_herramienta",
+            "inputs": {"param": "valor"},
+            "dependencies": []
+        }
+    ],
+    "reasoning": "explicación breve del plan"
+}"""
+
+        user_prompt = f"""OBJETIVO: {objective}
+
+INTENCIONES DETECTADAS:
+{intents_info}
+
+ENTIDADES EXTRAÍDAS:
+{entities_info}
+
+HERRAMIENTAS DISPONIBLES (por relevancia):
+{tools_info}
+
+Genera el plan de ejecución óptimo."""
+
+        response = await self.llm.complete(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.2,
+            max_tokens=1000
+        )
+        
+        try:
+            import json
+            result = json.loads(response)
+            
+            graph = DependencyGraph()
+            
+            for task in result["tasks"]:
+                node = TaskNode(
+                    id=task["id"],
+                    tool=task["tool"],
+                    inputs=task.get("inputs", {}),
+                    dependencies=task.get("dependencies", [])
+                )
+                graph.add_node(node)
+                
+                for dep in node.dependencies:
+                    graph.add_edge(dep, node.id)
+            
+            sorted_nodes = graph.topological_sort()
+            parallel_groups = graph.get_parallel_groups()
+            
+            return ExecutionPlan(
+                plan_id=f"plan_{uuid.uuid4().hex[:12]}",
+                objective=objective,
+                nodes=sorted_nodes,
+                edges=graph.edges,
+                estimated_duration_ms=self._estimate_duration(sorted_nodes),
+                parallel_groups=parallel_groups
+            )
+            
+        except Exception as e:
+            # Fallback a plan simple
+            return self._create_fallback_plan(objective, tools)
+    
+    def _create_fallback_plan(
+        self,
+        objective: str,
+        tools: List[ToolCandidate]
+    ) -> ExecutionPlan:
+        """Crea un plan simple de fallback."""
+        
+        nodes = []
+        
+        # Usar la herramienta más relevante
+        if tools:
+            primary_tool = tools[0]
+            nodes.append(TaskNode(
+                id="task_primary",
+                tool=primary_tool.tool_name,
+                inputs={"objective": objective},
+                dependencies=[]
+            ))
+        
+        # Siempre terminar con message para comunicar resultado
+        nodes.append(TaskNode(
+            id="task_respond",
+            tool="message",
+            inputs={"content": "$task_primary.result"},
+            dependencies=["task_primary"] if nodes else []
+        ))
+        
+        return ExecutionPlan(
+            plan_id=f"plan_fallback_{uuid.uuid4().hex[:8]}",
+            objective=objective,
+            nodes=nodes,
+            edges=[("task_primary", "task_respond")] if len(nodes) > 1 else [],
+            estimated_duration_ms=30000,
+            parallel_groups=[["task_primary"], ["task_respond"]]
+        )
+    
+    def _build_entity_map(self, entities: List[Entity]) -> Dict[str, str]:
+        """Construye mapa de entidades para sustitución de variables."""
+        entity_map = {}
+        
+        for entity in entities:
+            key = entity.type.value
+            value = entity.normalized_value or entity.value
+            
+            # Si hay múltiples del mismo tipo, usar lista
+            if key in entity_map:
+                if isinstance(entity_map[key], list):
+                    entity_map[key].append(value)
+                else:
+                    entity_map[key] = [entity_map[key], value]
+            else:
+                entity_map[key] = value
+        
+        return entity_map
+    
+    def _resolve_template_vars(
+        self,
+        inputs: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Resuelve variables de template ($var) con valores del contexto."""
+        resolved = {}
+        
+        for key, value in inputs.items():
+            if isinstance(value, str) and value.startswith("$"):
+                var_path = value[1:].split(".")
+                var_name = var_path[0]
+                
+                if var_name in context:
+                    result = context[var_name]
+                    # Navegar path si hay más niveles
+                    for part in var_path[1:]:
+                        if isinstance(result, dict):
+                            result = result.get(part, value)
+                    resolved[key] = result
+                else:
+                    resolved[key] = value  # Mantener referencia para runtime
+            else:
+                resolved[key] = value
+        
+        return resolved
+    
+    def _estimate_duration(self, nodes: List[TaskNode]) -> int:
+        """Estima duración total del plan en ms."""
+        # Estimación simple: suma de timeouts
+        return sum(node.timeout_ms for node in nodes)
+```
+
+---
+
+### 6. Motor Principal de Análisis (Integración)
+
+```python
+# src/core/analysis/prompt_analyzer.py
+
+from typing import Dict, List, Optional, Any
+from pydantic import BaseModel
+import asyncio
+from src.core.models.prompt_analysis import (
+    PromptAnalysisResult, Intent, Entity, ToolCandidate, ExecutionPlan
+)
+from src.core.analysis.intent_classifier import IntentClassifier
+from src.core.analysis.entity_extractor import EntityExtractor
+from src.core.analysis.tool_router import ToolRouter
+from src.core.analysis.plan_generator import PlanGenerator
+from src.core.tool_registry import ToolRegistry
+from src.core.tools.embeddings import EmbeddingsTool
+from src.integrations.llm_router import LLMRouter
+from src.memory.memory_manager import MemoryManager
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class PromptAnalyzer:
+    """
+    Motor principal de análisis de prompts.
+    
+    Integra todos los componentes:
+    1. IntentClassifier: Clasifica la intención
+    2. EntityExtractor: Extrae entidades
+    3. ToolRouter: Selecciona herramientas
+    4. PlanGenerator: Genera plan de ejecución
+    
+    Flujo:
+    prompt → context → classify → extract → route → plan → ExecutionPlan
+    """
+    
+    def __init__(
+        self,
+        tool_registry: ToolRegistry,
+        llm_client: LLMRouter,
+        memory_manager: MemoryManager,
+        embeddings_tool: EmbeddingsTool,
+        config: Optional[Dict] = None
+    ):
+        self.config = config or {}
+        
+        # Componentes de análisis
+        self.intent_classifier = IntentClassifier(
+            llm_client=llm_client,
+            embeddings_tool=embeddings_tool,
+            confidence_threshold=self.config.get("intent_confidence_threshold", 0.7),
+            use_llm_fallback=self.config.get("use_llm_fallback", True)
+        )
+        
+        self.entity_extractor = EntityExtractor(
+            llm_client=llm_client,
+            tool_schemas=self._load_tool_schemas(tool_registry)
+        )
+        
+        self.tool_router = ToolRouter(
+            tool_registry=tool_registry,
+            embeddings_tool=embeddings_tool,
+            similarity_threshold=self.config.get("similarity_threshold", 0.5)
+        )
+        
+        self.plan_generator = PlanGenerator(
+            tool_registry=tool_registry,
+            llm_client=llm_client
+        )
+        
+        self.memory = memory_manager
+        self.llm = llm_client
+    
+    async def analyze(
+        self,
+        prompt: str,
+        session_context: Optional[Dict] = None
+    ) -> PromptAnalysisResult:
+        """
+        Analiza un prompt completo y genera plan de ejecución.
+        
+        Args:
+            prompt: Texto del usuario
+            session_context: Contexto de sesión (memoria, preferencias, etc.)
+            
+        Returns:
+            Resultado completo del análisis con plan de ejecución
+        """
+        logger.info(f"Analyzing prompt: {prompt[:100]}...")
+        
+        # 1. Normalizar prompt
+        normalized = self._normalize_prompt(prompt)
+        
+        # 2. Recuperar contexto relevante de memoria
+        memory_context = await self._retrieve_context(prompt, session_context)
+        
+        # 3. Ejecutar análisis en paralelo donde sea posible
+        intents_task = self.intent_classifier.classify(normalized, memory_context)
+        entities_task = self.entity_extractor.extract(normalized)
+        
+        intents, entities = await asyncio.gather(intents_task, entities_task)
+        
+        logger.debug(f"Classified intents: {[i.category.value for i in intents]}")
+        logger.debug(f"Extracted entities: {[e.type.value for e in entities]}")
+        
+        # 4. Verificar si necesita clarificación
+        if self._needs_clarification(intents, entities):
+            questions = await self._generate_clarification_questions(
+                prompt, intents, entities
+            )
+            
+            return PromptAnalysisResult(
+                original_prompt=prompt,
+                normalized_prompt=normalized,
+                intents=intents,
+                entities=entities,
+                tool_candidates=[],
+                execution_plan=self._create_empty_plan(prompt),
+                requires_clarification=True,
+                clarification_questions=questions,
+                context_used=memory_context
+            )
+        
+        # 5. Enrutar a herramientas
+        tool_candidates = await self.tool_router.route(
+            prompt=normalized,
+            intents=intents,
+            entities=entities,
+            max_candidates=self.config.get("max_tool_candidates", 5)
+        )
+        
+        logger.debug(f"Tool candidates: {[t.tool_name for t in tool_candidates]}")
+        
+        # 6. Generar plan de ejecución
+        execution_plan = await self.plan_generator.generate(
+            objective=prompt,
+            intents=intents,
+            entities=entities,
+            tool_candidates=tool_candidates,
+            context=memory_context
+        )
+        
+        logger.info(f"Generated plan with {len(execution_plan.nodes)} tasks")
+        
+        # 7. Construir resultado
+        return PromptAnalysisResult(
+            original_prompt=prompt,
+            normalized_prompt=normalized,
+            intents=intents,
+            entities=entities,
+            tool_candidates=tool_candidates,
+            execution_plan=execution_plan,
+            requires_clarification=False,
+            clarification_questions=[],
+            context_used=memory_context,
+            analysis_metadata={
+                "primary_intent": intents[0].category.value if intents else None,
+                "entity_count": len(entities),
+                "tool_count": len(tool_candidates),
+                "plan_task_count": len(execution_plan.nodes)
+            }
+        )
+    
+    def _normalize_prompt(self, prompt: str) -> str:
+        """Normaliza el prompt (limpieza, corrección básica)."""
+        # Eliminar espacios extra
+        normalized = " ".join(prompt.split())
+        
+        # Eliminar caracteres de control
+        normalized = "".join(
+            char for char in normalized
+            if ord(char) >= 32 or char in "\n\t"
+        )
+        
+        return normalized.strip()
+    
+    async def _retrieve_context(
+        self,
+        prompt: str,
+        session_context: Optional[Dict]
+    ) -> Dict[str, Any]:
+        """Recupera contexto relevante de memoria."""
+        context = session_context or {}
+        
+        try:
+            # Buscar memorias relevantes
+            memories = await self.memory.search(
+                query=prompt,
+                limit=5,
+                filters={"types": ["conversation", "preference", "fact"]}
+            )
+            
+            if memories:
+                context["relevant_memories"] = [
+                    {"content": m.content, "type": m.type}
+                    for m in memories
+                ]
+        except Exception as e:
+            logger.warning(f"Failed to retrieve memory context: {e}")
+        
+        return context
+    
+    def _needs_clarification(
+        self,
+        intents: List[Intent],
+        entities: List[Entity]
+    ) -> bool:
+        """Determina si el prompt necesita clarificación."""
+        
+        # Verificar confianza de intención
+        if not intents or intents[0].confidence < 0.4:
+            return True
+        
+        # Verificar si la intención principal es CLARIFICATION
+        if intents[0].category.value == "clarification":
+            return True
+        
+        # Verificar si faltan entidades críticas para intenciones de comando
+        if intents[0].category.value in ["command", "creation", "automation"]:
+            # Estas intenciones típicamente necesitan más contexto
+            if len(entities) == 0:
+                return True
+        
+        return False
+    
+    async def _generate_clarification_questions(
+        self,
+        prompt: str,
+        intents: List[Intent],
+        entities: List[Entity]
+    ) -> List[str]:
+        """Genera preguntas de clarificación."""
+        
+        system_prompt = """Genera 1-3 preguntas breves y específicas para clarificar la intención del usuario.
+
+REGLAS:
+1. Preguntas cortas y directas
+2. No preguntar lo obvio
+3. Enfocarse en información faltante crítica
+4. Formato: lista simple
+
+Responde SOLO con JSON: {"questions": ["pregunta1", "pregunta2"]}"""
+
+        intents_str = ", ".join([i.category.value for i in intents[:3]])
+        entities_str = ", ".join([f"{e.type.value}:{e.value}" for e in entities[:5]])
+
+        response = await self.llm.complete(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Prompt: {prompt}\nIntenciones: {intents_str}\nEntidades: {entities_str}"}
+            ],
+            temperature=0.3,
+            max_tokens=200
+        )
+        
+        try:
+            import json
+            result = json.loads(response)
+            return result.get("questions", [])
+        except Exception:
+            return ["¿Podrías dar más detalles sobre lo que necesitas?"]
+    
+    def _create_empty_plan(self, objective: str) -> ExecutionPlan:
+        """Crea un plan vacío para casos de clarificación."""
+        from src.core.models.prompt_analysis import TaskNode
+        import uuid
+        
+        return ExecutionPlan(
+            plan_id=f"plan_empty_{uuid.uuid4().hex[:8]}",
+            objective=objective,
+            nodes=[
+                TaskNode(
+                    id="clarify",
+                    tool="clarify",
+                    inputs={"original_prompt": objective},
+                    dependencies=[]
+                )
+            ],
+            edges=[],
+            estimated_duration_ms=0,
+            parallel_groups=[]
+        )
+    
+    def _load_tool_schemas(self, registry: ToolRegistry) -> Dict[str, Dict]:
+        """Carga schemas de parámetros de herramientas."""
+        schemas = {}
+        
+        for tool_info in registry.list_tools():
+            try:
+                tool = registry._tools.get(tool_info["name"])
+                if tool and hasattr(tool, "input_schema"):
+                    schemas[tool_info["name"]] = tool.input_schema
+            except Exception:
+                pass
+        
+        return schemas
+```
+
+---
+
+## 📋 INSTRUCCIONES PARA REPLIT
+
+### Copiar este texto completo a Replit Agent:
+
+```
+TAREA: Implementar el sistema PARE (Prompt Analysis & Routing Engine)
+
+REQUISITOS:
+1. Crear la estructura de archivos en src/core/analysis/
+2. Implementar todos los modelos de datos en src/core/models/prompt_analysis.py
+3. Implementar IntentClassifier con clasificación multi-estrategia
+4. Implementar EntityExtractor con NER regex + LLM
+5. Implementar ToolRouter con scoring ponderado
+6. Implementar PlanGenerator con DAG y ordenamiento topológico
+7. Implementar PromptAnalyzer como motor integrador
+8. Integrar con el orquestador existente
+
+DEPENDENCIAS REQUERIDAS:
+- numpy (para embeddings y similitud coseno)
+- pydantic (para modelos de datos)
+- asyncio (para operaciones async)
+
+ARCHIVOS A CREAR:
+- src/core/models/prompt_analysis.py
+- src/core/analysis/__init__.py
+- src/core/analysis/intent_classifier.py
+- src/core/analysis/entity_extractor.py
+- src/core/analysis/tool_router.py
+- src/core/analysis/plan_generator.py
+- src/core/analysis/prompt_analyzer.py
+
+INTEGRACIÓN:
+Modificar src/core/orchestrator.py para usar PromptAnalyzer en lugar de lógica inline.
+
+El código completo está en el documento adjunto.
+```
+
+---
+
+¿Necesitas que genere también tests unitarios o documentación adicional?

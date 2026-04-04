@@ -1,0 +1,360 @@
+Integra ambos editores de Excel de forma estratégica, combinando lo mejor de cada uno:
+
+=== ESTRATEGIA DE INTEGRACIÓN ===
+
+1) MANTENER AMBOS EDITORES para diferentes casos de uso:
+
+- EDITOR ORIGINAL (spreadsheet-editor.tsx): 
+  * Usar en el CHAT para interacciones conversacionales
+  * Ideal para: crear hojas rápidas, visualizar datos del chat, gráficos inline
+  * Características: Excel Ribbon, FormulaEngine, streaming, gráficos integrados
+
+- EDITOR HANDSONTABLE (SpreadsheetEditor.tsx):
+  * Usar en ADMIN (/admin/excel) para gestión completa de documentos
+  * Ideal para: importar/exportar archivos reales, edición profesional, múltiples hojas
+  * Características: Import/Export nativo .xlsx/.csv, tema oscuro, multi-sheet
+
+2) CREAR PÁGINA DE EXCEL MANAGER EN ADMIN - crear client/src/pages/admin/ExcelManager.tsx:
+
+import React, { useState, useEffect } from 'react';
+import SpreadsheetEditor from '@/components/spreadsheet/SpreadsheetEditor';
+import { 
+  FileSpreadsheet, Plus, Upload, Download, Trash2, Edit, 
+  Search, Filter, Clock, User, HardDrive, FolderOpen,
+  Table, BarChart3, FileText, MoreVertical
+} from 'lucide-react';
+
+interface SavedDocument {
+  id: string;
+  name: string;
+  sheets: number;
+  size: number;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+}
+
+export default function ExcelManager() {
+  const [view, setView] = useState<'list' | 'editor'>('list');
+  const [documents, setDocuments] = useState<SavedDocument[]>([]);
+  const [currentDoc, setCurrentDoc] = useState<any>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    loadDocuments();
+  }, []);
+
+  const loadDocuments = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/excel/list');
+      if (response.ok) {
+        const data = await response.json();
+        setDocuments(data);
+      } else {
+        // Mock data para desarrollo
+        setDocuments([
+          { id: '1', name: 'Reporte Q4 2024.xlsx', sheets: 3, size: 45000, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), createdBy: 'Admin' },
+          { id: '2', name: 'Análisis Ventas.xlsx', sheets: 5, size: 128000, createdAt: new Date(Date.now() - 86400000).toISOString(), updatedAt: new Date().toISOString(), createdBy: 'Admin' },
+          { id: '3', name: 'Inventario.xlsx', sheets: 2, size: 67000, createdAt: new Date(Date.now() - 172800000).toISOString(), updatedAt: new Date().toISOString(), createdBy: 'Admin' }
+        ]);
+      }
+    } catch (error) {
+      console.error('Error loading documents:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const createNew = () => {
+    setCurrentDoc({ id: `new_${Date.now()}`, name: 'Nuevo Documento.xlsx', data: null });
+    setView('editor');
+  };
+
+  const openDocument = async (doc: SavedDocument) => {
+    try {
+      const response = await fetch(`/api/admin/excel/${doc.id}`);
+      if (response.ok) {
+        const data = await response.json();
+        setCurrentDoc({ ...doc, data: data.data });
+      } else {
+        setCurrentDoc(doc);
+      }
+    } catch {
+      setCurrentDoc(doc);
+    }
+    setView('editor');
+  };
+
+  const saveDocument = async (data: any[][], fileName: string) => {
+    try {
+      await fetch('/api/admin/excel/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: currentDoc?.id, name: fileName, data })
+      });
+      loadDocuments();
+    } catch (error) {
+      console.error('Error saving:', error);
+    }
+  };
+
+  const deleteDocument = async (id: string) => {
+    if (!confirm('¿Eliminar este documento?')) return;
+    try {
+      await fetch(`/api/admin/excel/${id}`, { method: 'DELETE' });
+      loadDocuments();
+    } catch (error) {
+      console.error('Error deleting:', error);
+    }
+  };
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const formatDate = (date: string) => new Date(date).toLocaleDateString('es-ES', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+
+  const filtered = documents.filter(d => d.name.toLowerCase().includes(searchTerm.toLowerCase()));
+
+  // VISTA DE LISTA
+  if (view === 'list') {
+    return (
+      <div className="p-6 space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+              <FileSpreadsheet className="w-8 h-8 text-green-500" />
+              Excel Manager
+            </h1>
+            <p className="text-gray-400 mt-1">Crea, edita y gestiona hojas de cálculo</p>
+          </div>
+          <button onClick={createNew} className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors">
+            <Plus className="w-4 h-4" />
+            Nuevo Documento
+          </button>
+        </div>
+
+        {/* Stats Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="p-4 bg-gray-800/50 rounded-xl border border-gray-700">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-green-500/20 rounded-lg">
+                <FileSpreadsheet className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-white">{documents.length}</p>
+                <p className="text-sm text-gray-400">Documentos</p>
+              </div>
+            </div>
+          </div>
+          <div className="p-4 bg-gray-800/50 rounded-xl border border-gray-700">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-500/20 rounded-lg">
+                <Table className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-white">{documents.reduce((a, d) => a + d.sheets, 0)}</p>
+                <p className="text-sm text-gray-400">Hojas Totales</p>
+              </div>
+            </div>
+          </div>
+          <div className="p-4 bg-gray-800/50 rounded-xl border border-gray-700">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-purple-500/20 rounded-lg">
+                <HardDrive className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-white">{formatSize(documents.reduce((a, d) => a + d.size, 0))}</p>
+                <p className="text-sm text-gray-400">Almacenamiento</p>
+              </div>
+            </div>
+          </div>
+          <div className="p-4 bg-gray-800/50 rounded-xl border border-gray-700">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-orange-500/20 rounded-lg">
+                <Clock className="w-5 h-5 text-orange-400" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-white">Hoy</p>
+                <p className="text-sm text-gray-400">Última Edición</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Search */}
+        <div className="flex items-center gap-4">
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Buscar documentos..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+        </div>
+
+        {/* Document List */}
+        <div className="bg-gray-800/50 rounded-xl border border-gray-700 overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-gray-700">
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Nombre</th>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Hojas</th>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Tamaño</th>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Modificado</th>
+                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((doc) => (
+                <tr key={doc.id} className="border-b border-gray-800 hover:bg-gray-800/50 cursor-pointer" onClick={() => openDocument(doc)}>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-green-500/20 rounded">
+                        <FileSpreadsheet className="w-4 h-4 text-green-400" />
+                      </div>
+                      <span className="text-white font-medium">{doc.name}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="px-2 py-1 bg-blue-500/20 text-blue-400 text-xs rounded-full">{doc.sheets} hojas</span>
+                  </td>
+                  <td className="px-4 py-3 text-gray-400">{formatSize(doc.size)}</td>
+                  <td className="px-4 py-3 text-gray-400">{formatDate(doc.updatedAt)}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-end gap-2" onClick={e => e.stopPropagation()}>
+                      <button onClick={() => openDocument(doc)} className="p-2 hover:bg-gray-700 rounded" title="Editar">
+                        <Edit className="w-4 h-4 text-gray-400" />
+                      </button>
+                      <button className="p-2 hover:bg-gray-700 rounded" title="Descargar">
+                        <Download className="w-4 h-4 text-gray-400" />
+                      </button>
+                      <button onClick={() => deleteDocument(doc.id)} className="p-2 hover:bg-gray-700 rounded" title="Eliminar">
+                        <Trash2 className="w-4 h-4 text-red-400" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filtered.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-12">
+              <FileSpreadsheet className="w-12 h-12 text-gray-600 mb-4" />
+              <p className="text-gray-400">No hay documentos</p>
+              <button onClick={createNew} className="mt-4 px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg">
+                Crear Primer Documento
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // VISTA DE EDITOR
+  return (
+    <div className="h-screen flex flex-col bg-gray-900">
+      <div className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700">
+        <div className="flex items-center gap-4">
+          <button onClick={() => setView('list')} className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-300">
+            ← Volver
+          </button>
+          <div className="flex items-center gap-2">
+            <FileSpreadsheet className="w-5 h-5 text-green-400" />
+            <span className="text-white font-medium">{currentDoc?.name}</span>
+          </div>
+        </div>
+      </div>
+      <div className="flex-1 overflow-hidden">
+        <SpreadsheetEditor
+          initialData={currentDoc?.data}
+          fileName={currentDoc?.name}
+          onSave={saveDocument}
+          height={window.innerHeight - 60}
+        />
+      </div>
+    </div>
+  );
+}
+
+3) AÑADIR RUTA EN ADMIN - en el archivo de rutas:
+
+import ExcelManager from './pages/admin/ExcelManager';
+
+// Añadir ruta:
+{ path: '/admin/excel', element: <ExcelManager /> }
+
+4) AÑADIR AL SIDEBAR DE ADMIN - localizar el sidebar y añadir después de Reports:
+
+{
+  id: 'excel',
+  label: 'Excel Manager',
+  icon: FileSpreadsheet,
+  path: '/admin/excel'
+}
+
+5) CREAR API ENDPOINTS - crear server/routes/excelRouter.ts:
+
+import { Router } from 'express';
+
+const router = Router();
+const store = new Map();
+
+router.get('/list', (req, res) => {
+  const docs = Array.from(store.values()).map(d => ({
+    id: d.id, name: d.name, sheets: d.sheets?.length || 1,
+    size: d.size, createdAt: d.createdAt, updatedAt: d.updatedAt, createdBy: d.createdBy
+  }));
+  res.json(docs);
+});
+
+router.get('/:id', (req, res) => {
+  const doc = store.get(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Not found' });
+  res.json(doc);
+});
+
+router.post('/save', (req, res) => {
+  const { id, name, data } = req.body;
+  const docId = id || `xlsx_${Date.now()}`;
+  const now = new Date().toISOString();
+  store.set(docId, {
+    id: docId, name, data, sheets: [{ name: 'Hoja 1', data }],
+    createdAt: store.get(docId)?.createdAt || now, updatedAt: now,
+    createdBy: 'Admin', size: JSON.stringify(data).length
+  });
+  res.json({ success: true, id: docId });
+});
+
+router.delete('/:id', (req, res) => {
+  store.delete(req.params.id);
+  res.json({ success: true });
+});
+
+export default router;
+
+6) REGISTRAR ROUTER - en server/routes.ts:
+
+import excelRouter from './routes/excelRouter';
+app.use('/api/admin/excel', excelRouter);
+
+7) VERIFICAR INTEGRACIÓN:
+- Acceder a /admin/excel
+- Crear nuevo documento
+- Importar archivo .xlsx
+- Exportar a .xlsx y .csv
+- Verificar múltiples hojas funcionan
+- Verificar que el editor original sigue funcionando en el chat
+
+Reportar: ✅ Excel Manager funcionando / ❌ Errores encontrados

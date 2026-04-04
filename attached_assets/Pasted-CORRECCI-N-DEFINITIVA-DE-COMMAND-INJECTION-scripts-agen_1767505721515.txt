@@ -1,0 +1,435 @@
+CORRECCIÓN DEFINITIVA DE COMMAND INJECTION - scripts/agent-certify.cjs
+
+El escáner de seguridad detecta que `commandKey` (parámetro de función) fluye hacia `spawnSync`. 
+La ÚNICA forma de resolver esto es eliminar el parámetro y hardcodear los comandos directamente.
+
+REEMPLAZA TODO el contenido de scripts/agent-certify.cjs con este código:
+```javascript
+/**
+ * Agent Certify Script - Versión Segura
+ * 
+ * NOTA DE SEGURIDAD: Este archivo NO acepta comandos como parámetros.
+ * Todos los comandos están hardcodeados para prevenir command injection.
+ */
+
+const { spawnSync } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+
+// ============================================================================
+// CONFIGURACIÓN DE SEGURIDAD
+// ============================================================================
+
+const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
+const TIMEOUT = 300000; // 5 minutos
+
+const SAFE_ENV = {
+  ...process.env,
+  LD_PRELOAD: undefined,
+  LD_LIBRARY_PATH: undefined,
+  NODE_OPTIONS: undefined
+};
+
+const SPAWN_OPTIONS = {
+  encoding: 'utf8',
+  timeout: TIMEOUT,
+  maxBuffer: MAX_BUFFER,
+  shell: false,
+  env: SAFE_ENV
+};
+
+// ============================================================================
+// FUNCIONES DE COMANDOS HARDCODEADOS
+// Cada función ejecuta UN comando específico - sin parámetros de comando
+// ============================================================================
+
+/**
+ * Ejecuta npm audit
+ * @param {string} cwd - Directorio de trabajo (validado)
+ * @returns {object} Resultado de la ejecución
+ */
+function runNpmAudit(cwd) {
+  console.log('[CERTIFY] Ejecutando: npm audit');
+  
+  const result = spawnSync('npm', ['audit', '--audit-level=high'], {
+    ...SPAWN_OPTIONS,
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  
+  return {
+    success: result.status === 0,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    code: result.status
+  };
+}
+
+/**
+ * Ejecuta npm install
+ * @param {string} cwd - Directorio de trabajo (validado)
+ * @returns {object} Resultado de la ejecución
+ */
+function runNpmInstall(cwd) {
+  console.log('[CERTIFY] Ejecutando: npm install');
+  
+  const result = spawnSync('npm', ['install'], {
+    ...SPAWN_OPTIONS,
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  
+  return {
+    success: result.status === 0,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    code: result.status
+  };
+}
+
+/**
+ * Ejecuta npm run lint
+ * @param {string} cwd - Directorio de trabajo (validado)
+ * @returns {object} Resultado de la ejecución
+ */
+function runNpmLint(cwd) {
+  console.log('[CERTIFY] Ejecutando: npm run lint');
+  
+  const result = spawnSync('npm', ['run', 'lint'], {
+    ...SPAWN_OPTIONS,
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  
+  return {
+    success: result.status === 0,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    code: result.status
+  };
+}
+
+/**
+ * Ejecuta npm run build
+ * @param {string} cwd - Directorio de trabajo (validado)
+ * @returns {object} Resultado de la ejecución
+ */
+function runNpmBuild(cwd) {
+  console.log('[CERTIFY] Ejecutando: npm run build');
+  
+  const result = spawnSync('npm', ['run', 'build'], {
+    ...SPAWN_OPTIONS,
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  
+  return {
+    success: result.status === 0,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    code: result.status
+  };
+}
+
+/**
+ * Ejecuta npm test
+ * @param {string} cwd - Directorio de trabajo (validado)
+ * @returns {object} Resultado de la ejecución
+ */
+function runNpmTest(cwd) {
+  console.log('[CERTIFY] Ejecutando: npm test');
+  
+  const result = spawnSync('npm', ['test', '--', '--passWithNoTests'], {
+    ...SPAWN_OPTIONS,
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  
+  return {
+    success: result.status === 0,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    code: result.status
+  };
+}
+
+/**
+ * Ejecuta npx tsc --noEmit (type check)
+ * @param {string} cwd - Directorio de trabajo (validado)
+ * @returns {object} Resultado de la ejecución
+ */
+function runTypeCheck(cwd) {
+  console.log('[CERTIFY] Ejecutando: npx tsc --noEmit');
+  
+  const result = spawnSync('npx', ['tsc', '--noEmit'], {
+    ...SPAWN_OPTIONS,
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  
+  return {
+    success: result.status === 0,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    code: result.status
+  };
+}
+
+/**
+ * Ejecuta npx prisma generate
+ * @param {string} cwd - Directorio de trabajo (validado)
+ * @returns {object} Resultado de la ejecución
+ */
+function runPrismaGenerate(cwd) {
+  console.log('[CERTIFY] Ejecutando: npx prisma generate');
+  
+  const result = spawnSync('npx', ['prisma', 'generate'], {
+    ...SPAWN_OPTIONS,
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  
+  return {
+    success: result.status === 0,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    code: result.status
+  };
+}
+
+/**
+ * Ejecuta npx drizzle-kit generate
+ * @param {string} cwd - Directorio de trabajo (validado)
+ * @returns {object} Resultado de la ejecución
+ */
+function runDrizzleGenerate(cwd) {
+  console.log('[CERTIFY] Ejecutando: npx drizzle-kit generate');
+  
+  const result = spawnSync('npx', ['drizzle-kit', 'generate'], {
+    ...SPAWN_OPTIONS,
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  
+  return {
+    success: result.status === 0,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    code: result.status
+  };
+}
+
+// ============================================================================
+// VALIDACIÓN DE PATH
+// ============================================================================
+
+/**
+ * Valida que el path sea seguro (dentro del directorio actual)
+ * @param {string} inputPath - Path a validar
+ * @returns {string} Path absoluto validado
+ * @throws {Error} Si el path es inválido
+ */
+function validatePath(inputPath) {
+  if (!inputPath || typeof inputPath !== 'string') {
+    throw new Error('Path inválido: debe ser un string no vacío');
+  }
+  
+  // Resolver path absoluto
+  const resolvedPath = path.resolve(inputPath);
+  const currentDir = process.cwd();
+  
+  // Verificar que esté dentro del directorio actual
+  if (!resolvedPath.startsWith(currentDir)) {
+    throw new Error(`Path fuera del directorio permitido: ${inputPath}`);
+  }
+  
+  // Verificar que exista
+  if (!fs.existsSync(resolvedPath)) {
+    throw new Error(`Path no existe: ${resolvedPath}`);
+  }
+  
+  // Verificar que sea directorio
+  if (!fs.statSync(resolvedPath).isDirectory()) {
+    throw new Error(`Path no es un directorio: ${resolvedPath}`);
+  }
+  
+  return resolvedPath;
+}
+
+// ============================================================================
+// FUNCIÓN PRINCIPAL DE CERTIFICACIÓN
+// ============================================================================
+
+/**
+ * Ejecuta la certificación completa del agente
+ * @param {string} projectPath - Ruta del proyecto (opcional, default '.')
+ * @returns {boolean} true si todas las pruebas pasan
+ */
+function certifyAgent(projectPath = '.') {
+  console.log('');
+  console.log('╔══════════════════════════════════════════════════════════════╗');
+  console.log('║           AGENT CERTIFY - CERTIFICACIÓN DE SEGURIDAD         ║');
+  console.log('╚══════════════════════════════════════════════════════════════╝');
+  console.log('');
+  
+  // Validar path
+  let safePath;
+  try {
+    safePath = validatePath(projectPath);
+    console.log(`[CERTIFY] Directorio: ${safePath}`);
+  } catch (error) {
+    console.error(`[CERTIFY] ❌ Error de path: ${error.message}`);
+    return false;
+  }
+  
+  // Definir checks a ejecutar (usando funciones hardcodeadas)
+  const checks = [
+    { name: 'Auditoría de Seguridad', fn: runNpmAudit },
+    { name: 'Type Check (TypeScript)', fn: runTypeCheck },
+    { name: 'Linting', fn: runNpmLint },
+    { name: 'Tests', fn: runNpmTest }
+  ];
+  
+  const results = [];
+  
+  console.log('');
+  console.log('[CERTIFY] Iniciando verificaciones...');
+  console.log('─'.repeat(60));
+  
+  // Ejecutar cada check
+  for (const check of checks) {
+    console.log('');
+    console.log(`[CERTIFY] 🔍 ${check.name}...`);
+    
+    try {
+      // Llamar la función hardcodeada - NO hay parámetro de comando
+      const result = check.fn(safePath);
+      
+      if (result.success) {
+        console.log(`[CERTIFY] ✅ ${check.name}: PASÓ`);
+      } else {
+        console.log(`[CERTIFY] ⚠️  ${check.name}: FALLÓ (código ${result.code})`);
+        if (result.stderr) {
+          console.log(`[CERTIFY]    Error: ${result.stderr.slice(0, 200)}`);
+        }
+      }
+      
+      results.push({
+        name: check.name,
+        success: result.success,
+        code: result.code,
+        output: result.stdout,
+        error: result.stderr
+      });
+      
+    } catch (error) {
+      console.log(`[CERTIFY] ❌ ${check.name}: ERROR - ${error.message}`);
+      results.push({
+        name: check.name,
+        success: false,
+        code: -1,
+        error: error.message
+      });
+    }
+  }
+  
+  // Resumen final
+  console.log('');
+  console.log('═'.repeat(60));
+  console.log('[CERTIFY] RESUMEN DE CERTIFICACIÓN');
+  console.log('═'.repeat(60));
+  
+  const passed = results.filter(r => r.success).length;
+  const total = results.length;
+  
+  results.forEach(r => {
+    const icon = r.success ? '✅' : '❌';
+    const status = r.success ? 'PASÓ' : 'FALLÓ';
+    console.log(`  ${icon} ${r.name}: ${status}`);
+  });
+  
+  console.log('─'.repeat(60));
+  console.log(`  Total: ${passed}/${total} verificaciones pasadas`);
+  console.log('═'.repeat(60));
+  
+  const allPassed = passed === total;
+  
+  if (allPassed) {
+    console.log('');
+    console.log('  🎉 CERTIFICACIÓN EXITOSA');
+    console.log('');
+  } else {
+    console.log('');
+    console.log('  ⛔ CERTIFICACIÓN FALLIDA');
+    console.log('  Revisa los errores arriba antes de continuar.');
+    console.log('');
+  }
+  
+  return allPassed;
+}
+
+// ============================================================================
+// EXPORTACIONES
+// ============================================================================
+
+module.exports = {
+  certifyAgent,
+  // Exportar funciones individuales para uso específico
+  runNpmAudit,
+  runNpmInstall,
+  runNpmLint,
+  runNpmBuild,
+  runNpmTest,
+  runTypeCheck,
+  runPrismaGenerate,
+  runDrizzleGenerate,
+  validatePath
+};
+
+// ============================================================================
+// EJECUCIÓN DIRECTA
+// ============================================================================
+
+if (require.main === module) {
+  const projectPath = process.argv[2] || '.';
+  
+  try {
+    const success = certifyAgent(projectPath);
+    process.exit(success ? 0 : 1);
+  } catch (error) {
+    console.error('[CERTIFY] Error fatal:', error.message);
+    process.exit(1);
+  }
+}
+```
+
+================================================================================
+¿POR QUÉ ESTO RESUELVE EL PROBLEMA?
+================================================================================
+
+El escáner detectaba:
+function runCommand(commandKey, ...) {  // ← commandKey es parámetro
+const cmd = WHITELIST[commandKey];    // ← fluye hacia variable
+spawnSync(cmd, ...);                  // ← variable va a child_process
+}
+
+Ahora NO hay flujo de datos desde parámetros hacia child_process:
+function runNpmAudit(cwd) {             // ← NO hay parámetro de comando
+spawnSync('npm', ['audit', ...]);     // ← comando HARDCODEADO
+}
+
+CAMBIOS CLAVE:
+1. ❌ ELIMINADO: Función genérica `runSecureCommand(commandKey, args)`
+2. ✅ NUEVO: Funciones específicas `runNpmAudit()`, `runNpmTest()`, etc.
+3. ✅ Comandos hardcodeados como strings literales
+4. ✅ NO hay parámetro que fluya hacia `spawnSync`
+5. ✅ El único parámetro (`cwd`) es el directorio de trabajo, no el comando
+
+================================================================================
+INSTRUCCIÓN FINAL
+================================================================================
+
+1. Borra TODO el contenido de scripts/agent-certify.cjs
+2. Pega el código de arriba
+3. El error de seguridad desaparecerá porque ya no hay flujo de datos
+   desde parámetros de función hacia child_process

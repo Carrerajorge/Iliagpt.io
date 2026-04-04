@@ -1,0 +1,617 @@
+// ============================================================
+// SISTEMA DE REDIMENSIONAMIENTO DE FILAS Y COLUMNAS
+// ============================================================
+
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+
+// === CONFIGURACIÓN ===
+const RESIZE_CONFIG = {
+  MIN_COL_WIDTH: 30,
+  MAX_COL_WIDTH: 500,
+  MIN_ROW_HEIGHT: 20,
+  MAX_ROW_HEIGHT: 300,
+  DEFAULT_COL_WIDTH: 100,
+  DEFAULT_ROW_HEIGHT: 28,
+  RESIZE_HANDLE_SIZE: 6,  // Zona sensible para detectar el borde (px)
+  DOUBLE_CLICK_DELAY: 300 // ms para detectar doble clic
+};
+
+// === HOOK PARA REDIMENSIONAMIENTO ===
+const useGridResize = (gridConfig, grid) => {
+  // Almacenar dimensiones personalizadas
+  const [customColWidths, setCustomColWidths] = useState(new Map());
+  const [customRowHeights, setCustomRowHeights] = useState(new Map());
+  
+  // Estado de redimensionamiento activo
+  const [resizeState, setResizeState] = useState({
+    isResizing: false,
+    type: null,        // 'column' | 'row'
+    index: null,       // índice de la columna/fila
+    startPos: 0,       // posición inicial del mouse
+    startSize: 0,      // tamaño inicial
+    currentSize: 0,    // tamaño actual durante el arrastre
+    guidePos: 0        // posición de la línea guía
+  });
+
+  // Obtener ancho de columna (personalizado o default)
+  const getColWidth = useCallback((colIndex) => {
+    return customColWidths.get(colIndex) ?? RESIZE_CONFIG.DEFAULT_COL_WIDTH;
+  }, [customColWidths]);
+
+  // Obtener alto de fila (personalizado o default)
+  const getRowHeight = useCallback((rowIndex) => {
+    return customRowHeights.get(rowIndex) ?? RESIZE_CONFIG.DEFAULT_ROW_HEIGHT;
+  }, [customRowHeights]);
+
+  // Calcular posición X de una columna
+  const getColPosition = useCallback((colIndex) => {
+    let pos = 0;
+    for (let i = 0; i < colIndex; i++) {
+      pos += getColWidth(i);
+    }
+    return pos;
+  }, [getColWidth]);
+
+  // Calcular posición Y de una fila
+  const getRowPosition = useCallback((rowIndex) => {
+    let pos = 0;
+    for (let i = 0; i < rowIndex; i++) {
+      pos += getRowHeight(i);
+    }
+    return pos;
+  }, [getRowHeight]);
+
+  // Establecer ancho de columna
+  const setColWidth = useCallback((colIndex, width) => {
+    const clampedWidth = Math.max(
+      RESIZE_CONFIG.MIN_COL_WIDTH,
+      Math.min(RESIZE_CONFIG.MAX_COL_WIDTH, width)
+    );
+    setCustomColWidths(prev => {
+      const newMap = new Map(prev);
+      newMap.set(colIndex, clampedWidth);
+      return newMap;
+    });
+  }, []);
+
+  // Establecer alto de fila
+  const setRowHeight = useCallback((rowIndex, height) => {
+    const clampedHeight = Math.max(
+      RESIZE_CONFIG.MIN_ROW_HEIGHT,
+      Math.min(RESIZE_CONFIG.MAX_ROW_HEIGHT, height)
+    );
+    setCustomRowHeights(prev => {
+      const newMap = new Map(prev);
+      newMap.set(rowIndex, clampedHeight);
+      return newMap;
+    });
+  }, []);
+
+  // Autoajustar ancho de columna basado en contenido
+  const autoFitColWidth = useCallback((colIndex) => {
+    if (!grid) return;
+    
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.font = '13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    
+    let maxWidth = 50; // Mínimo inicial
+    
+    // Medir el header de la columna
+    const headerText = getColumnName(colIndex);
+    maxWidth = Math.max(maxWidth, ctx.measureText(headerText).width + 20);
+    
+    // Medir contenido de las celdas (revisar primeras 100 filas por rendimiento)
+    for (let row = 0; row < Math.min(100, gridConfig.MAX_ROWS); row++) {
+      const cell = grid.getCell(row, colIndex);
+      if (cell && cell.value) {
+        const textWidth = ctx.measureText(String(cell.value)).width + 16; // padding
+        maxWidth = Math.max(maxWidth, textWidth);
+      }
+    }
+    
+    setColWidth(colIndex, Math.ceil(maxWidth));
+  }, [grid, gridConfig, setColWidth]);
+
+  // Autoajustar alto de fila basado en contenido
+  const autoFitRowHeight = useCallback((rowIndex) => {
+    // Para filas, generalmente se mantiene un alto estándar
+    // A menos que haya texto con saltos de línea
+    setRowHeight(rowIndex, RESIZE_CONFIG.DEFAULT_ROW_HEIGHT);
+  }, [setRowHeight]);
+
+  // Iniciar redimensionamiento
+  const startResize = useCallback((type, index, startPos, startSize) => {
+    setResizeState({
+      isResizing: true,
+      type,
+      index,
+      startPos,
+      startSize,
+      currentSize: startSize,
+      guidePos: startPos
+    });
+  }, []);
+
+  // Actualizar durante el arrastre
+  const updateResize = useCallback((currentPos) => {
+    if (!resizeState.isResizing) return;
+    
+    const delta = currentPos - resizeState.startPos;
+    const newSize = Math.max(
+      resizeState.type === 'column' ? RESIZE_CONFIG.MIN_COL_WIDTH : RESIZE_CONFIG.MIN_ROW_HEIGHT,
+      Math.min(
+        resizeState.type === 'column' ? RESIZE_CONFIG.MAX_COL_WIDTH : RESIZE_CONFIG.MAX_ROW_HEIGHT,
+        resizeState.startSize + delta
+      )
+    );
+    
+    setResizeState(prev => ({
+      ...prev,
+      currentSize: newSize,
+      guidePos: currentPos
+    }));
+  }, [resizeState]);
+
+  // Finalizar redimensionamiento
+  const endResize = useCallback(() => {
+    if (!resizeState.isResizing) return;
+    
+    if (resizeState.type === 'column') {
+      setColWidth(resizeState.index, resizeState.currentSize);
+    } else {
+      setRowHeight(resizeState.index, resizeState.currentSize);
+    }
+    
+    setResizeState({
+      isResizing: false,
+      type: null,
+      index: null,
+      startPos: 0,
+      startSize: 0,
+      currentSize: 0,
+      guidePos: 0
+    });
+  }, [resizeState, setColWidth, setRowHeight]);
+
+  // Cancelar redimensionamiento
+  const cancelResize = useCallback(() => {
+    setResizeState({
+      isResizing: false,
+      type: null,
+      index: null,
+      startPos: 0,
+      startSize: 0,
+      currentSize: 0,
+      guidePos: 0
+    });
+  }, []);
+
+  return {
+    customColWidths,
+    customRowHeights,
+    resizeState,
+    getColWidth,
+    getRowHeight,
+    getColPosition,
+    getRowPosition,
+    setColWidth,
+    setRowHeight,
+    autoFitColWidth,
+    autoFitRowHeight,
+    startResize,
+    updateResize,
+    endResize,
+    cancelResize
+  };
+};
+
+// === UTILIDAD: Nombre de columna ===
+const getColumnName = (index) => {
+  let name = '';
+  let i = index;
+  while (i >= 0) {
+    name = String.fromCharCode(65 + (i % 26)) + name;
+    i = Math.floor(i / 26) - 1;
+  }
+  return name;
+};
+
+// === COMPONENTE: HEADER DE COLUMNA REDIMENSIONABLE ===
+const ResizableColumnHeader = ({
+  colIndex,
+  width,
+  scrollLeft,
+  onResizeStart,
+  onAutoFit,
+  isResizing,
+  resizingIndex
+}) => {
+  const [isHoveringResize, setIsHoveringResize] = useState(false);
+  const lastClickTime = useRef(0);
+  const headerRef = useRef(null);
+
+  // Detectar si el mouse está en la zona de redimensionamiento
+  const handleMouseMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const isNearRightEdge = e.clientX >= rect.right - RESIZE_CONFIG.RESIZE_HANDLE_SIZE;
+    setIsHoveringResize(isNearRightEdge);
+  };
+
+  const handleMouseLeave = () => {
+    if (!isResizing) {
+      setIsHoveringResize(false);
+    }
+  };
+
+  const handleMouseDown = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const isNearRightEdge = e.clientX >= rect.right - RESIZE_CONFIG.RESIZE_HANDLE_SIZE;
+    
+    if (isNearRightEdge) {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // Detectar doble clic
+      const now = Date.now();
+      if (now - lastClickTime.current < RESIZE_CONFIG.DOUBLE_CLICK_DELAY) {
+        // Doble clic - autoajustar
+        onAutoFit(colIndex);
+        lastClickTime.current = 0;
+      } else {
+        // Clic simple - iniciar redimensionamiento
+        lastClickTime.current = now;
+        onResizeStart('column', colIndex, e.clientX, width);
+      }
+    }
+  };
+
+  const isCurrentlyResizing = isResizing && resizingIndex === colIndex;
+
+  return (
+    <div
+      ref={headerRef}
+      className={`col-header ${isHoveringResize ? 'resize-hover' : ''} ${isCurrentlyResizing ? 'resizing' : ''}`}
+      style={{ width }}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+      onMouseDown={handleMouseDown}
+    >
+      <span className="col-header-text">{getColumnName(colIndex)}</span>
+      <div className={`resize-handle-col ${isHoveringResize ? 'visible' : ''}`} />
+    </div>
+  );
+};
+
+// === COMPONENTE: HEADER DE FILA REDIMENSIONABLE ===
+const ResizableRowHeader = ({
+  rowIndex,
+  height,
+  scrollTop,
+  onResizeStart,
+  onAutoFit,
+  isResizing,
+  resizingIndex
+}) => {
+  const [isHoveringResize, setIsHoveringResize] = useState(false);
+  const lastClickTime = useRef(0);
+
+  const handleMouseMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const isNearBottomEdge = e.clientY >= rect.bottom - RESIZE_CONFIG.RESIZE_HANDLE_SIZE;
+    setIsHoveringResize(isNearBottomEdge);
+  };
+
+  const handleMouseLeave = () => {
+    if (!isResizing) {
+      setIsHoveringResize(false);
+    }
+  };
+
+  const handleMouseDown = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const isNearBottomEdge = e.clientY >= rect.bottom - RESIZE_CONFIG.RESIZE_HANDLE_SIZE;
+    
+    if (isNearBottomEdge) {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const now = Date.now();
+      if (now - lastClickTime.current < RESIZE_CONFIG.DOUBLE_CLICK_DELAY) {
+        onAutoFit(rowIndex);
+        lastClickTime.current = 0;
+      } else {
+        lastClickTime.current = now;
+        onResizeStart('row', rowIndex, e.clientY, height);
+      }
+    }
+  };
+
+  const isCurrentlyResizing = isResizing && resizingIndex === rowIndex;
+
+  return (
+    <div
+      className={`row-header ${isHoveringResize ? 'resize-hover' : ''} ${isCurrentlyResizing ? 'resizing' : ''}`}
+      style={{ height }}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+      onMouseDown={handleMouseDown}
+    >
+      <span className="row-header-text">{rowIndex + 1}</span>
+      <div className={`resize-handle-row ${isHoveringResize ? 'visible' : ''}`} />
+    </div>
+  );
+};
+
+// === COMPONENTE: LÍNEA GUÍA DE REDIMENSIONAMIENTO ===
+const ResizeGuideLine = ({ resizeState, gridOffset }) => {
+  if (!resizeState.isResizing) return null;
+
+  const style = resizeState.type === 'column'
+    ? {
+        position: 'absolute',
+        left: resizeState.guidePos - gridOffset.left,
+        top: 0,
+        width: 2,
+        height: '100%',
+        background: '#3b82f6',
+        pointerEvents: 'none',
+        zIndex: 1000
+      }
+    : {
+        position: 'absolute',
+        left: 0,
+        top: resizeState.guidePos - gridOffset.top,
+        width: '100%',
+        height: 2,
+        background: '#3b82f6',
+        pointerEvents: 'none',
+        zIndex: 1000
+      };
+
+  return <div className="resize-guide-line" style={style} />;
+};
+
+// === COMPONENTE: TOOLTIP DE TAMAÑO ===
+const ResizeSizeTooltip = ({ resizeState, gridOffset }) => {
+  if (!resizeState.isResizing) return null;
+
+  const size = Math.round(resizeState.currentSize);
+  const label = resizeState.type === 'column' 
+    ? `Ancho: ${size}px` 
+    : `Alto: ${size}px`;
+
+  const style = resizeState.type === 'column'
+    ? {
+        position: 'absolute',
+        left: resizeState.guidePos - gridOffset.left + 10,
+        top: 30,
+      }
+    : {
+        position: 'absolute',
+        left: 60,
+        top: resizeState.guidePos - gridOffset.top + 10,
+      };
+
+  return (
+    <div className="resize-tooltip" style={style}>
+      {label}
+    </div>
+  );
+};
+
+// === COMPONENTE PRINCIPAL: EXCEL CON REDIMENSIONAMIENTO ===
+const ExcelWithResize = () => {
+  const [workbook, setWorkbook] = useState(createWorkbook());
+  const [activeSheetId, setActiveSheetId] = useState('sheet1');
+  const [scrollPos, setScrollPos] = useState({ top: 0, left: 0 });
+  const [selectedCell, setSelectedCell] = useState({ row: 0, col: 0 });
+  
+  const gridContainerRef = useRef(null);
+  const activeSheet = workbook.sheets.find(s => s.id === activeSheetId);
+  const grid = activeSheet?.grid;
+
+  const GRID_CONFIG = {
+    MAX_ROWS: 10000,
+    MAX_COLS: 10000,
+    VISIBLE_ROWS: 30,
+    VISIBLE_COLS: 15
+  };
+
+  // Hook de redimensionamiento
+  const {
+    resizeState,
+    getColWidth,
+    getRowHeight,
+    getColPosition,
+    getRowPosition,
+    autoFitColWidth,
+    autoFitRowHeight,
+    startResize,
+    updateResize,
+    endResize,
+    cancelResize
+  } = useGridResize(GRID_CONFIG, grid);
+
+  // Manejar movimiento global del mouse durante redimensionamiento
+  useEffect(() => {
+    if (!resizeState.isResizing) return;
+
+    const handleMouseMove = (e) => {
+      if (resizeState.type === 'column') {
+        updateResize(e.clientX);
+      } else {
+        updateResize(e.clientY);
+      }
+    };
+
+    const handleMouseUp = () => {
+      endResize();
+    };
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        cancelResize();
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('keydown', handleKeyDown);
+    
+    // Cambiar cursor globalmente durante el redimensionamiento
+    document.body.style.cursor = resizeState.type === 'column' ? 'col-resize' : 'row-resize';
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('keydown', handleKeyDown);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [resizeState.isResizing, resizeState.type, updateResize, endResize, cancelResize]);
+
+  // Calcular filas y columnas visibles
+  const startRow = Math.floor(scrollPos.top / RESIZE_CONFIG.DEFAULT_ROW_HEIGHT);
+  const startCol = Math.floor(scrollPos.left / RESIZE_CONFIG.DEFAULT_COL_WIDTH);
+
+  // Obtener offset del grid para posicionar líneas guía
+  const gridOffset = gridContainerRef.current?.getBoundingClientRect() || { left: 0, top: 0 };
+
+  // Generar headers de columnas visibles
+  const visibleColHeaders = [];
+  let colOffset = 0;
+  for (let c = 0; c < startCol; c++) {
+    colOffset += getColWidth(c);
+  }
+  for (let c = startCol; c < startCol + GRID_CONFIG.VISIBLE_COLS + 5; c++) {
+    const width = getColWidth(c);
+    visibleColHeaders.push({ index: c, width, offset: colOffset });
+    colOffset += width;
+  }
+
+  // Generar headers de filas visibles
+  const visibleRowHeaders = [];
+  let rowOffset = 0;
+  for (let r = 0; r < startRow; r++) {
+    rowOffset += getRowHeight(r);
+  }
+  for (let r = startRow; r < startRow + GRID_CONFIG.VISIBLE_ROWS + 5; r++) {
+    const height = getRowHeight(r);
+    visibleRowHeaders.push({ index: r, height, offset: rowOffset });
+    rowOffset += height;
+  }
+
+  // Calcular tamaño total del contenido
+  const totalWidth = Array.from({ length: GRID_CONFIG.MAX_COLS }, (_, i) => getColWidth(i))
+    .reduce((sum, w) => sum + w, 0);
+  const totalHeight = Array.from({ length: GRID_CONFIG.MAX_ROWS }, (_, i) => getRowHeight(i))
+    .reduce((sum, h) => sum + h, 0);
+
+  return (
+    <div className="excel-with-resize" ref={gridContainerRef}>
+      {/* Headers de columnas */}
+      <div className="column-headers-wrapper">
+        <div className="corner-cell" />
+        <div 
+          className="column-headers"
+          style={{ transform: `translateX(-${scrollPos.left}px)` }}
+        >
+          {visibleColHeaders.map(({ index, width, offset }) => (
+            <ResizableColumnHeader
+              key={index}
+              colIndex={index}
+              width={width}
+              scrollLeft={scrollPos.left}
+              onResizeStart={startResize}
+              onAutoFit={autoFitColWidth}
+              isResizing={resizeState.isResizing && resizeState.type === 'column'}
+              resizingIndex={resizeState.index}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* Contenedor principal del grid */}
+      <div className="grid-main">
+        {/* Headers de filas */}
+        <div 
+          className="row-headers"
+          style={{ transform: `translateY(-${scrollPos.top}px)` }}
+        >
+          {visibleRowHeaders.map(({ index, height, offset }) => (
+            <ResizableRowHeader
+              key={index}
+              rowIndex={index}
+              height={height}
+              scrollTop={scrollPos.top}
+              onResizeStart={startResize}
+              onAutoFit={autoFitRowHeight}
+              isResizing={resizeState.isResizing && resizeState.type === 'row'}
+              resizingIndex={resizeState.index}
+            />
+          ))}
+        </div>
+
+        {/* Viewport de celdas */}
+        <div
+          className="cells-viewport"
+          onScroll={(e) => setScrollPos({ 
+            top: e.target.scrollTop, 
+            left: e.target.scrollLeft 
+          })}
+        >
+          <div
+            className="cells-container"
+            style={{ width: totalWidth, height: totalHeight }}
+          >
+            {/* Renderizar celdas visibles */}
+            {visibleRowHeaders.map(({ index: rowIndex, height: rowHeight, offset: rowOffset }) => (
+              visibleColHeaders.map(({ index: colIndex, width: colWidth, offset: colOffset }) => {
+                const cell = grid?.getCell(rowIndex, colIndex) || { value: '' };
+                return (
+                  <div
+                    key={`${rowIndex}:${colIndex}`}
+                    className={`cell ${
+                      selectedCell.row === rowIndex && selectedCell.col === colIndex ? 'selected' : ''
+                    }`}
+                    style={{
+                      position: 'absolute',
+                      left: colOffset,
+                      top: rowOffset,
+                      width: colWidth,
+                      height: rowHeight
+                    }}
+                    onClick={() => setSelectedCell({ row: rowIndex, col: colIndex })}
+                  >
+                    <span className="cell-value">{cell.value}</span>
+                  </div>
+                );
+              })
+            ))}
+          </div>
+
+          {/* Línea guía de redimensionamiento */}
+          <ResizeGuideLine resizeState={resizeState} gridOffset={gridOffset} />
+          
+          {/* Tooltip de tamaño */}
+          <ResizeSizeTooltip resizeState={resizeState} gridOffset={gridOffset} />
+        </div>
+      </div>
+
+      {/* Información de columna/fila actual */}
+      {resizeState.isResizing && (
+        <div className="resize-info-bar">
+          {resizeState.type === 'column' 
+            ? `Redimensionando columna ${getColumnName(resizeState.index)}: ${Math.round(resizeState.currentSize)}px`
+            : `Redimensionando fila ${resizeState.index + 1}: ${Math.round(resizeState.currentSize)}px`
+          }
+        </div>
+      )}
+    </div>
+  );
+};
+
+// === CSS ===
+const res

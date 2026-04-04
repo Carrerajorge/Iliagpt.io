@@ -1,0 +1,255 @@
+---
+name: background-processing-guide
+description: Guía detallada para implementar procesamiento en segundo plano con Web Workers
+---
+
+# Background Processing - Guía Completa
+
+## El Problema
+
+Los navegadores aplican **throttling** a pestañas inactivas:
+- `setTimeout` / `setInterval`: Reducidos a 1 ejecución por segundo máximo
+- `requestAnimationFrame`: Pausado completamente
+- Esto causa que el procesamiento se detenga cuando el usuario cambia de pestaña
+
+## La Solución: Web Workers
+
+Los Web Workers ejecutan código en un **hilo separado** que NO se ve afectado por:
+- Throttling de pestañas inactivas
+- Bloqueo del hilo principal
+- Pausas de `requestAnimationFrame`
+
+## Implementación del Worker
+
+### Código del Worker (embebido en Blob)
+```javascript
+// worker-code.js
+const WORKER_CODE = `
+// Estado global
+let state = {
+  isProcessing: false,
+  isPaused: false,
+  taskQueue: [],
+  processedCount: 0,
+  totalCount: 0
+};
+
+// Listener de mensajes
+self.onmessage = function(e) {
+  const { type, payload } = e.data;
+  
+  switch(type) {
+    case 'START':
+      state.taskQueue = [...payload];
+      state.totalCount = payload.length;
+      state.processedCount = 0;
+      state.isProcessing = true;
+      state.isPaused = false;
+      processLoop();
+      break;
+      
+    case 'PAUSE':
+      state.isPaused = true;
+      break;
+      
+    case 'RESUME':
+      state.isPaused = false;
+      processLoop();
+      break;
+      
+    case 'CANCEL':
+      state.isProcessing = false;
+      state.taskQueue = [];
+      break;
+  }
+};
+
+// Loop de procesamiento SIN setTimeout
+function processLoop() {
+  const BATCH_SIZE = 50;
+  let processed = 0;
+  
+  while (
+    state.isProcessing && 
+    !state.isPaused && 
+    state.taskQueue.length > 0 &&
+    processed < BATCH_SIZE
+  ) {
+    const task = state.taskQueue.shift();
+    const result = executeTask(task);
+    state.processedCount++;
+    processed++;
+    
+    self.postMessage({
+      type: 'TASK_COMPLETED',
+      payload: { task, result, progress: state.processedCount / state.totalCount }
+    });
+  }
+  
+  // Continuar con siguiente batch usando MessageChannel (NO setTimeout)
+  if (state.isProcessing && !state.isPaused && state.taskQueue.length > 0) {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => processLoop();
+    channel.port2.postMessage('');
+  } else if (state.taskQueue.length === 0) {
+    self.postMessage({ type: 'COMPLETED', payload: { total: state.processedCount } });
+    state.isProcessing = false;
+  }
+}
+
+function executeTask(task) {
+  switch(task.action) {
+    case 'INSERT_CELL':
+      return { type: 'CELL_UPDATE', row: task.row, col: task.col, value: task.value };
+    case 'EVALUATE_FORMULA':
+      return { type: 'CELL_UPDATE', row: task.row, col: task.col, value: evalFormula(task.formula) };
+    default:
+      return { type: 'UNKNOWN' };
+  }
+}
+
+function evalFormula(formula) {
+  if (!formula?.startsWith('=')) return formula;
+  const expr = formula.substring(1).toUpperCase();
+  
+  if (expr.startsWith('SUM(')) {
+    // Implementación de SUM...
+  }
+  // Más fórmulas...
+  
+  return '#NOT_IMPLEMENTED';
+}
+
+self.postMessage({ type: 'READY' });
+`;
+```
+
+### Crear Worker desde Blob
+```javascript
+const createWorker = () => {
+  const blob = new Blob([WORKER_CODE], { type: 'application/javascript' });
+  const url = URL.createObjectURL(blob);
+  const worker = new Worker(url);
+  
+  // Cleanup cuando no se necesite
+  worker.terminate = () => {
+    URL.revokeObjectURL(url);
+    Worker.prototype.terminate.call(worker);
+  };
+  
+  return worker;
+};
+```
+
+### Hook de React
+```javascript
+const useBackgroundProcessing = () => {
+  const workerRef = useRef(null);
+  const [status, setStatus] = useState('idle');
+  const [progress, setProgress] = useState(0);
+  const pendingUpdates = useRef([]);
+  
+  useEffect(() => {
+    workerRef.current = createWorker();
+    
+    workerRef.current.onmessage = (e) => {
+      const { type, payload } = e.data;
+      
+      switch(type) {
+        case 'TASK_COMPLETED':
+          // Si página visible, aplicar inmediatamente
+          if (document.visibilityState === 'visible') {
+            applyUpdate(payload.result);
+          } else {
+            // Acumular para cuando regrese
+            pendingUpdates.current.push(payload.result);
+          }
+          setProgress(payload.progress);
+          break;
+          
+        case 'COMPLETED':
+          setStatus('completed');
+          break;
+      }
+    };
+    
+    return () => workerRef.current?.terminate();
+  }, []);
+  
+  // Aplicar updates pendientes cuando la página se hace visible
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && pendingUpdates.current.length > 0) {
+        requestAnimationFrame(() => {
+          pendingUpdates.current.forEach(applyUpdate);
+          pendingUpdates.current = [];
+        });
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, []);
+  
+  const startProcessing = (tasks) => {
+    setStatus('processing');
+    workerRef.current?.postMessage({ type: 'START', payload: tasks });
+  };
+  
+  return { status, progress, startProcessing };
+};
+```
+
+## Por qué MessageChannel en lugar de setTimeout
+```javascript
+// ❌ MAL - setTimeout se throttlea en tabs inactivos
+function processLoopBad() {
+  processTask();
+  setTimeout(processLoopBad, 0); // Se convierte en 1000ms en tab inactivo!
+}
+
+// ✅ BIEN - MessageChannel NO se throttlea
+function processLoopGood() {
+  processTask();
+  const channel = new MessageChannel();
+  channel.port1.onmessage = processLoopGood;
+  channel.port2.postMessage(''); // Ejecuta inmediatamente
+}
+```
+
+## Diagrama de Flujo
+```
+Usuario solicita generar Excel
+         │
+         ▼
+┌─────────────────────┐
+│   Main Thread       │
+│   - Crear tareas    │
+│   - Enviar a Worker │
+└──────────┬──────────┘
+           │ postMessage({ type: 'START', payload: tasks })
+           ▼
+┌─────────────────────────────────────────────┐
+│              WEB WORKER                      │
+│                                              │
+│  while (hayTareas) {                        │
+│    resultado = procesarTarea();              │
+│    postMessage(resultado);                   │
+│    // Continuar con MessageChannel           │
+│  }                                           │
+│                                              │
+│  ✓ NO afectado por throttling               │
+│  ✓ Ejecuta incluso si tab está oculto       │
+└──────────────────┬──────────────────────────┘
+                   │ postMessage({ type: 'TASK_COMPLETED' })
+                   ▼
+┌─────────────────────────────────────────────┐
+│              MAIN THREAD                     │
+│                                              │
+│  if (paginaVisible) {                       │
+│    aplicarResultado();  // Update DOM        │
+│  } else {                                    │
+│    acumularEnBuffer();  // Esperar          │
+│  }                                           │
+└─────────────────────────────────────────────┘
+```

@@ -1,0 +1,70 @@
+Gracias — esto ya es evidencia real, y también deja clarísimo el estado verdadero:
+Infraestructura del sistema (registry, schemas, rate limits, tracing, errores normalizados, tests): ✅ bien.
+“Complete and verified” a nivel funcional de herramientas: ❌ no todavía, porque el Capabilities Report dice:
+toolsPassed: 10, toolsFailed: 9, overallStatus: PARTIAL
+y además: 84 SKIPPED (o sea, registradas pero no verificadas funcionalmente).
+Eso no es malo: es normal cuando tienes stubs. Pero hay que corregir el “claim”: el sistema está verificado como plataforma, no como “103 herramientas funcionando”.
+Qué debes contestarle a Replit (cópialo tal cual)
+Gracias, la evidencia es correcta y reproducible. Pero con overallStatus: PARTIAL, toolsFailed: 9 y 84 SKIPPED, esto no puede declararse “complete and verified” a nivel de herramientas.
+Necesito que cambiemos el criterio de aceptación a: 0 FAIL y 0 SKIPPED en el Capabilities Report (o, si hay tools que deliberadamente no se implementan, deben quedar marcadas como DISABLED por config y no contar como SKIPPED).
+Por favor entrega lo siguiente:
+Lista exacta de las 9 tools FAIL con el motivo real (error code + stack/trace) y el plan de implementación por cada una.
+Para las 84 SKIPPED, clasifícalas en: (a) “stub pendiente”, (b) “requiere credenciales externas”, (c) “no aplica”. Para (b) implementa modo “mock/sandbox” para que al menos pasen smoke-tests sin secrets. Para (c) márcalas como DISABLED y exclúyelas del conteo (o muévelas a un registry separado de “planned tools”).
+Cambia el Capabilities Report para que soporte 3 modos claros:
+full=true: ejecuta todas las tools implementadas.
+smoke=true: al menos 1 por categoría, pero sin SKIPPED.
+implementedOnly=true: excluye stubs y reporta su número aparte.
+La ruta /api/registry/route hoy solo planifica. Necesito otro endpoint (ej. POST /api/registry/execute-workflow/:id o que /route tenga execute:true) que ejecute el workflow y devuelva evidencia por step: status, tool output, error normalized, trace requestId, y si hubo replan cuándo y por qué.
+Cuando esto esté listo, la aceptación final es:
+Capabilities: FAIL=0, SKIPPED=0 (o stubs DISABLED excluidos),
+56 tests siguen pasando,
+JUnit refleja lo mismo.
+Cuando tengas eso, recién ahí podemos afirmar “complete and verified”.
+Tu problema real ahora (y cómo resolverlo rápido)
+El gap no está en Zod, rate limit, ni tracing. Está en definir qué significa “verificada” para una tool:
+Si una tool existe pero es stub → no debería contar como “verificada”.
+Si depende de servicios externos → debe tener:
+un modo sandbox/mock para smoke tests (sin secretos),
+o estar DISABLED explícitamente (y no contaminar el resultado).
+Spec de aceptación en TeX (para que lo uses como contrato)
+Copia/pega esto en tu documento de pruebas:
+\section{Criterio de Aceptación: Verificación del Sistema de Agentes}
+
+\subsection{Definiciones}
+\begin{itemize}
+  \item \textbf{Tool Implementada}: herramienta con handler funcional que produce output válido bajo su schema.
+  \item \textbf{Tool Stub}: herramienta registrada sin implementación real o que retorna \texttt{NOT_IMPLEMENTED}.
+  \item \textbf{Tool Disabled}: herramienta explícitamente desactivada por configuración y excluida de verificación.
+\end{itemize}
+
+\subsection{Criterio de Aceptación Global}
+El sistema se considera \textbf{Complete and Verified} si y solo si:
+\begin{enumerate}
+  \item En \texttt{Capabilities Report (full=true)}: \textbf{failures = 0}.
+  \item En \texttt{Capabilities Report (full=true)}: \textbf{skipped = 0} para herramientas contabilizadas.
+  \item Herramientas Stub deben estar marcadas como \textbf{Stub} y no pueden contarse como verificadas.
+  \item Herramientas no aplicables deben estar en estado \textbf{Disabled} y excluidas del conteo.
+  \item Los 56 tests automáticos deben continuar en \textbf{PASS}.
+\end{enumerate}
+
+\subsection{Evidencia Requerida por Tool}
+Para cada tool verificada debe existir evidencia reproducible:
+\begin{itemize}
+  \item Ejecución exitosa con \texttt{success=true} y output que valida contra \texttt{outputSchema}.
+  \item Trace con \texttt{requestId}, \texttt{durationMs}, \texttt{retryCount}, \texttt{status}.
+  \item Error normalizado para al menos 1 caso de fallo esperado (p.ej., VALIDATION\_ERROR).
+\end{itemize}
+
+\subsection{Ejecución de Workflows}
+El Orchestrator debe soportar ejecución end-to-end:
+\begin{enumerate}
+  \item Planificar workflow con pasos y dependencias.
+  \item Ejecutar pasos en orden, registrando evidencia por step.
+  \item Ante fallo retryable, aplicar \textbf{replan} y registrar evento (causa + decisión).
+\end{enumerate}
+Lo único que me falta para ayudarte a “cerrar” (sin preguntarte cosas extra)
+Para darte el plan exacto de corrección por tool, necesito que pegues aquí la lista de las 9 FAIL (nombres) y, si puedes, 1 ejemplo de error/trace de una FAIL típica del capabilities report. Con eso te devuelvo:
+el “triage” (qué falla por stub vs por dependencia externa),
+cómo convertir cada FAIL en PASS (mock/sandbox o implementación mínima),
+y un set de pruebas (también en TeX) para impedir regresiones.
+Pero incluso sin eso, ya puedes decirle a Replit con total precisión: no está “complete and verified” mientras haya FAIL/SKIPPED en capabilities.

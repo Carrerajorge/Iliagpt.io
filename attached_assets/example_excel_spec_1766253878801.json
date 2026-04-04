@@ -1,0 +1,59 @@
+{
+  "workbook_title": "Reporte de Ventas",
+  "sheets": [
+    {
+      "name": "Resumen",
+      "tables": [
+        {
+          "anchor": "A1",
+          "headers": [
+            "Mes",
+            "Ventas",
+            "Margen",
+            "Notas"
+          ],
+          "rows": [
+            [
+              "2025-01-01",
+              120000,
+              0.32,
+              "Campaña A"
+            ],
+            [
+              "2025-02-01",
+              135000,
+              0.28,
+              "Campaña B"
+            ],
+            [
+              "2025-03-01",
+              142500,
+              0.35,
+              "Campaña C"
+            ]
+          ],
+          "column_formats": {
+            "Ventas": "$#,##0",
+            "Margen": "0.0%"
+          },
+          "table_style": "TableStyleMedium9",
+          "autofilter": true,
+          "freeze_header": true
+        }
+      ],
+      "charts": [
+        {
+          "type": "bar",
+          "title": "Ventas por mes",
+          "categories_range": "A2:A4",
+          "values_range": "B2:B4",
+          "position": "F2"
+        }
+      ],
+      "layout": {
+        "auto_fit_columns": true,
+        "show_gridlines": true
+      }
+    }
+  ]
+}

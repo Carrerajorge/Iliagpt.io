@@ -1,0 +1,296 @@
+Sí. Te dejo una **base “production-ready”** para montar una plataforma de **“computadoras virtuales” a gran escala** usando **Kubernetes + KubeVirt (VMs como recursos de Kubernetes)** y un **API** que crea/borra VMs on-demand. Esto es lo más práctico para escalar con control, cuotas, observabilidad y automatización.
+
+> Suposición razonable: quieres “PCs virtuales” (VMs completas) para usuarios/servicios, creadas bajo demanda y escalables horizontalmente.
+
+---
+
+## 1) Manifiesto de una “computadora virtual” (KubeVirt VM)
+
+Guárdalo como `vm-template.yaml` (ajusta `storageClassName`, imagen, CPU/RAM). Incluye `cloud-init` para configurar usuario/SSH.
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: vm-REPLACE_ME
+  namespace: vms
+  labels:
+    app: virtual-desktop
+    owner: REPLACE_OWNER
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: vm-REPLACE_ME
+        app: virtual-desktop
+        owner: REPLACE_OWNER
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        resources:
+          requests:
+            memory: 4Gi
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: dv-REPLACE_ME
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              users:
+                - name: ubuntu
+                  sudo: ALL=(ALL) NOPASSWD:ALL
+                  groups: [sudo]
+                  shell: /bin/bash
+                  ssh_authorized_keys:
+                    - REPLACE_SSH_PUBLIC_KEY
+              package_update: true
+              runcmd:
+                - [ bash, -lc, "echo 'VM ready' > /etc/motd" ]
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: dv-REPLACE_ME
+  namespace: vms
+spec:
+  source:
+    http:
+      # Imagen cloud (ejemplo Ubuntu). Mejor: apunta a tu registry/HTTP interno.
+      url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+  pvc:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 40Gi
+    storageClassName: YOUR_STORAGECLASS
+```
+
+---
+
+## 2) API para crear/borrar VMs (FastAPI + Kubernetes client)
+
+Esto crea VMs usando el template anterior, reemplazando placeholders.
+
+### `requirements.txt`
+
+```txt
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+kubernetes==30.1.0
+pyyaml==6.0.2
+```
+
+### `main.py`
+
+```python
+import os
+import re
+import yaml
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from kubernetes import client, config, utils
+
+NAMESPACE = os.getenv("VM_NAMESPACE", "vms")
+TEMPLATE_PATH = os.getenv("VM_TEMPLATE_PATH", "./vm-template.yaml")
+
+app = FastAPI(title="Virtual Computer Provisioner")
+
+class CreateVM(BaseModel):
+    owner: str = Field(..., min_length=2, max_length=64)
+    name: str = Field(..., min_length=3, max_length=40, description="vm name, lowercase/dash")
+    ssh_public_key: str = Field(..., min_length=30)
+
+def _safe_name(name: str) -> str:
+    # DNS-1123 label
+    name = name.lower()
+    name = re.sub(r"[^a-z0-9-]+", "-", name)
+    name = re.sub(r"-{2,}", "-", name).strip("-")
+    if not name or len(name) > 40:
+        raise ValueError("Invalid name")
+    return name
+
+def _load_and_render(vm_name: str, owner: str, ssh_key: str) -> list[dict]:
+    with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
+        docs = list(yaml.safe_load_all(f))
+
+    def repl(obj):
+        if isinstance(obj, str):
+            return (obj.replace("vm-REPLACE_ME", f"vm-{vm_name}")
+                       .replace("dv-REPLACE_ME", f"dv-{vm_name}")
+                       .replace("REPLACE_OWNER", owner)
+                       .replace("REPLACE_SSH_PUBLIC_KEY", ssh_key))
+        if isinstance(obj, dict):
+            return {k: repl(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [repl(x) for x in obj]
+        return obj
+
+    return [repl(d) for d in docs if d is not None]
+
+@app.on_event("startup")
+def startup():
+    # In-cluster si corre dentro de k8s; local para desarrollo
+    try:
+        config.load_incluster_config()
+    except Exception:
+        config.load_kube_config()
+
+@app.post("/v1/vm")
+def create_vm(req: CreateVM):
+    try:
+        vm_name = _safe_name(req.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Cargar y “renderizar” manifiestos
+    manifests = _load_and_render(vm_name, req.owner, req.ssh_public_key)
+
+    api_client = client.ApiClient()
+
+    # Crear recursos (DataVolume + VirtualMachine)
+    try:
+        for m in manifests:
+            utils.create_from_dict(api_client, m, namespace=NAMESPACE)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create VM: {e}")
+
+    return {
+        "ok": True,
+        "vm": f"vm-{vm_name}",
+        "datavolume": f"dv-{vm_name}",
+        "namespace": NAMESPACE
+    }
+
+@app.delete("/v1/vm/{name}")
+def delete_vm(name: str):
+    try:
+        vm_name = _safe_name(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    k8s = client.CustomObjectsApi()
+    core = client.CoreV1Api()
+
+    # Borrar VM (CRD)
+    try:
+        k8s.delete_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=NAMESPACE,
+            plural="virtualmachines",
+            name=f"vm-{vm_name}",
+        )
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise HTTPException(status_code=500, detail=f"Failed deleting VM: {e}")
+
+    # Borrar DataVolume (CRD)
+    try:
+        k8s.delete_namespaced_custom_object(
+            group="cdi.kubevirt.io",
+            version="v1beta1",
+            namespace=NAMESPACE,
+            plural="datavolumes",
+            name=f"dv-{vm_name}",
+        )
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise HTTPException(status_code=500, detail=f"Failed deleting DataVolume: {e}")
+
+    # (Opcional) borrar PVC remanente si aplica
+    # Nota: CDI normalmente gestiona el PVC; si tu instalación deja PVCs, límpialos aquí.
+
+    return {"ok": True, "deleted": f"vm-{vm_name}"}
+```
+
+Ejecutar local:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8080
+```
+
+Crear VM:
+
+```bash
+curl -X POST http://localhost:8080/v1/vm \
+  -H "Content-Type: application/json" \
+  -d '{"owner":"jorge","name":"pc-01","ssh_public_key":"ssh-ed25519 AAAA..."}'
+```
+
+---
+
+## 3) RBAC mínimo para que el API pueda crear/borrar VMs
+
+`rbac.yaml` (si corres el API dentro del cluster con ServiceAccount)
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vm-provisioner
+  namespace: vms
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vm-provisioner-role
+  namespace: vms
+rules:
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines"]
+    verbs: ["get", "list", "create", "delete", "patch", "update"]
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes"]
+    verbs: ["get", "list", "create", "delete", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods", "services", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vm-provisioner-rb
+  namespace: vms
+subjects:
+  - kind: ServiceAccount
+    name: vm-provisioner
+    namespace: vms
+roleRef:
+  kind: Role
+  name: vm-provisioner-role
+  apiGroup: rbac.authorization.k8s.io
+```
+
+---
+
+## 4) Qué falta para “producción a gran escala” (lista corta, pero clave)
+
+* **Pool de nodos hypervisor** (KVM) y **escalado** de nodos (más hosts → más VMs).
+* **Storage distribuido** (Ceph/Rook/Longhorn) + `StorageClass` estable.
+* **Networking**: si necesitas IPs “reales” por VM, usa **Multus + bridge/macvlan**; si no, `masquerade` está ok.
+* **Acceso remoto**: RDP/VNC/Guacamole/noVNC según tu caso (esto ya es “capa 2”).
+* **Cuotas por owner**: `ResourceQuota`/`LimitRange` y/o admission policies.
+* **Observabilidad**: Prometheus + Grafana + logs (y métricas de KubeVirt).
+
+---
+
+Si me dices **dónde lo vas a correr** (on-prem con KVM, Proxmox/bare metal, o cloud) y si las “computadoras virtuales” son **Linux o Windows**, te ajusto el template (CPU/IO, red, disco, pool de imágenes internas y acceso remoto) para que tu programador lo implemente directo.

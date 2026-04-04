@@ -1,0 +1,117 @@
+Perfecto, aquí el problema **no es técnico**, sino **cómo explicarlo bien para que tu profesor lo apruebe** sin presupuesto. Te dejo **qué decir**, **cómo decirlo** y **qué arquitectura proponer** usando solo herramientas gratuitas.
+
+---
+
+## 1. Cómo planteárselo a tu profesor (mensaje clave)
+
+Puedes decirle algo así (ajústalo a tu estilo):
+
+> *Proponemos implementar un sistema de respuesta inteligente basado en modelos LLM apoyado por un navegador web propio y gratuito, utilizando el enfoque Retrieval-Augmented Generation (RAG). El modelo no accede directamente a internet, sino que consume información obtenida mediante un módulo de búsqueda web desarrollado por el equipo, evitando costos de licencias y APIs comerciales.*
+
+Eso suena:
+
+* Académico
+* Realista
+* Justificado
+* Sin depender de dinero 💰
+
+---
+
+## 2. Qué estás proponiendo realmente (en términos simples)
+
+No estás diciendo:
+❌ “vamos a crear Google”
+
+Estás diciendo:
+✅ “vamos a crear un **módulo de navegación/búsqueda web básica** que alimente a un LLM”
+
+---
+
+## 3. Arquitectura propuesta (la que debes mostrar)
+
+### Componentes:
+
+1. **Navegador web propio (gratuito)**
+
+   * Hace solicitudes HTTP
+   * Descarga HTML
+   * Extrae texto relevante
+
+2. **Módulo de recuperación**
+
+   * Limpia el texto
+   * Selecciona fragmentos útiles
+
+3. **LLM**
+
+   * Recibe el texto como contexto
+   * Genera la respuesta
+
+---
+
+### Flujo (explícalo así):
+
+1. El usuario hace una pregunta
+2. El sistema ejecuta una búsqueda web automatizada
+3. Se recupera contenido textual de fuentes abiertas
+4. El contenido se inyecta como contexto al modelo
+5. El LLM genera la respuesta final
+
+👉 **Eso es RAG**, aunque no lo llames así si tu profesor no maneja el término.
+
+---
+
+## 4. Cómo justificar que sea GRATIS
+
+Dile explícitamente:
+
+> *Dado que el proyecto no cuenta con presupuesto, se prioriza el uso de tecnologías open source y servicios gratuitos, desarrollando un navegador web propio que permite la consulta de fuentes públicas sin depender de APIs comerciales.*
+
+Ejemplos que puedes mencionar:
+
+* Python + requests / httpx
+* BeautifulSoup
+* DuckDuckGo HTML (sin API)
+* Sitios open access (Redalyc, Scielo, arXiv)
+
+---
+
+## 5. Si tu profesor pregunta:
+
+### “¿Pero eso no es copiar contenido?”
+
+Respuesta correcta:
+
+> *No, el sistema no reproduce contenido literal, sino que lo utiliza como contexto para generar respuestas originales, siguiendo un enfoque de recuperación y generación similar al usado en sistemas modernos de IA.*
+
+---
+
+## 6. Si te pide rigor académico
+
+Usa este término clave:
+
+### 🔹 **Sistema de generación aumentada por recuperación de información (RAG)**
+
+Definición corta:
+
+> *Un enfoque que combina modelos de lenguaje con recuperación de información externa para mejorar la precisión y actualidad de las respuestas.*
+
+---
+
+## 7. Objetivo del proyecto (redáctalo así)
+
+> *Desarrollar un sistema inteligente capaz de responder preguntas utilizando información obtenida dinámicamente desde la web mediante un navegador propio, integrando técnicas de recuperación de información y modelos de lenguaje, sin depender de servicios comerciales.*
+
+---
+
+## 8. Si quieres, te ayudo más
+
+Puedo:
+
+* Redactarte el **objetivo general y específicos**
+* Armar el **diagrama de arquitectura**
+* Escribirte el **capítulo metodológico**
+* Prepararte una **respuesta exacta** para cuando el profesor dude
+
+Dime:
+👉 ¿es proyecto de **tesis**, **materia**, **seminario** o **trabajo final**?

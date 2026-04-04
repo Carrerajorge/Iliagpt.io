@@ -1,0 +1,308 @@
+// === ESTADOS DE GENERACIÓN ===
+const GENERATION_STATES = {
+  IDLE: 'idle',
+  ANALYZING: 'analyzing',
+  STRUCTURING: 'structuring', 
+  GENERATING: 'generating',
+  COMPLETING: 'completing',
+  DONE: 'done'
+};
+
+const STATE_MESSAGES = {
+  analyzing: { text: 'Analizando solicitud...', progress: 20 },
+  structuring: { text: 'Estructurando contenido...', progress: 45 },
+  generating: { text: 'Generando documento...', progress: 70 },
+  completing: { text: 'Finalizando...', progress: 90 },
+  done: { text: 'Documento listo', progress: 100 }
+};
+
+// === COMPONENTE DE GENERACIÓN DE DOCUMENTO ===
+const DocumentGenerationLoader = ({ state, documentData, onOpen }) => {
+  
+  if (state === 'done' && documentData) {
+    // Mostrar card del documento terminado
+    return (
+      <div className="document-ready-card" onClick={onOpen}>
+        <div className="ready-icon">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+            <rect width="40" height="40" rx="8" fill="#2B579A"/>
+            <text x="50%" y="55%" dominantBaseline="middle" textAnchor="middle" fill="white" fontSize="18" fontWeight="bold">W</text>
+          </svg>
+          <div className="check-badge">✓</div>
+        </div>
+        <div className="ready-info">
+          <span className="ready-title">{documentData.title || 'Documento Word'}</span>
+          <span className="ready-subtitle">Documento listo • Click para abrir</span>
+        </div>
+        <div className="ready-arrow">→</div>
+      </div>
+    );
+  }
+  
+  // Mostrar loader mientras genera
+  const currentState = STATE_MESSAGES[state] || STATE_MESSAGES.analyzing;
+  
+  return (
+    <div className="document-generation-loader">
+      <div className="loader-header">
+        <div className="loader-icon">
+          <div className="icon-pulse"></div>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+            <rect width="24" height="24" rx="4" fill="#2B579A"/>
+            <text x="50%" y="55%" dominantBaseline="middle" textAnchor="middle" fill="white" fontSize="10" fontWeight="bold">W</text>
+          </svg>
+        </div>
+        <div className="loader-text">
+          <span className="loader-title">Creando documento</span>
+          <span className="loader-status">{currentState.text}</span>
+        </div>
+      </div>
+      
+      <div className="progress-container">
+        <div className="progress-bar">
+          <div 
+            className="progress-fill" 
+            style={{ width: `${currentState.progress}%` }}
+          ></div>
+        </div>
+        <span className="progress-percent">{currentState.progress}%</span>
+      </div>
+      
+      <div className="loader-dots">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+  );
+};
+
+// === LÓGICA PARA SIMULAR PROGRESO MIENTRAS LA IA GENERA ===
+const useDocumentGeneration = () => {
+  const [generationState, setGenerationState] = useState('idle');
+  const [documentData, setDocumentData] = useState(null);
+  
+  const startGeneration = async (instruction) => {
+    setGenerationState('analyzing');
+    
+    // Simular progreso mientras espera respuesta real
+    const progressInterval = setInterval(() => {
+      setGenerationState(prev => {
+        if (prev === 'analyzing') return 'structuring';
+        if (prev === 'structuring') return 'generating';
+        if (prev === 'generating') return 'completing';
+        return prev;
+      });
+    }, 1500);
+    
+    try {
+      // Llamada real a la IA
+      const response = await generateDocumentFromAI(instruction);
+      
+      clearInterval(progressInterval);
+      
+      // Parsear respuesta (extraer JSON internamente, nunca mostrarlo)
+      const parsed = parseDocumentResponse(response);
+      setDocumentData(parsed);
+      setGenerationState('done');
+      
+    } catch (error) {
+      clearInterval(progressInterval);
+      setGenerationState('idle');
+    }
+  };
+  
+  return { generationState, documentData, startGeneration };
+};
+
+// === PARSEAR RESPUESTA SIN MOSTRAR JSON ===
+const parseDocumentResponse = (response) => {
+  try {
+    // Extraer JSON de la respuesta
+    const jsonMatch = response.match(/\{[\s\S]*"type":\s*"word"[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+  } catch (e) {
+    console.error('Error parsing document:', e);
+  }
+  return null;
+};
+
+// === CSS FUTURISTA Y MINIMALISTA ===
+.document-generation-loader {
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 20px;
+  max-width: 320px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+}
+
+.loader-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.loader-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-pulse {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  background: rgba(43, 87, 154, 0.15);
+  border-radius: 50%;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 0.5; }
+  50% { transform: scale(1.3); opacity: 0; }
+}
+
+.loader-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.loader-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #1e293b;
+}
+
+.loader-status {
+  font-size: 12px;
+  color: #64748b;
+  animation: fadeInOut 1.5s ease-in-out infinite;
+}
+
+@keyframes fadeInOut {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+.progress-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 4px;
+  background: #e2e8f0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #2B579A 0%, #3b82f6 100%);
+  border-radius: 4px;
+  transition: width 0.5s ease-out;
+}
+
+.progress-percent {
+  font-size: 11px;
+  color: #94a3b8;
+  min-width: 32px;
+  text-align: right;
+}
+
+.loader-dots {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.loader-dots span {
+  width: 6px;
+  height: 6px;
+  background: #cbd5e1;
+  border-radius: 50%;
+  animation: bounce 1.4s ease-in-out infinite;
+}
+
+.loader-dots span:nth-child(2) { animation-delay: 0.2s; }
+.loader-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-6px); }
+}
+
+/* Card documento listo */
+.document-ready-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+  border: 1px solid #7dd3fc;
+  border-radius: 16px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  max-width: 320px;
+}
+
+.document-ready-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(43, 87, 154, 0.15);
+  border-color: #2B579A;
+}
+
+.ready-icon {
+  position: relative;
+}
+
+.check-badge {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 18px;
+  height: 18px;
+  background: #10b981;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: white;
+  border: 2px solid white;
+}
+
+.ready-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ready-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #1e293b;
+}
+
+.ready-subtitle {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.ready-arrow {
+  font-size: 18px;
+  color: #2B579A;
+  transition: transform 0.2s ease;
+}
+
+.document-ready-card:hover .ready-arrow {
+  transform: translateX(4px);
+}

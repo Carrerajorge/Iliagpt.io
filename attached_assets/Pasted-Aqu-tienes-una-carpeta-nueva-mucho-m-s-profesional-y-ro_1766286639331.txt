@@ -1,0 +1,125 @@
+Aquí tienes una **carpeta nueva, mucho más profesional y robusta**, con **toda la documentación + código + tests + API + CLI + Docker**, lista para copiar/pegar y llevar a producción:
+
+[Descargar carpeta completa PRO (ZIP)](sandbox:/mnt/data/office_agent_pro_bundle.zip)
+
+---
+
+## Qué incluye esta versión “PRO” (robusta)
+
+### Arquitectura sólida (producción)
+
+* **IR (JSON) estricta** con Pydantic v2 (`extra="forbid"`, validaciones fuertes).
+* Render **determinístico** (no “texto bonito”):
+
+  * Excel → `openpyxl` → `.xlsx`
+  * Word → `python-docx` → `.docx`
+* **Quality Gates** (reglas profesionales) con reporte `errors/warnings`:
+
+  * límites anti-DoS (filas, celdas, bloques, etc.)
+  * detección de **tablas que se solapan** (error)
+  * advertencias y mitigación de **formula injection** (Excel)
+* **Validadores post-render** (reabre el archivo generado para detectar corrupción).
+* **API FastAPI** lista para producción + **CLI**.
+* **Dockerfile**, Makefile, requirements, y **tests con pytest**.
+
+### “Sin licencias”
+
+* Esto genera `.docx/.xlsx` **sin Microsoft** (estándar Office Open XML).
+* Para **editar en web sin pagar licencias**, la carpeta trae guía: `docs/07_deployment.md` (OnlyOffice/Collabora como ruta realista).
+
+---
+
+## Cómo correrlo (5 minutos)
+
+### 1) Instalar
+
+```bash
+cd office_agent_pro
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 2) Generar demo (crea Excel + Word profesionales)
+
+```bash
+PYTHONPATH=src python scripts/generate_demo.py
+PYTHONPATH=src python scripts/validate_files.py out/report.xlsx out/report.docx
+```
+
+### 3) Levantar API
+
+```bash
+PYTHONPATH=src uvicorn office_agent.api.app:app --host 0.0.0.0 --port 8000
+```
+
+Health:
+
+```bash
+curl -s http://localhost:8000/health
+```
+
+### 4) Render desde spec JSON (sin LLM)
+
+Hay ejemplos ya listos en `examples/`:
+
+* `examples/excel_spec_report.json`
+* `examples/doc_spec_report.json`
+
+---
+
+## Dónde está “lo fundamental” del sistema
+
+* **Schemas (IR)**
+
+  * `src/office_agent/schemas/excel.py`
+  * `src/office_agent/schemas/word.py`
+
+* **Render Excel (.xlsx)**
+
+  * `src/office_agent/renderers/excel.py`
+    Incluye:
+  * tablas con estilo,
+  * formatos numéricos,
+  * fórmulas **explícitas** vía `formulas` usando `{row}`,
+  * charts básicos,
+  * freeze panes automático.
+
+* **Render Word (.docx)**
+
+  * `src/office_agent/renderers/word.py`
+  * TOC (campo) en `src/office_agent/renderers/utils_word.py`
+
+* **Quality Gates**
+
+  * `src/office_agent/quality/rules_excel.py`
+  * `src/office_agent/quality/rules_word.py`
+
+* **Validación real de archivos**
+
+  * `src/office_agent/validators/excel.py`
+  * `src/office_agent/validators/word.py`
+
+* **Agente (opcional) + repair loop**
+
+  * `src/office_agent/orchestrator/agent.py`
+  * `src/office_agent/orchestrator/repair.py`
+  * Cliente LLM (OpenAI-compatible) en `src/office_agent/llm/openai_compat.py`
+
+---
+
+## Qué leer primero (documentación dentro de la carpeta)
+
+1. `docs/01_architecture.md` (pipeline completo)
+2. `docs/05_quality_gates.md` (cómo garantizar “queda perfecto”)
+3. `docs/07_deployment.md` (producción sin licencias + edición web)
+4. `docs/08_security.md` (inyección de fórmulas, DoS, hardening)
+
+---
+
+Si me dices **qué tipo de entregables** quieres (por ejemplo: “reportes financieros con tablas y gráficas”, o “contratos legales con formato estricto”), puedo ajustar esta misma carpeta PRO con:
+
+* **plantillas corporativas** (stylesets) más fuertes,
+* reglas de layout más estrictas,
+* soporte de secciones/encabezados/pies,
+* y un set de “quality gates” específico para tu industria (finanzas, legal, BI, etc.).

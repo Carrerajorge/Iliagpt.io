@@ -1,0 +1,111 @@
+// === HANDLER ENVIAR MENSAJE - CORREGIDO ===
+const handleSend = async () => {
+  // Permitir envío si hay instrucción O si hay selección con instrucción
+  const hasInstruction = inputState.userInstruction.trim().length > 0;
+  const hasSelection = inputState.selectedText !== null;
+  
+  // Validación: necesita al menos una instrucción
+  if (!hasInstruction) {
+    console.log('No hay instrucción para enviar');
+    return;
+  }
+  
+  // Construir el mensaje/payload
+  const messagePayload = {
+    instruction: inputState.userInstruction.trim(),
+    selectedText: inputState.selectedText || null,
+    selectionRange: inputState.selectionRange || null,
+    timestamp: Date.now()
+  };
+  
+  console.log('Enviando:', messagePayload); // Debug
+  
+  try {
+    // Si hay selección, procesar como edición de texto
+    if (hasSelection) {
+      await processSelectionEdit(messagePayload);
+    } else {
+      // Si no hay selección, procesar como instrucción normal
+      await processNormalInstruction(messagePayload);
+    }
+    
+    // IMPORTANTE: Limpiar estado DESPUÉS de enviar exitosamente
+    setInputState({
+      selectedText: null,
+      userInstruction: '',
+      selectionRange: null
+    });
+    
+  } catch (error) {
+    console.error('Error al enviar:', error);
+  }
+};
+
+// === EVENTO ENTER - VERIFICAR QUE ESTÉ CONECTADO ===
+const handleKeyDown = (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault(); // Prevenir comportamiento default
+    handleSend();
+  }
+};
+
+// === COMPONENTE INPUT CORREGIDO ===
+const InputWithSelection = () => {
+  return (
+    <div className="input-container">
+      {/* Chip de selección */}
+      {inputState.selectedText && (
+        <div className="selection-chip">
+          <span className="chip-icon">📄</span>
+          <span className="chip-text">
+            {inputState.selectedText.length > 30 
+              ? inputState.selectedText.substring(0, 30) + '...' 
+              : inputState.selectedText}
+          </span>
+          <button 
+            className="chip-remove" 
+            onClick={handleRemoveSelection}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+      )}
+      
+      {/* Input y botón */}
+      <div className="input-wrapper">
+        <input
+          type="text"
+          value={inputState.userInstruction}
+          onChange={handleInputChange}
+          onKeyDown={handleKeyDown}  // IMPORTANTE: usar onKeyDown, no onKeyPress
+          placeholder={inputState.selectedText 
+            ? "Escribe qué hacer con la selección..." 
+            : "Escribe tu mensaje aquí..."}
+        />
+        <button 
+          onClick={handleSend}  // IMPORTANTE: verificar que esté conectado
+          type="button"
+          className="send-button"
+        >
+          Enviar
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// === SI USAN FORM, AGREGAR onSubmit ===
+const InputForm = () => {
+  const handleSubmit = (e) => {
+    e.preventDefault();  // CRÍTICO: prevenir refresh de página
+    handleSend();
+  };
+  
+  return (
+    <form onSubmit={handleSubmit} className="input-container">
+      {/* ... contenido ... */}
+      <button type="submit">Enviar</button>
+    </form>
+  );
+};

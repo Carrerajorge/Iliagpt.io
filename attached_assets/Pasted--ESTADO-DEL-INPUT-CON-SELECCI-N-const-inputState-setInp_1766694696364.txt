@@ -1,0 +1,171 @@
+// === ESTADO DEL INPUT CON SELECCIÓN ===
+const [inputState, setInputState] = useState({
+  selectedText: null,      // Texto seleccionado del documento
+  userInstruction: '',     // Lo que el usuario escribe
+  selectionRange: null     // Posición en el documento para aplicar cambios
+});
+
+// === HANDLER CUANDO SE SELECCIONA TEXTO EN EL DOCUMENTO ===
+const handleTextSelection = (selectedText, range) => {
+  setInputState(prev => ({
+    ...prev,
+    selectedText: selectedText,
+    selectionRange: range
+  }));
+};
+
+// === HANDLER DEL INPUT - NO BORRA LA SELECCIÓN ===
+const handleInputChange = (e) => {
+  setInputState(prev => ({
+    ...prev,
+    userInstruction: e.target.value
+    // selectedText se MANTIENE, no se toca
+  }));
+};
+
+// === HANDLER PARA ELIMINAR CHIP MANUALMENTE ===
+const handleRemoveSelection = () => {
+  setInputState(prev => ({
+    ...prev,
+    selectedText: null,
+    selectionRange: null
+  }));
+};
+
+// === HANDLER ENVIAR MENSAJE ===
+const handleSend = async () => {
+  if (!inputState.userInstruction.trim()) return;
+  
+  const payload = {
+    instruction: inputState.userInstruction,
+    context: inputState.selectedText,  // Enviar el texto seleccionado como contexto
+    range: inputState.selectionRange
+  };
+  
+  await processInstruction(payload);
+  
+  // Limpiar TODO después de enviar
+  setInputState({
+    selectedText: null,
+    userInstruction: '',
+    selectionRange: null
+  });
+};
+
+// === COMPONENTE DEL INPUT CON CHIP ===
+const InputWithSelection = ({ inputState, onChange, onRemoveSelection, onSend }) => {
+  const inputRef = useRef(null);
+  
+  // Focus en input NO borra el chip
+  const handleFocus = () => {
+    // No hacer nada - mantener el chip
+  };
+  
+  return (
+    <div className="input-container">
+      {/* Chip de selección - persiste hasta que se elimine manualmente o se envíe */}
+      {inputState.selectedText && (
+        <div className="selection-chip">
+          <span className="chip-icon">📄</span>
+          <span className="chip-text">
+            {inputState.selectedText.length > 30 
+              ? inputState.selectedText.substring(0, 30) + '...' 
+              : inputState.selectedText}
+          </span>
+          <button 
+            className="chip-remove" 
+            onClick={onRemoveSelection}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+      )}
+      
+      {/* Campo de texto */}
+      <div className="input-wrapper">
+        <input
+          ref={inputRef}
+          type="text"
+          value={inputState.userInstruction}
+          onChange={onChange}
+          onFocus={handleFocus}  // No borra nada
+          placeholder={inputState.selectedText 
+            ? "Escribe qué hacer con la selección..." 
+            : "Escribe tu mensaje aquí..."}
+          onKeyDown={(e) => e.key === 'Enter' && onSend()}
+        />
+        <button onClick={onSend} className="send-button">
+          Enviar
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// === CSS ===
+.input-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.selection-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #eff6ff;
+  border: 1px solid #3b82f6;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #1e40af;
+  max-width: fit-content;
+}
+
+.chip-icon {
+  font-size: 14px;
+}
+
+.chip-text {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-remove {
+  background: none;
+  border: none;
+  color: #3b82f6;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  margin-left: 4px;
+}
+
+.chip-remove:hover {
+  color: #1d4ed8;
+}
+
+.input-wrapper {
+  display: flex;
+  gap: 8px;
+}
+
+.input-wrapper input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 14px;
+  padding: 8px 0;
+}
+
+.input-wrapper input::placeholder {
+  color: #94a3b8;
+}

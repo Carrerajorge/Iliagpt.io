@@ -1,0 +1,265 @@
+Ejecuta una verificación completa de TODAS las funcionalidades del sistema Excel y reporta resultados:
+
+=== EXAMEN 1: TOOLBAR Y FORMATO ===
+
+TEST 1.1 - Negrita:
+- Abre /admin/excel
+- Crea nuevo documento
+- Escribe "Test" en celda A1
+- Selecciona A1
+- Click en botón Negrita (B)
+- Verificar: ¿El texto se pone en negrita? ¿El botón se resalta?
+- Resultado: ✅/❌
+
+TEST 1.2 - Cursiva:
+- Selecciona celda B1, escribe "Italic"
+- Click en botón Cursiva (I)
+- Verificar: ¿El texto se pone en cursiva?
+- Resultado: ✅/❌
+
+TEST 1.3 - Alineación:
+- Selecciona celda C1, escribe "Centro"
+- Click en botón Centrar
+- Verificar: ¿El texto se centra en la celda?
+- Prueba también alinear izquierda y derecha
+- Resultado: ✅/❌
+
+TEST 1.4 - Color de Fondo:
+- Selecciona celda D1
+- Click en botón de color/paleta
+- Selecciona un color (ej: azul)
+- Verificar: ¿La celda cambia de color de fondo?
+- Resultado: ✅/❌
+
+TEST 1.5 - Color de Texto:
+- Selecciona celda E1, escribe "Color"
+- Cambia el color del texto a rojo
+- Verificar: ¿El texto cambia de color?
+- Resultado: ✅/❌
+
+TEST 1.6 - Atajos de Teclado:
+- Selecciona celda F1, escribe "Shortcut"
+- Presiona Ctrl+B (o Cmd+B en Mac)
+- Verificar: ¿Se aplica negrita?
+- Presiona Ctrl+I
+- Verificar: ¿Se aplica cursiva?
+- Resultado: ✅/❌
+
+TEST 1.7 - Persistencia de Formato:
+- Aplica formato a varias celdas (negrita, color, alineación)
+- Guarda el documento
+- Cierra y vuelve a abrir
+- Verificar: ¿El formato se mantiene?
+- Resultado: ✅/❌
+
+=== EXAMEN 2: STREAMING EN TIEMPO REAL ===
+
+TEST 2.1 - Indicador de Streaming:
+- Ejecuta un comando de IA que genere datos
+- Verificar: ¿Aparece indicador de "Escribiendo en..."?
+- Resultado: ✅/❌
+
+TEST 2.2 - Efecto Visual:
+- Genera datos con IA en varias celdas
+- Verificar: ¿Las celdas tienen flash/highlight al escribirse?
+- Verificar: ¿Los datos aparecen secuencialmente (no todos de golpe)?
+- Resultado: ✅/❌
+
+TEST 2.3 - Cancelar Streaming:
+- Inicia generación de muchos datos
+- Click en "Cancelar"
+- Verificar: ¿Se detiene la escritura?
+- Resultado: ✅/❌
+
+=== EXAMEN 3: COMANDOS DE IA ===
+
+TEST 3.1 - Barra de Comandos:
+- Verificar que existe barra de comandos de IA debajo del toolbar
+- Verificar que tiene icono de Sparkles/✨
+- Verificar que tiene placeholder de texto
+- Resultado: ✅/❌
+
+TEST 3.2 - Sugerencias:
+- Click en la barra de comandos (sin escribir)
+- Verificar: ¿Aparecen sugerencias predefinidas?
+- Verificar: ¿Hay al menos 5 sugerencias?
+- Resultado: ✅/❌
+
+TEST 3.3 - Generar Ciudades:
+- Selecciona rango A1:A5
+- Escribe "llena con nombres de ciudades"
+- Presiona Enter o click en enviar
+- Verificar: ¿Se llenan las celdas con nombres de ciudades?
+- Resultado: ✅/❌
+
+TEST 3.4 - Generar Nombres:
+- Selecciona rango B1:B5
+- Escribe "llena con nombres de personas"
+- Verificar: ¿Se generan nombres?
+- Resultado: ✅/❌
+
+TEST 3.5 - Generar Números:
+- Selecciona rango C1:C10
+- Escribe "genera números de ventas"
+- Verificar: ¿Se generan números aleatorios?
+- Resultado: ✅/❌
+
+TEST 3.6 - Generar Fechas:
+- Selecciona rango D1:D7
+- Escribe "llena con fechas"
+- Verificar: ¿Se generan fechas secuenciales?
+- Resultado: ✅/❌
+
+=== EXAMEN 4: PERSISTENCIA EN BASE DE DATOS ===
+
+TEST 4.1 - Guardar Nuevo:
+- Crea documento nuevo
+- Escribe datos en varias celdas
+- Click en Guardar
+- Verificar: ¿Aparece mensaje de éxito?
+- Verificar: ¿El documento aparece en la lista?
+- Resultado: ✅/❌
+
+TEST 4.2 - Cargar Documento:
+- Ve a la lista de documentos
+- Click en un documento existente
+- Verificar: ¿Se abre el editor con los datos?
+- Verificar: ¿Los datos son correctos?
+- Resultado: ✅/❌
+
+TEST 4.3 - Persistencia Real:
+- Guarda un documento con datos específicos
+- Recarga la página (F5)
+- Vuelve a abrir el documento
+- Verificar: ¿Los datos persisten después de recargar?
+- Resultado: ✅/❌
+
+TEST 4.4 - Eliminar Documento:
+- Selecciona un documento para eliminar
+- Click en eliminar, confirma
+- Verificar: ¿El documento desaparece de la lista?
+- Recarga la página
+- Verificar: ¿Sigue eliminado?
+- Resultado: ✅/❌
+
+TEST 4.5 - Búsqueda:
+- Crea 3 documentos con nombres diferentes
+- Usa el campo de búsqueda
+- Verificar: ¿Filtra correctamente por nombre?
+- Resultado: ✅/❌
+
+=== EXAMEN 5: MÚLTIPLES HOJAS ===
+
+TEST 5.1 - Crear Hoja:
+- Abre un documento
+- Click en "+" para añadir hoja
+- Verificar: ¿Se crea nueva pestaña "Hoja 2"?
+- Resultado: ✅/❌
+
+TEST 5.2 - Cambiar Entre Hojas:
+- Escribe datos en Hoja 1
+- Cambia a Hoja 2
+- Escribe datos diferentes
+- Vuelve a Hoja 1
+- Verificar: ¿Cada hoja mantiene sus datos independientes?
+- Resultado: ✅/❌
+
+TEST 5.3 - Eliminar Hoja:
+- Crea 3 hojas
+- Elimina Hoja 2
+- Verificar: ¿Se elimina correctamente?
+- Verificar: ¿Las otras hojas se mantienen?
+- Resultado: ✅/❌
+
+TEST 5.4 - Guardar Múltiples Hojas:
+- Crea documento con 3 hojas, cada una con datos
+- Guarda
+- Cierra y vuelve a abrir
+- Verificar: ¿Las 3 hojas persisten con sus datos?
+- Resultado: ✅/❌
+
+=== EXAMEN 6: IMPORTAR/EXPORTAR ===
+
+TEST 6.1 - Exportar XLSX:
+- Crea documento con datos y formato
+- Click en exportar/descargar XLSX
+- Verificar: ¿Se descarga archivo .xlsx?
+- Abre el archivo en Excel/Google Sheets
+- Verificar: ¿Los datos están correctos?
+- Resultado: ✅/❌
+
+TEST 6.2 - Exportar CSV:
+- Click en exportar CSV
+- Verificar: ¿Se descarga archivo .csv?
+- Abre el archivo
+- Verificar: ¿Los datos están correctos?
+- Resultado: ✅/❌
+
+TEST 6.3 - Importar XLSX:
+- Prepara un archivo .xlsx con datos
+- Click en importar
+- Selecciona el archivo
+- Verificar: ¿Los datos se cargan correctamente?
+- Verificar: ¿Múltiples hojas se importan?
+- Resultado: ✅/❌
+
+TEST 6.4 - Importar CSV:
+- Prepara un archivo .csv
+- Importa el archivo
+- Verificar: ¿Los datos se cargan correctamente?
+- Resultado: ✅/❌
+
+=== EXAMEN 7: PLANTILLAS ===
+
+TEST 7.1 - Listar Plantillas:
+- Busca opción de plantillas
+- Verificar: ¿Hay plantillas disponibles?
+- Verificar: ¿Están categorizadas (finanzas, negocio, etc.)?
+- Resultado: ✅/❌
+
+TEST 7.2 - Crear desde Plantilla:
+- Selecciona plantilla "Factura"
+- Verificar: ¿Se crea documento con estructura de factura?
+- Verificar: ¿Tiene los campos predefinidos?
+- Resultado: ✅/❌
+
+=== EXAMEN 8: RENDIMIENTO ===
+
+TEST 8.1 - Carga Rápida:
+- Abre la página /admin/excel
+- Mide tiempo de carga
+- Verificar: ¿Carga en menos de 2 segundos?
+- Resultado: ✅/❌
+
+TEST 8.2 - Muchos Datos:
+- Crea documento con 1000+ filas de datos
+- Navega por el documento
+- Verificar: ¿Es fluido sin lag?
+- Resultado: ✅/❌
+
+TEST 8.3 - Guardado Rápido:
+- Modifica documento grande
+- Guarda
+- Verificar: ¿Guarda en menos de 3 segundos?
+- Resultado: ✅/❌
+
+=== RESUMEN DE RESULTADOS ===
+
+Genera tabla resumen:
+
+| Categoría | Tests | Pasados | Fallidos | % Éxito |
+|-----------|-------|---------|----------|---------|
+| Toolbar/Formato | 7 | ? | ? | ?% |
+| Streaming | 3 | ? | ? | ?% |
+| Comandos IA | 6 | ? | ? | ?% |
+| Persistencia | 5 | ? | ? | ?% |
+| Múltiples Hojas | 4 | ? | ? | ?% |
+| Import/Export | 4 | ? | ? | ?% |
+| Plantillas | 2 | ? | ? | ?% |
+| Rendimiento | 3 | ? | ? | ?% |
+| **TOTAL** | **34** | ? | ? | ?% |
+
+Para cada test fallido, indicar:
+- Qué falló exactamente
+- Error mostrado (si hay)
+- Comportamiento esperado vs actual

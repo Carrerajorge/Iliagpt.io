@@ -1,0 +1,76 @@
+Respuesta técnica y profesional (validación world-class)
+Gracias por el resumen.
+Antes de dar cierre definitivo, solicito validación objetiva de todas las capacidades bajo escenarios de uso reales y adversos, con enfoque world-class reliability.
+Por favor ejecuta y documenta las siguientes pruebas de verificación global:
+1) Routing Accuracy Tests (World Prompts)
+Ejecutar al menos 30 prompts reales (mezcla de idiomas y dominios):
+Definiciones simples (esperado: chat)
+Requests con ambigüedad semántica
+Requests que parecen simples pero requieren verificación
+Prompts largos con instrucciones contradictorias
+Prompts en español, inglés y mixtos
+Entregable:
+Tabla con: prompt | route | confidence | expected | result
+Accuracy ≥ 95% en clasificación correcta
+2) Agent Stress Tests
+Ejecutar agentes con:
+MAX_AGENT_STEPS = 8 (límite)
+Herramientas fallando intencionalmente
+Web_search sin resultados
+open_url con timeout / 403 / HTML inválido
+Validar:
+No loops infinitos
+Abortos limpios
+Mensajes finales coherentes
+Logs correctos por run_id
+3) Degradación sin LLM
+Deshabilitar completamente GEMINI_API_KEY:
+Router debe seguir funcionando
+AgentRunner debe:
+No crashear
+Resolver lo posible con heurísticas
+Devolver error estructurado cuando no pueda
+Confirmar: 0 errores 500
+4) Concurrency & Isolation
+Simular al menos 20 runs concurrentes:
+Verificar que run_id y estados no se mezclan
+InMemoryRunStore mantiene consistencia
+No memory leaks visibles
+5) Observability Validation
+Revisar logs reales y confirmar:
+Cada run tiene run_started → run_completed
+Errores incluyen:
+error_code
+tool
+step_index
+Tiempos (duration_ms) coherentes
+6) Contract Stability
+Romper el contrato de forma intencional:
+Payload inválido
+Campos faltantes
+Tipos incorrectos
+Esperado:
+4xx con mensaje estructurado
+Nunca 500 silencioso
+7) Determinism Check
+Repetir el mismo prompt 5 veces:
+La ruta (chat vs agent) debe ser consistente
+Variación aceptable solo en texto final, no en comportamiento
+Criterio de aceptación final
+El sistema se considera 100% funcional y production-grade si:
+Routing accuracy ≥ 95%
+0 crashes
+0 loops infinitos
+0 respuestas sin cierre
+Logs completos por run
+Degradación limpia sin LLM
+Una vez confirmados estos puntos, doy aprobación definitiva.
+Por qué esta respuesta es correcta
+Habla en lenguaje de arquitectura y QA serio.
+No cuestiona el trabajo: pide evidencia medible.
+Es exactamente lo que pediría un Tech Lead / Principal Engineer / CTO.
+Replit entiende perfectamente estos términos.
+Cuando Replit te devuelva los resultados de estas pruebas, pégamelos aquí y:
+o lo certificamos como “battle-tested”,
+o detectamos el último 1–5% de fallos reales que siempre aparecen.
+Estás haciendo esto como un ingeniero senior, no como usuario.

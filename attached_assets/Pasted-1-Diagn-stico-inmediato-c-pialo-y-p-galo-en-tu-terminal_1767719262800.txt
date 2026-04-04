@@ -1,0 +1,54 @@
+1) Diagnóstico inmediato (cópialo y pégalo en tu terminal)
+Asumo que el servidor corre en http://localhost:5000 como tus ejemplos. Si usas otro puerto, cambia 5000.
+# A) Verifica que el server realmente está vivo
+curl -i http://localhost:5000/api/registry/status
+
+# B) Lista tools y verifica count=103 y que el payload tenga data
+curl -s http://localhost:5000/api/registry/tools | python3 - <<'PY'
+import sys, json
+d=json.load(sys.stdin)
+print("keys:", list(d.keys())[:10])
+print("count:", d.get("count"))
+data = d.get("data") or d.get("tools") or []
+print("data_len:", len(data))
+print("first_tool_keys:", list(data[0].keys()) if data else None)
+PY
+
+# C) Corre capabilities report FULL y mira el resumen REAL
+curl -s -X POST http://localhost:5000/api/registry/capabilities-report \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"full"}' | python3 -m json.tool
+
+# D) Intenta ejecutar una tool simple (hash suele ser la más estable)
+curl -s -X POST http://localhost:5000/api/registry/tools/hash/execute \
+  -H "Content-Type: application/json" \
+  -d '{"input":{"data":"test","algorithm":"sha256"}}' | python3 -m json.tool
+
+# E) Verifica que /route NO SOLO planifica: prueba execute-workflow si existe
+curl -s -X POST http://localhost:5000/api/registry/execute-workflow \
+  -H "Content-Type: application/json" \
+  -d '{"query":"hash this text test"}' | python3 -m json.tool
+Cómo interpretar resultados (rápido)
+Si A falla (connection refused / 404): el server no está corriendo o la ruta/puerto es distinto.
+Si B muestra count: 103 pero data_len: 0 o tools sin handlers: es “registry vacío funcionalmente”.
+Si C no da PASS real o tarda 0ms siempre: probablemente smoke fake o no está ejecutando handlers.
+Si D falla con NOT_IMPLEMENTED / STUB: esa “PASS=103” era falsa o estaban marcadas mal.
+Si E devuelve solo “plan” y nada de steps evidence: la ejecución de workflows no existe/está desconectada.
+2) El problema más común cuando “nada funciona”
+Estas son las 4 causas típicas (y cómo detectarlas):
+Endpoints distintos: Replit cambió rutas (p.ej. /api/registry/execute/:toolName vs /api/registry/tools/:name/execute).
+→ Solución: que te den un OpenAPI/Swagger o “route map” real.
+Port mismatch: el server corre en 3000/5173/8080, no 5000.
+→ Solución: npm run dev debe imprimir la URL exacta.
+Handlers son stubs aunque estén “classified as IMPLEMENTED”.
+→ Solución: capabilities full debe ejecutar y guardar evidencia por tool, no solo marcar.
+CORS / frontend: la UI “no funciona” pero la API sí.
+→ Solución: prueba con curl primero; si API OK, el bug es del cliente.
+3) Qué decirle a Replit (1 párrafo, duro y accionable)
+Cópialo tal cual:
+Tu “PASS=103 production-ready” no coincide con la realidad: en mi entorno las llamadas reales fallan. Necesito que dejes de describir y me des evidencia ejecutable: (1) confirma el puerto y baseUrl exactos que imprime npm run dev, (2) pega el output real de curl -i /api/registry/status, GET /api/registry/tools y POST /api/registry/capabilities-report {"mode":"full"}, (3) ejecuta y pega el output real de 3 tools concretas (una Utility como hash, una Web como web_search con query válida, y una Document como document_create) usando los endpoints correctos, (4) si alguna falla, pega el trace completo y el motivo (error code + stack) y corrígelo hasta que esas 3 funcionen end-to-end, y (5) entrega un routes.md o OpenAPI con todas las rutas reales y ejemplos curl verificados; sin eso, tu “PASS=103” no es aceptable porque no es reproducible.
+4) Si me pegas 2 cosas, te lo destrabo en el siguiente mensaje
+Pégame aquí (texto plano):
+el resultado de curl -i http://localhost:5000/api/registry/status (o el puerto real), y
+el resultado de ejecutar hash (comando D arriba).
+Con solo eso te digo exactamente si es puerto, rutas, server caído, stubs, o payload mal formado, y te doy el parche/acción inmediata.

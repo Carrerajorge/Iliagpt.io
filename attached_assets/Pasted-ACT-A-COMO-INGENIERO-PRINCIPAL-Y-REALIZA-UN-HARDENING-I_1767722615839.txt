@@ -1,0 +1,111 @@
+ACTÚA COMO INGENIERO PRINCIPAL Y REALIZA UN “HARDENING + INTEGRATION PASS” DEL SISTEMA MULTI-AGENTE (10 AGENTES, 103 TOOLS, 19 CATEGORÍAS). PROBLEMA: el sistema pasa checks sintéticos pero en uso real muchas tareas no se completan o quedan en “Ejecutando…”, y aunque a veces hay steps completados, no hay resultado final/artifacts/feedback en tiempo real. OBJETIVO: convertir el sistema en un motor de ejecución robusto, composable y observable que complete tareas reales (web, docs, data, generación, diagramas, APIs) y SIEMPRE cierre con COMPLETED/FAILED, con UI minimalista y progreso real.
+
+0) DEFINICIÓN DE “DONE”
+- Cualquier request debe terminar en <= T (configurable) con estado final: COMPLETED | FAILED | CANCELED.
+- “DONE” significa: (a) respuesta final útil (finalText) y/o (b) artifacts reales (archivos) y/o (c) resultados estructurados verificables por schema; y SIEMPRE eventos de cierre (run_completed o run_failed).
+- Prohibido: “loading infinito”, “agent_execution completed” sin outputs, “success=true” sin evidencia.
+
+1) ARQUITECTURA DE EJECUCIÓN (RUN ENGINE)
+Implementa un motor de ejecución con:
+- State machine global: QUEUED → RUNNING → COMPLETED/FAILED/CANCELED.
+- Step machine: PENDING → RUNNING → SUCCESS/ERROR/SKIPPED.
+- Persistencia por runId: snapshot + event log + evidence.
+- Watchdog de progreso: si no hay evento en N segundos, dispara TIMEOUT_ERROR, cancela steps, emite run_failed.
+- Cancelación real: endpoint cancel que interrumpe tool calls (AbortController) y marca run_canceled.
+
+2) EVENT STREAMING + UI MINIMALISTA (TIEMPO REAL)
+- Implementa SSE (preferido) o WebSocket:
+  GET /api/registry/workflows/:runId/events  (stream)
+  GET /api/registry/workflows/:runId         (snapshot)
+  POST /api/registry/execute-workflow        (crea run, responde 202 con runId)
+  POST /api/registry/workflows/:runId/cancel
+- Eventos tipados/versionados:
+  run_started, intent_classified, plan_created, step_started, tool_called, tool_output, schema_validated, artifact_created, step_completed, replan_triggered, run_completed, run_failed, heartbeat.
+- UI: render minimalista por eventos: lista compacta de steps (iconos + estado), barra de progreso, “último evento recibido” con timestamp, sección Artifacts (ver/descargar), botón cancel.
+- Si el stream se cae: reconexión con backoff, muestra alerta “stream down”, NO quedar cargando sin explicación.
+
+3) ROUTER/ORCHESTRATOR (INTENT → PLAN → EXECUTE) CON VALIDACIÓN
+- Separar 3 fases:
+  A) Intent classification (rules-first + LLM fallback)
+  B) Planning (DAG de steps con dependencias, inputs/outputs)
+  C) Execution (runner) con evidencia
+- Implementa “plan validator” duro:
+  - Si el intent requiere artifact (image/pdf/docx/xlsx/pptx) y el plan no incluye tool generadora → PLANNING_ERROR (fallo inmediato, no ejecutar).
+  - Si el intent requiere web → debe incluir web_fetch/browse/search + parse/extract.
+  - Si el intent requiere documento → debe incluir doc_ingest + extract + analyze.
+- Implementa “tool capability constraints”:
+  - Cada tool declara capabilities (ioTypes, artifactTypes, externalDeps, supportsStreaming, deterministic, cost).
+  - El planner solo puede encadenar tools si outputSchema de una satisface inputSchema de la siguiente (o hay mapper tool).
+- Implementa “tool mapper/adapter”:
+  - Si schemas no calzan, inserta automáticamente tools de transformación (json_transform, text_extract, table_normalize, etc.) o falla con MAPPING_ERROR.
+
+4) DOCUMENT INTELLIGENCE (DOCS MULTI-TIPO)
+El sistema debe analizar y extraer de:
+- PDF, DOCX, PPTX, XLSX, TXT, HTML, CSV, JSON (mínimo).
+Implementa pipeline:
+  ingest_document -> detect_type -> extract_text/tables/images -> normalize -> summarize/qa -> produce_output (json + optional report)
+Requisitos:
+- Para PDFs: extracción de tablas y metadatos; si hay imágenes, generar thumbnails o export.
+- Para XLSX/CSV: inferir esquema, stats, detección de outliers, resumen ejecutivo.
+- Para PPTX: extraer títulos, bullets, notas, y estructura de slides.
+- Entrega evidence: cantidad de páginas, tablas detectadas, filas/columnas, errores de extracción, etc.
+- Output estructurado validado por schema.
+
+5) WEB/BROWSER REAL (NO MOCKS)
+- web_search + browse_url/fetch_url + extract_content + cite_sources.
+- Debe devolver URLs reales y contenido parseado (no solo links).
+- Rate limits, retries y timeouts reales.
+- Modo sandbox si falta conexión externa, pero debe etiquetarse como SANDBOX y reflejarse en evidence.
+
+6) ARTIFACTS (ARCHIVOS) Y CONTRACTOS
+- Cualquier creación: imagen/png, pdf, docx, xlsx, pptx debe generar artifact en artifacts/ con:
+  {artifactId, type, mimeType, path, sizeBytes, sha256, createdAt, previewUrl?}
+- Endpoints:
+  GET /api/artifacts/:artifactId/metadata
+  GET /api/artifacts/:artifactId/download
+  GET /api/artifacts/:artifactId/preview (si aplica)
+- Prohibido “success” sin artifactPath cuando el intent requiere archivo.
+
+7) QA/SECURITY/RELIABILITY (GUARDRAILS DE PRODUCCIÓN)
+- Error normalization universal: VALIDATION_ERROR, TIMEOUT_ERROR, RATE_LIMIT_ERROR, NOT_FOUND_ERROR, DEPENDENCY_ERROR, PLANNING_ERROR, MAPPING_ERROR, EXECUTION_ERROR.
+- Tracing correlacionado: requestId + runId + stepId + toolName en todos los logs.
+- Circuit breaker por tools externas.
+- Sanitización de inputs (URLs, paths) y prevención de path traversal.
+- Límite de tamaño de artifacts y limpieza (retention policy).
+- Auditoría: log de herramientas invocadas y artifacts generados.
+
+8) TESTING: DE “UNIT PASS” A “PRODUCTION PASS”
+Crea un “Acceptance Test Pack” ejecutable que falle si algo se cuelga:
+- npm run acceptance
+Incluye al menos 20 pruebas E2E reales:
+A) Generación de artifacts: image/png, pdf, docx, xlsx, pptx (5 tests)
+B) Doc analysis: PDF + DOCX + XLSX + PPTX + HTML (5 tests) con asserts de evidence (tablas detectadas, etc.)
+C) Web: search + fetch + extract + summary con URLs reales (3 tests)
+D) Workflow: DAG con dependencias y replan por fallo (3 tests)
+E) Robustez: cancelación, timeout watchdog, caída de SSE y reconexión (4 tests)
+Criterio: 0 hangs, 0 infinite loading, exit code !=0 si falta run_completed/run_failed.
+
+9) PRIMERA DEMO OBLIGATORIA (END-TO-END REAL)
+Entrega una demo reproducible (scripts + curl) para cada clase de tarea:
+- “Analiza este PDF y extrae tablas”
+- “Busca en internet X y resume con fuentes”
+- “Crea una presentación PPTX de 5 slides”
+- “Crea un Excel con tabla y estadísticas”
+- “Crea un DOCX con secciones”
+- “Genera una imagen”
+Cada demo debe producir artifacts + finalText + evidence + run_completed.
+
+10) ENTREGABLES Y EVIDENCIA
+- docs/execution.md: estados, eventos, contracts, timeouts, cancel.
+- docs/api.md: endpoints, ejemplos curl.
+- Reporte de compatibilidad: matrix de tools (inputs/outputs/artifacts) + qué agentes las usan.
+- Video/captura: UI minimalista mostrando progreso real y artifacts.
+- Logs de ejemplo con runId correlacionado.
+- Si algo falla, NO maquilles PASS: devuelve FAILED con error normalizado y evidencia.
+
+EMPIEZA IMPLEMENTANDO:
+(1) RUN ENGINE + SSE + watchdog + run_completed/run_failed obligatorio,
+(2) plan validator (artifact-required),
+(3) document pipeline (pdf/docx/xlsx/pptx),
+(4) web pipeline (search+fetch+extract),
+(5) acceptance pack (20 E2E) y CI gate.

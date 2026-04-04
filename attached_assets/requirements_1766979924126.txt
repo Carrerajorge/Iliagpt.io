@@ -1,0 +1,14 @@
+# Dependencias para xAI Grok Integration
+# ========================================
+
+# SDK de OpenAI (compatible con xAI API)
+openai>=1.0.0
+
+# Para requests HTTP alternativo
+requests>=2.28.0
+
+# Manejo de variables de entorno
+python-dotenv>=1.0.0
+
+# Tipado mejorado
+typing-extensions>=4.5.0

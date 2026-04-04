@@ -1,0 +1,324 @@
+# src/core/analysis/tool_router.py
+
+from typing import Dict, List, Optional, Any, Tuple
+import numpy as np
+from pydantic import BaseModel
+from src.core.models.prompt_analysis import (
+    Intent, IntentCategory, Entity, EntityType, ToolCandidate
+)
+from src.core.tool_registry import ToolRegistry
+from src.core.tools.base import BaseTool, ToolCategory
+from src.core.tools.embeddings import EmbeddingsTool
+
+
+class ToolCapability(BaseModel):
+    """Descripción de capacidades de una herramienta."""
+    tool_name: str
+    description: str
+    input_types: List[EntityType] = []
+    output_types: List[str] = []
+    intent_affinity: Dict[IntentCategory, float] = {}
+    keywords: List[str] = []
+    embedding: Optional[List[float]] = None
+
+
+class ToolRouter:
+    """
+    Enrutador de herramientas basado en intenciones y entidades.
+    
+    Estrategias de matching:
+    1. Intent-based affinity (qué categoría de intención soporta)
+    2. Entity-based matching (qué tipos de entrada/salida maneja)
+    3. Semantic similarity (embedding de descripción vs prompt)
+    4. Keyword matching (palabras clave en prompt)
+    """
+    
+    # Afinidad predefinida: IntentCategory -> [herramientas]
+    INTENT_TO_TOOLS: Dict[IntentCategory, List[str]] = {
+        IntentCategory.QUERY: [
+            "search_web", "search_semantic", "memory_retrieve", 
+            "fetch_url", "file_read"
+        ],
+        IntentCategory.COMMAND: [
+            "shell", "code_execute", "file_manage", "email_manage",
+            "calendar_manage", "api_call"
+        ],
+        IntentCategory.CREATION: [
+            "file_write", "doc_create", "slides_create", "spreadsheet_create",
+            "generate_text", "generate_image", "code_generate"
+        ],
+        IntentCategory.ANALYSIS: [
+            "data_analyze", "data_visualize", "summarize", "reason",
+            "vision_analyze", "verify"
+        ],
+        IntentCategory.CODE: [
+            "code_generate", "code_execute", "code_review", "code_debug",
+            "code_test", "code_refactor", "shell", "git_manage"
+        ],
+        IntentCategory.RESEARCH: [
+            "search_web", "fetch_url", "research_deep", "summarize",
+            "memory_store", "verify"
+        ],
+        IntentCategory.AUTOMATION: [
+            "schedule_cron", "schedule_once", "trigger_event", 
+            "workflow", "queue_manage", "webhook_send"
+        ],
+        IntentCategory.CONVERSATION: [
+            "message", "clarify", "summarize", "explain"
+        ],
+        IntentCategory.CLARIFICATION: [
+            "clarify", "context_manage"
+        ],
+    }
+    
+    # Mapeo de EntityType a herramientas relevantes
+    ENTITY_TO_TOOLS: Dict[EntityType, List[str]] = {
+        EntityType.FILE_PATH: ["file_read", "file_write", "file_manage", "file_convert"],
+        EntityType.URL: ["fetch_url", "browser_navigate", "search_web"],
+        EntityType.CODE_SNIPPET: ["code_execute", "code_review", "code_debug"],
+        EntityType.DATE_TIME: ["schedule_cron", "schedule_once", "calendar_manage"],
+        EntityType.PROGRAMMING_LANGUAGE: ["code_generate", "code_execute", "code_review"],
+        EntityType.DATA_FORMAT: ["file_convert", "data_transform", "file_read"],
+    }
+    
+    def __init__(
+        self,
+        tool_registry: ToolRegistry,
+        embeddings_tool: EmbeddingsTool,
+        similarity_threshold: float = 0.5
+    ):
+        self.registry = tool_registry
+        self.embeddings = embeddings_tool
+        self.similarity_threshold = similarity_threshold
+        self._tool_capabilities: Dict[str, ToolCapability] = {}
+        self._tool_embeddings: Dict[str, np.ndarray] = {}
+        self._initialized = False
+    
+    async def initialize(self):
+        """Inicializa capacidades y embeddings de herramientas."""
+        if self._initialized:
+            return
+        
+        tools = self.registry.list_tools()
+        
+        for tool_info in tools:
+            tool_name = tool_info["name"]
+            
+            # Obtener herramienta completa
+            tool = await self.registry.get(tool_name)
+            
+            # Construir capability
+            capability = ToolCapability(
+                tool_name=tool_name,
+                description=tool.description,
+                keywords=self._extract_keywords(tool.description),
+                intent_affinity=self._compute_intent_affinity(tool_name, tool.category)
+            )
+            
+            # Generar embedding de descripción
+            embedding = await self.embeddings.generate(
+                f"{tool_name}: {tool.description}"
+            )
+            
+            self._tool_capabilities[tool_name] = capability
+            self._tool_embeddings[tool_name] = np.array(embedding)
+        
+        self._initialized = True
+    
+    async def route(
+        self,
+        prompt: str,
+        intents: List[Intent],
+        entities: List[Entity],
+        max_candidates: int = 5
+    ) -> List[ToolCandidate]:
+        """
+        Determina las herramientas más apropiadas para el prompt.
+        
+        Args:
+            prompt: Texto del usuario
+            intents: Intenciones clasificadas
+            entities: Entidades extraídas
+            max_candidates: Número máximo de candidatos
+            
+        Returns:
+            Lista de herramientas candidatas ordenadas por relevancia
+        """
+        await self.initialize()
+        
+        candidates: Dict[str, ToolCandidate] = {}
+        
+        # 1. Scoring por intención
+        intent_scores = self._score_by_intent(intents)
+        
+        # 2. Scoring por entidades
+        entity_scores = self._score_by_entities(entities)
+        
+        # 3. Scoring semántico
+        semantic_scores = await self._score_by_semantics(prompt)
+        
+        # 4. Scoring por keywords
+        keyword_scores = self._score_by_keywords(prompt)
+        
+        # 5. Combinar scores
+        all_tools = set(intent_scores.keys()) | set(entity_scores.keys()) | \
+                    set(semantic_scores.keys()) | set(keyword_scores.keys())
+        
+        for tool_name in all_tools:
+            # Pesos de combinación
+            intent_weight = 0.35
+            entity_weight = 0.25
+            semantic_weight = 0.25
+            keyword_weight = 0.15
+            
+            combined_score = (
+                intent_scores.get(tool_name, 0) * intent_weight +
+                entity_scores.get(tool_name, 0) * entity_weight +
+                semantic_scores.get(tool_name, 0) * semantic_weight +
+                keyword_scores.get(tool_name, 0) * keyword_weight
+            )
+            
+            if combined_score > 0.1:  # Threshold mínimo
+                candidates[tool_name] = ToolCandidate(
+                    tool_name=tool_name,
+                    relevance_score=combined_score,
+                    capability_match=semantic_scores.get(tool_name, 0),
+                    dependencies=self._get_dependencies(tool_name)
+                )
+        
+        # 6. Ordenar y retornar top candidatos
+        sorted_candidates = sorted(
+            candidates.values(),
+            key=lambda c: c.relevance_score,
+            reverse=True
+        )
+        
+        return sorted_candidates[:max_candidates]
+    
+    def _score_by_intent(self, intents: List[Intent]) -> Dict[str, float]:
+        """Calcula scores de herramientas basado en intenciones."""
+        scores: Dict[str, float] = {}
+        
+        for intent in intents:
+            tools = self.INTENT_TO_TOOLS.get(intent.category, [])
+            for tool in tools:
+                if tool not in scores:
+                    scores[tool] = 0
+                # Ponderar por confianza de la intención
+                scores[tool] += intent.confidence
+        
+        # Normalizar
+        if scores:
+            max_score = max(scores.values())
+            scores = {k: v / max_score for k, v in scores.items()}
+        
+        return scores
+    
+    def _score_by_entities(self, entities: List[Entity]) -> Dict[str, float]:
+        """Calcula scores basado en entidades detectadas."""
+        scores: Dict[str, float] = {}
+        
+        for entity in entities:
+            tools = self.ENTITY_TO_TOOLS.get(entity.type, [])
+            for tool in tools:
+                if tool not in scores:
+                    scores[tool] = 0
+                scores[tool] += entity.confidence
+        
+        # Normalizar
+        if scores:
+            max_score = max(scores.values())
+            scores = {k: v / max_score for k, v in scores.items()}
+        
+        return scores
+    
+    async def _score_by_semantics(self, prompt: str) -> Dict[str, float]:
+        """Calcula similitud semántica entre prompt y herramientas."""
+        scores: Dict[str, float] = {}
+        
+        prompt_embedding = np.array(await self.embeddings.generate(prompt))
+        
+        for tool_name, tool_embedding in self._tool_embeddings.items():
+            similarity = self._cosine_similarity(prompt_embedding, tool_embedding)
+            # Convertir de [-1, 1] a [0, 1]
+            normalized_sim = (similarity + 1) / 2
+            
+            if normalized_sim > self.similarity_threshold:
+                scores[tool_name] = normalized_sim
+        
+        return scores
+    
+    def _score_by_keywords(self, prompt: str) -> Dict[str, float]:
+        """Calcula scores basado en coincidencia de keywords."""
+        scores: Dict[str, float] = {}
+        prompt_lower = prompt.lower()
+        
+        for tool_name, capability in self._tool_capabilities.items():
+            matches = sum(
+                1 for keyword in capability.keywords
+                if keyword.lower() in prompt_lower
+            )
+            if matches > 0:
+                # Normalizar por número de keywords
+                scores[tool_name] = min(matches / len(capability.keywords), 1.0)
+        
+        return scores
+    
+    def _compute_intent_affinity(
+        self, 
+        tool_name: str, 
+        category: ToolCategory
+    ) -> Dict[IntentCategory, float]:
+        """Calcula afinidad de herramienta con categorías de intención."""
+        affinity = {}
+        
+        for intent_cat, tools in self.INTENT_TO_TOOLS.items():
+            if tool_name in tools:
+                affinity[intent_cat] = 1.0
+            else:
+                # Afinidad parcial basada en categoría de herramienta
+                category_mapping = {
+                    ToolCategory.ORCHESTRATION: [IntentCategory.COMMAND],
+                    ToolCategory.MEMORY: [IntentCategory.QUERY, IntentCategory.RESEARCH],
+                    ToolCategory.REASONING: [IntentCategory.ANALYSIS, IntentCategory.QUERY],
+                    ToolCategory.COMMUNICATION: [IntentCategory.CONVERSATION],
+                    ToolCategory.SYSTEM: [IntentCategory.COMMAND, IntentCategory.CODE],
+                    ToolCategory.FILES: [IntentCategory.CREATION, IntentCategory.COMMAND],
+                    ToolCategory.RESEARCH: [IntentCategory.RESEARCH, IntentCategory.QUERY],
+                    ToolCategory.WEB: [IntentCategory.RESEARCH, IntentCategory.AUTOMATION],
+                    ToolCategory.GENERATION: [IntentCategory.CREATION],
+                    ToolCategory.DATA: [IntentCategory.ANALYSIS],
+                    ToolCategory.AUTOMATION: [IntentCategory.AUTOMATION],
+                }
+                
+                related_intents = category_mapping.get(category, [])
+                if intent_cat in related_intents:
+                    affinity[intent_cat] = 0.5
+        
+        return affinity
+    
+    def _extract_keywords(self, description: str) -> List[str]:
+        """Extrae keywords de la descripción de una herramienta."""
+        # Stopwords básicas
+        stopwords = {
+            "de", "la", "el", "en", "y", "a", "para", "con", "que", "del",
+            "the", "a", "an", "and", "or", "for", "with", "to", "of", "in"
+        }
+        
+        words = description.lower().split()
+        keywords = [w for w in words if len(w) > 3 and w not in stopwords]
+        
+        return list(set(keywords))
+    
+    def _get_dependencies(self, tool_name: str) -> List[str]:
+        """Obtiene dependencias de una herramienta."""
+        try:
+            tool = self.registry._tools.get(tool_name)
+            return tool.dependencies if tool else []
+        except Exception:
+            return []
+    
+    @staticmethod
+    def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+        """Similitud coseno entre vectores."""
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))

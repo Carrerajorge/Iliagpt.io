@@ -1,0 +1,1533 @@
+// ============================================================
+// SISTEMA DE PROCESAMIENTO EN SEGUNDO PLANO - NIVEL EMPRESARIAL
+// ============================================================
+
+// ==========================================
+// PARTE 1: WEB WORKER (Código embebido)
+// ==========================================
+
+const WORKER_CODE = `
+// === ESTADO GLOBAL DEL WORKER ===
+let state = {
+  isProcessing: false,
+  isPaused: false,
+  taskQueue: [],
+  completedTasks: [],
+  currentTask: null,
+  startTime: null,
+  processedCount: 0,
+  totalCount: 0
+};
+
+// === LISTENER DE MENSAJES ===
+self.onmessage = function(event) {
+  const { type, payload, id } = event.data;
+  
+  switch(type) {
+    case 'INIT':
+      handleInit(payload);
+      break;
+    case 'START':
+      handleStart(payload);
+      break;
+    case 'ADD_TASKS':
+      handleAddTasks(payload);
+      break;
+    case 'PAUSE':
+      handlePause();
+      break;
+    case 'RESUME':
+      handleResume();
+      break;
+    case 'CANCEL':
+      handleCancel();
+      break;
+    case 'GET_STATUS':
+      sendStatus();
+      break;
+    case 'PING':
+      self.postMessage({ type: 'PONG', id });
+      break;
+  }
+};
+
+// === HANDLERS ===
+function handleInit(config) {
+  state = { ...state, ...config };
+  self.postMessage({ type: 'INITIALIZED', payload: { ready: true } });
+}
+
+function handleStart(tasks) {
+  if (state.isProcessing) {
+    self.postMessage({ type: 'ERROR', payload: { message: 'Already processing' } });
+    return;
+  }
+  
+  state.taskQueue = Array.isArray(tasks) ? [...tasks] : [];
+  state.totalCount = state.taskQueue.length;
+  state.processedCount = 0;
+  state.completedTasks = [];
+  state.isProcessing = true;
+  state.isPaused = false;
+  state.startTime = Date.now();
+  
+  self.postMessage({ 
+    type: 'STARTED', 
+    payload: { 
+      total: state.totalCount,
+      startTime: state.startTime 
+    } 
+  });
+  
+  // Iniciar loop de procesamiento
+  processLoop();
+}
+
+function handleAddTasks(newTasks) {
+  if (!Array.isArray(newTasks)) return;
+  
+  state.taskQueue.push(...newTasks);
+  state.totalCount += newTasks.length;
+  
+  self.postMessage({ 
+    type: 'TASKS_ADDED', 
+    payload: { 
+      added: newTasks.length,
+      total: state.totalCount,
+      pending: state.taskQueue.length
+    } 
+  });
+  
+  // Si estaba idle, reiniciar procesamiento
+  if (state.isProcessing && !state.isPaused && !state.currentTask) {
+    processLoop();
+  }
+}
+
+function handlePause() {
+  state.isPaused = true;
+  self.postMessage({ type: 'PAUSED', payload: { pending: state.taskQueue.length } });
+}
+
+function handleResume() {
+  if (!state.isProcessing) return;
+  
+  state.isPaused = false;
+  self.postMessage({ type: 'RESUMED' });
+  processLoop();
+}
+
+function handleCancel() {
+  state.isProcessing = false;
+  state.isPaused = false;
+  state.taskQueue = [];
+  state.currentTask = null;
+  
+  self.postMessage({ 
+    type: 'CANCELLED', 
+    payload: { 
+      processed: state.processedCount,
+      cancelled: state.totalCount - state.processedCount 
+    } 
+  });
+}
+
+function sendStatus() {
+  const elapsed = state.startTime ? Date.now() - state.startTime : 0;
+  const rate = elapsed > 0 ? (state.processedCount / elapsed) * 1000 : 0;
+  const eta = rate > 0 ? (state.taskQueue.length / rate) * 1000 : 0;
+  
+  self.postMessage({
+    type: 'STATUS',
+    payload: {
+      isProcessing: state.isProcessing,
+      isPaused: state.isPaused,
+      processed: state.processedCount,
+      total: state.totalCount,
+      pending: state.taskQueue.length,
+      elapsed,
+      rate: Math.round(rate * 100) / 100,
+      eta: Math.round(eta)
+    }
+  });
+}
+
+// === LOOP DE PROCESAMIENTO (Sin setTimeout para evitar throttling) ===
+function processLoop() {
+  // Procesar en batches para mejor rendimiento
+  const BATCH_SIZE = 50;
+  let batchCount = 0;
+  
+  while (
+    state.isProcessing && 
+    !state.isPaused && 
+    state.taskQueue.length > 0 &&
+    batchCount < BATCH_SIZE
+  ) {
+    state.currentTask = state.taskQueue.shift();
+    
+    try {
+      const result = executeTask(state.currentTask);
+      state.completedTasks.push(result);
+      state.processedCount++;
+      batchCount++;
+      
+      // Enviar resultado individual
+      self.postMessage({
+        type: 'TASK_COMPLETED',
+        payload: {
+          task: state.currentTask,
+          result,
+          progress: {
+            current: state.processedCount,
+            total: state.totalCount,
+            percent: Math.round((state.processedCount / state.totalCount) * 100)
+          }
+        }
+      });
+      
+    } catch (error) {
+      self.postMessage({
+        type: 'TASK_ERROR',
+        payload: {
+          task: state.currentTask,
+          error: error.message
+        }
+      });
+    }
+    
+    state.currentTask = null;
+  }
+  
+  // Si hay más tareas, programar siguiente batch
+  if (state.isProcessing && !state.isPaused && state.taskQueue.length > 0) {
+    // Usar MessageChannel para evitar throttling (más rápido que setTimeout)
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => processLoop();
+    channel.port2.postMessage('');
+  } else if (state.taskQueue.length === 0 && state.isProcessing) {
+    // Procesamiento completado
+    const elapsed = Date.now() - state.startTime;
+    
+    self.postMessage({
+      type: 'COMPLETED',
+      payload: {
+        total: state.processedCount,
+        elapsed,
+        rate: Math.round((state.processedCount / elapsed) * 1000 * 100) / 100,
+        results: state.completedTasks
+      }
+    });
+    
+    state.isProcessing = false;
+  }
+}
+
+// === EJECUTOR DE TAREAS ===
+function executeTask(task) {
+  if (!task || !task.action) {
+    throw new Error('Invalid task');
+  }
+  
+  switch(task.action) {
+    case 'INSERT_CELL':
+      return {
+        type: 'CELL_UPDATE',
+        row: task.row,
+        col: task.col,
+        value: task.value,
+        format: task.format || {}
+      };
+    
+    case 'EVALUATE_FORMULA':
+      const evaluated = evaluateFormula(task.formula, task.context || {});
+      return {
+        type: 'CELL_UPDATE',
+        row: task.row,
+        col: task.col,
+        value: evaluated,
+        formula: task.formula
+      };
+    
+    case 'BULK_INSERT':
+      return {
+        type: 'BULK_UPDATE',
+        cells: task.cells.map(cell => ({
+          row: cell.row,
+          col: cell.col,
+          value: cell.value
+        }))
+      };
+    
+    case 'CREATE_SHEET':
+      return {
+        type: 'SHEET_CREATED',
+        sheetId: task.sheetId || 'sheet_' + Date.now(),
+        name: task.name
+      };
+    
+    case 'GENERATE_CHART':
+      return {
+        type: 'CHART_CREATED',
+        chartId: 'chart_' + Date.now(),
+        chartType: task.chartType,
+        dataRange: task.dataRange,
+        options: task.options
+      };
+    
+    case 'APPLY_FORMAT':
+      return {
+        type: 'FORMAT_APPLIED',
+        range: task.range,
+        format: task.format
+      };
+    
+    default:
+      return { type: 'UNKNOWN', task };
+  }
+}
+
+// === EVALUADOR DE FÓRMULAS ===
+function evaluateFormula(formula, context) {
+  if (!formula || typeof formula !== 'string') return formula;
+  if (!formula.startsWith('=')) return formula;
+  
+  const expr = formula.substring(1).toUpperCase().trim();
+  const gridData = context.gridData || {};
+  
+  try {
+    // SUM
+    if (expr.startsWith('SUM(')) {
+      const rangeMatch = expr.match(/SUM\\(([^)]+)\\)/);
+      if (rangeMatch) {
+        const values = getRangeValues(rangeMatch[1], gridData);
+        return values.reduce((sum, val) => sum + (parseFloat(val) || 0), 0);
+      }
+    }
+    
+    // AVERAGE
+    if (expr.startsWith('AVERAGE(')) {
+      const rangeMatch = expr.match(/AVERAGE\\(([^)]+)\\)/);
+      if (rangeMatch) {
+        const values = getRangeValues(rangeMatch[1], gridData);
+        const nums = values.filter(v => !isNaN(parseFloat(v))).map(v => parseFloat(v));
+        return nums.length > 0 ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
+      }
+    }
+    
+    // COUNT
+    if (expr.startsWith('COUNT(')) {
+      const rangeMatch = expr.match(/COUNT\\(([^)]+)\\)/);
+      if (rangeMatch) {
+        const values = getRangeValues(rangeMatch[1], gridData);
+        return values.filter(v => !isNaN(parseFloat(v))).length;
+      }
+    }
+    
+    // MAX
+    if (expr.startsWith('MAX(')) {
+      const rangeMatch = expr.match(/MAX\\(([^)]+)\\)/);
+      if (rangeMatch) {
+        const values = getRangeValues(rangeMatch[1], gridData);
+        const nums = values.filter(v => !isNaN(parseFloat(v))).map(v => parseFloat(v));
+        return nums.length > 0 ? Math.max(...nums) : 0;
+      }
+    }
+    
+    // MIN
+    if (expr.startsWith('MIN(')) {
+      const rangeMatch = expr.match(/MIN\\(([^)]+)\\)/);
+      if (rangeMatch) {
+        const values = getRangeValues(rangeMatch[1], gridData);
+        const nums = values.filter(v => !isNaN(parseFloat(v))).map(v => parseFloat(v));
+        return nums.length > 0 ? Math.min(...nums) : 0;
+      }
+    }
+    
+    // Operación matemática simple (=A1*B1, =C2+D2, etc.)
+    const mathExpr = expr.replace(/([A-Z]+)(\\d+)/gi, (match, col, row) => {
+      const colIndex = columnToIndex(col);
+      const rowIndex = parseInt(row) - 1;
+      const key = rowIndex + ':' + colIndex;
+      const value = gridData[key];
+      return parseFloat(value) || 0;
+    });
+    
+    // Evaluar expresión matemática de forma segura
+    return safeEval(mathExpr);
+    
+  } catch (error) {
+    return '#ERROR: ' + error.message;
+  }
+}
+
+// === UTILIDADES ===
+function getRangeValues(rangeStr, gridData) {
+  const [start, end] = rangeStr.split(':');
+  if (!start) return [];
+  
+  const startRef = parseRef(start);
+  const endRef = end ? parseRef(end) : startRef;
+  
+  if (!startRef || !endRef) return [];
+  
+  const values = [];
+  for (let r = startRef.row; r <= endRef.row; r++) {
+    for (let c = startRef.col; c <= endRef.col; c++) {
+      const key = r + ':' + c;
+      if (gridData[key] !== undefined) {
+        values.push(gridData[key]);
+      }
+    }
+  }
+  return values;
+}
+
+function parseRef(ref) {
+  const match = ref.trim().match(/^([A-Z]+)(\\d+)$/i);
+  if (!match) return null;
+  return {
+    col: columnToIndex(match[1]),
+    row: parseInt(match[2]) - 1
+  };
+}
+
+function columnToIndex(col) {
+  let index = 0;
+  const upper = col.toUpperCase();
+  for (let i = 0; i < upper.length; i++) {
+    index = index * 26 + (upper.charCodeAt(i) - 64);
+  }
+  return index - 1;
+}
+
+function safeEval(expr) {
+  // Solo permitir números y operadores matemáticos básicos
+  const sanitized = expr.replace(/[^0-9+\\-*/().\\s]/g, '');
+  if (sanitized !== expr.replace(/\\s/g, '')) {
+    throw new Error('Invalid expression');
+  }
+  return Function('"use strict"; return (' + sanitized + ')')();
+}
+
+// === NOTIFICAR QUE EL WORKER ESTÁ LISTO ===
+self.postMessage({ type: 'READY', payload: { timestamp: Date.now() } });
+`;
+
+// ==========================================
+// PARTE 2: SERVICIO DE PERSISTENCIA (IndexedDB)
+// ==========================================
+
+class TaskPersistenceService {
+  constructor() {
+    this.dbName = 'ExcelBackgroundProcessing';
+    this.dbVersion = 2;
+    this.db = null;
+    this.stores = {
+      tasks: 'pendingTasks',
+      results: 'completedResults',
+      state: 'processingState'
+    };
+  }
+
+  async initialize() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(this.dbName, this.dbVersion);
+
+      request.onerror = () => reject(new Error('Failed to open IndexedDB'));
+
+      request.onsuccess = (event) => {
+        this.db = event.target.result;
+        console.log('✅ IndexedDB inicializado');
+        resolve(this.db);
+      };
+
+      request.onupgradeneeded = (event) => {
+        const db = event.target.result;
+
+        // Store para tareas pendientes
+        if (!db.objectStoreNames.contains(this.stores.tasks)) {
+          const taskStore = db.createObjectStore(this.stores.tasks, { 
+            keyPath: 'id', 
+            autoIncrement: true 
+          });
+          taskStore.createIndex('status', 'status', { unique: false });
+          taskStore.createIndex('priority', 'priority', { unique: false });
+          taskStore.createIndex('createdAt', 'createdAt', { unique: false });
+        }
+
+        // Store para resultados completados
+        if (!db.objectStoreNames.contains(this.stores.results)) {
+          const resultStore = db.createObjectStore(this.stores.results, { 
+            keyPath: 'id', 
+            autoIncrement: true 
+          });
+          resultStore.createIndex('taskId', 'taskId', { unique: false });
+          resultStore.createIndex('completedAt', 'completedAt', { unique: false });
+        }
+
+        // Store para estado del procesamiento
+        if (!db.objectStoreNames.contains(this.stores.state)) {
+          db.createObjectStore(this.stores.state, { keyPath: 'key' });
+        }
+      };
+    });
+  }
+
+  // === TAREAS ===
+  async saveTasks(tasks) {
+    const tx = this.db.transaction(this.stores.tasks, 'readwrite');
+    const store = tx.objectStore(this.stores.tasks);
+    
+    const ids = [];
+    for (const task of tasks) {
+      const taskWithMeta = {
+        ...task,
+        status: 'pending',
+        priority: task.priority || 0,
+        createdAt: Date.now(),
+        attempts: 0
+      };
+      const request = store.add(taskWithMeta);
+      ids.push(await this._promisifyRequest(request));
+    }
+    
+    return ids;
+  }
+
+  async getPendingTasks() {
+    const tx = this.db.transaction(this.stores.tasks, 'readonly');
+    const store = tx.objectStore(this.stores.tasks);
+    const index = store.index('status');
+    const request = index.getAll('pending');
+    return this._promisifyRequest(request);
+  }
+
+  async updateTaskStatus(taskId, status) {
+    const tx = this.db.transaction(this.stores.tasks, 'readwrite');
+    const store = tx.objectStore(this.stores.tasks);
+    
+    const task = await this._promisifyRequest(store.get(taskId));
+    if (task) {
+      task.status = status;
+      task.updatedAt = Date.now();
+      await this._promisifyRequest(store.put(task));
+    }
+  }
+
+  async removeCompletedTasks() {
+    const tx = this.db.transaction(this.stores.tasks, 'readwrite');
+    const store = tx.objectStore(this.stores.tasks);
+    const index = store.index('status');
+    
+    const completed = await this._promisifyRequest(index.getAllKeys('completed'));
+    for (const key of completed) {
+      await this._promisifyRequest(store.delete(key));
+    }
+  }
+
+  async clearAllTasks() {
+    const tx = this.db.transaction(this.stores.tasks, 'readwrite');
+    const store = tx.objectStore(this.stores.tasks);
+    await this._promisifyRequest(store.clear());
+  }
+
+  // === RESULTADOS ===
+  async saveResult(taskId, result) {
+    const tx = this.db.transaction(this.stores.results, 'readwrite');
+    const store = tx.objectStore(this.stores.results);
+    
+    const resultWithMeta = {
+      taskId,
+      result,
+      completedAt: Date.now()
+    };
+    
+    return this._promisifyRequest(store.add(resultWithMeta));
+  }
+
+  async getResults(since = 0) {
+    const tx = this.db.transaction(this.stores.results, 'readonly');
+    const store = tx.objectStore(this.stores.results);
+    const index = store.index('completedAt');
+    const range = IDBKeyRange.lowerBound(since);
+    return this._promisifyRequest(index.getAll(range));
+  }
+
+  async clearResults() {
+    const tx = this.db.transaction(this.stores.results, 'readwrite');
+    const store = tx.objectStore(this.stores.results);
+    await this._promisifyRequest(store.clear());
+  }
+
+  // === ESTADO ===
+  async saveState(key, value) {
+    const tx = this.db.transaction(this.stores.state, 'readwrite');
+    const store = tx.objectStore(this.stores.state);
+    await this._promisifyRequest(store.put({ key, value, updatedAt: Date.now() }));
+  }
+
+  async getState(key) {
+    const tx = this.db.transaction(this.stores.state, 'readonly');
+    const store = tx.objectStore(this.stores.state);
+    const result = await this._promisifyRequest(store.get(key));
+    return result?.value;
+  }
+
+  // === UTILIDADES ===
+  _promisifyRequest(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+}
+
+// ==========================================
+// PARTE 3: COORDINADOR DE PESTAÑAS (BroadcastChannel)
+// ==========================================
+
+class TabCoordinator {
+  constructor(channelName = 'excel-processing-channel') {
+    this.channel = new BroadcastChannel(channelName);
+    this.tabId = this._generateTabId();
+    this.isLeader = false;
+    this.listeners = new Map();
+    this.heartbeatInterval = null;
+    this.lastHeartbeats = new Map();
+
+    this._setupListeners();
+    this._startHeartbeat();
+    this._electLeader();
+  }
+
+  _generateTabId() {
+    return `tab_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  _setupListeners() {
+    this.channel.onmessage = (event) => {
+      const { type, senderId, payload } = event.data;
+
+      if (senderId === this.tabId) return; // Ignorar mensajes propios
+
+      switch (type) {
+        case 'HEARTBEAT':
+          this.lastHeartbeats.set(senderId, Date.now());
+          break;
+        case 'LEADER_ELECTION':
+          this._handleLeaderElection(senderId, payload);
+          break;
+        case 'TASK_CLAIMED':
+          this._emit('taskClaimed', payload);
+          break;
+        case 'TASK_COMPLETED':
+          this._emit('taskCompleted', payload);
+          break;
+        case 'STATE_SYNC':
+          this._emit('stateSync', payload);
+          break;
+      }
+
+      // Emitir evento genérico
+      this._emit('message', { type, senderId, payload });
+    };
+  }
+
+  _startHeartbeat() {
+    this.heartbeatInterval = setInterval(() => {
+      this._broadcast('HEARTBEAT', { timestamp: Date.now() });
+      this._cleanupDeadTabs();
+    }, 2000);
+  }
+
+  _cleanupDeadTabs() {
+    const now = Date.now();
+    const timeout = 5000;
+
+    for (const [tabId, lastSeen] of this.lastHeartbeats) {
+      if (now - lastSeen > timeout) {
+        this.lastHeartbeats.delete(tabId);
+        
+        // Si el líder murió, re-elegir
+        if (tabId === this.leaderId) {
+          this._electLeader();
+        }
+      }
+    }
+  }
+
+  _electLeader() {
+    // El tab con el ID más bajo (creado primero) se convierte en líder
+    const allTabs = [this.tabId, ...this.lastHeartbeats.keys()].sort();
+    const newLeader = allTabs[0];
+    
+    const wasLeader = this.isLeader;
+    this.isLeader = newLeader === this.tabId;
+    this.leaderId = newLeader;
+
+    if (this.isLeader && !wasLeader) {
+      console.log('👑 Esta pestaña es ahora el líder');
+      this._emit('becameLeader');
+    } else if (!this.isLeader && wasLeader) {
+      console.log('👤 Esta pestaña ya no es el líder');
+      this._emit('lostLeadership');
+    }
+
+    this._broadcast('LEADER_ELECTION', { leaderId: this.leaderId });
+  }
+
+  _handleLeaderElection(senderId, payload) {
+    if (payload.leaderId) {
+      this.leaderId = payload.leaderId;
+      this.isLeader = this.leaderId === this.tabId;
+    }
+  }
+
+  _broadcast(type, payload) {
+    this.channel.postMessage({
+      type,
+      senderId: this.tabId,
+      payload
+    });
+  }
+
+  _emit(event, data) {
+    const listeners = this.listeners.get(event) || [];
+    listeners.forEach(callback => callback(data));
+  }
+
+  // === API PÚBLICA ===
+  on(event, callback) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, []);
+    }
+    this.listeners.get(event).push(callback);
+  }
+
+  off(event, callback) {
+    const listeners = this.listeners.get(event) || [];
+    const index = listeners.indexOf(callback);
+    if (index > -1) {
+      listeners.splice(index, 1);
+    }
+  }
+
+  broadcast(type, payload) {
+    this._broadcast(type, payload);
+  }
+
+  claimTask(taskId) {
+    this._broadcast('TASK_CLAIMED', { taskId, claimedBy: this.tabId });
+  }
+
+  reportCompletion(taskId, result) {
+    this._broadcast('TASK_COMPLETED', { taskId, result, completedBy: this.tabId });
+  }
+
+  syncState(state) {
+    this._broadcast('STATE_SYNC', state);
+  }
+
+  getActiveTabs() {
+    return [this.tabId, ...this.lastHeartbeats.keys()];
+  }
+
+  destroy() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+    this.channel.close();
+  }
+}
+
+// ==========================================
+// PARTE 4: HOOK PRINCIPAL DE PROCESAMIENTO
+// ==========================================
+
+import { useState, useEffect, useRef, useCallback } from 'react';
+
+const useBackgroundProcessing = (options = {}) => {
+  const {
+    onCellUpdate,
+    onSheetCreated,
+    onChartCreated,
+    onComplete,
+    onError,
+    onProgress,
+    autoRecover = true
+  } = options;
+
+  // Estado
+  const [status, setStatus] = useState('idle'); // idle, initializing, processing, paused, completed, error
+  const [progress, setProgress] = useState({ current: 0, total: 0, percent: 0 });
+  const [isPageVisible, setIsPageVisible] = useState(true);
+  const [isLeader, setIsLeader] = useState(false);
+  const [stats, setStats] = useState({ rate: 0, eta: 0, elapsed: 0 });
+
+  // Referencias
+  const workerRef = useRef(null);
+  const persistenceRef = useRef(null);
+  const coordinatorRef = useRef(null);
+  const pendingUpdatesRef = useRef([]);
+  const callbacksRef = useRef({ onCellUpdate, onComplete, onError, onProgress });
+
+  // Actualizar callbacks ref
+  useEffect(() => {
+    callbacksRef.current = { onCellUpdate, onComplete, onError, onProgress };
+  }, [onCellUpdate, onComplete, onError, onProgress]);
+
+  // === INICIALIZACIÓN ===
+  useEffect(() => {
+    const initialize = async () => {
+      setStatus('initializing');
+
+      try {
+        // 1. Inicializar persistencia
+        persistenceRef.current = new TaskPersistenceService();
+        await persistenceRef.current.initialize();
+
+        // 2. Inicializar coordinador de pestañas
+        coordinatorRef.current = new TabCoordinator();
+        coordinatorRef.current.on('becameLeader', () => setIsLeader(true));
+        coordinatorRef.current.on('lostLeadership', () => setIsLeader(false));
+        coordinatorRef.current.on('taskCompleted', handleExternalTaskCompletion);
+
+        // 3. Crear Web Worker
+        const blob = new Blob([WORKER_CODE], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(blob);
+        workerRef.current = new Worker(workerUrl);
+        workerRef.current.onmessage = handleWorkerMessage;
+        workerRef.current.onerror = handleWorkerError;
+
+        // 4. Esperar a que el worker esté listo
+        await new Promise((resolve) => {
+          const checkReady = (e) => {
+            if (e.data.type === 'READY') {
+              workerRef.current.removeEventListener('message', checkReady);
+              resolve();
+            }
+          };
+          workerRef.current.addEventListener('message', checkReady);
+        });
+
+        // 5. Recuperar tareas pendientes si autoRecover está habilitado
+        if (autoRecover) {
+          const pendingTasks = await persistenceRef.current.getPendingTasks();
+          if (pendingTasks.length > 0) {
+            console.log(`📋 Recuperando ${pendingTasks.length} tareas pendientes`);
+            workerRef.current.postMessage({ 
+              type: 'START', 
+              payload: pendingTasks 
+            });
+          }
+        }
+
+        setStatus('idle');
+        console.log('✅ Sistema de background processing inicializado');
+
+      } catch (error) {
+        console.error('Error inicializando background processing:', error);
+        setStatus('error');
+      }
+    };
+
+    initialize();
+
+    // Cleanup
+    return () => {
+      workerRef.current?.terminate();
+      coordinatorRef.current?.destroy();
+    };
+  }, [autoRecover]);
+
+  // === PAGE VISIBILITY API ===
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const visible = document.visibilityState === 'visible';
+      setIsPageVisible(visible);
+
+      if (visible) {
+        console.log('👁️ Página visible - Aplicando actualizaciones pendientes');
+        flushPendingUpdates();
+        
+        // Solicitar estado actual del worker
+        workerRef.current?.postMessage({ type: 'GET_STATUS' });
+      } else {
+        console.log('👁️‍🗨️ Página en background - Continuando procesamiento');
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  // === HANDLERS DEL WORKER ===
+  const handleWorkerMessage = useCallback((event) => {
+    const { type, payload } = event.data;
+
+    switch (type) {
+      case 'STARTED':
+        setStatus('processing');
+        setProgress({ current: 0, total: payload.total, percent: 0 });
+        break;
+
+      case 'TASK_COMPLETED':
+        handleTaskCompletion(payload);
+        break;
+
+      case 'TASK_ERROR':
+        console.error('Error en tarea:', payload);
+        callbacksRef.current.onError?.(payload.error);
+        break;
+
+      case 'COMPLETED':
+        handleProcessingComplete(payload);
+        break;
+
+      case 'PAUSED':
+        setStatus('paused');
+        break;
+
+      case 'RESUMED':
+        setStatus('processing');
+        break;
+
+      case 'CANCELLED':
+        setStatus('idle');
+        setProgress({ current: 0, total: 0, percent: 0 });
+        break;
+
+      case 'STATUS':
+        setProgress({
+          current: payload.processed,
+          total: payload.total,
+          percent: Math.round((payload.processed / payload.total) * 100) || 0
+        });
+        setStats({
+          rate: payload.rate,
+          eta: payload.eta,
+          elapsed: payload.elapsed
+        });
+        break;
+    }
+  }, []);
+
+  const handleWorkerError = useCallback((error) => {
+    console.error('Worker error:', error);
+    setStatus('error');
+    callbacksRef.current.onError?.(error.message);
+  }, []);
+
+  const handleTaskCompletion = useCallback((payload) => {
+    const { result, progress: taskProgress } = payload;
+
+    // Actualizar progreso
+    setProgress({
+      current: taskProgress.current,
+      total: taskProgress.total,
+      percent: taskProgress.percent
+    });
+
+    // Si la página está visible, aplicar inmediatamente
+    if (document.visibilityState === 'visible') {
+      applyResult(result);
+    } else {
+      // Acumular para aplicar cuando la página sea visible
+      pendingUpdatesRef.current.push(result);
+    }
+
+    // Notificar al callback de progreso
+    callbacksRef.current.onProgress?.(taskProgress);
+
+    // Notificar a otras pestañas
+    coordinatorRef.current?.reportCompletion(payload.task?.id, result);
+  }, []);
+
+  const handleExternalTaskCompletion = useCallback((data) => {
+    // Una tarea fue completada por otra pestaña
+    if (data.result) {
+      applyResult(data.result);
+    }
+  }, []);
+
+  const handleProcessingComplete = useCallback(async (payload) => {
+    setStatus('completed');
+    console.log(`✅ Procesamiento completado: ${payload.total} tareas en ${payload.elapsed}ms`);
+
+    // Aplicar actualizaciones pendientes
+    flushPendingUpdates();
+
+    // Limpiar tareas de IndexedDB
+    await persistenceRef.current?.clearAllTasks();
+
+    // Notificar callback
+    callbacksRef.current.onComplete?.(payload);
+
+    // Notificación del navegador si la página estaba oculta
+    if (document.visibilityState !== 'visible') {
+      showNotification('Procesamiento Completado', {
+        body: `Se procesaron ${payload.total} tareas correctamente.`,
+        icon: '/excel-icon.png'
+      });
+    }
+
+    // Reset status después de un momento
+    setTimeout(() => setStatus('idle'), 2000);
+  }, []);
+
+  // === APLICAR RESULTADOS ===
+  const applyResult = useCallback((result) => {
+    if (!result) return;
+
+    switch (result.type) {
+      case 'CELL_UPDATE':
+        callbacksRef.current.onCellUpdate?.({
+          row: result.row,
+          col: result.col,
+          value: result.value,
+          formula: result.formula,
+          format: result.format
+        });
+        break;
+
+      case 'BULK_UPDATE':
+        result.cells?.forEach(cell => {
+          callbacksRef.current.onCellUpdate?.(cell);
+        });
+        break;
+
+      case 'SHEET_CREATED':
+        onSheetCreated?.(result);
+        break;
+
+      case 'CHART_CREATED':
+        onChartCreated?.(result);
+        break;
+    }
+  }, [onSheetCreated, onChartCreated]);
+
+  const flushPendingUpdates = useCallback(() => {
+    if (pendingUpdatesRef.current.length === 0) return;
+
+    console.log(`Aplicando ${pendingUpdatesRef.current.length} actualizaciones pendientes`);
+    
+    // Aplicar en batch usando requestAnimationFrame para mejor rendimiento
+    requestAnimationFrame(() => {
+      pendingUpdatesRef.current.forEach(result => applyResult(result));
+      pendingUpdatesRef.current = [];
+    });
+  }, [applyResult]);
+
+  // === NOTIFICACIONES ===
+  const showNotification = useCallback(async (title, options) => {
+    if (!('Notification' in window)) return;
+
+    if (Notification.permission === 'granted') {
+      new Notification(title, options);
+    } else if (Notification.permission !== 'denied') {
+      const permission = await Notification.requestPermission();
+      if (permission === 'granted') {
+        new Notification(title, options);
+      }
+    }
+  }, []);
+
+  // === API PÚBLICA ===
+  const startProcessing = useCallback(async (tasks) => {
+    if (!workerRef.current) {
+      console.error('Worker no inicializado');
+      return false;
+    }
+
+    if (status === 'processing') {
+      console.warn('Ya hay un procesamiento en curso');
+      return false;
+    }
+
+    // Guardar tareas en IndexedDB para recuperación
+    await persistenceRef.current?.saveTasks(tasks);
+
+    // Solicitar permiso de notificaciones
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
+    // Iniciar procesamiento en el worker
+    workerRef.current.postMessage({ type: 'START', payload: tasks });
+
+    return true;
+  }, [status]);
+
+  const addTasks = useCallback(async (tasks) => {
+    if (!workerRef.current) return false;
+
+    await persistenceRef.current?.saveTasks(tasks);
+    workerRef.current.postMessage({ type: 'ADD_TASKS', payload: tasks });
+
+    return true;
+  }, []);
+
+  const pause = useCallback(() => {
+    workerRef.current?.postMessage({ type: 'PAUSE' });
+  }, []);
+
+  const resume = useCallback(() => {
+    workerRef.current?.postMessage({ type: 'RESUME' });
+  }, []);
+
+  const cancel = useCallback(async () => {
+    workerRef.current?.postMessage({ type: 'CANCEL' });
+    await persistenceRef.current?.clearAllTasks();
+    pendingUpdatesRef.current = [];
+  }, []);
+
+  const getStatus = useCallback(() => {
+    workerRef.current?.postMessage({ type: 'GET_STATUS' });
+  }, []);
+
+  return {
+    // Estado
+    status,
+    progress,
+    stats,
+    isPageVisible,
+    isLeader,
+    isProcessing: status === 'processing',
+    isPaused: status === 'paused',
+
+    // Acciones
+    startProcessing,
+    addTasks,
+    pause,
+    resume,
+    cancel,
+    getStatus,
+    flushPendingUpdates
+  };
+};
+
+// ==========================================
+// PARTE 5: COMPONENTE DE INDICADOR VISUAL
+// ==========================================
+
+const BackgroundProcessingStatus = ({
+  status,
+  progress,
+  stats,
+  isPageVisible,
+  onPause,
+  onResume,
+  onCancel
+}) => {
+  if (status === 'idle' || status === 'initializing') return null;
+
+  const formatTime = (ms) => {
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60000) return `${Math.round(ms / 1000)}s`;
+    return `${Math.round(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
+  };
+
+  const isBackground = !isPageVisible && status === 'processing';
+
+  return (
+    <div className={`bg-processing-status ${isBackground ? 'background-mode' : ''} ${status}`}>
+      {/* Header */}
+      <div className="status-header">
+        <div className="status-icon">
+          {status === 'processing' && (
+            isBackground ? (
+              <div className="background-pulse">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <polyline points="12 6 12 12 16 14" />
+                </svg>
+              </div>
+            ) : (
+              <div className="processing-spinner" />
+            )
+          )}
+          {status === 'paused' && <span className="pause-icon">⏸️</span>}
+          {status === 'completed' && <span className="complete-icon">✅</span>}
+          {status === 'error' && <span className="error-icon">❌</span>}
+        </div>
+
+        <div className="status-info">
+          <div className="status-title">
+            {status === 'processing' && (isBackground ? 'Procesando en segundo plano' : 'Procesando...')}
+            {status === 'paused' && 'Procesamiento pausado'}
+            {status === 'completed' && 'Completado'}
+            {status === 'error' && 'Error en el procesamiento'}
+          </div>
+          <div className="status-subtitle">
+            {progress.current.toLocaleString()} / {progress.total.toLocaleString()} tareas
+          </div>
+        </div>
+      </div>
+
+      {/* Barra de progreso */}
+      <div className="status-progress">
+        <div className="progress-bar">
+          <div 
+            className="progress-fill" 
+            style={{ width: `${progress.percent}%` }}
+          />
+        </div>
+        <span className="progress-percent">{progress.percent}%</span>
+      </div>
+
+      {/* Estadísticas */}
+      {status === 'processing' && (
+        <div className="status-stats">
+          <div className="stat">
+            <span className="stat-label">Velocidad:</span>
+            <span className="stat-value">{stats.rate} tareas/s</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Tiempo restante:</span>
+            <span className="stat-value">~{formatTime(stats.eta)}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Transcurrido:</span>
+            <span className="stat-value">{formatTime(stats.elapsed)}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Mensaje de background */}
+      {isBackground && (
+        <div className="background-notice">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          <span>Puedes cambiar de pestaña o minimizar. El proceso continuará.</span>
+        </div>
+      )}
+
+      {/* Controles */}
+      <div className="status-controls">
+        {status === 'processing' && (
+          <button className="control-btn pause-btn" onClick={onPause}>
+            ⏸️ Pausar
+          </button>
+        )}
+        {status === 'paused' && (
+          <button className="control-btn resume-btn" onClick={onResume}>
+            ▶️ Reanudar
+          </button>
+        )}
+        {(status === 'processing' || status === 'paused') && (
+          <button className="control-btn cancel-btn" onClick={onCancel}>
+            ✕ Cancelar
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ==========================================
+// PARTE 6: CSS
+// ==========================================
+
+const backgroundProcessingStyles = `
+/* === CONTENEDOR PRINCIPAL === */
+.bg-processing-status {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: white;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  z-index: 10000;
+  min-width: 320px;
+  max-width: 400px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  transition: all 0.3s ease;
+  border: 1px solid #e2e8f0;
+}
+
+.bg-processing-status.background-mode {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  color: white;
+  border-color: #334155;
+}
+
+.bg-processing-status.completed {
+  border-color: #10b981;
+  box-shadow: 0 8px 32px rgba(16, 185, 129, 0.2);
+}
+
+.bg-processing-status.error {
+  border-color: #ef4444;
+  box-shadow: 0 8px 32px rgba(239, 68, 68, 0.2);
+}
+
+/* === HEADER === */
+.status-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.status-icon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+}
+
+.processing-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #e2e8f0;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.background-pulse {
+  animation: pulse-bg 2s ease-in-out infinite;
+}
+
+.background-pulse svg {
+  width: 32px;
+  height: 32px;
+  color: #10b981;
+}
+
+@keyframes pulse-bg {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(0.95); }
+}
+
+.status-info {
+  flex: 1;
+}
+
+.status-title {
+  font-weight: 600;
+  font-size: 15px;
+  margin-bottom: 2px;
+}
+
+.status-subtitle {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.background-mode .status-subtitle {
+  color: #94a3b8;
+}
+
+/* === PROGRESO === */
+.status-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.background-mode .progress-bar {
+  background: #334155;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6 0%, #10b981 100%);
+  border-radius: 8px;
+  transition: width 0.3s ease;
+  position: relative;
+}
+
+.progress-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.3) 50%,
+    transparent 100%
+  );
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.progress-percent {
+  font-size: 14px;
+  font-weight: 700;
+  min-width: 48px;
+  text-align: right;
+  color: #3b82f6;
+}
+
+.background-mode .progress-percent {
+  color: #10b981;
+}
+
+/* === ESTADÍSTICAS === */
+.status-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 10px;
+  background: #f8fafc;
+  border-radius: 8px;
+}
+
+.background-mode .status-stats {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.stat-label {
+  font-size: 10px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.background-mode .stat-label {
+  color: #94a3b8;
+}
+
+.stat-value {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* === AVISO DE BACKGROUND === */
+.background-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: rgba(16, 185, 129, 0.1);
+  border-radius: 8px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  color: #10b981;
+  line-height: 1.4;
+}
+
+/* === CONTROLES === */
+.status-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.control-btn {
+  flex: 1;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.pause-btn {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.pause-btn:hover {
+  background: #fde68a;
+}
+
+.resume-btn {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.resume-btn:hover {
+  background: #bbf7d0;
+}
+
+.cancel-btn {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.cancel-btn:hover {
+  background: #fecaca;
+}
+
+.background-mode .cancel-btn {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+}
+
+/* === ANIMACIÓN DE ENTRADA === */
+.bg-processing-status {
+  animation: slideInUp 0.3s ease-out;
+}
+
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+`;
+
+// Inyectar estilos
+if (typeof document !== 'undefined') {
+  const styleEl = document.createElement('style');
+  styleEl.textContent = backgroundProcessingStyles;
+  document.head.appendChild(styleEl);
+}
+
+// ==========================================
+// EXPORTACIONES
+// ==========================================
+
+export {
+  useBackgroundProcessing,
+  BackgroundProcessingStatus,
+  TaskPersistenceService,
+  TabCoordinator,
+  WORKER_CODE
+};

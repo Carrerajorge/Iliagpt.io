@@ -1,0 +1,251 @@
+Perfecto. Lo que estás pidiendo **sí se puede poner en producción** sin pagar licencias de Microsoft, **si defines bien el alcance**:
+
+* ✅ **Generar** archivos **.xlsx** y **.docx** (compatibles con Excel/Word) **NO requiere licencias** si usas librerías open‑source y el estándar Office Open XML.
+* ✅ **Editar/visualizar** esos archivos en web **sin Microsoft Office** se resuelve integrando un editor open‑source (p. ej. LibreOffice/OnlyOffice/Collabora, según tu caso).
+* ❌ “Recrear Word y Excel completos desde cero” como aplicaciones equivalentes **es un proyecto enorme** (años). La vía realista es **generar** + **integrar un editor**.
+
+Abajo te dejo una **ruta clara paso a paso** (lista para mandársela a tu equipo) y el **código fundamental** (esqueleto funcional) para la arquitectura tipo “agente + renderers determinísticos”.
+
+---
+
+# Ruta clara paso a paso para producción (Word + Excel sin licencias)
+
+## Paso 1 — Definir el contrato (IR) como JSON estricto
+
+Tu agente nunca debe “dibujar” Excel/Word directamente. Debe producir una **Representación Intermedia (IR)** validable.
+
+**Entregables**
+
+* `ExcelSpec` (workbook → sheets → tables/charts/layout)
+* `DocSpec` (document → bloques: headings/paragraphs/bullets/tables)
+
+**Criterio de éxito**
+
+* Cualquier output del agente debe pasar validación de schema (Pydantic/JSON Schema).
+* Si no pasa, se reintenta con “repair loop”.
+
+---
+
+## Paso 2 — Implementar renderers determinísticos
+
+Aquí está la “magia real” de que se vea profesional:
+
+### Excel renderer
+
+* crea workbook/sheets
+* escribe tablas en rangos
+* aplica estilos, formatos numéricos, freeze panes, filtros
+* (opcional) charts
+* guarda `.xlsx`
+
+### Word renderer
+
+* crea doc
+* aplica estilos base
+* renderiza bloques (headings, párrafos, bullets, tablas)
+* (opcional) TOC como field (Word lo actualiza al abrir)
+* guarda `.docx`
+
+**Criterio de éxito**
+
+* se generan archivos que abren sin corrupción en LibreOffice / OnlyOffice / Excel / Word.
+
+---
+
+## Paso 3 — Validación + QA automático (ciclo de calidad)
+
+Para lograr “queda perfecto”, necesitas un bucle:
+
+1. Generar spec
+2. Renderizar archivo
+3. Validar que abre (parse)
+4. Validar reglas visuales (heurísticas):
+
+   * encabezados congelados
+   * anchos razonables
+   * formatos correctos (moneda/porcentaje/fechas)
+   * tablas sin desbordes
+5. Si falla → “patch” del spec → rerender
+
+**Criterio de éxito**
+
+* 0 errores de apertura
+* 0 errores de reglas mínimas
+
+---
+
+## Paso 4 — Orquestador tipo agente (LLM → Spec → Render → QA)
+
+Implementa un orquestador con:
+
+* “planner prompt” → produce JSON
+* `schema-guided generation` (o function calling)
+* `repair loop` si el JSON no valida
+* (opcional) herramientas: scraping, SQL, python, etc. **sandboxed**
+
+**Criterio de éxito**
+
+* prompts ambiguos generan documentos consistentes con plantillas
+* el agente aprende a corregir según errores de validación
+
+---
+
+## Paso 5 — Exponerlo como servicio (API) para producción
+
+Crea un microservicio:
+
+* `POST /v1/render/excel` (recibe ExcelSpec JSON → devuelve .xlsx)
+* `POST /v1/render/word`  (recibe DocSpec JSON → devuelve .docx)
+* `POST /v1/generate/excel` / `word` (recibe prompt → llama LLM → genera spec → render → devuelve archivo)
+
+**Criterio de éxito**
+
+* idempotencia, logs, límites de tamaño, timeouts
+* almacenamiento de artefactos (S3/MinIO) si aplica
+
+---
+
+## Paso 6 — “No quiero pagar licencias”: cómo cubrir edición/visualización
+
+Tienes 3 caminos:
+
+### Opción A (más simple)
+
+Tu sistema **genera** `.docx/.xlsx` y el usuario abre con:
+
+* LibreOffice (desktop), o
+* Google Docs/Sheets, o
+* OnlyOffice/Collabora (web)
+
+### Opción B (web editor embebido)
+
+Integras un editor compatible con docx/xlsx (self-host) y tu backend sólo genera/guarda.
+
+### Opción C (editor propio)
+
+Solo viable si tu editor será “limitado” (no full Word/Excel). Normalmente no conviene.
+
+---
+
+# Código fundamental (listo para tu equipo)
+
+Te preparé un scaffold funcional (schemas + renderers + validadores + API FastAPI).
+
+## Descargas
+
+* [Descargar scaffold completo (ZIP)](sandbox:/mnt/data/docsheets_agent_scaffold.zip)
+* [Ejemplo Excel generado (.xlsx)](sandbox:/mnt/data/report.xlsx)
+* [Ejemplo Word generado (.docx)](sandbox:/mnt/data/report.docx)
+
+---
+
+## 1) Schemas (IR) con Pydantic
+
+Archivo: `src/docsheets/schemas.py`
+
+Puntos clave:
+
+* Excel: `ExcelSpec → SheetSpec → TableSpec/ChartSpec/Layout`
+* Word: `DocSpec → blocks (heading/paragraph/bullets/table/page_break)`
+* Validación: filas “rectangulares” (mismo número de columnas)
+
+---
+
+## 2) Renderer Excel (openpyxl) – lo esencial
+
+Archivo: `src/docsheets/excel_renderer.py`
+
+Incluye:
+
+* escribir encabezados con fill + font
+* escribir filas
+* aplicar `number_format` por columna
+* crear `Table` (estilo y autofiltro)
+* freeze panes
+* auto-fit de columnas
+
+---
+
+## 3) Renderer Word (python-docx) – lo esencial
+
+Archivo: `src/docsheets/word_renderer.py`
+
+Incluye:
+
+* estilo base (Calibri 11)
+* headings jerárquicos
+* bullets (List Bullet)
+* tablas con estilo
+* TOC como field (Word lo rellena al actualizar)
+
+---
+
+## 4) Repair loop del “agente”
+
+Archivo: `src/docsheets/orchestrator.py`
+
+El patrón crítico:
+
+* LLM devuelve JSON
+* `model_validate()`
+* si falla → se manda el error de validación al LLM → devuelve JSON corregido
+* se repite hasta `max_attempts`
+
+Esto es lo que hace que en producción **no explote por JSON inválido**.
+
+---
+
+## 5) API para producción (FastAPI)
+
+Archivo: `api/main.py`
+
+Endpoints listos:
+
+* `/v1/render/excel`
+* `/v1/render/word`
+* `/v1/generate/excel` y `/v1/generate/word` (con DummyLLM de demo)
+
+En producción, tu equipo reemplaza `DummyLLM` por su cliente real.
+
+---
+
+# Checklist de producción para que “quede perfecto”
+
+Si se lo envías a tu equipo, pídeles que cumplan estos “gates”:
+
+## Gate A — Calidad de Excel
+
+* Freeze header en tablas
+* Autofilter habilitado
+* Formatos:
+
+  * moneda: `$#,##0` (o el que definas)
+  * porcentaje: `0.0%`
+  * fechas: como `date` (no string)
+* Column widths: auto-fit con límites (8–60)
+* Nada de merges innecesarios
+
+## Gate B — Calidad de Word
+
+* Headings 1/2/3 consistentes
+* Tablas con estilo consistente
+* Espaciado después de tablas
+* TOC opcional (y nota: el usuario puede “Actualizar campos”)
+
+## Gate C — QA automático
+
+* Reabrir y parsear el archivo generado (detecta corrupción)
+* Pruebas con datasets grandes y textos largos
+* Sanitización de strings (evitar caracteres raros que rompan render)
+
+---
+
+# ¿Qué me falta para ajustarlo 100% a tu caso?
+
+Sin hacerte mil preguntas, dime solo esto (en una línea cada uno) y lo adapto:
+
+1. ¿Tus documentos son más tipo **reportes** (tablas + narrativa) o más tipo **plantillas legales** (mucho formato)?
+2. ¿Necesitas **edición en web** o solo **descargar** el archivo final?
+3. ¿El Excel debe incluir **charts** siempre o es opcional?
+
+Con eso te indico exactamente qué módulos ampliar primero (y qué evitar para no meterse en un “clon de Office”).

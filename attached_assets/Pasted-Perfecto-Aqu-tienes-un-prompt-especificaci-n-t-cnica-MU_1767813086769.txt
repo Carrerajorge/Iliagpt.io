@@ -1,0 +1,231 @@
+Perfecto. Aquí tienes un **prompt / especificación técnica MUCHO más fuerte, de nivel senior / staff engineer**, pensado para que el ingeniero **no pueda responder con generalidades** y tenga que **arreglar el sistema de verdad**.
+Esto no es marketing: es **arquitectura + ejecución + garantías**.
+
+Puedes copiarlo íntegro y enviarlo.
+
+---
+
+# 🚨 ESPECIFICACIÓN CRÍTICA — SISTEMA DE ANÁLISIS DE DOCUMENTOS NO FUNCIONAL EN PRODUCCIÓN
+
+## Contexto real del problema (NO TEÓRICO)
+
+En producción, el flujo **“Subo un documento → Pido un resumen” falla**.
+
+Caso reproducible:
+
+1. Usuario sube un **DOCX válido**
+2. Usuario escribe: *“Dame un resumen”*
+3. El sistema responde: **“Sube el documento por favor”**
+
+Esto implica una **ruptura del estado**, **falla del pipeline**, o **desacople entre upload, parsing y LLM**.
+
+Este bug es **bloqueante** y **rompe la funcionalidad principal del producto**.
+
+---
+
+## 1️⃣ Diagnóstico de alto nivel (hipótesis técnicas obligatorias)
+
+El sistema **NO está fallando en IA**, está fallando en **ingeniería**.
+
+Posibles causas (una o varias):
+
+* El archivo se sube pero **no se persiste el `document_id` en sesión/conversación**
+* El extractor corre pero **no genera `content_chunks`**
+* El LLM **no recibe contexto** porque el binding documento↔prompt es nulo
+* El sistema **confía en el mensaje del usuario** y no en el estado interno
+* El frontend **no reinyecta el documento al prompt** después del upload
+* El backend **pierde el documento entre requests (stateless mal diseñado)**
+
+---
+
+## 2️⃣ Requerimiento NO NEGOCIABLE (Behavioral Contract)
+
+> **Una vez que el usuario sube un documento, el sistema DEBE recordarlo y usarlo automáticamente en TODAS las instrucciones posteriores**, sin volver a pedir el archivo.
+
+El sistema debe ser **stateful por conversación**, no por mensaje.
+
+---
+
+## 3️⃣ Arquitectura CORRECTA (lo que debe existir y hoy no existe)
+
+### A) Document Session State (OBLIGATORIO)
+
+Cada conversación debe mantener un estado persistente:
+
+```json
+{
+  "conversation_id": "uuid",
+  "active_document": {
+    "document_id": "uuid",
+    "type": "docx",
+    "status": "parsed",
+    "content_available": true,
+    "chunks_count": 42
+  }
+}
+```
+
+❌ Nunca depender del texto del usuario para saber si hay documento
+✅ El backend debe saberlo **sin preguntar**
+
+---
+
+### B) Pipeline de procesamiento (con estados explícitos)
+
+```text
+UPLOAD_RECEIVED
+→ FILE_STORED
+→ TYPE_DETECTED
+→ CONTENT_EXTRACTED
+→ NORMALIZED
+→ INDEXED
+→ READY_FOR_LLM
+```
+
+Si el usuario pide “resumen” y el estado **≠ READY_FOR_LLM**, eso es un **bug interno**, no error del usuario.
+
+---
+
+## 4️⃣ Binding CORRECTO con el LLM (el fallo más común)
+
+### ❌ Lo que probablemente pasa hoy
+
+El prompt del LLM se arma **sin inyectar el documento**:
+
+> “Dame un resumen”
+
+El LLM no tiene contexto → responde “sube el documento”.
+
+---
+
+### ✅ Lo que DEBE pasar
+
+El prompt SIEMPRE debe incluir el documento activo:
+
+```text
+SYSTEM:
+You are analyzing a user-uploaded document.
+
+DOCUMENT CONTEXT:
+<<<
+[chunk 1]
+[chunk 2]
+[chunk 3]
+...
+>>>
+
+USER:
+Dame un resumen
+```
+
+⚠️ El LLM **NUNCA** debe decidir si hay documento.
+Eso es responsabilidad **100% del backend**.
+
+---
+
+## 5️⃣ Regla crítica (anti-bug)
+
+### 🚫 PROHIBIDO
+
+* Que el LLM diga “sube el documento”
+* Que el sistema pregunte otra vez por el archivo
+* Que el frontend dependa del mensaje del usuario
+
+### ✅ OBLIGATORIO
+
+* Si hay `active_document`, SIEMPRE usarlo
+* Si no hay documento, **bloquear el prompt antes del LLM** y mostrar error UX controlado
+
+---
+
+## 6️⃣ Prompt interno CORRECTO (para producción)
+
+Este es el **prompt base obligatorio**:
+
+```text
+SYSTEM:
+You are a document analysis engine.
+A document has already been uploaded and parsed.
+You MUST answer using ONLY the document content provided.
+If the document is empty, say so explicitly.
+
+DOCUMENT CONTENT:
+{{document_chunks}}
+
+USER:
+{{user_instruction}}
+```
+
+Nunca usar prompts genéricos tipo:
+
+> “If no document is provided ask the user to upload one”
+
+Eso es **arquitectura rota**.
+
+---
+
+## 7️⃣ Observabilidad (para que no vuelva a pasar)
+
+Agregar métricas obligatorias:
+
+* `document_attached_to_prompt: true|false`
+* `chunks_sent_to_llm: N`
+* `chars_sent_to_llm`
+* `llm_response_without_context` (ALERTA ROJA)
+
+Si `chunks_sent_to_llm = 0` → **bloquear request**
+
+---
+
+## 8️⃣ Pruebas que DEBEN pasar (no opcional)
+
+### Test 1 — DOCX básico
+
+* Subir DOCX
+* Pedir “resumen”
+* ❌ nunca pedir subir archivo
+* ✅ resumen correcto
+
+### Test 2 — Multi-turn
+
+* Subir documento
+* Preguntar 3 veces cosas distintas
+* El sistema **recuerda el mismo documento**
+
+### Test 3 — Error controlado
+
+* Pedir resumen sin subir archivo
+* Mensaje claro del sistema (no del LLM)
+
+---
+
+## 9️⃣ Definición de “DONE”
+
+No se considera resuelto hasta que:
+
+* El LLM **siempre recibe contenido**
+* El usuario **nunca vuelve a subir el archivo**
+* El resumen funciona en el **primer intento**
+* Existen logs que prueban `document → prompt → response`
+
+---
+
+## 🔥 Resumen ejecutivo (para cerrar)
+
+El problema **NO es el parser**, **NO es Tesseract**, **NO es IA**.
+
+Es un **fallo de diseño de estado, binding y responsabilidad**.
+
+👉 El backend debe garantizar contexto
+👉 El LLM solo razona, no decide flujo
+👉 El usuario no debe repetir acciones
+
+---
+
+Si quieres, dime:
+
+* ¿Stack exacto? (Node/Nest, Python/FastAPI, etc.)
+* ¿LLM cómo lo llaman? (OpenAI, local, etc.)
+* ¿Frontend? (React, Flutter, etc.)
+
+Y te entrego **el diagrama exacto + pseudocódigo + prompt final de producción** para que tu ingeniero lo implemente sin excusas.

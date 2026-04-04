@@ -1,0 +1,743 @@
+// === CONFIGURACIÓN DEL GRID MASIVO ===
+const GRID_CONFIG = {
+  MAX_ROWS: 10000,
+  MAX_COLS: 10000,
+  ROW_HEIGHT: 28,
+  COL_WIDTH: 100,
+  VISIBLE_ROWS: 35,      // Filas renderizadas
+  VISIBLE_COLS: 20,      // Columnas renderizadas
+  BUFFER_ROWS: 5,        // Buffer extra para scroll suave
+  BUFFER_COLS: 3
+};
+
+// === ALMACENAMIENTO SPARSE - Solo guarda celdas con datos ===
+class SparseGrid {
+  constructor() {
+    this.cells = new Map();  // Key: "row:col" -> Value: {value, formula, format}
+    this.rowCount = GRID_CONFIG.MAX_ROWS;
+    this.colCount = GRID_CONFIG.MAX_COLS;
+  }
+
+  // Generar key única
+  _key(row, col) {
+    return `${row}:${col}`;
+  }
+
+  // Obtener celda (retorna vacío si no existe)
+  getCell(row, col) {
+    return this.cells.get(this._key(row, col)) || { value: '', formula: null, format: {} };
+  }
+
+  // Establecer celda (solo si tiene contenido)
+  setCell(row, col, cellData) {
+    const key = this._key(row, col);
+    if (cellData.value === '' && !cellData.formula) {
+      this.cells.delete(key);  // Eliminar celdas vacías para ahorrar memoria
+    } else {
+      this.cells.set(key, cellData);
+    }
+  }
+
+  // Obtener todas las celdas con datos (para exportar)
+  getAllCells() {
+    return Array.from(this.cells.entries()).map(([key, data]) => {
+      const [row, col] = key.split(':').map(Number);
+      return { row, col, ...data };
+    });
+  }
+
+  // Obtener cantidad de celdas con datos
+  getDataCount() {
+    return this.cells.size;
+  }
+
+  // Limpiar todo
+  clear() {
+    this.cells.clear();
+  }
+}
+
+// === GENERADOR DE NOMBRES DE COLUMNAS (A, B, ... Z, AA, AB, ... ZZZ) ===
+const getColumnName = (index) => {
+  let name = '';
+  let i = index;
+  while (i >= 0) {
+    name = String.fromCharCode(65 + (i % 26)) + name;
+    i = Math.floor(i / 26) - 1;
+  }
+  return name;
+};
+
+// Inverso: nombre a índice
+const getColumnIndex = (name) => {
+  let index = 0;
+  for (let i = 0; i < name.length; i++) {
+    index = index * 26 + (name.charCodeAt(i) - 64);
+  }
+  return index - 1;
+};
+
+// === ESTRUCTURA DEL WORKBOOK ===
+const createWorkbook = () => ({
+  sheets: [{
+    id: 'sheet1',
+    name: 'Hoja 1',
+    grid: new SparseGrid(),
+    charts: [],
+    conditionalFormats: [],
+    frozenRows: 0,
+    frozenCols: 0
+  }],
+  activeSheet: 'sheet1'
+});
+
+// === MOTOR DE FÓRMULAS OPTIMIZADO ===
+const FormulaEngine = {
+  parseRef: (ref) => {
+    const match = ref.match(/^([A-Z]+)(\d+)$/i);
+    if (!match) return null;
+    return { 
+      row: parseInt(match[2]) - 1, 
+      col: getColumnIndex(match[1].toUpperCase()) 
+    };
+  },
+
+  parseRange: (range) => {
+    const [start, end] = range.split(':');
+    return { 
+      start: FormulaEngine.parseRef(start), 
+      end: FormulaEngine.parseRef(end) 
+    };
+  },
+
+  getRangeValues: (grid, rangeStr) => {
+    const { start, end } = FormulaEngine.parseRange(rangeStr);
+    const values = [];
+    for (let r = start.row; r <= end.row; r++) {
+      for (let c = start.col; c <= end.col; c++) {
+        const val = parseFloat(grid.getCell(r, c).value);
+        if (!isNaN(val)) values.push(val);
+      }
+    }
+    return values;
+  },
+
+  evaluate: (formula, grid) => {
+    if (!formula?.startsWith('=')) return formula;
+    const expr = formula.substring(1).toUpperCase().trim();
+    
+    try {
+      // Funciones soportadas
+      const functions = {
+        SUM: (range) => FormulaEngine.getRangeValues(grid, range).reduce((a, b) => a + b, 0),
+        AVERAGE: (range) => {
+          const vals = FormulaEngine.getRangeValues(grid, range);
+          return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+        },
+        COUNT: (range) => FormulaEngine.getRangeValues(grid, range).length,
+        MAX: (range) => Math.max(...FormulaEngine.getRangeValues(grid, range)),
+        MIN: (range) => Math.min(...FormulaEngine.getRangeValues(grid, range)),
+        ROUND: (val, decimals = 0) => Number(val).toFixed(decimals),
+      };
+
+      // Detectar función
+      for (const [fn, handler] of Object.entries(functions)) {
+        const regex = new RegExp(`^${fn}\\(([^)]+)\\)$`);
+        const match = expr.match(regex);
+        if (match) return handler(match[1]);
+      }
+
+      // IF anidado
+      if (expr.startsWith('IF(')) {
+        const inner = expr.slice(3, -1);
+        const [cond, trueVal, falseVal] = inner.split(',').map(s => s.trim());
+        const condition = FormulaEngine.evaluateExpression(cond, grid);
+        return condition ? FormulaEngine.evaluateExpression(trueVal, grid) : FormulaEngine.evaluateExpression(falseVal, grid);
+      }
+
+      // Expresión matemática con referencias
+      return FormulaEngine.evaluateExpression(expr, grid);
+    } catch (e) {
+      return '#ERROR';
+    }
+  },
+
+  evaluateExpression: (expr, grid) => {
+    const resolved = expr.replace(/([A-Z]+\d+)/gi, (match) => {
+      const ref = FormulaEngine.parseRef(match);
+      if (!ref) return 0;
+      const cell = grid.getCell(ref.row, ref.col);
+      return parseFloat(cell.value) || 0;
+    });
+    return eval(resolved);
+  }
+};
+
+// === COMPONENTE EXCEL CON VIRTUALIZACIÓN ===
+const ExcelEditor = () => {
+  const [workbook, setWorkbook] = useState(createWorkbook);
+  const [activeSheetId, setActiveSheetId] = useState('sheet1');
+  const [selectedCell, setSelectedCell] = useState({ row: 0, col: 0 });
+  const [editingCell, setEditingCell] = useState(null);
+  const [scrollPos, setScrollPos] = useState({ top: 0, left: 0 });
+  const [formulaInput, setFormulaInput] = useState('');
+  
+  const viewportRef = useRef(null);
+  const scrollRAF = useRef(null);
+  
+  const activeSheet = workbook.sheets.find(s => s.id === activeSheetId);
+  const grid = activeSheet.grid;
+
+  // Calcular rango visible con buffer
+  const startRow = Math.max(0, Math.floor(scrollPos.top / GRID_CONFIG.ROW_HEIGHT) - GRID_CONFIG.BUFFER_ROWS);
+  const startCol = Math.max(0, Math.floor(scrollPos.left / GRID_CONFIG.COL_WIDTH) - GRID_CONFIG.BUFFER_COLS);
+  const endRow = Math.min(GRID_CONFIG.MAX_ROWS, startRow + GRID_CONFIG.VISIBLE_ROWS + GRID_CONFIG.BUFFER_ROWS * 2);
+  const endCol = Math.min(GRID_CONFIG.MAX_COLS, startCol + GRID_CONFIG.VISIBLE_COLS + GRID_CONFIG.BUFFER_COLS * 2);
+
+  // Scroll optimizado con RAF
+  const handleScroll = useCallback((e) => {
+    if (scrollRAF.current) cancelAnimationFrame(scrollRAF.current);
+    scrollRAF.current = requestAnimationFrame(() => {
+      setScrollPos({ top: e.target.scrollTop, left: e.target.scrollLeft });
+    });
+  }, []);
+
+  // Actualizar celda
+  const updateCell = useCallback((row, col, value) => {
+    const evaluated = value.startsWith('=') 
+      ? FormulaEngine.evaluate(value, grid) 
+      : value;
+    
+    grid.setCell(row, col, {
+      value: evaluated,
+      formula: value.startsWith('=') ? value : null,
+      format: {}
+    });
+    
+    setWorkbook(prev => ({ ...prev })); // Trigger re-render
+  }, [grid]);
+
+  // Seleccionar celda
+  const handleCellClick = useCallback((row, col) => {
+    setSelectedCell({ row, col });
+    const cell = grid.getCell(row, col);
+    setFormulaInput(cell.formula || cell.value);
+  }, [grid]);
+
+  // Navegación con teclado
+  const handleKeyDown = useCallback((e) => {
+    if (editingCell) return;
+    
+    const moves = {
+      ArrowUp: { row: -1, col: 0 },
+      ArrowDown: { row: 1, col: 0 },
+      ArrowLeft: { row: 0, col: -1 },
+      ArrowRight: { row: 0, col: 1 },
+      Tab: { row: 0, col: e.shiftKey ? -1 : 1 },
+      Enter: { row: 1, col: 0 }
+    };
+    
+    if (moves[e.key]) {
+      e.preventDefault();
+      setSelectedCell(prev => ({
+        row: Math.max(0, Math.min(GRID_CONFIG.MAX_ROWS - 1, prev.row + moves[e.key].row)),
+        col: Math.max(0, Math.min(GRID_CONFIG.MAX_COLS - 1, prev.col + moves[e.key].col))
+      }));
+    }
+    
+    // Iniciar edición al escribir
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+      setEditingCell(selectedCell);
+      setFormulaInput(e.key);
+    }
+  }, [editingCell, selectedCell]);
+
+  // Agregar hoja
+  const addSheet = () => {
+    const newSheet = {
+      id: `sheet${Date.now()}`,
+      name: `Hoja ${workbook.sheets.length + 1}`,
+      grid: new SparseGrid(),
+      charts: [],
+      conditionalFormats: []
+    };
+    setWorkbook(prev => ({ ...prev, sheets: [...prev.sheets, newSheet] }));
+  };
+
+  // Renombrar hoja
+  const renameSheet = (id, newName) => {
+    setWorkbook(prev => ({
+      ...prev,
+      sheets: prev.sheets.map(s => s.id === id ? { ...s, name: newName } : s)
+    }));
+  };
+
+  // Generar filas visibles
+  const visibleRows = useMemo(() => {
+    const rows = [];
+    for (let r = startRow; r < endRow; r++) {
+      rows.push(r);
+    }
+    return rows;
+  }, [startRow, endRow]);
+
+  // Generar columnas visibles
+  const visibleCols = useMemo(() => {
+    const cols = [];
+    for (let c = startCol; c < endCol; c++) {
+      cols.push(c);
+    }
+    return cols;
+  }, [startCol, endCol]);
+
+  return (
+    <div className="excel-container" onKeyDown={handleKeyDown} tabIndex={0}>
+      {/* Toolbar */}
+      <div className="excel-toolbar">
+        <button onClick={() => {}}>Negrita</button>
+        <button onClick={() => {}}>Cursiva</button>
+        <span className="separator">|</span>
+        <span className="cell-count">
+          Celdas con datos: {grid.getDataCount().toLocaleString()} / 
+          Capacidad: {(GRID_CONFIG.MAX_ROWS * GRID_CONFIG.MAX_COLS).toLocaleString()}
+        </span>
+      </div>
+
+      {/* Barra de fórmulas */}
+      <div className="formula-bar">
+        <div className="cell-address">
+          {getColumnName(selectedCell.col)}{selectedCell.row + 1}
+        </div>
+        <div className="formula-icon">fx</div>
+        <input
+          className="formula-input"
+          value={formulaInput}
+          onChange={(e) => setFormulaInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              updateCell(selectedCell.row, selectedCell.col, formulaInput);
+              setEditingCell(null);
+            }
+          }}
+          placeholder="Ingresa valor o fórmula (ej: =SUM(A1:A100))"
+        />
+      </div>
+
+      {/* Grid virtualizado */}
+      <div className="grid-wrapper">
+        {/* Headers de columnas fijos */}
+        <div className="column-headers-container">
+          <div className="corner-header"></div>
+          <div 
+            className="column-headers"
+            style={{ transform: `translateX(-${scrollPos.left}px)` }}
+          >
+            <div style={{ width: GRID_CONFIG.MAX_COLS * GRID_CONFIG.COL_WIDTH, display: 'flex' }}>
+              {visibleCols.map(col => (
+                <div
+                  key={col}
+                  className="col-header"
+                  style={{
+                    position: 'absolute',
+                    left: col * GRID_CONFIG.COL_WIDTH,
+                    width: GRID_CONFIG.COL_WIDTH
+                  }}
+                >
+                  {getColumnName(col)}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Row headers + Celdas */}
+        <div className="grid-body">
+          {/* Row headers fijos */}
+          <div 
+            className="row-headers"
+            style={{ transform: `translateY(-${scrollPos.top}px)` }}
+          >
+            {visibleRows.map(row => (
+              <div
+                key={row}
+                className="row-header"
+                style={{
+                  position: 'absolute',
+                  top: row * GRID_CONFIG.ROW_HEIGHT,
+                  height: GRID_CONFIG.ROW_HEIGHT
+                }}
+              >
+                {row + 1}
+              </div>
+            ))}
+          </div>
+
+          {/* Viewport de celdas */}
+          <div
+            ref={viewportRef}
+            className="cells-viewport"
+            onScroll={handleScroll}
+          >
+            <div
+              className="cells-container"
+              style={{
+                width: GRID_CONFIG.MAX_COLS * GRID_CONFIG.COL_WIDTH,
+                height: GRID_CONFIG.MAX_ROWS * GRID_CONFIG.ROW_HEIGHT,
+                position: 'relative'
+              }}
+            >
+              {visibleRows.map(row => (
+                visibleCols.map(col => {
+                  const cell = grid.getCell(row, col);
+                  const isSelected = selectedCell.row === row && selectedCell.col === col;
+                  const isEditing = editingCell?.row === row && editingCell?.col === col;
+
+                  return (
+                    <div
+                      key={`${row}:${col}`}
+                      className={`cell ${isSelected ? 'selected' : ''} ${cell.value ? 'has-data' : ''}`}
+                      style={{
+                        position: 'absolute',
+                        top: row * GRID_CONFIG.ROW_HEIGHT,
+                        left: col * GRID_CONFIG.COL_WIDTH,
+                        width: GRID_CONFIG.COL_WIDTH,
+                        height: GRID_CONFIG.ROW_HEIGHT,
+                        ...cell.format
+                      }}
+                      onClick={() => handleCellClick(row, col)}
+                      onDoubleClick={() => setEditingCell({ row, col })}
+                    >
+                      {isEditing ? (
+                        <input
+                          autoFocus
+                          className="cell-editor"
+                          value={formulaInput}
+                          onChange={(e) => setFormulaInput(e.target.value)}
+                          onBlur={() => {
+                            updateCell(row, col, formulaInput);
+                            setEditingCell(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              updateCell(row, col, formulaInput);
+                              setEditingCell(null);
+                            }
+                            if (e.key === 'Escape') {
+                              setEditingCell(null);
+                            }
+                          }}
+                        />
+                      ) : (
+                        <span className="cell-value">{cell.value}</span>
+                      )}
+                    </div>
+                  );
+                })
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs de hojas */}
+      <div className="sheet-tabs-bar">
+        <div className="sheet-tabs">
+          {workbook.sheets.map(sheet => (
+            <div
+              key={sheet.id}
+              className={`sheet-tab ${activeSheetId === sheet.id ? 'active' : ''}`}
+              onClick={() => setActiveSheetId(sheet.id)}
+              onDoubleClick={() => {
+                const newName = prompt('Nombre de la hoja:', sheet.name);
+                if (newName) renameSheet(sheet.id, newName);
+              }}
+            >
+              {sheet.name}
+            </div>
+          ))}
+          <button className="add-sheet-btn" onClick={addSheet}>
+            <span>+</span>
+          </button>
+        </div>
+        <div className="grid-info">
+          {getColumnName(selectedCell.col)}{selectedCell.row + 1} | 
+          {GRID_CONFIG.MAX_ROWS.toLocaleString()} × {GRID_CONFIG.MAX_COLS.toLocaleString()}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// === EXPORTAR A XLSX ===
+import * as XLSX from 'xlsx';
+
+const exportWorkbook = (workbook) => {
+  const wb = XLSX.utils.book_new();
+  
+  workbook.sheets.forEach(sheet => {
+    const cells = sheet.grid.getAllCells();
+    const wsData = [];
+    
+    cells.forEach(({ row, col, value, formula }) => {
+      if (!wsData[row]) wsData[row] = [];
+      wsData[row][col] = formula || value;
+    });
+    
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, sheet.name);
+  });
+  
+  XLSX.writeFile(wb, 'documento.xlsx');
+};
+
+// === CSS OPTIMIZADO ===
+.excel-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  outline: none;
+}
+
+.excel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.excel-toolbar button {
+  padding: 4px 12px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.cell-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.formula-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.cell-address {
+  min-width: 80px;
+  padding: 6px 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 13px;
+  text-align: center;
+}
+
+.formula-icon {
+  color: #64748b;
+  font-style: italic;
+  font-size: 14px;
+}
+
+.formula-input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.formula-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+.grid-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.column-headers-container {
+  display: flex;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  height: 28px;
+}
+
+.corner-header {
+  width: 50px;
+  min-width: 50px;
+  background: #f1f5f9;
+  border-right: 1px solid #e2e8f0;
+}
+
+.column-headers {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+.col-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  background: #f8fafc;
+  border-right: 1px solid #e2e8f0;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+}
+
+.grid-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.row-headers {
+  width: 50px;
+  min-width: 50px;
+  background: #f8fafc;
+  border-right: 1px solid #e2e8f0;
+  position: relative;
+  overflow: hidden;
+}
+
+.row-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 50px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.cells-viewport {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+.cells-container {
+  position: relative;
+}
+
+.cell {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  border-right: 1px solid #e9ecef;
+  border-bottom: 1px solid #e9ecef;
+  background: #fff;
+  cursor: cell;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.cell.has-data {
+  background: #fff;
+}
+
+.cell:hover {
+  background: #f8fafc;
+}
+
+.cell.selected {
+  outline: 2px solid #3b82f6;
+  outline-offset: -1px;
+  background: #eff6ff;
+  z-index: 1;
+}
+
+.cell-value {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cell-editor {
+  width: 100%;
+  height: 100%;
+  border: none;
+  outline: none;
+  font-size: 13px;
+  padding: 0;
+  background: #fff;
+}
+
+.sheet-tabs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+}
+
+.sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sheet-tab {
+  padding: 6px 16px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+
+.sheet-tab:hover {
+  background: #f1f5f9;
+}
+
+.sheet-tab.active {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+}
+
+.add-sheet-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px dashed #cbd5e1;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #64748b;
+  font-size: 18px;
+}
+
+.add-sheet-btn:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+.grid-info {
+  font-size: 12px;
+  color: #64748b;
+}

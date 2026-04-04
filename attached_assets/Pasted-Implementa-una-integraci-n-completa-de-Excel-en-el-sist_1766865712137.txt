@@ -1,0 +1,1316 @@
+Implementa una integración completa de Excel en el sistema de producción, incluyendo visor/editor de hojas de cálculo, importación/exportación, y herramientas del Agentic Engine:
+
+=== PARTE 1: COMPONENTE DE HOJA DE CÁLCULO ===
+
+1) Instalar dependencias necesarias:
+npm install xlsx handsontable @handsontable/react file-saver --save
+
+2) Crear client/src/components/spreadsheet/SpreadsheetEditor.tsx:
+
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { HotTable } from '@handsontable/react';
+import { registerAllModules } from 'handsontable/registry';
+import 'handsontable/dist/handsontable.full.min.css';
+import * as XLSX from 'xlsx';
+import { saveAs } from 'file-saver';
+import { 
+  Download, Upload, Plus, Trash2, Save, FileSpreadsheet, 
+  Table, BarChart3, Calculator, Filter, SortAsc, Search,
+  Undo, Redo, Copy, Clipboard, Scissors, Bold, Italic,
+  AlignLeft, AlignCenter, AlignRight, Palette, Grid3X3
+} from 'lucide-react';
+
+registerAllModules();
+
+interface SpreadsheetEditorProps {
+  initialData?: any[][];
+  fileName?: string;
+  onSave?: (data: any[][], fileName: string) => void;
+  readOnly?: boolean;
+  height?: number;
+}
+
+export function SpreadsheetEditor({ 
+  initialData, 
+  fileName = 'spreadsheet.xlsx',
+  onSave,
+  readOnly = false,
+  height = 600 
+}: SpreadsheetEditorProps) {
+  const hotRef = useRef<any>(null);
+  const [data, setData] = useState<any[][]>(initialData || generateEmptySheet(50, 26));
+  const [currentFileName, setCurrentFileName] = useState(fileName);
+  const [sheets, setSheets] = useState<{ name: string; data: any[][] }[]>([
+    { name: 'Hoja 1', data: initialData || generateEmptySheet(50, 26) }
+  ]);
+  const [activeSheet, setActiveSheet] = useState(0);
+  const [history, setHistory] = useState<any[][][]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [selectedCell, setSelectedCell] = useState<{ row: number; col: number } | null>(null);
+  const [isModified, setIsModified] = useState(false);
+
+  // Generar hoja vacía
+  function generateEmptySheet(rows: number, cols: number): any[][] {
+    return Array(rows).fill(null).map(() => Array(cols).fill(''));
+  }
+
+  // Generar headers de columnas (A, B, C, ..., Z, AA, AB, ...)
+  function getColumnHeaders(count: number): string[] {
+    const headers: string[] = [];
+    for (let i = 0; i < count; i++) {
+      let header = '';
+      let num = i;
+      while (num >= 0) {
+        header = String.fromCharCode(65 + (num % 26)) + header;
+        num = Math.floor(num / 26) - 1;
+      }
+      headers.push(header);
+    }
+    return headers;
+  }
+
+  // Importar archivo Excel
+  const handleImport = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        
+        const importedSheets = workbook.SheetNames.map(name => {
+          const worksheet = workbook.Sheets[name];
+          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+          return { name, data: jsonData as any[][] };
+        });
+        
+        setSheets(importedSheets);
+        setActiveSheet(0);
+        setData(importedSheets[0].data);
+        setCurrentFileName(file.name);
+        setIsModified(false);
+        
+        // Notificar éxito
+        console.log(`Importado: ${file.name} con ${importedSheets.length} hojas`);
+      } catch (error) {
+        console.error('Error al importar:', error);
+        alert('Error al importar el archivo. Verifica que sea un archivo Excel válido.');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    event.target.value = '';
+  }, []);
+
+  // Exportar a Excel
+  const handleExport = useCallback((format: 'xlsx' | 'csv' = 'xlsx') => {
+    const workbook = XLSX.utils.book_new();
+    
+    sheets.forEach(sheet => {
+      const worksheet = XLSX.utils.aoa_to_sheet(sheet.data);
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheet.name);
+    });
+    
+    if (format === 'xlsx') {
+      const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      saveAs(blob, currentFileName.endsWith('.xlsx') ? currentFileName : `${currentFileName}.xlsx`);
+    } else {
+      const csvData = XLSX.utils.sheet_to_csv(workbook.Sheets[sheets[activeSheet].name]);
+      const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8' });
+      saveAs(blob, currentFileName.replace('.xlsx', '.csv'));
+    }
+  }, [sheets, activeSheet, currentFileName]);
+
+  // Guardar cambios
+  const handleSave = useCallback(() => {
+    if (onSave) {
+      onSave(data, currentFileName);
+    }
+    setIsModified(false);
+  }, [data, currentFileName, onSave]);
+
+  // Manejar cambios en datos
+  const handleDataChange = useCallback((changes: any, source: string) => {
+    if (source === 'loadData') return;
+    
+    setIsModified(true);
+    
+    // Guardar en historial para undo/redo
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(JSON.parse(JSON.stringify(data)));
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+  }, [data, history, historyIndex]);
+
+  // Undo
+  const handleUndo = useCallback(() => {
+    if (historyIndex > 0) {
+      setHistoryIndex(historyIndex - 1);
+      setData(history[historyIndex - 1]);
+    }
+  }, [history, historyIndex]);
+
+  // Redo
+  const handleRedo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      setHistoryIndex(historyIndex + 1);
+      setData(history[historyIndex + 1]);
+    }
+  }, [history, historyIndex]);
+
+  // Añadir hoja
+  const addSheet = useCallback(() => {
+    const newSheet = {
+      name: `Hoja ${sheets.length + 1}`,
+      data: generateEmptySheet(50, 26)
+    };
+    setSheets([...sheets, newSheet]);
+    setActiveSheet(sheets.length);
+    setData(newSheet.data);
+  }, [sheets]);
+
+  // Eliminar hoja
+  const removeSheet = useCallback((index: number) => {
+    if (sheets.length <= 1) return;
+    const newSheets = sheets.filter((_, i) => i !== index);
+    setSheets(newSheets);
+    const newActiveSheet = Math.min(activeSheet, newSheets.length - 1);
+    setActiveSheet(newActiveSheet);
+    setData(newSheets[newActiveSheet].data);
+  }, [sheets, activeSheet]);
+
+  // Cambiar hoja activa
+  const switchSheet = useCallback((index: number) => {
+    // Guardar datos de hoja actual
+    const updatedSheets = [...sheets];
+    updatedSheets[activeSheet] = { ...updatedSheets[activeSheet], data };
+    setSheets(updatedSheets);
+    
+    // Cambiar a nueva hoja
+    setActiveSheet(index);
+    setData(updatedSheets[index].data);
+  }, [sheets, activeSheet, data]);
+
+  // Insertar fila
+  const insertRow = useCallback(() => {
+    if (!hotRef.current) return;
+    const hot = hotRef.current.hotInstance;
+    const selected = hot.getSelected();
+    if (selected) {
+      hot.alter('insert_row_below', selected[0][0]);
+    }
+  }, []);
+
+  // Insertar columna
+  const insertColumn = useCallback(() => {
+    if (!hotRef.current) return;
+    const hot = hotRef.current.hotInstance;
+    const selected = hot.getSelected();
+    if (selected) {
+      hot.alter('insert_col_end', selected[0][1]);
+    }
+  }, []);
+
+  // Eliminar fila
+  const deleteRow = useCallback(() => {
+    if (!hotRef.current) return;
+    const hot = hotRef.current.hotInstance;
+    const selected = hot.getSelected();
+    if (selected) {
+      hot.alter('remove_row', selected[0][0]);
+    }
+  }, []);
+
+  // Eliminar columna
+  const deleteColumn = useCallback(() => {
+    if (!hotRef.current) return;
+    const hot = hotRef.current.hotInstance;
+    const selected = hot.getSelected();
+    if (selected) {
+      hot.alter('remove_col', selected[0][1]);
+    }
+  }, []);
+
+  // Configuración de Handsontable
+  const hotSettings = {
+    data,
+    rowHeaders: true,
+    colHeaders: getColumnHeaders(26),
+    height,
+    width: '100%',
+    licenseKey: 'non-commercial-and-evaluation',
+    contextMenu: true,
+    manualColumnResize: true,
+    manualRowResize: true,
+    filters: true,
+    dropdownMenu: true,
+    multiColumnSorting: true,
+    mergeCells: true,
+    comments: true,
+    customBorders: true,
+    copyPaste: true,
+    fillHandle: true,
+    formulas: true,
+    undo: true,
+    readOnly,
+    afterChange: handleDataChange,
+    afterSelection: (row: number, col: number) => {
+      setSelectedCell({ row, col });
+    },
+    className: 'spreadsheet-table',
+    stretchH: 'all' as const
+  };
+
+  return (
+    <div className="flex flex-col h-full bg-gray-900 rounded-xl overflow-hidden border border-gray-700">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-1 p-2 bg-gray-800 border-b border-gray-700">
+        {/* File operations */}
+        <div className="flex items-center gap-1 pr-2 border-r border-gray-600">
+          <label className="p-2 hover:bg-gray-700 rounded cursor-pointer transition-colors" title="Importar Excel">
+            <Upload className="w-4 h-4 text-gray-300" />
+            <input type="file" accept=".xlsx,.xls,.csv" onChange={handleImport} className="hidden" />
+          </label>
+          <button onClick={() => handleExport('xlsx')} className="p-2 hover:bg-gray-700 rounded transition-colors" title="Exportar XLSX">
+            <Download className="w-4 h-4 text-gray-300" />
+          </button>
+          <button onClick={() => handleExport('csv')} className="p-2 hover:bg-gray-700 rounded transition-colors" title="Exportar CSV">
+            <FileSpreadsheet className="w-4 h-4 text-gray-300" />
+          </button>
+          {onSave && (
+            <button 
+              onClick={handleSave} 
+              className={`p-2 rounded transition-colors ${isModified ? 'bg-indigo-600 hover:bg-indigo-500' : 'hover:bg-gray-700'}`}
+              title="Guardar"
+            >
+              <Save className="w-4 h-4 text-white" />
+            </button>
+          )}
+        </div>
+
+        {/* Edit operations */}
+        <div className="flex items-center gap-1 px-2 border-r border-gray-600">
+          <button onClick={handleUndo} className="p-2 hover:bg-gray-700 rounded transition-colors" title="Deshacer (Ctrl+Z)">
+            <Undo className="w-4 h-4 text-gray-300" />
+          </button>
+          <button onClick={handleRedo} className="p-2 hover:bg-gray-700 rounded transition-colors" title="Rehacer (Ctrl+Y)">
+            <Redo className="w-4 h-4 text-gray-300" />
+          </button>
+        </div>
+
+        {/* Clipboard */}
+        <div className="flex items-center gap-1 px-2 border-r border-gray-600">
+          <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Cortar">
+            <Scissors className="w-4 h-4 text-gray-300" />
+          </button>
+          <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Copiar">
+            <Copy className="w-4 h-4 text-gray-300" />
+          </button>
+          <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Pegar">
+            <Clipboard className="w-4 h-4 text-gray-300" />
+          </button>
+        </div>
+
+        {/* Row/Column operations */}
+        <div className="flex items-center gap-1 px-2 border-r border-gray-600">
+          <button onClick={insertRow} className="p-2 hover:bg-gray-700 rounded transition-colors" title="Insertar Fila">
+            <Plus className="w-4 h-4 text-gray-300" />
+          </button>
+          <button onClick={insertColumn} className="p-2 hover:bg-gray-700 rounded transition-colors" title="Insertar Columna">
+            <Grid3X3 className="w-4 h-4 text-gray-300" />
+          </button>
+          <button onClick={deleteRow} className="p-2 hover:bg-gray-700 rounded transition-colors text-red-400" title="Eliminar Fila">
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Format */}
+        <div className="flex items-center gap-1 px-2 border-r border-gray-600">
+          <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Negrita">
+            <Bold className="w-4 h-4 text-gray-300" />
+          </button>
+          <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Cursiva">
+            <Italic className="w-4 h-4 text-gray-300" />
+          </button>
+        </div>
+
+        {/* Alignment */}
+        <div className="flex items-center gap-1 px-2 border-r border-gray-600">
+          <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Alinear Izquierda">
+            <AlignLeft className="w-4 h-4 text-gray-300" />
+          </button>
+          <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Centrar">
+            <AlignCenter className="w-4 h-4 text-gray-300" />
+          </button>
+          <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Alinear Derecha">
+            <AlignRight className="w-4 h-4 text-gray-300" />
+          </button>
+        </div>
+
+        {/* Data operations */}
+        <div className="flex items-center gap-1 px-2">
+          <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Filtrar">
+            <Filter className="w-4 h-4 text-gray-300" />
+          </button>
+          <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Ordenar">
+            <SortAsc className="w-4 h-4 text-gray-300" />
+          </button>
+          <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Buscar">
+            <Search className="w-4 h-4 text-gray-300" />
+          </button>
+        </div>
+
+        {/* File name */}
+        <div className="ml-auto flex items-center gap-2">
+          <input
+            type="text"
+            value={currentFileName}
+            onChange={(e) => setCurrentFileName(e.target.value)}
+            className="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-indigo-500"
+            placeholder="nombre-archivo.xlsx"
+          />
+          {isModified && <span className="text-yellow-400 text-xs">● Sin guardar</span>}
+        </div>
+      </div>
+
+      {/* Formula bar */}
+      <div className="flex items-center gap-2 px-3 py-2 bg-gray-850 border-b border-gray-700">
+        <div className="flex items-center gap-2 px-2 py-1 bg-gray-700 rounded min-w-[80px]">
+          <span className="text-xs text-gray-400">
+            {selectedCell ? `${getColumnHeaders(26)[selectedCell.col]}${selectedCell.row + 1}` : 'A1'}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 px-2">
+          <Calculator className="w-4 h-4 text-gray-400" />
+          <span className="text-xs text-gray-400">fx</span>
+        </div>
+        <input
+          type="text"
+          className="flex-1 px-3 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-indigo-500"
+          placeholder="Ingresa fórmula o valor..."
+        />
+      </div>
+
+      {/* Spreadsheet */}
+      <div className="flex-1 overflow-hidden">
+        <HotTable ref={hotRef} settings={hotSettings} />
+      </div>
+
+      {/* Sheet tabs */}
+      <div className="flex items-center gap-1 p-2 bg-gray-800 border-t border-gray-700 overflow-x-auto">
+        {sheets.map((sheet, index) => (
+          <div
+            key={index}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded cursor-pointer transition-colors ${
+              activeSheet === index 
+                ? 'bg-indigo-600 text-white' 
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+            onClick={() => switchSheet(index)}
+          >
+            <Table className="w-3 h-3" />
+            <span className="text-sm">{sheet.name}</span>
+            {sheets.length > 1 && (
+              <button
+                onClick={(e) => { e.stopPropagation(); removeSheet(index); }}
+                className="p-0.5 hover:bg-gray-500 rounded"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        ))}
+        <button
+          onClick={addSheet}
+          className="p-1.5 hover:bg-gray-700 rounded transition-colors"
+          title="Añadir hoja"
+        >
+          <Plus className="w-4 h-4 text-gray-400" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default SpreadsheetEditor;
+
+3) Crear estilos para el spreadsheet en client/src/styles/spreadsheet.css:
+
+/* Spreadsheet custom styles */
+.spreadsheet-table {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+}
+
+.spreadsheet-table .htCore {
+  background: #1a1a24;
+  color: #e5e5e5;
+}
+
+.spreadsheet-table th {
+  background: #2a2a34 !important;
+  color: #a1a1aa !important;
+  font-weight: 500;
+  border-color: #3f3f46 !important;
+}
+
+.spreadsheet-table td {
+  background: #1a1a24;
+  color: #e5e5e5;
+  border-color: #27272a !important;
+}
+
+.spreadsheet-table td.current,
+.spreadsheet-table td.area {
+  background: rgba(99, 102, 241, 0.2) !important;
+}
+
+.spreadsheet-table .htBorders .wtBorder {
+  background-color: #6366f1 !important;
+}
+
+.spreadsheet-table .htContextMenu {
+  background: #1a1a24;
+  border-color: #3f3f46;
+}
+
+.spreadsheet-table .htContextMenu td {
+  color: #e5e5e5;
+}
+
+.spreadsheet-table .htContextMenu td:hover {
+  background: #2a2a34;
+}
+
+.spreadsheet-table .htDropdownMenu {
+  background: #1a1a24;
+  border-color: #3f3f46;
+}
+
+/* Row headers */
+.spreadsheet-table .ht_clone_left th {
+  background: #2a2a34 !important;
+}
+
+/* Selected header */
+.spreadsheet-table th.ht__highlight {
+  background: #3a3a44 !important;
+}
+
+/* Scrollbar styling */
+.spreadsheet-table ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.spreadsheet-table ::-webkit-scrollbar-track {
+  background: #1a1a24;
+}
+
+.spreadsheet-table ::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 4px;
+}
+
+.spreadsheet-table ::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
+
+=== PARTE 2: PÁGINA DE EXCEL EN ADMIN ===
+
+4) Crear client/src/pages/admin/ExcelManager.tsx:
+
+import React, { useState, useEffect } from 'react';
+import { SpreadsheetEditor } from '@/components/spreadsheet/SpreadsheetEditor';
+import { 
+  FileSpreadsheet, Upload, Download, Trash2, Eye, Edit, 
+  Plus, Search, Filter, Clock, User, HardDrive, MoreVertical,
+  Table, BarChart3, PieChart, TrendingUp
+} from 'lucide-react';
+import { Card, CardHeader, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+
+interface SavedSpreadsheet {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  size: number;
+  sheets: number;
+  data?: any[][];
+}
+
+export default function ExcelManager() {
+  const [view, setView] = useState<'list' | 'editor'>('list');
+  const [spreadsheets, setSpreadsheets] = useState<SavedSpreadsheet[]>([]);
+  const [currentSpreadsheet, setCurrentSpreadsheet] = useState<SavedSpreadsheet | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Cargar lista de spreadsheets
+  useEffect(() => {
+    loadSpreadsheets();
+  }, []);
+
+  const loadSpreadsheets = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/excel/list');
+      if (response.ok) {
+        const data = await response.json();
+        setSpreadsheets(data);
+      }
+    } catch (error) {
+      console.error('Error loading spreadsheets:', error);
+      // Mock data para desarrollo
+      setSpreadsheets([
+        {
+          id: '1',
+          name: 'Reporte Usuarios Q4.xlsx',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          createdBy: 'Admin',
+          size: 45000,
+          sheets: 3
+        },
+        {
+          id: '2',
+          name: 'Análisis Ventas 2024.xlsx',
+          createdAt: new Date(Date.now() - 86400000).toISOString(),
+          updatedAt: new Date(Date.now() - 3600000).toISOString(),
+          createdBy: 'Admin',
+          size: 128000,
+          sheets: 5
+        },
+        {
+          id: '3',
+          name: 'Inventario Productos.xlsx',
+          createdAt: new Date(Date.now() - 172800000).toISOString(),
+          updatedAt: new Date(Date.now() - 172800000).toISOString(),
+          createdBy: 'Admin',
+          size: 67000,
+          sheets: 2
+        }
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const createNewSpreadsheet = () => {
+    setCurrentSpreadsheet({
+      id: `new_${Date.now()}`,
+      name: 'Nuevo Documento.xlsx',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      createdBy: 'Admin',
+      size: 0,
+      sheets: 1
+    });
+    setView('editor');
+  };
+
+  const openSpreadsheet = async (spreadsheet: SavedSpreadsheet) => {
+    try {
+      const response = await fetch(`/api/admin/excel/${spreadsheet.id}`);
+      if (response.ok) {
+        const data = await response.json();
+        setCurrentSpreadsheet({ ...spreadsheet, data: data.data });
+      } else {
+        setCurrentSpreadsheet(spreadsheet);
+      }
+    } catch (error) {
+      setCurrentSpreadsheet(spreadsheet);
+    }
+    setView('editor');
+  };
+
+  const saveSpreadsheet = async (data: any[][], fileName: string) => {
+    try {
+      const response = await fetch('/api/admin/excel/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: currentSpreadsheet?.id,
+          name: fileName,
+          data
+        })
+      });
+      
+      if (response.ok) {
+        console.log('Spreadsheet saved successfully');
+        loadSpreadsheets();
+      }
+    } catch (error) {
+      console.error('Error saving spreadsheet:', error);
+    }
+  };
+
+  const deleteSpreadsheet = async (id: string) => {
+    if (!confirm('¿Estás seguro de eliminar este documento?')) return;
+    
+    try {
+      await fetch(`/api/admin/excel/${id}`, { method: 'DELETE' });
+      loadSpreadsheets();
+    } catch (error) {
+      console.error('Error deleting spreadsheet:', error);
+    }
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const formatDate = (dateString: string): string => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('es-ES', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const filteredSpreadsheets = spreadsheets.filter(s => 
+    s.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  // Vista de lista
+  if (view === 'list') {
+    return (
+      <div className="p-6 space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+              <FileSpreadsheet className="w-8 h-8 text-green-500" />
+              Excel Manager
+            </h1>
+            <p className="text-gray-400 mt-1">Crea, edita y gestiona hojas de cálculo</p>
+          </div>
+          <button
+            onClick={createNewSpreadsheet}
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            Nuevo Documento
+          </button>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Card variant="elevated" className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-green-500/20 rounded-lg">
+                <FileSpreadsheet className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-white">{spreadsheets.length}</p>
+                <p className="text-sm text-gray-400">Documentos</p>
+              </div>
+            </div>
+          </Card>
+          <Card variant="elevated" className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-500/20 rounded-lg">
+                <Table className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-white">
+                  {spreadsheets.reduce((acc, s) => acc + s.sheets, 0)}
+                </p>
+                <p className="text-sm text-gray-400">Hojas Totales</p>
+              </div>
+            </div>
+          </Card>
+          <Card variant="elevated" className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-purple-500/20 rounded-lg">
+                <HardDrive className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-white">
+                  {formatFileSize(spreadsheets.reduce((acc, s) => acc + s.size, 0))}
+                </p>
+                <p className="text-sm text-gray-400">Almacenamiento</p>
+              </div>
+            </div>
+          </Card>
+          <Card variant="elevated" className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-orange-500/20 rounded-lg">
+                <Clock className="w-5 h-5 text-orange-400" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-white">Hoy</p>
+                <p className="text-sm text-gray-400">Última Edición</p>
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        {/* Search and filters */}
+        <div className="flex items-center gap-4">
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Buscar documentos..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+          <button className="flex items-center gap-2 px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-300 hover:bg-gray-700">
+            <Filter className="w-4 h-4" />
+            Filtros
+          </button>
+        </div>
+
+        {/* Document list */}
+        <Card variant="default">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-700">
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Nombre</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Hojas</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Tamaño</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Modificado</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Creado por</th>
+                  <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredSpreadsheets.map((spreadsheet) => (
+                  <tr 
+                    key={spreadsheet.id}
+                    className="border-b border-gray-800 hover:bg-gray-800/50 transition-colors cursor-pointer"
+                    onClick={() => openSpreadsheet(spreadsheet)}
+                  >
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-green-500/20 rounded">
+                          <FileSpreadsheet className="w-4 h-4 text-green-400" />
+                        </div>
+                        <span className="text-white font-medium">{spreadsheet.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge variant="info">{spreadsheet.sheets} hojas</Badge>
+                    </td>
+                    <td className="px-4 py-3 text-gray-400">
+                      {formatFileSize(spreadsheet.size)}
+                    </td>
+                    <td className="px-4 py-3 text-gray-400">
+                      {formatDate(spreadsheet.updatedAt)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <User className="w-4 h-4 text-gray-500" />
+                        <span className="text-gray-400">{spreadsheet.createdBy}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                        <button 
+                          onClick={() => openSpreadsheet(spreadsheet)}
+                          className="p-2 hover:bg-gray-700 rounded transition-colors"
+                          title="Editar"
+                        >
+                          <Edit className="w-4 h-4 text-gray-400" />
+                        </button>
+                        <button 
+                          className="p-2 hover:bg-gray-700 rounded transition-colors"
+                          title="Descargar"
+                        >
+                          <Download className="w-4 h-4 text-gray-400" />
+                        </button>
+                        <button 
+                          onClick={() => deleteSpreadsheet(spreadsheet.id)}
+                          className="p-2 hover:bg-gray-700 rounded transition-colors"
+                          title="Eliminar"
+                        >
+                          <Trash2 className="w-4 h-4 text-red-400" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {filteredSpreadsheets.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-12">
+              <FileSpreadsheet className="w-12 h-12 text-gray-600 mb-4" />
+              <p className="text-gray-400">No hay documentos</p>
+              <button
+                onClick={createNewSpreadsheet}
+                className="mt-4 px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors"
+              >
+                Crear Primer Documento
+              </button>
+            </div>
+          )}
+        </Card>
+      </div>
+    );
+  }
+
+  // Vista de editor
+  return (
+    <div className="h-screen flex flex-col">
+      {/* Header del editor */}
+      <div className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={() => setView('list')}
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-300 transition-colors"
+          >
+            ← Volver
+          </button>
+          <div className="flex items-center gap-2">
+            <FileSpreadsheet className="w-5 h-5 text-green-400" />
+            <span className="text-white font-medium">{currentSpreadsheet?.name}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Editor */}
+      <div className="flex-1 overflow-hidden">
+        <SpreadsheetEditor
+          initialData={currentSpreadsheet?.data}
+          fileName={currentSpreadsheet?.name}
+          onSave={saveSpreadsheet}
+          height={window.innerHeight - 120}
+        />
+      </div>
+    </div>
+  );
+}
+
+=== PARTE 3: ENDPOINTS DE API PARA EXCEL ===
+
+5) Crear server/routes/excelRouter.ts:
+
+import { Router, Request, Response } from 'express';
+import * as XLSX from 'xlsx';
+import { db } from '../db';
+import { logger } from '../utils/logger';
+
+const router = Router();
+
+// Almacenamiento temporal (en producción usar base de datos)
+const spreadsheetStore = new Map<string, {
+  id: string;
+  name: string;
+  data: any[][];
+  sheets: { name: string; data: any[][] }[];
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  size: number;
+}>();
+
+// Listar todos los spreadsheets
+router.get('/list', async (req: Request, res: Response) => {
+  try {
+    const spreadsheets = Array.from(spreadsheetStore.values()).map(s => ({
+      id: s.id,
+      name: s.name,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      createdBy: s.createdBy,
+      size: s.size,
+      sheets: s.sheets?.length || 1
+    }));
+    
+    res.json(spreadsheets);
+  } catch (error) {
+    logger.error('Error listing spreadsheets', { error });
+    res.status(500).json({ error: 'Failed to list spreadsheets' });
+  }
+});
+
+// Obtener un spreadsheet específico
+router.get('/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const spreadsheet = spreadsheetStore.get(id);
+    
+    if (!spreadsheet) {
+      return res.status(404).json({ error: 'Spreadsheet not found' });
+    }
+    
+    res.json(spreadsheet);
+  } catch (error) {
+    logger.error('Error getting spreadsheet', { error, id: req.params.id });
+    res.status(500).json({ error: 'Failed to get spreadsheet' });
+  }
+});
+
+// Guardar spreadsheet
+router.post('/save', async (req: Request, res: Response) => {
+  try {
+    const { id, name, data, sheets } = req.body;
+    const spreadsheetId = id || `xlsx_${Date.now()}`;
+    const now = new Date().toISOString();
+    
+    const spreadsheet = {
+      id: spreadsheetId,
+      name: name || 'Untitled.xlsx',
+      data,
+      sheets: sheets || [{ name: 'Hoja 1', data }],
+      createdAt: spreadsheetStore.get(spreadsheetId)?.createdAt || now,
+      updatedAt: now,
+      createdBy: (req as any).user?.email || 'Admin',
+      size: JSON.stringify(data).length
+    };
+    
+    spreadsheetStore.set(spreadsheetId, spreadsheet);
+    
+    logger.info('Spreadsheet saved', { id: spreadsheetId, name });
+    
+    res.json({ 
+      success: true, 
+      id: spreadsheetId,
+      message: 'Spreadsheet saved successfully' 
+    });
+  } catch (error) {
+    logger.error('Error saving spreadsheet', { error });
+    res.status(500).json({ error: 'Failed to save spreadsheet' });
+  }
+});
+
+// Eliminar spreadsheet
+router.delete('/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    
+    if (!spreadsheetStore.has(id)) {
+      return res.status(404).json({ error: 'Spreadsheet not found' });
+    }
+    
+    spreadsheetStore.delete(id);
+    
+    logger.info('Spreadsheet deleted', { id });
+    
+    res.json({ success: true, message: 'Spreadsheet deleted successfully' });
+  } catch (error) {
+    logger.error('Error deleting spreadsheet', { error, id: req.params.id });
+    res.status(500).json({ error: 'Failed to delete spreadsheet' });
+  }
+});
+
+// Importar archivo Excel
+router.post('/import', async (req: Request, res: Response) => {
+  try {
+    // Esto manejaría uploads de archivos
+    // En producción usar multer para file uploads
+    const { fileData, fileName } = req.body;
+    
+    if (!fileData) {
+      return res.status(400).json({ error: 'No file data provided' });
+    }
+    
+    const buffer = Buffer.from(fileData, 'base64');
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    
+    const sheets = workbook.SheetNames.map(name => {
+      const worksheet = workbook.Sheets[name];
+      const data = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+      return { name, data };
+    });
+    
+    const spreadsheetId = `xlsx_${Date.now()}`;
+    const now = new Date().toISOString();
+    
+    const spreadsheet = {
+      id: spreadsheetId,
+      name: fileName || 'Imported.xlsx',
+      data: sheets[0]?.data || [],
+      sheets,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: (req as any).user?.email || 'Admin',
+      size: buffer.length
+    };
+    
+    spreadsheetStore.set(spreadsheetId, spreadsheet);
+    
+    res.json({ 
+      success: true, 
+      id: spreadsheetId,
+      sheets: sheets.length,
+      message: 'File imported successfully' 
+    });
+  } catch (error) {
+    logger.error('Error importing spreadsheet', { error });
+    res.status(500).json({ error: 'Failed to import spreadsheet' });
+  }
+});
+
+// Exportar a diferentes formatos
+router.get('/:id/export/:format', async (req: Request, res: Response) => {
+  try {
+    const { id, format } = req.params;
+    const spreadsheet = spreadsheetStore.get(id);
+    
+    if (!spreadsheet) {
+      return res.status(404).json({ error: 'Spreadsheet not found' });
+    }
+    
+    const workbook = XLSX.utils.book_new();
+    
+    if (spreadsheet.sheets) {
+      spreadsheet.sheets.forEach(sheet => {
+        const worksheet = XLSX.utils.aoa_to_sheet(sheet.data);
+        XLSX.utils.book_append_sheet(workbook, worksheet, sheet.name);
+      });
+    } else {
+      const worksheet = XLSX.utils.aoa_to_sheet(spreadsheet.data);
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Hoja 1');
+    }
+    
+    let buffer: Buffer;
+    let contentType: string;
+    let extension: string;
+    
+    switch (format) {
+      case 'csv':
+        const csvData = XLSX.utils.sheet_to_csv(workbook.Sheets[workbook.SheetNames[0]]);
+        buffer = Buffer.from(csvData, 'utf-8');
+        contentType = 'text/csv';
+        extension = 'csv';
+        break;
+      case 'xlsx':
+      default:
+        buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' });
+        contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        extension = 'xlsx';
+        break;
+    }
+    
+    const fileName = spreadsheet.name.replace(/\.[^/.]+$/, '') + '.' + extension;
+    
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(buffer);
+  } catch (error) {
+    logger.error('Error exporting spreadsheet', { error, id: req.params.id });
+    res.status(500).json({ error: 'Failed to export spreadsheet' });
+  }
+});
+
+// Generar spreadsheet desde datos del sistema
+router.post('/generate', async (req: Request, res: Response) => {
+  try {
+    const { type, filters, columns } = req.body;
+    let data: any[][] = [];
+    
+    switch (type) {
+      case 'users':
+        // Obtener usuarios y formatear para Excel
+        data = [
+          ['ID', 'Email', 'Nombre', 'Plan', 'Estado', 'Creado'],
+          // Los datos vendrían de la base de datos
+        ];
+        break;
+      case 'payments':
+        data = [
+          ['ID', 'Usuario', 'Monto', 'Estado', 'Fecha'],
+        ];
+        break;
+      case 'analytics':
+        data = [
+          ['Fecha', 'Visitas', 'Usuarios', 'Conversiones'],
+        ];
+        break;
+      default:
+        return res.status(400).json({ error: 'Invalid report type' });
+    }
+    
+    const spreadsheetId = `report_${type}_${Date.now()}`;
+    const now = new Date().toISOString();
+    
+    const spreadsheet = {
+      id: spreadsheetId,
+      name: `Reporte_${type}_${new Date().toISOString().split('T')[0]}.xlsx`,
+      data,
+      sheets: [{ name: type, data }],
+      createdAt: now,
+      updatedAt: now,
+      createdBy: (req as any).user?.email || 'System',
+      size: JSON.stringify(data).length
+    };
+    
+    spreadsheetStore.set(spreadsheetId, spreadsheet);
+    
+    res.json({ 
+      success: true, 
+      id: spreadsheetId,
+      message: 'Report generated successfully' 
+    });
+  } catch (error) {
+    logger.error('Error generating spreadsheet', { error });
+    res.status(500).json({ error: 'Failed to generate spreadsheet' });
+  }
+});
+
+export default router;
+
+6) Registrar el router en el servidor principal - añadir a server/routes.ts o equivalente:
+
+import excelRouter from './routes/excelRouter';
+
+// Dentro de la configuración de rutas:
+app.use('/api/admin/excel', excelRouter);
+
+=== PARTE 4: INTEGRACIÓN CON AGENTIC ENGINE ===
+
+7) Añadir herramientas de Excel al ToolRegistry en server/services/toolRegistry.ts:
+
+// Excel Tools
+registerTool({
+  id: 'excel_create',
+  name: 'Crear Excel',
+  description: 'Crea un nuevo documento Excel vacío o con datos',
+  category: 'data',
+  capabilities: ['create_spreadsheet', 'create_from_data', 'create_from_template'],
+  inputSchema: {
+    name: 'string',
+    data: 'array?',
+    template: 'string?'
+  },
+  isEnabled: true,
+  execute: async (input) => {
+    const id = `xlsx_${Date.now()}`;
+    return { success: true, spreadsheetId: id, name: input.name };
+  }
+});
+
+registerTool({
+  id: 'excel_import',
+  name: 'Importar Excel',
+  description: 'Importa un archivo Excel existente',
+  category: 'data',
+  capabilities: ['import_xlsx', 'import_csv', 'import_xls'],
+  inputSchema: {
+    fileUrl: 'string?',
+    fileData: 'string?',
+    fileName: 'string'
+  },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, message: 'File imported', fileName: input.fileName };
+  }
+});
+
+registerTool({
+  id: 'excel_export',
+  name: 'Exportar Excel',
+  description: 'Exporta datos a formato Excel',
+  category: 'data',
+  capabilities: ['export_xlsx', 'export_csv', 'export_pdf'],
+  inputSchema: {
+    spreadsheetId: 'string',
+    format: 'string'
+  },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, downloadUrl: `/api/admin/excel/${input.spreadsheetId}/export/${input.format}` };
+  }
+});
+
+registerTool({
+  id: 'excel_analyze',
+  name: 'Analizar Excel',
+  description: 'Analiza datos de un spreadsheet y genera estadísticas',
+  category: 'data',
+  capabilities: ['analyze_data', 'generate_stats', 'find_patterns'],
+  inputSchema: {
+    spreadsheetId: 'string',
+    analysisType: 'string'
+  },
+  isEnabled: true,
+  execute: async (input) => {
+    return { 
+      success: true, 
+      stats: {
+        rows: 100,
+        columns: 10,
+        numericColumns: 5,
+        textColumns: 5
+      }
+    };
+  }
+});
+
+registerTool({
+  id: 'excel_transform',
+  name: 'Transformar Excel',
+  description: 'Transforma datos de Excel (filtrar, ordenar, pivotar)',
+  category: 'data',
+  capabilities: ['filter_data', 'sort_data', 'pivot_table', 'merge_sheets'],
+  inputSchema: {
+    spreadsheetId: 'string',
+    operation: 'string',
+    config: 'object'
+  },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, message: `Operation ${input.operation} completed` };
+  }
+});
+
+8) Actualizar Intent Mapper con patterns de Excel en server/services/intentMapper.ts:
+
+// Añadir a EXTENDED_TOOL_PATTERNS:
+excel_create: ['crear excel', 'nuevo excel', 'crear hoja de cálculo', 'nueva hoja', 'crear spreadsheet', 'create excel', 'new spreadsheet'],
+excel_import: ['importar excel', 'cargar excel', 'subir excel', 'abrir excel', 'import excel', 'upload excel'],
+excel_export: ['exportar excel', 'descargar excel', 'guardar como excel', 'export excel', 'download excel'],
+excel_analyze: ['analizar excel', 'analizar datos', 'estadísticas excel', 'analyze spreadsheet'],
+excel_transform: ['transformar excel', 'filtrar excel', 'ordenar excel', 'pivotar', 'pivot table'],
+
+=== PARTE 5: AÑADIR AL SIDEBAR DE ADMIN ===
+
+9) Actualizar el sidebar de administración para incluir Excel Manager - en client/src/components/admin/AdminSidebar.tsx o equivalente:
+
+// Añadir item de Excel después de Reports y antes de Settings:
+{
+  id: 'excel',
+  label: 'Excel Manager',
+  icon: FileSpreadsheet, // de lucide-react
+  path: '/admin/excel',
+  badge: null
+}
+
+10) Añadir ruta en el router de admin:
+
+// En el archivo de rutas de admin (App.tsx o router config):
+import ExcelManager from './pages/admin/ExcelManager';
+
+// Añadir ruta:
+{ path: '/admin/excel', element: <ExcelManager /> }
+
+=== PARTE 6: VERIFICACIÓN ===
+
+11) Verificar la implementación:
+
+- Navegar a /admin/excel
+- Crear nuevo documento
+- Verificar toolbar completo (importar, exportar, editar, formatear)
+- Probar importar archivo .xlsx
+- Probar exportar a .xlsx y .csv
+- Verificar múltiples hojas funcionan
+- Verificar que las herramientas aparecen en /api/admin/agent/tools
+- Probar el Agentic Engine con "crear excel con datos de usuarios"
+
+Reportar resultados de cada verificación con ✅ o ❌.

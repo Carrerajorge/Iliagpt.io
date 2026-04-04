@@ -1,0 +1,72 @@
+Vamos a trabajar en modo técnico y con pruebas reproducibles para validar que lo que Replit dice (“Router listo”) es cierto y, de paso, aislar por qué antes aparecía “Agent ran into an error”.
+Abajo tienes un plan de verificación + comandos concretos (curl) + expectativas + dónde mirar si algo falla.
+1) Smoke test: ¿el server está arriba y exponiendo endpoints?
+En Replit, abre el Shell y ejecuta:
+curl -i http://localhost:3000/health
+Si no existe /health, prueba:
+curl -i http://localhost:3000/
+Esperado: status 200/304 o algún JSON/HTML.
+Si te da 404, no pasa nada; lo importante es confirmar que el servidor responde en el puerto correcto.
+Si tu server usa otro puerto (Replit a veces usa PORT), el comando correcto es:
+echo $PORT
+curl -i http://localhost:$PORT/
+2) Test del Router: POST /api/chat/route
+Caso A: pregunta simple → debería ir a chat
+curl -s http://localhost:3000/api/chat/route \
+  -H "Content-Type: application/json" \
+  -d '{"message":"¿Qué es una lista enlazada?"}' | jq
+Esperado: algo tipo
+{
+  "route": "chat",
+  "confidence": 0.6-0.9,
+  "reasons": [...]
+}
+Caso B: requiere web/verificación → debería ir a agent
+curl -s http://localhost:3000/api/chat/route \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Busca en la web el precio actual de Bitcoin y cita fuentes."}' | jq
+Esperado: "route":"agent" y tool_needs con web_search/open_url o similar.
+Caso C: complejo multi-step → agent
+curl -s http://localhost:3000/api/chat/route \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Crea un plan para una app con login y base de datos y dame pasos de implementación."}' | jq
+3) Test del agente: POST /api/chat/agent-run
+Este endpoint debe ejecutar AgentRunner y devolver respuesta final.
+curl -s http://localhost:3000/api/chat/agent-run \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Investiga en la web qué es OWASP Top 10 (2021 o el más reciente) y dame un resumen con fuentes."}' | jq
+Esperado:
+Un output con final_answer o result.
+Debe verse que usó web_search y/o open_url.
+Si falla con 500 o “Agent ran into an error”
+El 80% de las veces es una de estas causas técnicas:
+ToolRegistry no está cableado a las tools nuevas (web_search, open_url, etc.).
+El agentRunner wrapper no está construyendo bien el “context/state” que el agentOrchestrator espera.
+Falta clave (Gemini/OpenAI) y el “fallback heurístico” rutea, pero el agente igual intenta llamar LLM y revienta.
+El agente usa navegación real pero no tiene implementación (ej: open_url no hace fetch o bloquea CORS).
+✅ Acción inmediata si falla: pégame el stack trace del backend (la excepción real) y el contenido del handler agent-run (solo ese archivo), y te digo exactamente qué línea corregir.
+4) Test de escalamiento: POST /api/chat/escalation-check
+Esto debe decidir si una “respuesta de chat” requiere escalar. Pruébalo así:
+curl -s http://localhost:3000/api/chat/escalation-check \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userMessage":"Dame el precio actual del oro.",
+    "chatDraft":"No puedo verificarlo sin buscar en la web."
+  }' | jq
+Esperado: algo como { "escalate": true }.
+5) Validación de configuración (env vars)
+En el Shell:
+printenv | egrep "ROUTER_CONFIDENCE_THRESHOLD|MAX_AGENT_STEPS|ENABLE_DYNAMIC_ESCALATION|GEMINI_API_KEY|OPENAI_API_KEY|PORT"
+Esperado:
+ROUTER_CONFIDENCE_THRESHOLD=0.65
+MAX_AGENT_STEPS=8
+ENABLE_DYNAMIC_ESCALATION=true
+y alguna API key si el agente necesita LLM para planificar.
+Si no hay key, el router puede funcionar igual, pero el agente podría fallar si no implementaron “degradación” dentro del loop.
+6) Qué le dices a Replit (técnico y accionable)
+Dile esto (copy/paste):
+“Quiero ver evidencias y no solo el resumen. Haz lo siguiente:
+Ejecuta 3 curl tests contra /api/chat/route (simple/chat, web/agent, multi-step/agent) y pega las respuestas JSON.
+Ejecuta 1 curl contra /api/chat/agent-run que obligue web_search + open_url y pega el output.
+Si hay error, pega el stack trace completo del backend (no HMR), y la ruta exacta de archivos tocados: router.ts, agentRunner.ts, endpoints, toolRegistry bindings.
+Confirma que AgentRunner llama al agentOrchestrator existente con estado correcto y que las tools están registradas con los mismos nombres que el runner usa.”

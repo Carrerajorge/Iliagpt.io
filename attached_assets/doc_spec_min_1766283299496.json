@@ -1,0 +1,10 @@
+{
+  "meta": {},
+  "styleset": "modern",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "Hola"
+    }
+  ]
+}

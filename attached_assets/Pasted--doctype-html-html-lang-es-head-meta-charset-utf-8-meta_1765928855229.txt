@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ribbon estilo Word (similar)</title>
+  <style>
+    :root{
+      --bg:#f3f4f6;
+      --panel:#ffffff;
+      --line:#e5e7eb;
+      --text:#111827;
+      --muted:#6b7280;
+      --blue:#2563eb;
+      --blue2:#1d4ed8;
+      --chip:#ffffff;
+      --chipHover:#f9fafb;
+      --btn:#f3f4f6;
+      --btnHover:#e5e7eb;
+      --r:10px;
+      --shadow:0 1px 0 rgba(0,0,0,.04);
+      --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:var(--font);color:var(--text);background:#fff}
+    /* Top row */
+    .top{
+      display:flex;align-items:center;gap:12px;
+      padding:10px 12px;background:var(--bg);
+      border-bottom:1px solid var(--line);
+    }
+    .left{display:flex;align-items:center;gap:10px;min-width:280px}
+    .center{flex:1;text-align:center;font-weight:600;color:#374151}
+    .right{display:flex;align-items:center;gap:10px;min-width:340px;justify-content:flex-end}
+
+    .toggle{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+    .switch{
+      width:38px;height:20px;border-radius:999px;background:#d1d5db;position:relative;cursor:pointer;
+    }
+    .switch::after{
+      content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:999px;background:#fff;
+      box-shadow:0 1px 2px rgba(0,0,0,.15);transition:.18s;
+    }
+    .switch[data-on="true"]{background:#22c55e}
+    .switch[data-on="true"]::after{left:21px}
+
+    .iconbtn{
+      width:34px;height:34px;border:1px solid var(--line);
+      background:var(--panel);border-radius:var(--r);
+      box-shadow:var(--shadow);cursor:pointer;
+      display:grid;place-items:center;font-size:16px;
+    }
+    .search{
+      display:flex;align-items:center;gap:8px;
+      min-width:320px;padding:8px 10px;border-radius:999px;
+      border:1px solid var(--line);background:var(--panel);box-shadow:var(--shadow);
+    }
+    .search input{border:0;outline:0;width:100%;font-size:14px}
+    .chip{
+      display:flex;align-items:center;gap:8px;
+      padding:8px 10px;border-radius:999px;border:1px solid var(--line);
+      background:var(--chip);cursor:pointer;box-shadow:var(--shadow);
+      font-size:14px;
+    }
+    .chip:hover{background:var(--chipHover)}
+    .share{
+      padding:9px 12px;border-radius:999px;border:1px solid var(--blue2);
+      background:var(--blue);color:#fff;font-weight:700;cursor:pointer;
+      display:flex;align-items:center;gap:8px;
+      box-shadow:0 1px 0 rgba(37,99,235,.25);
+    }
+
+    /* Tabs */
+    .tabs{
+      display:flex;gap:10px;align-items:flex-end;
+      padding:8px 12px 0;background:var(--bg);
+      border-bottom:1px solid var(--line);
+    }
+    .tab{
+      padding:10px 12px;border-radius:10px 10px 0 0;
+      font-weight:650;font-size:14px;color:#374151;cursor:pointer;
+    }
+    .tab[aria-selected="true"]{
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-bottom-color:var(--panel);
+    }
+
+    /* Ribbon strip */
+    .ribbon{
+      background:var(--panel);
+      border-bottom:1px solid var(--line);
+      box-shadow:var(--shadow);
+      padding:10px 12px;
+    }
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .group{
+      border:1px solid var(--line);border-radius:12px;background:#fff;
+      padding:10px;display:flex;gap:10px;align-items:flex-start;min-height:86px;
+    }
+    .gcol{display:flex;flex-direction:column;gap:6px}
+    .gtitle{margin-top:6px;font-size:11px;color:var(--muted);text-align:center}
+    .btn{
+      border:1px solid var(--line);background:var(--btn);
+      border-radius:10px;padding:8px 10px;cursor:pointer;
+      display:flex;align-items:center;gap:8px;font-size:13px;
+    }
+    .btn:hover{background:var(--btnHover)}
+    .tiny{
+      width:34px;height:34px;border-radius:10px;border:1px solid var(--line);
+      background:var(--btn);cursor:pointer;display:grid;place-items:center;
+      font-size:14px;
+    }
+    .tiny:hover{background:var(--btnHover)}
+    select{
+      border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:#fff;
+      font-size:13px;outline:0;
+    }
+    .stack{display:flex;gap:8px;align-items:center}
+    .muted{color:var(--muted)}
+  </style>
+</head>
+<body>
+
+  <!-- Top row -->
+  <div class="top">
+    <div class="left">
+      <div class="toggle">
+        <span>Autoguardado</span>
+        <div id="autosave" class="switch" data-on="false" title="Autoguardado"></div>
+      </div>
+
+      <button class="iconbtn" title="Inicio">⌂</button>
+      <button class="iconbtn" title="Guardar">💾</button>
+      <button class="iconbtn" title="Deshacer">↶</button>
+      <button class="iconbtn" title="Rehacer">↷</button>
+      <button class="iconbtn" title="Imprimir">🖨️</button>
+      <button class="iconbtn" title="Más">⋯</button>
+    </div>
+
+    <div class="center">Documento2</div>
+
+    <div class="right">
+      <div class="search" title="Buscar">
+        🔎 <input placeholder="Buscar (Cmd + Ctrl + U)" />
+      </div>
+      <div class="chip" id="comments">💬 <span>Comentarios</span></div>
+      <div class="chip" id="mode">✏️ <span>Edición</span> ▾</div>
+      <button class="share" id="share">⤴︎ Compartir</button>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs" role="tablist" aria-label="Pestañas">
+    <div class="tab" role="tab" tabindex="0" data-tab="inicio" aria-selected="true">Inicio</div>
+    <div class="tab" role="tab" tabindex="-1" data-tab="insertar" aria-selected="false">Insertar</div>
+    <div class="tab" role="tab" tabindex="-1" data-tab="dibujar" aria-selected="false">Dibujar</div>
+    <div class="tab" role="tab" tabindex="-1" data-tab="diseno" aria-selected="false">Diseño</div>
+    <div class="tab" role="tab" tabindex="-1" data-tab="disposicion" aria-selected="false">Disposición</div>
+    <div class="tab" role="tab" tabindex="-1" data-tab="referencias" aria-selected="false">Referencias</div>
+    <div class="tab" role="tab" tabindex="-1" data-tab="correspondencia" aria-selected="false">Correspondencia</div>
+    <div class="tab" role="tab" tabindex="-1" data-tab="revisar" aria-selected="false">Revisar</div>
+    <div class="tab" role="tab" tabindex="-1" data-tab="vista" aria-selected="false">Vista</div>
+  </div>
+
+  <!-- Ribbon -->
+  <div class="ribbon" id="ribbon"></div>
+
+  <script>
+    const ribbon = document.getElementById("ribbon");
+
+    const tabs = {
+      inicio: () => `
+        <div class="row">
+          <div class="group">
+            <div class="gcol">
+              <button class="btn">📋 Pegar</button>
+              <button class="btn">📄 Copiar</button>
+              <button class="btn">✂️ Cortar</button>
+              <div class="gtitle">Portapapeles</div>
+            </div>
+          </div>
+
+          <div class="group">
+            <div class="gcol">
+              <div class="stack">
+                <select>
+                  <option>Times New Roman</option>
+                  <option>Arial</option>
+                  <option>Calibri</option>
+                  <option>Georgia</option>
+                </select>
+                <select>
+                  <option>10</option><option selected>12</option><option>14</option><option>16</option><option>18</option><option>24</option>
+                </select>
+              </div>
+              <div class="stack" style="flex-wrap:wrap">
+                <div class="tiny" title="Negrita"><b>N</b></div>
+                <div class="tiny" title="Cursiva"><i>K</i></div>
+                <div class="tiny" title="Subrayado"><u>S</u></div>
+                <div class="tiny" title="Superíndice">x²</div>
+                <div class="tiny" title="Subíndice">x₂</div>
+                <div class="tiny" title="Color">A▾</div>
+                <div class="tiny" title="Resaltar">🖍️</div>
+              </div>
+              <div class="gtitle">Fuente</div>
+            </div>
+          </div>
+
+          <div class="group">
+            <div class="gcol">
+              <div class="stack" style="flex-wrap:wrap">
+                <div class="tiny" title="Viñetas">•</div>
+                <div class="tiny" title="Numeración">1.</div>
+                <div class="tiny" title="Alinear izquierda">≡</div>
+                <div class="tiny" title="Centrar">≣</div>
+                <div class="tiny" title="Alinear derecha">≡</div>
+                <div class="tiny" title="Justificar">▤</div>
+              </div>
+              <div class="gtitle">Párrafo</div>
+            </div>
+          </div>
+
+          <div class="group">
+            <div class="gcol">
+              <button class="btn">🎨 Panel de estilos</button>
+              <button class="btn">🗣️ Dictar</button>
+              <button class="btn">🧩 Complementos</button>
+              <div class="gtitle">Herramientas</div>
+            </div>
+          </div>
+        </div>
+      `,
+      insertar: () => `<div class="muted">Aquí irían las opciones de Insertar.</div>`,
+      dibujar: () => `<div class="muted">Aquí irían lápices, tinta y trazos.</div>`,
+      diseno: () => `<div class="muted">Aquí irían temas, colores y estilos del documento.</div>`,
+      disposicion: () => `<div class="muted">Aquí irían márgenes, sangrías, columnas…</div>`,
+      referencias: () => `<div class="muted">Aquí irían citas, bibliografía…</div>`,
+      correspondencia: () => `<div class="muted">Aquí iría combinación de correspondencia…</div>`,
+      revisar: () => `<div class="muted">Aquí irían ortografía, control de cambios…</div>`,
+      vista: () => `<div class="muted">Aquí irían zoom, reglas, vistas…</div>`
+    };
+
+    function render(name){ ribbon.innerHTML = tabs[name]?.() ?? ""; }
+
+    document.querySelectorAll(".tab").forEach(t=>{
+      t.addEventListener("click", ()=>{
+        document.querySelectorAll(".tab").forEach(x=>x.setAttribute("aria-selected","false"));
+        t.setAttribute("aria-selected","true");
+        render(t.dataset.tab);
+      });
+    });
+
+    // demo actions
+    document.getElementById("autosave").addEventListener("click", (e)=>{
+      const el = e.currentTarget;
+      el.dataset.on = (el.dataset.on !== "true").toString();
+    });
+    document.getElementById("share").addEventListener("click", ()=>alert("Demo: Compartir"));
+    document.getElementById("comments").addEventListener("click", ()=>alert("Demo: Comentarios"));
+    document.getElementById("mode").addEventListener("click", ()=>alert("Demo: Modo Edición/Lectura"));
+
+    render("inicio");
+  </script>
+</body>
+</html>

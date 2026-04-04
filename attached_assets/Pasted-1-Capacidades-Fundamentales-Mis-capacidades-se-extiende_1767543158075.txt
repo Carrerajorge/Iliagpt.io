@@ -1,0 +1,131 @@
+1. Capacidades Fundamentales
+
+Mis capacidades se extienden a través de diversas disciplinas, permitiéndome actuar como un investigador, desarrollador, escritor y analista, todo en uno. A continuación, se presenta un resumen de mis áreas de competencia clave:
+
+Categoría de Capacidad
+Descripción
+Ejemplos de Tareas
+Investigación y Análisis
+Recopilación de información actualizada, verificación de hechos, análisis de datos estructurados y generación de visualizaciones.
+Redacción de informes de investigación, análisis de tendencias de mercado, creación de gráficos a partir de hojas de cálculo.
+Desarrollo de Software
+Construcción de aplicaciones web, móviles y soluciones de software, incluyendo scaffolding y configuración de entornos.
+Desarrollo de una página de aterrizaje estática, creación de una aplicación con base de datos y autenticación de usuarios, debugging de código Python.
+Creación de Contenido
+Generación y edición de texto, presentaciones, imágenes, videos, audio y voz a partir de descripciones o referencias.
+Redacción de artículos de varias secciones, diseño de presentaciones (PPT/PDF), generación de imágenes para un sitio web, transcripción de audio.
+Automatización y Productividad
+Ejecución de tareas programadas y automatización de flujos de trabajo complejos que involucran múltiples pasos.
+Programación de una tarea recurrente (e.g., monitoreo de un sitio web), automatización de procesos de compra o reserva, gestión de archivos en el sistema.
+
+
+
+
+1.1. Investigación y Producción Documental
+
+Soy experto en la síntesis de información y la producción de documentos formales. Esto incluye:
+
+•
+Recolección de Datos: Utilizo herramientas de búsqueda para acceder a información actualizada, artículos, datos públicos y publicaciones académicas.
+
+•
+Verificación de Hechos: Cruzo información de múltiples fuentes para asegurar la precisión de las afirmaciones.
+
+•
+Documentación Formal: Puedo generar documentos con formato académico, utilizando párrafos completos, tablas, texto en negrita para énfasis y citas en línea para referencias.
+
+1.2. Desarrollo de Software y Aplicaciones
+
+Mi entorno me permite inicializar y trabajar en proyectos de desarrollo de software con scaffolding preconfigurado.
+
+
+"Mi capacidad de desarrollo se extiende a la creación de aplicaciones web estáticas (Vite + React + TypeScript + TailwindCSS), aplicaciones web con base de datos y autenticación de usuarios (incluyendo Drizzle y MySQL/TiDB), y aplicaciones móviles nativas (Expo + React Native)."
+
+El proceso de desarrollo se realiza directamente en el entorno sandbox, lo que me permite escribir, ejecutar y depurar código utilizando herramientas como shell y file.
+
+1.3. Creación de Contenido Multimedia
+
+Puedo generar y manipular diversos tipos de medios, entrando en modos de generación especializados:
+
+•
+Presentaciones: Puedo crear presentaciones de diapositivas (PPT/PDF) a partir de un esquema de contenido, utilizando modos de generación html (para contenido editable y con datos) o image (para diapositivas visualmente impactantes).
+
+•
+Medios Visuales y Auditivos: Tengo la capacidad de generar y editar imágenes, audio y voz a partir de descripciones textuales.
+
+2. Mecanismos de Ejecución: El "Cómo lo Hace"
+
+Mi funcionamiento se basa en una arquitectura que combina un entorno de ejecución robusto con un sistema de toma de decisiones iterativo.
+
+2.1. El Entorno Sandbox
+
+Opero dentro de una máquina virtual aislada (sandbox) basada en Ubuntu 22.04. Este entorno proporciona:
+
+•
+Aislamiento: Garantiza que mis operaciones no afecten el sistema del usuario y viceversa, ofreciendo seguridad y privacidad.
+
+•
+Persistencia: El estado del sistema, las instalaciones de paquetes y los archivos persisten entre sesiones, permitiendo retomar tareas complejas.
+
+•
+Herramientas Preinstaladas: Acceso a utilidades de línea de comandos (e.g., git, curl), entornos de Python (3.11) y Node.js (22.13), y un navegador Chromium.
+
+2.2. El Ciclo de Agente (Agent Loop)
+
+Mi proceso de trabajo es un ciclo continuo de siete pasos que garantiza una progresión lógica y adaptativa:
+
+1.
+Analizar Contexto: Entender la intención del usuario y el estado actual de la tarea.
+
+2.
+Pensar: Razonar sobre la estrategia a seguir (actualizar plan, avanzar fase, o tomar una acción).
+
+3.
+Seleccionar Herramienta: Elegir la herramienta más adecuada para el siguiente paso.
+
+4.
+Ejecutar Acción: Invocar la herramienta seleccionada (ejecución de función).
+
+5.
+Recibir Observación: Procesar el resultado de la acción.
+
+6.
+Iterar Ciclo: Repetir los pasos hasta completar la tarea.
+
+7.
+Entregar Resultado: Comunicar el resultado final al usuario.
+
+2.3. El Sistema de Herramientas (Tool Use)
+
+La clave de mi versatilidad reside en mi capacidad para invocar herramientas especializadas (a través de function calling), cada una diseñada para interactuar con el entorno o el mundo exterior:
+
+Herramienta
+Función Principal
+plan
+Gestionar el plan de tareas (crear, actualizar, avanzar fases).
+message
+Comunicarme con el usuario (informar, preguntar, entregar resultados).
+shell
+Ejecutar comandos de línea en el sandbox (instalación, gestión de archivos, ejecución de código).
+file
+Operaciones de contenido de archivos (leer, escribir, editar, ver).
+search
+Búsqueda de información externa (web, imágenes, APIs, noticias, datos).
+browser
+Navegación web y acceso a contenido de URLs.
+schedule
+Programar tareas para ejecución futura o recurrente.
+expose
+Exponer un puerto local del sandbox para acceso público temporal.
+webdev_init_project
+Inicializar proyectos de desarrollo de software con scaffolding.
+slides
+Entrar en modo de creación de presentaciones.
+generate
+Entrar en modo de generación de medios (imágenes, audio, etc.).
+
+
+
+
+El uso de estas herramientas me permite descomponer tareas complejas en pasos manejables y ejecutarlos de manera secuencial y lógica. Por ejemplo, para crear un sitio web, primero uso webdev_init_project, luego file para escribir el código, y finalmente shell para ejecutar y expose para mostrar el resultado.
+

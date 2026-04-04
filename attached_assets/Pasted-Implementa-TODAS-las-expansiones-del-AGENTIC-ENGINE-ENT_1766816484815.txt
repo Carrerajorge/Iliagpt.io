@@ -1,0 +1,93 @@
+Implementa TODAS las expansiones del AGENTIC ENGINE ENTERPRISE - Dashboard Visual, Integración Chat, 50+ Herramientas, Documentación, Tests y Optimizaciones de Producción:
+
+=== PARTE A: DASHBOARD VISUAL DEL AGENTIC ===
+
+1) PÁGINA PRINCIPAL AGENTIC DASHBOARD - crear client/src/pages/admin/AgenticDashboard.tsx: layout con sidebar de navegación interna [Overview, Tools, Complexity, Orchestration, Gaps, Memory, Circuits]; header con título "🤖 Agentic Engine" y badges de status (healthy/degraded/down); auto-refresh cada 30s con toggle para pausar.
+
+2) OVERVIEW SECTION - métricas principales en grid de 6 cards: {icon: Wrench, label: "Tools Activas", value: 28, subtext: "de 50 disponibles"}, {icon: Brain, label: "Requests Hoy", value: dynamic, trend: +12%}, {icon: CheckCircle, label: "Success Rate", value: "94.2%", color: green}, {icon: Gauge, label: "Avg Complexity", value: "4.7", subtext: "moderate"}, {icon: AlertTriangle, label: "Circuits Open", value: 0, color: green si 0, red si >0}, {icon: Database, label: "Memory Used", value: "2.4 KB", subtext: "de 10MB max"}; debajo: mini chart de requests por hora (últimas 24h) usando Recharts AreaChart.
+
+3) TOOLS SECTION - crear AgenticToolsPanel.tsx: tabs por categoría [All, Users, AI Models, Payments, Analytics, Database, Security, Reports, Settings]; tabla con columnas: Tool Name, Category, Status (badge verde/amarillo/rojo), Usage Count, Success Rate, Avg Time; cada fila expandible mostrando: description, input_schema, last_used, failure_count; filtro de búsqueda por nombre; ordenar por cualquier columna; indicador de health: verde (>95% success), amarillo (80-95%), rojo (<80%).
+
+4) COMPLEXITY TESTER SECTION - crear ComplexityTester.tsx: textarea grande para input de prompt con placeholder "Escribe un prompt para analizar su complejidad..."; botón "Analizar" que llama POST /api/admin/agent/complexity/analyze; resultados: gauge semicircular animado (1-10) con color gradient (verde→amarillo→rojo), badge grande con categoría (TRIVIAL/SIMPLE/MODERATE/COMPLEX/ARCHITECTURAL), lista de signals detectados con iconos, path recomendado con flecha visual (fast→standard→orchestrated→architect), breakdown de dimensiones: 5 barras horizontales mostrando cognitive_load, domain_breadth, steps_required, ambiguity_level, technical_depth; historial de últimos 10 análisis en sidebar derecho.
+
+5) ORCHESTRATION MONITOR - crear OrchestrationMonitor.tsx: lista de ejecuciones recientes con status badge, duración, subtasks count; cada ejecución expandible mostrando: timeline vertical con cada subtask (icono, nombre, status, duración), progress bar animado si está en ejecución, dependency graph visual simple (boxes conectadas con líneas), errores si hubo con stack trace colapsable; WebSocket listener para actualizaciones real-time: useEffect con socket.on('progress:update'), actualizar UI sin refresh; filtros: status (all/running/completed/failed), fecha, complexity range.
+
+6) GAPS NOTIFICATION CENTER - crear GapsCenter.tsx: header con stats: {pendientes, trending, resueltos_esta_semana}; sección "🔥 Trending Gaps" con top 3 gaps más solicitados, badge con user count, botones quick action; tabla principal con columnas: Gap Description, Users, Impact (1-10 con color), Status (NEW/ACK/WIP/DONE), First Seen, Actions; filtros: status, impact range, date range, search text; modal de detalle al hacer click: full description, lista de prompts ejemplo (comprimidos), segmentos que lo piden (pie chart), solución sugerida, campo para notas de admin, botones de acción (Acknowledge, In Progress, Resolve, Dismiss); bulk actions: seleccionar múltiples y marcar status.
+
+7) MEMORY EXPLORER - crear MemoryExplorer.tsx: cards de stats: total_atoms, storage_bytes, avg_weight, atoms_by_type; pie chart de distribución por tipo (intent/pattern/correction/preference/outcome); timeline chart mostrando atoms created over time; tabla de atoms recientes: id (truncado), type, weight, created, last_active; detail modal: full atom data con JSON viewer; botón "Run Garbage Collection" con confirmación y resultado; decay simulator: slider para simular paso del tiempo y ver qué atoms se eliminarían.
+
+8) CIRCUIT BREAKERS PANEL - crear CircuitBreakersPanel.tsx: lista de circuits por tool_id; cada circuit muestra: status (CLOSED verde / OPEN rojo / HALF_OPEN amarillo), failure_count, last_failure timestamp, opened_at si está abierto, cooldown_remaining; acciones: Force Close (reset manual), Force Open (para testing); timeline de eventos del circuit; alertas configurables: notificar cuando circuit se abre.
+
+9) ESTILOS DARK THEME - mantener consistencia: background #0a0a0f, cards #12121a, borders #1e1e2e, primary #6366f1, success #22c55e, warning #eab308, error #ef4444; todas las transiciones suaves; hover states en todos los interactivos; responsive para móvil.
+
+=== PARTE B: INTEGRACIÓN COMPLETA CON CHAT ===
+
+10) CHAT INTERCEPTOR - crear server/middleware/agenticInterceptor.ts: middleware que intercepta POST /api/chat/messages; antes de procesar: const analysis = await agenticEngine.analyze(message); decidir ruta: if (analysis.complexity.score <= 2) return fastResponse(message); if (analysis.complexity.score <= 4) return standardResponse(message); return orchestratedResponse(message, analysis);
+
+11) AUTONOMOUS EXECUTION - crear server/services/autonomousExecutor.ts: async function executeAutonomously(prompt, context): detectar intent y tools necesarias, verificar permisos del usuario, ejecutar tools en orden correcto, combinar resultados, formatear respuesta para chat; si tool no disponible → crear gap notification automáticamente; si error → usar fallback o responder con explicación amigable.
+
+12) OUTCOME LEARNING - después de cada respuesta: capturar señales de outcome (user continuó conversación, regeneró, dio feedback), crear OutcomeAtom en CompressedMemory, actualizar weights de patterns usados (éxito +0.1, fallo -0.2), detectar si respuesta fue demasiado larga/corta/incorrecta y crear CorrectionAtom.
+
+13) PROACTIVE SUGGESTIONS - crear server/services/proactiveSuggester.ts: analizar contexto de conversación, si usuario está en tema relacionado con tool disponible → sugerir: "💡 Puedo ayudarte a [acción] automáticamente. ¿Quieres que lo haga?"; suggestions basadas en: hora del día, historial del usuario, patterns exitosos; no ser intrusivo: max 1 sugerencia por conversación.
+
+14) REAL-TIME PROGRESS UI - crear client/src/components/chat/OrchestrationProgress.tsx: modal/drawer que aparece cuando orchestration inicia; progress bar con porcentaje, paso actual con animación, lista de pasos completados con checkmarks, ETA countdown, botón cancelar; WebSocket para updates; auto-close cuando completa con animación de éxito.
+
+15) CHAT CONTEXT MEMORY - mantener contexto de conversación para el agentic: últimos 5 mensajes, entities mencionadas, preferencias detectadas (formato, verbosidad, idioma), tools ya usadas en esta conversación; usar para mejorar respuestas siguientes.
+
+=== PARTE C: EXPANSIÓN A 50+ HERRAMIENTAS ===
+
+16) INTEGRATION TOOLS - añadir al ToolRegistry: {id: 'slack_send', name: 'Enviar a Slack', category: 'integrations', capabilities: ['send_message', 'send_file', 'send_alert'], execute: async(input) => {...}}, {id: 'email_send', name: 'Enviar Email', capabilities: ['send_email', 'send_template']}, {id: 'webhook_trigger', name: 'Trigger Webhook', capabilities: ['http_post', 'http_get']}, {id: 'calendar_create', name: 'Crear Evento', capabilities: ['create_event', 'schedule_meeting']}, {id: 'drive_upload', name: 'Subir a Drive', capabilities: ['upload_file', 'create_folder']}, {id: 'sms_send', name: 'Enviar SMS', capabilities: ['send_sms']}, {id: 'push_notify', name: 'Push Notification', capabilities: ['send_push']}.
+
+17) AI ADVANCED TOOLS - añadir: {id: 'image_generate', name: 'Generar Imagen', category: 'ai_advanced', capabilities: ['generate_image', 'edit_image']}, {id: 'code_review', name: 'Revisar Código', capabilities: ['analyze_code', 'suggest_fixes', 'security_scan']}, {id: 'summarize_long', name: 'Resumir Documento', capabilities: ['summarize', 'extract_key_points']}, {id: 'translate_doc', name: 'Traducir Documento', capabilities: ['translate', 'detect_language']}, {id: 'sentiment_analyze', name: 'Análisis de Sentimiento', capabilities: ['analyze_sentiment', 'detect_emotions']}, {id: 'entity_extract', name: 'Extraer Entidades', capabilities: ['extract_names', 'extract_dates', 'extract_amounts']}.
+
+18) AUTOMATION TOOLS - añadir: {id: 'schedule_task', name: 'Programar Tarea', category: 'automation', capabilities: ['schedule_once', 'schedule_recurring', 'cancel_scheduled']}, {id: 'batch_process', name: 'Procesar en Lote', capabilities: ['batch_users', 'batch_emails', 'batch_reports']}, {id: 'workflow_create', name: 'Crear Workflow', capabilities: ['define_steps', 'set_triggers', 'set_conditions']}, {id: 'auto_backup', name: 'Backup Automático', capabilities: ['backup_db', 'backup_files', 'restore']}, {id: 'cleanup_job', name: 'Limpieza Automática', capabilities: ['cleanup_old_data', 'archive', 'purge']}.
+
+19) DATA TOOLS - añadir: {id: 'chart_generate', name: 'Generar Gráfico', category: 'data', capabilities: ['line_chart', 'bar_chart', 'pie_chart', 'area_chart']}, {id: 'csv_export', name: 'Exportar CSV', capabilities: ['export_users', 'export_payments', 'export_custom']}, {id: 'pdf_generate', name: 'Generar PDF', capabilities: ['generate_report', 'generate_invoice', 'generate_certificate']}, {id: 'excel_export', name: 'Exportar Excel', capabilities: ['export_xlsx', 'multi_sheet']}, {id: 'data_transform', name: 'Transformar Datos', capabilities: ['filter', 'aggregate', 'pivot', 'join']}, {id: 'data_import', name: 'Importar Datos', capabilities: ['import_csv', 'import_json', 'import_excel']}.
+
+20) COMMUNICATION TOOLS - añadir: {id: 'template_render', name: 'Renderizar Template', category: 'communication', capabilities: ['email_template', 'sms_template', 'notification_template']}, {id: 'broadcast_send', name: 'Enviar Broadcast', capabilities: ['send_to_segment', 'send_to_all']}, {id: 'notification_create', name: 'Crear Notificación', capabilities: ['in_app', 'push', 'email']}.
+
+21) MONITORING TOOLS - añadir: {id: 'health_check', name: 'Health Check', category: 'monitoring', capabilities: ['check_api', 'check_db', 'check_services']}, {id: 'alert_create', name: 'Crear Alerta', capabilities: ['threshold_alert', 'anomaly_alert']}, {id: 'log_search', name: 'Buscar Logs', capabilities: ['search_errors', 'search_by_user', 'search_by_date']}, {id: 'metric_query', name: 'Consultar Métricas', capabilities: ['get_metrics', 'compare_periods']}.
+
+22) ACTUALIZAR INTENT MAPPER - añadir patterns para nuevas tools: 'slack' → slack_send, 'email' → email_send, 'imagen' → image_generate, 'programar' → schedule_task, 'gráfico' → chart_generate, 'pdf' → pdf_generate, etc.; asegurar que OrchestrationEngine puede descomponer tareas que usan nuevas tools.
+
+=== PARTE D: DOCUMENTACIÓN Y TESTS ===
+
+23) README PRINCIPAL - crear docs/AGENTIC_ENGINE.md: título y badges, arquitectura con diagrama ASCII, quick start (instalación, configuración, uso básico), componentes principales con descripción de cada uno, API endpoints con ejemplos curl, configuración de environment variables, troubleshooting común, contributing guidelines, changelog.
+
+24) API DOCUMENTATION - crear docs/API.md: para cada endpoint: método, URL, descripción, request body schema, response schema, ejemplos de request/response, error codes, rate limits; agrupar por categoría: Tools, Complexity, Orchestration, Memory, Gaps, Circuits.
+
+25) COMPONENT DOCS - crear docs para cada componente: docs/components/ComplexityAnalyzer.md (algoritmo de scoring, calibración, extensión), docs/components/OrchestrationEngine.md (decomposition, parallel execution, dependency resolution), docs/components/CompressedMemory.md (atom structure, decay, garbage collection), docs/components/ErrorRecovery.md (retry strategies, circuit breaker, fallbacks).
+
+26) TEST SUITE - crear tests/agentic/: complexityAnalyzer.test.ts: test cada categoría de scoring, edge cases (empty, very long, unicode), performance (<50ms); orchestrationEngine.test.ts: test decomposition, parallel execution, dependency order, timeout handling, error recovery; compressedMemory.test.ts: test create, deduplicate, decay, gc, storage limits; errorRecovery.test.ts: test retry, circuit breaker open/close, fallback execution; intentMapper.test.ts: test cada idioma, caching, tool matching; integration tests: test flujo completo desde prompt hasta response.
+
+27) EXAMPLES - crear examples/: basic_usage.ts (analizar prompt simple), orchestration_example.ts (ejecutar tarea compleja), custom_tool.ts (cómo añadir nueva tool), memory_management.ts (trabajar con atoms), error_handling.ts (recovery patterns).
+
+=== PARTE E: OPTIMIZACIONES DE PRODUCCIÓN ===
+
+28) REDIS CACHING - crear server/services/redisCache.ts: conexión a Redis con ioredis, implementar: cacheComplexity(promptHash, result, ttl=300), getCachedComplexity(promptHash), cacheToolResult(toolId, inputHash, result, ttl=60), invalidateToolCache(toolId); usar para: complexity analysis cache, tool results cache, session data, rate limit counters; fallback a memoria si Redis no disponible.
+
+29) BULL QUEUES - crear server/queues/: agenticQueue.ts con Bull: queue para orchestration jobs (tareas largas en background), queue para gap processing, queue para memory maintenance (decay, gc); workers: orchestrationWorker.ts procesa jobs de orchestration con progress reporting, maintenanceWorker.ts ejecuta tareas periódicas; dashboard: Bull Board para monitorear queues en /admin/queues.
+
+30) RATE LIMITING AVANZADO - crear server/middleware/agenticRateLimiter.ts: rate limits diferenciados: free users: 10 requests/min, 100/day; pro users: 60 requests/min, 1000/day; enterprise: 300 requests/min, unlimited; por endpoint: /complexity: 30/min (lightweight), /orchestrate: 10/min (heavy); sliding window con Redis; response headers: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset; graceful degradation: si Redis down → memory fallback con límites conservadores.
+
+31) MONITORING PROMETHEUS - crear server/metrics/: metricsCollector.ts con prom-client: counters (requests_total, errors_total, gaps_created), histograms (request_duration, complexity_score, orchestration_duration), gauges (active_requests, memory_atoms, circuit_breakers_open); endpoint GET /metrics para Prometheus scraping; custom metrics: tool_usage_by_id, success_rate_by_tool, complexity_distribution.
+
+32) STRUCTURED LOGGING - crear server/utils/logger.ts: winston logger con: formato JSON estructurado, campos obligatorios (timestamp, level, traceId, service, message), contexto automático (userId, requestId, sessionId), niveles (debug, info, warn, error), transports (console para dev, file para prod, optional Loki/ELK); correlación: generar traceId en cada request, propagar a todos los servicios, loggear en cada paso de orchestration.
+
+33) HEALTH CHECKS - crear server/routes/healthRouter.ts: GET /health/live → {status: "ok"} simple para k8s liveness; GET /health/ready → verifica DB, Redis, queues están healthy; GET /health/detailed → status de cada componente (toolRegistry, memory, circuits, queues) con latencias; auto-healing: si componente unhealthy → intentar reconectar.
+
+34) GRACEFUL SHUTDOWN - en server/index.ts: process.on('SIGTERM') → stop accepting new requests, wait for in-flight requests (max 30s), close DB connections, close Redis, close queue workers, exit 0; process.on('SIGINT') → mismo proceso para dev; log cada paso del shutdown.
+
+35) DATABASE INDEXES - crear migration con índices optimizados: CREATE INDEX idx_gaps_signature ON agent_gap_logs(gap_signature); CREATE INDEX idx_gaps_status_created ON agent_gap_logs(status, created_at DESC); CREATE INDEX idx_atoms_type_weight ON agent_atoms(type, weight DESC); CREATE INDEX idx_progress_execution ON agent_progress(execution_id); ANALYZE para actualizar estadísticas.
+
+36) AUTO-SCALING CONFIG - crear infra/scaling.md: documentar configuración recomendada: min 2 replicas, max 10, CPU target 70%, memory target 80%; horizontal pod autoscaler config para k8s; connection pool sizing basado en replicas; Redis cluster config para alta disponibilidad; queue worker scaling independiente.
+
+37) ENVIRONMENT CONFIG - crear .env.example completo: NODE_ENV, PORT, DATABASE_URL, REDIS_URL, BULL_REDIS_URL, LOG_LEVEL, METRICS_ENABLED, RATE_LIMIT_ENABLED, AGENTIC_MAX_COMPLEXITY, AGENTIC_ORCHESTRATION_TIMEOUT, AGENTIC_MEMORY_MAX_ATOMS, CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN; validación de env vars al startup con error descriptivo si falta alguna requerida.
+
+=== INTEGRACIÓN FINAL ===
+
+38) WIRING TODO - asegurar que todos los componentes están conectados: dashboard consume todos los endpoints, chat usa agentic interceptor, nuevas tools registradas y funcionando, tests pasan, métricas exportándose, logs estructurados, Redis caching activo, queues procesando, health checks respondiendo. Verificar con checklist completo.
+
+39) SMOKE TESTS - crear script scripts/smoke-test.sh: curl cada endpoint crítico, verificar responses correctos, medir latencias, reportar pass/fail; ejecutar como parte de CI/CD antes de deploy.
+
+40) FINAL VERIFICATION - ejecutar todos los tests, verificar métricas en /metrics, verificar logs estructurados, probar un flujo completo end-to-end desde chat hasta ejecución de tool con progress tracking, verificar que gaps se crean correctamente, verificar memory atoms se guardan y decaen.

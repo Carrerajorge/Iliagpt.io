@@ -1,0 +1,10 @@
+# State files containing session data and credentials
+.state/
+
+# Environment files
+.env
+.env.local
+
+# Credentials and secrets
+*.pem
+*.key

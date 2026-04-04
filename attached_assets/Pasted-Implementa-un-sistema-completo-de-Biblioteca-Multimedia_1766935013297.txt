@@ -1,0 +1,206 @@
+Implementa un sistema completo de Biblioteca Multimedia para guardar automáticamente fotos, videos y documentos creados. Sistema robusto con categorización, búsqueda, previsualizaciones y gestión de almacenamiento:
+
+=== PARTE 1: SCHEMA DE BASE DE DATOS ===
+
+1) Actualizar shared/schema.ts - Añadir tablas de biblioteca:
+
+// ========== BIBLIOTECA MULTIMEDIA ==========
+
+// Tabla principal de archivos de la biblioteca
+export const libraryFiles = pgTable('library_files', {
+  id: serial('id').primaryKey(),
+  uuid: text('uuid').notNull().unique(), // ID único público
+  
+  // Información básica
+  name: text('name').notNull(),
+  originalName: text('original_name').notNull(),
+  description: text('description'),
+  
+  // Tipo y formato
+  type: text('type').notNull(), // 'image' | 'video' | 'document' | 'audio' | 'spreadsheet' | 'presentation' | 'other'
+  mimeType: text('mime_type').notNull(),
+  extension: text('extension').notNull(),
+  
+  // Almacenamiento
+  path: text('path').notNull(), // Ruta en el servidor
+  url: text('url'), // URL pública si aplica
+  thumbnailPath: text('thumbnail_path'), // Miniatura para previews
+  thumbnailUrl: text('thumbnail_url'),
+  
+  // Tamaño y dimensiones
+  size: integer('size').notNull().default(0), // Bytes
+  width: integer('width'), // Para imágenes/videos
+  height: integer('height'),
+  duration: integer('duration'), // Para videos/audio (segundos)
+  pages: integer('pages'), // Para documentos
+  
+  // Metadatos
+  metadata: jsonb('metadata').$type<{
+    exif?: Record<string, any>;
+    colors?: string[];
+    tags?: string[];
+    aiDescription?: string;
+    sourceChat?: string;
+    sourceMessage?: string;
+    generatedBy?: 'ai' | 'user' | 'system';
+    originalPrompt?: string;
+  }>(),
+  
+  // Organización
+  folderId: integer('folder_id').references(() => libraryFolders.id),
+  tags: text('tags').array(),
+  isFavorite: boolean('is_favorite').default(false),
+  isArchived: boolean('is_archived').default(false),
+  isPinned: boolean('is_pinned').default(false),
+  
+  // Permisos
+  userId: integer('user_id').references(() => users.id).notNull(),
+  isPublic: boolean('is_public').default(false),
+  sharedWith: jsonb('shared_with').$type<number[]>(), // IDs de usuarios
+  
+  // Timestamps
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  lastAccessedAt: timestamp('last_accessed_at'),
+  
+  // Soft delete
+  deletedAt: timestamp('deleted_at'),
+  
+  // Versionado
+  version: integer('version').default(1),
+  parentVersionId: integer('parent_version_id').references(() => libraryFiles.id),
+});
+
+// Carpetas de la biblioteca
+export const libraryFolders = pgTable('library_folders', {
+  id: serial('id').primaryKey(),
+  uuid: text('uuid').notNull().unique(),
+  name: text('name').notNull(),
+  description: text('description'),
+  color: text('color').default('#6366f1'), // Color del folder
+  icon: text('icon').default('folder'), // Icono
+  
+  parentId: integer('parent_id').references(() => libraryFolders.id),
+  path: text('path').notNull(), // /root/folder1/subfolder
+  
+  userId: integer('user_id').references(() => users.id).notNull(),
+  isSystem: boolean('is_system').default(false), // Carpetas del sistema (no eliminables)
+  
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Colecciones (álbumes, proyectos, etc.)
+export const libraryCollections = pgTable('library_collections', {
+  id: serial('id').primaryKey(),
+  uuid: text('uuid').notNull().unique(),
+  name: text('name').notNull(),
+  description: text('description'),
+  coverFileId: integer('cover_file_id').references(() => libraryFiles.id),
+  
+  type: text('type').default('album'), // 'album' | 'project' | 'smart' | 'shared'
+  
+  // Para colecciones inteligentes (smart)
+  smartRules: jsonb('smart_rules').$type<{
+    conditions: Array<{
+      field: string;
+      operator: string;
+      value: any;
+    }>;
+    matchAll: boolean;
+  }>(),
+  
+  userId: integer('user_id').references(() => users.id).notNull(),
+  isPublic: boolean('is_public').default(false),
+  
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Relación archivos-colecciones (muchos a muchos)
+export const libraryFileCollections = pgTable('library_file_collections', {
+  id: serial('id').primaryKey(),
+  fileId: integer('file_id').references(() => libraryFiles.id).notNull(),
+  collectionId: integer('collection_id').references(() => libraryCollections.id).notNull(),
+  order: integer('order').default(0),
+  addedAt: timestamp('added_at').defaultNow().notNull(),
+});
+
+// Historial de actividad
+export const libraryActivity = pgTable('library_activity', {
+  id: serial('id').primaryKey(),
+  fileId: integer('file_id').references(() => libraryFiles.id),
+  folderId: integer('folder_id').references(() => libraryFolders.id),
+  collectionId: integer('collection_id').references(() => libraryCollections.id),
+  
+  action: text('action').notNull(), // 'created' | 'viewed' | 'downloaded' | 'shared' | 'moved' | 'renamed' | 'deleted' | 'restored'
+  
+  userId: integer('user_id').references(() => users.id).notNull(),
+  details: jsonb('details'),
+  
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// Estadísticas de almacenamiento por usuario
+export const libraryStorage = pgTable('library_storage', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id).notNull().unique(),
+  
+  totalBytes: bigint('total_bytes', { mode: 'number' }).default(0),
+  imageBytes: bigint('image_bytes', { mode: 'number' }).default(0),
+  videoBytes: bigint('video_bytes', { mode: 'number' }).default(0),
+  documentBytes: bigint('document_bytes', { mode: 'number' }).default(0),
+  otherBytes: bigint('other_bytes', { mode: 'number' }).default(0),
+  
+  fileCount: integer('file_count').default(0),
+  quotaBytes: bigint('quota_bytes', { mode: 'number' }).default(5368709120), // 5GB default
+  
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Tipos TypeScript
+export type LibraryFile = typeof libraryFiles.$inferSelect;
+export type NewLibraryFile = typeof libraryFiles.$inferInsert;
+export type LibraryFolder = typeof libraryFolders.$inferSelect;
+export type LibraryCollection = typeof libraryCollections.$inferSelect;
+export type LibraryActivity = typeof libraryActivity.$inferSelect;
+export type LibraryStorage = typeof libraryStorage.$inferSelect;
+
+=== PARTE 2: SERVICIO DE BIBLIOTECA ===
+
+2) Crear server/services/libraryService.ts:
+
+import { db } from '../db';
+import { 
+  libraryFiles, libraryFolders, libraryCollections, 
+  libraryFileCollections, libraryActivity, libraryStorage,
+  LibraryFile, NewLibraryFile
+} from '../../shared/schema';
+import { eq, and, or, like, desc, asc, sql, inArray, isNull } from 'drizzle-orm';
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+import fs from 'fs/promises';
+import sharp from 'sharp'; // Para procesar imágenes
+import { execSync } from 'child_process';
+
+// Configuración
+const UPLOAD_DIR = process.env.UPLOAD_DIR || './uploads/library';
+const THUMBNAIL_DIR = process.env.THUMBNAIL_DIR || './uploads/thumbnails';
+const MAX_THUMBNAIL_SIZE = 400;
+
+// Tipos de archivo soportados
+const FILE_TYPES: Record<string, string> = {
+  // Imágenes
+  'image/jpeg': 'image',
+  'image/png': 'image',
+  'image/gif': 'image',
+  'image/webp': 'image',
+  'image/svg+xml': 'image',
+  'image/bmp': 'image',
+  // Videos
+  'video/mp4': 'video',
+  'video/webm': 'video',
+  'video/quicktime': 'video',
+  'video/x-msvideo': 'video',
+  // Audio
+  'audio

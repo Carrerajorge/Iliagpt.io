@@ -1,0 +1,100 @@
+48 potential vulnerabilities found.
+Last ran on
+ 
+7:45 pm, Jan 06, 2026
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected 'create_subprocess_exec' function without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected 'create_subprocess_exec' function with user controlled data. You may consider using 'shlex.escape()'.
+Security
+Detected asyncio subprocess function without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected asyncio subprocess function without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Avoid executing dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. Dynamic string construction makes the query vulnerable when user input is involved. Use `execute(text("... :param_name"), param_name=value)` with named parameters instead of f-strings/concatenation to ensure proper escaping.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected asyncio subprocess function without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Avoid executing dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. Dynamic string construction makes the query vulnerable when user input is involved. Use `execute(text("... :param_name"), param_name=value)` with named parameters instead of f-strings/concatenation to ensure proper escaping.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected asyncio subprocess function without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Avoid executing dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. Dynamic string construction makes the query vulnerable when user input is involved. Use `execute(text("... :param_name"), param_name=value)` with named parameters instead of f-strings/concatenation to ensure proper escaping.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected asyncio subprocess function without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Avoid executing dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. Dynamic string construction makes the query vulnerable when user input is involved. Use `execute(text("... :param_name"), param_name=value)` with named parameters instead of f-strings/concatenation to ensure proper escaping.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected asyncio subprocess function without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Avoid executing dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. Dynamic string construction makes the query vulnerable when user input is involved. Use `execute(text("... :param_name"), param_name=value)` with named parameters instead of f-strings/concatenation to ensure proper escaping.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Avoid executing dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. Dynamic string construction makes the query vulnerable when user input is involved. Use `execute(text("... :param_name"), param_name=value)` with named parameters instead of f-strings/concatenation to ensure proper escaping.
+Security
+Avoid executing dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. Dynamic string construction makes the query vulnerable when user input is involved. Use `execute(text("... :param_name"), param_name=value)` with named parameters instead of f-strings/concatenation to ensure proper escaping.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Avoid executing dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. Dynamic string construction makes the query vulnerable when user input is involved. Use `execute(text("... :param_name"), param_name=value)` with named parameters instead of f-strings/concatenation to ensure proper escaping.
+Security
+Google API Key detected. Avoid hardcoding credentials directly in connection strings as this creates security risks. Instead, use environment variables to store and access credentials at runtime. If you need the actual credential values to make this work properly, ask me to provide them through Replit's secret system.
+Security
+Google Cloud API Key detected. Avoid hardcoding credentials directly in connection strings as this creates security risks. Instead, use environment variables to store and access credentials at runtime. If you need the actual credential values to make this work properly, ask me to provide them through Replit's secret system.
+Security
+A gitleaks GCP API Key detected. Avoid hardcoding credentials directly in connection strings as this creates security risks. Instead, use environment variables to store and access credentials at runtime. If you need the actual credential values to make this work properly, ask me to provide them through Replit's secret system.
+Security
+Google OAuth detected. Avoid hardcoding credentials directly in connection strings as this creates security risks. Instead, use environment variables to store and access credentials at runtime. If you need the actual credential values to make this work properly, ask me to provide them through Replit's secret system.
+Security
+JWT token detected in source code. Avoid hardcoding tokens directly in your code, even if they are public or anonymous keys. Instead, use environment variables to store and access tokens at runtime. If you need the actual token values to make this work properly, ask me to provide them through Replit's secret system.
+Security
+A gitleaks JWT credential detected. Avoid hardcoding credentials directly in connection strings as this creates security risks. Instead, use environment variables to store and access credentials at runtime. If you need the actual credential values to make this work properly, ask me to provide them through Replit's secret system.
+Security
+A gitleaks Generic API Key detected. Avoid hardcoding credentials directly in connection strings as this creates security risks. Instead, use environment variables to store and access credentials at runtime. If you need the actual credential values to make this work properly, ask me to provide them through Replit's secret system.
+Security
+A gitleaks Generic API Key detected. Avoid hardcoding credentials directly in connection strings as this creates security risks. Instead, use environment variables to store and access credentials at runtime. If you need the actual credential values to make this work properly, ask me to provide them through Replit's secret system.
+Security
+A gitleaks Openai API Key detected. Avoid hardcoding credentials directly in connection strings as this creates security risks. Instead, use environment variables to store and access credentials at runtime. If you need the actual credential values to make this work properly, ask me to provide them through Replit's secret system.
+Security
+A gitleaks Generic API Key detected. Avoid hardcoding credentials directly in connection strings as this creates security risks. Instead, use environment variables to store and access credentials at runtime. If you need the actual credential values to make this work properly, ask me to provide them through Replit's secret system.
+Security
+A gitleaks Generic API Key detected. Avoid hardcoding credentials directly in connection strings as this creates security risks. Instead, use environment variables to store and access credentials at runtime. If you need the actual credential values to make this work properly, ask me to provide them through Replit's secret system.
+Security
+Detected non-literal calls to spawn(). This could lead to a command injection vulnerability.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected asyncio subprocess function without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Avoid executing dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. Dynamic string construction makes the query vulnerable when user input is involved. Use `execute(text("... :param_name"), param_name=value)` with named parameters instead of f-strings/concatenation to ensure proper escaping.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Detected subprocess function 'run' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.
+Security
+Avoid executing dynamically constructed SQL strings as this bypasses SQLAlchemy's SQL injection protections. Dynamic string construction makes the query vulnerable when user input is involved. Use `execute(text("... :param_name"), param_name=value)` with named parameters instead of f-strings/concatenation to ensure proper escaping.

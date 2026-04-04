@@ -1,0 +1,1686 @@
+Implementa un Excel Ribbon completamente funcional con TODAS las operaciones de Excel. Cada botón debe funcionar correctamente:
+
+=== PARTE 1: ESTRUCTURA DE DATOS BASE ===
+
+1) Crear tipos y estructuras en client/src/types/spreadsheet.ts:
+
+// Tipos base para el spreadsheet
+export interface CellStyle {
+  // Fuente
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: 'normal' | 'bold';
+  fontStyle: 'normal' | 'italic';
+  textDecoration: 'none' | 'underline' | 'line-through';
+  fontColor: string;
+  
+  // Relleno
+  fillColor: string;
+  
+  // Bordes
+  borderTop: BorderStyle | null;
+  borderRight: BorderStyle | null;
+  borderBottom: BorderStyle | null;
+  borderLeft: BorderStyle | null;
+  
+  // Alineación
+  horizontalAlign: 'left' | 'center' | 'right';
+  verticalAlign: 'top' | 'middle' | 'bottom';
+  textRotation: number; // grados
+  indentLevel: number;
+  wrapText: boolean;
+  
+  // Número
+  numberFormat: string; // 'general' | 'number' | 'currency' | 'percent' | 'date' | 'text' | custom
+  decimalPlaces: number;
+  useThousandsSeparator: boolean;
+  currencySymbol: string;
+}
+
+export interface BorderStyle {
+  style: 'thin' | 'medium' | 'thick' | 'dashed' | 'dotted' | 'double';
+  color: string;
+}
+
+export interface CellData {
+  value: any;
+  formula: string | null;
+  style: Partial<CellStyle>;
+  comment: string | null;
+  hyperlink: string | null;
+}
+
+export interface MergedCell {
+  startRow: number;
+  startCol: number;
+  endRow: number;
+  endCol: number;
+}
+
+export interface ClipboardData {
+  mode: 'copy' | 'cut';
+  data: CellData[][];
+  styles: Partial<CellStyle>[][];
+  sourceRange: { startRow: number; startCol: number; endRow: number; endCol: number };
+  formatOnly: boolean;
+}
+
+export interface ConditionalRule {
+  id: string;
+  range: { startRow: number; startCol: number; endRow: number; endCol: number };
+  type: 'greaterThan' | 'lessThan' | 'between' | 'equal' | 'text' | 'duplicate' | 'colorScale' | 'dataBar';
+  condition: any;
+  format: Partial<CellStyle>;
+  priority: number;
+}
+
+export interface TableDefinition {
+  id: string;
+  name: string;
+  range: { startRow: number; startCol: number; endRow: number; endCol: number };
+  hasHeaders: boolean;
+  style: string;
+  bandedRows: boolean;
+  bandedColumns: boolean;
+  showFilters: boolean;
+}
+
+export const DEFAULT_CELL_STYLE: CellStyle = {
+  fontFamily: 'Arial',
+  fontSize: 11,
+  fontWeight: 'normal',
+  fontStyle: 'normal',
+  textDecoration: 'none',
+  fontColor: '#ffffff',
+  fillColor: 'transparent',
+  borderTop: null,
+  borderRight: null,
+  borderBottom: null,
+  borderLeft: null,
+  horizontalAlign: 'left',
+  verticalAlign: 'middle',
+  textRotation: 0,
+  indentLevel: 0,
+  wrapText: false,
+  numberFormat: 'general',
+  decimalPlaces: 2,
+  useThousandsSeparator: false,
+  currencySymbol: '$'
+};
+
+=== PARTE 2: HOOK DE OPERACIONES DEL SPREADSHEET ===
+
+2) Crear hook completo en client/src/hooks/useSpreadsheetOperations.ts:
+
+import { useState, useCallback, useRef } from 'react';
+import type { CellData, CellStyle, ClipboardData, MergedCell, ConditionalRule, BorderStyle } from '@/types/spreadsheet';
+
+export function useSpreadsheetOperations(hotRef: React.RefObject<any>) {
+  const [clipboard, setClipboard] = useState<ClipboardData | null>(null);
+  const [mergedCells, setMergedCells] = useState<MergedCell[]>([]);
+  const [conditionalRules, setConditionalRules] = useState<ConditionalRule[]>([]);
+  const [undoStack, setUndoStack] = useState<any[]>([]);
+  const [redoStack, setRedoStack] = useState<any[]>([]);
+
+  // ============ PORTAPAPELES (CLIPBOARD) ============
+  
+  const copy = useCallback((formatOnly: boolean = false) => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected || selected.length === 0) return;
+    
+    const [startRow, startCol, endRow, endCol] = selected[0];
+    const minRow = Math.min(startRow, endRow);
+    const maxRow = Math.max(startRow, endRow);
+    const minCol = Math.min(startCol, endCol);
+    const maxCol = Math.max(startCol, endCol);
+    
+    const data: CellData[][] = [];
+    const styles: Partial<CellStyle>[][] = [];
+    
+    for (let r = minRow; r <= maxRow; r++) {
+      const rowData: CellData[] = [];
+      const rowStyles: Partial<CellStyle>[] = [];
+      
+      for (let c = minCol; c <= maxCol; c++) {
+        const value = hot.getDataAtCell(r, c);
+        const meta = hot.getCellMeta(r, c);
+        
+        rowData.push({
+          value: formatOnly ? null : value,
+          formula: formatOnly ? null : (meta.formula || null),
+          style: meta.style || {},
+          comment: meta.comment || null,
+          hyperlink: meta.hyperlink || null
+        });
+        
+        rowStyles.push(meta.style || {});
+      }
+      
+      data.push(rowData);
+      styles.push(rowStyles);
+    }
+    
+    setClipboard({
+      mode: 'copy',
+      data,
+      styles,
+      sourceRange: { startRow: minRow, startCol: minCol, endRow: maxRow, endCol: maxCol },
+      formatOnly
+    });
+    
+    // Visual feedback - borde punteado
+    highlightCopiedRange(hot, minRow, minCol, maxRow, maxCol);
+    
+    return { rows: maxRow - minRow + 1, cols: maxCol - minCol + 1 };
+  }, [hotRef]);
+
+  const cut = useCallback(() => {
+    const result = copy(false);
+    if (result && clipboard) {
+      setClipboard(prev => prev ? { ...prev, mode: 'cut' } : null);
+    }
+    return result;
+  }, [copy, clipboard]);
+
+  const paste = useCallback((pasteType: 'all' | 'values' | 'formulas' | 'formats' | 'transpose' = 'all') => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot || !clipboard) return;
+    
+    const selected = hot.getSelected();
+    if (!selected || selected.length === 0) return;
+    
+    const [targetRow, targetCol] = [selected[0][0], selected[0][1]];
+    
+    // Guardar estado para undo
+    saveUndoState(hot);
+    
+    const { data, styles, sourceRange, mode, formatOnly } = clipboard;
+    
+    for (let r = 0; r < data.length; r++) {
+      for (let c = 0; c < data[r].length; c++) {
+        const destRow = pasteType === 'transpose' ? targetRow + c : targetRow + r;
+        const destCol = pasteType === 'transpose' ? targetCol + r : targetCol + c;
+        const cellData = data[r][c];
+        
+        // Pegar según tipo
+        if (pasteType === 'all' || pasteType === 'values') {
+          if (!formatOnly && cellData.value !== null) {
+            hot.setDataAtCell(destRow, destCol, cellData.value);
+          }
+        }
+        
+        if (pasteType === 'all' || pasteType === 'formulas') {
+          if (!formatOnly && cellData.formula) {
+            const adjustedFormula = adjustFormulaReferences(
+              cellData.formula,
+              destRow - sourceRange.startRow,
+              destCol - sourceRange.startCol
+            );
+            hot.setCellMeta(destRow, destCol, 'formula', adjustedFormula);
+          }
+        }
+        
+        if (pasteType === 'all' || pasteType === 'formats' || formatOnly) {
+          const existingMeta = hot.getCellMeta(destRow, destCol);
+          hot.setCellMeta(destRow, destCol, 'style', { ...existingMeta.style, ...cellData.style });
+          applyStyleToCell(hot, destRow, destCol, cellData.style);
+        }
+      }
+    }
+    
+    // Si fue cortar, limpiar origen
+    if (mode === 'cut') {
+      for (let r = sourceRange.startRow; r <= sourceRange.endRow; r++) {
+        for (let c = sourceRange.startCol; c <= sourceRange.endCol; c++) {
+          hot.setDataAtCell(r, c, '');
+          hot.setCellMeta(r, c, 'style', {});
+        }
+      }
+      setClipboard(null);
+    }
+    
+    hot.render();
+  }, [hotRef, clipboard]);
+
+  const copyFormat = useCallback(() => {
+    return copy(true);
+  }, [copy]);
+
+  // ============ FUENTE (FONT) ============
+
+  const setFontFamily = useCallback((fontFamily: string) => {
+    applyStyleToSelection({ fontFamily });
+  }, []);
+
+  const setFontSize = useCallback((fontSize: number) => {
+    applyStyleToSelection({ fontSize });
+  }, []);
+
+  const increaseFontSize = useCallback(() => {
+    const sizes = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72];
+    modifyFontSize(sizes, 1);
+  }, []);
+
+  const decreaseFontSize = useCallback(() => {
+    const sizes = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72];
+    modifyFontSize(sizes, -1);
+  }, []);
+
+  const modifyFontSize = useCallback((sizes: number[], direction: 1 | -1) => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    forEachSelectedCell(hot, selected, (row, col) => {
+      const meta = hot.getCellMeta(row, col);
+      const currentSize = meta.style?.fontSize || 11;
+      const currentIndex = sizes.findIndex(s => s >= currentSize);
+      const newIndex = Math.max(0, Math.min(sizes.length - 1, currentIndex + direction));
+      const newSize = sizes[newIndex];
+      
+      hot.setCellMeta(row, col, 'style', { ...meta.style, fontSize: newSize });
+      const cell = hot.getCell(row, col);
+      if (cell) cell.style.fontSize = `${newSize}px`;
+    });
+    
+    hot.render();
+  }, [hotRef]);
+
+  const toggleBold = useCallback(() => {
+    toggleStyleProperty('fontWeight', 'bold', 'normal');
+  }, []);
+
+  const toggleItalic = useCallback(() => {
+    toggleStyleProperty('fontStyle', 'italic', 'normal');
+  }, []);
+
+  const toggleUnderline = useCallback((type: 'underline' | 'line-through' = 'underline') => {
+    toggleStyleProperty('textDecoration', type, 'none');
+  }, []);
+
+  const setFontColor = useCallback((color: string) => {
+    applyStyleToSelection({ fontColor: color });
+  }, []);
+
+  const setFillColor = useCallback((color: string) => {
+    applyStyleToSelection({ fillColor: color });
+  }, []);
+
+  // ============ BORDES ============
+
+  const setBorders = useCallback((borderType: 'all' | 'outer' | 'inner' | 'top' | 'bottom' | 'left' | 'right' | 'none', style: BorderStyle = { style: 'thin', color: '#ffffff' }) => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    const [startRow, startCol, endRow, endCol] = selected[0];
+    const minRow = Math.min(startRow, endRow);
+    const maxRow = Math.max(startRow, endRow);
+    const minCol = Math.min(startCol, endCol);
+    const maxCol = Math.max(startCol, endCol);
+    
+    saveUndoState(hot);
+    
+    for (let r = minRow; r <= maxRow; r++) {
+      for (let c = minCol; c <= maxCol; c++) {
+        const meta = hot.getCellMeta(r, c);
+        const currentStyle = meta.style || {};
+        const newBorders: Partial<CellStyle> = {};
+        
+        const isTop = r === minRow;
+        const isBottom = r === maxRow;
+        const isLeft = c === minCol;
+        const isRight = c === maxCol;
+        
+        if (borderType === 'none') {
+          newBorders.borderTop = null;
+          newBorders.borderBottom = null;
+          newBorders.borderLeft = null;
+          newBorders.borderRight = null;
+        } else {
+          if (borderType === 'all' || borderType === 'inner' || borderType === 'top' || (borderType === 'outer' && isTop)) {
+            if (borderType !== 'inner' || !isTop) newBorders.borderTop = style;
+          }
+          if (borderType === 'all' || borderType === 'inner' || borderType === 'bottom' || (borderType === 'outer' && isBottom)) {
+            if (borderType !== 'inner' || !isBottom) newBorders.borderBottom = style;
+          }
+          if (borderType === 'all' || borderType === 'inner' || borderType === 'left' || (borderType === 'outer' && isLeft)) {
+            if (borderType !== 'inner' || !isLeft) newBorders.borderLeft = style;
+          }
+          if (borderType === 'all' || borderType === 'inner' || borderType === 'right' || (borderType === 'outer' && isRight)) {
+            if (borderType !== 'inner' || !isRight) newBorders.borderRight = style;
+          }
+        }
+        
+        hot.setCellMeta(r, c, 'style', { ...currentStyle, ...newBorders });
+        applyBordersToCell(hot, r, c, newBorders);
+      }
+    }
+    
+    hot.render();
+  }, [hotRef]);
+
+  // ============ ALINEACIÓN ============
+
+  const setHorizontalAlign = useCallback((align: 'left' | 'center' | 'right') => {
+    applyStyleToSelection({ horizontalAlign: align });
+  }, []);
+
+  const setVerticalAlign = useCallback((align: 'top' | 'middle' | 'bottom') => {
+    applyStyleToSelection({ verticalAlign: align });
+  }, []);
+
+  const setTextRotation = useCallback((degrees: number) => {
+    applyStyleToSelection({ textRotation: degrees });
+  }, []);
+
+  const increaseIndent = useCallback(() => {
+    modifyIndent(1);
+  }, []);
+
+  const decreaseIndent = useCallback(() => {
+    modifyIndent(-1);
+  }, []);
+
+  const modifyIndent = useCallback((change: number) => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    forEachSelectedCell(hot, selected, (row, col) => {
+      const meta = hot.getCellMeta(row, col);
+      const currentIndent = meta.style?.indentLevel || 0;
+      const newIndent = Math.max(0, currentIndent + change);
+      
+      hot.setCellMeta(row, col, 'style', { ...meta.style, indentLevel: newIndent });
+      const cell = hot.getCell(row, col);
+      if (cell) cell.style.paddingLeft = `${newIndent * 10}px`;
+    });
+    
+    hot.render();
+  }, [hotRef]);
+
+  const toggleWrapText = useCallback(() => {
+    toggleStyleProperty('wrapText', true, false);
+  }, []);
+
+  // ============ COMBINAR CELDAS ============
+
+  const mergeCells = useCallback((type: 'all' | 'horizontal' | 'vertical' | 'unmerge' = 'all') => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    const [startRow, startCol, endRow, endCol] = selected[0];
+    const minRow = Math.min(startRow, endRow);
+    const maxRow = Math.max(startRow, endRow);
+    const minCol = Math.min(startCol, endCol);
+    const maxCol = Math.max(startCol, endCol);
+    
+    saveUndoState(hot);
+    
+    if (type === 'unmerge') {
+      // Buscar y eliminar merge existente
+      const plugin = hot.getPlugin('mergeCells');
+      if (plugin) {
+        plugin.unmerge(minRow, minCol, maxRow, maxCol);
+      }
+      setMergedCells(prev => prev.filter(m => 
+        !(m.startRow === minRow && m.startCol === minCol && m.endRow === maxRow && m.endCol === maxCol)
+      ));
+    } else {
+      // Aplicar merge
+      const plugin = hot.getPlugin('mergeCells');
+      if (plugin) {
+        if (type === 'all') {
+          plugin.merge(minRow, minCol, maxRow, maxCol);
+          setMergedCells(prev => [...prev, { startRow: minRow, startCol: minCol, endRow: maxRow, endCol: maxCol }]);
+        } else if (type === 'horizontal') {
+          for (let r = minRow; r <= maxRow; r++) {
+            plugin.merge(r, minCol, r, maxCol);
+            setMergedCells(prev => [...prev, { startRow: r, startCol: minCol, endRow: r, endCol: maxCol }]);
+          }
+        } else if (type === 'vertical') {
+          for (let c = minCol; c <= maxCol; c++) {
+            plugin.merge(minRow, c, maxRow, c);
+            setMergedCells(prev => [...prev, { startRow: minRow, startCol: c, endRow: maxRow, endCol: c }]);
+          }
+        }
+      }
+    }
+    
+    hot.render();
+  }, [hotRef]);
+
+  // ============ FORMATO DE NÚMERO ============
+
+  const setNumberFormat = useCallback((format: string) => {
+    applyStyleToSelection({ numberFormat: format });
+  }, []);
+
+  const formatAsCurrency = useCallback((symbol: string = '$') => {
+    applyStyleToSelection({ numberFormat: 'currency', currencySymbol: symbol, decimalPlaces: 2 });
+  }, []);
+
+  const formatAsPercent = useCallback(() => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    forEachSelectedCell(hot, selected, (row, col) => {
+      const value = hot.getDataAtCell(row, col);
+      if (typeof value === 'number' && value <= 1) {
+        hot.setDataAtCell(row, col, value * 100);
+      }
+      const meta = hot.getCellMeta(row, col);
+      hot.setCellMeta(row, col, 'style', { ...meta.style, numberFormat: 'percent' });
+    });
+    
+    hot.render();
+  }, [hotRef]);
+
+  const toggleThousandsSeparator = useCallback(() => {
+    toggleStyleProperty('useThousandsSeparator', true, false);
+  }, []);
+
+  const increaseDecimals = useCallback(() => {
+    modifyDecimals(1);
+  }, []);
+
+  const decreaseDecimals = useCallback(() => {
+    modifyDecimals(-1);
+  }, []);
+
+  const modifyDecimals = useCallback((change: number) => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    forEachSelectedCell(hot, selected, (row, col) => {
+      const meta = hot.getCellMeta(row, col);
+      const currentDecimals = meta.style?.decimalPlaces ?? 2;
+      const newDecimals = Math.max(0, Math.min(10, currentDecimals + change));
+      
+      hot.setCellMeta(row, col, 'style', { ...meta.style, decimalPlaces: newDecimals });
+    });
+    
+    hot.render();
+  }, [hotRef]);
+
+  // ============ INSERTAR / ELIMINAR ============
+
+  const insertRows = useCallback((position: 'above' | 'below' = 'below', count: number = 1) => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    saveUndoState(hot);
+    
+    const row = position === 'above' ? selected[0][0] : selected[0][2] + 1;
+    hot.alter('insert_row_above', row, count);
+  }, [hotRef]);
+
+  const insertColumns = useCallback((position: 'left' | 'right' = 'right', count: number = 1) => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    saveUndoState(hot);
+    
+    const col = position === 'left' ? selected[0][1] : selected[0][3] + 1;
+    hot.alter('insert_col_start', col, count);
+  }, [hotRef]);
+
+  const deleteRows = useCallback(() => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    saveUndoState(hot);
+    
+    const [startRow, , endRow] = selected[0];
+    const minRow = Math.min(startRow, endRow);
+    const count = Math.abs(endRow - startRow) + 1;
+    
+    hot.alter('remove_row', minRow, count);
+  }, [hotRef]);
+
+  const deleteColumns = useCallback(() => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    saveUndoState(hot);
+    
+    const [, startCol, , endCol] = selected[0];
+    const minCol = Math.min(startCol, endCol);
+    const count = Math.abs(endCol - startCol) + 1;
+    
+    hot.alter('remove_col', minCol, count);
+  }, [hotRef]);
+
+  // ============ EDICIÓN ============
+
+  const autoSum = useCallback(() => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    const [row, col] = [selected[0][0], selected[0][1]];
+    
+    // Detectar rango de números arriba o a la izquierda
+    let sumRange = '';
+    
+    // Buscar arriba primero
+    let startRow = row - 1;
+    while (startRow >= 0 && typeof hot.getDataAtCell(startRow, col) === 'number') {
+      startRow--;
+    }
+    startRow++;
+    
+    if (startRow < row) {
+      const startCell = `${String.fromCharCode(65 + col)}${startRow + 1}`;
+      const endCell = `${String.fromCharCode(65 + col)}${row}`;
+      sumRange = `${startCell}:${endCell}`;
+    } else {
+      // Buscar a la izquierda
+      let startCol = col - 1;
+      while (startCol >= 0 && typeof hot.getDataAtCell(row, startCol) === 'number') {
+        startCol--;
+      }
+      startCol++;
+      
+      if (startCol < col) {
+        const startCell = `${String.fromCharCode(65 + startCol)}${row + 1}`;
+        const endCell = `${String.fromCharCode(65 + col - 1)}${row + 1}`;
+        sumRange = `${startCell}:${endCell}`;
+      }
+    }
+    
+    if (sumRange) {
+      hot.setDataAtCell(row, col, `=SUM(${sumRange})`);
+    }
+  }, [hotRef]);
+
+  const fill = useCallback((direction: 'down' | 'up' | 'right' | 'left') => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    saveUndoState(hot);
+    
+    const [startRow, startCol, endRow, endCol] = selected[0];
+    const minRow = Math.min(startRow, endRow);
+    const maxRow = Math.max(startRow, endRow);
+    const minCol = Math.min(startCol, endCol);
+    const maxCol = Math.max(startCol, endCol);
+    
+    if (direction === 'down') {
+      const sourceRow = minRow;
+      for (let c = minCol; c <= maxCol; c++) {
+        const value = hot.getDataAtCell(sourceRow, c);
+        for (let r = minRow + 1; r <= maxRow; r++) {
+          hot.setDataAtCell(r, c, value);
+        }
+      }
+    } else if (direction === 'right') {
+      const sourceCol = minCol;
+      for (let r = minRow; r <= maxRow; r++) {
+        const value = hot.getDataAtCell(r, sourceCol);
+        for (let c = minCol + 1; c <= maxCol; c++) {
+          hot.setDataAtCell(r, c, value);
+        }
+      }
+    }
+    // Implementar up y left de manera similar
+    
+    hot.render();
+  }, [hotRef]);
+
+  const clearCells = useCallback((type: 'all' | 'contents' | 'formats' | 'comments' = 'all') => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    saveUndoState(hot);
+    
+    forEachSelectedCell(hot, selected, (row, col) => {
+      if (type === 'all' || type === 'contents') {
+        hot.setDataAtCell(row, col, '');
+        hot.setCellMeta(row, col, 'formula', null);
+      }
+      if (type === 'all' || type === 'formats') {
+        hot.setCellMeta(row, col, 'style', {});
+        const cell = hot.getCell(row, col);
+        if (cell) {
+          cell.removeAttribute('style');
+        }
+      }
+      if (type === 'all' || type === 'comments') {
+        hot.setCellMeta(row, col, 'comment', null);
+      }
+    });
+    
+    hot.render();
+  }, [hotRef]);
+
+  // ============ ORDENAR Y FILTRAR ============
+
+  const sort = useCallback((direction: 'asc' | 'desc') => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    const col = selected[0][1];
+    const plugin = hot.getPlugin('columnSorting');
+    
+    if (plugin) {
+      plugin.sort({ column: col, sortOrder: direction });
+    }
+  }, [hotRef]);
+
+  const toggleFilter = useCallback(() => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const plugin = hot.getPlugin('filters');
+    if (plugin) {
+      if (plugin.enabled) {
+        plugin.disablePlugin();
+      } else {
+        plugin.enablePlugin();
+      }
+      hot.render();
+    }
+  }, [hotRef]);
+
+  // ============ BUSCAR Y REEMPLAZAR ============
+
+  const findAndReplace = useCallback((find: string, replace: string, options: { matchCase?: boolean; matchEntireCell?: boolean } = {}) => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return { found: 0, replaced: 0 };
+    
+    saveUndoState(hot);
+    
+    let found = 0;
+    let replaced = 0;
+    const data = hot.getData();
+    
+    for (let r = 0; r < data.length; r++) {
+      for (let c = 0; c < data[r].length; c++) {
+        const cellValue = String(data[r][c] || '');
+        let matches = false;
+        
+        if (options.matchEntireCell) {
+          matches = options.matchCase 
+            ? cellValue === find 
+            : cellValue.toLowerCase() === find.toLowerCase();
+        } else {
+          matches = options.matchCase
+            ? cellValue.includes(find)
+            : cellValue.toLowerCase().includes(find.toLowerCase());
+        }
+        
+        if (matches) {
+          found++;
+          if (replace !== undefined) {
+            const newValue = options.matchCase
+              ? cellValue.replace(new RegExp(find, 'g'), replace)
+              : cellValue.replace(new RegExp(find, 'gi'), replace);
+            hot.setDataAtCell(r, c, newValue);
+            replaced++;
+          }
+        }
+      }
+    }
+    
+    hot.render();
+    return { found, replaced };
+  }, [hotRef]);
+
+  // ============ UNDO / REDO ============
+
+  const saveUndoState = useCallback((hot: any) => {
+    const state = {
+      data: hot.getData(),
+      meta: getAllCellMeta(hot)
+    };
+    setUndoStack(prev => [...prev.slice(-50), state]);
+    setRedoStack([]);
+  }, []);
+
+  const undo = useCallback(() => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot || undoStack.length === 0) return;
+    
+    const currentState = {
+      data: hot.getData(),
+      meta: getAllCellMeta(hot)
+    };
+    setRedoStack(prev => [...prev, currentState]);
+    
+    const previousState = undoStack[undoStack.length - 1];
+    setUndoStack(prev => prev.slice(0, -1));
+    
+    hot.loadData(previousState.data);
+    restoreAllCellMeta(hot, previousState.meta);
+    hot.render();
+  }, [hotRef, undoStack]);
+
+  const redo = useCallback(() => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot || redoStack.length === 0) return;
+    
+    const currentState = {
+      data: hot.getData(),
+      meta: getAllCellMeta(hot)
+    };
+    setUndoStack(prev => [...prev, currentState]);
+    
+    const nextState = redoStack[redoStack.length - 1];
+    setRedoStack(prev => prev.slice(0, -1));
+    
+    hot.loadData(nextState.data);
+    restoreAllCellMeta(hot, nextState.meta);
+    hot.render();
+  }, [hotRef, redoStack]);
+
+  // ============ HELPERS ============
+
+  const applyStyleToSelection = useCallback((style: Partial<CellStyle>) => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    saveUndoState(hot);
+    
+    forEachSelectedCell(hot, selected, (row, col) => {
+      const meta = hot.getCellMeta(row, col);
+      hot.setCellMeta(row, col, 'style', { ...meta.style, ...style });
+      applyStyleToCell(hot, row, col, style);
+    });
+    
+    hot.render();
+  }, [hotRef]);
+
+  const toggleStyleProperty = useCallback((property: keyof CellStyle, onValue: any, offValue: any) => {
+    const hot = hotRef.current?.hotInstance;
+    if (!hot) return;
+    
+    const selected = hot.getSelected();
+    if (!selected) return;
+    
+    saveUndoState(hot);
+    
+    // Verificar estado actual de la primera celda
+    const firstMeta = hot.getCellMeta(selected[0][0], selected[0][1]);
+    const currentValue = firstMeta.style?.[property];
+    const newValue = currentValue === onValue ? offValue : onValue;
+    
+    forEachSelectedCell(hot, selected, (row, col) => {
+      const meta = hot.getCellMeta(row, col);
+      hot.setCellMeta(row, col, 'style', { ...meta.style, [property]: newValue });
+      applyStyleToCell(hot, row, col, { [property]: newValue });
+    });
+    
+    hot.render();
+  }, [hotRef]);
+
+  const forEachSelectedCell = (hot: any, selected: number[][], callback: (row: number, col: number) => void) => {
+    selected.forEach(([startRow, startCol, endRow, endCol]) => {
+      const minRow = Math.min(startRow, endRow);
+      const maxRow = Math.max(startRow, endRow);
+      const minCol = Math.min(startCol, endCol);
+      const maxCol = Math.max(startCol, endCol);
+      
+      for (let r = minRow; r <= maxRow; r++) {
+        for (let c = minCol; c <= maxCol; c++) {
+          callback(r, c);
+        }
+      }
+    });
+  };
+
+  const applyStyleToCell = (hot: any, row: number, col: number, style: Partial<CellStyle>) => {
+    const cell = hot.getCell(row, col);
+    if (!cell) return;
+    
+    if (style.fontFamily) cell.style.fontFamily = style.fontFamily;
+    if (style.fontSize) cell.style.fontSize = `${style.fontSize}px`;
+    if (style.fontWeight) cell.style.fontWeight = style.fontWeight;
+    if (style.fontStyle) cell.style.fontStyle = style.fontStyle;
+    if (style.textDecoration) cell.style.textDecoration = style.textDecoration;
+    if (style.fontColor) cell.style.color = style.fontColor;
+    if (style.fillColor) cell.style.backgroundColor = style.fillColor;
+    if (style.horizontalAlign) cell.style.textAlign = style.horizontalAlign;
+    if (style.verticalAlign) cell.style.verticalAlign = style.verticalAlign;
+    if (style.textRotation) cell.style.transform = `rotate(${style.textRotation}deg)`;
+    if (style.indentLevel) cell.style.paddingLeft = `${style.indentLevel * 10}px`;
+    if (style.wrapText !== undefined) cell.style.whiteSpace = style.wrapText ? 'pre-wrap' : 'nowrap';
+  };
+
+  const applyBordersToCell = (hot: any, row: number, col: number, borders: Partial<CellStyle>) => {
+    const cell = hot.getCell(row, col);
+    if (!cell) return;
+    
+    if (borders.borderTop) {
+      cell.style.borderTop = `${borders.borderTop.style} 1px ${borders.borderTop.color}`;
+    } else if (borders.borderTop === null) {
+      cell.style.borderTop = 'none';
+    }
+    // Repetir para otros bordes...
+  };
+
+  const highlightCopiedRange = (hot: any, minRow: number, minCol: number, maxRow: number, maxCol: number) => {
+    for (let r = minRow; r <= maxRow; r++) {
+      for (let c = minCol; c <= maxCol; c++) {
+        const cell = hot.getCell(r, c);
+        if (cell) {
+          cell.style.outline = '2px dashed #6366f1';
+        }
+      }
+    }
+    
+    setTimeout(() => {
+      for (let r = minRow; r <= maxRow; r++) {
+        for (let c = minCol; c <= maxCol; c++) {
+          const cell = hot.getCell(r, c);
+          if (cell) {
+            cell.style.outline = '';
+          }
+        }
+      }
+    }, 2000);
+  };
+
+  const adjustFormulaReferences = (formula: string, rowOffset: number, colOffset: number): string => {
+    // Ajustar referencias de celda en fórmulas (A1 -> B2, etc.)
+    return formula.replace(/([A-Z]+)(\d+)/g, (match, col, row) => {
+      const colNum = col.split('').reduce((acc: number, char: string) => acc * 26 + char.charCodeAt(0) - 64, 0);
+      const newCol = String.fromCharCode(64 + colNum + colOffset);
+      const newRow = parseInt(row) + rowOffset;
+      return `${newCol}${newRow}`;
+    });
+  };
+
+  const getAllCellMeta = (hot: any) => {
+    const meta: any[][] = [];
+    const rowCount = hot.countRows();
+    const colCount = hot.countCols();
+    
+    for (let r = 0; r < rowCount; r++) {
+      meta[r] = [];
+      for (let c = 0; c < colCount; c++) {
+        meta[r][c] = hot.getCellMeta(r, c);
+      }
+    }
+    
+    return meta;
+  };
+
+  const restoreAllCellMeta = (hot: any, meta: any[][]) => {
+    for (let r = 0; r < meta.length; r++) {
+      for (let c = 0; c < meta[r].length; c++) {
+        Object.entries(meta[r][c]).forEach(([key, value]) => {
+          hot.setCellMeta(r, c, key, value);
+        });
+      }
+    }
+  };
+
+  return {
+    // Clipboard
+    copy,
+    cut,
+    paste,
+    copyFormat,
+    clipboard,
+    
+    // Font
+    setFontFamily,
+    setFontSize,
+    increaseFontSize,
+    decreaseFontSize,
+    toggleBold,
+    toggleItalic,
+    toggleUnderline,
+    setFontColor,
+    setFillColor,
+    
+    // Borders
+    setBorders,
+    
+    // Alignment
+    setHorizontalAlign,
+    setVerticalAlign,
+    setTextRotation,
+    increaseIndent,
+    decreaseIndent,
+    toggleWrapText,
+    
+    // Merge
+    mergeCells,
+    
+    // Number format
+    setNumberFormat,
+    formatAsCurrency,
+    formatAsPercent,
+    toggleThousandsSeparator,
+    increaseDecimals,
+    decreaseDecimals,
+    
+    // Insert/Delete
+    insertRows,
+    insertColumns,
+    deleteRows,
+    deleteColumns,
+    
+    // Edit
+    autoSum,
+    fill,
+    clearCells,
+    
+    // Sort/Filter
+    sort,
+    toggleFilter,
+    
+    // Find/Replace
+    findAndReplace,
+    
+    // Undo/Redo
+    undo,
+    redo,
+    undoStack,
+    redoStack,
+    
+    // State
+    mergedCells,
+    conditionalRules
+  };
+}
+
+=== PARTE 3: COMPONENTE DE RIBBON COMPLETO ===
+
+3) Crear el ribbon visual en client/src/components/spreadsheet/ExcelRibbon.tsx:
+
+import React, { useState } from 'react';
+import {
+  Clipboard, Scissors, Copy, PaintBucket, 
+  Bold, Italic, Underline, Type, ChevronDown,
+  AlignLeft, AlignCenter, AlignRight, AlignVerticalJustifyStart,
+  AlignVerticalJustifyCenter, AlignVerticalJustifyEnd,
+  RotateCcw, IndentDecrease, IndentIncrease, WrapText,
+  Grid3X3, Percent, DollarSign, Hash, ArrowDown01, ArrowUp01,
+  Plus, Minus, Trash2, Filter, ArrowUpDown, Search, Sigma,
+  Undo, Redo, Palette, Square, MoreVertical
+} from 'lucide-react';
+
+interface ExcelRibbonProps {
+  operations: ReturnType<typeof useSpreadsheetOperations>;
+  selectedFormat: any;
+}
+
+export function ExcelRibbon({ operations, selectedFormat }: ExcelRibbonProps) {
+  const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
+
+  const toggleDropdown = (name: string) => {
+    setActiveDropdown(activeDropdown === name ? null : name);
+  };
+
+  // Colores predefinidos
+  const colors = [
+    '#ffffff', '#000000', '#ff0000', '#00ff00', '#0000ff',
+    '#ffff00', '#ff00ff', '#00ffff', '#ff8000', '#8000ff',
+    '#008000', '#800000', '#008080', '#800080', '#808000'
+  ];
+
+  const fontFamilies = ['Arial', 'Calibri', 'Times New Roman', 'Verdana', 'Georgia', 'Courier New'];
+  const fontSizes = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72];
+
+  return (
+    <div className="bg-gray-800 border-b border-gray-700">
+      {/* Tab bar */}
+      <div className="flex items-center gap-1 px-2 py-1 border-b border-gray-700">
+        {['Inicio', 'Insertar', 'Diseño', 'Fórmulas', 'Datos', 'Vista'].map(tab => (
+          <button
+            key={tab}
+            className={`px-3 py-1 text-sm rounded ${
+              tab === 'Inicio' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:bg-gray-700'
+            }`}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+
+      {/* Ribbon toolbar */}
+      <div className="flex items-stretch gap-1 px-2 py-1 overflow-x-auto">
+        
+        {/* PORTAPAPELES */}
+        <div className="flex flex-col border-r border-gray-700 pr-2">
+          <span className="text-[10px] text-gray-500 text-center mb-1">Portapapeles</span>
+          <div className="flex items-center gap-1">
+            <div className="relative">
+              <button
+                onClick={() => operations.paste()}
+                className="flex flex-col items-center p-2 hover:bg-gray-700 rounded"
+                title="Pegar (Ctrl+V)"
+              >
+                <Clipboard className="w-5 h-5 text-gray-300" />
+                <span className="text-[10px] text-gray-400">Pegar</span>
+              </button>
+              <button
+                onClick={() => toggleDropdown('paste')}
+                className="absolute bottom-0 right-0 p-0.5 hover:bg-gray-600 rounded"
+              >
+                <ChevronDown className="w-3 h-3 text-gray-400" />
+              </button>
+              {activeDropdown === 'paste' && (
+                <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-xl z-50">
+                  {['Pegar todo', 'Pegar valores', 'Pegar fórmulas', 'Pegar formato', 'Transponer'].map((option, i) => (
+                    <button
+                      key={option}
+                      onClick={() => {
+                        operations.paste(['all', 'values', 'formulas', 'formats', 'transpose'][i] as any);
+                        setActiveDropdown(null);
+                      }}
+                      className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700"
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex flex-col gap-1">
+              <button onClick={() => operations.cut()} className="p-1.5 hover:bg-gray-700 rounded" title="Cortar (Ctrl+X)">
+                <Scissors className="w-4 h-4 text-gray-300" />
+              </button>
+              <button onClick={() => operations.copy()} className="p-1.5 hover:bg-gray-700 rounded" title="Copiar (Ctrl+C)">
+                <Copy className="w-4 h-4 text-gray-300" />
+              </button>
+              <button onClick={() => operations.copyFormat()} className="p-1.5 hover:bg-gray-700 rounded" title="Copiar formato">
+                <PaintBucket className="w-4 h-4 text-gray-300" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* FUENTE */}
+        <div className="flex flex-col border-r border-gray-700 pr-2">
+          <span className="text-[10px] text-gray-500 text-center mb-1">Fuente</span>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-1">
+              {/* Font family */}
+              <div className="relative">
+                <button
+                  onClick={() => toggleDropdown('fontFamily')}
+                  className="flex items-center gap-1 px-2 py-1 bg-gray-700 rounded text-sm text-gray-300 min-w-[100px]"
+                >
+                  <span className="truncate">{selectedFormat.fontFamily || 'Arial'}</span>
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+                {activeDropdown === 'fontFamily' && (
+                  <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-xl z-50 max-h-48 overflow-y-auto">
+                    {fontFamilies.map(font => (
+                      <button
+                        key={font}
+                        onClick={() => { operations.setFontFamily(font); setActiveDropdown(null); }}
+                        className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700"
+                        style={{ fontFamily: font }}
+                      >
+                        {font}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              {/* Font size */}
+              <div className="relative">
+                <button
+                  onClick={() => toggleDropdown('fontSize')}
+                  className="flex items-center gap-1 px-2 py-1 bg-gray-700 rounded text-sm text-gray-300"
+                >
+                  <span>{selectedFormat.fontSize || 11}</span>
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+                {activeDropdown === 'fontSize' && (
+                  <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-xl z-50 max-h-48 overflow-y-auto">
+                    {fontSizes.map(size => (
+                      <button
+                        key={size}
+                        onClick={() => { operations.setFontSize(size); setActiveDropdown(null); }}
+                        className="block w-full px-3 py-1.5 text-sm text-center text-gray-300 hover:bg-gray-700"
+                      >
+                        {size}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              <button onClick={() => operations.increaseFontSize()} className="p-1 hover:bg-gray-700 rounded" title="Aumentar tamaño">
+                <Type className="w-4 h-4 text-gray-300" />
+                <span className="text-[8px]">▲</span>
+              </button>
+              <button onClick={() => operations.decreaseFontSize()} className="p-1 hover:bg-gray-700 rounded" title="Disminuir tamaño">
+                <Type className="w-4 h-4 text-gray-300" />
+                <span className="text-[8px]">▼</span>
+              </button>
+            </div>
+            
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => operations.toggleBold()}
+                className={`p-1.5 rounded ${selectedFormat.fontWeight === 'bold' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+                title="Negrita (Ctrl+B)"
+              >
+                <Bold className="w-4 h-4 text-gray-300" />
+              </button>
+              <button
+                onClick={() => operations.toggleItalic()}
+                className={`p-1.5 rounded ${selectedFormat.fontStyle === 'italic' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+                title="Cursiva (Ctrl+I)"
+              >
+                <Italic className="w-4 h-4 text-gray-300" />
+              </button>
+              <button
+                onClick={() => operations.toggleUnderline()}
+                className={`p-1.5 rounded ${selectedFormat.textDecoration === 'underline' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+                title="Subrayado (Ctrl+U)"
+              >
+                <Underline className="w-4 h-4 text-gray-300" />
+              </button>
+              
+              {/* Bordes */}
+              <div className="relative">
+                <button
+                  onClick={() => toggleDropdown('borders')}
+                  className="p-1.5 hover:bg-gray-700 rounded"
+                  title="Bordes"
+                >
+                  <Square className="w-4 h-4 text-gray-300" />
+                </button>
+                {activeDropdown === 'borders' && (
+                  <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-xl z-50">
+                    {[
+                      { label: 'Todos los bordes', type: 'all' },
+                      { label: 'Borde exterior', type: 'outer' },
+                      { label: 'Borde interior', type: 'inner' },
+                      { label: 'Sin bordes', type: 'none' }
+                    ].map(({ label, type }) => (
+                      <button
+                        key={type}
+                        onClick={() => { operations.setBorders(type as any); setActiveDropdown(null); }}
+                        className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              {/* Color de relleno */}
+              <div className="relative">
+                <button
+                  onClick={() => toggleDropdown('fillColor')}
+                  className="p-1.5 hover:bg-gray-700 rounded"
+                  title="Color de relleno"
+                >
+                  <PaintBucket className="w-4 h-4 text-gray-300" />
+                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-yellow-400 rounded-b" />
+                </button>
+                {activeDropdown === 'fillColor' && (
+                  <div className="absolute top-full left-0 mt-1 p-2 bg-gray-800 border border-gray-700 rounded shadow-xl z-50">
+                    <div className="grid grid-cols-5 gap-1">
+                      {colors.map(color => (
+                        <button
+                          key={color}
+                          onClick={() => { operations.setFillColor(color); setActiveDropdown(null); }}
+                          className="w-5 h-5 rounded border border-gray-600 hover:scale-110 transition-transform"
+                          style={{ backgroundColor: color }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              
+              {/* Color de fuente */}
+              <div className="relative">
+                <button
+                  onClick={() => toggleDropdown('fontColor')}
+                  className="p-1.5 hover:bg-gray-700 rounded"
+                  title="Color de fuente"
+                >
+                  <Type className="w-4 h-4 text-gray-300" />
+                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-red-500 rounded-b" />
+                </button>
+                {activeDropdown === 'fontColor' && (
+                  <div className="absolute top-full left-0 mt-1 p-2 bg-gray-800 border border-gray-700 rounded shadow-xl z-50">
+                    <div className="grid grid-cols-5 gap-1">
+                      {colors.map(color => (
+                        <button
+                          key={color}
+                          onClick={() => { operations.setFontColor(color); setActiveDropdown(null); }}
+                          className="w-5 h-5 rounded border border-gray-600 hover:scale-110 transition-transform"
+                          style={{ backgroundColor: color }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ALINEACIÓN */}
+        <div className="flex flex-col border-r border-gray-700 pr-2">
+          <span className="text-[10px] text-gray-500 text-center mb-1">Alineación</span>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => operations.setVerticalAlign('top')}
+                className={`p-1.5 rounded ${selectedFormat.verticalAlign === 'top' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+                title="Alinear arriba"
+              >
+                <AlignVerticalJustifyStart className="w-4 h-4 text-gray-300" />
+              </button>
+              <button
+                onClick={() => operations.setVerticalAlign('middle')}
+                className={`p-1.5 rounded ${selectedFormat.verticalAlign === 'middle' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+                title="Alinear medio"
+              >
+                <AlignVerticalJustifyCenter className="w-4 h-4 text-gray-300" />
+              </button>
+              <button
+                onClick={() => operations.setVerticalAlign('bottom')}
+                className={`p-1.5 rounded ${selectedFormat.verticalAlign === 'bottom' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+                title="Alinear abajo"
+              >
+                <AlignVerticalJustifyEnd className="w-4 h-4 text-gray-300" />
+              </button>
+              <button onClick={() => operations.toggleWrapText()} className="p-1.5 hover:bg-gray-700 rounded" title="Ajustar texto">
+                <WrapText className="w-4 h-4 text-gray-300" />
+              </button>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => operations.setHorizontalAlign('left')}
+                className={`p-1.5 rounded ${selectedFormat.horizontalAlign === 'left' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+                title="Alinear izquierda"
+              >
+                <AlignLeft className="w-4 h-4 text-gray-300" />
+              </button>
+              <button
+                onClick={() => operations.setHorizontalAlign('center')}
+                className={`p-1.5 rounded ${selectedFormat.horizontalAlign === 'center' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+                title="Centrar"
+              >
+                <AlignCenter className="w-4 h-4 text-gray-300" />
+              </button>
+              <button
+                onClick={() => operations.setHorizontalAlign('right')}
+                className={`p-1.5 rounded ${selectedFormat.horizontalAlign === 'right' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+                title="Alinear derecha"
+              >
+                <AlignRight className="w-4 h-4 text-gray-300" />
+              </button>
+              <button onClick={() => operations.decreaseIndent()} className="p-1.5 hover:bg-gray-700 rounded" title="Disminuir sangría">
+                <IndentDecrease className="w-4 h-4 text-gray-300" />
+              </button>
+              <button onClick={() => operations.increaseIndent()} className="p-1.5 hover:bg-gray-700 rounded" title="Aumentar sangría">
+                <IndentIncrease className="w-4 h-4 text-gray-300" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* COMBINAR */}
+        <div className="flex flex-col border-r border-gray-700 pr-2">
+          <span className="text-[10px] text-gray-500 text-center mb-1">Combinar</span>
+          <div className="relative">
+            <button
+              onClick={() => toggleDropdown('merge')}
+              className="flex flex-col items-center p-2 hover:bg-gray-700 rounded"
+            >
+              <Grid3X3 className="w-5 h-5 text-gray-300" />
+              <span className="text-[10px] text-gray-400">Combinar</span>
+            </button>
+            {activeDropdown === 'merge' && (
+              <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-xl z-50">
+                {[
+                  { label: 'Combinar y centrar', type: 'all' },
+                  { label: 'Combinar horizontal', type: 'horizontal' },
+                  { label: 'Combinar vertical', type: 'vertical' },
+                  { label: 'Separar celdas', type: 'unmerge' }
+                ].map(({ label, type }) => (
+                  <button
+                    key={type}
+                    onClick={() => { operations.mergeCells(type as any); setActiveDropdown(null); }}
+                    className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* NÚMERO */}
+        <div className="flex flex-col border-r border-gray-700 pr-2">
+          <span className="text-[10px] text-gray-500 text-center mb-1">Número</span>
+          <div className="flex flex-col gap-1">
+            <div className="relative">
+              <button
+                onClick={() => toggleDropdown('numberFormat')}
+                className="flex items-center gap-1 px-2 py-1 bg-gray-700 rounded text-sm text-gray-300 min-w-[80px]"
+              >
+                <span>General</span>
+                <ChevronDown className="w-3 h-3" />
+              </button>
+              {activeDropdown === 'numberFormat' && (
+                <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-xl z-50">
+                  {[
+                    { label: 'General', format: 'general' },
+                    { label: 'Número', format: 'number' },
+                    { label: 'Moneda', format: 'currency' },
+                    { label: 'Porcentaje', format: 'percent' },
+                    { label: 'Fecha', format: 'date' },
+                    { label: 'Texto', format: 'text' }
+                  ].map(({ label, format }) => (
+                    <button
+                      key={format}
+                      onClick={() => { operations.setNumberFormat(format); setActiveDropdown(null); }}
+                      className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700"
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-1">
+              <button onClick={() => operations.formatAsCurrency()} className="p-1.5 hover:bg-gray-700 rounded" title="Formato moneda">
+                <DollarSign className="w-4 h-4 text-gray-300" />
+              </button>
+              <button onClick={() => operations.formatAsPercent()} className="p-1.5 hover:bg-gray-700 rounded" title="Formato porcentaje">
+                <Percent className="w-4 h-4 text-gray-300" />
+              </button>
+              <button onClick={() => operations.toggleThousandsSeparator()} className="p-1.5 hover:bg-gray-700 rounded" title="Separador miles">
+                <Hash className="w-4 h-4 text-gray-300" />
+              </button>
+              <button onClick={() => operations.decreaseDecimals()} className="p-1.5 hover:bg-gray-700 rounded" title="Disminuir decimales">
+                <ArrowDown01 className="w-4 h-4 text-gray-300" />
+              </button>
+              <button onClick={() => operations.increaseDecimals()} className="p-1.5 hover:bg-gray-700 rounded" title="Aumentar decimales">
+                <ArrowUp01 className="w-4 h-4 text-gray-300" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* CELDAS */}
+        <div className="flex flex-col border-r border-gray-700 pr-2">
+          <span className="text-[10px] text-gray-500 text-center mb-1">Celdas</span>
+          <div className="flex items-center gap-1">
+            <div className="relative">
+              <button
+                onClick={() => toggleDropdown('insert')}
+                className="flex flex-col items-center p-2 hover:bg-gray-700 rounded"
+              >
+                <Plus className="w-5 h-5 text-gray-300" />
+                <span className="text-[10px] text-gray-400">Insertar</span>
+              </button>
+              {activeDropdown === 'insert' && (
+                <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-xl z-50">
+                  <button onClick={() => { operations.insertRows('above'); setActiveDropdown(null); }} className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700">Fila arriba</button>
+                  <button onClick={() => { operations.insertRows('below'); setActiveDropdown(null); }} className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700">Fila abajo</button>
+                  <button onClick={() => { operations.insertColumns('left'); setActiveDropdown(null); }} className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700">Columna izquierda</button>
+                  <button onClick={() => { operations.insertColumns('right'); setActiveDropdown(null); }} className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700">Columna derecha</button>
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <button
+                onClick={() => toggleDropdown('delete')}
+                className="flex flex-col items-center p-2 hover:bg-gray-700 rounded"
+              >
+                <Trash2 className="w-5 h-5 text-gray-300" />
+                <span className="text-[10px] text-gray-400">Eliminar</span>
+              </button>
+              {activeDropdown === 'delete' && (
+                <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-xl z-50">
+                  <button onClick={() => { operations.deleteRows(); setActiveDropdown(null); }} className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700">Eliminar filas</button>
+                  <button onClick={() => { operations.deleteColumns(); setActiveDropdown(null); }} className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700">Eliminar columnas</button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* EDICIÓN */}
+        <div className="flex flex-col border-r border-gray-700 pr-2">
+          <span className="text-[10px] text-gray-500 text-center mb-1">Edición</span>
+          <div className="flex items-center gap-1">
+            <button onClick={() => operations.autoSum()} className="p-1.5 hover:bg-gray-700 rounded" title="Autosuma">
+              <Sigma className="w-4 h-4 text-gray-300" />
+            </button>
+            <div className="relative">
+              <button onClick={() => toggleDropdown('fill')} className="p-1.5 hover:bg-gray-700 rounded" title="Rellenar">
+                <ArrowUpDown className="w-4 h-4 text-gray-300" />
+              </button>
+              {activeDropdown === 'fill' && (
+                <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-xl z-50">
+                  <button onClick={() => { operations.fill('down'); setActiveDropdown(null); }} className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700">Rellenar abajo</button>
+                  <button onClick={() => { operations.fill('right'); setActiveDropdown(null); }} className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700">Rellenar derecha</button>
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <button onClick={() => toggleDropdown('clear')} className="p-1.5 hover:bg-gray-700 rounded" title="Borrar">
+                <Minus className="w-4 h-4 text-gray-300" />
+              </button>
+              {activeDropdown === 'clear' && (
+                <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-xl z-50">
+                  <button onClick={() => { operations.clearCells('all'); setActiveDropdown(null); }} className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700">Borrar todo</button>
+                  <button onClick={() => { operations.clearCells('contents'); setActiveDropdown(null); }} className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700">Borrar contenido</button>
+                  <button onClick={() => { operations.clearCells('formats'); setActiveDropdown(null); }} className="block w-full px-3 py-1.5 text-sm text-left text-gray-300 hover:bg-gray-700">Borrar formatos</button>
+                </div>
+              )}
+            </div>
+            <button onClick={() => operations.sort('asc')} className="p-1.5 hover:bg-gray-700 rounded" title="Ordenar A-Z">
+              <ArrowUpDown className="w-4 h-4 text-gray-300" />
+            </button>
+            <button onClick={() => operations.toggleFilter()} className="p-1.5 hover:bg-gray-700 rounded" title="Filtrar">
+              <Filter className="w-4 h-4 text-gray-300" />
+            </button>
+            <button className="p-1.5 hover:bg-gray-700 rounded" title="Buscar">
+              <Search className="w-4 h-4 text-gray-300" />
+            </button>
+          </div>
+        </div>
+
+        {/* UNDO / REDO */}
+        <div className="flex items-center gap-1 ml-auto">
+          <button
+            onClick={() => operations.undo()}
+            disabled={operations.undoStack.length === 0}
+            className="p-2 hover:bg-gray-700 rounded disabled:opacity-50"
+            title="Deshacer (Ctrl+Z)"
+          >
+            <Undo className="w-4 h-4 text-gray-300" />
+          </button>
+          <button
+            onClick={() => operations.redo()}
+            disabled={operations.redoStack.length === 0}
+            className="p-2 hover:bg-gray-700 rounded disabled:opacity-50"
+            title="Rehacer (Ctrl+Y)"
+          >
+            <Redo className="w-4 h-4 text-gray-300" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+=== PARTE 4: INTEGRAR EN SPREADSHEET EDITOR ===
+
+4) Actualizar SpreadsheetEditor.tsx para usar el nuevo hook y ribbon:
+
+// Añadir imports:
+import { useSpreadsheetOperations } from '@/hooks/useSpreadsheetOperations';
+import { ExcelRibbon } from './ExcelRibbon';
+
+// Dentro del componente:
+const operations = useSpreadsheetOperations(hotRef);
+
+// Estado para tracking del formato de celda seleccionada
+const [selectedFormat, setSelectedFormat] = useState({
+  fontFamily: 'Arial',
+  fontSize: 11,
+  fontWeight: 'normal',
+  fontStyle: 'normal',
+  textDecoration: 'none',
+  horizontalAlign: 'left',
+  verticalAlign: 'middle'
+});
+
+// Callback para actualizar formato al cambiar selección
+const updateSelectedFormat = useCallback(() => {
+  const hot = hotRef.current?.hotInstance;
+  if (!hot) return;
+  
+  const selected = hot.getSelected();
+  if (!selected) return;
+  
+  const [row, col] = [selected[0][0], selected[0][1]];
+  const meta = hot.getCellMeta(row, col);
+  const style = meta.style || {};
+  
+  setSelectedFormat({
+    fontFamily: style.fontFamily || 'Arial',
+    fontSize: style.fontSize || 11,
+    fontWeight: style.fontWeight || 'normal',
+    fontStyle: style.fontStyle || 'normal',
+    textDecoration: style.textDecoration || 'none',
+    horizontalAlign: style.horizontalAlign || 'left',
+    verticalAlign: style.verticalAlign || 'middle'
+  });
+}, []);
+
+// En hotSettings:
+afterSelection: (row, col) => {
+  setSelectedCell({ row, col });
+  updateSelectedFormat();
+}
+
+// En el JSX, reemplazar el toolbar existente con:
+<ExcelRibbon operations={operations} selectedFormat={selectedFormat} />
+
+5) Añadir atajos de teclado globales:
+
+useEffect(() => {
+  const handleKeyDown = (e: KeyboardEvent) => {
+    const ctrl = e.ctrlKey || e.metaKey;
+    
+    if (ctrl && e.key === 'c') { e.preventDefault(); operations.copy(); }
+    if (ctrl && e.key === 'x') { e.preventDefault(); operations.cut(); }
+    if (ctrl && e.key === 'v') { e.preventDefault(); operations.paste(); }
+    if (ctrl && e.key === 'z') { e.preventDefault(); operations.undo(); }
+    if (ctrl && e.key === 'y') { e.preventDefault(); operations.redo(); }
+    if (ctrl && e.key === 'b') { e.preventDefault(); operations.toggleBold(); }
+    if (ctrl && e.key === 'i') { e.preventDefault(); operations.toggleItalic(); }
+    if (ctrl && e.key === 'u') { e.preventDefault(); operations.toggleUnderline(); }
+  };
+  
+  window.addEventListener('keydown', handleKeyDown);
+  return () => window.removeEventListener('keydown', handleKeyDown);
+}, [operations]);
+
+=== PARTE 5: VERIFICACIÓN ===
+
+6) Verificar que TODAS las operaciones funcionan:
+
+PORTAPAPELES:
+- ✅/❌ Copiar (Ctrl+C)
+- ✅/❌ Cortar (Ctrl+X)
+- ✅/❌ Pegar (Ctrl+V)
+- ✅/❌ Pegar valores
+- ✅/❌ Pegar formato
+- ✅/❌ Copiar formato (brocha)
+
+FUENTE:
+- ✅/❌ Cambiar tipo de letra
+- ✅/❌ Cambiar tamaño
+- ✅/❌ Aumentar/disminuir tamaño
+- ✅/❌ Negrita (Ctrl+B)
+- ✅/❌ Cursiva (Ctrl+I)
+- ✅/❌ Subrayado (Ctrl+U)
+- ✅/❌ Color de texto
+- ✅/❌ Color de fondo
+- ✅/❌ Bordes
+
+ALINEACIÓN:
+- ✅/❌ Horizontal (izq/centro/der)
+- ✅/❌ Vertical (arriba/medio/abajo)
+- ✅/❌ Sangría
+- ✅/❌ Ajustar texto
+
+NÚMERO:
+- ✅/❌ Formato general/número/moneda/porcentaje
+- ✅/❌ Decimales +/-
+- ✅/❌ Separador de miles
+
+CELDAS:
+- ✅/❌ Insertar fila/columna
+- ✅/❌ Eliminar fila/columna
+- ✅/❌ Combinar celdas
+
+EDICIÓN:
+- ✅/❌ Autosuma
+- ✅/❌ Rellenar
+- ✅/❌ Borrar
+- ✅/❌ Ordenar
+- ✅/❌ Filtrar
+- ✅/❌ Undo/Redo
+
+Reportar tabla de resultados.

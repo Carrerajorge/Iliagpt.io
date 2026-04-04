@@ -1,0 +1,1050 @@
+Implementa un sistema de Excel completamente profesional con autorrelleno inteligente, menú contextual completo, y optimización de rendimiento:
+
+=== PARTE 1: OPTIMIZACIÓN DE RENDIMIENTO ===
+
+1) Actualizar la configuración de Handsontable para mejor rendimiento. En el archivo del SpreadsheetEditor:
+
+const hotSettings = {
+  data,
+  rowHeaders: true,
+  colHeaders: getColumnHeaders(26),
+  height: height,
+  width: '100%',
+  licenseKey: 'non-commercial-and-evaluation',
+  
+  // ===== RENDIMIENTO - CRÍTICO =====
+  renderAllRows: false, // NO renderizar todas las filas (virtualización)
+  viewportRowRenderingOffset: 20, // Filas extra a renderizar fuera del viewport
+  viewportColumnRenderingOffset: 5, // Columnas extra
+  
+  // Debounce para evitar re-renders excesivos
+  afterChange: (changes, source) => {
+    if (source === 'loadData') return;
+    // Solo actualizar estado si hay cambios reales
+    if (changes && changes.length > 0) {
+      handleDataChange(changes, source);
+    }
+  },
+  
+  // Optimizar edición
+  enterBeginsEditing: true,
+  autoWrapRow: true,
+  autoWrapCol: true,
+  
+  // Editor más rápido
+  editor: 'text', // Usar editor de texto simple por defecto
+  
+  // ===== SELECCIÓN =====
+  selectionMode: 'multiple',
+  outsideClickDeselects: false,
+  fragmentSelection: true,
+  
+  // ===== FILL HANDLE (Autorrelleno) - CRÍTICO =====
+  fillHandle: {
+    autoInsertRow: true,
+    direction: 'vertical', // o 'horizontal' o 'both'
+  },
+  
+  // ===== MENÚ CONTEXTUAL PERSONALIZADO =====
+  contextMenu: {
+    items: {
+      'cut': { name: 'Cortar', key: 'mod+x' },
+      'copy': { name: 'Copiar', key: 'mod+c' },
+      'paste': { name: 'Pegar', key: 'mod+v' },
+      'paste_special': {
+        name: 'Pegado especial',
+        submenu: {
+          items: [
+            { key: 'paste_value', name: 'Pegar valores', callback: () => pasteValues() },
+            { key: 'paste_format', name: 'Pegar formato', callback: () => pasteFormat() },
+            { key: 'paste_formula', name: 'Pegar fórmulas', callback: () => pasteFormulas() },
+            { key: 'paste_transpose', name: 'Transponer', callback: () => pasteTranspose() }
+          ]
+        }
+      },
+      'separator1': '---------',
+      'insert_row_above': { name: 'Insertar fila arriba' },
+      'insert_row_below': { name: 'Insertar fila abajo' },
+      'insert_col_left': { name: 'Insertar columna izquierda' },
+      'insert_col_right': { name: 'Insertar columna derecha' },
+      'separator2': '---------',
+      'remove_row': { name: 'Eliminar fila(s)' },
+      'remove_col': { name: 'Eliminar columna(s)' },
+      'clear_contents': {
+        name: 'Borrar contenido',
+        callback: function() {
+          const selected = this.getSelected();
+          if (selected) {
+            selected.forEach(([r1, c1, r2, c2]) => {
+              for (let r = Math.min(r1, r2); r <= Math.max(r1, r2); r++) {
+                for (let c = Math.min(c1, c2); c <= Math.max(c1, c2); c++) {
+                  this.setDataAtCell(r, c, '');
+                }
+              }
+            });
+          }
+        }
+      },
+      'separator3': '---------',
+      'filter_by_value': {
+        name: 'Filtrar por valor de celda',
+        callback: function() {
+          const selected = this.getSelected();
+          if (selected) {
+            const value = this.getDataAtCell(selected[0][0], selected[0][1]);
+            // Implementar filtro
+            console.log('Filtrar por:', value);
+          }
+        }
+      },
+      'sort_asc': {
+        name: 'Ordenar A → Z',
+        callback: function() {
+          const selected = this.getSelected();
+          if (selected) {
+            const col = selected[0][1];
+            this.getPlugin('columnSorting').sort({ column: col, sortOrder: 'asc' });
+          }
+        }
+      },
+      'sort_desc': {
+        name: 'Ordenar Z → A',
+        callback: function() {
+          const selected = this.getSelected();
+          if (selected) {
+            const col = selected[0][1];
+            this.getPlugin('columnSorting').sort({ column: col, sortOrder: 'desc' });
+          }
+        }
+      },
+      'separator4': '---------',
+      'add_comment': {
+        name: 'Nuevo comentario',
+        callback: function() {
+          const selected = this.getSelected();
+          if (selected) {
+            const comment = prompt('Escribe un comentario:');
+            if (comment) {
+              this.setCellMeta(selected[0][0], selected[0][1], 'comment', { value: comment });
+              this.render();
+            }
+          }
+        }
+      },
+      'separator5': '---------',
+      'format_cells': {
+        name: 'Formato de celdas...',
+        callback: function() {
+          // Abrir modal de formato
+          openFormatDialog();
+        }
+      },
+      'merge_cells': {
+        name: 'Combinar celdas',
+        callback: function() {
+          const selected = this.getSelected();
+          if (selected) {
+            const [r1, c1, r2, c2] = selected[0];
+            this.getPlugin('mergeCells').merge(
+              Math.min(r1, r2), Math.min(c1, c2),
+              Math.max(r1, r2), Math.max(c1, c2)
+            );
+          }
+        }
+      },
+      'unmerge_cells': {
+        name: 'Separar celdas',
+        callback: function() {
+          const selected = this.getSelected();
+          if (selected) {
+            const [r1, c1, r2, c2] = selected[0];
+            this.getPlugin('mergeCells').unmerge(
+              Math.min(r1, r2), Math.min(c1, c2),
+              Math.max(r1, r2), Math.max(c1, c2)
+            );
+          }
+        }
+      },
+      'separator6': '---------',
+      'define_name': {
+        name: 'Definir nombre...',
+        callback: function() {
+          const selected = this.getSelected();
+          if (selected) {
+            const name = prompt('Nombre para este rango:');
+            if (name) {
+              // Guardar nombre de rango
+              console.log('Rango definido:', name, selected[0]);
+            }
+          }
+        }
+      },
+      'hyperlink': {
+        name: 'Hipervínculo...',
+        callback: function() {
+          const selected = this.getSelected();
+          if (selected) {
+            const url = prompt('URL del hipervínculo:');
+            if (url) {
+              this.setCellMeta(selected[0][0], selected[0][1], 'hyperlink', url);
+              this.render();
+            }
+          }
+        }
+      },
+      'separator7': '---------',
+      'autofill_series': {
+        name: 'Autorrelleno',
+        submenu: {
+          items: [
+            { 
+              key: 'fill_down', 
+              name: 'Rellenar abajo', 
+              callback: function() { fillSeries(this, 'down'); }
+            },
+            { 
+              key: 'fill_right', 
+              name: 'Rellenar derecha',
+              callback: function() { fillSeries(this, 'right'); }
+            },
+            { 
+              key: 'fill_series', 
+              name: 'Series...',
+              callback: function() { openSeriesDialog(this); }
+            }
+          ]
+        }
+      }
+    }
+  },
+  
+  // ===== PLUGINS NECESARIOS =====
+  filters: true,
+  dropdownMenu: true,
+  columnSorting: true,
+  multiColumnSorting: true,
+  mergeCells: true,
+  comments: true,
+  customBorders: true,
+  undo: true,
+  copyPaste: true,
+  manualColumnResize: true,
+  manualRowResize: true,
+  manualColumnMove: true,
+  manualRowMove: true,
+  
+  // ===== CALLBACKS =====
+  beforeAutofill: (selectionData, sourceRange, targetRange, direction) => {
+    // Interceptar autorrelleno para aplicar lógica inteligente
+    return handleSmartAutofill(selectionData, sourceRange, targetRange, direction);
+  },
+  
+  afterSelection: (row, col, row2, col2) => {
+    setSelectedCell({ row, col });
+    setSelectedRange({
+      startRow: Math.min(row, row2),
+      startCol: Math.min(col, col2),
+      endRow: Math.max(row, row2),
+      endCol: Math.max(col, col2)
+    });
+  }
+};
+
+=== PARTE 2: AUTORRELLENO INTELIGENTE (Fill Handle) ===
+
+2) Crear función de autorrelleno inteligente. Añadir en el mismo archivo o crear nuevo:
+
+// Función principal de autorrelleno inteligente
+function handleSmartAutofill(selectionData, sourceRange, targetRange, direction) {
+  const hot = hotRef.current?.hotInstance;
+  if (!hot) return;
+  
+  const { startRow: sr, startCol: sc, endRow: er, endCol: ec } = sourceRange;
+  const { startRow: tr, startCol: tc, endRow: ter, endCol: tec } = targetRange;
+  
+  // Obtener datos de origen
+  const sourceData = [];
+  for (let r = sr; r <= er; r++) {
+    const row = [];
+    for (let c = sc; c <= ec; c++) {
+      row.push(hot.getDataAtCell(r, c));
+    }
+    sourceData.push(row);
+  }
+  
+  // Detectar patrón
+  const pattern = detectPattern(sourceData, direction);
+  
+  // Generar datos según el patrón
+  const fillData = generateFillData(pattern, sourceData, targetRange, direction);
+  
+  return fillData;
+}
+
+// Detectar el tipo de patrón en los datos
+function detectPattern(data, direction) {
+  // Aplanar datos según dirección
+  const values = direction === 'down' || direction === 'up'
+    ? data.map(row => row[0])
+    : data[0];
+  
+  if (values.length === 0) return { type: 'copy', values };
+  
+  // Si solo hay un valor, copiar
+  if (values.length === 1) {
+    return { type: 'copy', values };
+  }
+  
+  // Verificar si todos son números
+  const numbers = values.map(v => parseFloat(v)).filter(n => !isNaN(n));
+  
+  if (numbers.length === values.length) {
+    // Calcular diferencia/incremento
+    const diffs = [];
+    for (let i = 1; i < numbers.length; i++) {
+      diffs.push(numbers[i] - numbers[i - 1]);
+    }
+    
+    // Verificar si todas las diferencias son iguales (secuencia aritmética)
+    const allSameDiff = diffs.every(d => d === diffs[0]);
+    
+    if (allSameDiff) {
+      return {
+        type: 'arithmetic',
+        start: numbers[numbers.length - 1],
+        step: diffs[0],
+        values: numbers
+      };
+    }
+    
+    // Verificar secuencia geométrica (multiplicación)
+    if (numbers[0] !== 0) {
+      const ratios = [];
+      for (let i = 1; i < numbers.length; i++) {
+        ratios.push(numbers[i] / numbers[i - 1]);
+      }
+      const allSameRatio = ratios.every(r => Math.abs(r - ratios[0]) < 0.0001);
+      
+      if (allSameRatio && ratios[0] !== 1) {
+        return {
+          type: 'geometric',
+          start: numbers[numbers.length - 1],
+          ratio: ratios[0],
+          values: numbers
+        };
+      }
+    }
+    
+    // Números pero sin patrón claro - copiar secuencia
+    return { type: 'repeat_sequence', values: numbers };
+  }
+  
+  // Verificar si son fechas
+  const dates = values.map(v => parseDate(v)).filter(d => d !== null);
+  if (dates.length === values.length) {
+    const dayDiffs = [];
+    for (let i = 1; i < dates.length; i++) {
+      dayDiffs.push(Math.round((dates[i] - dates[i - 1]) / (1000 * 60 * 60 * 24)));
+    }
+    const allSameDayDiff = dayDiffs.every(d => d === dayDiffs[0]);
+    
+    if (allSameDayDiff) {
+      return {
+        type: 'date',
+        lastDate: dates[dates.length - 1],
+        dayStep: dayDiffs[0],
+        format: detectDateFormat(values[0]),
+        values: dates
+      };
+    }
+  }
+  
+  // Verificar patrones de texto conocidos
+  const textPattern = detectTextPattern(values);
+  if (textPattern) {
+    return textPattern;
+  }
+  
+  // Default: repetir secuencia
+  return { type: 'repeat_sequence', values };
+}
+
+// Detectar patrones de texto comunes
+function detectTextPattern(values) {
+  // Días de la semana
+  const daysES = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+  const daysEN = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+  const daysShortES = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'];
+  const daysShortEN = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  
+  // Meses
+  const monthsES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  const monthsEN = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+  const monthsShortES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  const monthsShortEN = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  
+  // Trimestres
+  const quarters = ['Q1', 'Q2', 'Q3', 'Q4', 'T1', 'T2', 'T3', 'T4'];
+  
+  const lowerValues = values.map(v => String(v).toLowerCase().trim());
+  
+  // Buscar en cada lista
+  const lists = [
+    { name: 'days', list: daysES },
+    { name: 'days', list: daysEN },
+    { name: 'days', list: daysShortES },
+    { name: 'days', list: daysShortEN },
+    { name: 'months', list: monthsES },
+    { name: 'months', list: monthsEN },
+    { name: 'months', list: monthsShortES },
+    { name: 'months', list: monthsShortEN },
+    { name: 'quarters', list: quarters.map(q => q.toLowerCase()) }
+  ];
+  
+  for (const { name, list } of lists) {
+    const indices = lowerValues.map(v => list.indexOf(v));
+    if (indices.every(i => i !== -1)) {
+      // Verificar que son consecutivos
+      let isConsecutive = true;
+      for (let i = 1; i < indices.length; i++) {
+        const expectedNext = (indices[i - 1] + 1) % list.length;
+        if (indices[i] !== expectedNext) {
+          isConsecutive = false;
+          break;
+        }
+      }
+      
+      if (isConsecutive || indices.length === 1) {
+        return {
+          type: 'list',
+          listType: name,
+          list: list,
+          lastIndex: indices[indices.length - 1],
+          originalCase: detectCase(values[0])
+        };
+      }
+    }
+  }
+  
+  // Detectar patrón alfanumérico (A1, A2, A3 o Item1, Item2, Item3)
+  const alphanumPattern = detectAlphanumericPattern(values);
+  if (alphanumPattern) {
+    return alphanumPattern;
+  }
+  
+  return null;
+}
+
+// Detectar patrón alfanumérico
+function detectAlphanumericPattern(values) {
+  // Patrón: prefijo + número (ej: "Item1", "A1", "Row1")
+  const regex = /^(.+?)(\d+)$/;
+  
+  const parsed = values.map(v => {
+    const match = String(v).match(regex);
+    if (match) {
+      return { prefix: match[1], number: parseInt(match[2]) };
+    }
+    return null;
+  });
+  
+  if (parsed.every(p => p !== null)) {
+    // Verificar mismo prefijo
+    const prefix = parsed[0].prefix;
+    if (parsed.every(p => p.prefix === prefix)) {
+      // Verificar números consecutivos
+      const numbers = parsed.map(p => p.number);
+      const diffs = [];
+      for (let i = 1; i < numbers.length; i++) {
+        diffs.push(numbers[i] - numbers[i - 1]);
+      }
+      
+      if (diffs.length === 0 || diffs.every(d => d === diffs[0])) {
+        return {
+          type: 'alphanumeric',
+          prefix: prefix,
+          lastNumber: numbers[numbers.length - 1],
+          step: diffs.length > 0 ? diffs[0] : 1
+        };
+      }
+    }
+  }
+  
+  return null;
+}
+
+// Generar datos de relleno según el patrón
+function generateFillData(pattern, sourceData, targetRange, direction) {
+  const { startRow: tr, startCol: tc, endRow: ter, endCol: tec } = targetRange;
+  const targetCount = direction === 'down' || direction === 'up'
+    ? ter - tr + 1
+    : tec - tc + 1;
+  
+  const result = [];
+  
+  switch (pattern.type) {
+    case 'arithmetic':
+      for (let i = 0; i < targetCount; i++) {
+        const value = pattern.start + pattern.step * (i + 1);
+        result.push(value);
+      }
+      break;
+      
+    case 'geometric':
+      for (let i = 0; i < targetCount; i++) {
+        const value = pattern.start * Math.pow(pattern.ratio, i + 1);
+        result.push(Math.round(value * 100) / 100);
+      }
+      break;
+      
+    case 'date':
+      for (let i = 0; i < targetCount; i++) {
+        const newDate = new Date(pattern.lastDate);
+        newDate.setDate(newDate.getDate() + pattern.dayStep * (i + 1));
+        result.push(formatDate(newDate, pattern.format));
+      }
+      break;
+      
+    case 'list':
+      for (let i = 0; i < targetCount; i++) {
+        const index = (pattern.lastIndex + i + 1) % pattern.list.length;
+        let value = pattern.list[index];
+        // Aplicar mismo case que el original
+        value = applyCase(value, pattern.originalCase);
+        result.push(value);
+      }
+      break;
+      
+    case 'alphanumeric':
+      for (let i = 0; i < targetCount; i++) {
+        const num = pattern.lastNumber + pattern.step * (i + 1);
+        result.push(`${pattern.prefix}${num}`);
+      }
+      break;
+      
+    case 'repeat_sequence':
+      for (let i = 0; i < targetCount; i++) {
+        const index = i % pattern.values.length;
+        result.push(pattern.values[index]);
+      }
+      break;
+      
+    case 'copy':
+    default:
+      for (let i = 0; i < targetCount; i++) {
+        const index = i % pattern.values.length;
+        result.push(pattern.values[index]);
+      }
+      break;
+  }
+  
+  return result;
+}
+
+// Helpers
+function parseDate(value) {
+  const str = String(value);
+  // Intentar varios formatos
+  const formats = [
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, // DD/MM/YYYY
+    /^(\d{1,2})-(\d{1,2})-(\d{4})$/, // DD-MM-YYYY
+    /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/, // YYYY/MM/DD
+    /^(\d{4})-(\d{1,2})-(\d{1,2})$/, // YYYY-MM-DD
+  ];
+  
+  for (const regex of formats) {
+    const match = str.match(regex);
+    if (match) {
+      // Determinar orden según formato
+      let day, month, year;
+      if (regex.source.startsWith('^(\\d{4})')) {
+        [, year, month, day] = match;
+      } else {
+        [, day, month, year] = match;
+      }
+      const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+      if (!isNaN(date.getTime())) return date;
+    }
+  }
+  
+  return null;
+}
+
+function detectDateFormat(value) {
+  const str = String(value);
+  if (str.includes('/')) {
+    if (str.match(/^\d{4}\//)) return 'YYYY/MM/DD';
+    return 'DD/MM/YYYY';
+  }
+  if (str.includes('-')) {
+    if (str.match(/^\d{4}-/)) return 'YYYY-MM-DD';
+    return 'DD-MM-YYYY';
+  }
+  return 'DD/MM/YYYY';
+}
+
+function formatDate(date, format) {
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  
+  switch (format) {
+    case 'YYYY/MM/DD': return `${year}/${month}/${day}`;
+    case 'YYYY-MM-DD': return `${year}-${month}-${day}`;
+    case 'DD-MM-YYYY': return `${day}-${month}-${year}`;
+    case 'DD/MM/YYYY':
+    default: return `${day}/${month}/${year}`;
+  }
+}
+
+function detectCase(str) {
+  if (str === str.toUpperCase()) return 'upper';
+  if (str === str.toLowerCase()) return 'lower';
+  if (str[0] === str[0].toUpperCase()) return 'capitalize';
+  return 'mixed';
+}
+
+function applyCase(str, caseType) {
+  switch (caseType) {
+    case 'upper': return str.toUpperCase();
+    case 'lower': return str.toLowerCase();
+    case 'capitalize': return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+    default: return str;
+  }
+}
+
+=== PARTE 3: MENÚ CONTEXTUAL COMPLETO CON SUBMENÚS ===
+
+3) Crear componente de menú contextual personalizado si necesitas más control:
+
+// client/src/components/spreadsheet/ExcelContextMenu.tsx
+
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  Scissors, Copy, Clipboard, ClipboardPaste, 
+  Plus, Minus, Trash2, Filter, ArrowUpDown,
+  MessageSquare, StickyNote, Link2, Table2,
+  ChevronRight, Type, Palette, Grid3X3,
+  ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
+  Search, ListOrdered, Hash
+} from 'lucide-react';
+
+interface ContextMenuProps {
+  x: number;
+  y: number;
+  isOpen: boolean;
+  onClose: () => void;
+  onAction: (action: string, params?: any) => void;
+  selectedRange: { startRow: number; startCol: number; endRow: number; endCol: number } | null;
+}
+
+interface MenuItem {
+  id: string;
+  label: string;
+  icon?: React.ComponentType<any>;
+  shortcut?: string;
+  divider?: boolean;
+  submenu?: MenuItem[];
+  disabled?: boolean;
+  action?: string;
+}
+
+export function ExcelContextMenu({ x, y, isOpen, onClose, onAction, selectedRange }: ContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [activeSubmenu, setActiveSubmenu] = useState<string | null>(null);
+  const [submenuPosition, setSubmenuPosition] = useState({ x: 0, y: 0 });
+
+  const menuItems: MenuItem[] = [
+    { id: 'cut', label: 'Cortar', icon: Scissors, shortcut: '⌘X', action: 'cut' },
+    { id: 'copy', label: 'Copiar', icon: Copy, shortcut: '⌘C', action: 'copy' },
+    { id: 'paste', label: 'Pegar', icon: Clipboard, shortcut: '⌘V', action: 'paste' },
+    {
+      id: 'paste_special',
+      label: 'Pegado especial',
+      icon: ClipboardPaste,
+      submenu: [
+        { id: 'paste_values', label: 'Pegar valores', action: 'paste_values' },
+        { id: 'paste_formulas', label: 'Pegar fórmulas', action: 'paste_formulas' },
+        { id: 'paste_formats', label: 'Pegar formato', action: 'paste_formats' },
+        { id: 'paste_transpose', label: 'Transponer', action: 'paste_transpose' },
+        { id: 'paste_link', label: 'Pegar vínculo', action: 'paste_link' },
+      ]
+    },
+    { id: 'divider1', label: '', divider: true },
+    { id: 'search', label: 'Búsqueda inteligente...', icon: Search, shortcut: '⌘L', action: 'smart_search' },
+    { id: 'divider2', label: '', divider: true },
+    {
+      id: 'insert',
+      label: 'Insertar...',
+      icon: Plus,
+      submenu: [
+        { id: 'insert_row_above', label: 'Fila arriba', action: 'insert_row_above' },
+        { id: 'insert_row_below', label: 'Fila abajo', action: 'insert_row_below' },
+        { id: 'insert_col_left', label: 'Columna izquierda', action: 'insert_col_left' },
+        { id: 'insert_col_right', label: 'Columna derecha', action: 'insert_col_right' },
+        { id: 'divider', label: '', divider: true },
+        { id: 'insert_cells', label: 'Celdas...', action: 'insert_cells' },
+      ]
+    },
+    {
+      id: 'delete',
+      label: 'Eliminar...',
+      icon: Trash2,
+      submenu: [
+        { id: 'delete_rows', label: 'Eliminar filas', action: 'delete_rows' },
+        { id: 'delete_cols', label: 'Eliminar columnas', action: 'delete_cols' },
+        { id: 'delete_cells', label: 'Eliminar celdas...', action: 'delete_cells' },
+      ]
+    },
+    { id: 'clear', label: 'Borrar contenido', icon: Minus, action: 'clear_contents' },
+    { id: 'divider3', label: '', divider: true },
+    {
+      id: 'filter',
+      label: 'Filtro',
+      icon: Filter,
+      submenu: [
+        { id: 'filter_by_value', label: 'Filtrar por valor seleccionado', action: 'filter_by_value' },
+        { id: 'filter_by_color', label: 'Filtrar por color', action: 'filter_by_color' },
+        { id: 'clear_filter', label: 'Borrar filtro', action: 'clear_filter' },
+      ]
+    },
+    {
+      id: 'sort',
+      label: 'Ordenar',
+      icon: ArrowUpDown,
+      submenu: [
+        { id: 'sort_asc', label: 'Ordenar A → Z', icon: ArrowUp, action: 'sort_asc' },
+        { id: 'sort_desc', label: 'Ordenar Z → A', icon: ArrowDown, action: 'sort_desc' },
+        { id: 'sort_custom', label: 'Ordenar personalizado...', action: 'sort_custom' },
+      ]
+    },
+    { id: 'divider4', label: '', divider: true },
+    { id: 'comment', label: 'Nuevo comentario', icon: MessageSquare, action: 'add_comment' },
+    { id: 'note', label: 'Nueva nota', icon: StickyNote, action: 'add_note' },
+    { id: 'divider5', label: '', divider: true },
+    { id: 'format_cells', label: 'Formato de celdas...', icon: Type, shortcut: '⌘1', action: 'format_cells' },
+    { id: 'dropdown_list', label: 'Elegir de la lista desplegable...', icon: ListOrdered, action: 'dropdown_list' },
+    { id: 'define_name', label: 'Definir nombre...', icon: Hash, action: 'define_name' },
+    { id: 'divider6', label: '', divider: true },
+    { id: 'hyperlink', label: 'Hipervínculo...', icon: Link2, shortcut: '⌘K', action: 'hyperlink' },
+    { id: 'divider7', label: '', divider: true },
+    {
+      id: 'autofill',
+      label: 'Autorrelleno',
+      icon: Grid3X3,
+      submenu: [
+        { id: 'fill_down', label: 'Rellenar abajo', icon: ArrowDown, action: 'fill_down' },
+        { id: 'fill_right', label: 'Rellenar derecha', icon: ArrowRight, action: 'fill_right' },
+        { id: 'fill_up', label: 'Rellenar arriba', icon: ArrowUp, action: 'fill_up' },
+        { id: 'fill_left', label: 'Rellenar izquierda', icon: ArrowLeft, action: 'fill_left' },
+        { id: 'divider', label: '', divider: true },
+        { id: 'fill_series', label: 'Series...', action: 'fill_series' },
+      ]
+    },
+    { id: 'divider8', label: '', divider: true },
+    {
+      id: 'merge',
+      label: 'Combinar celdas',
+      icon: Table2,
+      submenu: [
+        { id: 'merge_all', label: 'Combinar y centrar', action: 'merge_all' },
+        { id: 'merge_horizontal', label: 'Combinar horizontalmente', action: 'merge_horizontal' },
+        { id: 'merge_vertical', label: 'Combinar verticalmente', action: 'merge_vertical' },
+        { id: 'unmerge', label: 'Separar celdas', action: 'unmerge' },
+      ]
+    },
+  ];
+
+  // Cerrar al hacer click fuera
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isOpen, onClose]);
+
+  // Cerrar con Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    if (isOpen) {
+      document.addEventListener('keydown', handleKeyDown);
+    }
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  const handleItemClick = (item: MenuItem) => {
+    if (item.submenu) {
+      return; // No hacer nada, el submenu se maneja con hover
+    }
+    if (item.action) {
+      onAction(item.action);
+    }
+    onClose();
+  };
+
+  const handleSubmenuEnter = (itemId: string, e: React.MouseEvent) => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setSubmenuPosition({ x: rect.right, y: rect.top });
+    setActiveSubmenu(itemId);
+  };
+
+  const renderMenuItem = (item: MenuItem) => {
+    if (item.divider) {
+      return <div key={item.id} className="h-px bg-gray-700 my-1" />;
+    }
+
+    const hasSubmenu = item.submenu && item.submenu.length > 0;
+    const Icon = item.icon;
+
+    return (
+      <div
+        key={item.id}
+        className={`
+          relative flex items-center gap-3 px-3 py-2 cursor-pointer
+          ${item.disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-700'}
+          ${activeSubmenu === item.id ? 'bg-gray-700' : ''}
+        `}
+        onClick={() => !item.disabled && handleItemClick(item)}
+        onMouseEnter={(e) => hasSubmenu && handleSubmenuEnter(item.id, e)}
+        onMouseLeave={() => !hasSubmenu && setActiveSubmenu(null)}
+      >
+        <div className="w-5 h-5 flex items-center justify-center">
+          {Icon && <Icon className="w-4 h-4 text-gray-400" />}
+        </div>
+        <span className="flex-1 text-sm text-gray-200">{item.label}</span>
+        {item.shortcut && (
+          <span className="text-xs text-gray-500">{item.shortcut}</span>
+        )}
+        {hasSubmenu && (
+          <ChevronRight className="w-4 h-4 text-gray-500" />
+        )}
+
+        {/* Submenu */}
+        {hasSubmenu && activeSubmenu === item.id && (
+          <div
+            className="absolute left-full top-0 ml-1 min-w-[200px] bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 z-50"
+            onMouseEnter={() => setActiveSubmenu(item.id)}
+            onMouseLeave={() => setActiveSubmenu(null)}
+          >
+            {item.submenu!.map(subItem => {
+              if (subItem.divider) {
+                return <div key={subItem.id} className="h-px bg-gray-700 my-1" />;
+              }
+              const SubIcon = subItem.icon;
+              return (
+                <div
+                  key={subItem.id}
+                  className="flex items-center gap-3 px-3 py-2 hover:bg-gray-700 cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (subItem.action) {
+                      onAction(subItem.action);
+                    }
+                    onClose();
+                  }}
+                >
+                  <div className="w-5 h-5 flex items-center justify-center">
+                    {SubIcon && <SubIcon className="w-4 h-4 text-gray-400" />}
+                  </div>
+                  <span className="text-sm text-gray-200">{subItem.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Ajustar posición para que no se salga de la pantalla
+  const adjustedX = Math.min(x, window.innerWidth - 250);
+  const adjustedY = Math.min(y, window.innerHeight - 500);
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed z-50 min-w-[220px] bg-gray-800 border border-gray-700 rounded-lg shadow-2xl py-1 overflow-hidden"
+      style={{ left: adjustedX, top: adjustedY }}
+    >
+      {menuItems.map(renderMenuItem)}
+    </div>
+  );
+}
+
+=== PARTE 4: INTEGRAR EN EL SPREADSHEET EDITOR ===
+
+4) Actualizar el SpreadsheetEditor para usar el menú contextual y autorrelleno:
+
+// Añadir estados
+const [contextMenu, setContextMenu] = useState<{ x: number; y: number; isOpen: boolean }>({
+  x: 0, y: 0, isOpen: false
+});
+
+// Manejar click derecho
+const handleContextMenu = useCallback((e: React.MouseEvent) => {
+  e.preventDefault();
+  setContextMenu({
+    x: e.clientX,
+    y: e.clientY,
+    isOpen: true
+  });
+}, []);
+
+// Manejar acciones del menú contextual
+const handleContextAction = useCallback((action: string, params?: any) => {
+  const hot = hotRef.current?.hotInstance;
+  if (!hot) return;
+  
+  const selected = hot.getSelected();
+  if (!selected) return;
+  
+  switch (action) {
+    case 'cut':
+      operations.cut();
+      break;
+    case 'copy':
+      operations.copy();
+      break;
+    case 'paste':
+      operations.paste();
+      break;
+    case 'paste_values':
+      operations.paste('values');
+      break;
+    case 'paste_formats':
+      operations.paste('formats');
+      break;
+    case 'paste_transpose':
+      operations.paste('transpose');
+      break;
+    case 'insert_row_above':
+      operations.insertRows('above');
+      break;
+    case 'insert_row_below':
+      operations.insertRows('below');
+      break;
+    case 'insert_col_left':
+      operations.insertColumns('left');
+      break;
+    case 'insert_col_right':
+      operations.insertColumns('right');
+      break;
+    case 'delete_rows':
+      operations.deleteRows();
+      break;
+    case 'delete_cols':
+      operations.deleteColumns();
+      break;
+    case 'clear_contents':
+      operations.clearCells('contents');
+      break;
+    case 'sort_asc':
+      operations.sort('asc');
+      break;
+    case 'sort_desc':
+      operations.sort('desc');
+      break;
+    case 'add_comment':
+      const comment = prompt('Escribe un comentario:');
+      if (comment) {
+        hot.setCellMeta(selected[0][0], selected[0][1], 'comment', { value: comment });
+        hot.render();
+      }
+      break;
+    case 'format_cells':
+      setShowFormatDialog(true);
+      break;
+    case 'merge_all':
+      operations.mergeCells('all');
+      break;
+    case 'unmerge':
+      operations.mergeCells('unmerge');
+      break;
+    case 'fill_down':
+      operations.fill('down');
+      break;
+    case 'fill_right':
+      operations.fill('right');
+      break;
+    case 'hyperlink':
+      const url = prompt('URL del hipervínculo:');
+      if (url) {
+        hot.setCellMeta(selected[0][0], selected[0][1], 'hyperlink', url);
+        const currentValue = hot.getDataAtCell(selected[0][0], selected[0][1]);
+        // Opcional: convertir celda en enlace visual
+        hot.render();
+      }
+      break;
+    default:
+      console.log('Acción no implementada:', action);
+  }
+}, [operations]);
+
+// En el JSX, añadir el menú contextual
+<div onContextMenu={handleContextMenu}>
+  <HotTable ref={hotRef} settings={hotSettings} />
+</div>
+
+<ExcelContextMenu
+  x={contextMenu.x}
+  y={contextMenu.y}
+  isOpen={contextMenu.isOpen}
+  onClose={() => setContextMenu(prev => ({ ...prev, isOpen: false }))}
+  onAction={handleContextAction}
+  selectedRange={selectedRange}
+/>
+
+=== PARTE 5: VERIFICACIÓN COMPLETA ===
+
+Después de implementar, verificar:
+
+RENDIMIENTO:
+- ✅/❌ Escribir en celda es instantáneo (sin lag)
+- ✅/❌ El contenido se muestra completo en cada celda
+- ✅/❌ Scroll es fluido con muchos datos
+
+AUTORRELLENO (Fill Handle):
+- ✅/❌ Celda con "1" → arrastrar → copia "1,1,1,1"
+- ✅/❌ Celdas con "1,2" → arrastrar → genera "3,4,5,6..."
+- ✅/❌ Celdas con "Lunes,Martes" → arrastrar → genera "Miércoles,Jueves..."
+- ✅/❌ Celdas con "Enero,Febrero" → arrastrar → genera "Marzo,Abril..."
+- ✅/❌ Celdas con "Item1,Item2" → arrastrar → genera "Item3,Item4..."
+- ✅/❌ Celdas con fechas → arrastrar → genera fechas consecutivas
+
+MENÚ CONTEXTUAL (Click derecho):
+- ✅/❌ Aparece menú al hacer click derecho
+- ✅/❌ Cortar funciona
+- ✅/❌ Copiar funciona
+- ✅/❌ Pegar funciona
+- ✅/❌ Pegado especial tiene submenú
+- ✅/❌ Insertar tiene submenú con filas/columnas
+- ✅/❌ Eliminar funciona
+- ✅/❌ Borrar contenido funciona
+- ✅/❌ Filtrar tiene submenú
+- ✅/❌ Ordenar A-Z y Z-A funcionan
+- ✅/❌ Nuevo comentario funciona
+- ✅/❌ Formato de celdas abre diálogo
+- ✅/❌ Combinar celdas funciona
+- ✅/❌ Autorrelleno tiene submenú
+- ✅/❌ Hipervínculo funciona
+
+Reportar resultados de cada verificación.

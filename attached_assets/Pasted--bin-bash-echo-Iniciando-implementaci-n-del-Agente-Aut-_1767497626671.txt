@@ -1,0 +1,2067 @@
+#!/bin/bash
+
+echo "🚀 Iniciando implementación del Agente Autónomo para MiChat..."
+
+# 1. Crear estructura de directorios
+mkdir -p server/agent/tools
+mkdir -p server/routes
+mkdir -p client/src/stores
+mkdir -p client/src/hooks
+mkdir -p client/src/components
+
+echo "📂 Directorios creados."
+
+# ==========================================
+# ARCHIVO 1: server/agent/types.ts
+# ==========================================
+cat << 'EOF' > server/agent/types.ts
+export type AgentStatus = 'idle' | 'starting' | 'planning' | 'executing' | 'waiting_input' | 'replanning' | 'completed' | 'failed' | 'cancelled';
+
+export type ToolName = 'plan' | 'message' | 'shell' | 'file' | 'search' | 'browser' | 'schedule' | 'expose' | 'webdev_init_project' | 'slides' | 'generate';
+
+export interface AgentStep {
+  id: string;
+  tool: ToolName;
+  action: string;
+  params: Record<string, any>;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+  result?: any;
+  error?: string;
+  startedAt?: Date;
+  completedAt?: Date;
+  duration?: number;
+}
+
+export interface AgentPhase {
+  id: string;
+  name: string;
+  description: string;
+  steps: AgentStep[];
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+}
+
+export interface AgentPlan {
+  id: string;
+  objective: string;
+  phases: AgentPhase[];
+  currentPhaseIndex: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ToolResult {
+  success: boolean;
+  data?: any;
+  error?: string;
+  artifacts?: ToolArtifact[];
+  requiresUserInput?: boolean;
+  userPrompt?: string;
+}
+
+export interface ToolArtifact {
+  type: 'file' | 'image' | 'url' | 'code' | 'table' | 'chart' | 'html' | 'markdown';
+  name: string;
+  content: string;
+  mimeType?: string;
+  metadata?: Record<string, any>;
+}
+
+export interface AgentEvent {
+  type: 'status_change' | 'plan_created' | 'phase_start' | 'phase_complete' | 'step_start' | 'step_complete' | 'tool_progress' | 'error' | 'message' | 'artifact' | 'done';
+  timestamp: Date;
+  runId: string;
+  data?: any;
+  status?: AgentStatus;
+  plan?: AgentPlan;
+  phaseId?: string;
+  step?: AgentStep;
+  message?: string;
+  progress?: number;
+  error?: string;
+  artifact?: ToolArtifact;
+}
+
+export interface AgentConfig {
+  runId: string;
+  chatId: string;
+  userId: string;
+  model: string;
+  provider: string;
+  maxExecutionTime?: number;
+  maxSteps?: number;
+  sandboxPath?: string;
+}
+
+export interface LLMMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface ToolAction {
+  name: string;
+  description: string;
+  requiredParams?: string[];
+  optionalParams?: string[];
+}
+EOF
+
+# ==========================================
+# ARCHIVO 2: server/agent/llm-client.ts
+# ==========================================
+cat << 'EOF' > server/agent/llm-client.ts
+import { LLMMessage } from './types';
+
+interface LLMClientConfig {
+  provider: string;
+  model: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+export class LLMClient {
+  private provider: string;
+  private model: string;
+  private temperature: number;
+  private maxTokens: number;
+
+  constructor(config: LLMClientConfig) {
+    this.provider = config.provider;
+    this.model = config.model;
+    this.temperature = config.temperature ?? 0.7;
+    this.maxTokens = config.maxTokens ?? 4096;
+  }
+
+  async complete(messages: LLMMessage[], options?: { jsonMode?: boolean }): Promise<string> {
+    const apiKey = this.getApiKey();
+    
+    switch (this.provider) {
+      case 'gemini': return this.callGemini(messages, apiKey, options);
+      case 'openai': return this.callOpenAI(messages, apiKey, options);
+      case 'xai': return this.callXAI(messages, apiKey, options);
+      case 'anthropic': return this.callAnthropic(messages, apiKey, options);
+      default: return this.callGemini(messages, apiKey, options);
+    }
+  }
+
+  private getApiKey(): string {
+    const keys: Record<string, string> = {
+      gemini: process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY || '',
+      openai: process.env.OPENAI_API_KEY || '',
+      xai: process.env.XAI_API_KEY || '',
+      anthropic: process.env.ANTHROPIC_API_KEY || ''
+    };
+    return keys[this.provider] || keys.gemini;
+  }
+
+  private async callGemini(messages: LLMMessage[], apiKey: string, options?: { jsonMode?: boolean }): Promise<string> {
+    const url = \`https://generativelanguage.googleapis.com/v1beta/models/\${this.model}:generateContent?key=\${apiKey}\`;
+    const contents = this.formatMessagesForGemini(messages);
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents,
+        generationConfig: {
+          temperature: this.temperature,
+          maxOutputTokens: this.maxTokens,
+          responseMimeType: options?.jsonMode ? 'application/json' : 'text/plain'
+        }
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error?.message || 'Gemini API error');
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  }
+
+  private formatMessagesForGemini(messages: LLMMessage[]): any[] {
+    const contents: any[] = [];
+    let systemPrompt = '';
+
+    for (const msg of messages) {
+      if (msg.role === 'system') {
+        systemPrompt = msg.content;
+      } else {
+        const role = msg.role === 'assistant' ? 'model' : 'user';
+        let content = msg.content;
+        if (systemPrompt && role === 'user' && contents.length === 0) {
+          content = \`\${systemPrompt}\n\n\${content}\`;
+          systemPrompt = '';
+        }
+        contents.push({ role, parts: [{ text: content }] });
+      }
+    }
+    return contents;
+  }
+
+  private async callOpenAI(messages: LLMMessage[], apiKey: string, options?: { jsonMode?: boolean }): Promise<string> {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': \`Bearer \${apiKey}\`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: this.model,
+        messages,
+        temperature: this.temperature,
+        max_tokens: this.maxTokens,
+        response_format: options?.jsonMode ? { type: 'json_object' } : undefined
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error?.message || 'OpenAI API error');
+    return data.choices?.[0]?.message?.content || '';
+  }
+
+  private async callXAI(messages: LLMMessage[], apiKey: string, options?: { jsonMode?: boolean }): Promise<string> {
+    const response = await fetch('https://api.x.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': \`Bearer \${apiKey}\`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: this.model,
+        messages,
+        temperature: this.temperature,
+        max_tokens: this.maxTokens
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error?.message || 'xAI API error');
+    return data.choices?.[0]?.message?.content || '';
+  }
+
+  private async callAnthropic(messages: LLMMessage[], apiKey: string, options?: { jsonMode?: boolean }): Promise<string> {
+    const systemMessage = messages.find(m => m.role === 'system');
+    const otherMessages = messages.filter(m => m.role !== 'system');
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: this.maxTokens,
+        system: systemMessage?.content,
+        messages: otherMessages.map(m => ({ role: m.role, content: m.content }))
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error?.message || 'Anthropic API error');
+    return data.content?.[0]?.text || '';
+  }
+
+  async completeWithRetry(messages: LLMMessage[], options?: { jsonMode?: boolean }, maxRetries: number = 3): Promise<string> {
+    let lastError: Error | null = null;
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await this.complete(messages, options);
+      } catch (error: any) {
+        lastError = error;
+        if (i < maxRetries - 1) await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+      }
+    }
+    throw lastError || new Error('LLM request failed');
+  }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 3: server/agent/tools/BaseTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/BaseTool.ts
+import { EventEmitter } from 'events';
+import { ToolResult, ToolAction, ToolArtifact } from '../types';
+import { LLMClient } from '../llm-client';
+
+export abstract class BaseTool {
+  protected orchestrator: EventEmitter;
+  protected llm: LLMClient;
+  protected sandboxPath: string;
+  
+  abstract name: string;
+  abstract description: string;
+  abstract actions: ToolAction[];
+
+  constructor(orchestrator: EventEmitter, llm: LLMClient, sandboxPath: string) {
+    this.orchestrator = orchestrator;
+    this.llm = llm;
+    this.sandboxPath = sandboxPath;
+  }
+
+  abstract execute(action: string, params: Record<string, any>): Promise<ToolResult>;
+
+  protected emitProgress(message: string, progress?: number): void {
+    this.orchestrator.emit('tool_progress', { tool: this.name, message, progress, timestamp: new Date() });
+  }
+
+  protected emitArtifact(artifact: ToolArtifact): void {
+    this.orchestrator.emit('artifact', { tool: this.name, artifact, timestamp: new Date() });
+  }
+
+  protected async validateParams(action: string, params: Record<string, any>): Promise<void> {
+    const actionDef = this.actions.find(a => a.name === action);
+    if (!actionDef) throw new Error(\`Acción desconocida: \${action}\`);
+    for (const param of actionDef.requiredParams || []) {
+      if (!(param in params) || params[param] === undefined) throw new Error(\`Parámetro requerido: \${param}\`);
+    }
+  }
+
+  getSchema(): object {
+    return {
+      name: this.name,
+      description: this.description,
+      actions: this.actions.map(a => ({
+        name: a.name,
+        description: a.description,
+        requiredParams: a.requiredParams || [],
+        optionalParams: a.optionalParams || []
+      }))
+    };
+  }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 4: server/agent/tools/PlanTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/PlanTool.ts
+import { BaseTool } from './BaseTool';
+import { ToolResult, ToolAction, AgentPlan, AgentStep } from '../types';
+
+export class PlanTool extends BaseTool {
+  name = 'plan';
+  description = 'Gestionar el plan de tareas: crear, actualizar, avanzar fases, replanificar';
+
+  actions: ToolAction[] = [
+    { name: 'create', description: 'Crear plan de ejecución', requiredParams: ['objective', 'phases'] },
+    { name: 'update', description: 'Actualizar plan actual', requiredParams: ['changes'] },
+    { name: 'advance_phase', description: 'Avanzar a siguiente fase' },
+    { name: 'replan', description: 'Replanificar por error', requiredParams: ['reason'] },
+    { name: 'get_status', description: 'Estado actual del plan' },
+    { name: 'add_step', description: 'Agregar paso a fase actual', requiredParams: ['step'] }
+  ];
+
+  private currentPlan: AgentPlan | null = null;
+
+  async execute(action: string, params: Record<string, any>): Promise<ToolResult> {
+    await this.validateParams(action, params);
+    switch (action) {
+      case 'create': return this.createPlan(params.objective, params.phases);
+      case 'update': return this.updatePlan(params.changes);
+      case 'advance_phase': return this.advancePhase();
+      case 'replan': return this.replan(params.reason, params.context);
+      case 'get_status': return this.getStatus();
+      case 'add_step': return this.addStep(params.step);
+      default: return { success: false, error: \`Acción desconocida: \${action}\` };
+    }
+  }
+
+  private async createPlan(objective: string, phases: any[]): Promise<ToolResult> {
+    this.emitProgress('Creando plan de ejecución...');
+    const planId = \`plan-\${Date.now()}\`;
+    
+    this.currentPlan = {
+      id: planId,
+      objective,
+      phases: phases.map((phase, i) => ({
+        id: \`phase-\${i}\`,
+        name: phase.name,
+        description: phase.description || '',
+        status: i === 0 ? 'in_progress' : 'pending',
+        steps: (phase.steps || []).map((step: any, j: number) => ({
+          id: \`step-\${i}-\${j}\`,
+          tool: step.tool,
+          action: step.action,
+          params: step.params || {},
+          status: 'pending'
+        }))
+      })),
+      currentPhaseIndex: 0,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    return {
+      success: true,
+      data: { planId, totalPhases: this.currentPlan.phases.length, totalSteps: this.currentPlan.phases.reduce((a, p) => a + p.steps.length, 0) }
+    };
+  }
+
+  private async updatePlan(changes: any): Promise<ToolResult> {
+    if (!this.currentPlan) return { success: false, error: 'No hay plan activo' };
+    if (changes.phases) {
+      for (const change of changes.phases) {
+        const phase = this.currentPlan.phases.find(p => p.id === change.id);
+        if (phase) Object.assign(phase, change);
+      }
+    }
+    this.currentPlan.updatedAt = new Date();
+    return { success: true, data: { updated: true } };
+  }
+
+  private async advancePhase(): Promise<ToolResult> {
+    if (!this.currentPlan) return { success: false, error: 'No hay plan activo' };
+    const currentPhase = this.currentPlan.phases[this.currentPlan.currentPhaseIndex];
+    if (currentPhase) currentPhase.status = 'completed';
+    this.currentPlan.currentPhaseIndex++;
+    if (this.currentPlan.currentPhaseIndex >= this.currentPlan.phases.length) {
+      return { success: true, data: { completed: true, message: 'Todas las fases completadas' } };
+    }
+    const nextPhase = this.currentPlan.phases[this.currentPlan.currentPhaseIndex];
+    nextPhase.status = 'in_progress';
+    this.emitProgress(\`Avanzando a fase: \${nextPhase.name}\`);
+    return { success: true, data: { currentPhase: this.currentPlan.currentPhaseIndex, phaseName: nextPhase.name } };
+  }
+
+  private async replan(reason: string, context?: any): Promise<ToolResult> {
+    this.emitProgress(\`Replanificando: \${reason}\`);
+    try {
+      const response = await this.llm.complete([
+        { role: 'system', content: 'Eres un planificador de tareas. Genera planes alternativos cuando hay errores.' },
+        { role: 'user', content: \`Plan actual ha fallado. Razón: \${reason}\nContexto: \${JSON.stringify(context || {})}\nPlan: \${JSON.stringify(this.currentPlan)}\n\nGenera pasos alternativos en JSON: { "newSteps": [...] }\` }
+      ], { jsonMode: true });
+      return { success: true, data: { replanned: true, newSteps: JSON.parse(response).newSteps } };
+    } catch (error: any) {
+      return { success: false, error: \`Error replanificando: \${error.message}\` };
+    }
+  }
+
+  private async getStatus(): Promise<ToolResult> {
+    if (!this.currentPlan) return { success: true, data: { status: 'no_plan' } };
+    const completedPhases = this.currentPlan.phases.filter(p => p.status === 'completed').length;
+    const totalSteps = this.currentPlan.phases.reduce((a, p) => a + p.steps.length, 0);
+    const completedSteps = this.currentPlan.phases.reduce((a, p) => a + p.steps.filter(s => s.status === 'completed').length, 0);
+    return {
+      success: true,
+      data: { planId: this.currentPlan.id, objective: this.currentPlan.objective, currentPhase: this.currentPlan.currentPhaseIndex, totalPhases: this.currentPlan.phases.length, completedPhases, totalSteps, completedSteps, progress: Math.round((completedSteps / totalSteps) * 100) }
+    };
+  }
+
+  private async addStep(step: any): Promise<ToolResult> {
+    if (!this.currentPlan) return { success: false, error: 'No hay plan activo' };
+    const currentPhase = this.currentPlan.phases[this.currentPlan.currentPhaseIndex];
+    if (!currentPhase) return { success: false, error: 'No hay fase activa' };
+    const newStep: AgentStep = { id: \`step-\${this.currentPlan.currentPhaseIndex}-\${currentPhase.steps.length}\`, tool: step.tool, action: step.action, params: step.params || {}, status: 'pending' };
+    currentPhase.steps.push(newStep);
+    return { success: true, data: { stepId: newStep.id } };
+  }
+
+  getPlan(): AgentPlan | null { return this.currentPlan; }
+  setPlan(plan: AgentPlan): void { this.currentPlan = plan; }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 5: server/agent/tools/MessageTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/MessageTool.ts
+import { BaseTool } from './BaseTool';
+import { ToolResult, ToolAction } from '../types';
+
+export class MessageTool extends BaseTool {
+  name = 'message';
+  description = 'Comunicarse con el usuario: informar, preguntar, entregar resultados';
+
+  actions: ToolAction[] = [
+    { name: 'inform', description: 'Informar al usuario', requiredParams: ['content'] },
+    { name: 'ask', description: 'Hacer pregunta y esperar respuesta', requiredParams: ['question'], optionalParams: ['options'] },
+    { name: 'deliver', description: 'Entregar resultado final', requiredParams: ['content'], optionalParams: ['artifacts'] },
+    { name: 'error', description: 'Informar error', requiredParams: ['message'] },
+    { name: 'suggest', description: 'Sugerir opciones', requiredParams: ['suggestions'] }
+  ];
+
+  async execute(action: string, params: Record<string, any>): Promise<ToolResult> {
+    await this.validateParams(action, params);
+    switch (action) {
+      case 'inform':
+        this.emitProgress(params.content);
+        this.orchestrator.emit('message', { type: 'info', content: params.content, timestamp: new Date() });
+        return { success: true, data: { delivered: true } };
+      case 'ask':
+        this.orchestrator.emit('message', { type: 'question', content: params.question, options: params.options, timestamp: new Date() });
+        return { success: true, requiresUserInput: true, userPrompt: params.question, data: { awaiting: true } };
+      case 'deliver':
+        this.emitProgress('Entregando resultado...');
+        this.orchestrator.emit('message', { type: 'result', content: params.content, artifacts: params.artifacts, timestamp: new Date() });
+        if (params.artifacts) params.artifacts.forEach((a: any) => this.emitArtifact(a));
+        return { success: true, data: { delivered: true }, artifacts: params.artifacts };
+      case 'error':
+        this.orchestrator.emit('message', { type: 'error', content: params.message, timestamp: new Date() });
+        return { success: true, data: { errorReported: true } };
+      case 'suggest':
+        this.orchestrator.emit('message', { type: 'suggestions', suggestions: params.suggestions, timestamp: new Date() });
+        return { success: true, data: { suggestions: params.suggestions } };
+      default:
+        return { success: false, error: \`Acción desconocida: \${action}\` };
+    }
+  }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 6: server/agent/tools/ShellTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/ShellTool.ts
+import { BaseTool } from './BaseTool';
+import { ToolResult, ToolAction } from '../types';
+import { spawn } from 'child_process';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+export class ShellTool extends BaseTool {
+  name = 'shell';
+  description = 'Ejecutar comandos en sandbox: instalación, scripts, gestión de archivos';
+
+  private allowedCommands = ['npm', 'npx', 'node', 'python', 'python3', 'pip', 'pip3', 'git', 'ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'mkdir', 'cp', 'mv', 'rm', 'touch', 'chmod', 'curl', 'wget', 'tar', 'unzip', 'zip', 'echo', 'pwd', 'which', 'tsc', 'eslint', 'prettier'];
+  private blockedPatterns = [/rm\s+-rf\s+\//, /sudo/, />\s*\/etc/, /mkfs/, /dd\s+if=/, /:(){ :|:& };:/];
+  private maxExecutionTime = 120000;
+
+  actions: ToolAction[] = [
+    { name: 'run', description: 'Ejecutar comando', requiredParams: ['command'], optionalParams: ['cwd', 'timeout'] },
+    { name: 'install_npm', description: 'Instalar paquete npm', requiredParams: ['packages'], optionalParams: ['dev'] },
+    { name: 'install_pip', description: 'Instalar paquete pip', requiredParams: ['packages'] },
+    { name: 'run_script', description: 'Ejecutar archivo script', requiredParams: ['filepath'], optionalParams: ['args'] },
+    { name: 'run_code', description: 'Ejecutar código inline', requiredParams: ['code', 'language'] },
+    { name: 'git_clone', description: 'Clonar repositorio', requiredParams: ['url'], optionalParams: ['directory', 'branch'] }
+  ];
+
+  async execute(action: string, params: Record<string, any>): Promise<ToolResult> {
+    await this.validateParams(action, params);
+    await fs.mkdir(this.sandboxPath, { recursive: true }).catch(() => {});
+    
+    switch (action) {
+      case 'run': return this.runCommand(params.command, params.cwd, params.timeout);
+      case 'install_npm': return this.runCommand(\`npm install \${Array.isArray(params.packages) ? params.packages.join(' ') : params.packages} \${params.dev ? '--save-dev' : ''}\`.trim());
+      case 'install_pip': return this.runCommand(\`pip3 install \${Array.isArray(params.packages) ? params.packages.join(' ') : params.packages} --user\`);
+      case 'run_script': return this.runScript(params.filepath, params.args);
+      case 'run_code': return this.runCode(params.code, params.language);
+      case 'git_clone': return this.runCommand(\`git clone \${params.branch ? \`-b \${params.branch}\` : ''} "\${params.url}" "\${params.directory || ''}"\`.trim());
+      default: return { success: false, error: \`Acción desconocida: \${action}\` };
+    }
+  }
+
+  private validateCommand(command: string): { valid: boolean; error?: string } {
+    for (const pattern of this.blockedPatterns) {
+      if (pattern.test(command)) return { valid: false, error: 'Comando bloqueado por seguridad' };
+    }
+    const baseCmd = command.trim().split(/\s+/)[0];
+    const resolved = baseCmd.includes('/') ? path.basename(baseCmd) : baseCmd;
+    if (!this.allowedCommands.includes(resolved)) return { valid: false, error: \`Comando no permitido: \${resolved}\` };
+    return { valid: true };
+  }
+
+  private async runCommand(command: string, cwd?: string, timeout?: number): Promise<ToolResult> {
+    const validation = this.validateCommand(command);
+    if (!validation.valid) return { success: false, error: validation.error };
+    
+    const workDir = cwd ? path.join(this.sandboxPath, cwd) : this.sandboxPath;
+    this.emitProgress(\`Ejecutando: \${command}\`);
+
+    return new Promise((resolve) => {
+      let stdout = '', stderr = '', killed = false;
+      const proc = spawn('bash', ['-c', command], {
+        cwd: workDir,
+        env: { ...process.env, HOME: this.sandboxPath, PATH: \`\${this.sandboxPath}/node_modules/.bin:\${process.env.PATH}\` }
+      });
+
+      const timeoutId = setTimeout(() => { killed = true; proc.kill('SIGTERM'); }, timeout || this.maxExecutionTime);
+      proc.stdout.on('data', d => { stdout += d.toString(); this.emitProgress(d.toString().slice(0, 200)); });
+      proc.stderr.on('data', d => { stderr += d.toString(); });
+      proc.on('close', code => {
+        clearTimeout(timeoutId);
+        if (killed) resolve({ success: false, error: 'Timeout', data: { stdout, stderr, timedOut: true } });
+        else resolve({ success: code === 0, data: { stdout: stdout.trim(), stderr: stderr.trim(), exitCode: code }, error: code !== 0 ? stderr || \`Exit: \${code}\` : undefined });
+      });
+      proc.on('error', e => { clearTimeout(timeoutId); resolve({ success: false, error: e.message }); });
+    });
+  }
+
+  private async runScript(filepath: string, args?: string[]): Promise<ToolResult> {
+    const fullPath = path.join(this.sandboxPath, filepath);
+    const ext = path.extname(filepath).toLowerCase();
+    const runners: Record<string, string> = { '.js': 'node', '.ts': 'npx ts-node', '.py': 'python3', '.sh': 'bash' };
+    const runner = runners[ext];
+    if (!runner) return { success: false, error: \`Extensión no soportada: \${ext}\` };
+    return this.runCommand(\`\${runner} "\${fullPath}" \${args?.join(' ') || ''}\`.trim());
+  }
+
+  private async runCode(code: string, language: string): Promise<ToolResult> {
+    const exts: Record<string, string> = { javascript: 'js', typescript: 'ts', python: 'py', bash: 'sh' };
+    const ext = exts[language.toLowerCase()];
+    if (!ext) return { success: false, error: \`Lenguaje no soportado: \${language}\` };
+    const filename = \`temp_\${Date.now()}.\${ext}\`;
+    const filepath = path.join(this.sandboxPath, filename);
+    await fs.writeFile(filepath, code, 'utf-8');
+    const result = await this.runScript(filename);
+    await fs.unlink(filepath).catch(() => {});
+    return result;
+  }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 7: server/agent/tools/FileTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/FileTool.ts
+import { BaseTool } from './BaseTool';
+import { ToolResult, ToolAction } from '../types';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+export class FileTool extends BaseTool {
+  name = 'file';
+  description = 'Operaciones de archivos: leer, escribir, editar, buscar';
+
+  actions: ToolAction[] = [
+    { name: 'read', description: 'Leer archivo', requiredParams: ['filepath'], optionalParams: ['encoding', 'lines'] },
+    { name: 'write', description: 'Escribir archivo', requiredParams: ['filepath', 'content'] },
+    { name: 'append', description: 'Agregar al archivo', requiredParams: ['filepath', 'content'] },
+    { name: 'edit', description: 'Reemplazar texto', requiredParams: ['filepath', 'search', 'replace'], optionalParams: ['all'] },
+    { name: 'delete', description: 'Eliminar archivo/directorio', requiredParams: ['filepath'] },
+    { name: 'list', description: 'Listar directorio', requiredParams: ['dirpath'], optionalParams: ['recursive', 'pattern'] },
+    { name: 'exists', description: 'Verificar existencia', requiredParams: ['filepath'] },
+    { name: 'mkdir', description: 'Crear directorio', requiredParams: ['dirpath'] },
+    { name: 'copy', description: 'Copiar archivo', requiredParams: ['source', 'destination'] },
+    { name: 'move', description: 'Mover archivo', requiredParams: ['source', 'destination'] },
+    { name: 'search', description: 'Buscar en archivos', requiredParams: ['pattern'], optionalParams: ['dirpath'] }
+  ];
+
+  async execute(action: string, params: Record<string, any>): Promise<ToolResult> {
+    await this.validateParams(action, params);
+    const sanitize = (p: string) => path.join(this.sandboxPath, path.normalize(p).replace(/^(\.\.[\/\\])+/, ''));
+    
+    if (params.filepath) params.filepath = sanitize(params.filepath);
+    if (params.dirpath) params.dirpath = sanitize(params.dirpath);
+    if (params.source) params.source = sanitize(params.source);
+    if (params.destination) params.destination = sanitize(params.destination);
+
+    try {
+      switch (action) {
+        case 'read': {
+          this.emitProgress(\`Leyendo: \${path.basename(params.filepath)}\`);
+          const content = await fs.readFile(params.filepath, params.encoding || 'utf-8');
+          return { success: true, data: { content, size: content.length, lines: content.split('\n').length } };
+        }
+        case 'write': {
+          this.emitProgress(\`Escribiendo: \${path.basename(params.filepath)}\`);
+          await fs.mkdir(path.dirname(params.filepath), { recursive: true });
+          await fs.writeFile(params.filepath, params.content, 'utf-8');
+          return { success: true, data: { filepath: params.filepath, size: params.content.length } };
+        }
+        case 'append': {
+          await fs.appendFile(params.filepath, params.content, 'utf-8');
+          return { success: true, data: { appended: true } };
+        }
+        case 'edit': {
+          let content = await fs.readFile(params.filepath, 'utf-8');
+          if (!content.includes(params.search)) return { success: false, error: 'Texto no encontrado' };
+          content = params.all ? content.split(params.search).join(params.replace) : content.replace(params.search, params.replace);
+          await fs.writeFile(params.filepath, content, 'utf-8');
+          return { success: true, data: { modified: true } };
+        }
+        case 'delete': {
+          const stats = await fs.stat(params.filepath);
+          if (stats.isDirectory()) await fs.rm(params.filepath, { recursive: true });
+          else await fs.unlink(params.filepath);
+          return { success: true, data: { deleted: params.filepath } };
+        }
+        case 'list': {
+          const entries = await fs.readdir(params.dirpath, { withFileTypes: true });
+          const files = entries.map(e => ({ name: e.name, path: path.join(params.dirpath, e.name), isDirectory: e.isDirectory(), isFile: e.isFile() }));
+          return { success: true, data: { files, count: files.length } };
+        }
+        case 'exists': {
+          try {
+            const stats = await fs.stat(params.filepath);
+            return { success: true, data: { exists: true, isFile: stats.isFile(), isDirectory: stats.isDirectory() } };
+          } catch { return { success: true, data: { exists: false } }; }
+        }
+        case 'mkdir': {
+          await fs.mkdir(params.dirpath, { recursive: true });
+          return { success: true, data: { created: params.dirpath } };
+        }
+        case 'copy': {
+          await fs.mkdir(path.dirname(params.destination), { recursive: true });
+          await fs.copyFile(params.source, params.destination);
+          return { success: true, data: { copied: true } };
+        }
+        case 'move': {
+          await fs.mkdir(path.dirname(params.destination), { recursive: true });
+          await fs.rename(params.source, params.destination);
+          return { success: true, data: { moved: true } };
+        }
+        case 'search': {
+          const searchDir = params.dirpath || this.sandboxPath;
+          const results: any[] = [];
+          const entries = await fs.readdir(searchDir, { withFileTypes: true });
+          for (const entry of entries.filter(e => e.isFile()).slice(0, 50)) {
+            try {
+              const content = await fs.readFile(path.join(searchDir, entry.name), 'utf-8');
+              content.split('\n').forEach((line, i) => {
+                if (line.includes(params.pattern)) results.push({ file: entry.name, line: i + 1, content: line.trim().slice(0, 200) });
+              });
+            } catch {}
+          }
+          return { success: true, data: { results, count: results.length } };
+        }
+        default: return { success: false, error: \`Acción desconocida: \${action}\` };
+      }
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 8: server/agent/tools/BrowserTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/BrowserTool.ts
+import { BaseTool } from './BaseTool';
+import { ToolResult, ToolAction } from '../types';
+import puppeteer, { Browser, Page } from 'puppeteer';
+
+export class BrowserTool extends BaseTool {
+  name = 'browser';
+  description = 'Navegación web: visitar URLs, extraer contenido, interactuar con páginas';
+
+  private browser: Browser | null = null;
+  private page: Page | null = null;
+
+  actions: ToolAction[] = [
+    { name: 'navigate', description: 'Navegar a URL', requiredParams: ['url'] },
+    { name: 'get_content', description: 'Obtener contenido', optionalParams: ['selector', 'format'] },
+    { name: 'screenshot', description: 'Captura de pantalla', optionalParams: ['fullPage', 'selector'] },
+    { name: 'click', description: 'Clic en elemento', requiredParams: ['selector'] },
+    { name: 'type', description: 'Escribir texto', requiredParams: ['selector', 'text'] },
+    { name: 'wait', description: 'Esperar elemento', requiredParams: ['selector'] },
+    { name: 'scroll', description: 'Hacer scroll', optionalParams: ['direction', 'amount'] },
+    { name: 'extract_links', description: 'Extraer enlaces' },
+    { name: 'evaluate', description: 'Ejecutar JavaScript', requiredParams: ['script'] },
+    { name: 'close', description: 'Cerrar navegador' }
+  ];
+
+  async execute(action: string, params: Record<string, any>): Promise<ToolResult> {
+    await this.validateParams(action, params);
+    if (action !== 'close' && !this.browser) await this.initBrowser();
+
+    try {
+      switch (action) {
+        case 'navigate': {
+          if (!this.page) return { success: false, error: 'Navegador no iniciado' };
+          let url = params.url;
+          if (!url.startsWith('http')) url = 'https://' + url;
+          this.emitProgress(\`Navegando: \${url}\`);
+          await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          return { success: true, data: { url: this.page.url(), title: await this.page.title() } };
+        }
+        case 'get_content': {
+          if (!this.page) return { success: false, error: 'Navegador no iniciado' };
+          this.emitProgress('Extrayendo contenido...');
+          let content: string;
+          if (params.selector) {
+            const el = await this.page.$(params.selector);
+            if (!el) return { success: false, error: 'Elemento no encontrado' };
+            content = params.format === 'html' ? await el.evaluate(e => e.outerHTML) : await el.evaluate(e => e.textContent || '');
+          } else {
+            content = params.format === 'html' ? await this.page.content() : await this.page.evaluate(() => document.body?.innerText || '');
+          }
+          content = content.replace(/\s+/g, ' ').trim().slice(0, 50000);
+          return { success: true, data: { content, length: content.length } };
+        }
+        case 'screenshot': {
+          if (!this.page) return { success: false, error: 'Navegador no iniciado' };
+          this.emitProgress('Capturando pantalla...');
+          const screenshot = params.selector 
+            ? await (await this.page.$(params.selector))?.screenshot() as Buffer
+            : await this.page.screenshot({ fullPage: params.fullPage }) as Buffer;
+          return { success: true, data: { imageBase64: screenshot?.toString('base64') }, artifacts: [{ type: 'image', name: \`screenshot-\${Date.now()}.png\`, content: screenshot?.toString('base64') || '', mimeType: 'image/png' }] };
+        }
+        case 'click': {
+          if (!this.page) return { success: false, error: 'Navegador no iniciado' };
+          await this.page.waitForSelector(params.selector, { timeout: 5000 });
+          await this.page.click(params.selector);
+          return { success: true, data: { clicked: params.selector } };
+        }
+        case 'type': {
+          if (!this.page) return { success: false, error: 'Navegador no iniciado' };
+          await this.page.waitForSelector(params.selector, { timeout: 5000 });
+          await this.page.click(params.selector, { clickCount: 3 });
+          await this.page.type(params.selector, params.text, { delay: 50 });
+          return { success: true, data: { typed: params.text.length } };
+        }
+        case 'wait': {
+          if (!this.page) return { success: false, error: 'Navegador no iniciado' };
+          await this.page.waitForSelector(params.selector, { timeout: params.timeout || 10000 });
+          return { success: true, data: { found: params.selector } };
+        }
+        case 'scroll': {
+          if (!this.page) return { success: false, error: 'Navegador no iniciado' };
+          const amt = params.direction === 'up' ? -(params.amount || 500) : (params.amount || 500);
+          await this.page.evaluate(a => window.scrollBy(0, a), amt);
+          return { success: true, data: { scrolled: amt } };
+        }
+        case 'extract_links': {
+          if (!this.page) return { success: false, error: 'Navegador no iniciado' };
+          const links = await this.page.evaluate(() => Array.from(document.querySelectorAll('a[href]')).map(a => ({ text: a.textContent?.trim().slice(0, 100), href: a.getAttribute('href') })).filter(l => l.href && !l.href.startsWith('javascript:')));
+          return { success: true, data: { links, count: links.length } };
+        }
+        case 'evaluate': {
+          if (!this.page) return { success: false, error: 'Navegador no iniciado' };
+          const result = await this.page.evaluate(params.script);
+          return { success: true, data: { result } };
+        }
+        case 'close': {
+          if (this.browser) { await this.browser.close(); this.browser = null; this.page = null; }
+          return { success: true, data: { closed: true } };
+        }
+        default: return { success: false, error: \`Acción desconocida: \${action}\` };
+      }
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  private async initBrowser(): Promise<void> {
+    this.emitProgress('Iniciando navegador...');
+    this.browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+    this.page = await this.browser.newPage();
+    await this.page.setViewport({ width: 1920, height: 1080 });
+    await this.page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+  }
+
+  async cleanup(): Promise<void> { await this.execute('close', {}); }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 9: server/agent/tools/SearchTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/SearchTool.ts
+import { BaseTool } from './BaseTool';
+import { ToolResult, ToolAction } from '../types';
+import { BrowserTool } from './BrowserTool';
+
+export class SearchTool extends BaseTool {
+  name = 'search';
+  description = 'Búsqueda web usando navegador: Google, DuckDuckGo, Wikipedia';
+
+  private browserTool: BrowserTool;
+
+  actions: ToolAction[] = [
+    { name: 'web', description: 'Búsqueda web general', requiredParams: ['query'], optionalParams: ['numResults'] },
+    { name: 'google', description: 'Buscar en Google', requiredParams: ['query'] },
+    { name: 'wikipedia', description: 'Buscar en Wikipedia', requiredParams: ['query'], optionalParams: ['lang'] },
+    { name: 'news', description: 'Buscar noticias', requiredParams: ['query'] },
+    { name: 'fetch_url', description: 'Obtener contenido de URL', requiredParams: ['url'] }
+  ];
+
+  constructor(orchestrator: any, llm: any, sandboxPath: string, browserTool: BrowserTool) {
+    super(orchestrator, llm, sandboxPath);
+    this.browserTool = browserTool;
+  }
+
+  async execute(action: string, params: Record<string, any>): Promise<ToolResult> {
+    await this.validateParams(action, params);
+    
+    switch (action) {
+      case 'web': return this.searchDuckDuckGo(params.query, params.numResults || 5);
+      case 'google': return this.searchGoogle(params.query);
+      case 'wikipedia': return this.searchWikipedia(params.query, params.lang || 'es');
+      case 'news': return this.searchNews(params.query);
+      case 'fetch_url': return this.fetchUrl(params.url);
+      default: return { success: false, error: \`Acción desconocida: \${action}\` };
+    }
+  }
+
+  private async searchDuckDuckGo(query: string, numResults: number): Promise<ToolResult> {
+    this.emitProgress(\`Buscando: "\${query}"\`);
+    try {
+      await this.browserTool.execute('navigate', { url: \`https://html.duckduckgo.com/html/?q=\${encodeURIComponent(query)}\` });
+      await new Promise(r => setTimeout(r, 2000));
+      const content = await this.browserTool.execute('get_content', { format: 'text' });
+      const links = await this.browserTool.execute('extract_links', {});
+      
+      const results = (links.data?.links || []).filter((l: any) => l.href && !l.href.includes('duckduckgo.com') && l.href.startsWith('http') && l.text).slice(0, numResults);
+      
+      const summary = await this.llm.complete([
+        { role: 'system', content: 'Resume resultados de búsqueda web de forma concisa.' },
+        { role: 'user', content: \`Búsqueda: "\${query}"\nContenido: \${content.data?.content?.slice(0, 10000)}\n\nResume los hallazgos principales.\` }
+      ]);
+
+      return { success: true, data: { query, results, summary, totalResults: results.length } };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  private async searchGoogle(query: string): Promise<ToolResult> {
+    this.emitProgress(\`Buscando en Google: "\${query}"\`);
+    try {
+      await this.browserTool.execute('navigate', { url: \`https://www.google.com/search?q=\${encodeURIComponent(query)}&hl=es\` });
+      await new Promise(r => setTimeout(r, 2000));
+      const content = await this.browserTool.execute('get_content', { format: 'text' });
+      if (!content.success) return this.searchDuckDuckGo(query, 5);
+      
+      const extracted = await this.llm.complete([
+        { role: 'system', content: 'Extrae resultados de búsqueda Google en JSON: { "results": [{"title":"", "snippet":""}], "summary": "" }' },
+        { role: 'user', content: \`Búsqueda: "\${query}"\nContenido: \${content.data?.content?.slice(0, 15000)}\` }
+      ], { jsonMode: true });
+
+      return { success: true, data: { query, ...JSON.parse(extracted), source: 'google' } };
+    } catch { return this.searchDuckDuckGo(query, 5); }
+  }
+
+  private async searchWikipedia(query: string, lang: string): Promise<ToolResult> {
+    this.emitProgress(\`Buscando en Wikipedia: "\${query}"\`);
+    try {
+      await this.browserTool.execute('navigate', { url: \`https://\${lang}.wikipedia.org/wiki/\${encodeURIComponent(query.replace(/ /g, '_'))}\` });
+      await new Promise(r => setTimeout(r, 2000));
+      const content = await this.browserTool.execute('get_content', { format: 'text' });
+      return { success: true, data: { query, content: content.data?.content?.slice(0, 15000), source: 'wikipedia' } };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  private async searchNews(query: string): Promise<ToolResult> {
+    this.emitProgress(\`Buscando noticias: "\${query}"\`);
+    try {
+      await this.browserTool.execute('navigate', { url: \`https://news.google.com/search?q=\${encodeURIComponent(query)}&hl=es\` });
+      await new Promise(r => setTimeout(r, 3000));
+      const content = await this.browserTool.execute('get_content', { format: 'text' });
+      const links = await this.browserTool.execute('extract_links', {});
+      return { success: true, data: { query, articles: (links.data?.links || []).filter((l: any) => l.text?.length > 20).slice(0, 10), content: content.data?.content?.slice(0, 5000) } };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  private async fetchUrl(url: string): Promise<ToolResult> {
+    this.emitProgress(\`Obteniendo: \${url}\`);
+    try {
+      await this.browserTool.execute('navigate', { url });
+      await new Promise(r => setTimeout(r, 2000));
+      const content = await this.browserTool.execute('get_content', { format: 'text' });
+      const title = await this.browserTool.execute('evaluate', { script: 'document.title' });
+      return { success: true, data: { url, title: title.data?.result, content: content.data?.content?.slice(0, 20000) } };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 10: server/agent/tools/WebDevTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/WebDevTool.ts
+import { BaseTool } from './BaseTool';
+import { ToolResult, ToolAction } from '../types';
+import { ShellTool } from './ShellTool';
+import { FileTool } from './FileTool';
+import * as path from 'path';
+
+export class WebDevTool extends BaseTool {
+  name = 'webdev_init_project';
+  description = 'Inicializar proyectos: React, Next.js, Vue, Express, FastAPI, HTML';
+
+  private shellTool: ShellTool;
+  private fileTool: FileTool;
+
+  actions: ToolAction[] = [
+    { name: 'create_react', description: 'Crear proyecto React/Vite', requiredParams: ['name'], optionalParams: ['typescript', 'tailwind'] },
+    { name: 'create_nextjs', description: 'Crear proyecto Next.js', requiredParams: ['name'] },
+    { name: 'create_express', description: 'Crear servidor Express', requiredParams: ['name'], optionalParams: ['typescript'] },
+    { name: 'create_fastapi', description: 'Crear API FastAPI', requiredParams: ['name'] },
+    { name: 'create_html', description: 'Crear proyecto HTML/CSS/JS', requiredParams: ['name'] },
+    { name: 'add_component', description: 'Agregar componente', requiredParams: ['name', 'framework'] },
+    { name: 'setup_tailwind', description: 'Configurar Tailwind', requiredParams: ['projectPath'] }
+  ];
+
+  constructor(orchestrator: any, llm: any, sandboxPath: string, shellTool: ShellTool, fileTool: FileTool) {
+    super(orchestrator, llm, sandboxPath);
+    this.shellTool = shellTool;
+    this.fileTool = fileTool;
+  }
+
+  async execute(action: string, params: Record<string, any>): Promise<ToolResult> {
+    await this.validateParams(action, params);
+    
+    switch (action) {
+      case 'create_react': return this.createReact(params.name, params.typescript !== false, params.tailwind !== false);
+      case 'create_nextjs': return this.createNextJs(params.name);
+      case 'create_express': return this.createExpress(params.name, params.typescript !== false);
+      case 'create_fastapi': return this.createFastAPI(params.name);
+      case 'create_html': return this.createHtml(params.name);
+      case 'add_component': return this.addComponent(params.name, params.framework);
+      case 'setup_tailwind': return this.setupTailwind(params.projectPath);
+      default: return { success: false, error: \`Acción desconocida: \${action}\` };
+    }
+  }
+
+  private async createReact(name: string, typescript: boolean, tailwind: boolean): Promise<ToolResult> {
+    this.emitProgress(\`Creando proyecto React: \${name}\`);
+    const template = typescript ? 'react-ts' : 'react';
+    let result = await this.shellTool.execute('run', { command: \`npm create vite@latest \${name} -- --template \${template}\` });
+    if (!result.success) return result;
+    await this.shellTool.execute('run', { command: 'npm install', cwd: name });
+    if (tailwind) await this.setupTailwindInProject(path.join(this.sandboxPath, name));
+    return { success: true, data: { projectPath: path.join(this.sandboxPath, name), framework: 'react', commands: { dev: 'npm run dev', build: 'npm run build' } } };
+  }
+
+  private async createNextJs(name: string): Promise<ToolResult> {
+    this.emitProgress(\`Creando proyecto Next.js: \${name}\`);
+    const projectPath = path.join(this.sandboxPath, name);
+    await this.fileTool.execute('mkdir', { dirpath: projectPath });
+    await this.fileTool.execute('mkdir', { dirpath: path.join(projectPath, 'app') });
+    
+    const pkg = { name, version: '0.1.0', scripts: { dev: 'next dev', build: 'next build', start: 'next start' }, dependencies: { next: '^14.0.0', react: '^18.2.0', 'react-dom': '^18.2.0' }, devDependencies: { '@types/node': '^20', '@types/react': '^18', typescript: '^5' } };
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'package.json'), content: JSON.stringify(pkg, null, 2) });
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'app/layout.tsx'), content: \`export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html> }\` });
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'app/page.tsx'), content: \`export default function Home() { return <main><h1>Bienvenido a \${name}</h1></main> }\` });
+    await this.shellTool.execute('run', { command: 'npm install', cwd: name });
+    
+    return { success: true, data: { projectPath, framework: 'nextjs', commands: { dev: 'npm run dev', build: 'npm run build' } } };
+  }
+
+  private async createExpress(name: string, typescript: boolean): Promise<ToolResult> {
+    this.emitProgress(\`Creando servidor Express: \${name}\`);
+    const projectPath = path.join(this.sandboxPath, name);
+    await this.fileTool.execute('mkdir', { dirpath: projectPath });
+    await this.fileTool.execute('mkdir', { dirpath: path.join(projectPath, 'src') });
+    
+    const pkg = { name, version: '1.0.0', main: typescript ? 'dist/index.js' : 'src/index.js', scripts: { start: typescript ? 'node dist/index.js' : 'node src/index.js', dev: typescript ? 'ts-node-dev src/index.ts' : 'nodemon src/index.js' }, dependencies: { express: '^4.18.2', cors: '^2.8.5' }, devDependencies: typescript ? { '@types/express': '^4.17.21', typescript: '^5', 'ts-node-dev': '^2.0.0' } : { nodemon: '^3.0.0' } };
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'package.json'), content: JSON.stringify(pkg, null, 2) });
+    
+    const mainCode = typescript 
+      ? \`import express from 'express';\nimport cors from 'cors';\nconst app = express();\napp.use(cors());\napp.use(express.json());\napp.get('/', (req, res) => res.json({ message: 'API funcionando' }));\napp.listen(3000, () => console.log('Server en http://localhost:3000'));\`
+      : \`const express = require('express');\nconst cors = require('cors');\nconst app = express();\napp.use(cors());\napp.use(express.json());\napp.get('/', (req, res) => res.json({ message: 'API funcionando' }));\napp.listen(3000, () => console.log('Server en http://localhost:3000'));\`;
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'src', \`index.\${typescript ? 'ts' : 'js'}\`), content: mainCode });
+    await this.shellTool.execute('run', { command: 'npm install', cwd: name });
+    
+    return { success: true, data: { projectPath, framework: 'express', commands: { dev: 'npm run dev', start: 'npm start' } } };
+  }
+
+  private async createFastAPI(name: string): Promise<ToolResult> {
+    this.emitProgress(\`Creando proyecto FastAPI: \${name}\`);
+    const projectPath = path.join(this.sandboxPath, name);
+    await this.fileTool.execute('mkdir', { dirpath: projectPath });
+    await this.fileTool.execute('mkdir', { dirpath: path.join(projectPath, 'app') });
+    
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'app/main.py'), content: \`from fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\n\napp = FastAPI(title="\${name}")\napp.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])\n\n@app.get("/")\ndef root(): return {"message": "API funcionando"}\` });
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'requirements.txt'), content: 'fastapi>=0.104.0\nuvicorn[standard]>=0.24.0' });
+    await this.shellTool.execute('run', { command: 'pip3 install -r requirements.txt --user', cwd: name });
+    
+    return { success: true, data: { projectPath, framework: 'fastapi', commands: { dev: 'uvicorn app.main:app --reload' } } };
+  }
+
+  private async createHtml(name: string): Promise<ToolResult> {
+    this.emitProgress(\`Creando proyecto HTML: \${name}\`);
+    const projectPath = path.join(this.sandboxPath, name);
+    await this.fileTool.execute('mkdir', { dirpath: projectPath });
+    await this.fileTool.execute('mkdir', { dirpath: path.join(projectPath, 'css') });
+    await this.fileTool.execute('mkdir', { dirpath: path.join(projectPath, 'js') });
+    
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'index.html'), content: \`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>\${name}</title><link rel="stylesheet" href="css/styles.css"></head><body><h1>Bienvenido a \${name}</h1><script src="js/main.js"></script></body></html>\` });
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'css/styles.css'), content: \`* { margin: 0; padding: 0; box-sizing: border-box; }\nbody { font-family: system-ui, sans-serif; line-height: 1.6; padding: 2rem; }\` });
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'js/main.js'), content: \`console.log('\${name} cargado');\` });
+    
+    return { success: true, data: { projectPath, framework: 'html', files: ['index.html', 'css/styles.css', 'js/main.js'] } };
+  }
+
+  private async addComponent(name: string, framework: string): Promise<ToolResult> {
+    this.emitProgress(\`Creando componente: \${name}\`);
+    const content = framework === 'vue' 
+      ? \`<template><div class="\${name.toLowerCase()}"></div></template><script setup lang="ts"></script><style scoped></style>\`
+      : \`export function \${name}() { return <div className="\${name.toLowerCase()}"></div>; }\nexport default \${name};\`;
+    const ext = framework === 'vue' ? 'vue' : 'tsx';
+    const basePath = framework === 'vue' ? 'src/components' : 'components';
+    return this.fileTool.execute('write', { filepath: path.join(this.sandboxPath, basePath, \`\${name}.\${ext}\`), content });
+  }
+
+  private async setupTailwind(projectPath: string): Promise<ToolResult> {
+    return this.setupTailwindInProject(projectPath);
+  }
+
+  private async setupTailwindInProject(projectPath: string): Promise<ToolResult> {
+    this.emitProgress('Configurando Tailwind...');
+    await this.shellTool.execute('run', { command: 'npm install -D tailwindcss postcss autoprefixer', cwd: projectPath });
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'tailwind.config.js'), content: \`module.exports = { content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}', './app/**/*.{js,ts,jsx,tsx}'], theme: { extend: {} }, plugins: [] }\` });
+    await this.fileTool.execute('write', { filepath: path.join(projectPath, 'postcss.config.js'), content: \`module.exports = { plugins: { tailwindcss: {}, autoprefixer: {} } }\` });
+    return { success: true, data: { tailwind: true } };
+  }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 11: server/agent/tools/SlidesTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/SlidesTool.ts
+import { BaseTool } from './BaseTool';
+import { ToolResult, ToolAction } from '../types';
+
+export class SlidesTool extends BaseTool {
+  name = 'slides';
+  description = 'Crear presentaciones: generar slides, exportar HTML/Markdown';
+
+  private presentation: { title: string; theme: string; slides: Array<{ title: string; content: string[]; notes?: string }> } | null = null;
+
+  actions: ToolAction[] = [
+    { name: 'create', description: 'Crear presentación', requiredParams: ['title'], optionalParams: ['theme'] },
+    { name: 'add_slide', description: 'Agregar slide', requiredParams: ['title'], optionalParams: ['content'] },
+    { name: 'generate_from_topic', description: 'Generar desde tema', requiredParams: ['topic'], optionalParams: ['numSlides'] },
+    { name: 'export_html', description: 'Exportar HTML' },
+    { name: 'export_markdown', description: 'Exportar Markdown' },
+    { name: 'get_slides', description: 'Ver slides actuales' }
+  ];
+
+  async execute(action: string, params: Record<string, any>): Promise<ToolResult> {
+    await this.validateParams(action, params);
+    
+    switch (action) {
+      case 'create':
+        this.presentation = { title: params.title, theme: params.theme || 'default', slides: [] };
+        return { success: true, data: { title: params.title } };
+      
+      case 'add_slide':
+        if (!this.presentation) return { success: false, error: 'No hay presentación activa' };
+        this.presentation.slides.push({ title: params.title, content: params.content || [] });
+        return { success: true, data: { slideIndex: this.presentation.slides.length - 1 } };
+      
+      case 'generate_from_topic':
+        this.emitProgress(\`Generando presentación: \${params.topic}\`);
+        try {
+          const response = await this.llm.complete([
+            { role: 'system', content: 'Crea presentaciones profesionales. Responde en JSON: { "title": "", "slides": [{ "title": "", "content": ["punto1", "punto2"] }] }' },
+            { role: 'user', content: \`Genera \${params.numSlides || 5} slides sobre: \${params.topic}\` }
+          ], { jsonMode: true });
+          const data = JSON.parse(response);
+          this.presentation = { title: data.title, theme: 'default', slides: data.slides };
+          return { success: true, data: { title: data.title, totalSlides: data.slides.length } };
+        } catch (e: any) { return { success: false, error: e.message }; }
+      
+      case 'export_html':
+        if (!this.presentation) return { success: false, error: 'No hay presentación' };
+        const html = \`<!DOCTYPE html><html><head><title>\${this.presentation.title}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/reveal.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/theme/black.min.css"></head><body><div class="reveal"><div class="slides"><section><h1>\${this.presentation.title}</h1></section>\${this.presentation.slides.map(s => \`<section><h2>\${s.title}</h2><ul>\${s.content.map(c => \`<li>\${c}</li>\`).join('')}</ul></section>\`).join('')}</div></div><script src="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/reveal.min.js"></script><script>Reveal.initialize();</script></body></html>\`;
+        return { success: true, artifacts: [{ type: 'html', name: \`\${this.presentation.title}.html\`, content: html, mimeType: 'text/html' }] };
+      
+      case 'export_markdown':
+        if (!this.presentation) return { success: false, error: 'No hay presentación' };
+        const md = \`# \${this.presentation.title}\n\n\${this.presentation.slides.map(s => \`---\n\n## \${s.title}\n\n\${s.content.map(c => \`- \${c}\`).join('\n')}\`).join('\n\n')}\`;
+        return { success: true, artifacts: [{ type: 'markdown', name: \`\${this.presentation.title}.md\`, content: md, mimeType: 'text/markdown' }] };
+      
+      case 'get_slides':
+        return { success: true, data: this.presentation ? { title: this.presentation.title, slides: this.presentation.slides.map((s, i) => ({ index: i, title: s.title })) } : { hasPresentation: false } };
+      
+      default: return { success: false, error: \`Acción desconocida: \${action}\` };
+    }
+  }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 12: server/agent/tools/GenerateTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/GenerateTool.ts
+import { BaseTool } from './BaseTool';
+import { ToolResult, ToolAction } from '../types';
+
+export class GenerateTool extends BaseTool {
+  name = 'generate';
+  description = 'Generar contenido: código, documentos, diagramas, datos, SQL, API specs';
+
+  actions: ToolAction[] = [
+    { name: 'code', description: 'Generar código', requiredParams: ['description', 'language'], optionalParams: ['framework'] },
+    { name: 'document', description: 'Generar documento', requiredParams: ['type', 'topic'] },
+    { name: 'diagram_mermaid', description: 'Generar diagrama Mermaid', requiredParams: ['type', 'description'] },
+    { name: 'data_json', description: 'Generar datos JSON', requiredParams: ['schema'], optionalParams: ['count'] },
+    { name: 'data_csv', description: 'Generar datos CSV', requiredParams: ['columns'], optionalParams: ['rows'] },
+    { name: 'sql_schema', description: 'Generar esquema SQL', requiredParams: ['tables'] },
+    { name: 'api_spec', description: 'Generar especificación OpenAPI', requiredParams: ['endpoints'] },
+    { name: 'regex', description: 'Generar expresión regular', requiredParams: ['description'] }
+  ];
+
+  async execute(action: string, params: Record<string, any>): Promise<ToolResult> {
+    await this.validateParams(action, params);
+    const exts: Record<string, string> = { javascript: 'js', typescript: 'ts', python: 'py', java: 'java', go: 'go', rust: 'rs', sql: 'sql', html: 'html', css: 'css' };
+
+    try {
+      switch (action) {
+        case 'code': {
+          this.emitProgress(\`Generando código \${params.language}...\`);
+          const code = await this.llm.complete([
+            { role: 'system', content: \`Eres experto en \${params.language}. Genera código limpio y documentado. Responde SOLO con código.\` },
+            { role: 'user', content: \`Genera código \${params.language}\${params.framework ? \` con \${params.framework}\` : ''} para: \${params.description}\` }
+          ]);
+          const clean = code.replace(/^\`\`\`\w*\n?/, '').replace(/\n?\`\`\`$/, '').trim();
+          return { success: true, data: { language: params.language, lines: clean.split('\n').length }, artifacts: [{ type: 'code', name: \`generated.\${exts[params.language.toLowerCase()] || 'txt'}\`, content: clean, mimeType: \`text/x-\${params.language}\` }] };
+        }
+        
+        case 'document': {
+          this.emitProgress(\`Generando documento \${params.type}...\`);
+          const doc = await this.llm.complete([
+            { role: 'system', content: 'Genera documentación profesional en Markdown.' },
+            { role: 'user', content: \`Genera un documento tipo \${params.type} sobre: \${params.topic}\` }
+          ]);
+          return { success: true, artifacts: [{ type: 'markdown', name: \`\${params.type}-\${params.topic.replace(/\s+/g, '-')}.md\`, content: doc, mimeType: 'text/markdown' }] };
+        }
+        
+        case 'diagram_mermaid': {
+          this.emitProgress(\`Generando diagrama \${params.type}...\`);
+          const types: Record<string, string> = { flowchart: 'flowchart TD', sequence: 'sequenceDiagram', class: 'classDiagram', state: 'stateDiagram-v2', er: 'erDiagram' };
+          const diagram = await this.llm.complete([
+            { role: 'system', content: 'Genera diagramas Mermaid válidos. Responde SOLO con código Mermaid.' },
+            { role: 'user', content: \`Genera diagrama \${params.type} (empieza con \${types[params.type] || 'flowchart TD'}) para: \${params.description}\` }
+          ]);
+          const clean = diagram.replace(/^\`\`\`mermaid\n?/, '').replace(/\n?\`\`\`$/, '').trim();
+          return { success: true, artifacts: [{ type: 'code', name: \`diagram.mermaid\`, content: clean, mimeType: 'text/x-mermaid' }] };
+        }
+        
+        case 'data_json': {
+          this.emitProgress(\`Generando \${params.count || 5} registros JSON...\`);
+          const data = await this.llm.complete([
+            { role: 'system', content: 'Genera datos de ejemplo realistas en JSON válido.' },
+            { role: 'user', content: \`Genera \${params.count || 5} registros JSON según esquema: \${typeof params.schema === 'string' ? params.schema : JSON.stringify(params.schema)}\` }
+          ], { jsonMode: true });
+          return { success: true, artifacts: [{ type: 'code', name: 'data.json', content: data, mimeType: 'application/json' }] };
+        }
+        
+        case 'data_csv': {
+          this.emitProgress(\`Generando \${params.rows || 10} filas CSV...\`);
+          const csv = await this.llm.complete([
+            { role: 'system', content: 'Genera datos CSV realistas. Primera fila = headers. Responde SOLO con CSV.' },
+            { role: 'user', content: \`Genera \${params.rows || 10} filas CSV con columnas: \${params.columns.join(', ')}\` }
+          ]);
+          return { success: true, artifacts: [{ type: 'code', name: 'data.csv', content: csv.trim(), mimeType: 'text/csv' }] };
+        }
+        
+        case 'sql_schema': {
+          this.emitProgress('Generando esquema SQL...');
+          const sql = await this.llm.complete([
+            { role: 'system', content: 'Genera esquemas SQL (PostgreSQL) con CREATE TABLE, PKs, FKs, índices.' },
+            { role: 'user', content: \`Genera esquema SQL para: \${typeof params.tables === 'string' ? params.tables : JSON.stringify(params.tables)}\` }
+          ]);
+          const clean = sql.replace(/^\`\`\`sql\n?/, '').replace(/\n?\`\`\`$/, '').trim();
+          return { success: true, artifacts: [{ type: 'code', name: 'schema.sql', content: clean, mimeType: 'application/sql' }] };
+        }
+        
+        case 'api_spec': {
+          this.emitProgress('Generando especificación OpenAPI...');
+          const spec = await this.llm.complete([
+            { role: 'system', content: 'Genera especificaciones OpenAPI 3.0 en YAML.' },
+            { role: 'user', content: \`Genera spec OpenAPI para endpoints: \${typeof params.endpoints === 'string' ? params.endpoints : JSON.stringify(params.endpoints)}\` }
+          ]);
+          const clean = spec.replace(/^\`\`\`yaml\n?/, '').replace(/\n?\`\`\`$/, '').trim();
+          return { success: true, artifacts: [{ type: 'code', name: 'openapi.yaml', content: clean, mimeType: 'text/yaml' }] };
+        }
+        
+        case 'regex': {
+          this.emitProgress('Generando regex...');
+          const result = await this.llm.complete([
+            { role: 'system', content: 'Genera regex con explicación. Responde JSON: { "regex": "", "flags": "", "explanation": "", "examples": [] }' },
+            { role: 'user', content: \`Genera regex para: \${params.description}\` }
+          ], { jsonMode: true });
+          return { success: true, data: JSON.parse(result) };
+        }
+        
+        default: return { success: false, error: \`Acción desconocida: \${action}\` };
+      }
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 13: server/agent/tools/ScheduleTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/ScheduleTool.ts
+import { BaseTool } from './BaseTool';
+import { ToolResult, ToolAction } from '../types';
+
+export class ScheduleTool extends BaseTool {
+  name = 'schedule';
+  description = 'Programar tareas para ejecución futura (registro de intenciones)';
+
+  private tasks: Array<{ id: string; task: string; schedule: string; createdAt: Date; status: string }> = [];
+
+  actions: ToolAction[] = [
+    { name: 'create', description: 'Crear tarea programada', requiredParams: ['task', 'schedule'] },
+    { name: 'list', description: 'Listar tareas' },
+    { name: 'cancel', description: 'Cancelar tarea', requiredParams: ['taskId'] },
+    { name: 'parse_schedule', description: 'Interpretar horario en cron', requiredParams: ['description'] }
+  ];
+
+  async execute(action: string, params: Record<string, any>): Promise<ToolResult> {
+    await this.validateParams(action, params);
+    
+    switch (action) {
+      case 'create': {
+        const id = \`task-\${Date.now()}\`;
+        this.tasks.push({ id, task: params.task, schedule: params.schedule, createdAt: new Date(), status: 'pending' });
+        return { success: true, data: { taskId: id, message: 'Tarea registrada. Nota: Requiere cron backend para ejecución real.' } };
+      }
+      case 'list':
+        return { success: true, data: { tasks: this.tasks, count: this.tasks.length } };
+      case 'cancel': {
+        const task = this.tasks.find(t => t.id === params.taskId);
+        if (!task) return { success: false, error: 'Tarea no encontrada' };
+        task.status = 'cancelled';
+        return { success: true, data: { cancelled: params.taskId } };
+      }
+      case 'parse_schedule': {
+        const result = await this.llm.complete([
+          { role: 'system', content: 'Convierte horarios a cron. JSON: { "cron": "* * * * *", "humanReadable": "" }' },
+          { role: 'user', content: \`Convierte a cron: "\${params.description}"\` }
+        ], { jsonMode: true });
+        return { success: true, data: JSON.parse(result) };
+      }
+      default: return { success: false, error: \`Acción desconocida: \${action}\` };
+    }
+  }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 14: server/agent/tools/ExposeTool.ts
+# ==========================================
+cat << 'EOF' > server/agent/tools/ExposeTool.ts
+import { BaseTool } from './BaseTool';
+import { ToolResult, ToolAction } from '../types';
+
+export class ExposeTool extends BaseTool {
+  name = 'expose';
+  description = 'Exponer puertos locales para acceso público (simulado en sandbox)';
+
+  private exposed: Map<number, { id: string; port: number; url: string; expiresAt: Date }> = new Map();
+
+  actions: ToolAction[] = [
+    { name: 'port', description: 'Exponer puerto', requiredParams: ['port'], optionalParams: ['duration'] },
+    { name: 'list', description: 'Listar puertos expuestos' },
+    { name: 'close', description: 'Cerrar puerto', requiredParams: ['port'] }
+  ];
+
+  async execute(action: string, params: Record<string, any>): Promise<ToolResult> {
+    await this.validateParams(action, params);
+    
+    switch (action) {
+      case 'port': {
+        const id = \`expose-\${Date.now()}\`;
+        const url = \`https://\${id.slice(-8)}.tunnel.local:\${params.port}\`;
+        this.exposed.set(params.port, { id, port: params.port, url, expiresAt: new Date(Date.now() + (params.duration || 3600) * 1000) });
+        return { success: true, data: { port: params.port, url, note: 'Simulado. En producción usaría ngrok/localtunnel.' } };
+      }
+      case 'list':
+        return { success: true, data: { ports: Array.from(this.exposed.values()) } };
+      case 'close': {
+        this.exposed.delete(params.port);
+        return { success: true, data: { closed: params.port } };
+      }
+      default: return { success: false, error: \`Acción desconocida: \${action}\` };
+    }
+  }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 15: server/agent/AgentOrchestrator.ts
+# ==========================================
+cat << 'EOF' > server/agent/AgentOrchestrator.ts
+import { EventEmitter } from 'events';
+import { AgentConfig, AgentStatus, AgentPlan, AgentStep, AgentEvent, ToolName, ToolResult, LLMMessage } from './types';
+import { LLMClient } from './llm-client';
+import { BaseTool } from './tools/BaseTool';
+import { PlanTool } from './tools/PlanTool';
+import { MessageTool } from './tools/MessageTool';
+import { ShellTool } from './tools/ShellTool';
+import { FileTool } from './tools/FileTool';
+import { BrowserTool } from './tools/BrowserTool';
+import { SearchTool } from './tools/SearchTool';
+import { WebDevTool } from './tools/WebDevTool';
+import { SlidesTool } from './tools/SlidesTool';
+import { GenerateTool } from './tools/GenerateTool';
+import { ScheduleTool } from './tools/ScheduleTool';
+import { ExposeTool } from './tools/ExposeTool';
+import * as fs from 'fs/promises';
+
+export class AgentOrchestrator extends EventEmitter {
+  private config: AgentConfig;
+  private llm: LLMClient;
+  private status: AgentStatus = 'idle';
+  private plan: AgentPlan | null = null;
+  private tools: Map<ToolName, BaseTool> = new Map();
+  private abortController: AbortController;
+  private eventStream: AgentEvent[] = [];
+  private sandboxPath: string;
+  private maxSteps: number;
+  private stepCount = 0;
+
+  constructor(config: AgentConfig) {
+    super();
+    this.config = config;
+    this.sandboxPath = config.sandboxPath || \`/tmp/agent-\${config.runId}\`;
+    this.maxSteps = config.maxSteps || 50;
+    this.abortController = new AbortController();
+    this.llm = new LLMClient({ provider: config.provider, model: config.model });
+    this.initializeTools();
+  }
+
+  private initializeTools(): void {
+    const browserTool = new BrowserTool(this, this.llm, this.sandboxPath);
+    const shellTool = new ShellTool(this, this.llm, this.sandboxPath);
+    const fileTool = new FileTool(this, this.llm, this.sandboxPath);
+
+    this.tools.set('plan', new PlanTool(this, this.llm, this.sandboxPath));
+    this.tools.set('message', new MessageTool(this, this.llm, this.sandboxPath));
+    this.tools.set('shell', shellTool);
+    this.tools.set('file', fileTool);
+    this.tools.set('browser', browserTool);
+    this.tools.set('search', new SearchTool(this, this.llm, this.sandboxPath, browserTool));
+    this.tools.set('webdev_init_project', new WebDevTool(this, this.llm, this.sandboxPath, shellTool, fileTool));
+    this.tools.set('slides', new SlidesTool(this, this.llm, this.sandboxPath));
+    this.tools.set('generate', new GenerateTool(this, this.llm, this.sandboxPath));
+    this.tools.set('schedule', new ScheduleTool(this, this.llm, this.sandboxPath));
+    this.tools.set('expose', new ExposeTool(this, this.llm, this.sandboxPath));
+  }
+
+  async run(userMessage: string, attachments?: any[]): Promise<void> {
+    try {
+      await fs.mkdir(this.sandboxPath, { recursive: true });
+      
+      this.setStatus('planning');
+      this.plan = await this.generatePlan(userMessage, attachments);
+      this.emitEvent({ type: 'plan_created', plan: this.plan });
+      
+      this.setStatus('executing');
+      for (let i = 0; i < this.plan.phases.length; i++) {
+        if (this.abortController.signal.aborted) break;
+        this.plan.currentPhaseIndex = i;
+        await this.executePhase(this.plan.phases[i]);
+      }
+      
+      if (!this.abortController.signal.aborted) {
+        this.setStatus('completed');
+        await this.deliverFinalResult();
+      }
+    } catch (error: any) {
+      this.setStatus('failed');
+      this.emitEvent({ type: 'error', error: error.message });
+    } finally {
+      await this.cleanup();
+    }
+  }
+
+  private async generatePlan(userMessage: string, attachments?: any[]): Promise<AgentPlan> {
+    const toolSchemas = Array.from(this.tools.values()).map(t => t.getSchema());
+    
+    const prompt = \`Eres un agente AI que planifica y ejecuta tareas. Analiza la solicitud y crea un plan.
+
+HERRAMIENTAS DISPONIBLES:
+\${JSON.stringify(toolSchemas, null, 2)}
+
+SOLICITUD DEL USUARIO:
+\${userMessage}
+
+\${attachments?.length ? \`ARCHIVOS ADJUNTOS: \${attachments.map(a => a.name).join(', ')}\` : ''}
+
+Crea un plan en JSON:
+{
+  "objective": "Resumen del objetivo",
+  "phases": [
+    {
+      "name": "Nombre de la fase",
+      "description": "Qué se logra",
+      "steps": [
+        { "tool": "nombre_herramienta", "action": "accion", "params": {} }
+      ]
+    }
+  ]
+}
+
+Reglas:
+- Divide en fases lógicas (2-5 fases)
+- Cada fase tiene 1-5 pasos
+- Usa las herramientas disponibles
+- Incluye mensajes al usuario para informar progreso\`;
+
+    const response = await this.llm.completeWithRetry([
+      { role: 'system', content: 'Eres un planificador de tareas. Responde SOLO en JSON válido.' },
+      { role: 'user', content: prompt }
+    ], { jsonMode: true });
+
+    const parsed = JSON.parse(response);
+    return {
+      id: \`plan-\${Date.now()}\`,
+      objective: parsed.objective,
+      phases: parsed.phases.map((p: any, i: number) => ({
+        id: \`phase-\${i}\`,
+        name: p.name,
+        description: p.description || '',
+        status: i === 0 ? 'in_progress' : 'pending',
+        steps: (p.steps || []).map((s: any, j: number) => ({
+          id: \`step-\${i}-\${j}\`,
+          tool: s.tool as ToolName,
+          action: s.action,
+          params: s.params || {},
+          status: 'pending'
+        }))
+      })),
+      currentPhaseIndex: 0,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+  }
+
+  private async executePhase(phase: any): Promise<void> {
+    phase.status = 'in_progress';
+    this.emitEvent({ type: 'phase_start', phaseId: phase.id, data: { name: phase.name } });
+
+    for (const step of phase.steps) {
+      if (this.abortController.signal.aborted) break;
+      if (this.stepCount >= this.maxSteps) {
+        this.emitEvent({ type: 'error', error: 'Límite de pasos alcanzado' });
+        break;
+      }
+      await this.executeStep(step);
+      this.stepCount++;
+    }
+
+    if (!this.abortController.signal.aborted) {
+      phase.status = 'completed';
+      this.emitEvent({ type: 'phase_complete', phaseId: phase.id });
+    }
+  }
+
+  private async executeStep(step: AgentStep): Promise<void> {
+    step.status = 'running';
+    step.startedAt = new Date();
+    this.emitEvent({ type: 'step_start', step });
+
+    try {
+      const tool = this.tools.get(step.tool);
+      if (!tool) throw new Error(\`Herramienta no encontrada: \${step.tool}\`);
+      
+      const result = await tool.execute(step.action, step.params);
+      step.result = result;
+      step.status = result.success ? 'completed' : 'failed';
+      
+      if (!result.success) {
+        step.error = result.error;
+        await this.handleStepFailure(step, result);
+      }
+    } catch (error: any) {
+      step.status = 'failed';
+      step.error = error.message;
+    }
+
+    step.completedAt = new Date();
+    step.duration = step.completedAt.getTime() - (step.startedAt?.getTime() || 0);
+    this.emitEvent({ type: 'step_complete', step });
+  }
+
+  private async handleStepFailure(step: AgentStep, result: ToolResult): Promise<void> {
+    this.setStatus('replanning');
+    this.emitEvent({ type: 'tool_progress', message: \`Replanificando por error: \${result.error}\` });
+    
+    try {
+      const planTool = this.tools.get('plan') as PlanTool;
+      const replanResult = await planTool.execute('replan', { reason: result.error, context: { failedStep: step } });
+      
+      if (replanResult.success && replanResult.data?.newSteps) {
+        this.emitEvent({ type: 'tool_progress', message: 'Plan alternativo generado' });
+      }
+    } catch (e) {
+      // Continuar sin replanificar
+    }
+    
+    this.setStatus('executing');
+  }
+
+  private async deliverFinalResult(): Promise<void> {
+    const messageTool = this.tools.get('message') as MessageTool;
+    await messageTool.execute('deliver', {
+      content: \`✅ Tarea completada: \${this.plan?.objective}\`,
+      artifacts: this.collectArtifacts()
+    });
+  }
+
+  private collectArtifacts(): any[] {
+    const artifacts: any[] = [];
+    this.plan?.phases.forEach(phase => {
+      phase.steps.forEach(step => {
+        if (step.result?.artifacts) artifacts.push(...step.result.artifacts);
+      });
+    });
+    return artifacts;
+  }
+
+  private async cleanup(): Promise<void> {
+    const browserTool = this.tools.get('browser') as BrowserTool;
+    await browserTool.cleanup?.();
+  }
+
+  cancel(): void {
+    this.abortController.abort();
+    this.setStatus('cancelled');
+  }
+
+  private setStatus(status: AgentStatus): void {
+    this.status = status;
+    this.emitEvent({ type: 'status_change', status });
+  }
+
+  private emitEvent(event: Partial<AgentEvent>): void {
+    const fullEvent = { ...event, timestamp: new Date(), runId: this.config.runId } as AgentEvent;
+    this.eventStream.push(fullEvent);
+    this.emit('event', fullEvent);
+  }
+
+  getStatus(): AgentStatus { return this.status; }
+  getPlan(): AgentPlan | null { return this.plan; }
+  getEventStream(): AgentEvent[] { return this.eventStream; }
+}
+EOF
+
+# ==========================================
+# ARCHIVO 16: server/routes/agent.ts
+# ==========================================
+cat << 'EOF' > server/routes/agent.ts
+import { Router } from 'express';
+import { AgentOrchestrator } from '../agent/AgentOrchestrator';
+import { db } from '../db';
+import { agentRuns } from '../db/schema';
+import { eq } from 'drizzle-orm';
+
+const router = Router();
+const activeAgents = new Map<string, AgentOrchestrator>();
+
+// POST /api/agent/run - Iniciar ejecución
+router.post('/run', async (req, res) => {
+  const { chatId, message, attachments, model, provider } = req.body;
+  const userId = (req as any).user?.id || 'demo-user'; // Fallback para demo
+  
+  // if (!userId) return res.status(401).json({ error: 'No autorizado' });
+  
+  try {
+    const runId = \`run-\${Date.now()}-\${Math.random().toString(36).slice(2, 8)}\`;
+    
+    await db.insert(agentRuns).values({
+      id: runId,
+      chatId,
+      userId,
+      status: 'starting',
+      userMessage: message,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+    
+    const agent = new AgentOrchestrator({
+      runId,
+      chatId,
+      userId,
+      model: model || 'gemini-1.5-flash',
+      provider: provider || 'gemini'
+    });
+    
+    activeAgents.set(runId, agent);
+    
+    // No esperar (fire & forget)
+    agent.run(message, attachments).then(async () => {
+      await db.update(agentRuns).set({ status: 'completed', updatedAt: new Date() }).where(eq(agentRuns.id, runId));
+      activeAgents.delete(runId);
+    }).catch(async (error) => {
+      await db.update(agentRuns).set({ status: 'failed', error: error.message, updatedAt: new Date() }).where(eq(agentRuns.id, runId));
+      activeAgents.delete(runId);
+    });
+    
+    res.json({ runId, chatId, status: 'starting' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/agent/run/:runId/stream - SSE para eventos
+router.get('/run/:runId/stream', async (req, res) => {
+  const { runId } = req.params;
+  const userId = (req as any).user?.id || 'demo-user';
+  
+  const run = await db.query.agentRuns.findFirst({ where: eq(agentRuns.id, runId) });
+  if (!run) return res.status(404).json({ error: 'No encontrado' });
+  
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+  
+  const agent = activeAgents.get(runId);
+  
+  if (!agent) {
+    res.write(\`data: \${JSON.stringify({ type: 'status', status: run.status })}\n\n\`);
+    res.write(\`data: \${JSON.stringify({ type: 'done' })}\n\n\`);
+    return res.end();
+  }
+  
+  const handler = (event: any) => res.write(\`data: \${JSON.stringify(event)}\n\n\`);
+  agent.on('event', handler);
+  agent.on('tool_progress', handler);
+  
+  req.on('close', () => {
+    agent.off('event', handler);
+    agent.off('tool_progress', handler);
+  });
+});
+
+// POST /api/agent/run/:runId/cancel - Cancelar
+router.post('/run/:runId/cancel', async (req, res) => {
+  const { runId } = req.params;
+  const agent = activeAgents.get(runId);
+  
+  if (agent) {
+    agent.cancel();
+    activeAgents.delete(runId);
+  }
+  
+  await db.update(agentRuns).set({ status: 'cancelled', updatedAt: new Date() }).where(eq(agentRuns.id, runId));
+  res.json({ success: true });
+});
+
+// GET /api/agent/run/:runId/status - Estado actual
+router.get('/run/:runId/status', async (req, res) => {
+  const { runId } = req.params;
+  const run = await db.query.agentRuns.findFirst({ where: eq(agentRuns.id, runId) });
+  
+  if (!run) return res.status(404).json({ error: 'No encontrado' });
+  
+  const agent = activeAgents.get(runId);
+  res.json({
+    runId: run.id,
+    status: agent?.getStatus() || run.status,
+    plan: agent?.getPlan(),
+    error: run.error
+  });
+});
+
+export default router;
+EOF
+
+# ==========================================
+# ARCHIVO 17: SCHEMA UPDATE (Necesitas agregarlo manualmente al existente)
+# ==========================================
+# Crearemos un archivo parcial para copiar al schema.ts real
+cat << 'EOF' > server/db/schema_agent_partial.ts
+import { pgTable, text, timestamp, jsonb } from 'drizzle-orm/pg-core';
+
+export const agentRuns = pgTable('agent_runs', {
+  id: text('id').primaryKey(),
+  chatId: text('chat_id').notNull(),
+  userId: text('user_id').notNull(),
+  status: text('status').notNull().default('starting'),
+  userMessage: text('user_message'),
+  plan: jsonb('plan'),
+  steps: jsonb('steps'),
+  summary: text('summary'),
+  error: text('error'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow()
+});
+EOF
+
+# ==========================================
+# ARCHIVO 18: client/src/stores/agent-store.ts
+# ==========================================
+cat << 'EOF' > client/src/stores/agent-store.ts
+import { create } from 'zustand';
+
+export interface AgentRun {
+  runId: string | null;
+  chatId: string;
+  userMessage: string;
+  status: string;
+  plan: any | null;
+  eventStream: any[];
+  error: string | null;
+}
+
+interface AgentStore {
+  runs: Record<string, AgentRun>;
+  initRun: (messageId: string, chatId: string, message: string) => void;
+  setRunId: (messageId: string, runId: string) => void;
+  updateStatus: (messageId: string, status: string) => void;
+  setPlan: (messageId: string, plan: any) => void;
+  addEvent: (messageId: string, event: any) => void;
+  setError: (messageId: string, error: string) => void;
+  updateStep: (messageId: string, step: any) => void;
+  clearRun: (messageId: string) => void;
+}
+
+export const useAgentStore = create<AgentStore>((set) => ({
+  runs: {},
+  
+  initRun: (messageId, chatId, message) => set((state) => ({
+    runs: { ...state.runs, [messageId]: { runId: null, chatId, userMessage: message, status: 'starting', plan: null, eventStream: [], error: null } }
+  })),
+  
+  setRunId: (messageId, runId) => set((state) => ({
+    runs: { ...state.runs, [messageId]: { ...state.runs[messageId], runId } }
+  })),
+  
+  updateStatus: (messageId, status) => set((state) => ({
+    runs: { ...state.runs, [messageId]: { ...state.runs[messageId], status } }
+  })),
+  
+  setPlan: (messageId, plan) => set((state) => ({
+    runs: { ...state.runs, [messageId]: { ...state.runs[messageId], plan } }
+  })),
+  
+  addEvent: (messageId, event) => set((state) => ({
+    runs: { ...state.runs, [messageId]: { ...state.runs[messageId], eventStream: [...(state.runs[messageId]?.eventStream || []), event] } }
+  })),
+  
+  setError: (messageId, error) => set((state) => ({
+    runs: { ...state.runs, [messageId]: { ...state.runs[messageId], error, status: 'failed' } }
+  })),
+  
+  updateStep: (messageId, step) => set((state) => {
+    const run = state.runs[messageId];
+    if (!run?.plan) return state;
+    const newPlan = { ...run.plan };
+    for (const phase of newPlan.phases || []) {
+      const idx = phase.steps?.findIndex((s: any) => s.id === step.id);
+      if (idx >= 0) { phase.steps[idx] = step; break; }
+    }
+    return { runs: { ...state.runs, [messageId]: { ...run, plan: newPlan } } };
+  }),
+  
+  clearRun: (messageId) => set((state) => {
+    const { [messageId]: _, ...rest } = state.runs;
+    return { runs: rest };
+  })
+}));
+EOF
+
+# ==========================================
+# ARCHIVO 19: client/src/hooks/use-agent-polling.ts
+# ==========================================
+cat << 'EOF' > client/src/hooks/use-agent-polling.ts
+import { useEffect, useRef, useCallback } from 'react';
+import { useAgentStore } from '@/stores/agent-store';
+
+export function useAgentPolling(messageId: string | null) {
+  const store = useAgentStore();
+  const eventSourceRef = useRef<EventSource | null>(null);
+
+  useEffect(() => {
+    if (!messageId) return;
+    const run = store.runs[messageId];
+    if (!run?.runId) return;
+    
+    const activeStatuses = ['starting', 'queued', 'planning', 'executing', 'replanning'];
+    if (!activeStatuses.includes(run.status)) return;
+
+    const es = new EventSource(\`/api/agent/run/\${run.runId}/stream\`, { withCredentials: true });
+    eventSourceRef.current = es;
+
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        switch (data.type) {
+          case 'status_change': store.updateStatus(messageId, data.status); break;
+          case 'plan_created': store.setPlan(messageId, data.plan); break;
+          case 'step_start': case 'step_complete': store.updateStep(messageId, data.step); store.addEvent(messageId, data); break;
+          case 'tool_progress': case 'message': case 'artifact': store.addEvent(messageId, data); break;
+          case 'error': store.setError(messageId, data.error); break;
+          case 'done': es.close(); break;
+        }
+      } catch (e) { console.error('SSE parse error:', e); }
+    };
+
+    es.onerror = () => {
+      es.close();
+      setTimeout(() => {
+        const currentRun = store.runs[messageId];
+        if (currentRun && activeStatuses.includes(currentRun.status)) store.updateStatus(messageId, currentRun.status);
+      }, 2000);
+    };
+
+    return () => es.close();
+  }, [messageId, store.runs[messageId || '']?.runId, store.runs[messageId || '']?.status]);
+}
+
+export function useStartAgentRun() {
+  const store = useAgentStore();
+
+  const startRun = useCallback(async (chatId: string, message: string, messageId: string, attachments?: any[], model?: string, provider?: string) => {
+    store.initRun(messageId, chatId, message);
+    
+    try {
+      const response = await fetch('/api/agent/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ chatId, message, attachments, model, provider })
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        store.setError(messageId, error.error || 'Error iniciando agente');
+        return null;
+      }
+      
+      const data = await response.json();
+      store.setRunId(messageId, data.runId);
+      return data;
+    } catch (error: any) {
+      store.setError(messageId, error.message);
+      return null;
+    }
+  }, [store]);
+
+  return { startRun };
+}
+
+export function useCancelAgentRun() {
+  const store = useAgentStore();
+
+  const cancel = useCallback(async (messageId: string, runId: string) => {
+    try {
+      await fetch(\`/api/agent/run/\${runId}/cancel\`, { method: 'POST', credentials: 'include' });
+      store.updateStatus(messageId, 'cancelled');
+    } catch (e) { console.error('Cancel error:', e); }
+  }, [store]);
+
+  return { cancel };
+}
+EOF
+
+# ==========================================
+# ARCHIVO 20: client/src/components/agent-panel.tsx
+# ==========================================
+cat << 'EOF' > client/src/components/agent-panel.tsx
+import { useAgentStore } from '@/stores/agent-store';
+import { motion, AnimatePresence } from 'framer-motion';
+import { CheckCircle2, Circle, Loader2, XCircle, ChevronDown, ChevronRight, X, Clock, Terminal, FileText, Search, Globe, Image, Presentation, Zap } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { useState } from 'react';
+import { cn } from '@/lib/utils';
+
+const TOOL_ICONS: Record<string, any> = {
+  plan: Clock, message: FileText, shell: Terminal, file: FileText, search: Search, browser: Globe, generate: Image, slides: Presentation, webdev_init_project: Zap, schedule: Clock, expose: Globe
+};
+
+interface AgentPanelProps {
+  messageId: string;
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+export function AgentPanel({ messageId, isOpen, onClose }: AgentPanelProps) {
+  const run = useAgentStore(state => state.runs[messageId]);
+  if (!run || !isOpen) return null;
+
+  return (
+    <motion.div initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} className="fixed right-0 top-0 h-full w-96 bg-background border-l shadow-xl z-50">
+      <div className="flex items-center justify-between p-4 border-b">
+        <div className="flex items-center gap-2">
+          <div className={cn("w-2 h-2 rounded-full", run.status === 'executing' && "bg-green-500 animate-pulse", run.status === 'completed' && "bg-green-500", run.status === 'failed' && "bg-red-500", run.status === 'planning' && "bg-yellow-500 animate-pulse")} />
+          <span className="font-semibold">Modo Agente</span>
+          <span className="text-xs text-muted-foreground capitalize">{run.status}</span>
+        </div>
+        <Button variant="ghost" size="icon" onClick={onClose}><X className="h-4 w-4" /></Button>
+      </div>
+      
+      <ScrollArea className="h-[calc(100vh-64px)]">
+        <div className="p-4 space-y-4">
+          <div className="bg-muted/50 p-3 rounded-lg">
+            <p className="text-sm font-medium">Objetivo</p>
+            <p className="text-sm text-muted-foreground">{run.userMessage}</p>
+          </div>
+          
+          {run.plan?.phases?.map((phase: any, i: number) => (
+            <PhaseCard key={phase.id} phase={phase} isActive={i === run.plan?.currentPhaseIndex} />
+          ))}
+          
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Actividad</p>
+            <div className="space-y-1 max-h-64 overflow-y-auto">
+              {run.eventStream?.slice(-20).map((event: any, i: number) => (
+                <div key={i} className="text-xs text-muted-foreground p-1 bg-muted/30 rounded">
+                  {event.message || event.type}
+                </div>
+              ))}
+            </div>
+          </div>
+          
+          {run.error && (
+            <div className="bg-red-500/10 border border-red-500/20 p-3 rounded-lg">
+              <p className="text-sm text-red-500">{run.error}</p>
+            </div>
+          )}
+          
+          {run.status === 'completed' && (
+            <div className="bg-green-500/10 border border-green-500/20 p-3 rounded-lg">
+              <p className="text-sm font-medium text-green-600">✅ Completado</p>
+            </div>
+          )}
+        </div>
+      </ScrollArea>
+    </motion.div>
+  );
+}
+
+function PhaseCard({ phase, isActive }: { phase: any; isActive: boolean }) {
+  const [isExpanded, setIsExpanded] = useState(isActive);
+
+  return (
+    <div className={cn("border rounded-lg overflow-hidden", isActive && "border-primary")}>
+      <button onClick={() => setIsExpanded(!isExpanded)} className="w-full flex items-center justify-between p-3 hover:bg-muted/50">
+        <div className="flex items-center gap-2">
+          {phase.status === 'completed' && <CheckCircle2 className="h-4 w-4 text-green-500" />}
+          {phase.status === 'in_progress' && <Loader2 className="h-4 w-4 text-primary animate-spin" />}
+          {phase.status === 'pending' && <Circle className="h-4 w-4 text-muted-foreground" />}
+          {phase.status === 'failed' && <XCircle className="h-4 w-4 text-red-500" />}
+          <span className="font-medium text-sm">{phase.name}</span>
+        </div>
+        {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+      </button>
+      
+      <AnimatePresence>
+        {isExpanded && (
+          <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} className="overflow-hidden">
+            <div className="p-3 pt-0 space-y-2">
+              {phase.steps?.map((step: any) => <StepRow key={step.id} step={step} />)}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function StepRow({ step }: { step: any }) {
+  const Icon = TOOL_ICONS[step.tool] || Circle;
+
+  return (
+    <div className={cn("flex items-center gap-2 text-sm p-2 rounded", step.status === 'running' && "bg-primary/10", step.status === 'failed' && "bg-red-500/10")}>
+      <Icon className={cn("h-4 w-4", step.status === 'running' && "text-primary animate-pulse", step.status === 'completed' && "text-green-500", step.status === 'failed' && "text-red-500")} />
+      <span className="flex-1 truncate">{step.action}</span>
+      {step.status === 'running' && <Loader2 className="h-3 w-3 animate-spin" />}
+      {step.status === 'completed' && <CheckCircle2 className="h-3 w-3 text-green-500" />}
+      {step.status === 'failed' && <XCircle className="h-3 w-3 text-red-500" />}
+    </div>
+  );
+}
+EOF
+
+echo "✅ Todos los archivos han sido generados correctamente."
+echo "⚠️ PASOS FINALES NECESARIOS:"
+echo "1. Ejecuta: npm install puppeteer framer-motion"
+echo "2. Copia el contenido de 'server/db/schema_agent_partial.ts' y pégalo en tu archivo 'server/db/schema.ts'"
+echo "3. Ejecuta: npm run db:push (para actualizar la base de datos)"
+echo "4. En 'server/index.ts', importa y usa la ruta: app.use('/api/agent', agentRoutes);"

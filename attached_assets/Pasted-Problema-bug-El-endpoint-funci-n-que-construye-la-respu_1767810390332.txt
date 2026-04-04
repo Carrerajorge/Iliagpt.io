@@ -1,0 +1,51 @@
+Problema (bug)
+El endpoint/función que construye la respuesta está devolviendo 1 item en vez de N=5.
+El campo de contexto (summary/snippet/description) viene vacío o no se está renderizando.
+Requerimiento esperado (output contract)
+Para cada consulta “noticias en Perú hoy”, el backend debe devolver un arreglo de longitud 5:
+{
+  "country": "PE",
+  "date": "YYYY-MM-DD",
+  "items": [
+    {
+      "title": "...",
+      "source": "...",
+      "url": "...",
+      "publishedAt": "...",
+      "context": "Resumen de 2–4 líneas con los puntos clave"
+    }
+  ]
+}
+Criterios de aceptación
+Siempre devolver 5 noticias (si hay menos disponibles, devolver las que haya y marcar items.length < 5 con razón).
+Cada noticia debe incluir title, source, url, publishedAt y context.
+El context debe ser texto útil (mínimo ~200–400 caracteres o 2–4 líneas).
+En el front, deben renderizarse los 5 cards (no solo el primero).
+Manejar duplicados: no repetir la misma URL/título.
+Loggear: cuántos artículos entran desde la fuente, cuántos se filtran, y cuántos se devuelven.
+Sospechas técnicas (para revisar rápido)
+Bug de loop / early return: se está haciendo return dentro del for, o un break accidental.
+Limit hardcoded: query trae limit=1 / pageSize=1 / top_k=1.
+State overwrite en front: en React/Vue, dentro de un loop se hace setNews(item) en vez de setNews(list) o se pisa el estado en cada iteración.
+Mapping incorrecto: el backend manda context, pero el front espera description (o viceversa).
+Campo vacío por la fuente: RSS/Google News a veces no trae description; entonces hay que:
+usar content:encoded cuando exista, o
+hacer fetch de la URL y extraer texto (Readability/Mercury), o
+generar el resumen con LLM a partir del snippet/primeros párrafos.
+Implementación recomendada (robusta)
+Pipeline:
+fetch_sources(country=PE, topic=news, limit=20) (RSS/APIs)
+normalizar → [{title, url, source, publishedAt, snippet}]
+dedupe por url/título
+seleccionar top 5
+context = summarize(snippet || extracted_text)
+retornar contrato JSON de arriba
+Checklist rápida (si lo quieren arreglar en 30 min)
+Revisar en el request a la fuente: pageSize/limit/top_k ¿está en 1?
+Revisar función que arma la lista: ¿hay return dentro del loop?
+Revisar front: ¿renderiza news[0] en vez de news.map(...)?
+Revisar nombres de campos: context vs description vs summary
+Agregar logs:
+rawArticles.length
+deduped.length
+finalItems.length

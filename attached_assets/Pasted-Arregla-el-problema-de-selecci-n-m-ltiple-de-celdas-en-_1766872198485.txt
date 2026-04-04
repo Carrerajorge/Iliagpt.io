@@ -1,0 +1,241 @@
+Arregla el problema de selección múltiple de celdas en el editor de Excel. Actualmente no se pueden seleccionar varias celdas a la vez:
+
+=== PROBLEMA ===
+La selección múltiple de celdas no funciona correctamente en Handsontable.
+
+=== SOLUCIÓN ===
+
+1) Buscar el archivo del SpreadsheetEditor (puede ser SpreadsheetEditor.tsx o spreadsheet-editor.tsx) y actualizar la configuración de Handsontable:
+
+En las settings de HotTable, asegurarse de que estas opciones estén habilitadas:
+
+const hotSettings = {
+  data,
+  rowHeaders: true,
+  colHeaders: true, // o getColumnHeaders(26) si usas función personalizada
+  height: height,
+  width: '100%',
+  licenseKey: 'non-commercial-and-evaluation',
+  
+  // ===== SELECCIÓN MÚLTIPLE - CRÍTICO =====
+  selectionMode: 'multiple', // Permite seleccionar múltiples rangos con Ctrl
+  fillHandle: true, // Permite arrastrar para rellenar
+  outsideClickDeselects: false, // No deselecciona al hacer click fuera
+  fragmentSelection: true, // Permite selección de fragmentos de texto
+  
+  // ===== NAVEGACIÓN =====
+  enterBeginsEditing: true,
+  enterMoves: { row: 1, col: 0 },
+  tabMoves: { row: 0, col: 1 },
+  autoWrapRow: true,
+  autoWrapCol: true,
+  
+  // ===== FUNCIONALIDADES =====
+  contextMenu: true,
+  manualColumnResize: true,
+  manualRowResize: true,
+  manualColumnMove: true,
+  manualRowMove: true,
+  
+  // ===== COPIAR/PEGAR =====
+  copyPaste: {
+    columnsLimit: 1000,
+    rowsLimit: 1000,
+    pasteMode: 'overwrite',
+    copyColumnHeaders: false,
+    copyColumnGroupHeaders: false,
+    copyColumnHeadersOnly: false,
+  },
+  
+  // ===== PLUGINS =====
+  filters: true,
+  dropdownMenu: true,
+  multiColumnSorting: true,
+  mergeCells: true,
+  comments: true,
+  customBorders: true,
+  undo: true,
+  
+  // ===== OTROS =====
+  stretchH: 'all',
+  wordWrap: false,
+  rowHeights: 25,
+  
+  // Callbacks existentes...
+  afterChange: handleDataChange,
+  afterSelection: (row, col, row2, col2) => {
+    // row, col = inicio de selección
+    // row2, col2 = fin de selección
+    setSelectedCell({ row, col });
+    setSelectedRange({ 
+      startRow: Math.min(row, row2), 
+      startCol: Math.min(col, col2),
+      endRow: Math.max(row, row2),
+      endCol: Math.max(col, col2)
+    });
+    updateSelectedFormat();
+  },
+  afterSelectionEnd: (row, col, row2, col2) => {
+    console.log(`Selección: ${String.fromCharCode(65 + col)}${row + 1}:${String.fromCharCode(65 + col2)}${row2 + 1}`);
+  }
+};
+
+2) Añadir estado para el rango seleccionado en el componente:
+
+// Añadir estos estados si no existen
+const [selectedCell, setSelectedCell] = useState<{ row: number; col: number } | null>(null);
+const [selectedRange, setSelectedRange] = useState<{
+  startRow: number;
+  startCol: number;
+  endRow: number;
+  endCol: number;
+} | null>(null);
+
+3) Mostrar el rango seleccionado en la UI (en la barra de fórmulas o status bar):
+
+// En el JSX, donde muestras la celda seleccionada:
+<div className="flex items-center gap-2 px-2 py-1 bg-gray-700 rounded min-w-[80px]">
+  <span className="text-xs text-gray-400">
+    {selectedRange ? (
+      selectedRange.startRow === selectedRange.endRow && selectedRange.startCol === selectedRange.endCol
+        ? `${String.fromCharCode(65 + selectedRange.startCol)}${selectedRange.startRow + 1}`
+        : `${String.fromCharCode(65 + selectedRange.startCol)}${selectedRange.startRow + 1}:${String.fromCharCode(65 + selectedRange.endCol)}${selectedRange.endRow + 1}`
+    ) : 'A1'}
+  </span>
+</div>
+
+// Y un indicador de cuántas celdas están seleccionadas:
+{selectedRange && (
+  <span className="text-xs text-gray-500 ml-2">
+    {(selectedRange.endRow - selectedRange.startRow + 1) * (selectedRange.endCol - selectedRange.startCol + 1)} celdas
+  </span>
+)}
+
+4) Si el problema persiste, verificar que NO estén estos parámetros que bloquean la selección:
+
+// QUITAR o poner en false si existen:
+// disableVisualSelection: false, // NO debe ser true
+// readOnly: false, // NO debe ser true para todo el grid
+
+5) Verificar que los plugins necesarios estén registrados al inicio del archivo:
+
+import { HotTable } from '@handsontable/react';
+import { registerAllModules } from 'handsontable/registry';
+import 'handsontable/dist/handsontable.full.min.css';
+
+// Registrar TODOS los módulos de Handsontable
+registerAllModules();
+
+6) Si usas un wrapper o contenedor, asegúrate de que no bloquee eventos:
+
+// El contenedor del HotTable debe permitir eventos de mouse
+<div 
+  className="flex-1 overflow-hidden"
+  style={{ 
+    userSelect: 'none',  // Esto está OK
+    // NO uses pointerEvents: 'none' aquí
+  }}
+>
+  <HotTable ref={hotRef} settings={hotSettings} />
+</div>
+
+7) Para la selección con CTRL + Click (múltiples rangos no contiguos), verificar:
+
+// En hotSettings:
+selectionMode: 'multiple', // CRÍTICO - permite Ctrl+Click
+
+// Esto permite:
+// - Click + Arrastrar = seleccionar rango
+// - Ctrl + Click = añadir celda a la selección
+// - Shift + Click = extender selección
+// - Ctrl + Shift + Click = añadir rango a la selección
+
+8) Actualizar las operaciones para trabajar con selección múltiple:
+
+// En useSpreadsheetOperations o donde proceses la selección:
+const getSelectedRanges = useCallback(() => {
+  const hot = hotRef.current?.hotInstance;
+  if (!hot) return [];
+  
+  const selected = hot.getSelected(); // Retorna array de rangos
+  // selected = [[startRow, startCol, endRow, endCol], [startRow2, startCol2, endRow2, endCol2], ...]
+  
+  return selected || [];
+}, [hotRef]);
+
+// Ejemplo de uso en una operación:
+const applyToSelection = useCallback((operation: (row: number, col: number) => void) => {
+  const hot = hotRef.current?.hotInstance;
+  if (!hot) return;
+  
+  const ranges = hot.getSelected();
+  if (!ranges) return;
+  
+  // Iterar sobre todos los rangos seleccionados
+  ranges.forEach(([startRow, startCol, endRow, endCol]) => {
+    const minRow = Math.min(startRow, endRow);
+    const maxRow = Math.max(startRow, endRow);
+    const minCol = Math.min(startCol, endCol);
+    const maxCol = Math.max(startCol, endCol);
+    
+    for (let r = minRow; r <= maxRow; r++) {
+      for (let c = minCol; c <= maxCol; c++) {
+        operation(r, c);
+      }
+    }
+  });
+  
+  hot.render();
+}, [hotRef]);
+
+=== VERIFICACIÓN ===
+
+Después de aplicar los cambios, probar:
+
+TEST 1 - Selección simple:
+- Click en una celda
+- Verificar que se selecciona
+- Resultado: ✅/❌
+
+TEST 2 - Selección por arrastre:
+- Click en A1 y arrastrar hasta C5
+- Verificar que todo el rango A1:C5 queda seleccionado (resaltado azul)
+- Resultado: ✅/❌
+
+TEST 3 - Extender con Shift:
+- Click en A1
+- Shift + Click en D4
+- Verificar que se selecciona A1:D4
+- Resultado: ✅/❌
+
+TEST 4 - Selección múltiple con Ctrl:
+- Click en A1
+- Ctrl + Click en C3
+- Ctrl + Click en E5
+- Verificar que las 3 celdas están seleccionadas
+- Resultado: ✅/❌
+
+TEST 5 - Selección de fila completa:
+- Click en el número de fila (header izquierdo)
+- Verificar que toda la fila se selecciona
+- Resultado: ✅/❌
+
+TEST 6 - Selección de columna completa:
+- Click en la letra de columna (header superior)
+- Verificar que toda la columna se selecciona
+- Resultado: ✅/❌
+
+TEST 7 - Aplicar formato a selección múltiple:
+- Seleccionar rango A1:C3
+- Aplicar negrita
+- Verificar que TODAS las celdas del rango quedan en negrita
+- Resultado: ✅/❌
+
+TEST 8 - Fill Handle (arrastrar esquina):
+- Escribir "1" en A1
+- Seleccionar A1
+- Arrastrar el pequeño cuadrado de la esquina inferior derecha hasta A5
+- Verificar que se llena con 1,1,1,1,1 o 1,2,3,4,5 (según contenido)
+- Resultado: ✅/❌
+
+Reportar los resultados de cada test.

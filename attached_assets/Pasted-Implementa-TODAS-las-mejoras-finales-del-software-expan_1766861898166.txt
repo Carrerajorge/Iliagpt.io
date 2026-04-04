@@ -1,0 +1,510 @@
+Implementa TODAS las mejoras finales del software: expansión a 50+ herramientas, documentación completa, tests, y optimizaciones de producción para millones de usuarios:
+
+=== PARTE A: EXPANSIÓN A 50+ HERRAMIENTAS ===
+
+1) INTEGRATION TOOLS - añadir a server/services/toolRegistry.ts en nueva categoría 'integrations':
+
+registerTool({
+  id: 'slack_send',
+  name: 'Enviar a Slack',
+  description: 'Envía mensajes, archivos y alertas a canales de Slack',
+  category: 'integrations',
+  capabilities: ['send_message', 'send_file', 'send_alert', 'list_channels'],
+  inputSchema: { channel: 'string', message: 'string', attachments: 'array?' },
+  isEnabled: true,
+  execute: async (input) => {
+    // Placeholder - integrar con Slack API
+    return { success: true, messageId: `slack_${Date.now()}`, channel: input.channel };
+  }
+});
+
+registerTool({
+  id: 'email_send',
+  name: 'Enviar Email',
+  description: 'Envía emails con templates y adjuntos',
+  category: 'integrations',
+  capabilities: ['send_email', 'send_template', 'send_bulk', 'schedule_email'],
+  inputSchema: { to: 'string', subject: 'string', body: 'string', template: 'string?', attachments: 'array?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, emailId: `email_${Date.now()}`, to: input.to };
+  }
+});
+
+registerTool({
+  id: 'webhook_trigger',
+  name: 'Trigger Webhook',
+  description: 'Dispara webhooks HTTP a URLs externas',
+  category: 'integrations',
+  capabilities: ['http_post', 'http_get', 'http_put', 'http_delete'],
+  inputSchema: { url: 'string', method: 'string', body: 'object?', headers: 'object?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, status: 200, responseTime: 150 };
+  }
+});
+
+registerTool({
+  id: 'calendar_event',
+  name: 'Gestionar Calendario',
+  description: 'Crea y gestiona eventos de calendario',
+  category: 'integrations',
+  capabilities: ['create_event', 'update_event', 'delete_event', 'list_events'],
+  inputSchema: { title: 'string', start: 'datetime', end: 'datetime', attendees: 'array?', description: 'string?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, eventId: `event_${Date.now()}` };
+  }
+});
+
+registerTool({
+  id: 'drive_upload',
+  name: 'Subir a Drive',
+  description: 'Sube archivos a Google Drive o almacenamiento cloud',
+  category: 'integrations',
+  capabilities: ['upload_file', 'create_folder', 'share_file', 'list_files'],
+  inputSchema: { fileName: 'string', content: 'binary', folder: 'string?', shareWith: 'array?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, fileId: `file_${Date.now()}`, url: `https://drive.example.com/${Date.now()}` };
+  }
+});
+
+registerTool({
+  id: 'sms_send',
+  name: 'Enviar SMS',
+  description: 'Envía mensajes SMS a números de teléfono',
+  category: 'integrations',
+  capabilities: ['send_sms', 'send_bulk_sms', 'check_status'],
+  inputSchema: { phone: 'string', message: 'string', scheduled: 'datetime?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, smsId: `sms_${Date.now()}` };
+  }
+});
+
+registerTool({
+  id: 'push_notification',
+  name: 'Push Notification',
+  description: 'Envía notificaciones push a dispositivos',
+  category: 'integrations',
+  capabilities: ['send_push', 'send_topic', 'schedule_push'],
+  inputSchema: { userId: 'string', title: 'string', body: 'string', data: 'object?', image: 'string?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, notificationId: `push_${Date.now()}` };
+  }
+});
+
+2) AI ADVANCED TOOLS - añadir en categoría 'ai_advanced':
+
+registerTool({
+  id: 'image_generate',
+  name: 'Generar Imagen',
+  description: 'Genera imágenes con IA a partir de texto',
+  category: 'ai_advanced',
+  capabilities: ['generate_image', 'edit_image', 'upscale', 'variations'],
+  inputSchema: { prompt: 'string', size: 'string?', style: 'string?', negativePrompt: 'string?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, imageUrl: `https://images.example.com/${Date.now()}.png` };
+  }
+});
+
+registerTool({
+  id: 'code_review',
+  name: 'Revisar Código',
+  description: 'Analiza código para bugs, seguridad y mejoras',
+  category: 'ai_advanced',
+  capabilities: ['analyze_code', 'suggest_fixes', 'security_scan', 'performance_check', 'style_check'],
+  inputSchema: { code: 'string', language: 'string', focus: 'array?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, issues: [], suggestions: [], securityScore: 95 };
+  }
+});
+
+registerTool({
+  id: 'document_summarize',
+  name: 'Resumir Documento',
+  description: 'Resume documentos largos extrayendo puntos clave',
+  category: 'ai_advanced',
+  capabilities: ['summarize', 'extract_key_points', 'generate_outline', 'extract_action_items'],
+  inputSchema: { content: 'string', maxLength: 'number?', format: 'string?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, summary: 'Resumen generado...', keyPoints: [] };
+  }
+});
+
+registerTool({
+  id: 'translate_text',
+  name: 'Traducir Texto',
+  description: 'Traduce texto entre múltiples idiomas',
+  category: 'ai_advanced',
+  capabilities: ['translate', 'detect_language', 'batch_translate'],
+  inputSchema: { text: 'string', targetLang: 'string', sourceLang: 'string?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, translation: 'Texto traducido...', detectedLang: 'es' };
+  }
+});
+
+registerTool({
+  id: 'sentiment_analysis',
+  name: 'Análisis de Sentimiento',
+  description: 'Analiza el sentimiento y emociones en texto',
+  category: 'ai_advanced',
+  capabilities: ['analyze_sentiment', 'detect_emotions', 'extract_opinions', 'toxicity_check'],
+  inputSchema: { text: 'string', detailed: 'boolean?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, sentiment: 'positive', score: 0.85, emotions: { joy: 0.7, trust: 0.6 } };
+  }
+});
+
+registerTool({
+  id: 'entity_extraction',
+  name: 'Extraer Entidades',
+  description: 'Extrae nombres, fechas, lugares y más del texto',
+  category: 'ai_advanced',
+  capabilities: ['extract_names', 'extract_dates', 'extract_amounts', 'extract_locations', 'extract_organizations'],
+  inputSchema: { text: 'string', entityTypes: 'array?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, entities: { names: [], dates: [], locations: [], amounts: [] } };
+  }
+});
+
+3) AUTOMATION TOOLS - añadir en categoría 'automation':
+
+registerTool({
+  id: 'schedule_task',
+  name: 'Programar Tarea',
+  description: 'Programa tareas para ejecutar en el futuro',
+  category: 'automation',
+  capabilities: ['schedule_once', 'schedule_recurring', 'cancel_scheduled', 'list_scheduled'],
+  inputSchema: { taskType: 'string', executeAt: 'datetime', payload: 'object', recurring: 'string?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, taskId: `task_${Date.now()}`, scheduledFor: input.executeAt };
+  }
+});
+
+registerTool({
+  id: 'batch_process',
+  name: 'Procesar en Lote',
+  description: 'Procesa múltiples items en una sola operación',
+  category: 'automation',
+  capabilities: ['batch_users', 'batch_emails', 'batch_reports', 'batch_updates'],
+  inputSchema: { operation: 'string', items: 'array', options: 'object?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, processed: input.items.length, failed: 0, results: [] };
+  }
+});
+
+registerTool({
+  id: 'workflow_manage',
+  name: 'Gestionar Workflow',
+  description: 'Crea y gestiona flujos de trabajo automatizados',
+  category: 'automation',
+  capabilities: ['create_workflow', 'update_workflow', 'trigger_workflow', 'list_workflows'],
+  inputSchema: { name: 'string', steps: 'array', triggers: 'array', conditions: 'object?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, workflowId: `wf_${Date.now()}` };
+  }
+});
+
+registerTool({
+  id: 'backup_manage',
+  name: 'Gestionar Backups',
+  description: 'Crea y restaura backups de datos',
+  category: 'automation',
+  capabilities: ['create_backup', 'restore_backup', 'list_backups', 'delete_backup'],
+  inputSchema: { type: 'string', destination: 'string?', includeMedia: 'boolean?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, backupId: `backup_${Date.now()}`, size: '2.5GB' };
+  }
+});
+
+registerTool({
+  id: 'cleanup_data',
+  name: 'Limpieza de Datos',
+  description: 'Limpia y archiva datos antiguos',
+  category: 'automation',
+  capabilities: ['cleanup_old', 'archive_data', 'purge_deleted', 'optimize_storage'],
+  inputSchema: { dataType: 'string', olderThanDays: 'number', action: 'string' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, cleaned: 1500, freedSpace: '500MB' };
+  }
+});
+
+4) DATA TOOLS - añadir en categoría 'data':
+
+registerTool({
+  id: 'chart_generate',
+  name: 'Generar Gráfico',
+  description: 'Genera gráficos y visualizaciones de datos',
+  category: 'data',
+  capabilities: ['line_chart', 'bar_chart', 'pie_chart', 'area_chart', 'scatter_plot', 'heatmap'],
+  inputSchema: { type: 'string', data: 'array', options: 'object?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, chartUrl: `https://charts.example.com/${Date.now()}.png` };
+  }
+});
+
+registerTool({
+  id: 'csv_export',
+  name: 'Exportar CSV',
+  description: 'Exporta datos a formato CSV',
+  category: 'data',
+  capabilities: ['export_users', 'export_payments', 'export_analytics', 'export_custom'],
+  inputSchema: { dataType: 'string', filters: 'object?', columns: 'array?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, downloadUrl: `https://exports.example.com/${Date.now()}.csv`, rows: 1000 };
+  }
+});
+
+registerTool({
+  id: 'pdf_generate',
+  name: 'Generar PDF',
+  description: 'Genera documentos PDF desde templates',
+  category: 'data',
+  capabilities: ['generate_report', 'generate_invoice', 'generate_certificate', 'merge_pdfs'],
+  inputSchema: { template: 'string', data: 'object', options: 'object?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, pdfUrl: `https://pdfs.example.com/${Date.now()}.pdf` };
+  }
+});
+
+registerTool({
+  id: 'excel_export',
+  name: 'Exportar Excel',
+  description: 'Exporta datos a formato Excel con múltiples hojas',
+  category: 'data',
+  capabilities: ['export_xlsx', 'multi_sheet', 'with_charts', 'with_formatting'],
+  inputSchema: { sheets: 'array', filename: 'string', options: 'object?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, downloadUrl: `https://exports.example.com/${Date.now()}.xlsx` };
+  }
+});
+
+registerTool({
+  id: 'data_transform',
+  name: 'Transformar Datos',
+  description: 'Transforma, filtra y procesa datos',
+  category: 'data',
+  capabilities: ['filter', 'aggregate', 'pivot', 'join', 'map', 'reduce'],
+  inputSchema: { operation: 'string', data: 'array', config: 'object' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, result: [], rowsProcessed: 1000 };
+  }
+});
+
+registerTool({
+  id: 'data_import',
+  name: 'Importar Datos',
+  description: 'Importa datos desde CSV, JSON o Excel',
+  category: 'data',
+  capabilities: ['import_csv', 'import_json', 'import_excel', 'validate_data'],
+  inputSchema: { fileUrl: 'string', format: 'string', mapping: 'object?', validation: 'object?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, imported: 500, skipped: 5, errors: [] };
+  }
+});
+
+5) COMMUNICATION TOOLS - añadir en categoría 'communication':
+
+registerTool({
+  id: 'template_render',
+  name: 'Renderizar Template',
+  description: 'Renderiza templates con datos dinámicos',
+  category: 'communication',
+  capabilities: ['email_template', 'sms_template', 'notification_template', 'document_template'],
+  inputSchema: { templateId: 'string', data: 'object', format: 'string?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, rendered: 'Contenido renderizado...', format: input.format || 'html' };
+  }
+});
+
+registerTool({
+  id: 'broadcast_send',
+  name: 'Enviar Broadcast',
+  description: 'Envía mensajes a múltiples usuarios o segmentos',
+  category: 'communication',
+  capabilities: ['send_to_segment', 'send_to_all', 'send_to_list', 'schedule_broadcast'],
+  inputSchema: { segment: 'string?', userIds: 'array?', channel: 'string', message: 'object' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, sent: 1500, failed: 3 };
+  }
+});
+
+registerTool({
+  id: 'notification_manage',
+  name: 'Gestionar Notificaciones',
+  description: 'Crea y gestiona notificaciones del sistema',
+  category: 'communication',
+  capabilities: ['create_notification', 'mark_read', 'delete_notification', 'get_unread'],
+  inputSchema: { type: 'string', userId: 'string', content: 'object', priority: 'string?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, notificationId: `notif_${Date.now()}` };
+  }
+});
+
+6) MONITORING TOOLS - añadir en categoría 'monitoring':
+
+registerTool({
+  id: 'health_check',
+  name: 'Health Check',
+  description: 'Verifica el estado de salud de servicios',
+  category: 'monitoring',
+  capabilities: ['check_api', 'check_database', 'check_redis', 'check_external'],
+  inputSchema: { services: 'array?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, healthy: true, services: { api: 'ok', db: 'ok', redis: 'ok' } };
+  }
+});
+
+registerTool({
+  id: 'alert_manage',
+  name: 'Gestionar Alertas',
+  description: 'Crea y gestiona alertas de monitoreo',
+  category: 'monitoring',
+  capabilities: ['create_alert', 'update_alert', 'delete_alert', 'list_alerts', 'trigger_alert'],
+  inputSchema: { metric: 'string', condition: 'string', threshold: 'number', channels: 'array' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, alertId: `alert_${Date.now()}` };
+  }
+});
+
+registerTool({
+  id: 'log_search',
+  name: 'Buscar en Logs',
+  description: 'Busca y filtra logs del sistema',
+  category: 'monitoring',
+  capabilities: ['search_errors', 'search_by_user', 'search_by_date', 'search_pattern', 'tail_logs'],
+  inputSchema: { query: 'string', dateRange: 'object?', level: 'string?', limit: 'number?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, logs: [], total: 150, hasMore: true };
+  }
+});
+
+registerTool({
+  id: 'metrics_query',
+  name: 'Consultar Métricas',
+  description: 'Consulta métricas y estadísticas del sistema',
+  category: 'monitoring',
+  capabilities: ['get_metrics', 'compare_periods', 'aggregate_metrics', 'export_metrics'],
+  inputSchema: { metrics: 'array', period: 'string', groupBy: 'string?' },
+  isEnabled: true,
+  execute: async (input) => {
+    return { success: true, data: [], period: input.period };
+  }
+});
+
+7) ACTUALIZAR INTENT MAPPER - en server/services/intentMapper.ts añadir patterns para nuevas herramientas:
+
+const EXTENDED_TOOL_PATTERNS: Record<string, string[]> = {
+  // Integrations
+  slack_send: ['slack', 'canal de slack', 'mensaje a slack', 'notificar slack'],
+  email_send: ['email', 'correo', 'enviar mail', 'mandar correo', 'enviar email'],
+  webhook_trigger: ['webhook', 'http request', 'llamar api', 'trigger'],
+  calendar_event: ['calendario', 'evento', 'reunión', 'agendar', 'cita'],
+  drive_upload: ['subir archivo', 'drive', 'cloud', 'almacenar'],
+  sms_send: ['sms', 'mensaje de texto', 'texto a', 'mensaje al'],
+  push_notification: ['push', 'notificación push', 'notificar usuario'],
+  
+  // AI Advanced
+  image_generate: ['generar imagen', 'crear imagen', 'imagen de', 'dibujar', 'ilustración'],
+  code_review: ['revisar código', 'code review', 'analizar código', 'bugs en'],
+  document_summarize: ['resumir', 'resumen de', 'extracto', 'puntos clave'],
+  translate_text: ['traducir', 'traducción', 'translate', 'en inglés', 'en español'],
+  sentiment_analysis: ['sentimiento', 'opinión', 'emociones', 'tono del'],
+  entity_extraction: ['extraer', 'entidades', 'nombres de', 'fechas de'],
+  
+  // Automation
+  schedule_task: ['programar', 'agendar tarea', 'ejecutar después', 'en 5 minutos'],
+  batch_process: ['lote', 'batch', 'masivo', 'bulk', 'todos los'],
+  workflow_manage: ['workflow', 'flujo de trabajo', 'automatizar', 'proceso'],
+  backup_manage: ['backup', 'respaldo', 'copia de seguridad'],
+  cleanup_data: ['limpiar', 'eliminar antiguos', 'purgar', 'liberar espacio'],
+  
+  // Data
+  chart_generate: ['gráfico', 'chart', 'visualizar', 'graficar', 'diagrama'],
+  csv_export: ['exportar csv', 'descargar csv', 'csv de'],
+  pdf_generate: ['generar pdf', 'crear pdf', 'pdf de', 'documento pdf'],
+  excel_export: ['excel', 'xlsx', 'hoja de cálculo', 'spreadsheet'],
+  data_transform: ['transformar datos', 'convertir', 'mapear datos'],
+  data_import: ['importar', 'cargar datos', 'subir csv', 'subir excel'],
+  
+  // Communication
+  template_render: ['template', 'plantilla', 'renderizar'],
+  broadcast_send: ['broadcast', 'enviar a todos', 'mensaje masivo'],
+  notification_manage: ['notificación', 'notificar', 'avisar'],
+  
+  // Monitoring
+  health_check: ['health', 'estado del sistema', 'verificar servicios'],
+  alert_manage: ['alerta', 'alert', 'monitorear', 'avisar cuando'],
+  log_search: ['buscar logs', 'logs de', 'errores de', 'historial'],
+  metrics_query: ['métricas', 'estadísticas', 'stats de', 'analytics de']
+};
+
+// Añadir al método analyzeIntent existente:
+for (const [toolId, patterns] of Object.entries(EXTENDED_TOOL_PATTERNS)) {
+  for (const pattern of patterns) {
+    if (normalizedPrompt.includes(pattern)) {
+      matches.push({ toolId, pattern, score: 0.8 });
+    }
+  }
+}
+
+8) VERIFICAR TOTAL DE HERRAMIENTAS - crear endpoint de verificación:
+// En adminRouter.ts
+router.get('/agent/tools/stats', async (req, res) => {
+  const tools = toolRegistry.getAllTools();
+  const byCategory = tools.reduce((acc, tool) => {
+    acc[tool.category] = (acc[tool.category] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  
+  res.json({
+    total: tools.length,
+    byCategory,
+    categories: Object.keys(byCategory)
+  });
+});
+
+=== PARTE B: DOCUMENTACIÓN COMPLETA ===
+
+9) README PRINCIPAL - crear docs/AGENTIC_ENGINE.md:
+
+# 🤖 Agentic Engine
+
+Sistema de IA autónomo que analiza intenciones de usuarios, orquesta herramientas y aprende continuamente.
+
+## 📋 Tabla de Contenidos
+- [Arquitectura](#arquitectura)
+- [Componentes](#componentes)
+- [Instalación](#instalación)
+- [Configuración](#configuración)
+- [API Reference](#api-reference)
+- [Herramientas Disponibles](#herramientas-disponibles)
+- [Guía de Uso](#guía-de-uso)
+
+## 🏗️ Arquitectura

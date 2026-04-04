@@ -1,0 +1,66 @@
+ACTÚA COMO INGENIERO PRINCIPAL (Staff/Principal) Y ARREGLA EL SISTEMA END-TO-END. CONTEXTO: tenemos 103 tools registradas y 10 agentes especializados. El problema real en producción/UI es que el “Modo Agente” se queda “Ejecutando…” y NO entrega el resultado final (imagen/PPT/Word/Excel). En la UI se ven eventos como tool_output y step_completed (ej. tool_name="web_search"), pero NO aparece un evento final/run_completed ni artifacts, y además el router elige tools incorrectas (p.ej. “crea una imagen” termina en web_search). TU OBJETIVO: eliminar para siempre el “loading infinito”, asegurar routing correcto por intención, y asegurar que TODAS las tareas de generación (imagen/ppt/docx/xlsx/pdf) terminan en artifact real o en failed con error normalizado.
+
+REQUERIMIENTOS NO NEGOCIABLES:
+1) PROTOCOLO DE EJECUCIÓN (STATE MACHINE)
+   - Define una máquina de estados única para runs: QUEUED → RUNNING → COMPLETED | FAILED | CANCELED.
+   - Cada run tiene runId, requestId, startedAt, updatedAt, status, currentStepIndex, totalSteps, replansCount.
+   - Garantiza (con finally) que TODO run termina en COMPLETED/FAILED/CANCELED. PROHIBIDO quedar indefinidamente en RUNNING.
+   - Implementa watchdog: si no hay progreso por N segundos (ej. 30s configurable), force FAIL con TIMEOUT_ERROR y emite run_failed.
+
+2) EVENTOS EN TIEMPO REAL (SSE / WS) + ALMACÉN DE EVENTOS
+   - Implementa un event bus con persistencia en memoria (y opcional file/db) por runId.
+   - Emite eventos tipados y versionados:
+     run_started, step_started, tool_called, tool_output, step_completed, artifact_created, replan_triggered, run_completed, run_failed, run_canceled, heartbeat.
+   - Exponer endpoints:
+     POST /api/registry/execute-workflow  -> responde 202 inmediatamente con {runId, requestId, statusUrl, eventsUrl}
+     GET  /api/registry/workflows/:runId -> snapshot del estado (status, steps, artifacts)
+     GET  /api/registry/workflows/:runId/events (SSE) -> stream de eventos
+     POST /api/registry/workflows/:runId/cancel -> cancela de verdad (aborta herramientas en progreso si es posible)
+   - La UI debe renderizar SOLO con estos eventos; si el stream cae, reconectar y mostrar “último evento recibido”.
+
+3) ROUTING Y PLANNING CORRECTO (INTENT → AGENT → TOOLS)
+   - Implementa intent classifier determinista con reglas + fallback LLM (si existe) pero con VALIDACIÓN post-clasificación.
+   - Reglas mínimas:
+     * “crea/genera/imagen” -> ImageAgent + tool image_generate (o equivalente) y artifacts[image/png]
+     * “ppt/presentación/slides” -> Document/Presentation agent + slides_create y artifacts[application/vnd.openxmlformats-officedocument.presentationml.presentation]
+     * “word/docx/documento” -> DocumentAgent + docx_generate/document_create y artifacts[docx]
+     * “excel/xlsx/spreadsheet” -> DataAgent + spreadsheet_create y artifacts[xlsx]
+     * “pdf” -> pdf_generate y artifacts[pdf]
+     * web_search SOLO como step auxiliar si hace falta contenido, nunca como resultado final para tareas de generación.
+   - Añade un “plan validator”: si el objetivo requiere artifact y el plan no contiene una tool generadora -> FAIL inmediato con PLANNING_ERROR.
+   - Añade “tool selection constraints”: para intents de generación debe existir al menos 1 tool de “Generation/Document” en el plan.
+
+4) EJECUCIÓN REAL DE STEPS + EVIDENCIA
+   - El workflow runner debe ejecutar realmente cada tool con su inputSchema y validar outputSchema.
+   - Cada step debe guardar evidence:
+     {stepId, toolName, input, output, schemaValidation, requestId, durationMs, retryCount, status}
+   - Si una tool falla: retries si retryable; si persiste -> replan (si aplica) y registrar replan_triggered; si no hay alternativa -> run_failed.
+
+5) ARTIFACTS REALES Y RENDER MINIMALISTA
+   - Para tools de generación, la salida debe incluir artifacts[] con:
+     {artifactId, type, mimeType, path, sizeBytes, createdAt, previewUrl?}
+   - Implementa GET /api/artifacts/:artifactId/download y GET /api/artifacts/:artifactId/preview (si aplica).
+   - UI minimalista: lista compacta de steps con estado (pending/running/done/failed), barra de progreso, “último evento”, y sección Artifacts con botones (ver/descargar).
+   - Nunca depender de que “el agente escriba un texto final” para cerrar; el cierre es run_completed con artifacts.
+
+6) PRUEBAS QUE REPRODUCEN EL BUG Y LO EVITAN
+   - Agrega un test E2E “no infinite loading”: inicia run, corta stream, reconecta, y verifica que llega run_completed o run_failed.
+   - Agrega test “image intent”: prompt “crea una imagen de un gato” debe invocar image_generate, crear artifact PNG y emitir artifact_created + run_completed.
+   - Agrega test “ppt/docx/xlsx”: deben generar artifact real en artifacts/ y el mimeType correcto.
+   - Agrega test “planning validator”: si el plan no incluye generador, debe fallar con PLANNING_ERROR (no ejecutar web_search y quedarse colgado).
+   - Agrega test “watchdog timeout”: simula tool colgada y verifica run_failed con TIMEOUT_ERROR y evento final.
+   - Mantén los 56 tests existentes pasando y añade al menos 10 tests nuevos de integración.
+
+7) ENTREGA
+   - Entrega cambios en código con rutas exactas y documentación:
+     docs/execution-protocol.md (estados, eventos, contratos)
+     docs/api.md (endpoints, ejemplos curl)
+   - Entrega scripts reproducibles:
+     npm run e2e:prove-it  (crea imagen/ppt/docx/xlsx/pdf y devuelve exit 0 solo si artifacts existen)
+     npm run e2e:hang-test (simula hang y verifica TIMEOUT_ERROR)
+   - Adjunta logs de ejemplo mostrando:
+     run_started → step_started → tool_output → artifact_created → run_completed
+     y en fallo: run_started → ... → run_failed
+   - NO acepto “PASS” si falta run_completed o artifacts; la aceptación depende de evidencia real.
+
+EMPIEZA POR ARREGLAR EL CASO: “crea una imagen de un gato”. Debe terminar en menos de 30s con artifact PNG descargable y UI actualizada en tiempo real. Luego extiende a ppt/docx/xlsx.

@@ -1,0 +1,54 @@
+{
+  "title": "Reporte de Ventas Q1",
+  "author": "Equipo de Datos",
+  "add_toc": false,
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "Resumen ejecutivo"
+    },
+    {
+      "type": "paragraph",
+      "text": "Este documento resume el desempeño de ventas del primer trimestre."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Hallazgos clave"
+    },
+    {
+      "type": "bullets",
+      "items": [
+        "Crecimiento sostenido",
+        "Mejora del margen en marzo"
+      ]
+    },
+    {
+      "type": "table",
+      "columns": [
+        "Mes",
+        "Ventas",
+        "Margen"
+      ],
+      "rows": [
+        [
+          "Enero",
+          120000,
+          "32%"
+        ],
+        [
+          "Febrero",
+          135000,
+          "28%"
+        ],
+        [
+          "Marzo",
+          142500,
+          "35%"
+        ]
+      ],
+      "style": "Light Shading"
+    }
+  ]
+}

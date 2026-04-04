@@ -1,0 +1,241 @@
+---
+name: excel-background-processing
+description: |
+  Sistema de Excel empresarial con procesamiento en segundo plano. Usar cuando el usuario solicite:
+  crear hojas de cálculo, generar datos masivos, fórmulas complejas, gráficos, 
+  procesamiento que continúe aunque cambie de pestaña, exportar a XLSX,
+  o cualquier funcionalidad avanzada de Excel. Soporta 10,000x10,000 celdas,
+  Web Workers para background processing, persistencia con IndexedDB,
+  coordinación multi-pestaña, y streaming en tiempo real.
+---
+
+# Excel Background Processing Skill
+
+Sistema de Excel de nivel empresarial con procesamiento en segundo plano que garantiza 
+continuidad incluso cuando el usuario cambia de pestaña o minimiza el navegador.
+
+## Capacidades Principales
+
+| Característica | Descripción |
+|----------------|-------------|
+| Grid Masivo | 10,000 filas × 10,000 columnas con virtualización |
+| Background Processing | Web Workers inmunes al throttling del navegador |
+| Persistencia | IndexedDB para recuperación automática |
+| Multi-tab | Coordinación entre pestañas con BroadcastChannel |
+| Streaming | Inserción de datos en tiempo real con animaciones |
+| Fórmulas | SUM, AVERAGE, COUNT, MAX, MIN, IF, referencias |
+| Gráficos | Barras, líneas, circular, área con Recharts |
+| Exportación | XLSX real con SheetJS |
+
+## Quick Start
+
+### 1. Inicializar el Sistema
+```jsx
+import { useBackgroundProcessing } from './hooks/useBackgroundProcessing';
+import { ExcelEditor } from './components/ExcelEditor';
+
+const App = () => {
+  const {
+    status,
+    progress,
+    isPageVisible,
+    startProcessing,
+    pause,
+    resume,
+    cancel
+  } = useBackgroundProcessing({
+    onCellUpdate: (cell) => updateGrid(cell),
+    onComplete: (results) => console.log('Completado:', results),
+    autoRecover: true // Recupera tareas pendientes al recargar
+  });
+
+  return <ExcelEditor backgroundProcessor={{ status, progress }} />;
+};
+```
+
+### 2. Iniciar Procesamiento en Background
+```jsx
+const handleGenerateData = async () => {
+  const tasks = [
+    { action: 'INSERT_CELL', row: 0, col: 0, value: 'Mes' },
+    { action: 'INSERT_CELL', row: 0, col: 1, value: 'Ventas' },
+    { action: 'EVALUATE_FORMULA', row: 10, col: 2, formula: '=SUM(B2:B10)' },
+    { action: 'GENERATE_CHART', chartType: 'bar', dataRange: 'A1:B10' }
+  ];
+  
+  await startProcessing(tasks);
+  // El procesamiento continúa aunque el usuario cambie de pestaña
+};
+```
+
+## Arquitectura del Sistema
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        MAIN THREAD                               │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
+│  │   React UI  │  │  Callbacks  │  │  Page Visibility API    │  │
+│  │   (Grid)    │◄─┤  Handler    │◄─┤  (detecta tab oculta)   │  │
+│  └─────────────┘  └──────▲──────┘  └─────────────────────────┘  │
+│                          │                                       │
+│  ┌───────────────────────┴───────────────────────────────────┐  │
+│  │              postMessage / onmessage                       │  │
+│  └───────────────────────┬───────────────────────────────────┘  │
+└──────────────────────────┼──────────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────────┐
+│                        WEB WORKER                                │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
+│  │ Task Queue  │─►│  Processor  │─►│  Formula Engine         │  │
+│  │ (sin limit) │  │  (loop sin  │  │  (SUM, AVG, IF, etc.)   │  │
+│  │             │  │  setTimeout)│  │                         │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
+│                                                                  │
+│  • NO se ve afectado por throttling de pestaña inactiva         │
+│  • Usa MessageChannel en lugar de setTimeout                     │
+│  • Procesa en batches de 50 tareas para mejor rendimiento       │
+└──────────────────────────────────────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────────┐
+│                       PERSISTENCIA                               │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │                      IndexedDB                               ││
+│  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐ ││
+│  │  │pendingTasks  │ │completedRes  │ │ processingState      │ ││
+│  │  │(tareas por   │ │(resultados)  │ │ (estado actual)      │ ││
+│  │  │ procesar)    │ │              │ │                      │ ││
+│  │  └──────────────┘ └──────────────┘ └──────────────────────┘ ││
+│  └─────────────────────────────────────────────────────────────┘│
+│  • Recuperación automática si se cierra la página               │
+│  • Sincronización entre pestañas vía BroadcastChannel           │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## Guías Detalladas
+
+Para implementaciones específicas, consultar:
+
+- [BACKGROUND_PROCESSING.md](BACKGROUND_PROCESSING.md) - Sistema completo de Web Workers
+- [PERSISTENCE.md](PERSISTENCE.md) - IndexedDB y recuperación de estado
+- [TAB_COORDINATION.md](TAB_COORDINATION.md) - Coordinación multi-pestaña
+- [STREAMING.md](STREAMING.md) - Inserción en tiempo real con animaciones
+- [CHARTS.md](CHARTS.md) - Gráficos con Recharts
+- [FORMULAS.md](FORMULAS.md) - Motor de evaluación de fórmulas
+- [RESIZE.md](RESIZE.md) - Redimensionamiento de filas/columnas
+- [RIBBON.md](RIBBON.md) - Interfaz tipo Microsoft Excel
+
+## Tipos de Tareas Soportadas
+
+| Acción | Descripción | Parámetros |
+|--------|-------------|------------|
+| `INSERT_CELL` | Insertar valor en celda | `row, col, value, format` |
+| `EVALUATE_FORMULA` | Evaluar fórmula | `row, col, formula, context` |
+| `BULK_INSERT` | Inserción masiva | `cells: [{row, col, value}]` |
+| `CREATE_SHEET` | Crear nueva hoja | `name, sheetId` |
+| `GENERATE_CHART` | Crear gráfico | `chartType, dataRange, options` |
+| `APPLY_FORMAT` | Aplicar formato | `range, format` |
+| `APPLY_CONDITIONAL` | Formato condicional | `range, rules` |
+
+## Fórmulas Soportadas
+```
+=SUM(A1:A100)           // Suma de rango
+=AVERAGE(B2:B50)        // Promedio
+=COUNT(C1:C100)         // Contar números
+=MAX(D1:D100)           // Valor máximo
+=MIN(E1:E100)           // Valor mínimo
+=IF(A1>100,"Alto","Bajo") // Condicional
+=A1*B1                  // Operaciones matemáticas
+=Ventas!E2:E13          // Referencias entre hojas
+```
+
+## Ejemplo Completo: Generar Workbook de Ventas
+```jsx
+const generateSalesWorkbook = async () => {
+  const tasks = [];
+  
+  // Crear hojas
+  tasks.push({ action: 'CREATE_SHEET', name: 'Ventas', sheetId: 'ventas' });
+  tasks.push({ action: 'CREATE_SHEET', name: 'Resumen', sheetId: 'resumen' });
+  tasks.push({ action: 'CREATE_SHEET', name: 'Gráficos', sheetId: 'graficos' });
+  tasks.push({ action: 'CREATE_SHEET', name: 'Análisis', sheetId: 'analisis' });
+  
+  // Headers de Ventas
+  const headers = ['Mes', 'Producto', 'Cantidad', 'Precio', 'Total'];
+  headers.forEach((h, col) => {
+    tasks.push({ action: 'INSERT_CELL', row: 0, col, value: h });
+  });
+  
+  // Datos con fórmulas
+  const meses = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio'];
+  const productos = ['Laptop', 'Mouse', 'Teclado', 'Monitor'];
+  
+  let row = 1;
+  meses.forEach(mes => {
+    productos.forEach(producto => {
+      const cantidad = Math.floor(Math.random() * 50) + 10;
+      const precio = Math.floor(Math.random() * 1000) + 100;
+      
+      tasks.push({ action: 'INSERT_CELL', row, col: 0, value: mes });
+      tasks.push({ action: 'INSERT_CELL', row, col: 1, value: producto });
+      tasks.push({ action: 'INSERT_CELL', row, col: 2, value: cantidad });
+      tasks.push({ action: 'INSERT_CELL', row, col: 3, value: precio });
+      tasks.push({ 
+        action: 'EVALUATE_FORMULA', 
+        row, 
+        col: 4, 
+        formula: `=C${row + 1}*D${row + 1}` 
+      });
+      row++;
+    });
+  });
+  
+  // Gráficos
+  tasks.push({
+    action: 'GENERATE_CHART',
+    chartType: 'bar',
+    title: 'Ventas por Mes',
+    dataRange: 'A2:B25',
+    position: { row: 0, col: 6 }
+  });
+  
+  tasks.push({
+    action: 'GENERATE_CHART',
+    chartType: 'pie',
+    title: 'Distribución por Producto',
+    dataRange: 'B2:E5',
+    position: { row: 15, col: 6 }
+  });
+  
+  // Formato condicional
+  tasks.push({
+    action: 'APPLY_CONDITIONAL',
+    range: { startRow: 1, endRow: 24, startCol: 4, endCol: 4 },
+    rules: [
+      { condition: 'greaterThan', value: 10000, style: { backgroundColor: '#dcfce7' } },
+      { condition: 'lessThan', value: 1000, style: { backgroundColor: '#fee2e2' } }
+    ]
+  });
+  
+  // Iniciar procesamiento (continúa en background)
+  await startProcessing(tasks);
+};
+```
+
+## Dependencias Requeridas
+```json
+{
+  "dependencies": {
+    "react": "^18.0.0",
+    "recharts": "^2.5.0",
+    "xlsx": "^0.18.5"
+  }
+}
+```
+
+## Notas de Implementación
+
+1. **Web Worker sin setTimeout**: Usar `MessageChannel` para evitar throttling
+2. **Batch processing**: Procesar 50 tareas por ciclo para mejor rendimiento
+3. **IndexedDB stores**: `pendingTasks`, `completedResults`, `processingState`
+4. **BroadcastChannel**: Elegir líder (tab más antiguo) para evitar duplicados
+5. **Page Visibility**: Acumular updates cuando oculto, aplicar al volver
+6. **Notificaciones**: Alertar cuando completa si tab está en background

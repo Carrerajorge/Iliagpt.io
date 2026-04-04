@@ -1,0 +1,236 @@
+Excelente pregunta — y muy buena para **diseñar bien tu chat desde el inicio**.
+ChatGPT no “dibuja” solo texto plano: usa **varios tipos de renderizado combinados**. Aquí te dejo **TODOS los renderizados que ChatGPT soporta**, explicados de forma técnica y práctica para que tu programador los implemente correctamente.
+
+---
+
+# 🧠 Renderizados que usa ChatGPT
+
+## 1️⃣ Texto plano (Plain text)
+
+**Qué es:** texto sin formato
+**Ejemplo:**
+
+```
+Hola, ¿cómo estás?
+```
+
+✅ Siempre soportado
+❌ No negritas, no listas, no fórmulas
+
+---
+
+## 2️⃣ Markdown (el más importante)
+
+ChatGPT **responde principalmente en Markdown**.
+
+### Soporta:
+
+* **Negritas** → `**texto**`
+* *Cursiva* → `*texto*`
+* `Código inline`
+* `bloques de código`
+* Listas (`-`, `1.`)
+* Títulos (`# ## ###`)
+* Links
+* Citas (`>`)
+
+📌 **Tu chat DEBE renderizar Markdown sí o sí**
+
+---
+
+## 3️⃣ Código (syntax highlighting)
+
+Código con lenguaje explícito:
+
+```js
+function suma(a, b) {
+  return a + b;
+}
+```
+
+👉 Ideal usar:
+
+* `highlight.js`
+* `prism.js`
+
+---
+
+## 4️⃣ Matemática (LaTeX)
+
+ChatGPT escribe matemática en **LaTeX**.
+
+### Formatos usados:
+
+* Inline: `\( x^2 + 1 \)`
+* Bloque:
+  `\[ \int_0^1 x dx \]`
+
+📌 Requiere:
+
+* **KaTeX (recomendado)** o MathJax
+
+---
+
+## 5️⃣ Tablas (Markdown Tables)
+
+```md
+| Plan | Precio |
+|------|--------|
+| Básico | S/ 50 |
+| Pro | S/ 100 |
+```
+
+📌 Se renderizan con Markdown (no con HTML)
+
+---
+
+## 6️⃣ Listas avanzadas
+
+* Listas anidadas
+* Checklists:
+
+```md
+- [x] Hecho
+- [ ] Pendiente
+```
+
+---
+
+## 7️⃣ Emojis
+
+🙂 🚀 📊
+Son **Unicode**, no imágenes.
+
+---
+
+## 8️⃣ Bloques de citas (quotes)
+
+```md
+> Esto es una cita
+```
+
+---
+
+## 9️⃣ Enlaces
+
+```md
+[Google](https://google.com)
+```
+
+---
+
+## 🔟 Imágenes (cuando la plataforma lo permite)
+
+```md
+![Texto alternativo](url)
+```
+
+📌 En tu chat puedes:
+
+* renderizar
+* o bloquearlas por seguridad
+
+---
+
+## 1️⃣1️⃣ Diagramas (opcional / avanzado)
+
+ChatGPT puede generar:
+
+### Mermaid
+
+````md
+```mermaid
+graph TD
+A --> B
+````
+
+⚠️ Esto NO viene renderizado por defecto
+👉 Necesitas `mermaid.js`
+
+---
+
+## 1️⃣2️⃣ HTML embebido (NO recomendado)
+
+A veces devuelve HTML:
+
+```html
+<b>Texto</b>
+```
+
+⚠️ Riesgo XSS
+👉 Sanitizar o bloquear
+
+---
+
+## 1️⃣3️⃣ Tablas + matemática combinada
+
+Ejemplo real:
+
+```md
+| Fórmula | Resultado |
+|--------|-----------|
+| \(x^2\) | 4 |
+```
+
+📌 Necesita **Markdown + KaTeX**
+
+---
+
+# 🧩 Render stack ideal (recomendado)
+
+Dile esto a tu programador 👇
+
+> El chat debe soportar:
+>
+> * Markdown
+> * Syntax highlighting para código
+> * LaTeX con KaTeX
+> * Tablas Markdown
+> * Emojis Unicode
+>
+> Todo en un solo pipeline de renderizado.
+
+---
+
+## 🔧 Stack recomendado (React)
+
+```txt
+react-markdown
+remark-math
+rehype-katex
+rehype-highlight
+```
+
+---
+
+## ❌ Qué NO soporta ChatGPT nativamente
+
+* CSS
+* JavaScript ejecutable
+* SVG dinámico
+* Canvas
+* HTML sin sanitizar
+
+---
+
+## 🎯 Resumen rápido
+
+| Tipo        | Soportado |
+| ----------- | --------- |
+| Texto plano | ✅         |
+| Markdown    | ✅         |
+| Código      | ✅         |
+| Matemática  | ✅         |
+| Tablas      | ✅         |
+| Diagramas   | ⚠️        |
+| HTML crudo  | ⚠️        |
+| JS/CSS      | ❌         |
+
+---
+
+Si quieres, dime:
+
+* **qué frontend usas**
+* **qué tipo de usuarios (tesis, matemáticas, programación)**
+
+y te armo el **pipeline exacto de renderizado tipo ChatGPT** listo para producción 🔥

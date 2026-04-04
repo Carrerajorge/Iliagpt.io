@@ -1,0 +1,23 @@
+vamos bien con el agente pero el mensaje de aviso como va yendo debe ser como esto que te voy a mandar en la foto mostrar los pasos como lo hace este chat mira asi, luego te da un docuemnto en base al pront del usuario y si el usuario le da clic a lo que se genero pueda verse en la otra mtas de la pantalla, entonces el paso es asi del agente, muestra el proceso, luego te da en texto un resumen de lo que realizo y luego te da el docuemnto en base a lo que solicito el usuairo puede ser excel, ppt, word, o csv o cualquier otra cosa
+Entiendo perfectamente. Quieres que el agente muestre:
+
+Pasos expandibles - Como en Claude: "3 pasos", "16 pasos" que se pueden expandir
+Resumen de texto - Después de los pasos, un resumen de lo que hizo
+Documentos generados - Con botón de descargar
+Vista previa en panel lateral - Al hacer clic en el documento, se abre en el lado derecho
+
+Creating Claude-style agent steps display component
+Checked console and system logs
+The app is running successfully. Now let me update the AgentRunContent component to use the new AgentStepsDisplay for showing completed agent runs in Claude-style:
+Optimized Agent memory
+
+Creating document preview panel component
+Checked console and system logs
+The app is running successfully. The vite websocket warning is a known issue in the Replit environment for HMR and doesn't affect actual functionality.
+
+Now let me integrate the DocumentPreviewPanel into the chat interface:
+Checked console and system logs
+The app is running successfully with HMR updates. Now I need to wire up the document preview functionality by passing the handler from ChatInterface to MessageList. Let me update the MessageList component to accept and use this handler:
+I need to update the AgentRunContent and AssistantMessage components to pass the onAgentArtifactPreview callback. Let me do this step by step:
+Checked console and system logs
+The app is running successfully with no compilation errors. The logs show the document-preview-panel.tsx is being loaded. Let me update the task list and get a review:

@@ -1,0 +1,163 @@
+Puedo ayudarte a verificarlo **al 100%**, pero ahora mismo **no puedo comprobar tu repo directamente**: al intentar buscar en GitHub desde aquí me sale `MissingGithubRepoSelection` (no hay repos seleccionados). Sin ver el código/PR, lo máximo que puedo hacer es darte una **lista de verificación “a prueba de balas”** para confirmar que Replit realmente implementó *cada* punto y que además **no quedan errores de runtime** (los que causan pantalla en blanco aunque TypeScript esté “verde”).
+
+Abajo tienes una verificación completa (código + ejecución).
+
+---
+
+## 1) Verificación por código (que cada cambio exista de verdad)
+
+### A. `generate-file.ts`: `"word"` → `"document"`
+
+**Qué comprobar**
+
+* Que el `ArtifactType` (enum/union) **incluye** `"document"` y **no requiere** `"word"`.
+* Que donde antes se enviaba `"word"` ahora se envía **exactamente** `"document"`.
+* Que cualquier `switch`/mapper que trate tipos de artefacto **maneja** `"document"`.
+
+**Comandos rápidos**
+
+```bash
+# busca usos del literal "word"
+rg -n "\"word\"" .
+
+# busca el archivo y el tipo
+rg -n "generate-file\.ts|ArtifactType|artifactType" .
+```
+
+**Riesgo típico**
+
+* Cambian el string en un sitio, pero queda otro lugar (p.ej. UI preview, backend route, serializer) esperando `"word"`.
+
+---
+
+### B. `message-list.tsx`: normalizador de estados
+
+**Qué comprobar**
+
+* Existe una función tipo `normalizeStatus(...)` (o similar).
+* Acepta *cualquier* string y devuelve solo:
+  `pending | running | succeeded | failed`
+* Si entra `undefined/null/""`, **no revienta** (esto es clave para “pantalla blanca”).
+* `AgentStepsDisplay` recibe **solo** valores válidos.
+
+**Comandos**
+
+```bash
+rg -n "normalize.*status|AgentStepsDisplay|pending|running|succeeded|failed" message-list.tsx src .
+```
+
+**Riesgo típico**
+
+* Hacen `status.toLowerCase()` sin validar `status` → crash en runtime.
+* Normalizan pero **olvidan** aplicarlo en un camino (p.ej. un render alternativo).
+
+---
+
+### C. `message-list.tsx`: `onAgentArtifactPreview` agregado
+
+**Qué comprobar**
+
+* `MessageItemProps` incluye `onAgentArtifactPreview`.
+* El componente lo recibe (destructuring) y lo pasa a donde corresponde.
+* No queda ningún `MessageItem`/invocación sin la prop si era requerida (o si es opcional, que haya fallback).
+
+**Comandos**
+
+```bash
+rg -n "onAgentArtifactPreview|MessageItemProps|<MessageItem" src .
+```
+
+**Riesgo típico**
+
+* Lo agregan al tipo, pero no lo conectan al evento real (click/preview).
+
+---
+
+### D. `use-chats.ts`: `FigmaDiagram` con `diagramType`
+
+**Qué comprobar**
+
+* El tipo/objeto `FigmaDiagram` incluye `diagramType`.
+* Cuando se crea un bloque `FigmaBlock`, se le está pasando `diagramType` siempre.
+* No lo dejan “hardcodeado” incorrectamente (si hay varios tipos).
+
+**Comandos**
+
+```bash
+rg -n "FigmaDiagram|diagramType|FigmaBlock" src .
+```
+
+---
+
+### E. `use-chats.ts`: `spreadsheetData` con `analysisId`/`sessionId`
+
+**Qué comprobar**
+
+* `spreadsheetData` permite `{ analysisId?: ..., sessionId?: ... }`
+* En el código donde se consume, no se asume que existen (evitar runtime `undefined`).
+
+**Comandos**
+
+```bash
+rg -n "spreadsheetData|analysisId|sessionId" src .
+```
+
+---
+
+## 2) Verificación por compilación (TypeScript + build real)
+
+Aunque “no haya errores TS” en el editor, lo que importa es el pipeline real:
+
+```bash
+# 1) typecheck estricto
+pnpm -s typecheck || npm run typecheck
+
+# 2) lint (si existe)
+pnpm -s lint || npm run lint
+
+# 3) build de producción (clave)
+pnpm -s build || npm run build
+```
+
+**Por qué el build importa:** hay errores que no aparecen igual en dev (o aparecen solo al renderizar cierto path).
+
+---
+
+## 3) Verificación de runtime (para descartar la “pantalla en blanco” de verdad)
+
+### A. Reproducir el bug anterior (si sabes el paso exacto)
+
+* Entra al **modo Agent**
+* Ejecuta la misma acción que antes rompía la UI
+* Abre DevTools → Console
+
+✅ Éxito = **cero** errores rojos + se ven actualizaciones en tiempo real.
+
+### B. “Prueba de estrés” del normalizador de estados
+
+Si puedes forzar mensajes/steps con estados raros (p.ej. desde mocks o backend), prueba que la UI no crashea con:
+
+* `"in_progress"`, `"done"`, `"success"`, `"error"`, `"PENDING"`, `""`, `null`, `undefined`
+
+✅ Éxito = se renderiza y cae a un valor válido (p.ej. `pending` por default) sin reventar.
+
+---
+
+## 4) La forma más rápida de confirmar “100% cumplido”
+
+Para que yo te lo confirme con evidencia concreta, tienes 2 opciones:
+
+1. **Selecciona el repo de GitHub** para que yo lo busque desde aquí
+
+   * Escribe `@github` → icono GitHub → elige el/los repos → luego me dices “ya”.
+2. Pégame **el link del PR** o directamente el **diff** (aunque sea parcial) de esos archivos.
+
+Con cualquiera de las dos, te devuelvo un checklist marcado (✅/⚠️) punto por punto, señalando exactamente dónde cumple y dónde falta.
+
+Si quieres, mientras conectas el repo, también puedes pegar aquí el output de:
+
+```bash
+pnpm -s typecheck && pnpm -s build
+```
+
+y (si hubo antes pantalla blanca) una captura o el texto del error de consola.

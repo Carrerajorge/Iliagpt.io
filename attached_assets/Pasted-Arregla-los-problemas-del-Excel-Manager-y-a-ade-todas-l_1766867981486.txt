@@ -1,0 +1,1073 @@
+Arregla los problemas del Excel Manager y añade todas las mejoras solicitadas:
+
+=== PARTE 1: ARREGLAR SINCRONIZACIÓN DEL TOOLBAR ===
+
+1) El problema es que el toolbar no está conectado correctamente con Handsontable. Actualizar el SpreadsheetEditor para sincronizar el toolbar:
+
+En client/src/components/spreadsheet/SpreadsheetEditor.tsx, reemplazar o actualizar las funciones de formato:
+
+// Añadir estado para tracking de formato de celda seleccionada
+const [cellFormat, setCellFormat] = useState({
+  bold: false,
+  italic: false,
+  align: 'left',
+  backgroundColor: '',
+  textColor: ''
+});
+
+// Función para aplicar negrita
+const applyBold = useCallback(() => {
+  if (!hotRef.current) return;
+  const hot = hotRef.current.hotInstance;
+  const selected = hot.getSelected();
+  
+  if (!selected || selected.length === 0) return;
+  
+  selected.forEach(([startRow, startCol, endRow, endCol]) => {
+    for (let row = Math.min(startRow, endRow); row <= Math.max(startRow, endRow); row++) {
+      for (let col = Math.min(startCol, endCol); col <= Math.max(startCol, endCol); col++) {
+        const cell = hot.getCell(row, col);
+        if (cell) {
+          const currentWeight = cell.style.fontWeight;
+          cell.style.fontWeight = currentWeight === 'bold' ? 'normal' : 'bold';
+        }
+        // También guardar en metadata para persistencia
+        const meta = hot.getCellMeta(row, col);
+        meta.bold = !meta.bold;
+        hot.setCellMeta(row, col, 'bold', meta.bold);
+      }
+    }
+  });
+  
+  hot.render();
+  setIsModified(true);
+}, []);
+
+// Función para aplicar cursiva
+const applyItalic = useCallback(() => {
+  if (!hotRef.current) return;
+  const hot = hotRef.current.hotInstance;
+  const selected = hot.getSelected();
+  
+  if (!selected || selected.length === 0) return;
+  
+  selected.forEach(([startRow, startCol, endRow, endCol]) => {
+    for (let row = Math.min(startRow, endRow); row <= Math.max(startRow, endRow); row++) {
+      for (let col = Math.min(startCol, endCol); col <= Math.max(startCol, endCol); col++) {
+        const cell = hot.getCell(row, col);
+        if (cell) {
+          const currentStyle = cell.style.fontStyle;
+          cell.style.fontStyle = currentStyle === 'italic' ? 'normal' : 'italic';
+        }
+        const meta = hot.getCellMeta(row, col);
+        meta.italic = !meta.italic;
+        hot.setCellMeta(row, col, 'italic', meta.italic);
+      }
+    }
+  });
+  
+  hot.render();
+  setIsModified(true);
+}, []);
+
+// Función para aplicar alineación
+const applyAlignment = useCallback((alignment: 'left' | 'center' | 'right') => {
+  if (!hotRef.current) return;
+  const hot = hotRef.current.hotInstance;
+  const selected = hot.getSelected();
+  
+  if (!selected || selected.length === 0) return;
+  
+  selected.forEach(([startRow, startCol, endRow, endCol]) => {
+    for (let row = Math.min(startRow, endRow); row <= Math.max(startRow, endRow); row++) {
+      for (let col = Math.min(startCol, endCol); col <= Math.max(startCol, endCol); col++) {
+        const cell = hot.getCell(row, col);
+        if (cell) {
+          cell.style.textAlign = alignment;
+        }
+        hot.setCellMeta(row, col, 'alignment', alignment);
+      }
+    }
+  });
+  
+  hot.render();
+  setIsModified(true);
+}, []);
+
+// Función para aplicar color de fondo
+const applyBackgroundColor = useCallback((color: string) => {
+  if (!hotRef.current) return;
+  const hot = hotRef.current.hotInstance;
+  const selected = hot.getSelected();
+  
+  if (!selected || selected.length === 0) return;
+  
+  selected.forEach(([startRow, startCol, endRow, endCol]) => {
+    for (let row = Math.min(startRow, endRow); row <= Math.max(startRow, endRow); row++) {
+      for (let col = Math.min(startCol, endCol); col <= Math.max(startCol, endCol); col++) {
+        const cell = hot.getCell(row, col);
+        if (cell) {
+          cell.style.backgroundColor = color;
+        }
+        hot.setCellMeta(row, col, 'backgroundColor', color);
+      }
+    }
+  });
+  
+  hot.render();
+  setIsModified(true);
+}, []);
+
+// Función para aplicar color de texto
+const applyTextColor = useCallback((color: string) => {
+  if (!hotRef.current) return;
+  const hot = hotRef.current.hotInstance;
+  const selected = hot.getSelected();
+  
+  if (!selected || selected.length === 0) return;
+  
+  selected.forEach(([startRow, startCol, endRow, endCol]) => {
+    for (let row = Math.min(startRow, endRow); row <= Math.max(startRow, endRow); row++) {
+      for (let col = Math.min(startCol, endCol); col <= Math.max(startCol, endCol); col++) {
+        const cell = hot.getCell(row, col);
+        if (cell) {
+          cell.style.color = color;
+        }
+        hot.setCellMeta(row, col, 'textColor', color);
+      }
+    }
+  });
+  
+  hot.render();
+  setIsModified(true);
+}, []);
+
+// Actualizar estado del formato cuando cambia la selección
+const updateFormatState = useCallback(() => {
+  if (!hotRef.current) return;
+  const hot = hotRef.current.hotInstance;
+  const selected = hot.getSelected();
+  
+  if (!selected || selected.length === 0) return;
+  
+  const [row, col] = [selected[0][0], selected[0][1]];
+  const meta = hot.getCellMeta(row, col);
+  const cell = hot.getCell(row, col);
+  
+  setCellFormat({
+    bold: meta.bold || false,
+    italic: meta.italic || false,
+    align: meta.alignment || 'left',
+    backgroundColor: meta.backgroundColor || '',
+    textColor: meta.textColor || ''
+  });
+}, []);
+
+// Añadir el callback de selección en las settings de Handsontable
+const hotSettings = {
+  // ... otras settings existentes ...
+  afterSelection: (row: number, col: number) => {
+    setSelectedCell({ row, col });
+    updateFormatState();
+  },
+  afterSelectionEnd: () => {
+    updateFormatState();
+  },
+  // Renderer personalizado para aplicar estilos guardados
+  cells: function(row: number, col: number) {
+    const cellProperties: any = {};
+    const meta = this.getCellMeta?.(row, col) || {};
+    
+    if (meta.bold || meta.italic || meta.alignment || meta.backgroundColor || meta.textColor) {
+      cellProperties.renderer = function(instance: any, td: HTMLElement, row: number, col: number, prop: any, value: any, cellProperties: any) {
+        Handsontable.renderers.TextRenderer.apply(this, arguments);
+        if (meta.bold) td.style.fontWeight = 'bold';
+        if (meta.italic) td.style.fontStyle = 'italic';
+        if (meta.alignment) td.style.textAlign = meta.alignment;
+        if (meta.backgroundColor) td.style.backgroundColor = meta.backgroundColor;
+        if (meta.textColor) td.style.color = meta.textColor;
+      };
+    }
+    
+    return cellProperties;
+  }
+};
+
+// Actualizar los botones del toolbar para usar las nuevas funciones
+// En el JSX del toolbar:
+<button 
+  onClick={applyBold} 
+  className={`p-2 rounded transition-colors ${cellFormat.bold ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+  title="Negrita (Ctrl+B)"
+>
+  <Bold className="w-4 h-4 text-gray-300" />
+</button>
+
+<button 
+  onClick={applyItalic}
+  className={`p-2 rounded transition-colors ${cellFormat.italic ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+  title="Cursiva (Ctrl+I)"
+>
+  <Italic className="w-4 h-4 text-gray-300" />
+</button>
+
+<button 
+  onClick={() => applyAlignment('left')}
+  className={`p-2 rounded transition-colors ${cellFormat.align === 'left' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+  title="Alinear Izquierda"
+>
+  <AlignLeft className="w-4 h-4 text-gray-300" />
+</button>
+
+<button 
+  onClick={() => applyAlignment('center')}
+  className={`p-2 rounded transition-colors ${cellFormat.align === 'center' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+  title="Centrar"
+>
+  <AlignCenter className="w-4 h-4 text-gray-300" />
+</button>
+
+<button 
+  onClick={() => applyAlignment('right')}
+  className={`p-2 rounded transition-colors ${cellFormat.align === 'right' ? 'bg-indigo-600' : 'hover:bg-gray-700'}`}
+  title="Alinear Derecha"
+>
+  <AlignRight className="w-4 h-4 text-gray-300" />
+</button>
+
+// Añadir color picker para fondo y texto
+<div className="relative">
+  <button className="p-2 hover:bg-gray-700 rounded transition-colors" title="Color de Fondo">
+    <Palette className="w-4 h-4 text-gray-300" />
+  </button>
+  <input 
+    type="color" 
+    onChange={(e) => applyBackgroundColor(e.target.value)}
+    className="absolute inset-0 opacity-0 cursor-pointer"
+  />
+</div>
+
+// Añadir atajos de teclado
+useEffect(() => {
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+      e.preventDefault();
+      applyBold();
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'i') {
+      e.preventDefault();
+      applyItalic();
+    }
+  };
+  
+  window.addEventListener('keydown', handleKeyDown);
+  return () => window.removeEventListener('keydown', handleKeyDown);
+}, [applyBold, applyItalic]);
+
+=== PARTE 2: IMPLEMENTAR STREAMING EN TIEMPO REAL ===
+
+2) Crear sistema de streaming directo al documento. Crear client/src/components/spreadsheet/StreamingEditor.tsx:
+
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { HotTable } from '@handsontable/react';
+import { registerAllModules } from 'handsontable/registry';
+import 'handsontable/dist/handsontable.full.min.css';
+import { Sparkles, Loader2, Send, Wand2 } from 'lucide-react';
+
+registerAllModules();
+
+interface StreamingEditorProps {
+  hotRef: React.RefObject<any>;
+  data: any[][];
+  setData: (data: any[][]) => void;
+  setIsModified: (modified: boolean) => void;
+}
+
+export function useSpreadsheetStreaming(hotRef: React.RefObject<any>, setData: Function, setIsModified: Function) {
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingCell, setStreamingCell] = useState<{ row: number; col: number } | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Escribir texto carácter por carácter en una celda (efecto typewriter)
+  const streamToCell = useCallback(async (row: number, col: number, text: string, speed: number = 30) => {
+    if (!hotRef.current) return;
+    const hot = hotRef.current.hotInstance;
+    
+    setIsStreaming(true);
+    setStreamingCell({ row, col });
+    
+    let currentText = '';
+    
+    for (let i = 0; i < text.length; i++) {
+      if (abortControllerRef.current?.signal.aborted) break;
+      
+      currentText += text[i];
+      hot.setDataAtCell(row, col, currentText);
+      await new Promise(resolve => setTimeout(resolve, speed));
+    }
+    
+    setIsStreaming(false);
+    setStreamingCell(null);
+    setIsModified(true);
+  }, [hotRef, setIsModified]);
+
+  // Escribir múltiples celdas con streaming
+  const streamToCells = useCallback(async (cells: { row: number; col: number; value: string }[], speed: number = 20) => {
+    if (!hotRef.current) return;
+    const hot = hotRef.current.hotInstance;
+    
+    setIsStreaming(true);
+    
+    for (const cell of cells) {
+      if (abortControllerRef.current?.signal.aborted) break;
+      
+      setStreamingCell({ row: cell.row, col: cell.col });
+      
+      // Efecto de escritura
+      let currentText = '';
+      for (let i = 0; i < cell.value.length; i++) {
+        if (abortControllerRef.current?.signal.aborted) break;
+        currentText += cell.value[i];
+        hot.setDataAtCell(cell.row, cell.col, currentText);
+        await new Promise(resolve => setTimeout(resolve, speed));
+      }
+      
+      // Pequeña pausa entre celdas
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    setIsStreaming(false);
+    setStreamingCell(null);
+    setIsModified(true);
+  }, [hotRef, setIsModified]);
+
+  // Llenar columna completa con streaming
+  const streamFillColumn = useCallback(async (col: number, values: string[], startRow: number = 0, speed: number = 50) => {
+    if (!hotRef.current) return;
+    const hot = hotRef.current.hotInstance;
+    
+    setIsStreaming(true);
+    
+    for (let i = 0; i < values.length; i++) {
+      if (abortControllerRef.current?.signal.aborted) break;
+      
+      const row = startRow + i;
+      setStreamingCell({ row, col });
+      
+      // Escribir valor completo de golpe pero con highlight
+      hot.setDataAtCell(row, col, values[i]);
+      
+      // Flash effect en la celda
+      const cell = hot.getCell(row, col);
+      if (cell) {
+        cell.style.backgroundColor = '#4f46e5';
+        cell.style.transition = 'background-color 0.3s';
+        setTimeout(() => {
+          cell.style.backgroundColor = '';
+        }, 200);
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, speed));
+    }
+    
+    setIsStreaming(false);
+    setStreamingCell(null);
+    setIsModified(true);
+  }, [hotRef, setIsModified]);
+
+  // Llenar rango con datos en streaming
+  const streamFillRange = useCallback(async (
+    startRow: number, 
+    startCol: number, 
+    data: any[][], 
+    speed: number = 30
+  ) => {
+    if (!hotRef.current) return;
+    const hot = hotRef.current.hotInstance;
+    
+    setIsStreaming(true);
+    abortControllerRef.current = new AbortController();
+    
+    for (let r = 0; r < data.length; r++) {
+      for (let c = 0; c < data[r].length; c++) {
+        if (abortControllerRef.current?.signal.aborted) break;
+        
+        const row = startRow + r;
+        const col = startCol + c;
+        const value = data[r][c];
+        
+        if (value !== undefined && value !== null && value !== '') {
+          setStreamingCell({ row, col });
+          hot.setDataAtCell(row, col, value);
+          
+          // Visual feedback
+          const cell = hot.getCell(row, col);
+          if (cell) {
+            cell.style.backgroundColor = '#22c55e';
+            cell.style.transition = 'background-color 0.2s';
+            setTimeout(() => {
+              cell.style.backgroundColor = '';
+            }, 150);
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, speed));
+        }
+      }
+    }
+    
+    setIsStreaming(false);
+    setStreamingCell(null);
+    setIsModified(true);
+  }, [hotRef, setIsModified]);
+
+  // Cancelar streaming
+  const cancelStreaming = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    setIsStreaming(false);
+    setStreamingCell(null);
+  }, []);
+
+  // Streaming desde respuesta de IA
+  const streamFromAI = useCallback(async (prompt: string, targetRow: number, targetCol: number) => {
+    setIsStreaming(true);
+    setStreamingCell({ row: targetRow, col: targetCol });
+    
+    try {
+      const response = await fetch('/api/ai/generate-cell-content', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, context: { row: targetRow, col: targetCol } })
+      });
+      
+      if (!response.body) throw new Error('No response body');
+      
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      const hot = hotRef.current?.hotInstance;
+      let fullText = '';
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value);
+        fullText += chunk;
+        
+        if (hot) {
+          hot.setDataAtCell(targetRow, targetCol, fullText);
+        }
+      }
+    } catch (error) {
+      console.error('AI streaming error:', error);
+    } finally {
+      setIsStreaming(false);
+      setStreamingCell(null);
+      setIsModified(true);
+    }
+  }, [hotRef, setIsModified]);
+
+  return {
+    isStreaming,
+    streamingCell,
+    streamToCell,
+    streamToCells,
+    streamFillColumn,
+    streamFillRange,
+    streamFromAI,
+    cancelStreaming
+  };
+}
+
+// Componente de indicador de streaming
+export function StreamingIndicator({ isStreaming, cell }: { isStreaming: boolean; cell: { row: number; col: number } | null }) {
+  if (!isStreaming) return null;
+  
+  return (
+    <div className="fixed bottom-4 right-4 flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg shadow-lg animate-pulse">
+      <Loader2 className="w-4 h-4 animate-spin" />
+      <span className="text-sm">
+        Escribiendo en {cell ? `${String.fromCharCode(65 + cell.col)}${cell.row + 1}` : '...'}
+      </span>
+      <button className="ml-2 px-2 py-1 bg-red-500 rounded text-xs hover:bg-red-400">
+        Cancelar
+      </button>
+    </div>
+  );
+}
+
+3) Crear componente de input para comandos de IA. Crear client/src/components/spreadsheet/AICommandBar.tsx:
+
+import React, { useState } from 'react';
+import { Sparkles, Send, Loader2, Wand2, Table, BarChart3, Calculator } from 'lucide-react';
+
+interface AICommandBarProps {
+  onExecute: (command: string, type: string) => Promise<void>;
+  isProcessing: boolean;
+  selectedRange?: { startRow: number; startCol: number; endRow: number; endCol: number };
+}
+
+export function AICommandBar({ onExecute, isProcessing, selectedRange }: AICommandBarProps) {
+  const [command, setCommand] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  const suggestions = [
+    { icon: Table, text: 'Llena con nombres de ciudades', type: 'fill' },
+    { icon: Calculator, text: 'Calcula el total de esta columna', type: 'formula' },
+    { icon: BarChart3, text: 'Genera datos de ventas mensuales', type: 'generate' },
+    { icon: Wand2, text: 'Formatea como tabla', type: 'format' },
+    { icon: Sparkles, text: 'Completa los datos faltantes', type: 'complete' }
+  ];
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!command.trim() || isProcessing) return;
+    
+    await onExecute(command, 'custom');
+    setCommand('');
+  };
+
+  const handleSuggestionClick = async (suggestion: typeof suggestions[0]) => {
+    await onExecute(suggestion.text, suggestion.type);
+    setShowSuggestions(false);
+  };
+
+  return (
+    <div className="relative">
+      <form onSubmit={handleSubmit} className="flex items-center gap-2 px-3 py-2 bg-gray-800 border-b border-gray-700">
+        <Sparkles className="w-4 h-4 text-indigo-400" />
+        <input
+          type="text"
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          onFocus={() => setShowSuggestions(true)}
+          onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+          placeholder="Escribe un comando de IA... (ej: 'llena con nombres de productos')"
+          className="flex-1 bg-transparent text-white text-sm focus:outline-none placeholder-gray-500"
+          disabled={isProcessing}
+        />
+        {selectedRange && (
+          <span className="text-xs text-gray-500 px-2 py-1 bg-gray-700 rounded">
+            {String.fromCharCode(65 + selectedRange.startCol)}{selectedRange.startRow + 1}:
+            {String.fromCharCode(65 + selectedRange.endCol)}{selectedRange.endRow + 1}
+          </span>
+        )}
+        <button
+          type="submit"
+          disabled={!command.trim() || isProcessing}
+          className="p-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-700 disabled:cursor-not-allowed rounded transition-colors"
+        >
+          {isProcessing ? (
+            <Loader2 className="w-4 h-4 text-white animate-spin" />
+          ) : (
+            <Send className="w-4 h-4 text-white" />
+          )}
+        </button>
+      </form>
+
+      {/* Sugerencias */}
+      {showSuggestions && !command && (
+        <div className="absolute top-full left-0 right-0 bg-gray-800 border border-gray-700 rounded-b-lg shadow-xl z-50">
+          <div className="p-2 text-xs text-gray-500 border-b border-gray-700">Sugerencias</div>
+          {suggestions.map((suggestion, index) => (
+            <button
+              key={index}
+              onClick={() => handleSuggestionClick(suggestion)}
+              className="w-full flex items-center gap-3 px-3 py-2 hover:bg-gray-700 text-left transition-colors"
+            >
+              <suggestion.icon className="w-4 h-4 text-indigo-400" />
+              <span className="text-sm text-gray-300">{suggestion.text}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+=== PARTE 3: PERSISTENCIA EN BASE DE DATOS ===
+
+4) Crear tabla para documentos Excel en la base de datos. Añadir al schema:
+
+// En shared/schema.ts, añadir:
+export const excelDocuments = pgTable('excel_documents', {
+  id: serial('id').primaryKey(),
+  uuid: text('uuid').notNull().unique(),
+  name: text('name').notNull(),
+  data: jsonb('data'), // Datos de las celdas
+  sheets: jsonb('sheets'), // Múltiples hojas
+  metadata: jsonb('metadata'), // Formato, estilos, etc.
+  createdBy: integer('created_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+  size: integer('size').default(0),
+  isTemplate: boolean('is_template').default(false),
+  templateCategory: text('template_category'),
+  sharedWith: jsonb('shared_with'), // IDs de usuarios con acceso
+  version: integer('version').default(1)
+});
+
+5) Actualizar el router de Excel para usar la base de datos. Reemplazar server/routes/excelRouter.ts:
+
+import { Router } from 'express';
+import { db } from '../db';
+import { excelDocuments } from '@shared/schema';
+import { eq, desc, and, or, ilike } from 'drizzle-orm';
+import { v4 as uuidv4 } from 'uuid';
+
+const router = Router();
+
+// Listar documentos
+router.get('/list', async (req, res) => {
+  try {
+    const userId = (req as any).user?.id;
+    const docs = await db.select()
+      .from(excelDocuments)
+      .where(or(
+        eq(excelDocuments.createdBy, userId),
+        // También incluir documentos compartidos
+      ))
+      .orderBy(desc(excelDocuments.updatedAt));
+    
+    res.json(docs.map(d => ({
+      id: d.uuid,
+      name: d.name,
+      sheets: Array.isArray(d.sheets) ? d.sheets.length : 1,
+      size: d.size,
+      createdAt: d.createdAt,
+      updatedAt: d.updatedAt,
+      createdBy: d.createdBy,
+      isTemplate: d.isTemplate
+    })));
+  } catch (error) {
+    console.error('Error listing documents:', error);
+    res.status(500).json({ error: 'Failed to list documents' });
+  }
+});
+
+// Obtener documento
+router.get('/:id', async (req, res) => {
+  try {
+    const [doc] = await db.select()
+      .from(excelDocuments)
+      .where(eq(excelDocuments.uuid, req.params.id));
+    
+    if (!doc) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+    
+    res.json(doc);
+  } catch (error) {
+    console.error('Error getting document:', error);
+    res.status(500).json({ error: 'Failed to get document' });
+  }
+});
+
+// Guardar documento
+router.post('/save', async (req, res) => {
+  try {
+    const { id, name, data, sheets, metadata } = req.body;
+    const userId = (req as any).user?.id;
+    const now = new Date();
+    const size = JSON.stringify(data || sheets).length;
+    
+    if (id && !id.startsWith('new_')) {
+      // Actualizar existente
+      await db.update(excelDocuments)
+        .set({
+          name,
+          data,
+          sheets,
+          metadata,
+          size,
+          updatedAt: now,
+          version: db.raw('version + 1')
+        })
+        .where(eq(excelDocuments.uuid, id));
+      
+      res.json({ success: true, id });
+    } else {
+      // Crear nuevo
+      const uuid = uuidv4();
+      await db.insert(excelDocuments).values({
+        uuid,
+        name: name || 'Untitled.xlsx',
+        data,
+        sheets: sheets || [{ name: 'Hoja 1', data }],
+        metadata,
+        size,
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now
+      });
+      
+      res.json({ success: true, id: uuid });
+    }
+  } catch (error) {
+    console.error('Error saving document:', error);
+    res.status(500).json({ error: 'Failed to save document' });
+  }
+});
+
+// Eliminar documento
+router.delete('/:id', async (req, res) => {
+  try {
+    await db.delete(excelDocuments)
+      .where(eq(excelDocuments.uuid, req.params.id));
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting document:', error);
+    res.status(500).json({ error: 'Failed to delete document' });
+  }
+});
+
+// Buscar documentos
+router.get('/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+    const docs = await db.select()
+      .from(excelDocuments)
+      .where(ilike(excelDocuments.name, `%${q}%`))
+      .orderBy(desc(excelDocuments.updatedAt))
+      .limit(20);
+    
+    res.json(docs);
+  } catch (error) {
+    console.error('Error searching documents:', error);
+    res.status(500).json({ error: 'Failed to search documents' });
+  }
+});
+
+// Obtener plantillas
+router.get('/templates', async (req, res) => {
+  try {
+    const templates = await db.select()
+      .from(excelDocuments)
+      .where(eq(excelDocuments.isTemplate, true))
+      .orderBy(excelDocuments.templateCategory);
+    
+    res.json(templates);
+  } catch (error) {
+    console.error('Error getting templates:', error);
+    res.status(500).json({ error: 'Failed to get templates' });
+  }
+});
+
+// Duplicar documento
+router.post('/:id/duplicate', async (req, res) => {
+  try {
+    const [original] = await db.select()
+      .from(excelDocuments)
+      .where(eq(excelDocuments.uuid, req.params.id));
+    
+    if (!original) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+    
+    const uuid = uuidv4();
+    const now = new Date();
+    
+    await db.insert(excelDocuments).values({
+      uuid,
+      name: `${original.name} (copia)`,
+      data: original.data,
+      sheets: original.sheets,
+      metadata: original.metadata,
+      size: original.size,
+      createdBy: (req as any).user?.id,
+      createdAt: now,
+      updatedAt: now
+    });
+    
+    res.json({ success: true, id: uuid });
+  } catch (error) {
+    console.error('Error duplicating document:', error);
+    res.status(500).json({ error: 'Failed to duplicate document' });
+  }
+});
+
+export default router;
+
+=== PARTE 4: PLANTILLAS PREDEFINIDAS ===
+
+6) Crear plantillas predefinidas. Crear server/data/excelTemplates.ts:
+
+export const EXCEL_TEMPLATES = [
+  {
+    id: 'invoice',
+    name: 'Factura',
+    category: 'finanzas',
+    description: 'Plantilla de factura profesional',
+    sheets: [{
+      name: 'Factura',
+      data: [
+        ['FACTURA', '', '', '', '', ''],
+        ['', '', '', '', '', ''],
+        ['Número:', '', '', 'Fecha:', '', ''],
+        ['Cliente:', '', '', '', '', ''],
+        ['', '', '', '', '', ''],
+        ['Descripción', 'Cantidad', 'Precio Unit.', 'Subtotal', '', ''],
+        ['', '', '', '', '', ''],
+        ['', '', '', '', '', ''],
+        ['', '', '', '', '', ''],
+        ['', '', '', '', '', ''],
+        ['', '', '', 'SUBTOTAL:', '', ''],
+        ['', '', '', 'IVA (21%):', '', ''],
+        ['', '', '', 'TOTAL:', '', '']
+      ],
+      metadata: {
+        styles: {
+          'A1': { bold: true, fontSize: 24 },
+          'A6:D6': { bold: true, backgroundColor: '#1e1e2e' },
+          'D11:D13': { bold: true }
+        }
+      }
+    }]
+  },
+  {
+    id: 'budget',
+    name: 'Presupuesto Mensual',
+    category: 'finanzas',
+    description: 'Control de ingresos y gastos mensuales',
+    sheets: [{
+      name: 'Presupuesto',
+      data: [
+        ['PRESUPUESTO MENSUAL', '', '', ''],
+        ['', '', '', ''],
+        ['INGRESOS', '', '', ''],
+        ['Concepto', 'Presupuestado', 'Real', 'Diferencia'],
+        ['Salario', '', '', ''],
+        ['Otros', '', '', ''],
+        ['Total Ingresos', '', '', ''],
+        ['', '', '', ''],
+        ['GASTOS', '', '', ''],
+        ['Concepto', 'Presupuestado', 'Real', 'Diferencia'],
+        ['Vivienda', '', '', ''],
+        ['Alimentación', '', '', ''],
+        ['Transporte', '', '', ''],
+        ['Servicios', '', '', ''],
+        ['Otros', '', '', ''],
+        ['Total Gastos', '', '', ''],
+        ['', '', '', ''],
+        ['BALANCE', '', '', '']
+      ]
+    }]
+  },
+  {
+    id: 'inventory',
+    name: 'Control de Inventario',
+    category: 'negocio',
+    description: 'Gestión de productos y stock',
+    sheets: [{
+      name: 'Inventario',
+      data: [
+        ['CONTROL DE INVENTARIO', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['Código', 'Producto', 'Categoría', 'Stock', 'Mínimo', 'Precio', 'Valor Total'],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', '']
+      ]
+    }]
+  },
+  {
+    id: 'project-tracker',
+    name: 'Seguimiento de Proyecto',
+    category: 'gestión',
+    description: 'Seguimiento de tareas y progreso',
+    sheets: [{
+      name: 'Tareas',
+      data: [
+        ['SEGUIMIENTO DE PROYECTO', '', '', '', '', ''],
+        ['Proyecto:', '', '', 'Inicio:', '', ''],
+        ['', '', '', '', '', ''],
+        ['Tarea', 'Responsable', 'Inicio', 'Fin', 'Estado', 'Progreso'],
+        ['', '', '', '', '', ''],
+        ['', '', '', '', '', ''],
+        ['', '', '', '', '', ''],
+        ['', '', '', '', '', ''],
+        ['', '', '', '', '', '']
+      ]
+    }]
+  },
+  {
+    id: 'calendar',
+    name: 'Calendario Mensual',
+    category: 'planificación',
+    description: 'Calendario para planificación mensual',
+    sheets: [{
+      name: 'Calendario',
+      data: [
+        ['CALENDARIO', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', '']
+      ]
+    }]
+  },
+  {
+    id: 'employee-list',
+    name: 'Lista de Empleados',
+    category: 'rrhh',
+    description: 'Registro de empleados',
+    sheets: [{
+      name: 'Empleados',
+      data: [
+        ['LISTA DE EMPLEADOS', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['ID', 'Nombre', 'Departamento', 'Cargo', 'Email', 'Teléfono', 'Fecha Ingreso'],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', '']
+      ]
+    }]
+  }
+];
+
+=== PARTE 5: INTEGRAR TODO EN EL SPREADSHEET EDITOR ===
+
+7) Actualizar SpreadsheetEditor.tsx para incluir todas las mejoras:
+
+// Añadir imports
+import { useSpreadsheetStreaming, StreamingIndicator } from './StreamingEditor';
+import { AICommandBar } from './AICommandBar';
+
+// Dentro del componente, añadir:
+const {
+  isStreaming,
+  streamingCell,
+  streamToCell,
+  streamToCells,
+  streamFillColumn,
+  streamFillRange,
+  cancelStreaming
+} = useSpreadsheetStreaming(hotRef, setData, setIsModified);
+
+// Handler para comandos de IA
+const handleAICommand = async (command: string, type: string) => {
+  const hot = hotRef.current?.hotInstance;
+  if (!hot) return;
+  
+  const selected = hot.getSelected();
+  if (!selected || selected.length === 0) {
+    alert('Selecciona una celda o rango primero');
+    return;
+  }
+  
+  const [startRow, startCol, endRow, endCol] = selected[0];
+  
+  try {
+    // Llamar a la API de IA
+    const response = await fetch('/api/ai/excel-command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command,
+        type,
+        range: { startRow, startCol, endRow, endCol },
+        currentData: hot.getData()
+      })
+    });
+    
+    const result = await response.json();
+    
+    if (result.data && Array.isArray(result.data)) {
+      // Usar streaming para llenar los datos
+      await streamFillRange(startRow, startCol, result.data, 30);
+    } else if (result.values && Array.isArray(result.values)) {
+      // Llenar columna
+      await streamFillColumn(startCol, result.values, startRow, 50);
+    } else if (result.value) {
+      // Llenar celda individual con efecto typewriter
+      await streamToCell(startRow, startCol, result.value, 30);
+    }
+  } catch (error) {
+    console.error('AI command error:', error);
+  }
+};
+
+// En el JSX, añadir después del toolbar:
+<AICommandBar
+  onExecute={handleAICommand}
+  isProcessing={isStreaming}
+  selectedRange={selectedCell ? {
+    startRow: selectedCell.row,
+    startCol: selectedCell.col,
+    endRow: selectedCell.row,
+    endCol: selectedCell.col
+  } : undefined}
+/>
+
+// Añadir indicador de streaming al final:
+<StreamingIndicator isStreaming={isStreaming} cell={streamingCell} />
+
+8) Crear endpoint de IA para Excel. Crear server/routes/aiExcelRouter.ts:
+
+import { Router } from 'express';
+
+const router = Router();
+
+router.post('/excel-command', async (req, res) => {
+  const { command, type, range, currentData } = req.body;
+  
+  // Aquí integrar con el servicio de IA
+  // Por ahora, respuestas mock basadas en el tipo de comando
+  
+  const commandLower = command.toLowerCase();
+  
+  if (commandLower.includes('ciudad') || commandLower.includes('cities')) {
+    const cities = ['Madrid', 'Barcelona', 'Valencia', 'Sevilla', 'Bilbao', 'Málaga', 'Zaragoza', 'Murcia'];
+    const count = Math.min(range.endRow - range.startRow + 1, cities.length);
+    res.json({ values: cities.slice(0, count) });
+  }
+  else if (commandLower.includes('nombre') || commandLower.includes('name')) {
+    const names = ['Ana García', 'Carlos López', 'María Rodríguez', 'Juan Martínez', 'Laura Sánchez'];
+    const count = Math.min(range.endRow - range.startRow + 1, names.length);
+    res.json({ values: names.slice(0, count) });
+  }
+  else if (commandLower.includes('número') || commandLower.includes('number') || commandLower.includes('ventas')) {
+    const numbers = Array.from({ length: range.endRow - range.startRow + 1 }, () => 
+      Math.floor(Math.random() * 10000)
+    );
+    res.json({ values: numbers.map(String) });
+  }
+  else if (commandLower.includes('fecha') || commandLower.includes('date')) {
+    const dates = Array.from({ length: range.endRow - range.startRow + 1 }, (_, i) => {
+      const date = new Date();
+      date.setDate(date.getDate() + i);
+      return date.toLocaleDateString('es-ES');
+    });
+    res.json({ values: dates });
+  }
+  else {
+    res.json({ value: `Generado: ${command}` });
+  }
+});
+
+export default router;
+
+9) Registrar el router de IA:
+
+import aiExcelRouter from './routes/aiExcelRouter';
+app.use('/api/ai', aiExcelRouter);
+
+10) Ejecutar migración para crear la tabla excel_documents.
+
+11) Verificar que todo funciona:
+- Toolbar sincronizado (negrita, cursiva, alineación funcionan)
+- Streaming en tiempo real visible al escribir datos
+- Barra de comandos de IA funciona
+- Documentos se guardan en base de datos y persisten
+- Plantillas disponibles
+
+Reportar: ✅ Funcionando / ❌ Error para cada verificación.

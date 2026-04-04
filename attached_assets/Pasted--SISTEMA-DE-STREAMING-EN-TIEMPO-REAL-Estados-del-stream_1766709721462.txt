@@ -1,0 +1,808 @@
+// === SISTEMA DE STREAMING EN TIEMPO REAL ===
+
+// Estados del streaming
+const STREAM_STATUS = {
+  IDLE: 'idle',
+  CONNECTING: 'connecting',
+  STREAMING: 'streaming',
+  PAUSED: 'paused',
+  COMPLETED: 'completed',
+  ERROR: 'error'
+};
+
+// Hook principal para streaming al Excel
+const useExcelStreaming = (grid, setWorkbook) => {
+  const [streamStatus, setStreamStatus] = useState(STREAM_STATUS.IDLE);
+  const [activeCell, setActiveCell] = useState(null);
+  const [streamProgress, setStreamProgress] = useState({ current: 0, total: 0 });
+  const [recentCells, setRecentCells] = useState([]); // Celdas recién escritas para highlight
+  const streamQueue = useRef([]);
+  const isStreaming = useRef(false);
+
+  // Agregar celda a la cola de streaming
+  const queueCell = useCallback((row, col, value, delay = 50) => {
+    streamQueue.current.push({ row, col, value, delay });
+  }, []);
+
+  // Procesar cola de streaming con animación
+  const processStreamQueue = useCallback(async () => {
+    if (isStreaming.current || streamQueue.current.length === 0) return;
+    
+    isStreaming.current = true;
+    setStreamStatus(STREAM_STATUS.STREAMING);
+    
+    const totalCells = streamQueue.current.length;
+    let processed = 0;
+
+    while (streamQueue.current.length > 0) {
+      const { row, col, value, delay } = streamQueue.current.shift();
+      
+      // Mover cursor activo
+      setActiveCell({ row, col });
+      
+      // Escribir celda con efecto de typing
+      await typeInCell(row, col, value, grid);
+      
+      // Agregar a celdas recientes (para highlight)
+      setRecentCells(prev => [...prev.slice(-20), { row, col, timestamp: Date.now() }]);
+      
+      // Actualizar progreso
+      processed++;
+      setStreamProgress({ current: processed, total: totalCells });
+      
+      // Delay entre celdas para efecto visual
+      await sleep(delay);
+    }
+
+    setStreamStatus(STREAM_STATUS.COMPLETED);
+    setActiveCell(null);
+    isStreaming.current = false;
+    
+    // Limpiar highlights después de 2 segundos
+    setTimeout(() => setRecentCells([]), 2000);
+  }, [grid]);
+
+  // Efecto de typing en celda individual
+  const typeInCell = async (row, col, finalValue, grid) => {
+    const isFormula = String(finalValue).startsWith('=');
+    
+    if (isFormula) {
+      // Para fórmulas, mostrar progresivamente
+      const formula = String(finalValue);
+      for (let i = 1; i <= formula.length; i++) {
+        grid.setCell(row, col, {
+          value: formula.substring(0, i),
+          formula: null,
+          format: { isTyping: true }
+        });
+        setWorkbook(prev => ({ ...prev }));
+        await sleep(30);
+      }
+      // Evaluar fórmula al final
+      const evaluated = FormulaEngine.evaluate(formula, grid);
+      grid.setCell(row, col, {
+        value: evaluated,
+        formula: formula,
+        format: {}
+      });
+    } else {
+      // Para valores normales, escribir directamente con flash
+      grid.setCell(row, col, {
+        value: finalValue,
+        formula: null,
+        format: { justWritten: true }
+      });
+    }
+    
+    setWorkbook(prev => ({ ...prev }));
+  };
+
+  // Iniciar streaming desde respuesta de IA
+  const startStreamFromAI = useCallback(async (instruction, startRow = 0, startCol = 0) => {
+    setStreamStatus(STREAM_STATUS.CONNECTING);
+    streamQueue.current = [];
+
+    try {
+      // Llamada a la IA con streaming
+      const response = await fetch('/api/generate-excel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction })
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      
+      let currentRow = startRow;
+      let currentCol = startCol;
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        
+        // Procesar chunks (asumiendo formato JSON Lines o similar)
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          
+          try {
+            const data = JSON.parse(line);
+            
+            if (data.type === 'cell') {
+              queueCell(data.row ?? currentRow, data.col ?? currentCol, data.value);
+              currentCol++;
+            } else if (data.type === 'newRow') {
+              currentRow++;
+              currentCol = startCol;
+            } else if (data.type === 'range') {
+              // Insertar rango completo
+              data.cells.forEach((cell, idx) => {
+                queueCell(cell.row, cell.col, cell.value, 30 + idx * 10);
+              });
+            }
+          } catch (e) {
+            // Si no es JSON, tratar como valor directo
+            queueCell(currentRow, currentCol, line.trim());
+            currentCol++;
+          }
+        }
+      }
+
+      // Procesar toda la cola
+      await processStreamQueue();
+
+    } catch (error) {
+      console.error('Streaming error:', error);
+      setStreamStatus(STREAM_STATUS.ERROR);
+    }
+  }, [queueCell, processStreamQueue]);
+
+  // Streaming simulado para demo/testing
+  const simulateStreaming = useCallback(async (data, startRow = 0, startCol = 0) => {
+    setStreamStatus(STREAM_STATUS.STREAMING);
+    
+    for (let r = 0; r < data.length; r++) {
+      for (let c = 0; c < data[r].length; c++) {
+        if (data[r][c] !== null && data[r][c] !== undefined && data[r][c] !== '') {
+          queueCell(startRow + r, startCol + c, data[r][c], 50);
+        }
+      }
+    }
+    
+    await processStreamQueue();
+  }, [queueCell, processStreamQueue]);
+
+  // Pausar/Reanudar streaming
+  const pauseStreaming = () => setStreamStatus(STREAM_STATUS.PAUSED);
+  const resumeStreaming = () => processStreamQueue();
+
+  // Cancelar streaming
+  const cancelStreaming = () => {
+    streamQueue.current = [];
+    isStreaming.current = false;
+    setStreamStatus(STREAM_STATUS.IDLE);
+    setActiveCell(null);
+  };
+
+  return {
+    streamStatus,
+    activeCell,
+    streamProgress,
+    recentCells,
+    startStreamFromAI,
+    simulateStreaming,
+    pauseStreaming,
+    resumeStreaming,
+    cancelStreaming,
+    queueCell,
+    processStreamQueue
+  };
+};
+
+// Utilidad sleep
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// === COMPONENTE DE CELDA CON ANIMACIONES DE STREAMING ===
+const StreamingCell = ({ 
+  row, col, cell, isSelected, isEditing, 
+  activeCell, recentCells, onClick, onDoubleClick, style 
+}) => {
+  const isAIWriting = activeCell?.row === row && activeCell?.col === col;
+  const isRecentlyWritten = recentCells.some(
+    rc => rc.row === row && rc.col === col && Date.now() - rc.timestamp < 2000
+  );
+
+  return (
+    <div
+      className={`
+        cell 
+        ${isSelected ? 'selected' : ''} 
+        ${cell.value ? 'has-data' : ''}
+        ${isAIWriting ? 'ai-writing' : ''}
+        ${isRecentlyWritten ? 'recently-written' : ''}
+      `}
+      style={style}
+      onClick={onClick}
+      onDoubleClick={onDoubleClick}
+    >
+      {isAIWriting && <div className="typing-cursor" />}
+      {isEditing ? (
+        <input autoFocus className="cell-editor" />
+      ) : (
+        <span className="cell-value">{cell.value}</span>
+      )}
+      {isRecentlyWritten && <div className="write-flash" />}
+    </div>
+  );
+};
+
+// === INDICADOR DE STREAMING ===
+const StreamingIndicator = ({ status, progress, activeCell, onPause, onResume, onCancel }) => {
+  if (status === STREAM_STATUS.IDLE || status === STREAM_STATUS.COMPLETED) return null;
+
+  const getColumnName = (index) => {
+    let name = '';
+    let i = index;
+    while (i >= 0) {
+      name = String.fromCharCode(65 + (i % 26)) + name;
+      i = Math.floor(i / 26) - 1;
+    }
+    return name;
+  };
+
+  return (
+    <div className="streaming-indicator">
+      <div className="streaming-header">
+        <div className="streaming-icon">
+          <div className="pulse-ring"></div>
+          <div className="pulse-dot"></div>
+        </div>
+        <div className="streaming-info">
+          <span className="streaming-title">
+            {status === STREAM_STATUS.CONNECTING && 'Conectando con IA...'}
+            {status === STREAM_STATUS.STREAMING && 'IA escribiendo en el documento'}
+            {status === STREAM_STATUS.PAUSED && 'Streaming pausado'}
+            {status === STREAM_STATUS.ERROR && 'Error en streaming'}
+          </span>
+          {activeCell && (
+            <span className="streaming-position">
+              Celda actual: {getColumnName(activeCell.col)}{activeCell.row + 1}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Barra de progreso */}
+      <div className="streaming-progress">
+        <div className="progress-bar">
+          <div 
+            className="progress-fill"
+            style={{ width: `${(progress.current / progress.total) * 100}%` }}
+          />
+        </div>
+        <span className="progress-text">
+          {progress.current} / {progress.total} celdas
+        </span>
+      </div>
+
+      {/* Controles */}
+      <div className="streaming-controls">
+        {status === STREAM_STATUS.STREAMING && (
+          <button className="control-btn pause" onClick={onPause}>
+            <span>⏸</span> Pausar
+          </button>
+        )}
+        {status === STREAM_STATUS.PAUSED && (
+          <button className="control-btn resume" onClick={onResume}>
+            <span>▶</span> Continuar
+          </button>
+        )}
+        <button className="control-btn cancel" onClick={onCancel}>
+          <span>✕</span> Cancelar
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// === COMPONENTE PRINCIPAL EXCEL CON STREAMING ===
+const ExcelEditorWithStreaming = () => {
+  const [workbook, setWorkbook] = useState(createWorkbook);
+  const [activeSheetId, setActiveSheetId] = useState('sheet1');
+  const [selectedCell, setSelectedCell] = useState({ row: 0, col: 0 });
+  const [showPromptModal, setShowPromptModal] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState('');
+
+  const activeSheet = workbook.sheets.find(s => s.id === activeSheetId);
+  const grid = activeSheet.grid;
+
+  // Hook de streaming
+  const {
+    streamStatus,
+    activeCell,
+    streamProgress,
+    recentCells,
+    startStreamFromAI,
+    simulateStreaming,
+    pauseStreaming,
+    resumeStreaming,
+    cancelStreaming
+  } = useExcelStreaming(grid, setWorkbook);
+
+  // Manejar solicitud de IA
+  const handleAIRequest = async () => {
+    if (!aiPrompt.trim()) return;
+    
+    setShowPromptModal(false);
+    
+    // Ejemplo: simular datos basados en el prompt
+    // En producción, esto llamaría a la API real
+    const sampleData = generateSampleData(aiPrompt);
+    await simulateStreaming(sampleData, selectedCell.row, selectedCell.col);
+    
+    setAiPrompt('');
+  };
+
+  // Generar datos de ejemplo basados en prompt
+  const generateSampleData = (prompt) => {
+    const lowerPrompt = prompt.toLowerCase();
+    
+    if (lowerPrompt.includes('ventas') || lowerPrompt.includes('sales')) {
+      return [
+        ['Mes', 'Producto', 'Cantidad', 'Precio', 'Total'],
+        ['Enero', 'Laptop', '15', '1200', '=C2*D2'],
+        ['Febrero', 'Mouse', '45', '25', '=C3*D3'],
+        ['Marzo', 'Teclado', '30', '75', '=C4*D4'],
+        ['Abril', 'Monitor', '12', '350', '=C5*D5'],
+        ['Mayo', 'Laptop', '20', '1200', '=C6*D6'],
+        ['Junio', 'Mouse', '60', '25', '=C7*D7'],
+        ['', '', '', 'TOTAL:', '=SUM(E2:E7)'],
+      ];
+    }
+    
+    if (lowerPrompt.includes('empleados') || lowerPrompt.includes('nómina')) {
+      return [
+        ['ID', 'Nombre', 'Departamento', 'Salario', 'Bono', 'Total'],
+        ['001', 'Juan Pérez', 'Ventas', '3500', '500', '=D2+E2'],
+        ['002', 'María García', 'Marketing', '3200', '400', '=D3+E3'],
+        ['003', 'Carlos López', 'IT', '4500', '700', '=D4+E4'],
+        ['004', 'Ana Martínez', 'RRHH', '3000', '350', '=D5+E5'],
+        ['', '', '', '', 'TOTAL:', '=SUM(F2:F5)'],
+      ];
+    }
+
+    // Default
+    return [
+      ['Dato 1', 'Dato 2', 'Dato 3'],
+      ['Valor A', '100', '=B2*2'],
+      ['Valor B', '200', '=B3*2'],
+      ['Valor C', '300', '=B4*2'],
+    ];
+  };
+
+  // Auto-scroll hacia celda activa durante streaming
+  useEffect(() => {
+    if (activeCell) {
+      const cellElement = document.querySelector(
+        `[data-row="${activeCell.row}"][data-col="${activeCell.col}"]`
+      );
+      cellElement?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    }
+  }, [activeCell]);
+
+  return (
+    <div className="excel-with-streaming">
+      {/* Toolbar con botón de IA */}
+      <div className="excel-toolbar">
+        <button 
+          className="ai-generate-btn"
+          onClick={() => setShowPromptModal(true)}
+          disabled={streamStatus === STREAM_STATUS.STREAMING}
+        >
+          <span className="ai-icon">✨</span>
+          Generar con IA
+        </button>
+        <div className="toolbar-separator" />
+        <button>Negrita</button>
+        <button>Cursiva</button>
+        <span className="cell-count">
+          Celdas: {grid.getDataCount().toLocaleString()}
+        </span>
+      </div>
+
+      {/* Indicador de streaming flotante */}
+      <StreamingIndicator
+        status={streamStatus}
+        progress={streamProgress}
+        activeCell={activeCell}
+        onPause={pauseStreaming}
+        onResume={resumeStreaming}
+        onCancel={cancelStreaming}
+      />
+
+      {/* Grid del Excel (con las celdas que tienen animación) */}
+      <div className="excel-grid">
+        {/* ... renderizado del grid con StreamingCell ... */}
+      </div>
+
+      {/* Modal para prompt de IA */}
+      {showPromptModal && (
+        <div className="modal-overlay">
+          <div className="ai-prompt-modal">
+            <div className="modal-header">
+              <h3>🤖 Generar contenido con IA</h3>
+              <button className="close-btn" onClick={() => setShowPromptModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p className="modal-hint">
+                El contenido se insertará a partir de la celda seleccionada: 
+                <strong> {getColumnName(selectedCell.col)}{selectedCell.row + 1}</strong>
+              </p>
+              <textarea
+                className="ai-prompt-input"
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                placeholder="Describe qué datos quieres generar...&#10;&#10;Ejemplos:&#10;• Tabla de ventas mensuales con totales&#10;• Lista de empleados con salarios y bonos&#10;• Presupuesto anual con fórmulas"
+                rows={5}
+              />
+            </div>
+            <div className="modal-footer">
+              <button className="cancel-btn" onClick={() => setShowPromptModal(false)}>
+                Cancelar
+              </button>
+              <button className="generate-btn" onClick={handleAIRequest}>
+                <span>✨</span> Generar en vivo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// === CSS PARA STREAMING ===
+/* Celda donde la IA está escribiendo */
+.cell.ai-writing {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%) !important;
+  box-shadow: 0 0 0 2px #f59e0b, 0 0 20px rgba(245, 158, 11, 0.3);
+  z-index: 10;
+  animation: aiWritingPulse 0.5s ease-in-out infinite;
+}
+
+@keyframes aiWritingPulse {
+  0%, 100% { box-shadow: 0 0 0 2px #f59e0b, 0 0 15px rgba(245, 158, 11, 0.2); }
+  50% { box-shadow: 0 0 0 3px #f59e0b, 0 0 25px rgba(245, 158, 11, 0.4); }
+}
+
+/* Cursor de typing dentro de la celda */
+.typing-cursor {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 16px;
+  background: #f59e0b;
+  animation: blink 0.7s infinite;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Celda recién escrita (flash verde) */
+.cell.recently-written {
+  animation: writeFlash 0.6s ease-out;
+}
+
+@keyframes writeFlash {
+  0% { background: #10b981; }
+  100% { background: transparent; }
+}
+
+.write-flash {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.4) 0%, rgba(16, 185, 129, 0) 100%);
+  animation: flashFade 0.8s ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes flashFade {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Indicador de streaming flotante */
+.streaming-indicator {
+  position: fixed;
+  bottom: 80px;
+  right: 20px;
+  background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+  border-radius: 16px;
+  padding: 16px 20px;
+  color: white;
+  min-width: 280px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.streaming-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.streaming-icon {
+  position: relative;
+  width: 24px;
+  height: 24px;
+}
+
+.pulse-ring {
+  position: absolute;
+  inset: 0;
+  border: 2px solid #10b981;
+  border-radius: 50%;
+  animation: pulseRing 1.5s ease-out infinite;
+}
+
+@keyframes pulseRing {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(2); opacity: 0; }
+}
+
+.pulse-dot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  background: #10b981;
+  border-radius: 50%;
+}
+
+.streaming-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.streaming-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.streaming-position {
+  font-size: 12px;
+  color: #94a3b8;
+  font-family: monospace;
+}
+
+.streaming-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.streaming-progress .progress-bar {
+  flex: 1;
+  height: 4px;
+  background: #475569;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.streaming-progress .progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #10b981 0%, #34d399 100%);
+  border-radius: 4px;
+  transition: width 0.2s ease-out;
+}
+
+.progress-text {
+  font-size: 11px;
+  color: #94a3b8;
+  min-width: 80px;
+  text-align: right;
+}
+
+.streaming-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.control-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s;
+}
+
+.control-btn.pause {
+  background: #f59e0b;
+  color: white;
+}
+
+.control-btn.resume {
+  background: #10b981;
+  color: white;
+}
+
+.control-btn.cancel {
+  background: #475569;
+  color: #e2e8f0;
+}
+
+.control-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+}
+
+/* Botón de generar con IA */
+.ai-generate-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.ai-generate-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 15px rgba(139, 92, 246, 0.4);
+}
+
+.ai-generate-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ai-icon {
+  font-size: 16px;
+}
+
+/* Modal de prompt */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.ai-prompt-modal {
+  background: white;
+  border-radius: 16px;
+  width: 90%;
+  max-width: 500px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: modalSlideIn 0.3s ease-out;
+}
+
+@keyframes modalSlideIn {
+  from { transform: translateY(-20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #1e293b;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.modal-body {
+  padding: 20px 24px;
+}
+
+.modal-hint {
+  font-size: 13px;
+  color: #64748b;
+  margin-bottom: 12px;
+}
+
+.ai-prompt-input {
+  width: 100%;
+  padding: 12px 16px;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  font-size: 14px;
+  resize: none;
+  transition: border-color 0.2s;
+}
+
+.ai-prompt-input:focus {
+  outline: none;
+  border-color: #8b5cf6;
+}
+
+.modal-footer {
+  display: flex;
+  gap: 12px;
+  padding: 16px 24px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.cancel-btn, .generate-btn {
+  flex: 1;
+  padding: 12px;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.cancel-btn {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.generate-btn {
+  background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.generate-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 15px rgba(139, 92, 246, 0.4);
+}

@@ -1,0 +1,1191 @@
+Implementa un sistema completo de Error Boundaries, monitoreo de errores y recuperación automática para una aplicación React robusta y profesional:
+
+=== PARTE 1: ERROR BOUNDARIES UNIVERSALES ===
+
+1) Crear client/src/components/error-boundaries/index.ts (exporta todo):
+
+export * from './BaseErrorBoundary';
+export * from './LazyLoadErrorBoundary';
+export * from './ChartErrorBoundary';
+export * from './EditorErrorBoundary';
+export * from './ThreeJSErrorBoundary';
+export * from './MarkdownErrorBoundary';
+export * from './withErrorBoundary';
+
+2) Crear client/src/components/error-boundaries/BaseErrorBoundary.tsx:
+
+import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { AlertTriangle, RefreshCw, Bug, Copy, ChevronDown, ChevronUp } from 'lucide-react';
+
+interface ErrorDetails {
+  message: string;
+  stack?: string;
+  componentStack?: string;
+  timestamp: Date;
+  errorId: string;
+  componentName?: string;
+  props?: Record<string, any>;
+}
+
+interface Props {
+  children: ReactNode;
+  fallback?: ReactNode | ((error: ErrorDetails, retry: () => void) => ReactNode);
+  onError?: (error: ErrorDetails) => void;
+  componentName?: string;
+  showDetails?: boolean;
+  allowRetry?: boolean;
+  maxRetries?: number;
+  retryDelay?: number;
+  logToServer?: boolean;
+}
+
+interface State {
+  hasError: boolean;
+  error: ErrorDetails | null;
+  retryCount: number;
+  showStack: boolean;
+}
+
+// Genera ID único para cada error
+function generateErrorId(): string {
+  return `err_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+export class BaseErrorBoundary extends Component<Props, State> {
+  static defaultProps = {
+    showDetails: process.env.NODE_ENV === 'development',
+    allowRetry: true,
+    maxRetries: 3,
+    retryDelay: 1000,
+    logToServer: true
+  };
+
+  constructor(props: Props) {
+    super(props);
+    this.state = {
+      hasError: false,
+      error: null,
+      retryCount: 0,
+      showStack: false
+    };
+  }
+
+  static getDerivedStateFromError(error: Error): Partial<State> {
+    return {
+      hasError: true,
+      error: {
+        message: error.message,
+        stack: error.stack,
+        timestamp: new Date(),
+        errorId: generateErrorId()
+      }
+    };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    const errorDetails: ErrorDetails = {
+      message: error.message,
+      stack: error.stack,
+      componentStack: errorInfo.componentStack || undefined,
+      timestamp: new Date(),
+      errorId: generateErrorId(),
+      componentName: this.props.componentName
+    };
+
+    this.setState({ error: errorDetails });
+
+    // Callback de error
+    this.props.onError?.(errorDetails);
+
+    // Log a consola con formato mejorado
+    console.group(`🔴 Error Boundary: ${this.props.componentName || 'Unknown'}`);
+    console.error('Error:', error);
+    console.error('Component Stack:', errorInfo.componentStack);
+    console.error('Error ID:', errorDetails.errorId);
+    console.groupEnd();
+
+    // Log al servidor si está habilitado
+    if (this.props.logToServer) {
+      this.logErrorToServer(errorDetails);
+    }
+  }
+
+  async logErrorToServer(errorDetails: ErrorDetails) {
+    try {
+      await fetch('/api/errors/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...errorDetails,
+          url: window.location.href,
+          userAgent: navigator.userAgent,
+          timestamp: errorDetails.timestamp.toISOString()
+        })
+      });
+    } catch (e) {
+      console.warn('Failed to log error to server:', e);
+    }
+  }
+
+  handleRetry = () => {
+    const { maxRetries, retryDelay } = this.props;
+    const { retryCount } = this.state;
+
+    if (retryCount < (maxRetries || 3)) {
+      setTimeout(() => {
+        this.setState(prev => ({
+          hasError: false,
+          error: null,
+          retryCount: prev.retryCount + 1
+        }));
+      }, retryDelay);
+    }
+  };
+
+  handleCopyError = () => {
+    const { error } = this.state;
+    if (!error) return;
+
+    const errorText = `
+Error ID: ${error.errorId}
+Component: ${error.componentName || 'Unknown'}
+Message: ${error.message}
+Time: ${error.timestamp.toISOString()}
+Stack: ${error.stack || 'N/A'}
+Component Stack: ${error.componentStack || 'N/A'}
+    `.trim();
+
+    navigator.clipboard.writeText(errorText);
+  };
+
+  toggleStack = () => {
+    this.setState(prev => ({ showStack: !prev.showStack }));
+  };
+
+  render() {
+    const { hasError, error, retryCount, showStack } = this.state;
+    const { children, fallback, showDetails, allowRetry, maxRetries, componentName } = this.props;
+
+    if (!hasError) {
+      return children;
+    }
+
+    // Fallback personalizado
+    if (fallback) {
+      if (typeof fallback === 'function') {
+        return fallback(error!, this.handleRetry);
+      }
+      return fallback;
+    }
+
+    // Fallback por defecto
+    const canRetry = allowRetry && retryCount < (maxRetries || 3);
+
+    return (
+      <div className="flex flex-col items-center justify-center p-6 bg-red-900/20 border border-red-500/30 rounded-lg m-2">
+        <div className="flex items-center gap-3 mb-4">
+          <AlertTriangle className="w-8 h-8 text-red-400" />
+          <div>
+            <h3 className="text-lg font-semibold text-red-300">
+              Error en {componentName || 'componente'}
+            </h3>
+            <p className="text-sm text-red-400/80">
+              {error?.message || 'Ha ocurrido un error inesperado'}
+            </p>
+          </div>
+        </div>
+
+        {/* Acciones */}
+        <div className="flex items-center gap-3 mb-4">
+          {canRetry && (
+            <button
+              onClick={this.handleRetry}
+              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Reintentar ({retryCount}/{maxRetries})
+            </button>
+          )}
+          
+          <button
+            onClick={this.handleCopyError}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+          >
+            <Copy className="w-4 h-4" />
+            Copiar error
+          </button>
+        </div>
+
+        {/* Detalles técnicos */}
+        {showDetails && error && (
+          <div className="w-full max-w-2xl">
+            <button
+              onClick={this.toggleStack}
+              className="flex items-center gap-2 text-sm text-gray-400 hover:text-gray-300 mb-2"
+            >
+              <Bug className="w-4 h-4" />
+              Detalles técnicos
+              {showStack ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </button>
+
+            {showStack && (
+              <div className="bg-gray-900 rounded-lg p-4 text-xs font-mono overflow-auto max-h-64">
+                <div className="text-gray-500 mb-2">Error ID: {error.errorId}</div>
+                <div className="text-red-400 mb-2">{error.message}</div>
+                {error.stack && (
+                  <pre className="text-gray-400 whitespace-pre-wrap">{error.stack}</pre>
+                )}
+                {error.componentStack && (
+                  <>
+                    <div className="text-gray-500 mt-4 mb-2">Component Stack:</div>
+                    <pre className="text-gray-400 whitespace-pre-wrap">{error.componentStack}</pre>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ID para soporte */}
+        <div className="text-xs text-gray-500 mt-4">
+          ID de error: <code className="bg-gray-800 px-2 py-1 rounded">{error?.errorId}</code>
+        </div>
+      </div>
+    );
+  }
+}
+
+3) Crear client/src/components/error-boundaries/LazyLoadErrorBoundary.tsx:
+
+import React from 'react';
+import { BaseErrorBoundary } from './BaseErrorBoundary';
+import { Loader2, WifiOff, RefreshCw, AlertCircle } from 'lucide-react';
+
+interface Props {
+  children: React.ReactNode;
+  componentName: string;
+  fallbackComponent?: React.ReactNode;
+  loadingComponent?: React.ReactNode;
+  onLoadError?: (error: Error) => void;
+}
+
+// Detectar tipo de error de carga
+function getLoadErrorType(error: Error): 'network' | 'chunk' | 'timeout' | 'unknown' {
+  const message = error.message.toLowerCase();
+  
+  if (message.includes('loading chunk') || message.includes('loading css chunk')) {
+    return 'chunk';
+  }
+  if (message.includes('network') || message.includes('fetch')) {
+    return 'network';
+  }
+  if (message.includes('timeout')) {
+    return 'timeout';
+  }
+  return 'unknown';
+}
+
+export function LazyLoadErrorBoundary({ 
+  children, 
+  componentName, 
+  fallbackComponent,
+  loadingComponent,
+  onLoadError 
+}: Props) {
+  return (
+    <BaseErrorBoundary
+      componentName={componentName}
+      onError={(errorDetails) => {
+        if (onLoadError) {
+          onLoadError(new Error(errorDetails.message));
+        }
+      }}
+      fallback={(error, retry) => {
+        const errorType = getLoadErrorType(new Error(error.message));
+        
+        if (fallbackComponent) {
+          return fallbackComponent;
+        }
+
+        return (
+          <div className="flex flex-col items-center justify-center p-8 bg-gray-800/50 border border-gray-700 rounded-xl">
+            {errorType === 'network' ? (
+              <>
+                <WifiOff className="w-12 h-12 text-yellow-400 mb-4" />
+                <h3 className="text-lg font-medium text-white mb-2">
+                  Error de conexión
+                </h3>
+                <p className="text-gray-400 text-center mb-4 max-w-md">
+                  No se pudo cargar el componente "{componentName}". 
+                  Verifica tu conexión a internet.
+                </p>
+              </>
+            ) : errorType === 'chunk' ? (
+              <>
+                <AlertCircle className="w-12 h-12 text-orange-400 mb-4" />
+                <h3 className="text-lg font-medium text-white mb-2">
+                  Nueva versión disponible
+                </h3>
+                <p className="text-gray-400 text-center mb-4 max-w-md">
+                  La aplicación se ha actualizado. Recarga la página para obtener la última versión.
+                </p>
+              </>
+            ) : (
+              <>
+                <AlertCircle className="w-12 h-12 text-red-400 mb-4" />
+                <h3 className="text-lg font-medium text-white mb-2">
+                  Error al cargar componente
+                </h3>
+                <p className="text-gray-400 text-center mb-4 max-w-md">
+                  No se pudo cargar "{componentName}". 
+                </p>
+              </>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                onClick={retry}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Reintentar
+              </button>
+              
+              {errorType === 'chunk' && (
+                <button
+                  onClick={() => window.location.reload()}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                >
+                  Recargar página
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      }}
+    >
+      <React.Suspense fallback={loadingComponent || <DefaultLoadingFallback name={componentName} />}>
+        {children}
+      </React.Suspense>
+    </BaseErrorBoundary>
+  );
+}
+
+function DefaultLoadingFallback({ name }: { name: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center p-8">
+      <Loader2 className="w-8 h-8 text-indigo-400 animate-spin mb-3" />
+      <p className="text-sm text-gray-400">Cargando {name}...</p>
+    </div>
+  );
+}
+
+4) Crear client/src/components/error-boundaries/EditorErrorBoundary.tsx:
+
+import React from 'react';
+import { BaseErrorBoundary } from './BaseErrorBoundary';
+import { Code2, RefreshCw, FileCode, Terminal } from 'lucide-react';
+
+interface Props {
+  children: React.ReactNode;
+  editorType: 'monaco' | 'codemirror' | 'ppt' | 'spreadsheet' | 'document';
+  onError?: (error: Error) => void;
+  fallbackContent?: string;
+}
+
+const editorIcons = {
+  monaco: Code2,
+  codemirror: Terminal,
+  ppt: FileCode,
+  spreadsheet: FileCode,
+  document: FileCode
+};
+
+const editorNames = {
+  monaco: 'Editor de código',
+  codemirror: 'Editor de código',
+  ppt: 'Editor de presentaciones',
+  spreadsheet: 'Hoja de cálculo',
+  document: 'Editor de documentos'
+};
+
+export function EditorErrorBoundary({ 
+  children, 
+  editorType, 
+  onError,
+  fallbackContent 
+}: Props) {
+  const Icon = editorIcons[editorType] || Code2;
+  const name = editorNames[editorType] || 'Editor';
+
+  return (
+    <BaseErrorBoundary
+      componentName={name}
+      onError={(details) => onError?.(new Error(details.message))}
+      fallback={(error, retry) => (
+        <div className="flex flex-col h-full bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-3 bg-gray-800 border-b border-gray-700">
+            <div className="flex items-center gap-2">
+              <Icon className="w-5 h-5 text-red-400" />
+              <span className="font-medium text-gray-300">{name}</span>
+              <span className="px-2 py-0.5 bg-red-900/50 text-red-300 text-xs rounded">Error</span>
+            </div>
+            <button
+              onClick={retry}
+              className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-sm text-white rounded transition-colors"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Reintentar
+            </button>
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 flex flex-col items-center justify-center p-8">
+            <div className="w-16 h-16 rounded-full bg-red-900/30 flex items-center justify-center mb-4">
+              <Icon className="w-8 h-8 text-red-400" />
+            </div>
+            <h3 className="text-lg font-medium text-white mb-2">
+              Error al cargar el editor
+            </h3>
+            <p className="text-gray-400 text-center max-w-md mb-6">
+              {error.message || 'Ha ocurrido un error al inicializar el editor. Intenta recargar.'}
+            </p>
+            
+            {/* Fallback: mostrar contenido en textarea básico */}
+            {fallbackContent && (
+              <div className="w-full max-w-2xl">
+                <p className="text-sm text-gray-500 mb-2">
+                  Vista de respaldo (solo lectura):
+                </p>
+                <textarea
+                  readOnly
+                  value={fallbackContent}
+                  className="w-full h-48 bg-gray-800 border border-gray-700 rounded-lg p-4 font-mono text-sm text-gray-300 resize-none"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Footer con ID de error */}
+          <div className="px-4 py-2 bg-gray-800 border-t border-gray-700 text-xs text-gray-500">
+            Error ID: {error.errorId}
+          </div>
+        </div>
+      )}
+    >
+      {children}
+    </BaseErrorBoundary>
+  );
+}
+
+5) Crear client/src/components/error-boundaries/ThreeJSErrorBoundary.tsx:
+
+import React from 'react';
+import { BaseErrorBoundary } from './BaseErrorBoundary';
+import { Box, RefreshCw, Monitor, Cpu } from 'lucide-react';
+
+interface Props {
+  children: React.ReactNode;
+  onError?: (error: Error) => void;
+}
+
+// Detectar capacidades WebGL
+function detectWebGLSupport(): { supported: boolean; version: number; renderer: string } {
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+    
+    if (!gl) {
+      return { supported: false, version: 0, renderer: 'N/A' };
+    }
+
+    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+    const renderer = debugInfo 
+      ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) 
+      : 'Unknown';
+    const version = gl.getParameter(gl.VERSION).includes('2.0') ? 2 : 1;
+
+    return { supported: true, version, renderer };
+  } catch {
+    return { supported: false, version: 0, renderer: 'N/A' };
+  }
+}
+
+export function ThreeJSErrorBoundary({ children, onError }: Props) {
+  return (
+    <BaseErrorBoundary
+      componentName="Visualización 3D"
+      onError={(details) => onError?.(new Error(details.message))}
+      fallback={(error, retry) => {
+        const webgl = detectWebGLSupport();
+
+        return (
+          <div className="flex flex-col items-center justify-center h-full min-h-[300px] bg-gradient-to-b from-gray-900 to-gray-800 rounded-xl p-8">
+            <div className="relative mb-6">
+              <div className="w-20 h-20 rounded-2xl bg-purple-900/30 flex items-center justify-center">
+                <Box className="w-10 h-10 text-purple-400" />
+              </div>
+              <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-red-500 flex items-center justify-center">
+                <span className="text-white text-xs">!</span>
+              </div>
+            </div>
+
+            <h3 className="text-xl font-semibold text-white mb-2">
+              Error en visualización 3D
+            </h3>
+            
+            <p className="text-gray-400 text-center max-w-md mb-6">
+              {!webgl.supported 
+                ? 'Tu navegador no soporta WebGL, necesario para visualizaciones 3D.'
+                : error.message || 'No se pudo renderizar el contenido 3D.'}
+            </p>
+
+            {/* Info del sistema */}
+            <div className="flex gap-4 mb-6 text-sm">
+              <div className="flex items-center gap-2 px-3 py-2 bg-gray-800 rounded-lg">
+                <Monitor className="w-4 h-4 text-gray-400" />
+                <span className="text-gray-300">
+                  WebGL {webgl.supported ? `v${webgl.version}` : 'No soportado'}
+                </span>
+                {webgl.supported && (
+                  <span className="w-2 h-2 rounded-full bg-green-400" />
+                )}
+                {!webgl.supported && (
+                  <span className="w-2 h-2 rounded-full bg-red-400" />
+                )}
+              </div>
+              
+              {webgl.supported && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-gray-800 rounded-lg">
+                  <Cpu className="w-4 h-4 text-gray-400" />
+                  <span className="text-gray-300 truncate max-w-[200px]" title={webgl.renderer}>
+                    {webgl.renderer}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3">
+              {webgl.supported && (
+                <button
+                  onClick={retry}
+                  className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  Reintentar
+                </button>
+              )}
+              
+              {!webgl.supported && (
+                
+                  href="https://get.webgl.org/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors"
+                >
+                  Más información
+                </a>
+              )}
+            </div>
+
+            <p className="text-xs text-gray-500 mt-4">
+              Error ID: {error.errorId}
+            </p>
+          </div>
+        );
+      }}
+    >
+      {children}
+    </BaseErrorBoundary>
+  );
+}
+
+6) Crear HOC para envolver componentes: client/src/components/error-boundaries/withErrorBoundary.tsx:
+
+import React, { ComponentType } from 'react';
+import { BaseErrorBoundary } from './BaseErrorBoundary';
+import { LazyLoadErrorBoundary } from './LazyLoadErrorBoundary';
+import { EditorErrorBoundary } from './EditorErrorBoundary';
+import { ThreeJSErrorBoundary } from './ThreeJSErrorBoundary';
+
+type BoundaryType = 'base' | 'lazy' | 'editor' | 'threejs';
+
+interface Options {
+  type?: BoundaryType;
+  componentName: string;
+  editorType?: 'monaco' | 'codemirror' | 'ppt' | 'spreadsheet' | 'document';
+  onError?: (error: Error) => void;
+}
+
+export function withErrorBoundary<P extends object>(
+  WrappedComponent: ComponentType<P>,
+  options: Options
+) {
+  const { type = 'base', componentName, editorType, onError } = options;
+
+  const ComponentWithBoundary = (props: P) => {
+    const children = <WrappedComponent {...props} />;
+
+    switch (type) {
+      case 'lazy':
+        return (
+          <LazyLoadErrorBoundary componentName={componentName} onLoadError={onError}>
+            {children}
+          </LazyLoadErrorBoundary>
+        );
+      
+      case 'editor':
+        return (
+          <EditorErrorBoundary 
+            editorType={editorType || 'monaco'} 
+            onError={onError}
+          >
+            {children}
+          </EditorErrorBoundary>
+        );
+      
+      case 'threejs':
+        return (
+          <ThreeJSErrorBoundary onError={onError}>
+            {children}
+          </ThreeJSErrorBoundary>
+        );
+      
+      default:
+        return (
+          <BaseErrorBoundary componentName={componentName} onError={(d) => onError?.(new Error(d.message))}>
+            {children}
+          </BaseErrorBoundary>
+        );
+    }
+  };
+
+  ComponentWithBoundary.displayName = `withErrorBoundary(${WrappedComponent.displayName || WrappedComponent.name || 'Component'})`;
+
+  return ComponentWithBoundary;
+}
+
+=== PARTE 2: APLICAR A COMPONENTES LAZY EXISTENTES ===
+
+7) Actualizar los componentes lazy que identificaste. Buscar y modificar:
+
+// Para ThreeEngineImpl en three-engine.tsx:
+import { ThreeJSErrorBoundary } from '@/components/error-boundaries';
+
+export function ThreeEngine(props: ThreeEngineProps) {
+  return (
+    <ThreeJSErrorBoundary onError={(err) => console.error('ThreeJS Error:', err)}>
+      <Suspense fallback={<ThreeLoadingFallback />}>
+        <ThreeEngineImpl {...props} />
+      </Suspense>
+    </ThreeJSErrorBoundary>
+  );
+}
+
+// Para LazyPPTEditorShell en lazyComponents.tsx:
+import { LazyLoadErrorBoundary } from '@/components/error-boundaries';
+
+export function PPTEditorWithBoundary(props: PPTEditorProps) {
+  return (
+    <LazyLoadErrorBoundary componentName="Editor de Presentaciones">
+      <LazyPPTEditorShell {...props} />
+    </LazyLoadErrorBoundary>
+  );
+}
+
+// Para MonacoEditorLazy en monaco-code-editor.tsx:
+import { EditorErrorBoundary } from '@/components/error-boundaries';
+
+export function MonacoEditor(props: MonacoEditorProps) {
+  return (
+    <EditorErrorBoundary editorType="monaco" fallbackContent={props.value}>
+      <Suspense fallback={<EditorLoadingFallback />}>
+        <MonacoEditorLazy {...props} />
+      </Suspense>
+    </EditorErrorBoundary>
+  );
+}
+
+=== PARTE 3: SISTEMA DE LOGGING Y MONITOREO ===
+
+8) Crear server/routes/errorRouter.ts:
+
+import { Router } from 'express';
+import { db } from '../db';
+
+const router = Router();
+
+interface ErrorLog {
+  errorId: string;
+  message: string;
+  stack?: string;
+  componentStack?: string;
+  componentName?: string;
+  url: string;
+  userAgent: string;
+  timestamp: string;
+  userId?: number;
+  sessionId?: string;
+}
+
+// Almacenamiento en memoria (en producción usar BD)
+const errorLogs: ErrorLog[] = [];
+const MAX_LOGS = 1000;
+
+// Log de error desde el cliente
+router.post('/log', async (req, res) => {
+  try {
+    const errorLog: ErrorLog = {
+      ...req.body,
+      userId: req.user?.id,
+      sessionId: req.sessionID
+    };
+
+    // Agregar a memoria
+    errorLogs.unshift(errorLog);
+    if (errorLogs.length > MAX_LOGS) {
+      errorLogs.pop();
+    }
+
+    // Log a consola del servidor
+    console.error('[CLIENT ERROR]', {
+      errorId: errorLog.errorId,
+      component: errorLog.componentName,
+      message: errorLog.message,
+      url: errorLog.url,
+      timestamp: errorLog.timestamp
+    });
+
+    // Opcional: Guardar en base de datos
+    // await db.insert(errorLogsTable).values(errorLog);
+
+    // Opcional: Enviar a servicio externo (Sentry, LogRocket, etc.)
+    // await sendToExternalService(errorLog);
+
+    res.json({ success: true, errorId: errorLog.errorId });
+  } catch (error) {
+    console.error('Error logging client error:', error);
+    res.status(500).json({ error: 'Failed to log error' });
+  }
+});
+
+// Obtener errores recientes (admin)
+router.get('/recent', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const component = req.query.component as string;
+
+    let filtered = errorLogs;
+    if (component) {
+      filtered = errorLogs.filter(e => e.componentName === component);
+    }
+
+    res.json({
+      errors: filtered.slice(0, limit),
+      total: filtered.length,
+      components: [...new Set(errorLogs.map(e => e.componentName).filter(Boolean))]
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch errors' });
+  }
+});
+
+// Estadísticas de errores (admin)
+router.get('/stats', async (req, res) => {
+  try {
+    const now = new Date();
+    const last24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const lastWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    const errors24h = errorLogs.filter(e => new Date(e.timestamp) > last24h);
+    const errorsWeek = errorLogs.filter(e => new Date(e.timestamp) > lastWeek);
+
+    // Agrupar por componente
+    const byComponent: Record<string, number> = {};
+    errorLogs.forEach(e => {
+      const name = e.componentName || 'Unknown';
+      byComponent[name] = (byComponent[name] || 0) + 1;
+    });
+
+    // Errores más frecuentes
+    const byMessage: Record<string, number> = {};
+    errorLogs.forEach(e => {
+      const msg = e.message.slice(0, 100);
+      byMessage[msg] = (byMessage[msg] || 0) + 1;
+    });
+
+    const topErrors = Object.entries(byMessage)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([message, count]) => ({ message, count }));
+
+    res.json({
+      total: errorLogs.length,
+      last24Hours: errors24h.length,
+      lastWeek: errorsWeek.length,
+      byComponent,
+      topErrors,
+      healthScore: calculateHealthScore(errors24h.length)
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+function calculateHealthScore(errorsIn24h: number): number {
+  if (errorsIn24h === 0) return 100;
+  if (errorsIn24h < 5) return 90;
+  if (errorsIn24h < 20) return 75;
+  if (errorsIn24h < 50) return 50;
+  if (errorsIn24h < 100) return 25;
+  return 10;
+}
+
+export default router;
+
+9) Registrar el router en server/routes.ts:
+
+import errorRouter from './routes/errorRouter';
+app.use('/api/errors', errorRouter);
+
+=== PARTE 4: DASHBOARD DE SALUD DEL SISTEMA ===
+
+10) Crear client/src/pages/admin/SystemHealth.tsx:
+
+import React, { useState, useEffect } from 'react';
+import { 
+  Activity, AlertTriangle, CheckCircle, Clock, 
+  RefreshCw, TrendingDown, TrendingUp, Server,
+  Monitor, Cpu, HardDrive, Wifi
+} from 'lucide-react';
+
+interface ErrorStats {
+  total: number;
+  last24Hours: number;
+  lastWeek: number;
+  byComponent: Record<string, number>;
+  topErrors: { message: string; count: number }[];
+  healthScore: number;
+}
+
+interface ErrorLog {
+  errorId: string;
+  message: string;
+  componentName?: string;
+  url: string;
+  timestamp: string;
+}
+
+export default function SystemHealth() {
+  const [stats, setStats] = useState<ErrorStats | null>(null);
+  const [recentErrors, setRecentErrors] = useState<ErrorLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+
+  const fetchData = async () => {
+    try {
+      const [statsRes, errorsRes] = await Promise.all([
+        fetch('/api/errors/stats'),
+        fetch('/api/errors/recent?limit=20')
+      ]);
+
+      if (statsRes.ok) {
+        setStats(await statsRes.json());
+      }
+      if (errorsRes.ok) {
+        const data = await errorsRes.json();
+        setRecentErrors(data.errors);
+      }
+    } catch (error) {
+      console.error('Error fetching health data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+    
+    if (autoRefresh) {
+      const interval = setInterval(fetchData, 30000); // Cada 30 segundos
+      return () => clearInterval(interval);
+    }
+  }, [autoRefresh]);
+
+  const getHealthColor = (score: number) => {
+    if (score >= 90) return 'text-green-400';
+    if (score >= 70) return 'text-yellow-400';
+    if (score >= 50) return 'text-orange-400';
+    return 'text-red-400';
+  };
+
+  const getHealthBg = (score: number) => {
+    if (score >= 90) return 'bg-green-900/30 border-green-500/30';
+    if (score >= 70) return 'bg-yellow-900/30 border-yellow-500/30';
+    if (score >= 50) return 'bg-orange-900/30 border-orange-500/30';
+    return 'bg-red-900/30 border-red-500/30';
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            <Activity className="w-7 h-7 text-indigo-400" />
+            Estado del Sistema
+          </h1>
+          <p className="text-gray-400 mt-1">
+            Monitoreo de errores y salud de la aplicación
+          </p>
+        </div>
+        
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm text-gray-400">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+              className="rounded border-gray-600 bg-gray-700 text-indigo-500"
+            />
+            Auto-refresh
+          </label>
+          <button
+            onClick={fetchData}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Actualizar
+          </button>
+        </div>
+      </div>
+
+      {/* Health Score */}
+      {stats && (
+        <div className={`p-6 rounded-xl border ${getHealthBg(stats.healthScore)}`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-medium text-gray-300">Puntuación de Salud</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Basado en errores de las últimas 24 horas
+              </p>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className={`text-5xl font-bold ${getHealthColor(stats.healthScore)}`}>
+                {stats.healthScore}
+              </div>
+              <div className="text-right">
+                <div className={`text-2xl ${getHealthColor(stats.healthScore)}`}>
+                  {stats.healthScore >= 90 ? (
+                    <CheckCircle className="w-10 h-10" />
+                  ) : stats.healthScore >= 50 ? (
+                    <AlertTriangle className="w-10 h-10" />
+                  ) : (
+                    <AlertTriangle className="w-10 h-10" />
+                  )}
+                </div>
+                <p className="text-sm text-gray-500 mt-1">
+                  {stats.healthScore >= 90 ? 'Excelente' : 
+                   stats.healthScore >= 70 ? 'Bueno' :
+                   stats.healthScore >= 50 ? 'Regular' : 'Crítico'}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-400 text-sm">Total Errores</span>
+            <Server className="w-5 h-5 text-gray-500" />
+          </div>
+          <div className="text-3xl font-bold text-white mt-2">{stats?.total || 0}</div>
+          <div className="text-sm text-gray-500 mt-1">Histórico</div>
+        </div>
+
+        <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-400 text-sm">Últimas 24h</span>
+            <Clock className="w-5 h-5 text-yellow-400" />
+          </div>
+          <div className="text-3xl font-bold text-white mt-2">{stats?.last24Hours || 0}</div>
+          <div className="flex items-center gap-1 text-sm mt-1">
+            {(stats?.last24Hours || 0) > 10 ? (
+              <>
+                <TrendingUp className="w-4 h-4 text-red-400" />
+                <span className="text-red-400">Alto</span>
+              </>
+            ) : (
+              <>
+                <TrendingDown className="w-4 h-4 text-green-400" />
+                <span className="text-green-400">Normal</span>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-400 text-sm">Última Semana</span>
+            <Monitor className="w-5 h-5 text-blue-400" />
+          </div>
+          <div className="text-3xl font-bold text-white mt-2">{stats?.lastWeek || 0}</div>
+          <div className="text-sm text-gray-500 mt-1">7 días</div>
+        </div>
+
+        <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-400 text-sm">Componentes</span>
+            <Cpu className="w-5 h-5 text-purple-400" />
+          </div>
+          <div className="text-3xl font-bold text-white mt-2">
+            {Object.keys(stats?.byComponent || {}).length}
+          </div>
+          <div className="text-sm text-gray-500 mt-1">Con errores</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Errores por Componente */}
+        <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
+          <h3 className="text-lg font-medium text-white mb-4">Errores por Componente</h3>
+          {stats && Object.entries(stats.byComponent).length > 0 ? (
+            <div className="space-y-3">
+              {Object.entries(stats.byComponent)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 8)
+                .map(([component, count]) => (
+                  <div key={component} className="flex items-center justify-between">
+                    <span className="text-gray-300 truncate">{component}</span>
+                    <div className="flex items-center gap-3">
+                      <div className="w-32 h-2 bg-gray-700 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-indigo-500 rounded-full"
+                          style={{
+                            width: `${Math.min(100, (count / stats.total) * 100 * 5)}%`
+                          }}
+                        />
+                      </div>
+                      <span className="text-gray-400 text-sm w-12 text-right">{count}</span>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          ) : (
+            <p className="text-gray-500 text-center py-8">No hay datos disponibles</p>
+          )}
+        </div>
+
+        {/* Errores Más Frecuentes */}
+        <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
+          <h3 className="text-lg font-medium text-white mb-4">Errores Más Frecuentes</h3>
+          {stats && stats.topErrors.length > 0 ? (
+            <div className="space-y-3">
+              {stats.topErrors.slice(0, 8).map((error, idx) => (
+                <div 
+                  key={idx} 
+                  className="flex items-start justify-between gap-4 p-3 bg-gray-700/50 rounded-lg"
+                >
+                  <span className="text-gray-300 text-sm flex-1 break-words">
+                    {error.message}
+                  </span>
+                  <span className="px-2 py-1 bg-red-900/50 text-red-300 text-xs rounded flex-shrink-0">
+                    {error.count}x
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-gray-500 text-center py-8">No hay errores registrados</p>
+          )}
+        </div>
+      </div>
+
+      {/* Errores Recientes */}
+      <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
+        <h3 className="text-lg font-medium text-white mb-4">Errores Recientes</h3>
+        {recentErrors.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-700">
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">ID</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Componente</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Mensaje</th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Hora</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-700">
+                {recentErrors.map((error) => (
+                  <tr key={error.errorId} className="hover:bg-gray-700/50">
+                    <td className="px-4 py-3">
+                      <code className="text-xs text-indigo-400 bg-indigo-900/30 px-2 py-1 rounded">
+                        {error.errorId.slice(0, 12)}...
+                      </code>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-300">
+                      {error.componentName || 'Unknown'}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-400 max-w-md truncate">
+                      {error.message}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-500">
+                      {new Date(error.timestamp).toLocaleString('es-ES')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center py-12">
+            <CheckCircle className="w-12 h-12 text-green-400 mb-3" />
+            <p className="text-gray-400">No hay errores recientes</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+=== PARTE 5: VERIFICACIÓN ===
+
+11) Verificar la implementación:
+
+ERROR BOUNDARIES:
+- ✅/❌ BaseErrorBoundary muestra fallback en error
+- ✅/❌ LazyLoadErrorBoundary detecta errores de chunk
+- ✅/❌ EditorErrorBoundary muestra fallback con contenido
+- ✅/❌ ThreeJSErrorBoundary detecta WebGL
+- ✅/❌ withErrorBoundary HOC funciona
+
+COMPONENTES PROTEGIDOS:
+- ✅/❌ ThreeEngine tiene ThreeJSErrorBoundary
+- ✅/❌ PPTEditor tiene LazyLoadErrorBoundary
+- ✅/❌ MonacoEditor tiene EditorErrorBoundary
+
+LOGGING:
+- ✅/❌ POST /api/errors/log guarda errores
+- ✅/❌ GET /api/errors/recent devuelve lista
+- ✅/❌ GET /api/errors/stats devuelve estadísticas
+
+DASHBOARD:
+- ✅/❌ SystemHealth muestra health score
+- ✅/❌ Muestra errores por componente
+- ✅/❌ Muestra errores más frecuentes
+- ✅/❌ Muestra errores recientes
+- ✅/❌ Auto-refresh funciona
+
+Reportar resultados de cada verificación.

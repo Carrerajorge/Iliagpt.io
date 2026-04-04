@@ -1,0 +1,1125 @@
+## 🛠️ Herramientas por Categoría (56 total)
+
+| Categoría | Count | Herramientas |
+|-----------|-------|--------------|
+| users | 8 | create_user, update_user, delete_user, list_users, get_user, change_role, change_plan, suspend_user |
+| ai_models | 5 | list_models, enable_model, disable_model, get_model_stats, configure_model |
+| payments | 6 | process_payment, refund_payment, list_payments, get_payment, create_invoice, send_invoice |
+| analytics | 5 | get_metrics, get_chart_data, get_realtime_stats, compare_periods, track_event |
+| database | 4 | query_stats, list_tables, get_slow_queries, backup_database |
+| security | 6 | get_audit_logs, create_policy, block_ip, generate_api_key, revoke_api_key, security_scan |
+| reports | 4 | generate_report, schedule_report, list_reports, export_report |
+| settings | 4 | get_settings, update_settings, reset_settings, export_settings |
+| integrations | 7 | slack_send, email_send, webhook_trigger, calendar_event, drive_upload, sms_send, push_notification |
+| ai_advanced | 6 | image_generate, code_review, document_summarize, translate_text, sentiment_analysis, entity_extraction |
+| automation | 5 | schedule_task, batch_process, workflow_manage, backup_manage, cleanup_data |
+| data | 6 | chart_generate, csv_export, pdf_generate, excel_export, data_transform, data_import |
+| communication | 4 | template_render, broadcast_send, notification_manage, announcement_create |
+
+## ⚙️ Configuración
+
+Variables de entorno requeridas:
+```env
+# Agentic Engine
+AGENTIC_CHAT_ENABLED=true
+AGENTIC_AUTONOMOUS_MODE=false
+AGENTIC_SUGGESTIONS_ENABLED=true
+AGENTIC_MAX_COMPLEXITY=10
+AGENTIC_ORCHESTRATION_TIMEOUT=120000
+AGENTIC_MEMORY_MAX_ATOMS=100000
+
+# Circuit Breaker
+CIRCUIT_BREAKER_THRESHOLD=5
+CIRCUIT_BREAKER_COOLDOWN=300000
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX_REQUESTS=100
+```
+
+## 📡 API Endpoints
+
+### Herramientas
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/admin/agent/tools` | GET | Lista todas las 56 herramientas |
+| `/api/admin/agent/tools/stats` | GET | Estadísticas por categoría |
+| `/api/admin/agent/tools/:category` | GET | Herramientas de una categoría |
+
+### Análisis
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/admin/agent/complexity/analyze` | POST | Analiza complejidad de un prompt |
+| `/api/admin/agent/intents/analyze` | POST | Analiza intención y mapea herramientas |
+
+### Orquestación
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/admin/agent/orchestrate` | POST | Orquesta ejecución de tareas complejas |
+| `/api/admin/agent/progress/:id` | GET | Estado de una ejecución en progreso |
+
+### Memoria y Gaps
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/admin/agent/memory/stats` | GET | Estadísticas de memoria comprimida |
+| `/api/admin/agent/memory/gc` | POST | Ejecuta garbage collection |
+| `/api/admin/agent/gaps` | GET | Lista gaps detectados |
+| `/api/admin/agent/gaps/:id` | PUT | Actualiza estado de un gap |
+
+### Sistema
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `/api/admin/agent/circuits` | GET | Estado de circuit breakers |
+| `/api/admin/agent/emergency-disable` | POST | Desactiva agentic inmediatamente |
+| `/health/live` | GET | Liveness probe |
+| `/health/ready` | GET | Readiness probe |
+| `/health` | GET | Health detallado |
+
+## 🔧 Ejemplos de Uso
+
+### Analizar Complejidad
+```bash
+curl -X POST http://localhost:5000/api/admin/agent/complexity/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "crear usuario admin con permisos especiales"}'
+```
+
+Respuesta:
+```json
+{
+  "score": 4,
+  "category": "simple",
+  "signals": ["user_management"],
+  "path": "fast",
+  "dimensions": {
+    "cognitive": 3,
+    "breadth": 2,
+    "steps": 2,
+    "ambiguity": 2,
+    "depth": 3
+  }
+}
+```
+
+### Orquestar Tarea Compleja
+```bash
+curl -X POST http://localhost:5000/api/admin/agent/orchestrate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "generar reporte de usuarios activos y enviarlo por email al admin"}'
+```
+
+Respuesta:
+```json
+{
+  "executionId": "exec_abc123",
+  "tasks": [
+    {"id": "t1", "tool": "list_users", "status": "completed"},
+    {"id": "t2", "tool": "generate_report", "status": "completed"},
+    {"id": "t3", "tool": "email_send", "status": "completed"}
+  ],
+  "results": [...],
+  "duration": 2340,
+  "success": true
+}
+```
+
+## 🔒 Seguridad
+
+- **Rate Limiting**: 100 req/min para API, 30 msg/min para chat
+- **Circuit Breakers**: Auto-open después de 5 fallos consecutivos
+- **Feature Flags**: Control granular de funcionalidades
+- **Audit Logging**: Todas las operaciones registradas
+- **Input Sanitization**: Validación de todos los inputs
+
+## 📈 Métricas
+
+Disponibles en `/api/admin/metrics`:
+- Requests totales por endpoint
+- Análisis de complejidad (count, avg score)
+- Ejecuciones de herramientas por tool_id
+- Errores por tipo
+- Uptime del sistema
+
+## 🐛 Troubleshooting
+
+### El análisis es muy lento
+- Verificar que el caching está funcionando
+- Revisar si hay muchas herramientas deshabilitadas
+
+### Circuit breaker se abre frecuentemente
+- Revisar logs de la herramienta afectada
+- Aumentar CIRCUIT_BREAKER_THRESHOLD si es apropiado
+
+### Gaps no se detectan
+- Verificar que AGENTIC_CHAT_ENABLED=true
+- Revisar que el IntentMapper tiene patterns para el idioma
+
+---
+
+2) Crear docs/API_REFERENCE.md con documentación detallada de cada endpoint incluyendo schemas de request/response.
+
+3) Crear CHANGELOG.md:
+
+# Changelog
+
+## [1.0.0] - 2024-12-27
+
+### Added
+- Agentic Engine con 56 herramientas en 12 categorías
+- ComplexityAnalyzer con scoring multidimensional 1-10
+- IntentMapper con soporte para 5 idiomas
+- OrchestrationEngine con ejecución paralela
+- CompressedMemory con atoms y decay automático
+- ErrorRecovery con circuit breakers
+- GapDetector con deduplicación por signature
+- Dashboard visual en Admin (/admin/agentic) con 7 tabs
+- Integración segura con Chat (feature flags)
+- Health endpoints (/health/live, /health/ready, /health)
+- Botón "Nuevo Chat" profesional con shortcuts
+- Componentes UI mejorados (Card, Badge, Skeleton, EmptyState)
+- Rate limiting por endpoint
+- Métricas del sistema
+- Documentación completa
+
+### Security
+- Feature flags para control de funcionalidades
+- Circuit breakers para resiliencia
+- Rate limiting distribuido
+- Input sanitization
+
+=== TESTS ===
+
+4) Crear archivo vitest.config.ts en la raíz del proyecto:
+
+import { defineConfig } from 'vitest/config';
+import path from 'path';
+
+export default defineConfig({
+  test: {
+    globals: true,
+    environment: 'node',
+    include: ['tests/**/*.test.ts'],
+    exclude: ['node_modules', 'dist'],
+    testTimeout: 30000,
+    hookTimeout: 30000,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+      exclude: ['node_modules', 'tests', '**/*.config.*']
+    }
+  },
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './')
+    }
+  }
+});
+
+5) Crear directorio tests/agentic/ y archivo tests/agentic/complexity.test.ts:
+
+import { describe, it, expect, beforeAll } from 'vitest';
+
+const BASE_URL = process.env.TEST_URL || 'http://localhost:5000';
+
+async function analyzeComplexity(prompt: string) {
+  const response = await fetch(`${BASE_URL}/api/admin/agent/complexity/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt })
+  });
+  return response.json();
+}
+
+describe('ComplexityAnalyzer', () => {
+  describe('Scoring por Categoría', () => {
+    it('debe puntuar prompts triviales como 1-2', async () => {
+      const result = await analyzeComplexity('hola');
+      expect(result.score).toBeGreaterThanOrEqual(1);
+      expect(result.score).toBeLessThanOrEqual(2);
+      expect(result.category).toBe('trivial');
+    });
+
+    it('debe puntuar prompts simples como 3-4', async () => {
+      const result = await analyzeComplexity('qué es React');
+      expect(result.score).toBeGreaterThanOrEqual(3);
+      expect(result.score).toBeLessThanOrEqual(4);
+      expect(result.category).toBe('simple');
+    });
+
+    it('debe puntuar prompts moderados como 5-6', async () => {
+      const result = await analyzeComplexity('explica async/await en JavaScript con ejemplos prácticos');
+      expect(result.score).toBeGreaterThanOrEqual(5);
+      expect(result.score).toBeLessThanOrEqual(6);
+      expect(result.category).toBe('moderate');
+    });
+
+    it('debe puntuar prompts complejos como 7-8', async () => {
+      const result = await analyzeComplexity('implementa un sistema de autenticación completo con JWT y refresh tokens');
+      expect(result.score).toBeGreaterThanOrEqual(7);
+      expect(result.score).toBeLessThanOrEqual(8);
+      expect(result.category).toBe('complex');
+    });
+
+    it('debe puntuar prompts arquitectónicos como 9-10', async () => {
+      const result = await analyzeComplexity('diseña una arquitectura de microservicios para una plataforma SaaS que soporte millones de usuarios con event sourcing y CQRS');
+      expect(result.score).toBeGreaterThanOrEqual(9);
+      expect(result.score).toBeLessThanOrEqual(10);
+      expect(result.category).toBe('architectural');
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('debe manejar prompts vacíos', async () => {
+      const result = await analyzeComplexity('');
+      expect(result.score).toBeDefined();
+      expect(result.score).toBeGreaterThanOrEqual(1);
+    });
+
+    it('debe manejar prompts con caracteres especiales', async () => {
+      const result = await analyzeComplexity('¿Cómo está? 你好 🚀 @#$%');
+      expect(result.score).toBeDefined();
+    });
+
+    it('debe manejar prompts muy largos', async () => {
+      const longPrompt = 'explica '.repeat(500);
+      const result = await analyzeComplexity(longPrompt);
+      expect(result.score).toBeDefined();
+    });
+  });
+
+  describe('Multi-idioma', () => {
+    it('debe analizar prompts en inglés', async () => {
+      const result = await analyzeComplexity('create a new user with admin permissions');
+      expect(result.score).toBeDefined();
+      expect(result.language).toBe('en');
+    });
+
+    it('debe analizar prompts en español', async () => {
+      const result = await analyzeComplexity('crear un nuevo usuario con permisos de admin');
+      expect(result.score).toBeDefined();
+      expect(result.language).toBe('es');
+    });
+
+    it('debe analizar prompts en francés', async () => {
+      const result = await analyzeComplexity('créer un nouvel utilisateur');
+      expect(result.score).toBeDefined();
+      expect(result.language).toBe('fr');
+    });
+  });
+});
+
+6) Crear tests/agentic/tools.test.ts:
+
+import { describe, it, expect } from 'vitest';
+
+const BASE_URL = process.env.TEST_URL || 'http://localhost:5000';
+
+describe('ToolRegistry', () => {
+  describe('Listado de Herramientas', () => {
+    it('debe tener al menos 56 herramientas', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/tools`);
+      const tools = await response.json();
+      expect(tools.length).toBeGreaterThanOrEqual(56);
+    });
+
+    it('debe tener 12 categorías', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/tools/stats`);
+      const stats = await response.json();
+      expect(Object.keys(stats.byCategory).length).toBeGreaterThanOrEqual(12);
+    });
+
+    it('cada herramienta debe tener campos requeridos', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/tools`);
+      const tools = await response.json();
+      
+      tools.forEach((tool: any) => {
+        expect(tool).toHaveProperty('id');
+        expect(tool).toHaveProperty('name');
+        expect(tool).toHaveProperty('description');
+        expect(tool).toHaveProperty('category');
+        expect(tool).toHaveProperty('capabilities');
+        expect(tool).toHaveProperty('isEnabled');
+        expect(Array.isArray(tool.capabilities)).toBe(true);
+      });
+    });
+  });
+
+  describe('Filtrado por Categoría', () => {
+    it('debe filtrar herramientas de integrations', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/tools/integrations`);
+      const tools = await response.json();
+      expect(tools.length).toBe(7);
+      tools.forEach((tool: any) => {
+        expect(tool.category).toBe('integrations');
+      });
+    });
+
+    it('debe filtrar herramientas de ai_advanced', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/tools/ai_advanced`);
+      const tools = await response.json();
+      expect(tools.length).toBe(6);
+    });
+
+    it('debe filtrar herramientas de automation', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/tools/automation`);
+      const tools = await response.json();
+      expect(tools.length).toBe(5);
+    });
+  });
+
+  describe('Estadísticas', () => {
+    it('debe retornar estadísticas correctas', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/tools/stats`);
+      const stats = await response.json();
+      
+      expect(stats).toHaveProperty('total');
+      expect(stats).toHaveProperty('byCategory');
+      expect(stats.total).toBeGreaterThanOrEqual(56);
+      expect(stats.byCategory.integrations).toBe(7);
+      expect(stats.byCategory.ai_advanced).toBe(6);
+      expect(stats.byCategory.automation).toBe(5);
+      expect(stats.byCategory.data).toBe(6);
+    });
+  });
+});
+
+7) Crear tests/agentic/orchestration.test.ts:
+
+import { describe, it, expect } from 'vitest';
+
+const BASE_URL = process.env.TEST_URL || 'http://localhost:5000';
+
+describe('OrchestrationEngine', () => {
+  describe('Descomposición de Tareas', () => {
+    it('debe descomponer prompts multi-tarea', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/orchestrate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'crear usuario y generar reporte' })
+      });
+      const result = await response.json();
+      
+      expect(result.tasks).toBeDefined();
+      expect(result.tasks.length).toBeGreaterThan(1);
+    });
+
+    it('debe identificar herramientas correctas', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/orchestrate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'listar usuarios activos' })
+      });
+      const result = await response.json();
+      
+      expect(result.tasks.some((t: any) => t.toolId?.includes('user') || t.tool?.includes('user'))).toBe(true);
+    });
+  });
+
+  describe('Ejecución', () => {
+    it('debe completar dentro del timeout', async () => {
+      const start = Date.now();
+      const response = await fetch(`${BASE_URL}/api/admin/agent/orchestrate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'listar usuarios' })
+      });
+      const duration = Date.now() - start;
+      
+      expect(response.ok).toBe(true);
+      expect(duration).toBeLessThan(30000);
+    });
+
+    it('debe retornar resultados estructurados', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/orchestrate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'obtener estadísticas' })
+      });
+      const result = await response.json();
+      
+      expect(result).toHaveProperty('tasks');
+      expect(result).toHaveProperty('duration');
+    });
+  });
+
+  describe('Manejo de Errores', () => {
+    it('debe manejar prompts inválidos gracefully', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/orchestrate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: '' })
+      });
+      
+      expect(response.status).toBeLessThan(500);
+    });
+  });
+});
+
+8) Crear tests/agentic/memory.test.ts:
+
+import { describe, it, expect } from 'vitest';
+
+const BASE_URL = process.env.TEST_URL || 'http://localhost:5000';
+
+describe('CompressedMemory', () => {
+  describe('Estadísticas', () => {
+    it('debe retornar estadísticas de memoria', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/memory/stats`);
+      const stats = await response.json();
+      
+      expect(stats).toHaveProperty('totalAtoms');
+      expect(stats).toHaveProperty('storageBytes');
+      expect(typeof stats.totalAtoms).toBe('number');
+    });
+  });
+
+  describe('Garbage Collection', () => {
+    it('debe ejecutar GC sin errores', async () => {
+      const response = await fetch(`${BASE_URL}/api/admin/agent/memory/gc`, {
+        method: 'POST'
+      });
+      
+      expect(response.ok).toBe(true);
+      const result = await response.json();
+      expect(result).toHaveProperty('cleaned');
+    });
+  });
+});
+
+9) Crear tests/agentic/health.test.ts:
+
+import { describe, it, expect } from 'vitest';
+
+const BASE_URL = process.env.TEST_URL || 'http://localhost:5000';
+
+describe('Health Endpoints', () => {
+  it('/health/live debe responder ok', async () => {
+    const response = await fetch(`${BASE_URL}/health/live`);
+    expect(response.ok).toBe(true);
+    const data = await response.json();
+    expect(data.status).toBe('ok');
+  });
+
+  it('/health/ready debe verificar servicios', async () => {
+    const response = await fetch(`${BASE_URL}/health/ready`);
+    expect(response.ok).toBe(true);
+    const data = await response.json();
+    expect(data).toHaveProperty('status');
+  });
+
+  it('/health debe retornar info detallada', async () => {
+    const response = await fetch(`${BASE_URL}/health`);
+    expect(response.ok).toBe(true);
+    const data = await response.json();
+    expect(data).toHaveProperty('status');
+  });
+});
+
+describe('Circuit Breakers', () => {
+  it('debe retornar estado de circuits', async () => {
+    const response = await fetch(`${BASE_URL}/api/admin/agent/circuits`);
+    expect(response.ok).toBe(true);
+    const circuits = await response.json();
+    expect(Array.isArray(circuits)).toBe(true);
+  });
+});
+
+10) Actualizar package.json añadiendo scripts de test:
+
+En la sección "scripts" de package.json, añadir:
+"test": "vitest",
+"test:run": "vitest run",
+"test:coverage": "vitest run --coverage",
+"test:agentic": "vitest run tests/agentic"
+
+Y en devDependencies añadir si no existen:
+"vitest": "^1.0.0",
+"@vitest/coverage-v8": "^1.0.0"
+
+=== PRODUCCIÓN ===
+
+11) Crear server/middleware/rateLimiter.ts:
+
+import { Request, Response, NextFunction } from 'express';
+
+interface RateLimitRecord {
+  count: number;
+  resetTime: number;
+}
+
+const requestCounts = new Map<string, RateLimitRecord>();
+
+// Limpiar registros expirados cada minuto
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, record] of requestCounts) {
+    if (now > record.resetTime) {
+      requestCounts.delete(key);
+    }
+  }
+}, 60000);
+
+export function createRateLimiter(options: {
+  windowMs?: number;
+  max?: number;
+  keyGenerator?: (req: Request) => string;
+  message?: string;
+}) {
+  const {
+    windowMs = 60000,
+    max = 100,
+    keyGenerator = (req) => (req as any).user?.id || req.ip || 'anonymous',
+    message = 'Too many requests, please try again later.'
+  } = options;
+
+  return (req: Request, res: Response, next: NextFunction) => {
+    const key = keyGenerator(req);
+    const now = Date.now();
+
+    let record = requestCounts.get(key);
+
+    if (!record || now > record.resetTime) {
+      record = { count: 1, resetTime: now + windowMs };
+      requestCounts.set(key, record);
+    } else {
+      record.count++;
+    }
+
+    // Set rate limit headers
+    res.setHeader('X-RateLimit-Limit', max);
+    res.setHeader('X-RateLimit-Remaining', Math.max(0, max - record.count));
+    res.setHeader('X-RateLimit-Reset', Math.ceil(record.resetTime / 1000));
+
+    if (record.count > max) {
+      const retryAfter = Math.ceil((record.resetTime - now) / 1000);
+      res.setHeader('Retry-After', retryAfter);
+      return res.status(429).json({
+        error: 'Too Many Requests',
+        message,
+        retryAfter
+      });
+    }
+
+    next();
+  };
+}
+
+// Pre-configured limiters
+export const apiLimiter = createRateLimiter({
+  windowMs: 60000,
+  max: 100,
+  message: 'API rate limit exceeded'
+});
+
+export const chatLimiter = createRateLimiter({
+  windowMs: 60000,
+  max: 30,
+  message: 'Chat rate limit exceeded'
+});
+
+export const adminLimiter = createRateLimiter({
+  windowMs: 60000,
+  max: 200,
+  message: 'Admin API rate limit exceeded'
+});
+
+export const heavyLimiter = createRateLimiter({
+  windowMs: 60000,
+  max: 10,
+  message: 'Heavy operation rate limit exceeded'
+});
+
+12) Crear server/metrics/simpleMetrics.ts:
+
+interface SystemMetrics {
+  requests: {
+    total: number;
+    byEndpoint: Record<string, number>;
+    byStatus: Record<string, number>;
+  };
+  agentic: {
+    analyses: number;
+    orchestrations: number;
+    avgComplexity: number;
+    complexitySum: number;
+  };
+  tools: {
+    executions: number;
+    byTool: Record<string, number>;
+    failures: number;
+  };
+  memory: {
+    atoms: number;
+    bytes: number;
+  };
+  errors: {
+    total: number;
+    byType: Record<string, number>;
+  };
+  performance: {
+    avgResponseTime: number;
+    responseTimeSum: number;
+    responseCount: number;
+  };
+  startTime: number;
+}
+
+const metrics: SystemMetrics = {
+  requests: { total: 0, byEndpoint: {}, byStatus: {} },
+  agentic: { analyses: 0, orchestrations: 0, avgComplexity: 0, complexitySum: 0 },
+  tools: { executions: 0, byTool: {}, failures: 0 },
+  memory: { atoms: 0, bytes: 0 },
+  errors: { total: 0, byType: {} },
+  performance: { avgResponseTime: 0, responseTimeSum: 0, responseCount: 0 },
+  startTime: Date.now()
+};
+
+export const metricsCollector = {
+  recordRequest(endpoint: string, status: number, duration: number) {
+    metrics.requests.total++;
+    metrics.requests.byEndpoint[endpoint] = (metrics.requests.byEndpoint[endpoint] || 0) + 1;
+    
+    const statusGroup = `${Math.floor(status / 100)}xx`;
+    metrics.requests.byStatus[statusGroup] = (metrics.requests.byStatus[statusGroup] || 0) + 1;
+    
+    metrics.performance.responseTimeSum += duration;
+    metrics.performance.responseCount++;
+    metrics.performance.avgResponseTime = metrics.performance.responseTimeSum / metrics.performance.responseCount;
+  },
+
+  recordAnalysis(complexity: number) {
+    metrics.agentic.analyses++;
+    metrics.agentic.complexitySum += complexity;
+    metrics.agentic.avgComplexity = metrics.agentic.complexitySum / metrics.agentic.analyses;
+  },
+
+  recordOrchestration() {
+    metrics.agentic.orchestrations++;
+  },
+
+  recordToolExecution(toolId: string, success: boolean) {
+    metrics.tools.executions++;
+    metrics.tools.byTool[toolId] = (metrics.tools.byTool[toolId] || 0) + 1;
+    if (!success) {
+      metrics.tools.failures++;
+    }
+  },
+
+  recordMemoryStats(atoms: number, bytes: number) {
+    metrics.memory.atoms = atoms;
+    metrics.memory.bytes = bytes;
+  },
+
+  recordError(type: string) {
+    metrics.errors.total++;
+    metrics.errors.byType[type] = (metrics.errors.byType[type] || 0) + 1;
+  },
+
+  getMetrics() {
+    const uptimeMs = Date.now() - metrics.startTime;
+    return {
+      ...metrics,
+      uptime: {
+        ms: uptimeMs,
+        seconds: Math.floor(uptimeMs / 1000),
+        minutes: Math.floor(uptimeMs / 60000),
+        hours: Math.floor(uptimeMs / 3600000)
+      },
+      rates: {
+        requestsPerMinute: metrics.requests.total / (uptimeMs / 60000) || 0,
+        errorsPerMinute: metrics.errors.total / (uptimeMs / 60000) || 0
+      }
+    };
+  },
+
+  reset() {
+    metrics.requests = { total: 0, byEndpoint: {}, byStatus: {} };
+    metrics.agentic = { analyses: 0, orchestrations: 0, avgComplexity: 0, complexitySum: 0 };
+    metrics.tools = { executions: 0, byTool: {}, failures: 0 };
+    metrics.errors = { total: 0, byType: {} };
+    metrics.performance = { avgResponseTime: 0, responseTimeSum: 0, responseCount: 0 };
+    metrics.startTime = Date.now();
+  }
+};
+
+// Middleware para tracking automático
+export function metricsMiddleware(req: any, res: any, next: any) {
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const endpoint = req.route?.path || req.path;
+    metricsCollector.recordRequest(endpoint, res.statusCode, duration);
+  });
+  
+  next();
+}
+
+// Handler para endpoint de métricas
+export function metricsHandler(req: any, res: any) {
+  res.json(metricsCollector.getMetrics());
+}
+
+13) Crear server/utils/logger.ts:
+
+type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+interface LogEntry {
+  timestamp: string;
+  level: LogLevel;
+  message: string;
+  traceId?: string;
+  userId?: string;
+  duration?: number;
+  meta?: Record<string, any>;
+}
+
+const LOG_LEVELS: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3
+};
+
+const currentLevel = (process.env.LOG_LEVEL as LogLevel) || 'info';
+
+function shouldLog(level: LogLevel): boolean {
+  return LOG_LEVELS[level] >= LOG_LEVELS[currentLevel];
+}
+
+function formatLog(entry: LogEntry): string {
+  if (process.env.NODE_ENV === 'production') {
+    return JSON.stringify(entry);
+  }
+  
+  const { timestamp, level, message, ...rest } = entry;
+  const meta = Object.keys(rest).length > 0 ? ` ${JSON.stringify(rest)}` : '';
+  const levelColors: Record<LogLevel, string> = {
+    debug: '\x1b[36m',
+    info: '\x1b[32m',
+    warn: '\x1b[33m',
+    error: '\x1b[31m'
+  };
+  const reset = '\x1b[0m';
+  
+  return `${timestamp} ${levelColors[level]}[${level.toUpperCase()}]${reset} ${message}${meta}`;
+}
+
+function log(level: LogLevel, message: string, meta?: Record<string, any>) {
+  if (!shouldLog(level)) return;
+  
+  const entry: LogEntry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+    ...meta
+  };
+  
+  const formatted = formatLog(entry);
+  
+  if (level === 'error') {
+    console.error(formatted);
+  } else {
+    console.log(formatted);
+  }
+}
+
+export const logger = {
+  debug: (message: string, meta?: Record<string, any>) => log('debug', message, meta),
+  info: (message: string, meta?: Record<string, any>) => log('info', message, meta),
+  warn: (message: string, meta?: Record<string, any>) => log('warn', message, meta),
+  error: (message: string, meta?: Record<string, any>) => log('error', message, meta),
+  
+  // Agentic-specific logging
+  agentic: {
+    analysis: (traceId: string, prompt: string, result: any) => {
+      log('info', 'Agentic analysis completed', {
+        traceId,
+        promptLength: prompt.length,
+        score: result.score,
+        category: result.category,
+        path: result.path
+      });
+    },
+    
+    orchestration: (traceId: string, taskCount: number, duration: number) => {
+      log('info', 'Orchestration completed', {
+        traceId,
+        taskCount,
+        duration
+      });
+    },
+    
+    toolExecution: (traceId: string, toolId: string, success: boolean, duration: number) => {
+      log('info', 'Tool executed', {
+        traceId,
+        toolId,
+        success,
+        duration
+      });
+    },
+    
+    gap: (traceId: string, description: string, userId?: string) => {
+      log('warn', 'Capability gap detected', {
+        traceId,
+        description,
+        userId
+      });
+    },
+    
+    error: (traceId: string, error: Error, context?: Record<string, any>) => {
+      log('error', 'Agentic error', {
+        traceId,
+        error: error.message,
+        stack: error.stack,
+        ...context
+      });
+    }
+  }
+};
+
+// Request logging middleware
+export function requestLogger(req: any, res: any, next: any) {
+  const traceId = req.headers['x-trace-id'] || crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const start = Date.now();
+  
+  req.traceId = traceId;
+  res.setHeader('X-Trace-Id', traceId);
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    logger.info('HTTP Request', {
+      traceId,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      duration,
+      userId: req.user?.id
+    });
+  });
+  
+  next();
+}
+
+14) Crear endpoint de métricas añadiendo a las rutas de admin:
+
+// En el archivo de rutas admin (adminRouter.ts o similar), añadir:
+import { metricsHandler, metricsMiddleware } from '../metrics/simpleMetrics';
+import { apiLimiter, adminLimiter } from '../middleware/rateLimiter';
+import { requestLogger, logger } from '../utils/logger';
+
+// Aplicar middleware de métricas
+router.use(metricsMiddleware);
+router.use(requestLogger);
+
+// Endpoint de métricas
+router.get('/metrics', metricsHandler);
+
+// Aplicar rate limiting a rutas específicas
+router.use('/agent/orchestrate', heavyLimiter);
+
+15) Actualizar .env.example con todas las variables:
+
+# Application
+NODE_ENV=development
+PORT=5000
+APP_URL=http://localhost:5000
+
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/dbname
+
+# Authentication
+JWT_SECRET=your-super-secret-jwt-key-change-in-production
+SESSION_SECRET=your-session-secret-change-in-production
+
+# Agentic Engine
+AGENTIC_CHAT_ENABLED=true
+AGENTIC_AUTONOMOUS_MODE=false
+AGENTIC_SUGGESTIONS_ENABLED=true
+AGENTIC_MAX_COMPLEXITY=10
+AGENTIC_ORCHESTRATION_TIMEOUT=120000
+AGENTIC_MEMORY_MAX_ATOMS=100000
+
+# Circuit Breaker
+CIRCUIT_BREAKER_THRESHOLD=5
+CIRCUIT_BREAKER_COOLDOWN=300000
+
+# Rate Limiting
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX_REQUESTS=100
+
+# Logging
+LOG_LEVEL=info
+
+# Redis (optional, for production)
+REDIS_URL=redis://localhost:6379
+
+# External Services (optional)
+SLACK_WEBHOOK_URL=
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASSWORD=
+
+=== VERIFICACIÓN FINAL ===
+
+16) Crear script de verificación scripts/verify-complete.ts:
+
+async function verifyCompleteSystem() {
+  const BASE_URL = process.env.APP_URL || 'http://localhost:5000';
+  
+  console.log('\n🔍 VERIFICACIÓN COMPLETA DEL SISTEMA\n');
+  console.log('='.repeat(50) + '\n');
+  
+  const checks: { name: string; status: string; details?: string }[] = [];
+  
+  // 1. Health endpoints
+  try {
+    const liveRes = await fetch(`${BASE_URL}/health/live`);
+    const readyRes = await fetch(`${BASE_URL}/health/ready`);
+    const healthRes = await fetch(`${BASE_URL}/health`);
+    
+    checks.push({
+      name: 'Health Endpoints',
+      status: liveRes.ok && readyRes.ok && healthRes.ok ? '✅' : '❌',
+      details: `live: ${liveRes.ok}, ready: ${readyRes.ok}, health: ${healthRes.ok}`
+    });
+  } catch (e: any) {
+    checks.push({ name: 'Health Endpoints', status: '❌', details: e.message });
+  }
+  
+  // 2. Tool Registry
+  try {
+    const toolsRes = await fetch(`${BASE_URL}/api/admin/agent/tools`);
+    const tools = await toolsRes.json();
+    checks.push({
+      name: 'Tool Registry',
+      status: tools.length >= 56 ? '✅' : '⚠️',
+      details: `${tools.length} tools registered`
+    });
+  } catch (e: any) {
+    checks.push({ name: 'Tool Registry', status: '❌', details: e.message });
+  }
+  
+  // 3. Complexity Analyzer
+  try {
+    const analysisRes = await fetch(`${BASE_URL}/api/admin/agent/complexity/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'hola' })
+    });
+    const analysis = await analysisRes.json();
+    checks.push({
+      name: 'Complexity Analyzer',
+      status: analysis.score >= 1 && analysis.score <= 10 ? '✅' : '❌',
+      details: `Score: ${analysis.score}, Category: ${analysis.category}`
+    });
+  } catch (e: any) {
+    checks.push({ name: 'Complexity Analyzer', status: '❌', details: e.message });
+  }
+  
+  // 4. Intent Mapper
+  try {
+    const intentRes = await fetch(`${BASE_URL}/api/admin/agent/intents/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'crear usuario' })
+    });
+    const intent = await intentRes.json();
+    checks.push({
+      name: 'Intent Mapper',
+      status: intent.tools && intent.tools.length > 0 ? '✅' : '⚠️',
+      details: `Tools matched: ${intent.tools?.length || 0}`
+    });
+  } catch (e: any) {
+    checks.push({ name: 'Intent Mapper', status: '❌', details: e.message });
+  }
+  
+  // 5. Orchestration Engine
+  try {
+    const orchRes = await fetch(`${BASE_URL}/api/admin/agent/orchestrate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'listar usuarios' })
+    });
+    checks.push({
+      name: 'Orchestration Engine',
+      status: orchRes.ok ? '✅' : '❌',
+      details: `Status: ${orchRes.status}`
+    });
+  } catch (e: any) {
+    checks.push({ name: 'Orchestration Engine', status: '❌', details: e.message });
+  }
+  
+  // 6. Memory Stats
+  try {
+    const memRes = await fetch(`${BASE_URL}/api/admin/agent/memory/stats`);
+    const memStats = await memRes.json();
+    checks.push({
+      name: 'Compressed Memory',
+      status: memRes.ok ? '✅' : '❌',
+      details: `Atoms: ${memStats.totalAtoms || 0}`
+    });
+  } catch (e: any) {
+    checks.push({ name: 'Compressed Memory', status: '❌', details: e.message });
+  }
+  
+  // 7. Circuit Breakers
+  try {
+    const circuitsRes = await fetch(`${BASE_URL}/api/admin/agent/circuits`);
+    checks.push({
+      name: 'Circuit Breakers',
+      status: circuitsRes.ok ? '✅' : '❌'
+    });
+  } catch (e: any) {
+    checks.push({ name: 'Circuit Breakers', status: '❌', details: e.message });
+  }
+  
+  // 8. Gaps
+  try {
+    const gapsRes = await fetch(`${BASE_URL}/api/admin/agent/gaps`);
+    const gaps = await gapsRes.json();
+    checks.push({
+      name: 'Gap Detector',
+      status: gapsRes.ok ? '✅' : '❌',
+      details: `${Array.isArray(gaps) ? gaps.length : 0} gaps tracked`
+    });
+  } catch (e: any) {
+    checks.push({ name: 'Gap Detector', status: '❌', details: e.message });
+  }
+  
+  // 9. Metrics
+  try {
+    const metricsRes = await fetch(`${BASE_URL}/api/admin/metrics`);
+    checks.push({
+      name: 'Metrics Endpoint',
+      status: metricsRes.ok ? '✅' : '⚠️',
+      details: metricsRes.ok ? 'Available' : 'Not configured'
+    });
+  } catch (e: any) {
+    checks.push({ name: 'Metrics Endpoint', status: '⚠️', details: 'Optional' });
+  }
+  
+  // Print results
+  checks.forEach(check => {
+    console.log(`${check.status} ${check.name}${check.details ? ` (${check.details})` : ''}`);
+  });
+  
+  const passed = checks.filter(c => c.status === '✅').length;
+  const warnings = checks.filter(c => c.status === '⚠️').length;
+  const failed = checks.filter(c => c.status === '❌').length;
+  
+  console.log('\n' + '='.repeat(50));
+  console.log(`\n📊 RESULTADO: ${passed} passed, ${warnings} warnings, ${failed} failed\n`);
+  
+  if (failed === 0) {
+    console.log('🚀 ¡SISTEMA COMPLETAMENTE FUNCIONAL Y LISTO PARA PRODUCCIÓN!\n');
+  } else {
+    console.log('⚠️ Algunos componentes necesitan atención. Revisa los errores arriba.\n');
+  }
+}
+
+verifyCompleteSystem();
+
+17) Ejecutar verificación y confirmar que todo funciona correctamente. Reportar resultados.

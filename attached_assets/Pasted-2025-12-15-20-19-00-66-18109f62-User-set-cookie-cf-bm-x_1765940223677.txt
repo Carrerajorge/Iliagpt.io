@@ -1,0 +1,100 @@
+2025-12-15 20:19:00.66
+18109f62
+User
+'set-cookie': '__cf_bm=xSyMyvNlekuMTzcbFsRz6r_qo.Kz6QbujQuV8MbsoO0-1765844340-1.0.1.1-Ca1xmjmTEr5nXnSTEAy_jiyxcaiPghFBqchMTlFvjes8Kq6wryUZ8Vyei8xWNlKVz0sQJZPe.1bYlB6_6JYoHZoBKoWBVh1fEk46Q1ov.uY; path=/; expires=Tue, 16-Dec-25 00:49:00 GMT; domain=.x.ai; HttpOnly; Secure; SameSite=None',
+2025-12-15 20:19:00.66
+18109f62
+User
+'content-encoding': 'gzip',
+2025-12-15 20:19:00.66
+18109f62
+User
+vary: 'origin, access-control-request-method, access-control-request-headers',
+2025-12-15 20:19:00.66
+18109f62
+User
+'access-control-expose-headers': '*',
+2025-12-15 20:19:00.66
+18109f62
+User
+status: 404,
+2025-12-15 20:19:00.66
+18109f62
+User
+headers: Headers {
+2025-12-15 20:19:00.66
+18109f62
+User
+at H.makeStatusError (/home/runner/workspace/dist/index.cjs:100:1172)
+2025-12-15 20:19:00.66
+18109f62
+User
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+2025-12-15 20:19:00.66
+18109f62
+User
+param: undefined,
+2025-12-15 20:19:00.66
+18109f62
+User
+at H.makeRequest (/home/runner/workspace/dist/index.cjs:100:4487)
+2025-12-15 20:19:00.66
+18109f62
+User
+at async /home/runner/workspace/dist/index.cjs:100:16077 {
+2025-12-15 20:19:00.66
+18109f62
+User
+'cf-cache-status': 'DYNAMIC',
+2025-12-15 20:19:00.66
+18109f62
+User
+}
+2025-12-15 20:19:00.66
+18109f62
+User
+connection: 'keep-alive',
+2025-12-15 20:19:00.66
+18109f62
+User
+'access-control-allow-origin': '*',
+2025-12-15 20:19:00.66
+18109f62
+User
+at async rv (/home/runner/workspace/dist/index.cjs:100:14058)
+2025-12-15 20:19:00.66
+18109f62
+User
+at t.generate (/home/runner/workspace/dist/index.cjs:78:2136)
+2025-12-15 20:19:00.66
+18109f62
+User
+error: "The model text-embedding-3-small does not exist or your team caf66fcb-88a5-4f9c-b8c6-d1a2b65e81af does not have access to it. Please ensure you're using the correct API key. If you believe this is a mistake, please contact support and quote your team ID and the model name.",
+2025-12-15 20:19:00.66
+18109f62
+User
+'cf-ray': '9aea01b8a8a56193-ORD'
+2025-12-15 20:19:00.66
+18109f62
+User
+'strict-transport-security': 'max-age=31536000',
+2025-12-15 20:19:00.66
+18109f62
+User
+Embedding generation error: Ca [Error]: 404 "The model text-embedding-3-small does not exist or your team caf66fcb-88a5-4f9c-b8c6-d1a2b65e81af does not have access to it. Please ensure you're using the correct API key. If you believe this is a mistake, please contact support and quote your team ID and the model name."
+2025-12-15 20:19:00.66
+18109f62
+User
+'content-type': 'application/json',
+2025-12-15 20:19:00.66
+18109f62
+User
+server: 'cloudflare',
+2025-12-15 20:19:00.66
+18109f62
+User
+requestID: null,
+2025-12-15 20:19:00.66
+18109f62
+User
+},

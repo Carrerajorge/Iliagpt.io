@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "title": "Reporte Comercial Q4",
+    "author": "Office Agent Pro"
+  },
+  "styleset": "modern",
+  "blocks": [
+    {
+      "type": "title",
+      "text": "Reporte Comercial Q4"
+    },
+    {
+      "type": "toc",
+      "max_level": 3
+    },
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "Resumen ejecutivo"
+    },
+    {
+      "type": "paragraph",
+      "text": "Reporte generado con IR JSON estricta + render determinístico."
+    },
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "Indicadores clave"
+    },
+    {
+      "type": "bullets",
+      "items": [
+        "Ingresos: 1.25M",
+        "Crecimiento: 18.3%",
+        "Clientes nuevos: 342"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "Paquetes"
+    },
+    {
+      "type": "table",
+      "columns": [
+        "Plan",
+        "Precio",
+        "Incluye"
+      ],
+      "rows": [
+        [
+          "Basic",
+          "$999",
+          "Soporte estándar"
+        ],
+        [
+          "Pro",
+          "$2,499",
+          "Soporte premium"
+        ]
+      ],
+      "style": "Table Grid",
+      "header": true
+    },
+    {
+      "type": "page_break"
+    },
+    {
+      "type": "heading",
+      "level": 1,
+      "text": "Notas"
+    },
+    {
+      "type": "paragraph",
+      "text": "Actualiza la tabla de contenido en tu editor para reflejar headings."
+    }
+  ]
+}

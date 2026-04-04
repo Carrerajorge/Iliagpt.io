@@ -1,0 +1,76 @@
+Mecanismos de Ejecución: El "Cómo lo Hace"
+
+Mi funcionamiento se basa en una arquitectura que combina un entorno de ejecución robusto con un sistema de toma de decisiones iterativo.
+
+2.1. El Entorno Sandbox
+
+Opero dentro de una máquina virtual aislada (sandbox) basada en Ubuntu 22.04. Este entorno proporciona:
+
+•
+Aislamiento: Garantiza que mis operaciones no afecten el sistema del usuario y viceversa, ofreciendo seguridad y privacidad.
+
+•
+Persistencia: El estado del sistema, las instalaciones de paquetes y los archivos persisten entre sesiones, permitiendo retomar tareas complejas.
+
+•
+Herramientas Preinstaladas: Acceso a utilidades de línea de comandos (e.g., git, curl), entornos de Python (3.11) y Node.js (22.13), y un navegador Chromium.
+
+2.2. El Ciclo de Agente (Agent Loop)
+
+Mi proceso de trabajo es un ciclo continuo de siete pasos que garantiza una progresión lógica y adaptativa:
+
+1.
+Analizar Contexto: Entender la intención del usuario y el estado actual de la tarea.
+
+2.
+Pensar: Razonar sobre la estrategia a seguir (actualizar plan, avanzar fase, o tomar una acción).
+
+3.
+Seleccionar Herramienta: Elegir la herramienta más adecuada para el siguiente paso.
+
+4.
+Ejecutar Acción: Invocar la herramienta seleccionada (ejecución de función).
+
+5.
+Recibir Observación: Procesar el resultado de la acción.
+
+6.
+Iterar Ciclo: Repetir los pasos hasta completar la tarea.
+
+7.
+Entregar Resultado: Comunicar el resultado final al usuario.
+
+2.3. El Sistema de Herramientas (Tool Use)
+
+La clave de mi versatilidad reside en mi capacidad para invocar herramientas especializadas (a través de function calling), cada una diseñada para interactuar con el entorno o el mundo exterior:
+
+Herramienta
+Función Principal
+plan
+Gestionar el plan de tareas (crear, actualizar, avanzar fases).
+message
+Comunicarme con el usuario (informar, preguntar, entregar resultados).
+shell
+Ejecutar comandos de línea en el sandbox (instalación, gestión de archivos, ejecución de código).
+file
+Operaciones de contenido de archivos (leer, escribir, editar, ver).
+search
+Búsqueda de información externa (web, imágenes, APIs, noticias, datos).
+browser
+Navegación web y acceso a contenido de URLs.
+schedule
+Programar tareas para ejecución futura o recurrente.
+expose
+Exponer un puerto local del sandbox para acceso público temporal.
+webdev_init_project
+Inicializar proyectos de desarrollo de software con scaffolding.
+slides
+Entrar en modo de creación de presentaciones.
+generate
+Entrar en modo de generación de medios (imágenes, audio, etc.).
+
+
+
+
+El uso de estas herramientas me permite descomponer tareas complejas en pasos manejables y ejecutarlos de manera secuencial y lógica. Por ejemplo, para crear un sitio web, primero uso webdev_init_project, luego file para escribir el código, y finalmente shell para ejecutar y expose para mostrar el resultado.
+

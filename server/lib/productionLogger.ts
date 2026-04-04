@@ -98,6 +98,50 @@ class ProductionLogger {
         };
     }
 
+    private isContext(value: unknown): value is LogContext {
+        return typeof value === 'object' && value !== null && !(value instanceof Error);
+    }
+
+    private toError(value: unknown): Error {
+        return value instanceof Error ? value : new Error(String(value));
+    }
+
+    private normalizeErrorArgs(
+        messageOrContext: string | LogContext,
+        errorOrMessage?: Error | unknown | LogContext | string,
+        contextOrError?: LogContext | Error | unknown,
+    ): { message: string; context?: LogContext; error?: Error } {
+        if (typeof messageOrContext === 'string') {
+            const message = messageOrContext;
+            if (this.isContext(errorOrMessage) && contextOrError === undefined) {
+                return { message, context: errorOrMessage };
+            }
+            const error =
+                errorOrMessage !== undefined && !this.isContext(errorOrMessage) && typeof errorOrMessage !== 'string'
+                    ? this.toError(errorOrMessage)
+                    : undefined;
+            const context = this.isContext(contextOrError) ? contextOrError : undefined;
+            return { message, context, error };
+        }
+
+        const message = typeof errorOrMessage === 'string' ? errorOrMessage : 'Error';
+        const trailingContext =
+            typeof errorOrMessage === 'string' && this.isContext(contextOrError) ? contextOrError : undefined;
+        const context = trailingContext
+            ? { ...messageOrContext, ...trailingContext }
+            : messageOrContext;
+        const error =
+            typeof errorOrMessage === 'string'
+                ? contextOrError !== undefined && !this.isContext(contextOrError)
+                    ? this.toError(contextOrError)
+                    : undefined
+                : errorOrMessage !== undefined && !this.isContext(errorOrMessage)
+                    ? this.toError(errorOrMessage)
+                    : undefined;
+
+        return { message, context, error };
+    }
+
     private log(level: LogLevel, message: string, context?: LogContext, error?: Error): void {
         if (!this.shouldLog(level)) {
             return;
@@ -154,9 +198,16 @@ class ProductionLogger {
         this.log('warn', message, context);
     }
 
-    error(message: string, error?: Error | unknown, context?: LogContext): void {
-        const err = error instanceof Error ? error : new Error(String(error));
-        this.log('error', message, context, err);
+    error(message: string, context?: LogContext): void;
+    error(message: string, error?: Error | unknown, context?: LogContext): void;
+    error(context: LogContext, message: string, error?: Error | unknown): void;
+    error(
+        messageOrContext: string | LogContext,
+        errorOrMessage?: Error | unknown | LogContext | string,
+        contextOrError?: LogContext | Error | unknown,
+    ): void {
+        const normalized = this.normalizeErrorArgs(messageOrContext, errorOrMessage, contextOrError);
+        this.log('error', normalized.message, normalized.context, normalized.error);
     }
 
     child(component: string): ProductionLogger {
