@@ -1,340 +1,309 @@
-/**
- * SourceCredibilityScorer — evaluates trustworthiness and bias of web sources.
- * Factors: TLD, domain age heuristics, HTTPS, known publisher lists, bias indicators.
- * Outputs a normalized 0–1 score with per-factor explanation.
- */
-
-import { createLogger } from "../utils/logger";
-
-const logger = createLogger("SourceCredibilityScorer");
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+import { Logger } from "../lib/logger"
+import { redis } from "../lib/redis"
 
 export interface CredibilityScore {
-  url: string;
-  domain: string;
-  overall: number; // 0–1
-  factors: CredibilityFactor[];
-  biasLeaning?: "left" | "center-left" | "center" | "center-right" | "right" | "unknown";
-  freshnessScore?: number;
-  explanation: string;
+  url: string
+  domain: string
+  overall: number
+  trustScore: number
+  biasScore: number
+  freshnessScore: number
+  category: "academic" | "news" | "government" | "commercial" | "blog" | "social" | "unknown"
+  flags: string[]
+  tldBonus: number
 }
 
-export interface CredibilityFactor {
-  name: string;
-  score: number; // 0–1
-  weight: number;
-  detail: string;
+interface BiasInfo {
+  bias: "left" | "right" | "center" | "extreme"
+  score: number
 }
 
-export interface ScoringOptions {
-  publishedAt?: string;
-  preferFresh?: boolean;
-}
+const CACHE_TTL_SEC = 86400  // 24 hours
 
-// ─── Domain Knowledge Bases ───────────────────────────────────────────────────
+class SourceCredibilityScorer {
+  private whitelist: Set<string>
+  private blacklist: Set<string>
+  private biasedDomains: Map<string, BiasInfo>
 
-const HIGH_CREDIBILITY_DOMAINS = new Set([
-  "nature.com", "science.org", "nejm.org", "thelancet.com", "bmj.com",
-  "pubmed.ncbi.nlm.nih.gov", "scholar.google.com", "arxiv.org",
-  "who.int", "cdc.gov", "nih.gov", "fda.gov", "nasa.gov",
-  "reuters.com", "apnews.com", "bbc.com", "theguardian.com",
-  "nytimes.com", "wsj.com", "economist.com", "ft.com",
-  "mit.edu", "stanford.edu", "harvard.edu", "ox.ac.uk", "cam.ac.uk",
-  "wikipedia.org", "britannica.com",
-]);
-
-const LOW_CREDIBILITY_DOMAINS = new Set([
-  "naturalnews.com", "infowars.com", "beforeitsnews.com", "worldnewsdailyreport.com",
-  "empirenews.net", "theonion.com", "clickhole.com", "babylonbee.com",
-  "yournewswire.com", "newspunch.com", "neonnettle.com",
-]);
-
-const FACT_CHECK_DOMAINS = new Set([
-  "snopes.com", "factcheck.org", "politifact.com", "fullfact.org",
-  "reuters.com/fact-check", "apnews.com/APFactCheck", "leadstories.com",
-]);
-
-// Political bias data (Center-left, Center-right, etc.) from media bias resources
-const DOMAIN_BIAS_MAP: Record<string, CredibilityScore["biasLeaning"]> = {
-  "foxnews.com": "right",
-  "breitbart.com": "right",
-  "nationalreview.com": "center-right",
-  "wsj.com": "center-right",
-  "economist.com": "center",
-  "reuters.com": "center",
-  "apnews.com": "center",
-  "bbc.com": "center",
-  "nytimes.com": "center-left",
-  "washingtonpost.com": "center-left",
-  "theguardian.com": "center-left",
-  "msnbc.com": "left",
-  "motherjones.com": "left",
-  "jacobinmag.com": "left",
-};
-
-// TLD credibility tiers
-const TLD_SCORES: Record<string, number> = {
-  ".edu": 0.9,
-  ".gov": 0.95,
-  ".ac.uk": 0.88,
-  ".ac.": 0.85,
-  ".org": 0.65,
-  ".com": 0.55,
-  ".net": 0.5,
-  ".io": 0.5,
-  ".info": 0.4,
-  ".biz": 0.3,
-  ".xyz": 0.2,
-  ".click": 0.15,
-  ".buzz": 0.15,
-};
-
-// ─── Scoring Functions ────────────────────────────────────────────────────────
-
-function scoreTld(domain: string): CredibilityFactor {
-  for (const [tld, score] of Object.entries(TLD_SCORES)) {
-    if (domain.endsWith(tld)) {
-      return { name: "tld", score, weight: 0.15, detail: `TLD "${tld}" score: ${score}` };
-    }
-  }
-  return { name: "tld", score: 0.4, weight: 0.15, detail: "Unknown TLD" };
-}
-
-function scoreKnownDomain(domain: string): CredibilityFactor {
-  const normalized = domain.replace(/^www\./, "");
-
-  if (HIGH_CREDIBILITY_DOMAINS.has(normalized)) {
-    return { name: "known_domain", score: 0.95, weight: 0.3, detail: "High-credibility publisher" };
-  }
-  if (LOW_CREDIBILITY_DOMAINS.has(normalized)) {
-    return { name: "known_domain", score: 0.05, weight: 0.3, detail: "Low-credibility / satire domain" };
-  }
-  if (FACT_CHECK_DOMAINS.has(normalized)) {
-    return { name: "known_domain", score: 0.9, weight: 0.3, detail: "Fact-checking organization" };
+  constructor() {
+    this.whitelist = this.buildWhitelist()
+    this.blacklist = this.buildBlacklist()
+    this.biasedDomains = this.buildBiasMap()
   }
 
-  return { name: "known_domain", score: 0.5, weight: 0.3, detail: "Unknown domain — neutral baseline" };
-}
-
-function scoreHttps(url: string): CredibilityFactor {
-  const isHttps = url.startsWith("https://");
-  return {
-    name: "https",
-    score: isHttps ? 1.0 : 0.2,
-    weight: 0.1,
-    detail: isHttps ? "HTTPS encrypted" : "HTTP unencrypted",
-  };
-}
-
-function scoreDomainStructure(domain: string): CredibilityFactor {
-  // Subdomain count heuristic: many subdomains can indicate aggregation/spam sites
-  const parts = domain.split(".");
-  const subdomainCount = Math.max(0, parts.length - 2);
-
-  // Numeric domains or very long domains are suspicious
-  const hasNumbers = /\d/.test(parts[0] ?? "");
-  const isLong = (parts[0]?.length ?? 0) > 20;
-
-  let score = 0.7;
-  if (subdomainCount > 2) score -= 0.15;
-  if (hasNumbers) score -= 0.1;
-  if (isLong) score -= 0.1;
-  score = Math.max(0.1, score);
-
-  return {
-    name: "domain_structure",
-    score,
-    weight: 0.1,
-    detail: `Subdomains: ${subdomainCount}, numeric: ${hasNumbers}, long name: ${isLong}`,
-  };
-}
-
-function scoreFreshness(publishedAt: string | undefined, preferFresh: boolean): CredibilityFactor {
-  if (!publishedAt) {
-    return { name: "freshness", score: 0.5, weight: 0.15, detail: "No publication date available" };
-  }
-
-  const pub = new Date(publishedAt);
-  if (isNaN(pub.getTime())) {
-    return { name: "freshness", score: 0.5, weight: 0.15, detail: "Invalid date format" };
-  }
-
-  const ageMs = Date.now() - pub.getTime();
-  const ageDays = ageMs / (1000 * 60 * 60 * 24);
-
-  let score: number;
-  if (ageDays < 1) score = 1.0;
-  else if (ageDays < 7) score = 0.95;
-  else if (ageDays < 30) score = 0.85;
-  else if (ageDays < 90) score = 0.75;
-  else if (ageDays < 365) score = 0.65;
-  else if (ageDays < 365 * 2) score = 0.5;
-  else if (ageDays < 365 * 5) score = 0.35;
-  else score = 0.2;
-
-  const weight = preferFresh ? 0.25 : 0.1;
-
-  return {
-    name: "freshness",
-    score,
-    weight,
-    detail: `Published ${Math.round(ageDays)} days ago`,
-  };
-}
-
-function detectBiasLeaning(domain: string): CredibilityScore["biasLeaning"] {
-  const normalized = domain.replace(/^www\./, "");
-  return DOMAIN_BIAS_MAP[normalized] ?? "unknown";
-}
-
-function detectBiasInText(content: string): number {
-  // Heuristic: loaded/emotional language reduces credibility
-  const biasWords = [
-    "radical", "extreme", "corrupt", "evil", "destroy", "hoax", "conspiracy",
-    "regime", "puppet", "shill", "traitor", "invader", "invasion",
-    "woke", "snowflake", "nazi", "communist", "socialist agenda",
-  ];
-
-  const lower = content.toLowerCase();
-  const hits = biasWords.filter((w) => lower.includes(w)).length;
-  const penalty = Math.min(0.4, hits * 0.04);
-  return Math.max(0, 1 - penalty);
-}
-
-// ─── Blacklist / Whitelist ────────────────────────────────────────────────────
-
-const customBlacklist = new Set<string>();
-const customWhitelist = new Set<string>();
-
-// ─── Main Scorer ──────────────────────────────────────────────────────────────
-
-export class SourceCredibilityScorer {
-  addToBlacklist(domain: string): void {
-    customBlacklist.add(domain.replace(/^www\./, ""));
-  }
-
-  addToWhitelist(domain: string): void {
-    customWhitelist.add(domain.replace(/^www\./, ""));
-  }
-
-  removeFromBlacklist(domain: string): void {
-    customBlacklist.delete(domain.replace(/^www\./, ""));
-  }
-
-  score(url: string, options: ScoringOptions = {}): CredibilityScore {
-    let domain: string;
+  async score(url: string, publishedAt?: string): Promise<CredibilityScore> {
+    const domain = this.extractDomain(url)
+    const cacheKey = `credibility:${domain}:${publishedAt ?? "nodate"}`
 
     try {
-      domain = new URL(url).hostname.toLowerCase();
-    } catch {
-      return {
-        url,
-        domain: url,
-        overall: 0.1,
-        factors: [],
-        explanation: "Invalid URL",
-      };
+      const cached = await redis.get(cacheKey)
+      if (cached) return JSON.parse(cached)
+    } catch (err) {
+      Logger.debug("[Credibility] Cache read failed", { error: (err as Error).message })
     }
 
-    const normalized = domain.replace(/^www\./, "");
+    const result = this.computeScore(url, domain, publishedAt)
 
-    // Custom lists override everything
-    if (customBlacklist.has(normalized)) {
-      return {
-        url,
-        domain,
-        overall: 0.0,
-        factors: [],
-        explanation: "Domain is on the custom blacklist",
-        biasLeaning: "unknown",
-      };
+    try {
+      await redis.setex(cacheKey, CACHE_TTL_SEC, JSON.stringify(result))
+    } catch (err) {
+      Logger.debug("[Credibility] Cache write failed", { error: (err as Error).message })
     }
 
-    if (customWhitelist.has(normalized)) {
-      return {
-        url,
-        domain,
-        overall: 1.0,
-        factors: [],
-        explanation: "Domain is on the custom whitelist",
-        biasLeaning: detectBiasLeaning(domain),
-      };
+    return result
+  }
+
+  async scoreBatch(urls: string[]): Promise<CredibilityScore[]> {
+    return Promise.all(urls.map((url) => this.score(url)))
+  }
+
+  private computeScore(url: string, domain: string, publishedAt?: string): CredibilityScore {
+    const flags: string[] = []
+    const tld = this.extractTld(domain)
+
+    if (this.blacklist.has(domain)) {
+      flags.push("blacklisted", "known_misinformation")
     }
 
-    const factors: CredibilityFactor[] = [
-      scoreTld(domain),
-      scoreKnownDomain(domain),
-      scoreHttps(url),
-      scoreDomainStructure(domain),
-      scoreFreshness(options.publishedAt, options.preferFresh ?? false),
-    ];
+    const tldBonus = this.scoreByTld(domain)
+    const domainAuthority = this.scoreDomainAuthority(domain)
+    const freshnessScore = this.scoreFreshness(publishedAt)
+    const biasInfo = this.detectBias(domain)
+    const category = this.categorize(domain, tld)
 
-    // Weighted average
-    const totalWeight = factors.reduce((s, f) => s + f.weight, 0);
-    const weightedSum = factors.reduce((s, f) => s + f.score * f.weight, 0);
-    const overall = Math.min(1, Math.max(0, weightedSum / totalWeight));
+    if (biasInfo.score > 0.6) flags.push("known_bias")
+    if (biasInfo.score > 0.85) flags.push("extreme_bias")
+    if (freshnessScore < 0.3) flags.push("outdated")
+    if (this.isPotentiallySatire(domain)) flags.push("satire")
+    if (this.isPaywalled(domain)) flags.push("paywalled")
 
-    const biasLeaning = detectBiasLeaning(domain);
+    let trustScore = this.blacklist.has(domain) ? 0.05 : domainAuthority + tldBonus
+    trustScore = Math.min(trustScore, 1.0)
 
-    const explanation = factors
-      .map((f) => `${f.name} (${Math.round(f.score * 100)}%): ${f.detail}`)
-      .join("; ");
-
-    logger.debug(`Credibility score for ${domain}: ${overall.toFixed(2)}`);
+    const biasScore = biasInfo.score
+    const overall = this.blacklist.has(domain)
+      ? 0.05
+      : trustScore * 0.5 + (1 - biasScore) * 0.3 + freshnessScore * 0.2
 
     return {
       url,
       domain,
-      overall: Math.round(overall * 100) / 100,
-      factors,
-      biasLeaning,
-      freshnessScore: factors.find((f) => f.name === "freshness")?.score,
-      explanation,
-    };
+      overall: Math.min(Math.max(overall, 0), 1),
+      trustScore: Math.min(trustScore, 1),
+      biasScore,
+      freshnessScore,
+      category,
+      flags,
+      tldBonus,
+    }
   }
 
-  scoreMany(urls: Array<{ url: string; publishedAt?: string }>): CredibilityScore[] {
-    return urls
-      .map((u) => this.score(u.url, { publishedAt: u.publishedAt }))
-      .sort((a, b) => b.overall - a.overall);
+  private scoreByTld(domain: string): number {
+    if (domain.endsWith(".edu")) return 0.3
+    if (domain.endsWith(".gov")) return 0.2
+    if (/\.ac\.[a-z]{2}$/.test(domain)) return 0.25
+    if (domain.endsWith(".org")) return 0.1
+    if (domain.endsWith(".com") || domain.endsWith(".net")) return 0
+    if (domain.endsWith(".info") || domain.endsWith(".biz")) return -0.1
+    return 0
   }
 
-  filterByMinScore(urls: Array<{ url: string; publishedAt?: string }>, minScore: number): Array<{ url: string; score: CredibilityScore }> {
-    return urls
-      .map((u) => ({ url: u.url, score: this.score(u.url, { publishedAt: u.publishedAt }) }))
-      .filter((r) => r.score.overall >= minScore);
+  private scoreFreshness(publishedAt?: string): number {
+    if (!publishedAt) return 0.5  // unknown freshness
+    const pubDate = new Date(publishedAt)
+    if (isNaN(pubDate.getTime())) return 0.5
+    const now = Date.now()
+    const ageMs = now - pubDate.getTime()
+    const DAY = 86400000
+    if (ageMs < DAY) return 1.0
+    if (ageMs < 7 * DAY) return 0.9
+    if (ageMs < 30 * DAY) return 0.7
+    if (ageMs < 365 * DAY) return 0.4
+    return 0.1
   }
 
-  isReliable(url: string): boolean {
-    return this.score(url).overall >= 0.65;
+  private detectBias(domain: string): { score: number; direction?: string } {
+    const info = this.biasedDomains.get(domain)
+    if (!info) return { score: 0 }
+    return { score: info.score, direction: info.bias }
   }
 
-  isSatireOrFake(url: string): boolean {
-    return this.score(url).overall < 0.2;
+  private scoreDomainAuthority(domain: string): number {
+    // Tier 1: 0.95+ — top academic, scientific, and established news
+    const tier1 = new Set([
+      "nature.com", "sciencedirect.com", "pubmed.ncbi.nlm.nih.gov", "arxiv.org",
+      "nytimes.com", "bbc.com", "bbc.co.uk", "reuters.com", "who.int", "cdc.gov",
+      "nasa.gov", "nih.gov", "ncbi.nlm.nih.gov", "science.org", "thelancet.com",
+      "nejm.org", "cell.com", "pnas.org", "journals.plos.org", "ieee.org",
+    ])
+    if (tier1.has(domain)) return 0.95
+
+    // Tier 2: 0.80 — high quality reference and journalism
+    const tier2 = new Set([
+      "wikipedia.org", "britannica.com", "wired.com", "theatlantic.com",
+      "scientificamerican.com", "washingtonpost.com", "theguardian.com",
+      "economist.com", "ft.com", "wsj.com", "apnews.com", "npr.org",
+      "pbs.org", "smithsonianmag.com", "nationalgeographic.com", "newscientist.com",
+      "technologyreview.com", "spectrum.ieee.org", "acm.org",
+    ])
+    if (tier2.has(domain)) return 0.8
+
+    // Tier 3: 0.60 — mixed quality
+    const tier3 = new Set([
+      "medium.com", "substack.com", "forbes.com", "businessinsider.com",
+      "huffpost.com", "vox.com", "theconversation.com", "slate.com",
+      "salon.com", "reason.com", "vice.com", "buzzfeednews.com", "fivethirtyeight.com",
+    ])
+    if (tier3.has(domain)) return 0.6
+
+    // Tier 4: 0.30 — default for unknown
+    return 0.3
   }
 
-  scoreWithContent(url: string, content: string, options: ScoringOptions = {}): CredibilityScore {
-    const base = this.score(url, options);
-    const contentBias = detectBiasInText(content);
+  private categorize(domain: string, tld: string): CredibilityScore["category"] {
+    const academicDomains = ["arxiv.org", "pubmed.ncbi.nlm.nih.gov", "semanticscholar.org", "jstor.org", "acm.org", "ieee.org"]
+    if (academicDomains.some((d) => domain.includes(d))) return "academic"
+    if (tld === ".edu" || /\.ac\.[a-z]{2}$/.test(domain)) return "academic"
 
-    // Blend content bias into overall score with low weight
-    const blended = base.overall * 0.85 + contentBias * 0.15;
+    const govDomains = [".gov", ".mil"]
+    if (govDomains.some((d) => domain.endsWith(d))) return "government"
 
-    return {
-      ...base,
-      overall: Math.round(blended * 100) / 100,
-      factors: [
-        ...base.factors,
-        {
-          name: "content_bias",
-          score: contentBias,
-          weight: 0.15,
-          detail: `Loaded/emotional language score: ${Math.round(contentBias * 100)}%`,
-        },
-      ],
-    };
+    const newsDomains = ["nytimes.com", "bbc.com", "reuters.com", "apnews.com", "cnn.com", "foxnews.com",
+      "washingtonpost.com", "theguardian.com", "wsj.com", "ft.com", "npr.org",
+      "huffpost.com", "vox.com", "theatlantic.com", "slate.com"]
+    if (newsDomains.some((d) => domain.includes(d))) return "news"
+
+    const socialDomains = ["twitter.com", "x.com", "facebook.com", "instagram.com",
+      "reddit.com", "linkedin.com", "tiktok.com", "youtube.com", "quora.com"]
+    if (socialDomains.some((d) => domain.includes(d))) return "social"
+
+    const blogIndicators = ["medium.com", "substack.com", "blogspot.com", "wordpress.com", "tumblr.com"]
+    if (blogIndicators.some((d) => domain.includes(d))) return "blog"
+
+    if (tld === ".com" || tld === ".net" || tld === ".io") return "commercial"
+
+    return "unknown"
+  }
+
+  private isPotentiallySatire(domain: string): boolean {
+    const satire = new Set([
+      "theonion.com", "clickhole.com", "babylonbee.com", "thebeaverton.com",
+      "waterfordwhispersnews.com", "newsthump.com", "palmerreport.com",
+      "duffelblog.com", "reductress.com",
+    ])
+    return satire.has(domain)
+  }
+
+  private isPaywalled(domain: string): boolean {
+    const paywalled = new Set([
+      "wsj.com", "ft.com", "nytimes.com", "washingtonpost.com", "economist.com",
+      "thetimes.co.uk", "newyorker.com", "wired.com", "theatlantic.com", "bloomberg.com",
+    ])
+    return paywalled.has(domain)
+  }
+
+  private extractDomain(url: string): string {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "")
+    } catch {
+      return url.split("/")[2]?.replace(/^www\./, "") ?? url
+    }
+  }
+
+  private extractTld(domain: string): string {
+    const parts = domain.split(".")
+    return parts.length >= 2 ? `.${parts[parts.length - 1]}` : ""
+  }
+
+  private buildWhitelist(): Set<string> {
+    return new Set([
+      // Academic & Scientific
+      "nature.com", "sciencedirect.com", "pubmed.ncbi.nlm.nih.gov", "arxiv.org",
+      "science.org", "thelancet.com", "nejm.org", "cell.com", "pnas.org",
+      "journals.plos.org", "ieee.org", "acm.org", "springer.com", "wiley.com",
+      "jstor.org", "semanticscholar.org", "researchgate.net", "scholar.google.com",
+      "ncbi.nlm.nih.gov", "nih.gov",
+      // News & Journalism
+      "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk", "nytimes.com",
+      "theguardian.com", "washingtonpost.com", "wsj.com", "ft.com",
+      "economist.com", "npr.org", "pbs.org", "cbsnews.com", "nbcnews.com",
+      "abcnews.go.com", "politico.com", "thehill.com",
+      // Government & Health
+      "who.int", "cdc.gov", "nasa.gov", "nih.gov", "fda.gov", "epa.gov",
+      "whitehouse.gov", "congress.gov", "un.org", "europa.eu",
+      // Reference
+      "wikipedia.org", "britannica.com", "merriam-webster.com",
+      // Science communication
+      "scientificamerican.com", "newscientist.com", "technologyreview.com",
+      "smithsonianmag.com", "nationalgeographic.com", "discovermagazine.com",
+      "theconversation.com", "factcheck.org", "snopes.com",
+    ])
+  }
+
+  private buildBlacklist(): Set<string> {
+    return new Set([
+      // Known misinformation and conspiracy
+      "infowars.com", "naturalnews.com", "breitbart.com", "zerohedge.com",
+      "beforeitsnews.com", "worldnewsdailyreport.com", "yournewswire.com",
+      "newspunch.com", "activistpost.com", "globalresearch.ca",
+      "veteranstoday.com", "stormfront.org", "dailystormer.name",
+      "thegatewaypundit.com", "100percentfedup.com", "conservativedailypost.com",
+      "mediamass.net", "huzlers.com", "empirenews.net", "nationalreport.net",
+      "theuspatriot.com", "usapoliticstoday.com",
+    ])
+  }
+
+  private buildBiasMap(): Map<string, BiasInfo> {
+    return new Map([
+      // Left-leaning
+      ["salon.com", { bias: "left", score: 0.65 }],
+      ["motherjones.com", { bias: "left", score: 0.65 }],
+      ["thenation.com", { bias: "left", score: 0.65 }],
+      ["huffpost.com", { bias: "left", score: 0.55 }],
+      ["vox.com", { bias: "left", score: 0.5 }],
+      ["slate.com", { bias: "left", score: 0.5 }],
+      ["democracynow.org", { bias: "left", score: 0.6 }],
+      ["jacobinmag.com", { bias: "left", score: 0.7 }],
+      ["currentaffairs.org", { bias: "left", score: 0.65 }],
+      ["truthout.org", { bias: "left", score: 0.65 }],
+      // Right-leaning
+      ["foxnews.com", { bias: "right", score: 0.65 }],
+      ["dailywire.com", { bias: "right", score: 0.75 }],
+      ["nationalreview.com", { bias: "right", score: 0.55 }],
+      ["weeklystandard.com", { bias: "right", score: 0.55 }],
+      ["reason.com", { bias: "right", score: 0.5 }],
+      ["theblaze.com", { bias: "right", score: 0.7 }],
+      ["townhall.com", { bias: "right", score: 0.7 }],
+      ["washingtonexaminer.com", { bias: "right", score: 0.6 }],
+      ["nypost.com", { bias: "right", score: 0.6 }],
+      ["westernjournal.com", { bias: "right", score: 0.65 }],
+      // Center
+      ["reuters.com", { bias: "center", score: 0.1 }],
+      ["apnews.com", { bias: "center", score: 0.1 }],
+      ["bbc.com", { bias: "center", score: 0.15 }],
+      ["economist.com", { bias: "center", score: 0.2 }],
+      ["thehill.com", { bias: "center", score: 0.25 }],
+      ["axios.com", { bias: "center", score: 0.2 }],
+      // Extreme
+      ["infowars.com", { bias: "extreme", score: 0.95 }],
+      ["breitbart.com", { bias: "extreme", score: 0.9 }],
+      ["stormfront.org", { bias: "extreme", score: 1.0 }],
+    ])
+  }
+
+  isBlacklisted(url: string): boolean {
+    const domain = this.extractDomain(url)
+    return this.blacklist.has(domain)
+  }
+
+  getTopTrustedDomains(category?: string): string[] {
+    const trusted = Array.from(this.whitelist)
+    if (!category) return trusted
+    return trusted.filter((d) => {
+      const tld = this.extractTld(d)
+      return this.categorize(d, tld) === category
+    })
   }
 }
 
-export const sourceCredibilityScorer = new SourceCredibilityScorer();
+export const credibilityScorer = new SourceCredibilityScorer()

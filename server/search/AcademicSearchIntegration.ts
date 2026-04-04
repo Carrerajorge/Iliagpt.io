@@ -1,438 +1,443 @@
-/**
- * AcademicSearchIntegration — unified interface over arXiv, PubMed, Semantic Scholar, and CrossRef.
- * Returns normalized paper objects with citation graph traversal and trend detection.
- */
-
-import { createLogger } from "../utils/logger";
-import { AppError } from "../utils/errors";
-
-const logger = createLogger("AcademicSearchIntegration");
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+import axios from "axios"
+import { Logger } from "../lib/logger"
+import { redis } from "../lib/redis"
 
 export interface AcademicPaper {
-  id: string;
-  title: string;
-  authors: string[];
-  year: number | null;
-  abstract: string;
-  doi?: string;
-  pdfUrl?: string;
-  sourceUrl: string;
-  citations: number;
-  references?: string[];
-  source: "arxiv" | "pubmed" | "semantic_scholar" | "crossref";
-  keywords?: string[];
-  venue?: string;
-}
-
-export interface AcademicSearchOptions {
-  query: string;
-  maxResults?: number;
-  sources?: Array<"arxiv" | "pubmed" | "semantic_scholar" | "crossref">;
-  yearFrom?: number;
-  yearTo?: number;
-  sortBy?: "relevance" | "citations" | "date";
+  id: string
+  title: string
+  authors: string[]
+  abstract: string
+  year: number
+  venue?: string
+  doi?: string
+  arxivId?: string
+  pmid?: string
+  citationCount: number
+  references?: string[]
+  url: string
+  openAccess: boolean
 }
 
 export interface CitationGraph {
-  paper: AcademicPaper;
-  references: AcademicPaper[];
-  citedBy: AcademicPaper[];
-  depth: number;
+  paper: AcademicPaper
+  citations: AcademicPaper[]
+  references: AcademicPaper[]
+  depth: number
 }
 
-export interface ResearchTrend {
-  topic: string;
-  paperCount: number;
-  growthRate: number;
-  topPapers: AcademicPaper[];
-  peakYear: number;
+export interface TrendAnalysis {
+  topic: string
+  papersByYear: Record<number, number>
+  topVenues: string[]
+  topAuthors: string[]
+  citationGrowth: number
+  emergingSubtopics: string[]
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function stripTags(s: string): string {
-  return s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+interface SearchOptions {
+  sources?: ("arxiv" | "pubmed" | "semanticscholar" | "crossref")[]
+  limit?: number
+  yearFrom?: number
+  yearTo?: number
+  openAccessOnly?: boolean
 }
 
-// ─── arXiv ────────────────────────────────────────────────────────────────────
+const CACHE_TTL = 3600  // 1 hour
 
-async function searchArXiv(options: AcademicSearchOptions): Promise<AcademicPaper[]> {
-  const max = options.maxResults ?? 10;
-  const params = new URLSearchParams({
-    search_query: `all:${options.query}`,
-    start: "0",
-    max_results: String(max),
-    sortBy: options.sortBy === "date" ? "submittedDate" : "relevance",
-    sortOrder: "descending",
-  });
+class AcademicSearchIntegration {
+  async search(query: string, options: SearchOptions = {}): Promise<AcademicPaper[]> {
+    const { sources = ["arxiv", "pubmed", "semanticscholar", "crossref"], limit = 10 } = options
+    Logger.info("[AcademicSearch] Searching", { query, sources })
 
-  const resp = await fetch(`https://export.arxiv.org/api/query?${params}`, {
-    headers: { "User-Agent": "IliaGPT-Academic/1.0" },
-    signal: AbortSignal.timeout(15_000),
-  });
-
-  if (!resp.ok) throw new AppError(`arXiv API error ${resp.status}`, 502, "ARXIV_ERROR");
-
-  const xml = await resp.text();
-  const papers: AcademicPaper[] = [];
-  const entryRegex = /<entry>([\s\S]*?)<\/entry>/g;
-  let m: RegExpExecArray | null;
-
-  while ((m = entryRegex.exec(xml)) !== null) {
-    const entry = m[1];
-    const rawId = (entry.match(/<id>([^<]+)<\/id>/) ?? [])[1]?.trim() ?? "";
-    const title = stripTags((entry.match(/<title>([^<]+)<\/title>/) ?? [])[1] ?? "");
-    const summary = stripTags((entry.match(/<summary>([\s\S]*?)<\/summary>/) ?? [])[1] ?? "");
-    const published = (entry.match(/<published>([^<]+)<\/published>/) ?? [])[1] ?? "";
-    const year = published ? new Date(published).getFullYear() : null;
-    const authorMatches = [...entry.matchAll(/<author>\s*<name>([^<]+)<\/name>/g)];
-    const authors = authorMatches.map((am) => am[1].trim());
-    const doi = (entry.match(/<arxiv:doi[^>]*>([^<]+)<\/arxiv:doi>/) ?? [])[1]?.trim();
-
-    if (!title) continue;
-    papers.push({
-      id: `arxiv:${rawId.split("/abs/")[1] ?? rawId}`,
-      title,
-      authors,
-      year,
-      abstract: summary.slice(0, 800),
-      doi,
-      pdfUrl: rawId.replace("abs", "pdf"),
-      sourceUrl: rawId,
-      citations: 0,
-      source: "arxiv",
-    });
-  }
-
-  return papers;
-}
-
-// ─── PubMed ───────────────────────────────────────────────────────────────────
-
-async function searchPubMed(options: AcademicSearchOptions): Promise<AcademicPaper[]> {
-  const max = options.maxResults ?? 10;
-  const searchParams = new URLSearchParams({
-    db: "pubmed",
-    term: options.query,
-    retmax: String(max),
-    retmode: "json",
-    sort: options.sortBy === "date" ? "date" : "relevance",
-  });
-
-  const searchResp = await fetch(
-    `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?${searchParams}`,
-    { signal: AbortSignal.timeout(10_000) }
-  );
-  if (!searchResp.ok) throw new AppError(`PubMed ESearch error ${searchResp.status}`, 502, "PUBMED_ERROR");
-
-  const searchData = (await searchResp.json()) as { esearchresult?: { idlist?: string[] } };
-  const ids = searchData.esearchresult?.idlist ?? [];
-  if (ids.length === 0) return [];
-
-  const summaryParams = new URLSearchParams({ db: "pubmed", id: ids.join(","), retmode: "json" });
-  const summaryResp = await fetch(
-    `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?${summaryParams}`,
-    { signal: AbortSignal.timeout(12_000) }
-  );
-  if (!summaryResp.ok) throw new AppError(`PubMed ESummary error ${summaryResp.status}`, 502, "PUBMED_ERROR");
-
-  const summaryData = (await summaryResp.json()) as {
-    result?: Record<string, {
-      uid: string;
-      title: string;
-      authors: Array<{ name: string }>;
-      pubdate: string;
-      doi?: string;
-      fulljournalname?: string;
-    }>;
-  };
-
-  const papers: AcademicPaper[] = [];
-  for (const id of ids) {
-    const item = summaryData.result?.[id];
-    if (!item) continue;
-    const year = item.pubdate ? parseInt(item.pubdate.split(" ")[0], 10) : null;
-    papers.push({
-      id: `pubmed:${item.uid}`,
-      title: item.title,
-      authors: (item.authors ?? []).map((a) => a.name),
-      year: isNaN(year!) ? null : year,
-      abstract: "",
-      doi: item.doi,
-      sourceUrl: `https://pubmed.ncbi.nlm.nih.gov/${item.uid}/`,
-      citations: 0,
-      venue: item.fulljournalname,
-      source: "pubmed",
-    });
-  }
-
-  return papers;
-}
-
-// ─── Semantic Scholar ─────────────────────────────────────────────────────────
-
-async function searchSemanticScholar(options: AcademicSearchOptions): Promise<AcademicPaper[]> {
-  const max = options.maxResults ?? 10;
-  const params = new URLSearchParams({
-    query: options.query,
-    limit: String(max),
-    fields: "paperId,title,authors,year,abstract,citationCount,openAccessPdf,externalIds,venue",
-    ...(options.sortBy === "citations" ? { sort: "citationCount:desc" } : {}),
-  });
-
-  const resp = await fetch(`https://api.semanticscholar.org/graph/v1/paper/search?${params}`, {
-    headers: { "User-Agent": "IliaGPT-Academic/1.0" },
-    signal: AbortSignal.timeout(12_000),
-  });
-
-  if (!resp.ok) throw new AppError(`Semantic Scholar error ${resp.status}`, 502, "S2_ERROR");
-
-  const data = (await resp.json()) as {
-    data?: Array<{
-      paperId: string;
-      title: string;
-      authors: Array<{ name: string }>;
-      year: number | null;
-      abstract: string | null;
-      citationCount: number;
-      openAccessPdf?: { url: string } | null;
-      externalIds?: { DOI?: string };
-      venue?: string;
-    }>;
-  };
-
-  return (data.data ?? []).map((p) => ({
-    id: `s2:${p.paperId}`,
-    title: p.title,
-    authors: (p.authors ?? []).map((a) => a.name),
-    year: p.year,
-    abstract: p.abstract?.slice(0, 800) ?? "",
-    doi: p.externalIds?.DOI,
-    pdfUrl: p.openAccessPdf?.url,
-    sourceUrl: `https://www.semanticscholar.org/paper/${p.paperId}`,
-    citations: p.citationCount ?? 0,
-    venue: p.venue,
-    source: "semantic_scholar" as const,
-  }));
-}
-
-// ─── CrossRef ─────────────────────────────────────────────────────────────────
-
-async function searchCrossRef(options: AcademicSearchOptions): Promise<AcademicPaper[]> {
-  const max = options.maxResults ?? 10;
-  const params = new URLSearchParams({
-    query: options.query,
-    rows: String(max),
-    sort: options.sortBy === "citations" ? "is-referenced-by-count" : "relevance",
-    select: "DOI,title,author,published,abstract,is-referenced-by-count,URL,container-title",
-    mailto: "research@iliagpt.ai",
-  });
-
-  const resp = await fetch(`https://api.crossref.org/works?${params}`, {
-    signal: AbortSignal.timeout(12_000),
-  });
-
-  if (!resp.ok) throw new AppError(`CrossRef error ${resp.status}`, 502, "CROSSREF_ERROR");
-
-  const data = (await resp.json()) as {
-    message?: {
-      items?: Array<{
-        DOI: string;
-        title: string[];
-        author?: Array<{ given?: string; family?: string }>;
-        published?: { "date-parts": number[][] };
-        abstract?: string;
-        "is-referenced-by-count"?: number;
-        URL?: string;
-        "container-title"?: string[];
-      }>;
-    };
-  };
-
-  return (data.message?.items ?? []).map((item) => {
-    const year = item.published?.["date-parts"]?.[0]?.[0] ?? null;
-    const authors = (item.author ?? []).map((a) => `${a.given ?? ""} ${a.family ?? ""}`.trim());
-    return {
-      id: `crossref:${item.DOI}`,
-      title: item.title?.[0] ?? "(No title)",
-      authors,
-      year,
-      abstract: item.abstract ? stripTags(item.abstract).slice(0, 800) : "",
-      doi: item.DOI,
-      sourceUrl: item.URL ?? `https://doi.org/${item.DOI}`,
-      citations: item["is-referenced-by-count"] ?? 0,
-      venue: item["container-title"]?.[0],
-      source: "crossref" as const,
-    };
-  });
-}
-
-// ─── Citation Graph ───────────────────────────────────────────────────────────
-
-async function fetchCitationGraph(paperId: string, depth = 1): Promise<CitationGraph> {
-  const s2Id = paperId.startsWith("s2:") ? paperId.slice(3) : paperId;
-  const resp = await fetch(
-    `https://api.semanticscholar.org/graph/v1/paper/${s2Id}?fields=title,authors,year,abstract,references,citations,citationCount`,
-    { signal: AbortSignal.timeout(12_000) }
-  );
-
-  if (!resp.ok) throw new AppError(`S2 citation graph error ${resp.status}`, 502, "S2_ERROR");
-
-  const data = (await resp.json()) as {
-    paperId: string;
-    title: string;
-    authors: Array<{ name: string }>;
-    year: number;
-    abstract: string;
-    citationCount: number;
-    references: Array<{ paperId: string; title: string; year: number; authors: Array<{ name: string }> }>;
-    citations: Array<{ paperId: string; title: string; year: number; authors: Array<{ name: string }> }>;
-  };
-
-  const toMinimal = (p: { paperId: string; title: string; year: number; authors: Array<{ name: string }> }): AcademicPaper => ({
-    id: `s2:${p.paperId}`,
-    title: p.title,
-    authors: (p.authors ?? []).map((a) => a.name),
-    year: p.year,
-    abstract: "",
-    sourceUrl: `https://www.semanticscholar.org/paper/${p.paperId}`,
-    citations: 0,
-    source: "semantic_scholar",
-  });
-
-  return {
-    paper: {
-      id: `s2:${data.paperId}`,
-      title: data.title,
-      authors: (data.authors ?? []).map((a) => a.name),
-      year: data.year,
-      abstract: data.abstract?.slice(0, 800) ?? "",
-      sourceUrl: `https://www.semanticscholar.org/paper/${data.paperId}`,
-      citations: data.citationCount,
-      source: "semantic_scholar",
-    },
-    references: (data.references ?? []).slice(0, 20).map(toMinimal),
-    citedBy: (data.citations ?? []).slice(0, 20).map(toMinimal),
-    depth,
-  };
-}
-
-// ─── Trend Detection ──────────────────────────────────────────────────────────
-
-async function detectResearchTrends(topics: string[]): Promise<ResearchTrend[]> {
-  const trends: ResearchTrend[] = [];
-
-  await Promise.allSettled(
-    topics.map(async (topic) => {
+    const tasks = sources.map(async (source) => {
       try {
-        const results = await searchSemanticScholar({ query: topic, maxResults: 50, sortBy: "citations" });
-
-        const byYear = new Map<number, number>();
-        for (const p of results) {
-          if (p.year) byYear.set(p.year, (byYear.get(p.year) ?? 0) + 1);
+        switch (source) {
+          case "arxiv": return await this.searchArxiv(query, limit)
+          case "pubmed": return await this.searchPubMed(query, limit)
+          case "semanticscholar": return await this.searchSemanticScholar(query, limit)
+          case "crossref": return await this.searchCrossRef(query, limit)
+          default: return []
         }
-
-        const years = [...byYear.keys()].sort();
-        if (years.length === 0) return;
-
-        const peakYear = years.reduce((a, b) => (byYear.get(a)! >= byYear.get(b)! ? a : b), years[0]);
-        const now = new Date().getFullYear();
-        const prev = byYear.get(now - 1) ?? 1;
-        const curr = byYear.get(now) ?? 0;
-        const growthRate = prev > 0 ? (curr - prev) / prev : 0;
-
-        trends.push({
-          topic,
-          paperCount: results.length,
-          growthRate,
-          topPapers: results.filter((p) => p.citations > 10).slice(0, 5),
-          peakYear,
-        });
-      } catch (err) {
-        logger.warn(`Trend detection failed for "${topic}": ${(err as Error).message}`);
+      } catch (err: any) {
+        Logger.warn(`[AcademicSearch] Source ${source} failed`, { error: err?.message })
+        return []
       }
     })
-  );
 
-  return trends.sort((a, b) => b.growthRate - a.growthRate);
-}
+    const allResults = await Promise.allSettled(tasks)
+    let papers: AcademicPaper[] = []
+    for (const r of allResults) {
+      if (r.status === "fulfilled") papers.push(...r.value)
+    }
 
-// ─── Unified Academic Search ──────────────────────────────────────────────────
+    papers = this.deduplicatePapers(papers)
 
-export class AcademicSearchIntegration {
-  async search(options: AcademicSearchOptions): Promise<AcademicPaper[]> {
-    const sources = options.sources ?? ["semantic_scholar", "arxiv", "pubmed", "crossref"];
-    const perSource = Math.ceil((options.maxResults ?? 10) / sources.length);
-    const all: AcademicPaper[] = [];
+    if (options.yearFrom) papers = papers.filter((p) => p.year >= (options.yearFrom ?? 0))
+    if (options.yearTo) papers = papers.filter((p) => p.year <= (options.yearTo ?? 9999))
+    if (options.openAccessOnly) papers = papers.filter((p) => p.openAccess)
 
-    await Promise.allSettled(
-      sources.map(async (src) => {
-        try {
-          let results: AcademicPaper[] = [];
-          switch (src) {
-            case "arxiv": results = await searchArXiv({ ...options, maxResults: perSource }); break;
-            case "pubmed": results = await searchPubMed({ ...options, maxResults: perSource }); break;
-            case "semantic_scholar": results = await searchSemanticScholar({ ...options, maxResults: perSource }); break;
-            case "crossref": results = await searchCrossRef({ ...options, maxResults: perSource }); break;
-          }
-          all.push(...results);
-          logger.debug(`Academic [${src}]: ${results.length} results`);
-        } catch (err) {
-          logger.warn(`Academic source ${src} failed: ${(err as Error).message}`);
-        }
-      })
-    );
-
-    // Deduplicate by DOI then title prefix
-    const seen = new Set<string>();
-    const deduped = all.filter((p) => {
-      const key = p.doi ?? p.title.toLowerCase().slice(0, 50);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-    return deduped
-      .sort((a, b) => (b.citations ?? 0) - (a.citations ?? 0))
-      .slice(0, options.maxResults ?? 20);
+    papers.sort((a, b) => b.citationCount - a.citationCount)
+    Logger.info("[AcademicSearch] Combined results", { count: papers.length })
+    return papers.slice(0, limit * 2)
   }
 
-  async getCitationGraph(paperId: string, depth = 1): Promise<CitationGraph> {
-    return fetchCitationGraph(paperId, depth);
+  async searchArxiv(query: string, limit = 10): Promise<AcademicPaper[]> {
+    const cacheKey = `academic:arxiv:${Buffer.from(query).toString("base64").slice(0, 40)}:${limit}`
+    const cached = await this.getCache<AcademicPaper[]>(cacheKey)
+    if (cached) return cached
+
+    const url = `http://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(query)}&max_results=${limit}&sortBy=relevance`
+    Logger.debug("[AcademicSearch] arXiv request", { url })
+
+    const response = await axios.get<string>(url, { timeout: 15000, responseType: "text" })
+    const papers = this.parseArxivXml(response.data)
+
+    await this.setCache(cacheKey, papers)
+    Logger.debug("[AcademicSearch] arXiv returned", { count: papers.length })
+    return papers
   }
 
-  async detectTrends(topics: string[]): Promise<ResearchTrend[]> {
-    return detectResearchTrends(topics);
+  async searchPubMed(query: string, limit = 10): Promise<AcademicPaper[]> {
+    const cacheKey = `academic:pubmed:${Buffer.from(query).toString("base64").slice(0, 40)}:${limit}`
+    const cached = await this.getCache<AcademicPaper[]>(cacheKey)
+    if (cached) return cached
+
+    // Step 1: Search for IDs
+    const searchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=${limit}&retmode=json`
+    const searchResp = await axios.get<any>(searchUrl, { timeout: 15000 })
+    const ids: string[] = searchResp.data?.esearchresult?.idlist ?? []
+    if (ids.length === 0) return []
+
+    // Step 2: Fetch details
+    const fetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${ids.join(",")}&retmode=xml`
+    const fetchResp = await axios.get<string>(fetchUrl, { timeout: 20000, responseType: "text" })
+    const papers = this.parsePubMedXml(fetchResp.data)
+
+    await this.setCache(cacheKey, papers)
+    Logger.debug("[AcademicSearch] PubMed returned", { count: papers.length })
+    return papers
   }
 
-  async resolveDoI(doi: string): Promise<AcademicPaper | null> {
-    try {
-      const resp = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, {
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (!resp.ok) return null;
-      const data = (await resp.json()) as {
-        message?: { title?: string[]; author?: Array<{ given?: string; family?: string }> };
-      };
-      if (!data.message) return null;
+  async searchSemanticScholar(query: string, limit = 10): Promise<AcademicPaper[]> {
+    const cacheKey = `academic:ss:${Buffer.from(query).toString("base64").slice(0, 40)}:${limit}`
+    const cached = await this.getCache<AcademicPaper[]>(cacheKey)
+    if (cached) return cached
 
+    const fields = "title,authors,year,citationCount,abstract,openAccessPdf,venue,externalIds"
+    const url = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(query)}&limit=${limit}&fields=${fields}`
+    const response = await axios.get<any>(url, {
+      timeout: 15000,
+      headers: { "User-Agent": "IliaGPT/1.0 (research; mailto:support@iliagpt.com)" },
+    })
+
+    const items: any[] = response.data?.data ?? []
+    const papers: AcademicPaper[] = items.map((p: any) => ({
+      id: p.paperId ?? p.externalIds?.DOI ?? "",
+      title: p.title ?? "",
+      authors: (p.authors ?? []).map((a: any) => a.name ?? ""),
+      abstract: p.abstract ?? "",
+      year: p.year ?? 0,
+      venue: p.venue ?? undefined,
+      doi: p.externalIds?.DOI ?? undefined,
+      arxivId: p.externalIds?.ArXiv ?? undefined,
+      citationCount: p.citationCount ?? 0,
+      url: p.openAccessPdf?.url ?? `https://www.semanticscholar.org/paper/${p.paperId}`,
+      openAccess: !!p.openAccessPdf?.url,
+    }))
+
+    await this.setCache(cacheKey, papers)
+    Logger.debug("[AcademicSearch] Semantic Scholar returned", { count: papers.length })
+    return papers
+  }
+
+  async searchCrossRef(query: string, limit = 10): Promise<AcademicPaper[]> {
+    const cacheKey = `academic:crossref:${Buffer.from(query).toString("base64").slice(0, 40)}:${limit}`
+    const cached = await this.getCache<AcademicPaper[]>(cacheKey)
+    if (cached) return cached
+
+    const fields = "title,author,published,DOI,abstract,is-referenced-by-count,container-title"
+    const url = `https://api.crossref.org/works?query=${encodeURIComponent(query)}&rows=${limit}&select=${fields}`
+    const response = await axios.get<any>(url, {
+      timeout: 15000,
+      headers: { "User-Agent": "IliaGPT/1.0 (mailto:support@iliagpt.com)" },
+    })
+
+    const items: any[] = response.data?.message?.items ?? []
+    const papers: AcademicPaper[] = items.map((p: any) => {
+      const published = p.published?.["date-parts"]?.[0] ?? []
+      const year = published[0] ?? 0
+      const doi = p.DOI ?? ""
       return {
-        id: `crossref:${doi}`,
-        title: data.message.title?.[0] ?? doi,
-        authors: (data.message.author ?? []).map((a) => `${a.given ?? ""} ${a.family ?? ""}`.trim()),
-        year: null,
-        abstract: "",
-        doi,
-        sourceUrl: `https://doi.org/${doi}`,
-        citations: 0,
-        source: "crossref",
-      };
-    } catch {
-      return null;
+        id: doi || `crossref:${Math.random()}`,
+        title: Array.isArray(p.title) ? (p.title[0] ?? "") : (p.title ?? ""),
+        authors: (p.author ?? []).map((a: any) => `${a.given ?? ""} ${a.family ?? ""}`.trim()),
+        abstract: p.abstract ? p.abstract.replace(/<[^>]+>/g, "") : "",
+        year,
+        venue: Array.isArray(p["container-title"]) ? p["container-title"][0] : undefined,
+        doi: doi || undefined,
+        citationCount: p["is-referenced-by-count"] ?? 0,
+        url: doi ? `https://doi.org/${doi}` : "",
+        openAccess: false,
+      }
+    })
+
+    await this.setCache(cacheKey, papers)
+    Logger.debug("[AcademicSearch] CrossRef returned", { count: papers.length })
+    return papers
+  }
+
+  async buildCitationGraph(paperId: string, depth = 1): Promise<CitationGraph> {
+    Logger.info("[AcademicSearch] Building citation graph", { paperId, depth })
+
+    const cacheKey = `academic:citgraph:${paperId}:${depth}`
+    const cached = await this.getCache<CitationGraph>(cacheKey)
+    if (cached) return cached
+
+    const fields = "title,authors,year,citationCount,abstract,openAccessPdf,venue,externalIds"
+    const paperUrl = `https://api.semanticscholar.org/graph/v1/paper/${encodeURIComponent(paperId)}?fields=${fields},citations,references`
+
+    const response = await axios.get<any>(paperUrl, {
+      timeout: 20000,
+      headers: { "User-Agent": "IliaGPT/1.0" },
+    })
+
+    const p = response.data
+    const paper = this.ssItemToAcademicPaper(p)
+
+    const citations: AcademicPaper[] = (p.citations ?? []).slice(0, 20).map((c: any) =>
+      this.ssItemToAcademicPaper(c.citingPaper ?? c)
+    )
+    const references: AcademicPaper[] = (p.references ?? []).slice(0, 20).map((r: any) =>
+      this.ssItemToAcademicPaper(r.citedPaper ?? r)
+    )
+
+    const graph: CitationGraph = { paper, citations, references, depth }
+    await this.setCache(cacheKey, graph, 3600)
+    return graph
+  }
+
+  async detectTrends(topic: string): Promise<TrendAnalysis> {
+    Logger.info("[AcademicSearch] Detecting trends", { topic })
+
+    const currentYear = new Date().getFullYear()
+    const papers = await this.searchSemanticScholar(topic, 100)
+
+    const papersByYear: Record<number, number> = {}
+    const venueCount: Record<string, number> = {}
+    const authorCount: Record<string, number> = {}
+
+    for (const paper of papers) {
+      if (paper.year >= 2015) {
+        papersByYear[paper.year] = (papersByYear[paper.year] ?? 0) + 1
+      }
+      if (paper.venue) {
+        venueCount[paper.venue] = (venueCount[paper.venue] ?? 0) + 1
+      }
+      for (const author of paper.authors) {
+        if (author) authorCount[author] = (authorCount[author] ?? 0) + 1
+      }
+    }
+
+    const topVenues = Object.entries(venueCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([v]) => v)
+
+    const topAuthors = Object.entries(authorCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([a]) => a)
+
+    const lastYearCount = papersByYear[currentYear - 1] ?? 0
+    const twoYearsAgoCount = papersByYear[currentYear - 3] ?? 1
+    const citationGrowth = twoYearsAgoCount > 0
+      ? ((lastYearCount - twoYearsAgoCount) / twoYearsAgoCount) * 100
+      : 0
+
+    return {
+      topic,
+      papersByYear,
+      topVenues,
+      topAuthors,
+      citationGrowth: Math.round(citationGrowth),
+      emergingSubtopics: [],
+    }
+  }
+
+  async getRelatedPapers(paperId: string, limit = 10): Promise<AcademicPaper[]> {
+    const cacheKey = `academic:related:${paperId}:${limit}`
+    const cached = await this.getCache<AcademicPaper[]>(cacheKey)
+    if (cached) return cached
+
+    const url = `https://api.semanticscholar.org/recommendations/v1/papers/forpaper/${encodeURIComponent(paperId)}?limit=${limit}&fields=title,authors,year,citationCount,abstract,openAccessPdf,venue`
+    try {
+      const response = await axios.get<any>(url, { timeout: 15000, headers: { "User-Agent": "IliaGPT/1.0" } })
+      const papers: AcademicPaper[] = (response.data?.recommendedPapers ?? []).map((p: any) =>
+        this.ssItemToAcademicPaper(p)
+      )
+      await this.setCache(cacheKey, papers)
+      return papers
+    } catch (err: any) {
+      Logger.warn("[AcademicSearch] Related papers failed", { paperId, error: err?.message })
+      return []
+    }
+  }
+
+  parseArxivXml(xml: string): AcademicPaper[] {
+    const papers: AcademicPaper[] = []
+    const entries = xml.split("<entry>").slice(1)
+
+    for (const entry of entries) {
+      try {
+        const id = (entry.match(/<id>([^<]+)<\/id>/)?.[1] ?? "").trim()
+        const title = (entry.match(/<title>([\s\S]*?)<\/title>/)?.[1] ?? "").replace(/\s+/g, " ").trim()
+        const abstract = (entry.match(/<summary>([\s\S]*?)<\/summary>/)?.[1] ?? "").replace(/\s+/g, " ").trim()
+        const published = entry.match(/<published>([^<]+)<\/published>/)?.[1] ?? ""
+        const year = published ? parseInt(published.slice(0, 4), 10) : 0
+
+        const authorMatches = [...entry.matchAll(/<name>([^<]+)<\/name>/g)]
+        const authors = authorMatches.map((m) => m[1].trim())
+
+        const arxivId = id.replace("http://arxiv.org/abs/", "").trim()
+
+        papers.push({
+          id: arxivId,
+          title,
+          authors,
+          abstract,
+          year,
+          arxivId,
+          citationCount: 0,
+          url: id,
+          openAccess: true,
+        })
+      } catch (err) {
+        Logger.debug("[AcademicSearch] arXiv XML parse error on entry", { error: (err as Error).message })
+      }
+    }
+
+    return papers
+  }
+
+  parsePubMedXml(xml: string): AcademicPaper[] {
+    const papers: AcademicPaper[] = []
+    const articles = xml.split("<PubmedArticle>").slice(1)
+
+    for (const article of articles) {
+      try {
+        const pmid = article.match(/<PMID[^>]*>(\d+)<\/PMID>/)?.[1] ?? ""
+        const title = (article.match(/<ArticleTitle>([\s\S]*?)<\/ArticleTitle>/)?.[1] ?? "")
+          .replace(/<[^>]+>/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+
+        const abstractText = (article.match(/<AbstractText[^>]*>([\s\S]*?)<\/AbstractText>/)?.[1] ?? "")
+          .replace(/<[^>]+>/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+
+        const year = parseInt(
+          article.match(/<PubDate>[\s\S]*?<Year>(\d{4})<\/Year>/)?.[1] ??
+          article.match(/<Year>(\d{4})<\/Year>/)?.[1] ?? "0",
+          10
+        )
+
+        const authorMatches = [...article.matchAll(/<LastName>([^<]+)<\/LastName>[\s\S]*?<ForeName>([^<]*)<\/ForeName>/g)]
+        const authors = authorMatches.map((m) => `${m[2]} ${m[1]}`.trim())
+
+        const journalMatch = article.match(/<Title>([\s\S]*?)<\/Title>/)
+        const venue = journalMatch ? journalMatch[1].replace(/\s+/g, " ").trim() : undefined
+
+        const doiMatch = article.match(/<ArticleId IdType="doi">([^<]+)<\/ArticleId>/)
+        const doi = doiMatch ? doiMatch[1].trim() : undefined
+
+        papers.push({
+          id: pmid,
+          title,
+          authors,
+          abstract: abstractText,
+          year,
+          venue,
+          doi,
+          pmid,
+          citationCount: 0,
+          url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+          openAccess: false,
+        })
+      } catch (err) {
+        Logger.debug("[AcademicSearch] PubMed XML parse error", { error: (err as Error).message })
+      }
+    }
+
+    return papers
+  }
+
+  deduplicatePapers(papers: AcademicPaper[]): AcademicPaper[] {
+    const seen = new Map<string, AcademicPaper>()
+
+    for (const p of papers) {
+      // Deduplicate by DOI first
+      if (p.doi) {
+        const key = `doi:${p.doi.toLowerCase()}`
+        if (!seen.has(key) || seen.get(key)!.citationCount < p.citationCount) {
+          seen.set(key, p)
+        }
+        continue
+      }
+
+      // Deduplicate by arXiv ID
+      if (p.arxivId) {
+        const key = `arxiv:${p.arxivId.toLowerCase()}`
+        if (!seen.has(key) || seen.get(key)!.citationCount < p.citationCount) {
+          seen.set(key, p)
+        }
+        continue
+      }
+
+      // Deduplicate by normalized title
+      const normalTitle = p.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 40)
+      const key = `title:${normalTitle}`
+      if (!seen.has(key) || seen.get(key)!.citationCount < p.citationCount) {
+        seen.set(key, p)
+      }
+    }
+
+    return Array.from(seen.values())
+  }
+
+  private ssItemToAcademicPaper(p: any): AcademicPaper {
+    return {
+      id: p.paperId ?? p.externalIds?.DOI ?? "",
+      title: p.title ?? "",
+      authors: (p.authors ?? []).map((a: any) => a.name ?? ""),
+      abstract: p.abstract ?? "",
+      year: p.year ?? 0,
+      venue: p.venue ?? undefined,
+      doi: p.externalIds?.DOI ?? undefined,
+      arxivId: p.externalIds?.ArXiv ?? undefined,
+      citationCount: p.citationCount ?? 0,
+      url: p.openAccessPdf?.url ?? `https://www.semanticscholar.org/paper/${p.paperId ?? ""}`,
+      openAccess: !!p.openAccessPdf?.url,
+    }
+  }
+
+  private async getCache<T>(key: string): Promise<T | null> {
+    try {
+      const cached = await redis.get(key)
+      if (cached) return JSON.parse(cached) as T
+    } catch (err) {
+      Logger.debug("[AcademicSearch] Cache read failed", { key, error: (err as Error).message })
+    }
+    return null
+  }
+
+  private async setCache<T>(key: string, value: T, ttl = CACHE_TTL): Promise<void> {
+    try {
+      await redis.setex(key, ttl, JSON.stringify(value))
+    } catch (err) {
+      Logger.debug("[AcademicSearch] Cache write failed", { key, error: (err as Error).message })
     }
   }
 }
 
-export const academicSearch = new AcademicSearchIntegration();
+export const academicSearch = new AcademicSearchIntegration()

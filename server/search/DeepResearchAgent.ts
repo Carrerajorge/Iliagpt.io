@@ -1,403 +1,379 @@
-/**
- * DeepResearchAgent — multi-step research workflow with configurable depth.
- * Searches → fetches pages → extracts facts → cross-references → synthesizes.
- * Streams progress events so the UI can show real-time research status.
- */
+import { Logger } from "../lib/logger"
+import { llmGateway } from "../lib/llmGateway"
+import { multiSearchProvider } from "./MultiSearchProvider"
+import { webScraper } from "./WebScraperRobust"
 
-import { EventEmitter } from "events";
-import { createLogger } from "../utils/logger";
-import { AppError } from "../utils/errors";
-import { multiSearchProvider, SearchResult } from "./MultiSearchProvider";
-
-const logger = createLogger("DeepResearchAgent");
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export type ResearchDepth = "quick" | "medium" | "deep";
-
-export interface ResearchOptions {
-  query: string;
-  depth?: ResearchDepth;
-  maxSources?: number;
-  /** Stream progress events on the emitter */
-  onProgress?: (event: ResearchProgressEvent) => void;
+export interface ResearchTask {
+  question: string
+  depth: 1 | 2 | 3
+  maxSources?: number
+  userId?: string
+  onProgress?: (event: ProgressEvent) => void
 }
 
-export interface ResearchProgressEvent {
-  stage: "searching" | "fetching" | "extracting" | "cross_referencing" | "synthesizing" | "done";
-  message: string;
-  progress: number; // 0–100
-  data?: unknown;
+export interface SourceInfo {
+  url: string
+  title: string
+  domain: string
+  publishedAt?: string
 }
 
 export interface ExtractedFact {
-  claim: string;
-  source: string;
-  url: string;
-  confidence: "high" | "medium" | "low";
-  corroborated: boolean;
-  corroboratedBy?: string[];
+  fact: string
+  source: string
+  confidence: number
+  supportedBy: string[]
 }
 
-export interface PageContent {
-  url: string;
-  title: string;
-  content: string;
-  wordCount: number;
-  fetchedAt: string;
-  facts: ExtractedFact[];
+export interface ResearchResult {
+  question: string
+  answer: string
+  confidence: number
+  sources: SourceInfo[]
+  facts: ExtractedFact[]
+  relatedQuestions: string[]
+  searchQueriesUsed: string[]
+  processingTimeMs: number
 }
 
-export interface ResearchReport {
-  query: string;
-  depth: ResearchDepth;
-  sources: PageContent[];
-  facts: ExtractedFact[];
-  synthesis: string;
-  citations: Array<{ index: number; url: string; title: string }>;
-  searchResults: SearchResult[];
-  totalTime: number;
-  costUSD: number;
+export type ProgressEvent =
+  | { type: "searching"; query: string; step: number; totalSteps: number }
+  | { type: "reading"; url: string; title: string }
+  | { type: "extracting"; url: string; factsFound: number }
+  | { type: "synthesizing"; factsTotal: number }
+  | { type: "complete"; result: ResearchResult }
+
+const DEPTH_CONFIG: Record<number, { searches: number; maxSources: number }> = {
+  1: { searches: 3, maxSources: 3 },
+  2: { searches: 8, maxSources: 6 },
+  3: { searches: 15, maxSources: 10 },
 }
 
-// Depth configuration
-const DEPTH_CONFIG: Record<ResearchDepth, { pagesToRead: number; maxResults: number; crossRef: boolean }> = {
-  quick: { pagesToRead: 0, maxResults: 10, crossRef: false },
-  medium: { pagesToRead: 3, maxResults: 10, crossRef: false },
-  deep: { pagesToRead: 10, maxResults: 15, crossRef: true },
-};
+const PAGE_TIMEOUT_MS = 30000
 
-// ─── Readability Extraction ───────────────────────────────────────────────────
+class DeepResearchAgent {
+  async research(task: ResearchTask): Promise<ResearchResult> {
+    const startTime = Date.now()
+    const { question, depth, maxSources, userId, onProgress } = task
+    const config = DEPTH_CONFIG[depth]
+    const sourceCap = maxSources ?? config.maxSources
 
-interface ReadableContent {
-  title: string;
-  content: string;
-  wordCount: number;
-}
+    Logger.info("[DeepResearch] Starting research", { question, depth })
 
-function extractReadableContent(html: string, url: string): ReadableContent {
-  // Remove script, style, nav, footer, header, aside
-  let cleaned = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<nav[\s\S]*?<\/nav>/gi, "")
-    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
-    .replace(/<header[\s\S]*?<\/header>/gi, "")
-    .replace(/<aside[\s\S]*?<\/aside>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
+    // Step 1: Generate search queries
+    const queries = await this.generateSearchQueries(question, config.searches)
+    Logger.info("[DeepResearch] Generated queries", { count: queries.length })
 
-  // Extract title
-  const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-  const title = titleMatch?.[1]?.trim() ?? new URL(url).hostname;
+    // Step 2: Execute searches
+    const allUrls: string[] = []
+    const seenUrls = new Set<string>()
 
-  // Limit content to first 8000 chars to stay within token budgets
-  const content = cleaned.slice(0, 8_000);
-  const wordCount = content.split(/\s+/).length;
-
-  return { title, content, wordCount };
-}
-
-// ─── Fact Extractor ───────────────────────────────────────────────────────────
-
-function extractFactsFromText(text: string, sourceUrl: string): ExtractedFact[] {
-  // Heuristic: sentences with numbers, named entities, or "is/are/was" patterns
-  const sentences = text.split(/(?<=[.!?])\s+/).filter((s) => s.length > 40 && s.length < 400);
-
-  const factPatterns = [
-    /\b\d+[\d,]*\.?\d*\s*(percent|%|million|billion|thousand|kg|km|m|°|years?|months?)/i,
-    /\b(according to|research shows?|studies? show?|found that|reported that|evidence suggests?)\b/i,
-    /\b(is|are|was|were|has been|have been)\s+(the|a|an|one of)\b/i,
-    /\b(first|second|largest|smallest|highest|lowest|most|least)\b/i,
-  ];
-
-  const facts: ExtractedFact[] = [];
-
-  for (const sentence of sentences) {
-    const hasFactPattern = factPatterns.some((p) => p.test(sentence));
-    if (!hasFactPattern) continue;
-
-    facts.push({
-      claim: sentence.trim(),
-      source: new URL(sourceUrl).hostname,
-      url: sourceUrl,
-      confidence: "medium",
-      corroborated: false,
-    });
-
-    if (facts.length >= 20) break;
-  }
-
-  return facts;
-}
-
-// ─── Cross Reference ──────────────────────────────────────────────────────────
-
-function crossReferenceFacts(allFacts: ExtractedFact[]): ExtractedFact[] {
-  // For each fact, find similar claims from different sources
-  const updated = allFacts.map((fact) => ({ ...fact }));
-
-  for (let i = 0; i < updated.length; i++) {
-    const a = updated[i];
-    const corroboratedBy: string[] = [];
-
-    for (let j = 0; j < updated.length; j++) {
-      if (i === j || a.url === updated[j].url) continue;
-
-      const b = updated[j];
-      const similarity = computeTextSimilarity(a.claim, b.claim);
-
-      if (similarity > 0.4) {
-        corroboratedBy.push(b.url);
-      }
-    }
-
-    if (corroboratedBy.length > 0) {
-      a.corroborated = true;
-      a.corroboratedBy = corroboratedBy;
-      a.confidence = corroboratedBy.length >= 2 ? "high" : "medium";
-    }
-  }
-
-  return updated;
-}
-
-function computeTextSimilarity(a: string, b: string): number {
-  const wordsA = new Set(a.toLowerCase().split(/\W+/).filter((w) => w.length > 4));
-  const wordsB = new Set(b.toLowerCase().split(/\W+/).filter((w) => w.length > 4));
-
-  if (wordsA.size === 0 || wordsB.size === 0) return 0;
-
-  let intersection = 0;
-  for (const w of wordsA) {
-    if (wordsB.has(w)) intersection++;
-  }
-
-  return intersection / Math.sqrt(wordsA.size * wordsB.size);
-}
-
-// ─── Synthesis Builder ────────────────────────────────────────────────────────
-
-function buildSynthesis(
-  query: string,
-  facts: ExtractedFact[],
-  sources: PageContent[],
-  citations: Array<{ index: number; url: string; title: string }>
-): string {
-  const highConf = facts.filter((f) => f.confidence === "high" && f.corroborated);
-  const medConf = facts.filter((f) => f.confidence === "medium");
-  const citationMap = new Map(citations.map((c) => [c.url, c.index]));
-
-  const lines: string[] = [
-    `## Research Summary: ${query}\n`,
-    `*Based on ${sources.length} sources and ${facts.length} extracted facts.*\n`,
-  ];
-
-  if (highConf.length > 0) {
-    lines.push("### Corroborated Findings\n");
-    for (const f of highConf.slice(0, 5)) {
-      const idx = citationMap.get(f.url);
-      const cite = idx != null ? ` [${idx}]` : "";
-      lines.push(`- ${f.claim}${cite}`);
-    }
-    lines.push("");
-  }
-
-  if (medConf.length > 0) {
-    lines.push("### Additional Information\n");
-    for (const f of medConf.slice(0, 8)) {
-      const idx = citationMap.get(f.url);
-      const cite = idx != null ? ` [${idx}]` : "";
-      lines.push(`- ${f.claim}${cite}`);
-    }
-    lines.push("");
-  }
-
-  lines.push("### Sources\n");
-  for (const c of citations) {
-    lines.push(`[${c.index}] [${c.title}](${c.url})`);
-  }
-
-  return lines.join("\n");
-}
-
-// ─── DeepResearchAgent ────────────────────────────────────────────────────────
-
-export class DeepResearchAgent extends EventEmitter {
-  private fetchTimeout: number;
-  private userAgent: string;
-
-  constructor(opts: { fetchTimeoutMs?: number } = {}) {
-    super();
-    this.fetchTimeout = opts.fetchTimeoutMs ?? 15_000;
-    this.userAgent = "IliaGPT-Research/1.0 (Academic Research Assistant)";
-  }
-
-  async research(options: ResearchOptions): Promise<ResearchReport> {
-    const { query, depth = "medium", maxSources, onProgress } = options;
-    const cfg = DEPTH_CONFIG[depth];
-    const startTime = Date.now();
-
-    const progress = (stage: ResearchProgressEvent["stage"], message: string, pct: number, data?: unknown) => {
-      const ev: ResearchProgressEvent = { stage, message, progress: pct, data };
-      this.emit("progress", ev);
-      onProgress?.(ev);
-      logger.debug(`Research progress [${pct}%]: ${message}`);
-    };
-
-    // ── Step 1: Search ────────────────────────────────────────────────────────
-
-    progress("searching", `Searching for: "${query}"`, 5);
-
-    const searchResp = await multiSearchProvider.searchMultiProvider({
-      query,
-      maxResults: maxSources ?? cfg.maxResults,
-      mergeResults: true,
-      deduplicate: true,
-    });
-
-    progress("searching", `Found ${searchResp.results.length} results from ${searchResp.providers.join(", ")}`, 20, {
-      count: searchResp.results.length,
-    });
-
-    if (depth === "quick") {
-      progress("done", "Quick search complete", 100);
-      return {
-        query,
-        depth,
-        sources: [],
-        facts: [],
-        synthesis: this.buildQuickSummary(query, searchResp.results),
-        citations: searchResp.results.slice(0, 5).map((r, i) => ({ index: i + 1, url: r.url, title: r.title })),
-        searchResults: searchResp.results,
-        totalTime: Date.now() - startTime,
-        costUSD: searchResp.cost,
-      };
-    }
-
-    // ── Step 2: Fetch pages ───────────────────────────────────────────────────
-
-    const pagesToFetch = searchResp.results.slice(0, cfg.pagesToRead);
-    progress("fetching", `Fetching ${pagesToFetch.length} pages...`, 25);
-
-    const pages = await this.fetchPages(pagesToFetch, (url, i, total) => {
-      const pct = 25 + Math.round((i / total) * 30);
-      progress("fetching", `Reading: ${url}`, pct);
-    });
-
-    progress("fetching", `Successfully fetched ${pages.length} pages`, 55);
-
-    // ── Step 3: Extract facts ─────────────────────────────────────────────────
-
-    progress("extracting", "Extracting key facts from pages...", 60);
-
-    const allFacts: ExtractedFact[] = [];
-    for (const page of pages) {
-      const facts = extractFactsFromText(page.content, page.url);
-      page.facts = facts;
-      allFacts.push(...facts);
-    }
-
-    progress("extracting", `Extracted ${allFacts.length} facts`, 70);
-
-    // ── Step 4: Cross-reference ───────────────────────────────────────────────
-
-    let finalFacts = allFacts;
-
-    if (cfg.crossRef && allFacts.length > 0) {
-      progress("cross_referencing", "Cross-referencing claims across sources...", 75);
-      finalFacts = crossReferenceFacts(allFacts);
-      const corroborated = finalFacts.filter((f) => f.corroborated).length;
-      progress("cross_referencing", `Found ${corroborated} corroborated claims`, 85);
-    }
-
-    // ── Step 5: Synthesize ────────────────────────────────────────────────────
-
-    progress("synthesizing", "Synthesizing research findings...", 88);
-
-    const citations = pages.map((p, i) => ({ index: i + 1, url: p.url, title: p.title }));
-    const synthesis = buildSynthesis(query, finalFacts, pages, citations);
-
-    progress("done", "Research complete", 100);
-
-    return {
-      query,
-      depth,
-      sources: pages,
-      facts: finalFacts,
-      synthesis,
-      citations,
-      searchResults: searchResp.results,
-      totalTime: Date.now() - startTime,
-      costUSD: searchResp.cost,
-    };
-  }
-
-  private async fetchPages(
-    results: SearchResult[],
-    onFetch: (url: string, index: number, total: number) => void
-  ): Promise<PageContent[]> {
-    const pages: PageContent[] = [];
-
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      onFetch(r.url, i, results.length);
+    for (let i = 0; i < queries.length; i++) {
+      const query = queries[i]
+      onProgress?.({ type: "searching", query, step: i + 1, totalSteps: queries.length })
 
       try {
-        const page = await this.fetchPage(r.url);
-        pages.push(page);
-      } catch (err) {
-        logger.warn(`Failed to fetch ${r.url}: ${(err as Error).message}`);
+        const results = await multiSearchProvider.search({
+          query,
+          maxResults: Math.ceil(sourceCap / queries.length) + 2,
+        })
+        for (const r of results) {
+          if (!seenUrls.has(r.url)) {
+            seenUrls.add(r.url)
+            allUrls.push(r.url)
+          }
+        }
+      } catch (err: any) {
+        Logger.warn("[DeepResearch] Search failed for query", { query, error: err?.message })
       }
     }
 
-    return pages;
-  }
+    // Step 3: Read pages and extract facts
+    const urlsToRead = allUrls.slice(0, sourceCap)
+    const allFacts: ExtractedFact[] = []
+    const sources: SourceInfo[] = []
 
-  private async fetchPage(url: string): Promise<PageContent> {
-    const resp = await fetch(url, {
-      headers: {
-        "User-Agent": this.userAgent,
-        "Accept": "text/html,application/xhtml+xml,*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-      signal: AbortSignal.timeout(this.fetchTimeout),
-      redirect: "follow",
-    });
+    for (const url of urlsToRead) {
+      let title = url
+      try {
+        onProgress?.({ type: "reading", url, title })
 
-    if (!resp.ok) throw new AppError(`HTTP ${resp.status} for ${url}`, resp.status, "PAGE_FETCH_ERROR");
+        const pagePromise = webScraper.scrape(url, { timeout: PAGE_TIMEOUT_MS, useCache: true })
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Page read timeout")), PAGE_TIMEOUT_MS)
+        )
 
-    const contentType = resp.headers.get("content-type") ?? "";
-    if (!contentType.includes("text/html") && !contentType.includes("text/plain")) {
-      throw new AppError(`Non-HTML content at ${url}`, 400, "NON_HTML_CONTENT");
+        const page = await Promise.race([pagePromise, timeoutPromise])
+        title = page.title
+
+        onProgress?.({ type: "reading", url, title })
+
+        // Truncate content to avoid LLM token limits (~6000 words)
+        const contentForExtraction = page.content.slice(0, 24000)
+
+        const facts = await this.extractFacts(url, contentForExtraction, question)
+        onProgress?.({ type: "extracting", url, factsFound: facts.length })
+
+        allFacts.push(...facts)
+        sources.push({
+          url,
+          title: page.title,
+          domain: (() => { try { return new URL(url).hostname.replace(/^www\./, "") } catch { return url } })(),
+          publishedAt: page.publishedAt,
+        })
+      } catch (err: any) {
+        Logger.warn("[DeepResearch] Failed to process URL", { url, error: err?.message })
+      }
     }
 
-    const html = await resp.text();
-    const { title, content, wordCount } = extractReadableContent(html, url);
+    // Step 4: Cross-reference facts
+    const crossReferenced = await this.crossReference(allFacts)
+    onProgress?.({ type: "synthesizing", factsTotal: crossReferenced.length })
 
-    return {
-      url,
-      title,
-      content,
-      wordCount,
-      fetchedAt: new Date().toISOString(),
-      facts: [],
-    };
+    // Step 5: Synthesize answer
+    const answer = await this.synthesize(question, crossReferenced, sources)
+
+    // Step 6: Generate related questions
+    const relatedQuestions = await this.generateRelatedQuestions(question, answer)
+
+    // Calculate confidence based on fact corroboration
+    const avgConfidence = crossReferenced.length > 0
+      ? crossReferenced.reduce((sum, f) => sum + f.confidence, 0) / crossReferenced.length
+      : 0
+
+    const result: ResearchResult = {
+      question,
+      answer,
+      confidence: Math.min(avgConfidence, 1),
+      sources,
+      facts: crossReferenced,
+      relatedQuestions,
+      searchQueriesUsed: queries,
+      processingTimeMs: Date.now() - startTime,
+    }
+
+    onProgress?.({ type: "complete", result })
+    Logger.info("[DeepResearch] Research complete", {
+      question,
+      sourcesRead: sources.length,
+      factsExtracted: crossReferenced.length,
+      processingTimeMs: result.processingTimeMs,
+    })
+
+    return result
   }
 
-  private buildQuickSummary(query: string, results: SearchResult[]): string {
-    const lines = [`## Quick Research: ${query}\n`];
-    for (let i = 0; i < Math.min(results.length, 8); i++) {
-      const r = results[i];
-      lines.push(`**[${i + 1}] [${r.title}](${r.url})**`);
-      lines.push(r.snippet);
-      lines.push("");
+  private async generateSearchQueries(question: string, count: number): Promise<string[]> {
+    try {
+      const messages = [
+        {
+          role: "user" as const,
+          content: `Generate ${count} different search queries to thoroughly research this question: "${question}"
+
+Requirements:
+- Each query should approach the topic from a different angle
+- Include specific technical terms, general terms, and related concepts
+- Vary the phrasing (some specific, some broad)
+- Output ONLY a JSON array of strings, no other text
+
+Example output: ["query 1", "query 2", "query 3"]`,
+        },
+      ]
+
+      const response = await (llmGateway as any).chat(messages, { maxTokens: 500, temperature: 0.7 })
+      const content = typeof response === "string" ? response : response?.content ?? ""
+
+      const jsonMatch = content.match(/\[[\s\S]*\]/)
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0])
+        if (Array.isArray(parsed)) {
+          return parsed.slice(0, count).map(String)
+        }
+      }
+    } catch (err: any) {
+      Logger.warn("[DeepResearch] Query generation failed", { error: err?.message })
     }
-    return lines.join("\n");
+
+    // Fallback: generate simple variations
+    return [
+      question,
+      `${question} overview`,
+      `${question} research`,
+      `${question} explained`,
+      `${question} analysis`,
+    ].slice(0, count)
+  }
+
+  private async extractFacts(url: string, content: string, question: string): Promise<ExtractedFact[]> {
+    if (!content || content.length < 50) return []
+
+    try {
+      const messages = [
+        {
+          role: "user" as const,
+          content: `Extract key facts relevant to this question from the content below.
+
+Question: "${question}"
+
+Content from ${url}:
+${content.slice(0, 8000)}
+
+Extract facts as a JSON array. Each fact should be a concise, specific statement.
+Output ONLY valid JSON array, no other text:
+[
+  { "fact": "specific fact statement", "confidence": 0.9 },
+  ...
+]
+
+Confidence: 0.9=directly stated, 0.7=implied, 0.5=tangentially related.
+Include only facts relevant to the question. Maximum 10 facts.`,
+        },
+      ]
+
+      const response = await (llmGateway as any).chat(messages, { maxTokens: 800, temperature: 0.3 })
+      const content2 = typeof response === "string" ? response : response?.content ?? ""
+
+      const jsonMatch = content2.match(/\[[\s\S]*\]/)
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0])
+        if (Array.isArray(parsed)) {
+          return parsed.slice(0, 10).map((f: any) => ({
+            fact: String(f.fact ?? ""),
+            source: url,
+            confidence: Number(f.confidence ?? 0.7),
+            supportedBy: [],
+          })).filter((f) => f.fact.length > 0)
+        }
+      }
+    } catch (err: any) {
+      Logger.warn("[DeepResearch] Fact extraction failed", { url, error: err?.message })
+    }
+
+    return []
+  }
+
+  private async crossReference(facts: ExtractedFact[]): Promise<ExtractedFact[]> {
+    if (facts.length === 0) return []
+
+    // Group similar facts using simple text similarity
+    const groups: ExtractedFact[][] = []
+    const assigned = new Set<number>()
+
+    for (let i = 0; i < facts.length; i++) {
+      if (assigned.has(i)) continue
+      const group: ExtractedFact[] = [facts[i]]
+      assigned.add(i)
+
+      for (let j = i + 1; j < facts.length; j++) {
+        if (assigned.has(j)) continue
+        if (this.textSimilarity(facts[i].fact, facts[j].fact) > 0.5) {
+          group.push(facts[j])
+          assigned.add(j)
+        }
+      }
+
+      groups.push(group)
+    }
+
+    // For each group, produce a merged fact with boosted confidence
+    return groups.map((group) => {
+      const sources = [...new Set(group.map((f) => f.source))]
+      const bestFact = group.reduce((best, f) => f.confidence > best.confidence ? f : best)
+      const supportedBy = sources.filter((s) => s !== bestFact.source)
+      const confidenceBoost = Math.min(0.1 * (sources.length - 1), 0.3)
+
+      return {
+        ...bestFact,
+        confidence: Math.min(bestFact.confidence + confidenceBoost, 1.0),
+        supportedBy,
+      }
+    }).sort((a, b) => b.confidence - a.confidence)
+  }
+
+  private textSimilarity(a: string, b: string): number {
+    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter((w) => w.length > 3))
+    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter((w) => w.length > 3))
+    if (wordsA.size === 0 || wordsB.size === 0) return 0
+    let overlap = 0
+    for (const w of wordsA) { if (wordsB.has(w)) overlap++ }
+    return overlap / Math.max(wordsA.size, wordsB.size)
+  }
+
+  private async synthesize(question: string, facts: ExtractedFact[], sources: SourceInfo[]): Promise<string> {
+    if (facts.length === 0) {
+      return "Insufficient information was found to answer this question comprehensively."
+    }
+
+    const factsText = facts
+      .slice(0, 30)
+      .map((f, i) => `[${i + 1}] ${f.fact} (confidence: ${(f.confidence * 100).toFixed(0)}%, source: ${f.source})`)
+      .join("\n")
+
+    const sourcesText = sources
+      .map((s, i) => `[${i + 1}] ${s.title} - ${s.url}`)
+      .join("\n")
+
+    try {
+      const messages = [
+        {
+          role: "user" as const,
+          content: `Write a comprehensive, well-structured answer to this question using the extracted facts below.
+
+Question: "${question}"
+
+Extracted Facts:
+${factsText}
+
+Sources:
+${sourcesText}
+
+Instructions:
+- Synthesize the facts into a coherent, flowing answer
+- Use inline citations like [1], [2] etc. referring to the fact numbers
+- Be accurate and don't extrapolate beyond the facts provided
+- Structure the answer with clear paragraphs
+- Acknowledge any uncertainty or conflicting information
+- Length: 200-500 words depending on complexity`,
+        },
+      ]
+
+      const response = await (llmGateway as any).chat(messages, { maxTokens: 1200, temperature: 0.4 })
+      return typeof response === "string" ? response : response?.content ?? "Unable to synthesize answer."
+    } catch (err: any) {
+      Logger.error("[DeepResearch] Synthesis failed", err)
+      // Fallback: concatenate top facts
+      return facts.slice(0, 5).map((f) => f.fact).join(" ")
+    }
+  }
+
+  private async generateRelatedQuestions(question: string, answer: string): Promise<string[]> {
+    try {
+      const messages = [
+        {
+          role: "user" as const,
+          content: `Based on this question and answer, generate 5 related follow-up questions that would help explore the topic further.
+
+Question: "${question}"
+Answer summary: "${answer.slice(0, 500)}"
+
+Output ONLY a JSON array of 5 question strings, no other text.`,
+        },
+      ]
+
+      const response = await (llmGateway as any).chat(messages, { maxTokens: 400, temperature: 0.8 })
+      const content = typeof response === "string" ? response : response?.content ?? ""
+
+      const jsonMatch = content.match(/\[[\s\S]*\]/)
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0])
+        if (Array.isArray(parsed)) return parsed.slice(0, 5).map(String)
+      }
+    } catch (err: any) {
+      Logger.warn("[DeepResearch] Related questions generation failed", { error: err?.message })
+    }
+
+    return []
   }
 }
 
-// ─── Singleton ────────────────────────────────────────────────────────────────
-
-export const deepResearchAgent = new DeepResearchAgent();
+export const deepResearchAgent = new DeepResearchAgent()
