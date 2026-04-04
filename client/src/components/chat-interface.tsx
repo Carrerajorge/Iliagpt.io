@@ -1815,10 +1815,8 @@ export function ChatInterface({
           ? { ...m, deliveryStatus: "sent", deliveryError: undefined }
           : m
       ));
-      if (aiStateRef.current === "thinking") {
-        setAiStateForChat("idle", analysisConversationId);
-        setAiProcessStepsForChat([], analysisConversationId);
-      }
+      setAiStateForChat("idle", analysisConversationId);
+      setAiProcessStepsForChat([], analysisConversationId);
     } catch (analysisError: any) {
       if (analysisError?.name === "AbortError") {
         return;
@@ -1834,10 +1832,8 @@ export function ChatInterface({
           content: `No se pudo analizar el documento. ${errorMessage}`,
         };
       }));
-      if (aiStateRef.current === "thinking") {
-        setAiStateForChat("idle", analysisConversationId);
-        setAiProcessStepsForChat([], analysisConversationId);
-      }
+      setAiStateForChat("idle", analysisConversationId);
+      setAiProcessStepsForChat([], analysisConversationId);
       console.error(`[Document Analysis] (${userFriendlySource}) failed for userMessage ${opts.userMessageId}:`, analysisError);
       throw analysisError;
     } finally {
@@ -6041,6 +6037,7 @@ IMPORTANTE:
 
               if (hasDocumentAttachments && documentAttachmentsForAnalysis.length > 0) {
                 console.log("[handleSubmit] DATA_MODE (SSE): document attachments detected, async analysis running");
+                setAiStateForChat("thinking", effectiveStreamChatId);
                 return;
               }
 
@@ -6607,6 +6604,7 @@ IMPORTANTE:
               // Legacy mode - fall back to non-streaming /api/chat for Figma diagrams or when no run info
               if (hasDocumentAttachments && documentAttachmentsForAnalysis.length > 0) {
                 console.log("[handleSubmit] DATA_MODE (Legacy): document attachments detected, async analysis running");
+                setAiStateForChat("thinking", effectiveStreamChatId);
                 return;
               }
 
