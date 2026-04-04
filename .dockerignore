@@ -1,8 +1,10 @@
 # Version control
 .git
 .gitignore
+.github/
 
 # Rust build artifacts (~881 MB, dev-only)
+native/
 native/target/
 native/src/
 native/Cargo.toml
@@ -10,19 +12,24 @@ native/Cargo.lock
 
 # Python dev libraries (~215 MB)
 .pythonlibs/
+python_agent_tools/
 __pycache__/
 **/__pycache__/
 **/*.pyc
 **/*.pyo
 
-# Development assets and downloads
+# Development assets and downloads (~111 MB)
 attached_assets/
 Downloads/
 sandbox_workspace/
 generated_reports/
+uploads/
+
+# Artifacts / mockup sandbox (~259 MB)
 artifacts/
 
 # Test directories and reports
+tests/
 e2e/
 e2e-reports/
 playwright-report/
@@ -30,6 +37,10 @@ test-results/
 test_results/
 coverage/
 .nyc_output/
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
 
 # Documentation
 docs/
@@ -41,13 +52,18 @@ CONTRIBUTING.md
 desktop/
 daemon/
 
-# Local agent/cache state
+# Local agent/cache state (~454 MB)
 .local/
 .cache/
 .agents/
 .upm/
 .npm/
 .config/
+.canvas/
+tmp/
+.replit
+replit.nix
+replit.md
 
 # Dev tool config files
 .husky/
@@ -65,6 +81,7 @@ eslint.config.mjs
 .DS_Store
 *.tar.gz
 Shimmer
+*.log
 
 # node_modules caches (pruned by build, but ensure caches excluded)
 node_modules/.cache
@@ -74,8 +91,8 @@ node_modules/.package-lock.json
 # Frontend source (already built into dist/public/)
 client/src/
 
-# Build scripts (not needed at runtime)
-script/
+# Dev/test scripts (not needed at runtime)
+scripts/
 
 # Large dev-only files
 *.map
