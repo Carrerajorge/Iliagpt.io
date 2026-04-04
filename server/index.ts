@@ -363,6 +363,14 @@ export function log(message: string, source = "express") {
   const { initializeOpenClaw } = await import("./openclaw/index");
   await initializeOpenClaw(httpServer);
 
+  // Initialize the agentic capability layer (AgenticLoop, tools, terminal, tasks)
+  try {
+    const { integrateAgenticSystem } = await import("./integration/index");
+    await integrateAgenticSystem(app);
+  } catch (err) {
+    log(`[WARNING] Agentic system integration failed: ${(err as Error).message}`);
+  }
+
   // Ensure unmatched API routes return consistent JSON (instead of Express' default HTML 404).
   // This MUST be registered after all routes, but before the API error handler.
   app.use("/api", (req, _res, next) => {
