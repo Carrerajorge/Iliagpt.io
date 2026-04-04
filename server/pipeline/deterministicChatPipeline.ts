@@ -396,7 +396,7 @@ export class DeterministicChatPipeline extends EventEmitter {
         }
 
         // CONTEXT FIX: Use memory manager instead of hardcoded slice(-10)
-        const optimizedHistory = await conversationMemoryManager.augmentWithHistory(
+        const { messages: optimizedHistory, diagnostics: memoryDiagnostics } = await conversationMemoryManager.augmentWithHistoryWithDiagnostics(
           context.chatId,
           context.conversationHistory.map(m => ({
             role: m.role as "user" | "assistant" | "system",
@@ -404,6 +404,17 @@ export class DeterministicChatPipeline extends EventEmitter {
           })),
           6000 // Reserve tokens for system prompt + current message + response
         );
+
+        if (memoryDiagnostics.compressionApplied) {
+          this.log("info", "memory_compacted", {
+            requestId: context.requestId,
+            sessionId: context.sessionId,
+            originalTokens: memoryDiagnostics.originalTokens,
+            finalTokens: memoryDiagnostics.finalTokens,
+            summarizedMessages: memoryDiagnostics.summarizedMessages,
+            relevantMessagesKept: memoryDiagnostics.relevantMessagesKept,
+          });
+        }
 
         for (const msg of optimizedHistory) {
           messages.push({
@@ -552,7 +563,7 @@ export class DeterministicChatPipeline extends EventEmitter {
         messages.push({ role: "system", content: context.systemPrompt });
       }
       // CONTEXT FIX: Use memory manager for streaming too
-      const optimizedHistory = await conversationMemoryManager.augmentWithHistory(
+      const { messages: optimizedHistory, diagnostics: memoryDiagnostics } = await conversationMemoryManager.augmentWithHistoryWithDiagnostics(
         context.chatId,
         context.conversationHistory.map(m => ({
           role: m.role as "user" | "assistant" | "system",
@@ -560,6 +571,17 @@ export class DeterministicChatPipeline extends EventEmitter {
         })),
         6000
       );
+
+      if (memoryDiagnostics.compressionApplied) {
+        this.log("info", "memory_compacted", {
+          requestId: context.requestId,
+          sessionId: context.sessionId,
+          originalTokens: memoryDiagnostics.originalTokens,
+          finalTokens: memoryDiagnostics.finalTokens,
+          summarizedMessages: memoryDiagnostics.summarizedMessages,
+          relevantMessagesKept: memoryDiagnostics.relevantMessagesKept,
+        });
+      }
       for (const msg of optimizedHistory) {
         messages.push({
           role: msg.role as "user" | "assistant" | "system",

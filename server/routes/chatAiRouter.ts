@@ -32,6 +32,7 @@ import type { z } from "zod";
 import { getUserId } from "../types/express";
 import { semanticMemoryStore } from "../memory/SemanticMemoryStore";
 import { type SkillScope } from "@shared/schema/skillPlatform";
+import { MAX_CHAT_ATTACHMENT_SIZE_BYTES } from "@shared/chatLimits";
 import { handleEmailChatRequest } from "../services/gmailChatIntegration";
 import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
 import { ensureUserRowExists } from "../lib/ensureUserRowExists";
@@ -68,7 +69,7 @@ const MAX_STREAM_REQUEST_ID_LEN = 140;
 const MAX_STREAM_EVENT_PAYLOAD_BYTES = 4600;
 const MAX_STREAM_ATTACHMENT_NAME_LEN = 220;
 const MAX_STREAM_ATTACHMENT_MIME_LEN = 120;
-const MAX_STREAM_ATTACHMENT_SIZE = 200_000_000;
+const MAX_STREAM_ATTACHMENT_SIZE = MAX_CHAT_ATTACHMENT_SIZE_BYTES;
 const MAX_STREAM_SKILL_SCOPES = 12;
 const MAX_STREAM_SKILL_ATTACHMENTS = 12;
 const DEFAULT_STREAM_SKILL_SCOPES: SkillScope[] = ["storage.read", "files", "code_interpreter"];
@@ -3564,12 +3565,12 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
       }
 
       // CONTEXT FIX: Augment client messages with server-side history
-      const messages = await conversationMemoryManager.augmentWithHistory(
+      const { messages, diagnostics: memoryDiagnostics } = await conversationMemoryManager.augmentWithHistoryWithDiagnostics(
         conversationId,
         clientMessages,
         8000 // token budget
       );
-      console.log(`[Chat API] Context augmented: ${clientMessages.length} client msgs -> ${messages.length} total`);
+      console.log(`[Chat API] Context augmented: ${clientMessages.length} client msgs -> ${messages.length} total`, memoryDiagnostics);
 
       // userId already extracted above
 
@@ -3815,7 +3816,20 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
         session_id: serverSessionId || gptSessionContract.sessionId
       } : response;
 
-      res.json(responseWithMetadata);
+      res.json({
+        ...responseWithMetadata,
+        memoryCompression: memoryDiagnostics.compressionApplied
+          ? {
+              originalTokens: memoryDiagnostics.originalTokens,
+              finalTokens: memoryDiagnostics.finalTokens,
+              originalMessageCount: memoryDiagnostics.originalMessageCount,
+              finalMessageCount: memoryDiagnostics.finalMessageCount,
+              summarizedMessages: memoryDiagnostics.summarizedMessages,
+              relevantMessagesKept: memoryDiagnostics.relevantMessagesKept,
+              recentMessagesKept: memoryDiagnostics.recentMessagesKept,
+            }
+          : undefined,
+      });
     } catch (error: any) {
       const requestId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       console.error(`[Chat API Error] requestId=${requestId}:`, error);
@@ -4754,6 +4768,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       let agentLoopHandled = false;
       let shouldRunModel = true;
       let skillSeedForModel = "";
+      let activeStreamProvider: string | null = null;
       // NOTE: doneSent is attached to `res` so that the bundler cannot
       // rename or tree-shake it across try/catch/finally boundaries.
       // Previous attempts with local variables (`let doneSent`, `const streamFlags`)
@@ -5159,12 +5174,48 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       // CONTEXT FIX: Augment client messages with server-side history
       const effectiveChatId = chatId || conversationId || streamConversationId;
-      const messages = await conversationMemoryManager.augmentWithHistory(
+      const { messages, diagnostics: memoryDiagnostics } = await conversationMemoryManager.augmentWithHistoryWithDiagnostics(
         effectiveChatId,
         clientMessages,
         8000 // token budget
       );
-      console.log(`[Stream API] Context augmented: ${clientMessages.length} client msgs -> ${messages.length} total`);
+      console.log(`[Stream API] Context augmented: ${clientMessages.length} client msgs -> ${messages.length} total`, memoryDiagnostics);
+
+      if (memoryDiagnostics.compressionApplied && !isConnectionClosed) {
+        writeSse(res, "notice", {
+          type: "memory_compacted",
+          originalTokens: memoryDiagnostics.originalTokens,
+          finalTokens: memoryDiagnostics.finalTokens,
+          originalMessageCount: memoryDiagnostics.originalMessageCount,
+          finalMessageCount: memoryDiagnostics.finalMessageCount,
+          summarizedMessages: memoryDiagnostics.summarizedMessages,
+          relevantMessagesKept: memoryDiagnostics.relevantMessagesKept,
+          recentMessagesKept: memoryDiagnostics.recentMessagesKept,
+          requestId,
+          timestamp: Date.now(),
+        });
+
+        promptAuditStore.logTransformation({
+          chatId: effectiveChatId || undefined,
+          runId: runId || undefined,
+          requestId,
+          stage: "compress",
+          inputTokens: memoryDiagnostics.originalTokens,
+          outputTokens: memoryDiagnostics.finalTokens,
+          droppedMessages: Math.max(
+            0,
+            memoryDiagnostics.originalMessageCount - memoryDiagnostics.finalMessageCount
+          ),
+          droppedChars: 0,
+          transformationDetails: {
+            originalMessageCount: memoryDiagnostics.originalMessageCount,
+            finalMessageCount: memoryDiagnostics.finalMessageCount,
+            summarizedMessages: memoryDiagnostics.summarizedMessages,
+            relevantMessagesKept: memoryDiagnostics.relevantMessagesKept,
+            recentMessagesKept: memoryDiagnostics.recentMessagesKept,
+          },
+        });
+      }
 
       // DOC TOOL: Stream content directly to client editor (real-time rendering)
       // Previously this routed through handleProductionRequest which generates binary files.
@@ -6568,6 +6619,20 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         for await (const chunk of streamGenerator) {
           if (isConnectionClosed) break;
 
+          if (chunk.providerSwitch && !isConnectionClosed) {
+            writeSse(res, "notice", {
+              type: "provider_fallback",
+              fromProvider: chunk.providerSwitch.fromProvider,
+              toProvider: chunk.providerSwitch.toProvider,
+              requestId,
+              timestamp: Date.now(),
+            });
+          }
+
+          if (chunk.provider) {
+            activeStreamProvider = chunk.provider;
+          }
+
           if (chunk.content) {
             markFirstToken();
           }
@@ -6592,6 +6657,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
               intent: unifiedContext?.requestSpec.intent,
               latencyLane: resolvedLane,
               webSources: detectedWebSources.length > 0 ? detectedWebSources : undefined,
+              provider: activeStreamProvider || undefined,
               traceId: requestId,
               timings: buildTimingPayload(),
               timestamp: Date.now(),
@@ -6714,6 +6780,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             assistantMessageId,
             latencyLane: resolvedLane,
             webSources: detectedWebSources.length > 0 ? detectedWebSources : undefined,
+            provider: activeStreamProvider || undefined,
             traceId: requestId,
             timings: finalTimings,
             timestamp: Date.now()
@@ -6732,6 +6799,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           deliverableType: unifiedContext?.requestSpec.deliverableType,
           durationMs,
           traceId: requestId,
+          provider: activeStreamProvider || undefined,
           timings: finalTimings,
           timestamp: Date.now(),
           ...sessionMetadata
@@ -6783,6 +6851,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           error: error.message,
           requestId,
           runId: errorRunId,
+          provider: activeStreamProvider || undefined,
           traceId: requestId,
           timings: errorTimings,
           timestamp: Date.now()
@@ -6796,6 +6865,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           writeSse(res, 'done', {
             requestId,
             runId: errorRunId,
+            provider: activeStreamProvider || undefined,
             traceId: requestId,
             timings: errorTimings,
             timestamp: Date.now(),

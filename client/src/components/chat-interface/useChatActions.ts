@@ -11,6 +11,11 @@ import {
   type SetStateAction,
 } from "react";
 
+import {
+  MAX_CHAT_ATTACHMENTS,
+  MAX_CHAT_ATTACHMENT_SIZE_BYTES,
+  MAX_CHAT_ATTACHMENT_TOTAL_BYTES,
+} from "@shared/chatLimits";
 import { chatLogger } from "@/lib/logger";
 import { useToast } from "@/hooks/use-toast";
 import { Message, Attachment, type AIState } from "./types";
@@ -29,9 +34,6 @@ interface UseChatActionsProps {
 
 type AiVisualState = AIState;
 
-const MAX_ATTACHMENT_SIZE_BYTES = 20 * 1024 * 1024; // 20MB
-const MAX_ATTACHMENT_TOTAL_BYTES = 100 * 1024 * 1024; // 100MB
-const MAX_ATTACHMENTS = 8;
 const MAX_MESSAGE_LENGTH = 16_000;
 const MAX_ATTACHMENT_NAME_LENGTH = 200;
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -219,7 +221,7 @@ export function useChatActions({
         continue;
       }
 
-      if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
+      if (file.size > MAX_CHAT_ATTACHMENT_SIZE_BYTES) {
         errors.push(`${file.name}: supera 20MB`);
         continue;
       }
@@ -329,19 +331,19 @@ export function useChatActions({
 
     if (!safeContent && safeFiles.length === 0) return;
 
-    if (safeFiles.length > MAX_ATTACHMENTS) {
+    if (safeFiles.length > MAX_CHAT_ATTACHMENTS) {
       toast({
         title: "Límite de adjuntos",
-        description: `Máximo ${MAX_ATTACHMENTS} archivos por mensaje.`,
+        description: `Máximo ${MAX_CHAT_ATTACHMENTS} archivos por mensaje.`,
         variant: "destructive",
       });
       return;
     }
 
-    if (totalBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
+    if (totalBytes > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
       toast({
         title: "Límite de tamaño total",
-        description: `La suma de adjuntos no puede exceder ${Math.round(MAX_ATTACHMENT_TOTAL_BYTES / (1024 * 1024))} MB.`,
+        description: `La suma de adjuntos no puede exceder ${Math.round(MAX_CHAT_ATTACHMENT_TOTAL_BYTES / (1024 * 1024))} MB.`,
         variant: "destructive",
       });
       return;

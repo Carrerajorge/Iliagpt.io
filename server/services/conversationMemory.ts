@@ -10,6 +10,7 @@
 
 import { storage } from "../storage";
 import * as crypto from "crypto";
+import { knowledgeGraph } from "./knowledgeGraph";
 
 export interface ChatMessage {
     role: "user" | "assistant" | "system";
@@ -23,7 +24,26 @@ export interface MemoryOptions {
     maxMessages?: number;
     preserveSystemPrompts?: boolean;
     preserveRecentCount?: number;
+    relevantHistoryCount?: number;
+    relevantCandidateWindow?: number;
     userId?: string;
+}
+
+export interface MemoryCompressionDiagnostics {
+    compressionApplied: boolean;
+    originalTokens: number;
+    finalTokens: number;
+    originalMessageCount: number;
+    finalMessageCount: number;
+    recentMessagesKept: number;
+    relevantMessagesKept: number;
+    summarizedMessages: number;
+    summaryApplied: boolean;
+}
+
+export interface ConversationContextResult {
+    messages: ChatMessage[];
+    diagnostics: MemoryCompressionDiagnostics;
 }
 
 const DEFAULT_OPTIONS: Required<MemoryOptions> = {
@@ -31,8 +51,23 @@ const DEFAULT_OPTIONS: Required<MemoryOptions> = {
     maxMessages: 100,
     preserveSystemPrompts: true,
     preserveRecentCount: 10,
+    relevantHistoryCount: 4,
+    relevantCandidateWindow: 40,
     userId: "",
 };
+
+const RELEVANCE_STOP_WORDS = new Set([
+    "a", "al", "algo", "algun", "alguna", "alguno", "and", "ante", "are", "como",
+    "con", "cual", "cuando", "de", "del", "desde", "donde", "el", "ella", "ellas",
+    "ellos", "en", "entre", "era", "eramos", "es", "esa", "esas", "ese", "eso",
+    "esos", "esta", "estaba", "estado", "estamos", "estan", "estar", "este", "esto",
+    "estos", "fue", "fueron", "ha", "han", "hasta", "hay", "he", "i", "in", "is",
+    "la", "las", "lo", "los", "me", "mi", "mis", "mucho", "muy", "no", "nos",
+    "o", "of", "para", "pero", "por", "que", "se", "ser", "si", "sin", "sobre",
+    "son", "su", "sus", "te", "the", "their", "them", "they", "this", "to", "tu",
+    "tus", "un", "una", "uno", "was", "we", "were", "what", "when", "where", "which",
+    "who", "will", "with", "y", "yo",
+]);
 
 // Approximate token count (4 chars ≈ 1 token)
 function estimateTokens(text: string): number {
@@ -45,7 +80,133 @@ function estimateMessagesTokens(messages: ChatMessage[]): number {
 
 // Generate content hash for deduplication
 function hashContent(content: string): string {
-    return crypto.createHash("md5").update(content.trim().toLowerCase()).digest("hex").slice(0, 12);
+    const normalized = content.trim().toLowerCase().replace(/\s+/g, " ");
+    return crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+}
+
+function buildMessageFingerprint(message: ChatMessage): string {
+    if (message.id) {
+        return `id:${message.id}`;
+    }
+
+    return `${message.role}:${hashContent(message.content)}`;
+}
+
+function buildComparableHistoryKey(message: ChatMessage): string {
+    return `${message.role}:${hashContent(message.content)}`;
+}
+
+function normalizeTextForRelevance(text: string): string {
+    return text
+        .toLowerCase()
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function tokenizeForRelevance(text: string): string[] {
+    return normalizeTextForRelevance(text)
+        .split(" ")
+        .filter((token) => token.length >= 3 && !RELEVANCE_STOP_WORDS.has(token));
+}
+
+function computeLexicalRelevanceScore(
+    queryTerms: Set<string>,
+    queryNormalized: string,
+    message: ChatMessage,
+    index: number,
+    total: number
+): number {
+    const messageTerms = tokenizeForRelevance(message.content);
+    if (messageTerms.length === 0) {
+        return 0;
+    }
+
+    let overlapCount = 0;
+    const uniqueMessageTerms = new Set(messageTerms);
+    for (const term of uniqueMessageTerms) {
+        if (queryTerms.has(term)) {
+            overlapCount += 1;
+        }
+    }
+
+    const overlapRatio = overlapCount / Math.max(1, Math.min(queryTerms.size, 6));
+    const recencyBoost = total > 1 ? ((index + 1) / total) * 0.25 : 0.25;
+    const roleBoost = message.role === "user" ? 0.12 : 0.06;
+    const exactPhraseBoost = queryNormalized.length >= 12 && normalizeTextForRelevance(message.content).includes(queryNormalized)
+        ? 0.2
+        : 0;
+
+    return overlapCount * 1.25 + overlapRatio + recencyBoost + roleBoost + exactPhraseBoost;
+}
+
+function findConversationPairIndex(messages: ChatMessage[], index: number): number | null {
+    if (index < 0 || index >= messages.length) {
+        return null;
+    }
+
+    const current = messages[index];
+    if (current.role === "user" && index + 1 < messages.length && messages[index + 1].role === "assistant") {
+        return index + 1;
+    }
+
+    if (current.role === "assistant" && index > 0 && messages[index - 1].role === "user") {
+        return index - 1;
+    }
+
+    return null;
+}
+
+function trimRecentMessagesToBudget(
+    systemMessages: ChatMessage[],
+    recentMessages: ChatMessage[],
+    maxTokens: number
+): ChatMessage[] {
+    const kept = [...recentMessages];
+
+    while (kept.length > 1 && estimateMessagesTokens([...systemMessages, ...kept]) > maxTokens) {
+        kept.shift();
+    }
+
+    return kept;
+}
+
+function selectMessagesWithinBudget(
+    baseMessages: ChatMessage[],
+    candidates: ChatMessage[],
+    maxTokens: number
+): ChatMessage[] {
+    const selected: ChatMessage[] = [];
+    let currentTokens = estimateMessagesTokens(baseMessages);
+
+    for (const candidate of candidates) {
+        const candidateTokens = estimateMessagesTokens([candidate]);
+        if (currentTokens + candidateTokens > maxTokens) {
+            continue;
+        }
+
+        selected.push(candidate);
+        currentTokens += candidateTokens;
+    }
+
+    return selected;
+}
+
+function createNoCompressionDiagnostics(messages: ChatMessage[]): MemoryCompressionDiagnostics {
+    const tokens = estimateMessagesTokens(messages);
+    return {
+        compressionApplied: false,
+        originalTokens: tokens,
+        finalTokens: tokens,
+        originalMessageCount: messages.length,
+        finalMessageCount: messages.length,
+        recentMessagesKept: messages.filter((message) => message.role !== "system").length,
+        relevantMessagesKept: 0,
+        summarizedMessages: 0,
+        summaryApplied: false,
+    };
 }
 
 // Merge messages chronologically, detecting duplicates
@@ -53,22 +214,19 @@ function mergeMessages(
     dbMessages: ChatMessage[],
     clientMessages: ChatMessage[]
 ): ChatMessage[] {
-    // Create map of DB messages by content hash
-    const dbContentHashes = new Map<string, ChatMessage>();
-    for (const msg of dbMessages) {
-        const hash = hashContent(msg.content);
-        dbContentHashes.set(hash, msg);
-    }
+    const dbFingerprints = new Set(dbMessages.map(buildMessageFingerprint));
+    const dbComparableKeys = new Set(dbMessages.map(buildComparableHistoryKey));
 
     // Start with DB messages
     const merged: ChatMessage[] = [...dbMessages];
 
     // Add client messages that aren't duplicates
     for (const clientMsg of clientMessages) {
-        const hash = hashContent(clientMsg.content);
+        const fingerprint = buildMessageFingerprint(clientMsg);
+        const comparableKey = buildComparableHistoryKey(clientMsg);
 
         // Skip if already in DB
-        if (dbContentHashes.has(hash)) {
+        if (dbFingerprints.has(fingerprint) || dbComparableKeys.has(comparableKey)) {
             continue;
         }
 
@@ -108,14 +266,9 @@ function deduplicateConsecutive(messages: ChatMessage[]): ChatMessage[] {
     return result;
 }
 
-import { getEmbedding, cosineSimilarity } from "./embeddings";
-import { knowledgeGraph } from "./knowledgeGraph";
-
 // Summarize old messages to save tokens and build knowledge
 async function summarizeMessages(messages: ChatMessage[]): Promise<string> {
     if (messages.length === 0) return "";
-
-    const topics = new Set<string>();
 
     // Ingest into knowledge graph
     for (const msg of messages) {
@@ -134,36 +287,55 @@ async function summarizeMessages(messages: ChatMessage[]): Promise<string> {
     return `[Resumen de ${messages.length} mensajes anteriores. ${kgSummary}]`;
 }
 
-// Find relevant older messages using vector similarity
-// Feature #1: Unificación de Memoria Vectorial
+// Find relevant older messages using lightweight lexical relevance so
+// compression preserves topic-specific turns without expensive embedding calls.
 async function findRelevantHistory(
     queryMessage: string,
     historyMessages: ChatMessage[],
-    limit: number = 3
+    limit: number = 3,
+    candidateWindow: number = DEFAULT_OPTIONS.relevantCandidateWindow
 ): Promise<ChatMessage[]> {
     if (historyMessages.length === 0) return [];
 
     try {
-        const queryEmbedding = await getEmbedding(queryMessage);
+        const queryTerms = new Set(tokenizeForRelevance(queryMessage));
+        if (queryTerms.size === 0) {
+            return [];
+        }
 
-        // We need embeddings for history. In a real DB we'd query vector index.
-        // Here we'll do it in-memory but only for a subset to avoid latency spike.
-        // Or assume we only check the last 50 messages that are being dropped?
+        const queryNormalized = normalizeTextForRelevance(queryMessage);
+        const windowSize = Math.max(limit, Math.min(candidateWindow, historyMessages.length));
+        const windowStart = Math.max(0, historyMessages.length - windowSize);
+        const candidateMessages = historyMessages.slice(windowStart);
 
-        const candidateMessages = historyMessages.map(async (msg) => {
-            const embedding = await getEmbedding(msg.content);
-            return {
+        const scored = candidateMessages
+            .map((msg, idx) => ({
+                index: windowStart + idx,
                 msg,
-                score: cosineSimilarity(queryEmbedding, embedding)
-            };
-        });
+                score: computeLexicalRelevanceScore(queryTerms, queryNormalized, msg, idx, candidateMessages.length),
+            }))
+            .filter((entry) => entry.score > 0.5)
+            .sort((a, b) => b.score - a.score);
 
-        const scored = await Promise.all(candidateMessages);
-        scored.sort((a, b) => b.score - a.score);
+        const selectedIndices = new Set<number>();
+        for (const entry of scored) {
+            if (selectedIndices.size >= limit) {
+                break;
+            }
 
-        return scored.slice(0, limit).map(s => s.msg);
+            selectedIndices.add(entry.index);
+
+            const pairIndex = findConversationPairIndex(historyMessages, entry.index);
+            if (pairIndex !== null && selectedIndices.size < limit) {
+                selectedIndices.add(pairIndex);
+            }
+        }
+
+        return Array.from(selectedIndices)
+            .sort((a, b) => a - b)
+            .map((index) => historyMessages[index]);
     } catch (e) {
-        console.warn("[Memory] Vector search failed", e);
+        console.warn("[Memory] Relevant history scoring failed", e);
         return [];
     }
 }
@@ -172,11 +344,14 @@ async function findRelevantHistory(
 async function enforceTokenBudget(
     messages: ChatMessage[],
     options: Required<MemoryOptions>
-): Promise<ChatMessage[]> {
+): Promise<ConversationContextResult> {
     const totalTokens = estimateMessagesTokens(messages);
 
     if (totalTokens <= options.maxTokens) {
-        return messages;
+        return {
+            messages,
+            diagnostics: createNoCompressionDiagnostics(messages),
+        };
     }
 
     console.log(`[ConversationMemory] Token budget exceeded: ${totalTokens} > ${options.maxTokens}, compressing...`);
@@ -187,34 +362,88 @@ async function enforceTokenBudget(
 
     // Preserve recent messages
     const recentCount = Math.min(options.preserveRecentCount, conversationMessages.length);
-    const recentMessages = conversationMessages.slice(-recentCount);
-    const oldMessages = conversationMessages.slice(0, -recentCount);
+    const rawRecentMessages = recentCount > 0 ? conversationMessages.slice(-recentCount) : [];
+    const recentMessages = trimRecentMessagesToBudget(
+        options.preserveSystemPrompts ? systemMessages : [],
+        rawRecentMessages,
+        options.maxTokens
+    );
+    const oldMessages = recentCount > 0
+        ? conversationMessages.slice(0, -recentCount)
+        : [...conversationMessages];
+    const latestUserMessage = [...recentMessages].reverse().find((msg) => msg.role === "user")
+        || [...conversationMessages].reverse().find((msg) => msg.role === "user");
+    const relevantHistory = latestUserMessage
+        ? await findRelevantHistory(
+            latestUserMessage.content,
+            oldMessages,
+            Math.min(options.relevantHistoryCount, oldMessages.length),
+            options.relevantCandidateWindow
+        )
+        : [];
+    const relevantFingerprints = new Set(relevantHistory.map(buildMessageFingerprint));
+    const summarizedMessages = oldMessages.filter((message) => !relevantFingerprints.has(buildMessageFingerprint(message)));
 
     // If still too many tokens after keeping recent, summarize old
-    let result: ChatMessage[] = [];
+    const result: ChatMessage[] = [];
 
     if (options.preserveSystemPrompts && systemMessages.length > 0) {
         result.push(...systemMessages);
     }
 
+    const reservedRecentTokens = estimateMessagesTokens(recentMessages);
+    const maxTokensBeforeRecent = Math.max(options.maxTokens - reservedRecentTokens, 0);
+    const selectedRelevantHistory = selectMessagesWithinBudget(result, relevantHistory, maxTokensBeforeRecent);
+    let summaryApplied = false;
+    let summarizedMessagesCount = 0;
+
     // Summarize old messages
-    if (oldMessages.length > 0) {
-        const summary = await summarizeMessages(oldMessages);
+    if (summarizedMessages.length > 0) {
+        const summary = await summarizeMessages(summarizedMessages);
         if (summary) {
-            result.push({
+            const summaryMessage: ChatMessage = {
                 role: "system",
                 content: summary,
-            });
+            };
+            const selectedSummary = selectMessagesWithinBudget(
+                [...result, ...selectedRelevantHistory],
+                [summaryMessage],
+                maxTokensBeforeRecent
+            );
+            result.push(...selectedSummary);
+            summaryApplied = selectedSummary.length > 0;
+            if (summaryApplied) {
+                summarizedMessagesCount = summarizedMessages.length;
+            }
         }
+    }
+
+    if (selectedRelevantHistory.length > 0) {
+        result.push(...selectedRelevantHistory);
     }
 
     // Add recent messages
     result.push(...recentMessages);
 
     const newTokens = estimateMessagesTokens(result);
-    console.log(`[ConversationMemory] Compressed: ${totalTokens} -> ${newTokens} tokens (${messages.length} -> ${result.length} messages)`);
+    console.log(
+        `[ConversationMemory] Compressed: ${totalTokens} -> ${newTokens} tokens (${messages.length} -> ${result.length} messages, relevant=${selectedRelevantHistory.length}, recent=${recentMessages.length})`
+    );
 
-    return result;
+    return {
+        messages: result,
+        diagnostics: {
+            compressionApplied: true,
+            originalTokens: totalTokens,
+            finalTokens: newTokens,
+            originalMessageCount: messages.length,
+            finalMessageCount: result.length,
+            recentMessagesKept: recentMessages.length,
+            relevantMessagesKept: selectedRelevantHistory.length,
+            summarizedMessages: summarizedMessagesCount,
+            summaryApplied,
+        },
+    };
 }
 
 /**
@@ -223,11 +452,11 @@ async function enforceTokenBudget(
  * Fetches server history, merges with client messages,
  * deduplicates, and enforces token budget
  */
-export async function getConversationContext(
+export async function getConversationContextWithDiagnostics(
     chatId: string | undefined,
     clientMessages: ChatMessage[],
     options: MemoryOptions = {}
-): Promise<ChatMessage[]> {
+): Promise<ConversationContextResult> {
     const opts = { ...DEFAULT_OPTIONS, ...options };
 
     // If no chatId, just use client messages
@@ -277,6 +506,15 @@ export async function getConversationContext(
     }
 }
 
+export async function getConversationContext(
+    chatId: string | undefined,
+    clientMessages: ChatMessage[],
+    options: MemoryOptions = {}
+): Promise<ChatMessage[]> {
+    const result = await getConversationContextWithDiagnostics(chatId, clientMessages, options);
+    return result.messages;
+}
+
 /**
  * Augment client messages with server history
  * Simpler API for existing code integration
@@ -287,6 +525,14 @@ export async function augmentWithHistory(
     maxTokens = 8000
 ): Promise<ChatMessage[]> {
     return getConversationContext(chatId, clientMessages, { maxTokens });
+}
+
+export async function augmentWithHistoryWithDiagnostics(
+    chatId: string | undefined,
+    clientMessages: ChatMessage[],
+    maxTokens = 8000
+): Promise<ConversationContextResult> {
+    return getConversationContextWithDiagnostics(chatId, clientMessages, { maxTokens });
 }
 
 /**
@@ -328,9 +574,15 @@ export async function validateClientHistory(
     try {
         const dbMessages = await storage.getChatMessages(chatId);
 
-        const dbHashes = new Set(dbMessages.map(m => hashContent(m.content)));
+        const dbHashes = new Set(dbMessages.map((m) => buildComparableHistoryKey({
+            role: m.role as ChatMessage["role"],
+            content: m.content,
+            id: m.id,
+        })));
         const clientHashes = new Set(
-            clientMessages.filter(m => m.role !== "system").map(m => hashContent(m.content))
+            clientMessages
+                .filter(m => m.role !== "system")
+                .map((m) => buildComparableHistoryKey(m))
         );
 
         let missingFromClient = 0;
@@ -356,7 +608,9 @@ export async function validateClientHistory(
 }
 
 export const conversationMemoryManager = {
+    getConversationContextWithDiagnostics,
     getConversationContext,
+    augmentWithHistoryWithDiagnostics,
     augmentWithHistory,
     getRecentMessages,
     validateClientHistory,

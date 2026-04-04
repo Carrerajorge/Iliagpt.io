@@ -123,6 +123,12 @@ const envSchema = z.object({
   CHANNEL_INGEST_INPROCESS_QUEUE_MAX: z.string().optional(),
   CHANNEL_INGEST_INPROCESS_DEDUPE_TTL_MS: z.string().optional(),
   CHANNEL_INGEST_INPROCESS_RESERVATION_TTL_MS: z.string().optional(),
+
+  // Request body limits. Keep configurable so chat/vision flows can raise them
+  // without reopening the global DoS window for every API route.
+  API_JSON_BODY_LIMIT: z.string().optional(),
+  CHAT_STREAM_JSON_BODY_LIMIT: z.string().optional(),
+  URLENCODED_BODY_LIMIT: z.string().optional(),
 });
 
 function validateEnv() {

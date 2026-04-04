@@ -3,6 +3,45 @@
  * Fix #20: Add Zod validation to chat endpoints
  */
 import { z } from 'zod';
+import {
+    MAX_CHAT_ATTACHMENTS,
+    MAX_CHAT_ATTACHMENT_SIZE_BYTES,
+    MAX_CHAT_ATTACHMENT_TOTAL_BYTES,
+    MAX_CHAT_INLINE_IMAGE_BASE64_CHARS,
+} from '@shared/chatLimits';
+
+const MAX_CHAT_MESSAGES = 100;
+
+function applyChatAttachmentRefinements<T extends z.ZodTypeAny>(schema: T): T {
+    return schema.superRefine((data: any, ctx: z.RefinementCtx) => {
+        const attachments = data.attachments ?? [];
+        let totalAttachmentBytes = 0;
+
+        attachments.forEach((attachment: { size?: number }, index: number) => {
+            if (typeof attachment.size !== 'number') {
+                return;
+            }
+
+            totalAttachmentBytes += attachment.size;
+
+            if (attachment.size > MAX_CHAT_ATTACHMENT_SIZE_BYTES) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['attachments', index, 'size'],
+                    message: `Attachment exceeds maximum size of ${Math.round(MAX_CHAT_ATTACHMENT_SIZE_BYTES / (1024 * 1024))} MB`,
+                });
+            }
+        });
+
+        if (totalAttachmentBytes > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['attachments'],
+                message: `Combined attachment size exceeds ${Math.round(MAX_CHAT_ATTACHMENT_TOTAL_BYTES / (1024 * 1024))} MB`,
+            });
+        }
+    }) as T;
+}
 
 // Chat message schema
 export const chatMessageSchema = z.object({
@@ -19,15 +58,14 @@ const attachmentSchema = z.object({
     name: z.string().max(255).optional(),
     type: z.string().max(160).optional(),
     mimeType: z.string().max(180).optional(),
-    size: z.number().int().min(0).max(500_000_000).optional(),
+    size: z.number().int().min(0).max(MAX_CHAT_ATTACHMENT_SIZE_BYTES).optional(),
     storagePath: z.string().max(512).optional(),
     content: z.string().max(2_000_000).optional(),
     url: z.string().max(2048).optional(),
 }).passthrough(); // allow extra fields from legacy clients
 
-// Chat request body schema
-export const chatRequestSchema = z.object({
-    messages: z.array(chatMessageSchema).min(1, 'At least one message is required').max(100, 'Too many messages'),
+const baseChatRequestSchema = z.object({
+    messages: z.array(chatMessageSchema).min(1, 'At least one message is required').max(MAX_CHAT_MESSAGES, 'Too many messages'),
     useRag: z.boolean().optional().default(true),
     conversationId: z.string().max(200).optional(),
     images: z.array(z.string()).max(10).optional(),
@@ -37,16 +75,19 @@ export const chatRequestSchema = z.object({
     figmaMode: z.boolean().optional(),
     provider: z.string().max(40).optional().default('gemini'),
     model: z.string().max(160).trim().optional().default('gemini-2.5-flash'),
-    attachments: z.array(attachmentSchema).max(20).optional(),
-    lastImageBase64: z.string().max(500_000).nullable().optional(),
+    attachments: z.array(attachmentSchema).max(MAX_CHAT_ATTACHMENTS).optional(),
+    lastImageBase64: z.string().max(MAX_CHAT_INLINE_IMAGE_BASE64_CHARS).nullable().optional(),
     lastImageId: z.string().max(200).nullable().optional(),
     session_id: z.string().max(120).optional(),
 });
 
+// Chat request body schema
+export const chatRequestSchema = applyChatAttachmentRefinements(baseChatRequestSchema);
+
 export type ChatRequest = z.infer<typeof chatRequestSchema>;
 
 // Streaming chat request schema
-export const streamChatRequestSchema = chatRequestSchema.extend({
+export const streamChatRequestSchema = applyChatAttachmentRefinements(baseChatRequestSchema.extend({
     runId: z.string().max(200).optional(),
     chatId: z.string().max(200).optional(),
     // Client may send docTool="figma" even when server ignores it; accept to avoid hard-failing validation.
@@ -70,7 +111,7 @@ export const streamChatRequestSchema = chatRequestSchema.extend({
 
     // Client-generated request correlation ID
     requestId: z.string().max(200).optional(),
-}).passthrough(); // allow extra fields from client without hard-failing
+}).passthrough()); // allow extra fields from client without hard-failing
 
 export type StreamChatRequest = z.infer<typeof streamChatRequestSchema>;
 
