@@ -200,55 +200,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                 className="mb-2"
             />
             
-            {message.steps && message.steps.length > 0 && (
-                <div className={cn(
-                    "rounded-lg border p-4 space-y-3 w-full",
-                    message.isThinking
-                        ? "bg-card animate-in fade-in slide-in-from-bottom-2"
-                        : "bg-muted/30 border-border/50 opacity-90"
-                )}>
-                    {message.isThinking ? (
-                        <AgentStateIndicator
-                            status="thinking"
-                            message="Processing Goal"
-                            className="mb-2"
-                        />
-                    ) : (
-                        <div className="flex items-center gap-2 mb-2">
-                            <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                                Cadena de Razonamiento
-                            </span>
-                        </div>
-                    )}
-                    {message.steps.map((step, idx) => (
-                        <div key={idx} className="flex items-center gap-3 text-sm">
-                            {step.status === "complete" ? (
-                                <CheckCircle2 className="h-4 w-4 text-green-500" />
-                            ) : step.status === "loading" ? (
-                                <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
-                            ) : (
-                                <div className="h-4 w-4 rounded-full border border-muted-foreground/30" />
-                            )}
-                            <span
-                                className={cn(
-                                    step.status === "pending" && "text-muted-foreground",
-                                    step.status === "loading" && "text-foreground font-medium",
-                                    step.status === "complete" &&
-                                    "text-muted-foreground line-through"
-                                )}
-                            >
-                                {step.title}
-                            </span>
-                        </div>
-                    ))}
-                </div>
-            )}
-            {message.retrievalSteps && message.retrievalSteps.length > 0 && (
-                <div className="mb-3 w-full max-w-sm">
-                    <RetrievalVis steps={message.retrievalSteps} />
-                </div>
-            )}
+            
             {message.webSources && message.webSources.length > 0 && !message.isThinking && (
                 <NewsCards sources={message.webSources} maxDisplay={5} searchQueries={message.searchQueries} totalSearches={message.totalSearches} />
             )}

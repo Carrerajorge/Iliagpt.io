@@ -3623,23 +3623,12 @@ export function ChatInterface({
       }
     }
 
-    const urlsFromUriList = extractUrlsFromUriList(uriList);
-    const urlsFromBareText = extractBareUrlsFromText(text);
-
-    const urls = uniq([...urlsFromUriList, ...urlsFromBareText]);
-    if (urls.length > 0) {
-      return;
-    }
-
-    // HTML-only: allow importing a single copied image (common in browsers), but avoid mass-importing links
-    // when pasting rich text.
+    // Allow URLs to be pasted as plain text — do NOT intercept or convert to attachments.
+    // Only intercept single HTML-embedded images when no text accompanies them.
     const htmlImageUrls = extractImageUrlsFromHtml(html);
-    if (htmlImageUrls.length === 1) {
-      const normalizedText = normalizeHttpUrl(text);
-      if (!text.trim() || normalizedText === htmlImageUrls[0]) {
-        e.preventDefault();
-        importUrlsForUpload([htmlImageUrls[0]]);
-      }
+    if (htmlImageUrls.length === 1 && !text.trim()) {
+      e.preventDefault();
+      importUrlsForUpload([htmlImageUrls[0]]);
     }
   };
 

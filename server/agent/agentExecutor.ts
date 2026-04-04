@@ -278,7 +278,16 @@ async function executeToolCall(
                 const sr = await searchWeb(q, Math.min(maxResults, 20));
                 const newResults = (sr.results || []).filter((r: any) => !seenUrls.has(r.url));
                 newResults.forEach((r: any) => seenUrls.add(r.url));
-                allResults.push(...newResults.map((r: any) => ({ title: r.title, url: r.url, snippet: r.snippet, query: q })));
+                allResults.push(...newResults.map((r: any) => ({
+                  title: r.title,
+                  url: r.url,
+                  snippet: r.snippet,
+                  query: q,
+                  metadata: r.metadata || r.extra || null,
+                  imageUrl: r.imageUrl || null,
+                  publishedDate: r.publishedDate || r.date || null,
+                  favicon: r.favicon || null,
+                })));
                 queryLog.push({ query: q, resultCount: newResults.length, status: "completed" });
               } catch {
                 queryLog.push({ query: q, resultCount: 0, status: "failed" });
@@ -299,13 +308,30 @@ async function executeToolCall(
               });
             }
 
+            if (context.res && allResults.length > 0) {
+              const sseCtx = (context.res as any).sseWrite || ((event: string, data: any) => {
+                try { (context.res as any).write?.(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
+              });
+              sseCtx("context", {
+                runId: context.runId || "",
+                webSources: allResults.map((r: any) => ({
+                  url: r.url,
+                  title: r.title,
+                  snippet: r.snippet,
+                  domain: (() => { try { return new URL(r.url).hostname.replace("www.", ""); } catch { return ""; } })(),
+                  query: r.query || null,
+                  metadata: r.metadata || null,
+                })),
+              });
+            }
+
             result = allResults.length > 0
               ? { results: allResults, totalSearches: args.queries.length, queryLog }
               : { message: "No results found", queries: args.queries };
           } else {
             const searchResult = await searchWeb(args.query, maxResults);
             result = searchResult.results?.length > 0
-              ? searchResult.results.map((r: any) => ({ title: r.title, url: r.url, snippet: r.snippet }))
+              ? searchResult.results.map((r: any) => ({ title: r.title, url: r.url, snippet: r.snippet, query: args.query }))
               : { message: "No results found", query: args.query };
           }
         } catch (err: any) {

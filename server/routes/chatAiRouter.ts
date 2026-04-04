@@ -5141,7 +5141,9 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
                   favicon: r.favicon || null,
                   imageUrl: r.imageUrl || null,
                   siteName: r.siteName || new URL(r.url).hostname.replace('www.', ''),
-                  publishedDate: r.publishedDate || null
+                  publishedDate: r.publishedDate || null,
+                  query: r.query || null,
+                  metadata: r.metadata || null,
                 }));
 
                 console.log("[Stream] Web search complete", { results: searchResults.results.length, contentsCount: searchResults.contents?.length || 0 });

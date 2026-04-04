@@ -235,12 +235,19 @@ export function ChatMessageList({
                                 <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '150ms' }} />
                                 <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '300ms' }} />
                             </div>
+                            {aiProcessSteps.length > 0 && (() => {
+                                const active = aiProcessSteps.find(s => s.status === 'active');
+                                if (active) return (
+                                    <span className="text-xs text-muted-foreground ml-1 animate-in fade-in">{active.step}</span>
+                                );
+                                return null;
+                            })()}
                         </div>
                     </motion.div>
                 )}
             </>
         );
-    }, [showSuggestedReplies, suggestions, onSelectSuggestedReply, uiPhase, activeRunId, onRunComplete, aiState, streamingContent, variant, realTimePhase, detectedIntent]);
+    }, [showSuggestedReplies, suggestions, onSelectSuggestedReply, uiPhase, activeRunId, onRunComplete, aiState, streamingContent, variant, realTimePhase, detectedIntent, aiProcessSteps]);
 
     // Stable key function.
     // For optimistic messages, `id` is replaced after server ACK; use `clientTempId`

@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { diffZonedDays, formatZonedDate, normalizeTimeZone, type PlatformDateFormat } from "@/lib/platformDateTime";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { SourcesPanel } from "@/components/sources-panel";
 
 interface NewsCardsProps {
   sources: WebSource[];
@@ -739,21 +740,13 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
         </div>
       </div>
 
-      {showSourcesPanel && (
-        <>
-          <div 
-            className="fixed inset-0 bg-black/50 z-40"
-            onClick={() => setShowSourcesPanel(false)}
-          />
-          <FullSourcesPanel 
-            sources={sources}
-            searchQueries={searchQueries}
-            totalSearches={totalSearches}
-            isOpen={showSourcesPanel} 
-            onClose={() => setShowSourcesPanel(false)} 
-          />
-        </>
-      )}
+      <SourcesPanel
+        open={showSourcesPanel}
+        onOpenChange={setShowSourcesPanel}
+        sources={sources}
+        searchQueries={searchQueries}
+        totalSearches={totalSearches}
+      />
     </>
   );
 });
