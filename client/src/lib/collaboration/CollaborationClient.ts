@@ -1,411 +1,435 @@
-import { logger } from '@/lib/logger';
+/**
+ * CollaborationClient.ts
+ * WebSocket-based real-time collaboration client with reconnect logic,
+ * presence, cursors, typing indicators, and heartbeat support.
+ */
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Message types (discriminated union)
+// ---------------------------------------------------------------------------
 
-export type ActivityState = 'ACTIVE' | 'IDLE' | 'AWAY' | 'OFFLINE';
+export type ConnectionState =
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "reconnecting";
 
-export interface CollaborationUser {
-  id: string;
-  name: string;
-  avatar?: string;
-  color: string;
-  cursor?: { x: number; y: number };
-  isTyping: boolean;
-  lastSeen: number;
-  activityState: ActivityState;
+export interface CursorPosition {
+  x: number;
+  y: number;
+  /** Optional: element/container id the cursor is relative to */
+  containerId?: string;
 }
 
-export type CollaborationMessageType =
-  | 'PRESENCE_UPDATE'
-  | 'CURSOR_MOVE'
-  | 'CURSOR_STOP'
-  | 'TYPING_START'
-  | 'TYPING_STOP'
-  | 'MENTION'
-  | 'CHAT_JOIN'
-  | 'CHAT_LEAVE'
-  | 'PING'
-  | 'PONG'
-  | 'ERROR';
-
-export interface CollaborationMessage {
-  type: CollaborationMessageType;
-  chatId: string;
-  userId: string;
-  payload?: Record<string, unknown>;
+export interface BaseMessage {
+  roomId: string;
+  senderId: string;
   timestamp: number;
 }
 
-export type CollaborationEventMap = {
-  PRESENCE_UPDATE: CollaborationUser;
-  CURSOR_MOVE: { userId: string; x: number; y: number };
-  CURSOR_STOP: { userId: string };
-  TYPING_START: { userId: string };
-  TYPING_STOP: { userId: string };
-  MENTION: { userId: string; mentionedUserId: string; text: string };
-  CHAT_JOIN: { user: CollaborationUser };
-  CHAT_LEAVE: { userId: string };
-  connected: void;
-  disconnected: { code: number; reason: string };
-  error: Error;
-};
-
-type EventCallback<K extends keyof CollaborationEventMap> = (
-  data: CollaborationEventMap[K],
-) => void;
-
-// ─── Color Palette ────────────────────────────────────────────────────────────
-
-const USER_COLORS = [
-  '#EF4444', // red
-  '#F97316', // orange
-  '#EAB308', // yellow
-  '#22C55E', // green
-  '#06B6D4', // cyan
-  '#3B82F6', // blue
-  '#8B5CF6', // violet
-  '#EC4899', // pink
-  '#14B8A6', // teal
-  '#F59E0B', // amber
-];
-
-let colorIndex = 0;
-
-export function assignUserColor(): string {
-  const color = USER_COLORS[colorIndex % USER_COLORS.length];
-  colorIndex++;
-  return color;
+export interface PresenceUpdateMessage extends BaseMessage {
+  type: "presence_update";
+  payload: {
+    userId: string;
+    name: string;
+    avatar?: string;
+    color: string;
+    status: "online" | "away" | "offline";
+  };
 }
 
-// ─── CollaborationClient ─────────────────────────────────────────────────────
+export interface CursorMoveMessage extends BaseMessage {
+  type: "cursor_move";
+  payload: {
+    position: CursorPosition;
+  };
+}
+
+export interface TypingStartMessage extends BaseMessage {
+  type: "typing_start";
+  payload: {
+    targetId?: string; // e.g. document/chat id being typed in
+  };
+}
+
+export interface TypingStopMessage extends BaseMessage {
+  type: "typing_stop";
+  payload: {
+    targetId?: string;
+  };
+}
+
+export interface ChatMessage extends BaseMessage {
+  type: "chat_message";
+  payload: {
+    messageId: string;
+    text: string;
+    replyToId?: string;
+  };
+}
+
+export interface PingMessage {
+  type: "ping";
+  timestamp: number;
+}
+
+export interface PongMessage {
+  type: "pong";
+  timestamp: number;
+}
+
+export interface JoinRoomMessage {
+  type: "join_room";
+  roomId: string;
+  userId: string;
+  name: string;
+  avatar?: string;
+  color: string;
+}
+
+export interface LeaveRoomMessage {
+  type: "leave_room";
+  roomId: string;
+  userId: string;
+}
+
+export type IncomingMessage =
+  | PresenceUpdateMessage
+  | CursorMoveMessage
+  | TypingStartMessage
+  | TypingStopMessage
+  | ChatMessage
+  | PongMessage;
+
+export type OutgoingMessage =
+  | PresenceUpdateMessage
+  | CursorMoveMessage
+  | TypingStartMessage
+  | TypingStopMessage
+  | ChatMessage
+  | PingMessage
+  | JoinRoomMessage
+  | LeaveRoomMessage;
+
+// ---------------------------------------------------------------------------
+// Event listener map
+// ---------------------------------------------------------------------------
+
+export interface CollaborationEvents {
+  presence_update: (msg: PresenceUpdateMessage) => void;
+  cursor_move: (msg: CursorMoveMessage) => void;
+  typing_start: (msg: TypingStartMessage) => void;
+  typing_stop: (msg: TypingStopMessage) => void;
+  chat_message: (msg: ChatMessage) => void;
+  connection_state: (state: ConnectionState) => void;
+  error: (error: Error) => void;
+}
+
+type Listener<T> = (payload: T) => void;
+type EventMap = { [K in keyof CollaborationEvents]: Listener<Parameters<CollaborationEvents[K]>[0]>[] };
+
+// ---------------------------------------------------------------------------
+// CollaborationClient
+// ---------------------------------------------------------------------------
+
+export interface CollaborationClientOptions {
+  url: string;
+  roomId: string;
+  userId: string;
+  name: string;
+  avatar?: string;
+  color: string;
+  /** Max reconnect attempts before giving up. Default: 10 */
+  maxReconnectAttempts?: number;
+  /** Base delay (ms) for exponential backoff. Default: 1000 */
+  reconnectBaseDelay?: number;
+  /** Heartbeat interval in ms. Default: 25000 */
+  heartbeatInterval?: number;
+  /** How long to wait (ms) for a pong before considering the connection dead. Default: 5000 */
+  heartbeatTimeout?: number;
+}
 
 export class CollaborationClient {
   private ws: WebSocket | null = null;
-  private chatId: string | null = null;
-  private userId: string;
-  private userName: string;
-  private userAvatar?: string;
-  private userColor: string;
-
+  private state: ConnectionState = "disconnected";
+  private listeners: Partial<EventMap> = {};
   private reconnectAttempts = 0;
-  private readonly maxReconnectAttempts = 10;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private pongTimer: ReturnType<typeof setTimeout> | null = null;
+  private messageQueue: OutgoingMessage[] = [];
+  private destroyed = false;
 
-  private isIntentionalDisconnect = false;
-  private isConnecting = false;
+  private readonly url: string;
+  private readonly roomId: string;
+  private readonly userId: string;
+  private readonly name: string;
+  private readonly avatar?: string;
+  private readonly color: string;
+  private readonly maxReconnectAttempts: number;
+  private readonly reconnectBaseDelay: number;
+  private readonly heartbeatInterval: number;
+  private readonly heartbeatTimeout: number;
 
-  // Typed event listeners
-  private listeners: {
-    [K in keyof CollaborationEventMap]?: Set<EventCallback<K>>;
-  } = {};
-
-  private readonly wsUrl: string;
-
-  constructor(options: {
-    userId: string;
-    userName: string;
-    userAvatar?: string;
-    wsUrl?: string;
-  }) {
+  constructor(options: CollaborationClientOptions) {
+    this.url = options.url;
+    this.roomId = options.roomId;
     this.userId = options.userId;
-    this.userName = options.userName;
-    this.userAvatar = options.userAvatar;
-    this.userColor = assignUserColor();
-    this.wsUrl =
-      options.wsUrl ??
-      (() => {
-        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        return `${proto}//${window.location.host}/ws/collaboration`;
-      })();
+    this.name = options.name;
+    this.avatar = options.avatar;
+    this.color = options.color;
+    this.maxReconnectAttempts = options.maxReconnectAttempts ?? 10;
+    this.reconnectBaseDelay = options.reconnectBaseDelay ?? 1000;
+    this.heartbeatInterval = options.heartbeatInterval ?? 25_000;
+    this.heartbeatTimeout = options.heartbeatTimeout ?? 5_000;
   }
 
-  // ─── Public API ──────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
 
-  connect(chatId: string): void {
-    if (this.isConnecting) return;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.chatId === chatId) return;
-
-    // Leave previous chat cleanly
-    if (this.chatId && this.chatId !== chatId) {
-      this.leaveCurrent();
-    }
-
-    this.chatId = chatId;
-    this.isIntentionalDisconnect = false;
-    this.isConnecting = true;
-
+  connect(): void {
+    if (this.destroyed) throw new Error("CollaborationClient has been destroyed");
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     this.openSocket();
   }
 
   disconnect(): void {
-    this.isIntentionalDisconnect = true;
-    this.leaveCurrent();
-    this.cleanupSocket();
-    this.stopHeartbeat();
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+    this.destroyed = true;
+    this.clearTimers();
+    if (this.ws) {
+      this.sendRaw({ type: "leave_room", roomId: this.roomId, userId: this.userId });
+      this.ws.close(1000, "Client disconnect");
+      this.ws = null;
     }
-    this.reconnectAttempts = 0;
-    this.chatId = null;
+    this.setState("disconnected");
   }
 
-  sendCursorPosition(x: number, y: number): void {
+  joinRoom(): void {
     this.send({
-      type: 'CURSOR_MOVE',
-      payload: { x, y },
+      type: "join_room",
+      roomId: this.roomId,
+      userId: this.userId,
+      name: this.name,
+      avatar: this.avatar,
+      color: this.color,
     });
   }
 
-  stopCursor(): void {
-    this.send({ type: 'CURSOR_STOP' });
+  leaveRoom(): void {
+    this.send({ type: "leave_room", roomId: this.roomId, userId: this.userId });
   }
 
-  startTyping(): void {
-    this.send({ type: 'TYPING_START' });
-  }
-
-  stopTyping(): void {
-    this.send({ type: 'TYPING_STOP' });
-  }
-
-  sendMention(mentionedUserId: string, text: string): void {
+  sendPresenceUpdate(status: PresenceUpdateMessage["payload"]["status"]): void {
     this.send({
-      type: 'MENTION',
-      payload: { mentionedUserId, text },
+      type: "presence_update",
+      roomId: this.roomId,
+      senderId: this.userId,
+      timestamp: Date.now(),
+      payload: {
+        userId: this.userId,
+        name: this.name,
+        avatar: this.avatar,
+        color: this.color,
+        status,
+      },
     });
   }
 
-  updatePresence(activityState: ActivityState): void {
+  sendCursorMove(position: CursorPosition): void {
     this.send({
-      type: 'PRESENCE_UPDATE',
-      payload: { activityState },
+      type: "cursor_move",
+      roomId: this.roomId,
+      senderId: this.userId,
+      timestamp: Date.now(),
+      payload: { position },
     });
   }
 
-  get currentUserId(): string {
-    return this.userId;
+  sendTypingStart(targetId?: string): void {
+    this.send({
+      type: "typing_start",
+      roomId: this.roomId,
+      senderId: this.userId,
+      timestamp: Date.now(),
+      payload: { targetId },
+    });
   }
 
-  get currentColor(): string {
-    return this.userColor;
+  sendTypingStop(targetId?: string): void {
+    this.send({
+      type: "typing_stop",
+      roomId: this.roomId,
+      senderId: this.userId,
+      timestamp: Date.now(),
+      payload: { targetId },
+    });
   }
 
-  // ─── Event System ────────────────────────────────────────────────────────
+  sendChatMessage(text: string, replyToId?: string): string {
+    const messageId = `${this.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.send({
+      type: "chat_message",
+      roomId: this.roomId,
+      senderId: this.userId,
+      timestamp: Date.now(),
+      payload: { messageId, text, replyToId },
+    });
+    return messageId;
+  }
 
-  on<K extends keyof CollaborationEventMap>(
+  getState(): ConnectionState {
+    return this.state;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Event emitter
+  // ---------------------------------------------------------------------------
+
+  on<K extends keyof CollaborationEvents>(
     event: K,
-    callback: EventCallback<K>,
-  ): void {
+    listener: CollaborationEvents[K]
+  ): () => void {
     if (!this.listeners[event]) {
-      (this.listeners as Record<string, Set<unknown>>)[event] = new Set();
+      (this.listeners as EventMap)[event] = [];
     }
-    (this.listeners[event] as Set<EventCallback<K>>).add(callback);
+    (this.listeners[event] as Listener<unknown>[]).push(listener as Listener<unknown>);
+    return () => this.off(event, listener);
   }
 
-  off<K extends keyof CollaborationEventMap>(
+  off<K extends keyof CollaborationEvents>(
     event: K,
-    callback: EventCallback<K>,
+    listener: CollaborationEvents[K]
   ): void {
-    const set = this.listeners[event] as Set<EventCallback<K>> | undefined;
-    set?.delete(callback);
+    if (!this.listeners[event]) return;
+    (this.listeners as EventMap)[event] = (
+      (this.listeners[event] as Listener<unknown>[]).filter(
+        (l) => l !== (listener as Listener<unknown>)
+      )
+    ) as EventMap[K];
   }
 
-  private emit<K extends keyof CollaborationEventMap>(
-    event: K,
-    data: CollaborationEventMap[K],
-  ): void {
-    const set = this.listeners[event] as Set<EventCallback<K>> | undefined;
-    if (!set) return;
-    for (const cb of set) {
-      try {
-        cb(data);
-      } catch (err) {
-        logger.error({ err, event }, '[CollaborationClient] listener error');
-      }
-    }
-  }
-
-  // ─── WebSocket Management ────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
+  // Private – socket lifecycle
+  // ---------------------------------------------------------------------------
 
   private openSocket(): void {
+    this.setState("connecting");
     try {
-      this.ws = new WebSocket(this.wsUrl);
+      this.ws = new WebSocket(this.url);
     } catch (err) {
-      logger.error({ err }, '[CollaborationClient] WebSocket construction failed');
-      this.isConnecting = false;
+      this.emit("error", err instanceof Error ? err : new Error(String(err)));
       this.scheduleReconnect();
       return;
     }
 
-    this.ws.addEventListener('open', this.handleOpen);
-    this.ws.addEventListener('message', this.handleMessage);
-    this.ws.addEventListener('close', this.handleClose);
-    this.ws.addEventListener('error', this.handleError);
-  }
-
-  private cleanupSocket(): void {
-    if (!this.ws) return;
-    this.ws.removeEventListener('open', this.handleOpen);
-    this.ws.removeEventListener('message', this.handleMessage);
-    this.ws.removeEventListener('close', this.handleClose);
-    this.ws.removeEventListener('error', this.handleError);
-    if (
-      this.ws.readyState === WebSocket.OPEN ||
-      this.ws.readyState === WebSocket.CONNECTING
-    ) {
-      this.ws.close(1000, 'Client disconnect');
-    }
-    this.ws = null;
-  }
-
-  private handleOpen = (): void => {
-    this.isConnecting = false;
-    this.reconnectAttempts = 0;
-    logger.info({ chatId: this.chatId }, '[CollaborationClient] connected');
-
-    // Join the chat room
-    if (this.chatId) {
-      this.send({
-        type: 'CHAT_JOIN',
-        payload: {
-          user: {
-            id: this.userId,
-            name: this.userName,
-            avatar: this.userAvatar,
-            color: this.userColor,
-            isTyping: false,
-            lastSeen: Date.now(),
-            activityState: 'ACTIVE',
-          },
-        },
-      });
-    }
-
-    this.startHeartbeat();
-    this.emit('connected', undefined as void);
-  };
-
-  private handleMessage = (event: MessageEvent): void => {
-    let msg: CollaborationMessage;
-    try {
-      msg = JSON.parse(event.data as string) as CollaborationMessage;
-    } catch (err) {
-      logger.warn({ err }, '[CollaborationClient] malformed message');
-      return;
-    }
-
-    if (msg.type === 'PONG') return; // heartbeat ack
-
-    this.routeIncoming(msg);
-  };
-
-  private handleClose = (event: CloseEvent): void => {
-    this.isConnecting = false;
-    this.stopHeartbeat();
-    logger.info(
-      { code: event.code, reason: event.reason },
-      '[CollaborationClient] disconnected',
-    );
-    this.emit('disconnected', { code: event.code, reason: event.reason });
-
-    if (!this.isIntentionalDisconnect) {
-      this.scheduleReconnect();
-    }
-  };
-
-  private handleError = (event: Event): void => {
-    logger.error({ event }, '[CollaborationClient] WebSocket error');
-    this.emit('error', new Error('WebSocket error'));
-  };
-
-  // ─── Message Routing ─────────────────────────────────────────────────────
-
-  private routeIncoming(msg: CollaborationMessage): void {
-    switch (msg.type) {
-      case 'PRESENCE_UPDATE': {
-        const user = msg.payload as unknown as CollaborationUser;
-        this.emit('PRESENCE_UPDATE', user);
-        break;
-      }
-      case 'CURSOR_MOVE': {
-        const { x, y } = msg.payload as { x: number; y: number };
-        this.emit('CURSOR_MOVE', { userId: msg.userId, x, y });
-        break;
-      }
-      case 'CURSOR_STOP': {
-        this.emit('CURSOR_STOP', { userId: msg.userId });
-        break;
-      }
-      case 'TYPING_START': {
-        this.emit('TYPING_START', { userId: msg.userId });
-        break;
-      }
-      case 'TYPING_STOP': {
-        this.emit('TYPING_STOP', { userId: msg.userId });
-        break;
-      }
-      case 'MENTION': {
-        const { mentionedUserId, text } = msg.payload as {
-          mentionedUserId: string;
-          text: string;
-        };
-        this.emit('MENTION', {
-          userId: msg.userId,
-          mentionedUserId,
-          text,
-        });
-        break;
-      }
-      case 'CHAT_JOIN': {
-        const user = (msg.payload as { user: CollaborationUser }).user;
-        this.emit('CHAT_JOIN', { user });
-        break;
-      }
-      case 'CHAT_LEAVE': {
-        this.emit('CHAT_LEAVE', { userId: msg.userId });
-        break;
-      }
-      default:
-        logger.warn({ type: msg.type }, '[CollaborationClient] unknown message type');
-    }
-  }
-
-  // ─── Send ────────────────────────────────────────────────────────────────
-
-  private send(
-    partial: Omit<CollaborationMessage, 'chatId' | 'userId' | 'timestamp'>,
-  ): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.chatId) return;
-    const msg: CollaborationMessage = {
-      ...partial,
-      chatId: this.chatId,
-      userId: this.userId,
-      timestamp: Date.now(),
+    this.ws.onopen = () => {
+      this.reconnectAttempts = 0;
+      this.setState("connected");
+      this.startHeartbeat();
+      this.joinRoom();
+      this.flushQueue();
     };
+
+    this.ws.onmessage = (event: MessageEvent) => {
+      this.handleMessage(event.data);
+    };
+
+    this.ws.onerror = () => {
+      this.emit("error", new Error("WebSocket error"));
+    };
+
+    this.ws.onclose = (event: CloseEvent) => {
+      this.stopHeartbeat();
+      if (this.destroyed || event.code === 1000) {
+        this.setState("disconnected");
+        return;
+      }
+      this.setState("reconnecting");
+      this.scheduleReconnect();
+    };
+  }
+
+  private handleMessage(raw: string): void {
+    let msg: IncomingMessage;
     try {
-      this.ws.send(JSON.stringify(msg));
-    } catch (err) {
-      logger.warn({ err }, '[CollaborationClient] send failed');
+      msg = JSON.parse(raw) as IncomingMessage;
+    } catch {
+      return;
+    }
+
+    if (msg.type === "pong") {
+      if (this.pongTimer) {
+        clearTimeout(this.pongTimer);
+        this.pongTimer = null;
+      }
+      return;
+    }
+
+    switch (msg.type) {
+      case "presence_update":
+        this.emit("presence_update", msg);
+        break;
+      case "cursor_move":
+        this.emit("cursor_move", msg);
+        break;
+      case "typing_start":
+        this.emit("typing_start", msg);
+        break;
+      case "typing_stop":
+        this.emit("typing_stop", msg);
+        break;
+      case "chat_message":
+        this.emit("chat_message", msg);
+        break;
     }
   }
 
-  // ─── Helpers ─────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
+  // Private – send / queue
+  // ---------------------------------------------------------------------------
 
-  private leaveCurrent(): void {
-    if (this.chatId && this.ws?.readyState === WebSocket.OPEN) {
-      this.send({ type: 'CHAT_LEAVE' });
+  private send(msg: OutgoingMessage): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.sendRaw(msg);
+    } else {
+      // Queue non-ping, non-room messages for later delivery
+      if (msg.type !== "ping" && msg.type !== "leave_room") {
+        this.messageQueue.push(msg);
+      }
     }
   }
+
+  private sendRaw(msg: OutgoingMessage): void {
+    try {
+      this.ws?.send(JSON.stringify(msg));
+    } catch {
+      // Socket may have closed; will be retried after reconnect
+    }
+  }
+
+  private flushQueue(): void {
+    while (this.messageQueue.length > 0) {
+      const msg = this.messageQueue.shift()!;
+      this.sendRaw(msg);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private – heartbeat
+  // ---------------------------------------------------------------------------
 
   private startHeartbeat(): void {
-    this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.send({ type: 'PING' });
-      }
-    }, 30_000);
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+      this.sendRaw({ type: "ping", timestamp: Date.now() });
+
+      this.pongTimer = setTimeout(() => {
+        // No pong received — connection is stale, force close
+        this.ws?.close(4000, "Heartbeat timeout");
+      }, this.heartbeatTimeout);
+    }, this.heartbeatInterval);
   }
 
   private stopHeartbeat(): void {
@@ -413,31 +437,65 @@ export class CollaborationClient {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+    if (this.pongTimer) {
+      clearTimeout(this.pongTimer);
+      this.pongTimer = null;
+    }
   }
 
+  // ---------------------------------------------------------------------------
+  // Private – reconnect
+  // ---------------------------------------------------------------------------
+
   private scheduleReconnect(): void {
+    if (this.destroyed) return;
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      logger.error('[CollaborationClient] max reconnect attempts reached');
+      this.setState("disconnected");
+      this.emit("error", new Error(`Max reconnect attempts (${this.maxReconnectAttempts}) reached`));
       return;
     }
 
     const delay = Math.min(
-      1000 * Math.pow(2, this.reconnectAttempts) + Math.random() * 500,
-      30_000,
+      this.reconnectBaseDelay * 2 ** this.reconnectAttempts,
+      30_000 // cap at 30 s
     );
     this.reconnectAttempts++;
 
-    logger.info(
-      { attempt: this.reconnectAttempts, delay },
-      '[CollaborationClient] scheduling reconnect',
-    );
-
     this.reconnectTimer = setTimeout(() => {
-      if (!this.isIntentionalDisconnect && this.chatId) {
-        this.cleanupSocket();
-        this.isConnecting = true;
-        this.openSocket();
-      }
+      if (!this.destroyed) this.openSocket();
     }, delay);
+  }
+
+  private clearTimers(): void {
+    this.stopHeartbeat();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private – state / emit helpers
+  // ---------------------------------------------------------------------------
+
+  private setState(state: ConnectionState): void {
+    if (this.state === state) return;
+    this.state = state;
+    this.emit("connection_state", state);
+  }
+
+  private emit<K extends keyof CollaborationEvents>(
+    event: K,
+    payload: Parameters<CollaborationEvents[K]>[0]
+  ): void {
+    const handlers = this.listeners[event] as Listener<typeof payload>[] | undefined;
+    if (!handlers) return;
+    for (const handler of handlers) {
+      try {
+        handler(payload);
+      } catch (err) {
+        console.error(`[CollaborationClient] Error in "${event}" listener:`, err);
+      }
+    }
   }
 }

@@ -1,301 +1,325 @@
-import pino from 'pino';
-import express, { Request, Response } from 'express';
-import http from 'http';
+import { EventEmitter } from 'events';
+import { MeshNode, NodeCapabilities, NodeResources, NodeState } from './MeshNode';
 
-const logger = pino({ name: 'CognitiveMesh', level: process.env.LOG_LEVEL ?? 'info' });
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-export enum NodeCapability {
-  PERCEPTION = 'PERCEPTION',
-  REASONING = 'REASONING',
-  MEMORY = 'MEMORY',
-  ACTION = 'ACTION',
-  SYNTHESIS = 'SYNTHESIS',
-}
+export type LoadBalancingStrategy = 'round-robin' | 'least-loaded' | 'capability-match';
 
-export interface MeshNodeInfo {
-  id: string;
-  url: string;
-  capabilities: NodeCapability[];
-  load: number;
-  healthy: boolean;
-  lastHeartbeat: number;
-}
-
-export interface CognitiveTask {
-  id: string;
-  type: NodeCapability;
-  priority: number;
+export interface TaskRequest {
+  taskId: string;
+  type: string;
   payload: unknown;
+  requiredCapabilities?: Partial<NodeCapabilities>;
+  priority: number; // 0 (lowest) – 10 (highest)
+  timeoutMs?: number;
+  submittedAt: number;
 }
 
-const HEARTBEAT_TIMEOUT_MS = 30_000;
-const HEALTH_CHECK_INTERVAL_MS = 15_000;
-const HEALTH_CHECK_TIMEOUT_MS = 5_000;
+export interface MeshTask extends TaskRequest {
+  assignedNodeId: string;
+  routedAt: number;
+}
 
-export class CognitiveMesh {
-  public nodes: Map<string, MeshNodeInfo> = new Map();
+export interface TaskResult {
+  taskId: string;
+  nodeId: string;
+  success: boolean;
+  output?: unknown;
+  error?: string;
+  durationMs: number;
+  completedAt: number;
+}
 
-  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
-  private httpServer: http.Server | null = null;
-  private app = express();
-  private port = 0;
+export interface MeshNodeEntry {
+  node: MeshNode;
+  lastHeartbeat: number;
+  healthy: boolean;
+  tasksRouted: number;
+}
 
-  constructor() {
-    this.app.use(express.json());
-    this.setupRoutes();
+export interface MeshStats {
+  totalNodes: number;
+  healthyNodes: number;
+  totalTasksRouted: number;
+  totalTasksCompleted: number;
+  averageLatencyMs: number;
+  topology: 'peer-to-peer' | 'coordinator';
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const HEARTBEAT_INTERVAL_MS = 5_000;
+const HEARTBEAT_TIMEOUT_MS = 15_000;
+const HEALTH_CHECK_INTERVAL_MS = 8_000;
+const ROUND_ROBIN_POINTER_KEY = '__rr_pointer__';
+
+// ─── CognitiveMesh ────────────────────────────────────────────────────────────
+
+export class CognitiveMesh extends EventEmitter {
+  private readonly nodeRegistry = new Map<string, MeshNodeEntry>();
+  private readonly coordinatorId: string;
+  private strategy: LoadBalancingStrategy;
+  private roundRobinPointer = 0;
+  private heartbeatTimer?: NodeJS.Timeout;
+  private healthCheckTimer?: NodeJS.Timeout;
+  private taskLatencies: number[] = [];
+  private totalTasksCompleted = 0;
+  private isShuttingDown = false;
+
+  constructor(coordinatorId: string, strategy: LoadBalancingStrategy = 'least-loaded') {
+    super();
+    this.coordinatorId = coordinatorId;
+    this.strategy = strategy;
   }
 
-  private setupRoutes(): void {
-    // Node registration endpoint
-    this.app.post('/mesh/register', (req: Request, res: Response) => {
-      const nodeInfo = req.body as MeshNodeInfo;
-      if (!nodeInfo?.id || !nodeInfo?.url) {
-        res.status(400).json({ error: 'Missing required fields: id, url' });
-        return;
-      }
-      this.registerNode({ ...nodeInfo, healthy: true, lastHeartbeat: Date.now() });
-      logger.info({ nodeId: nodeInfo.id, url: nodeInfo.url }, 'Node registered via HTTP');
-      res.json({ ok: true, registered: nodeInfo.id });
-    });
+  // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
-    // Node deregistration endpoint
-    this.app.delete('/mesh/register/:nodeId', (req: Request, res: Response) => {
-      const { nodeId } = req.params;
-      this.unregisterNode(nodeId);
-      res.json({ ok: true, unregistered: nodeId });
-    });
-
-    // Heartbeat endpoint
-    this.app.post('/mesh/heartbeat/:nodeId', (req: Request, res: Response) => {
-      const { nodeId } = req.params;
-      const node = this.nodes.get(nodeId);
-      if (!node) {
-        res.status(404).json({ error: 'Node not found' });
-        return;
-      }
-      const { load } = req.body as { load?: number };
-      node.lastHeartbeat = Date.now();
-      node.healthy = true;
-      if (typeof load === 'number') node.load = Math.max(0, Math.min(1, load));
-      logger.debug({ nodeId, load: node.load }, 'Heartbeat received');
-      res.json({ ok: true, timestamp: Date.now() });
-    });
-
-    // Mesh status endpoint
-    this.app.get('/mesh/nodes', (_req: Request, res: Response) => {
-      res.json({ nodes: Array.from(this.nodes.values()) });
-    });
-
-    // Task routing endpoint
-    this.app.post('/mesh/route', (req: Request, res: Response) => {
-      const task = req.body as CognitiveTask;
-      const node = this.selectNode(task);
-      if (!node) {
-        res.status(503).json({ error: 'No capable healthy node available', capability: task.type });
-        return;
-      }
-      res.json({ nodeId: node.id, nodeUrl: node.url, task });
-    });
-
-    // Health endpoint for this coordinator
-    this.app.get('/mesh/health', (_req: Request, res: Response) => {
-      res.json({
-        status: 'ok',
-        nodeCount: this.nodes.size,
-        healthyNodes: this.getHealthyNodes().length,
-        timestamp: Date.now(),
-      });
-    });
+  start(): void {
+    this.heartbeatTimer = setInterval(() => this.broadcastHeartbeat(), HEARTBEAT_INTERVAL_MS);
+    this.healthCheckTimer = setInterval(() => this.runHealthCheck(), HEALTH_CHECK_INTERVAL_MS);
+    this.emit('mesh_started', { coordinatorId: this.coordinatorId, strategy: this.strategy });
   }
 
-  registerNode(nodeInfo: MeshNodeInfo): void {
-    const existing = this.nodes.get(nodeInfo.id);
-    this.nodes.set(nodeInfo.id, {
-      ...nodeInfo,
-      lastHeartbeat: nodeInfo.lastHeartbeat ?? Date.now(),
-      healthy: nodeInfo.healthy ?? true,
-    });
+  async shutdown(): Promise<void> {
+    this.isShuttingDown = true;
+    clearInterval(this.heartbeatTimer);
+    clearInterval(this.healthCheckTimer);
+
+    const drainPromises: Promise<void>[] = [];
+    for (const [nodeId, entry] of this.nodeRegistry) {
+      drainPromises.push(entry.node.drain());
+      this.emit('node_left', { nodeId, reason: 'mesh_shutdown' });
+    }
+
+    await Promise.all(drainPromises);
+    this.nodeRegistry.clear();
+    this.emit('mesh_stopped', { coordinatorId: this.coordinatorId });
+  }
+
+  // ─── Node Management ────────────────────────────────────────────────────────
+
+  registerNode(node: MeshNode): void {
+    if (this.isShuttingDown) {
+      throw new Error('Cannot register nodes during shutdown');
+    }
+
+    const existing = this.nodeRegistry.get(node.nodeId);
     if (existing) {
-      logger.info({ nodeId: nodeInfo.id }, 'Mesh node updated');
-    } else {
-      logger.info({ nodeId: nodeInfo.id, url: nodeInfo.url, capabilities: nodeInfo.capabilities }, 'Mesh node registered');
-    }
-  }
-
-  unregisterNode(nodeId: string): void {
-    const existed = this.nodes.delete(nodeId);
-    if (existed) {
-      logger.info({ nodeId }, 'Mesh node unregistered');
-    } else {
-      logger.warn({ nodeId }, 'Attempted to unregister unknown node');
-    }
-  }
-
-  async discoverNodes(serviceRegistryUrl?: string): Promise<void> {
-    if (!serviceRegistryUrl) {
-      logger.debug('No service registry URL provided, skipping discovery');
+      existing.lastHeartbeat = Date.now();
+      existing.healthy = true;
       return;
     }
 
-    logger.info({ serviceRegistryUrl }, 'Discovering nodes from service registry');
+    const entry: MeshNodeEntry = {
+      node,
+      lastHeartbeat: Date.now(),
+      healthy: true,
+      tasksRouted: 0,
+    };
+
+    this.nodeRegistry.set(node.nodeId, entry);
+
+    // Listen for heartbeats from this node
+    node.on('heartbeat', (nodeId: string) => {
+      const e = this.nodeRegistry.get(nodeId);
+      if (e) {
+        e.lastHeartbeat = Date.now();
+        e.healthy = true;
+      }
+    });
+
+    // Listen for task completions
+    node.on('task_completed', (result: TaskResult) => {
+      const e = this.nodeRegistry.get(result.nodeId);
+      if (e) {
+        e.tasksRouted = Math.max(0, e.tasksRouted - 1);
+      }
+      this.totalTasksCompleted++;
+      this.taskLatencies.push(result.durationMs);
+      if (this.taskLatencies.length > 1000) this.taskLatencies.shift();
+      this.emit('task_completed', result);
+    });
+
+    this.emit('node_joined', {
+      nodeId: node.nodeId,
+      capabilities: node.getCapabilities(),
+      registeredAt: Date.now(),
+    });
+  }
+
+  deregisterNode(nodeId: string): void {
+    const entry = this.nodeRegistry.get(nodeId);
+    if (!entry) return;
+    this.nodeRegistry.delete(nodeId);
+    this.emit('node_left', { nodeId, reason: 'deregistered' });
+  }
+
+  // ─── Task Routing ────────────────────────────────────────────────────────────
+
+  async routeTask(task: TaskRequest): Promise<TaskResult> {
+    if (this.isShuttingDown) {
+      return this.makeError(task, 'no_node', 'Mesh is shutting down', 0);
+    }
+
+    const candidateNode = this.selectNode(task);
+    if (!candidateNode) {
+      return this.makeError(task, 'no_node', 'No healthy node available for task', 0);
+    }
+
+    const meshTask: MeshTask = {
+      ...task,
+      assignedNodeId: candidateNode.node.nodeId,
+      routedAt: Date.now(),
+    };
+
+    candidateNode.tasksRouted++;
+    this.emit('task_routed', { task: meshTask, nodeId: candidateNode.node.nodeId });
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
+      const result = await candidateNode.node.executeTask(meshTask, task.timeoutMs);
+      return result;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return this.makeError(task, candidateNode.node.nodeId, msg, Date.now() - meshTask.routedAt);
+    }
+  }
 
-      const response = await fetch(`${serviceRegistryUrl}/nodes`, {
-        signal: controller.signal,
-        headers: { 'Content-Type': 'application/json' },
-      });
+  // ─── Load Balancing Strategies ──────────────────────────────────────────────
 
-      clearTimeout(timeoutId);
+  private selectNode(task: TaskRequest): MeshNodeEntry | null {
+    const healthy = this.getHealthyNodes();
+    if (healthy.length === 0) return null;
 
-      if (!response.ok) {
-        logger.warn({ status: response.status, serviceRegistryUrl }, 'Service registry returned non-OK status');
-        return;
-      }
+    switch (this.strategy) {
+      case 'round-robin':
+        return this.roundRobin(healthy);
+      case 'least-loaded':
+        return this.leastLoaded(healthy);
+      case 'capability-match':
+        return this.capabilityMatch(healthy, task);
+      default:
+        return this.leastLoaded(healthy);
+    }
+  }
 
-      const data = (await response.json()) as { nodes?: MeshNodeInfo[] };
-      const discoveredNodes = data.nodes ?? [];
+  private roundRobin(nodes: MeshNodeEntry[]): MeshNodeEntry {
+    const idx = this.roundRobinPointer % nodes.length;
+    this.roundRobinPointer = (this.roundRobinPointer + 1) % nodes.length;
+    return nodes[idx];
+  }
 
-      for (const node of discoveredNodes) {
-        if (!this.nodes.has(node.id)) {
-          this.registerNode({ ...node, healthy: true, lastHeartbeat: Date.now() });
+  private leastLoaded(nodes: MeshNodeEntry[]): MeshNodeEntry {
+    return nodes.reduce((best, entry) => {
+      const bestLoad = best.node.getResources().activeTasks + best.node.getResources().queuedTasks;
+      const entryLoad = entry.node.getResources().activeTasks + entry.node.getResources().queuedTasks;
+      return entryLoad < bestLoad ? entry : best;
+    });
+  }
+
+  private capabilityMatch(nodes: MeshNodeEntry[], task: TaskRequest): MeshNodeEntry {
+    if (!task.requiredCapabilities) return this.leastLoaded(nodes);
+
+    const req = task.requiredCapabilities;
+
+    const scored = nodes
+      .filter((e) => e.node.canAccept(task as MeshTask))
+      .map((e) => {
+        const cap = e.node.getCapabilities();
+        let score = 0;
+
+        if (req.hasGPU !== undefined && cap.hasGPU === req.hasGPU) score += 3;
+        if (req.memoryGB !== undefined && cap.memoryGB >= (req.memoryGB ?? 0)) score += 2;
+        if (req.maxConcurrentTasks !== undefined && cap.maxConcurrentTasks >= (req.maxConcurrentTasks ?? 0)) score += 1;
+        if (req.specializations && req.specializations.length > 0) {
+          const overlap = (req.specializations ?? []).filter((s) => cap.specializations.includes(s));
+          score += overlap.length * 2;
         }
-      }
 
-      logger.info({ discovered: discoveredNodes.length, total: this.nodes.size }, 'Node discovery complete');
-    } catch (err) {
-      logger.error({ err, serviceRegistryUrl }, 'Failed to discover nodes from service registry');
-    }
+        // Penalise heavily loaded nodes
+        const res = e.node.getResources();
+        const loadRatio = res.activeTasks / Math.max(cap.maxConcurrentTasks, 1);
+        score -= loadRatio * 2;
+
+        return { entry: e, score };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    return scored.length > 0 ? scored[0].entry : this.leastLoaded(nodes);
   }
 
-  getHealthyNodes(capability?: NodeCapability): MeshNodeInfo[] {
-    const nodes = Array.from(this.nodes.values()).filter((n) => n.healthy);
-    if (!capability) return nodes;
-    return nodes.filter((n) => n.capabilities.includes(capability));
-  }
+  // ─── Health Monitoring ──────────────────────────────────────────────────────
 
-  selectNode(task: CognitiveTask): MeshNodeInfo | null {
-    const candidates = this.getHealthyNodes(task.type);
-    if (candidates.length === 0) {
-      logger.warn({ capability: task.type, taskId: task.id }, 'No healthy nodes available for capability');
-      return null;
-    }
-
-    // Least-loaded capable node selection
-    candidates.sort((a, b) => a.load - b.load);
-    const selected = candidates[0];
-    logger.debug(
-      { taskId: task.id, capability: task.type, selectedNode: selected.id, load: selected.load },
-      'Node selected for task',
-    );
-    return selected;
-  }
-
-  async healthCheck(): Promise<void> {
+  private runHealthCheck(): void {
     const now = Date.now();
-    const checkPromises: Promise<void>[] = [];
-
-    for (const [nodeId, node] of this.nodes.entries()) {
-      // Mark as unhealthy if heartbeat is stale
-      if (now - node.lastHeartbeat > HEARTBEAT_TIMEOUT_MS) {
-        if (node.healthy) {
-          logger.warn({ nodeId, lastHeartbeat: node.lastHeartbeat }, 'Node marked unhealthy due to stale heartbeat');
-          node.healthy = false;
-        }
-        continue;
+    for (const [nodeId, entry] of this.nodeRegistry) {
+      const elapsed = now - entry.lastHeartbeat;
+      if (elapsed > HEARTBEAT_TIMEOUT_MS && entry.healthy) {
+        entry.healthy = false;
+        this.emit('node_unhealthy', { nodeId, lastSeen: entry.lastHeartbeat, elapsed });
+      } else if (elapsed <= HEARTBEAT_TIMEOUT_MS && !entry.healthy) {
+        entry.healthy = true;
+        this.emit('node_recovered', { nodeId });
       }
-
-      // Ping the node
-      const checkPromise = (async () => {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
-
-        try {
-          const response = await fetch(`${node.url}/health`, {
-            signal: controller.signal,
-            method: 'GET',
-          });
-          clearTimeout(timeoutId);
-
-          const wasHealthy = node.healthy;
-          node.healthy = response.ok;
-          node.lastHeartbeat = Date.now();
-
-          if (!wasHealthy && node.healthy) {
-            logger.info({ nodeId }, 'Node recovered and is healthy again');
-          } else if (wasHealthy && !node.healthy) {
-            logger.warn({ nodeId, status: response.status }, 'Node health check failed');
-          }
-        } catch (err) {
-          clearTimeout(timeoutId);
-          if (node.healthy) {
-            logger.warn({ nodeId, err }, 'Node health check timed out or failed - marking unhealthy');
-            node.healthy = false;
-          }
-        }
-      })();
-
-      checkPromises.push(checkPromise);
     }
-
-    await Promise.allSettled(checkPromises);
-
-    const healthy = this.getHealthyNodes().length;
-    const total = this.nodes.size;
-    logger.debug({ healthy, total }, 'Health check cycle complete');
   }
 
-  async start(port: number): Promise<void> {
-    this.port = port;
-
-    return new Promise((resolve, reject) => {
-      this.httpServer = this.app.listen(port, () => {
-        logger.info({ port }, 'CognitiveMesh coordinator started');
-
-        // Start periodic health checks
-        this.healthCheckTimer = setInterval(async () => {
-          try {
-            await this.healthCheck();
-          } catch (err) {
-            logger.error({ err }, 'Error during health check cycle');
-          }
-        }, HEALTH_CHECK_INTERVAL_MS);
-
-        resolve();
-      });
-
-      this.httpServer.on('error', (err) => {
-        logger.error({ err, port }, 'Failed to start CognitiveMesh coordinator');
-        reject(err);
-      });
-    });
+  private broadcastHeartbeat(): void {
+    const now = Date.now();
+    for (const [, entry] of this.nodeRegistry) {
+      if (entry.healthy) {
+        entry.node.receiveCoordinatorPing(now);
+      }
+    }
   }
 
-  async stop(): Promise<void> {
-    if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer);
-      this.healthCheckTimer = null;
-    }
+  // ─── Introspection ──────────────────────────────────────────────────────────
 
-    return new Promise((resolve, reject) => {
-      if (!this.httpServer) {
-        resolve();
-        return;
-      }
+  getStats(): MeshStats {
+    const healthy = this.getHealthyNodes();
+    const avg =
+      this.taskLatencies.length > 0
+        ? this.taskLatencies.reduce((a, b) => a + b, 0) / this.taskLatencies.length
+        : 0;
+    const totalRouted = [...this.nodeRegistry.values()].reduce((s, e) => s + e.tasksRouted, 0);
 
-      this.httpServer.close((err) => {
-        if (err) {
-          logger.error({ err }, 'Error stopping CognitiveMesh coordinator');
-          reject(err);
-        } else {
-          logger.info({ port: this.port }, 'CognitiveMesh coordinator stopped');
-          resolve();
-        }
-      });
-    });
+    return {
+      totalNodes: this.nodeRegistry.size,
+      healthyNodes: healthy.length,
+      totalTasksRouted: totalRouted,
+      totalTasksCompleted: this.totalTasksCompleted,
+      averageLatencyMs: Math.round(avg),
+      topology: 'peer-to-peer',
+    };
+  }
+
+  getNodeIds(): string[] {
+    return [...this.nodeRegistry.keys()];
+  }
+
+  getNode(nodeId: string): MeshNode | undefined {
+    return this.nodeRegistry.get(nodeId)?.node;
+  }
+
+  setStrategy(strategy: LoadBalancingStrategy): void {
+    this.strategy = strategy;
+    this.roundRobinPointer = 0;
+    this.emit('strategy_changed', { strategy });
+  }
+
+  // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+  private getHealthyNodes(): MeshNodeEntry[] {
+    return [...this.nodeRegistry.values()].filter((e) => e.healthy && e.node.getState() !== 'offline');
+  }
+
+  private makeError(task: TaskRequest, nodeId: string, error: string, durationMs: number): TaskResult {
+    return {
+      taskId: task.taskId,
+      nodeId,
+      success: false,
+      error,
+      durationMs,
+      completedAt: Date.now(),
+    };
   }
 }
-
-export const globalCognitiveMesh = new CognitiveMesh();

@@ -1,299 +1,441 @@
-// ============================================================
-// Design System – Typography Tokens
-// ============================================================
+/**
+ * Design System Typography Tokens
+ *
+ * Type scale follows a modular ratio of ~1.25 (Major Third).
+ * All sizes expressed in rem units (base: 16px).
+ */
 
 // ---------------------------------------------------------------------------
-// Font size scale (px values, always rendered as rem in CSS)
+// Font family stacks
 // ---------------------------------------------------------------------------
 
-export type FontSizeKey =
-  | 'xs' | 'sm' | 'base' | 'lg' | 'xl'
-  | '2xl' | '3xl' | '4xl' | '5xl' | '6xl';
-
-export const fontSizePx: Record<FontSizeKey, number> = {
-  xs:   12,
-  sm:   14,
-  base: 16,
-  lg:   18,
-  xl:   20,
-  '2xl': 24,
-  '3xl': 30,
-  '4xl': 36,
-  '5xl': 48,
-  '6xl': 60,
-};
-
-/** Convert px value to rem string based on 16px root. */
-export function pxToRem(px: number): string {
-  return `${(px / 16).toFixed(4).replace(/\.?0+$/, '')}rem`;
-}
-
-// ---------------------------------------------------------------------------
-// TypeScale definition
-// ---------------------------------------------------------------------------
-
-export interface TypeScale {
-  fontSize: string;       // rem
-  lineHeight: string;     // unitless or rem
-  letterSpacing: string;  // em
-  fontWeight: number;
-  fontFamily?: 'sans' | 'mono' | 'display';
-}
-
-// ---------------------------------------------------------------------------
-// Predefined type scales
-// ---------------------------------------------------------------------------
-
-export const typeScales: Record<string, TypeScale> = {
-  display: {
-    fontSize:      pxToRem(60),
-    lineHeight:    '1.1',
-    letterSpacing: '-0.02em',
-    fontWeight:    800,
-    fontFamily:    'display',
-  },
-
-  h1: {
-    fontSize:      pxToRem(48),
-    lineHeight:    '1.15',
-    letterSpacing: '-0.015em',
-    fontWeight:    700,
-    fontFamily:    'display',
-  },
-
-  h2: {
-    fontSize:      pxToRem(36),
-    lineHeight:    '1.2',
-    letterSpacing: '-0.01em',
-    fontWeight:    700,
-    fontFamily:    'display',
-  },
-
-  h3: {
-    fontSize:      pxToRem(30),
-    lineHeight:    '1.25',
-    letterSpacing: '-0.005em',
-    fontWeight:    600,
-    fontFamily:    'sans',
-  },
-
-  h4: {
-    fontSize:      pxToRem(24),
-    lineHeight:    '1.3',
-    letterSpacing: '0em',
-    fontWeight:    600,
-    fontFamily:    'sans',
-  },
-
-  h5: {
-    fontSize:      pxToRem(20),
-    lineHeight:    '1.35',
-    letterSpacing: '0em',
-    fontWeight:    600,
-    fontFamily:    'sans',
-  },
-
-  h6: {
-    fontSize:      pxToRem(18),
-    lineHeight:    '1.4',
-    letterSpacing: '0em',
-    fontWeight:    600,
-    fontFamily:    'sans',
-  },
-
-  bodyLarge: {
-    fontSize:      pxToRem(18),
-    lineHeight:    '1.6',
-    letterSpacing: '0.005em',
-    fontWeight:    400,
-    fontFamily:    'sans',
-  },
-
-  body: {
-    fontSize:      pxToRem(16),
-    lineHeight:    '1.6',
-    letterSpacing: '0.005em',
-    fontWeight:    400,
-    fontFamily:    'sans',
-  },
-
-  bodySmall: {
-    fontSize:      pxToRem(14),
-    lineHeight:    '1.5',
-    letterSpacing: '0.01em',
-    fontWeight:    400,
-    fontFamily:    'sans',
-  },
-
-  caption: {
-    fontSize:      pxToRem(12),
-    lineHeight:    '1.4',
-    letterSpacing: '0.02em',
-    fontWeight:    400,
-    fontFamily:    'sans',
-  },
-
-  code: {
-    fontSize:      pxToRem(14),
-    lineHeight:    '1.5',
-    letterSpacing: '0em',
-    fontWeight:    400,
-    fontFamily:    'mono',
-  },
-
-  codeBlock: {
-    fontSize:      pxToRem(13),
-    lineHeight:    '1.65',
-    letterSpacing: '0em',
-    fontWeight:    400,
-    fontFamily:    'mono',
-  },
-};
-
-export type TypeScaleName = keyof typeof typeScales;
-
-// ---------------------------------------------------------------------------
-// Font families
-// ---------------------------------------------------------------------------
-
-export interface FontFamily {
-  sans:    string[];
-  mono:    string[];
-  display: string[];
-}
-
-export const fontFamilies: FontFamily = {
+export const fontFamilies = {
+  /**
+   * Primary sans-serif stack — optimized for UI readability.
+   * Falls back through system UI fonts for performance.
+   */
   sans: [
-    'Inter',
-    'ui-sans-serif',
-    'system-ui',
-    '-apple-system',
-    'BlinkMacSystemFont',
+    "Inter",
+    "ui-sans-serif",
+    "system-ui",
+    "-apple-system",
+    "BlinkMacSystemFont",
     '"Segoe UI"',
-    'Roboto',
+    "Roboto",
     '"Helvetica Neue"',
-    'Arial',
+    "Arial",
     '"Noto Sans"',
-    'sans-serif',
+    "sans-serif",
     '"Apple Color Emoji"',
     '"Segoe UI Emoji"',
     '"Segoe UI Symbol"',
     '"Noto Color Emoji"',
-  ],
+  ].join(", "),
+
+  /**
+   * Monospace stack — for code, terminals, and data display.
+   * Prioritizes fonts with good ligature and glyph support.
+   */
   mono: [
     '"JetBrains Mono"',
     '"Fira Code"',
     '"Cascadia Code"',
-    'ui-monospace',
-    'SFMono-Regular',
-    'Menlo',
-    'Monaco',
-    'Consolas',
+    '"Source Code Pro"',
+    "ui-monospace",
+    "SFMono-Regular",
+    "Menlo",
+    "Monaco",
+    "Consolas",
     '"Liberation Mono"',
     '"Courier New"',
-    'monospace',
-  ],
+    "monospace",
+  ].join(", "),
+
+  /**
+   * Display / heading stack — for large, prominent text.
+   * Uses variable font features when available.
+   */
   display: [
     '"Cal Sans"',
-    'Inter',
-    'ui-sans-serif',
-    'system-ui',
-    '-apple-system',
-    'sans-serif',
-  ],
+    '"Plus Jakarta Sans"',
+    "Inter",
+    "ui-sans-serif",
+    "system-ui",
+    "sans-serif",
+  ].join(", "),
+} as const;
+
+export type FontFamily = keyof typeof fontFamilies;
+
+// ---------------------------------------------------------------------------
+// Font weight map
+// ---------------------------------------------------------------------------
+
+export const fontWeights = {
+  thin: "100",
+  extralight: "200",
+  light: "300",
+  normal: "400",
+  medium: "500",
+  semibold: "600",
+  bold: "700",
+  extrabold: "800",
+  black: "900",
+} as const;
+
+export type FontWeight = keyof typeof fontWeights;
+
+// ---------------------------------------------------------------------------
+// Type scale
+// ---------------------------------------------------------------------------
+
+export interface TypeScaleEntry {
+  /** Font size in rem */
+  fontSize: string;
+  /** Unitless line height ratio */
+  lineHeight: string;
+  /** Letter spacing (em or px) */
+  letterSpacing: string;
+}
+
+/**
+ * Modular type scale (Major Third ≈ 1.25).
+ * Base: 1rem = 16px
+ */
+export const typeScale = {
+  /** 11px — smallest labels, legal text */
+  "2xs": {
+    fontSize: "0.6875rem",
+    lineHeight: "1rem",
+    letterSpacing: "0.02em",
+  },
+  /** 12px — captions, badges, tiny UI */
+  xs: {
+    fontSize: "0.75rem",
+    lineHeight: "1rem",
+    letterSpacing: "0.02em",
+  },
+  /** 13px — secondary UI labels */
+  sm: {
+    fontSize: "0.8125rem",
+    lineHeight: "1.25rem",
+    letterSpacing: "0.01em",
+  },
+  /** 14px — default body/UI text */
+  base: {
+    fontSize: "0.875rem",
+    lineHeight: "1.5rem",
+    letterSpacing: "0em",
+  },
+  /** 16px — comfortable reading body text */
+  md: {
+    fontSize: "1rem",
+    lineHeight: "1.625rem",
+    letterSpacing: "0em",
+  },
+  /** 18px — large body, small headings */
+  lg: {
+    fontSize: "1.125rem",
+    lineHeight: "1.75rem",
+    letterSpacing: "-0.01em",
+  },
+  /** 20px — sub-headings */
+  xl: {
+    fontSize: "1.25rem",
+    lineHeight: "1.875rem",
+    letterSpacing: "-0.01em",
+  },
+  /** 24px — h4-level headings */
+  "2xl": {
+    fontSize: "1.5rem",
+    lineHeight: "2rem",
+    letterSpacing: "-0.02em",
+  },
+  /** 30px — h3-level headings */
+  "3xl": {
+    fontSize: "1.875rem",
+    lineHeight: "2.375rem",
+    letterSpacing: "-0.02em",
+  },
+  /** 36px — h2-level headings */
+  "4xl": {
+    fontSize: "2.25rem",
+    lineHeight: "2.75rem",
+    letterSpacing: "-0.03em",
+  },
+  /** 48px — h1-level headings */
+  "5xl": {
+    fontSize: "3rem",
+    lineHeight: "3.5rem",
+    letterSpacing: "-0.04em",
+  },
+  /** 60px — display / hero headings */
+  "6xl": {
+    fontSize: "3.75rem",
+    lineHeight: "4.25rem",
+    letterSpacing: "-0.04em",
+  },
+  /** 72px — massive display text */
+  "7xl": {
+    fontSize: "4.5rem",
+    lineHeight: "5rem",
+    letterSpacing: "-0.05em",
+  },
+} as const;
+
+export type TypeScaleKey = keyof typeof typeScale;
+
+// ---------------------------------------------------------------------------
+// Composite text styles
+// ---------------------------------------------------------------------------
+
+export interface TextStyle extends TypeScaleEntry {
+  fontFamily: string;
+  fontWeight: string;
+}
+
+/** Heading styles (h1 – h6) */
+export const headingStyles: Record<"h1" | "h2" | "h3" | "h4" | "h5" | "h6", TextStyle> = {
+  h1: {
+    ...typeScale["5xl"],
+    fontFamily: fontFamilies.display,
+    fontWeight: fontWeights.bold,
+    letterSpacing: "-0.04em",
+  },
+  h2: {
+    ...typeScale["4xl"],
+    fontFamily: fontFamilies.display,
+    fontWeight: fontWeights.bold,
+    letterSpacing: "-0.03em",
+  },
+  h3: {
+    ...typeScale["3xl"],
+    fontFamily: fontFamilies.display,
+    fontWeight: fontWeights.semibold,
+    letterSpacing: "-0.02em",
+  },
+  h4: {
+    ...typeScale["2xl"],
+    fontFamily: fontFamilies.display,
+    fontWeight: fontWeights.semibold,
+    letterSpacing: "-0.02em",
+  },
+  h5: {
+    ...typeScale["xl"],
+    fontFamily: fontFamilies.display,
+    fontWeight: fontWeights.semibold,
+    letterSpacing: "-0.01em",
+  },
+  h6: {
+    ...typeScale["lg"],
+    fontFamily: fontFamilies.display,
+    fontWeight: fontWeights.semibold,
+    letterSpacing: "-0.01em",
+  },
 };
 
-export function fontFamilyString(family: keyof FontFamily): string {
-  return fontFamilies[family].join(', ');
+/** Body text styles */
+export const bodyStyles = {
+  /** Comfortable reading body text — articles, long-form content */
+  bodyLarge: {
+    ...typeScale["md"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.normal,
+  },
+  /** Default body text — general UI content */
+  body: {
+    ...typeScale["base"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.normal,
+  },
+  /** Small body — secondary content, metadata */
+  bodySmall: {
+    ...typeScale["sm"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.normal,
+  },
+} as const;
+
+/** UI text styles — labels, buttons, navigation */
+export const uiStyles = {
+  /** Button / CTA labels */
+  buttonLg: {
+    ...typeScale["md"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.semibold,
+    letterSpacing: "0em",
+  },
+  button: {
+    ...typeScale["base"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.semibold,
+    letterSpacing: "0em",
+  },
+  buttonSm: {
+    ...typeScale["sm"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.semibold,
+    letterSpacing: "0.01em",
+  },
+
+  /** Form labels */
+  label: {
+    ...typeScale["sm"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.medium,
+    letterSpacing: "0.01em",
+  },
+
+  /** Input placeholder text */
+  placeholder: {
+    ...typeScale["base"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.normal,
+  },
+
+  /** Navigation links */
+  navItem: {
+    ...typeScale["sm"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.medium,
+    letterSpacing: "0.01em",
+  },
+
+  /** Badges, tags, pills */
+  badge: {
+    ...typeScale["xs"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.semibold,
+    letterSpacing: "0.03em",
+  },
+
+  /** Caption / helper text */
+  caption: {
+    ...typeScale["xs"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.normal,
+    letterSpacing: "0.01em",
+  },
+
+  /** Overline — small uppercase category label */
+  overline: {
+    ...typeScale["xs"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.semibold,
+    letterSpacing: "0.08em",
+  },
+
+  /** Tooltip text */
+  tooltip: {
+    ...typeScale["xs"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.medium,
+    letterSpacing: "0em",
+  },
+
+  /** Tab labels */
+  tab: {
+    ...typeScale["sm"],
+    fontFamily: fontFamilies.sans,
+    fontWeight: fontWeights.medium,
+    letterSpacing: "0.01em",
+  },
+} as const;
+
+/** Code / monospace styles */
+export const codeStyles = {
+  /** Inline code — within prose */
+  inline: {
+    ...typeScale["sm"],
+    fontFamily: fontFamilies.mono,
+    fontWeight: fontWeights.normal,
+    letterSpacing: "0em",
+  },
+
+  /** Code block — syntax highlighted regions */
+  block: {
+    ...typeScale["sm"],
+    fontFamily: fontFamilies.mono,
+    fontWeight: fontWeights.normal,
+    letterSpacing: "0em",
+    lineHeight: "1.75rem",  // Slightly more generous for readability in blocks
+  },
+
+  /** Code block with line numbers */
+  blockWithLines: {
+    ...typeScale["sm"],
+    fontFamily: fontFamilies.mono,
+    fontWeight: fontWeights.normal,
+    letterSpacing: "0em",
+    lineHeight: "1.75rem",
+  },
+
+  /** Terminal / shell output */
+  terminal: {
+    ...typeScale["sm"],
+    fontFamily: fontFamilies.mono,
+    fontWeight: fontWeights.normal,
+    letterSpacing: "0em",
+  },
+
+  /** Code comment */
+  comment: {
+    ...typeScale["sm"],
+    fontFamily: fontFamilies.mono,
+    fontWeight: fontWeights.normal,
+    letterSpacing: "0em",
+  },
+
+  /** Keyboard shortcut label — kbd element */
+  kbd: {
+    ...typeScale["xs"],
+    fontFamily: fontFamilies.mono,
+    fontWeight: fontWeights.medium,
+    letterSpacing: "0em",
+  },
+} as const;
+
+// ---------------------------------------------------------------------------
+// CSS custom property generation
+// ---------------------------------------------------------------------------
+
+/** Generates a flat CSS custom property block from the design tokens */
+export function generateTypographyCSS(): string {
+  const entries: string[] = [];
+
+  // Font families
+  for (const [key, value] of Object.entries(fontFamilies)) {
+    entries.push(`  --font-family-${key}: ${value};`);
+  }
+
+  // Font weights
+  for (const [key, value] of Object.entries(fontWeights)) {
+    entries.push(`  --font-weight-${key}: ${value};`);
+  }
+
+  // Type scale
+  for (const [key, scale] of Object.entries(typeScale)) {
+    const cssKey = key.replace(/\//g, "-");
+    entries.push(`  --text-${cssKey}-size: ${scale.fontSize};`);
+    entries.push(`  --text-${cssKey}-line-height: ${scale.lineHeight};`);
+    entries.push(`  --text-${cssKey}-letter-spacing: ${scale.letterSpacing};`);
+  }
+
+  return entries.join("\n");
 }
 
-// ---------------------------------------------------------------------------
-// TypographyToken class
-// ---------------------------------------------------------------------------
+export type HeadingLevel = "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+export type BodyStyle = keyof typeof bodyStyles;
+export type UIStyle = keyof typeof uiStyles;
+export type CodeStyle = keyof typeof codeStyles;
 
-export class TypographyToken {
-  readonly name: string;
-  readonly scale: TypeScale;
-
-  constructor(name: string, scale: TypeScale) {
-    this.name  = name;
-    this.scale = scale;
-  }
-
-  /** Returns a Tailwind-compatible class string for this scale. */
-  toCSSClass(): string {
-    return tailwindClasses[this.name] ?? '';
-  }
-
-  /** Returns a React CSSProperties object for inline styling. */
-  toCSSProperties(): React.CSSProperties {
-    const { fontSize, lineHeight, letterSpacing, fontWeight, fontFamily } = this.scale;
-    return {
-      fontSize,
-      lineHeight,
-      letterSpacing,
-      fontWeight,
-      ...(fontFamily
-        ? { fontFamily: fontFamilyString(fontFamily) }
-        : {}),
-    };
-  }
-}
-
-// Avoid a full React import – only the type is needed here.
-declare namespace React {
-  interface CSSProperties {
-    [key: string]: string | number | undefined;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Instantiated tokens
-// ---------------------------------------------------------------------------
-
-export const typographyTokens: Record<TypeScaleName, TypographyToken> = Object.fromEntries(
-  Object.entries(typeScales).map(([name, scale]) => [name, new TypographyToken(name, scale)]),
-) as Record<TypeScaleName, TypographyToken>;
-
-// ---------------------------------------------------------------------------
-// Tailwind class map
-// ---------------------------------------------------------------------------
-
-export const tailwindClasses: Record<string, string> = {
-  display:   'text-6xl font-extrabold tracking-tighter leading-none font-display',
-  h1:        'text-5xl font-bold tracking-tight leading-tight font-display',
-  h2:        'text-4xl font-bold tracking-tight leading-snug font-display',
-  h3:        'text-3xl font-semibold tracking-tight leading-snug',
-  h4:        'text-2xl font-semibold leading-snug',
-  h5:        'text-xl font-semibold leading-snug',
-  h6:        'text-lg font-semibold leading-normal',
-  bodyLarge: 'text-lg font-normal leading-relaxed tracking-wide',
-  body:      'text-base font-normal leading-relaxed tracking-wide',
-  bodySmall: 'text-sm font-normal leading-normal tracking-wide',
-  caption:   'text-xs font-normal leading-tight tracking-wider',
-  code:      'text-sm font-normal font-mono',
-  codeBlock: 'text-[13px] font-normal font-mono leading-relaxed',
+export default {
+  fontFamilies,
+  fontWeights,
+  typeScale,
+  headingStyles,
+  bodyStyles,
+  uiStyles,
+  codeStyles,
+  generateTypographyCSS,
 };
-
-// ---------------------------------------------------------------------------
-// CSS custom-property generator for font settings
-// ---------------------------------------------------------------------------
-
-export function getTypographyCSSVars(): string {
-  const lines: string[] = [
-    `  --font-sans: ${fontFamilyString('sans')};`,
-    `  --font-mono: ${fontFamilyString('mono')};`,
-    `  --font-display: ${fontFamilyString('display')};`,
-  ];
-
-  for (const [name, scale] of Object.entries(typeScales)) {
-    lines.push(
-      `  --type-${name}-size: ${scale.fontSize};`,
-      `  --type-${name}-lh: ${scale.lineHeight};`,
-      `  --type-${name}-ls: ${scale.letterSpacing};`,
-      `  --type-${name}-weight: ${scale.fontWeight};`,
-    );
-  }
-
-  return `:root {\n${lines.join('\n')}\n}`;
-}

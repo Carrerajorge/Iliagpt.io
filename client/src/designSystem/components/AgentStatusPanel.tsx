@@ -1,170 +1,404 @@
-import React, { useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import {
-  Pause,
-  Play,
-  Square,
-  CheckCircle,
-  XCircle,
-  Clock,
-  Loader2,
-  Brain,
-  Zap,
-  AlertCircle,
-  Activity,
-} from 'lucide-react';
-import { cn } from '@/lib/utils';
+import React, { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type AgentStatus = 'idle' | 'thinking' | 'acting' | 'complete' | 'error';
+export type AgentStatusType =
+  | "thinking"
+  | "executing"
+  | "waiting"
+  | "done"
+  | "error"
+  | "idle";
 
-interface AgentStep {
+export interface AgentStatus {
+  id: string;
   name: string;
-  status: 'pending' | 'running' | 'done' | 'failed';
-  timestamp?: string;
+  status: AgentStatusType;
+  /** Progress 0–100, undefined = indeterminate */
+  progress?: number;
+  currentTask?: string;
+  tokensUsed?: number;
+  /** Maximum tokens budget */
+  tokenBudget?: number;
+  /** Timestamp agent was started */
+  startedAt?: Date;
+  /** Any sub-tasks or steps */
+  steps?: Array<{ label: string; done: boolean }>;
 }
 
-interface AgentStatusPanelProps {
-  agentId: string;
-  taskName: string;
-  status: AgentStatus;
-  model: string;
-  tokensIn: number;
-  tokensOut: number;
-  steps: AgentStep[];
-  onPause?: () => void;
-  onResume?: () => void;
-  onCancel?: () => void;
+export interface AgentStatusPanelProps {
+  agents: AgentStatus[];
+  /** Panel title */
+  title?: string;
+  /** Whether the panel starts collapsed */
+  defaultCollapsed?: boolean;
+  /** Called when user requests to cancel an agent */
+  onCancelAgent?: (agentId: string) => void;
   className?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Model pricing ($/M tokens) – approximate
-// ---------------------------------------------------------------------------
-
-const MODEL_PRICES: Record<string, { input: number; output: number }> = {
-  'claude-opus-4-6':     { input: 15,    output: 75    },
-  'claude-sonnet-4-6':   { input: 3,     output: 15    },
-  'claude-haiku-4-5':    { input: 0.8,   output: 4     },
-  'gpt-4o':              { input: 2.5,   output: 10    },
-  'gpt-4o-mini':         { input: 0.15,  output: 0.6   },
-  'gemini-1.5-pro':      { input: 1.25,  output: 5     },
-  'gemini-1.5-flash':    { input: 0.075, output: 0.3   },
-};
-
-function estimateCost(model: string, tokensIn: number, tokensOut: number): number {
-  const pricing = MODEL_PRICES[model] ?? { input: 3, output: 15 };
-  return (tokensIn / 1_000_000) * pricing.input +
-         (tokensOut / 1_000_000) * pricing.output;
-}
-
-function formatCost(usd: number): string {
-  if (usd < 0.001) return '<$0.001';
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  if (usd < 1)    return `$${usd.toFixed(3)}`;
-  return `$${usd.toFixed(2)}`;
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
-// ---------------------------------------------------------------------------
-// Provider detection
-// ---------------------------------------------------------------------------
-
-function getProviderInfo(model: string): { emoji: string; name: string } {
-  if (model.startsWith('claude'))  return { emoji: '🤖', name: 'Anthropic' };
-  if (model.startsWith('gpt'))     return { emoji: '🟢', name: 'OpenAI'    };
-  if (model.startsWith('gemini'))  return { emoji: '🔷', name: 'Google'    };
-  return { emoji: '⚡', name: 'Unknown' };
 }
 
 // ---------------------------------------------------------------------------
 // Status config
 // ---------------------------------------------------------------------------
 
-const STATUS_CONFIG: Record<
-  AgentStatus,
-  { label: string; color: string; bg: string; headerGradient: string }
-> = {
-  idle:     {
-    label: 'Idle',
-    color: 'text-slate-500',
-    bg:    'bg-slate-100 dark:bg-slate-800',
-    headerGradient: 'from-slate-700 to-slate-900',
-  },
+interface AgentStatusConfig {
+  label: string;
+  badgeClass: string;
+  iconBg: string;
+  dotColor: string;
+}
+
+const AGENT_STATUS_CONFIG: Record<AgentStatusType, AgentStatusConfig> = {
   thinking: {
-    label: 'Thinking…',
-    color: 'text-violet-600 dark:text-violet-400',
-    bg:    'bg-violet-100 dark:bg-violet-900/40',
-    headerGradient: 'from-violet-900 via-indigo-900 to-slate-900',
+    label: "Thinking",
+    badgeClass: "bg-purple-950/60 text-purple-300 border-purple-800/50",
+    iconBg: "bg-purple-500",
+    dotColor: "bg-purple-400",
   },
-  acting:   {
-    label: 'Acting',
-    color: 'text-blue-600 dark:text-blue-400',
-    bg:    'bg-blue-100 dark:bg-blue-900/40',
-    headerGradient: 'from-blue-900 via-indigo-900 to-slate-900',
+  executing: {
+    label: "Executing",
+    badgeClass: "bg-blue-950/60 text-blue-300 border-blue-800/50",
+    iconBg: "bg-blue-500",
+    dotColor: "bg-blue-400",
   },
-  complete: {
-    label: 'Complete',
-    color: 'text-emerald-600 dark:text-emerald-400',
-    bg:    'bg-emerald-100 dark:bg-emerald-900/40',
-    headerGradient: 'from-emerald-900 via-teal-900 to-slate-900',
+  waiting: {
+    label: "Waiting",
+    badgeClass: "bg-amber-950/60 text-amber-300 border-amber-800/50",
+    iconBg: "bg-amber-500",
+    dotColor: "bg-amber-400",
   },
-  error:    {
-    label: 'Error',
-    color: 'text-red-600 dark:text-red-400',
-    bg:    'bg-red-100 dark:bg-red-900/40',
-    headerGradient: 'from-red-900 via-rose-900 to-slate-900',
+  done: {
+    label: "Done",
+    badgeClass: "bg-green-950/60 text-green-300 border-green-800/50",
+    iconBg: "bg-green-500",
+    dotColor: "bg-green-400",
+  },
+  error: {
+    label: "Error",
+    badgeClass: "bg-red-950/60 text-red-300 border-red-800/50",
+    iconBg: "bg-red-500",
+    dotColor: "bg-red-400",
+  },
+  idle: {
+    label: "Idle",
+    badgeClass: "bg-gray-800 text-gray-400 border-gray-700",
+    iconBg: "bg-gray-600",
+    dotColor: "bg-gray-500",
   },
 };
 
 // ---------------------------------------------------------------------------
-// Step icon
+// Utilities
 // ---------------------------------------------------------------------------
 
-function StepIcon({ status }: { status: AgentStep['status'] }) {
-  switch (status) {
-    case 'done':
-      return <CheckCircle size={14} className="text-emerald-500 flex-shrink-0" />;
-    case 'failed':
-      return <XCircle size={14} className="text-red-500 flex-shrink-0" />;
-    case 'running':
-      return <Loader2 size={14} className="text-blue-500 flex-shrink-0 animate-spin" />;
-    default:
-      return <Clock size={14} className="text-slate-400 flex-shrink-0" />;
-  }
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function formatElapsed(startedAt: Date): string {
+  const ms = Date.now() - startedAt.getTime();
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${s % 60}s`;
+}
+
+// ---------------------------------------------------------------------------
+// Thinking indicator
+// ---------------------------------------------------------------------------
+
+function ThinkingDots({ color }: { color: string }) {
+  return (
+    <span className="flex items-center gap-0.5" aria-label="Thinking">
+      {[0, 1, 2].map((i) => (
+        <motion.span
+          key={i}
+          className={`inline-block w-1 h-1 rounded-full ${color}`}
+          animate={{ scale: [1, 1.6, 1], opacity: [0.4, 1, 0.4] }}
+          transition={{
+            duration: 1.2,
+            repeat: Infinity,
+            delay: i * 0.2,
+            ease: "easeInOut",
+          }}
+        />
+      ))}
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Progress bar
 // ---------------------------------------------------------------------------
 
-function ProgressBar({ steps }: { steps: AgentStep[] }) {
-  const doneCount = steps.filter((s) => s.status === 'done').length;
-  const total     = steps.length;
-  const pct       = total === 0 ? 0 : Math.round((doneCount / total) * 100);
+interface ProgressBarProps {
+  value?: number; // 0-100; undefined = indeterminate
+  colorClass: string;
+}
 
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="text-xs text-slate-400">Progress</span>
-        <span className="text-xs font-semibold text-slate-300">{pct}%</span>
-      </div>
-      <div className="h-1.5 rounded-full bg-slate-700/50 overflow-hidden">
+function ProgressBar({ value, colorClass }: ProgressBarProps) {
+  if (value === undefined) {
+    // Indeterminate — animated sweep
+    return (
+      <div className="h-1 rounded-full bg-gray-800 overflow-hidden">
         <motion.div
-          className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500"
-          initial={{ width: 0 }}
-          animate={{ width: `${pct}%` }}
-          transition={{ duration: 0.5, ease: [0, 0, 0.2, 1] }}
+          className={`h-full ${colorClass} rounded-full`}
+          animate={{ x: ["-100%", "200%"] }}
+          transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+          style={{ width: "40%" }}
         />
       </div>
+    );
+  }
+
+  return (
+    <div className="h-1 rounded-full bg-gray-800 overflow-hidden">
+      <motion.div
+        className={`h-full ${colorClass} rounded-full`}
+        initial={{ width: 0 }}
+        animate={{ width: `${Math.min(100, Math.max(0, value))}%` }}
+        transition={{ duration: 0.4, ease: "easeOut" }}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Single agent row
+// ---------------------------------------------------------------------------
+
+interface AgentRowProps {
+  agent: AgentStatus;
+  onCancel?: (id: string) => void;
+}
+
+function AgentRow({ agent, onCancel }: AgentRowProps) {
+  const [stepsOpen, setStepsOpen] = useState(false);
+  const config = AGENT_STATUS_CONFIG[agent.status];
+  const isActive = ["thinking", "executing", "waiting"].includes(agent.status);
+
+  const progressColorMap: Record<AgentStatusType, string> = {
+    thinking: "bg-purple-500",
+    executing: "bg-blue-500",
+    waiting: "bg-amber-500",
+    done: "bg-green-500",
+    error: "bg-red-500",
+    idle: "bg-gray-600",
+  };
+
+  const tokenPct =
+    agent.tokensUsed !== undefined && agent.tokenBudget
+      ? (agent.tokensUsed / agent.tokenBudget) * 100
+      : undefined;
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -6 }}
+      className="rounded-xl border border-gray-800/60 bg-gray-900/60 overflow-hidden"
+    >
+      {/* Main row */}
+      <div className="flex items-start gap-3 p-4">
+        {/* Avatar / indicator */}
+        <div className="relative flex-shrink-0 mt-0.5">
+          <div
+            className={`w-8 h-8 rounded-lg ${config.iconBg} flex items-center justify-center text-white font-bold text-sm`}
+          >
+            {agent.name.charAt(0).toUpperCase()}
+          </div>
+          {isActive && (
+            <motion.span
+              className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-gray-900 ${config.dotColor}`}
+              animate={{ scale: [1, 1.3, 1] }}
+              transition={{ duration: 2, repeat: Infinity }}
+            />
+          )}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          {/* Name + badge row */}
+          <div className="flex items-center gap-2 flex-wrap mb-1.5">
+            <span className="font-medium text-gray-100 text-sm truncate max-w-[160px]">
+              {agent.name}
+            </span>
+
+            <span
+              className={`flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full border font-medium ${config.badgeClass}`}
+            >
+              {agent.status === "thinking" && (
+                <ThinkingDots color={config.dotColor} />
+              )}
+              {agent.status === "executing" && (
+                <motion.span
+                  className={`inline-block w-1.5 h-1.5 rounded-full ${config.dotColor}`}
+                  animate={{ opacity: [1, 0.3, 1] }}
+                  transition={{ duration: 0.8, repeat: Infinity }}
+                />
+              )}
+              {config.label}
+            </span>
+
+            {agent.startedAt && isActive && (
+              <span className="text-xs text-gray-600 tabular-nums">
+                {formatElapsed(agent.startedAt)}
+              </span>
+            )}
+          </div>
+
+          {/* Current task */}
+          {agent.currentTask && (
+            <p className="text-xs text-gray-400 truncate mb-2 leading-relaxed">
+              {agent.currentTask}
+            </p>
+          )}
+
+          {/* Progress bar */}
+          <div className="mb-2">
+            <ProgressBar
+              value={agent.status === "done" ? 100 : agent.progress}
+              colorClass={progressColorMap[agent.status]}
+            />
+          </div>
+
+          {/* Footer stats */}
+          <div className="flex items-center gap-3 text-xs text-gray-600">
+            {agent.tokensUsed !== undefined && (
+              <span className="tabular-nums">
+                <span className="text-gray-500">{formatTokens(agent.tokensUsed)}</span>
+                {agent.tokenBudget && (
+                  <span> / {formatTokens(agent.tokenBudget)} tokens</span>
+                )}
+              </span>
+            )}
+
+            {tokenPct !== undefined && tokenPct > 80 && (
+              <span className={`text-xs font-medium ${tokenPct > 95 ? "text-red-400" : "text-amber-400"}`}>
+                {tokenPct > 95 ? "⚠ Near limit" : "High usage"}
+              </span>
+            )}
+
+            {agent.steps && agent.steps.length > 0 && (
+              <button
+                onClick={() => setStepsOpen((v) => !v)}
+                className="text-gray-500 hover:text-gray-300 transition-colors underline underline-offset-2"
+              >
+                {agent.steps.filter((s) => s.done).length}/{agent.steps.length} steps
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Cancel button */}
+        {isActive && onCancel && (
+          <button
+            onClick={() => onCancel(agent.id)}
+            aria-label={`Cancel agent ${agent.name}`}
+            className="flex-shrink-0 w-7 h-7 rounded-lg bg-gray-800 hover:bg-red-900/60 border border-gray-700 hover:border-red-700/60 flex items-center justify-center text-gray-500 hover:text-red-400 transition-all duration-150"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* Token usage mini-bar */}
+      {tokenPct !== undefined && (
+        <div className="h-0.5 bg-gray-800">
+          <div
+            className={`h-full transition-all duration-500 ${
+              tokenPct > 95
+                ? "bg-red-500"
+                : tokenPct > 80
+                ? "bg-amber-500"
+                : "bg-purple-600"
+            }`}
+            style={{ width: `${tokenPct}%` }}
+          />
+        </div>
+      )}
+
+      {/* Steps list */}
+      <AnimatePresence>
+        {stepsOpen && agent.steps && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden border-t border-gray-800/60"
+          >
+            <ul className="px-4 py-3 space-y-1.5">
+              {agent.steps.map((step, i) => (
+                <li key={i} className="flex items-center gap-2 text-xs">
+                  <span
+                    className={`flex-shrink-0 w-4 h-4 rounded-full flex items-center justify-center ${
+                      step.done
+                        ? "bg-green-900/60 text-green-400"
+                        : "bg-gray-800 text-gray-600"
+                    }`}
+                  >
+                    {step.done ? (
+                      <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    ) : (
+                      <span className="w-1 h-1 rounded-full bg-current" />
+                    )}
+                  </span>
+                  <span className={step.done ? "text-gray-400 line-through" : "text-gray-300"}>
+                    {step.label}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Panel header summary
+// ---------------------------------------------------------------------------
+
+function PanelSummary({ agents }: { agents: AgentStatus[] }) {
+  const active = agents.filter((a) =>
+    ["thinking", "executing", "waiting"].includes(a.status)
+  ).length;
+  const done = agents.filter((a) => a.status === "done").length;
+  const errors = agents.filter((a) => a.status === "error").length;
+
+  return (
+    <div className="flex items-center gap-3 text-xs">
+      {active > 0 && (
+        <span className="flex items-center gap-1 text-purple-400">
+          <motion.span
+            className="inline-block w-1.5 h-1.5 rounded-full bg-purple-400"
+            animate={{ scale: [1, 1.5, 1] }}
+            transition={{ duration: 1.5, repeat: Infinity }}
+          />
+          {active} active
+        </span>
+      )}
+      {done > 0 && (
+        <span className="text-green-400">{done} done</span>
+      )}
+      {errors > 0 && (
+        <span className="text-red-400">{errors} error{errors > 1 ? "s" : ""}</span>
+      )}
+      {agents.length === 0 && (
+        <span className="text-gray-600">No agents</span>
+      )}
     </div>
   );
 }
@@ -174,202 +408,89 @@ function ProgressBar({ steps }: { steps: AgentStep[] }) {
 // ---------------------------------------------------------------------------
 
 export function AgentStatusPanel({
-  agentId,
-  taskName,
-  status,
-  model,
-  tokensIn,
-  tokensOut,
-  steps,
-  onPause,
-  onResume,
-  onCancel,
-  className,
+  agents,
+  title = "Agent Status",
+  defaultCollapsed = false,
+  onCancelAgent,
+  className = "",
 }: AgentStatusPanelProps) {
-  const cfg      = STATUS_CONFIG[status];
-  const provider = getProviderInfo(model);
-  const cost     = useMemo(() => estimateCost(model, tokensIn, tokensOut), [model, tokensIn, tokensOut]);
-  const isPaused = status === 'idle';
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+
+  const activeAgents = agents.filter((a) =>
+    ["thinking", "executing", "waiting"].includes(a.status)
+  );
+  const inactiveAgents = agents.filter((a) =>
+    !["thinking", "executing", "waiting"].includes(a.status)
+  );
+  // Show active first, then inactive
+  const ordered = [...activeAgents, ...inactiveAgents];
 
   return (
     <div
-      className={cn(
-        'rounded-2xl overflow-hidden',
-        'border border-slate-700/50',
-        'bg-slate-900 dark:bg-slate-950',
-        'shadow-xl',
-        className,
-      )}
+      className={`rounded-2xl border border-gray-800/60 bg-gray-900/40 backdrop-blur-sm overflow-hidden ${className}`}
     >
-      {/* Gradient header */}
-      <div className={cn('bg-gradient-to-r p-4', cfg.headerGradient)}>
-        {/* Title row */}
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              {/* Pulse indicator */}
-              {(status === 'thinking' || status === 'acting') && (
-                <motion.div
-                  className="relative w-2 h-2 flex-shrink-0"
-                  animate={{ scale: [1, 1.3, 1] }}
-                  transition={{ duration: 1.2, repeat: Infinity }}
-                >
-                  <span className="absolute inset-0 rounded-full bg-violet-400 opacity-50 animate-ping" />
-                  <span className="relative block w-2 h-2 rounded-full bg-violet-400" />
-                </motion.div>
-              )}
-              {status === 'complete' && (
-                <CheckCircle size={14} className="text-emerald-400 flex-shrink-0" />
-              )}
-              {status === 'error' && (
-                <AlertCircle size={14} className="text-red-400 flex-shrink-0" />
-              )}
-              <span className={cn('text-xs font-semibold uppercase tracking-wider', cfg.color)}>
-                {cfg.label}
-              </span>
-            </div>
-            <h3 className="text-sm font-semibold text-white leading-tight truncate max-w-[240px]">
-              {taskName}
-            </h3>
-            <p className="text-[10px] text-slate-400 mt-0.5 font-mono">
-              id: {agentId.slice(0, 12)}…
-            </p>
+      {/* Panel header */}
+      <button
+        onClick={() => setCollapsed((v) => !v)}
+        aria-expanded={!collapsed}
+        className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-gray-800/40 transition-colors text-left"
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-7 h-7 rounded-lg bg-purple-900/60 border border-purple-800/40 flex items-center justify-center">
+            <svg className="w-3.5 h-3.5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18" />
+            </svg>
           </div>
-
-          {/* Model badge */}
-          <div className="flex-shrink-0 bg-white/10 rounded-lg px-2.5 py-1.5 text-right">
-            <div className="text-base leading-none">{provider.emoji}</div>
-            <div className="text-[10px] text-slate-300 mt-0.5 font-medium">{provider.name}</div>
-            <div className="text-[9px] text-slate-400 font-mono">{model}</div>
-          </div>
+          <span className="text-sm font-semibold text-gray-100">{title}</span>
+          <PanelSummary agents={agents} />
         </div>
 
-        {/* Progress bar */}
-        {steps.length > 0 && (
-          <div className="mt-3">
-            <ProgressBar steps={steps} />
-          </div>
-        )}
-      </div>
+        <motion.svg
+          animate={{ rotate: collapsed ? 0 : 180 }}
+          transition={{ duration: 0.2 }}
+          className="w-4 h-4 text-gray-500"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </motion.svg>
+      </button>
 
-      {/* Body */}
-      <div className="p-4 space-y-4">
-        {/* Token / cost stats */}
-        <div className="grid grid-cols-3 gap-3">
-          <div className="bg-slate-800/60 rounded-xl p-3 text-center">
-            <div className="text-xs text-slate-500 mb-1 flex items-center justify-center gap-1">
-              <Activity size={10} />
-              In
-            </div>
-            <div className="text-sm font-semibold text-slate-200">
-              {formatTokens(tokensIn)}
-            </div>
-          </div>
-          <div className="bg-slate-800/60 rounded-xl p-3 text-center">
-            <div className="text-xs text-slate-500 mb-1 flex items-center justify-center gap-1">
-              <Brain size={10} />
-              Out
-            </div>
-            <div className="text-sm font-semibold text-slate-200">
-              {formatTokens(tokensOut)}
-            </div>
-          </div>
-          <div className="bg-slate-800/60 rounded-xl p-3 text-center">
-            <div className="text-xs text-slate-500 mb-1 flex items-center justify-center gap-1">
-              <Zap size={10} />
-              Cost
-            </div>
-            <div className="text-sm font-semibold text-emerald-400">
-              {formatCost(cost)}
-            </div>
-          </div>
-        </div>
-
-        {/* Steps timeline */}
-        {steps.length > 0 && (
-          <div>
-            <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-              Steps
-            </h4>
-            <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-              {steps.map((step, index) => (
-                <motion.div
-                  key={index}
-                  initial={{ opacity: 0, x: -8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: index * 0.04, duration: 0.2 }}
-                  className={cn(
-                    'flex items-center gap-2.5 px-3 py-2 rounded-lg',
-                    'bg-slate-800/40 border border-slate-700/30',
-                    step.status === 'running' && 'border-blue-500/30 bg-blue-900/10',
-                    step.status === 'done'    && 'border-emerald-500/20 bg-emerald-900/10',
-                    step.status === 'failed'  && 'border-red-500/20 bg-red-900/10',
-                  )}
-                >
-                  <StepIcon status={step.status} />
-                  <span className={cn(
-                    'text-xs flex-1 truncate',
-                    step.status === 'done'    && 'text-slate-400 line-through',
-                    step.status === 'failed'  && 'text-red-400',
-                    step.status === 'running' && 'text-blue-300 font-medium',
-                    step.status === 'pending' && 'text-slate-500',
-                  )}>
-                    {step.name}
-                  </span>
-                  {step.timestamp && (
-                    <span className="text-[10px] text-slate-600 flex-shrink-0 font-mono">
-                      {step.timestamp}
-                    </span>
-                  )}
+      {/* Agent list */}
+      <AnimatePresence initial={false}>
+        {!collapsed && (
+          <motion.div
+            key="panel-body"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: "easeInOut" }}
+            className="overflow-hidden"
+          >
+            <div className="px-4 pb-4 pt-1">
+              {ordered.length === 0 ? (
+                <div className="text-center py-8 text-gray-600 text-sm">
+                  No agents registered yet.
+                </div>
+              ) : (
+                <motion.div layout className="space-y-2.5">
+                  <AnimatePresence>
+                    {ordered.map((agent) => (
+                      <AgentRow
+                        key={agent.id}
+                        agent={agent}
+                        onCancel={onCancelAgent}
+                      />
+                    ))}
+                  </AnimatePresence>
                 </motion.div>
-              ))}
+              )}
             </div>
-          </div>
+          </motion.div>
         )}
-
-        {/* Action buttons */}
-        {(onPause || onResume || onCancel) && (
-          <div className="flex items-center gap-2 pt-1 border-t border-slate-800">
-            {/* Pause / Resume toggle */}
-            {(onPause || onResume) && (
-              <button
-                onClick={isPaused ? onResume : onPause}
-                disabled={status === 'complete' || status === 'error'}
-                className={cn(
-                  'flex-1 flex items-center justify-center gap-2',
-                  'py-2 px-3 rounded-lg text-sm font-medium',
-                  'bg-slate-700 hover:bg-slate-600 text-slate-200',
-                  'transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
-                  'border border-slate-600',
-                )}
-              >
-                {isPaused ? (
-                  <><Play size={13} /> Resume</>
-                ) : (
-                  <><Pause size={13} /> Pause</>
-                )}
-              </button>
-            )}
-
-            {/* Cancel */}
-            {onCancel && (
-              <button
-                onClick={onCancel}
-                disabled={status === 'complete' || status === 'error'}
-                className={cn(
-                  'flex items-center justify-center gap-2',
-                  'py-2 px-3 rounded-lg text-sm font-medium',
-                  'bg-red-900/30 hover:bg-red-800/50 text-red-300',
-                  'transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
-                  'border border-red-800/30',
-                )}
-              >
-                <Square size={13} /> Cancel
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+      </AnimatePresence>
     </div>
   );
 }
