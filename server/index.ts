@@ -204,6 +204,15 @@ export function log(message: string, source = "express") {
     startHealthChecks();
     log("Database health checks started");
 
+    // Bootstrap Universal LLM Provider System
+    try {
+      const { bootstrapProviderSystem } = await import("./lib/providers/bootstrap");
+      const providerResult = await bootstrapProviderSystem();
+      log(`Universal LLM Provider System: ${providerResult.registeredProviders.length} providers, ${providerResult.totalModels} models (${providerResult.startupTimeMs}ms)`);
+    } catch (providerErr: any) {
+      log(`[WARNING] Provider system bootstrap failed: ${providerErr.message}`);
+    }
+
     // Setup Full-Text Search
     const { setupFts } = await import("./lib/fts");
     await setupFts();

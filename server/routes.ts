@@ -664,6 +664,10 @@ export async function registerRoutes(
     }
   });
 
+  // Universal LLM API (OpenAI-compatible)
+  const { default: universalLLMRouter } = await import("./routes/universalLLMRouter");
+  app.use("/api", universalLLMRouter);
+
   app.use("/api", createChatsRouter());
   app.use(createFilesRouter());
   app.use(createLocalStorageRouter());
