@@ -1,146 +1,261 @@
 /**
- * OpenRouter Provider — OpenAI-compatible meta-router
- * Routes to 200+ models across all major providers with unified billing
+ * OpenRouterProvider — Access to 200+ models through a single API
+ * Automatic fallback routing, unified pricing, model capability metadata
  */
 
-import OpenAI from 'openai';
+import OpenAI from "openai";
+import { BaseProvider } from "../core/BaseProvider.js";
 import {
-  IProviderConfig, IChatRequest, IChatResponse, IStreamChunk,
-  IEmbedRequest, IEmbedResponse, IModelInfo, ModelCapability,
-  MessageRole, ProviderError, AuthenticationError, RateLimitError,
-} from '../core/types';
-import { BaseProvider } from '../core/BaseProvider';
+  AuthenticationError,
+  FinishReason,
+  type IChatMessage,
+  type IChatOptions,
+  type IChatResponse,
+  type IEmbeddingOptions,
+  type IEmbeddingResponse,
+  type IModelInfo,
+  type IProviderConfig,
+  type IStreamChunk,
+  MessageRole,
+  ModelCapability,
+  ProviderError,
+  RateLimitError,
+} from "../core/types.js";
 
-// A representative subset; the real list is fetched dynamically
+// Curated popular models — full list fetched dynamically
 const OPENROUTER_STATIC_MODELS: IModelInfo[] = [
   {
-    id: 'anthropic/claude-sonnet-4-5',
-    name: 'Claude Sonnet 4.5 (via OpenRouter)',
-    provider: 'openrouter',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.ImageUnderstanding],
+    id: "anthropic/claude-opus-4",
+    name: "Claude Opus 4 (via OpenRouter)",
+    provider: "openrouter",
+    capabilities: [ModelCapability.CHAT, ModelCapability.VISION, ModelCapability.CODE, ModelCapability.REASONING],
     contextWindow: 200_000,
-    maxOutputTokens: 16_000,
-    pricing: { inputPerMillion: 3, outputPerMillion: 15 },
-    latencyClass: 'fast',
-    qualityScore: 0.92,
+    pricing: { inputPerMillion: 15.0, outputPerMillion: 75.0 },
   },
   {
-    id: 'openai/gpt-4o',
-    name: 'GPT-4o (via OpenRouter)',
-    provider: 'openrouter',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.ImageUnderstanding],
+    id: "openai/gpt-4o",
+    name: "GPT-4o (via OpenRouter)",
+    provider: "openrouter",
+    capabilities: [ModelCapability.CHAT, ModelCapability.VISION, ModelCapability.CODE],
     contextWindow: 128_000,
-    maxOutputTokens: 16_384,
-    pricing: { inputPerMillion: 2.5, outputPerMillion: 10 },
-    latencyClass: 'fast',
-    qualityScore: 0.92,
+    pricing: { inputPerMillion: 2.5, outputPerMillion: 10.0 },
   },
   {
-    id: 'google/gemini-2.0-flash-exp:free',
-    name: 'Gemini 2.0 Flash (free)',
-    provider: 'openrouter',
-    capabilities: [ModelCapability.Chat, ModelCapability.Streaming],
+    id: "google/gemini-2.5-pro",
+    name: "Gemini 2.5 Pro (via OpenRouter)",
+    provider: "openrouter",
+    capabilities: [ModelCapability.CHAT, ModelCapability.VISION, ModelCapability.CODE, ModelCapability.LONG_CONTEXT],
     contextWindow: 1_048_576,
-    maxOutputTokens: 8_192,
-    pricing: { inputPerMillion: 0, outputPerMillion: 0 },
-    latencyClass: 'ultra_fast',
-    qualityScore: 0.80,
+    pricing: { inputPerMillion: 1.25, outputPerMillion: 10.0 },
+  },
+  {
+    id: "meta-llama/llama-3.3-70b-instruct",
+    name: "Llama 3.3 70B (via OpenRouter)",
+    provider: "openrouter",
+    capabilities: [ModelCapability.CHAT, ModelCapability.CODE],
+    contextWindow: 128_000,
+    pricing: { inputPerMillion: 0.12, outputPerMillion: 0.3 },
+  },
+  {
+    id: "deepseek/deepseek-r1",
+    name: "DeepSeek R1 (via OpenRouter)",
+    provider: "openrouter",
+    capabilities: [ModelCapability.CHAT, ModelCapability.CODE, ModelCapability.REASONING],
+    contextWindow: 64_000,
+    pricing: { inputPerMillion: 0.55, outputPerMillion: 2.19 },
   },
 ];
 
+interface OpenRouterModel {
+  id: string;
+  name: string;
+  context_length: number;
+  pricing: { prompt: string; completion: string };
+  architecture?: { modality: string };
+}
+
 export class OpenRouterProvider extends BaseProvider {
-  private client!: OpenAI;
-  private _cachedModels: IModelInfo[] = [...OPENROUTER_STATIC_MODELS];
+  readonly id = "openrouter";
+  readonly name = "OpenRouter";
+  private readonly client: OpenAI;
+  private modelsCache: IModelInfo[] = [];
+  private modelsCachedAt = 0;
 
-  get name(): string { return 'openrouter'; }
+  constructor(config: Partial<IProviderConfig> & { apiKey: string }) {
+    super({
+      id: "openrouter",
+      name: "OpenRouter",
+      defaultModel: "anthropic/claude-sonnet-4-6",
+      timeout: 120_000,
+      maxRetries: 3,
+      rateLimitRpm: 200,
+      ...config,
+    });
 
-  override async initialize(config: IProviderConfig): Promise<void> {
-    await super.initialize(config);
     this.client = new OpenAI({
       apiKey: config.apiKey,
-      baseURL: config.baseUrl ?? 'https://openrouter.ai/api/v1',
-      timeout: config.timeout ?? 90_000,
-      maxRetries: 0,
+      baseURL: config.baseUrl ?? "https://openrouter.ai/api/v1",
       defaultHeaders: {
-        'HTTP-Referer': config.metadata?.siteUrl as string ?? 'https://iliagpt.ia',
-        'X-Title': config.metadata?.siteTitle as string ?? 'IliaGPT',
-        ...config.headers,
+        "HTTP-Referer": "https://iliagpt.ai",
+        "X-Title": "IliaGPT",
       },
+      timeout: this.config.timeout,
+      maxRetries: 0,
     });
+
+    this._models = OPENROUTER_STATIC_MODELS;
   }
 
-  protected async _chat(request: IChatRequest): Promise<IChatResponse> {
-    const model = request.model ?? this.config.defaultModel ?? 'openai/gpt-4o-mini';
+  isCapable(capability: ModelCapability): boolean {
+    // OpenRouter has access to models with all capabilities
+    return Object.values(ModelCapability).includes(capability);
+  }
+
+  protected async _chat(messages: IChatMessage[], options: IChatOptions): Promise<IChatResponse> {
+    const start = Date.now();
+    const model = options.model ?? this.config.defaultModel ?? "anthropic/claude-sonnet-4-6";
+
     try {
-      const res = await this.client.chat.completions.create({
-        model, messages: request.messages as OpenAI.ChatCompletionMessageParam[],
-        temperature: request.temperature, max_tokens: request.maxTokens,
+      const response = await this.client.chat.completions.create({
+        model,
+        messages: this.formatMessages(messages, options.systemPrompt),
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        top_p: options.topP,
+        stop: options.stop,
         stream: false,
-      });
-      const choice = res.choices[0];
-      const usage = this.buildUsage(res.usage!.prompt_tokens, res.usage!.completion_tokens);
-      return {
-        id: res.id, content: choice.message.content ?? '',
-        role: MessageRole.Assistant, model: res.model, provider: this.name, usage,
-        finishReason: this.normalizeFinishReason(choice.finish_reason), latencyMs: 0,
-        cost: (res as any).usage?.cost ?? undefined,
+      } as OpenAI.ChatCompletionCreateParamsNonStreaming);
+
+      const choice = response.choices[0];
+      const usage = {
+        promptTokens: response.usage?.prompt_tokens ?? 0,
+        completionTokens: response.usage?.completion_tokens ?? 0,
+        totalTokens: response.usage?.total_tokens ?? 0,
       };
-    } catch (err: any) { throw this._mapError(err); }
+
+      // OpenRouter includes actual cost in response
+      const generationCost = (response as { usage?: { cost?: number } }).usage?.cost;
+
+      return {
+        id: response.id,
+        model: response.model,
+        provider: this.id,
+        content: choice.message.content ?? "",
+        finishReason: choice.finish_reason === "stop" ? FinishReason.STOP : FinishReason.LENGTH,
+        usage,
+        cost: generationCost ?? this.calculateCost(model, usage.promptTokens, usage.completionTokens),
+        latencyMs: Date.now() - start,
+        createdAt: new Date(response.created * 1000),
+        metadata: { routedTo: response.model },
+      };
+    } catch (err) {
+      throw this.mapError(err);
+    }
   }
 
-  protected async *_stream(request: IChatRequest): AsyncGenerator<IStreamChunk> {
-    const model = request.model ?? this.config.defaultModel ?? 'openai/gpt-4o-mini';
-    const id = this.generateId('openrouter');
+  protected async *_stream(messages: IChatMessage[], options: IChatOptions): AsyncIterable<IStreamChunk> {
+    const model = options.model ?? this.config.defaultModel ?? "anthropic/claude-sonnet-4-6";
+
     try {
-      const stream = await this.client.chat.completions.create({ model, messages: request.messages as any, stream: true });
+      const stream = await this.client.chat.completions.create({
+        model,
+        messages: this.formatMessages(messages, options.systemPrompt),
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        stream: true,
+      });
+
       for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content;
-        if (delta) yield { type: 'delta', id, model, provider: this.name, delta, finishReason: null };
-        const fr = chunk.choices[0]?.finish_reason;
-        if (fr) yield { type: 'done', id, model, provider: this.name, finishReason: this.normalizeFinishReason(fr) };
+        const choice = chunk.choices[0];
+        if (!choice) continue;
+        yield {
+          id: chunk.id,
+          delta: choice.delta?.content ?? "",
+          finishReason: choice.finish_reason === "stop" ? FinishReason.STOP : undefined,
+          metadata: { model: chunk.model },
+        };
       }
-    } catch (err: any) {
-      yield { type: 'error', id, model, provider: this.name, error: err.message, finishReason: null };
-      throw this._mapError(err);
+    } catch (err) {
+      throw this.mapError(err);
     }
   }
 
-  protected async _embed(_req: IEmbedRequest): Promise<IEmbedResponse> {
-    throw new ProviderError('OpenRouter does not support embeddings directly', this.name, 'NOT_SUPPORTED', false);
+  protected async _embed(_texts: string[], _options: IEmbeddingOptions): Promise<IEmbeddingResponse> {
+    throw new ProviderError("OpenRouter embedding endpoint is not yet supported.", this.id, "NOT_SUPPORTED", undefined, false);
   }
 
-  async listModels(): Promise<IModelInfo[]> {
+  protected async _listModels(): Promise<IModelInfo[]> {
+    // Cache for 10 minutes
+    const now = Date.now();
+    if (this.modelsCache.length > 0 && now - this.modelsCachedAt < 600_000) {
+      return this.modelsCache;
+    }
+
     try {
-      const res = await this.client.models.list();
-      this._cachedModels = res.data.map((m) => ({
+      const response = await fetch("https://openrouter.ai/api/v1/models", {
+        headers: { Authorization: `Bearer ${this.config.apiKey}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      if (!response.ok) return OPENROUTER_STATIC_MODELS;
+
+      const data = await response.json() as { data: OpenRouterModel[] };
+      this.modelsCache = data.data.map((m): IModelInfo => ({
         id: m.id,
-        name: (m as any).name ?? m.id,
-        provider: 'openrouter',
-        capabilities: [ModelCapability.Chat, ModelCapability.Streaming],
-        contextWindow: (m as any).context_length ?? 128_000,
-        maxOutputTokens: 4_096,
+        name: m.name,
+        provider: "openrouter",
+        capabilities: this.inferCapabilities(m),
+        contextWindow: m.context_length,
         pricing: {
-          inputPerMillion: parseFloat((m as any).pricing?.prompt ?? '0') * 1_000_000,
-          outputPerMillion: parseFloat((m as any).pricing?.completion ?? '0') * 1_000_000,
+          inputPerMillion: parseFloat(m.pricing.prompt) * 1_000_000,
+          outputPerMillion: parseFloat(m.pricing.completion) * 1_000_000,
         },
-        latencyClass: 'medium' as const,
-        qualityScore: 0.80,
       }));
-      return this._cachedModels;
+      this.modelsCachedAt = now;
+      return this.modelsCache;
     } catch {
-      return this._cachedModels;
+      return OPENROUTER_STATIC_MODELS;
     }
   }
 
-  async healthCheck(): Promise<boolean> {
-    try { await this.client.models.list(); return true; } catch { return false; }
+  private inferCapabilities(model: OpenRouterModel): ModelCapability[] {
+    const caps: ModelCapability[] = [ModelCapability.CHAT];
+    const id = model.id.toLowerCase();
+    const modality = model.architecture?.modality ?? "";
+
+    if (modality.includes("image") || id.includes("vision") || id.includes("vl")) {
+      caps.push(ModelCapability.VISION);
+    }
+    if (id.includes("code") || id.includes("coder") || id.includes("deepseek")) {
+      caps.push(ModelCapability.CODE);
+    }
+    if (id.includes("reasoning") || id.includes("-r1") || id.includes("-o1") || id.includes("-o3")) {
+      caps.push(ModelCapability.REASONING);
+    }
+    if (model.context_length >= 100_000) {
+      caps.push(ModelCapability.LONG_CONTEXT);
+    }
+
+    return caps;
   }
 
-  private _mapError(err: any): Error {
-    if (err instanceof ProviderError) return err;
-    const s = err.status ?? err.statusCode;
-    if (s === 401) return new AuthenticationError(this.name);
-    if (s === 429) return new RateLimitError(this.name);
-    return new ProviderError(err.message ?? 'OpenRouter error', this.name, 'OPENROUTER_ERROR', s >= 500);
+  private formatMessages(messages: IChatMessage[], systemPrompt?: string): OpenAI.ChatCompletionMessageParam[] {
+    const result: OpenAI.ChatCompletionMessageParam[] = [];
+    if (systemPrompt) result.push({ role: "system", content: systemPrompt });
+    for (const m of messages) {
+      if (m.role === MessageRole.SYSTEM) result.push({ role: "system", content: this.normalizeContent(m.content) });
+      else if (m.role === MessageRole.USER) result.push({ role: "user", content: this.normalizeContent(m.content) });
+      else if (m.role === MessageRole.ASSISTANT) result.push({ role: "assistant", content: this.normalizeContent(m.content) });
+    }
+    return result;
+  }
+
+  private mapError(err: unknown): ProviderError {
+    if (err instanceof OpenAI.APIError) {
+      if (err.status === 401) return new AuthenticationError(this.id, err);
+      if (err.status === 429) return new RateLimitError(this.id, undefined, err);
+      return new ProviderError(err.message, this.id, `OPENROUTER_${err.status}`, err.status, err.status >= 500, err);
+    }
+    return new ProviderError(String(err), this.id, "UNKNOWN", undefined, true, err);
   }
 }

@@ -1,143 +1,207 @@
 /**
- * Groq Provider — OpenAI-compatible, ultra-fast inference
- * Models: llama-3.3-70b, llama-3.1-8b, mixtral-8x7b, gemma2-9b
+ * GroqProvider — Ultra-fast inference for Llama 3, Mixtral, Gemma via Groq LPU
+ * OpenAI-compatible API with sub-100ms time-to-first-token
  */
 
-import OpenAI from 'openai';
+import OpenAI from "openai";
+import { BaseProvider } from "../core/BaseProvider.js";
 import {
-  IProviderConfig, IChatRequest, IChatResponse, IStreamChunk,
-  IEmbedRequest, IEmbedResponse, IModelInfo, ModelCapability,
-  MessageRole, ProviderError, AuthenticationError, RateLimitError,
-} from '../core/types';
-import { BaseProvider } from '../core/BaseProvider';
+  AuthenticationError,
+  FinishReason,
+  type IChatMessage,
+  type IChatOptions,
+  type IChatResponse,
+  type IEmbeddingOptions,
+  type IEmbeddingResponse,
+  type IModelInfo,
+  type IProviderConfig,
+  type IStreamChunk,
+  MessageRole,
+  ModelCapability,
+  ProviderError,
+  RateLimitError,
+} from "../core/types.js";
 
 const GROQ_MODELS: IModelInfo[] = [
   {
-    id: 'llama-3.3-70b-versatile',
-    name: 'Llama 3.3 70B',
-    provider: 'groq',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.JsonMode, ModelCapability.CodeGeneration],
+    id: "llama-3.3-70b-versatile",
+    name: "Llama 3.3 70B Versatile",
+    provider: "groq",
+    capabilities: [ModelCapability.CHAT, ModelCapability.CODE, ModelCapability.FUNCTION_CALLING],
     contextWindow: 128_000,
     maxOutputTokens: 32_768,
     pricing: { inputPerMillion: 0.59, outputPerMillion: 0.79 },
-    latencyClass: 'ultra_fast',
-    qualityScore: 0.85,
   },
   {
-    id: 'llama-3.1-8b-instant',
-    name: 'Llama 3.1 8B Instant',
-    provider: 'groq',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.JsonMode],
+    id: "llama-3.1-8b-instant",
+    name: "Llama 3.1 8B Instant",
+    provider: "groq",
+    capabilities: [ModelCapability.CHAT, ModelCapability.CODE],
     contextWindow: 128_000,
     maxOutputTokens: 8_192,
     pricing: { inputPerMillion: 0.05, outputPerMillion: 0.08 },
-    latencyClass: 'ultra_fast',
-    qualityScore: 0.70,
   },
   {
-    id: 'mixtral-8x7b-32768',
-    name: 'Mixtral 8x7B',
-    provider: 'groq',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.JsonMode],
+    id: "mixtral-8x7b-32768",
+    name: "Mixtral 8x7B",
+    provider: "groq",
+    capabilities: [ModelCapability.CHAT, ModelCapability.CODE],
     contextWindow: 32_768,
-    maxOutputTokens: 4_096,
+    maxOutputTokens: 32_768,
     pricing: { inputPerMillion: 0.24, outputPerMillion: 0.24 },
-    latencyClass: 'ultra_fast',
-    qualityScore: 0.76,
   },
   {
-    id: 'gemma2-9b-it',
-    name: 'Gemma 2 9B',
-    provider: 'groq',
-    capabilities: [ModelCapability.Chat, ModelCapability.Streaming],
+    id: "gemma2-9b-it",
+    name: "Gemma 2 9B",
+    provider: "groq",
+    capabilities: [ModelCapability.CHAT, ModelCapability.CODE],
     contextWindow: 8_192,
     maxOutputTokens: 8_192,
     pricing: { inputPerMillion: 0.2, outputPerMillion: 0.2 },
-    latencyClass: 'ultra_fast',
-    qualityScore: 0.72,
+  },
+  {
+    id: "llama-3.2-90b-vision-preview",
+    name: "Llama 3.2 90B Vision",
+    provider: "groq",
+    capabilities: [ModelCapability.CHAT, ModelCapability.VISION, ModelCapability.CODE],
+    contextWindow: 128_000,
+    maxOutputTokens: 8_192,
+    pricing: { inputPerMillion: 0.9, outputPerMillion: 0.9 },
   },
 ];
 
 export class GroqProvider extends BaseProvider {
-  private client!: OpenAI;
+  readonly id = "groq";
+  readonly name = "Groq";
+  private readonly client: OpenAI;
 
-  get name(): string { return 'groq'; }
+  constructor(config: Partial<IProviderConfig> & { apiKey: string }) {
+    super({
+      id: "groq",
+      name: "Groq",
+      defaultModel: "llama-3.3-70b-versatile",
+      timeout: 30_000,
+      maxRetries: 3,
+      rateLimitRpm: 30,
+      ...config,
+    });
 
-  override async initialize(config: IProviderConfig): Promise<void> {
-    await super.initialize(config);
     this.client = new OpenAI({
       apiKey: config.apiKey,
-      baseURL: config.baseUrl ?? 'https://api.groq.com/openai/v1',
-      timeout: config.timeout ?? 30_000,
+      baseURL: config.baseUrl ?? "https://api.groq.com/openai/v1",
+      timeout: this.config.timeout,
       maxRetries: 0,
     });
+
+    this._models = GROQ_MODELS;
   }
 
-  protected async _chat(request: IChatRequest): Promise<IChatResponse> {
-    const model = request.model ?? this.config.defaultModel ?? 'llama-3.1-8b-instant';
+  isCapable(capability: ModelCapability): boolean {
+    return [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.FUNCTION_CALLING,
+    ].includes(capability);
+  }
+
+  protected async _chat(messages: IChatMessage[], options: IChatOptions): Promise<IChatResponse> {
+    const start = Date.now();
+    const model = options.model ?? this.config.defaultModel ?? "llama-3.3-70b-versatile";
+
     try {
-      const res = await this.client.chat.completions.create({
+      const response = await this.client.chat.completions.create({
         model,
-        messages: request.messages as OpenAI.ChatCompletionMessageParam[],
-        temperature: request.temperature,
-        max_tokens: request.maxTokens,
-        top_p: request.topP,
-        stop: request.stop,
+        messages: this.formatMessages(messages, options.systemPrompt),
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        top_p: options.topP,
+        stop: options.stop,
         stream: false,
-        response_format: request.responseFormat as any,
       });
-      const choice = res.choices[0];
-      const usage = this.buildUsage(res.usage!.prompt_tokens, res.usage!.completion_tokens);
-      const modelInfo = GROQ_MODELS.find((m) => m.id === model);
-      return {
-        id: res.id, content: choice.message.content ?? '',
-        role: MessageRole.Assistant, model: res.model,
-        provider: this.name, usage,
-        finishReason: this.normalizeFinishReason(choice.finish_reason),
-        latencyMs: 0,
-        cost: modelInfo ? this.calculateCost(usage, modelInfo.pricing) : undefined,
-      };
-    } catch (err: any) { throw this._mapError(err); }
-  }
 
-  protected async *_stream(request: IChatRequest): AsyncGenerator<IStreamChunk> {
-    const model = request.model ?? this.config.defaultModel ?? 'llama-3.1-8b-instant';
-    const id = this.generateId('groq');
-    try {
-      const stream = await this.client.chat.completions.create({
-        model, messages: request.messages as any, stream: true,
-        stream_options: { include_usage: true },
-      });
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content;
-        if (delta) yield { type: 'delta', id, model, provider: this.name, delta, finishReason: null };
-        if (chunk.usage) {
-          yield { type: 'usage', id, model, provider: this.name, usage: this.buildUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens), finishReason: 'stop' };
-        }
-        const fr = chunk.choices[0]?.finish_reason;
-        if (fr) yield { type: 'done', id, model, provider: this.name, finishReason: this.normalizeFinishReason(fr) };
-      }
-    } catch (err: any) {
-      yield { type: 'error', id, model, provider: this.name, error: err.message, finishReason: null };
-      throw this._mapError(err);
+      const choice = response.choices[0];
+      const usage = {
+        promptTokens: response.usage?.prompt_tokens ?? 0,
+        completionTokens: response.usage?.completion_tokens ?? 0,
+        totalTokens: response.usage?.total_tokens ?? 0,
+      };
+
+      // Groq provides queue_time and total_time in x_groq metadata
+      const groqMeta = (response as { x_groq?: { usage?: { queue_time?: number; total_time?: number } } }).x_groq;
+
+      return {
+        id: response.id,
+        model: response.model,
+        provider: this.id,
+        content: choice.message.content ?? "",
+        finishReason: choice.finish_reason === "stop" ? FinishReason.STOP : FinishReason.LENGTH,
+        usage,
+        cost: this.calculateCost(model, usage.promptTokens, usage.completionTokens),
+        latencyMs: Date.now() - start,
+        createdAt: new Date(response.created * 1000),
+        metadata: groqMeta ? { groqTiming: groqMeta.usage } : undefined,
+      };
+    } catch (err) {
+      throw this.mapError(err);
     }
   }
 
-  protected async _embed(_req: IEmbedRequest): Promise<IEmbedResponse> {
-    throw new ProviderError('Groq does not support embeddings', this.name, 'NOT_SUPPORTED', false);
+  protected async *_stream(messages: IChatMessage[], options: IChatOptions): AsyncIterable<IStreamChunk> {
+    const model = options.model ?? this.config.defaultModel ?? "llama-3.3-70b-versatile";
+
+    try {
+      const stream = await this.client.chat.completions.create({
+        model,
+        messages: this.formatMessages(messages, options.systemPrompt),
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        stream: true,
+      });
+
+      for await (const chunk of stream) {
+        const choice = chunk.choices[0];
+        if (!choice) continue;
+
+        yield {
+          id: chunk.id,
+          delta: choice.delta?.content ?? "",
+          finishReason: choice.finish_reason === "stop" ? FinishReason.STOP : undefined,
+        };
+      }
+    } catch (err) {
+      throw this.mapError(err);
+    }
   }
 
-  async listModels(): Promise<IModelInfo[]> { return GROQ_MODELS; }
-
-  async healthCheck(): Promise<boolean> {
-    try { await this.client.models.list(); return true; } catch { return false; }
+  protected async _embed(_texts: string[], _options: IEmbeddingOptions): Promise<IEmbeddingResponse> {
+    throw new ProviderError("Groq does not support embeddings.", this.id, "NOT_SUPPORTED", undefined, false);
   }
 
-  private _mapError(err: any): Error {
-    if (err instanceof ProviderError) return err;
-    const s = err.status ?? err.statusCode;
-    if (s === 401) return new AuthenticationError(this.name);
-    if (s === 429) return new RateLimitError(this.name);
-    return new ProviderError(err.message ?? 'Groq error', this.name, 'GROQ_ERROR', s >= 500);
+  protected async _listModels(): Promise<IModelInfo[]> {
+    return GROQ_MODELS;
+  }
+
+  private formatMessages(messages: IChatMessage[], systemPrompt?: string): OpenAI.ChatCompletionMessageParam[] {
+    const result: OpenAI.ChatCompletionMessageParam[] = [];
+    if (systemPrompt) result.push({ role: "system", content: systemPrompt });
+    for (const m of messages) {
+      if (m.role === MessageRole.SYSTEM) result.push({ role: "system", content: this.normalizeContent(m.content) });
+      else if (m.role === MessageRole.USER) result.push({ role: "user", content: this.normalizeContent(m.content) });
+      else if (m.role === MessageRole.ASSISTANT) result.push({ role: "assistant", content: this.normalizeContent(m.content) });
+    }
+    return result;
+  }
+
+  private mapError(err: unknown): ProviderError {
+    if (err instanceof OpenAI.APIError) {
+      if (err.status === 401) return new AuthenticationError(this.id, err);
+      if (err.status === 429) {
+        const retryAfter = parseInt(err.headers?.["retry-after"] ?? "60", 10) * 1000;
+        return new RateLimitError(this.id, retryAfter, err);
+      }
+      return new ProviderError(err.message, this.id, `GROQ_${err.status}`, err.status, err.status >= 500, err);
+    }
+    return new ProviderError(String(err), this.id, "UNKNOWN", undefined, true, err);
   }
 }

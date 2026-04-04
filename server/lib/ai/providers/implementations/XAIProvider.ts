@@ -1,123 +1,257 @@
 /**
- * xAI (Grok) Provider — OpenAI-compatible API
- * Models: grok-3, grok-3-mini, grok-2-vision
+ * XAIProvider — Grok models via xAI API (OpenAI-compatible)
  */
 
-import OpenAI from 'openai';
+import OpenAI from "openai";
+import { BaseProvider } from "../core/BaseProvider.js";
 import {
-  IProviderConfig, IChatRequest, IChatResponse, IStreamChunk,
-  IEmbedRequest, IEmbedResponse, IModelInfo, ModelCapability,
-  MessageRole, ProviderError, AuthenticationError, RateLimitError,
-} from '../core/types';
-import { BaseProvider } from '../core/BaseProvider';
+  AuthenticationError,
+  FinishReason,
+  type IChatMessage,
+  type IChatOptions,
+  type IChatResponse,
+  type IEmbeddingOptions,
+  type IEmbeddingResponse,
+  type IModelInfo,
+  type IProviderConfig,
+  type IStreamChunk,
+  MessageRole,
+  ModelCapability,
+  ProviderError,
+  RateLimitError,
+} from "../core/types.js";
+
+// ─────────────────────────────────────────────
+// Model Catalog
+// ─────────────────────────────────────────────
 
 const XAI_MODELS: IModelInfo[] = [
   {
-    id: 'grok-3',
-    name: 'Grok 3',
-    provider: 'xai',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.CodeGeneration, ModelCapability.Reasoning],
-    contextWindow: 131_072,
-    maxOutputTokens: 8_192,
-    pricing: { inputPerMillion: 3, outputPerMillion: 15 },
-    latencyClass: 'fast',
-    qualityScore: 0.88,
+    id: "grok-4-1-fast-non-reasoning",
+    name: "Grok 4.1 Fast",
+    provider: "xai",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.CODE,
+      ModelCapability.FUNCTION_CALLING,
+      ModelCapability.LONG_CONTEXT,
+    ],
+    contextWindow: 2_000_000,
+    maxOutputTokens: 32_768,
+    pricing: { inputPerMillion: 3.0, outputPerMillion: 15.0 },
   },
   {
-    id: 'grok-3-mini',
-    name: 'Grok 3 Mini',
-    provider: 'xai',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.Reasoning],
-    contextWindow: 131_072,
-    maxOutputTokens: 8_192,
-    pricing: { inputPerMillion: 0.3, outputPerMillion: 0.5 },
-    latencyClass: 'ultra_fast',
-    qualityScore: 0.74,
+    id: "grok-4-1-fast-reasoning",
+    name: "Grok 4.1 Fast Reasoning",
+    provider: "xai",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.CODE,
+      ModelCapability.REASONING,
+      ModelCapability.FUNCTION_CALLING,
+      ModelCapability.LONG_CONTEXT,
+    ],
+    contextWindow: 2_000_000,
+    maxOutputTokens: 32_768,
+    pricing: { inputPerMillion: 5.0, outputPerMillion: 25.0 },
   },
   {
-    id: 'grok-2-vision-1212',
-    name: 'Grok 2 Vision',
-    provider: 'xai',
-    capabilities: [ModelCapability.Chat, ModelCapability.Streaming, ModelCapability.ImageUnderstanding],
+    id: "grok-3-fast",
+    name: "Grok 3 Fast",
+    provider: "xai",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.CODE,
+      ModelCapability.FUNCTION_CALLING,
+    ],
+    contextWindow: 131_072,
+    maxOutputTokens: 16_384,
+    pricing: { inputPerMillion: 0.6, outputPerMillion: 2.4 },
+  },
+  {
+    id: "grok-2-vision-1212",
+    name: "Grok 2 Vision",
+    provider: "xai",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.FUNCTION_CALLING,
+    ],
     contextWindow: 32_768,
     maxOutputTokens: 4_096,
-    pricing: { inputPerMillion: 2, outputPerMillion: 10 },
-    latencyClass: 'medium',
-    qualityScore: 0.80,
+    pricing: { inputPerMillion: 2.0, outputPerMillion: 10.0 },
   },
 ];
 
+// ─────────────────────────────────────────────
+// XAIProvider
+// ─────────────────────────────────────────────
+
 export class XAIProvider extends BaseProvider {
-  private client!: OpenAI;
+  readonly id = "xai";
+  readonly name = "xAI (Grok)";
 
-  get name(): string { return 'xai'; }
+  private readonly client: OpenAI;
 
-  override async initialize(config: IProviderConfig): Promise<void> {
-    await super.initialize(config);
+  constructor(config: Partial<IProviderConfig> & { apiKey: string }) {
+    super({
+      id: "xai",
+      name: "xAI (Grok)",
+      defaultModel: "grok-4-1-fast-non-reasoning",
+      timeout: 120_000,
+      maxRetries: 3,
+      rateLimitRpm: 60,
+      ...config,
+    });
+
     this.client = new OpenAI({
       apiKey: config.apiKey,
-      baseURL: config.baseUrl ?? 'https://api.x.ai/v1',
-      timeout: config.timeout ?? 60_000,
+      baseURL: config.baseUrl ?? "https://api.x.ai/v1",
+      timeout: this.config.timeout,
       maxRetries: 0,
     });
+
+    this._models = XAI_MODELS;
   }
 
-  protected async _chat(request: IChatRequest): Promise<IChatResponse> {
-    const model = request.model ?? this.config.defaultModel ?? 'grok-3-mini';
+  isCapable(capability: ModelCapability): boolean {
+    return [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.REASONING,
+      ModelCapability.FUNCTION_CALLING,
+      ModelCapability.LONG_CONTEXT,
+    ].includes(capability);
+  }
+
+  protected async _chat(
+    messages: IChatMessage[],
+    options: IChatOptions,
+  ): Promise<IChatResponse> {
+    const start = Date.now();
+    const model = options.model ?? this.config.defaultModel ?? "grok-4-1-fast-non-reasoning";
+    const openaiMessages = this.toOpenAIMessages(messages, options.systemPrompt);
+
     try {
-      const res = await this.client.chat.completions.create({
+      const response = await this.client.chat.completions.create({
         model,
-        messages: request.messages as OpenAI.ChatCompletionMessageParam[],
-        temperature: request.temperature,
-        max_completion_tokens: request.maxTokens,
+        messages: openaiMessages,
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        top_p: options.topP,
+        stop: options.stop,
         stream: false,
       });
-      const choice = res.choices[0];
-      const usage = this.buildUsage(res.usage!.prompt_tokens, res.usage!.completion_tokens);
-      const modelInfo = XAI_MODELS.find((m) => m.id === model);
-      return {
-        id: res.id, content: choice.message.content ?? '',
-        role: MessageRole.Assistant, model: res.model,
-        provider: this.name, usage,
-        finishReason: this.normalizeFinishReason(choice.finish_reason),
-        latencyMs: 0,
-        cost: modelInfo ? this.calculateCost(usage, modelInfo.pricing) : undefined,
-      };
-    } catch (err: any) { throw this._mapError(err); }
-  }
 
-  protected async *_stream(request: IChatRequest): AsyncGenerator<IStreamChunk> {
-    const model = request.model ?? this.config.defaultModel ?? 'grok-3-mini';
-    const id = this.generateId('xai');
-    try {
-      const stream = await this.client.chat.completions.create({ model, messages: request.messages as any, stream: true });
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content;
-        if (delta) yield { type: 'delta', id, model, provider: this.name, delta, finishReason: null };
-        const fr = chunk.choices[0]?.finish_reason;
-        if (fr) yield { type: 'done', id, model, provider: this.name, finishReason: this.normalizeFinishReason(fr) };
-      }
-    } catch (err: any) {
-      yield { type: 'error', id, model, provider: this.name, error: err.message, finishReason: null };
-      throw this._mapError(err);
+      const choice = response.choices[0];
+      const usage = {
+        promptTokens: response.usage?.prompt_tokens ?? 0,
+        completionTokens: response.usage?.completion_tokens ?? 0,
+        totalTokens: response.usage?.total_tokens ?? 0,
+      };
+
+      return {
+        id: response.id,
+        model: response.model,
+        provider: this.id,
+        content: choice.message.content ?? "",
+        finishReason: this.mapFinishReason(choice.finish_reason),
+        usage,
+        cost: this.calculateCost(model, usage.promptTokens, usage.completionTokens),
+        latencyMs: Date.now() - start,
+        createdAt: new Date(response.created * 1000),
+      };
+    } catch (err) {
+      throw this.mapError(err);
     }
   }
 
-  protected async _embed(_req: IEmbedRequest): Promise<IEmbedResponse> {
-    throw new ProviderError('xAI does not support embeddings', this.name, 'NOT_SUPPORTED', false);
+  protected async *_stream(
+    messages: IChatMessage[],
+    options: IChatOptions,
+  ): AsyncIterable<IStreamChunk> {
+    const model = options.model ?? this.config.defaultModel ?? "grok-4-1-fast-non-reasoning";
+    const openaiMessages = this.toOpenAIMessages(messages, options.systemPrompt);
+
+    try {
+      const stream = await this.client.chat.completions.create({
+        model,
+        messages: openaiMessages,
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        stream: true,
+      });
+
+      for await (const chunk of stream) {
+        const choice = chunk.choices[0];
+        if (!choice) continue;
+
+        yield {
+          id: chunk.id,
+          delta: choice.delta?.content ?? "",
+          finishReason: choice.finish_reason
+            ? this.mapFinishReason(choice.finish_reason)
+            : undefined,
+        };
+      }
+    } catch (err) {
+      throw this.mapError(err);
+    }
   }
 
-  async listModels(): Promise<IModelInfo[]> { return XAI_MODELS; }
-
-  async healthCheck(): Promise<boolean> {
-    try { await this.client.models.list(); return true; } catch { return false; }
+  protected async _embed(
+    _texts: string[],
+    _options: IEmbeddingOptions,
+  ): Promise<IEmbeddingResponse> {
+    throw new ProviderError(
+      "xAI does not support embeddings.",
+      this.id,
+      "NOT_SUPPORTED",
+      undefined,
+      false,
+    );
   }
 
-  private _mapError(err: any): Error {
-    if (err instanceof ProviderError) return err;
-    const s = err.status ?? err.statusCode;
-    if (s === 401) return new AuthenticationError(this.name);
-    if (s === 429) return new RateLimitError(this.name);
-    return new ProviderError(err.message ?? 'xAI error', this.name, 'XAI_ERROR', s >= 500);
+  protected async _listModels(): Promise<IModelInfo[]> {
+    return XAI_MODELS;
+  }
+
+  private toOpenAIMessages(
+    messages: IChatMessage[],
+    systemPrompt?: string,
+  ): OpenAI.ChatCompletionMessageParam[] {
+    const result: OpenAI.ChatCompletionMessageParam[] = [];
+    if (systemPrompt) result.push({ role: "system", content: systemPrompt });
+
+    for (const msg of messages) {
+      if (msg.role === MessageRole.SYSTEM) {
+        result.push({ role: "system", content: this.normalizeContent(msg.content) });
+      } else if (msg.role === MessageRole.USER) {
+        result.push({ role: "user", content: this.normalizeContent(msg.content) });
+      } else if (msg.role === MessageRole.ASSISTANT) {
+        result.push({ role: "assistant", content: this.normalizeContent(msg.content) });
+      }
+    }
+    return result;
+  }
+
+  private mapFinishReason(reason: string | null): FinishReason {
+    switch (reason) {
+      case "stop": return FinishReason.STOP;
+      case "length": return FinishReason.LENGTH;
+      case "tool_calls": return FinishReason.TOOL_CALL;
+      default: return FinishReason.STOP;
+    }
+  }
+
+  private mapError(err: unknown): ProviderError {
+    if (err instanceof OpenAI.APIError) {
+      if (err.status === 401) return new AuthenticationError(this.id, err);
+      if (err.status === 429) return new RateLimitError(this.id, undefined, err);
+      return new ProviderError(err.message, this.id, `XAI_${err.status}`, err.status, err.status >= 500, err);
+    }
+    return new ProviderError(String(err), this.id, "UNKNOWN", undefined, true, err);
   }
 }

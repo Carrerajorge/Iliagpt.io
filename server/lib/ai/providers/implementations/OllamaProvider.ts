@@ -1,124 +1,295 @@
 /**
- * Ollama Provider — Local model inference, OpenAI-compatible API
- * Runs models locally on CPU/GPU. No API key required.
+ * OllamaProvider — Local models via Ollama (runs on localhost)
+ * Supports any model available in Ollama's library
  */
 
-import OpenAI from 'openai';
+import { BaseProvider } from "../core/BaseProvider.js";
 import {
-  IProviderConfig, IChatRequest, IChatResponse, IStreamChunk,
-  IEmbedRequest, IEmbedResponse, IModelInfo, ModelCapability,
-  MessageRole, ProviderError,
-} from '../core/types';
-import { BaseProvider } from '../core/BaseProvider';
+  FinishReason,
+  type IChatMessage,
+  type IChatOptions,
+  type IChatResponse,
+  type IEmbeddingOptions,
+  type IEmbeddingResponse,
+  type IModelInfo,
+  type IProviderConfig,
+  type IStreamChunk,
+  MessageRole,
+  ModelCapability,
+  ProviderError,
+} from "../core/types.js";
+
+interface OllamaModel {
+  name: string;
+  modified_at: string;
+  size: number;
+  details: { parameter_size?: string; family?: string };
+}
+
+interface OllamaChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+  images?: string[];
+}
+
+interface OllamaGenerateResponse {
+  model: string;
+  created_at: string;
+  message: { role: string; content: string };
+  done: boolean;
+  done_reason?: string;
+  eval_count?: number;
+  prompt_eval_count?: number;
+  total_duration?: number;
+}
 
 export class OllamaProvider extends BaseProvider {
-  private client!: OpenAI;
-  private _baseUrl = 'http://localhost:11434';
+  readonly id = "ollama";
+  readonly name = "Ollama (Local)";
+  private readonly baseUrl: string;
+  private modelsCachedAt = 0;
 
-  get name(): string { return 'ollama'; }
-
-  override async initialize(config: IProviderConfig): Promise<void> {
-    await super.initialize(config);
-    this._baseUrl = config.baseUrl ?? 'http://localhost:11434';
-    this.client = new OpenAI({
-      apiKey: 'ollama', // required by SDK, not validated by Ollama
-      baseURL: `${this._baseUrl}/v1`,
-      timeout: config.timeout ?? 120_000, // local models can be slow
-      maxRetries: 0,
+  constructor(config: Partial<IProviderConfig> = {}) {
+    super({
+      id: "ollama",
+      name: "Ollama (Local)",
+      defaultModel: "llama3.2",
+      baseUrl: "http://localhost:11434",
+      timeout: 300_000,  // Local models can be slow on first load
+      maxRetries: 1,
+      ...config,
     });
+
+    this.baseUrl = this.config.baseUrl ?? "http://localhost:11434";
   }
 
-  protected async _chat(request: IChatRequest): Promise<IChatResponse> {
-    const model = request.model ?? this.config.defaultModel ?? 'llama3.2';
+  isCapable(capability: ModelCapability): boolean {
+    return [
+      ModelCapability.CHAT,
+      ModelCapability.CODE,
+      ModelCapability.EMBEDDING,
+    ].includes(capability);
+  }
+
+  protected async _chat(messages: IChatMessage[], options: IChatOptions): Promise<IChatResponse> {
+    const start = Date.now();
+    const model = options.model ?? this.config.defaultModel ?? "llama3.2";
+
+    const ollamaMessages = this.formatMessages(messages, options.systemPrompt);
+
     try {
-      const res = await this.client.chat.completions.create({
-        model, messages: request.messages as OpenAI.ChatCompletionMessageParam[],
-        temperature: request.temperature, max_tokens: request.maxTokens,
-        stream: false,
+      const response = await fetch(`${this.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: ollamaMessages,
+          stream: false,
+          options: {
+            temperature: options.temperature,
+            num_predict: options.maxTokens,
+            top_p: options.topP,
+            stop: options.stop,
+          },
+        }),
+        signal: AbortSignal.timeout(this.config.timeout ?? 300_000),
       });
-      const choice = res.choices[0];
-      const usage = this.buildUsage(res.usage?.prompt_tokens ?? 0, res.usage?.completion_tokens ?? 0);
-      return {
-        id: res.id ?? this.generateId('ollama'),
-        content: choice.message.content ?? '',
-        role: MessageRole.Assistant, model, provider: this.name, usage,
-        finishReason: this.normalizeFinishReason(choice.finish_reason),
-        latencyMs: 0,
-      };
-    } catch (err: any) { throw this._mapError(err); }
-  }
 
-  protected async *_stream(request: IChatRequest): AsyncGenerator<IStreamChunk> {
-    const model = request.model ?? this.config.defaultModel ?? 'llama3.2';
-    const id = this.generateId('ollama');
-    try {
-      const stream = await this.client.chat.completions.create({ model, messages: request.messages as any, stream: true });
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content;
-        if (delta) yield { type: 'delta', id, model, provider: this.name, delta, finishReason: null };
-        const fr = chunk.choices[0]?.finish_reason;
-        if (fr) yield { type: 'done', id, model, provider: this.name, finishReason: this.normalizeFinishReason(fr) };
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new ProviderError(
+          `Ollama HTTP ${response.status}: ${text}`,
+          this.id,
+          `OLLAMA_${response.status}`,
+          response.status,
+          response.status >= 500,
+        );
       }
-    } catch (err: any) {
-      yield { type: 'error', id, model, provider: this.name, error: err.message, finishReason: null };
-      throw this._mapError(err);
+
+      const data = await response.json() as OllamaGenerateResponse;
+      const usage = {
+        promptTokens: data.prompt_eval_count ?? 0,
+        completionTokens: data.eval_count ?? 0,
+        totalTokens: (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0),
+      };
+
+      return {
+        id: this.generateRequestId(),
+        model: data.model,
+        provider: this.id,
+        content: data.message.content,
+        finishReason: data.done_reason === "stop" ? FinishReason.STOP : FinishReason.LENGTH,
+        usage,
+        cost: 0, // Local — no cost
+        latencyMs: data.total_duration ? data.total_duration / 1_000_000 : Date.now() - start,
+        createdAt: new Date(data.created_at),
+      };
+    } catch (err) {
+      if (err instanceof ProviderError) throw err;
+      const isConnectionRefused =
+        err instanceof Error && (err.message.includes("ECONNREFUSED") || err.message.includes("fetch failed"));
+      throw new ProviderError(
+        isConnectionRefused
+          ? "Ollama is not running. Start it with: ollama serve"
+          : String(err),
+        this.id,
+        isConnectionRefused ? "OLLAMA_NOT_RUNNING" : "UNKNOWN",
+        undefined,
+        false,
+        err,
+      );
     }
   }
 
-  protected async _embed(request: IEmbedRequest): Promise<IEmbedResponse> {
-    const model = request.model ?? 'nomic-embed-text';
-    const inputs = Array.isArray(request.input) ? request.input : [request.input];
+  protected async *_stream(messages: IChatMessage[], options: IChatOptions): AsyncIterable<IStreamChunk> {
+    const model = options.model ?? this.config.defaultModel ?? "llama3.2";
+    const ollamaMessages = this.formatMessages(messages, options.systemPrompt);
+    const requestId = this.generateRequestId();
 
-    // Ollama uses a different endpoint for embeddings
-    const res = await fetch(`${this._baseUrl}/api/embed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, input: inputs }),
-    });
+    try {
+      const response = await fetch(`${this.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: ollamaMessages,
+          stream: true,
+          options: {
+            temperature: options.temperature,
+            num_predict: options.maxTokens,
+          },
+        }),
+        signal: AbortSignal.timeout(this.config.timeout ?? 300_000),
+      });
 
-    if (!res.ok) throw new ProviderError(`Ollama embed error: ${res.status}`, this.name, 'OLLAMA_EMBED_ERROR', false);
-    const data = await res.json();
+      if (!response.ok || !response.body) {
+        throw new ProviderError(`Ollama stream failed: HTTP ${response.status}`, this.id, `OLLAMA_${response.status}`);
+      }
 
-    return {
-      embeddings: data.embeddings ?? [],
-      model, provider: this.name,
-      usage: { promptTokens: data.prompt_eval_count ?? 0, totalTokens: data.prompt_eval_count ?? 0 },
-    };
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const lines = decoder.decode(value, { stream: true }).split("\n").filter(Boolean);
+        for (const line of lines) {
+          try {
+            const event = JSON.parse(line) as OllamaGenerateResponse;
+            yield {
+              id: requestId,
+              delta: event.message?.content ?? "",
+              finishReason: event.done ? FinishReason.STOP : undefined,
+              usage: event.done
+                ? {
+                    promptTokens: event.prompt_eval_count ?? 0,
+                    completionTokens: event.eval_count ?? 0,
+                    totalTokens: (event.prompt_eval_count ?? 0) + (event.eval_count ?? 0),
+                  }
+                : undefined,
+            };
+          } catch {
+            // Skip malformed JSON
+          }
+        }
+      }
+    } catch (err) {
+      if (err instanceof ProviderError) throw err;
+      throw new ProviderError(String(err), this.id, "UNKNOWN", undefined, true, err);
+    }
   }
 
-  async listModels(): Promise<IModelInfo[]> {
+  protected async _embed(texts: string[], options: IEmbeddingOptions): Promise<IEmbeddingResponse> {
+    const start = Date.now();
+    const model = options.model ?? "nomic-embed-text";
+
     try {
-      const res = await fetch(`${this._baseUrl}/api/tags`);
-      if (!res.ok) return [];
-      const data = await res.json();
-      return (data.models ?? []).map((m: any) => ({
+      const embeddings: number[][] = [];
+      for (const text of texts) {
+        const response = await fetch(`${this.baseUrl}/api/embeddings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model, prompt: text }),
+          signal: AbortSignal.timeout(30_000),
+        });
+
+        if (!response.ok) throw new ProviderError(`Ollama embed HTTP ${response.status}`, this.id, "EMBED_ERROR");
+        const data = await response.json() as { embedding: number[] };
+        embeddings.push(data.embedding);
+      }
+
+      return {
+        id: this.generateRequestId(),
+        provider: this.id,
+        model,
+        embeddings,
+        usage: { totalTokens: 0 },
+        cost: 0,
+        latencyMs: Date.now() - start,
+      };
+    } catch (err) {
+      if (err instanceof ProviderError) throw err;
+      throw new ProviderError(String(err), this.id, "UNKNOWN", undefined, true, err);
+    }
+  }
+
+  protected async _listModels(): Promise<IModelInfo[]> {
+    const now = Date.now();
+    if (this._models.length > 0 && now - this.modelsCachedAt < 30_000) {
+      return this._models;
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/api/tags`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+
+      if (!response.ok) return [];
+      const data = await response.json() as { models: OllamaModel[] };
+
+      this._models = data.models.map((m): IModelInfo => ({
         id: m.name,
         name: m.name,
-        provider: 'ollama',
-        capabilities: [ModelCapability.Chat, ModelCapability.Streaming, ModelCapability.Embedding],
-        contextWindow: m.details?.parameter_size ? parseInt(m.details.parameter_size) * 1000 : 128_000,
-        maxOutputTokens: 4_096,
-        pricing: { inputPerMillion: 0, outputPerMillion: 0 }, // free, local
-        latencyClass: 'medium' as const,
-        qualityScore: 0.70,
-        metadata: { size: m.size, family: m.details?.family },
+        provider: this.id,
+        capabilities: this.inferCapabilities(m),
+        contextWindow: 8_192, // Ollama doesn't expose this in tags API
+        pricing: { inputPerMillion: 0, outputPerMillion: 0 },
+        description: m.details?.parameter_size ? `${m.details.parameter_size} parameters` : undefined,
       }));
-    } catch { return []; }
-  }
 
-  async healthCheck(): Promise<boolean> {
-    try {
-      const res = await fetch(`${this._baseUrl}/api/tags`);
-      return res.ok;
-    } catch { return false; }
-  }
-
-  private _mapError(err: any): Error {
-    if (err instanceof ProviderError) return err;
-    const isConnectionRefused = err.code === 'ECONNREFUSED' || err.cause?.code === 'ECONNREFUSED';
-    if (isConnectionRefused) {
-      return new ProviderError('Ollama is not running. Start with: ollama serve', this.name, 'OLLAMA_NOT_RUNNING', false);
+      this.modelsCachedAt = now;
+      return this._models;
+    } catch {
+      return [];
     }
-    return new ProviderError(err.message ?? 'Ollama error', this.name, 'OLLAMA_ERROR', true);
+  }
+
+  private inferCapabilities(model: OllamaModel): ModelCapability[] {
+    const caps: ModelCapability[] = [ModelCapability.CHAT];
+    const name = model.name.toLowerCase();
+
+    if (name.includes("code") || name.includes("coder") || name.includes("starcoder")) {
+      caps.push(ModelCapability.CODE);
+    }
+    if (name.includes("embed") || name.includes("nomic")) {
+      caps.push(ModelCapability.EMBEDDING);
+    }
+    if (name.includes("vision") || name.includes("llava") || name.includes("bakllava")) {
+      caps.push(ModelCapability.VISION);
+    }
+
+    return caps;
+  }
+
+  private formatMessages(messages: IChatMessage[], systemPrompt?: string): OllamaChatMessage[] {
+    const result: OllamaChatMessage[] = [];
+    if (systemPrompt) result.push({ role: "system", content: systemPrompt });
+    for (const m of messages) {
+      if (m.role === MessageRole.SYSTEM) result.push({ role: "system", content: this.normalizeContent(m.content) });
+      else if (m.role === MessageRole.USER) result.push({ role: "user", content: this.normalizeContent(m.content) });
+      else if (m.role === MessageRole.ASSISTANT) result.push({ role: "assistant", content: this.normalizeContent(m.content) });
+    }
+    return result;
   }
 }

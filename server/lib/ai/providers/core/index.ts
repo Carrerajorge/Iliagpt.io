@@ -1,133 +1,164 @@
 /**
- * Universal LLM Provider System — Public API
+ * Universal Provider System — Main Entry Point
  *
- * Import from here rather than individual files:
- *
- *   import { registry, OpenAIProvider, intelligentRouter } from '@/lib/ai/providers/core';
+ * Automatically registers providers based on available environment variables.
+ * Import this file once at app startup to initialize the provider system.
  */
 
-// ── Core types ──────────────────────────────────────────────────────────────
-export * from './types';
+export * from "./types.js";
+export * from "./BaseProvider.js";
+export { ProviderRegistry, providerRegistry } from "./ProviderRegistry.js";
 
-// ── Base & Registry ─────────────────────────────────────────────────────────
-export { BaseProvider, exponentialBackoffWithJitter } from './BaseProvider';
-export { ProviderRegistry, registry, type RegistryEvents } from './ProviderRegistry';
+// Provider Implementations
+export { OpenAIProvider } from "../implementations/OpenAIProvider.js";
+export { AnthropicProvider } from "../implementations/AnthropicProvider.js";
+export { GoogleProvider } from "../implementations/GoogleProvider.js";
+export { XAIProvider } from "../implementations/XAIProvider.js";
+export { MistralProvider } from "../implementations/MistralProvider.js";
+export { CohereProvider } from "../implementations/CohereProvider.js";
+export { DeepSeekProvider } from "../implementations/DeepSeekProvider.js";
+export { GroqProvider } from "../implementations/GroqProvider.js";
+export { TogetherProvider } from "../implementations/TogetherProvider.js";
+export { PerplexityProvider } from "../implementations/PerplexityProvider.js";
+export { FireworksProvider } from "../implementations/FireworksProvider.js";
+export { OpenRouterProvider } from "../implementations/OpenRouterProvider.js";
+export { OllamaProvider } from "../implementations/OllamaProvider.js";
+export { LMStudioProvider } from "../implementations/LMStudioProvider.js";
+export { AzureOpenAIProvider } from "../implementations/AzureOpenAIProvider.js";
 
-// ── Provider implementations ────────────────────────────────────────────────
-export { OpenAIProvider } from '../implementations/OpenAIProvider';
-export { AnthropicProvider } from '../implementations/AnthropicProvider';
-export { GoogleProvider } from '../implementations/GoogleProvider';
-export { XAIProvider } from '../implementations/XAIProvider';
-export { MistralProvider } from '../implementations/MistralProvider';
-export { CohereProvider } from '../implementations/CohereProvider';
-export { DeepSeekProvider } from '../implementations/DeepSeekProvider';
-export { GroqProvider } from '../implementations/GroqProvider';
-export { TogetherProvider } from '../implementations/TogetherProvider';
-export { PerplexityProvider } from '../implementations/PerplexityProvider';
-export { FireworksProvider } from '../implementations/FireworksProvider';
-export { OpenRouterProvider } from '../implementations/OpenRouterProvider';
-export { OllamaProvider } from '../implementations/OllamaProvider';
-export { LMStudioProvider } from '../implementations/LMStudioProvider';
-export { AzureOpenAIProvider, type AzureProviderConfig } from '../implementations/AzureOpenAIProvider';
-
-// ── Routing ─────────────────────────────────────────────────────────────────
-export { IntelligentRouter, intelligentRouter } from '../../routing/IntelligentRouter';
-export { ComplexityAnalyzer, complexityAnalyzer, type ComplexityBreakdown } from '../../routing/ComplexityAnalyzer';
-export {
-  CostCalculator, costCalculator,
-  type CostEstimate, type CostRecord, type BudgetConfig, type BudgetStatus,
-} from '../../routing/CostCalculator';
-
-// ── Consensus ────────────────────────────────────────────────────────────────
-export { ConsensusEngine, consensusEngine } from '../../consensus/ConsensusEngine';
-
-// ── Streaming ────────────────────────────────────────────────────────────────
-export {
-  UniversalStreamAdapter, streamAdapter,
-  chunkToSSE, sseTerminator, tee, merge,
-} from '../../streaming/UniversalStreamAdapter';
-
-// ── Factory helper ───────────────────────────────────────────────────────────
-
-import { IProvider, IProviderConfig } from './types';
-import { ProviderRegistry } from './ProviderRegistry';
-import { OpenAIProvider } from '../implementations/OpenAIProvider';
-import { AnthropicProvider } from '../implementations/AnthropicProvider';
-import { GoogleProvider } from '../implementations/GoogleProvider';
-import { XAIProvider } from '../implementations/XAIProvider';
-import { MistralProvider } from '../implementations/MistralProvider';
-import { CohereProvider } from '../implementations/CohereProvider';
-import { DeepSeekProvider } from '../implementations/DeepSeekProvider';
-import { GroqProvider } from '../implementations/GroqProvider';
-import { TogetherProvider } from '../implementations/TogetherProvider';
-import { PerplexityProvider } from '../implementations/PerplexityProvider';
-import { FireworksProvider } from '../implementations/FireworksProvider';
-import { OpenRouterProvider } from '../implementations/OpenRouterProvider';
-import { OllamaProvider } from '../implementations/OllamaProvider';
-import { LMStudioProvider } from '../implementations/LMStudioProvider';
-import { AzureOpenAIProvider } from '../implementations/AzureOpenAIProvider';
-
-type ProviderName =
-  | 'openai' | 'anthropic' | 'google' | 'xai' | 'mistral'
-  | 'cohere' | 'deepseek' | 'groq' | 'together' | 'perplexity'
-  | 'fireworks' | 'openrouter' | 'ollama' | 'lmstudio' | 'azure';
-
-const PROVIDER_CONSTRUCTORS: Record<ProviderName, new () => IProvider> = {
-  openai: OpenAIProvider,
-  anthropic: AnthropicProvider,
-  google: GoogleProvider,
-  xai: XAIProvider,
-  mistral: MistralProvider,
-  cohere: CohereProvider,
-  deepseek: DeepSeekProvider,
-  groq: GroqProvider,
-  together: TogetherProvider,
-  perplexity: PerplexityProvider,
-  fireworks: FireworksProvider,
-  openrouter: OpenRouterProvider,
-  ollama: OllamaProvider,
-  lmstudio: LMStudioProvider,
-  azure: AzureOpenAIProvider,
-};
+import { ProviderRegistry } from "./ProviderRegistry.js";
+import { OpenAIProvider } from "../implementations/OpenAIProvider.js";
+import { AnthropicProvider } from "../implementations/AnthropicProvider.js";
+import { GoogleProvider } from "../implementations/GoogleProvider.js";
+import { XAIProvider } from "../implementations/XAIProvider.js";
+import { MistralProvider } from "../implementations/MistralProvider.js";
+import { CohereProvider } from "../implementations/CohereProvider.js";
+import { DeepSeekProvider } from "../implementations/DeepSeekProvider.js";
+import { GroqProvider } from "../implementations/GroqProvider.js";
+import { TogetherProvider } from "../implementations/TogetherProvider.js";
+import { PerplexityProvider } from "../implementations/PerplexityProvider.js";
+import { FireworksProvider } from "../implementations/FireworksProvider.js";
+import { OpenRouterProvider } from "../implementations/OpenRouterProvider.js";
+import { OllamaProvider } from "../implementations/OllamaProvider.js";
+import { LMStudioProvider } from "../implementations/LMStudioProvider.js";
+import { AzureOpenAIProvider } from "../implementations/AzureOpenAIProvider.js";
 
 /**
- * Convenience factory: create and register a provider by name.
+ * Initialize the provider registry from environment variables.
+ * Call this once during application startup.
  *
- * @example
- * await registerProvider('openai', { apiKey: process.env.OPENAI_API_KEY! });
- * await registerProvider('anthropic', { apiKey: process.env.ANTHROPIC_API_KEY! });
+ * @returns The initialized registry with all configured providers
  */
-export async function registerProvider(
-  name: ProviderName,
-  config: IProviderConfig,
-  reg?: ProviderRegistry,
-): Promise<IProvider> {
-  const R = reg ?? ProviderRegistry.getInstance();
-  const Ctor = PROVIDER_CONSTRUCTORS[name];
-  if (!Ctor) throw new Error(`Unknown provider: ${name}`);
-  const provider = new Ctor();
-  await R.register(provider, { name, ...config });
-  return provider;
-}
+export function initializeProviders(): ProviderRegistry {
+  const registry = ProviderRegistry.getInstance();
+  const env = process.env;
 
-/**
- * Register all providers whose API keys are present in the provided config map.
- * Safe to call at startup — skips providers with missing keys.
- */
-export async function registerAllAvailableProviders(
-  configs: Partial<Record<ProviderName, IProviderConfig>>,
-  reg?: ProviderRegistry,
-): Promise<string[]> {
-  const registered: string[] = [];
-  for (const [name, config] of Object.entries(configs) as [ProviderName, IProviderConfig][]) {
-    if (!config) continue;
-    try {
-      await registerProvider(name, config, reg);
-      registered.push(name);
-    } catch (err) {
-      // Log but don't throw — partial registration is fine
-      console.warn(`[ProviderSystem] Failed to register ${name}:`, err instanceof Error ? err.message : err);
-    }
+  // ─── Cloud Providers ───
+
+  if (env.OPENAI_API_KEY) {
+    registry.register(new OpenAIProvider({
+      apiKey: env.OPENAI_API_KEY,
+      organizationId: env.OPENAI_ORG_ID,
+      baseUrl: env.OPENAI_BASE_URL,
+    }));
   }
-  return registered;
+
+  if (env.ANTHROPIC_API_KEY) {
+    registry.register(new AnthropicProvider({
+      apiKey: env.ANTHROPIC_API_KEY,
+      baseUrl: env.ANTHROPIC_BASE_URL,
+    }));
+  }
+
+  if (env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY) {
+    registry.register(new GoogleProvider({
+      apiKey: (env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY) as string,
+    }));
+  }
+
+  if (env.XAI_API_KEY) {
+    registry.register(new XAIProvider({
+      apiKey: env.XAI_API_KEY,
+    }));
+  }
+
+  if (env.MISTRAL_API_KEY) {
+    registry.register(new MistralProvider({
+      apiKey: env.MISTRAL_API_KEY,
+    }));
+  }
+
+  if (env.COHERE_API_KEY) {
+    registry.register(new CohereProvider({
+      apiKey: env.COHERE_API_KEY,
+    }));
+  }
+
+  if (env.DEEPSEEK_API_KEY) {
+    registry.register(new DeepSeekProvider({
+      apiKey: env.DEEPSEEK_API_KEY,
+    }));
+  }
+
+  if (env.GROQ_API_KEY) {
+    registry.register(new GroqProvider({
+      apiKey: env.GROQ_API_KEY,
+    }));
+  }
+
+  if (env.TOGETHER_API_KEY) {
+    registry.register(new TogetherProvider({
+      apiKey: env.TOGETHER_API_KEY,
+    }));
+  }
+
+  if (env.PERPLEXITY_API_KEY) {
+    registry.register(new PerplexityProvider({
+      apiKey: env.PERPLEXITY_API_KEY,
+    }));
+  }
+
+  if (env.FIREWORKS_API_KEY) {
+    registry.register(new FireworksProvider({
+      apiKey: env.FIREWORKS_API_KEY,
+    }));
+  }
+
+  if (env.OPENROUTER_API_KEY) {
+    registry.register(new OpenRouterProvider({
+      apiKey: env.OPENROUTER_API_KEY,
+    }));
+  }
+
+  // ─── Azure OpenAI ───
+
+  if (env.AZURE_OPENAI_API_KEY && env.AZURE_OPENAI_ENDPOINT) {
+    registry.register(new AzureOpenAIProvider({
+      apiKey: env.AZURE_OPENAI_API_KEY,
+      endpoint: env.AZURE_OPENAI_ENDPOINT,
+      apiVersion: env.AZURE_OPENAI_API_VERSION,
+    }));
+  }
+
+  // ─── Local Providers (always attempt to register, gracefully fail if not running) ───
+
+  if (env.OLLAMA_HOST !== "disabled") {
+    registry.register(new OllamaProvider({
+      baseUrl: env.OLLAMA_HOST ?? "http://localhost:11434",
+    }));
+  }
+
+  if (env.LM_STUDIO_HOST !== "disabled") {
+    registry.register(new LMStudioProvider({
+      baseUrl: env.LM_STUDIO_HOST ?? "http://localhost:1234/v1",
+    }));
+  }
+
+  const summary = registry.getHealthySummary();
+  console.log(
+    `[ProviderRegistry] Initialized with ${summary.total} providers.`,
+    `(${summary.healthy} healthy, ${summary.degraded} degraded, ${summary.unavailable} unavailable)`,
+  );
+
+  return registry;
 }

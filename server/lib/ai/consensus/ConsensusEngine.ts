@@ -1,233 +1,276 @@
 /**
- * Consensus Engine
- * Queries multiple providers in parallel and combines their responses
- * using one of three strategies:
+ * ConsensusEngine — Send query to N models, compare responses, return best/fused result
  *
- *   majority  — pick the response that is most semantically similar to others
- *   best_of_n — pick the highest quality score response
- *   fusion    — synthesize all responses via a dedicated fusion model
+ * Use for high-stakes queries where quality > cost/latency.
+ * Configurable: min models, timeout, quality threshold, cost ceiling.
  */
 
+import { ProviderRegistry } from "../providers/core/ProviderRegistry.js";
 import {
-  IConsensusRequest,
-  IConsensusResponse,
-  IChatRequest,
-  IChatResponse,
-  IChatMessage,
-  MessageRole,
-} from '../providers/core/types';
-import { ProviderRegistry } from '../providers/core/ProviderRegistry';
+  type IChatMessage,
+  type IChatOptions,
+  type IChatResponse,
+  ProviderStatus,
+} from "../providers/core/types.js";
+import { ResponseComparator } from "./ResponseComparator.js";
+import { ResponseFusion, type IScoredResponse } from "./ResponseFusion.js";
 
-// ─── Text similarity (Jaccard on word trigrams) ───────────────────────────────
+// ─────────────────────────────────────────────
+// Interfaces
+// ─────────────────────────────────────────────
 
-function tokenize(text: string): Set<string> {
-  const words = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-  const trigrams = new Set<string>();
-  for (let i = 0; i < words.length - 2; i++) {
-    trigrams.add(`${words[i]} ${words[i + 1]} ${words[i + 2]}`);
-  }
-  // Also add unigrams for short texts
-  words.forEach((w) => trigrams.add(w));
-  return trigrams;
+export interface IConsensusConfig {
+  minModels: number;         // Minimum models that must respond
+  maxModels: number;         // Maximum to query concurrently
+  timeoutMs: number;         // Max wait for all models
+  qualityThreshold: number;  // Min score for a response to count
+  costCeiling?: number;      // Max total $ for this consensus call
+  requireAgreement?: number; // Require X% agreement for high confidence
+  fusionEnabled: boolean;    // Enable response fusion
 }
 
-function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 1;
-  let intersection = 0;
-  for (const item of a) {
-    if (b.has(item)) intersection++;
-  }
-  return intersection / (a.size + b.size - intersection);
+export interface IModelTarget {
+  providerId: string;
+  modelId: string;
 }
 
-function avgPairwiseSimilarity(responses: IChatResponse[]): number {
-  if (responses.length <= 1) return 0;
-  const tokenSets = responses.map((r) => tokenize(r.content));
-  let totalSim = 0;
-  let pairs = 0;
-  for (let i = 0; i < tokenSets.length; i++) {
-    for (let j = i + 1; j < tokenSets.length; j++) {
-      totalSim += jaccardSimilarity(tokenSets[i], tokenSets[j]);
-      pairs++;
-    }
-  }
-  return pairs > 0 ? totalSim / pairs : 0;
+export interface IConsensusResponse {
+  content: string;
+  confidence: number;
+  strategy: "unanimous" | "majority" | "fusion" | "best_available";
+  participatingModels: number;
+  responses: Array<{
+    model: string;
+    provider: string;
+    content: string;
+    score: number;
+    latencyMs: number;
+    error?: string;
+  }>;
+  totalCostUsd: number;
+  totalLatencyMs: number;
+  warnings: string[];
 }
 
-// ─── Fusion prompt builder ────────────────────────────────────────────────────
+const DEFAULT_CONFIG: IConsensusConfig = {
+  minModels: 2,
+  maxModels: 5,
+  timeoutMs: 30_000,
+  qualityThreshold: 0.4,
+  fusionEnabled: true,
+};
 
-function buildFusionMessages(
-  original: IChatMessage[],
-  responses: IChatResponse[],
-): IChatMessage[] {
-  const originalQuestion = original
-    .filter((m) => m.role === MessageRole.User)
-    .map((m) => (typeof m.content === 'string' ? m.content : m.content.map((c) => c.text ?? '').join(' ')))
-    .join('\n');
-
-  const responseList = responses
-    .map((r, i) => `### Response ${i + 1} (${r.provider}/${r.model})\n${r.content}`)
-    .join('\n\n');
-
-  return [
-    {
-      role: MessageRole.System,
-      content: `You are a synthesis assistant. You will be given multiple AI responses to the same question. Your task is to synthesize the best, most accurate, and complete answer by:
-1. Identifying points of agreement and using them as the foundation
-2. Resolving contradictions by selecting the most well-reasoned position
-3. Combining complementary information
-4. Being transparent about genuine uncertainty where responses disagree
-
-Output only the synthesized answer, not meta-commentary about the synthesis process.`,
-    },
-    {
-      role: MessageRole.User,
-      content: `Original question:\n${originalQuestion}\n\n---\n\nMultiple AI responses to synthesize:\n\n${responseList}\n\n---\n\nProvide a single synthesized answer.`,
-    },
-  ];
-}
-
-// ─── Engine ───────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// ConsensusEngine
+// ─────────────────────────────────────────────
 
 export class ConsensusEngine {
-  private _registry: ProviderRegistry;
+  private readonly comparator: ResponseComparator;
+  private readonly fusion: ResponseFusion;
 
-  constructor(registry?: ProviderRegistry) {
-    this._registry = registry ?? ProviderRegistry.getInstance();
+  constructor(private readonly registry: ProviderRegistry) {
+    this.comparator = new ResponseComparator();
+    this.fusion = new ResponseFusion();
   }
 
-  async query(consensusRequest: IConsensusRequest): Promise<IConsensusResponse> {
-    const { request, providers, votingStrategy, fusionModel, timeoutMs = 30_000 } = consensusRequest;
+  /**
+   * Query multiple models and return a consensus response.
+   *
+   * @param messages - The conversation messages
+   * @param targets - Which provider/model combos to query (auto-selected if empty)
+   * @param options - Chat options passed to each model
+   * @param config - Consensus configuration
+   */
+  async query(
+    messages: IChatMessage[],
+    targets: IModelTarget[] = [],
+    options: IChatOptions = {},
+    config: Partial<IConsensusConfig> = {},
+  ): Promise<IConsensusResponse> {
+    const cfg: IConsensusConfig = { ...DEFAULT_CONFIG, ...config };
+    const start = Date.now();
+    const warnings: string[] = [];
 
-    // Query all providers in parallel with per-provider timeout
-    const settled = await Promise.allSettled(
-      providers.map((providerName) =>
-        this._queryProvider(providerName, request, timeoutMs),
-      ),
+    // Auto-select models if not specified
+    const selectedTargets = targets.length > 0
+      ? targets.slice(0, cfg.maxModels)
+      : this.autoSelectModels(cfg.maxModels);
+
+    if (selectedTargets.length < cfg.minModels) {
+      warnings.push(`Only ${selectedTargets.length} model(s) available, need ${cfg.minModels} for strong consensus`);
+    }
+
+    // Query all models concurrently with individual timeout
+    const queries = selectedTargets.map((target) =>
+      this.queryWithTimeout(target, messages, options, cfg.timeoutMs),
     );
 
-    const successful: IChatResponse[] = settled
-      .filter((r): r is PromiseFulfilledResult<IChatResponse> => r.status === 'fulfilled')
-      .map((r) => r.value);
+    const results = await Promise.allSettled(queries);
+
+    // Collect successful responses
+    const successful: Array<{
+      target: IModelTarget;
+      response: IChatResponse;
+      latencyMs: number;
+    }> = [];
+
+    const responseDetails: IConsensusResponse["responses"] = [];
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      const target = selectedTargets[i];
+
+      if (result.status === "fulfilled") {
+        successful.push(result.value);
+        responseDetails.push({
+          model: target.modelId,
+          provider: target.providerId,
+          content: result.value.response.content,
+          score: 0, // Will be filled after comparison
+          latencyMs: result.value.latencyMs,
+        });
+      } else {
+        responseDetails.push({
+          model: target.modelId,
+          provider: target.providerId,
+          content: "",
+          score: 0,
+          latencyMs: Date.now() - start,
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        });
+        warnings.push(`${target.providerId}/${target.modelId} failed: ${responseDetails[i].error}`);
+      }
+    }
 
     if (successful.length === 0) {
-      throw new Error('All providers failed in consensus query');
+      throw new Error("All consensus models failed. " + warnings.join("; "));
     }
 
-    if (successful.length === 1) {
+    // Score each response relative to others
+    const contents = successful.map((s) => s.response.content);
+    const scoredResponses: IScoredResponse[] = successful.map((s, i) => {
+      const others = contents.filter((_, j) => j !== i);
+      const score = this.comparator.compare(s.response.content, others);
+      responseDetails.find((r) => r.model === s.target.modelId)!.score = score.overallScore;
       return {
-        finalResponse: successful[0],
-        responses: successful,
-        agreement: 0,
-        strategy: votingStrategy,
-        totalCostUsd: successful[0].cost ?? 0,
+        content: s.response.content,
+        score,
+        model: s.target.modelId,
+        provider: s.target.providerId,
       };
+    });
+
+    // Filter below quality threshold
+    const qualityFiltered = scoredResponses.filter(
+      (r) => r.score.overallScore >= cfg.qualityThreshold,
+    );
+
+    if (qualityFiltered.length === 0) {
+      warnings.push("All responses below quality threshold, using best available");
     }
 
-    const totalCostUsd = successful.reduce((s, r) => s + (r.cost ?? 0), 0);
-    const agreement = avgPairwiseSimilarity(successful);
+    const eligible = qualityFiltered.length > 0 ? qualityFiltered : scoredResponses;
 
-    let finalResponse: IChatResponse;
+    // Determine consensus strategy
+    const consensusStrategy = this.determineStrategy(eligible, cfg);
 
-    switch (votingStrategy) {
-      case 'majority':
-        finalResponse = this._majorityVote(successful);
-        break;
+    // Generate final response
+    const fusionResult = cfg.fusionEnabled
+      ? this.fusion.fuse(eligible)
+      : {
+          content: eligible[0].content,
+          strategy: "best_single" as const,
+          sourcesUsed: 1,
+          confidence: eligible[0].score.overallScore,
+          metadata: { totalResponses: eligible.length, bestResponseScore: eligible[0].score.overallScore, fusionQualityEstimate: eligible[0].score.overallScore },
+        };
 
-      case 'best_of_n':
-        finalResponse = this._bestOfN(successful);
-        break;
-
-      case 'fusion':
-        finalResponse = await this._fusion(successful, request.messages, fusionModel);
-        break;
-
-      default:
-        finalResponse = this._majorityVote(successful);
-    }
+    const totalCost = successful.reduce(
+      (sum, s) => sum + (s.response.cost ?? 0),
+      0,
+    );
 
     return {
-      finalResponse,
-      responses: successful,
-      agreement,
-      strategy: votingStrategy,
-      totalCostUsd,
+      content: fusionResult.content,
+      confidence: fusionResult.confidence,
+      strategy: consensusStrategy,
+      participatingModels: successful.length,
+      responses: responseDetails,
+      totalCostUsd: totalCost,
+      totalLatencyMs: Date.now() - start,
+      warnings,
     };
   }
 
-  // ── Voting strategies ────────────────────────────────────────────────────────
+  // ─── Private Helpers ───
 
-  /** Pick the response with the highest average similarity to all others. */
-  private _majorityVote(responses: IChatResponse[]): IChatResponse {
-    const tokenSets = responses.map((r) => tokenize(r.content));
+  private async queryWithTimeout(
+    target: IModelTarget,
+    messages: IChatMessage[],
+    options: IChatOptions,
+    timeoutMs: number,
+  ): Promise<{ target: IModelTarget; response: IChatResponse; latencyMs: number }> {
+    const provider = this.registry.getProvider(target.providerId);
+    const start = Date.now();
 
-    const scores = responses.map((_, i) => {
-      let totalSim = 0;
-      for (let j = 0; j < responses.length; j++) {
-        if (i !== j) totalSim += jaccardSimilarity(tokenSets[i], tokenSets[j]);
-      }
-      return totalSim / (responses.length - 1);
+    const responsePromise = provider.chat(messages, {
+      ...options,
+      model: target.modelId,
     });
 
-    const bestIdx = scores.indexOf(Math.max(...scores));
-    return responses[bestIdx];
-  }
-
-  /** Pick the response from the highest-quality model (by qualityScore). */
-  private _bestOfN(responses: IChatResponse[]): IChatResponse {
-    // We don't have qualityScore here, so use the one with the most tokens (proxy for detail)
-    return responses.reduce((best, curr) =>
-      (curr.usage.completionTokens > best.usage.completionTokens ? curr : best),
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs),
     );
+
+    const response = await Promise.race([responsePromise, timeoutPromise]);
+    return { target, response, latencyMs: Date.now() - start };
   }
 
-  /** Synthesize all responses using a dedicated fusion model. */
-  private async _fusion(
-    responses: IChatResponse[],
-    originalMessages: IChatMessage[],
-    fusionModelSpec?: string,
-  ): Promise<IChatResponse> {
-    const [providerName, ...modelParts] = (fusionModelSpec ?? 'openai:gpt-4o-mini').split(':');
-    const modelId = modelParts.join(':');
+  private autoSelectModels(maxModels: number): IModelTarget[] {
+    const targets: IModelTarget[] = [];
+    const providers = this.registry
+      .listProviders()
+      .filter((p) => p.health.status !== ProviderStatus.UNAVAILABLE);
 
-    const provider = this._registry.tryGetProvider(providerName);
-    if (!provider) {
-      // Fall back to majority vote if fusion provider not available
-      return this._majorityVote(responses);
+    // Try to pick one model from each provider for diversity
+    for (const provider of providers) {
+      if (targets.length >= maxModels) break;
+      const models = provider["_models"] as Array<{ id: string; capabilities: unknown[] }>;
+      if (!models?.length) continue;
+
+      const chatModels = models.filter((m) =>
+        Array.isArray(m.capabilities) && m.capabilities.includes("chat"),
+      );
+      if (chatModels.length === 0) continue;
+
+      // Pick the mid-tier model (not cheapest, not most expensive)
+      const midIndex = Math.floor(chatModels.length / 2);
+      targets.push({
+        providerId: provider.id,
+        modelId: chatModels[midIndex].id,
+      });
     }
 
-    const fusionMessages = buildFusionMessages(originalMessages, responses);
-    return provider.chat({ messages: fusionMessages, model: modelId });
+    return targets;
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────────
+  private determineStrategy(
+    responses: IScoredResponse[],
+    config: IConsensusConfig,
+  ): IConsensusResponse["strategy"] {
+    if (responses.length === 0) return "best_available";
+    if (responses.length === 1) return "best_available";
 
-  private async _queryProvider(
-    providerName: string,
-    request: IChatRequest,
-    timeoutMs: number,
-  ): Promise<IChatResponse> {
-    const provider = this._registry.getProvider(providerName);
-    return Promise.race([
-      provider.chat(request),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Provider ${providerName} timed out after ${timeoutMs}ms`)), timeoutMs),
-      ),
-    ]);
-  }
+    // Check for unanimous agreement (high similarity)
+    const avgSimilarity = responses.reduce((sum, r) => sum + r.score.similarity, 0) / responses.length;
+    if (avgSimilarity > 0.8) return "unanimous";
 
-  // ── Convenience ──────────────────────────────────────────────────────────────
+    // Check for majority agreement
+    if (avgSimilarity > 0.5 && responses.length >= 2) return "majority";
 
-  /** Quick helper: query N providers with majority vote, returns the winner. */
-  async majority(request: IChatRequest, providers: string[]): Promise<IChatResponse> {
-    const result = await this.query({ request, providers, votingStrategy: 'majority' });
-    return result.finalResponse;
-  }
+    // Use fusion for divergent responses
+    if (config.fusionEnabled && responses.length >= 2) return "fusion";
 
-  /** Quick helper: query N providers, fuse results. */
-  async fuse(request: IChatRequest, providers: string[], fusionModel?: string): Promise<IConsensusResponse> {
-    return this.query({ request, providers, votingStrategy: 'fusion', fusionModel });
+    return "best_available";
   }
 }
-
-export const consensusEngine = new ConsensusEngine();
