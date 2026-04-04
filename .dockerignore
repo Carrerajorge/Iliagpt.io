@@ -61,7 +61,6 @@ daemon/
 .config/
 .canvas/
 tmp/
-.replit
 replit.nix
 replit.md
 
