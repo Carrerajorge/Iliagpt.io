@@ -51,7 +51,12 @@ import type { Response } from "express";
 import type { AuthenticatedRequest } from "../types/express";
 import { auditLog } from "../services/auditLogger";
 import { usageQuotaService, type UsageCheckResult } from "../services/usageQuotaService";
-import { conversationMemoryManager } from "../services/conversationMemory";
+import {
+  conversationMemoryManager,
+  type ChatMessage as ConversationMemoryChatMessage,
+  type ConversationContextResult,
+  type MemoryCompressionDiagnostics,
+} from "../services/conversationMemory";
 import { conversationStateService } from "../services/conversationStateService";
 import { generateAndPersistChatTitle } from "../lib/chatTitleGenerator";
 import { validate } from "../lib/requestValidator";
@@ -87,6 +92,56 @@ const VALID_STREAM_SCOPE_SET = new Set<SkillScope>([
 const STREAM_IDENTIFIER_RE = /^[a-zA-Z0-9._-]{1,140}$/;
 const STREAM_ATTACHMENT_NAME_RE = /^[^<>:\"/\\|?*\u0000-\u001f]{1,220}$/;
 const STREAM_MIME_RE = /^[a-zA-Z0-9][a-zA-Z0-9.+-\/]*/;
+
+function estimateMemoryTokens(messages: ConversationMemoryChatMessage[]): number {
+  if (typeof conversationMemoryManager.estimateMessagesTokens === "function") {
+    return conversationMemoryManager.estimateMessagesTokens(messages);
+  }
+
+  return messages.reduce((total, message) => total + Math.ceil(String(message?.content || "").length / 4) + 4, 0);
+}
+
+function createMemoryDiagnosticsFallback(
+  messages: ConversationMemoryChatMessage[],
+): MemoryCompressionDiagnostics {
+  const totalTokens = estimateMemoryTokens(messages);
+  const nonSystemMessageCount = messages.filter((message) => message.role !== "system").length;
+
+  return {
+    compressionApplied: false,
+    originalTokens: totalTokens,
+    finalTokens: totalTokens,
+    originalMessageCount: messages.length,
+    finalMessageCount: messages.length,
+    recentMessagesKept: nonSystemMessageCount,
+    relevantMessagesKept: 0,
+    summarizedMessages: 0,
+    summaryApplied: false,
+  };
+}
+
+async function augmentHistoryWithCompatibility(
+  chatId: string | undefined,
+  clientMessages: ConversationMemoryChatMessage[],
+  maxTokens = 8000,
+): Promise<ConversationContextResult> {
+  if (typeof conversationMemoryManager.augmentWithHistoryWithDiagnostics === "function") {
+    return conversationMemoryManager.augmentWithHistoryWithDiagnostics(chatId, clientMessages, maxTokens);
+  }
+
+  if (typeof conversationMemoryManager.augmentWithHistory === "function") {
+    const messages = await conversationMemoryManager.augmentWithHistory(chatId, clientMessages, maxTokens);
+    return {
+      messages,
+      diagnostics: createMemoryDiagnosticsFallback(messages),
+    };
+  }
+
+  return {
+    messages: clientMessages,
+    diagnostics: createMemoryDiagnosticsFallback(clientMessages),
+  };
+}
 
 function extractUserText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -3565,7 +3620,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
       }
 
       // CONTEXT FIX: Augment client messages with server-side history
-      const { messages, diagnostics: memoryDiagnostics } = await conversationMemoryManager.augmentWithHistoryWithDiagnostics(
+      const { messages, diagnostics: memoryDiagnostics } = await augmentHistoryWithCompatibility(
         conversationId,
         clientMessages,
         8000 // token budget
@@ -4150,6 +4205,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
     let claimedRun: any = null;
     let runFinalized = false; // true once run status has been set to done/failed
     let assistantMessageId: string | null = null;
+    let activeStreamProvider: string | null = null;
     let streamHardTimeout: NodeJS.Timeout | null = null;
     let streamIdleTimeout: NodeJS.Timeout | null = null;
 
@@ -4768,7 +4824,6 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       let agentLoopHandled = false;
       let shouldRunModel = true;
       let skillSeedForModel = "";
-      let activeStreamProvider: string | null = null;
       // NOTE: doneSent is attached to `res` so that the bundler cannot
       // rename or tree-shake it across try/catch/finally boundaries.
       // Previous attempts with local variables (`let doneSent`, `const streamFlags`)
@@ -5174,7 +5229,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       // CONTEXT FIX: Augment client messages with server-side history
       const effectiveChatId = chatId || conversationId || streamConversationId;
-      const { messages, diagnostics: memoryDiagnostics } = await conversationMemoryManager.augmentWithHistoryWithDiagnostics(
+      const { messages, diagnostics: memoryDiagnostics } = await augmentHistoryWithCompatibility(
         effectiveChatId,
         clientMessages,
         8000 // token budget

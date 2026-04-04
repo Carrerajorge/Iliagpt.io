@@ -31,6 +31,12 @@ vi.mock("../storage", () => ({
     getChat: vi.fn(async () => null),
     createChat: vi.fn(async () => null),
     createChatMessage: vi.fn(async () => ({ id: "m1" })),
+    updateChatMessageContent: vi.fn(async () => null),
+    getChatMessages: vi.fn(async () => []),
+    getChatRun: vi.fn(async () => null),
+    getChatRunByClientRequestId: vi.fn(async () => null),
+    claimPendingRun: vi.fn(async () => null),
+    updateChatRunStatus: vi.fn(async () => null),
   },
 }));
 
@@ -50,6 +56,7 @@ vi.mock("../services/usageQuotaService", () => ({
 
 vi.mock("../lib/anonUserHelper", () => ({
   getOrCreateSecureUserId: vi.fn(() => "user_test"),
+  getSecureUserId: vi.fn(() => "user_test"),
 }));
 
 vi.mock("../types/express", () => ({
@@ -88,6 +95,67 @@ vi.mock("../services/skillPlatform", () => ({
       selectedSkill: undefined,
     })),
   })),
+}));
+
+vi.mock("../services/webSearch", () => ({
+  needsAcademicSearch: vi.fn(() => false),
+  needsWebSearch: vi.fn(() => false),
+  searchWeb: vi.fn(async () => ({
+    results: [],
+    contents: [],
+  })),
+}));
+
+vi.mock("../services/academicResearchEngineV3", () => ({
+  academicEngineV3: {
+    search: vi.fn(async () => ({
+      papers: [],
+      sources: [],
+    })),
+  },
+  generateAPACitation: vi.fn(() => ""),
+}));
+
+vi.mock("../agent/unifiedChatHandler", () => ({
+  createUnifiedRun: vi.fn(async () => ({
+    runId: "run_test",
+    startTime: Date.now(),
+    resolvedLane: "fast",
+    isAgenticMode: false,
+    requestSpec: {
+      intent: "chat",
+      intentConfidence: 0.95,
+      deliverableType: null,
+      primaryAgent: "chat",
+      targetAgents: [],
+      sessionState: null,
+    },
+  })),
+  hydrateSessionState: vi.fn(async () => null),
+  emitTraceEvent: vi.fn(async () => {}),
+  SseBufferedWriter: class {
+    constructor() {}
+    write() {}
+    flush() {}
+    close() {}
+  },
+  resolveLatencyLane: vi.fn(() => "fast"),
+}));
+
+vi.mock("../agent/agentExecutor", () => ({
+  executeAgentLoop: vi.fn(async () => ({
+    status: "completed",
+    fullResponse: "stream ok",
+    response: "stream ok",
+    artifacts: [],
+    usage: null,
+  })),
+}));
+
+vi.mock("../services/conversationStateService", () => ({
+  conversationStateService: {
+    appendMessage: vi.fn(async () => null),
+  },
 }));
 
 async function makeApp() {

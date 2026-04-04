@@ -16,6 +16,14 @@ if (!envLoadedByBootstrap) {
 // Backward compatible aliases for xAI keys used across different parts of the codebase.
 process.env.XAI_API_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || process.env.ILIAGPT_API_KEY;
 
+if (nodeEnv === "test") {
+  // Keep route/unit tests hermetic: many modules import env eagerly even when the
+  // database and session layer are mocked away by the test itself.
+  process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://test:test@127.0.0.1:5432/iliagpt_test";
+  process.env.SESSION_SECRET =
+    process.env.SESSION_SECRET || "test-session-secret-1234567890abcdefghijklmnopqrstuvwxyz";
+}
+
 const boolish = z
   .preprocess((v) => {
     if (typeof v !== "string") return v;
