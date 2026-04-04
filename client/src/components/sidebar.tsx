@@ -43,6 +43,7 @@ import {
   Home,
 } from "lucide-react";
 import { IliaGPTLogo } from "@/components/iliagpt-logo";
+import { OpenClawLogo } from "@/components/openclaw-panel";
 import { cn } from "@/lib/utils";
 import { isAdminUser } from "@/lib/admin";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -93,6 +94,7 @@ interface SidebarProps {
   onOpenWhatsAppConnect?: () => void;
   onOpenCodex?: () => void;
   onOpenLibrary?: () => void;
+  onOpenOpenClaw?: () => void;
   processingChatIds?: string[];
   pendingResponseCounts?: Record<string, number>;
   onClearPendingCount?: (chatId: string) => void;
@@ -229,6 +231,7 @@ export function Sidebar({
   onOpenWhatsAppConnect,
   onOpenCodex,
   onOpenLibrary,
+  onOpenOpenClaw,
   processingChatIds = [],
   pendingResponseCounts = {},
   onClearPendingCount,
@@ -587,6 +590,10 @@ export function Sidebar({
         <button onClick={onOpenGpts} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-gpts">
           <Bot className="h-4 w-4 text-amber-500 shrink-0 pointer-events-none" />
           <span className="pointer-events-none">GPTs</span>
+        </button>
+        <button onClick={onOpenOpenClaw} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-openclaw">
+          <OpenClawLogo className="h-4 w-4 shrink-0 pointer-events-none" />
+          <span className="pointer-events-none">OpenClaw</span>
         </button>
         <button onClick={onOpenSkills} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-skills">
           <Zap className="h-4 w-4 text-blue-500 shrink-0 pointer-events-none" />

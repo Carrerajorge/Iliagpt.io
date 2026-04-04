@@ -43,6 +43,7 @@ const AboutGptDialogLazy = lazy(() =>
 const GptBuilderLazy = lazy(() => import("@/components/gpt-builder").then((m) => ({ default: m.GptBuilder })));
 const UserLibraryLazy = lazy(() => import("@/components/user-library").then((m) => ({ default: m.UserLibrary })));
 const CodexDialogLazy = lazy(() => import("@/components/codex-dialog").then((m) => ({ default: m.CodexDialog })));
+const OpenClawPanelLazy = lazy(() => import("@/components/openclaw-panel").then((m) => ({ default: m.OpenClawPanel })));
 const SearchModalLazy = lazy(() => import("@/components/search-modal").then((m) => ({ default: m.SearchModal })));
 const SettingsDialogLazy = lazy(() => import("@/components/settings-dialog").then((m) => ({ default: m.SettingsDialog })));
 const KeyboardShortcutsDialogLazy = lazy(() =>
@@ -102,6 +103,7 @@ export default function Home() {
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
   const [isCodexOpen, setIsCodexOpen] = useState(false);
   const [isAppsDialogOpen, setIsAppsDialogOpen] = useState(false);
+  const [isOpenClawOpen, setIsOpenClawOpen] = useState(false);
   const [isWhatsAppConnectOpen, setIsWhatsAppConnectOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -623,6 +625,10 @@ export default function Home() {
     setIsCodexOpen(true);
   };
 
+  const handleOpenOpenClaw = () => {
+    setIsOpenClawOpen(true);
+  };
+
   const handleSelectGpt = (gpt: Gpt) => {
     setActiveGpt(gpt);
     handleNewChat({ preserveGpt: true });
@@ -771,6 +777,7 @@ export default function Home() {
           onOpenWhatsAppConnect={() => setIsWhatsAppConnectOpen(true)}
           onOpenCodex={handleOpenCodex}
           onOpenLibrary={handleOpenLibrary}
+          onOpenOpenClaw={handleOpenOpenClaw}
           processingChatIds={processingChatIds}
           pendingResponseCounts={pendingResponseCounts}
           onClearPendingCount={handleClearPendingCount}
@@ -818,6 +825,7 @@ export default function Home() {
               onOpenSkills={handleOpenSkills}
               onOpenWhatsAppConnect={() => setIsWhatsAppConnectOpen(true)}
               onOpenLibrary={handleOpenLibrary}
+              onOpenOpenClaw={handleOpenOpenClaw}
               processingChatIds={processingChatIds}
               pendingResponseCounts={pendingResponseCounts}
               onClearPendingCount={handleClearPendingCount}
@@ -982,6 +990,12 @@ export default function Home() {
       <Suspense fallback={null}>
         {isCodexOpen ? (
           <CodexDialogLazy isOpen={isCodexOpen} onClose={() => setIsCodexOpen(false)} />
+        ) : null}
+      </Suspense>
+      {/* OpenClaw Panel */}
+      <Suspense fallback={null}>
+        {isOpenClawOpen ? (
+          <OpenClawPanelLazy open={isOpenClawOpen} onOpenChange={setIsOpenClawOpen} />
         ) : null}
       </Suspense>
 
