@@ -543,14 +543,48 @@ const generateImageTool: ToolDefinition = {
   description: "Generate an image using AI based on a text prompt",
   inputSchema: GenerateImageSchema,
   async execute(input: any, context: ToolContext): Promise<ToolResult> {
-    return {
-      success: true,
-      output: { prompt: input.prompt, style: input.style, status: "queued", message: "Image generation queued" },
-      artifacts: [],
-      previews: [],
-      logs: [],
-      metrics: { durationMs: 0 },
-    };
+    const startTime = Date.now();
+    try {
+      const { generateImage } = await import("../../services/imageGeneration");
+      const result = await generateImage(input.prompt);
+      const durationMs = Date.now() - startTime;
+
+      const fs = await import("fs/promises");
+      const path = await import("path");
+      const ext = result.mimeType.includes("png") ? "png" : "jpg";
+      const fileName = `generated_${Date.now()}.${ext}`;
+      const outDir = path.resolve(process.cwd(), "uploads");
+      await fs.mkdir(outDir, { recursive: true });
+      const outPath = path.join(outDir, fileName);
+      await fs.writeFile(outPath, Buffer.from(result.imageBase64, "base64"));
+
+      return {
+        success: true,
+        output: {
+          prompt: input.prompt,
+          style: input.style,
+          model: result.model || "unknown",
+          filePath: outPath,
+          fileName,
+          mimeType: result.mimeType,
+          status: "completed",
+        },
+        artifacts: [{ type: "image", path: outPath, mimeType: result.mimeType }],
+        previews: [],
+        logs: [`Image generated in ${durationMs}ms using model ${result.model || "unknown"}`],
+        metrics: { durationMs },
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        output: null,
+        error: { code: "IMAGE_GENERATION_ERROR", message: err.message, retryable: true },
+        artifacts: [],
+        previews: [],
+        logs: [`Image generation failed: ${err.message}`],
+        metrics: { durationMs: Date.now() - startTime },
+      };
+    }
   },
 };
 
@@ -559,38 +593,317 @@ const analyzeSpreadsheetTool: ToolDefinition = {
   description: "Analyze a spreadsheet file with an AI-powered query",
   inputSchema: AnalyzeSpreadsheetSchema,
   async execute(input: any, context: ToolContext): Promise<ToolResult> {
+    const startTime = Date.now();
     try {
       const fs = await import("fs/promises");
       const path = await import("path");
       const fullPath = path.resolve(process.cwd(), input.path);
+      const workspaceRoot = path.resolve(process.cwd()) + path.sep;
+      const relativePath = path.relative(workspaceRoot, fullPath);
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        return {
+          success: false,
+          output: null,
+          error: { code: "SECURITY_ERROR", message: "Path traversal not allowed. File must be within workspace.", retryable: false },
+          artifacts: [], previews: [], logs: [], metrics: { durationMs: Date.now() - startTime },
+        };
+      }
+      let realPath: string;
+      try {
+        realPath = await fs.realpath(fullPath);
+      } catch {
+        realPath = fullPath;
+      }
+      if (!realPath.startsWith(workspaceRoot) && realPath !== workspaceRoot.slice(0, -1)) {
+        return {
+          success: false,
+          output: null,
+          error: { code: "SECURITY_ERROR", message: "Symlink target is outside workspace.", retryable: false },
+          artifacts: [], previews: [], logs: [], metrics: { durationMs: Date.now() - startTime },
+        };
+      }
+      const blockedPrefixes = ["/etc/", "/usr/", "/var/", "/boot/", "/dev/", "/proc/", "/sys/"];
+      if (blockedPrefixes.some(bp => realPath.startsWith(bp))) {
+        return {
+          success: false,
+          output: null,
+          error: { code: "SECURITY_ERROR", message: "Access to system directories is not allowed.", retryable: false },
+          artifacts: [], previews: [], logs: [], metrics: { durationMs: Date.now() - startTime },
+        };
+      }
       await fs.access(fullPath);
+
+      const ExcelJS = await import("exceljs");
+      const workbook = new ExcelJS.Workbook();
+      const ext = path.extname(fullPath).toLowerCase();
+
+      if (ext === ".csv") {
+        await workbook.csv.readFile(fullPath);
+      } else {
+        await workbook.xlsx.readFile(fullPath);
+      }
+
+      const targetSheet = input.sheet
+        ? workbook.getWorksheet(input.sheet)
+        : workbook.worksheets[0];
+
+      if (!targetSheet) {
+        return {
+          success: false,
+          output: null,
+          error: { code: "SHEET_NOT_FOUND", message: `Sheet "${input.sheet || "default"}" not found`, retryable: false },
+          artifacts: [], previews: [], logs: [], metrics: { durationMs: Date.now() - startTime },
+        };
+      }
+
+      const headers: string[] = [];
+      const firstRow = targetSheet.getRow(1);
+      firstRow.eachCell((cell, colNumber) => {
+        headers[colNumber - 1] = String(cell.value || `Column${colNumber}`);
+      });
+
+      const rows: Record<string, any>[] = [];
+      const maxRowsForAnalysis = 500;
+      targetSheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1 || rows.length >= maxRowsForAnalysis) return;
+        const rowData: Record<string, any> = {};
+        row.eachCell((cell, colNumber) => {
+          const header = headers[colNumber - 1] || `col_${colNumber}`;
+          rowData[header] = cell.value;
+        });
+        rows.push(rowData);
+      });
+
+      const stats: Record<string, any> = {
+        totalRows: targetSheet.rowCount - 1,
+        totalColumns: headers.length,
+        headers,
+        sheetName: targetSheet.name,
+        sheetsAvailable: workbook.worksheets.map(s => s.name),
+      };
+
+      for (const header of headers) {
+        const values = rows.map(r => r[header]).filter(v => v != null);
+        const numericValues = values.filter(v => typeof v === "number") as number[];
+        if (numericValues.length > values.length * 0.5 && numericValues.length > 0) {
+          stats[`${header}_stats`] = {
+            min: Math.min(...numericValues),
+            max: Math.max(...numericValues),
+            avg: Number((numericValues.reduce((a, b) => a + b, 0) / numericValues.length).toFixed(2)),
+            sum: Number(numericValues.reduce((a, b) => a + b, 0).toFixed(2)),
+            count: numericValues.length,
+          };
+        } else {
+          const uniqueValues = [...new Set(values.map(String))];
+          stats[`${header}_info`] = {
+            uniqueCount: uniqueValues.length,
+            sampleValues: uniqueValues.slice(0, 5),
+            type: "text",
+          };
+        }
+      }
+
+      const sampleData = rows.slice(0, 10);
+      const durationMs = Date.now() - startTime;
+
       return {
         success: true,
-        output: { path: input.path, query: input.query, status: "analyzing" },
+        output: {
+          path: input.path,
+          query: input.query,
+          stats,
+          sampleData,
+          analyzedRows: rows.length,
+          totalRows: targetSheet.rowCount - 1,
+          status: "completed",
+        },
         artifacts: [],
         previews: [],
-        logs: [],
-        metrics: { durationMs: 0 },
+        logs: [`Analyzed ${rows.length} rows across ${headers.length} columns in ${durationMs}ms`],
+        metrics: { durationMs },
       };
     } catch (err: any) {
-      return { success: false, output: null, error: { code: "SPREADSHEET_ERROR", message: err.message, retryable: false } };
+      return {
+        success: false,
+        output: null,
+        error: { code: "SPREADSHEET_ERROR", message: err.message, retryable: false },
+        artifacts: [], previews: [], logs: [`Spreadsheet analysis failed: ${err.message}`],
+        metrics: { durationMs: Date.now() - startTime },
+      };
     }
   },
 };
+
+function generateSvgChart(type: string, data: any, title?: string, width = 800, height = 500): string {
+  const margin = { top: 50, right: 30, bottom: 60, left: 60 };
+  const chartW = width - margin.left - margin.right;
+  const chartH = height - margin.top - margin.bottom;
+
+  const labels: string[] = Array.isArray(data.labels) ? data.labels : [];
+  const datasets: Array<{ label?: string; values: number[] }> = Array.isArray(data.datasets)
+    ? data.datasets.map((ds: any) => ({
+        label: ds.label || "",
+        values: Array.isArray(ds.data || ds.values) ? (ds.data || ds.values).map(Number) : [],
+      }))
+    : Array.isArray(data.values)
+    ? [{ label: "", values: data.values.map(Number) }]
+    : [];
+
+  if (datasets.length === 0 || datasets[0].values.length === 0) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><text x="${width / 2}" y="${height / 2}" text-anchor="middle" font-size="16">No data provided</text></svg>`;
+  }
+
+  const allValues = datasets.flatMap(ds => ds.values);
+  const maxVal = Math.max(...allValues, 1);
+  const minVal = Math.min(...allValues, 0);
+  const range = maxVal - (minVal < 0 ? minVal : 0);
+
+  const colors = ["#4F46E5", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#06B6D4", "#EC4899", "#84CC16"];
+
+  let chartBody = "";
+
+  if (type === "bar") {
+    const groupW = chartW / Math.max(labels.length, 1);
+    const barW = Math.max(groupW / (datasets.length + 1), 4);
+    datasets.forEach((ds, di) => {
+      ds.values.forEach((v, i) => {
+        const barH = (v / range) * chartH;
+        const x = margin.left + i * groupW + di * barW + barW * 0.5;
+        const y = margin.top + chartH - barH;
+        chartBody += `<rect x="${x}" y="${y}" width="${barW - 2}" height="${barH}" fill="${colors[di % colors.length]}" rx="2" />`;
+      });
+    });
+  } else if (type === "line" || type === "area") {
+    datasets.forEach((ds, di) => {
+      const points = ds.values.map((v, i) => {
+        const x = margin.left + (i / Math.max(ds.values.length - 1, 1)) * chartW;
+        const y = margin.top + chartH - ((v - Math.min(0, minVal)) / range) * chartH;
+        return `${x},${y}`;
+      });
+      if (type === "area") {
+        const firstX = margin.left;
+        const lastX = margin.left + chartW;
+        const bottomY = margin.top + chartH;
+        chartBody += `<polygon points="${firstX},${bottomY} ${points.join(" ")} ${lastX},${bottomY}" fill="${colors[di % colors.length]}" opacity="0.2" />`;
+      }
+      chartBody += `<polyline points="${points.join(" ")}" fill="none" stroke="${colors[di % colors.length]}" stroke-width="2.5" />`;
+      ds.values.forEach((v, i) => {
+        const x = margin.left + (i / Math.max(ds.values.length - 1, 1)) * chartW;
+        const y = margin.top + chartH - ((v - Math.min(0, minVal)) / range) * chartH;
+        chartBody += `<circle cx="${x}" cy="${y}" r="4" fill="${colors[di % colors.length]}" />`;
+      });
+    });
+  } else if (type === "pie") {
+    const vals = datasets[0].values;
+    const total = vals.reduce((a, b) => a + Math.abs(b), 0) || 1;
+    const cx = width / 2;
+    const cy = height / 2;
+    const radius = Math.min(chartW, chartH) / 2 - 20;
+    let startAngle = -Math.PI / 2;
+    vals.forEach((v, i) => {
+      const sliceAngle = (Math.abs(v) / total) * 2 * Math.PI;
+      const endAngle = startAngle + sliceAngle;
+      const x1 = cx + radius * Math.cos(startAngle);
+      const y1 = cy + radius * Math.sin(startAngle);
+      const x2 = cx + radius * Math.cos(endAngle);
+      const y2 = cy + radius * Math.sin(endAngle);
+      const largeArc = sliceAngle > Math.PI ? 1 : 0;
+      chartBody += `<path d="M${cx},${cy} L${x1},${y1} A${radius},${radius} 0 ${largeArc} 1 ${x2},${y2} Z" fill="${colors[i % colors.length]}" stroke="white" stroke-width="1" />`;
+      const midAngle = startAngle + sliceAngle / 2;
+      const labelR = radius * 0.65;
+      const lx = cx + labelR * Math.cos(midAngle);
+      const ly = cy + labelR * Math.sin(midAngle);
+      const pct = ((Math.abs(v) / total) * 100).toFixed(1);
+      chartBody += `<text x="${lx}" y="${ly}" text-anchor="middle" font-size="11" fill="white" font-weight="bold">${pct}%</text>`;
+      startAngle = endAngle;
+    });
+  } else if (type === "scatter") {
+    const vals = datasets[0].values;
+    vals.forEach((v, i) => {
+      const x = margin.left + (i / Math.max(vals.length - 1, 1)) * chartW;
+      const y = margin.top + chartH - ((v - Math.min(0, minVal)) / range) * chartH;
+      chartBody += `<circle cx="${x}" cy="${y}" r="5" fill="${colors[0]}" opacity="0.7" />`;
+    });
+  }
+
+  let axes = "";
+  if (type !== "pie") {
+    axes += `<line x1="${margin.left}" y1="${margin.top + chartH}" x2="${margin.left + chartW}" y2="${margin.top + chartH}" stroke="#CBD5E1" stroke-width="1" />`;
+    axes += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + chartH}" stroke="#CBD5E1" stroke-width="1" />`;
+    const yTicks = 5;
+    for (let i = 0; i <= yTicks; i++) {
+      const yVal = (range / yTicks) * i + Math.min(0, minVal);
+      const y = margin.top + chartH - (i / yTicks) * chartH;
+      axes += `<text x="${margin.left - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="#64748B">${yVal.toFixed(1)}</text>`;
+      axes += `<line x1="${margin.left}" y1="${y}" x2="${margin.left + chartW}" y2="${y}" stroke="#E2E8F0" stroke-width="0.5" />`;
+    }
+    labels.forEach((label, i) => {
+      const x = margin.left + (i / Math.max(labels.length - 1, 1)) * chartW;
+      axes += `<text x="${x}" y="${margin.top + chartH + 20}" text-anchor="middle" font-size="10" fill="#64748B">${label.length > 12 ? label.slice(0, 12) + "…" : label}</text>`;
+    });
+  }
+
+  let legend = "";
+  if (datasets.length > 1 || datasets[0].label) {
+    const legendY = height - 15;
+    let legendX = margin.left;
+    datasets.forEach((ds, di) => {
+      legend += `<rect x="${legendX}" y="${legendY - 8}" width="12" height="12" fill="${colors[di % colors.length]}" rx="2" />`;
+      legend += `<text x="${legendX + 16}" y="${legendY + 2}" font-size="11" fill="#334155">${ds.label || `Series ${di + 1}`}</text>`;
+      legendX += (ds.label || `Series ${di + 1}`).length * 7 + 30;
+    });
+  }
+
+  const titleEl = title ? `<text x="${width / 2}" y="28" text-anchor="middle" font-size="16" font-weight="bold" fill="#1E293B">${title}</text>` : "";
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+<rect width="${width}" height="${height}" fill="white" rx="8" />
+${titleEl}${axes}${chartBody}${legend}
+</svg>`;
+}
 
 const generateChartTool: ToolDefinition = {
   name: "generate_chart",
   description: "Generate chart visualizations from data",
   inputSchema: GenerateChartSchema,
   async execute(input: any, context: ToolContext): Promise<ToolResult> {
-    return {
-      success: true,
-      output: { type: input.type, title: input.title, status: "generated" },
-      artifacts: [],
-      previews: [],
-      logs: [],
-      metrics: { durationMs: 0 },
-    };
+    const startTime = Date.now();
+    try {
+      const svgContent = generateSvgChart(input.type, input.data, input.title, input.width, input.height);
+      const durationMs = Date.now() - startTime;
+
+      const fs = await import("fs/promises");
+      const path = await import("path");
+      const fileName = `chart_${input.type}_${Date.now()}.svg`;
+      const outDir = path.resolve(process.cwd(), "uploads");
+      await fs.mkdir(outDir, { recursive: true });
+      const outPath = path.join(outDir, fileName);
+      await fs.writeFile(outPath, svgContent, "utf-8");
+
+      return {
+        success: true,
+        output: {
+          type: input.type,
+          title: input.title || "Chart",
+          filePath: outPath,
+          fileName,
+          format: "svg",
+          status: "completed",
+        },
+        artifacts: [{ type: "chart", path: outPath, mimeType: "image/svg+xml" }],
+        previews: [],
+        logs: [`Chart generated (${input.type}) in ${durationMs}ms`],
+        metrics: { durationMs },
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        output: null,
+        error: { code: "CHART_ERROR", message: err.message, retryable: false },
+        artifacts: [], previews: [], logs: [`Chart generation failed: ${err.message}`],
+        metrics: { durationMs: Date.now() - startTime },
+      };
+    }
   },
 };
 

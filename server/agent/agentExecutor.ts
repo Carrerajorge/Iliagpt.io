@@ -21,6 +21,9 @@ import {
   categorizeError,
   buildContextPruningStrategy,
 } from "./toolExecutionEngine";
+import { compactConversation, needsCompaction, guardContextWindow, type ConversationMessage } from "./openclaw/compaction";
+import { toolHookPipeline } from "./hooks/toolHooks";
+import { sessionPersistence, type AgentSessionSnapshot } from "./sessionPersistence";
 
 export interface AgentExecutorOptions {
   maxIterations?: number;
@@ -56,10 +59,14 @@ function isHighRiskAction(toolName: string, args: Record<string, any>): { risky:
 class CircuitBreaker {
   private failures: Map<string, number> = new Map();
   private tripped: Set<string> = new Set();
+  private halfOpen: Set<string> = new Set();
+  private lastTrippedAt: Map<string, number> = new Map();
   private threshold: number;
+  private cooldownMs: number;
 
-  constructor(threshold = 3) {
+  constructor(threshold = 3, cooldownMs = 30000) {
     this.threshold = threshold;
+    this.cooldownMs = cooldownMs;
   }
 
   recordFailure(toolName: string): void {
@@ -67,24 +74,151 @@ class CircuitBreaker {
     this.failures.set(toolName, count);
     if (count >= this.threshold) {
       this.tripped.add(toolName);
-      console.warn(`[CircuitBreaker] Tool "${toolName}" tripped after ${count} failures`);
+      this.halfOpen.delete(toolName);
+      this.lastTrippedAt.set(toolName, Date.now());
+      console.warn(`[CircuitBreaker] Tool "${toolName}" tripped after ${count} consecutive failures`);
     }
   }
 
   recordSuccess(toolName: string): void {
     this.failures.set(toolName, 0);
+    if (this.halfOpen.has(toolName)) {
+      this.halfOpen.delete(toolName);
+      this.tripped.delete(toolName);
+      console.log(`[CircuitBreaker] Tool "${toolName}" recovered from half-open state`);
+    }
   }
 
   isTripped(toolName: string): boolean {
-    return this.tripped.has(toolName);
+    if (!this.tripped.has(toolName)) return false;
+
+    const trippedAt = this.lastTrippedAt.get(toolName) || 0;
+    if (Date.now() - trippedAt > this.cooldownMs) {
+      this.halfOpen.add(toolName);
+      console.log(`[CircuitBreaker] Tool "${toolName}" entering half-open state after cooldown`);
+      return false;
+    }
+
+    return true;
   }
 
-  getStatus(): Record<string, { failures: number; tripped: boolean }> {
-    const status: Record<string, { failures: number; tripped: boolean }> = {};
-    for (const [name, count] of this.failures) {
-      status[name] = { failures: count, tripped: this.tripped.has(name) };
-    }
+  reset(toolName: string): void {
+    this.failures.delete(toolName);
+    this.tripped.delete(toolName);
+    this.halfOpen.delete(toolName);
+    this.lastTrippedAt.delete(toolName);
+  }
+
+  getStatus(): Record<string, { failures: number; tripped: boolean; halfOpen: boolean }> {
+    const status: Record<string, { failures: number; tripped: boolean; halfOpen: boolean }> = {};
+    this.failures.forEach((count, name) => {
+      status[name] = {
+        failures: count,
+        tripped: this.tripped.has(name),
+        halfOpen: this.halfOpen.has(name),
+      };
+    });
     return status;
+  }
+}
+
+interface ToolCallRecord {
+  toolName: string;
+  argsHash: string;
+  iteration: number;
+}
+
+class ReflectionEngine {
+  private toolCallHistory: ToolCallRecord[] = [];
+  private reflectionInterval: number;
+  private stuckThreshold: number;
+
+  constructor(reflectionInterval = 5, stuckThreshold = 3) {
+    this.reflectionInterval = reflectionInterval;
+    this.stuckThreshold = stuckThreshold;
+  }
+
+  recordToolCall(toolName: string, args: Record<string, any>, iteration: number): void {
+    const argsHash = this.hashArgs(args);
+    this.toolCallHistory.push({ toolName, argsHash, iteration });
+  }
+
+  private hashArgs(args: Record<string, any>): string {
+    try {
+      return JSON.stringify(args).substring(0, 200);
+    } catch {
+      return "unknown";
+    }
+  }
+
+  shouldReflect(iteration: number): boolean {
+    return iteration > 0 && iteration % this.reflectionInterval === 0;
+  }
+
+  detectStuckLoop(): { stuck: boolean; pattern?: string } {
+    if (this.toolCallHistory.length < this.stuckThreshold) {
+      return { stuck: false };
+    }
+
+    const recent = this.toolCallHistory.slice(-this.stuckThreshold);
+    const firstCall = recent[0];
+    const allSame = recent.every(
+      r => r.toolName === firstCall.toolName && r.argsHash === firstCall.argsHash
+    );
+
+    if (allSame) {
+      return {
+        stuck: true,
+        pattern: `Tool "${firstCall.toolName}" called ${this.stuckThreshold} times with identical arguments`,
+      };
+    }
+
+    const toolCounts: Record<string, number> = {};
+    for (const r of this.toolCallHistory.slice(-6)) {
+      toolCounts[r.toolName] = (toolCounts[r.toolName] || 0) + 1;
+    }
+    for (const tool of Object.keys(toolCounts)) {
+      if (toolCounts[tool] >= 4) {
+        return {
+          stuck: true,
+          pattern: `Tool "${tool}" called ${toolCounts[tool]} times in last 6 iterations`,
+        };
+      }
+    }
+
+    return { stuck: false };
+  }
+
+  buildReflectionPrompt(iteration: number, totalIterations: number): string {
+    const recentTools = this.toolCallHistory.slice(-5).map(r => r.toolName).join(", ");
+    const stuckCheck = this.detectStuckLoop();
+
+    let prompt = `[REFLECTION - Iteration ${iteration}/${totalIterations}]
+Review your progress so far. Tools used recently: ${recentTools || "none"}.`;
+
+    if (stuckCheck.stuck) {
+      prompt += `
+WARNING: Stuck loop detected - ${stuckCheck.pattern}.
+You MUST try a different approach or tool. If the current strategy is not working, consider:
+1. Using a different tool entirely
+2. Modifying the arguments significantly
+3. Breaking the problem into smaller steps
+4. Providing a partial answer with what you have so far`;
+    }
+
+    prompt += `
+Assess: Are you making progress toward the user's goal? What should you do next?`;
+
+    return prompt;
+  }
+
+  getStats(): { totalCalls: number; uniqueTools: number; stuckDetected: boolean } {
+    const uniqueTools = new Set(this.toolCallHistory.map(r => r.toolName)).size;
+    return {
+      totalCalls: this.toolCallHistory.length,
+      uniqueTools,
+      stuckDetected: this.detectStuckLoop().stuck,
+    };
   }
 }
 
@@ -846,10 +980,28 @@ export async function executeAgentLoop(
   let iteration = 0;
   let conversationHistory = [...messages];
   let fullResponse = "";
-  const circuitBreaker = new CircuitBreaker(3);
+  const circuitBreaker = new CircuitBreaker(3, 30000);
   const toolHealth = new ToolHealthTracker();
+  const reflectionEngine = new ReflectionEngine(5, 3);
   let totalTokensUsed = 0;
   let consecutiveLoopErrors = 0;
+  let inferenceProgressInterval: ReturnType<typeof setInterval> | null = null;
+
+  try {
+    const existingSession = await sessionPersistence.loadSession(runId);
+    if (existingSession && (existingSession.status === "paused" || existingSession.status === "running") && existingSession.conversationHistory.length > 0 && existingSession.currentIteration > 0) {
+      console.log(`[AgentExecutor] Resuming session ${runId} from iteration ${existingSession.currentIteration} (was ${existingSession.status})`);
+      conversationHistory = existingSession.conversationHistory as typeof conversationHistory;
+      iteration = existingSession.currentIteration;
+      totalTokensUsed = existingSession.totalTokensUsed || 0;
+      if (existingSession.artifacts?.length) {
+        artifacts.push(...existingSession.artifacts);
+      }
+      await sessionPersistence.saveSession({ ...existingSession, status: "running", lastActiveAt: Date.now() });
+    }
+  } catch (resumeErr: any) {
+    console.warn(`[AgentExecutor] Session restore failed (non-fatal):`, resumeErr?.message);
+  }
 
   const defaultModel = process.env.AGENT_MODEL || "google/gemini-2.5-flash";
   const budgetMgr = new BudgetManager(runId, defaultModel, { maxIterations: maxIterations });
@@ -1198,6 +1350,31 @@ MANDATORY RULES:
       timestamp: Date.now(),
     });
 
+    if (iteration > 1 && iteration % 2 === 0) {
+      try {
+        const currentSession = await sessionPersistence.loadSession(runId);
+        if (currentSession && currentSession.status === "paused") {
+          console.log(`[AgentExecutor] Pause detected for session ${runId} at iteration ${iteration}, saving state and stopping...`);
+          await sessionPersistence.saveSession({
+            ...currentSession,
+            currentIteration: iteration,
+            conversationHistory: conversationHistory.map(m => {
+              const msg: any = { role: (m as any).role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || "") };
+              if ((m as any).tool_call_id) msg.tool_call_id = (m as any).tool_call_id;
+              if ((m as any).tool_calls) msg.tool_calls = (m as any).tool_calls;
+              return msg;
+            }),
+            conversationSummary: fullResponse.substring(0, 2000),
+            artifacts: artifacts.map(a => ({ type: a.type, url: a.url || "", name: a.name || "" })),
+            totalTokensUsed,
+            lastActiveAt: Date.now(),
+          });
+          sse.write("paused", { runId, iteration, message: "Session paused by user request" });
+          break;
+        }
+      } catch {}
+    }
+
     await emitTraceEvent(runId, "thinking", {
       content: `Iteration ${iteration}: Analyzing and planning next action...`,
       phase: "executing"
@@ -1234,6 +1411,103 @@ MANDATORY RULES:
           conversationHistory = pruneResult.pruned as typeof conversationHistory;
           console.log(`[AgentExecutor] Context pruned: ${pruneResult.removed} messages trimmed to fit context window`);
         }
+      }
+
+      if (iteration > 3) {
+        try {
+          const compactionMessages = conversationHistory.map(m => ({
+            role: (m as any).role as "system" | "user" | "assistant" | "tool",
+            content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || ""),
+          }));
+          const guard = guardContextWindow(compactionMessages);
+          if (!guard.safe) {
+            console.log(`[AgentExecutor] Context overflow detected (${guard.tokenCount}/${guard.limit} tokens), running compaction...`);
+            sse.write("thinking", {
+              runId,
+              step: "compaction",
+              message: `Compacting conversation context (${guard.overflowTokens} tokens over limit)...`,
+              timestamp: Date.now(),
+            });
+
+            const recentProtocolCount = 8;
+            const protocolTail = conversationHistory.slice(-recentProtocolCount);
+            const compactablePart = conversationHistory.slice(0, -recentProtocolCount);
+
+            const compactableSimple = compactablePart
+              .filter(m => (m as any).role !== "tool" && !(m as any).tool_calls)
+              .map(m => ({
+                role: (m as any).role as "system" | "user" | "assistant" | "tool",
+                content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || ""),
+              }));
+
+            const maxToolOutputChars = 500;
+            const truncatedToolMsgs = compactablePart
+              .filter(m => (m as any).role === "tool" || (m as any).tool_calls)
+              .map(m => {
+                const msg = { ...m } as any;
+                if (msg.role === "tool" && typeof msg.content === "string" && msg.content.length > maxToolOutputChars) {
+                  msg.content = msg.content.slice(0, maxToolOutputChars) + `\n...[truncated from ${msg.content.length} chars]`;
+                }
+                if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+                  msg.tool_calls = msg.tool_calls.map((tc: any) => {
+                    if (tc.function?.arguments && typeof tc.function.arguments === "string" && tc.function.arguments.length > maxToolOutputChars) {
+                      return { ...tc, function: { ...tc.function, arguments: tc.function.arguments.slice(0, maxToolOutputChars) } };
+                    }
+                    return tc;
+                  });
+                }
+                return msg;
+              });
+
+            if (compactableSimple.length > 4) {
+              const compactionResult = await compactConversation(compactableSimple);
+              if (compactionResult.chunksCompacted > 0) {
+                conversationHistory = [
+                  ...compactionResult.messages.map(m => ({ role: m.role, content: m.content }) as typeof conversationHistory[0]),
+                  ...truncatedToolMsgs,
+                  ...protocolTail,
+                ];
+
+                const postCheck = guardContextWindow(conversationHistory.map(m => ({
+                  role: (m as any).role as "system" | "user" | "assistant" | "tool",
+                  content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || ""),
+                })));
+                if (!postCheck.safe && truncatedToolMsgs.length > 4) {
+                  const keepRecentToolMsgs = Math.max(2, Math.floor(truncatedToolMsgs.length / 3));
+                  const prunedToolMsgs = truncatedToolMsgs.slice(-keepRecentToolMsgs);
+                  conversationHistory = [
+                    ...compactionResult.messages.map(m => ({ role: m.role, content: m.content }) as typeof conversationHistory[0]),
+                    ...prunedToolMsgs,
+                    ...protocolTail,
+                  ];
+                  console.log(`[AgentExecutor] Post-compaction pruning: dropped ${truncatedToolMsgs.length - keepRecentToolMsgs} old tool msgs, kept ${keepRecentToolMsgs}`);
+                }
+
+                console.log(`[AgentExecutor] Compaction complete: ${compactionResult.originalTokenCount} -> ${compactionResult.compactedTokenCount} tokens (ratio: ${compactionResult.compressionRatio.toFixed(2)}) in ${compactionResult.durationMs}ms, preserved ${truncatedToolMsgs.length} tool protocol msgs + ${protocolTail.length} recent msgs`);
+              }
+            }
+          }
+        } catch (compactionErr: any) {
+          console.warn(`[AgentExecutor] Compaction failed (non-fatal):`, compactionErr?.message);
+        }
+      }
+
+      if (reflectionEngine.shouldReflect(iteration)) {
+        const stuckCheck = reflectionEngine.detectStuckLoop();
+        if (stuckCheck.stuck) {
+          console.warn(`[AgentExecutor] Stuck loop detected: ${stuckCheck.pattern}`);
+          sse.write("thinking", {
+            runId,
+            step: "reflection",
+            message: `Reflecting on progress (stuck pattern detected)...`,
+            timestamp: Date.now(),
+          });
+        }
+        const reflectionPrompt = reflectionEngine.buildReflectionPrompt(iteration, maxIterations);
+        conversationHistory.push({
+          role: "system",
+          content: reflectionPrompt,
+        });
       }
 
       const openaiClient = new OpenAI({
@@ -1316,7 +1590,7 @@ MANDATORY RULES:
         "Preparando ejecución...",
       ];
       let inferenceProgressIdx = 0;
-      let inferenceProgressInterval: ReturnType<typeof setInterval> | null = setInterval(() => {
+      inferenceProgressInterval = setInterval(() => {
         if (inferenceProgressIdx < inferenceProgressMessages.length) {
           sse.write("thinking", {
             runId,
@@ -1498,7 +1772,38 @@ MANDATORY RULES:
           "web_fetch": (a) => ({ url: a.url, extract_mode: a.extract_mode || a.extractMode || (a.extractText === false ? "html" : "text") }),
         };
 
-        const normalizedArgs = PARAM_NORMALIZERS[name]?.(args) || args;
+        let normalizedArgs = PARAM_NORMALIZERS[name]?.(args) || args;
+
+        try {
+          const preHookResult = await toolHookPipeline.runPreHooks({
+            toolName: name,
+            args: normalizedArgs,
+            userId,
+            runId,
+            chatId,
+            iteration,
+          });
+
+          if (preHookResult.action === "block") {
+            console.warn(`[AgentExecutor] Tool "${name}" blocked by pre-hook: ${preHookResult.reason}`);
+            return {
+              tc,
+              name,
+              args: normalizedArgs,
+              result: { error: `Blocked by security hook: ${preHookResult.reason}` },
+              artifact: undefined as { type: string; url: string; name: string } | undefined,
+              skipped: true,
+            };
+          }
+
+          if (preHookResult.modifiedArgs) {
+            normalizedArgs = preHookResult.modifiedArgs;
+          }
+        } catch (hookErr: any) {
+          console.warn(`[AgentExecutor] Pre-hook error (non-fatal):`, hookErr?.message);
+        }
+
+        reflectionEngine.recordToolCall(name, normalizedArgs, iteration);
 
         if (circuitBreaker.isTripped(name)) {
           console.warn(`[AgentExecutor] Skipping tripped tool: ${name}`);
@@ -1589,6 +1894,26 @@ MANDATORY RULES:
         }
 
         const toolDurationMs = Date.now() - toolStartTime;
+
+        try {
+          const hasError = result && typeof result === "object" && "error" in result;
+          const postHookResult = await toolHookPipeline.runPostHooks({
+            toolName: name,
+            args: normalizedArgs,
+            result,
+            durationMs: toolDurationMs,
+            success: !hasError,
+            userId,
+            runId,
+            chatId,
+            iteration,
+          });
+          if (postHookResult !== undefined) {
+            result = postHookResult;
+          }
+        } catch (hookErr: any) {
+          console.warn(`[AgentExecutor] Post-hook error (non-fatal):`, hookErr?.message);
+        }
 
         if (artifact) {
           artifacts.push(artifact);
@@ -1857,8 +2182,66 @@ Please rewrite your response addressing these issues.`
         }
       });
 
+      if (iteration % 3 === 0) {
+        try {
+          await sessionPersistence.saveSession({
+            runId, chatId, userId,
+            status: "running",
+            currentIteration: iteration,
+            maxIterations,
+            plan: {
+              intent: requestSpec?.intent || "chat",
+              steps: planSteps.map((label, i) => ({
+                id: `step_${i}`, label,
+                status: i <= Math.min(iteration - 1, planSteps.length - 1) ? "done" : "pending",
+              })),
+              currentStepIndex: Math.min(iteration - 1, planSteps.length - 1),
+            },
+            toolProgress: [],
+            conversationSummary: fullResponse.substring(0, 2000),
+            conversationHistory: conversationHistory.map(m => {
+              const msg: any = { role: (m as any).role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || "") };
+              if ((m as any).tool_call_id) msg.tool_call_id = (m as any).tool_call_id;
+              if ((m as any).tool_calls) msg.tool_calls = (m as any).tool_calls;
+              return msg;
+            }),
+            artifacts: artifacts.map(a => ({ type: a.type, url: a.url || "", name: a.name || "" })),
+            totalTokensUsed,
+            lastActiveAt: Date.now(),
+          });
+        } catch {}
+      }
+
     } catch (error: any) {
-      if (inferenceProgressInterval) { clearInterval(inferenceProgressInterval); inferenceProgressInterval = null; }
+      if (inferenceProgressInterval) {
+        clearInterval(inferenceProgressInterval);
+        inferenceProgressInterval = null;
+      }
+      try {
+        await sessionPersistence.saveSession({
+          runId, chatId, userId,
+          status: "failed",
+          currentIteration: iteration,
+          maxIterations,
+          plan: {
+            intent: requestSpec?.intent || "chat",
+            steps: planSteps.map((label, i) => ({ id: `step_${i}`, label, status: "pending" })),
+            currentStepIndex: 0,
+          },
+          toolProgress: [],
+          conversationSummary: `Failed at iteration ${iteration}: ${error?.message || "Unknown error"}`,
+          conversationHistory: conversationHistory.map(m => {
+            const msg: any = { role: (m as any).role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || "") };
+            if ((m as any).tool_call_id) msg.tool_call_id = (m as any).tool_call_id;
+            if ((m as any).tool_calls) msg.tool_calls = (m as any).tool_calls;
+            return msg;
+          }),
+          artifacts: artifacts.map(a => ({ type: a.type, url: a.url || "", name: a.name || "" })),
+          totalTokensUsed,
+          lastActiveAt: Date.now(),
+        });
+      } catch {}
+
       console.error(`[AgentExecutor] Error in iteration ${iteration}:`, error?.message || error);
       consecutiveLoopErrors++;
 
@@ -1971,6 +2354,41 @@ Please rewrite your response addressing these issues.`
 
   budgetMgr.emitBudgetUpdate(sse.write);
 
+  try {
+    await sessionPersistence.saveSession({
+      runId,
+      chatId,
+      userId,
+      status: "completed",
+      currentIteration: iteration,
+      maxIterations,
+      plan: {
+        intent: requestSpec?.intent || "chat",
+        steps: planSteps.map((label, i) => ({
+          id: `step_${i}`,
+          label,
+          status: i <= Math.min(iteration - 1, planSteps.length - 1) ? "done" : "pending",
+        })),
+        currentStepIndex: Math.min(iteration - 1, planSteps.length - 1),
+      },
+      toolProgress: reflectionEngine.getStats().totalCalls > 0
+        ? [{ toolName: "summary", iteration, success: true, durationMs: 0, timestamp: Date.now() }]
+        : [],
+      conversationSummary: fullResponse.substring(0, 2000),
+      conversationHistory: conversationHistory.map(m => {
+        const msg: any = { role: (m as any).role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || "") };
+        if ((m as any).tool_call_id) msg.tool_call_id = (m as any).tool_call_id;
+        if ((m as any).tool_calls) msg.tool_calls = (m as any).tool_calls;
+        return msg;
+      }),
+      artifacts: artifacts.map(a => ({ type: a.type, url: a.url || "", name: a.name || "" })),
+      totalTokensUsed,
+      lastActiveAt: Date.now(),
+    });
+  } catch (persistErr: any) {
+    console.warn(`[AgentExecutor] Session persistence save failed (non-fatal):`, persistErr?.message);
+  }
+
   await emitTraceEvent(runId, "agent_completed", {
     agent: {
       name: requestSpec.primaryAgent,
@@ -1982,6 +2400,8 @@ Please rewrite your response addressing these issues.`
     totalTokensUsed,
     circuitBreakerStatus: circuitBreaker.getStatus(),
     toolHealthSummary: toolHealth.getSummary(),
+    reflectionStats: reflectionEngine.getStats(),
+    hookStats: toolHookPipeline.getStats(),
     modelRouting: {
       costSummary: modelRouter.getCostSummary(),
       healthStatus: modelRouter.getHealthStatus(),

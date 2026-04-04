@@ -1,144 +1,247 @@
-import { randomUUID } from 'crypto';
-import { promisify } from 'util';
-import * as zlib from 'zlib';
-
-const brotliCompress = promisify(zlib.brotliCompress);
-const brotliDecompress = promisify(zlib.brotliDecompress);
-
-// Wire actual DB and Schema
 import { db } from '../db';
-import { agentCheckpoints } from '../../shared/schema/agent';
-import { eq } from 'drizzle-orm';
+import { agentSessionState } from '@shared/schema';
+import { eq, and } from 'drizzle-orm';
 
-export interface AgentState {
-    id: string; // The primary Agent ID UUID
-    beliefs: any;
-    memory: { serialize: () => string };
-    planTree: { serialize: () => string };
-    actionHistory: any[];
-    visionState: any;
+export interface AgentSessionSnapshot {
+  runId: string;
+  chatId: string;
+  userId: string;
+  status: "running" | "paused" | "completed" | "failed";
+  currentIteration: number;
+  maxIterations: number;
+  plan: {
+    intent: string;
+    steps: Array<{ id: string; label: string; status: string }>;
+    currentStepIndex: number;
+  };
+  toolProgress: Array<{
+    toolName: string;
+    iteration: number;
+    success: boolean;
+    durationMs: number;
+    timestamp: number;
+  }>;
+  conversationSummary: string;
+  conversationHistory: Array<{ role: string; content: string; tool_call_id?: string; tool_calls?: any[] }>;
+  artifacts: Array<{ type: string; url: string; name: string }>;
+  totalTokensUsed: number;
+  lastActiveAt: number;
 }
 
-export class SessionPersistence {
-    private checkpointInterval = 2 * 60 * 1000; // 2 min Auto-Save
-    private compressionEnabled = true; // Use Brotli 
+async function upsertSessionKey(sessionId: string, key: string, value: any): Promise<void> {
+  const existing = await db.select()
+    .from(agentSessionState)
+    .where(and(
+      eq(agentSessionState.sessionId, sessionId),
+      eq(agentSessionState.key, key)
+    ))
+    .limit(1);
 
-    // In-memory track of active agents for the timer loop
-    private activeAgents: Map<string, AgentState> = new Map();
-    private loopTimer: NodeJS.Timeout | null = null;
-
-    constructor() {
-        this.startAutoSaveLoop();
-    }
-
-    public registerAgentForAutoSave(state: AgentState) {
-        this.activeAgents.set(state.id, state);
-    }
-
-    public unregisterAgent(agentId: string) {
-        this.activeAgents.delete(agentId);
-    }
-
-    private startAutoSaveLoop() {
-        if (this.loopTimer) clearInterval(this.loopTimer);
-        this.loopTimer = setInterval(async () => {
-            for (const [agentId, state] of this.activeAgents.entries()) {
-                try {
-                    await this.saveCheckpoint(state);
-                } catch (e) {
-                    console.error(`[SessionPersistence] AutoSave failed for agent ${agentId}:`, e);
-                }
-            }
-        }, this.checkpointInterval);
-    }
-
-    /**
-     * Captures the full state of the autonomous brain for pause/resume capabilities
-     * across long-running tasks.
-     */
-    async saveCheckpoint(state: AgentState): Promise<string> {
-        const checkpoint = {
-            id: randomUUID(),
-            timestamp: Date.now(),
-            beliefState: state.beliefs,
-            memory: state.memory ? state.memory.serialize() : null,
-            planTree: state.planTree ? state.planTree.serialize() : null,
-            actionHistory: state.actionHistory ? state.actionHistory.slice(-1000) : [], // Keep last 1000
-            visionState: state.visionState,
-        };
-
-        let payload: string;
-        try {
-            if (this.compressionEnabled) {
-                const compressed = await brotliCompress(Buffer.from(rawData, 'utf-8'));
-                payload = compressed.toString('base64');
-                console.log(`[SessionPersistence] Saved Checkpoint ${checkpoint.id} (compressed: ${(payload.length / 1024).toFixed(2)} KB)`);
-            } else {
-                payload = rawData;
-                console.log(`[SessionPersistence] Saved Checkpoint ${checkpoint.id} (raw: ${(payload.length / 1024).toFixed(2)} KB)`);
-            }
-        } catch (compressErr) {
-            console.error("[SessionPersistence] Compression failed, saving raw:", compressErr);
-            payload = rawData;
-        }
-
-        try {
-            await db.insert(agentCheckpoints).values({
-                id: checkpoint.id,
-                timestamp: new Date(checkpoint.timestamp),
-                data: payload,
-            });
-        } catch (dbErr) {
-            console.error("[SessionPersistence] Checkpoint Failed to save in DB:", dbErr);
-        }
-
-        return checkpoint.id;
-    }
-
-    /**
-     * Resurrects an agent into its exact contextual working state.
-     */
-    async resume(checkpointId: string): Promise<AgentState | null> {
-        console.log(`[SessionPersistence] Resuming from Checkpoint ${checkpointId}`);
-
-        try {
-            const checkpointRow = await db.query.agentCheckpoints.findFirst({
-                where: eq(agentCheckpoints.id, checkpointId),
-            });
-            if (!checkpointRow) return null;
-
-            let decompressedData: string = checkpointRow.data;
-
-            if (this.compressionEnabled && !checkpointRow.data.startsWith('{')) {
-                try {
-                    // Try to decompress base64 brotli payload
-                    const buffer = Buffer.from(checkpointRow.data, 'base64');
-                    const unzipped = await brotliDecompress(buffer);
-                    decompressedData = unzipped.toString('utf-8');
-                } catch (e) {
-                    // Fallback to raw if decompression fails and isn't a strict JSON signature
-                    console.warn("[SessionPersistence] Decompression failed, attempting raw parse");
-                }
-            }
-
-            return this.deserialize(checkpointRow.id, decompressedData);
-        } catch (dbErr) {
-            console.error("[SessionPersistence] Error fetching checkpoint:", dbErr);
-            return null;
-        }
-    }
-
-    private deserialize(agentId: string, data: string): AgentState {
-        const parsed = JSON.parse(data);
-        return {
-            id: agentId,
-            beliefs: parsed.beliefState,
-            memory: { serialize: () => parsed.memory },
-            planTree: { serialize: () => parsed.planTree },
-            actionHistory: parsed.actionHistory,
-            visionState: parsed.visionState
-        };
-    }
+  if (existing.length > 0) {
+    await db.update(agentSessionState)
+      .set({ value, updatedAt: new Date() })
+      .where(and(
+        eq(agentSessionState.sessionId, sessionId),
+        eq(agentSessionState.key, key)
+      ));
+  } else {
+    await db.insert(agentSessionState).values({ sessionId, key, value });
+  }
 }
 
-export const globalSessionPersistence = new SessionPersistence();
+export class SessionPersistenceManager {
+  async saveSession(snapshot: AgentSessionSnapshot): Promise<void> {
+    const sessionId = snapshot.runId;
+    const entries: Array<{ key: string; value: any }> = [
+      { key: "status", value: snapshot.status },
+      { key: "currentIteration", value: snapshot.currentIteration },
+      { key: "maxIterations", value: snapshot.maxIterations },
+      { key: "plan", value: snapshot.plan },
+      { key: "toolProgress", value: snapshot.toolProgress },
+      { key: "conversationSummary", value: snapshot.conversationSummary },
+      { key: "conversationHistory", value: snapshot.conversationHistory },
+      { key: "artifacts", value: snapshot.artifacts },
+      { key: "totalTokensUsed", value: snapshot.totalTokensUsed },
+      { key: "lastActiveAt", value: snapshot.lastActiveAt },
+      { key: "chatId", value: snapshot.chatId },
+      { key: "userId", value: snapshot.userId },
+    ];
+
+    try {
+      await db.transaction(async (tx) => {
+        for (const entry of entries) {
+          const existing = await tx.select()
+            .from(agentSessionState)
+            .where(and(
+              eq(agentSessionState.sessionId, sessionId),
+              eq(agentSessionState.key, entry.key)
+            ))
+            .limit(1);
+
+          if (existing.length > 0) {
+            await tx.update(agentSessionState)
+              .set({ value: entry.value, updatedAt: new Date() })
+              .where(and(
+                eq(agentSessionState.sessionId, sessionId),
+                eq(agentSessionState.key, entry.key)
+              ));
+          } else {
+            await tx.insert(agentSessionState).values({ sessionId, key: entry.key, value: entry.value });
+          }
+        }
+      });
+    } catch (txErr: any) {
+      console.warn(`[SessionPersistence] Transaction failed, falling back to individual writes:`, txErr.message);
+      for (const entry of entries) {
+        try {
+          await upsertSessionKey(sessionId, entry.key, entry.value);
+        } catch (err: any) {
+          console.error(`[SessionPersistence] Failed to save key "${entry.key}":`, err.message);
+        }
+      }
+    }
+    console.log(`[SessionPersistence] Saved session ${sessionId} (status: ${snapshot.status})`);
+  }
+
+  async loadSession(runId: string): Promise<AgentSessionSnapshot | null> {
+    try {
+      const rows = await db.select()
+        .from(agentSessionState)
+        .where(eq(agentSessionState.sessionId, runId));
+
+      if (rows.length === 0) return null;
+
+      const data: Record<string, any> = {};
+      for (const row of rows) {
+        data[row.key] = row.value;
+      }
+
+      return {
+        runId,
+        chatId: data.chatId || "",
+        userId: data.userId || "",
+        status: data.status || "paused",
+        currentIteration: data.currentIteration || 0,
+        maxIterations: data.maxIterations || 25,
+        plan: data.plan || { intent: "unknown", steps: [], currentStepIndex: 0 },
+        toolProgress: data.toolProgress || [],
+        conversationSummary: data.conversationSummary || "",
+        conversationHistory: data.conversationHistory || [],
+        artifacts: data.artifacts || [],
+        totalTokensUsed: data.totalTokensUsed || 0,
+        lastActiveAt: data.lastActiveAt || Date.now(),
+      };
+    } catch (err: any) {
+      console.error(`[SessionPersistence] Failed to load session ${runId}:`, err.message);
+      return null;
+    }
+  }
+
+  async pauseSession(runId: string, snapshot: Partial<AgentSessionSnapshot>): Promise<boolean> {
+    try {
+      const current = await this.loadSession(runId);
+      if (!current) return false;
+
+      const updated: AgentSessionSnapshot = {
+        ...current,
+        ...snapshot,
+        status: "paused",
+        lastActiveAt: Date.now(),
+      };
+
+      await this.saveSession(updated);
+      console.log(`[SessionPersistence] Paused session ${runId}`);
+      return true;
+    } catch (err: any) {
+      console.error(`[SessionPersistence] Failed to pause session ${runId}:`, err.message);
+      return false;
+    }
+  }
+
+  async resumeSession(runId: string): Promise<AgentSessionSnapshot | null> {
+    try {
+      const session = await this.loadSession(runId);
+      if (!session) return null;
+      if (session.status !== "paused") {
+        console.warn(`[SessionPersistence] Session ${runId} is not paused (status: ${session.status})`);
+        return null;
+      }
+
+      session.status = "running";
+      session.lastActiveAt = Date.now();
+      await this.saveSession(session);
+      console.log(`[SessionPersistence] Resumed session ${runId}`);
+      return session;
+    } catch (err: any) {
+      console.error(`[SessionPersistence] Failed to resume session ${runId}:`, err.message);
+      return null;
+    }
+  }
+
+  async markCompleted(runId: string): Promise<void> {
+    try {
+      await upsertSessionKey(runId, "status", "completed");
+    } catch (err: any) {
+      console.error(`[SessionPersistence] Failed to mark completed ${runId}:`, err.message);
+    }
+  }
+
+  async listPausedSessions(userId: string): Promise<Array<{ runId: string; lastActiveAt: number; plan: any }>> {
+    try {
+      const statusRows = await db.select()
+        .from(agentSessionState)
+        .where(eq(agentSessionState.key, "status"));
+
+      const pausedIds = statusRows
+        .filter(r => r.value === "paused")
+        .map(r => r.sessionId);
+
+      if (pausedIds.length === 0) return [];
+
+      const results: Array<{ runId: string; lastActiveAt: number; plan: any }> = [];
+      for (const sessionId of pausedIds) {
+        const session = await this.loadSession(sessionId);
+        if (session && session.userId === userId) {
+          results.push({
+            runId: session.runId,
+            lastActiveAt: session.lastActiveAt,
+            plan: session.plan,
+          });
+        }
+      }
+      return results.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+    } catch (err: any) {
+      console.error(`[SessionPersistence] Failed to list paused sessions:`, err.message);
+      return [];
+    }
+  }
+
+  async cleanExpiredSessions(maxAgeMs: number = 24 * 60 * 60 * 1000): Promise<number> {
+    try {
+      const cutoff = Date.now() - maxAgeMs;
+      const lastActiveRows = await db.select()
+        .from(agentSessionState)
+        .where(eq(agentSessionState.key, "lastActiveAt"));
+
+      let cleaned = 0;
+      for (const row of lastActiveRows) {
+        const lastActive = typeof row.value === "number" ? row.value : 0;
+        if (lastActive < cutoff) {
+          await db.delete(agentSessionState)
+            .where(eq(agentSessionState.sessionId, row.sessionId));
+          cleaned++;
+        }
+      }
+
+      if (cleaned > 0) {
+        console.log(`[SessionPersistence] Cleaned ${cleaned} expired sessions`);
+      }
+      return cleaned;
+    } catch (err: any) {
+      console.error(`[SessionPersistence] Failed to clean expired sessions:`, err.message);
+      return 0;
+    }
+  }
+}
+
+export const sessionPersistence = new SessionPersistenceManager();

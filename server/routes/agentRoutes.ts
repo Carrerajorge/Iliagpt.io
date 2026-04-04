@@ -10,6 +10,7 @@ import { Router, Request, Response, NextFunction } from "express"; import { Auth
 } from "../agent/contracts"; import { validateOrThrow, ValidationError } from "../agent/validation"; import { checkIdempotency } from
   "../agent/idempotency"; import { updateRunWithLock } from "../agent/dbTransactions"; import { toolRegistry, TOOL_CATEGORIES } from "../agent/registry/toolRegistry"; import { ToolArtifact } from
   "../agent/toolRegistry"; import { agentRegistry } from "../agent/registry/agentRegistry";
+import { sessionPersistence } from "../agent/sessionPersistence";
 
 
 
@@ -1481,6 +1482,107 @@ export function createAgentModeRouter() {
   });
 
 
+
+  function getSessionUserId(req: Request): string {
+    const user = (req as AuthenticatedRequest).user;
+    return user?.claims?.sub || user?.id || "";
+  }
+
+  router.post("/sessions/:runId/pause", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const { runId } = req.params;
+      const userId = getSessionUserId(req);
+      const session = await sessionPersistence.loadSession(runId);
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+      if (session.userId !== userId) {
+        return res.status(403).json({ error: "Not authorized to pause this session" });
+      }
+      const success = await sessionPersistence.pauseSession(runId, {});
+      if (success) {
+        res.json({ success: true, message: "Session paused" });
+      } else {
+        res.status(400).json({ error: "Failed to pause session" });
+      }
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to pause session" });
+    }
+  });
+
+  router.post("/sessions/:runId/resume", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const { runId } = req.params;
+      const userId = getSessionUserId(req);
+      const session = await sessionPersistence.loadSession(runId);
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+      if (session.userId !== userId) {
+        return res.status(403).json({ error: "Not authorized to resume this session" });
+      }
+      const resumed = await sessionPersistence.resumeSession(runId);
+      if (resumed) {
+        res.json({ success: true, session: { runId: resumed.runId, currentIteration: resumed.currentIteration, plan: resumed.plan } });
+      } else {
+        res.status(400).json({ error: "Session is not in paused state" });
+      }
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to resume session" });
+    }
+  });
+
+  router.get("/sessions/paused", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = getSessionUserId(req);
+      const sessions = await sessionPersistence.listPausedSessions(userId);
+      res.json({ sessions });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to list paused sessions" });
+    }
+  });
+
+  router.get("/sessions/:runId", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const { runId } = req.params;
+      const userId = getSessionUserId(req);
+      const session = await sessionPersistence.loadSession(runId);
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+      if (session.userId !== userId) {
+        return res.status(403).json({ error: "Not authorized to view this session" });
+      }
+      res.json({
+        runId: session.runId,
+        status: session.status,
+        currentIteration: session.currentIteration,
+        maxIterations: session.maxIterations,
+        plan: session.plan,
+        conversationSummary: session.conversationSummary,
+        artifacts: session.artifacts,
+        totalTokensUsed: session.totalTokensUsed,
+        lastActiveAt: session.lastActiveAt,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to get session" });
+    }
+  });
+
+  router.delete("/sessions/expired", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+      const isAdmin = user?.role === "admin" || user?.claims?.role === "admin";
+      if (!isAdmin) {
+        return res.status(403).json({ error: "Admin access required for session cleanup" });
+      }
+      const maxAgeMs = parseInt(req.query.maxAgeMs as string) || 24 * 60 * 60 * 1000;
+      const cleaned = await sessionPersistence.cleanExpiredSessions(maxAgeMs);
+      res.json({ cleaned });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to clean sessions" });
+    }
+  });
 
   return router;
 }
