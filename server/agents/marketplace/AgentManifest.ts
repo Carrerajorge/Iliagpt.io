@@ -1,266 +1,366 @@
-import { z } from 'zod';
+import { z } from "zod";
+import pino from "pino";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+const logger = pino({ name: "AgentManifest" });
 
-export const CURRENT_SDK_VERSION = '1.0.0';
-export const MAX_TOOLS_PER_AGENT = 50;
-
-// ─── Enums / Literals ─────────────────────────────────────────────────────────
-
-export const AgentCapabilityEnum = z.enum([
-  'web_search',
-  'code_execution',
-  'file_system',
-  'database',
-  'email',
-  'calendar',
-  'browser',
-  'image_generation',
-  'data_analysis',
-  'communication',
-]);
-
-export type AgentCapability = z.infer<typeof AgentCapabilityEnum>;
-
-export const PermissionResourceEnum = z.enum([
-  'filesystem',
-  'network',
-  'process',
-  'clipboard',
-  'screen',
-  'microphone',
-  'camera',
-  'database',
-]);
-
-export const PermissionAccessEnum = z.enum(['read', 'write', 'execute']);
-
-export const PricingTypeEnum = z.enum(['free', 'paid', 'freemium']);
-
-// ─── Semver Validation ────────────────────────────────────────────────────────
-
+// ─── Semver regex ────────────────────────────────────────────────────────────
 const SEMVER_RE =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([\w.-]+))?(?:\+([\w.-]+))?$/;
+const SEMVER_RANGE_RE = /^[\^~>=<]?[\d.*]+(?:\s*-\s*[\d.*]+)?$/;
 
-const semverString = z.string().refine((v) => SEMVER_RE.test(v), {
-  message: 'Must be a valid semver string (e.g. 1.2.3)',
-});
-
-// ─── Slug Validation ──────────────────────────────────────────────────────────
-
-const slugString = z
+const SemVer = z.string().regex(SEMVER_RE, "Must be valid semver (x.y.z)");
+const SemVerRange = z
   .string()
-  .min(2)
-  .max(64)
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
-    message: 'Must be a valid slug (lowercase alphanumeric with hyphens)',
-  });
+  .regex(SEMVER_RANGE_RE, "Must be valid semver range");
 
-// ─── JSON Schema Support ──────────────────────────────────────────────────────
+// ─── Enums ───────────────────────────────────────────────────────────────────
+export const AgentCategory = z.enum([
+  "productivity",
+  "research",
+  "coding",
+  "data-analysis",
+  "creative",
+  "customer-support",
+  "security",
+  "devops",
+  "finance",
+  "legal",
+  "healthcare",
+  "education",
+  "other",
+]);
+export type AgentCategory = z.infer<typeof AgentCategory>;
 
-const JsonSchemaValueSchema: z.ZodType<JsonSchemaValue> = z.lazy(() =>
-  z.union([
-    z.string(),
-    z.number(),
-    z.boolean(),
-    z.null(),
-    z.array(JsonSchemaValueSchema),
-    z.record(z.string(), JsonSchemaValueSchema),
-  ])
-);
+export const PermissionLevel = z.enum(["minimal", "standard", "trusted", "admin"]);
+export type PermissionLevel = z.infer<typeof PermissionLevel>;
 
-export type JsonSchemaValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonSchemaValue[]
-  | { [key: string]: JsonSchemaValue };
+export const ModelTier = z.enum(["nano", "small", "medium", "large", "frontier"]);
+export type ModelTier = z.infer<typeof ModelTier>;
 
-export const JsonSchemaObjectSchema = z.record(z.string(), JsonSchemaValueSchema);
-export type JsonSchemaObject = z.infer<typeof JsonSchemaObjectSchema>;
-
-// ─── Permission Schema ────────────────────────────────────────────────────────
-
-export const PermissionSchema = z.object({
-  resource: PermissionResourceEnum,
-  access: PermissionAccessEnum,
-  scope: z.string().optional(),
-});
-
-export type Permission = z.infer<typeof PermissionSchema>;
-
-// ─── Tool Declaration Schema ──────────────────────────────────────────────────
-
-export const ToolDeclarationSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .max(64)
-    .regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, {
-      message: 'Tool name must be a valid identifier',
-    }),
-  description: z.string().min(1).max(1024),
-  inputSchema: JsonSchemaObjectSchema,
-  outputSchema: JsonSchemaObjectSchema,
-});
-
-export type ToolDeclaration = z.infer<typeof ToolDeclarationSchema>;
-
-// ─── Author Schema ────────────────────────────────────────────────────────────
-
-export const AuthorSchema = z.object({
+// ─── Sub-schemas ─────────────────────────────────────────────────────────────
+export const AgentCapabilitySchema = z.object({
+  /** Unique identifier for this capability, e.g. "web-search" */
+  id: z.string().min(1).max(64).regex(/^[a-z][a-z0-9-_]*$/),
   name: z.string().min(1).max(128),
-  email: z.string().email(),
-  url: z.string().url().optional(),
+  description: z.string().max(512),
+  /** Semantic version of this capability implementation */
+  version: SemVer,
+  /** Whether this capability is optional for the agent to function */
+  optional: z.boolean().default(false),
+  /** Input/output schema as a JSON Schema object */
+  inputSchema: z.record(z.unknown()).optional(),
+  outputSchema: z.record(z.unknown()).optional(),
 });
+export type AgentCapability = z.infer<typeof AgentCapabilitySchema>;
 
-export type Author = z.infer<typeof AuthorSchema>;
-
-// ─── Models Schema ────────────────────────────────────────────────────────────
-
-export const ModelsSchema = z.object({
-  preferred: z.array(z.string().min(1)).min(1),
-  fallback: z.array(z.string().min(1)).default([]),
+export const RequiredToolSchema = z.object({
+  toolId: z.string().min(1),
+  versionRange: SemVerRange.optional(),
+  /** If false, agent degrades gracefully when tool is unavailable */
+  required: z.boolean().default(true),
+  /** Why this tool is needed */
+  reason: z.string().max(256).optional(),
 });
+export type RequiredTool = z.infer<typeof RequiredToolSchema>;
 
-export type Models = z.infer<typeof ModelsSchema>;
+export const RequiredModelSchema = z.object({
+  /** Model family, e.g. "claude", "gpt", "gemini" */
+  family: z.string().min(1),
+  /** Minimum tier needed */
+  minTier: ModelTier,
+  /** Specific model IDs acceptable, if empty any model in family at minTier works */
+  acceptedModelIds: z.array(z.string()).default([]),
+  /** Context window needed in tokens */
+  minContextWindow: z.number().int().positive().optional(),
+  /** Whether vision capability is needed */
+  requiresVision: z.boolean().default(false),
+  /** Whether function/tool calling is needed */
+  requiresToolUse: z.boolean().default(true),
+});
+export type RequiredModel = z.infer<typeof RequiredModelSchema>;
 
-// ─── Pricing Schema ───────────────────────────────────────────────────────────
+export const AgentPermissionsSchema = z.object({
+  /** Base permission level preset */
+  level: PermissionLevel.default("standard"),
+  /** Explicit filesystem access */
+  filesystem: z.enum(["none", "readonly", "readwrite"]).default("none"),
+  /** Network access whitelist; empty array means no network */
+  networkAllowlist: z.array(z.string().url()).default([]),
+  /** Whether to allow executing shell/terminal commands */
+  shellExecution: z.boolean().default(false),
+  /** Whether to allow browser/DOM access */
+  browserAccess: z.boolean().default(false),
+  /** Max heap memory in MB */
+  maxMemoryMB: z.number().int().positive().default(256),
+  /** Max CPU time per invocation in milliseconds */
+  maxCpuTimeMs: z.number().int().positive().default(30_000),
+  /** Max concurrent executions */
+  maxConcurrency: z.number().int().positive().default(1),
+  /** Whether this agent can spawn sub-agents */
+  canSpawnAgents: z.boolean().default(false),
+  /** Whether this agent can access shared memory across users */
+  crossUserMemoryAccess: z.boolean().default(false),
+  /** Custom permission keys for extension */
+  custom: z.record(z.boolean()).default({}),
+});
+export type AgentPermissions = z.infer<typeof AgentPermissionsSchema>;
 
-export const PricingSchema = z
-  .object({
-    type: PricingTypeEnum,
-    pricePerCall: z.number().positive().optional(),
-    currency: z
-      .string()
-      .length(3)
-      .regex(/^[A-Z]{3}$/, { message: 'Must be a 3-letter ISO 4217 currency code' }),
-  })
-  .refine(
-    (val) => {
-      if (val.type === 'paid' && val.pricePerCall === undefined) {
-        return false;
-      }
-      return true;
-    },
-    { message: 'pricePerCall is required when pricing type is "paid"' }
-  );
-
+export const PricingSchema = z.discriminatedUnion("model", [
+  z.object({
+    model: z.literal("free"),
+  }),
+  z.object({
+    model: z.literal("per-call"),
+    /** Price in USD cents per call */
+    centsPerCall: z.number().positive(),
+    freeTierCalls: z.number().int().nonnegative().default(0),
+  }),
+  z.object({
+    model: z.literal("subscription"),
+    /** Monthly price in USD cents */
+    monthlyCents: z.number().positive(),
+    /** Calls included per month, -1 = unlimited */
+    callsPerMonth: z.number().int().default(-1),
+  }),
+  z.object({
+    model: z.literal("usage-based"),
+    /** Price per 1000 tokens in USD cents */
+    centsPerKToken: z.number().positive(),
+    minimumMonthlyCents: z.number().nonnegative().default(0),
+  }),
+]);
 export type Pricing = z.infer<typeof PricingSchema>;
 
-// ─── Metadata Schema ──────────────────────────────────────────────────────────
-
-export const MetadataSchema = z.object({
-  tags: z.array(z.string().min(1).max(32)).max(20).default([]),
-  category: z.string().min(1).max(64),
-  homepage: z.string().url().optional(),
-  repository: z.string().url().optional(),
-  license: z.string().min(1).max(64),
+export const AgentAuthorSchema = z.object({
+  name: z.string().min(1).max(128),
+  email: z.string().email().optional(),
+  url: z.string().url().optional(),
+  organizationId: z.string().optional(),
 });
+export type AgentAuthor = z.infer<typeof AgentAuthorSchema>;
 
-export type Metadata = z.infer<typeof MetadataSchema>;
-
-// ─── Agent Manifest Schema ────────────────────────────────────────────────────
-
+// ─── Main manifest schema ─────────────────────────────────────────────────────
 export const AgentManifestSchema = z
   .object({
-    name: slugString,
-    version: semverString,
-    displayName: z.string().min(1).max(128),
-    description: z.string().min(10).max(2048),
-    author: AuthorSchema,
-    capabilities: z
-      .array(AgentCapabilityEnum)
-      .min(1)
-      .refine((caps) => new Set(caps).size === caps.length, {
-        message: 'Capabilities must be unique',
-      }),
-    tools: z
-      .array(ToolDeclarationSchema)
-      .max(MAX_TOOLS_PER_AGENT)
-      .refine(
-        (tools) => {
-          const names = tools.map((t) => t.name);
-          return new Set(names).size === names.length;
-        },
-        { message: 'Tool names must be unique within an agent' }
-      ),
-    models: ModelsSchema,
-    permissions: z.array(PermissionSchema).default([]),
-    pricing: PricingSchema,
-    metadata: MetadataSchema,
-    minSdkVersion: semverString,
-    entryPoint: z
+    /** Schema version for forward compatibility */
+    manifestVersion: z.literal("1.0"),
+    /** Unique reverse-domain identifier, e.g. "com.acme.research-agent" */
+    id: z
       .string()
-      .min(1)
-      .max(256)
-      .regex(/\.(js|ts|mjs|cjs)$/, {
-        message: 'Entry point must be a JavaScript or TypeScript file',
-      }),
+      .min(3)
+      .max(128)
+      .regex(
+        /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/,
+        "Must be reverse-domain format (e.g. com.acme.agent-name)"
+      ),
+    name: z.string().min(1).max(128),
+    version: SemVer,
+    description: z.string().min(10).max(1024),
+    /** Short one-liner shown in search results */
+    tagline: z.string().max(160),
+    category: AgentCategory,
+    tags: z.array(z.string().max(32)).max(10).default([]),
+    author: AgentAuthorSchema,
+    /** SPDX license identifier */
+    license: z.string().default("MIT"),
+    homepage: z.string().url().optional(),
+    repository: z.string().url().optional(),
+    icon: z.string().url().optional(),
+    screenshots: z.array(z.string().url()).max(8).default([]),
+
+    /** SemVer range of platform versions this agent supports */
+    platformVersionRange: SemVerRange,
+
+    /** Capabilities this agent exposes */
+    capabilities: z.array(AgentCapabilitySchema).min(1).max(32),
+    /** Tools from the platform's tool registry that this agent requires */
+    requiredTools: z.array(RequiredToolSchema).default([]),
+    /** Model requirements */
+    requiredModels: z.array(RequiredModelSchema).min(1).max(4),
+    /** Permission declarations */
+    permissions: AgentPermissionsSchema.default({}),
+    /** Pricing model */
+    pricing: PricingSchema.default({ model: "free" }),
+
+    /** Entry point relative to the agent package root */
+    main: z.string().default("index.js"),
+    /** Optional secondary entry for types */
+    types: z.string().optional(),
+
+    /** SHA-256 hash of the agent bundle for integrity checks */
+    checksum: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/, "Must be hex-encoded SHA-256")
+      .optional(),
+
+    /** Locale codes supported, e.g. ["en", "es", "zh"] */
+    supportedLocales: z.array(z.string().length(2)).default(["en"]),
+
+    /** Dependencies on other marketplace agents */
+    agentDependencies: z
+      .record(SemVerRange)
+      .default({}),
+
+    /** Changelog for this version */
+    changelog: z.string().max(4096).optional(),
+
+    /** ISO-8601 date of publishing */
+    publishedAt: z.string().datetime().optional(),
+
+    /** Whether this is a beta/preview release */
+    prerelease: z.boolean().default(false),
   })
-  .strict();
+  .superRefine((manifest, ctx) => {
+    // Validate that admin-level permissions are not granted by default for free agents
+    if (
+      manifest.permissions.level === "admin" &&
+      manifest.pricing.model === "free"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["permissions", "level"],
+        message:
+          "Admin-level permissions require a paid pricing model for audit trail",
+      });
+    }
+
+    // Shell execution requires at least trusted permission level
+    if (
+      manifest.permissions.shellExecution &&
+      manifest.permissions.level === "minimal"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["permissions", "shellExecution"],
+        message:
+          "Shell execution requires permission level of 'standard' or higher",
+      });
+    }
+
+    // Cross-user memory access requires admin level
+    if (
+      manifest.permissions.crossUserMemoryAccess &&
+      !["trusted", "admin"].includes(manifest.permissions.level)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["permissions", "crossUserMemoryAccess"],
+        message: "Cross-user memory access requires 'trusted' or 'admin' level",
+      });
+    }
+
+    // Validate capability IDs are unique
+    const capIds = manifest.capabilities.map((c) => c.id);
+    const uniqueIds = new Set(capIds);
+    if (uniqueIds.size !== capIds.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["capabilities"],
+        message: "Capability IDs must be unique within a manifest",
+      });
+    }
+  });
 
 export type AgentManifest = z.infer<typeof AgentManifestSchema>;
 
-// ─── Validation Function ──────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-export function validateManifest(raw: unknown): AgentManifest {
+/**
+ * Parse and validate a raw manifest object.
+ * Returns a typed manifest or throws with detailed validation errors.
+ */
+export function parseManifest(raw: unknown): AgentManifest {
   const result = AgentManifestSchema.safeParse(raw);
-
   if (!result.success) {
-    const issues = result.error.issues
-      .map((issue) => {
-        const path = issue.path.length > 0 ? `[${issue.path.join('.')}]` : '[root]';
-        return `  ${path}: ${issue.message}`;
-      })
-      .join('\n');
-
-    throw new Error(`Agent manifest validation failed:\n${issues}`);
+    const formatted = result.error.errors
+      .map((e) => `  • ${e.path.join(".")} — ${e.message}`)
+      .join("\n");
+    logger.warn({ errors: result.error.errors }, "[AgentManifest] Validation failed");
+    throw new Error(`Invalid agent manifest:\n${formatted}`);
   }
-
+  logger.debug(
+    { agentId: result.data.id, version: result.data.version },
+    "[AgentManifest] Manifest validated"
+  );
   return result.data;
 }
 
-// ─── Semver Utilities ─────────────────────────────────────────────────────────
+/**
+ * Check whether a manifest is compatible with the given platform version.
+ * Uses a simple semver range check.
+ */
+export function isCompatibleWithPlatform(
+  manifest: AgentManifest,
+  platformVersion: string
+): boolean {
+  const range = manifest.platformVersionRange;
+  const [major, minor] = platformVersion.split(".").map(Number);
 
-function parseSemver(version: string): [number, number, number] {
-  const match = SEMVER_RE.exec(version);
-  if (!match) {
-    throw new Error(`Invalid semver string: "${version}"`);
+  // Parse range patterns: ^1.0.0, ~1.2.0, >=1.0.0 <2.0.0, 1.x
+  const exactMatch = range.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (exactMatch) {
+    return platformVersion === range;
   }
-  return [parseInt(match[1], 10), parseInt(match[2], 10), parseInt(match[3], 10)];
-}
 
-export function semverCompare(a: string, b: string): number {
-  const [aMajor, aMinor, aPatch] = parseSemver(a);
-  const [bMajor, bMinor, bPatch] = parseSemver(b);
-
-  if (aMajor !== bMajor) return aMajor > bMajor ? 1 : -1;
-  if (aMinor !== bMinor) return aMinor > bMinor ? 1 : -1;
-  if (aPatch !== bPatch) return aPatch > bPatch ? 1 : -1;
-  return 0;
-}
-
-export function isCompatible(manifest: AgentManifest, sdkVersion: string): boolean {
-  return semverCompare(sdkVersion, manifest.minSdkVersion) >= 0;
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-export function formatPermission(permission: Permission): string {
-  const scope = permission.scope ? ` (scope: ${permission.scope})` : '';
-  return `${permission.resource}:${permission.access}${scope}`;
-}
-
-export function permissionKey(permission: Permission): string {
-  return `${permission.resource}:${permission.access}:${permission.scope ?? '*'}`;
-}
-
-export function indexTools(manifest: AgentManifest): Map<string, ToolDeclaration> {
-  const map = new Map<string, ToolDeclaration>();
-  for (const tool of manifest.tools) {
-    map.set(tool.name, tool);
+  const caretMatch = range.match(/^\^(\d+)\.(\d+)\.(\d+)$/);
+  if (caretMatch) {
+    const [, rMaj] = caretMatch.map(Number);
+    return major === rMaj;
   }
-  return map;
+
+  const tildeMatch = range.match(/^~(\d+)\.(\d+)\.(\d+)$/);
+  if (tildeMatch) {
+    const [, rMaj, rMin] = tildeMatch.map(Number);
+    return major === rMaj && minor >= rMin;
+  }
+
+  const gteMatch = range.match(/^>=(\d+)\.(\d+)/);
+  if (gteMatch) {
+    const [, rMaj, rMin] = gteMatch.map(Number);
+    return major > rMaj || (major === rMaj && minor >= rMin);
+  }
+
+  logger.warn({ range }, "[AgentManifest] Unrecognized semver range pattern, allowing");
+  return true;
+}
+
+/**
+ * Summarize the human-readable permission requirements of a manifest.
+ */
+export function summarizePermissions(manifest: AgentManifest): string[] {
+  const perms = manifest.permissions;
+  const lines: string[] = [`Permission level: ${perms.level}`];
+
+  if (perms.filesystem !== "none") lines.push(`Filesystem: ${perms.filesystem}`);
+  if (perms.networkAllowlist.length)
+    lines.push(`Network: ${perms.networkAllowlist.join(", ")}`);
+  if (perms.shellExecution) lines.push("Can execute shell commands");
+  if (perms.browserAccess) lines.push("Can control browser");
+  if (perms.canSpawnAgents) lines.push("Can spawn sub-agents");
+  if (perms.crossUserMemoryAccess) lines.push("Can access other users' memory");
+
+  lines.push(`Max memory: ${perms.maxMemoryMB} MB`);
+  lines.push(`Max CPU time: ${perms.maxCpuTimeMs / 1000}s per call`);
+
+  return lines;
+}
+
+export type ManifestValidationResult =
+  | { valid: true; manifest: AgentManifest }
+  | { valid: false; errors: string[] };
+
+/**
+ * Non-throwing variant that returns a discriminated result.
+ */
+export function validateManifest(raw: unknown): ManifestValidationResult {
+  const result = AgentManifestSchema.safeParse(raw);
+  if (!result.success) {
+    return {
+      valid: false,
+      errors: result.error.errors.map(
+        (e) => `${e.path.join(".") || "(root)"}: ${e.message}`
+      ),
+    };
+  }
+  return { valid: true, manifest: result.data };
 }

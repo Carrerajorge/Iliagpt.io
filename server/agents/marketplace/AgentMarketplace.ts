@@ -1,376 +1,492 @@
-import { EventEmitter } from 'events';
-import { randomUUID } from 'crypto';
-import { Logger } from '../../lib/logger';
+import { EventEmitter } from "events";
+import { randomUUID } from "crypto";
+import pino from "pino";
 import {
-  AgentManifest,
-  AgentCapability,
-  Permission,
-  CURRENT_SDK_VERSION,
-  validateManifest,
-  isCompatible,
-  semverCompare,
-  formatPermission,
-  permissionKey,
-} from './AgentManifest';
+  parseManifest,
+  isCompatibleWithPlatform,
+  type AgentManifest,
+} from "./AgentManifest.js";
+import {
+  AgentLoader,
+  getAgentLoader,
+  type LoadOptions,
+} from "./AgentLoader.js";
+import {
+  AgentStore,
+  getAgentStore,
+  type CreateListingInput,
+  type SearchFilters,
+  type SearchResult,
+} from "./AgentStore.js";
+import type {
+  MarketplaceAgent,
+  ResourceAPI,
+  CommunicationAPI,
+  AgentContext,
+  ExecutionResult,
+} from "./AgentSDK.js";
+
+const logger = pino({ name: "AgentMarketplace" });
+
+export const PLATFORM_VERSION = process.env.PLATFORM_VERSION ?? "1.0.0";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type AgentStatus = 'active' | 'disabled' | 'error' | 'loading';
-
-export interface AgentStats {
-  calls: number;
-  errors: number;
-  avgLatency: number;
+export interface InstallOptions {
+  userId: string;
+  /** Force reinstall even if already installed */
+  force?: boolean;
+  /** Override load options */
+  loadOptions?: Partial<LoadOptions>;
 }
 
 export interface InstalledAgent {
-  manifest: AgentManifest;
-  installedAt: Date;
-  updatedAt: Date;
-  status: AgentStatus;
-  errorMessage?: string;
-  sandboxId?: string;
-  source: string;
-  stats: AgentStats;
+  installId: string;
+  agentId: string;
+  listingId: string;
+  userId: string;
+  installedAt: number;
+  lastUsedAt?: number;
+  totalInvocations: number;
+  totalTokensUsed: number;
+  enabled: boolean;
 }
 
-export interface AgentFilter {
-  status?: AgentStatus;
-  capability?: AgentCapability;
-  category?: string;
+export interface InvocationOptions {
+  userId: string;
+  sessionId?: string;
+  conversationId?: string;
+  metadata?: Record<string, unknown>;
 }
 
-export interface MarketplaceStats {
-  total: number;
-  active: number;
-  disabled: number;
-  totalCalls: number;
-  totalErrors: number;
+export interface PublishOptions {
+  publisherId: string;
+  bundleUrl: string;
+  /** Raw manifest object — will be validated */
+  rawManifest: unknown;
 }
 
-// ─── Allowed Permissions Whitelist ────────────────────────────────────────────
-
-const ALLOWED_PERMISSIONS: ReadonlySet<string> = new Set<string>([
-  'filesystem:read',
-  'filesystem:write',
-  'network:read',
-  'network:write',
-  'database:read',
-  'database:write',
-  'clipboard:read',
-  'clipboard:write',
-]);
-
-const HIGH_RISK_PERMISSIONS: ReadonlySet<string> = new Set<string>([
-  'process:execute',
-  'screen:read',
-  'microphone:read',
-  'camera:read',
-]);
+export interface DependencyResolution {
+  resolved: AgentManifest[];
+  missing: string[];
+  conflicts: Array<{ dep: string; reason: string }>;
+}
 
 // ─── AgentMarketplace ─────────────────────────────────────────────────────────
 
 export class AgentMarketplace extends EventEmitter {
-  private readonly registry: Map<string, InstalledAgent> = new Map();
+  private readonly loader: AgentLoader;
+  private readonly store: AgentStore;
 
-  constructor() {
+  /** userId → Set<agentId> */
+  private userInstalls = new Map<string, Map<string, InstalledAgent>>();
+  /** agentId → Set<userId> */
+  private agentUsers = new Map<string, Set<string>>();
+
+  private resourceAPIs = new Map<string, ResourceAPI>();
+  private communicationAPIs = new Map<string, CommunicationAPI>();
+
+  constructor(
+    loader?: AgentLoader,
+    store?: AgentStore,
+    private readonly platformVersion: string = PLATFORM_VERSION
+  ) {
     super();
-    Logger.info('[AgentMarketplace] Initialized');
+    this.loader = loader ?? getAgentLoader(platformVersion);
+    this.store = store ?? getAgentStore();
+
+    logger.info(
+      { platformVersion: this.platformVersion },
+      "[AgentMarketplace] Initialized"
+    );
   }
 
-  // ─── Install ──────────────────────────────────────────────────────────────
+  // ── Publishing ──────────────────────────────────────────────────────────────
 
-  async install(manifestRaw: unknown, source: string): Promise<InstalledAgent> {
-    Logger.info('[AgentMarketplace] Installing agent from source:', source);
+  async publish(opts: PublishOptions): Promise<{ listingId: string; manifest: AgentManifest }> {
+    logger.info({ publisherId: opts.publisherId }, "[AgentMarketplace] Publishing agent");
 
-    const manifest = validateManifest(manifestRaw);
+    // 1. Validate and parse the manifest
+    const manifest = parseManifest(opts.rawManifest);
 
-    if (!isCompatible(manifest, CURRENT_SDK_VERSION)) {
+    // 2. Check platform compatibility
+    if (!isCompatibleWithPlatform(manifest, this.platformVersion)) {
       throw new Error(
-        `Agent "${manifest.name}" requires SDK >= ${manifest.minSdkVersion}, ` +
-          `but current SDK is ${CURRENT_SDK_VERSION}`
+        `Agent '${manifest.id}' requires platform version '${manifest.platformVersionRange}', ` +
+          `but current platform is '${this.platformVersion}'`
       );
     }
 
-    if (this.registry.has(manifest.name)) {
-      const existing = this.registry.get(manifest.name)!;
+    // 3. Resolve and check agent dependencies
+    const depResolution = await this.resolveDependencies(manifest);
+    if (depResolution.missing.length > 0) {
       throw new Error(
-        `Agent "${manifest.name}" is already installed at version ${existing.manifest.version}. ` +
-          `Use upgrade() to update to a newer version.`
+        `Agent '${manifest.id}' has unresolved dependencies: ${depResolution.missing.join(", ")}`
+      );
+    }
+    if (depResolution.conflicts.length > 0) {
+      const details = depResolution.conflicts
+        .map((c) => `${c.dep}: ${c.reason}`)
+        .join("; ");
+      throw new Error(
+        `Agent '${manifest.id}' has dependency conflicts: ${details}`
       );
     }
 
-    this._validatePermissions(manifest);
-
-    const now = new Date();
-    const agent: InstalledAgent = {
+    // 4. Create store listing (starts as 'pending' — requires admin approval)
+    const listing = await this.store.createListing({
       manifest,
-      installedAt: now,
-      updatedAt: now,
-      status: 'loading',
-      source,
-      sandboxId: this._assignSandboxId(manifest.name),
-      stats: { calls: 0, errors: 0, avgLatency: 0 },
-    };
-
-    this.registry.set(manifest.name, agent);
-
-    try {
-      agent.status = 'active';
-      this.registry.set(manifest.name, { ...agent });
-
-      Logger.info(
-        `[AgentMarketplace] Agent "${manifest.name}" v${manifest.version} installed successfully`
-      );
-
-      this.emit('agent:installed', { agent: this.registry.get(manifest.name)!, source });
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      agent.status = 'error';
-      agent.errorMessage = errorMessage;
-      this.registry.set(manifest.name, { ...agent });
-
-      Logger.error(`[AgentMarketplace] Failed to activate agent "${manifest.name}":`, errorMessage);
-      this.emit('agent:error', { agentName: manifest.name, error: err });
-
-      throw new Error(`Failed to install agent "${manifest.name}": ${errorMessage}`);
-    }
-
-    return this.registry.get(manifest.name)!;
-  }
-
-  // ─── Uninstall ────────────────────────────────────────────────────────────
-
-  async uninstall(agentName: string): Promise<void> {
-    const agent = this._requireAgent(agentName);
-
-    Logger.info(`[AgentMarketplace] Uninstalling agent "${agentName}"`);
-
-    this.registry.delete(agentName);
-
-    Logger.info(`[AgentMarketplace] Agent "${agentName}" uninstalled`);
-    this.emit('agent:uninstalled', { agentName, sandboxId: agent.sandboxId });
-  }
-
-  // ─── Upgrade ──────────────────────────────────────────────────────────────
-
-  async upgrade(agentName: string, newManifestRaw: unknown): Promise<InstalledAgent> {
-    const existing = this._requireAgent(agentName);
-    const newManifest = validateManifest(newManifestRaw);
-
-    if (newManifest.name !== agentName) {
-      throw new Error(
-        `Upgrade manifest name "${newManifest.name}" does not match installed agent "${agentName}"`
-      );
-    }
-
-    if (semverCompare(newManifest.version, existing.manifest.version) <= 0) {
-      throw new Error(
-        `Upgrade version ${newManifest.version} must be higher than ` +
-          `installed version ${existing.manifest.version}`
-      );
-    }
-
-    if (!isCompatible(newManifest, CURRENT_SDK_VERSION)) {
-      throw new Error(
-        `New version requires SDK >= ${newManifest.minSdkVersion}, ` +
-          `but current SDK is ${CURRENT_SDK_VERSION}`
-      );
-    }
-
-    this._validatePermissions(newManifest);
-
-    Logger.info(
-      `[AgentMarketplace] Upgrading "${agentName}" ` +
-        `from v${existing.manifest.version} to v${newManifest.version}`
-    );
-
-    const upgraded: InstalledAgent = {
-      manifest: newManifest,
-      installedAt: existing.installedAt,
-      updatedAt: new Date(),
-      status: 'active',
-      source: existing.source,
-      sandboxId: this._assignSandboxId(agentName),
-      stats: { ...existing.stats },
-    };
-
-    this.registry.set(agentName, upgraded);
-
-    Logger.info(
-      `[AgentMarketplace] Agent "${agentName}" upgraded to v${newManifest.version}`
-    );
-
-    this.emit('agent:upgraded', {
-      agentName,
-      previousVersion: existing.manifest.version,
-      newVersion: newManifest.version,
-      agent: this.registry.get(agentName)!,
+      publisherId: opts.publisherId,
+      bundleUrl: opts.bundleUrl,
     });
 
-    return this.registry.get(agentName)!;
+    this.emit("agent:published", {
+      listingId: listing.listingId,
+      agentId: manifest.id,
+      publisherId: opts.publisherId,
+    });
+
+    logger.info(
+      { listingId: listing.listingId, agentId: manifest.id },
+      "[AgentMarketplace] Agent published (pending review)"
+    );
+
+    return { listingId: listing.listingId, manifest };
   }
 
-  // ─── Enable / Disable ─────────────────────────────────────────────────────
+  // ── Installation ────────────────────────────────────────────────────────────
 
-  enable(agentName: string): void {
-    const agent = this._requireAgent(agentName);
+  async install(
+    listingId: string,
+    opts: InstallOptions,
+    packagePath: string
+  ): Promise<InstalledAgent> {
+    const { userId, force = false } = opts;
 
-    if (agent.status === 'active') {
-      Logger.warn(`[AgentMarketplace] Agent "${agentName}" is already active`);
+    const listing = await this.store.getListing(listingId);
+    if (!listing) throw new Error(`Listing '${listingId}' not found`);
+    if (listing.status !== "active") {
+      throw new Error(
+        `Cannot install agent with listing status '${listing.status}'`
+      );
+    }
+
+    const { manifest } = listing;
+
+    // Check if already installed
+    const userMap = this.userInstalls.get(userId);
+    if (userMap?.has(manifest.id) && !force) {
+      logger.info(
+        { userId, agentId: manifest.id },
+        "[AgentMarketplace] Agent already installed"
+      );
+      return userMap.get(manifest.id)!;
+    }
+
+    logger.info(
+      { userId, agentId: manifest.id, listingId },
+      "[AgentMarketplace] Installing agent"
+    );
+
+    // Load the agent module
+    const loadOpts: LoadOptions = {
+      packagePath,
+      verifyChecksum: true,
+      sandbox: manifest.permissions.level !== "admin",
+      ...opts.loadOptions,
+    };
+
+    await this.loader.load(manifest, loadOpts);
+
+    // Create install record
+    const installed: InstalledAgent = {
+      installId: randomUUID(),
+      agentId: manifest.id,
+      listingId,
+      userId,
+      installedAt: Date.now(),
+      totalInvocations: 0,
+      totalTokensUsed: 0,
+      enabled: true,
+    };
+
+    if (!this.userInstalls.has(userId)) {
+      this.userInstalls.set(userId, new Map());
+    }
+    this.userInstalls.get(userId)!.set(manifest.id, installed);
+
+    if (!this.agentUsers.has(manifest.id)) {
+      this.agentUsers.set(manifest.id, new Set());
+    }
+    this.agentUsers.get(manifest.id)!.add(userId);
+
+    // Record install in store
+    await this.store.recordInstall(listingId);
+
+    this.emit("agent:installed", { installId: installed.installId, userId, agentId: manifest.id });
+    logger.info(
+      { installId: installed.installId, agentId: manifest.id },
+      "[AgentMarketplace] Agent installed"
+    );
+
+    return installed;
+  }
+
+  async initializeAgent(
+    agentId: string,
+    userId: string,
+    ctx: Partial<AgentContext>
+  ): Promise<void> {
+    const resources = this.getResourceAPI(agentId, userId);
+    const comms = this.getCommunicationAPI(agentId);
+
+    const fullCtx: AgentContext = {
+      agentId,
+      userId,
+      sessionId: randomUUID(),
+      locale: "en",
+      permissions: this.getInstalledManifest(agentId, userId)!.permissions,
+      metadata: {},
+      ...ctx,
+    };
+
+    await this.loader.initialize(agentId, resources, comms, fullCtx);
+    logger.info({ agentId, userId }, "[AgentMarketplace] Agent initialized");
+  }
+
+  async uninstall(agentId: string, userId: string): Promise<void> {
+    const userMap = this.userInstalls.get(userId);
+    if (!userMap?.has(agentId)) {
+      logger.warn(
+        { agentId, userId },
+        "[AgentMarketplace] Uninstall called for non-installed agent"
+      );
       return;
     }
 
-    const updated: InstalledAgent = {
-      ...agent,
-      status: 'active',
-      errorMessage: undefined,
-      updatedAt: new Date(),
-    };
+    const installed = userMap.get(agentId)!;
 
-    this.registry.set(agentName, updated);
+    // Remove from user index
+    userMap.delete(agentId);
+    const userSet = this.agentUsers.get(agentId);
+    userSet?.delete(userId);
 
-    Logger.info(`[AgentMarketplace] Agent "${agentName}" enabled`);
-    this.emit('agent:enabled', { agentName, agent: this.registry.get(agentName)! });
-  }
-
-  disable(agentName: string): void {
-    const agent = this._requireAgent(agentName);
-
-    if (agent.status === 'disabled') {
-      Logger.warn(`[AgentMarketplace] Agent "${agentName}" is already disabled`);
-      return;
+    // Unload if no more users
+    if (!userSet?.size) {
+      await this.loader.unload(agentId);
     }
 
-    const updated: InstalledAgent = {
-      ...agent,
-      status: 'disabled',
-      updatedAt: new Date(),
-    };
+    // Record in store
+    await this.store.recordUninstall(installed.listingId);
 
-    this.registry.set(agentName, updated);
-
-    Logger.info(`[AgentMarketplace] Agent "${agentName}" disabled`);
-    this.emit('agent:disabled', { agentName, agent: this.registry.get(agentName)! });
+    this.emit("agent:uninstalled", { agentId, userId });
+    logger.info({ agentId, userId }, "[AgentMarketplace] Agent uninstalled");
   }
 
-  // ─── Queries ──────────────────────────────────────────────────────────────
+  // ── Invocation ──────────────────────────────────────────────────────────────
 
-  getAgent(agentName: string): InstalledAgent | undefined {
-    return this.registry.get(agentName);
-  }
+  async invoke(
+    agentId: string,
+    input: unknown,
+    opts: InvocationOptions
+  ): Promise<ExecutionResult> {
+    const { userId } = opts;
 
-  listAgents(filter?: AgentFilter): InstalledAgent[] {
-    let agents = Array.from(this.registry.values());
-
-    if (!filter) {
-      return agents;
+    const installed = this.getUserInstalled(userId, agentId);
+    if (!installed) {
+      throw new Error(`User '${userId}' has not installed agent '${agentId}'`);
+    }
+    if (!installed.enabled) {
+      throw new Error(`Agent '${agentId}' is disabled for user '${userId}'`);
     }
 
-    if (filter.status !== undefined) {
-      agents = agents.filter((a) => a.status === filter.status);
+    const loadedAgent = this.loader.getLoaded(agentId);
+    if (!loadedAgent) {
+      throw new Error(`Agent '${agentId}' is not loaded`);
     }
 
-    if (filter.capability !== undefined) {
-      const cap = filter.capability;
-      agents = agents.filter((a) => a.manifest.capabilities.includes(cap));
-    }
+    const startMs = Date.now();
 
-    if (filter.category !== undefined) {
-      const cat = filter.category.toLowerCase();
-      agents = agents.filter(
-        (a) => a.manifest.metadata.category.toLowerCase() === cat
-      );
-    }
-
-    return agents;
-  }
-
-  getStats(): MarketplaceStats {
-    const all = Array.from(this.registry.values());
-    return {
-      total: all.length,
-      active: all.filter((a) => a.status === 'active').length,
-      disabled: all.filter((a) => a.status === 'disabled').length,
-      totalCalls: all.reduce((sum, a) => sum + a.stats.calls, 0),
-      totalErrors: all.reduce((sum, a) => sum + a.stats.errors, 0),
-    };
-  }
-
-  // ─── Stats Recording ──────────────────────────────────────────────────────
-
-  recordCall(agentName: string, latencyMs: number, isError: boolean): void {
-    const agent = this.registry.get(agentName);
-    if (!agent) return;
-
-    const prev = agent.stats;
-    const newCalls = prev.calls + 1;
-    const newErrors = prev.errors + (isError ? 1 : 0);
-    const newAvgLatency =
-      prev.calls === 0
-        ? latencyMs
-        : (prev.avgLatency * prev.calls + latencyMs) / newCalls;
-
-    this.registry.set(agentName, {
-      ...agent,
-      stats: {
-        calls: newCalls,
-        errors: newErrors,
-        avgLatency: Math.round(newAvgLatency * 100) / 100,
-      },
+    const result = await loadedAgent.instance.run(input, {
+      userId,
+      sessionId: opts.sessionId ?? randomUUID(),
+      conversationId: opts.conversationId,
+      metadata: opts.metadata ?? {},
     });
+
+    // Update usage stats
+    const updated: InstalledAgent = {
+      ...installed,
+      lastUsedAt: Date.now(),
+      totalInvocations: installed.totalInvocations + 1,
+      totalTokensUsed: installed.totalTokensUsed + (result.tokensUsed ?? 0),
+    };
+    this.userInstalls.get(userId)?.set(agentId, updated);
+
+    this.emit("agent:invoked", {
+      agentId,
+      userId,
+      durationMs: Date.now() - startMs,
+      success: result.success,
+    });
+
+    return result;
   }
 
-  // ─── Private Helpers ──────────────────────────────────────────────────────
+  // ── Dependency resolution ────────────────────────────────────────────────────
 
-  private _requireAgent(agentName: string): InstalledAgent {
-    const agent = this.registry.get(agentName);
-    if (!agent) {
-      throw new Error(`Agent "${agentName}" is not installed`);
-    }
-    return agent;
-  }
+  async resolveDependencies(manifest: AgentManifest): Promise<DependencyResolution> {
+    const deps = manifest.agentDependencies;
+    const resolved: AgentManifest[] = [];
+    const missing: string[] = [];
+    const conflicts: Array<{ dep: string; reason: string }> = [];
 
-  private _validatePermissions(manifest: AgentManifest): void {
-    const denied: Permission[] = [];
-    const warnings: Permission[] = [];
-
-    for (const permission of manifest.permissions) {
-      const key = permissionKey(permission);
-      const baseKey = `${permission.resource}:${permission.access}`;
-
-      if (HIGH_RISK_PERMISSIONS.has(baseKey)) {
-        warnings.push(permission);
-        Logger.warn(
-          `[AgentMarketplace] Agent "${manifest.name}" requests high-risk permission: ` +
-            formatPermission(permission)
-        );
-      } else if (!ALLOWED_PERMISSIONS.has(baseKey)) {
-        denied.push(permission);
+    for (const [depId] of Object.entries(deps)) {
+      const listing = await this.store.getListingByAgentId(depId);
+      if (!listing) {
+        missing.push(depId);
+        continue;
       }
-
-      Logger.debug(
-        `[AgentMarketplace] Permission check "${manifest.name}": ${key} => allowed`
-      );
+      if (listing.status !== "active") {
+        conflicts.push({
+          dep: depId,
+          reason: `Dependency '${depId}' exists but is not active (status: ${listing.status})`,
+        });
+        continue;
+      }
+      if (!isCompatibleWithPlatform(listing.manifest, this.platformVersion)) {
+        conflicts.push({
+          dep: depId,
+          reason: `Dependency '${depId}' is incompatible with platform ${this.platformVersion}`,
+        });
+        continue;
+      }
+      resolved.push(listing.manifest);
     }
 
-    if (denied.length > 0) {
-      const list = denied.map(formatPermission).join(', ');
+    return { resolved, missing, conflicts };
+  }
+
+  // ── Search & discovery ──────────────────────────────────────────────────────
+
+  async search(filters: SearchFilters, page = 1, pageSize = 20): Promise<SearchResult> {
+    return this.store.search(filters, page, pageSize);
+  }
+
+  async getFeatured() {
+    return this.store.getFeatured();
+  }
+
+  async getTrending() {
+    return this.store.getTrending();
+  }
+
+  getCategories() {
+    return this.store.getCategories();
+  }
+
+  // ── Version management ──────────────────────────────────────────────────────
+
+  async publishUpdate(
+    listingId: string,
+    opts: PublishOptions
+  ): Promise<{ manifest: AgentManifest }> {
+    const existing = await this.store.getListing(listingId);
+    if (!existing) throw new Error(`Listing '${listingId}' not found`);
+
+    const newManifest = parseManifest(opts.rawManifest);
+
+    if (newManifest.id !== existing.manifest.id) {
       throw new Error(
-        `Agent "${manifest.name}" requests disallowed permissions: ${list}`
+        `Cannot change agent ID during update. ` +
+          `Expected '${existing.manifest.id}', got '${newManifest.id}'`
       );
     }
 
-    if (warnings.length > 0) {
-      Logger.warn(
-        `[AgentMarketplace] Agent "${manifest.name}" has ${warnings.length} high-risk permission(s). ` +
-          `Manual review recommended before enabling.`
+    await this.store.updateListing(listingId, {
+      bundleUrl: opts.bundleUrl,
+      status: "pending",
+    });
+
+    // Reload active instances
+    if (this.loader.isLoaded(newManifest.id)) {
+      logger.info(
+        { agentId: newManifest.id },
+        "[AgentMarketplace] Reloading agent after update"
       );
+      await this.loader.unload(newManifest.id);
     }
+
+    this.emit("agent:updated", { listingId, agentId: newManifest.id });
+    return { manifest: newManifest };
   }
 
-  private _assignSandboxId(name: string): string {
-    const uuid = randomUUID();
-    return `sandbox-${name}-${uuid}`;
+  // ── User queries ─────────────────────────────────────────────────────────────
+
+  getUserInstalled(userId: string, agentId: string): InstalledAgent | null {
+    return this.userInstalls.get(userId)?.get(agentId) ?? null;
   }
+
+  listUserAgents(userId: string): InstalledAgent[] {
+    return Array.from(this.userInstalls.get(userId)?.values() ?? []);
+  }
+
+  // ── Resource / communication API hooks ────────────────────────────────────────
+
+  registerResourceAPI(agentId: string, api: ResourceAPI): void {
+    this.resourceAPIs.set(agentId, api);
+  }
+
+  registerCommunicationAPI(agentId: string, api: CommunicationAPI): void {
+    this.communicationAPIs.set(agentId, api);
+  }
+
+  private getResourceAPI(agentId: string, _userId: string): ResourceAPI {
+    const api = this.resourceAPIs.get(agentId);
+    if (!api) throw new Error(`No ResourceAPI registered for agent '${agentId}'`);
+    return api;
+  }
+
+  private getCommunicationAPI(agentId: string): CommunicationAPI {
+    const api = this.communicationAPIs.get(agentId);
+    if (!api)
+      throw new Error(`No CommunicationAPI registered for agent '${agentId}'`);
+    return api;
+  }
+
+  private getInstalledManifest(
+    agentId: string,
+    userId: string
+  ): AgentManifest | null {
+    const installed = this.getUserInstalled(userId, agentId);
+    if (!installed) return null;
+    return (
+      this.loader.getLoaded(agentId)?.manifest ?? null
+    );
+  }
+
+  // ── Health ────────────────────────────────────────────────────────────────────
+
+  async healthCheck() {
+    const loadedAgents = this.loader.listLoaded();
+    const storeStats = this.store.getStats();
+
+    return {
+      healthy: true,
+      loadedAgents: loadedAgents.length,
+      storeStats,
+      platformVersion: this.platformVersion,
+    };
+  }
+
+  getLoadedAgent(agentId: string): MarketplaceAgent | undefined {
+    return this.loader.getLoaded(agentId)?.instance;
+  }
+}
+
+// ─── Singleton ─────────────────────────────────────────────────────────────────
+let _marketplace: AgentMarketplace | null = null;
+export function getAgentMarketplace(): AgentMarketplace {
+  if (!_marketplace) _marketplace = new AgentMarketplace();
+  return _marketplace;
 }

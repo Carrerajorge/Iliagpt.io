@@ -1,390 +1,638 @@
-/**
- * ParallelToolExecutor — Execute tool calls in parallel using a DAG-based
- * dependency graph. Independent tools run concurrently; dependent tools
- * wait for their predecessors.
- */
-
+import { EventEmitter } from "events";
 import { randomUUID } from "crypto";
-import { Logger } from "../lib/logger";
-import type { ToolContext, ToolResult } from "../agent/toolTypes";
-import type { ToolCallRequest, ToolExecutor } from "./ClaudeAgentBackbone";
+import pino from "pino";
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
-export type ExecutionStatus = "pending" | "running" | "success" | "failed" | "cancelled" | "timeout";
+const logger = pino({ name: "ParallelToolExecutor" });
 
-export interface ToolNode {
-  id: string; // corresponds to ToolCallRequest.id
-  call: ToolCallRequest;
-  dependsOn: string[]; // tool node ids that must complete first
-  status: ExecutionStatus;
-  result?: ToolResult;
-  error?: Error;
-  startedAt?: Date;
-  completedAt?: Date;
-  latencyMs?: number;
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type ToolExecutionStatus =
+  | "pending"
+  | "waiting"   // waiting for dependencies
+  | "running"
+  | "completed"
+  | "failed"
+  | "skipped"   // dependency failed and skipOnDependencyFailure = true
+  | "cancelled";
+
+export interface ToolTask {
+  taskId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  /** taskIds that must complete before this task can run */
+  dependencies: string[];
+  /** If true, skip this task (instead of failing) when a dependency fails */
+  skipOnDependencyFailure: boolean;
+  /** Max ms to wait before marking as failed */
+  timeoutMs: number;
+  /** Max retries on transient failure */
+  maxRetries: number;
+  retryCount: number;
+  /** Priority — higher runs first when multiple tasks become ready */
+  priority: number;
+  metadata?: Record<string, unknown>;
 }
 
-export interface ExecutionDAG {
-  id: string;
-  nodes: Map<string, ToolNode>;
-  createdAt: Date;
-}
-
-export interface ParallelExecutionConfig {
-  maxConcurrent?: number; // default 5
-  toolTimeoutMs?: number; // per-tool timeout, default 30000
-  totalTimeoutMs?: number; // overall execution timeout, default 120000
-  onProgress?: (nodeId: string, status: ExecutionStatus) => void;
-}
-
-export interface ParallelExecutionResult {
-  dagId: string;
-  totalTools: number;
-  succeeded: number;
-  failed: number;
-  cancelled: number;
-  results: Map<string, ToolResult | Error>;
+export interface ToolExecutionResult {
+  taskId: string;
+  toolName: string;
+  status: ToolExecutionStatus;
+  result?: unknown;
+  error?: string;
+  startedAt: number;
+  completedAt: number;
   durationMs: number;
+  retryCount: number;
+  input: Record<string, unknown>;
 }
 
-// ─── DAG utilities ──────────────────────────────────────────────────────────────
-
-/** Build a DAG from tool calls with optional explicit dependencies.
- *  If no dependencies are specified, all calls run in parallel. */
-function buildDAG(
-  calls: ToolCallRequest[],
-  dependencies?: Map<string, string[]> // callId → [dependsOnCallId]
-): ExecutionDAG {
-  const nodes = new Map<string, ToolNode>();
-
-  for (const call of calls) {
-    nodes.set(call.id, {
-      id: call.id,
-      call,
-      dependsOn: dependencies?.get(call.id) ?? [],
-      status: "pending",
-    });
-  }
-
-  return { id: randomUUID(), nodes, createdAt: new Date() };
+export interface ExecutionPlan {
+  planId: string;
+  tasks: ToolTask[];
+  /** Topologically sorted waves for parallel execution */
+  waves: string[][];
+  /** Total estimated time if all independent tasks run in parallel */
+  estimatedParallelMs: number;
+  /** Total estimated time if all tasks run sequentially */
+  estimatedSequentialMs: number;
+  /** Parallelism ratio */
+  parallelismGain: number;
 }
 
-/** Topological sort using Kahn's algorithm. Returns execution levels. */
-function topologicalLevels(dag: ExecutionDAG): string[][] {
-  const inDegree = new Map<string, number>();
-  const dependents = new Map<string, string[]>(); // nodeId → nodes that depend on it
+export interface ExecutionSession {
+  sessionId: string;
+  plan: ExecutionPlan;
+  status: "running" | "completed" | "failed" | "cancelled";
+  results: Map<string, ToolExecutionResult>;
+  startedAt: number;
+  completedAt?: number;
+  failedTaskIds: string[];
+  skippedTaskIds: string[];
+}
 
-  for (const [id] of dag.nodes) {
-    inDegree.set(id, 0);
-    dependents.set(id, []);
-  }
+export interface ExecutorOptions {
+  maxConcurrentTasks?: number; // default 10
+  defaultTimeoutMs?: number; // default 30_000
+  defaultMaxRetries?: number; // default 2
+  retryDelayMs?: number; // default 500
+}
 
-  for (const [id, node] of dag.nodes) {
-    inDegree.set(id, node.dependsOn.length);
-    for (const dep of node.dependsOn) {
-      const list = dependents.get(dep) ?? [];
-      list.push(id);
-      dependents.set(dep, list);
+export type ToolHandler = (
+  toolName: string,
+  input: Record<string, unknown>,
+  context: { taskId: string; sessionId: string; dependencyResults: Map<string, unknown> }
+) => Promise<unknown>;
+
+// ─── DAG analysis ─────────────────────────────────────────────────────────────
+
+function buildExecutionWaves(tasks: ToolTask[]): {
+  waves: string[][];
+  hasCycle: boolean;
+} {
+  const taskIds = new Set(tasks.map((t) => t.taskId));
+  const inDegree = new Map(tasks.map((t) => [t.taskId, 0]));
+  const graph = new Map<string, string[]>(); // id → dependents
+
+  for (const task of tasks) {
+    if (!graph.has(task.taskId)) graph.set(task.taskId, []);
+    for (const dep of task.dependencies) {
+      if (!taskIds.has(dep)) {
+        // Unknown dependency — treat as already satisfied
+        continue;
+      }
+      if (!graph.has(dep)) graph.set(dep, []);
+      graph.get(dep)!.push(task.taskId);
+      inDegree.set(task.taskId, (inDegree.get(task.taskId) ?? 0) + 1);
     }
   }
 
-  const levels: string[][] = [];
-  let queue = [...inDegree.entries()]
-    .filter(([, deg]) => deg === 0)
-    .map(([id]) => id);
+  const waves: string[][] = [];
+  const visited = new Set<string>();
 
-  while (queue.length > 0) {
-    levels.push([...queue]);
-    const nextQueue: string[] = [];
-    for (const id of queue) {
-      for (const dependent of dependents.get(id) ?? []) {
-        inDegree.set(dependent, (inDegree.get(dependent) ?? 1) - 1);
-        if (inDegree.get(dependent) === 0) nextQueue.push(dependent);
+  while (visited.size < tasks.length) {
+    const wave = Array.from(inDegree.entries())
+      .filter(([id, deg]) => deg === 0 && !visited.has(id))
+      // Sort by priority (higher priority first)
+      .sort(([idA], [idB]) => {
+        const pA = tasks.find((t) => t.taskId === idA)?.priority ?? 0;
+        const pB = tasks.find((t) => t.taskId === idB)?.priority ?? 0;
+        return pB - pA;
+      })
+      .map(([id]) => id);
+
+    if (wave.length === 0) {
+      // Cycle detected
+      return { waves, hasCycle: true };
+    }
+
+    waves.push(wave);
+    for (const id of wave) {
+      visited.add(id);
+      for (const dep of graph.get(id) ?? []) {
+        inDegree.set(dep, (inDegree.get(dep) ?? 1) - 1);
       }
     }
-    queue = nextQueue;
   }
 
-  return levels;
+  return { waves, hasCycle: false };
 }
 
-/** Check if the DAG has cycles (returns true if cyclic). */
-function hasCycles(dag: ExecutionDAG): boolean {
-  const visited = new Set<string>();
-  const recStack = new Set<string>();
+// ─── ParallelToolExecutor ─────────────────────────────────────────────────────
 
-  const dfs = (id: string): boolean => {
-    visited.add(id);
-    recStack.add(id);
-    const node = dag.nodes.get(id);
-    for (const dep of node?.dependsOn ?? []) {
-      if (!visited.has(dep) && dfs(dep)) return true;
-      if (recStack.has(dep)) return true;
+export class ParallelToolExecutor extends EventEmitter {
+  private handlers = new Map<string, ToolHandler>();
+  private sessions = new Map<string, ExecutionSession>();
+  private activeSessions = new Set<string>();
+
+  constructor(
+    private readonly options: ExecutorOptions = {}
+  ) {
+    super();
+    const {
+      maxConcurrentTasks = 10,
+      defaultTimeoutMs = 30_000,
+      defaultMaxRetries = 2,
+      retryDelayMs = 500,
+    } = options;
+
+    this.options = {
+      maxConcurrentTasks,
+      defaultTimeoutMs,
+      defaultMaxRetries,
+      retryDelayMs,
+    };
+
+    logger.info("[ParallelToolExecutor] Initialized");
+  }
+
+  // ── Handler registration ──────────────────────────────────────────────────────
+
+  registerHandler(toolName: string, handler: ToolHandler): void {
+    this.handlers.set(toolName, handler);
+    logger.debug({ toolName }, "[ParallelToolExecutor] Handler registered");
+  }
+
+  registerHandlers(handlers: Record<string, ToolHandler>): void {
+    for (const [name, handler] of Object.entries(handlers)) {
+      this.registerHandler(name, handler);
     }
-    recStack.delete(id);
-    return false;
-  };
-
-  for (const [id] of dag.nodes) {
-    if (!visited.has(id) && dfs(id)) return true;
-  }
-  return false;
-}
-
-// ─── ParallelToolExecutor ───────────────────────────────────────────────────────
-export class ParallelToolExecutor {
-  private readonly maxConcurrent: number;
-  private readonly toolTimeoutMs: number;
-  private readonly totalTimeoutMs: number;
-  private readonly onProgress?: (nodeId: string, status: ExecutionStatus) => void;
-  private activeCount = 0;
-
-  constructor(config: ParallelExecutionConfig = {}) {
-    this.maxConcurrent = config.maxConcurrent ?? 5;
-    this.toolTimeoutMs = config.toolTimeoutMs ?? 30_000;
-    this.totalTimeoutMs = config.totalTimeoutMs ?? 120_000;
-    this.onProgress = config.onProgress;
   }
 
-  // ─── Public API ──────────────────────────────────────────────────────────────
+  // ── Plan analysis ─────────────────────────────────────────────────────────────
 
-  /**
-   * Execute tool calls respecting dependencies.
-   * Calls with no dependencies run in parallel up to maxConcurrent.
-   */
+  analyze(tasks: ToolTask[]): ExecutionPlan {
+    const { waves, hasCycle } = buildExecutionWaves(tasks);
+
+    if (hasCycle) {
+      logger.warn(
+        { tasks: tasks.length },
+        "[ParallelToolExecutor] Circular dependency detected — some tasks may not run"
+      );
+    }
+
+    // Estimate times (assume 1s per task as baseline)
+    const avgTaskMs = 1_000;
+    const estimatedParallelMs = waves.length * avgTaskMs;
+    const estimatedSequentialMs = tasks.length * avgTaskMs;
+    const parallelismGain =
+      estimatedSequentialMs > 0
+        ? estimatedSequentialMs / Math.max(estimatedParallelMs, 1)
+        : 1;
+
+    return {
+      planId: randomUUID(),
+      tasks,
+      waves,
+      estimatedParallelMs,
+      estimatedSequentialMs,
+      parallelismGain,
+    };
+  }
+
+  // ── Execution ─────────────────────────────────────────────────────────────────
+
   async execute(
-    calls: ToolCallRequest[],
-    executor: ToolExecutor,
-    ctx: ToolContext,
-    dependencies?: Map<string, string[]>
-  ): Promise<ParallelExecutionResult> {
-    const startMs = Date.now();
+    tasks: ToolTask[],
+    sessionId = randomUUID()
+  ): Promise<ExecutionSession> {
+    const plan = this.analyze(tasks);
 
-    if (calls.length === 0) {
-      return {
-        dagId: randomUUID(),
-        totalTools: 0,
-        succeeded: 0,
-        failed: 0,
-        cancelled: 0,
-        results: new Map(),
-        durationMs: 0,
-      };
-    }
+    const session: ExecutionSession = {
+      sessionId,
+      plan,
+      status: "running",
+      results: new Map(),
+      startedAt: Date.now(),
+      failedTaskIds: [],
+      skippedTaskIds: [],
+    };
 
-    const dag = buildDAG(calls, dependencies);
+    this.sessions.set(sessionId, session);
+    this.activeSessions.add(sessionId);
 
-    if (hasCycles(dag)) {
-      throw new Error("[ParallelToolExecutor] Dependency graph has cycles — cannot execute");
-    }
+    logger.info(
+      {
+        sessionId,
+        tasks: tasks.length,
+        waves: plan.waves.length,
+        parallelismGain: plan.parallelismGain.toFixed(1) + "x",
+      },
+      "[ParallelToolExecutor] Execution started"
+    );
 
-    Logger.info("[ParallelToolExecutor] Starting parallel execution", {
-      dagId: dag.id,
-      toolCount: calls.length,
-      maxConcurrent: this.maxConcurrent,
-    });
-
-    const levels = topologicalLevels(dag);
-    const results = new Map<string, ToolResult | Error>();
-
-    // Overall timeout
-    let timedOut = false;
-    const totalTimer = setTimeout(() => {
-      timedOut = true;
-      Logger.warn("[ParallelToolExecutor] Overall timeout reached", { dagId: dag.id });
-    }, this.totalTimeoutMs);
+    this.emit("execution:started", { sessionId, taskCount: tasks.length });
 
     try {
-      for (const level of levels) {
-        if (timedOut) {
-          // Cancel remaining
-          for (const id of level) {
-            const node = dag.nodes.get(id)!;
-            node.status = "cancelled";
-            results.set(id, new Error("Cancelled: overall timeout exceeded"));
-            this.onProgress?.(id, "cancelled");
+      await this.runWaves(session, plan);
+
+      session.status =
+        session.failedTaskIds.length > 0 ? "failed" : "completed";
+    } catch (err) {
+      session.status = "failed";
+      logger.error({ err, sessionId }, "[ParallelToolExecutor] Execution error");
+    } finally {
+      session.completedAt = Date.now();
+      this.activeSessions.delete(sessionId);
+
+      logger.info(
+        {
+          sessionId,
+          status: session.status,
+          completed: [...session.results.values()].filter((r) => r.status === "completed").length,
+          failed: session.failedTaskIds.length,
+          skipped: session.skippedTaskIds.length,
+          durationMs: session.completedAt - session.startedAt,
+        },
+        "[ParallelToolExecutor] Execution finished"
+      );
+
+      this.emit("execution:finished", {
+        sessionId,
+        status: session.status,
+        results: Object.fromEntries(session.results),
+      });
+    }
+
+    return session;
+  }
+
+  private async runWaves(
+    session: ExecutionSession,
+    plan: ExecutionPlan
+  ): Promise<void> {
+    const taskMap = new Map(plan.tasks.map((t) => [t.taskId, t]));
+
+    for (const wave of plan.waves) {
+      if (session.status === "cancelled") break;
+
+      // Filter out tasks that should be skipped due to failed deps
+      const tasksToRun: ToolTask[] = [];
+      for (const taskId of wave) {
+        const task = taskMap.get(taskId);
+        if (!task) continue;
+
+        const hasFailed = task.dependencies.some((dep) =>
+          session.failedTaskIds.includes(dep)
+        );
+
+        if (hasFailed) {
+          if (task.skipOnDependencyFailure) {
+            session.skippedTaskIds.push(taskId);
+            session.results.set(taskId, this.buildSkippedResult(task));
+            this.emit("task:skipped", { sessionId: session.sessionId, taskId });
+          } else {
+            const err = `Dependency failed: ${task.dependencies.find((d) => session.failedTaskIds.includes(d))}`;
+            session.failedTaskIds.push(taskId);
+            session.results.set(taskId, this.buildFailedResult(task, err));
+            this.emit("task:failed", { sessionId: session.sessionId, taskId, error: err });
           }
           continue;
         }
 
-        // Execute level in batches of maxConcurrent
-        await this.executeLevelInBatches(level, dag, executor, ctx, results, () => timedOut);
+        tasksToRun.push(task);
       }
-    } finally {
-      clearTimeout(totalTimer);
+
+      if (tasksToRun.length === 0) continue;
+
+      this.emit("wave:started", {
+        sessionId: session.sessionId,
+        wave: plan.waves.indexOf(wave),
+        taskCount: tasksToRun.length,
+      });
+
+      // Respect concurrency limit
+      const maxConcurrent = this.options.maxConcurrentTasks ?? 10;
+      const chunks = this.chunkArray(tasksToRun, maxConcurrent);
+
+      for (const chunk of chunks) {
+        const chunkResults = await Promise.allSettled(
+          chunk.map((task) => this.runTask(task, session))
+        );
+
+        for (let i = 0; i < chunkResults.length; i++) {
+          const settled = chunkResults[i];
+          const task = chunk[i];
+
+          if (settled.status === "rejected") {
+            // Unexpected executor-level error
+            const error = String(settled.reason);
+            session.failedTaskIds.push(task.taskId);
+            session.results.set(task.taskId, this.buildFailedResult(task, error));
+            logger.error(
+              { taskId: task.taskId, error },
+              "[ParallelToolExecutor] Unexpected executor error"
+            );
+          }
+          // Successful results are already stored inside runTask
+        }
+      }
+
+      this.emit("wave:completed", {
+        sessionId: session.sessionId,
+        wave: plan.waves.indexOf(wave),
+      });
     }
-
-    let succeeded = 0;
-    let failed = 0;
-    let cancelled = 0;
-
-    for (const [, node] of dag.nodes) {
-      if (node.status === "success") succeeded++;
-      else if (node.status === "failed") failed++;
-      else if (node.status === "cancelled") cancelled++;
-    }
-
-    const durationMs = Date.now() - startMs;
-
-    Logger.info("[ParallelToolExecutor] Execution complete", {
-      dagId: dag.id,
-      succeeded,
-      failed,
-      cancelled,
-      durationMs,
-    });
-
-    return {
-      dagId: dag.id,
-      totalTools: calls.length,
-      succeeded,
-      failed,
-      cancelled,
-      results,
-      durationMs,
-    };
   }
 
-  /**
-   * Analyse a list of tool calls and infer dependencies based on tool names.
-   * Heuristic: write tools depend on prior read tools of the same resource.
-   */
-  inferDependencies(calls: ToolCallRequest[]): Map<string, string[]> {
-    const deps = new Map<string, string[]>();
-    const writersOf = new Map<string, string[]>(); // resource key → writer ids
+  // ── Single task execution ─────────────────────────────────────────────────────
 
-    for (const call of calls) {
-      deps.set(call.id, []);
+  private async runTask(
+    task: ToolTask,
+    session: ExecutionSession
+  ): Promise<void> {
+    const startedAt = Date.now();
+
+    logger.debug(
+      { taskId: task.taskId, tool: task.toolName },
+      "[ParallelToolExecutor] Task started"
+    );
+
+    this.emit("task:started", {
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      toolName: task.toolName,
+    });
+
+    const handler = this.handlers.get(task.toolName);
+
+    if (!handler) {
+      const error = `No handler registered for tool '${task.toolName}'`;
+      session.failedTaskIds.push(task.taskId);
+      session.results.set(
+        task.taskId,
+        this.buildFailedResult(task, error, startedAt)
+      );
+      this.emit("task:failed", {
+        sessionId: session.sessionId,
+        taskId: task.taskId,
+        error,
+      });
+      return;
     }
 
-    // Simple heuristic: tools with "write"/"create"/"delete" depend on prior reads of same resource
-    for (let i = 0; i < calls.length; i++) {
-      const call = calls[i];
-      const isWrite = /write|create|delete|update|save/i.test(call.name);
-      const isRead = /read|fetch|search|list|get/i.test(call.name);
-      const resourceKey = this.extractResourceKey(call);
-
-      if (isRead) {
-        // Mark resource as "recently read" — writes after this should depend on it
-        const writers = writersOf.get(resourceKey) ?? [];
-        writers.push(call.id);
-        writersOf.set(resourceKey, writers);
+    // Collect dependency results to pass as context
+    const dependencyResults = new Map<string, unknown>();
+    for (const depId of task.dependencies) {
+      const depResult = session.results.get(depId);
+      if (depResult?.result !== undefined) {
+        dependencyResults.set(depId, depResult.result);
       }
+    }
 
-      if (isWrite && resourceKey) {
-        // Depend on all prior reads of same resource
-        const priorReads = writersOf.get(resourceKey) ?? [];
-        const myDeps = deps.get(call.id)!;
-        for (const rid of priorReads) {
-          if (rid !== call.id && !myDeps.includes(rid)) {
-            myDeps.push(rid);
-          }
+    let attempt = 0;
+    const maxRetries =
+      task.maxRetries ?? this.options.defaultMaxRetries ?? 2;
+
+    while (attempt <= maxRetries) {
+      try {
+        const result = await this.withTimeout(
+          handler(task.toolName, task.input, {
+            taskId: task.taskId,
+            sessionId: session.sessionId,
+            dependencyResults,
+          }),
+          task.timeoutMs ?? this.options.defaultTimeoutMs ?? 30_000,
+          task.taskId
+        );
+
+        const completedAt = Date.now();
+        session.results.set(task.taskId, {
+          taskId: task.taskId,
+          toolName: task.toolName,
+          status: "completed",
+          result,
+          startedAt,
+          completedAt,
+          durationMs: completedAt - startedAt,
+          retryCount: attempt,
+          input: task.input,
+        });
+
+        logger.debug(
+          { taskId: task.taskId, durationMs: completedAt - startedAt },
+          "[ParallelToolExecutor] Task completed"
+        );
+
+        this.emit("task:completed", {
+          sessionId: session.sessionId,
+          taskId: task.taskId,
+          result,
+        });
+        return;
+      } catch (err) {
+        attempt++;
+        const isTransient = this.isTransientError(err);
+
+        if (attempt <= maxRetries && isTransient) {
+          logger.warn(
+            { taskId: task.taskId, attempt, error: String(err) },
+            "[ParallelToolExecutor] Retrying task"
+          );
+          this.emit("task:retry", {
+            sessionId: session.sessionId,
+            taskId: task.taskId,
+            attempt,
+          });
+          await this.delay(this.options.retryDelayMs ?? 500);
+        } else {
+          const error = String(err);
+          session.failedTaskIds.push(task.taskId);
+          session.results.set(
+            task.taskId,
+            this.buildFailedResult(task, error, startedAt)
+          );
+
+          logger.warn(
+            { taskId: task.taskId, attempts: attempt, error },
+            "[ParallelToolExecutor] Task failed"
+          );
+
+          this.emit("task:failed", {
+            sessionId: session.sessionId,
+            taskId: task.taskId,
+            error,
+          });
+          return;
         }
       }
     }
-
-    return deps;
   }
 
-  // ─── Private helpers ──────────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────────
 
-  private async executeLevelInBatches(
-    level: string[],
-    dag: ExecutionDAG,
-    executor: ToolExecutor,
-    ctx: ToolContext,
-    results: Map<string, ToolResult | Error>,
-    isTimedOut: () => boolean
-  ): Promise<void> {
-    // Split level into batches of maxConcurrent
-    for (let batchStart = 0; batchStart < level.length; batchStart += this.maxConcurrent) {
-      if (isTimedOut()) break;
-
-      const batch = level.slice(batchStart, batchStart + this.maxConcurrent);
-      await Promise.allSettled(
-        batch.map((id) => this.executeSingleNode(id, dag, executor, ctx, results))
+  private withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    taskId: string
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`Task '${taskId}' timed out after ${timeoutMs}ms`)),
+        timeoutMs
       );
-    }
-  }
-
-  private async executeSingleNode(
-    id: string,
-    dag: ExecutionDAG,
-    executor: ToolExecutor,
-    ctx: ToolContext,
-    results: Map<string, ToolResult | Error>
-  ): Promise<void> {
-    const node = dag.nodes.get(id)!;
-
-    // Check if any dependency failed — if so, cancel this node
-    for (const depId of node.dependsOn) {
-      const depNode = dag.nodes.get(depId);
-      if (depNode && (depNode.status === "failed" || depNode.status === "cancelled")) {
-        node.status = "cancelled";
-        const err = new Error(`Cancelled: dependency "${depId}" failed`);
-        results.set(id, err);
-        this.onProgress?.(id, "cancelled");
-        Logger.debug("[ParallelToolExecutor] Node cancelled due to failed dependency", { id, depId });
-        return;
-      }
-    }
-
-    node.status = "running";
-    node.startedAt = new Date();
-    this.onProgress?.(id, "running");
-
-    try {
-      const result = await this.withTimeout(
-        executor.execute(node.call, ctx),
-        this.toolTimeoutMs,
-        `Tool "${node.call.name}" timed out after ${this.toolTimeoutMs}ms`
-      );
-
-      node.status = result.success ? "success" : "failed";
-      node.result = result;
-      results.set(id, result);
-      this.onProgress?.(id, node.status);
-
-      Logger.debug("[ParallelToolExecutor] Tool completed", {
-        id,
-        name: node.call.name,
-        status: node.status,
-        latencyMs: Date.now() - node.startedAt!.getTime(),
-      });
-    } catch (err: any) {
-      node.status = "failed";
-      node.error = err instanceof Error ? err : new Error(String(err));
-      results.set(id, node.error);
-      this.onProgress?.(id, "failed");
-
-      Logger.error("[ParallelToolExecutor] Tool execution failed", {
-        id,
-        name: node.call.name,
-        error: err?.message,
-      });
-    } finally {
-      node.completedAt = new Date();
-      node.latencyMs = node.completedAt.getTime() - (node.startedAt?.getTime() ?? 0);
-    }
-  }
-
-  private withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(message)), ms);
       promise.then(
-        (v) => { clearTimeout(timer); resolve(v); },
-        (e) => { clearTimeout(timer); reject(e); }
+        (value) => { clearTimeout(timer); resolve(value); },
+        (err) => { clearTimeout(timer); reject(err); }
       );
     });
   }
 
-  private extractResourceKey(call: ToolCallRequest): string {
-    // Try to extract a resource name from the tool input (file path, URL, etc.)
-    const input = call.input;
-    const candidates = [input.path, input.url, input.file, input.resource, input.key];
-    for (const c of candidates) {
-      if (typeof c === "string" && c.length > 0) return c.toLowerCase();
-    }
-    return call.name;
+  private isTransientError(err: unknown): boolean {
+    const msg = String(err).toLowerCase();
+    return (
+      msg.includes("timeout") ||
+      msg.includes("econnreset") ||
+      msg.includes("econnrefused") ||
+      msg.includes("rate limit") ||
+      msg.includes("503") ||
+      msg.includes("429")
+    );
   }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private chunkArray<T>(arr: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) {
+      chunks.push(arr.slice(i, i + size));
+    }
+    return chunks;
+  }
+
+  private buildFailedResult(
+    task: ToolTask,
+    error: string,
+    startedAt = Date.now()
+  ): ToolExecutionResult {
+    return {
+      taskId: task.taskId,
+      toolName: task.toolName,
+      status: "failed",
+      error,
+      startedAt,
+      completedAt: Date.now(),
+      durationMs: Date.now() - startedAt,
+      retryCount: task.retryCount,
+      input: task.input,
+    };
+  }
+
+  private buildSkippedResult(task: ToolTask): ToolExecutionResult {
+    const now = Date.now();
+    return {
+      taskId: task.taskId,
+      toolName: task.toolName,
+      status: "skipped",
+      startedAt: now,
+      completedAt: now,
+      durationMs: 0,
+      retryCount: 0,
+      input: task.input,
+    };
+  }
+
+  // ── Session control ───────────────────────────────────────────────────────────
+
+  cancelSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.status !== "running") return;
+    session.status = "cancelled";
+    this.emit("execution:cancelled", { sessionId });
+    logger.info({ sessionId }, "[ParallelToolExecutor] Session cancelled");
+  }
+
+  // ── Queries ───────────────────────────────────────────────────────────────────
+
+  getSession(sessionId: string): ExecutionSession | null {
+    return this.sessions.get(sessionId) ?? null;
+  }
+
+  getTaskResult(sessionId: string, taskId: string): ToolExecutionResult | null {
+    return this.sessions.get(sessionId)?.results.get(taskId) ?? null;
+  }
+
+  getProgress(sessionId: string): {
+    total: number;
+    completed: number;
+    failed: number;
+    skipped: number;
+    running: number;
+    percentage: number;
+  } | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const total = session.plan.tasks.length;
+    const results = [...session.results.values()];
+    const completed = results.filter((r) => r.status === "completed").length;
+    const failed = results.filter((r) => r.status === "failed").length;
+    const skipped = results.filter((r) => r.status === "skipped").length;
+    const finished = completed + failed + skipped;
+
+    return {
+      total,
+      completed,
+      failed,
+      skipped,
+      running: Math.max(0, total - finished),
+      percentage: total > 0 ? Math.round((finished / total) * 100) : 0,
+    };
+  }
+
+  /** Build task array from tool_use blocks returned by ClaudeAgentBackbone */
+  static buildTasksFromToolUse(
+    toolUseBlocks: Array<{
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+    }>,
+    dependencyMap: Record<string, string[]> = {},
+    opts: Partial<ToolTask> = {}
+  ): ToolTask[] {
+    return toolUseBlocks.map((block) => ({
+      taskId: block.id,
+      toolName: block.name,
+      input: block.input,
+      dependencies: dependencyMap[block.id] ?? [],
+      skipOnDependencyFailure: false,
+      timeoutMs: 30_000,
+      maxRetries: 2,
+      retryCount: 0,
+      priority: 0,
+      ...opts,
+    }));
+  }
+}
+
+// ─── Singleton ─────────────────────────────────────────────────────────────────
+
+let _instance: ParallelToolExecutor | null = null;
+
+export function getParallelToolExecutor(
+  opts?: ExecutorOptions
+): ParallelToolExecutor {
+  if (!_instance) _instance = new ParallelToolExecutor(opts);
+  return _instance;
 }

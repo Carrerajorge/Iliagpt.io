@@ -1,402 +1,636 @@
-/**
- * ToolDiscoveryEngine — Dynamic tool discovery, capability matching,
- * tool composition, and runtime MCP tool registration.
- */
-
-import Anthropic from "@anthropic-ai/sdk";
-import type { Tool } from "@anthropic-ai/sdk/resources/messages";
+import { EventEmitter } from "events";
 import { randomUUID } from "crypto";
-import { Logger } from "../lib/logger";
-import { FAST_MODEL } from "./ClaudeAgentBackbone";
-import type { ToolDefinition, ToolCapability } from "../agent/toolTypes";
+import pino from "pino";
+import {
+  getClaudeAgentBackbone,
+  CLAUDE_MODELS,
+  type AgentMessage,
+  type ToolDefinition,
+} from "./ClaudeAgentBackbone.js";
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
-export interface DiscoveredTool {
-  id: string;
+const logger = pino({ name: "ToolDiscoveryEngine" });
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface DiscoverableTool extends ToolDefinition {
+  toolId: string;
+  sourceServer?: string; // MCP server name
+  category: string;
+  tags: string[];
+  /** Normalized embedding vector (1536-dim or TF-IDF sparse) */
+  embedding?: number[];
+  /** How often this tool has been used */
+  usageCount: number;
+  /** Average success rate 0-1 */
+  successRate: number;
+  /** Average latency in ms */
+  avgLatencyMs: number;
+  /** When this tool was registered */
+  registeredAt: number;
+  /** Last time it was used */
+  lastUsedAt?: number;
+  /** Output schema (JSON Schema) */
+  outputSchema?: Record<string, unknown>;
+  /** If true, tool is available; false = offline/disabled */
+  available: boolean;
+}
+
+export interface MCPServerConfig {
+  serverId: string;
   name: string;
-  description: string;
-  capabilities: ToolCapability[];
-  inputSchema: Record<string, unknown>;
-  outputDescription: string;
-  source: "builtin" | "mcp" | "dynamic";
-  mcpServer?: string;
-  registeredAt: Date;
-  lastUsedAt?: Date;
-  useCount: number;
-  averageLatencyMs?: number;
+  transport: "stdio" | "sse" | "http";
+  endpoint?: string; // for sse/http
+  command?: string; // for stdio
+  args?: string[];
+  env?: Record<string, string>;
+  capabilities?: string[];
 }
 
-export interface ToolCompositionChain {
-  id: string;
-  description: string;
-  steps: Array<{
-    toolName: string;
-    purpose: string;
-    outputMapping?: Record<string, string>; // maps output field to next tool input field
-  }>;
-}
-
-export interface ToolRecommendation {
-  tool: DiscoveredTool;
+export interface ToolMatch {
+  tool: DiscoverableTool;
   relevanceScore: number; // 0-1
-  reason: string;
+  matchReason: string;
   suggestedInput?: Record<string, unknown>;
 }
 
-export interface ToolCompatibilityCheck {
-  compatible: boolean;
-  outputTool: string;
-  inputTool: string;
-  issues: string[];
-  suggestions: string[];
+export interface ToolComposition {
+  compositionId: string;
+  name: string;
+  description: string;
+  steps: Array<{
+    stepId: string;
+    toolId: string;
+    toolName: string;
+    inputMapping: Record<string, string>; // target field → source (prior step result or input)
+    description: string;
+  }>;
+  createdAt: number;
 }
 
-// ─── ToolDiscoveryEngine ───────────────────────────────────────────────────────
-export class ToolDiscoveryEngine {
-  private readonly client: Anthropic;
-  private readonly registry = new Map<string, DiscoveredTool>();
-  private readonly mcpServers = new Map<string, { url: string; connected: boolean }>();
+export interface DiscoveryQuery {
+  taskDescription: string;
+  requiredCapabilities?: string[];
+  preferredCategories?: string[];
+  excludeTools?: string[];
+  maxResults?: number;
+  minSuccessRate?: number;
+}
 
-  constructor() {
-    this.client = new Anthropic();
+// ─── TF-IDF vector helpers ────────────────────────────────────────────────────
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s_-]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 2);
+}
+
+function buildTFIDF(
+  terms: string[],
+  corpus: string[][]
+): Map<string, number> {
+  const tf = new Map<string, number>();
+  for (const term of terms) {
+    tf.set(term, (tf.get(term) ?? 0) + 1);
   }
 
-  // ─── Registration ────────────────────────────────────────────────────────────
+  const idf = new Map<string, number>();
+  const docCount = corpus.length;
+  for (const [term, count] of tf.entries()) {
+    const docsWithTerm = corpus.filter((doc) => doc.includes(term)).length;
+    idf.set(term, Math.log((docCount + 1) / (docsWithTerm + 1)) + 1);
+    tf.set(term, (count / terms.length) * (idf.get(term) ?? 1));
+  }
 
-  /** Register a built-in tool definition. */
-  registerBuiltin(def: ToolDefinition): void {
-    const tool: DiscoveredTool = {
-      id: randomUUID(),
-      name: def.name,
-      description: def.description,
-      capabilities: def.capabilities ?? [],
-      inputSchema: def.inputSchema ? this.zodToJsonSchema(def.inputSchema) : {},
-      outputDescription: "See tool documentation.",
-      source: "builtin",
-      registeredAt: new Date(),
-      useCount: 0,
+  return tf;
+}
+
+function cosineSimilarity(a: Map<string, number>, b: Map<string, number>): number {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (const [term, valA] of a.entries()) {
+    const valB = b.get(term) ?? 0;
+    dot += valA * valB;
+    normA += valA * valA;
+  }
+  for (const valB of b.values()) {
+    normB += valB * valB;
+  }
+
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom > 0 ? dot / denom : 0;
+}
+
+// ─── ToolDiscoveryEngine ──────────────────────────────────────────────────────
+
+export class ToolDiscoveryEngine extends EventEmitter {
+  private tools = new Map<string, DiscoverableTool>(); // toolId → tool
+  private nameIndex = new Map<string, string>(); // name → toolId
+  private mcpServers = new Map<string, MCPServerConfig>(); // serverId → config
+  private compositions = new Map<string, ToolComposition>(); // compositionId → comp
+  /** TF-IDF corpus: tokenized tool descriptions */
+  private corpus: string[][] = [];
+  private corpusDirty = true;
+
+  constructor(
+    private readonly backbone = getClaudeAgentBackbone()
+  ) {
+    super();
+    logger.info("[ToolDiscoveryEngine] Initialized");
+  }
+
+  // ── Tool registration ─────────────────────────────────────────────────────────
+
+  registerTool(
+    tool: Omit<DiscoverableTool, "toolId" | "usageCount" | "successRate" | "avgLatencyMs" | "registeredAt">
+  ): DiscoverableTool {
+    const existing = this.nameIndex.get(tool.name);
+    if (existing) {
+      // Update existing tool
+      const current = this.tools.get(existing)!;
+      const updated: DiscoverableTool = {
+        ...current,
+        ...tool,
+        toolId: current.toolId,
+        registeredAt: current.registeredAt,
+      };
+      this.tools.set(current.toolId, updated);
+      this.corpusDirty = true;
+      logger.debug({ toolId: current.toolId, name: tool.name }, "[ToolDiscoveryEngine] Tool updated");
+      return updated;
+    }
+
+    const registered: DiscoverableTool = {
+      ...tool,
+      toolId: randomUUID(),
+      usageCount: 0,
+      successRate: 1.0,
+      avgLatencyMs: 0,
+      registeredAt: Date.now(),
+      available: tool.available ?? true,
     };
-    this.registry.set(def.name, tool);
-    Logger.info("[ToolDiscovery] Registered builtin tool", { name: def.name });
+
+    this.tools.set(registered.toolId, registered);
+    this.nameIndex.set(tool.name, registered.toolId);
+    this.corpusDirty = true;
+
+    logger.info(
+      { toolId: registered.toolId, name: tool.name, category: tool.category },
+      "[ToolDiscoveryEngine] Tool registered"
+    );
+
+    this.emit("tool:registered", { toolId: registered.toolId, name: tool.name });
+    return registered;
   }
 
-  /** Register a tool discovered from an MCP server. */
-  registerMcpTool(
-    serverName: string,
-    name: string,
-    description: string,
-    inputSchema: Record<string, unknown>,
-    outputDescription: string
-  ): void {
-    const tool: DiscoveredTool = {
-      id: randomUUID(),
-      name: `${serverName}__${name}`,
-      description,
-      capabilities: this.inferCapabilities(description),
-      inputSchema,
-      outputDescription,
-      source: "mcp",
-      mcpServer: serverName,
-      registeredAt: new Date(),
-      useCount: 0,
-    };
-    this.registry.set(tool.name, tool);
-    Logger.info("[ToolDiscovery] Registered MCP tool", { name: tool.name, server: serverName });
+  registerTools(tools: Parameters<ToolDiscoveryEngine["registerTool"]>[0][]): DiscoverableTool[] {
+    return tools.map((t) => this.registerTool(t));
   }
 
-  /** Deregister a tool by name. */
-  deregister(toolName: string): boolean {
-    const removed = this.registry.delete(toolName);
-    if (removed) Logger.info("[ToolDiscovery] Deregistered tool", { name: toolName });
-    return removed;
+  deregisterTool(toolId: string): void {
+    const tool = this.tools.get(toolId);
+    if (!tool) return;
+    this.tools.delete(toolId);
+    this.nameIndex.delete(tool.name);
+    this.corpusDirty = true;
+    this.emit("tool:deregistered", { toolId, name: tool.name });
   }
 
-  /** Connect to an MCP server and import its tools (stub — implement MCP client call). */
-  async connectMcpServer(serverName: string, serverUrl: string): Promise<number> {
-    this.mcpServers.set(serverName, { url: serverUrl, connected: false });
-
-    // In a real implementation, call the MCP server's tools/list endpoint
-    // and call registerMcpTool for each. Here we mark connected and return 0.
-    this.mcpServers.get(serverName)!.connected = true;
-    Logger.info("[ToolDiscovery] MCP server connected (stub)", { serverName, serverUrl });
-    return 0; // number of tools imported
-  }
-
-  // ─── Discovery ───────────────────────────────────────────────────────────────
-
-  /** Return all registered tools. */
-  listAll(): DiscoveredTool[] {
-    return Array.from(this.registry.values());
-  }
-
-  /** Return tools filtered by capability. */
-  byCapability(capability: ToolCapability): DiscoveredTool[] {
-    return this.listAll().filter((t) => t.capabilities.includes(capability));
-  }
-
-  /** Convert registered tools to Anthropic Tool format for API calls. */
-  toAnthropicTools(toolNames?: string[]): Tool[] {
-    const tools = toolNames
-      ? toolNames.map((n) => this.registry.get(n)).filter(Boolean) as DiscoveredTool[]
-      : this.listAll();
-
-    return tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.inputSchema as any,
-    }));
-  }
-
-  // ─── Capability matching ─────────────────────────────────────────────────────
-
-  /** Find tools that can solve a natural-language sub-task description. */
-  async matchToSubTask(subTaskDescription: string): Promise<ToolRecommendation[]> {
-    const allTools = this.listAll();
-    if (allTools.length === 0) return [];
-
-    const toolListText = allTools
-      .map((t) => `- ${t.name}: ${t.description}`)
-      .join("\n");
-
-    const prompt = `Given this sub-task, rank the most relevant tools (max 5).
-
-SUB-TASK: ${subTaskDescription}
-
-AVAILABLE TOOLS:
-${toolListText}
-
-Return JSON array:
-[
-  {
-    "tool_name": "name",
-    "relevance_score": 0.0-1.0,
-    "reason": "why this tool fits",
-    "suggested_input": {}
-  }
-]
-
-Only include tools with relevance_score >= 0.5.`;
-
-    try {
-      const response = await this.client.messages.create({
-        model: FAST_MODEL,
-        max_tokens: 1024,
-        messages: [{ role: "user", content: prompt }],
-      });
-
-      const textBlock = response.content.find((b) => b.type === "text");
-      const text = textBlock?.type === "text" ? textBlock.text : "[]";
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      const parsed: any[] = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
-
-      return parsed
-        .map((item) => {
-          const tool = this.registry.get(item.tool_name);
-          if (!tool) return null;
-          return {
-            tool,
-            relevanceScore: item.relevance_score ?? 0,
-            reason: item.reason ?? "",
-            suggestedInput: item.suggested_input,
-          } as ToolRecommendation;
-        })
-        .filter(Boolean) as ToolRecommendation[];
-    } catch (err) {
-      Logger.error("[ToolDiscovery] matchToSubTask failed", err);
-      return [];
+  setToolAvailability(toolId: string, available: boolean): void {
+    const tool = this.tools.get(toolId);
+    if (tool) {
+      tool.available = available;
+      this.emit("tool:availability_changed", { toolId, available });
     }
   }
 
-  // ─── Composition ─────────────────────────────────────────────────────────────
+  // ── MCP server integration ────────────────────────────────────────────────────
 
-  /** Generate a composition chain to accomplish a goal from available tools. */
-  async composeChain(goal: string, availableToolNames: string[]): Promise<ToolCompositionChain> {
-    const tools = availableToolNames
-      .map((n) => this.registry.get(n))
-      .filter(Boolean) as DiscoveredTool[];
+  registerMCPServer(config: MCPServerConfig): void {
+    this.mcpServers.set(config.serverId, config);
+    logger.info(
+      { serverId: config.serverId, name: config.name },
+      "[ToolDiscoveryEngine] MCP server registered"
+    );
+    this.emit("mcp:registered", config);
+  }
 
-    const toolListText = tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
+  async discoverFromMCPServer(serverId: string): Promise<DiscoverableTool[]> {
+    const server = this.mcpServers.get(serverId);
+    if (!server) throw new Error(`MCP server '${serverId}' not registered`);
 
-    const prompt = `Design a tool chain to accomplish the goal.
+    logger.info({ serverId, name: server.name }, "[ToolDiscoveryEngine] Discovering tools from MCP server");
 
-GOAL: ${goal}
+    // Use LLM to infer tools from server capabilities description
+    // In a real impl, this would call the MCP protocol's tools/list endpoint
+    const messages: AgentMessage[] = [
+      {
+        role: "user",
+        content: `Infer likely tools available from this MCP server configuration.
+
+SERVER: ${server.name}
+CAPABILITIES: ${JSON.stringify(server.capabilities ?? [])}
+TRANSPORT: ${server.transport}
+
+Generate 2-4 realistic tool definitions for this server.
+Output JSON array: [{ "name": "...", "description": "...", "category": "...", "tags": ["..."], "inputSchema": { "type": "object", "properties": {}, "required": [] } }]
+
+Return ONLY valid JSON array.`,
+      },
+    ];
+
+    const response = await this.backbone.call(messages, {
+      model: CLAUDE_MODELS.HAIKU,
+      maxTokens: 1024,
+      system: "Generate realistic MCP tool definitions based on server capabilities.",
+    });
+
+    const discovered: DiscoverableTool[] = [];
+    try {
+      const jsonMatch = response.text.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]) as Array<{
+          name?: string;
+          description?: string;
+          category?: string;
+          tags?: string[];
+          inputSchema?: Record<string, unknown>;
+        }>;
+        for (const t of parsed) {
+          if (!t.name || !t.description) continue;
+          const tool = this.registerTool({
+            name: t.name,
+            description: t.description,
+            category: t.category ?? "mcp",
+            tags: t.tags ?? [],
+            inputSchema: t.inputSchema ?? { type: "object", properties: {}, required: [] },
+            sourceServer: serverId,
+            available: true,
+          });
+          discovered.push(tool);
+        }
+      }
+    } catch (err) {
+      logger.error({ err, serverId }, "[ToolDiscoveryEngine] Failed to parse MCP tools");
+    }
+
+    logger.info(
+      { serverId, discovered: discovered.length },
+      "[ToolDiscoveryEngine] MCP discovery complete"
+    );
+
+    return discovered;
+  }
+
+  // ── Tool search ───────────────────────────────────────────────────────────────
+
+  async findTools(query: DiscoveryQuery): Promise<ToolMatch[]> {
+    const {
+      taskDescription,
+      requiredCapabilities = [],
+      preferredCategories = [],
+      excludeTools = [],
+      maxResults = 5,
+      minSuccessRate = 0,
+    } = query;
+
+    // Rebuild corpus if stale
+    if (this.corpusDirty) this.rebuildCorpus();
+
+    const available = Array.from(this.tools.values()).filter(
+      (t) =>
+        t.available &&
+        !excludeTools.includes(t.toolId) &&
+        !excludeTools.includes(t.name) &&
+        t.successRate >= minSuccessRate
+    );
+
+    if (available.length === 0) return [];
+
+    // Tokenize query
+    const corpusTokenized = available.map((t) =>
+      tokenize(`${t.name} ${t.description} ${t.tags.join(" ")} ${t.category}`)
+    );
+    const queryTokens = tokenize(taskDescription);
+    const queryTF = buildTFIDF(queryTokens, corpusTokenized);
+
+    const matches: ToolMatch[] = [];
+
+    for (let i = 0; i < available.length; i++) {
+      const tool = available[i];
+      const toolTokens = corpusTokenized[i];
+      const toolTF = buildTFIDF(toolTokens, corpusTokenized);
+
+      let relevance = cosineSimilarity(queryTF, toolTF);
+
+      // Boost for preferred categories
+      if (preferredCategories.includes(tool.category)) {
+        relevance = Math.min(1, relevance + 0.15);
+      }
+
+      // Boost for required capabilities (tag match)
+      for (const cap of requiredCapabilities) {
+        if (tool.tags.includes(cap) || tool.description.toLowerCase().includes(cap)) {
+          relevance = Math.min(1, relevance + 0.1);
+        }
+      }
+
+      // Weight by success rate (tools with higher success rate score better)
+      relevance = relevance * (0.7 + tool.successRate * 0.3);
+
+      if (relevance > 0.05) {
+        matches.push({
+          tool,
+          relevanceScore: relevance,
+          matchReason: this.buildMatchReason(tool, taskDescription, relevance),
+        });
+      }
+    }
+
+    // Sort by relevance and return top N
+    matches.sort((a, b) => b.relevanceScore - a.relevanceScore);
+    const topMatches = matches.slice(0, maxResults);
+
+    // Use LLM to suggest input for top matches
+    if (topMatches.length > 0) {
+      await this.enrichWithSuggestedInput(topMatches, taskDescription);
+    }
+
+    logger.info(
+      { query: taskDescription.slice(0, 60), found: topMatches.length },
+      "[ToolDiscoveryEngine] Tool search completed"
+    );
+
+    return topMatches;
+  }
+
+  private async enrichWithSuggestedInput(
+    matches: ToolMatch[],
+    taskDescription: string
+  ): Promise<void> {
+    const topTool = matches[0];
+    if (!topTool) return;
+
+    const messages: AgentMessage[] = [
+      {
+        role: "user",
+        content: `Given this task, suggest input parameters for this tool.
+
+TASK: ${taskDescription}
+
+TOOL: ${topTool.tool.name}
+DESCRIPTION: ${topTool.tool.description}
+INPUT SCHEMA: ${JSON.stringify(topTool.tool.inputSchema, null, 2).slice(0, 500)}
+
+Output JSON object with suggested input values, or {} if no suggestions.
+Return ONLY valid JSON.`,
+      },
+    ];
+
+    try {
+      const response = await this.backbone.call(messages, {
+        model: CLAUDE_MODELS.HAIKU,
+        maxTokens: 256,
+        system: "Suggest tool input parameters for a given task.",
+      });
+
+      const jsonMatch = response.text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        topTool.suggestedInput = JSON.parse(jsonMatch[0]);
+      }
+    } catch {
+      // Non-critical — skip suggested input
+    }
+  }
+
+  private buildMatchReason(
+    tool: DiscoverableTool,
+    query: string,
+    score: number
+  ): string {
+    const parts: string[] = [];
+    if (score > 0.7) parts.push("Strong semantic match");
+    else if (score > 0.4) parts.push("Moderate semantic match");
+    else parts.push("Weak semantic match");
+
+    if (tool.usageCount > 10) parts.push(`used ${tool.usageCount} times`);
+    if (tool.successRate >= 0.9) parts.push(`${(tool.successRate * 100).toFixed(0)}% success rate`);
+
+    return parts.join(", ");
+  }
+
+  private rebuildCorpus(): void {
+    this.corpus = Array.from(this.tools.values()).map((t) =>
+      tokenize(`${t.name} ${t.description} ${t.tags.join(" ")} ${t.category}`)
+    );
+    this.corpusDirty = false;
+  }
+
+  // ── Tool composition ──────────────────────────────────────────────────────────
+
+  async composeTools(
+    taskDescription: string,
+    availableToolIds?: string[]
+  ): Promise<ToolComposition | null> {
+    const toolPool = availableToolIds
+      ? availableToolIds
+          .map((id) => this.tools.get(id))
+          .filter(Boolean) as DiscoverableTool[]
+      : Array.from(this.tools.values()).filter((t) => t.available);
+
+    if (toolPool.length < 2) return null;
+
+    const toolList = toolPool
+      .slice(0, 10)
+      .map((t) => `- ${t.name}: ${t.description}`)
+      .join("\n");
+
+    const messages: AgentMessage[] = [
+      {
+        role: "user",
+        content: `Create a tool composition pipeline for this task.
+
+TASK: ${taskDescription}
 
 AVAILABLE TOOLS:
-${toolListText}
+${toolList}
 
-Return JSON:
+Design a multi-step pipeline using 2-4 of these tools.
+Output JSON:
 {
-  "description": "what the chain accomplishes",
+  "name": "pipeline name",
+  "description": "what this pipeline does",
   "steps": [
     {
-      "tool_name": "name",
-      "purpose": "what this step achieves",
-      "output_mapping": { "output_field": "next_tool_input_field" }
+      "toolName": "tool_name",
+      "inputMapping": { "param": "input.field or step1.result.field" },
+      "description": "what this step does"
     }
   ]
 }
 
-Use the minimum number of steps needed. Each step's output should feed naturally into the next.`;
+Only use tools from the available list. Return ONLY valid JSON.`,
+      },
+    ];
+
+    const response = await this.backbone.call(messages, {
+      model: CLAUDE_MODELS.SONNET,
+      maxTokens: 1024,
+      system:
+        "Design efficient tool composition pipelines. Only use listed tools. Be precise about data flow.",
+    });
 
     try {
-      const response = await this.client.messages.create({
-        model: FAST_MODEL,
-        max_tokens: 1024,
-        messages: [{ role: "user", content: prompt }],
-      });
+      const jsonMatch = response.text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return null;
 
-      const textBlock = response.content.find((b) => b.type === "text");
-      const text = textBlock?.type === "text" ? textBlock.text : "{}";
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      const parsed: any = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
-
-      return {
-        id: randomUUID(),
-        description: String(parsed.description ?? goal),
-        steps: Array.isArray(parsed.steps)
-          ? parsed.steps.map((s: any) => ({
-              toolName: String(s.tool_name ?? ""),
-              purpose: String(s.purpose ?? ""),
-              outputMapping: s.output_mapping ?? {},
-            }))
-          : [],
+      const parsed = JSON.parse(jsonMatch[0]) as {
+        name?: string;
+        description?: string;
+        steps?: Array<{
+          toolName?: string;
+          inputMapping?: Record<string, string>;
+          description?: string;
+        }>;
       };
+
+      if (!parsed.steps || !Array.isArray(parsed.steps)) return null;
+
+      const composition: ToolComposition = {
+        compositionId: randomUUID(),
+        name: String(parsed.name ?? "Custom Pipeline"),
+        description: String(parsed.description ?? taskDescription),
+        steps: parsed.steps
+          .filter((s) => s.toolName && this.nameIndex.has(s.toolName))
+          .map((s) => ({
+            stepId: randomUUID(),
+            toolId: this.nameIndex.get(s.toolName!)!,
+            toolName: s.toolName!,
+            inputMapping: s.inputMapping ?? {},
+            description: String(s.description ?? ""),
+          })),
+        createdAt: Date.now(),
+      };
+
+      if (composition.steps.length < 2) return null;
+
+      this.compositions.set(composition.compositionId, composition);
+
+      logger.info(
+        { compositionId: composition.compositionId, steps: composition.steps.length },
+        "[ToolDiscoveryEngine] Tool composition created"
+      );
+
+      this.emit("composition:created", composition);
+      return composition;
     } catch (err) {
-      Logger.error("[ToolDiscovery] composeChain failed", err);
-      return { id: randomUUID(), description: goal, steps: [] };
+      logger.error({ err }, "[ToolDiscoveryEngine] Failed to create composition");
+      return null;
     }
   }
 
-  // ─── Compatibility ────────────────────────────────────────────────────────────
+  // ── Usage tracking ────────────────────────────────────────────────────────────
 
-  /** Check if outputTool's output is compatible as input to inputTool. */
-  checkCompatibility(outputToolName: string, inputToolName: string): ToolCompatibilityCheck {
-    const outputTool = this.registry.get(outputToolName);
-    const inputTool = this.registry.get(inputToolName);
-    const issues: string[] = [];
-    const suggestions: string[] = [];
+  recordToolUsage(
+    toolId: string,
+    success: boolean,
+    latencyMs: number
+  ): void {
+    const tool = this.tools.get(toolId);
+    if (!tool) return;
 
-    if (!outputTool) issues.push(`Output tool "${outputToolName}" not found in registry`);
-    if (!inputTool) issues.push(`Input tool "${inputToolName}" not found in registry`);
+    tool.usageCount++;
+    tool.lastUsedAt = Date.now();
 
-    if (outputTool && inputTool) {
-      // Check for network-required tools in sandboxed chains
-      if (
-        outputTool.capabilities.includes("requires_network") &&
-        inputTool.capabilities.includes("executes_code")
-      ) {
-        suggestions.push("Consider caching network output before passing to code execution");
-      }
+    // Rolling average for success rate (weight recent more)
+    tool.successRate = tool.successRate * 0.9 + (success ? 0.1 : 0);
 
-      if (
-        outputTool.capabilities.includes("produces_artifacts") &&
-        !inputTool.capabilities.includes("reads_files")
-      ) {
-        issues.push(`${outputToolName} produces artifacts but ${inputToolName} may not consume file artifacts`);
-      }
+    // Rolling average for latency
+    tool.avgLatencyMs =
+      tool.avgLatencyMs === 0
+        ? latencyMs
+        : tool.avgLatencyMs * 0.85 + latencyMs * 0.15;
+  }
+
+  // ── Recommendations ───────────────────────────────────────────────────────────
+
+  getRecommendedTools(limit = 10): DiscoverableTool[] {
+    return Array.from(this.tools.values())
+      .filter((t) => t.available)
+      .sort((a, b) => {
+        // Score = usage * successRate / latency_penalty
+        const scoreA = a.usageCount * a.successRate * (1 / (1 + a.avgLatencyMs / 1000));
+        const scoreB = b.usageCount * b.successRate * (1 / (1 + b.avgLatencyMs / 1000));
+        return scoreB - scoreA;
+      })
+      .slice(0, limit);
+  }
+
+  // ── Queries ───────────────────────────────────────────────────────────────────
+
+  getTool(toolIdOrName: string): DiscoverableTool | null {
+    const byId = this.tools.get(toolIdOrName);
+    if (byId) return byId;
+    const id = this.nameIndex.get(toolIdOrName);
+    return id ? (this.tools.get(id) ?? null) : null;
+  }
+
+  listTools(category?: string): DiscoverableTool[] {
+    const all = Array.from(this.tools.values());
+    return category ? all.filter((t) => t.category === category) : all;
+  }
+
+  listCategories(): Array<{ category: string; count: number }> {
+    const counts = new Map<string, number>();
+    for (const tool of this.tools.values()) {
+      counts.set(tool.category, (counts.get(tool.category) ?? 0) + 1);
     }
+    return Array.from(counts.entries())
+      .map(([category, count]) => ({ category, count }))
+      .sort((a, b) => b.count - a.count);
+  }
 
+  getComposition(compositionId: string): ToolComposition | null {
+    return this.compositions.get(compositionId) ?? null;
+  }
+
+  /** Convert to ToolDefinition[] for use with ClaudeAgentBackbone */
+  toToolDefinitions(toolIds?: string[]): ToolDefinition[] {
+    const tools = toolIds
+      ? toolIds.map((id) => this.tools.get(id) ?? this.tools.get(this.nameIndex.get(id) ?? "")).filter(Boolean) as DiscoverableTool[]
+      : Array.from(this.tools.values()).filter((t) => t.available);
+
+    return tools.map(({ name, description, inputSchema }) => ({
+      name,
+      description,
+      inputSchema,
+    }));
+  }
+
+  getStats() {
+    const tools = Array.from(this.tools.values());
     return {
-      compatible: issues.length === 0,
-      outputTool: outputToolName,
-      inputTool: inputToolName,
-      issues,
-      suggestions,
+      totalTools: tools.length,
+      availableTools: tools.filter((t) => t.available).length,
+      mcpServers: this.mcpServers.size,
+      compositions: this.compositions.size,
+      categories: this.listCategories().length,
+      avgSuccessRate:
+        tools.length > 0
+          ? tools.reduce((s, t) => s + t.successRate, 0) / tools.length
+          : 0,
     };
   }
+}
 
-  // ─── Recommendations ─────────────────────────────────────────────────────────
+// ─── Singleton ─────────────────────────────────────────────────────────────────
 
-  /** Suggest tools the user might not know about, relevant to a context. */
-  async recommend(context: string, alreadyUsed: string[] = []): Promise<ToolRecommendation[]> {
-    const unused = this.listAll().filter(
-      (t) => !alreadyUsed.includes(t.name) && t.useCount === 0
-    );
-    if (unused.length === 0) return [];
+let _instance: ToolDiscoveryEngine | null = null;
 
-    const toolListText = unused.slice(0, 20).map((t) => `- ${t.name}: ${t.description}`).join("\n");
-
-    const prompt = `Suggest tools that would be useful but haven't been used yet.
-
-CONTEXT: ${context}
-
-UNUSED TOOLS:
-${toolListText}
-
-Return JSON array of up to 3 recommendations:
-[{ "tool_name": "name", "relevance_score": 0.0-1.0, "reason": "why it would help" }]`;
-
-    try {
-      const response = await this.client.messages.create({
-        model: FAST_MODEL,
-        max_tokens: 512,
-        messages: [{ role: "user", content: prompt }],
-      });
-
-      const textBlock = response.content.find((b) => b.type === "text");
-      const text = textBlock?.type === "text" ? textBlock.text : "[]";
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      const parsed: any[] = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
-
-      return parsed
-        .map((item) => {
-          const tool = this.registry.get(item.tool_name);
-          if (!tool) return null;
-          return {
-            tool,
-            relevanceScore: item.relevance_score ?? 0,
-            reason: item.reason ?? "",
-          } as ToolRecommendation;
-        })
-        .filter(Boolean) as ToolRecommendation[];
-    } catch (err) {
-      Logger.error("[ToolDiscovery] recommend failed", err);
-      return [];
-    }
-  }
-
-  // ─── Metrics tracking ─────────────────────────────────────────────────────────
-
-  /** Record a tool use result for metrics. */
-  recordUse(toolName: string, latencyMs: number): void {
-    const tool = this.registry.get(toolName);
-    if (!tool) return;
-    tool.useCount++;
-    tool.lastUsedAt = new Date();
-    tool.averageLatencyMs =
-      tool.averageLatencyMs === undefined
-        ? latencyMs
-        : Math.round(0.8 * tool.averageLatencyMs + 0.2 * latencyMs);
-  }
-
-  // ─── Private helpers ──────────────────────────────────────────────────────────
-
-  private inferCapabilities(description: string): ToolCapability[] {
-    const caps: ToolCapability[] = [];
-    const d = description.toLowerCase();
-    if (/read|fetch|get|retrieve|search/.test(d)) caps.push("reads_files");
-    if (/write|save|create|generate/.test(d)) caps.push("writes_files");
-    if (/web|http|url|internet/.test(d)) caps.push("requires_network");
-    if (/api|service|endpoint/.test(d)) caps.push("accesses_external_api");
-    if (/execut|run|code|script/.test(d)) caps.push("executes_code");
-    if (/artifact|output|file|document/.test(d)) caps.push("produces_artifacts");
-    return caps;
-  }
-
-  private zodToJsonSchema(schema: any): Record<string, unknown> {
-    // Minimal zod → JSON Schema conversion for InputSchema
-    try {
-      if (schema && typeof schema._def === "object") {
-        const shape = schema._def.shape?.() ?? {};
-        const properties: Record<string, unknown> = {};
-        const required: string[] = [];
-        for (const [key, value] of Object.entries<any>(shape)) {
-          properties[key] = { type: "string", description: key };
-          if (!value.isOptional?.()) required.push(key);
-        }
-        return { type: "object", properties, required };
-      }
-    } catch {}
-    return { type: "object", properties: {} };
-  }
+export function getToolDiscoveryEngine(): ToolDiscoveryEngine {
+  if (!_instance) _instance = new ToolDiscoveryEngine();
+  return _instance;
 }

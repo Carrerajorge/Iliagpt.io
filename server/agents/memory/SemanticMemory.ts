@@ -1,585 +1,486 @@
-import { randomUUID } from 'crypto';
-import { Logger } from '../../lib/logger';
+import { randomUUID } from "crypto";
+import pino from "pino";
+import { VectorMemoryStore } from "./VectorMemoryStore.js";
 
-// ---------------------------------------------------------------------------
-// Interfaces
-// ---------------------------------------------------------------------------
+const logger = pino({ name: "SemanticMemory" });
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface Entity {
-  id: string;
-  agentId: string;
-  type: string;
-  name: string;
-  attributes: Record<string, unknown>;
-  embedding?: number[];
-  confidence: number; // 0-1
-  sources: string[];
-  createdAt: Date;
-  updatedAt: Date;
-  version: number;
-}
-
-export interface Relationship {
-  id: string;
-  fromEntityId: string;
-  toEntityId: string;
-  type: string;
-  weight: number; // 0-1
-  attributes?: Record<string, unknown>;
-  createdAt: Date;
-  bidirectional: boolean;
-}
-
-export interface InferenceRule {
-  id: string;
-  name: string;
-  pattern: {
-    antecedents: string[]; // relationship types that must exist
-    consequent: string;    // relationship type to infer
-  };
-  confidence: number; // 0-1
-  enabled: boolean;
-}
-
-export interface KnowledgeTriple {
-  subject: string;   // entity name or id
-  predicate: string; // relationship type or attribute key
-  object: string;    // entity name, id, or attribute value
-  confidence: number;
-  source?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Entity query
-// ---------------------------------------------------------------------------
-
-interface EntityQuery {
-  type?: string;
-  name?: string;
-  minConfidence?: number;
-}
-
-// ---------------------------------------------------------------------------
-// BFS path node
-// ---------------------------------------------------------------------------
-
-interface PathNode {
   entityId: string;
-  path: string[];
+  label: string;
+  type: string; // e.g. "person", "organization", "concept", "tool", "location"
+  aliases: string[];
+  properties: Record<string, unknown>;
+  confidence: number; // 0-1
+  createdAt: number;
+  updatedAt: number;
+  sourceEpisodeIds: string[];
 }
 
-// ---------------------------------------------------------------------------
-// SemanticMemory
-// ---------------------------------------------------------------------------
+export interface Relation {
+  relationId: string;
+  subjectId: string; // Entity ID
+  predicate: string; // e.g. "uses", "works_for", "has_property", "is_a"
+  objectId: string | string[]; // Entity ID or literal
+  confidence: number; // 0-1
+  evidenceCount: number;
+  createdAt: number;
+  updatedAt: number;
+  /** IDs of the episodes that provided evidence for this relation */
+  evidenceEpisodeIds: string[];
+}
+
+/** subject-predicate-object triple */
+export type Triple = {
+  subject: string;
+  predicate: string;
+  object: string;
+};
+
+export interface ConflictRecord {
+  conflictId: string;
+  triple: Triple;
+  conflictingTriple: Triple;
+  resolution: "kept_original" | "replaced" | "merged" | "pending";
+  resolvedAt?: number;
+  note?: string;
+}
+
+export interface EntityQuery {
+  label?: string;
+  type?: string;
+  properties?: Record<string, unknown>;
+  topK?: number;
+}
+
+export interface InferenceResult {
+  triple: Triple;
+  confidence: number;
+  basis: string; // human-readable explanation
+}
+
+// ─── SemanticMemory ──────────────────────────────────────────────────────────
 
 export class SemanticMemory {
-  private readonly entities: Map<string, Entity> = new Map();
-  private readonly relationships: Map<string, Relationship> = new Map();
-  private readonly rules: Map<string, InferenceRule> = new Map();
+  private entities = new Map<string, Entity>();
+  /** label → entityId index */
+  private labelIndex = new Map<string, string>();
+  /** type → Set<entityId> */
+  private typeIndex = new Map<string, Set<string>>();
 
-  // Adjacency: entityId -> Set of relationship ids
-  private readonly outgoing: Map<string, Set<string>> = new Map();
-  private readonly incoming: Map<string, Set<string>> = new Map();
+  private relations = new Map<string, Relation>();
+  /** subjectId:predicate → Set<relationId> */
+  private relationIndex = new Map<string, Set<string>>();
 
-  // -------------------------------------------------------------------------
-  // Entity operations
-  // -------------------------------------------------------------------------
+  private conflicts: ConflictRecord[] = [];
 
-  addEntity(
-    entity: Omit<Entity, 'id' | 'createdAt' | 'updatedAt' | 'version'>,
-  ): Entity {
-    const now = new Date();
-    const id = randomUUID();
-    const full: Entity = {
-      ...entity,
-      id,
-      createdAt: now,
-      updatedAt: now,
-      version: 1,
-    };
-    this.entities.set(id, full);
-    this.outgoing.set(id, new Set());
-    this.incoming.set(id, new Set());
-    Logger.debug(
-      `[SemanticMemory] addEntity id=${id} type=${entity.type} name=${entity.name}`,
-    );
-    return { ...full };
+  constructor(
+    private readonly vectorStore: VectorMemoryStore,
+    private readonly agentId: string
+  ) {
+    logger.info({ agentId }, "[SemanticMemory] Initialized");
   }
 
-  updateEntity(id: string, updates: Partial<Entity>): Entity {
-    const existing = this.entities.get(id);
-    if (!existing) {
-      throw new Error(`[SemanticMemory] updateEntity: entity not found id=${id}`);
+  // ── Entities ─────────────────────────────────────────────────────────────────
+
+  async upsertEntity(
+    label: string,
+    type: string,
+    properties: Record<string, unknown> = {},
+    opts: {
+      aliases?: string[];
+      confidence?: number;
+      sourceEpisodeId?: string;
+    } = {}
+  ): Promise<Entity> {
+    const normalizedLabel = label.trim().toLowerCase();
+    const existingId = this.labelIndex.get(normalizedLabel);
+
+    if (existingId) {
+      return this.mergeEntity(existingId, properties, opts);
     }
+
+    const entityId = randomUUID();
+    const entity: Entity = {
+      entityId,
+      label,
+      type,
+      aliases: opts.aliases ?? [],
+      properties,
+      confidence: opts.confidence ?? 0.8,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      sourceEpisodeIds: opts.sourceEpisodeId ? [opts.sourceEpisodeId] : [],
+    };
+
+    this.entities.set(entityId, entity);
+    this.labelIndex.set(normalizedLabel, entityId);
+    for (const alias of entity.aliases) {
+      this.labelIndex.set(alias.toLowerCase(), entityId);
+    }
+
+    if (!this.typeIndex.has(type)) this.typeIndex.set(type, new Set());
+    this.typeIndex.get(type)!.add(entityId);
+
+    // Also index in vector store for fuzzy retrieval
+    await this.vectorStore.upsert({
+      id: `entity:${entityId}`,
+      content: `${label} (${type}): ${JSON.stringify(properties).slice(0, 500)}`,
+      metadata: { entityId, label, type, kind: "entity" },
+      namespace: VectorMemoryStore.agentNamespace(this.agentId),
+      importance: entity.confidence,
+    });
+
+    logger.debug({ entityId, label, type }, "[SemanticMemory] Entity created");
+    return entity;
+  }
+
+  private async mergeEntity(
+    entityId: string,
+    newProperties: Record<string, unknown>,
+    opts: { confidence?: number; sourceEpisodeId?: string; aliases?: string[] }
+  ): Promise<Entity> {
+    const existing = this.entities.get(entityId)!;
+
+    const mergedProps = { ...existing.properties };
+    for (const [k, v] of Object.entries(newProperties)) {
+      if (k in mergedProps && mergedProps[k] !== v) {
+        logger.debug(
+          { entityId, key: k, old: mergedProps[k], new: v },
+          "[SemanticMemory] Property conflict detected, keeping higher confidence value"
+        );
+      }
+      mergedProps[k] = v;
+    }
+
+    const newAliases = [...new Set([...existing.aliases, ...(opts.aliases ?? [])])];
+    const newSources = opts.sourceEpisodeId
+      ? [...new Set([...existing.sourceEpisodeIds, opts.sourceEpisodeId])]
+      : existing.sourceEpisodeIds;
+
     const updated: Entity = {
       ...existing,
-      ...updates,
-      id, // prevent id override
-      createdAt: existing.createdAt,
-      updatedAt: new Date(),
-      version: existing.version + 1,
+      properties: mergedProps,
+      aliases: newAliases,
+      confidence: Math.max(existing.confidence, opts.confidence ?? 0),
+      updatedAt: Date.now(),
+      sourceEpisodeIds: newSources,
     };
-    this.entities.set(id, updated);
-    Logger.debug(`[SemanticMemory] updateEntity id=${id} version=${updated.version}`);
-    return { ...updated };
+
+    this.entities.set(entityId, updated);
+
+    // Update vector store
+    await this.vectorStore.upsert({
+      id: `entity:${entityId}`,
+      content: `${updated.label} (${updated.type}): ${JSON.stringify(updated.properties).slice(0, 500)}`,
+      metadata: { entityId, label: updated.label, type: updated.type, kind: "entity" },
+      namespace: VectorMemoryStore.agentNamespace(this.agentId),
+      importance: updated.confidence,
+    });
+
+    return updated;
   }
 
-  getEntity(id: string): Entity | undefined {
-    const e = this.entities.get(id);
-    return e ? { ...e } : undefined;
+  getEntity(entityId: string): Entity | null {
+    return this.entities.get(entityId) ?? null;
   }
 
-  findEntities(query: EntityQuery): Entity[] {
-    const results: Entity[] = [];
-    for (const entity of this.entities.values()) {
-      if (query.type !== undefined && entity.type !== query.type) continue;
-      if (
-        query.name !== undefined &&
-        !entity.name.toLowerCase().includes(query.name.toLowerCase())
-      )
-        continue;
-      if (
-        query.minConfidence !== undefined &&
-        entity.confidence < query.minConfidence
-      )
-        continue;
-      results.push({ ...entity });
+  findEntity(label: string): Entity | null {
+    const id = this.labelIndex.get(label.trim().toLowerCase());
+    if (!id) return null;
+    return this.entities.get(id) ?? null;
+  }
+
+  async searchEntities(query: EntityQuery): Promise<Entity[]> {
+    const { label, type, topK = 10 } = query;
+
+    let candidates: Entity[] = [];
+
+    if (label) {
+      // Semantic search
+      const result = await this.vectorStore.query(label, {
+        namespace: VectorMemoryStore.agentNamespace(this.agentId),
+        topK: topK * 2,
+        filters: { kind: "entity" },
+      });
+      candidates = result.records
+        .map((r) => this.entities.get(String(r.metadata.entityId)))
+        .filter((e): e is Entity => e !== undefined);
+    } else {
+      candidates = Array.from(this.entities.values());
+    }
+
+    if (type) candidates = candidates.filter((e) => e.type === type);
+
+    if (query.properties) {
+      candidates = candidates.filter((e) =>
+        Object.entries(query.properties!).every(
+          ([k, v]) => e.properties[k] === v
+        )
+      );
+    }
+
+    return candidates.slice(0, topK);
+  }
+
+  getEntitiesByType(type: string): Entity[] {
+    const ids = this.typeIndex.get(type) ?? new Set();
+    return Array.from(ids)
+      .map((id) => this.entities.get(id))
+      .filter((e): e is Entity => e !== undefined);
+  }
+
+  // ── Relations ─────────────────────────────────────────────────────────────────
+
+  async addRelation(
+    subjectId: string,
+    predicate: string,
+    objectId: string | string[],
+    opts: {
+      confidence?: number;
+      evidenceEpisodeId?: string;
+    } = {}
+  ): Promise<Relation> {
+    if (!this.entities.has(subjectId)) {
+      throw new Error(`Subject entity '${subjectId}' does not exist`);
+    }
+
+    // Check for conflicts
+    const existing = this.findRelation(subjectId, predicate);
+    if (existing && existing.objectId !== objectId) {
+      await this.handleConflict(
+        { subject: subjectId, predicate, object: String(existing.objectId) },
+        { subject: subjectId, predicate, object: String(objectId) }
+      );
+    }
+
+    const key = `${subjectId}:${predicate}`;
+    const existingIds = this.relationIndex.get(key) ?? new Set();
+
+    // If same relation already exists, reinforce it
+    for (const relId of existingIds) {
+      const rel = this.relations.get(relId);
+      if (rel && rel.objectId === objectId) {
+        const updated: Relation = {
+          ...rel,
+          confidence: Math.min(1, rel.confidence + 0.05),
+          evidenceCount: rel.evidenceCount + 1,
+          updatedAt: Date.now(),
+          evidenceEpisodeIds: opts.evidenceEpisodeId
+            ? [...new Set([...rel.evidenceEpisodeIds, opts.evidenceEpisodeId])]
+            : rel.evidenceEpisodeIds,
+        };
+        this.relations.set(relId, updated);
+        return updated;
+      }
+    }
+
+    const relation: Relation = {
+      relationId: randomUUID(),
+      subjectId,
+      predicate,
+      objectId,
+      confidence: opts.confidence ?? 0.7,
+      evidenceCount: 1,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      evidenceEpisodeIds: opts.evidenceEpisodeId ? [opts.evidenceEpisodeId] : [],
+    };
+
+    this.relations.set(relation.relationId, relation);
+    if (!this.relationIndex.has(key)) this.relationIndex.set(key, new Set());
+    this.relationIndex.get(key)!.add(relation.relationId);
+
+    // Also store in vector store for semantic relation search
+    const subject = this.entities.get(subjectId);
+    await this.vectorStore.upsert({
+      id: `relation:${relation.relationId}`,
+      content: `${subject?.label ?? subjectId} ${predicate} ${String(objectId)}`,
+      metadata: { relationId: relation.relationId, subjectId, predicate, kind: "relation" },
+      namespace: VectorMemoryStore.agentNamespace(this.agentId),
+      importance: relation.confidence,
+    });
+
+    logger.debug(
+      { subjectId, predicate, objectId },
+      "[SemanticMemory] Relation added"
+    );
+    return relation;
+  }
+
+  findRelation(subjectId: string, predicate: string): Relation | null {
+    const key = `${subjectId}:${predicate}`;
+    const ids = this.relationIndex.get(key);
+    if (!ids?.size) return null;
+    return this.relations.get(ids.values().next().value!) ?? null;
+  }
+
+  getRelationsForSubject(subjectId: string): Relation[] {
+    const results: Relation[] = [];
+    for (const [key, ids] of this.relationIndex.entries()) {
+      if (!key.startsWith(subjectId + ":")) continue;
+      for (const id of ids) {
+        const rel = this.relations.get(id);
+        if (rel) results.push(rel);
+      }
     }
     return results;
   }
 
-  // -------------------------------------------------------------------------
-  // Relationship operations
-  // -------------------------------------------------------------------------
-
-  addRelationship(
-    rel: Omit<Relationship, 'id' | 'createdAt'>,
-  ): Relationship {
-    if (!this.entities.has(rel.fromEntityId)) {
-      throw new Error(
-        `[SemanticMemory] addRelationship: fromEntity not found id=${rel.fromEntityId}`,
-      );
-    }
-    if (!this.entities.has(rel.toEntityId)) {
-      throw new Error(
-        `[SemanticMemory] addRelationship: toEntity not found id=${rel.toEntityId}`,
-      );
-    }
-
-    const id = randomUUID();
-    const full: Relationship = {
-      ...rel,
-      id,
-      createdAt: new Date(),
-    };
-    this.relationships.set(id, full);
-
-    // Update adjacency
-    this._ensureAdjacency(rel.fromEntityId);
-    this._ensureAdjacency(rel.toEntityId);
-    this.outgoing.get(rel.fromEntityId)!.add(id);
-    this.incoming.get(rel.toEntityId)!.add(id);
-    if (rel.bidirectional) {
-      this.outgoing.get(rel.toEntityId)!.add(id);
-      this.incoming.get(rel.fromEntityId)!.add(id);
-    }
-
-    Logger.debug(
-      `[SemanticMemory] addRelationship id=${id} type=${rel.type} from=${rel.fromEntityId} to=${rel.toEntityId}`,
+  getRelationsForPredicate(predicate: string): Relation[] {
+    return Array.from(this.relations.values()).filter(
+      (r) => r.predicate === predicate
     );
-    return { ...full };
   }
 
-  getRelationships(
-    entityId: string,
-    direction: 'outgoing' | 'incoming' | 'both' = 'both',
-  ): Relationship[] {
-    const relIds = new Set<string>();
-    if (direction === 'outgoing' || direction === 'both') {
-      for (const id of this.outgoing.get(entityId) ?? []) relIds.add(id);
-    }
-    if (direction === 'incoming' || direction === 'both') {
-      for (const id of this.incoming.get(entityId) ?? []) relIds.add(id);
-    }
-    return [...relIds]
-      .map((id) => this.relationships.get(id))
-      .filter((r): r is Relationship => r !== undefined)
-      .map((r) => ({ ...r }));
+  // ── Conflict resolution ───────────────────────────────────────────────────────
+
+  private async handleConflict(existing: Triple, incoming: Triple): Promise<void> {
+    const conflict: ConflictRecord = {
+      conflictId: randomUUID(),
+      triple: existing,
+      conflictingTriple: incoming,
+      resolution: "pending",
+    };
+
+    this.conflicts.push(conflict);
+
+    logger.warn(
+      { existing, incoming },
+      "[SemanticMemory] Knowledge conflict detected"
+    );
   }
 
-  // -------------------------------------------------------------------------
-  // BFS path finding
-  // -------------------------------------------------------------------------
+  resolveConflict(
+    conflictId: string,
+    resolution: ConflictRecord["resolution"],
+    note?: string
+  ): void {
+    const conflict = this.conflicts.find((c) => c.conflictId === conflictId);
+    if (!conflict) return;
 
-  findPath(
-    fromId: string,
-    toId: string,
-    maxHops = 5,
-  ): Entity[][] {
-    if (!this.entities.has(fromId) || !this.entities.has(toId)) return [];
-    if (fromId === toId) {
-      const e = this.entities.get(fromId);
-      return e ? [[{ ...e }]] : [];
+    conflict.resolution = resolution;
+    conflict.resolvedAt = Date.now();
+    conflict.note = note;
+
+    if (resolution === "replaced") {
+      // Remove the old relation and let the new one stand
+      const key = `${conflict.triple.subject}:${conflict.triple.predicate}`;
+      this.relationIndex.delete(key);
     }
 
-    const queue: PathNode[] = [{ entityId: fromId, path: [fromId] }];
-    const visited = new Set<string>([fromId]);
-    const paths: Entity[][] = [];
+    logger.info({ conflictId, resolution }, "[SemanticMemory] Conflict resolved");
+  }
 
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      if (current.path.length > maxHops + 1) continue;
+  getPendingConflicts(): ConflictRecord[] {
+    return this.conflicts.filter((c) => c.resolution === "pending");
+  }
 
-      const rels = this.getRelationships(current.entityId, 'outgoing');
-      for (const rel of rels) {
-        const neighbor =
-          rel.fromEntityId === current.entityId ? rel.toEntityId : rel.fromEntityId;
+  // ── Inference ─────────────────────────────────────────────────────────────────
 
-        if (visited.has(neighbor)) continue;
+  infer(subjectId: string): InferenceResult[] {
+    const results: InferenceResult[] = [];
+    const directRelations = this.getRelationsForSubject(subjectId);
+    const subject = this.entities.get(subjectId);
+    if (!subject) return results;
 
-        const newPath = [...current.path, neighbor];
-
-        if (neighbor === toId) {
-          // Found a path — resolve entity objects
-          const entityPath = newPath
-            .map((id) => this.entities.get(id))
-            .filter((e): e is Entity => e !== undefined)
-            .map((e) => ({ ...e }));
-          paths.push(entityPath);
-          continue; // keep searching for other paths
+    // Transitivity: if A is_a B and B has_property X, then A has_property X
+    for (const rel of directRelations) {
+      if (rel.predicate === "is_a" && typeof rel.objectId === "string") {
+        const parentRelations = this.getRelationsForSubject(rel.objectId);
+        for (const parentRel of parentRelations) {
+          if (parentRel.predicate === "has_property") {
+            results.push({
+              triple: {
+                subject: subjectId,
+                predicate: "has_property",
+                object: String(parentRel.objectId),
+              },
+              confidence: rel.confidence * parentRel.confidence,
+              basis: `Inferred from transitivity: ${subject.label} is_a ${this.entities.get(rel.objectId)?.label ?? rel.objectId}`,
+            });
+          }
         }
-
-        visited.add(neighbor);
-        queue.push({ entityId: neighbor, path: newPath });
       }
     }
 
-    return paths;
-  }
-
-  // -------------------------------------------------------------------------
-  // Inference
-  // -------------------------------------------------------------------------
-
-  infer(entityId: string): KnowledgeTriple[] {
-    const triples: KnowledgeTriple[] = [];
-    const entity = this.entities.get(entityId);
-    if (!entity) return triples;
-
-    for (const rule of this.rules.values()) {
-      if (!rule.enabled) continue;
-
-      // Check if all antecedent relationship types exist for this entity
-      const antecedentsSatisfied = rule.pattern.antecedents.every((relType) => {
-        const rels = this.getRelationships(entityId, 'both');
-        return rels.some((r) => r.type === relType);
-      });
-
-      if (!antecedentsSatisfied) continue;
-
-      // Find target entities connected via the last antecedent
-      const lastAntecedent =
-        rule.pattern.antecedents[rule.pattern.antecedents.length - 1];
-      const targetRels = this.getRelationships(entityId, 'outgoing').filter(
-        (r) => r.type === lastAntecedent,
-      );
-
-      for (const rel of targetRels) {
-        const targetEntity = this.entities.get(rel.toEntityId);
-        if (!targetEntity) continue;
-
-        triples.push({
-          subject: entity.name,
-          predicate: rule.pattern.consequent,
-          object: targetEntity.name,
-          confidence: rule.confidence * Math.min(entity.confidence, targetEntity.confidence),
-          source: `inferred:${rule.name}`,
-        });
-      }
-    }
-
-    Logger.debug(
-      `[SemanticMemory] infer entityId=${entityId} inferredTriples=${triples.length}`,
-    );
-    return triples;
-  }
-
-  // -------------------------------------------------------------------------
-  // Rules
-  // -------------------------------------------------------------------------
-
-  addRule(rule: Omit<InferenceRule, 'id'>): InferenceRule {
-    const id = randomUUID();
-    const full: InferenceRule = { ...rule, id };
-    this.rules.set(id, full);
-    Logger.debug(`[SemanticMemory] addRule id=${id} name=${rule.name}`);
-    return { ...full };
-  }
-
-  // -------------------------------------------------------------------------
-  // Merge entities
-  // -------------------------------------------------------------------------
-
-  mergeEntities(id1: string, id2: string): Entity {
-    const e1 = this.entities.get(id1);
-    const e2 = this.entities.get(id2);
-    if (!e1 || !e2) {
-      throw new Error(
-        `[SemanticMemory] mergeEntities: one or both entities not found id1=${id1} id2=${id2}`,
-      );
-    }
-
-    // Merged entity takes id1, merges attributes, combines sources
-    const merged: Entity = {
-      ...e1,
-      attributes: { ...e2.attributes, ...e1.attributes }, // e1 attributes win
-      confidence: Math.max(e1.confidence, e2.confidence),
-      sources: [...new Set([...e1.sources, ...e2.sources])],
-      updatedAt: new Date(),
-      version: e1.version + 1,
-    };
-    this.entities.set(id1, merged);
-
-    // Transfer all relationships from e2 to e1
-    const e2Rels = this.getRelationships(id2, 'both');
-    for (const rel of e2Rels) {
-      const newRel = { ...rel };
-      if (newRel.fromEntityId === id2) newRel.fromEntityId = id1;
-      if (newRel.toEntityId === id2) newRel.toEntityId = id1;
-
-      // Skip self-loops created by the merge
-      if (newRel.fromEntityId === newRel.toEntityId) continue;
-
-      // Check for duplicate relationship
-      const duplicate = [...this.relationships.values()].some(
-        (r) =>
-          r.fromEntityId === newRel.fromEntityId &&
-          r.toEntityId === newRel.toEntityId &&
-          r.type === newRel.type,
-      );
-      if (!duplicate) {
-        // Re-add with corrected endpoints
-        this.addRelationship({
-          fromEntityId: newRel.fromEntityId,
-          toEntityId: newRel.toEntityId,
-          type: newRel.type,
-          weight: newRel.weight,
-          attributes: newRel.attributes,
-          bidirectional: newRel.bidirectional,
-        });
-      }
-    }
-
-    // Remove e2 and its old relationships
-    this._removeEntityRelationships(id2);
-    this.entities.delete(id2);
-    this.outgoing.delete(id2);
-    this.incoming.delete(id2);
-
-    Logger.info(
-      `[SemanticMemory] merged id2=${id2} into id1=${id1} version=${merged.version}`,
-    );
-    return { ...merged };
-  }
-
-  // -------------------------------------------------------------------------
-  // Triple serialization
-  // -------------------------------------------------------------------------
-
-  toTriples(): KnowledgeTriple[] {
-    const triples: KnowledgeTriple[] = [];
-
-    // Attribute triples
-    for (const entity of this.entities.values()) {
-      for (const [key, value] of Object.entries(entity.attributes)) {
-        triples.push({
-          subject: entity.id,
-          predicate: key,
-          object: String(value),
-          confidence: entity.confidence,
-          source: entity.sources[0],
-        });
-      }
-    }
-
-    // Relationship triples
-    for (const rel of this.relationships.values()) {
-      const from = this.entities.get(rel.fromEntityId);
-      const to = this.entities.get(rel.toEntityId);
-      if (!from || !to) continue;
-      triples.push({
-        subject: from.id,
-        predicate: rel.type,
-        object: to.id,
-        confidence: rel.weight,
-      });
-    }
-
-    return triples;
-  }
-
-  fromTriples(triples: KnowledgeTriple[], agentId: string): void {
-    // Build entity index by name
-    const nameIndex = new Map<string, string>(); // name -> id
-    for (const entity of this.entities.values()) {
-      nameIndex.set(entity.name, entity.id);
-    }
-
-    for (const triple of triples) {
-      // Determine if subject/object are entity references or attribute values
-      // Convention: if subject/object looks like a UUID, treat as entity id;
-      // otherwise treat as entity name and create if missing.
-      const subjectId = this._resolveOrCreateEntity(
-        triple.subject,
-        agentId,
-        triple.confidence,
-        triple.source,
-        nameIndex,
-      );
-
-      // Check if this triple is an attribute (object is a literal string value)
-      const objectIsEntity =
-        this.entities.has(triple.object) || nameIndex.has(triple.object);
-
-      if (objectIsEntity) {
-        const objectId = this._resolveOrCreateEntity(
-          triple.object,
-          agentId,
-          triple.confidence,
-          triple.source,
-          nameIndex,
-        );
-        // Check for existing relationship to avoid duplicates
-        const exists = [...this.relationships.values()].some(
-          (r) =>
-            r.fromEntityId === subjectId &&
-            r.toEntityId === objectId &&
-            r.type === triple.predicate,
-        );
-        if (!exists) {
-          this.addRelationship({
-            fromEntityId: subjectId,
-            toEntityId: objectId,
-            type: triple.predicate,
-            weight: triple.confidence,
-            bidirectional: false,
+    // Symmetry: if A knows B, infer B knows A
+    for (const rel of directRelations) {
+      if (rel.predicate === "knows" && typeof rel.objectId === "string") {
+        const reverseExists = this.findRelation(rel.objectId, "knows");
+        if (!reverseExists) {
+          results.push({
+            triple: { subject: rel.objectId, predicate: "knows", object: subjectId },
+            confidence: rel.confidence * 0.8,
+            basis: `Inferred from symmetry of 'knows' relation`,
           });
         }
-      } else {
-        // Attribute triple — update entity attributes
-        const entity = this.entities.get(subjectId);
-        if (entity) {
-          entity.attributes[triple.predicate] = triple.object;
-          entity.updatedAt = new Date();
-          entity.version++;
-          this.entities.set(subjectId, entity);
-        }
       }
     }
+
+    return results.filter((r) => r.confidence > 0.3);
   }
 
-  // -------------------------------------------------------------------------
-  // Stats
-  // -------------------------------------------------------------------------
+  // ── Triple API ────────────────────────────────────────────────────────────────
 
-  getStats(): {
-    entities: number;
-    relationships: number;
-    rules: number;
-    avgConfidence: number;
-  } {
-    const allEntities = [...this.entities.values()];
-    const avgConfidence =
-      allEntities.length > 0
-        ? allEntities.reduce((s, e) => s + e.confidence, 0) / allEntities.length
-        : 0;
+  async assertTriple(triple: Triple, confidence = 0.7): Promise<void> {
+    let subject = this.findEntity(triple.subject);
+    if (!subject) {
+      subject = await this.upsertEntity(triple.subject, "unknown", {}, { confidence });
+    }
 
+    let object = this.findEntity(triple.object);
+    if (!object) {
+      object = await this.upsertEntity(triple.object, "unknown", {}, { confidence });
+    }
+
+    await this.addRelation(subject.entityId, triple.predicate, object.entityId, {
+      confidence,
+    });
+  }
+
+  async queryTriples(
+    subject?: string,
+    predicate?: string,
+    topK = 20
+  ): Promise<Relation[]> {
+    let results = Array.from(this.relations.values());
+
+    if (subject) {
+      const entity = this.findEntity(subject);
+      if (entity) results = results.filter((r) => r.subjectId === entity.entityId);
+      else results = [];
+    }
+
+    if (predicate) {
+      results = results.filter((r) => r.predicate === predicate);
+    }
+
+    return results
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, topK);
+  }
+
+  // ── Stats ─────────────────────────────────────────────────────────────────────
+
+  getStats() {
     return {
       entities: this.entities.size,
-      relationships: this.relationships.size,
-      rules: this.rules.size,
-      avgConfidence: parseFloat(avgConfidence.toFixed(4)),
+      relations: this.relations.size,
+      entityTypes: Array.from(this.typeIndex.entries()).map(([type, ids]) => ({
+        type,
+        count: ids.size,
+      })),
+      pendingConflicts: this.conflicts.filter((c) => c.resolution === "pending").length,
+      resolvedConflicts: this.conflicts.filter((c) => c.resolution !== "pending").length,
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Serialization helpers for MemoryManager
-  // -------------------------------------------------------------------------
-
-  getRawEntities(): Map<string, Entity> {
-    return new Map(this.entities);
-  }
-
-  getRawRelationships(): Map<string, Relationship> {
-    return new Map(this.relationships);
-  }
-
-  getRawRules(): Map<string, InferenceRule> {
-    return new Map(this.rules);
-  }
-
-  loadEntity(entity: Entity): void {
-    this.entities.set(entity.id, entity);
-    this._ensureAdjacency(entity.id);
-  }
-
-  loadRelationship(rel: Relationship): void {
-    this.relationships.set(rel.id, rel);
-    this._ensureAdjacency(rel.fromEntityId);
-    this._ensureAdjacency(rel.toEntityId);
-    this.outgoing.get(rel.fromEntityId)!.add(rel.id);
-    this.incoming.get(rel.toEntityId)!.add(rel.id);
-    if (rel.bidirectional) {
-      this.outgoing.get(rel.toEntityId)!.add(rel.id);
-      this.incoming.get(rel.fromEntityId)!.add(rel.id);
-    }
-  }
-
-  loadRule(rule: InferenceRule): void {
-    this.rules.set(rule.id, rule);
-  }
-
-  // -------------------------------------------------------------------------
-  // Private helpers
-  // -------------------------------------------------------------------------
-
-  private _ensureAdjacency(entityId: string): void {
-    if (!this.outgoing.has(entityId)) this.outgoing.set(entityId, new Set());
-    if (!this.incoming.has(entityId)) this.incoming.set(entityId, new Set());
-  }
-
-  private _removeEntityRelationships(entityId: string): void {
-    for (const relId of [
-      ...(this.outgoing.get(entityId) ?? []),
-      ...(this.incoming.get(entityId) ?? []),
-    ]) {
-      const rel = this.relationships.get(relId);
-      if (!rel) continue;
-      this.relationships.delete(relId);
-      this.outgoing.get(rel.fromEntityId)?.delete(relId);
-      this.incoming.get(rel.toEntityId)?.delete(relId);
-    }
-  }
-
-  private _resolveOrCreateEntity(
-    nameOrId: string,
-    agentId: string,
-    confidence: number,
-    source: string | undefined,
-    nameIndex: Map<string, string>,
-  ): string {
-    if (this.entities.has(nameOrId)) return nameOrId;
-    if (nameIndex.has(nameOrId)) return nameIndex.get(nameOrId)!;
-
-    const entity = this.addEntity({
-      agentId,
-      type: 'unknown',
-      name: nameOrId,
-      attributes: {},
-      confidence,
-      sources: source ? [source] : [],
-    });
-    nameIndex.set(nameOrId, entity.id);
-    return entity.id;
+  exportGraph(): { entities: Entity[]; relations: Relation[] } {
+    return {
+      entities: Array.from(this.entities.values()),
+      relations: Array.from(this.relations.values()),
+    };
   }
 }

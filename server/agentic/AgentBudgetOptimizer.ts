@@ -1,323 +1,575 @@
-/**
- * AgentBudgetOptimizer — Track token usage and cost per agent/tool/model,
- * dynamically select models, project remaining costs, and enforce budget limits.
- */
+import { EventEmitter } from "events";
+import { randomUUID } from "crypto";
+import pino from "pino";
+import { CLAUDE_MODELS } from "./ClaudeAgentBackbone.js";
 
-import Anthropic from "@anthropic-ai/sdk";
-import { Logger } from "../lib/logger";
-import { FAST_MODEL, REASONING_MODEL } from "./ClaudeAgentBackbone";
+const logger = pino({ name: "AgentBudgetOptimizer" });
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
-export type CostPreference = "quality-first" | "cost-first" | "balanced";
-export type ModelTier = "fast" | "reasoning";
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type ModelTier = "haiku" | "sonnet" | "opus";
+
+export type TaskComplexity = "trivial" | "low" | "medium" | "high" | "critical";
+
+export interface ModelCost {
+  modelId: string;
+  tier: ModelTier;
+  inputCostPer1M: number;  // USD
+  outputCostPer1M: number; // USD
+}
 
 export interface TokenUsageRecord {
-  model: string;
+  recordId: string;
+  agentId: string;
+  sessionId: string;
+  modelId: string;
+  tier: ModelTier;
+  taskType: string;
+  complexity: TaskComplexity;
   inputTokens: number;
   outputTokens: number;
   thinkingTokens: number;
-  costUsd: number;
-  timestamp: Date;
-  tool?: string;
-  stepDescription?: string;
+  costUSD: number;
+  success: boolean;
+  qualityScore?: number; // 0-1 if available
+  durationMs: number;
+  timestamp: number;
 }
 
 export interface BudgetAllocation {
-  stepId: string;
-  stepDescription: string;
-  allocatedUsd: number;
-  model: string;
-  estimatedInputTokens: number;
-  estimatedOutputTokens: number;
+  agentId: string;
+  sessionId?: string;
+  totalBudgetUSD: number;
+  spentUSD: number;
+  remainingUSD: number;
+  alertThreshold: number; // 0-1 (e.g. 0.8 = alert at 80%)
+  hardLimitUSD?: number; // if set, refuse calls over this
+  allocatedAt: number;
+  expiresAt?: number;
 }
 
-export interface CostProjection {
-  completedUsd: number;
-  projectedRemainingUsd: number;
-  projectedTotalUsd: number;
-  confidence: number; // 0-1; how reliable this estimate is
-  willExceedBudget: boolean;
-  remainingBudgetUsd: number;
+export interface ModelSuggestion {
+  recommendedModel: string;
+  recommendedTier: ModelTier;
+  reasoning: string;
+  estimatedCostUSD: number;
+  estimatedTokens: number;
+  confidenceScore: number; // 0-1
+  alternativeModel?: string;
+  alternativeCostUSD?: number;
 }
 
-export interface BudgetAlert {
-  level: "info" | "warning" | "critical";
-  message: string;
-  spentUsd: number;
-  budgetUsd: number;
-  percentUsed: number;
+export interface BudgetReport {
+  agentId?: string;
+  sessionId?: string;
+  period: { from: number; to: number };
+  totalCostUSD: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalThinkingTokens: number;
+  callCount: number;
+  costByModel: Record<string, { costUSD: number; calls: number; tokens: number }>;
+  costByTaskType: Record<string, { costUSD: number; calls: number }>;
+  costByComplexity: Record<TaskComplexity, { costUSD: number; calls: number }>;
+  avgCostPerCall: number;
+  projectedMonthlyUSD: number;
+  topExpensiveSessions: Array<{ sessionId: string; costUSD: number }>;
+  savingsOpportunities: string[];
 }
 
-export interface ModelRecommendation {
-  model: string;
-  tier: ModelTier;
-  reason: string;
-  estimatedCostUsd: number;
+export interface OptimizerConfig {
+  /** Default model selection strategy */
+  strategy?: "cost_optimized" | "quality_first" | "balanced"; // default balanced
+  /** Below this complexity, always try Haiku first */
+  haikusForComplexityBelow?: TaskComplexity; // default "medium"
+  /** Success rate threshold — if a cheaper model meets this, stick with it */
+  minSuccessRate?: number; // default 0.85
+  /** Quality threshold — if a model's quality is above this, downgrade is acceptable */
+  qualityThreshold?: number; // default 0.75
+  /** Max tokens to track in memory (auto-purge older) */
+  maxRecordsInMemory?: number; // default 10_000
 }
 
-export interface BudgetOptimizerConfig {
-  sessionBudgetUsd: number;
-  preference?: CostPreference;
-  alertThresholds?: number[]; // e.g. [0.5, 0.8, 0.95]
-  onAlert?: (alert: BudgetAlert) => void;
-}
+// ─── Model cost table ─────────────────────────────────────────────────────────
 
-// ─── Model pricing (USD per million tokens) ────────────────────────────────────
-const PRICING: Record<string, { input: number; output: number; thinking?: number }> = {
-  [FAST_MODEL]: { input: 3.0, output: 15.0 },
-  [REASONING_MODEL]: { input: 15.0, output: 75.0, thinking: 15.0 },
-  "claude-haiku-4-5-20251001": { input: 0.8, output: 4.0 },
+const MODEL_COSTS: Record<ModelTier, ModelCost> = {
+  haiku: {
+    modelId: CLAUDE_MODELS.HAIKU,
+    tier: "haiku",
+    inputCostPer1M: 0.8,
+    outputCostPer1M: 4.0,
+  },
+  sonnet: {
+    modelId: CLAUDE_MODELS.SONNET,
+    tier: "sonnet",
+    inputCostPer1M: 3.0,
+    outputCostPer1M: 15.0,
+  },
+  opus: {
+    modelId: CLAUDE_MODELS.OPUS,
+    tier: "opus",
+    inputCostPer1M: 15.0,
+    outputCostPer1M: 75.0,
+  },
 };
 
-function computeCost(model: string, inputTokens: number, outputTokens: number, thinkingTokens = 0): number {
-  const pricing = PRICING[model] ?? PRICING[FAST_MODEL];
+function computeCost(
+  tier: ModelTier,
+  inputTokens: number,
+  outputTokens: number,
+  thinkingTokens = 0
+): number {
+  const cost = MODEL_COSTS[tier];
   return (
-    (inputTokens / 1_000_000) * pricing.input +
-    (outputTokens / 1_000_000) * pricing.output +
-    (thinkingTokens / 1_000_000) * (pricing.thinking ?? pricing.input)
+    (inputTokens / 1_000_000) * cost.inputCostPer1M +
+    (outputTokens / 1_000_000) * cost.outputCostPer1M +
+    (thinkingTokens / 1_000_000) * cost.inputCostPer1M // thinking billed as input
   );
 }
 
-// ─── AgentBudgetOptimizer ──────────────────────────────────────────────────────
-export class AgentBudgetOptimizer {
-  private readonly sessionBudgetUsd: number;
-  private readonly preference: CostPreference;
-  private readonly alertThresholds: number[];
-  private readonly onAlert?: (alert: BudgetAlert) => void;
+function modelToTier(modelId: string): ModelTier {
+  if (modelId.includes("haiku")) return "haiku";
+  if (modelId.includes("opus")) return "opus";
+  return "sonnet";
+}
 
-  private usageHistory: TokenUsageRecord[] = [];
-  private totalSpentUsd = 0;
-  private firedThresholds = new Set<number>();
+// ─── AgentBudgetOptimizer ─────────────────────────────────────────────────────
 
-  // Historical cost data per task type (populated over time)
-  private taskCostHistory = new Map<string, number[]>();
+export class AgentBudgetOptimizer extends EventEmitter {
+  private records: TokenUsageRecord[] = [];
+  private budgets = new Map<string, BudgetAllocation>(); // agentId → allocation
+  private modelPerformance = new Map<
+    string, // `${tier}:${taskType}`
+    { successCount: number; totalCount: number; totalQuality: number }
+  >();
 
-  constructor(config: BudgetOptimizerConfig) {
-    this.sessionBudgetUsd = config.sessionBudgetUsd;
-    this.preference = config.preference ?? "balanced";
-    this.alertThresholds = config.alertThresholds ?? [0.5, 0.8, 0.95];
-    this.onAlert = config.onAlert;
-  }
+  constructor(private readonly config: OptimizerConfig = {}) {
+    super();
+    const {
+      strategy = "balanced",
+      haikusForComplexityBelow = "medium",
+      minSuccessRate = 0.85,
+      qualityThreshold = 0.75,
+      maxRecordsInMemory = 10_000,
+    } = config;
 
-  // ─── Public API ──────────────────────────────────────────────────────────────
-
-  /** Record token usage from an API response. */
-  record(
-    model: string,
-    inputTokens: number,
-    outputTokens: number,
-    thinkingTokens = 0,
-    context?: { tool?: string; stepDescription?: string }
-  ): TokenUsageRecord {
-    const costUsd = computeCost(model, inputTokens, outputTokens, thinkingTokens);
-    const record: TokenUsageRecord = {
-      model,
-      inputTokens,
-      outputTokens,
-      thinkingTokens,
-      costUsd,
-      timestamp: new Date(),
-      ...context,
+    this.config = {
+      strategy,
+      haikusForComplexityBelow,
+      minSuccessRate,
+      qualityThreshold,
+      maxRecordsInMemory,
     };
 
-    this.usageHistory.push(record);
-    this.totalSpentUsd += costUsd;
+    logger.info({ strategy }, "[AgentBudgetOptimizer] Initialized");
+  }
 
-    Logger.debug("[BudgetOptimizer] Usage recorded", {
-      model,
-      tokens: { inputTokens, outputTokens, thinkingTokens },
-      costUsd: costUsd.toFixed(6),
-      totalSpent: this.totalSpentUsd.toFixed(6),
-    });
+  // ── Usage recording ───────────────────────────────────────────────────────────
 
-    this.checkAlerts();
+  recordUsage(
+    usage: Omit<TokenUsageRecord, "recordId" | "timestamp" | "costUSD" | "tier">
+  ): TokenUsageRecord {
+    const tier = modelToTier(usage.modelId);
+    const costUSD = computeCost(
+      tier,
+      usage.inputTokens,
+      usage.outputTokens,
+      usage.thinkingTokens
+    );
+
+    const record: TokenUsageRecord = {
+      ...usage,
+      recordId: randomUUID(),
+      tier,
+      costUSD,
+      timestamp: Date.now(),
+    };
+
+    this.records.push(record);
+
+    // Trim memory
+    const maxRecords = this.config.maxRecordsInMemory ?? 10_000;
+    if (this.records.length > maxRecords) {
+      this.records = this.records.slice(-maxRecords);
+    }
+
+    // Update model performance stats
+    const key = `${tier}:${usage.taskType}`;
+    const perf = this.modelPerformance.get(key) ?? {
+      successCount: 0,
+      totalCount: 0,
+      totalQuality: 0,
+    };
+    perf.totalCount++;
+    if (usage.success) perf.successCount++;
+    if (usage.qualityScore !== undefined) perf.totalQuality += usage.qualityScore;
+    this.modelPerformance.set(key, perf);
+
+    // Check budget
+    this.checkBudgetAlert(usage.agentId, costUSD);
+
+    logger.debug(
+      {
+        agentId: usage.agentId,
+        model: tier,
+        costUSD: costUSD.toFixed(6),
+        taskType: usage.taskType,
+      },
+      "[AgentBudgetOptimizer] Usage recorded"
+    );
+
+    this.emit("usage:recorded", record);
     return record;
   }
 
-  /** Recommend a model for the next step based on complexity and budget. */
-  recommendModel(
-    stepDescription: string,
-    estimatedComplexity: "simple" | "moderate" | "complex",
-    remainingSteps: number
-  ): ModelRecommendation {
-    const remainingBudgetUsd = this.remainingBudget();
-    const budgetPerStep = remainingSteps > 0 ? remainingBudgetUsd / remainingSteps : remainingBudgetUsd;
+  // ── Model suggestion ──────────────────────────────────────────────────────────
 
-    // Cost estimates per step (rough averages)
-    const fastCostPerStep = 0.005; // ~1500 input + 500 output tokens
-    const reasoningCostPerStep = 0.03; // same tokens but higher rate
+  suggestModel(
+    taskType: string,
+    complexity: TaskComplexity,
+    agentId?: string,
+    estimatedTokens = 1000
+  ): ModelSuggestion {
+    const strategy = this.config.strategy ?? "balanced";
+    const complexityOrder: TaskComplexity[] = [
+      "trivial",
+      "low",
+      "medium",
+      "high",
+      "critical",
+    ];
+    const complexityIndex = complexityOrder.indexOf(complexity);
+    const thresholdIndex = complexityOrder.indexOf(
+      this.config.haikusForComplexityBelow ?? "medium"
+    );
 
-    // Decision matrix
-    if (this.preference === "cost-first") {
+    // Budget constraint check
+    const budget = agentId ? this.budgets.get(agentId) : null;
+    const budgetConstrained =
+      budget &&
+      budget.hardLimitUSD !== undefined &&
+      budget.spentUSD >= budget.hardLimitUSD;
+
+    if (budgetConstrained) {
       return {
-        model: FAST_MODEL,
-        tier: "fast",
-        reason: "Cost-first preference: always use fast model",
-        estimatedCostUsd: fastCostPerStep,
+        recommendedModel: CLAUDE_MODELS.HAIKU,
+        recommendedTier: "haiku",
+        reasoning: "Budget limit reached — forced to cheapest model",
+        estimatedCostUSD: computeCost("haiku", estimatedTokens, estimatedTokens / 2),
+        estimatedTokens,
+        confidenceScore: 1.0,
       };
     }
 
-    if (this.preference === "quality-first" && estimatedComplexity === "complex") {
-      if (remainingBudgetUsd >= reasoningCostPerStep * 2) {
-        return {
-          model: REASONING_MODEL,
-          tier: "reasoning",
-          reason: "Quality-first preference with complex step",
-          estimatedCostUsd: reasoningCostPerStep,
-        };
+    let tier: ModelTier;
+
+    if (strategy === "cost_optimized") {
+      // Always start with Haiku unless proven insufficient
+      const haikuPerf = this.getModelPerf("haiku", taskType);
+      const minRate = this.config.minSuccessRate ?? 0.85;
+      if (haikuPerf.successRate >= minRate || haikuPerf.sampleSize < 5) {
+        tier = "haiku";
+      } else {
+        const sonnetPerf = this.getModelPerf("sonnet", taskType);
+        tier = sonnetPerf.successRate >= minRate ? "sonnet" : "opus";
+      }
+    } else if (strategy === "quality_first") {
+      tier = complexity === "critical" || complexity === "high" ? "opus" : "sonnet";
+    } else {
+      // Balanced — use complexity + observed performance
+      if (complexityIndex < thresholdIndex) {
+        const haikuPerf = this.getModelPerf("haiku", taskType);
+        const minRate = this.config.minSuccessRate ?? 0.85;
+        tier =
+          haikuPerf.successRate >= minRate || haikuPerf.sampleSize < 5
+            ? "haiku"
+            : "sonnet";
+      } else if (complexity === "critical") {
+        tier = "opus";
+      } else if (complexity === "high") {
+        // Use Sonnet unless Sonnet has been failing
+        const sonnetPerf = this.getModelPerf("sonnet", taskType);
+        tier =
+          sonnetPerf.successRate < (this.config.minSuccessRate ?? 0.85) &&
+          sonnetPerf.sampleSize > 5
+            ? "opus"
+            : "sonnet";
+      } else {
+        tier = "sonnet";
       }
     }
 
-    // Balanced: use reasoning only for complex steps with sufficient budget
-    if (estimatedComplexity === "complex" && budgetPerStep >= reasoningCostPerStep * 1.5) {
-      return {
-        model: REASONING_MODEL,
-        tier: "reasoning",
-        reason: `Complex step with sufficient per-step budget ($${budgetPerStep.toFixed(4)})`,
-        estimatedCostUsd: reasoningCostPerStep,
-      };
-    }
+    const estimatedOutputTokens = Math.round(estimatedTokens * 0.4);
+    const estimatedCostUSD = computeCost(tier, estimatedTokens, estimatedOutputTokens);
+
+    // Suggest cheaper alternative if appropriate
+    const cheaperTier = tier === "opus" ? "sonnet" : tier === "sonnet" ? "haiku" : null;
+    const altCostUSD = cheaperTier
+      ? computeCost(cheaperTier, estimatedTokens, estimatedOutputTokens)
+      : undefined;
+
+    const perf = this.getModelPerf(tier, taskType);
 
     return {
-      model: FAST_MODEL,
-      tier: "fast",
-      reason:
-        estimatedComplexity !== "complex"
-          ? "Non-complex step: fast model is sufficient"
-          : `Budget constraint: per-step budget $${budgetPerStep.toFixed(4)} favours fast model`,
-      estimatedCostUsd: fastCostPerStep,
+      recommendedModel: MODEL_COSTS[tier].modelId,
+      recommendedTier: tier,
+      reasoning: this.buildReasoning(tier, taskType, complexity, perf, strategy),
+      estimatedCostUSD,
+      estimatedTokens,
+      confidenceScore: perf.sampleSize > 5 ? 0.9 : 0.6,
+      alternativeModel: cheaperTier ? MODEL_COSTS[cheaperTier].modelId : undefined,
+      alternativeCostUSD: altCostUSD,
     };
   }
 
-  /** Allocate budget across planned steps. */
-  allocateBudget(
-    steps: Array<{ id: string; description: string; estimatedMinutes: number; riskLevel: string }>
-  ): BudgetAllocation[] {
-    if (steps.length === 0) return [];
-
-    const totalWeight = steps.reduce((sum, s) => sum + this.stepWeight(s), 0);
-    const remainingBudget = this.remainingBudget();
-
-    return steps.map((step) => {
-      const weight = this.stepWeight(step);
-      const allocatedUsd = (weight / totalWeight) * remainingBudget;
-      const isHighRisk = step.riskLevel === "high" || step.riskLevel === "critical";
-      const model =
-        isHighRisk && allocatedUsd >= 0.02 ? REASONING_MODEL : FAST_MODEL;
-
-      return {
-        stepId: step.id,
-        stepDescription: step.description,
-        allocatedUsd,
-        model,
-        estimatedInputTokens: Math.round((allocatedUsd * 1_000_000) / (PRICING[model]?.input ?? 3) * 0.7),
-        estimatedOutputTokens: Math.round((allocatedUsd * 1_000_000) / (PRICING[model]?.output ?? 15) * 0.3),
-      };
-    });
-  }
-
-  /** Project remaining cost for N remaining steps. */
-  project(remainingSteps: number): CostProjection {
-    const avgCostPerStep = this.averageCostPerStep();
-    const projectedRemainingUsd = avgCostPerStep * remainingSteps;
-    const projectedTotalUsd = this.totalSpentUsd + projectedRemainingUsd;
-    const remainingBudgetUsd = this.remainingBudget();
-    const confidence = this.usageHistory.length >= 3 ? 0.75 : 0.4;
-
+  private getModelPerf(
+    tier: ModelTier,
+    taskType: string
+  ): { successRate: number; avgQuality: number; sampleSize: number } {
+    const key = `${tier}:${taskType}`;
+    const perf = this.modelPerformance.get(key);
+    if (!perf || perf.totalCount === 0) {
+      return { successRate: 1.0, avgQuality: 0.8, sampleSize: 0 };
+    }
     return {
-      completedUsd: this.totalSpentUsd,
-      projectedRemainingUsd,
-      projectedTotalUsd,
-      confidence,
-      willExceedBudget: projectedTotalUsd > this.sessionBudgetUsd,
-      remainingBudgetUsd,
+      successRate: perf.successCount / perf.totalCount,
+      avgQuality:
+        perf.totalCount > 0 ? perf.totalQuality / perf.totalCount : 0.8,
+      sampleSize: perf.totalCount,
     };
   }
 
-  /** Get cumulative cost summary by model. */
-  costByModel(): Record<string, { tokens: number; costUsd: number }> {
-    const summary: Record<string, { tokens: number; costUsd: number }> = {};
-    for (const r of this.usageHistory) {
-      if (!summary[r.model]) summary[r.model] = { tokens: 0, costUsd: 0 };
-      summary[r.model].tokens += r.inputTokens + r.outputTokens + r.thinkingTokens;
-      summary[r.model].costUsd += r.costUsd;
+  private buildReasoning(
+    tier: ModelTier,
+    taskType: string,
+    complexity: TaskComplexity,
+    perf: ReturnType<AgentBudgetOptimizer["getModelPerf"]>,
+    strategy: string
+  ): string {
+    const parts: string[] = [`Strategy: ${strategy}`];
+    parts.push(`Complexity: ${complexity}`);
+    if (perf.sampleSize > 0) {
+      parts.push(
+        `${tier} has ${(perf.successRate * 100).toFixed(0)}% success on '${taskType}' (${perf.sampleSize} samples)`
+      );
+    } else {
+      parts.push(`No performance data for '${taskType}' — using complexity-based selection`);
     }
-    return summary;
+    return parts.join("; ");
   }
 
-  /** Get cumulative cost summary by tool. */
-  costByTool(): Record<string, { calls: number; costUsd: number }> {
-    const summary: Record<string, { calls: number; costUsd: number }> = {};
-    for (const r of this.usageHistory) {
-      const key = r.tool ?? "no_tool";
-      if (!summary[key]) summary[key] = { calls: 0, costUsd: 0 };
-      summary[key].calls++;
-      summary[key].costUsd += r.costUsd;
+  // ── Budget management ─────────────────────────────────────────────────────────
+
+  setBudget(
+    agentId: string,
+    totalBudgetUSD: number,
+    opts: {
+      sessionId?: string;
+      alertThreshold?: number;
+      hardLimitUSD?: number;
+      expiresInMs?: number;
+    } = {}
+  ): BudgetAllocation {
+    const allocation: BudgetAllocation = {
+      agentId,
+      sessionId: opts.sessionId,
+      totalBudgetUSD,
+      spentUSD: 0,
+      remainingUSD: totalBudgetUSD,
+      alertThreshold: opts.alertThreshold ?? 0.8,
+      hardLimitUSD: opts.hardLimitUSD,
+      allocatedAt: Date.now(),
+      expiresAt: opts.expiresInMs ? Date.now() + opts.expiresInMs : undefined,
+    };
+
+    this.budgets.set(agentId, allocation);
+    logger.info(
+      { agentId, totalBudgetUSD, hardLimitUSD: opts.hardLimitUSD },
+      "[AgentBudgetOptimizer] Budget set"
+    );
+
+    return allocation;
+  }
+
+  getBudget(agentId: string): BudgetAllocation | null {
+    return this.budgets.get(agentId) ?? null;
+  }
+
+  private checkBudgetAlert(agentId: string, latestCostUSD: number): void {
+    const budget = this.budgets.get(agentId);
+    if (!budget) return;
+
+    budget.spentUSD += latestCostUSD;
+    budget.remainingUSD = Math.max(0, budget.totalBudgetUSD - budget.spentUSD);
+
+    const utilization = budget.spentUSD / budget.totalBudgetUSD;
+
+    if (utilization >= 1.0) {
+      this.emit("budget:exhausted", { agentId, spentUSD: budget.spentUSD });
+      logger.warn({ agentId }, "[AgentBudgetOptimizer] Budget exhausted");
+    } else if (utilization >= budget.alertThreshold) {
+      this.emit("budget:alert", {
+        agentId,
+        utilization,
+        spentUSD: budget.spentUSD,
+        remainingUSD: budget.remainingUSD,
+      });
     }
-    return summary;
+
+    if (budget.hardLimitUSD && budget.spentUSD >= budget.hardLimitUSD) {
+      this.emit("budget:hard_limit_reached", {
+        agentId,
+        spentUSD: budget.spentUSD,
+        hardLimitUSD: budget.hardLimitUSD,
+      });
+      logger.error(
+        { agentId, spentUSD: budget.spentUSD },
+        "[AgentBudgetOptimizer] Hard budget limit reached"
+      );
+    }
   }
 
-  /** Compute the estimated cost for a given number of tokens and model. */
-  static estimateCost(model: string, inputTokens: number, outputTokens: number): number {
-    return computeCost(model, inputTokens, outputTokens);
+  canAfford(agentId: string, estimatedCostUSD: number): boolean {
+    const budget = this.budgets.get(agentId);
+    if (!budget?.hardLimitUSD) return true;
+    return budget.spentUSD + estimatedCostUSD <= budget.hardLimitUSD;
   }
 
-  remainingBudget(): number {
-    return Math.max(0, this.sessionBudgetUsd - this.totalSpentUsd);
-  }
+  // ── Reporting ─────────────────────────────────────────────────────────────────
 
-  totalSpent(): number {
-    return this.totalSpentUsd;
-  }
+  generateReport(opts: {
+    agentId?: string;
+    sessionId?: string;
+    fromMs?: number;
+    toMs?: number;
+  } = {}): BudgetReport {
+    const { agentId, sessionId, fromMs = 0, toMs = Date.now() } = opts;
 
-  budgetExhausted(): boolean {
-    return this.totalSpentUsd >= this.sessionBudgetUsd;
-  }
+    let filtered = this.records.filter(
+      (r) => r.timestamp >= fromMs && r.timestamp <= toMs
+    );
 
-  /** Store historical cost for a task type. */
-  recordTaskCost(taskType: string, costUsd: number): void {
-    const history = this.taskCostHistory.get(taskType) ?? [];
-    history.push(costUsd);
-    // Keep last 20 entries
-    if (history.length > 20) history.shift();
-    this.taskCostHistory.set(taskType, history);
-  }
+    if (agentId) filtered = filtered.filter((r) => r.agentId === agentId);
+    if (sessionId) filtered = filtered.filter((r) => r.sessionId === sessionId);
 
-  /** Look up historical average cost for a task type. */
-  historicalAverageCost(taskType: string): number | null {
-    const history = this.taskCostHistory.get(taskType);
-    if (!history || history.length === 0) return null;
-    return history.reduce((a, b) => a + b, 0) / history.length;
-  }
+    const totalCostUSD = filtered.reduce((s, r) => s + r.costUSD, 0);
+    const totalInputTokens = filtered.reduce((s, r) => s + r.inputTokens, 0);
+    const totalOutputTokens = filtered.reduce((s, r) => s + r.outputTokens, 0);
+    const totalThinkingTokens = filtered.reduce((s, r) => s + r.thinkingTokens, 0);
 
-  // ─── Private helpers ──────────────────────────────────────────────────────────
+    const costByModel: BudgetReport["costByModel"] = {};
+    const costByTaskType: BudgetReport["costByTaskType"] = {};
+    const costByComplexity: BudgetReport["costByComplexity"] = {
+      trivial: { costUSD: 0, calls: 0 },
+      low: { costUSD: 0, calls: 0 },
+      medium: { costUSD: 0, calls: 0 },
+      high: { costUSD: 0, calls: 0 },
+      critical: { costUSD: 0, calls: 0 },
+    };
 
-  private checkAlerts(): void {
-    const pct = this.totalSpentUsd / this.sessionBudgetUsd;
-    for (const threshold of this.alertThresholds) {
-      if (pct >= threshold && !this.firedThresholds.has(threshold)) {
-        this.firedThresholds.add(threshold);
-        const alert: BudgetAlert = {
-          level: threshold >= 0.95 ? "critical" : threshold >= 0.8 ? "warning" : "info",
-          message: `Budget ${(threshold * 100).toFixed(0)}% used ($${this.totalSpentUsd.toFixed(4)} of $${this.sessionBudgetUsd})`,
-          spentUsd: this.totalSpentUsd,
-          budgetUsd: this.sessionBudgetUsd,
-          percentUsed: pct * 100,
-        };
-        Logger.warn("[BudgetOptimizer] Budget alert", alert);
-        this.onAlert?.(alert);
+    const sessionCosts = new Map<string, number>();
+
+    for (const r of filtered) {
+      // By model
+      const modelKey = r.tier;
+      if (!costByModel[modelKey]) costByModel[modelKey] = { costUSD: 0, calls: 0, tokens: 0 };
+      costByModel[modelKey].costUSD += r.costUSD;
+      costByModel[modelKey].calls++;
+      costByModel[modelKey].tokens += r.inputTokens + r.outputTokens;
+
+      // By task type
+      if (!costByTaskType[r.taskType]) costByTaskType[r.taskType] = { costUSD: 0, calls: 0 };
+      costByTaskType[r.taskType].costUSD += r.costUSD;
+      costByTaskType[r.taskType].calls++;
+
+      // By complexity
+      costByComplexity[r.complexity].costUSD += r.costUSD;
+      costByComplexity[r.complexity].calls++;
+
+      // By session
+      sessionCosts.set(r.sessionId, (sessionCosts.get(r.sessionId) ?? 0) + r.costUSD);
+    }
+
+    // Project monthly cost
+    const periodMs = toMs - fromMs;
+    const projectedMonthlyUSD =
+      periodMs > 0
+        ? (totalCostUSD / periodMs) * 30 * 24 * 60 * 60 * 1000
+        : 0;
+
+    // Top expensive sessions
+    const topExpensiveSessions = [...sessionCosts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([sessionId, costUSD]) => ({ sessionId, costUSD }));
+
+    // Savings opportunities
+    const savingsOpportunities: string[] = [];
+    for (const [taskType, stats] of Object.entries(costByTaskType)) {
+      if (stats.costUSD > totalCostUSD * 0.2) {
+        const haikuPerf = this.getModelPerf("haiku", taskType);
+        if (haikuPerf.successRate >= 0.85 || haikuPerf.sampleSize === 0) {
+          savingsOpportunities.push(
+            `Task type '${taskType}' uses ${((stats.costUSD / totalCostUSD) * 100).toFixed(0)}% of budget — Haiku could reduce cost by ~70%`
+          );
+        }
       }
     }
+
+    return {
+      agentId,
+      sessionId,
+      period: { from: fromMs, to: toMs },
+      totalCostUSD,
+      totalInputTokens,
+      totalOutputTokens,
+      totalThinkingTokens,
+      callCount: filtered.length,
+      costByModel,
+      costByTaskType,
+      costByComplexity,
+      avgCostPerCall: filtered.length > 0 ? totalCostUSD / filtered.length : 0,
+      projectedMonthlyUSD,
+      topExpensiveSessions,
+      savingsOpportunities,
+    };
   }
 
-  private averageCostPerStep(): number {
-    if (this.usageHistory.length === 0) return 0.005; // default estimate
-    const total = this.usageHistory.reduce((sum, r) => sum + r.costUsd, 0);
-    return total / this.usageHistory.length;
+  // ── Queries ───────────────────────────────────────────────────────────────────
+
+  getTotalCost(agentId?: string, sessionId?: string): number {
+    let filtered = this.records;
+    if (agentId) filtered = filtered.filter((r) => r.agentId === agentId);
+    if (sessionId) filtered = filtered.filter((r) => r.sessionId === sessionId);
+    return filtered.reduce((s, r) => s + r.costUSD, 0);
   }
 
-  private stepWeight(step: { estimatedMinutes: number; riskLevel: string }): number {
-    const riskMultiplier: Record<string, number> = { low: 1, medium: 1.5, high: 2, critical: 3 };
-    return step.estimatedMinutes * (riskMultiplier[step.riskLevel] ?? 1);
+  getUsageRecords(
+    agentId?: string,
+    limit = 100
+  ): TokenUsageRecord[] {
+    let filtered = this.records;
+    if (agentId) filtered = filtered.filter((r) => r.agentId === agentId);
+    return filtered.slice(-limit).reverse();
   }
+
+  static computeCost(
+    tier: ModelTier,
+    inputTokens: number,
+    outputTokens: number,
+    thinkingTokens = 0
+  ): number {
+    return computeCost(tier, inputTokens, outputTokens, thinkingTokens);
+  }
+}
+
+// ─── Singleton ─────────────────────────────────────────────────────────────────
+
+let _instance: AgentBudgetOptimizer | null = null;
+
+export function getAgentBudgetOptimizer(
+  config?: OptimizerConfig
+): AgentBudgetOptimizer {
+  if (!_instance) _instance = new AgentBudgetOptimizer(config);
+  return _instance;
 }

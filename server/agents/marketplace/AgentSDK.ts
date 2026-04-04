@@ -1,455 +1,422 @@
-import { randomUUID } from 'crypto';
-import { z } from 'zod';
-import { Logger } from '../../lib/logger';
-import { AgentManifest } from './AgentManifest';
+import { EventEmitter } from "events";
+import pino from "pino";
+import type { AgentManifest, AgentPermissions } from "./AgentManifest.js";
 
-// ─── Interfaces ───────────────────────────────────────────────────────────────
+const logger = pino({ name: "AgentSDK" });
 
-export interface ChildLogger {
-  debug(msg: string, ...args: unknown[]): void;
-  info(msg: string, ...args: unknown[]): void;
-  warn(msg: string, ...args: unknown[]): void;
-  error(msg: string, ...args: unknown[]): void;
+// ─── Core types ───────────────────────────────────────────────────────────────
+
+export interface SDKMessage {
+  id: string;
+  from: string;
+  to: string | "broadcast";
+  type: string;
+  payload: unknown;
+  timestamp: number;
+  correlationId?: string;
+}
+
+export interface SDKToolCall {
+  toolId: string;
+  input: Record<string, unknown>;
+  timeout?: number;
+}
+
+export interface SDKToolResult {
+  toolId: string;
+  success: boolean;
+  output: unknown;
+  durationMs: number;
+  error?: string;
+}
+
+export interface SDKModelRequest {
+  modelId?: string;
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  temperature?: number;
+  maxTokens?: number;
+  tools?: unknown[];
+  stream?: boolean;
+}
+
+export interface SDKModelResponse {
+  content: string;
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+  modelId: string;
+  finishReason: "stop" | "length" | "tool_calls" | "error";
+  toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+}
+
+export interface SDKMemoryQuery {
+  query: string;
+  namespace?: string;
+  topK?: number;
+  filters?: Record<string, unknown>;
+}
+
+export interface SDKMemoryRecord {
+  id: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  score?: number;
 }
 
 export interface AgentContext {
   agentId: string;
   userId: string;
-  runId: string;
   sessionId: string;
-  manifest: AgentManifest;
-  permissions: Set<string>;
-  logger: ChildLogger;
-  emit(event: string, data: unknown): void;
-  request(targetAgent: string, action: string, params: unknown): Promise<unknown>;
+  conversationId?: string;
+  locale: string;
+  permissions: AgentPermissions;
+  metadata: Record<string, unknown>;
 }
 
-export interface AgentLifecycleHooks {
-  onInstall?(): Promise<void> | void;
-  onUninstall?(): Promise<void> | void;
-  onEnable?(): Promise<void> | void;
-  onDisable?(): Promise<void> | void;
-  onError?(err: Error): Promise<void> | void;
-}
-
-export interface AgentMessage {
-  id: string;
-  from: string;
-  to: string;
-  action: string;
-  params: unknown;
-  replyTo?: string;
-  timestamp: Date;
-}
-
-export interface AgentResponse<T> {
+export interface ExecutionResult {
   success: boolean;
-  data?: T;
+  output: unknown;
+  durationMs: number;
+  tokensUsed?: number;
   error?: string;
-  duration: number;
+  metadata?: Record<string, unknown>;
 }
 
-// ─── Prefixed Logger ──────────────────────────────────────────────────────────
+// ─── Resource API ─────────────────────────────────────────────────────────────
 
-function makePrefixedLogger(prefix: string): ChildLogger {
-  return {
-    debug: (msg: string, ...args: unknown[]) => Logger.debug(`${prefix} ${msg}`, ...args),
-    info: (msg: string, ...args: unknown[]) => Logger.info(`${prefix} ${msg}`, ...args),
-    warn: (msg: string, ...args: unknown[]) => Logger.warn(`${prefix} ${msg}`, ...args),
-    error: (msg: string, ...args: unknown[]) => Logger.error(`${prefix} ${msg}`, ...args),
-  };
+export interface ResourceAPI {
+  /** Request a model completion */
+  requestModel(req: SDKModelRequest): Promise<SDKModelResponse>;
+  /** Call a registered tool */
+  requestTool(call: SDKToolCall): Promise<SDKToolResult>;
+  /** Store a value in agent memory */
+  storeMemory(content: string, metadata?: Record<string, unknown>): Promise<string>;
+  /** Query agent memory */
+  queryMemory(query: SDKMemoryQuery): Promise<SDKMemoryRecord[]>;
+  /** Delete a memory record */
+  forgetMemory(id: string): Promise<void>;
+  /** Read a file (requires filesystem permission) */
+  readFile(path: string): Promise<string>;
+  /** Write a file (requires filesystem readwrite permission) */
+  writeFile(path: string, content: string): Promise<void>;
+  /** Fetch a URL (requires network permission) */
+  fetchUrl(url: string, options?: RequestInit): Promise<{ status: number; body: string }>;
 }
 
-// ─── MarketplaceAgent ─────────────────────────────────────────────────────────
+// ─── Communication API ────────────────────────────────────────────────────────
 
-export abstract class MarketplaceAgent implements AgentLifecycleHooks {
-  protected readonly context: AgentContext;
-  protected readonly log: ChildLogger;
+export interface CommunicationAPI {
+  /** Send a message to another agent or user */
+  sendMessage(to: string, type: string, payload: unknown): Promise<void>;
+  /** Send a message to all agents in the same swarm */
+  broadcastToSwarm(type: string, payload: unknown): Promise<void>;
+  /** Subscribe to incoming messages of a given type */
+  onMessage(type: string, handler: (msg: SDKMessage) => void | Promise<void>): () => void;
+  /** Send a request and wait for a reply (request-response pattern) */
+  request(
+    to: string,
+    type: string,
+    payload: unknown,
+    timeoutMs?: number
+  ): Promise<SDKMessage>;
+}
 
-  constructor(context: AgentContext) {
-    this.context = context;
-    this.log = makePrefixedLogger(`[${context.manifest.name}]`);
+// ─── AgentCapability base class ───────────────────────────────────────────────
+
+export abstract class AgentCapability {
+  abstract readonly id: string;
+  abstract readonly name: string;
+  abstract readonly version: string;
+
+  protected resources!: ResourceAPI;
+  protected comms!: CommunicationAPI;
+  protected ctx!: AgentContext;
+
+  /** Called once when the capability is attached to an agent */
+  async initialize(
+    resources: ResourceAPI,
+    comms: CommunicationAPI,
+    ctx: AgentContext
+  ): Promise<void> {
+    this.resources = resources;
+    this.comms = comms;
+    this.ctx = ctx;
+    await this.onInitialize();
   }
 
-  // ─── Abstract ─────────────────────────────────────────────────────────────
+  protected async onInitialize(): Promise<void> {}
+  abstract execute(input: unknown): Promise<unknown>;
+  async cleanup(): Promise<void> {}
+}
 
-  abstract execute(action: string, params: unknown): Promise<AgentResponse<unknown>>;
+// ─── AgentTool base class ─────────────────────────────────────────────────────
 
-  // ─── Message Handling ─────────────────────────────────────────────────────
+export abstract class AgentTool {
+  abstract readonly toolId: string;
+  abstract readonly description: string;
+  abstract readonly inputSchema: Record<string, unknown>;
 
-  async handleMessage(msg: AgentMessage): Promise<AgentResponse<unknown>> {
-    const start = Date.now();
+  protected resources!: ResourceAPI;
+  protected ctx!: AgentContext;
 
-    this.log.debug(`Handling action "${msg.action}" from "${msg.from}" (msgId=${msg.id})`);
+  initialize(resources: ResourceAPI, ctx: AgentContext): void {
+    this.resources = resources;
+    this.ctx = ctx;
+  }
+
+  abstract run(input: Record<string, unknown>): Promise<unknown>;
+
+  /** Optional: validate input before run() is called */
+  validate(_input: Record<string, unknown>): string | null {
+    return null; // null = valid
+  }
+}
+
+// ─── MarketplaceAgent base class ──────────────────────────────────────────────
+
+export abstract class MarketplaceAgent extends EventEmitter {
+  protected readonly log: pino.Logger;
+  protected resources!: ResourceAPI;
+  protected comms!: CommunicationAPI;
+  protected ctx!: AgentContext;
+  protected capabilities: Map<string, AgentCapability> = new Map();
+  protected tools: Map<string, AgentTool> = new Map();
+
+  private _status: "idle" | "installing" | "active" | "deactivated" | "error" =
+    "idle";
+
+  constructor(protected readonly manifest: AgentManifest) {
+    super();
+    this.log = pino({ name: `Agent:${manifest.id}` });
+  }
+
+  get id(): string {
+    return this.manifest.id;
+  }
+  get name(): string {
+    return this.manifest.name;
+  }
+  get version(): string {
+    return this.manifest.version;
+  }
+  get status() {
+    return this._status;
+  }
+
+  // ── Lifecycle ───────────────────────────────────────────────────────────────
+
+  /**
+   * Called once after the agent package is downloaded and verified.
+   * Use this to initialize databases, validate config, warm caches.
+   */
+  async install(
+    resources: ResourceAPI,
+    comms: CommunicationAPI,
+    ctx: AgentContext
+  ): Promise<void> {
+    this._status = "installing";
+    this.resources = resources;
+    this.comms = comms;
+    this.ctx = ctx;
+
+    // Initialize all registered capabilities
+    for (const cap of this.capabilities.values()) {
+      await cap.initialize(resources, comms, ctx);
+    }
+    // Initialize all registered tools
+    for (const tool of this.tools.values()) {
+      tool.initialize(resources, ctx);
+    }
 
     try {
-      const result = await this.execute(msg.action, msg.params);
-      const duration = Date.now() - start;
-
-      return {
-        ...result,
-        duration,
-      };
+      await this.onInstall();
+      this.log.info("[SDK] Agent installed successfully");
+      this.emit("installed", { agentId: this.id });
     } catch (err) {
-      const duration = Date.now() - start;
-      const errorMessage = err instanceof Error ? err.message : String(err);
-
-      this.log.error(`Action "${msg.action}" failed: ${errorMessage}`);
-
-      if (err instanceof Error) {
-        await this.onError(err);
-      }
-
-      return {
-        success: false,
-        error: errorMessage,
-        duration,
-      };
+      this._status = "error";
+      this.log.error({ err }, "[SDK] Installation failed");
+      throw err;
     }
   }
 
-  // ─── Param Validation ─────────────────────────────────────────────────────
-
-  protected validateParams<T>(schema: z.ZodSchema<T>, params: unknown): T {
-    const result = schema.safeParse(params);
-
-    if (!result.success) {
-      const issues = result.error.issues
-        .map((issue) => {
-          const path = issue.path.length > 0 ? issue.path.join('.') : 'root';
-          return `[${path}] ${issue.message}`;
-        })
-        .join('; ');
-
-      throw new Error(`Parameter validation failed: ${issues}`);
+  /**
+   * Called when the agent is enabled for a user/session.
+   * Runs after install; may be called multiple times (activate/deactivate cycles).
+   */
+  async activate(): Promise<void> {
+    if (this._status !== "installing" && this._status !== "deactivated") {
+      throw new Error(
+        `Cannot activate agent in status '${this._status}'. Must be 'installing' or 'deactivated'.`
+      );
     }
-
-    return result.data;
-  }
-
-  // ─── Capabilities & Permissions ───────────────────────────────────────────
-
-  getCapabilities(): string[] {
-    return [...this.context.manifest.capabilities];
-  }
-
-  hasPermission(resource: string, access: string): boolean {
-    const key = `${resource}:${access}`;
-    return this.context.permissions.has(key);
-  }
-
-  // ─── Lifecycle Hooks (overridable) ────────────────────────────────────────
-
-  async onInstall(): Promise<void> {
-    this.log.debug('onInstall hook called');
-  }
-
-  async onUninstall(): Promise<void> {
-    this.log.debug('onUninstall hook called');
-  }
-
-  async onEnable(): Promise<void> {
-    this.log.debug('onEnable hook called');
-  }
-
-  async onDisable(): Promise<void> {
-    this.log.debug('onDisable hook called');
-  }
-
-  async onError(err: Error): Promise<void> {
-    this.log.error(`Unhandled agent error: ${err.message}`);
-  }
-
-  // ─── Static Factory ───────────────────────────────────────────────────────
-
-  static create<T extends MarketplaceAgent>(
-    AgentClass: new (ctx: AgentContext) => T,
-    context: AgentContext
-  ): T {
-    return new AgentClass(context);
-  }
-}
-
-// ─── Retry Utilities ──────────────────────────────────────────────────────────
-
-const RETRY_ATTEMPTS = 3;
-const RETRY_BASE_DELAY_MS = 100;
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function withRetry<T>(
-  fn: () => Promise<T>,
-  attempts: number,
-  baseDelay: number
-): Promise<T> {
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      return await fn();
+      await this.onActivate();
+      this._status = "active";
+      this.log.info("[SDK] Agent activated");
+      this.emit("activated", { agentId: this.id });
     } catch (err) {
-      lastError = err;
-
-      if (attempt < attempts - 1) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        Logger.debug(
-          `[AgentCommunicationBus] Retry ${attempt + 1}/${attempts - 1} after ${delay}ms`
-        );
-        await sleep(delay);
-      }
+      this._status = "error";
+      this.log.error({ err }, "[SDK] Activation failed");
+      throw err;
     }
   }
 
-  throw lastError;
-}
-
-// ─── Message Queue Entry ──────────────────────────────────────────────────────
-
-interface QueueEntry {
-  message: AgentMessage;
-  resolve: (response: AgentResponse<unknown>) => void;
-  reject: (err: unknown) => void;
-  attempts: number;
-}
-
-// ─── AgentCommunicationBus ────────────────────────────────────────────────────
-
-export class AgentCommunicationBus {
-  private readonly agents: Map<string, MarketplaceAgent> = new Map();
-  private readonly queue: QueueEntry[] = [];
-  private processing = false;
-
-  // ─── Registration ──────────────────────────────────────────────────────
-
-  register(agentId: string, agent: MarketplaceAgent): void {
-    if (this.agents.has(agentId)) {
-      Logger.warn(`[AgentCommunicationBus] Agent "${agentId}" is already registered; replacing`);
-    }
-    this.agents.set(agentId, agent);
-    Logger.info(`[AgentCommunicationBus] Agent "${agentId}" registered`);
-  }
-
-  unregister(agentId: string): void {
-    if (!this.agents.has(agentId)) {
-      Logger.warn(`[AgentCommunicationBus] Agent "${agentId}" not found for unregistration`);
+  /**
+   * Called when the agent is disabled temporarily.
+   * Resources are preserved; agent can be re-activated.
+   */
+  async deactivate(): Promise<void> {
+    if (this._status !== "active") {
+      this.log.warn(
+        { status: this._status },
+        "[SDK] Deactivate called on non-active agent, skipping"
+      );
       return;
     }
-    this.agents.delete(agentId);
-    Logger.info(`[AgentCommunicationBus] Agent "${agentId}" unregistered`);
+    try {
+      await this.onDeactivate();
+      this._status = "deactivated";
+      this.log.info("[SDK] Agent deactivated");
+      this.emit("deactivated", { agentId: this.id });
+    } catch (err) {
+      this.log.error({ err }, "[SDK] Deactivation failed");
+      throw err;
+    }
   }
 
-  // ─── Send ──────────────────────────────────────────────────────────────
+  /**
+   * Called when the agent package is being removed from the marketplace.
+   * Clean up all persistent resources.
+   */
+  async uninstall(): Promise<void> {
+    try {
+      if (this._status === "active") await this.deactivate();
+      await this.onUninstall();
+      for (const cap of this.capabilities.values()) await cap.cleanup();
+      this.capabilities.clear();
+      this.tools.clear();
+      this.log.info("[SDK] Agent uninstalled");
+      this.emit("uninstalled", { agentId: this.id });
+    } catch (err) {
+      this.log.error({ err }, "[SDK] Uninstall failed");
+      throw err;
+    }
+  }
 
-  async send(
-    from: string,
-    to: string,
-    action: string,
-    params: unknown
-  ): Promise<AgentResponse<unknown>> {
-    const target = this.agents.get(to);
-    if (!target) {
-      return {
-        success: false,
-        error: `Target agent "${to}" is not registered on the communication bus`,
-        duration: 0,
-      };
+  // ── Abstract lifecycle hooks (subclasses implement) ─────────────────────────
+
+  protected async onInstall(): Promise<void> {}
+  protected async onActivate(): Promise<void> {}
+  protected async onDeactivate(): Promise<void> {}
+  protected async onUninstall(): Promise<void> {}
+
+  // ── Core execution ───────────────────────────────────────────────────────────
+
+  /**
+   * Main entry point — process a user or system request.
+   */
+  async run(input: unknown, context?: Partial<AgentContext>): Promise<ExecutionResult> {
+    if (this._status !== "active") {
+      throw new Error(`Agent '${this.id}' is not active (status: ${this._status})`);
     }
 
-    const message: AgentMessage = {
-      id: randomUUID(),
-      from,
-      to,
-      action,
-      params,
-      timestamp: new Date(),
+    const mergedCtx: AgentContext = {
+      ...this.ctx,
+      ...context,
     };
 
-    Logger.debug(
-      `[AgentCommunicationBus] Sending "${action}" from "${from}" to "${to}" (msgId=${message.id})`
-    );
-
-    return new Promise<AgentResponse<unknown>>((resolve, reject) => {
-      const entry: QueueEntry = {
-        message,
-        resolve,
-        reject,
-        attempts: 0,
-      };
-      this.queue.push(entry);
-      this._processQueue();
-    });
-  }
-
-  // ─── Broadcast ─────────────────────────────────────────────────────────
-
-  async broadcast(
-    from: string,
-    action: string,
-    params: unknown
-  ): Promise<AgentResponse<unknown>[]> {
-    const targets = Array.from(this.agents.keys()).filter((id) => id !== from);
-
-    if (targets.length === 0) {
-      Logger.warn(`[AgentCommunicationBus] Broadcast from "${from}" found no targets`);
-      return [];
-    }
-
-    Logger.info(
-      `[AgentCommunicationBus] Broadcasting "${action}" from "${from}" to ${targets.length} agents`
-    );
-
-    const results = await Promise.allSettled(
-      targets.map((to) => this.send(from, to, action, params))
-    );
-
-    return results.map((result, index) => {
-      if (result.status === 'fulfilled') {
-        return result.value;
-      }
-      const errorMessage =
-        result.reason instanceof Error ? result.reason.message : String(result.reason);
-      Logger.error(
-        `[AgentCommunicationBus] Broadcast to "${targets[index]}" failed: ${errorMessage}`
-      );
-      return {
-        success: false,
-        error: errorMessage,
-        duration: 0,
-      };
-    });
-  }
-
-  // ─── Queue Processing ──────────────────────────────────────────────────
-
-  private _processQueue(): void {
-    if (this.processing) return;
-    this.processing = true;
-
-    setImmediate(() => this._drainQueue());
-  }
-
-  private async _drainQueue(): Promise<void> {
-    while (this.queue.length > 0) {
-      const entry = this.queue.shift();
-      if (!entry) break;
-
-      await this._dispatchEntry(entry);
-    }
-    this.processing = false;
-  }
-
-  private async _dispatchEntry(entry: QueueEntry): Promise<void> {
-    const { message, resolve } = entry;
-    const target = this.agents.get(message.to);
-
-    if (!target) {
-      resolve({
-        success: false,
-        error: `Target agent "${message.to}" was unregistered before the message could be delivered`,
-        duration: 0,
-      });
-      return;
-    }
+    const startMs = Date.now();
+    this.emit("execution:start", { agentId: this.id, input });
 
     try {
-      const response = await withRetry(
-        () => target.handleMessage(message),
-        RETRY_ATTEMPTS,
-        RETRY_BASE_DELAY_MS
-      );
-
-      Logger.debug(
-        `[AgentCommunicationBus] Message ${message.id} delivered to "${message.to}" ` +
-          `(success=${response.success}, duration=${response.duration}ms)`
-      );
-
-      resolve(response);
+      const output = await this.execute(input, mergedCtx);
+      const durationMs = Date.now() - startMs;
+      const result: ExecutionResult = { success: true, output, durationMs };
+      this.emit("execution:end", { agentId: this.id, result });
+      return result;
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-
-      Logger.error(
-        `[AgentCommunicationBus] Message ${message.id} to "${message.to}" failed after ` +
-          `${RETRY_ATTEMPTS} attempts: ${errorMessage}`
-      );
-
-      resolve({
-        success: false,
-        error: `Failed after ${RETRY_ATTEMPTS} attempts: ${errorMessage}`,
-        duration: 0,
-      });
+      const durationMs = Date.now() - startMs;
+      const error = err instanceof Error ? err.message : String(err);
+      this.log.error({ err, durationMs }, "[SDK] Execution error");
+      this.emit("execution:error", { agentId: this.id, error });
+      return { success: false, output: null, durationMs, error };
     }
   }
 
-  // ─── Introspection ────────────────────────────────────────────────────
+  /** Implement the core agent logic in subclasses */
+  protected abstract execute(input: unknown, ctx: AgentContext): Promise<unknown>;
 
-  getRegisteredAgentIds(): string[] {
-    return Array.from(this.agents.keys());
-  }
+  // ── Capability / Tool registration ───────────────────────────────────────────
 
-  isRegistered(agentId: string): boolean {
-    return this.agents.has(agentId);
-  }
-
-  getQueueDepth(): number {
-    return this.queue.length;
-  }
-}
-
-// ─── Context Builder ──────────────────────────────────────────────────────────
-
-export function buildAgentContext(options: {
-  manifest: AgentManifest;
-  userId: string;
-  sessionId?: string;
-  bus?: AgentCommunicationBus;
-  extraPermissions?: string[];
-}): AgentContext {
-  const { manifest, userId, sessionId, bus, extraPermissions } = options;
-
-  const agentId = `${manifest.name}-${randomUUID()}`;
-  const runId = randomUUID();
-  const resolvedSessionId = sessionId ?? randomUUID();
-
-  const permissions = new Set<string>(
-    manifest.permissions.map((p) => `${p.resource}:${p.access}`)
-  );
-
-  if (extraPermissions) {
-    for (const perm of extraPermissions) {
-      permissions.add(perm);
+  protected registerCapability(cap: AgentCapability): void {
+    if (this.capabilities.has(cap.id)) {
+      throw new Error(`Capability '${cap.id}' already registered`);
     }
+    this.capabilities.set(cap.id, cap);
+    this.log.debug({ capId: cap.id }, "[SDK] Capability registered");
   }
 
-  const logger = makePrefixedLogger(`[${manifest.name}]`);
+  protected registerTool(tool: AgentTool): void {
+    if (this.tools.has(tool.toolId)) {
+      throw new Error(`Tool '${tool.toolId}' already registered`);
+    }
+    this.tools.set(tool.toolId, tool);
+    this.log.debug({ toolId: tool.toolId }, "[SDK] Tool registered");
+  }
 
-  const context: AgentContext = {
-    agentId,
-    userId,
-    runId,
-    sessionId: resolvedSessionId,
-    manifest,
-    permissions,
-    logger,
-    emit: (event: string, data: unknown) => {
-      logger.debug(`emit "${event}": ${JSON.stringify(data)}`);
-    },
-    request: async (targetAgent: string, action: string, params: unknown): Promise<unknown> => {
-      if (!bus) {
-        throw new Error(
-          `Agent "${manifest.name}" attempted request to "${targetAgent}" but no bus is configured`
-        );
-      }
-      const response = await bus.send(agentId, targetAgent, action, params);
-      if (!response.success) {
-        throw new Error(
-          `Request to "${targetAgent}::${action}" failed: ${response.error ?? 'unknown error'}`
-        );
-      }
-      return response.data;
-    },
-  };
+  getCapability(id: string): AgentCapability | undefined {
+    return this.capabilities.get(id);
+  }
 
-  return context;
+  getTool(toolId: string): AgentTool | undefined {
+    return this.tools.get(toolId);
+  }
+
+  listCapabilities(): AgentCapability[] {
+    return Array.from(this.capabilities.values());
+  }
+
+  listTools(): AgentTool[] {
+    return Array.from(this.tools.values());
+  }
+
+  // ── Health ────────────────────────────────────────────────────────────────────
+
+  async healthCheck(): Promise<{ healthy: boolean; details: Record<string, unknown> }> {
+    return {
+      healthy: this._status === "active",
+      details: {
+        status: this._status,
+        capabilities: this.capabilities.size,
+        tools: this.tools.size,
+        agentId: this.id,
+        version: this.version,
+      },
+    };
+  }
 }
+
+// ─── SDK Factory ──────────────────────────────────────────────────────────────
+
+/** Type for the constructor of a MarketplaceAgent subclass */
+export type AgentClass = new (manifest: AgentManifest) => MarketplaceAgent;
+
+/**
+ * Define a marketplace agent. Returns a factory function.
+ * This is the primary export third-party developers use.
+ *
+ * @example
+ * export default defineAgent((manifest) =>
+ *   class MyAgent extends MarketplaceAgent {
+ *     protected async execute(input, ctx) { ... }
+ *   }
+ * );
+ */
+export function defineAgent(
+  factory: (manifest: AgentManifest) => AgentClass
+): (manifest: AgentManifest) => AgentClass {
+  return factory;
+}
+
+// ─── SDK version export ───────────────────────────────────────────────────────
+
+export const SDK_VERSION = "1.0.0";
+export const PLATFORM_API_VERSION = "1.0";

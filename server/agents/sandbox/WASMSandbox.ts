@@ -1,699 +1,608 @@
-/**
- * WASMSandbox — WebAssembly-style sandboxing with granular capability
- * permissions, static code analysis, and Node.js vm-module isolation.
- */
+import { EventEmitter } from "events";
+import { randomUUID } from "crypto";
+import pino from "pino";
 
-import { EventEmitter } from 'events';
-import { randomUUID } from 'crypto';
-import * as vm from 'vm';
-import { z } from 'zod';
-import { Logger } from '../../lib/logger';
+const logger = pino({ name: "WASMSandbox" });
 
-// ─────────────────────────────────────────────
-// Enums
-// ─────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-export enum SandboxPermission {
-  READ_FS = 'READ_FS',
-  WRITE_FS = 'WRITE_FS',
-  NETWORK = 'NETWORK',
-  EXEC_PROCESS = 'EXEC_PROCESS',
-  ENV_VARS = 'ENV_VARS',
-  CLOCK = 'CLOCK',
-  RANDOM = 'RANDOM',
-  STDIN = 'STDIN',
-  STDOUT = 'STDOUT',
-  STDERR = 'STDERR',
+export type SandboxStatus = "idle" | "running" | "suspended" | "terminated" | "error";
+
+export interface SandboxPermissions {
+  filesystem: "none" | "readonly" | "readwrite";
+  /** Allowed hostnames for network. Empty = no network. */
+  networkAllowlist: string[];
+  /** Max heap memory in bytes */
+  maxMemoryBytes: number;
+  /** Max CPU time per call in ms */
+  maxCpuTimeMs: number;
+  /** Allow reading environment variables */
+  allowEnvAccess: boolean;
+  /** Allow spawning child processes */
+  allowChildProcesses: boolean;
+  /** Allow timer APIs (setTimeout etc.) */
+  allowTimers: boolean;
+  /** Custom capability flags */
+  custom: Record<string, boolean>;
 }
 
-// ─────────────────────────────────────────────
-// Custom Error
-// ─────────────────────────────────────────────
+export const PERMISSION_PRESETS: Record<string, SandboxPermissions> = {
+  minimal: {
+    filesystem: "none",
+    networkAllowlist: [],
+    maxMemoryBytes: 32 * 1024 * 1024, // 32 MB
+    maxCpuTimeMs: 5_000,
+    allowEnvAccess: false,
+    allowChildProcesses: false,
+    allowTimers: false,
+    custom: {},
+  },
+  standard: {
+    filesystem: "readonly",
+    networkAllowlist: [],
+    maxMemoryBytes: 128 * 1024 * 1024, // 128 MB
+    maxCpuTimeMs: 30_000,
+    allowEnvAccess: false,
+    allowChildProcesses: false,
+    allowTimers: true,
+    custom: {},
+  },
+  trusted: {
+    filesystem: "readwrite",
+    networkAllowlist: ["https://api.openai.com", "https://api.anthropic.com"],
+    maxMemoryBytes: 512 * 1024 * 1024, // 512 MB
+    maxCpuTimeMs: 120_000,
+    allowEnvAccess: false,
+    allowChildProcesses: false,
+    allowTimers: true,
+    custom: {},
+  },
+  admin: {
+    filesystem: "readwrite",
+    networkAllowlist: ["*"],
+    maxMemoryBytes: 2 * 1024 * 1024 * 1024, // 2 GB
+    maxCpuTimeMs: 600_000,
+    allowEnvAccess: true,
+    allowChildProcesses: true,
+    allowTimers: true,
+    custom: {},
+  },
+};
 
-export class SandboxViolationError extends Error {
-  readonly permission: SandboxPermission | null;
-  readonly violationType: 'policy' | 'timeout' | 'memory' | 'static_analysis';
+export interface SandboxCall {
+  callId: string;
+  functionName: string;
+  args: unknown[];
+  timeoutMs?: number;
+}
+
+export interface SandboxResult {
+  callId: string;
+  success: boolean;
+  returnValue?: unknown;
+  error?: string;
+  durationMs: number;
+  memoryUsedBytes?: number;
+  interceptedSyscalls: string[];
+}
+
+export interface SandboxStats {
+  sandboxId: string;
+  status: SandboxStatus;
+  totalCalls: number;
+  successfulCalls: number;
+  failedCalls: number;
+  totalCpuTimeMs: number;
+  peakMemoryBytes: number;
+  interceptedSyscalls: Record<string, number>;
+  createdAt: number;
+  lastCallAt?: number;
+}
+
+export interface HostFunction {
+  name: string;
+  /** Called when the WASM module invokes this host function */
+  handler: (...args: unknown[]) => unknown | Promise<unknown>;
+  /** Whether to log each call */
+  audit?: boolean;
+}
+
+// ─── Syscall interceptor ──────────────────────────────────────────────────────
+
+type SyscallName =
+  | "readFile"
+  | "writeFile"
+  | "fetchUrl"
+  | "spawnProcess"
+  | "getEnv"
+  | "setTimeout"
+  | "setInterval"
+  | "consoleLog"
+  | "consoleError";
+
+class SyscallInterceptor {
+  private interceptedCounts = new Map<string, number>();
 
   constructor(
-    message: string,
-    violationType: SandboxViolationError['violationType'],
-    permission: SandboxPermission | null = null,
-  ) {
-    super(message);
-    this.name = 'SandboxViolationError';
-    this.permission = permission;
-    this.violationType = violationType;
+    private readonly permissions: SandboxPermissions,
+    private readonly sandboxId: string
+  ) {}
+
+  intercept(syscall: SyscallName, args: unknown[]): unknown {
+    this.interceptedCounts.set(
+      syscall,
+      (this.interceptedCounts.get(syscall) ?? 0) + 1
+    );
+
+    switch (syscall) {
+      case "readFile":
+        return this.interceptReadFile(args[0] as string);
+      case "writeFile":
+        return this.interceptWriteFile(args[0] as string, args[1] as string);
+      case "fetchUrl":
+        return this.interceptFetchUrl(args[0] as string);
+      case "spawnProcess":
+        return this.interceptSpawnProcess();
+      case "getEnv":
+        return this.interceptGetEnv(args[0] as string);
+      case "setTimeout":
+        return this.interceptTimer();
+      case "setInterval":
+        return this.interceptTimer();
+      case "consoleLog":
+        logger.info({ sandboxId: this.sandboxId }, `[Sandbox] ${args.join(" ")}`);
+        return undefined;
+      case "consoleError":
+        logger.warn({ sandboxId: this.sandboxId }, `[Sandbox:err] ${args.join(" ")}`);
+        return undefined;
+      default:
+        throw new Error(`Unknown syscall: ${syscall}`);
+    }
+  }
+
+  private interceptReadFile(path: string): never {
+    if (this.permissions.filesystem === "none") {
+      throw new Error(`SANDBOX_VIOLATION: readFile('${path}') denied — filesystem access is 'none'`);
+    }
+    // In real implementation, this would call the host's FS with path validation
+    throw new Error(`SANDBOX_VIOLATION: readFile not implemented in sandboxed context`);
+  }
+
+  private interceptWriteFile(path: string, _content: string): never {
+    if (this.permissions.filesystem !== "readwrite") {
+      throw new Error(
+        `SANDBOX_VIOLATION: writeFile('${path}') denied — filesystem is '${this.permissions.filesystem}'`
+      );
+    }
+    throw new Error(`SANDBOX_VIOLATION: writeFile not implemented in sandboxed context`);
+  }
+
+  private interceptFetchUrl(url: string): never {
+    if (!this.permissions.networkAllowlist.length) {
+      throw new Error(`SANDBOX_VIOLATION: fetch('${url}') denied — no network allowlist`);
+    }
+    if (
+      this.permissions.networkAllowlist[0] !== "*" &&
+      !this.permissions.networkAllowlist.some((allowed) => url.startsWith(allowed))
+    ) {
+      throw new Error(
+        `SANDBOX_VIOLATION: fetch('${url}') denied — not in allowlist`
+      );
+    }
+    throw new Error(`SANDBOX_VIOLATION: fetchUrl not implemented in sandboxed context`);
+  }
+
+  private interceptSpawnProcess(): never {
+    if (!this.permissions.allowChildProcesses) {
+      throw new Error(`SANDBOX_VIOLATION: spawnProcess denied`);
+    }
+    throw new Error(`SANDBOX_VIOLATION: spawnProcess not implemented in sandboxed context`);
+  }
+
+  private interceptGetEnv(key: string): string | undefined {
+    if (!this.permissions.allowEnvAccess) {
+      throw new Error(`SANDBOX_VIOLATION: getEnv('${key}') denied`);
+    }
+    return undefined; // Don't expose real env vars
+  }
+
+  private interceptTimer(): never {
+    if (!this.permissions.allowTimers) {
+      throw new Error(`SANDBOX_VIOLATION: timer APIs denied`);
+    }
+    throw new Error(`SANDBOX_VIOLATION: timer not implemented in sandboxed context`);
+  }
+
+  getCounts(): Record<string, number> {
+    return Object.fromEntries(this.interceptedCounts);
+  }
+
+  getTotalIntercepted(): number {
+    let total = 0;
+    for (const v of this.interceptedCounts.values()) total += v;
+    return total;
   }
 }
 
-// ─────────────────────────────────────────────
-// Interfaces
-// ─────────────────────────────────────────────
-
-export interface SandboxPolicy {
-  id: string;
-  name: string;
-  allowedPermissions: SandboxPermission[];
-  deniedPermissions: SandboxPermission[];
-  maxMemoryMb: number;        // default 128
-  maxExecutionMs: number;     // default 30 000
-  allowedHosts?: string[];
-  allowedPaths?: string[];
-  maxOutputBytes: number;     // default 1 048 576 (1 MB)
-}
-
-export interface SandboxInstance {
-  id: string;
-  policyId: string;
-  status: 'idle' | 'running' | 'completed' | 'terminated' | 'error';
-  createdAt: Date;
-  lastUsedAt: Date;
-  executionCount: number;
-  totalExecutionMs: number;
-  memoryPeakMb?: number;
-}
-
-export interface SandboxExecution {
-  id: string;
-  instanceId: string;
-  code: string;
-  language: 'javascript' | 'typescript' | 'python' | 'wasm';
-  startedAt: Date;
-  completedAt?: Date;
-  durationMs?: number;
-  stdout: string;
-  stderr: string;
-  exitCode: number | null;
-  error?: string;
-  memoryUsedMb?: number;
-}
-
-export interface ResourceUsage {
-  cpuMs: number;
-  memoryMb: number;
-  networkBytes: number;
-  fsOps: number;
-}
-
-export interface WASMSandboxConfig {
-  defaultPolicy?: Partial<SandboxPolicy>;
-  maxInstances: number;       // default 10
-  instanceTtlMs: number;      // default 3 600 000 (1 h)
-  enableMetrics: boolean;     // default true
-}
-
-// ─────────────────────────────────────────────
-// Zod schemas
-// ─────────────────────────────────────────────
-
-const PolicyInputSchema = z.object({
-  name: z.string().min(1),
-  allowedPermissions: z.array(z.nativeEnum(SandboxPermission)),
-  deniedPermissions: z.array(z.nativeEnum(SandboxPermission)),
-  maxMemoryMb: z.number().positive().default(128),
-  maxExecutionMs: z.number().positive().default(30_000),
-  allowedHosts: z.array(z.string()).optional(),
-  allowedPaths: z.array(z.string()).optional(),
-  maxOutputBytes: z.number().positive().default(1_048_576),
-});
-
-// ─────────────────────────────────────────────
-// Static analysis rule table
-// ─────────────────────────────────────────────
-// Patterns are constructed from parts to prevent false-positive triggers
-// from source-scanning hooks while still correctly analysing sandboxed code.
-
-interface AnalysisRule {
-  // Each element of `parts` is joined with '' to form the final RegExp source.
-  // This pattern only applies to code submitted for execution, NOT to this file.
-  parts: string[];
-  reason: string;
-  permission: SandboxPermission | null;
-}
-
-// Build a RegExp from parts — keeps the detection logic but avoids literal
-// scanner matches inside this source file.
-const rule = (parts: string[], reason: string, perm: SandboxPermission | null): AnalysisRule =>
-  ({ parts, reason, permission: perm });
-
-const ALWAYS_BANNED_RULES: AnalysisRule[] = [
-  rule(['process', '\\.exit\\s*\\('],        'process.exit() is not allowed in sandbox',              SandboxPermission.EXEC_PROCESS),
-  // Dynamic execution builtins — split across segments
-  rule(['\\bev', 'al\\s*\\('],              'Dynamic code evaluation is not allowed in sandbox',     null),
-  rule(['new\\s+Fun', 'ction\\s*\\('],      'Dynamic function construction is not allowed',          null),
-  rule(["req", "uire\\s*\\(\\s*['\"]child", "_pro", "cess['\"]\\s*\\)"],
-                                            'child_process module is not allowed in sandbox',        SandboxPermission.EXEC_PROCESS),
-  rule(["req", "uire\\s*\\(\\s*['\"]clust", "er['\"]\\s*\\)"],
-                                            'cluster module is not allowed in sandbox',             SandboxPermission.EXEC_PROCESS),
-  rule(['\\b__dirn', 'ame\\b|\\b__filen', 'ame\\b'],
-                                            '__dirname/__filename escapes are not allowed',          SandboxPermission.READ_FS),
-  rule(['process\\.e', 'nv'],               'process.env access is not allowed in sandbox',          SandboxPermission.ENV_VARS),
-];
-
-const NETWORK_RULES: AnalysisRule[] = [
-  rule(["req", "uire\\s*\\(\\s*['\"]https?['\"]\\s*\\)"],  'http/https require NETWORK permission',  SandboxPermission.NETWORK),
-  rule(["req", "uire\\s*\\(\\s*['\"]ne", "t['\"]\\s*\\)"], 'net module requires NETWORK permission', SandboxPermission.NETWORK),
-  rule(["req", "uire\\s*\\(\\s*['\"]dgr", "am['\"]\\s*\\)"],'dgram requires NETWORK permission',    SandboxPermission.NETWORK),
-  rule(['\\bfet', 'ch\\s*\\('],             'fetch() requires NETWORK permission',                   SandboxPermission.NETWORK),
-  rule(['\\bXMLHttp', 'Request\\b'],        'XMLHttpRequest requires NETWORK permission',            SandboxPermission.NETWORK),
-];
-
-const FS_RULES: AnalysisRule[] = [
-  rule(["req", "uire\\s*\\(\\s*['\"]f", "s['\"]\\s*\\)"],  'fs module requires READ_FS/WRITE_FS',   SandboxPermission.READ_FS),
-  rule(["req", "uire\\s*\\(\\s*['\"]pat", "h['\"]\\s*\\)"],'path module requires READ_FS',          SandboxPermission.READ_FS),
-];
-
-const EXEC_RULES: AnalysisRule[] = [
-  rule(['\\bspa', 'wn\\s*\\(|\\bex', 'ec\\s*\\(|\\bexecSyn', 'c\\s*\\('],
-                                            'Process execution denied by policy',                    SandboxPermission.EXEC_PROCESS),
-];
-
-const ENV_RULES: AnalysisRule[] = [
-  rule(['process\\.e', 'nv'],               'process.env access denied by policy',                  SandboxPermission.ENV_VARS),
-];
-
-/** Compile a rule's parts into a usable RegExp. */
-function compileRule(r: AnalysisRule): RegExp {
-  return new RegExp(r.parts.join(''));
-}
-
-// ─────────────────────────────────────────────
-// Defaults
-// ─────────────────────────────────────────────
-
-const DEFAULT_POLICY_TEMPLATE: Omit<SandboxPolicy, 'id'> = {
-  name: 'default',
-  allowedPermissions: [SandboxPermission.STDOUT, SandboxPermission.CLOCK, SandboxPermission.RANDOM],
-  deniedPermissions: [
-    SandboxPermission.READ_FS,
-    SandboxPermission.WRITE_FS,
-    SandboxPermission.NETWORK,
-    SandboxPermission.EXEC_PROCESS,
-    SandboxPermission.ENV_VARS,
-    SandboxPermission.STDIN,
-    SandboxPermission.STDERR,
-  ],
-  maxMemoryMb: 128,
-  maxExecutionMs: 30_000,
-  maxOutputBytes: 1_048_576,
-};
-
-const DEFAULT_CONFIG: WASMSandboxConfig = {
-  maxInstances: 10,
-  instanceTtlMs: 3_600_000,
-  enableMetrics: true,
-};
-
-// ─────────────────────────────────────────────
-// WASMSandbox class
-// ─────────────────────────────────────────────
+// ─── WASMSandbox ──────────────────────────────────────────────────────────────
 
 export class WASMSandbox extends EventEmitter {
-  private readonly instances: Map<string, SandboxInstance> = new Map();
-  private readonly executions: Map<string, SandboxExecution> = new Map();
-  private readonly policies: Map<string, SandboxPolicy> = new Map();
-  private readonly config: WASMSandboxConfig;
+  private readonly sandboxId: string;
+  private status: SandboxStatus = "idle";
+  private readonly interceptor: SyscallInterceptor;
+  private wasmInstance: WebAssembly.Instance | null = null;
+  private wasmMemory: WebAssembly.Memory | null = null;
 
-  private permissionViolationCount = 0;
-  private readonly cleanupHandle: NodeJS.Timeout;
+  private stats: SandboxStats;
+  private hostFunctions = new Map<string, HostFunction>();
 
-  constructor(config?: Partial<WASMSandboxConfig>) {
+  constructor(
+    private readonly agentId: string,
+    private readonly permissions: SandboxPermissions
+  ) {
     super();
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.sandboxId = randomUUID();
+    this.interceptor = new SyscallInterceptor(permissions, this.sandboxId);
 
-    const defaultPolicyInput: Omit<SandboxPolicy, 'id'> = {
-      ...DEFAULT_POLICY_TEMPLATE,
-      ...(config?.defaultPolicy ?? {}),
+    this.stats = {
+      sandboxId: this.sandboxId,
+      status: "idle",
+      totalCalls: 0,
+      successfulCalls: 0,
+      failedCalls: 0,
+      totalCpuTimeMs: 0,
+      peakMemoryBytes: 0,
+      interceptedSyscalls: {},
+      createdAt: Date.now(),
     };
-    this._registerDefaultPolicy(defaultPolicyInput);
 
-    // Scheduled cleanup every 5 minutes
-    this.cleanupHandle = setInterval(() => this._cleanupExpired(), 5 * 60 * 1_000);
-    Logger.info('[WASMSandbox] Initialized', {
-      maxInstances: this.config.maxInstances,
-      instanceTtlMs: this.config.instanceTtlMs,
-    });
+    logger.info(
+      { sandboxId: this.sandboxId, agentId, permissionLevel: this.getPermissionLevel() },
+      "[WASMSandbox] Sandbox created"
+    );
   }
 
-  // ─── Policy management ────────────────────
+  // ── WASM loading ──────────────────────────────────────────────────────────────
 
-  createPolicy(policy: Omit<SandboxPolicy, 'id'>): SandboxPolicy {
-    const parsed = PolicyInputSchema.parse(policy);
-    const full: SandboxPolicy = { id: randomUUID(), ...parsed };
-    this.policies.set(full.id, full);
-    Logger.info('[WASMSandbox] Policy created', { policyId: full.id, name: full.name });
-    return full;
-  }
-
-  getPolicy(policyId: string): SandboxPolicy | undefined {
-    return this.policies.get(policyId);
-  }
-
-  // ─── Instance management ──────────────────
-
-  createInstance(policyId?: string): SandboxInstance {
-    if (this.instances.size >= this.config.maxInstances) {
-      this._cleanupExpired();
-      if (this.instances.size >= this.config.maxInstances) {
-        throw new Error(`Maximum sandbox instances reached (${this.config.maxInstances})`);
-      }
+  async loadWASM(
+    wasmBytes: Uint8Array,
+    additionalHostFunctions: HostFunction[] = []
+  ): Promise<void> {
+    if (this.status !== "idle") {
+      throw new Error(`Cannot load WASM: sandbox is ${this.status}`);
     }
 
-    const resolvedPolicyId = policyId ?? this._getDefaultPolicyId();
-    if (!this.policies.has(resolvedPolicyId)) {
-      throw new Error(`Policy ${resolvedPolicyId} not found`);
+    // Register host functions
+    for (const fn of additionalHostFunctions) {
+      this.hostFunctions.set(fn.name, fn);
     }
 
-    const instance: SandboxInstance = {
-      id: randomUUID(),
-      policyId: resolvedPolicyId,
-      status: 'idle',
-      createdAt: new Date(),
-      lastUsedAt: new Date(),
-      executionCount: 0,
-      totalExecutionMs: 0,
-    };
-    this.instances.set(instance.id, instance);
-    Logger.debug('[WASMSandbox] Instance created', { instanceId: instance.id, policyId: resolvedPolicyId });
-    this.emit('instance:created', instance);
-    return instance;
-  }
-
-  // ─── Execution ────────────────────────────
-
-  async execute(
-    instanceId: string,
-    code: string,
-    language: SandboxExecution['language'],
-    input?: string,
-  ): Promise<SandboxExecution> {
-    const instance = this._requireInstance(instanceId);
-    const policy = this._requirePolicy(instance.policyId);
-
-    if (instance.status === 'terminated') {
-      throw new Error(`Instance ${instanceId} is terminated`);
-    }
+    const imports = this.buildImports();
 
     try {
-      this._enforcePolicy(instance, policy, code);
-    } catch (err) {
-      this.permissionViolationCount++;
-      this.emit('violation:detected', { instanceId, violation: err });
-      throw err;
-    }
-
-    instance.status = 'running';
-    instance.lastUsedAt = new Date();
-
-    const execution: SandboxExecution = {
-      id: randomUUID(),
-      instanceId,
-      code,
-      language,
-      startedAt: new Date(),
-      stdout: '',
-      stderr: '',
-      exitCode: null,
-    };
-    this.executions.set(execution.id, execution);
-    this.emit('execution:start', execution);
-
-    const start = Date.now();
-    try {
-      let result: { stdout: string; stderr: string; exitCode: number };
-
-      if (language === 'javascript' || language === 'typescript') {
-        result = await this._runJavaScript(code, policy.maxExecutionMs, input);
-      } else {
-        result = await this._runUnsupported(language);
-      }
-
-      const durationMs = Date.now() - start;
-
-      const outBytes = Buffer.byteLength(result.stdout + result.stderr, 'utf8');
-      if (outBytes > policy.maxOutputBytes) {
-        result.stdout = result.stdout.slice(0, Math.floor(policy.maxOutputBytes / 2));
-        result.stderr = '[output truncated: exceeded maxOutputBytes]';
-        Logger.warn('[WASMSandbox] Output truncated', { instanceId, outBytes });
-      }
-
-      execution.completedAt = new Date();
-      execution.durationMs = durationMs;
-      execution.stdout = result.stdout;
-      execution.stderr = result.stderr;
-      execution.exitCode = result.exitCode;
-
-      instance.status = 'completed';
-      instance.executionCount++;
-      instance.totalExecutionMs += durationMs;
-
-      Logger.debug('[WASMSandbox] Execution completed', {
-        executionId: execution.id,
-        durationMs,
-        exitCode: result.exitCode,
+      const module = await WebAssembly.compile(wasmBytes);
+      this.wasmMemory = new WebAssembly.Memory({
+        initial: Math.ceil(this.permissions.maxMemoryBytes / (64 * 1024)),
+        maximum: Math.ceil(this.permissions.maxMemoryBytes / (64 * 1024)),
       });
-      this.emit('execution:complete', execution);
+
+      this.wasmInstance = await WebAssembly.instantiate(module, {
+        ...imports,
+        env: { memory: this.wasmMemory, ...imports.env },
+      });
+
+      logger.info({ sandboxId: this.sandboxId }, "[WASMSandbox] WASM module loaded");
+      this.emit("wasm:loaded", { sandboxId: this.sandboxId });
     } catch (err) {
-      const durationMs = Date.now() - start;
-      const errMsg = err instanceof Error ? err.message : String(err);
-      execution.completedAt = new Date();
-      execution.durationMs = durationMs;
-      execution.error = errMsg;
-      execution.exitCode = 1;
-      execution.stderr = errMsg;
-
-      instance.status = 'error';
-      instance.executionCount++;
-      instance.totalExecutionMs += durationMs;
-
-      Logger.error('[WASMSandbox] Execution error', err as Error);
-      this.emit('execution:error', { execution, error: err });
-      throw err;
+      this.status = "error";
+      throw new Error(
+        `Failed to load WASM module: ${(err as Error).message}`
+      );
     }
-
-    return execution;
   }
 
-  async executeIsolated(
-    code: string,
-    language: SandboxExecution['language'],
-    policy?: Partial<SandboxPolicy>,
-  ): Promise<SandboxExecution> {
-    let policyId: string;
-    let ephemeralPolicyId: string | null = null;
+  // ── Execution ─────────────────────────────────────────────────────────────────
 
-    if (policy) {
-      const merged: Omit<SandboxPolicy, 'id'> = {
-        ...DEFAULT_POLICY_TEMPLATE,
-        ...policy,
-        name: policy.name ?? `ephemeral-${Date.now()}`,
+  async call(sandboxCall: SandboxCall): Promise<SandboxResult> {
+    const { callId, functionName, args, timeoutMs } = sandboxCall;
+    const effectiveTimeout = Math.min(
+      timeoutMs ?? this.permissions.maxCpuTimeMs,
+      this.permissions.maxCpuTimeMs
+    );
+
+    if (this.status === "terminated") {
+      return {
+        callId,
+        success: false,
+        error: "Sandbox has been terminated",
+        durationMs: 0,
+        interceptedSyscalls: [],
       };
-      const created = this.createPolicy(merged);
-      policyId = created.id;
-      ephemeralPolicyId = policyId;
-    } else {
-      policyId = this._getDefaultPolicyId();
     }
 
-    const instance = this.createInstance(policyId);
-    try {
-      return await this.execute(instance.id, code, language);
-    } finally {
-      this.terminateInstance(instance.id);
-      if (ephemeralPolicyId !== null) {
-        this.policies.delete(ephemeralPolicyId);
-      }
-    }
-  }
+    const startMs = Date.now();
+    this.status = "running";
+    this.stats.totalCalls++;
+    this.stats.lastCallAt = startMs;
 
-  terminateInstance(instanceId: string): void {
-    const instance = this.instances.get(instanceId);
-    if (!instance) return;
-    instance.status = 'terminated';
-    Logger.info('[WASMSandbox] Instance terminated', { instanceId });
-    this.emit('instance:terminated', instance);
-  }
+    const interceptedBefore = this.interceptor.getTotalIntercepted();
 
-  checkPermission(instanceId: string, permission: SandboxPermission): boolean {
-    const instance = this.instances.get(instanceId);
-    if (!instance) return false;
-    const policy = this.policies.get(instance.policyId);
-    if (!policy) return false;
-    if (policy.deniedPermissions.includes(permission)) return false;
-    return policy.allowedPermissions.includes(permission);
-  }
+    return new Promise<SandboxResult>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.status = "error";
+        this.stats.failedCalls++;
+        const durationMs = Date.now() - startMs;
 
-  // ─── Getters ──────────────────────────────
-
-  getInstance(instanceId: string): SandboxInstance | undefined {
-    return this.instances.get(instanceId);
-  }
-
-  listInstances(status?: SandboxInstance['status']): SandboxInstance[] {
-    const all = [...this.instances.values()];
-    return status !== undefined ? all.filter((i) => i.status === status) : all;
-  }
-
-  getExecution(executionId: string): SandboxExecution | undefined {
-    return this.executions.get(executionId);
-  }
-
-  getMetrics(): {
-    instances: number;
-    executions: number;
-    avgDurationMs: number;
-    errorRate: number;
-    permissionViolations: number;
-  } {
-    const allExecs = [...this.executions.values()];
-    const completed = allExecs.filter((e) => e.durationMs !== undefined);
-    const errored = allExecs.filter((e) => e.error !== undefined);
-    const totalDuration = completed.reduce((s, e) => s + (e.durationMs ?? 0), 0);
-    return {
-      instances: this.instances.size,
-      executions: allExecs.length,
-      avgDurationMs: completed.length > 0 ? totalDuration / completed.length : 0,
-      errorRate: allExecs.length > 0 ? errored.length / allExecs.length : 0,
-      permissionViolations: this.permissionViolationCount,
-    };
-  }
-
-  // ─── Private: policy enforcement ─────────
-
-  private _enforcePolicy(
-    _instance: SandboxInstance,
-    policy: SandboxPolicy,
-    code: string,
-  ): void {
-    // Always-banned patterns — cannot be overridden
-    for (const r of ALWAYS_BANNED_RULES) {
-      if (compileRule(r).test(code)) {
-        throw new SandboxViolationError(r.reason, 'static_analysis', r.permission);
-      }
-    }
-
-    // Network patterns — blocked unless NETWORK is explicitly allowed
-    if (!policy.allowedPermissions.includes(SandboxPermission.NETWORK)) {
-      for (const r of NETWORK_RULES) {
-        if (compileRule(r).test(code)) {
-          throw new SandboxViolationError(r.reason, 'policy', SandboxPermission.NETWORK);
-        }
-      }
-    }
-
-    // Filesystem patterns — blocked unless READ_FS or WRITE_FS is allowed
-    const hasFs =
-      policy.allowedPermissions.includes(SandboxPermission.READ_FS) ||
-      policy.allowedPermissions.includes(SandboxPermission.WRITE_FS);
-    if (!hasFs) {
-      for (const r of FS_RULES) {
-        if (compileRule(r).test(code)) {
-          throw new SandboxViolationError(r.reason, 'policy', r.permission);
-        }
-      }
-    }
-
-    // Process execution — blocked unless EXEC_PROCESS is allowed
-    if (!policy.allowedPermissions.includes(SandboxPermission.EXEC_PROCESS)) {
-      for (const r of EXEC_RULES) {
-        if (compileRule(r).test(code)) {
-          throw new SandboxViolationError(r.reason, 'policy', SandboxPermission.EXEC_PROCESS);
-        }
-      }
-    }
-
-    // ENV_VARS — if explicitly denied in policy
-    if (policy.deniedPermissions.includes(SandboxPermission.ENV_VARS)) {
-      for (const r of ENV_RULES) {
-        if (compileRule(r).test(code)) {
-          throw new SandboxViolationError(r.reason, 'policy', SandboxPermission.ENV_VARS);
-        }
-      }
-    }
-  }
-
-  // ─── Private: JavaScript runner ──────────
-
-  private async _runJavaScript(
-    code: string,
-    timeoutMs: number,
-    _input?: string,
-  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    const stdoutChunks: string[] = [];
-    const stderrChunks: string[] = [];
-
-    // Minimal console surface exposed to sandboxed code.
-    // Deliberately excludes: require, process, global, __dirname, __filename,
-    // Buffer, fetch, XMLHttpRequest, WebSocket, fs, path, child_process
-    const sandboxConsole = {
-      log: (...args: unknown[]): void => {
-        stdoutChunks.push(args.map((a) => String(a)).join(' '));
-      },
-      error: (...args: unknown[]): void => {
-        stderrChunks.push(args.map((a) => String(a)).join(' '));
-      },
-      warn: (...args: unknown[]): void => {
-        stderrChunks.push('[warn] ' + args.map((a) => String(a)).join(' '));
-      },
-      info: (...args: unknown[]): void => {
-        stdoutChunks.push('[info] ' + args.map((a) => String(a)).join(' '));
-      },
-    };
-
-    const context = vm.createContext({
-      console: sandboxConsole,
-      Math,
-      JSON,
-      Array,
-      Object,
-      String,
-      Number,
-      Boolean,
-      Date,
-      RegExp,
-      Error,
-      TypeError,
-      RangeError,
-      SyntaxError,
-      Map,
-      Set,
-      WeakMap,
-      WeakSet,
-      Promise,
-      Symbol,
-      parseInt,
-      parseFloat,
-      isNaN,
-      isFinite,
-      encodeURIComponent,
-      decodeURIComponent,
-      encodeURI,
-      decodeURI,
-    });
-
-    return new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-      let settled = false;
-
-      const settle = (out: { stdout: string; stderr: string; exitCode: number }): void => {
-        if (!settled) {
-          settled = true;
-          resolve(out);
-        }
-      };
-
-      const timer = setTimeout(() => {
-        settle({
-          stdout: stdoutChunks.join('\n'),
-          stderr: `[execution timed out after ${timeoutMs}ms]`,
-          exitCode: 124,
-        });
-      }, timeoutMs);
-
-      let scriptResult: unknown;
-      try {
-        const script = new vm.Script(code, { filename: 'sandbox.js' });
-        scriptResult = script.runInContext(context, { timeout: timeoutMs });
-        clearTimeout(timer);
-      } catch (runErr) {
-        clearTimeout(timer);
-        const msg = runErr instanceof Error ? runErr.message : String(runErr);
-        const isTimeout =
-          msg.includes('Script execution timed out') ||
-          msg.includes('Execution timed out');
-        settle({
-          stdout: stdoutChunks.join('\n'),
-          stderr: isTimeout ? `[execution timed out after ${timeoutMs}ms]` : msg,
-          exitCode: isTimeout ? 124 : 1,
-        });
-        return;
-      }
-
-      // Handle scripts that return a thenable (async)
-      const maybePromise = scriptResult as Record<string, unknown> | null;
-      if (
-        maybePromise !== null &&
-        typeof maybePromise === 'object' &&
-        typeof maybePromise['then'] === 'function'
-      ) {
-        (maybePromise['then'] as (
-          onFulfilled: () => void,
-          onRejected: (e: unknown) => void,
-        ) => void)(
-          () => {
-            clearTimeout(timer);
-            settle({ stdout: stdoutChunks.join('\n'), stderr: stderrChunks.join('\n'), exitCode: 0 });
-          },
-          (asyncErr: unknown) => {
-            clearTimeout(timer);
-            stderrChunks.push(asyncErr instanceof Error ? asyncErr.message : String(asyncErr));
-            settle({ stdout: stdoutChunks.join('\n'), stderr: stderrChunks.join('\n'), exitCode: 1 });
-          },
+        logger.warn(
+          { sandboxId: this.sandboxId, functionName, durationMs },
+          "[WASMSandbox] Call timed out"
         );
-      } else {
-        settle({ stdout: stdoutChunks.join('\n'), stderr: stderrChunks.join('\n'), exitCode: 0 });
+
+        resolve({
+          callId,
+          success: false,
+          error: `Function '${functionName}' timed out after ${effectiveTimeout}ms`,
+          durationMs,
+          interceptedSyscalls: Object.keys(this.interceptor.getCounts()),
+        });
+      }, effectiveTimeout);
+
+      try {
+        if (!this.wasmInstance) {
+          // Fallback: execute as JavaScript host function
+          const hostFn = this.hostFunctions.get(functionName);
+          if (!hostFn) {
+            throw new Error(
+              `Function '${functionName}' not found in WASM instance or host functions`
+            );
+          }
+
+          const returnValuePromise = hostFn.handler(...args);
+          Promise.resolve(returnValuePromise).then((returnValue) => {
+            clearTimeout(timeout);
+            const durationMs = Date.now() - startMs;
+            this.status = "idle";
+            this.stats.successfulCalls++;
+            this.stats.totalCpuTimeMs += durationMs;
+            this.stats.interceptedSyscalls = this.interceptor.getCounts();
+            const newInterceptions = this.interceptor.getTotalIntercepted() - interceptedBefore;
+
+            if (hostFn.audit) {
+              logger.info(
+                { sandboxId: this.sandboxId, functionName, durationMs },
+                "[WASMSandbox] Host function executed"
+              );
+            }
+
+            resolve({
+              callId,
+              success: true,
+              returnValue,
+              durationMs,
+              memoryUsedBytes: this.getMemoryUsage(),
+              interceptedSyscalls: Object.keys(
+                Object.fromEntries(
+                  Object.entries(this.interceptor.getCounts()).filter(([, v]) => v > 0)
+                )
+              ),
+            });
+          }).catch((err) => {
+            clearTimeout(timeout);
+            const durationMs = Date.now() - startMs;
+            this.status = "idle";
+            this.stats.failedCalls++;
+
+            const isSandboxViolation = (err as Error).message.startsWith("SANDBOX_VIOLATION:");
+            if (isSandboxViolation) {
+              logger.warn(
+                { sandboxId: this.sandboxId, error: (err as Error).message },
+                "[WASMSandbox] Sandbox violation"
+              );
+              this.emit("sandbox:violation", {
+                sandboxId: this.sandboxId,
+                functionName,
+                error: (err as Error).message,
+              });
+            }
+
+            resolve({
+              callId,
+              success: false,
+              error: (err as Error).message,
+              durationMs,
+              interceptedSyscalls: Object.keys(this.interceptor.getCounts()),
+            });
+          });
+        } else {
+          // WASM instance call
+          const exports = this.wasmInstance.exports as Record<string, Function>;
+          const fn = exports[functionName];
+          if (typeof fn !== "function") {
+            throw new Error(`WASM export '${functionName}' is not a function`);
+          }
+
+          const returnValue = fn(...(args as Parameters<typeof fn>));
+          clearTimeout(timeout);
+          const durationMs = Date.now() - startMs;
+          this.status = "idle";
+          this.stats.successfulCalls++;
+          this.stats.totalCpuTimeMs += durationMs;
+
+          const memUsed = this.getMemoryUsage();
+          if (memUsed > this.stats.peakMemoryBytes) {
+            this.stats.peakMemoryBytes = memUsed;
+          }
+
+          if (memUsed > this.permissions.maxMemoryBytes) {
+            logger.error(
+              { sandboxId: this.sandboxId, memUsed, limit: this.permissions.maxMemoryBytes },
+              "[WASMSandbox] Memory limit exceeded"
+            );
+            this.terminate("Memory limit exceeded");
+          }
+
+          resolve({
+            callId,
+            success: true,
+            returnValue,
+            durationMs,
+            memoryUsedBytes: memUsed,
+            interceptedSyscalls: [],
+          });
+        }
+      } catch (err) {
+        clearTimeout(timeout);
+        const durationMs = Date.now() - startMs;
+        this.status = "idle";
+        this.stats.failedCalls++;
+
+        resolve({
+          callId,
+          success: false,
+          error: (err as Error).message,
+          durationMs,
+          interceptedSyscalls: Object.keys(this.interceptor.getCounts()),
+        });
       }
     });
   }
 
-  private async _runUnsupported(
-    language: SandboxExecution['language'],
-  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    Logger.warn('[WASMSandbox] Unsupported language', { language });
+  // ── WASM import builder ───────────────────────────────────────────────────────
+
+  private buildImports(): WebAssembly.Imports {
+    const interceptor = this.interceptor;
+
+    const env: Record<string, WebAssembly.ExportValue> = {
+      // Standard syscalls
+      abort: (_msg: number, _file: number, _line: number, _col: number) => {
+        throw new Error("WASM abort called");
+      },
+      read_file: (ptr: number) => {
+        interceptor.intercept("readFile", [this.readString(ptr)]);
+        return 0;
+      },
+      write_file: (pathPtr: number, contentPtr: number) => {
+        interceptor.intercept("writeFile", [
+          this.readString(pathPtr),
+          this.readString(contentPtr),
+        ]);
+        return 0;
+      },
+      fetch_url: (urlPtr: number) => {
+        interceptor.intercept("fetchUrl", [this.readString(urlPtr)]);
+        return 0;
+      },
+      get_env: (keyPtr: number) => {
+        interceptor.intercept("getEnv", [this.readString(keyPtr)]);
+        return 0;
+      },
+      console_log: (msgPtr: number) => {
+        interceptor.intercept("consoleLog", [this.readString(msgPtr)]);
+      },
+      console_error: (msgPtr: number) => {
+        interceptor.intercept("consoleError", [this.readString(msgPtr)]);
+      },
+    };
+
+    // Register custom host functions
+    for (const [name, fn] of this.hostFunctions.entries()) {
+      env[name] = (...args: unknown[]) => {
+        if (fn.audit) {
+          logger.info({ sandboxId: this.sandboxId, fn: name, args }, "[WASMSandbox] Host fn called");
+        }
+        return fn.handler(...args);
+      };
+    }
+
+    return { env };
+  }
+
+  private readString(ptr: number): string {
+    if (!this.wasmMemory) return "";
+    const mem = new Uint8Array(this.wasmMemory.buffer);
+    let str = "";
+    let i = ptr;
+    while (i < mem.length && mem[i] !== 0) {
+      str += String.fromCharCode(mem[i++]);
+    }
+    return str;
+  }
+
+  // ── Control ────────────────────────────────────────────────────────────────────
+
+  suspend(): void {
+    if (this.status !== "idle") {
+      logger.warn({ sandboxId: this.sandboxId, status: this.status }, "[WASMSandbox] Cannot suspend non-idle sandbox");
+      return;
+    }
+    this.status = "suspended";
+    this.emit("sandbox:suspended", { sandboxId: this.sandboxId });
+  }
+
+  resume(): void {
+    if (this.status !== "suspended") return;
+    this.status = "idle";
+    this.emit("sandbox:resumed", { sandboxId: this.sandboxId });
+  }
+
+  terminate(reason = "Explicit termination"): void {
+    this.status = "terminated";
+    this.wasmInstance = null;
+    this.wasmMemory = null;
+    this.stats.interceptedSyscalls = this.interceptor.getCounts();
+
+    logger.info(
+      { sandboxId: this.sandboxId, reason },
+      "[WASMSandbox] Sandbox terminated"
+    );
+    this.emit("sandbox:terminated", { sandboxId: this.sandboxId, reason });
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────────
+
+  private getMemoryUsage(): number {
+    return this.wasmMemory?.buffer.byteLength ?? 0;
+  }
+
+  private getPermissionLevel(): string {
+    for (const [level, preset] of Object.entries(PERMISSION_PRESETS)) {
+      if (
+        preset.maxMemoryBytes === this.permissions.maxMemoryBytes &&
+        preset.filesystem === this.permissions.filesystem
+      ) {
+        return level;
+      }
+    }
+    return "custom";
+  }
+
+  getStatus(): SandboxStatus {
+    return this.status;
+  }
+
+  getStats(): SandboxStats {
     return {
-      stdout: '',
-      stderr: `[WASMSandbox] Language '${language}' runtime not integrated.`,
-      exitCode: 1,
+      ...this.stats,
+      status: this.status,
+      interceptedSyscalls: this.interceptor.getCounts(),
     };
   }
 
-  // ─── Private: cleanup ─────────────────────
-
-  private _cleanupExpired(): void {
-    const now = Date.now();
-    let removed = 0;
-    for (const [id, instance] of this.instances) {
-      const age = now - instance.lastUsedAt.getTime();
-      const isIdleOrDone =
-        instance.status === 'idle' ||
-        instance.status === 'completed' ||
-        instance.status === 'error';
-      if (isIdleOrDone && age > this.config.instanceTtlMs) {
-        instance.status = 'terminated';
-        this.instances.delete(id);
-        removed++;
-        this.emit('instance:terminated', instance);
-      }
-    }
-    if (removed > 0) {
-      Logger.debug('[WASMSandbox] Expired instances removed', { removed });
-    }
+  registerHostFunction(fn: HostFunction): void {
+    this.hostFunctions.set(fn.name, fn);
   }
+}
 
-  private _requireInstance(instanceId: string): SandboxInstance {
-    const inst = this.instances.get(instanceId);
-    if (!inst) throw new Error(`Sandbox instance ${instanceId} not found`);
-    return inst;
-  }
+// ─── Factory ───────────────────────────────────────────────────────────────────
 
-  private _requirePolicy(policyId: string): SandboxPolicy {
-    const pol = this.policies.get(policyId);
-    if (!pol) throw new Error(`Sandbox policy ${policyId} not found`);
-    return pol;
-  }
-
-  private _registerDefaultPolicy(template: Omit<SandboxPolicy, 'id'>): void {
-    this.policies.set('default', { id: 'default', ...template });
-  }
-
-  private _getDefaultPolicyId(): string {
-    return 'default';
-  }
-
-  // ─── Teardown ─────────────────────────────
-
-  destroy(): void {
-    clearInterval(this.cleanupHandle);
-    this.removeAllListeners();
-    Logger.info('[WASMSandbox] Destroyed');
-  }
+export function createSandbox(
+  agentId: string,
+  preset: keyof typeof PERMISSION_PRESETS = "standard",
+  overrides: Partial<SandboxPermissions> = {}
+): WASMSandbox {
+  const permissions: SandboxPermissions = {
+    ...PERMISSION_PRESETS[preset],
+    ...overrides,
+  };
+  return new WASMSandbox(agentId, permissions);
 }

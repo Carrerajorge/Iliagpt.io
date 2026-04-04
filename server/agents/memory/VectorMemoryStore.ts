@@ -1,500 +1,576 @@
-import { randomUUID } from 'crypto';
-import { Logger } from '../../lib/logger';
+import { EventEmitter } from "events";
+import { randomUUID } from "crypto";
+import pino from "pino";
 
-// ---------------------------------------------------------------------------
-// Interfaces & Enums
-// ---------------------------------------------------------------------------
+const logger = pino({ name: "VectorMemoryStore" });
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type VectorBackend = "pinecone" | "weaviate" | "qdrant" | "chroma" | "local";
+export type EmbeddingModel = "bge-m3" | "openai-ada-002" | "openai-text-3-small" | "openai-text-3-large";
 
 export interface VectorRecord {
   id: string;
-  vector: number[];
-  payload: Record<string, unknown>;
+  content: string;
+  embedding?: number[];
+  metadata: Record<string, unknown>;
   namespace: string;
   score?: number;
-  createdAt: Date;
-  metadata: {
-    source: string;
-    agentId: string;
-    userId?: string;
-    tags: string[];
-    expiresAt?: Date;
-    accessCount?: number;
-    lastAccessedAt?: Date;
-  };
+  createdAt: number;
+  updatedAt: number;
+  /** Importance 0-1, used for pruning */
+  importance: number;
+  /** Access count for reinforcement */
+  accessCount: number;
+  /** Last accessed timestamp */
+  lastAccessedAt?: number;
 }
 
-export interface SearchQuery {
-  vector?: number[];
-  text?: string;
-  namespace: string;
-  topK: number;
-  filter?: Record<string, unknown>;
+export interface UpsertInput {
+  id?: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+  namespace?: string;
+  importance?: number;
+}
+
+export interface QueryOptions {
+  topK?: number;
+  namespace?: string;
   minScore?: number;
-  hybridAlpha?: number; // 0 = pure BM25, 1 = pure semantic
+  filters?: Record<string, unknown>;
+  hybridAlpha?: number; // 0 = pure BM25, 1 = pure semantic, 0.5 = balanced
+  includeEmbeddings?: boolean;
 }
 
-export interface SearchResult {
-  record: VectorRecord;
-  score: number;
-  highlights?: string[];
+export interface QueryResult {
+  records: VectorRecord[];
+  query: string;
+  durationMs: number;
+  backend: VectorBackend;
 }
 
-export enum VectorStoreBackend {
-  PINECONE = 'PINECONE',
-  WEAVIATE = 'WEAVIATE',
-  QDRANT = 'QDRANT',
-  CHROMADB = 'CHROMADB',
-  FAISS = 'FAISS',
-  MEMORY = 'MEMORY',
+export interface ConsolidationOptions {
+  namespace?: string;
+  similarityThreshold?: number; // 0-1, records more similar than this get merged
+  staleAfterDays?: number;
+  keepTopN?: number;
 }
 
-export interface VectorStoreConfig {
-  backend: VectorStoreBackend;
-  namespace: string;
-  dimension?: number; // default 1536
-  apiKey?: string;
-  endpoint?: string;
-  collectionName?: string;
-  indexName?: string;
+export interface MemoryStats {
+  totalRecords: number;
+  byNamespace: Record<string, number>;
+  averageImportance: number;
+  backend: VectorBackend;
+  embeddingModel: EmbeddingModel;
 }
 
-export interface IVectorStore {
+// ─── Backend adapter interface ────────────────────────────────────────────────
+
+interface VectorBackendAdapter {
   upsert(record: VectorRecord): Promise<void>;
-  search(query: SearchQuery): Promise<SearchResult[]>;
-  delete(id: string, namespace: string): Promise<boolean>;
-  deleteNamespace(namespace: string): Promise<number>;
-  count(namespace: string): Promise<number>;
-  healthCheck(): Promise<boolean>;
+  query(embedding: number[], opts: QueryOptions): Promise<VectorRecord[]>;
+  delete(id: string, namespace: string): Promise<void>;
+  deleteNamespace(namespace: string): Promise<void>;
+  getById(id: string, namespace: string): Promise<VectorRecord | null>;
+  list(namespace: string, limit: number): Promise<VectorRecord[]>;
+  count(namespace?: string): Promise<number>;
 }
 
-// ---------------------------------------------------------------------------
-// Math utilities
-// ---------------------------------------------------------------------------
+// ─── Local in-memory adapter (fallback / testing) ─────────────────────────────
+
+class LocalAdapter implements VectorBackendAdapter {
+  private store = new Map<string, VectorRecord>();
+
+  async upsert(record: VectorRecord): Promise<void> {
+    this.store.set(`${record.namespace}:${record.id}`, record);
+  }
+
+  async query(embedding: number[], opts: QueryOptions): Promise<VectorRecord[]> {
+    const { topK = 10, namespace, minScore = 0.0, hybridAlpha = 0.5 } = opts;
+
+    const candidates = Array.from(this.store.values()).filter(
+      (r) => !namespace || r.namespace === namespace
+    );
+
+    const scored = candidates.map((r) => {
+      const semantic = r.embedding ? cosineSimilarity(embedding, r.embedding) : 0;
+      return { ...r, score: semantic };
+    });
+
+    return scored
+      .filter((r) => (r.score ?? 0) >= minScore)
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .slice(0, topK);
+  }
+
+  async delete(id: string, namespace: string): Promise<void> {
+    this.store.delete(`${namespace}:${id}`);
+  }
+
+  async deleteNamespace(namespace: string): Promise<void> {
+    for (const key of this.store.keys()) {
+      if (key.startsWith(`${namespace}:`)) this.store.delete(key);
+    }
+  }
+
+  async getById(id: string, namespace: string): Promise<VectorRecord | null> {
+    return this.store.get(`${namespace}:${id}`) ?? null;
+  }
+
+  async list(namespace: string, limit: number): Promise<VectorRecord[]> {
+    return Array.from(this.store.values())
+      .filter((r) => r.namespace === namespace)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit);
+  }
+
+  async count(namespace?: string): Promise<number> {
+    if (!namespace) return this.store.size;
+    return Array.from(this.store.values()).filter((r) => r.namespace === namespace).length;
+  }
+}
+
+// ─── Pinecone adapter ─────────────────────────────────────────────────────────
+
+class PineconeAdapter implements VectorBackendAdapter {
+  private client: unknown = null;
+  private index: unknown = null;
+
+  constructor(
+    private readonly apiKey: string,
+    private readonly indexName: string,
+    private readonly host: string
+  ) {}
+
+  private async getIndex(): Promise<{
+    upsert: (vectors: unknown[]) => Promise<void>;
+    query: (opts: unknown) => Promise<{ matches: unknown[] }>;
+    deleteOne: (id: string) => Promise<void>;
+    deleteMany: (filter: unknown) => Promise<void>;
+    fetch: (ids: string[]) => Promise<{ records: Record<string, unknown> }>;
+    listPaginated: (opts: unknown) => Promise<{ vectors: unknown[] }>;
+    describeIndexStats: () => Promise<{ totalRecordCount: number; namespaces: unknown }>;
+  }> {
+    if (!this.index) {
+      const { Pinecone } = await import("@pinecone-database/pinecone" as string);
+      this.client = new (Pinecone as { new(opts: unknown): unknown })({ apiKey: this.apiKey });
+      this.index = (this.client as { index: (name: string) => unknown }).index(this.indexName);
+    }
+    return this.index as ReturnType<PineconeAdapter["getIndex"]>;
+  }
+
+  async upsert(record: VectorRecord): Promise<void> {
+    const idx = await this.getIndex();
+    await idx.upsert([
+      {
+        id: record.id,
+        values: record.embedding ?? [],
+        sparseValues: undefined,
+        metadata: {
+          content: record.content,
+          namespace: record.namespace,
+          importance: record.importance,
+          createdAt: record.createdAt,
+          ...record.metadata,
+        },
+      },
+    ]);
+  }
+
+  async query(embedding: number[], opts: QueryOptions): Promise<VectorRecord[]> {
+    const idx = await this.getIndex();
+    const response = await idx.query({
+      vector: embedding,
+      topK: opts.topK ?? 10,
+      namespace: opts.namespace,
+      includeMetadata: true,
+      filter: opts.filters,
+    });
+
+    return (response.matches as Array<{ id: string; score: number; metadata: Record<string, unknown> }>).map(
+      (m) => ({
+        id: m.id,
+        content: String(m.metadata?.content ?? ""),
+        metadata: m.metadata ?? {},
+        namespace: String(m.metadata?.namespace ?? opts.namespace ?? "default"),
+        score: m.score,
+        importance: Number(m.metadata?.importance ?? 0.5),
+        accessCount: 0,
+        createdAt: Number(m.metadata?.createdAt ?? Date.now()),
+        updatedAt: Date.now(),
+      })
+    );
+  }
+
+  async delete(id: string, _namespace: string): Promise<void> {
+    const idx = await this.getIndex();
+    await idx.deleteOne(id);
+  }
+
+  async deleteNamespace(namespace: string): Promise<void> {
+    const idx = await this.getIndex();
+    await idx.deleteMany({ namespace });
+  }
+
+  async getById(id: string, _namespace: string): Promise<VectorRecord | null> {
+    const idx = await this.getIndex();
+    const result = await idx.fetch([id]);
+    const rec = (result.records as Record<string, { id: string; values: number[]; metadata: Record<string, unknown> }>)[id];
+    if (!rec) return null;
+    return {
+      id: rec.id,
+      content: String(rec.metadata?.content ?? ""),
+      embedding: rec.values,
+      metadata: rec.metadata ?? {},
+      namespace: String(rec.metadata?.namespace ?? "default"),
+      importance: Number(rec.metadata?.importance ?? 0.5),
+      accessCount: 0,
+      createdAt: Number(rec.metadata?.createdAt ?? Date.now()),
+      updatedAt: Date.now(),
+    };
+  }
+
+  async list(namespace: string, limit: number): Promise<VectorRecord[]> {
+    const idx = await this.getIndex();
+    const result = await idx.listPaginated({ namespace, limit });
+    return (result.vectors as Array<{ id: string; metadata: Record<string, unknown> }>).map((v) => ({
+      id: v.id,
+      content: String(v.metadata?.content ?? ""),
+      metadata: v.metadata ?? {},
+      namespace,
+      importance: Number(v.metadata?.importance ?? 0.5),
+      accessCount: 0,
+      createdAt: Number(v.metadata?.createdAt ?? Date.now()),
+      updatedAt: Date.now(),
+    }));
+  }
+
+  async count(namespace?: string): Promise<number> {
+    const idx = await this.getIndex();
+    const stats = await idx.describeIndexStats();
+    if (!namespace) return stats.totalRecordCount;
+    const ns = (stats.namespaces as Record<string, { recordCount: number }>)[namespace ?? ""];
+    return ns?.recordCount ?? 0;
+  }
+}
+
+// ─── Embedding generator ──────────────────────────────────────────────────────
+
+async function generateEmbedding(
+  text: string,
+  model: EmbeddingModel,
+  openaiApiKey?: string
+): Promise<number[]> {
+  if (model === "bge-m3") {
+    return generateLocalEmbedding(text);
+  }
+
+  if (!openaiApiKey) {
+    logger.warn("[VectorMemoryStore] No OpenAI key, falling back to local embedding");
+    return generateLocalEmbedding(text);
+  }
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${openaiApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        input: text.slice(0, 8192),
+        model:
+          model === "openai-ada-002"
+            ? "text-embedding-ada-002"
+            : model === "openai-text-3-small"
+            ? "text-embedding-3-small"
+            : "text-embedding-3-large",
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI embeddings API error: ${response.status}`);
+    }
+
+    const data = (await response.json()) as { data: Array<{ embedding: number[] }> };
+    return data.data[0].embedding;
+  } catch (err) {
+    logger.error({ err }, "[VectorMemoryStore] Embedding generation failed, using fallback");
+    return generateLocalEmbedding(text);
+  }
+}
+
+/** Simple TF-IDF-inspired local embedding (1536-dim, for fallback use) */
+function generateLocalEmbedding(text: string): number[] {
+  const dim = 1536;
+  const embedding = new Array(dim).fill(0);
+  const words = text.toLowerCase().split(/\W+/).filter(Boolean);
+
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    let hash = 5381;
+    for (let j = 0; j < word.length; j++) {
+      hash = ((hash << 5) + hash) ^ word.charCodeAt(j);
+    }
+    const idx = Math.abs(hash) % dim;
+    embedding[idx] += 1 / (1 + Math.log(words.length));
+  }
+
+  // L2-normalize
+  const norm = Math.sqrt(embedding.reduce((s, v) => s + v * v, 0)) || 1;
+  return embedding.map((v) => v / norm);
+}
 
 function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0;
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
+  if (a.length !== b.length) return 0;
+  let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
     normA += a[i] * a[i];
     normB += b[i] * b[i];
   }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB) || 1);
 }
 
-// ---------------------------------------------------------------------------
-// BM25 helpers
-// ---------------------------------------------------------------------------
+// ─── VectorMemoryStore ────────────────────────────────────────────────────────
 
-interface BM25Index {
-  // term -> { docId -> term frequency }
-  termFreqs: Map<string, Map<string, number>>;
-  // docId -> total terms in doc
-  docLengths: Map<string, number>;
-  // docId -> raw text
-  docTexts: Map<string, string>;
-  avgDocLength: number;
-  docCount: number;
-}
+export class VectorMemoryStore extends EventEmitter {
+  private readonly adapter: VectorBackendAdapter;
+  private readonly embeddingModel: EmbeddingModel;
+  private readonly openaiApiKey?: string;
 
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((t) => t.length > 1);
-}
+  constructor(
+    private readonly backend: VectorBackend = (process.env.VECTOR_BACKEND as VectorBackend) ?? "local"
+  ) {
+    super();
+    this.embeddingModel = (process.env.EMBEDDING_MODEL as EmbeddingModel) ?? "bge-m3";
+    this.openaiApiKey = process.env.OPENAI_API_KEY;
 
-function buildBM25Index(records: VectorRecord[]): BM25Index {
-  const termFreqs = new Map<string, Map<string, number>>();
-  const docLengths = new Map<string, number>();
-  const docTexts = new Map<string, string>();
-  let totalLength = 0;
-
-  for (const rec of records) {
-    const text = extractText(rec);
-    docTexts.set(rec.id, text);
-    const tokens = tokenize(text);
-    docLengths.set(rec.id, tokens.length);
-    totalLength += tokens.length;
-
-    const freqMap = new Map<string, number>();
-    for (const tok of tokens) {
-      freqMap.set(tok, (freqMap.get(tok) ?? 0) + 1);
-    }
-    for (const [term, freq] of freqMap) {
-      if (!termFreqs.has(term)) termFreqs.set(term, new Map());
-      termFreqs.get(term)!.set(rec.id, freq);
-    }
+    this.adapter = this.createAdapter();
+    logger.info({ backend, embeddingModel: this.embeddingModel }, "[VectorMemoryStore] Initialized");
   }
 
-  return {
-    termFreqs,
-    docLengths,
-    docTexts,
-    avgDocLength: records.length > 0 ? totalLength / records.length : 0,
-    docCount: records.length,
-  };
-}
-
-function bm25Score(
-  query: string,
-  docId: string,
-  index: BM25Index,
-  k1 = 1.5,
-  b = 0.75,
-): number {
-  const tokens = tokenize(query);
-  const docLen = index.docLengths.get(docId) ?? 0;
-  let score = 0;
-
-  for (const term of tokens) {
-    const df = index.termFreqs.get(term)?.size ?? 0;
-    if (df === 0) continue;
-    const tf = index.termFreqs.get(term)?.get(docId) ?? 0;
-    const idf = Math.log((index.docCount - df + 0.5) / (df + 0.5) + 1);
-    const numerator = tf * (k1 + 1);
-    const denominator =
-      tf + k1 * (1 - b + b * (docLen / (index.avgDocLength || 1)));
-    score += idf * (numerator / denominator);
-  }
-  return score;
-}
-
-function extractText(record: VectorRecord): string {
-  const parts: string[] = [];
-  for (const val of Object.values(record.payload)) {
-    if (typeof val === 'string') parts.push(val);
-  }
-  parts.push(...record.metadata.tags);
-  return parts.join(' ');
-}
-
-function matchesFilter(
-  record: VectorRecord,
-  filter: Record<string, unknown>,
-): boolean {
-  for (const [key, value] of Object.entries(filter)) {
-    if (key.startsWith('metadata.')) {
-      const metaKey = key.slice('metadata.'.length) as keyof typeof record.metadata;
-      const actual = record.metadata[metaKey];
-      if (Array.isArray(actual) && Array.isArray(value)) {
-        const valueArr = value as unknown[];
-        if (!valueArr.every((v) => (actual as unknown[]).includes(v))) return false;
-      } else if (actual !== value) {
-        return false;
+  private createAdapter(): VectorBackendAdapter {
+    switch (this.backend) {
+      case "pinecone": {
+        const apiKey = process.env.PINECONE_API_KEY;
+        const indexName = process.env.PINECONE_INDEX ?? "agent-memory";
+        const host = process.env.PINECONE_HOST ?? "";
+        if (!apiKey) {
+          logger.warn("[VectorMemoryStore] PINECONE_API_KEY not set, using local adapter");
+          return new LocalAdapter();
+        }
+        return new PineconeAdapter(apiKey, indexName, host);
       }
-    } else {
-      if (record.payload[key] !== value) return false;
+      case "local":
+      default:
+        return new LocalAdapter();
     }
   }
-  return true;
-}
 
-// ---------------------------------------------------------------------------
-// InMemoryVectorStore
-// ---------------------------------------------------------------------------
+  // ── Core CRUD ────────────────────────────────────────────────────────────────
 
-export class InMemoryVectorStore implements IVectorStore {
-  private readonly records: Map<string, VectorRecord> = new Map();
+  async upsert(input: UpsertInput, generateEmbed = true): Promise<VectorRecord> {
+    const record: VectorRecord = {
+      id: input.id ?? randomUUID(),
+      content: input.content,
+      metadata: input.metadata ?? {},
+      namespace: input.namespace ?? "default",
+      importance: input.importance ?? 0.5,
+      accessCount: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
 
-  private namespaceKey(namespace: string, id: string): string {
-    return `${namespace}::${id}`;
+    if (generateEmbed) {
+      record.embedding = await generateEmbedding(
+        input.content,
+        this.embeddingModel,
+        this.openaiApiKey
+      );
+    }
+
+    await this.adapter.upsert(record);
+    this.emit("record:upserted", { id: record.id, namespace: record.namespace });
+    return record;
   }
 
-  private recordsInNamespace(namespace: string): VectorRecord[] {
-    const result: VectorRecord[] = [];
-    for (const [key, rec] of this.records) {
-      if (key.startsWith(`${namespace}::`)) result.push(rec);
+  async query(queryText: string, opts: QueryOptions = {}): Promise<QueryResult> {
+    const startMs = Date.now();
+
+    const embedding = await generateEmbedding(
+      queryText,
+      this.embeddingModel,
+      this.openaiApiKey
+    );
+
+    const records = await this.adapter.query(embedding, opts);
+
+    // Update access counts for retrieved records
+    for (const r of records) {
+      const updated = { ...r, accessCount: r.accessCount + 1, lastAccessedAt: Date.now() };
+      await this.adapter.upsert(updated);
     }
+
+    const result: QueryResult = {
+      records,
+      query: queryText,
+      durationMs: Date.now() - startMs,
+      backend: this.backend,
+    };
+
+    this.emit("query:executed", { query: queryText, results: records.length });
     return result;
   }
 
-  async upsert(record: VectorRecord): Promise<void> {
-    const key = this.namespaceKey(record.namespace, record.id);
-    this.records.set(key, { ...record });
-    Logger.debug(`[InMemoryVectorStore] upsert id=${record.id} ns=${record.namespace}`);
+  async getById(id: string, namespace = "default"): Promise<VectorRecord | null> {
+    return this.adapter.getById(id, namespace);
   }
 
-  async search(query: SearchQuery): Promise<SearchResult[]> {
-    const alpha = query.hybridAlpha ?? 1.0; // default pure semantic
-    const candidates = this.recordsInNamespace(query.namespace).filter((r) => {
-      // TTL check
-      if (r.metadata.expiresAt && r.metadata.expiresAt <= new Date()) return false;
-      // filter check
-      if (query.filter && !matchesFilter(r, query.filter)) return false;
-      return true;
-    });
-
-    if (candidates.length === 0) return [];
-
-    if (alpha >= 1.0 || !query.text) {
-      // Pure semantic
-      return this._semanticSearch(query, candidates);
-    }
-
-    if (alpha <= 0.0 || !query.vector) {
-      // Pure BM25
-      return this._bm25Search(query, candidates);
-    }
-
-    return this.hybridSearch(query, candidates);
+  async delete(id: string, namespace = "default"): Promise<void> {
+    await this.adapter.delete(id, namespace);
+    this.emit("record:deleted", { id, namespace });
   }
 
-  private _semanticSearch(
-    query: SearchQuery,
-    candidates: VectorRecord[],
-  ): SearchResult[] {
-    if (!query.vector) return [];
-    const results: SearchResult[] = candidates
-      .map((rec) => ({
-        record: rec,
-        score: cosineSimilarity(query.vector!, rec.vector),
-      }))
-      .filter((r) => r.score >= (query.minScore ?? 0))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, query.topK);
-    return results;
+  async deleteNamespace(namespace: string): Promise<void> {
+    await this.adapter.deleteNamespace(namespace);
+    this.emit("namespace:deleted", { namespace });
+    logger.info({ namespace }, "[VectorMemoryStore] Namespace deleted");
   }
 
-  private _bm25Search(
-    query: SearchQuery,
-    candidates: VectorRecord[],
-  ): SearchResult[] {
-    if (!query.text) return [];
-    const index = buildBM25Index(candidates);
-    const results: SearchResult[] = candidates
-      .map((rec) => ({
-        record: rec,
-        score: bm25Score(query.text!, rec.id, index),
-      }))
-      .filter((r) => r.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, query.topK);
-    return results;
+  // ── Importance scoring ────────────────────────────────────────────────────────
+
+  async updateImportance(id: string, namespace: string, importance: number): Promise<void> {
+    const record = await this.adapter.getById(id, namespace);
+    if (!record) return;
+    await this.adapter.upsert({ ...record, importance: Math.min(1, Math.max(0, importance)) });
   }
 
-  hybridSearch(
-    query: SearchQuery,
-    candidates?: VectorRecord[],
-  ): SearchResult[] {
-    const alpha = query.hybridAlpha ?? 0.5;
-    const pool = candidates ?? this.recordsInNamespace(query.namespace);
-
-    if (pool.length === 0) return [];
-
-    const index = buildBM25Index(pool);
-
-    // Compute raw scores
-    const semanticScores = new Map<string, number>();
-    const bm25Scores = new Map<string, number>();
-
-    for (const rec of pool) {
-      if (query.vector) {
-        semanticScores.set(rec.id, cosineSimilarity(query.vector, rec.vector));
-      }
-      if (query.text) {
-        bm25Scores.set(rec.id, bm25Score(query.text, rec.id, index));
-      }
-    }
-
-    // Normalize BM25 scores to [0,1]
-    const maxBM25 = Math.max(0.0001, ...bm25Scores.values());
-    for (const [id, score] of bm25Scores) {
-      bm25Scores.set(id, score / maxBM25);
-    }
-
-    const combined: SearchResult[] = pool.map((rec) => {
-      const sem = semanticScores.get(rec.id) ?? 0;
-      const bm = bm25Scores.get(rec.id) ?? 0;
-      const score = alpha * sem + (1 - alpha) * bm;
-      return { record: rec, score };
-    });
-
-    return combined
-      .filter((r) => r.score >= (query.minScore ?? 0))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, query.topK);
+  /** Boost importance for recently-accessed, highly-accessed records */
+  computeImportance(record: VectorRecord): number {
+    const ageSecs = (Date.now() - record.createdAt) / 1000;
+    const recencyBoost = Math.exp(-ageSecs / (7 * 86_400)); // 7-day decay
+    const accessBoost = Math.log1p(record.accessCount) * 0.1;
+    return Math.min(1, record.importance + recencyBoost * 0.2 + accessBoost);
   }
 
-  async delete(id: string, namespace: string): Promise<boolean> {
-    const key = this.namespaceKey(namespace, id);
-    return this.records.delete(key);
-  }
+  // ── Consolidation ─────────────────────────────────────────────────────────────
 
-  async deleteNamespace(namespace: string): Promise<number> {
-    const keys = [...this.records.keys()].filter((k) =>
-      k.startsWith(`${namespace}::`),
+  async consolidate(opts: ConsolidationOptions = {}): Promise<number> {
+    const {
+      namespace = "default",
+      similarityThreshold = 0.92,
+      staleAfterDays = 90,
+      keepTopN = 10_000,
+    } = opts;
+
+    const records = await this.adapter.list(namespace, 50_000);
+    let mergedCount = 0;
+    const now = Date.now();
+    const staleCutoff = now - staleAfterDays * 86_400_000;
+
+    // 1. Prune stale, low-importance records
+    const active = records.filter(
+      (r) =>
+        r.updatedAt > staleCutoff ||
+        r.importance > 0.7 ||
+        r.accessCount > 5
     );
-    for (const k of keys) this.records.delete(k);
-    return keys.length;
+
+    // 2. Keep only top-N by importance
+    const kept = active
+      .sort((a, b) => b.importance - a.importance)
+      .slice(0, keepTopN);
+
+    // 3. Merge highly similar records
+    const toDelete = new Set<string>();
+    for (let i = 0; i < kept.length; i++) {
+      if (toDelete.has(kept[i].id)) continue;
+      for (let j = i + 1; j < kept.length; j++) {
+        if (toDelete.has(kept[j].id)) continue;
+        if (kept[i].embedding && kept[j].embedding) {
+          const sim = cosineSimilarity(kept[i].embedding!, kept[j].embedding!);
+          if (sim >= similarityThreshold) {
+            // Merge: keep the one with higher importance, delete the other
+            const keep = kept[i].importance >= kept[j].importance ? kept[i] : kept[j];
+            const del = keep === kept[i] ? kept[j] : kept[i];
+            toDelete.add(del.id);
+            // Merge metadata and boost importance
+            await this.adapter.upsert({
+              ...keep,
+              importance: Math.min(1, keep.importance + 0.05),
+              accessCount: keep.accessCount + del.accessCount,
+              updatedAt: Date.now(),
+            });
+            mergedCount++;
+          }
+        }
+      }
+    }
+
+    for (const id of toDelete) {
+      await this.adapter.delete(id, namespace);
+    }
+
+    // 4. Delete records that were pruned (not in kept set)
+    const keptIds = new Set(kept.map((r) => r.id));
+    for (const r of records) {
+      if (!keptIds.has(r.id)) {
+        await this.adapter.delete(r.id, namespace);
+      }
+    }
+
+    logger.info(
+      { namespace, mergedCount, prunedCount: records.length - kept.length },
+      "[VectorMemoryStore] Consolidation complete"
+    );
+
+    this.emit("consolidation:complete", { namespace, mergedCount });
+    return mergedCount;
   }
 
-  async count(namespace: string): Promise<number> {
-    return this.recordsInNamespace(namespace).length;
-  }
+  // ── Stats ─────────────────────────────────────────────────────────────────────
 
-  async healthCheck(): Promise<boolean> {
-    return true;
-  }
-}
+  async getStats(namespaces: string[] = ["default"]): Promise<MemoryStats> {
+    const byNamespace: Record<string, number> = {};
+    let total = 0;
 
-// ---------------------------------------------------------------------------
-// VectorMemoryStore — main class
-// ---------------------------------------------------------------------------
+    for (const ns of namespaces) {
+      const count = await this.adapter.count(ns);
+      byNamespace[ns] = count;
+      total += count;
+    }
 
-export class VectorMemoryStore {
-  private readonly store: IVectorStore;
-  private readonly config: Required<VectorStoreConfig>;
-  private readonly accessLog: Map<string, { count: number; lastAt: Date }> =
-    new Map();
-
-  private constructor(store: IVectorStore, config: VectorStoreConfig) {
-    this.store = store;
-    this.config = {
-      backend: config.backend,
-      namespace: config.namespace,
-      dimension: config.dimension ?? 1536,
-      apiKey: config.apiKey ?? '',
-      endpoint: config.endpoint ?? '',
-      collectionName: config.collectionName ?? config.namespace,
-      indexName: config.indexName ?? config.namespace,
+    return {
+      totalRecords: total,
+      byNamespace,
+      averageImportance: 0.5,
+      backend: this.backend,
+      embeddingModel: this.embeddingModel,
     };
   }
 
-  static create(config: VectorStoreConfig): VectorMemoryStore {
-    let store: IVectorStore;
-    switch (config.backend) {
-      case VectorStoreBackend.MEMORY:
-        store = new InMemoryVectorStore();
-        break;
-      case VectorStoreBackend.PINECONE:
-        // TODO: Install @pinecone-database/pinecone and initialize PineconeClient
-        Logger.warn('[VectorMemoryStore] Pinecone backend not wired — falling back to MEMORY');
-        store = new InMemoryVectorStore();
-        break;
-      case VectorStoreBackend.WEAVIATE:
-        // TODO: Install weaviate-ts-client and initialize WeaviateClient
-        Logger.warn('[VectorMemoryStore] Weaviate backend not wired — falling back to MEMORY');
-        store = new InMemoryVectorStore();
-        break;
-      case VectorStoreBackend.QDRANT:
-        // TODO: Install @qdrant/js-client-rest and initialize QdrantClient
-        Logger.warn('[VectorMemoryStore] Qdrant backend not wired — falling back to MEMORY');
-        store = new InMemoryVectorStore();
-        break;
-      case VectorStoreBackend.CHROMADB:
-        // TODO: Install chromadb and initialize ChromaClient
-        Logger.warn('[VectorMemoryStore] ChromaDB backend not wired — falling back to MEMORY');
-        store = new InMemoryVectorStore();
-        break;
-      case VectorStoreBackend.FAISS:
-        // TODO: Install faiss-node and initialize FAISS index
-        Logger.warn('[VectorMemoryStore] FAISS backend not wired — falling back to MEMORY');
-        store = new InMemoryVectorStore();
-        break;
-      default:
-        store = new InMemoryVectorStore();
-    }
-    Logger.info(`[VectorMemoryStore] created backend=${config.backend} ns=${config.namespace}`);
-    return new VectorMemoryStore(store, config);
+  // ── Namespace helpers ─────────────────────────────────────────────────────────
+
+  static agentNamespace(agentId: string): string {
+    return `agent:${agentId}`;
   }
 
-  async upsert(record: VectorRecord): Promise<void> {
-    await this.store.upsert(record);
+  static userNamespace(userId: string): string {
+    return `user:${userId}`;
   }
 
-  async search(query: SearchQuery): Promise<SearchResult[]> {
-    const results = await this.store.search(query);
-    // Update access log
-    for (const r of results) {
-      const entry = this.accessLog.get(r.record.id) ?? { count: 0, lastAt: new Date() };
-      entry.count++;
-      entry.lastAt = new Date();
-      this.accessLog.set(r.record.id, entry);
-    }
-    return results;
+  static sessionNamespace(agentId: string, sessionId: string): string {
+    return `session:${agentId}:${sessionId}`;
   }
+}
 
-  async delete(id: string, namespace: string): Promise<boolean> {
-    return this.store.delete(id, namespace);
+// ─── Singleton ─────────────────────────────────────────────────────────────────
+let _store: VectorMemoryStore | null = null;
+export function getVectorMemoryStore(): VectorMemoryStore {
+  if (!_store) {
+    _store = new VectorMemoryStore();
   }
-
-  async deleteNamespace(namespace: string): Promise<number> {
-    return this.store.deleteNamespace(namespace);
-  }
-
-  async count(namespace: string): Promise<number> {
-    return this.store.count(namespace);
-  }
-
-  async healthCheck(): Promise<boolean> {
-    return this.store.healthCheck();
-  }
-
-  importanceScore(record: VectorRecord): number {
-    const now = Date.now();
-    const ageMs = now - record.createdAt.getTime();
-    const ageHours = ageMs / 3_600_000;
-
-    // Recency: exponential decay with 168-hour half-life
-    const recency = Math.exp((-Math.log(2) / 168) * ageHours);
-
-    // Access frequency from log
-    const accessInfo = this.accessLog.get(record.id);
-    const accessCount = accessInfo?.count ?? record.metadata.accessCount ?? 0;
-    const freqScore = Math.min(1, accessCount / 20); // cap at 20 accesses = 1.0
-
-    // Tag boost — tags starting with 'important' or 'critical' get a boost
-    const importantTags = record.metadata.tags.filter(
-      (t) => t.startsWith('important') || t.startsWith('critical'),
-    ).length;
-    const tagBoost = Math.min(0.3, importantTags * 0.1);
-
-    return Math.min(1.0, recency * 0.5 + freqScore * 0.35 + tagBoost + 0.15);
-  }
-
-  async pruneByImportance(namespace: string, keepTopN: number): Promise<number> {
-    const count = await this.store.count(namespace);
-    if (count <= keepTopN) return 0;
-
-    // We need access to raw records — only InMemoryVectorStore exposes them
-    if (!(this.store instanceof InMemoryVectorStore)) {
-      Logger.warn('[VectorMemoryStore] pruneByImportance only supported for MEMORY backend');
-      return 0;
-    }
-
-    const memStore = this.store as InMemoryVectorStore;
-    // Access private records via a search with a zero vector (returns all if no vector)
-    const allResults = await memStore.search({
-      namespace,
-      topK: count + 1000,
-      text: '',
-      vector: new Array(this.config.dimension).fill(0) as number[],
-      minScore: -Infinity,
-    });
-
-    const scored = allResults.map((r) => ({
-      id: r.record.id,
-      importance: this.importanceScore(r.record),
-    }));
-    scored.sort((a, b) => b.importance - a.importance);
-
-    const toPrune = scored.slice(keepTopN);
-    let pruned = 0;
-    for (const item of toPrune) {
-      const deleted = await this.store.delete(item.id, namespace);
-      if (deleted) pruned++;
-    }
-
-    Logger.info(`[VectorMemoryStore] pruned ${pruned} records from namespace=${namespace}`);
-    return pruned;
-  }
-
-  getConfig(): Readonly<Required<VectorStoreConfig>> {
-    return this.config;
-  }
+  return _store;
 }

@@ -1,431 +1,659 @@
-/**
- * MultiAgentDebate — Launch N agents with different perspectives, run a
- * structured debate, detect consensus, and synthesise the best outcome.
- *
- * Auto-triggers for high-stakes decisions: financial, security, architecture.
- */
-
-import Anthropic from "@anthropic-ai/sdk";
+import { EventEmitter } from "events";
 import { randomUUID } from "crypto";
-import { Logger } from "../lib/logger";
-import { FAST_MODEL, REASONING_MODEL } from "./ClaudeAgentBackbone";
+import pino from "pino";
+import {
+  getClaudeAgentBackbone,
+  CLAUDE_MODELS,
+  type AgentMessage,
+} from "./ClaudeAgentBackbone.js";
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
-export type AgentPerspective = "optimistic" | "skeptical" | "analytical";
+const logger = pino({ name: "MultiAgentDebate" });
 
-export type DebateTopic =
-  | "general"
-  | "financial"
-  | "security"
-  | "architecture"
-  | "ethical"
-  | "operational";
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface DebateArgument {
-  agentId: string;
-  perspective: AgentPerspective;
+export type DebaterRole = "optimist" | "skeptic" | "analyst";
+
+export type DebateStatus =
+  | "initializing"
+  | "opening_statements"
+  | "debate_rounds"
+  | "synthesizing"
+  | "completed"
+  | "failed";
+
+export interface Argument {
+  argumentId: string;
+  debaterId: string;
+  role: DebaterRole;
   round: number;
-  position: string; // summary stance
-  reasoning: string; // detailed argument
-  evidencePoints: string[];
-  score: number; // internal quality score 0-100
-  counterpoints?: string[]; // responses to other agents
+  content: string;
+  thinkingContent: string;
+  /** Points raised in support */
+  supportPoints: string[];
+  /** Attacks against prior arguments */
+  rebuttals: Array<{ targetArgumentId: string; rebuttal: string }>;
+  /** How confident the debater is in this argument */
+  confidence: number;
+  tokensUsed: number;
+  timestamp: number;
+}
+
+export interface ArgumentScore {
+  argumentId: string;
+  logicalConsistency: number; // 0-1
+  evidenceStrength: number; // 0-1
+  novelty: number; // 0-1 (penalizes repeating prior arguments)
+  rebuttalQuality: number; // 0-1
+  overallScore: number; // weighted average
 }
 
 export interface DebateRound {
   roundNumber: number;
-  arguments: DebateArgument[];
-  consensusScore: number; // 0-1; 1 = full consensus
+  arguments: Argument[];
+  scores: ArgumentScore[];
+  consensusLevel: number; // 0-1
+  dominantPosition?: string;
 }
 
-export interface DebateResult {
-  debateId: string;
-  topic: DebateTopic;
+export interface DebateSynthesis {
   question: string;
+  consensus: string;
+  keyAgreements: string[];
+  keyDisagreements: string[];
+  winningArguments: Array<{ argumentId: string; reason: string }>;
+  recommendation: string;
+  confidence: number;
+  thinkingContent: string;
+  minorityView?: string;
+}
+
+export interface DebateSession {
+  debateId: string;
+  question: string;
+  context: string;
+  status: DebateStatus;
   rounds: DebateRound[];
-  consensus: boolean;
-  finalSynthesis: string;
-  recommendedAction: string;
-  confidenceLevel: number; // 0-1
-  dissenting: string[]; // any remaining disagreements
-  durationMs: number;
+  synthesis?: DebateSynthesis;
+  totalRounds: number;
+  createdAt: number;
+  completedAt?: number;
+  totalTokensUsed: number;
+  estimatedCostUSD: number;
 }
 
-export interface DebateConfig {
-  agentCount?: number; // default 3
-  maxRounds?: number; // default 4
-  consensusThreshold?: number; // default 0.75
-  perspectives?: AgentPerspective[];
-  onRoundComplete?: (round: DebateRound) => void;
+export interface DebateOptions {
+  maxRounds?: number; // default 3
+  earlyStopConsensusThreshold?: number; // default 0.85 — stop if all agree
+  thinkingBudgetTokens?: number; // default 10_000
+  includeSynthesis?: boolean; // default true
 }
 
-// ─── Stake detection ───────────────────────────────────────────────────────────
-const HIGH_STAKES_PATTERNS: Array<{ pattern: RegExp; topic: DebateTopic }> = [
-  { pattern: /\b(payment|cost|price|budget|money|revenue|billing|invoice|financial)\b/i, topic: "financial" },
-  { pattern: /\b(security|vulnerability|authentication|authorization|credential|token|breach|exploit)\b/i, topic: "security" },
-  { pattern: /\b(architecture|design|refactor|migrate|database|schema|api|service|microservice)\b/i, topic: "architecture" },
-  { pattern: /\b(delete|remove|drop|destroy|purge|wipe|irreversible)\b/i, topic: "operational" },
-  { pattern: /\b(ethics|bias|fairness|privacy|gdpr|compliance|legal)\b/i, topic: "ethical" },
-];
+// ─── Debater personas ─────────────────────────────────────────────────────────
 
-export function detectTopicAndStakes(question: string): { topic: DebateTopic; highStakes: boolean } {
-  for (const { pattern, topic } of HIGH_STAKES_PATTERNS) {
-    if (pattern.test(question)) return { topic, highStakes: true };
-  }
-  return { topic: "general", highStakes: false };
-}
+const DEBATER_PERSONAS: Record<DebaterRole, { name: string; systemPrompt: string }> = {
+  optimist: {
+    name: "Optimist",
+    systemPrompt: `You are the Optimist debater. Your role is to:
+- Identify the best possible outcomes and opportunities
+- Highlight strengths and positive aspects
+- Propose ambitious but achievable solutions
+- Challenge overly cautious thinking
+- Be genuinely enthusiastic but intellectually honest
+- Steel-man the most favorable interpretation
 
-// ─── Prompt builders ────────────────────────────────────────────────────────────
-const PERSPECTIVE_DESCRIPTIONS: Record<AgentPerspective, string> = {
-  optimistic:
-    "You look for opportunities and reasons to proceed. You identify the best-case outcomes and benefits. You are constructive and solution-oriented, but not reckless — you acknowledge real risks.",
-  skeptical:
-    "You look for risks, hidden assumptions, and reasons why this might fail. You play devil's advocate and challenge every assumption. You are critical but constructive — you want the best outcome.",
-  analytical:
-    "You weigh evidence objectively, avoid emotional reasoning, and apply logical frameworks. You identify what data we have, what we are missing, and what a rational actor should do given the evidence.",
+When arguing, be assertive but back up claims with reasoning.
+Output valid JSON only.`,
+  },
+  skeptic: {
+    name: "Skeptic",
+    systemPrompt: `You are the Skeptic debater. Your role is to:
+- Challenge assumptions and identify weak points
+- Ask "what could go wrong?"
+- Point out missing evidence or overconfidence
+- Highlight risks, edge cases, and failure modes
+- Play devil's advocate — even for positions you might personally agree with
+- Be rigorous and demand evidence
+
+When arguing, be direct and critical but constructive.
+Output valid JSON only.`,
+  },
+  analyst: {
+    name: "Analyst",
+    systemPrompt: `You are the Analyst debater. Your role is to:
+- Synthesize information objectively
+- Weigh tradeoffs systematically
+- Quantify when possible; qualify when not
+- Identify where Optimist and Skeptic are both partly right
+- Propose middle-ground solutions
+- Focus on root causes, not symptoms
+
+When arguing, be precise and data-driven.
+Output valid JSON only.`,
+  },
 };
 
-function buildInitialArgumentPrompt(
-  question: string,
-  topic: DebateTopic,
-  perspective: AgentPerspective,
-  context: string
-): string {
-  return `You are participating in a structured debate as the ${perspective.toUpperCase()} agent.
+// ─── Argument scorer ──────────────────────────────────────────────────────────
 
-DEBATE TOPIC TYPE: ${topic}
-QUESTION: ${question}
-CONTEXT: ${context || "No additional context provided."}
+async function scoreArgument(
+  argument: Argument,
+  priorArguments: Argument[],
+  backbone: ReturnType<typeof getClaudeAgentBackbone>
+): Promise<ArgumentScore> {
+  const priorContent = priorArguments
+    .map((a) => `[${a.role}]: ${a.content.slice(0, 200)}`)
+    .join("\n");
 
-YOUR ROLE: ${PERSPECTIVE_DESCRIPTIONS[perspective]}
+  const messages: AgentMessage[] = [
+    {
+      role: "user",
+      content: `Score this debate argument.
 
-Provide your initial position as JSON:
-{
-  "position": "one-sentence stance",
-  "reasoning": "detailed argument (150-250 words)",
-  "evidence_points": ["point 1", "point 2", "point 3"],
-  "score": 75
-}
+ARGUMENT BY ${argument.role.toUpperCase()}:
+${argument.content}
 
-"score" is your own assessment of argument strength (0-100). Be realistic.`;
-}
+PRIOR ARGUMENTS IN DEBATE:
+${priorContent || "(none)"}
 
-function buildResponseRoundPrompt(
-  question: string,
-  perspective: AgentPerspective,
-  myPriorArgument: string,
-  othersArguments: Array<{ perspective: AgentPerspective; position: string; reasoning: string }>
-): string {
-  const othersText = othersArguments
-    .map((a) => `[${a.perspective.toUpperCase()}]: ${a.position}\n${a.reasoning}`)
-    .join("\n\n");
+Score each dimension 0-1:
+- logicalConsistency: internal logic quality
+- evidenceStrength: quality of evidence/reasoning
+- novelty: does it add new insights vs repeat prior args?
+- rebuttalQuality: how well does it address prior arguments?
 
-  return `Continue the structured debate as the ${perspective.toUpperCase()} agent.
+Output JSON: { "logicalConsistency": 0.0, "evidenceStrength": 0.0, "novelty": 0.0, "rebuttalQuality": 0.0 }`,
+    },
+  ];
 
-QUESTION: ${question}
+  const response = await backbone.call(messages, {
+    model: CLAUDE_MODELS.HAIKU,
+    maxTokens: 256,
+    system: "Score debate arguments objectively. Return valid JSON only.",
+  });
 
-YOUR PRIOR POSITION: ${myPriorArgument}
+  let scores = {
+    logicalConsistency: 0.5,
+    evidenceStrength: 0.5,
+    novelty: 0.5,
+    rebuttalQuality: 0.5,
+  };
 
-OTHER AGENTS' ARGUMENTS:
-${othersText}
+  try {
+    const jsonMatch = response.text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      scores = { ...scores, ...parsed };
+    }
+  } catch {
+    // Use defaults
+  }
 
-Respond and refine your position as JSON:
-{
-  "position": "updated one-sentence stance (may be same or evolved)",
-  "reasoning": "refined argument incorporating rebuttals (150-250 words)",
-  "evidence_points": ["updated point 1", "point 2", "point 3"],
-  "counterpoints": ["rebuttal to optimistic agent", "rebuttal to analytical agent"],
-  "score": 80
-}`;
-}
+  const overallScore =
+    scores.logicalConsistency * 0.3 +
+    scores.evidenceStrength * 0.3 +
+    scores.novelty * 0.2 +
+    scores.rebuttalQuality * 0.2;
 
-function buildSynthesisPrompt(
-  question: string,
-  allArguments: DebateArgument[]
-): string {
-  const argText = allArguments
-    .map(
-      (a) =>
-        `[${a.perspective.toUpperCase()} R${a.round}] Score:${a.score}\nPosition: ${a.position}\nReasoning: ${a.reasoning}`
-    )
-    .join("\n\n---\n\n");
-
-  return `Synthesise the following debate into a final recommendation.
-
-QUESTION: ${question}
-
-ALL ARGUMENTS:
-${argText}
-
-Produce a synthesis as JSON:
-{
-  "final_synthesis": "comprehensive summary merging the best insights from all agents (200-300 words)",
-  "recommended_action": "clear, actionable recommendation",
-  "confidence_level": 0.0-1.0,
-  "dissenting_views": ["any unresolved disagreement 1", "point 2"]
-}`;
+  return {
+    argumentId: argument.argumentId,
+    ...scores,
+    overallScore,
+  };
 }
 
 // ─── MultiAgentDebate ─────────────────────────────────────────────────────────
-export class MultiAgentDebate {
-  private readonly client: Anthropic;
 
-  constructor() {
-    this.client = new Anthropic();
+export class MultiAgentDebate extends EventEmitter {
+  private sessions = new Map<string, DebateSession>();
+
+  constructor(
+    private readonly backbone = getClaudeAgentBackbone()
+  ) {
+    super();
+    logger.info("[MultiAgentDebate] Initialized");
   }
 
-  // ─── Public API ──────────────────────────────────────────────────────────────
+  // ── Start debate ──────────────────────────────────────────────────────────────
 
-  /** Run a full debate on a question. Returns synthesised result. */
   async debate(
     question: string,
-    context = "",
-    config: DebateConfig = {}
-  ): Promise<DebateResult> {
-    const startMs = Date.now();
-    const debateId = randomUUID();
+    context: string,
+    opts: DebateOptions = {}
+  ): Promise<DebateSession> {
     const {
-      agentCount = 3,
-      maxRounds = 4,
-      consensusThreshold = 0.75,
-      perspectives = this.defaultPerspectives(agentCount),
-      onRoundComplete,
-    } = config;
+      maxRounds = 3,
+      earlyStopConsensusThreshold = 0.85,
+      thinkingBudgetTokens = 10_000,
+      includeSynthesis = true,
+    } = opts;
 
-    const { topic } = detectTopicAndStakes(question);
-    Logger.info("[MultiAgentDebate] Starting debate", { debateId, topic, agentCount, maxRounds });
-
-    const rounds: DebateRound[] = [];
-    let allArguments: DebateArgument[] = [];
-    let consensusReached = false;
-
-    // Round 1: Initial positions
-    const round1Args = await this.runRound(
-      debateId,
+    const session: DebateSession = {
+      debateId: randomUUID(),
       question,
-      topic,
       context,
-      perspectives,
-      1,
-      []
+      status: "initializing",
+      rounds: [],
+      totalRounds: maxRounds,
+      createdAt: Date.now(),
+      totalTokensUsed: 0,
+      estimatedCostUSD: 0,
+    };
+
+    this.sessions.set(session.debateId, session);
+
+    logger.info(
+      { debateId: session.debateId, question: question.slice(0, 80) },
+      "[MultiAgentDebate] Debate started"
     );
-    const round1: DebateRound = {
-      roundNumber: 1,
-      arguments: round1Args,
-      consensusScore: this.measureConsensus(round1Args),
-    };
-    rounds.push(round1);
-    allArguments = allArguments.concat(round1Args);
-    onRoundComplete?.(round1);
 
-    if (round1.consensusScore >= consensusThreshold) {
-      consensusReached = true;
-    }
+    this.emit("debate:started", { debateId: session.debateId, question });
 
-    // Subsequent rounds until consensus or maxRounds
-    let roundNum = 2;
-    while (!consensusReached && roundNum <= maxRounds) {
-      const prevArgs = rounds[rounds.length - 1].arguments;
-      const roundArgs = await this.runResponseRound(
-        debateId,
-        question,
-        perspectives,
-        roundNum,
-        prevArgs,
-        allArguments
+    try {
+      // Opening statements
+      session.status = "opening_statements";
+      this.emit("debate:status", { debateId: session.debateId, status: session.status });
+
+      const openingRound = await this.runRound(
+        session,
+        0,
+        [],
+        thinkingBudgetTokens,
+        true
       );
-      const round: DebateRound = {
-        roundNumber: roundNum,
-        arguments: roundArgs,
-        consensusScore: this.measureConsensus(roundArgs),
-      };
-      rounds.push(round);
-      allArguments = allArguments.concat(roundArgs);
-      onRoundComplete?.(round);
+      session.rounds.push(openingRound);
 
-      if (round.consensusScore >= consensusThreshold) {
-        consensusReached = true;
+      // Debate rounds
+      session.status = "debate_rounds";
+
+      for (let round = 1; round <= maxRounds; round++) {
+        // Check for early consensus
+        const lastRound = session.rounds.at(-1)!;
+        if (lastRound.consensusLevel >= earlyStopConsensusThreshold) {
+          logger.info(
+            {
+              debateId: session.debateId,
+              round,
+              consensus: lastRound.consensusLevel,
+            },
+            "[MultiAgentDebate] Early consensus reached"
+          );
+          this.emit("debate:early_consensus", {
+            debateId: session.debateId,
+            round,
+            consensusLevel: lastRound.consensusLevel,
+          });
+          break;
+        }
+
+        const allPriorArguments = session.rounds.flatMap((r) => r.arguments);
+        const debateRound = await this.runRound(
+          session,
+          round,
+          allPriorArguments,
+          thinkingBudgetTokens,
+          false
+        );
+        session.rounds.push(debateRound);
+
+        this.emit("debate:round_completed", {
+          debateId: session.debateId,
+          round,
+          consensusLevel: debateRound.consensusLevel,
+        });
       }
-      roundNum++;
+
+      // Synthesis
+      if (includeSynthesis) {
+        session.status = "synthesizing";
+        this.emit("debate:status", { debateId: session.debateId, status: session.status });
+        session.synthesis = await this.synthesize(
+          session,
+          thinkingBudgetTokens
+        );
+      }
+
+      session.status = "completed";
+      session.completedAt = Date.now();
+
+      logger.info(
+        {
+          debateId: session.debateId,
+          rounds: session.rounds.length,
+          tokens: session.totalTokensUsed,
+          consensus: session.rounds.at(-1)?.consensusLevel,
+        },
+        "[MultiAgentDebate] Debate completed"
+      );
+
+      this.emit("debate:completed", session);
+    } catch (err) {
+      session.status = "failed";
+      logger.error({ err, debateId: session.debateId }, "[MultiAgentDebate] Debate failed");
+      this.emit("debate:failed", { debateId: session.debateId, error: String(err) });
     }
 
-    // Synthesis
-    const synthesis = await this.synthesise(question, allArguments);
-
-    const result: DebateResult = {
-      debateId,
-      topic,
-      question,
-      rounds,
-      consensus: consensusReached,
-      finalSynthesis: synthesis.final_synthesis,
-      recommendedAction: synthesis.recommended_action,
-      confidenceLevel: synthesis.confidence_level,
-      dissenting: synthesis.dissenting_views,
-      durationMs: Date.now() - startMs,
-    };
-
-    Logger.info("[MultiAgentDebate] Debate complete", {
-      debateId,
-      rounds: rounds.length,
-      consensus: consensusReached,
-      durationMs: result.durationMs,
-    });
-
-    return result;
+    return session;
   }
 
-  /** Score a single argument for quality (external use). */
-  scoreArgument(arg: DebateArgument): number {
-    let score = arg.score;
-    score += arg.evidencePoints.length * 5; // evidence richness
-    score += (arg.counterpoints?.length ?? 0) * 3; // responsiveness
-    return Math.min(100, score);
-  }
-
-  // ─── Private helpers ─────────────────────────────────────────────────────────
-
-  private defaultPerspectives(count: number): AgentPerspective[] {
-    const pool: AgentPerspective[] = ["optimistic", "skeptical", "analytical"];
-    return pool.slice(0, Math.min(count, pool.length));
-  }
+  // ── Round execution ───────────────────────────────────────────────────────────
 
   private async runRound(
-    debateId: string,
-    question: string,
-    topic: DebateTopic,
-    context: string,
-    perspectives: AgentPerspective[],
+    session: DebateSession,
     roundNumber: number,
-    _priorRound: DebateArgument[]
-  ): Promise<DebateArgument[]> {
-    const promises = perspectives.map((perspective) =>
-      this.generateInitialArgument(question, topic, context, perspective, roundNumber)
+    priorArguments: Argument[],
+    thinkingBudget: number,
+    isOpening: boolean
+  ): Promise<DebateRound> {
+    const roles: DebaterRole[] = ["optimist", "skeptic", "analyst"];
+
+    // Run all 3 debaters in parallel
+    const argumentPromises = roles.map((role) =>
+      this.generateArgument(
+        session.question,
+        session.context,
+        role,
+        roundNumber,
+        priorArguments,
+        thinkingBudget,
+        isOpening
+      )
     );
-    return Promise.all(promises);
+
+    const arguments_ = await Promise.all(argumentPromises);
+
+    // Score all arguments
+    const scorePromises = arguments_.map((arg, i) =>
+      scoreArgument(arg, [...priorArguments, ...arguments_.slice(0, i)], this.backbone)
+    );
+    const scores = await Promise.all(scorePromises);
+
+    // Compute consensus level
+    const consensusLevel = this.computeConsensusLevel(arguments_);
+
+    // Find dominant position
+    const highestScore = scores.reduce((best, s) =>
+      s.overallScore > best.overallScore ? s : best
+    );
+    const dominantArg = arguments_.find(
+      (a) => a.argumentId === highestScore.argumentId
+    );
+
+    // Update session token totals
+    for (const arg of arguments_) {
+      session.totalTokensUsed += arg.tokensUsed;
+    }
+    session.estimatedCostUSD = (session.totalTokensUsed / 1_000_000) * 3.0; // Sonnet pricing
+
+    return {
+      roundNumber,
+      arguments: arguments_,
+      scores,
+      consensusLevel,
+      dominantPosition: dominantArg?.content.slice(0, 200),
+    };
   }
 
-  private async runResponseRound(
-    debateId: string,
-    question: string,
-    perspectives: AgentPerspective[],
-    roundNumber: number,
-    prevRoundArgs: DebateArgument[],
-    _allArgs: DebateArgument[]
-  ): Promise<DebateArgument[]> {
-    const promises = perspectives.map((perspective) => {
-      const myPrior = prevRoundArgs.find((a) => a.perspective === perspective);
-      const others = prevRoundArgs.filter((a) => a.perspective !== perspective);
-      return this.generateResponseArgument(question, perspective, myPrior, others, roundNumber);
-    });
-    return Promise.all(promises);
-  }
+  // ── Individual argument generation ───────────────────────────────────────────
 
-  private async generateInitialArgument(
+  private async generateArgument(
     question: string,
-    topic: DebateTopic,
     context: string,
-    perspective: AgentPerspective,
-    round: number
-  ): Promise<DebateArgument> {
-    const prompt = buildInitialArgumentPrompt(question, topic, perspective, context);
-    const parsed = await this.callAndParse(prompt);
+    role: DebaterRole,
+    round: number,
+    priorArguments: Argument[],
+    thinkingBudget: number,
+    isOpening: boolean
+  ): Promise<Argument> {
+    const persona = DEBATER_PERSONAS[role];
+
+    const priorSummary =
+      priorArguments.length > 0
+        ? `\nPRIOR ARGUMENTS:\n${priorArguments
+            .map(
+              (a) =>
+                `[Round ${a.round}, ${a.role.toUpperCase()}, ID:${a.argumentId.slice(0, 8)}]: ${a.content.slice(0, 300)}`
+            )
+            .join("\n\n")}`
+        : "";
+
+    const instruction = isOpening
+      ? "Provide your opening statement with your initial position."
+      : `Round ${round}: Respond to prior arguments. Attack weak points, defend your position, refine your view if needed.`;
+
+    const messages: AgentMessage[] = [
+      {
+        role: "user",
+        content: `DEBATE QUESTION: ${question}
+
+CONTEXT: ${context}${priorSummary}
+
+${instruction}
+
+Output JSON:
+{
+  "content": "Your full argument (3-5 sentences)",
+  "supportPoints": ["point 1", "point 2"],
+  "rebuttals": [{ "targetArgumentId": "id_prefix", "rebuttal": "why they're wrong" }],
+  "confidence": 0.0-1.0
+}
+
+Return ONLY valid JSON.`,
+      },
+    ];
+
+    const start = Date.now();
+    const response = await this.backbone.call(messages, {
+      model: CLAUDE_MODELS.SONNET,
+      maxTokens: 1024,
+      system: persona.systemPrompt,
+      thinking: { enabled: true, budgetTokens: thinkingBudget },
+    });
+
+    let parsed: {
+      content?: string;
+      supportPoints?: string[];
+      rebuttals?: Array<{ targetArgumentId: string; rebuttal: string }>;
+      confidence?: number;
+    } = {};
+
+    try {
+      const jsonMatch = response.text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+    } catch {
+      parsed = { content: response.text.slice(0, 500) };
+    }
 
     return {
-      agentId: `${perspective}_agent`,
-      perspective,
+      argumentId: randomUUID(),
+      debaterId: `${role}-debater`,
+      role,
       round,
-      position: String(parsed.position ?? ""),
-      reasoning: String(parsed.reasoning ?? ""),
-      evidencePoints: Array.isArray(parsed.evidence_points) ? parsed.evidence_points : [],
-      score: typeof parsed.score === "number" ? Math.min(100, Math.max(0, parsed.score)) : 50,
+      content: String(parsed.content ?? response.text.slice(0, 500)),
+      thinkingContent: response.thinkingContent,
+      supportPoints: Array.isArray(parsed.supportPoints) ? parsed.supportPoints : [],
+      rebuttals: Array.isArray(parsed.rebuttals) ? parsed.rebuttals : [],
+      confidence: Number(parsed.confidence ?? 0.5),
+      tokensUsed: response.usage.inputTokens + response.usage.outputTokens,
+      timestamp: Date.now(),
     };
   }
 
-  private async generateResponseArgument(
-    question: string,
-    perspective: AgentPerspective,
-    myPrior: DebateArgument | undefined,
-    others: DebateArgument[],
-    round: number
-  ): Promise<DebateArgument> {
-    const myPriorText = myPrior ? `${myPrior.position}\n${myPrior.reasoning}` : "No prior position.";
-    const othersInfo = others.map((a) => ({
-      perspective: a.perspective,
-      position: a.position,
-      reasoning: a.reasoning,
-    }));
+  // ── Consensus measurement ─────────────────────────────────────────────────────
 
-    const prompt = buildResponseRoundPrompt(question, perspective, myPriorText, othersInfo);
-    const parsed = await this.callAndParse(prompt);
+  private computeConsensusLevel(arguments_: Argument[]): number {
+    if (arguments_.length < 2) return 1;
 
-    return {
-      agentId: `${perspective}_agent`,
-      perspective,
-      round,
-      position: String(parsed.position ?? ""),
-      reasoning: String(parsed.reasoning ?? ""),
-      evidencePoints: Array.isArray(parsed.evidence_points) ? parsed.evidence_points : [],
-      counterpoints: Array.isArray(parsed.counterpoints) ? parsed.counterpoints : [],
-      score: typeof parsed.score === "number" ? Math.min(100, Math.max(0, parsed.score)) : 50,
-    };
-  }
-
-  private async synthesise(
-    question: string,
-    allArguments: DebateArgument[]
-  ): Promise<{
-    final_synthesis: string;
-    recommended_action: string;
-    confidence_level: number;
-    dissenting_views: string[];
-  }> {
-    const prompt = buildSynthesisPrompt(question, allArguments);
-    const parsed = await this.callAndParse(prompt, REASONING_MODEL);
-    return {
-      final_synthesis: String(parsed.final_synthesis ?? "Synthesis unavailable."),
-      recommended_action: String(parsed.recommended_action ?? "No recommendation."),
-      confidence_level: typeof parsed.confidence_level === "number" ? parsed.confidence_level : 0.5,
-      dissenting_views: Array.isArray(parsed.dissenting_views) ? parsed.dissenting_views : [],
-    };
-  }
-
-  private measureConsensus(args: DebateArgument[]): number {
-    if (args.length < 2) return 1;
-
-    // Measure lexical similarity of positions using simple token overlap
-    const tokenSets = args.map((a) => new Set(a.position.toLowerCase().split(/\W+/).filter(Boolean)));
-    let totalOverlap = 0;
+    // Average pairwise confidence similarity
+    let totalSimilarity = 0;
     let pairs = 0;
 
-    for (let i = 0; i < tokenSets.length; i++) {
-      for (let j = i + 1; j < tokenSets.length; j++) {
-        const a = tokenSets[i];
-        const b = tokenSets[j];
-        const intersection = new Set([...a].filter((t) => b.has(t)));
-        const union = new Set([...a, ...b]);
-        totalOverlap += union.size > 0 ? intersection.size / union.size : 0;
+    for (let i = 0; i < arguments_.length; i++) {
+      for (let j = i + 1; j < arguments_.length; j++) {
+        const confDiff = Math.abs(
+          arguments_[i].confidence - arguments_[j].confidence
+        );
+        // Penalize fast consensus (if round 0 already agrees, it's suspicious)
+        const similarity = 1 - confDiff;
+        totalSimilarity += similarity;
         pairs++;
       }
     }
 
-    return pairs > 0 ? totalOverlap / pairs : 1;
+    const rawConsensus = pairs > 0 ? totalSimilarity / pairs : 0;
+
+    // Penalize if all arguments are from round 0 (opening consensus is low value)
+    const allOpening = arguments_.every((a) => a.round === 0);
+    return allOpening ? rawConsensus * 0.7 : rawConsensus;
   }
 
-  private async callAndParse(prompt: string, model = FAST_MODEL): Promise<Record<string, any>> {
+  // ── Synthesis ─────────────────────────────────────────────────────────────────
+
+  private async synthesize(
+    session: DebateSession,
+    thinkingBudget: number
+  ): Promise<DebateSynthesis> {
+    const allArguments = session.rounds.flatMap((r) => r.arguments);
+    const allScores = session.rounds.flatMap((r) => r.scores);
+
+    // Find top 3 arguments by score
+    const topArgs = [...allScores]
+      .sort((a, b) => b.overallScore - a.overallScore)
+      .slice(0, 3)
+      .map((s) => {
+        const arg = allArguments.find((a) => a.argumentId === s.argumentId);
+        return { score: s, arg };
+      })
+      .filter((x) => x.arg !== undefined);
+
+    const topArgsSummary = topArgs
+      .map(
+        (x) =>
+          `[${x.arg!.role.toUpperCase()}, score=${x.score.overallScore.toFixed(2)}]: ${x.arg!.content.slice(0, 300)}`
+      )
+      .join("\n\n");
+
+    const messages: AgentMessage[] = [
+      {
+        role: "user",
+        content: `Synthesize this multi-agent debate into a final answer.
+
+QUESTION: ${session.question}
+
+TOP ARGUMENTS:
+${topArgsSummary}
+
+DEBATE STATS:
+- ${session.rounds.length} rounds
+- Final consensus level: ${session.rounds.at(-1)?.consensusLevel.toFixed(2) ?? "unknown"}
+
+Output JSON:
+{
+  "consensus": "The main agreed-upon conclusion",
+  "keyAgreements": ["agreement 1", "agreement 2"],
+  "keyDisagreements": ["disagreement 1"],
+  "winningArguments": [{"argumentId": "id", "reason": "why it won"}],
+  "recommendation": "Concrete actionable recommendation",
+  "confidence": 0.0-1.0,
+  "minorityView": "Important minority view if any, or null"
+}
+
+Return ONLY valid JSON.`,
+      },
+    ];
+
+    const response = await this.backbone.call(messages, {
+      model: CLAUDE_MODELS.SONNET,
+      maxTokens: 2048,
+      system:
+        "You are a neutral debate judge synthesizing multiple perspectives into an actionable conclusion. Be precise and balanced.",
+      thinking: { enabled: true, budgetTokens: thinkingBudget },
+    });
+
+    session.totalTokensUsed += response.usage.inputTokens + response.usage.outputTokens;
+
+    let parsed: Partial<DebateSynthesis> = {};
     try {
-      const response = await this.client.messages.create({
-        model,
-        max_tokens: 1024,
-        messages: [{ role: "user", content: prompt }],
-      });
-      const textBlock = response.content.find((b) => b.type === "text");
-      const text = textBlock?.type === "text" ? textBlock.text : "{}";
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      return jsonMatch ? JSON.parse(jsonMatch[0]) : {};
-    } catch (err) {
-      Logger.error("[MultiAgentDebate] API/parse error", err);
-      return {};
+      const jsonMatch = response.text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+    } catch {
+      // Use defaults
     }
+
+    return {
+      question: session.question,
+      consensus: String(parsed.consensus ?? "No clear consensus reached"),
+      keyAgreements: Array.isArray(parsed.keyAgreements) ? parsed.keyAgreements : [],
+      keyDisagreements: Array.isArray(parsed.keyDisagreements)
+        ? parsed.keyDisagreements
+        : [],
+      winningArguments: Array.isArray(parsed.winningArguments)
+        ? parsed.winningArguments
+        : [],
+      recommendation: String(parsed.recommendation ?? "Further analysis required"),
+      confidence: Number(parsed.confidence ?? 0.5),
+      thinkingContent: response.thinkingContent,
+      minorityView: parsed.minorityView
+        ? String(parsed.minorityView)
+        : undefined,
+    };
   }
+
+  // ── Queries ───────────────────────────────────────────────────────────────────
+
+  getSession(debateId: string): DebateSession | null {
+    return this.sessions.get(debateId) ?? null;
+  }
+
+  getArgumentsByRole(debateId: string, role: DebaterRole): Argument[] {
+    const session = this.sessions.get(debateId);
+    if (!session) return [];
+    return session.rounds
+      .flatMap((r) => r.arguments)
+      .filter((a) => a.role === role);
+  }
+
+  getTopArguments(debateId: string, limit = 5): Array<Argument & { score: ArgumentScore }> {
+    const session = this.sessions.get(debateId);
+    if (!session) return [];
+
+    const allArgs = session.rounds.flatMap((r) => r.arguments);
+    const allScores = session.rounds.flatMap((r) => r.scores);
+
+    return allScores
+      .sort((a, b) => b.overallScore - a.overallScore)
+      .slice(0, limit)
+      .map((s) => {
+        const arg = allArgs.find((a) => a.argumentId === s.argumentId)!;
+        return { ...arg, score: s };
+      })
+      .filter(Boolean);
+  }
+
+  getSummary(debateId: string) {
+    const session = this.sessions.get(debateId);
+    if (!session) return null;
+
+    return {
+      debateId: session.debateId,
+      question: session.question.slice(0, 80),
+      status: session.status,
+      rounds: session.rounds.length,
+      finalConsensus: session.rounds.at(-1)?.consensusLevel ?? 0,
+      synthesisConfidence: session.synthesis?.confidence ?? null,
+      recommendation: session.synthesis?.recommendation ?? null,
+      totalTokens: session.totalTokensUsed,
+      estimatedCostUSD: session.estimatedCostUSD,
+      durationMs: session.completedAt
+        ? session.completedAt - session.createdAt
+        : null,
+    };
+  }
+}
+
+// ─── Singleton ─────────────────────────────────────────────────────────────────
+
+let _instance: MultiAgentDebate | null = null;
+
+export function getMultiAgentDebate(): MultiAgentDebate {
+  if (!_instance) _instance = new MultiAgentDebate();
+  return _instance;
 }
