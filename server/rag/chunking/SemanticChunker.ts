@@ -1,322 +1,454 @@
-/**
- * SemanticChunker — Embedding-similarity boundary detection with language-aware
- * sentence splitting and special handlers for code, tables, and lists.
- */
+import { randomUUID } from 'crypto';
+import { Logger } from '../../lib/logger';
+import type { ChunkStage, ProcessedDocument, Chunk } from '../UnifiedRAGPipeline';
 
-import crypto from "crypto";
-import { createLogger } from "../../utils/logger";
-import type {
-  ChunkStage,
-  PipelineChunk,
-  ChunkMetadata,
-  ChunkType,
-  SectionType,
-} from "../UnifiedRAGPipeline";
-import { cosineSimilarity, generateChunkId } from "../UnifiedRAGPipeline";
-
-const logger = createLogger("SemanticChunker");
+// ─── Configuration ───────────────────────────────────────────────────────────
 
 export interface SemanticChunkerConfig {
-  targetSize: number;
-  maxSize: number;
-  minSize: number;
-  similarityThreshold: number;
-  overlapSentences: number;
-  overlapChars: number;
-  useSemanticBoundaries: boolean;
+  targetTokens: number;
+  maxTokens: number;
+  minTokens: number;
+  overlapTokens: number;
+  topicShiftThreshold: number;
+  preserveCodeBlocks: boolean;
+  preserveTables: boolean;
+  language: 'auto' | 'en' | 'es';
 }
 
-const DEFAULT_CONFIG: SemanticChunkerConfig = {
-  targetSize: 800,
-  maxSize: 1200,
-  minSize: 100,
-  similarityThreshold: 0.7,
-  overlapSentences: 2,
-  overlapChars: 150,
-  useSemanticBoundaries: true,
+export const DEFAULT_SEMANTIC_CHUNKER_CONFIG: SemanticChunkerConfig = {
+  targetTokens: 800,
+  maxTokens: 1200,
+  minTokens: 100,
+  overlapTokens: 150,
+  topicShiftThreshold: 0.3,
+  preserveCodeBlocks: true,
+  preserveTables: true,
+  language: 'auto',
 };
 
-// ─── Abbreviation sets for sentence splitting ─────────────────────────────────
+// ─── Internal types ──────────────────────────────────────────────────────────
 
-const ABBREVIATIONS = new Set([
-  "dr","dra","sr","sra","srta","ing","lic","prof","dpto","dept","etc","vs",
-  "art","fig","cap","num","tel","av","mr","mrs","ms","jr","approx","avg","vol",
-]);
-
-function splitSentences(text: string): string[] {
-  let protected_ = text;
-  for (const abbr of ABBREVIATIONS) {
-    const re = new RegExp(`\\b${abbr}\\.`, "gi");
-    protected_ = protected_.replace(re, `${abbr}\u00B7`);
-  }
-  return protected_
-    .split(/(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÜÑa-záéíóúüñ])/)
-    .map((s) => s.replace(/\u00B7/g, ".").trim())
-    .filter((s) => s.length > 0);
+export interface SplitPoint {
+  index: number;
+  type: 'heading' | 'paragraph' | 'topic_shift' | 'table' | 'code_block';
+  confidence: number;
 }
 
-function detectChunkType(text: string): ChunkType {
-  if (/^```[\s\S]*?```/m.test(text) || /^( {4}|\t)\S/m.test(text)) return "code";
-  if (/\|[^|]+\|[^|]+\|/.test(text)) return "table";
-  if (/^[\s]*[-*\u2022]\s|^[\s]*\d+\.\s/m.test(text)) return "list";
-  if (/^#{1,6}\s|^[A-Z][A-Z\s]{3,}$/m.test(text)) return "heading";
-  return "text";
-}
-
-function detectSectionType(text: string): SectionType {
-  if (/^#{1,6}\s/.test(text.trim()) || /^[A-Z][A-Z\s]{3,50}$/.test(text.trim())) return "heading";
-  if (/^[\s]*[-*\u2022]\s|^[\s]*\d+\.\s/m.test(text)) return "list";
-  if (/\|[^|]+\|[^|]+\|/.test(text)) return "table";
-  if (/```|^\s{4}\S/m.test(text)) return "code";
-  return "paragraph";
-}
-
-function extractSectionTitle(text: string): string | undefined {
-  return (
-    text.match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim() ??
-    text.match(/^([A-Z\u00C0-\u00DC][A-Za-z\u00C0-\u017E\s]{2,60})$/m)?.[1]?.trim()
-  );
-}
-
-function detectLanguage(text: string): "es" | "en" | "mixed" {
-  const esCount = (text.match(/\b(el|la|los|las|de|que|en|un|una|es|por|con|del|al|se)\b/gi) ?? []).length;
-  const enCount = (text.match(/\b(the|is|are|of|and|to|in|for|with|that|this|have)\b/gi) ?? []).length;
-  if (esCount > enCount * 1.5) return "es";
-  if (enCount > esCount * 1.5) return "en";
-  return "mixed";
-}
-
-function isList(text: string): boolean {
-  const lines = text.split("\n").filter((l) => l.trim());
-  return (
-    lines.length >= 2 &&
-    lines.filter((l) => /^[\s]*[-*\u2022]\s|^[\s]*\d+\.\s/.test(l)).length >= lines.length * 0.6
-  );
-}
-
-function isTable(text: string): boolean {
-  return /^\|.+\|/m.test(text) && (text.match(/\|/g) ?? []).length >= 4;
-}
-
-// ─── Special block extraction ─────────────────────────────────────────────────
-
-interface SpecialBlock {
-  type: "code" | "table";
+interface ProtectedRegion {
+  start: number;
+  end: number;
+  type: 'code_block' | 'table';
   content: string;
-  startIndex: number;
-  endIndex: number;
 }
 
-function extractSpecialBlocks(text: string): SpecialBlock[] {
-  const blocks: SpecialBlock[] = [];
-
-  // Fenced code blocks
-  const codeFenced = /```[\s\S]*?```/g;
-  let m: RegExpExecArray | null;
-  while ((m = codeFenced.exec(text)) !== null) {
-    blocks.push({ type: "code", content: m[0], startIndex: m.index, endIndex: m.index + m[0].length });
-  }
-
-  // Markdown tables
-  const tableRe = /(?:^\|.+\|\s*\n){2,}/gm;
-  while ((m = tableRe.exec(text)) !== null) {
-    if (!blocks.some((b) => m!.index >= b.startIndex && m!.index < b.endIndex)) {
-      blocks.push({ type: "table", content: m[0].trim(), startIndex: m.index, endIndex: m.index + m[0].length });
-    }
-  }
-
-  return blocks.sort((a, b) => a.startIndex - b.startIndex);
-}
-
-// ─── SemanticChunker ──────────────────────────────────────────────────────────
+// ─── SemanticChunker ─────────────────────────────────────────────────────────
 
 export class SemanticChunker implements ChunkStage {
-  private readonly config: SemanticChunkerConfig;
+  private readonly _cfg: SemanticChunkerConfig;
 
-  constructor(config: Partial<SemanticChunkerConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+  constructor(config?: Partial<SemanticChunkerConfig>) {
+    this._cfg = { ...DEFAULT_SEMANTIC_CHUNKER_CONFIG, ...config };
   }
 
-  async chunk(text: string, options: Record<string, unknown> = {}): Promise<PipelineChunk[]> {
-    const sourceFile = String(options.sourceFile ?? "");
-    const pageInfo = options.pageInfo as Map<number, { start: number; end: number }> | undefined;
-    const specialBlocks = extractSpecialBlocks(text);
-    const chunks: PipelineChunk[] = [];
-    let chunkIndex = 0;
-    let cursor = 0;
-    let previousSentences: string[] = [];
+  // ── Public entry point ────────────────────────────────────────────────────
 
-    // Build segments: alternating plain text / special blocks
-    const segments: Array<{ text: string; startOffset: number; isSpecial: boolean; blockType?: "code" | "table" }> = [];
-    for (const block of specialBlocks) {
-      if (block.startIndex > cursor) {
-        segments.push({ text: text.slice(cursor, block.startIndex), startOffset: cursor, isSpecial: false });
-      }
-      segments.push({ text: block.content, startOffset: block.startIndex, isSpecial: true, blockType: block.type });
-      cursor = block.endIndex;
-    }
-    if (cursor < text.length) {
-      segments.push({ text: text.slice(cursor), startOffset: cursor, isSpecial: false });
-    }
+  async chunk(doc: ProcessedDocument): Promise<Chunk[]> {
+    const text = doc.cleanedContent;
+    if (!text.trim()) return [];
 
-    for (const seg of segments) {
-      if (seg.isSpecial && seg.blockType) {
-        if (seg.text.length >= this.config.minSize) {
-          chunks.push({
-            id: generateChunkId(seg.text, chunkIndex),
-            content: seg.text,
-            chunkIndex: chunkIndex++,
-            metadata: this.buildMeta(seg.text, seg.startOffset, seg.startOffset + seg.text.length, sourceFile, pageInfo, seg.blockType === "code" ? "code" : "table"),
-          });
-        }
-        previousSentences = [];
-        continue;
-      }
+    const lang =
+      this._cfg.language === 'auto' ? doc.detectedLanguage : this._cfg.language;
 
-      const textChunks = this.chunkPlainText(seg.text, seg.startOffset, sourceFile, pageInfo, previousSentences, chunkIndex);
-      chunks.push(...textChunks);
-      chunkIndex += textChunks.length;
-      previousSentences = splitSentences(seg.text).slice(-this.config.overlapSentences);
-    }
+    Logger.debug('SemanticChunker.chunk start', {
+      docId: doc.id,
+      length: text.length,
+      lang,
+    });
 
-    const result = this.config.useSemanticBoundaries && chunks.length > 2
-      ? await this.refineBySimilarity(chunks)
-      : chunks;
+    // Extract protected regions before splitting
+    const codeBlocks = this._cfg.preserveCodeBlocks
+      ? this._extractCodeBlocks(text)
+      : [];
+    const tables = this._cfg.preserveTables ? this._extractTables(text) : [];
+    const protectedRegions: ProtectedRegion[] = [
+      ...codeBlocks.map((b) => ({
+        start: b.start,
+        end: b.end,
+        type: 'code_block' as const,
+        content: b.content,
+      })),
+      ...tables.map((t) => ({
+        start: t.start,
+        end: t.end,
+        type: 'table' as const,
+        content: text.slice(t.start, t.end),
+      })),
+    ].sort((a, b) => a.start - b.start);
 
-    logger.debug("Chunking complete", { sourceFile, chunks: result.length, inputLen: text.length });
-    return result;
-  }
+    // Detect structural split points
+    const splitPoints = this._detectSplitPoints(text);
 
-  private chunkPlainText(
-    text: string,
-    baseOffset: number,
-    sourceFile: string,
-    pageInfo: Map<number, { start: number; end: number }> | undefined,
-    overlapSentences: string[],
-    startIdx: number
-  ): PipelineChunk[] {
-    const chunks: PipelineChunk[] = [];
-    const paragraphs = text.split(/\n{2,}/).filter((p) => p.trim().length > 0);
-    let currentParts: string[] = [...overlapSentences];
-    let currentStart = baseOffset;
-    let offset = baseOffset;
-    let idx = startIdx;
-
-    const flush = (endOffset: number) => {
-      const content = currentParts.join(" ").trim();
-      if (content.length < this.config.minSize) return;
-      chunks.push({
-        id: generateChunkId(content, idx),
-        content,
-        chunkIndex: idx++,
-        metadata: this.buildMeta(content, currentStart, endOffset, sourceFile, pageInfo),
-      });
-      const sentences = splitSentences(content);
-      currentParts = sentences.slice(-this.config.overlapSentences);
-      currentStart = endOffset;
-    };
-
-    for (const para of paragraphs) {
-      const trimmed = para.trim();
-      if (!trimmed) continue;
-
-      if (isList(trimmed) && trimmed.length <= this.config.maxSize) {
-        if (currentParts.join(" ").trim().length > 0) flush(offset);
-        chunks.push({
-          id: generateChunkId(trimmed, idx),
-          content: trimmed,
-          chunkIndex: idx++,
-          metadata: this.buildMeta(trimmed, offset, offset + trimmed.length, sourceFile, pageInfo, "list"),
-        });
-        currentParts = [];
-        currentStart = offset + trimmed.length + 2;
-        offset += trimmed.length + 2;
-        continue;
-      }
-
-      const projected = [...currentParts, trimmed].join(" ").length;
-      if (projected > this.config.maxSize && currentParts.join(" ").length >= this.config.minSize) {
-        flush(offset);
-      }
-
-      if (trimmed.length > this.config.maxSize) {
-        for (const sentence of splitSentences(trimmed)) {
-          if ([...currentParts, sentence].join(" ").length > this.config.maxSize && currentParts.length > 0) {
-            flush(offset);
+    // Detect topic shifts via sentence embeddings
+    const sentences = this._splitSentences(text, lang);
+    if (sentences.length > 3) {
+      const shiftIndices = this._detectTopicShifts(sentences);
+      let searchOffset = 0;
+      for (let si = 0; si < sentences.length; si++) {
+        const sentence = sentences[si];
+        const charPos = text.indexOf(sentence, searchOffset);
+        if (charPos !== -1 && shiftIndices.includes(si)) {
+          const inProtected = protectedRegions.some(
+            (r) => charPos >= r.start && charPos < r.end,
+          );
+          if (!inProtected) {
+            splitPoints.push({
+              index: charPos,
+              type: 'topic_shift',
+              confidence: 0.7,
+            });
           }
-          currentParts.push(sentence);
+          searchOffset = charPos + sentence.length;
         }
-      } else {
-        currentParts.push(trimmed);
       }
-      offset += trimmed.length + 2;
     }
 
-    if (currentParts.join(" ").trim().length >= this.config.minSize) flush(offset);
+    // Build final chunks
+    const chunks = this._buildChunks(text, splitPoints, doc.id, protectedRegions);
+
+    Logger.debug('SemanticChunker.chunk complete', {
+      docId: doc.id,
+      chunksProduced: chunks.length,
+    });
+
     return chunks;
   }
 
-  private async refineBySimilarity(chunks: PipelineChunk[]): Promise<PipelineChunk[]> {
-    try {
-      const { generateEmbeddingsBatch } = await import("../../services/ragPipeline");
-      const embeddings = await generateEmbeddingsBatch(chunks.map((c) => c.content.slice(0, 512)));
-      const refined: PipelineChunk[] = [{ ...chunks[0], embedding: embeddings[0] }];
+  // ── Split point detection ─────────────────────────────────────────────────
 
-      for (let i = 1; i < chunks.length; i++) {
-        const sim = cosineSimilarity(embeddings[i - 1], embeddings[i]);
-        const prev = refined[refined.length - 1];
+  private _detectSplitPoints(text: string): SplitPoint[] {
+    const points: SplitPoint[] = [];
+    const lines = text.split('\n');
+    let charPos = 0;
 
-        if (
-          sim >= this.config.similarityThreshold &&
-          prev.content.length + chunks[i].content.length <= this.config.maxSize
-        ) {
-          refined[refined.length - 1] = {
-            ...prev,
-            content: `${prev.content}\n\n${chunks[i].content}`,
-            embedding: embeddings[i],
-            metadata: { ...prev.metadata, endOffset: chunks[i].metadata.endOffset },
-          };
-        } else {
-          refined.push({ ...chunks[i], embedding: embeddings[i] });
-        }
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+
+      // Markdown heading: # ... ######
+      if (/^#{1,6}\s+\S/.test(line)) {
+        points.push({ index: charPos, type: 'heading', confidence: 0.95 });
+      } else if (
+        // ALL CAPS line with 4+ words
+        line.trim().length > 0 &&
+        line === line.toUpperCase() &&
+        line.trim().split(/\s+/).length >= 4
+      ) {
+        points.push({ index: charPos, type: 'heading', confidence: 0.75 });
       }
-      return refined;
-    } catch (err) {
-      logger.warn("Semantic refinement skipped", { error: String(err) });
-      return chunks;
+
+      // Paragraph break: blank line followed by non-blank
+      if (
+        line.trim() === '' &&
+        li + 1 < lines.length &&
+        lines[li + 1].trim() !== ''
+      ) {
+        points.push({ index: charPos, type: 'paragraph', confidence: 0.8 });
+      }
+
+      // Code block fence
+      if (/^```/.test(line.trim())) {
+        points.push({ index: charPos, type: 'code_block', confidence: 1.0 });
+      }
+
+      // Table separator row (markdown)
+      if (/^\|[-|: ]+\|/.test(line.trim())) {
+        const tableStart = charPos - (li > 0 ? lines[li - 1].length + 1 : 0);
+        points.push({ index: Math.max(0, tableStart), type: 'table', confidence: 0.9 });
+      }
+
+      charPos += line.length + 1; // +1 for '\n'
     }
+
+    // Deduplicate by index and sort
+    const seen = new Set<number>();
+    return points
+      .filter((p) => {
+        if (seen.has(p.index)) return false;
+        seen.add(p.index);
+        return true;
+      })
+      .sort((a, b) => a.index - b.index);
   }
 
-  private buildMeta(
-    content: string,
-    startOffset: number,
-    endOffset: number,
-    sourceFile: string,
-    pageInfo: Map<number, { start: number; end: number }> | undefined,
-    overrideType?: ChunkType
-  ): ChunkMetadata {
+  // ── Code block extraction ─────────────────────────────────────────────────
+
+  private _extractCodeBlocks(
+    text: string,
+  ): Array<{ start: number; end: number; content: string }> {
+    const blocks: Array<{ start: number; end: number; content: string }> = [];
+    const regex = /```[\s\S]*?```/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = regex.exec(text)) !== null) {
+      blocks.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        content: match[0],
+      });
+    }
+
+    return blocks;
+  }
+
+  // ── Table extraction ──────────────────────────────────────────────────────
+
+  private _extractTables(text: string): Array<{ start: number; end: number }> {
+    const tables: Array<{ start: number; end: number }> = [];
+    const lines = text.split('\n');
+    let i = 0;
+
+    while (i < lines.length) {
+      if (/^\|[-|: ]+\|/.test(lines[i].trim())) {
+        // Walk back to table header
+        let startLine = i - 1;
+        while (startLine > 0 && lines[startLine - 1].includes('|')) {
+          startLine--;
+        }
+        // Walk forward to end of table
+        let endLine = i + 1;
+        while (endLine < lines.length && lines[endLine].includes('|')) {
+          endLine++;
+        }
+
+        let startOffset = 0;
+        for (let k = 0; k < startLine; k++) startOffset += lines[k].length + 1;
+        let endOffset = 0;
+        for (let k = 0; k < endLine; k++) endOffset += lines[k].length + 1;
+
+        tables.push({ start: startOffset, end: endOffset });
+        i = endLine;
+        continue;
+      }
+      i++;
+    }
+
+    return tables;
+  }
+
+  // ── Sentence splitting ────────────────────────────────────────────────────
+
+  private _splitSentences(text: string, language: string): string[] {
+    // Remove code blocks to avoid splitting inside them
+    const stripped = text.replace(/```[\s\S]*?```/g, '');
+    let parts = stripped.split(/(?<=[.!?])[\s\n]+/);
+
+    if (language === 'es') {
+      const expanded: string[] = [];
+      for (const part of parts) {
+        expanded.push(...part.split(/(?<=¿|¡)/));
+      }
+      parts = expanded;
+    }
+
+    return parts.map((s) => s.trim()).filter(Boolean);
+  }
+
+  // ── Token estimation ──────────────────────────────────────────────────────
+
+  private _estimateTokens(text: string): number {
+    return Math.ceil(text.split(/\s+/).filter(Boolean).length * 1.3);
+  }
+
+  // ── Chunk assembly ────────────────────────────────────────────────────────
+
+  private _buildChunks(
+    text: string,
+    splitPoints: SplitPoint[],
+    docId: string,
+    protectedRegions: ProtectedRegion[],
+  ): Chunk[] {
+    const boundaries = [
+      0,
+      ...splitPoints.map((sp) => sp.index),
+      text.length,
+    ].sort((a, b) => a - b);
+
+    const uniqueBoundaries = [...new Set(boundaries)];
+
+    // Build raw segments between boundaries
+    const rawSegments: Array<{ text: string; charStart: number }> = [];
+    for (let i = 0; i < uniqueBoundaries.length - 1; i++) {
+      const s = text.slice(uniqueBoundaries[i], uniqueBoundaries[i + 1]);
+      if (s.trim()) rawSegments.push({ text: s, charStart: uniqueBoundaries[i] });
+    }
+
+    if (rawSegments.length === 0) {
+      return [this._makeChunk(text, docId, 0)];
+    }
+
+    const chunks: Chunk[] = [];
+    let buffer = '';
+    let bufferTokens = 0;
+    let chunkIdx = 0;
+
+    const flushBuffer = () => {
+      if (buffer.trim()) {
+        const tokens = this._estimateTokens(buffer);
+        if (tokens >= this._cfg.minTokens || chunks.length === 0) {
+          chunks.push(this._makeChunk(buffer.trim(), docId, chunkIdx++));
+          buffer = '';
+          bufferTokens = 0;
+        }
+      }
+    };
+
+    for (const seg of rawSegments) {
+      const segTokens = this._estimateTokens(seg.text);
+      const inProtected = protectedRegions.some(
+        (r) => seg.charStart >= r.start && seg.charStart + seg.text.length <= r.end,
+      );
+
+      if (inProtected) {
+        flushBuffer();
+        if (segTokens <= this._cfg.maxTokens) {
+          chunks.push(this._makeChunk(seg.text.trim(), docId, chunkIdx++));
+        } else {
+          // Split oversized protected region by lines
+          const lines = seg.text.split('\n');
+          let sub = '';
+          let subTok = 0;
+          for (const line of lines) {
+            const lt = this._estimateTokens(line);
+            if (subTok + lt > this._cfg.maxTokens && sub.trim()) {
+              chunks.push(this._makeChunk(sub.trim(), docId, chunkIdx++));
+              sub = line + '\n';
+              subTok = lt;
+            } else {
+              sub += line + '\n';
+              subTok += lt;
+            }
+          }
+          if (sub.trim()) chunks.push(this._makeChunk(sub.trim(), docId, chunkIdx++));
+        }
+        continue;
+      }
+
+      if (bufferTokens + segTokens > this._cfg.maxTokens && buffer.trim()) {
+        flushBuffer();
+      }
+
+      buffer += seg.text;
+      bufferTokens += segTokens;
+
+      if (bufferTokens >= this._cfg.targetTokens) {
+        flushBuffer();
+      }
+    }
+
+    flushBuffer();
+
+    // Add overlap: append first overlapTokens worth of next chunk to current
+    if (this._cfg.overlapTokens > 0 && chunks.length > 1) {
+      return chunks.map((chunk, i) => {
+        if (i === chunks.length - 1) return chunk;
+        const overlapWordCount = Math.ceil(this._cfg.overlapTokens / 1.3);
+        const nextWords = chunks[i + 1].content.split(/\s+/).slice(0, overlapWordCount);
+        const overlapSuffix = '\n\n[overlap] ' + nextWords.join(' ');
+        const newContent = chunk.content + overlapSuffix;
+        return {
+          ...chunk,
+          content: newContent,
+          tokens: this._estimateTokens(newContent),
+          metadata: { ...chunk.metadata, hasOverlap: true, overlapTokens: this._cfg.overlapTokens },
+        };
+      });
+    }
+
+    return chunks;
+  }
+
+  private _makeChunk(content: string, docId: string, index: number): Chunk {
     return {
-      sourceFile,
-      pageNumber: this.resolvePageNumber(startOffset, pageInfo),
-      sectionTitle: extractSectionTitle(content),
-      sectionType: detectSectionType(content),
-      chunkType: overrideType ?? detectChunkType(content),
-      startOffset,
-      endOffset,
-      hasTable: isTable(content),
-      hasFigure: /\[?(figure|figura|image|imagen|chart|gr[aá]fico)\s*\d*\]?/i.test(content),
-      language: detectLanguage(content),
+      id: randomUUID(),
+      documentId: docId,
+      content,
+      chunkIndex: index,
+      metadata: {},
+      tokens: this._estimateTokens(content),
     };
   }
 
-  private resolvePageNumber(
-    offset: number,
-    pageInfo: Map<number, { start: number; end: number }> | undefined
-  ): number | undefined {
-    if (!pageInfo) return undefined;
-    for (const [page, range] of pageInfo) {
-      if (offset >= range.start && offset < range.end) return page;
+  // ── Simple 64-dim hash embedding (no API call) ────────────────────────────
+
+  private _computeSimpleEmbedding(text: string): number[] {
+    const dims = 64;
+    const vec = new Array<number>(dims).fill(0);
+    const words = text.toLowerCase().split(/\W+/).filter(Boolean);
+
+    for (const word of words) {
+      let h = 2166136261;
+      for (let i = 0; i < word.length; i++) {
+        h ^= word.charCodeAt(i);
+        h = (h * 16777619) >>> 0;
+      }
+      vec[h % dims] += 1;
     }
-    return undefined;
+
+    // Bigram features
+    for (let i = 0; i < words.length - 1; i++) {
+      const bigram = words[i] + '_' + words[i + 1];
+      let h = 2166136261;
+      for (let k = 0; k < bigram.length; k++) {
+        h ^= bigram.charCodeAt(k);
+        h = (h * 16777619) >>> 0;
+      }
+      vec[h % dims] += 0.5;
+    }
+
+    const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
+    return vec.map((v) => v / norm);
+  }
+
+  // ── Cosine similarity ─────────────────────────────────────────────────────
+
+  private _cosineSimilarity(a: number[], b: number[]): number {
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < a.length; i++) {
+      dot += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
+    const denom = Math.sqrt(normA) * Math.sqrt(normB);
+    return denom === 0 ? 0 : dot / denom;
+  }
+
+  // ── Topic shift detection via sliding window ──────────────────────────────
+
+  private _detectTopicShifts(sentences: string[]): number[] {
+    if (sentences.length < 4) return [];
+
+    const shiftIndices: number[] = [];
+    const windowSize = 3;
+
+    const windowEmbeddings: number[][] = [];
+    for (let i = 0; i <= sentences.length - windowSize; i++) {
+      const windowText = sentences.slice(i, i + windowSize).join(' ');
+      windowEmbeddings.push(this._computeSimpleEmbedding(windowText));
+    }
+
+    for (let i = 1; i < windowEmbeddings.length; i++) {
+      const similarity = this._cosineSimilarity(windowEmbeddings[i - 1], windowEmbeddings[i]);
+      const cosineDistance = 1 - similarity;
+
+      if (cosineDistance > this._cfg.topicShiftThreshold) {
+        const shiftAt = i + Math.floor(windowSize / 2);
+        if (shiftAt < sentences.length) {
+          shiftIndices.push(shiftAt);
+        }
+      }
+    }
+
+    return [...new Set(shiftIndices)].sort((a, b) => a - b);
   }
 }
