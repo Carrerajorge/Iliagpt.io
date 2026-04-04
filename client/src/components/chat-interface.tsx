@@ -5997,6 +5997,14 @@ IMPORTANTE:
               return;
             }
             if (effectiveStreamChatId) {
+              // DATA_MODE: Document analysis is already running via runDocumentAnalysisAsync.
+              // Do NOT set aiState here — let runDocumentAnalysisAsync own the full lifecycle.
+              // Setting "responding" here would overwrite the "idle" set by the analysis if it finishes fast.
+              if (hasDocumentAttachments && documentAttachmentsForAnalysis.length > 0) {
+                console.log("[handleSubmit] DATA_MODE (SSE): document attachments detected, async analysis owns aiState");
+                return;
+              }
+
               // SSE streaming mode - real-time streaming from server
               setAiStateForChat("responding", effectiveStreamChatId);
 
@@ -6034,12 +6042,6 @@ IMPORTANTE:
                 type: a.type, name: a.name, mimeType: a.mimeType, storagePath: a.storagePath,
                 fileId: a.fileId, hasContent: !!a.content,
               }))));
-
-              if (hasDocumentAttachments && documentAttachmentsForAnalysis.length > 0) {
-                console.log("[handleSubmit] DATA_MODE (SSE): document attachments detected, async analysis running");
-                setAiStateForChat("thinking", effectiveStreamChatId);
-                return;
-              }
 
               if (import.meta.env.DEV) {
                 chatLogger.debug("handleSubmit docTool", { selectedDocTool, isWordMode });
@@ -6603,8 +6605,7 @@ IMPORTANTE:
             } else {
               // Legacy mode - fall back to non-streaming /api/chat for Figma diagrams or when no run info
               if (hasDocumentAttachments && documentAttachmentsForAnalysis.length > 0) {
-                console.log("[handleSubmit] DATA_MODE (Legacy): document attachments detected, async analysis running");
-                setAiStateForChat("thinking", effectiveStreamChatId);
+                console.log("[handleSubmit] DATA_MODE (Legacy): document attachments detected, async analysis owns aiState");
                 return;
               }
 
