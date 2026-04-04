@@ -3551,6 +3551,64 @@ export function ChatInterface({
     }
   };
 
+  const buildPastedDocument = (rawText: string): File => {
+    const trimmed = rawText.trim();
+    const lines = trimmed.split(/\r?\n/);
+    const hasTabs = /\t/.test(trimmed);
+    const timestamp = Date.now();
+
+    if (hasTabs) {
+      const csvRows = lines.map(line => {
+        const cells = line.split("\t");
+        return cells.map(cell => {
+          const v = cell.trim();
+          if (v.includes(",") || v.includes('"') || v.includes("\n") || v.includes(";")) {
+            return `"${v.replace(/"/g, '""')}"`;
+          }
+          return v;
+        }).join(",");
+      });
+      const csvContent = csvRows.join("\n");
+
+      const headers = (lines[0] || "").toLowerCase();
+      let label = "spreadsheet-data";
+      if (/\b(doi|journal|abstract|issn|scopus|pubmed|web of science)\b/i.test(headers + lines.slice(0, 3).join(" "))) {
+        label = "academic-articles";
+      } else if (/\b(price|amount|total|quantity|invoice|factura|precio|monto)\b/i.test(headers)) {
+        label = "financial-data";
+      } else if (/\b(name|email|phone|address|nombre|correo|teléfono)\b/i.test(headers)) {
+        label = "contacts";
+      } else if (/\b(date|status|id|code|fecha|estado|código)\b/i.test(headers)) {
+        label = "records";
+      }
+
+      const rowCount = lines.length - 1;
+      const colCount = (lines[0] || "").split("\t").length;
+      const fileName = `${label}-${rowCount}rows-${colCount}cols-${timestamp}.csv`;
+      return new File([csvContent], fileName, { type: "text/csv" });
+    }
+
+    const isCsv = lines.length > 3 && lines.slice(0, 5).every(l => {
+      const commas = (l.match(/,/g) || []).length;
+      return commas >= 2;
+    });
+
+    if (isCsv) {
+      return new File([trimmed], `data-${lines.length}rows-${timestamp}.csv`, { type: "text/csv" });
+    }
+
+    let label = "pasted-text";
+    if (/\b(abstract|doi|methodology|findings|journal|issn)\b/i.test(trimmed.slice(0, 500))) {
+      label = "academic-content";
+    } else if (/```|function\s|import\s|const\s|class\s|def\s|return\s/m.test(trimmed.slice(0, 300))) {
+      label = "code-snippet";
+    } else if (/\b(artículo|sección|capítulo|ley|decreto|resolución)\b/i.test(trimmed.slice(0, 500))) {
+      label = "legal-document";
+    }
+
+    return new File([trimmed], `${label}-${timestamp}.txt`, { type: "text/plain" });
+  };
+
   const handlePaste = async (e: React.ClipboardEvent) => {
     const clipboard = e.clipboardData;
     const items = clipboard?.items;
@@ -3595,11 +3653,7 @@ export function ChatInterface({
         const LONG_TEXT_THRESHOLD = 500;
         if (pastedText.trim().length > LONG_TEXT_THRESHOLD) {
           e.preventDefault();
-          const looksTabular = /\t/.test(pastedText) || pastedText.split("\n").length > 3;
-          const ext = looksTabular ? "csv" : "txt";
-          const mime = looksTabular ? "text/csv" : "text/plain";
-          const content = looksTabular ? pastedText.replace(/\t/g, ",") : pastedText;
-          const docFile = new File([content], `pasted-content-${Date.now()}.${ext}`, { type: mime });
+          const docFile = buildPastedDocument(pastedText);
           await processFilesForUpload([normalizeFileForUpload(docFile)]);
           return;
         }
@@ -3611,13 +3665,11 @@ export function ChatInterface({
     }
 
     const LONG_PASTE_THRESHOLD = 500;
-    if (pastedText.trim().length > LONG_PASTE_THRESHOLD) {
+    const trimmedPaste = pastedText.trim();
+    const looksLikeUrls = trimmedPaste.split(/\s+/).every(token => /^https?:\/\//i.test(token));
+    if (trimmedPaste.length > LONG_PASTE_THRESHOLD && !looksLikeUrls) {
       e.preventDefault();
-      const looksTabular = /\t/.test(pastedText) || (pastedText.split("\n").length > 5 && /[,;|]/.test(pastedText));
-      const ext = looksTabular ? "csv" : "txt";
-      const mime = looksTabular ? "text/csv" : "text/plain";
-      const content = looksTabular && /\t/.test(pastedText) ? pastedText.replace(/\t/g, ",") : pastedText;
-      const docFile = new File([content], `pasted-content-${Date.now()}.${ext}`, { type: mime });
+      const docFile = buildPastedDocument(pastedText);
       await processFilesForUpload([normalizeFileForUpload(docFile)]);
       return;
     }
