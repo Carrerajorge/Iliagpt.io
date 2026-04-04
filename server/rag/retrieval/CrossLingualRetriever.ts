@@ -1,513 +1,262 @@
-import { Logger } from '../../lib/logger';
-import { HybridRetriever } from './HybridRetriever';
+/**
+ * CrossLingualRetriever — Cross-language search by translating queries and
+ * normalizing scores across languages. Compatible with BGE-M3 multilingual
+ * embeddings (and the project's Gemini embedding-001 which supports 100+ languages).
+ *
+ * Strategy:
+ * 1. Detect query language
+ * 2. Translate query to other language(s) if needed
+ * 3. Retrieve with each language variant
+ * 4. Normalize scores across language sets
+ * 5. Merge, deduplicate, re-sort
+ */
 
-// ---------------------------------------------------------------------------
-// Shared types (local definitions — not imported from UnifiedRAGPipeline)
-// ---------------------------------------------------------------------------
+import { createLogger } from "../../utils/logger";
+import type {
+  RetrieveStage,
+  RetrievedChunk,
+  RetrieveOptions,
+} from "../UnifiedRAGPipeline";
 
-interface RetrievedChunk {
-  id: string;
-  documentId: string;
-  content: string;
-  chunkIndex: number;
-  metadata: Record<string, unknown>;
-  tokens: number;
-  score: number;
-  source: string;
-  retrievalMethod: 'vector' | 'bm25' | 'hybrid' | 'metadata';
+const logger = createLogger("CrossLingualRetriever");
+
+// ─── Language detection ───────────────────────────────────────────────────────
+
+export type SupportedLanguage = "es" | "en" | "pt" | "fr" | "de" | "it" | "auto";
+
+interface LangSignature {
+  lang: SupportedLanguage;
+  tokens: string[];
 }
 
-interface RetrievedQuery {
-  text: string;
-  namespace: string;
-  topK: number;
-  filter?: Record<string, unknown>;
-  hybridAlpha?: number;
-  minScore?: number;
+const LANG_SIGNATURES: LangSignature[] = [
+  { lang: "es", tokens: ["el","la","los","las","de","que","en","un","una","es","por","con","del","al","se","pero","como","más","todo","también"] },
+  { lang: "en", tokens: ["the","is","are","of","and","to","in","for","with","that","this","have","it","at","be","from","but","also","more","all"] },
+  { lang: "pt", tokens: ["o","a","os","as","de","que","em","um","uma","é","por","com","do","da","se","mas","como","mais","tudo","também"] },
+  { lang: "fr", tokens: ["le","la","les","de","que","en","un","une","est","par","avec","du","au","se","mais","comme","plus","tout","aussi"] },
+  { lang: "de", tokens: ["der","die","das","des","dem","den","ein","eine","ist","von","mit","für","auch","aus","noch","nur","über","beim","unter"] },
+  { lang: "it", tokens: ["il","la","i","le","di","che","in","un","una","è","per","con","del","al","si","ma","come","più","tutto","anche"] },
+];
+
+function detectLanguage(text: string): SupportedLanguage {
+  const words = new Set(text.toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter((w) => w.length > 1));
+  let best: SupportedLanguage = "en";
+  let bestScore = -1;
+
+  for (const sig of LANG_SIGNATURES) {
+    const score = sig.tokens.filter((t) => words.has(t)).length;
+    if (score > bestScore) {
+      bestScore = score;
+      best = sig.lang;
+    }
+  }
+
+  return bestScore >= 2 ? best : "en";
 }
 
-// ---------------------------------------------------------------------------
-// Exported types
-// ---------------------------------------------------------------------------
+// ─── Translation (via LLM) ───────────────────────────────────────────────────
 
-export interface DetectedLanguage {
-  code: 'en' | 'es' | 'fr' | 'de' | 'pt' | 'it' | 'zh' | 'ja' | 'ko' | 'ar' | 'unknown';
-  confidence: number; // 0-1
-  script: 'latin' | 'cjk' | 'arabic' | 'cyrillic' | 'other';
+async function translateQuery(
+  query: string,
+  fromLang: SupportedLanguage,
+  toLang: SupportedLanguage
+): Promise<string> {
+  if (fromLang === toLang) return query;
+
+  const { llmGateway } = await import("../../lib/llmGateway");
+
+  const langNames: Record<SupportedLanguage, string> = {
+    es: "Spanish", en: "English", pt: "Portuguese", fr: "French",
+    de: "German", it: "Italian", auto: "English",
+  };
+
+  try {
+    const response = await llmGateway.chat(
+      [
+        {
+          role: "system",
+          content: `You are a precise translator. Translate the search query from ${langNames[fromLang]} to ${langNames[toLang]}. Preserve technical terms and proper nouns. Return ONLY the translated query.`,
+        },
+        { role: "user", content: query },
+      ],
+      { model: "gpt-4o-mini", maxTokens: 150, temperature: 0 }
+    );
+    return response.content.trim();
+  } catch (err) {
+    logger.warn("Translation failed, using original query", { fromLang, toLang, error: String(err) });
+    return query;
+  }
 }
 
-export interface CrossLingualResult {
-  chunk: RetrievedChunk;
-  originalLanguage: string;
-  queryLanguage: string;
-  crossLingual: boolean;
-  normalizedScore: number;
+// ─── Score normalization ──────────────────────────────────────────────────────
+
+function normalizeScores(chunks: RetrievedChunk[]): RetrievedChunk[] {
+  if (chunks.length === 0) return [];
+  const max = Math.max(...chunks.map((c) => c.score));
+  const min = Math.min(...chunks.map((c) => c.score));
+  const range = max - min;
+  if (range === 0) return chunks;
+  return chunks.map((c) => ({ ...c, score: (c.score - min) / range }));
 }
 
-export interface LanguageProfile {
-  languageCode: string;
-  commonWords: string[];
-  charRanges?: [number, number][];
+// ─── Bilingual result merging ─────────────────────────────────────────────────
+
+function mergeAndDeduplicate(
+  resultSets: Array<{ chunks: RetrievedChunk[]; weight: number }>
+): RetrievedChunk[] {
+  const best = new Map<string, RetrievedChunk>();
+
+  for (const { chunks, weight } of resultSets) {
+    const normalized = normalizeScores(chunks);
+    for (const chunk of normalized) {
+      const weightedScore = chunk.score * weight;
+      const existing = best.get(chunk.id);
+      if (!existing) {
+        best.set(chunk.id, { ...chunk, score: weightedScore });
+      } else {
+        // Take max of weighted scores (same chunk retrieved via multiple language paths)
+        best.set(chunk.id, { ...existing, score: Math.max(existing.score, weightedScore) });
+      }
+    }
+  }
+
+  const merged = Array.from(best.values());
+  merged.sort((a, b) => b.score - a.score);
+  return merged;
 }
+
+// ─── CrossLingualRetriever ────────────────────────────────────────────────────
 
 export interface CrossLingualConfig {
-  supportedLanguages: string[];       // default ['en','es','fr','de','pt']
-  crossLingualBoost: number;          // default 0.1
-  scoreNormalizationPerLanguage: boolean; // default true
-  topKPerLanguage: number;            // default 5
-  embeddingDim: number;               // default 256
+  /** Which target languages to search in, in addition to the query language */
+  targetLanguages: SupportedLanguage[];
+  /** Weight for original-language results (vs translated) */
+  originalWeight: number;
+  /** Weight for cross-language results */
+  crossLingualWeight: number;
+  /** Whether to translate results' metadata back to query language */
+  translateResults: boolean;
+  /** Max characters to send for translation (to control LLM costs) */
+  maxQueryLength: number;
 }
 
-// ---------------------------------------------------------------------------
-// Language markers
-// ---------------------------------------------------------------------------
-
-const LANGUAGE_MARKERS: Record<string, string[]> = {
-  en: ['the', 'and', 'is', 'are', 'was', 'were', 'have', 'that', 'this', 'with', 'from', 'they', 'will', 'been'],
-  es: ['que', 'los', 'las', 'una', 'con', 'para', 'por', 'como', 'pero', 'más', 'del', 'está', 'todo'],
-  fr: ['les', 'des', 'une', 'est', 'pas', 'que', 'son', 'dans', 'qui', 'sur', 'avec', 'tout'],
-  de: ['die', 'der', 'das', 'und', 'ist', 'nicht', 'auch', 'sich', 'mit', 'dem', 'von', 'ein'],
-  pt: ['que', 'não', 'para', 'uma', 'com', 'por', 'mas', 'como', 'mais', 'seu', 'ela'],
-  it: ['che', 'non', 'una', 'del', 'per', 'con', 'sono', 'sul', 'dal', 'degli', 'alla'],
+const DEFAULT_XLING_CONFIG: CrossLingualConfig = {
+  targetLanguages: ["es", "en"],
+  originalWeight: 1.0,
+  crossLingualWeight: 0.85,
+  translateResults: false,
+  maxQueryLength: 500,
 };
 
-// ---------------------------------------------------------------------------
-// Bilingual EN↔ES dictionary (50 word pairs)
-// ---------------------------------------------------------------------------
+export class CrossLingualRetriever implements RetrieveStage {
+  private readonly config: CrossLingualConfig;
+  private readonly baseRetriever: RetrieveStage;
+  private embedQuery: (query: string) => Promise<number[]>;
 
-const EN_ES_DICT: Record<string, string> = {
-  search: 'buscar',
-  find: 'encontrar',
-  create: 'crear',
-  delete: 'eliminar',
-  update: 'actualizar',
-  error: 'error',
-  help: 'ayuda',
-  user: 'usuario',
-  file: 'archivo',
-  data: 'datos',
-  system: 'sistema',
-  service: 'servicio',
-  server: 'servidor',
-  database: 'base',
-  list: 'lista',
-  name: 'nombre',
-  type: 'tipo',
-  value: 'valor',
-  result: 'resultado',
-  report: 'informe',
-  message: 'mensaje',
-  password: 'contraseña',
-  access: 'acceso',
-  login: 'iniciar',
-  logout: 'cerrar',
-  settings: 'configuración',
-  language: 'idioma',
-  document: 'documento',
-  image: 'imagen',
-  text: 'texto',
-  email: 'correo',
-  phone: 'teléfono',
-  address: 'dirección',
-  country: 'país',
-  city: 'ciudad',
-  date: 'fecha',
-  time: 'tiempo',
-  number: 'número',
-  code: 'código',
-  version: 'versión',
-  download: 'descargar',
-  upload: 'cargar',
-  save: 'guardar',
-  open: 'abrir',
-  close: 'cerrar',
-  view: 'ver',
-  edit: 'editar',
-  add: 'agregar',
-  remove: 'quitar',
-  test: 'prueba',
-};
-
-// Reverse ES→EN
-const ES_EN_DICT: Record<string, string> = Object.fromEntries(
-  Object.entries(EN_ES_DICT).map(([en, es]) => [es, en]),
-);
-
-// ---------------------------------------------------------------------------
-// LanguageDetector (exported)
-// ---------------------------------------------------------------------------
-
-export class LanguageDetector {
-  static detect(text: string): DetectedLanguage {
-    if (!text || text.trim().length === 0) {
-      return { code: 'unknown', confidence: 0, script: 'other' };
-    }
-
-    // -----------------------------------------------------------------------
-    // Script detection via Unicode ranges
-    // -----------------------------------------------------------------------
-    const chars = Array.from(text);
-    let cjkCount = 0;
-    let arabicCount = 0;
-    let cyrillicCount = 0;
-    let latinCount = 0;
-
-    for (const ch of chars) {
-      const cp = ch.codePointAt(0) ?? 0;
-      if ((cp >= 0x4E00 && cp <= 0x9FFF) ||
-          (cp >= 0x3040 && cp <= 0x30FF) || // Hiragana/Katakana
-          (cp >= 0xAC00 && cp <= 0xD7AF)) {  // Hangul
-        cjkCount++;
-      } else if (cp >= 0x0600 && cp <= 0x06FF) {
-        arabicCount++;
-      } else if (cp >= 0x0400 && cp <= 0x04FF) {
-        cyrillicCount++;
-      } else if ((cp >= 0x0041 && cp <= 0x007A) ||
-                 (cp >= 0x00C0 && cp <= 0x024F)) {
-        latinCount++;
-      }
-    }
-
-    const total = chars.length;
-
-    if (cjkCount / total > 0.15) {
-      // Distinguish ZH / JA / KO by presence of kana or hangul
-      const hasKana = chars.some(c => {
-        const cp = c.codePointAt(0) ?? 0;
-        return cp >= 0x3040 && cp <= 0x30FF;
-      });
-      const hasHangul = chars.some(c => {
-        const cp = c.codePointAt(0) ?? 0;
-        return cp >= 0xAC00 && cp <= 0xD7AF;
-      });
-
-      if (hasKana) return { code: 'ja', confidence: 0.85, script: 'cjk' };
-      if (hasHangul) return { code: 'ko', confidence: 0.85, script: 'cjk' };
-      return { code: 'zh', confidence: 0.85, script: 'cjk' };
-    }
-
-    if (arabicCount / total > 0.15) {
-      return { code: 'ar', confidence: 0.85, script: 'arabic' };
-    }
-
-    if (cyrillicCount / total > 0.15) {
-      return { code: 'unknown', confidence: 0.7, script: 'cyrillic' };
-    }
-
-    // -----------------------------------------------------------------------
-    // Latin script: frequency-match against word lists
-    // -----------------------------------------------------------------------
-    const words = text.toLowerCase().split(/\W+/).filter(w => w.length > 1);
-    if (words.length === 0) {
-      return { code: 'unknown', confidence: 0, script: 'latin' };
-    }
-
-    const wordSet = new Set(words);
-    const scores: Record<string, number> = {};
-
-    for (const [lang, markers] of Object.entries(LANGUAGE_MARKERS)) {
-      let matchCount = 0;
-      for (const marker of markers) {
-        if (wordSet.has(marker)) matchCount++;
-      }
-      scores[lang] = matchCount / markers.length;
-    }
-
-    const bestLang = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
-    if (!bestLang || bestLang[1] === 0) {
-      return { code: 'unknown', confidence: 0.1, script: 'latin' };
-    }
-
-    const [langCode, confidence] = bestLang;
-    const validCodes = ['en', 'es', 'fr', 'de', 'pt', 'it', 'zh', 'ja', 'ko', 'ar'] as const;
-    type ValidCode = typeof validCodes[number];
-
-    const code: DetectedLanguage['code'] = validCodes.includes(langCode as ValidCode)
-      ? (langCode as ValidCode)
-      : 'unknown';
-
-    return { code, confidence: Math.min(1, confidence * 2), script: 'latin' };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Default config
-// ---------------------------------------------------------------------------
-
-const DEFAULT_CROSS_LINGUAL_CONFIG: CrossLingualConfig = {
-  supportedLanguages: ['en', 'es', 'fr', 'de', 'pt'],
-  crossLingualBoost: 0.1,
-  scoreNormalizationPerLanguage: true,
-  topKPerLanguage: 5,
-  embeddingDim: 256,
-};
-
-// ---------------------------------------------------------------------------
-// CrossLingualRetriever
-// ---------------------------------------------------------------------------
-
-export class CrossLingualRetriever {
-  private baseRetriever: HybridRetriever;
-  private config: CrossLingualConfig;
-  private chunkLanguageMap: Map<string, string> = new Map(); // chunkId → languageCode
-  private languageCounts: Map<string, number> = new Map();
-
-  constructor(baseRetriever: HybridRetriever, config?: Partial<CrossLingualConfig>) {
+  constructor(
+    baseRetriever: RetrieveStage,
+    embedQuery: (query: string) => Promise<number[]>,
+    config: Partial<CrossLingualConfig> = {}
+  ) {
     this.baseRetriever = baseRetriever;
-    this.config = { ...DEFAULT_CROSS_LINGUAL_CONFIG, ...(config ?? {}) };
-
-    Logger.debug('CrossLingualRetriever initialized', { config: this.config });
+    this.embedQuery = embedQuery;
+    this.config = { ...DEFAULT_XLING_CONFIG, ...config };
   }
 
-  addChunk(chunk: RetrievedChunk, vector?: number[]): void {
-    const detected = LanguageDetector.detect(chunk.content);
-    const langCode = detected.code === 'unknown' ? 'en' : detected.code;
+  async retrieve(
+    query: string,
+    queryEmbedding: number[],
+    options: RetrieveOptions = {}
+  ): Promise<RetrievedChunk[]> {
+    const queryLang = detectLanguage(query);
+    const truncatedQuery = query.slice(0, this.config.maxQueryLength);
 
-    this.chunkLanguageMap.set(chunk.id, langCode);
-    this.languageCounts.set(langCode, (this.languageCounts.get(langCode) ?? 0) + 1);
-
-    // Build cross-lingual vector if none provided
-    const effectiveVector = vector && vector.length > 0
-      ? vector
-      : this._computeCrossLingualVector(chunk.content, langCode);
-
-    this.baseRetriever.addChunk(chunk, effectiveVector);
-
-    Logger.debug('CrossLingualRetriever.addChunk', {
-      chunkId: chunk.id,
-      language: langCode,
-      confidence: detected.confidence,
-    });
-  }
-
-  async retrieve(query: RetrievedQuery): Promise<CrossLingualResult[]> {
-    Logger.info('CrossLingualRetriever.retrieve', {
-      query: query.text,
-      namespace: query.namespace,
-      topK: query.topK,
+    logger.debug("CrossLingualRetriever starting", {
+      queryLang,
+      targetLanguages: this.config.targetLanguages,
+      query: query.slice(0, 60),
     });
 
-    // Detect query language
-    const queryLang = LanguageDetector.detect(query.text);
-    const queryLangCode = queryLang.code === 'unknown' ? 'en' : queryLang.code;
+    // Determine which additional languages to search
+    const additionalLangs = this.config.targetLanguages.filter((l) => l !== queryLang && l !== "auto");
 
-    Logger.debug('CrossLingualRetriever: query language detected', {
-      code: queryLangCode,
-      confidence: queryLang.confidence,
-    });
+    const resultSets: Array<{ chunks: RetrievedChunk[]; weight: number }> = [];
 
-    // Retrieve per supported language using translated query hints
-    const byLang = new Map<string, CrossLingualResult[]>();
+    // Retrieve in query language (original)
+    try {
+      const originalResults = await this.baseRetriever.retrieve(query, queryEmbedding, {
+        ...options,
+        filterLanguage: queryLang !== "auto" ? queryLang : undefined,
+      });
+      resultSets.push({ chunks: originalResults, weight: this.config.originalWeight });
+    } catch (err) {
+      logger.error("Original language retrieval failed", { queryLang, error: String(err) });
+    }
 
-    for (const targetLang of this.config.supportedLanguages) {
-      const translatedQuery = this._translateQueryHint(query.text, queryLangCode, targetLang);
-      const langQuery: RetrievedQuery = {
-        ...query,
-        text: translatedQuery,
-        topK: this.config.topKPerLanguage,
-      };
+    // Retrieve in additional languages (skip filter to allow cross-lingual docs)
+    if (additionalLangs.length > 0) {
+      const translationPromises = additionalLangs.map(async (targetLang) => {
+        try {
+          const translatedQuery = await translateQuery(queryLang, queryLang, targetLang);
+          const translatedEmbedding = await this.embedQuery(translatedQuery);
 
-      // Compute cross-lingual vector for translated query
-      const queryVector = this._computeCrossLingualVector(translatedQuery, targetLang);
+          const results = await this.baseRetriever.retrieve(
+            translatedQuery,
+            translatedEmbedding,
+            {
+              ...options,
+              filterLanguage: targetLang,
+              topK: Math.ceil((options.topK ?? 10) * 0.7), // Fetch fewer cross-lingual results
+            }
+          );
 
-      let rawResults: RetrievedChunk[];
-      try {
-        rawResults = await this.baseRetriever.retrieve(langQuery, queryVector);
-      } catch (err) {
-        Logger.warn('CrossLingualRetriever: base retrieval failed', {
-          targetLang,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        continue;
-      }
-
-      const langResults: CrossLingualResult[] = rawResults.map(chunk => {
-        const chunkLang = this.chunkLanguageMap.get(chunk.id) ?? 'unknown';
-        const isCrossLingual = chunkLang !== queryLangCode;
-
-        return {
-          chunk,
-          originalLanguage: chunkLang,
-          queryLanguage: queryLangCode,
-          crossLingual: isCrossLingual,
-          normalizedScore: chunk.score,
-        };
+          return { chunks: results, weight: this.config.crossLingualWeight, lang: targetLang };
+        } catch (err) {
+          logger.warn("Cross-lingual retrieval failed", { targetLang, error: String(err) });
+          return null;
+        }
       });
 
-      if (langResults.length > 0) {
-        byLang.set(targetLang, langResults);
-      }
-    }
-
-    // Per-language score normalization
-    let normalizedByLang = byLang;
-    if (this.config.scoreNormalizationPerLanguage) {
-      normalizedByLang = this._normalizeScoresByLangMap(byLang);
-    }
-
-    // Apply cross-lingual boost to results in different language than query
-    const boostedByLang = new Map<string, CrossLingualResult[]>();
-    for (const [lang, results] of normalizedByLang) {
-      boostedByLang.set(lang, results.map(r => ({
-        ...r,
-        normalizedScore: r.crossLingual
-          ? r.normalizedScore + this.config.crossLingualBoost
-          : r.normalizedScore,
-      })));
-    }
-
-    // Merge with language diversity
-    const merged = this._mergeLanguageResults(boostedByLang, query.topK);
-
-    Logger.info('CrossLingualRetriever.retrieve complete', {
-      totalReturned: merged.length,
-      languagesFound: Array.from(boostedByLang.keys()),
-    });
-
-    return merged;
-  }
-
-  private _normalizeScoresByLanguage(results: CrossLingualResult[]): CrossLingualResult[] {
-    if (results.length === 0) return results;
-
-    const scores = results.map(r => r.normalizedScore);
-    const minScore = Math.min(...scores);
-    const maxScore = Math.max(...scores);
-    const range = maxScore - minScore;
-
-    if (range === 0) return results.map(r => ({ ...r, normalizedScore: 1.0 }));
-
-    return results.map(r => ({
-      ...r,
-      normalizedScore: (r.normalizedScore - minScore) / range,
-    }));
-  }
-
-  private _normalizeScoresByLangMap(
-    byLang: Map<string, CrossLingualResult[]>,
-  ): Map<string, CrossLingualResult[]> {
-    const result = new Map<string, CrossLingualResult[]>();
-
-    for (const [lang, results] of byLang) {
-      result.set(lang, this._normalizeScoresByLanguage(results));
-    }
-
-    return result;
-  }
-
-  private _translateQueryHint(query: string, sourceLang: string, targetLang: string): string {
-    // Only handle EN↔ES for now; all other pairs return original
-    if (sourceLang === targetLang) return query;
-
-    let dict: Record<string, string> | null = null;
-    if (sourceLang === 'en' && targetLang === 'es') dict = EN_ES_DICT;
-    else if (sourceLang === 'es' && targetLang === 'en') dict = ES_EN_DICT;
-
-    if (!dict) return query;
-
-    const words = query.split(/(\s+)/); // preserve whitespace
-    const translated = words.map(token => {
-      const lower = token.toLowerCase().trim();
-      if (lower && dict && Object.prototype.hasOwnProperty.call(dict, lower)) {
-        const replacement = dict[lower];
-        // Preserve capitalization of first letter
-        if (token[0] === token[0].toUpperCase() && token[0] !== token[0].toLowerCase()) {
-          return replacement.charAt(0).toUpperCase() + replacement.slice(1);
-        }
-        return replacement;
-      }
-      return token;
-    });
-
-    return translated.join('');
-  }
-
-  private _mergeLanguageResults(
-    byLang: Map<string, CrossLingualResult[]>,
-    totalTopK: number,
-  ): CrossLingualResult[] {
-    if (byLang.size === 0) return [];
-
-    // Cap each language at topKPerLanguage
-    const cappedByLang = new Map<string, CrossLingualResult[]>();
-    for (const [lang, results] of byLang) {
-      cappedByLang.set(lang, results.slice(0, this.config.topKPerLanguage));
-    }
-
-    // Round-robin interleaving for language diversity
-    const langQueues = Array.from(cappedByLang.values()).map(arr => [...arr]);
-    const merged: CrossLingualResult[] = [];
-    const seen = new Set<string>();
-
-    let hasMore = true;
-    while (hasMore && merged.length < totalTopK) {
-      hasMore = false;
-
-      for (const queue of langQueues) {
-        if (queue.length === 0) continue;
-        hasMore = true;
-
-        const item = queue.shift()!;
-        if (!seen.has(item.chunk.id)) {
-          seen.add(item.chunk.id);
-          merged.push(item);
-          if (merged.length >= totalTopK) break;
+      const translationResults = await Promise.all(translationPromises);
+      for (const result of translationResults) {
+        if (result) {
+          resultSets.push({ chunks: result.chunks, weight: result.weight });
         }
       }
     }
 
-    // Final sort by normalizedScore
-    merged.sort((a, b) => b.normalizedScore - a.normalizedScore);
+    if (resultSets.length === 0) return [];
 
-    return merged.slice(0, totalTopK);
+    // Merge and deduplicate across language result sets
+    const merged = mergeAndDeduplicate(resultSets);
+    const topK = options.topK ?? 10;
+    const final = merged.slice(0, topK);
+
+    logger.info("CrossLingualRetriever complete", {
+      queryLang,
+      resultSets: resultSets.length,
+      totalBeforeMerge: resultSets.reduce((sum, r) => sum + r.chunks.length, 0),
+      finalCount: final.length,
+    });
+
+    return final;
   }
 
-  private _computeCrossLingualVector(text: string, sourceLang: string): number[] {
-    const dim = this.config.embeddingDim;
-    const vector = new Array<number>(dim).fill(0);
-
-    // Hash-based pseudo-embedding
-    const words = text.toLowerCase().split(/\W+/).filter(w => w.length > 0);
-    for (const word of words) {
-      const hash = this._hashString(word);
-      for (let i = 0; i < dim; i++) {
-        // Spread hash across dimensions via different bit offsets
-        const bitPos = (hash >> (i % 32)) & 1;
-        vector[i] += bitPos ? 1 : -1;
-      }
-    }
-
-    // Normalize to unit vector
-    const norm = Math.sqrt(vector.reduce((s, v) => s + v * v, 0)) || 1;
-    for (let i = 0; i < dim; i++) {
-      vector[i] /= norm;
-    }
-
-    // Language offset: add language-code hash to first 8 dims to create alignment space
-    const langHash = this._hashString(sourceLang);
-    for (let i = 0; i < 8 && i < dim; i++) {
-      const langBit = (langHash >> i) & 0xFF;
-      vector[i] += (langBit / 255) * 0.1; // small offset to cluster by language
-    }
-
-    return vector;
+  /** Expose language detection for external use (e.g., pipeline pre-filtering) */
+  static detectLanguage(text: string): SupportedLanguage {
+    return detectLanguage(text);
   }
+}
 
-  private _hashString(str: string): number {
-    let hash = 0x811C9DC5; // FNV-1a 32-bit offset basis
-    for (let i = 0; i < str.length; i++) {
-      hash ^= str.charCodeAt(i);
-      hash = Math.imul(hash, 0x01000193); // FNV prime
-      hash >>>= 0; // keep as unsigned 32-bit
-    }
-    return hash;
-  }
+// ─── Language stats helper ────────────────────────────────────────────────────
 
-  getLanguageDistribution(): Map<string, number> {
-    return new Map(this.languageCounts);
+export function analyzeLanguageDistribution(
+  chunks: RetrievedChunk[]
+): Record<string, number> {
+  const dist: Record<string, number> = {};
+  for (const chunk of chunks) {
+    const lang = chunk.metadata.language ?? "unknown";
+    dist[lang] = (dist[lang] ?? 0) + 1;
   }
-
-  getSupportedLanguages(): string[] {
-    return [...this.config.supportedLanguages];
-  }
+  return dist;
 }

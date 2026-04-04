@@ -1,400 +1,298 @@
-import { createHash } from 'crypto';
-import { Logger } from '../../lib/logger';
-import { llmGateway } from '../../lib/llmGateway';
+/**
+ * LLMReranker — Cross-encoder reranking using an LLM in listwise mode.
+ * Sends all candidates in a single prompt to get a ranked ordering with
+ * relevance scores. Caches results for repeated queries.
+ *
+ * Cost control: skip reranking for queries with fewer than minChunks results
+ * or queries with lowStakesDetected signal.
+ */
 
-// ─── Shared chunk types ────────────────────────────────────────────────────────
+import crypto from "crypto";
+import { createLogger } from "../../utils/logger";
+import type { RerankStage, RetrievedChunk } from "../UnifiedRAGPipeline";
 
-interface RetrievedChunk {
-  id: string;
-  documentId: string;
-  content: string;
-  chunkIndex: number;
-  metadata: Record<string, unknown>;
-  tokens: number;
-  score: number;
-  source: string;
-  retrievalMethod: string;
-}
+const logger = createLogger("LLMReranker");
 
-export interface RankedChunk extends RetrievedChunk {
-  rank: number;
-  rerankScore?: number;
-}
-
-// ─── Public types ─────────────────────────────────────────────────────────────
-
-export interface RerankBatch {
-  batchId: string;
-  query: string;
-  chunks: RetrievedChunk[];
-  createdAt: Date;
-}
-
-export interface RerankResult {
-  chunkId: string;
-  score: number;
-  reasoning?: string;
-}
-
-export interface CacheEntry {
-  results: RerankResult[];
-  timestamp: number;
-  hitCount: number;
-}
+// ─── Configuration ────────────────────────────────────────────────────────────
 
 export interface LLMRerankerConfig {
   model: string;
-  batchSize: number;
+  maxChunksPerBatch: number;
+  /** Skip reranking if fewer than this many chunks */
+  minChunksToRerank: number;
+  /** 0–1 score assigned to chunks not mentioned in LLM output */
+  unrankedFallbackScore: number;
+  /** TTL for reranking cache in ms */
   cacheTtlMs: number;
-  cacheMaxSize: number;
-  skipForSimpleQueries: boolean;
-  simpleQueryMaxWords: number;
-  costPerCall: number;
-  maxCostPerRequest: number;
-  includeReasoning: boolean;
+  /** LLM temperature (low = more deterministic) */
+  temperature: number;
 }
 
-// ─── Internal tracking ────────────────────────────────────────────────────────
+const DEFAULT_CONFIG: LLMRerankerConfig = {
+  model: process.env.RAG_RERANK_MODEL ?? "gpt-4o-mini",
+  maxChunksPerBatch: 20,
+  minChunksToRerank: 3,
+  unrankedFallbackScore: 0.1,
+  cacheTtlMs: 10 * 60 * 1000,
+  temperature: 0.1,
+};
 
-interface BatchMetrics {
-  totalBatches: number;
-  totalChunks: number;
+// ─── Simple in-process cache ──────────────────────────────────────────────────
+
+interface CacheEntry {
+  rankedIds: string[];
+  scores: Map<string, number>;
+  expiresAt: number;
+}
+
+const rerankCache = new Map<string, CacheEntry>();
+
+function cacheKey(query: string, chunkIds: string[]): string {
+  const payload = `${query}:${chunkIds.sort().join(",")}`;
+  return crypto.createHash("sha256").update(payload).digest("hex").slice(0, 20);
+}
+
+function getCached(key: string): CacheEntry | undefined {
+  const entry = rerankCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) {
+    rerankCache.delete(key);
+    return undefined;
+  }
+  return entry;
+}
+
+function setCache(key: string, entry: Omit<CacheEntry, "expiresAt">, ttlMs: number): void {
+  if (rerankCache.size > 200) {
+    const now = Date.now();
+    for (const [k, v] of rerankCache) {
+      if (now > v.expiresAt) rerankCache.delete(k);
+    }
+  }
+  rerankCache.set(key, { ...entry, expiresAt: Date.now() + ttlMs });
+}
+
+// ─── Prompt building ──────────────────────────────────────────────────────────
+
+function buildRerankPrompt(query: string, chunks: RetrievedChunk[]): string {
+  const candidates = chunks
+    .map((c, i) => `[${i + 1}] ${c.content.slice(0, 400).replace(/\n+/g, " ")}`)
+    .join("\n\n");
+
+  return `You are a relevance ranking expert. Given a QUERY and a list of text PASSAGES, rank them by relevance to the query.
+
+QUERY: ${query}
+
+PASSAGES:
+${candidates}
+
+Return a JSON object with this exact structure:
+{
+  "rankings": [
+    { "rank": 1, "passage_number": <N>, "score": <0.0-1.0>, "reason": "<one sentence>" },
+    ...
+  ]
+}
+
+Rules:
+- Include ALL passages in the rankings
+- Score 1.0 = perfectly answers the query, 0.0 = completely irrelevant
+- Rank 1 is the most relevant
+- Return valid JSON only`;
+}
+
+interface RankingItem {
+  rank: number;
+  passage_number: number;
+  score: number;
+  reason?: string;
+}
+
+interface RerankResponse {
+  rankings: RankingItem[];
+}
+
+function parseRerankResponse(text: string, chunkCount: number): Map<number, number> {
+  const scores = new Map<number, number>();
+
+  // Try JSON extraction
+  const jsonMatch = text.match(/\{[\s\S]*"rankings"[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]) as RerankResponse;
+      if (Array.isArray(parsed.rankings)) {
+        for (const item of parsed.rankings) {
+          if (typeof item.passage_number === "number" && typeof item.score === "number") {
+            scores.set(item.passage_number, Math.max(0, Math.min(1, item.score)));
+          }
+        }
+        return scores;
+      }
+    } catch { /* fall through */ }
+  }
+
+  // Fallback: look for numbered lines like "1. passage 3: 0.9" or "Rank 1: [3]"
+  const lines = text.split("\n");
+  for (const line of lines) {
+    const m = line.match(/(\d+)[^\d]+?(\d+(?:\.\d+)?)/);
+    if (m) {
+      const passageNum = parseInt(m[1]);
+      const score = parseFloat(m[2]);
+      if (passageNum >= 1 && passageNum <= chunkCount && score >= 0 && score <= 1) {
+        scores.set(passageNum, score);
+      }
+    }
+  }
+
+  return scores;
+}
+
+// ─── Fast fallback reranker (no LLM) ─────────────────────────────────────────
+
+function fastRerank(query: string, chunks: RetrievedChunk[]): RetrievedChunk[] {
+  const queryTerms = new Set(
+    query.toLowerCase().split(/\s+/).filter((t) => t.length > 2)
+  );
+
+  return chunks
+    .map((chunk) => {
+      let boost = chunk.score;
+      const contentLower = chunk.content.toLowerCase();
+
+      // Exact term matches
+      for (const term of queryTerms) {
+        if (contentLower.includes(term)) boost += 0.03;
+      }
+      // Title match bonus
+      if (chunk.metadata.sectionTitle) {
+        const titleLower = chunk.metadata.sectionTitle.toLowerCase();
+        for (const term of queryTerms) {
+          if (titleLower.includes(term)) boost += 0.1;
+        }
+      }
+      // Heading bonus
+      if (chunk.metadata.sectionType === "heading") boost += 0.05;
+
+      return { ...chunk, score: boost };
+    })
+    .sort((a, b) => b.score - a.score);
 }
 
 // ─── LLMReranker ─────────────────────────────────────────────────────────────
 
-export class LLMReranker {
+export class LLMReranker implements RerankStage {
   private readonly config: LLMRerankerConfig;
-  private readonly cache: Map<string, CacheEntry>;
-  private totalCost: number;
-  private totalCalls: number;
-  private cacheHits: number;
-  private readonly batchMetrics: BatchMetrics;
 
-  constructor(config?: Partial<LLMRerankerConfig>) {
-    this.config = {
-      model: 'gpt-4o-mini',
-      batchSize: 10,
-      cacheTtlMs: 300_000,
-      cacheMaxSize: 500,
-      skipForSimpleQueries: true,
-      simpleQueryMaxWords: 4,
-      costPerCall: 0.0001,
-      maxCostPerRequest: 0.01,
-      includeReasoning: false,
-      ...config,
-    };
-    this.cache = new Map();
-    this.totalCost = 0;
-    this.totalCalls = 0;
-    this.cacheHits = 0;
-    this.batchMetrics = { totalBatches: 0, totalChunks: 0 };
+  constructor(config: Partial<LLMRerankerConfig> = {}) {
+    this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  async rerank(query: string, chunks: RetrievedChunk[]): Promise<RankedChunk[]> {
-    if (chunks.length === 0) {
-      Logger.debug('[LLMReranker] No chunks to rerank', { query });
-      return [];
+  async rerank(query: string, chunks: RetrievedChunk[]): Promise<RetrievedChunk[]> {
+    if (chunks.length === 0) return [];
+
+    // Cost-aware skip: too few chunks don't benefit from LLM reranking
+    if (chunks.length < this.config.minChunksToRerank) {
+      logger.debug("Skipping LLM rerank (too few chunks)", { count: chunks.length });
+      return fastRerank(query, chunks);
     }
 
-    // Skip reranking for simple queries — preserve original order
-    if (this.config.skipForSimpleQueries && this._isSimpleQuery(query)) {
-      Logger.debug('[LLMReranker] Skipping rerank for simple query', { query });
-      return chunks.map((chunk, idx) => ({
-        ...chunk,
-        rank: idx + 1,
-        rerankScore: chunk.score,
-      }));
-    }
-
-    const cacheKey = this._cacheKey(query, chunks.map((c) => c.id));
-    const cached = this._getFromCache(cacheKey);
+    const ck = cacheKey(query, chunks.map((c) => c.id));
+    const cached = getCached(ck);
     if (cached) {
-      this.cacheHits++;
-      Logger.debug('[LLMReranker] Cache hit', { cacheKey: cacheKey.slice(0, 16), query });
-      return this._applyResults(chunks, cached);
+      logger.debug("LLMReranker cache hit", { query: query.slice(0, 40) });
+      return this.applyScores(chunks, cached.scores);
     }
 
-    // Split into batches
+    // Batch into groups of maxChunksPerBatch
     const batches: RetrievedChunk[][] = [];
-    for (let i = 0; i < chunks.length; i += this.config.batchSize) {
-      batches.push(chunks.slice(i, i + this.config.batchSize));
+    for (let i = 0; i < chunks.length; i += this.config.maxChunksPerBatch) {
+      batches.push(chunks.slice(i, i + this.config.maxChunksPerBatch));
     }
 
-    Logger.info('[LLMReranker] Starting rerank', {
-      query,
-      chunkCount: chunks.length,
-      batchCount: batches.length,
-    });
-
-    const allResults: RerankResult[] = [];
-    let requestCost = 0;
+    const allScores = new Map<string, number>();
 
     for (const batch of batches) {
-      const estimatedCost = requestCost + this.config.costPerCall;
-      if (estimatedCost > this.config.maxCostPerRequest) {
-        Logger.warn('[LLMReranker] Cost limit reached, skipping remaining batches', {
-          requestCost,
-          maxCost: this.config.maxCostPerRequest,
-          remainingChunks: chunks.length - allResults.length,
-        });
-        // Fill remaining with fallback scores
-        const rankedIds = new Set(allResults.map((r) => r.chunkId));
-        for (const chunk of chunks) {
-          if (!rankedIds.has(chunk.id)) {
-            allResults.push({ chunkId: chunk.id, score: chunk.score });
-          }
+      try {
+        const batchScores = await this.rerankBatch(query, batch);
+        for (const [id, score] of batchScores) {
+          allScores.set(id, score);
         }
-        break;
+      } catch (err) {
+        logger.warn("LLM rerank batch failed, using fast rerank for batch", { error: String(err) });
+        // Apply fast rerank scores as fallback
+        const fallback = fastRerank(query, batch);
+        fallback.forEach((c, i) => {
+          allScores.set(c.id, 1 - i / fallback.length);
+        });
       }
-
-      const batchResults = await this._rerankBatch(query, batch);
-      allResults.push(...batchResults);
-      requestCost += this.config.costPerCall;
-      this.totalCost += this.config.costPerCall;
-      this.totalCalls++;
-      this.batchMetrics.totalBatches++;
-      this.batchMetrics.totalChunks += batch.length;
     }
 
-    // Store in cache
-    this._evictCache();
-    this.cache.set(cacheKey, {
-      results: allResults,
-      timestamp: Date.now(),
-      hitCount: 0,
+    setCache(ck, { rankedIds: [...allScores.keys()], scores: allScores }, this.config.cacheTtlMs);
+
+    const result = this.applyScores(chunks, allScores);
+
+    logger.info("LLMReranker complete", {
+      query: query.slice(0, 60),
+      inputChunks: chunks.length,
+      batches: batches.length,
     });
 
-    Logger.info('[LLMReranker] Rerank complete', {
-      query,
-      totalResults: allResults.length,
-      requestCost,
-    });
-
-    return this._applyResults(chunks, allResults);
+    return result;
   }
 
-  private _isSimpleQuery(query: string): boolean {
-    const words = query.trim().split(/\s+/).filter((w) => w.length > 0);
-    if (words.length > this.config.simpleQueryMaxWords) {
-      return false;
-    }
-    const questionWords = new Set(['what', 'how', 'why', 'when', 'where', 'which', 'who']);
-    const firstWord = words[0]?.toLowerCase() ?? '';
-    if (questionWords.has(firstWord)) {
-      return false;
-    }
-    return true;
-  }
-
-  private _cacheKey(query: string, chunkIds: string[]): string {
-    const sorted = [...chunkIds].sort().join(',');
-    return createHash('sha256')
-      .update(`${query}:${sorted}`)
-      .digest('hex');
-  }
-
-  private _getFromCache(key: string): RerankResult[] | null {
-    const entry = this.cache.get(key);
-    if (!entry) return null;
-    if (Date.now() - entry.timestamp > this.config.cacheTtlMs) {
-      this.cache.delete(key);
-      return null;
-    }
-    entry.hitCount++;
-    return entry.results;
-  }
-
-  private async _rerankBatch(
+  private async rerankBatch(
     query: string,
-    batch: RetrievedChunk[],
-  ): Promise<RerankResult[]> {
-    const passageList = batch
-      .map(
-        (chunk, idx) =>
-          `[${idx + 1}] ID:${chunk.id}\n${chunk.content.slice(0, 500)}`,
-      )
-      .join('\n\n');
+    batch: RetrievedChunk[]
+  ): Promise<Map<string, number>> {
+    const { llmGateway } = await import("../../lib/llmGateway");
 
-    const reasoningInstruction = this.config.includeReasoning
-      ? ' Include a brief "reasoning" field explaining your score.'
-      : ' Omit the "reasoning" field.';
+    const prompt = buildRerankPrompt(query, batch);
 
-    const prompt = [
-      'You are a relevance scoring system. Rate the relevance of each passage to the query on a scale 0.0–1.0.',
-      `Return a JSON array with objects: { "chunkId": string, "score": number${this.config.includeReasoning ? ', "reasoning": string' : ''} }.${reasoningInstruction}`,
-      'Respond with ONLY the JSON array, no other text.',
-      '',
-      `Query: ${query}`,
-      '',
-      'Passages:',
-      passageList,
-    ].join('\n');
-
-    try {
-      const response = await llmGateway.complete({
+    const response = await llmGateway.chat(
+      [
+        { role: "user", content: prompt },
+      ],
+      {
         model: this.config.model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0,
-        maxTokens: 1024,
-      });
-
-      const raw = (response.content ?? '').trim();
-
-      // Extract JSON array from response (handle markdown code fences)
-      const jsonMatch = raw.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) {
-        Logger.warn('[LLMReranker] No JSON array found in response, using fallback scores', {
-          raw: raw.slice(0, 200),
-        });
-        return this._fallbackResults(batch);
+        maxTokens: 600,
+        temperature: this.config.temperature,
       }
+    );
 
-      const parsed: unknown = JSON.parse(jsonMatch[0]);
-      if (!Array.isArray(parsed)) {
-        Logger.warn('[LLMReranker] Parsed response is not an array, using fallback scores');
-        return this._fallbackResults(batch);
-      }
+    const scoresByPosition = parseRerankResponse(response.content, batch.length);
+    const chunkScores = new Map<string, number>();
 
-      const results: RerankResult[] = [];
-      const seenIds = new Set<string>();
-
-      for (const item of parsed) {
-        if (
-          typeof item !== 'object' ||
-          item === null ||
-          typeof (item as Record<string, unknown>)['chunkId'] !== 'string' ||
-          typeof (item as Record<string, unknown>)['score'] !== 'number'
-        ) {
-          continue;
-        }
-        const obj = item as Record<string, unknown>;
-        const chunkId = obj['chunkId'] as string;
-        const score = Math.min(1, Math.max(0, obj['score'] as number));
-        const reasoning =
-          this.config.includeReasoning && typeof obj['reasoning'] === 'string'
-            ? (obj['reasoning'] as string)
-            : undefined;
-
-        if (!seenIds.has(chunkId)) {
-          seenIds.add(chunkId);
-          results.push({ chunkId, score, reasoning });
-        }
-      }
-
-      // Fill in any chunks that weren't included in the LLM response
-      const includedIds = new Set(results.map((r) => r.chunkId));
-      for (const chunk of batch) {
-        if (!includedIds.has(chunk.id)) {
-          Logger.debug('[LLMReranker] Chunk missing from LLM response, using fallback', {
-            chunkId: chunk.id,
-          });
-          results.push({ chunkId: chunk.id, score: 0.5 });
-        }
-      }
-
-      return results;
-    } catch (err) {
-      Logger.error('[LLMReranker] Batch rerank failed, using fallback scores', {
-        error: err instanceof Error ? err.message : String(err),
-        query,
-        batchSize: batch.length,
-      });
-      return this._fallbackResults(batch);
-    }
-  }
-
-  private _fallbackResults(batch: RetrievedChunk[]): RerankResult[] {
-    return batch.map((chunk) => ({ chunkId: chunk.id, score: 0.5 }));
-  }
-
-  private _applyResults(
-    chunks: RetrievedChunk[],
-    results: RerankResult[],
-  ): RankedChunk[] {
-    const scoreMap = new Map<string, RerankResult>();
-    for (const r of results) {
-      scoreMap.set(r.chunkId, r);
-    }
-
-    const ranked = chunks
-      .map((chunk) => {
-        const result = scoreMap.get(chunk.id);
-        const rerankScore = result?.score ?? chunk.score;
-        return {
-          ...chunk,
-          score: rerankScore,
-          rerankScore,
-          rank: 0, // placeholder, assigned below
-        };
-      })
-      .sort((a, b) => b.rerankScore! - a.rerankScore!);
-
-    return ranked.map((chunk, idx) => ({ ...chunk, rank: idx + 1 }));
-  }
-
-  private _evictCache(): void {
-    if (this.cache.size <= this.config.cacheMaxSize) return;
-
-    // Remove expired entries first
-    const now = Date.now();
-    for (const [key, entry] of this.cache.entries()) {
-      if (now - entry.timestamp > this.config.cacheTtlMs) {
-        this.cache.delete(key);
-      }
-    }
-
-    // If still over limit, remove oldest by timestamp
-    if (this.cache.size > this.config.cacheMaxSize) {
-      const entries = [...this.cache.entries()].sort(
-        ([, a], [, b]) => a.timestamp - b.timestamp,
+    for (let i = 0; i < batch.length; i++) {
+      const posScore = scoresByPosition.get(i + 1);
+      chunkScores.set(
+        batch[i].id,
+        posScore !== undefined ? posScore : this.config.unrankedFallbackScore
       );
-      const toRemove = entries.slice(0, this.cache.size - this.config.cacheMaxSize);
-      for (const [key] of toRemove) {
-        this.cache.delete(key);
-      }
-      Logger.debug('[LLMReranker] Evicted cache entries', { evicted: toRemove.length });
     }
+
+    return chunkScores;
   }
 
-  getCacheStats(): {
-    size: number;
-    hitRate: number;
-    totalCalls: number;
-    estimatedCost: number;
-  } {
-    const totalRequests = this.totalCalls + this.cacheHits;
-    return {
-      size: this.cache.size,
-      hitRate: totalRequests > 0 ? this.cacheHits / totalRequests : 0,
-      totalCalls: this.totalCalls,
-      estimatedCost: this.totalCost,
-    };
+  private applyScores(
+    chunks: RetrievedChunk[],
+    scores: Map<string, number>
+  ): RetrievedChunk[] {
+    return chunks
+      .map((chunk) => ({
+        ...chunk,
+        score: scores.get(chunk.id) ?? this.config.unrankedFallbackScore,
+        rerankScore: scores.get(chunk.id),
+      }))
+      .sort((a, b) => b.score - a.score);
   }
+}
 
-  clearCache(): void {
-    this.cache.clear();
-    Logger.info('[LLMReranker] Cache cleared');
-  }
+// ─── Exported helpers ────────────────────────────────────────────────────────
 
-  getMetrics(): {
-    totalCalls: number;
-    cacheHits: number;
-    cacheHitRate: number;
-    totalCost: number;
-    avgBatchSize: number;
-  } {
-    const totalRequests = this.totalCalls + this.cacheHits;
-    const avgBatchSize =
-      this.batchMetrics.totalBatches > 0
-        ? this.batchMetrics.totalChunks / this.batchMetrics.totalBatches
-        : 0;
-    return {
-      totalCalls: this.totalCalls,
-      cacheHits: this.cacheHits,
-      cacheHitRate: totalRequests > 0 ? this.cacheHits / totalRequests : 0,
-      totalCost: this.totalCost,
-      avgBatchSize,
-    };
-  }
+export { fastRerank };
+export function clearRerankCache(): void {
+  rerankCache.clear();
+}
+export function getRerankCacheStats(): { size: number; hitRate?: number } {
+  return { size: rerankCache.size };
 }

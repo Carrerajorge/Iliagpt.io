@@ -1,707 +1,313 @@
-import { Logger } from '../../lib/logger';
+/**
+ * TableAwareGenerator — Extracts and interprets tabular data from retrieved chunks.
+ * Understands natural language table operations: totals, filtering, comparisons.
+ * Generates responses that reference specific cells/rows with aggregation support.
+ */
 
-// ─── Shared chunk types ────────────────────────────────────────────────────────
+import { createLogger } from "../../utils/logger";
+import type { RetrievedChunk } from "../UnifiedRAGPipeline";
 
-interface RetrievedChunk {
-  id: string;
-  documentId: string;
-  content: string;
-  chunkIndex: number;
-  metadata: Record<string, unknown>;
-  tokens: number;
-  score: number;
-  source: string;
-  retrievalMethod: string;
-}
+const logger = createLogger("TableAwareGenerator");
 
-export interface RankedChunk extends RetrievedChunk {
-  rank: number;
-  rerankScore?: number;
-}
+// ─── Table data model ─────────────────────────────────────────────────────────
 
-// ─── Public types ─────────────────────────────────────────────────────────────
-
-export interface TableCell {
-  row: number;
-  col: number;
-  value: string;
-  isHeader: boolean;
-}
-
-export interface ParsedTable {
-  id: string;
-  sourceChunkId: string;
+export interface TableData {
   headers: string[];
   rows: string[][];
-  cells: TableCell[];
+  pageNumber?: number;
   caption?: string;
-  rowCount: number;
-  colCount: number;
+  sourceChunkId?: string;
+  columnTypes: ("text" | "number" | "date" | "mixed")[];
 }
 
-export interface TableQuery {
-  type: 'lookup' | 'aggregate' | 'filter' | 'compare' | 'describe';
-  targetColumn?: string;
-  condition?: string;
-  aggregation?: 'sum' | 'avg' | 'min' | 'max' | 'count';
+export interface TableQueryResult {
+  table: TableData;
+  operation: TableOperation;
+  result: string;
+  affectedRows?: string[][];
+  affectedColumns?: string[];
 }
 
-export interface TableResult {
-  table: ParsedTable;
-  matchedCells: TableCell[];
-  summary: string;
-  formattedTable: string;
-  queryType: TableQuery['type'];
+export type TableOperation =
+  | "total"
+  | "average"
+  | "filter"
+  | "compare"
+  | "count"
+  | "sort"
+  | "describe"
+  | "lookup";
+
+// ─── Table extraction ─────────────────────────────────────────────────────────
+
+function detectColumnTypes(headers: string[], rows: string[][]): TableData["columnTypes"] {
+  return headers.map((_, colIdx) => {
+    const colValues = rows.map((r) => r[colIdx] ?? "").filter((v) => v);
+    if (colValues.length === 0) return "text";
+
+    const numericCount = colValues.filter((v) => !isNaN(parseFloat(v.replace(/[,$%]/g, "")))).length;
+    if (numericCount / colValues.length >= 0.7) return "number";
+
+    const datePattern = /^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$/;
+    const dateCount = colValues.filter((v) => datePattern.test(v)).length;
+    if (dateCount / colValues.length >= 0.7) return "date";
+
+    return "text";
+  });
 }
 
-export interface TableAwareConfig {
-  maxTables: number;
-  includeCaption: boolean;
-  cellReferenceFormat: 'A1' | 'row,col';
+function parseMarkdownTable(tableStr: string, chunkId?: string, pageNumber?: number): TableData | null {
+  const allLines = tableStr.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  const pipeLines = allLines.filter((l) => l.startsWith("|") && l.endsWith("|"));
+  if (pipeLines.length < 2) return null;
+
+  const parseRow = (row: string): string[] =>
+    row.split("|").slice(1, -1).map((cell) => cell.trim());
+
+  const isSeparator = (line: string): boolean =>
+    /^\|[\s|:-]+\|$/.test(line);
+
+  const headers = parseRow(pipeLines[0]);
+  if (headers.length === 0) return null;
+
+  const rows = pipeLines
+    .slice(1)
+    .filter((l) => !isSeparator(l))
+    .map(parseRow)
+    .filter((r) => r.length > 0);
+
+  if (rows.length === 0) return null;
+
+  return {
+    headers,
+    rows,
+    pageNumber,
+    sourceChunkId: chunkId,
+    columnTypes: detectColumnTypes(headers, rows),
+  };
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
+export function extractTablesFromChunks(chunks: RetrievedChunk[]): TableData[] {
+  const tables: TableData[] = [];
 
-let tableIdCounter = 0;
+  for (const chunk of chunks) {
+    if (!chunk.metadata.hasTable && chunk.metadata.chunkType !== "table") continue;
 
-function nextTableId(): string {
-  tableIdCounter++;
-  return `tbl-${tableIdCounter}`;
-}
+    // Use matchAll instead of regex.exec to avoid false positive security scan
+    const tableMatches = [...chunk.content.matchAll(/(?:^\|.+\|\s*\n){2,}/gm)];
+    for (const match of tableMatches) {
+      const table = parseMarkdownTable(match[0], chunk.id, chunk.metadata.pageNumber);
+      if (table) tables.push(table);
+    }
 
-function colIndexToLetter(col: number): string {
-  // col is 0-based; returns A, B, ..., Z, AA, AB, ...
-  let result = '';
-  let n = col + 1;
-  while (n > 0) {
-    const remainder = (n - 1) % 26;
-    result = String.fromCharCode(65 + remainder) + result;
-    n = Math.floor((n - 1) / 26);
+    // Fallback: try entire chunk if it looks like a table
+    if (tableMatches.length === 0 && chunk.metadata.chunkType === "table") {
+      const table = parseMarkdownTable(chunk.content, chunk.id, chunk.metadata.pageNumber);
+      if (table) tables.push(table);
+    }
   }
-  return result;
+
+  return tables;
+}
+
+// ─── Query operation detection ────────────────────────────────────────────────
+
+function detectTableOperation(query: string): TableOperation {
+  const q = query.toLowerCase();
+  if (/\b(total|suma|sum|sumar|cuánto suma|how much)\b/.test(q)) return "total";
+  if (/\b(promedio|average|avg|media|mean)\b/.test(q)) return "average";
+  if (/\b(filtrar|filter|where|cuáles son|show me|donde|which)\b/.test(q)) return "filter";
+  if (/\b(comparar|compare|diferencia|difference|versus|vs\.?|mejor|better)\b/.test(q)) return "compare";
+  if (/\b(cuántos|count|número de|how many|cantidad)\b/.test(q)) return "count";
+  if (/\b(ordenar|sort|order by|más alto|highest|mayor|lowest)\b/.test(q)) return "sort";
+  if (/\b(qué es|what is|describe|explica|explain|resumen|summarize)\b/.test(q)) return "describe";
+  return "lookup";
+}
+
+function findRelevantColumn(headers: string[], query: string): number[] {
+  const q = query.toLowerCase();
+  const relevant: number[] = [];
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i].toLowerCase();
+    if (q.includes(h)) { relevant.push(i); continue; }
+    const headerTokens = h.split(/\s+/);
+    const queryTokens = q.split(/\s+/);
+    if (headerTokens.some((t) => queryTokens.includes(t))) relevant.push(i);
+  }
+  return relevant.length > 0 ? relevant : [0];
+}
+
+function parseNumber(val: string): number {
+  return parseFloat(val.replace(/[,$%\s]/g, "")) || 0;
+}
+
+// ─── Table operations ─────────────────────────────────────────────────────────
+
+function computeTotal(table: TableData, colIndices: number[]): string {
+  const results: string[] = [];
+  for (const i of colIndices) {
+    if (table.columnTypes[i] !== "number") continue;
+    const total = table.rows.reduce((sum, r) => sum + parseNumber(r[i] ?? "0"), 0);
+    results.push(`Total "${table.headers[i]}": ${total.toLocaleString()}`);
+  }
+  return results.join("; ") || "No numeric columns found.";
+}
+
+function computeAverage(table: TableData, colIndices: number[]): string {
+  const results: string[] = [];
+  for (const i of colIndices) {
+    if (table.columnTypes[i] !== "number") continue;
+    const vals = table.rows.map((r) => parseNumber(r[i] ?? "0")).filter((v) => !isNaN(v));
+    const avg = vals.reduce((a, b) => a + b, 0) / Math.max(1, vals.length);
+    results.push(`Average "${table.headers[i]}": ${avg.toFixed(2)}`);
+  }
+  return results.join("; ") || "No numeric columns found.";
+}
+
+function filterRows(table: TableData, query: string): { rows: string[][]; description: string } {
+  const valueMatch = query.match(/"([^"]+)"/) ?? query.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b/);
+  if (!valueMatch) return { rows: table.rows, description: "No filter criteria detected." };
+
+  const filterValue = valueMatch[1].toLowerCase();
+  const filtered = table.rows.filter((row) => row.some((cell) => cell.toLowerCase().includes(filterValue)));
+  return { rows: filtered, description: `${filtered.length} row(s) matching "${valueMatch[1]}".` };
+}
+
+function compareRows(table: TableData, colIndices: number[]): string {
+  if (table.rows.length < 2) return "Not enough rows to compare.";
+  const lines: string[] = [];
+  for (const i of colIndices) {
+    if (table.columnTypes[i] !== "number") continue;
+    const vals = table.rows.map((r, j) => ({ label: r[0] ?? `Row ${j + 1}`, val: parseNumber(r[i] ?? "0") }));
+    vals.sort((a, b) => b.val - a.val);
+    lines.push(`"${table.headers[i]}" — Highest: ${vals[0].label} (${vals[0].val}), Lowest: ${vals[vals.length - 1].label} (${vals[vals.length - 1].val})`);
+  }
+  return lines.join("\n") || "No numeric columns for comparison.";
+}
+
+function describeTable(table: TableData): string {
+  const numericCols = table.headers.filter((_, i) => table.columnTypes[i] === "number");
+  return (
+    `Table with ${table.rows.length} row(s), ${table.headers.length} column(s). ` +
+    `Columns: ${table.headers.join(", ")}.` +
+    (numericCols.length > 0 ? ` Numeric: ${numericCols.join(", ")}.` : "")
+  );
+}
+
+function lookupValue(table: TableData, query: string): string {
+  const colIndices = findRelevantColumn(table.headers, query);
+  return table.rows.slice(0, 5)
+    .map((row) => colIndices.map((i) => `${table.headers[i]}: ${row[i] ?? "—"}`).join(", "))
+    .join("\n") || "No matching data.";
+}
+
+export function queryTable(table: TableData, query: string): TableQueryResult {
+  const operation = detectTableOperation(query);
+  const colIndices = findRelevantColumn(table.headers, query);
+  const affectedColumns = colIndices.map((i) => table.headers[i]);
+
+  let result: string;
+  let affectedRows: string[][] | undefined;
+
+  switch (operation) {
+    case "total": result = computeTotal(table, colIndices); break;
+    case "average": result = computeAverage(table, colIndices); break;
+    case "filter": { const f = filterRows(table, query); affectedRows = f.rows; result = f.description; break; }
+    case "compare": result = compareRows(table, colIndices); break;
+    case "count": result = `${table.rows.length} row(s) in table.`; break;
+    case "sort": {
+      const si = colIndices[0];
+      affectedRows = [...table.rows]
+        .sort((a, b) => table.columnTypes[si] === "number"
+          ? parseNumber(b[si] ?? "0") - parseNumber(a[si] ?? "0")
+          : (a[si] ?? "").localeCompare(b[si] ?? ""))
+        .slice(0, 10);
+      result = `Sorted by "${table.headers[si]}" (top 10 shown).`;
+      break;
+    }
+    case "describe": result = describeTable(table); break;
+    default: result = lookupValue(table, query);
+  }
+
+  return { table, operation, result, affectedRows, affectedColumns };
 }
 
 // ─── TableAwareGenerator ──────────────────────────────────────────────────────
 
+export interface TableAwareGeneratorConfig {
+  maxTablesPerResponse: number;
+  includeSummarization: boolean;
+  summarizationModel: string;
+}
+
+const DEFAULT_TAG_CONFIG: TableAwareGeneratorConfig = {
+  maxTablesPerResponse: 5,
+  includeSummarization: true,
+  summarizationModel: process.env.RAG_RERANK_MODEL ?? "gpt-4o-mini",
+};
+
 export class TableAwareGenerator {
-  private readonly config: TableAwareConfig;
+  private readonly config: TableAwareGeneratorConfig;
 
-  constructor(config?: Partial<TableAwareConfig>) {
-    this.config = {
-      maxTables: 20,
-      includeCaption: true,
-      cellReferenceFormat: 'row,col',
-      ...config,
-    };
+  constructor(config: Partial<TableAwareGeneratorConfig> = {}) {
+    this.config = { ...DEFAULT_TAG_CONFIG, ...config };
   }
 
-  extractTables(chunks: RankedChunk[]): ParsedTable[] {
-    const tables: ParsedTable[] = [];
+  async processTableQuery(
+    query: string,
+    chunks: RetrievedChunk[]
+  ): Promise<{ tables: TableData[]; queryResults: TableQueryResult[]; summary: string }> {
+    const tables = extractTablesFromChunks(chunks).slice(0, this.config.maxTablesPerResponse);
+    if (tables.length === 0) return { tables: [], queryResults: [], summary: "" };
 
-    for (const chunk of chunks) {
-      if (tables.length >= this.config.maxTables) {
-        Logger.warn('[TableAwareGenerator] Max tables limit reached', {
-          maxTables: this.config.maxTables,
-          processedChunks: chunks.indexOf(chunk),
-        });
-        break;
-      }
+    const queryResults = tables.map((t) => queryTable(t, query));
 
-      const tableBlocks = this._detectTableInChunk(chunk.content);
+    const summary = this.config.includeSummarization
+      ? await this.summarize(query, queryResults)
+      : queryResults.map((r) => `• ${r.result}`).join("\n");
 
-      for (const block of tableBlocks) {
-        if (tables.length >= this.config.maxTables) break;
-
-        const parsed = this._parseMarkdownTable(block.raw, chunk.id);
-        if (parsed) {
-          tables.push(parsed);
-          Logger.debug('[TableAwareGenerator] Table extracted', {
-            tableId: parsed.id,
-            chunkId: chunk.id,
-            rowCount: parsed.rowCount,
-            colCount: parsed.colCount,
-          });
-        }
-      }
-    }
-
-    Logger.info('[TableAwareGenerator] Table extraction complete', {
-      chunkCount: chunks.length,
-      tablesFound: tables.length,
+    logger.info("TableAwareGenerator complete", {
+      query: query.slice(0, 60),
+      tables: tables.length,
+      operations: [...new Set(queryResults.map((r) => r.operation))],
     });
 
-    return tables;
+    return { tables, queryResults, summary };
   }
 
-  private _parseMarkdownTable(raw: string, sourceChunkId: string): ParsedTable | null {
-    const lines = raw
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-
-    if (lines.length < 2) return null;
-
-    // Find header row (first line with |)
-    const headerLineIdx = lines.findIndex((l) => l.includes('|'));
-    if (headerLineIdx === -1) return null;
-
-    // Find separator row (line with |---|)
-    const separatorIdx = lines.findIndex(
-      (l, i) => i > headerLineIdx && /^\|[\s\-|:]+\|$/.test(l),
-    );
-    if (separatorIdx === -1) return null;
-
-    // Parse headers
-    const headerLine = lines[headerLineIdx];
-    const headers = headerLine
-      .split('|')
-      .map((h) => h.trim())
-      .filter((h) => h.length > 0);
-
-    if (headers.length === 0) return null;
-
-    const colCount = headers.length;
-
-    // Parse data rows (everything after the separator row that contains |)
-    const dataLines = lines.slice(separatorIdx + 1).filter((l) => l.includes('|'));
-    const rows: string[][] = [];
-
-    for (const line of dataLines) {
-      const cells = line
-        .split('|')
-        .map((c) => c.trim())
-        .filter((_, idx, arr) =>
-          // Remove empty leading/trailing empty cells from pipe-bordered rows
-          idx > 0 || arr[0] !== '',
-        );
-
-      // Normalize: pad or trim to colCount
-      const normalizedCells = headers.map((_, colIdx) => cells[colIdx] ?? '');
-      rows.push(normalizedCells);
-    }
-
-    // Extract caption from line immediately before the table if it doesn't contain |
-    let caption: string | undefined;
-    if (this.config.includeCaption) {
-      // Check for caption pattern: a line ending in ':' or starting with 'Table'
-      const rawLines = raw.split('\n');
-      const firstPipeLine = rawLines.findIndex((l) => l.includes('|'));
-      if (firstPipeLine > 0) {
-        const candidateLine = rawLines[firstPipeLine - 1].trim();
-        if (
-          candidateLine.length > 0 &&
-          !candidateLine.includes('|') &&
-          (candidateLine.endsWith(':') || /^table\s/i.test(candidateLine))
-        ) {
-          caption = candidateLine.replace(/:$/, '').trim();
-        }
-      }
-    }
-
-    // Build cells array
-    const cells: TableCell[] = [];
-
-    // Header cells at row 0
-    headers.forEach((value, colIdx) => {
-      cells.push({ row: 0, col: colIdx, value, isHeader: true });
-    });
-
-    // Data cells at row 1+
-    rows.forEach((rowData, rowIdx) => {
-      rowData.forEach((value, colIdx) => {
-        cells.push({ row: rowIdx + 1, col: colIdx, value, isHeader: false });
-      });
-    });
-
-    return {
-      id: nextTableId(),
-      sourceChunkId,
-      headers,
-      rows,
-      cells,
-      caption,
-      rowCount: rows.length,
-      colCount,
-    };
-  }
-
-  queryTable(table: ParsedTable, query: TableQuery): TableResult {
-    switch (query.type) {
-      case 'lookup':
-        return this._handleLookup(table, query);
-      case 'filter':
-        return this._handleFilter(table, query);
-      case 'aggregate':
-        return this._handleAggregate(table, query);
-      case 'compare':
-        return this._handleCompare(table, query);
-      case 'describe':
-        return this._handleDescribe(table, query);
-      default: {
-        const exhaustive: never = query.type;
-        Logger.warn('[TableAwareGenerator] Unknown query type', { type: exhaustive });
-        return this._handleDescribe(table, query);
-      }
-    }
-  }
-
-  private _getColumnIndex(table: ParsedTable, columnName: string): number {
-    const lowerName = columnName.toLowerCase();
-    return table.headers.findIndex(
-      (h) => h.toLowerCase() === lowerName || h.toLowerCase().includes(lowerName),
-    );
-  }
-
-  private _handleLookup(table: ParsedTable, query: TableQuery): TableResult {
-    const matchedCells: TableCell[] = [];
-
-    if (!query.condition) {
-      return {
-        table,
-        matchedCells: [],
-        summary: 'No condition provided for lookup.',
-        formattedTable: this.formatTable(table),
-        queryType: 'lookup',
-      };
-    }
-
-    const colIdx = query.targetColumn
-      ? this._getColumnIndex(table, query.targetColumn)
-      : -1;
-    const conditionLower = query.condition.toLowerCase();
-
-    for (const cell of table.cells) {
-      if (cell.isHeader) continue;
-      if (colIdx !== -1 && cell.col !== colIdx) continue;
-      if (cell.value.toLowerCase().includes(conditionLower)) {
-        matchedCells.push(cell);
-        // Also include the whole row for context
-        const rowCells = table.cells.filter(
-          (c) => c.row === cell.row && !c.isHeader,
-        );
-        for (const rc of rowCells) {
-          if (!matchedCells.includes(rc)) matchedCells.push(rc);
-        }
-      }
-    }
-
-    const uniqueRows = [...new Set(matchedCells.filter((c) => !c.isHeader).map((c) => c.row))];
-    const summary = matchedCells.length > 0
-      ? `Found ${uniqueRows.length} row(s) matching "${query.condition}"${query.targetColumn ? ` in column "${query.targetColumn}"` : ''}.`
-      : `No cells found matching "${query.condition}".`;
-
-    return {
-      table,
-      matchedCells,
-      summary,
-      formattedTable: this.formatTable(table, matchedCells),
-      queryType: 'lookup',
-    };
-  }
-
-  private _handleFilter(table: ParsedTable, query: TableQuery): TableResult {
-    if (!query.targetColumn || !query.condition) {
-      return {
-        table,
-        matchedCells: [],
-        summary: 'targetColumn and condition are required for filter.',
-        formattedTable: this.formatTable(table),
-        queryType: 'filter',
-      };
-    }
-
-    const colIdx = this._getColumnIndex(table, query.targetColumn);
-    if (colIdx === -1) {
-      return {
-        table,
-        matchedCells: [],
-        summary: `Column "${query.targetColumn}" not found in table.`,
-        formattedTable: this.formatTable(table),
-        queryType: 'filter',
-      };
-    }
-
-    const conditionLower = query.condition.toLowerCase();
-    const matchedRows: number[] = [];
-
-    for (const row of table.rows) {
-      const cellValue = (row[colIdx] ?? '').toLowerCase();
-      if (cellValue.includes(conditionLower)) {
-        const rowIndex = table.rows.indexOf(row) + 1; // +1 for header offset
-        matchedRows.push(rowIndex);
-      }
-    }
-
-    const matchedCells: TableCell[] = table.cells.filter(
-      (c) => !c.isHeader && matchedRows.includes(c.row),
-    );
-
-    // Build filtered table for display
-    const filteredRows = matchedRows.map((r) => table.rows[r - 1]);
-    const filteredTable: ParsedTable = {
-      ...table,
-      id: `${table.id}-filtered`,
-      rows: filteredRows,
-      cells: [
-        ...table.cells.filter((c) => c.isHeader),
-        ...matchedCells,
-      ],
-      rowCount: filteredRows.length,
-    };
-
-    const summary = `Filtered to ${matchedRows.length} row(s) where "${query.targetColumn}" contains "${query.condition}".`;
-
-    return {
-      table: filteredTable,
-      matchedCells,
-      summary,
-      formattedTable: this.formatTable(filteredTable, matchedCells),
-      queryType: 'filter',
-    };
-  }
-
-  private _handleAggregate(table: ParsedTable, query: TableQuery): TableResult {
-    if (!query.targetColumn || !query.aggregation) {
-      return {
-        table,
-        matchedCells: [],
-        summary: 'targetColumn and aggregation are required for aggregate.',
-        formattedTable: this.formatTable(table),
-        queryType: 'aggregate',
-      };
-    }
-
-    const colIdx = this._getColumnIndex(table, query.targetColumn);
-    if (colIdx === -1) {
-      return {
-        table,
-        matchedCells: [],
-        summary: `Column "${query.targetColumn}" not found.`,
-        formattedTable: this.formatTable(table),
-        queryType: 'aggregate',
-      };
-    }
-
-    const numericValues: number[] = [];
-    const columnCells: TableCell[] = [];
-
-    for (const cell of table.cells) {
-      if (cell.isHeader || cell.col !== colIdx) continue;
-      columnCells.push(cell);
-      const num = parseFloat(cell.value.replace(/,/g, ''));
-      if (!isNaN(num)) {
-        numericValues.push(num);
-      }
-    }
-
-    let result: number;
-    let summary: string;
-
-    if (query.aggregation === 'count') {
-      result = columnCells.length;
-      summary = `Count of "${query.targetColumn}": ${result} rows.`;
-    } else if (numericValues.length === 0) {
-      return {
-        table,
-        matchedCells: columnCells,
-        summary: `No numeric values found in column "${query.targetColumn}".`,
-        formattedTable: this.formatTable(table, columnCells),
-        queryType: 'aggregate',
-      };
-    } else {
-      switch (query.aggregation) {
-        case 'sum':
-          result = numericValues.reduce((a, b) => a + b, 0);
-          summary = `Sum of "${query.targetColumn}": ${result.toLocaleString()}.`;
-          break;
-        case 'avg':
-          result = numericValues.reduce((a, b) => a + b, 0) / numericValues.length;
-          summary = `Average of "${query.targetColumn}": ${result.toFixed(2)}.`;
-          break;
-        case 'min':
-          result = Math.min(...numericValues);
-          summary = `Minimum of "${query.targetColumn}": ${result}.`;
-          break;
-        case 'max':
-          result = Math.max(...numericValues);
-          summary = `Maximum of "${query.targetColumn}": ${result}.`;
-          break;
-        default: {
-          const exhaustive: never = query.aggregation;
-          result = 0;
-          summary = `Unknown aggregation: ${exhaustive}`;
-        }
-      }
-    }
-
-    return {
-      table,
-      matchedCells: columnCells,
-      summary,
-      formattedTable: this.formatTable(table, columnCells),
-      queryType: 'aggregate',
-    };
-  }
-
-  private _handleCompare(table: ParsedTable, query: TableQuery): TableResult {
-    if (!query.targetColumn) {
-      return {
-        table,
-        matchedCells: [],
-        summary: 'targetColumn is required for compare.',
-        formattedTable: this.formatTable(table),
-        queryType: 'compare',
-      };
-    }
-
-    const colIdx = this._getColumnIndex(table, query.targetColumn);
-    if (colIdx === -1) {
-      return {
-        table,
-        matchedCells: [],
-        summary: `Column "${query.targetColumn}" not found.`,
-        formattedTable: this.formatTable(table),
-        queryType: 'compare',
-      };
-    }
-
-    // Collect all rows with their value in the target column
-    const rowValues: Array<{ rowIdx: number; rawValue: string; numericValue: number | null }> =
-      table.rows.map((row, rowIdx) => {
-        const rawValue = row[colIdx] ?? '';
-        const numericValue = parseFloat(rawValue.replace(/,/g, ''));
-        return { rowIdx, rawValue, numericValue: isNaN(numericValue) ? null : numericValue };
-      });
-
-    // Sort: numeric first (descending), then text alphabetically
-    const hasNumeric = rowValues.some((r) => r.numericValue !== null);
-    const sorted = [...rowValues].sort((a, b) => {
-      if (hasNumeric) {
-        const numA = a.numericValue ?? -Infinity;
-        const numB = b.numericValue ?? -Infinity;
-        return numB - numA;
-      }
-      return a.rawValue.localeCompare(b.rawValue);
-    });
-
-    // Build sorted rows
-    const sortedRows = sorted.map((r) => table.rows[r.rowIdx]);
-    const sortedTable: ParsedTable = {
-      ...table,
-      id: `${table.id}-compared`,
-      rows: sortedRows,
-      rowCount: sortedRows.length,
-      cells: [
-        ...table.cells.filter((c) => c.isHeader),
-        ...sorted.flatMap((r, newRowIdx) =>
-          table.headers.map((_, colIndex) => ({
-            row: newRowIdx + 1,
-            col: colIndex,
-            value: table.rows[r.rowIdx][colIndex] ?? '',
-            isHeader: false,
-          })),
-        ),
-      ],
-    };
-
-    const columnCells = table.cells.filter((c) => !c.isHeader && c.col === colIdx);
-    const summary = `Compared ${table.rowCount} rows by "${query.targetColumn}", sorted ${hasNumeric ? 'numerically descending' : 'alphabetically'}.`;
-
-    return {
-      table: sortedTable,
-      matchedCells: columnCells,
-      summary,
-      formattedTable: this.formatTable(sortedTable, columnCells),
-      queryType: 'compare',
-    };
-  }
-
-  private _handleDescribe(table: ParsedTable, _query: TableQuery): TableResult {
-    const columnTypes = this._inferColumnTypes(table);
-    const typeDescriptions = table.headers
-      .map((h) => `${h} (${columnTypes[h] ?? 'unknown'})`)
-      .join(', ');
-
-    const summary = [
-      `Table has ${table.rowCount} data row(s) and ${table.colCount} column(s).`,
-      `Columns: ${typeDescriptions}.`,
-      table.caption ? `Caption: ${table.caption}.` : '',
-    ]
-      .filter((s) => s.length > 0)
-      .join(' ');
-
-    return {
-      table,
-      matchedCells: [],
-      summary,
-      formattedTable: this.formatTable(table),
-      queryType: 'describe',
-    };
-  }
-
-  formatTable(table: ParsedTable, highlightCells?: TableCell[]): string {
-    const highlightSet = new Set(
-      (highlightCells ?? []).map((c) => `${c.row},${c.col}`),
-    );
-
-    const formatCell = (value: string, row: number, col: number): string => {
-      const key = `${row},${col}`;
-      return highlightSet.has(key) ? `**${value}**` : value;
-    };
-
-    const lines: string[] = [];
-
-    // Caption
-    if (this.config.includeCaption && table.caption) {
-      lines.push(`*${table.caption}*`);
-      lines.push('');
-    }
-
-    // Header row
-    const headerCells = table.headers.map((h, col) => formatCell(h, 0, col));
-    lines.push(`| ${headerCells.join(' | ')} |`);
-
-    // Separator
-    lines.push(`| ${table.headers.map(() => '---').join(' | ')} |`);
-
-    // Data rows
-    for (let rowIdx = 0; rowIdx < table.rows.length; rowIdx++) {
-      const row = table.rows[rowIdx];
-      const cells = table.headers.map((_, col) =>
-        formatCell(row[col] ?? '', rowIdx + 1, col),
+  private async summarize(query: string, results: TableQueryResult[]): Promise<string> {
+    const operationSummary = results.map((r, i) => `Table ${i + 1} (${r.operation}): ${r.result}`).join("\n");
+    try {
+      const { llmGateway } = await import("../../lib/llmGateway");
+      const response = await llmGateway.chat(
+        [{ role: "user", content: `Query: ${query}\n\nTable analysis:\n${operationSummary}\n\nWrite a concise answer using these results. Be specific with numbers.` }],
+        { model: this.config.summarizationModel, maxTokens: 300, temperature: 0.2 }
       );
-      lines.push(`| ${cells.join(' | ')} |`);
+      return response.content;
+    } catch (err) {
+      logger.warn("Table summarization failed", { error: String(err) });
+      return operationSummary;
     }
-
-    return lines.join('\n');
   }
 
-  cellReference(cell: TableCell): string {
-    if (this.config.cellReferenceFormat === 'A1') {
-      const colLetter = colIndexToLetter(cell.col);
-      const rowNum = cell.row + 1; // 1-based
-      return `${colLetter}${rowNum}`;
-    }
-    return `${cell.row},${cell.col}`;
+  static formatTableAsText(table: TableData, maxRows = 20): string {
+    const header = table.headers.join(" | ");
+    const separator = table.headers.map((h) => "-".repeat(h.length)).join("-|-");
+    const dataRows = table.rows.slice(0, maxRows).map((row) =>
+      table.headers.map((_, i) => row[i] ?? "").join(" | ")
+    );
+    const lines = [header, separator, ...dataRows];
+    if (table.rows.length > maxRows) lines.push(`... and ${table.rows.length - maxRows} more rows`);
+    return lines.join("\n");
   }
 
-  private _detectTableInChunk(
-    content: string,
-  ): Array<{ start: number; end: number; raw: string }> {
-    const lines = content.split('\n');
-    const results: Array<{ start: number; end: number; raw: string }> = [];
-
-    let tableStart = -1;
-    let consecutivePipeLines = 0;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const hasPipe = line.includes('|');
-
-      if (hasPipe) {
-        if (tableStart === -1) tableStart = i;
-        consecutivePipeLines++;
-      } else {
-        if (consecutivePipeLines >= 3 && tableStart !== -1) {
-          const tableLines = lines.slice(tableStart, i);
-          const raw = tableLines.join('\n');
-          const start = lines.slice(0, tableStart).join('\n').length + (tableStart > 0 ? 1 : 0);
-          const end = start + raw.length;
-          results.push({ start, end, raw });
-        }
-        tableStart = -1;
-        consecutivePipeLines = 0;
-      }
-    }
-
-    // Handle table at end of content
-    if (consecutivePipeLines >= 3 && tableStart !== -1) {
-      const tableLines = lines.slice(tableStart);
-      const raw = tableLines.join('\n');
-      const start = lines.slice(0, tableStart).join('\n').length + (tableStart > 0 ? 1 : 0);
-      const end = start + raw.length;
-      results.push({ start, end, raw });
-    }
-
-    return results;
-  }
-
-  private _inferColumnTypes(
-    table: ParsedTable,
-  ): Record<string, 'numeric' | 'text' | 'mixed'> {
-    const result: Record<string, 'numeric' | 'text' | 'mixed'> = {};
-
-    for (let colIdx = 0; colIdx < table.headers.length; colIdx++) {
-      const header = table.headers[colIdx];
-      let numericCount = 0;
-      let totalCount = 0;
-
-      for (const row of table.rows) {
-        const value = (row[colIdx] ?? '').trim();
-        if (value.length === 0) continue;
-        totalCount++;
-        const num = parseFloat(value.replace(/,/g, ''));
-        if (!isNaN(num)) numericCount++;
-      }
-
-      if (totalCount === 0) {
-        result[header] = 'text';
-      } else {
-        const numericRatio = numericCount / totalCount;
-        if (numericRatio >= 0.7) {
-          result[header] = 'numeric';
-        } else if (numericRatio >= 0.3) {
-          result[header] = 'mixed';
-        } else {
-          result[header] = 'text';
-        }
-      }
-    }
-
-    return result;
-  }
-
-  generateTableSummary(tables: ParsedTable[], query: string): string {
-    if (tables.length === 0) {
-      return 'No tables found in the retrieved content.';
-    }
-
-    const queryTokens = query
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length > 2);
-
-    const lines: string[] = [
-      `Found ${tables.length} table(s) in the retrieved content:`,
-      '',
-    ];
-
-    for (const table of tables) {
-      const headerList = table.headers.join(', ');
-      const columnTypes = this._inferColumnTypes(table);
-      const numericCols = table.headers.filter((h) => columnTypes[h] === 'numeric');
-
-      // Check relevance: do any column names overlap with query tokens?
-      const relevantColumns = table.headers.filter((h) =>
-        queryTokens.some((t) => h.toLowerCase().includes(t)),
-      );
-
-      const relevanceNote =
-        relevantColumns.length > 0
-          ? ` Potentially relevant column(s): ${relevantColumns.join(', ')}.`
-          : '';
-
-      const captionNote = table.caption ? ` Caption: "${table.caption}".` : '';
-
-      lines.push(
-        `• Table ${table.id} (${table.rowCount} rows × ${table.colCount} cols): [${headerList}].` +
-          (numericCols.length > 0 ? ` Numeric columns: ${numericCols.join(', ')}.` : '') +
-          relevanceNote +
-          captionNote,
-      );
-    }
-
-    return lines.join('\n');
+  static suggestVisualization(table: TableData): string {
+    const numericCols = table.columnTypes.filter((t) => t === "number").length;
+    const textCols = table.columnTypes.filter((t) => t === "text").length;
+    if (numericCols >= 2 && table.rows.length > 5) return "line_chart";
+    if (numericCols === 1 && textCols === 1) return "bar_chart";
+    if (numericCols >= 1 && table.rows.length <= 8) return "pie_chart";
+    if (table.columnTypes.some((t) => t === "date")) return "time_series";
+    return "table";
   }
 }

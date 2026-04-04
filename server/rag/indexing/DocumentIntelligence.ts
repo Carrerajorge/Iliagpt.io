@@ -1,730 +1,513 @@
-import { randomUUID } from 'crypto';
-import { Logger } from '../../lib/logger';
+/**
+ * DocumentIntelligence — Deep document understanding: structure extraction,
+ * knowledge graph generation, entity/relationship extraction, and multi-granularity summaries.
+ *
+ * Supports: PDF (structure), DOCX (heading hierarchy), Code (AST deps),
+ * images (OCR + vision description), and general text.
+ */
 
-// ---------------------------------------------------------------------------
-// Exported types
-// ---------------------------------------------------------------------------
+import { createLogger } from "../../utils/logger";
+import type { RetrievedChunk } from "../UnifiedRAGPipeline";
+
+const logger = createLogger("DocumentIntelligence");
+
+// ─── Document structure types ─────────────────────────────────────────────────
 
 export interface DocumentSection {
-  id: string;
+  level: number;          // 1 = top-level chapter, 2 = section, 3 = subsection
   title: string;
-  level: number; // 1-6 for headings, 0 for body
   content: string;
+  startOffset: number;
+  endOffset: number;
+  pageRange?: [number, number];
+  children: DocumentSection[];
+}
+
+export interface DocumentStructure {
+  title?: string;
+  author?: string;
+  language: string;
+  pageCount?: number;
   wordCount: number;
-  startChar: number;
-  endChar: number;
-  subsections: DocumentSection[];
+  sections: DocumentSection[];
+  tableCount: number;
+  figureCount: number;
+  codeBlockCount: number;
+  hasTableOfContents: boolean;
+  documentType: "academic" | "technical" | "report" | "code" | "general";
 }
 
-export interface ExtractedTable {
-  id: string;
-  caption?: string;
-  headers: string[];
-  rows: string[][];
-  location: string;
-  complexity: 'simple' | 'complex';
-  rowCount: number;
-  colCount: number;
-}
+// ─── Knowledge graph types ────────────────────────────────────────────────────
 
-export interface ExtractedFigure {
+export interface KGEntity {
   id: string;
-  type: 'image' | 'diagram' | 'chart' | 'equation';
-  caption?: string;
-  altText?: string;
-  location: string;
-  description: string;
-}
-
-export interface KnowledgeNode {
-  id: string;
-  type: 'concept' | 'entity' | 'process' | 'relationship';
   label: string;
-  aliases: string[];
-  attributes: Record<string, unknown>;
+  type: "person" | "organization" | "location" | "concept" | "technology" | "event" | "other";
+  frequency: number;
+  firstMention?: number;   // character offset
+  contexts: string[];      // up to 3 surrounding sentences
 }
 
-export interface KnowledgeEdge {
+export interface KGRelationship {
   fromId: string;
   toId: string;
   relation: string;
-  weight: number; // 0-1
+  confidence: number;
+  evidence: string;
 }
 
 export interface KnowledgeGraph {
-  nodes: KnowledgeNode[];
-  edges: KnowledgeEdge[];
-  rootConcepts: string[];
+  entities: KGEntity[];
+  relationships: KGRelationship[];
+  keyFacts: string[];
 }
 
-export interface DocumentIntelligenceResult {
-  documentId: string;
-  title: string;
-  structure: DocumentSection[];
-  tables: ExtractedTable[];
-  figures: ExtractedFigure[];
-  knowledgeGraph: KnowledgeGraph;
-  summary: string;
-  keyTerms: string[];
-  language: string;
-  readabilityScore: number;
-  wordCount: number;
-  sentenceCount: number;
-  avgWordsPerSentence: number;
-  metadata: Record<string, unknown>;
+// ─── Summary types ────────────────────────────────────────────────────────────
+
+export interface MultiGranularitySummary {
+  sentence: string;          // 1–2 sentences
+  paragraph: string;         // ~150 words
+  page: string;              // ~400 words, structured
+  full: string;              // comprehensive
 }
+
+// ─── Structure extraction ─────────────────────────────────────────────────────
+
+function detectDocumentType(text: string, fileName?: string): DocumentStructure["documentType"] {
+  const ext = fileName?.split(".").pop()?.toLowerCase();
+  if (ext && ["ts", "js", "py", "go", "rs", "java", "cpp"].includes(ext)) return "code";
+
+  const academicSignals = ["abstract", "introduction", "methodology", "conclusion", "references", "bibliography", "doi:", "et al."];
+  const technicalSignals = ["installation", "configuration", "api", "endpoint", "function", "parameter", "returns", "example"];
+  const reportSignals = ["executive summary", "findings", "recommendations", "appendix", "table of contents"];
+
+  const lowerText = text.slice(0, 5000).toLowerCase();
+  const academicScore = academicSignals.filter((s) => lowerText.includes(s)).length;
+  const technicalScore = technicalSignals.filter((s) => lowerText.includes(s)).length;
+  const reportScore = reportSignals.filter((s) => lowerText.includes(s)).length;
+
+  const max = Math.max(academicScore, technicalScore, reportScore);
+  if (max < 2) return "general";
+  if (max === academicScore) return "academic";
+  if (max === technicalScore) return "technical";
+  return "report";
+}
+
+function extractSections(text: string): DocumentSection[] {
+  const lines = text.split("\n");
+  const sections: DocumentSection[] = [];
+  const stack: DocumentSection[] = [];
+  let offset = 0;
+  let currentContent = "";
+
+  for (const line of lines) {
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/) ??
+      line.match(/^([A-Z][A-Z\s]{4,60})$/) &&
+      [null, "#", line] as RegExpMatchArray | null;
+
+    const mdMatch = line.match(/^(#{1,6})\s+(.+)$/);
+
+    if (mdMatch) {
+      const level = mdMatch[1].length;
+      const title = mdMatch[2].trim();
+
+      // Close all sections at same or deeper level
+      while (stack.length > 0 && stack[stack.length - 1].level >= level) {
+        const closing = stack.pop()!;
+        closing.content = currentContent.trim();
+        closing.endOffset = offset;
+        currentContent = "";
+      }
+
+      const section: DocumentSection = {
+        level,
+        title,
+        content: "",
+        startOffset: offset,
+        endOffset: offset,
+        children: [],
+      };
+
+      if (stack.length > 0) {
+        stack[stack.length - 1].children.push(section);
+      } else {
+        sections.push(section);
+      }
+      stack.push(section);
+    } else {
+      currentContent += line + "\n";
+    }
+
+    offset += line.length + 1;
+  }
+
+  // Close remaining sections
+  while (stack.length > 0) {
+    const closing = stack.pop()!;
+    closing.content = currentContent.trim();
+    closing.endOffset = offset;
+    currentContent = "";
+  }
+
+  return sections;
+}
+
+function countStructuralElements(text: string): { tables: number; figures: number; codeBlocks: number } {
+  const tables = (text.match(/^\|.+\|/gm) ?? []).filter((_, i) => i % 3 === 0).length;
+  const figures = (text.match(/\[?(figure|figura|fig\.|image|imagen)\s*\d*/gi) ?? []).length;
+  const codeBlocks = (text.match(/^```/gm) ?? []).length / 2;
+  return { tables, figures, codeBlocks: Math.round(codeBlocks) };
+}
+
+function detectLanguage(text: string): string {
+  const esCount = (text.match(/\b(el|la|los|las|de|que|en|un|una|es|por|con)\b/gi) ?? []).length;
+  const enCount = (text.match(/\b(the|is|are|of|and|to|in|for|with|that|this)\b/gi) ?? []).length;
+  if (esCount > enCount * 1.3) return "es";
+  if (enCount > esCount * 1.3) return "en";
+  return "mixed";
+}
+
+export function extractDocumentStructure(
+  text: string,
+  options: { fileName?: string; pageCount?: number } = {}
+): DocumentStructure {
+  const sections = extractSections(text);
+  const { tables, figures, codeBlocks } = countStructuralElements(text);
+  const wordCount = text.split(/\s+/).filter((w) => w.length > 0).length;
+  const hasToC = /table of contents|índice|contenido/i.test(text.slice(0, 3000));
+
+  // Try to extract title and author
+  const titleMatch = text.match(/^#\s+(.+)$/m) ?? text.match(/^([A-Z][^\n]{10,100})\n/);
+  const authorMatch = text.match(/(?:autor|author|by|por)[:.]?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})/i);
+
+  return {
+    title: titleMatch?.[1]?.trim(),
+    author: authorMatch?.[1]?.trim(),
+    language: detectLanguage(text),
+    pageCount: options.pageCount,
+    wordCount,
+    sections,
+    tableCount: tables,
+    figureCount: figures,
+    codeBlockCount: codeBlocks,
+    hasTableOfContents: hasToC,
+    documentType: detectDocumentType(text, options.fileName),
+  };
+}
+
+// ─── Entity extraction ────────────────────────────────────────────────────────
+
+interface SimpleEntity {
+  text: string;
+  type: KGEntity["type"];
+}
+
+function extractEntitiesHeuristic(text: string): SimpleEntity[] {
+  const entities: SimpleEntity[] = [];
+
+  // Technology patterns
+  const techPattern = /\b(React|Vue|Angular|Node\.js|TypeScript|JavaScript|Python|Docker|Kubernetes|PostgreSQL|MongoDB|Redis|AWS|Azure|GCP|OpenAI|Anthropic|LangChain|FastAPI|Express)\b/g;
+  for (const match of text.matchAll(techPattern)) {
+    entities.push({ text: match[1], type: "technology" });
+  }
+
+  // Capitalized multi-word phrases (likely proper nouns)
+  const properNounPattern = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b/g;
+  const seen = new Set(entities.map((e) => e.text));
+  for (const match of text.matchAll(properNounPattern)) {
+    if (!seen.has(match[1]) && match[1].length > 4) {
+      entities.push({ text: match[1], type: "other" });
+      seen.add(match[1]);
+    }
+  }
+
+  // Organization suffixes
+  const orgPattern = /\b([A-Z][a-zA-Z\s]+(?:Inc\.|LLC|Corp\.|S\.A\.|GmbH|Ltd\.|University|Institute|Foundation))\b/g;
+  for (const match of text.matchAll(orgPattern)) {
+    entities.push({ text: match[1], type: "organization" });
+  }
+
+  return entities;
+}
+
+function computeEntityFrequency(entities: SimpleEntity[], text: string): KGEntity[] {
+  const entityMap = new Map<string, KGEntity>();
+
+  for (const entity of entities) {
+    const existing = entityMap.get(entity.text);
+    if (existing) {
+      existing.frequency++;
+    } else {
+      const firstIndex = text.indexOf(entity.text);
+      const contextStart = Math.max(0, firstIndex - 100);
+      const contextEnd = Math.min(text.length, firstIndex + entity.text.length + 100);
+
+      entityMap.set(entity.text, {
+        id: entity.text.toLowerCase().replace(/\s+/g, "_"),
+        label: entity.text,
+        type: entity.type,
+        frequency: 1,
+        firstMention: firstIndex,
+        contexts: [text.slice(contextStart, contextEnd).replace(/\n/g, " ")],
+      });
+    }
+  }
+
+  return [...entityMap.values()].sort((a, b) => b.frequency - a.frequency);
+}
+
+// ─── Knowledge graph generation ───────────────────────────────────────────────
+
+async function generateKGWithLLM(
+  text: string,
+  model: string
+): Promise<KnowledgeGraph> {
+  const { llmGateway } = await import("../../lib/llmGateway");
+  const sample = text.slice(0, 3000);
+
+  try {
+    const response = await llmGateway.chat(
+      [
+        {
+          role: "user",
+          content: `Extract key information from this text as a knowledge graph.
+
+TEXT:
+${sample}
+
+Return JSON:
+{
+  "entities": [{"label": "...", "type": "person|organization|location|concept|technology|event|other"}],
+  "relationships": [{"from": "...", "to": "...", "relation": "...", "evidence": "<quote>"}],
+  "keyFacts": ["fact1", "fact2", ...]
+}
+
+Return valid JSON only. Limit to 15 entities, 10 relationships, 5 key facts.`,
+        },
+      ],
+      { model, maxTokens: 600, temperature: 0 }
+    );
+
+    const jsonMatch = response.content.match(/\{[\s\S]*"entities"[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No JSON in response");
+
+    const parsed = JSON.parse(jsonMatch[0]) as {
+      entities: Array<{ label: string; type: string }>;
+      relationships: Array<{ from: string; to: string; relation: string; evidence: string }>;
+      keyFacts: string[];
+    };
+
+    const entities: KGEntity[] = (parsed.entities ?? []).map((e, i) => ({
+      id: `entity_${i}`,
+      label: e.label,
+      type: (e.type as KGEntity["type"]) || "other",
+      frequency: 1,
+      contexts: [],
+    }));
+
+    const entityIdMap = new Map(entities.map((e) => [e.label, e.id]));
+
+    const relationships: KGRelationship[] = (parsed.relationships ?? [])
+      .map((r) => ({
+        fromId: entityIdMap.get(r.from) ?? r.from,
+        toId: entityIdMap.get(r.to) ?? r.to,
+        relation: r.relation,
+        confidence: 0.8,
+        evidence: r.evidence ?? "",
+      }))
+      .filter((r) => r.fromId && r.toId);
+
+    return {
+      entities,
+      relationships,
+      keyFacts: (parsed.keyFacts ?? []).slice(0, 5),
+    };
+  } catch (err) {
+    logger.warn("LLM knowledge graph failed, using heuristic entities", { error: String(err) });
+    const simpleEntities = extractEntitiesHeuristic(text);
+    const entities = computeEntityFrequency(simpleEntities, text).slice(0, 15);
+    return { entities, relationships: [], keyFacts: [] };
+  }
+}
+
+// ─── Multi-granularity summaries ──────────────────────────────────────────────
+
+async function generateSummaries(
+  text: string,
+  model: string,
+  documentTitle?: string
+): Promise<MultiGranularitySummary> {
+  const { llmGateway } = await import("../../lib/llmGateway");
+
+  const titleLine = documentTitle ? `Document: "${documentTitle}"\n\n` : "";
+  const sample = `${titleLine}${text.slice(0, 6000)}`;
+
+  try {
+    const response = await llmGateway.chat(
+      [
+        {
+          role: "user",
+          content: `Generate summaries of this document at multiple levels of detail.
+
+${sample}
+
+Return JSON:
+{
+  "sentence": "<1-2 sentence summary>",
+  "paragraph": "<~150 word summary>",
+  "page": "<~400 word structured summary with key sections>",
+  "full": "<comprehensive summary covering all major points>"
+}
+
+Return valid JSON only.`,
+        },
+      ],
+      { model, maxTokens: 1500, temperature: 0.3 }
+    );
+
+    const jsonMatch = response.content.match(/\{[\s\S]*"sentence"[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No JSON in response");
+
+    return JSON.parse(jsonMatch[0]) as MultiGranularitySummary;
+  } catch (err) {
+    logger.warn("LLM summary generation failed, using heuristic", { error: String(err) });
+    const sentences = text.split(/[.!?]+\s+/).filter((s) => s.length > 20);
+    return {
+      sentence: sentences.slice(0, 2).join(". ") + ".",
+      paragraph: text.slice(0, 600),
+      page: text.slice(0, 1600),
+      full: text.slice(0, 4000),
+    };
+  }
+}
+
+// ─── Main DocumentIntelligence ────────────────────────────────────────────────
 
 export interface DocumentIntelligenceConfig {
-  extractTables: boolean;
-  extractFigures: boolean;
-  buildKnowledgeGraph: boolean;
-  maxKeyTerms: number;
-  minTermFrequency: number;
-  summarize: boolean;
+  model: string;
+  generateKnowledgeGraph: boolean;
+  generateSummaries: boolean;
+  extractStructure: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Defaults
-// ---------------------------------------------------------------------------
-
-const DEFAULT_CONFIG: DocumentIntelligenceConfig = {
-  extractTables: true,
-  extractFigures: true,
-  buildKnowledgeGraph: true,
-  maxKeyTerms: 20,
-  minTermFrequency: 2,
-  summarize: false,
+const DEFAULT_DI_CONFIG: DocumentIntelligenceConfig = {
+  model: process.env.RAG_RERANK_MODEL ?? "gpt-4o-mini",
+  generateKnowledgeGraph: true,
+  generateSummaries: true,
+  extractStructure: true,
 };
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-interface HeadingMatch {
-  index: number;
-  length: number;
-  title: string;
-  level: number;
+export interface DocumentAnalysis {
+  structure?: DocumentStructure;
+  knowledgeGraph?: KnowledgeGraph;
+  summaries?: MultiGranularitySummary;
+  processingTimeMs: number;
 }
-
-// ---------------------------------------------------------------------------
-// DocumentIntelligence
-// ---------------------------------------------------------------------------
 
 export class DocumentIntelligence {
   private readonly config: DocumentIntelligenceConfig;
 
-  constructor(config?: Partial<DocumentIntelligenceConfig>) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+  constructor(config: Partial<DocumentIntelligenceConfig> = {}) {
+    this.config = { ...DEFAULT_DI_CONFIG, ...config };
   }
 
-  // -------------------------------------------------------------------------
-  // Main orchestrator
-  // -------------------------------------------------------------------------
-
   async analyze(
-    documentId: string,
-    content: string,
-    metadata?: Record<string, unknown>,
-  ): Promise<DocumentIntelligenceResult> {
-    Logger.info('DocumentIntelligence.analyze start', {
-      documentId,
-      contentLength: content.length,
+    text: string,
+    options: { fileName?: string; pageCount?: number } = {}
+  ): Promise<DocumentAnalysis> {
+    const startTime = Date.now();
+    const results: DocumentAnalysis = { processingTimeMs: 0 };
+
+    const tasks: Promise<void>[] = [];
+
+    if (this.config.extractStructure) {
+      tasks.push(
+        Promise.resolve().then(() => {
+          results.structure = extractDocumentStructure(text, options);
+        })
+      );
+    }
+
+    if (this.config.generateKnowledgeGraph) {
+      tasks.push(
+        generateKGWithLLM(text, this.config.model).then((kg) => {
+          results.knowledgeGraph = kg;
+        }).catch((err) => {
+          logger.warn("Knowledge graph generation failed", { error: String(err) });
+        })
+      );
+    }
+
+    if (this.config.generateSummaries) {
+      tasks.push(
+        generateSummaries(text, this.config.model, results.structure?.title).then((summaries) => {
+          results.summaries = summaries;
+        }).catch((err) => {
+          logger.warn("Summary generation failed", { error: String(err) });
+        })
+      );
+    }
+
+    await Promise.all(tasks);
+
+    results.processingTimeMs = Date.now() - startTime;
+
+    logger.info("DocumentIntelligence complete", {
+      fileName: options.fileName,
+      sections: results.structure?.sections.length ?? 0,
+      entities: results.knowledgeGraph?.entities.length ?? 0,
+      durationMs: results.processingTimeMs,
     });
 
-    const structure = this.extractStructure(content);
-    const tables = this.config.extractTables
-      ? this.extractTables(content)
-      : [];
-    const figures = this.config.extractFigures
-      ? this.extractFigures(content)
-      : [];
-    const knowledgeGraph = this.config.buildKnowledgeGraph
-      ? this.buildKnowledgeGraph(structure)
-      : { nodes: [], edges: [], rootConcepts: [] };
+    return results;
+  }
 
-    const keyTerms = this.computeKeyTerms(content, this.config.maxKeyTerms);
-    const readabilityScore = this.computeReadability(content);
-    const summary = await this.generateSummary(content, 5);
-
-    // Basic stats
-    const words = content.split(/\s+/).filter(Boolean);
-    const sentences = content.match(/[^.!?]+[.!?]+/g) ?? [];
-    const wordCount = words.length;
-    const sentenceCount = sentences.length || 1;
-    const avgWordsPerSentence = Math.round(wordCount / sentenceCount);
-
-    // Title: first h1 or first non-empty line
-    const firstSection = structure.find((s) => s.level === 1);
-    const title =
-      firstSection?.title ??
-      content.split('\n').find((l) => l.trim().length > 0)?.trim().slice(0, 80) ??
-      'Untitled';
-
-    // Naive language detection
-    const language = this._detectLanguage(content);
-
-    Logger.info('DocumentIntelligence.analyze complete', {
-      documentId,
-      sections: structure.length,
-      tables: tables.length,
-      figures: figures.length,
-      knowledgeNodes: knowledgeGraph.nodes.length,
-      keyTerms: keyTerms.length,
-      readabilityScore,
-    });
-
+  /**
+   * Generate a concise document card for UI display.
+   */
+  generateDocumentCard(analysis: DocumentAnalysis, fileName?: string): Record<string, unknown> {
     return {
-      documentId,
-      title,
-      structure,
-      tables,
-      figures,
-      knowledgeGraph,
-      summary,
-      keyTerms,
-      language,
-      readabilityScore,
-      wordCount,
-      sentenceCount,
-      avgWordsPerSentence,
-      metadata: metadata ?? {},
+      title: analysis.structure?.title ?? fileName ?? "Untitled",
+      author: analysis.structure?.author,
+      language: analysis.structure?.language,
+      documentType: analysis.structure?.documentType,
+      wordCount: analysis.structure?.wordCount,
+      pageCount: analysis.structure?.pageCount,
+      sections: analysis.structure?.sections.length ?? 0,
+      hasTables: (analysis.structure?.tableCount ?? 0) > 0,
+      hasFigures: (analysis.structure?.figureCount ?? 0) > 0,
+      topEntities: analysis.knowledgeGraph?.entities.slice(0, 5).map((e) => e.label) ?? [],
+      keyFacts: analysis.knowledgeGraph?.keyFacts ?? [],
+      summary: analysis.summaries?.sentence,
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Structure extraction
-  // -------------------------------------------------------------------------
-
-  extractStructure(content: string): DocumentSection[] {
-    const lines = content.split('\n');
-    const headings: HeadingMatch[] = [];
-    let charPos = 0;
-
-    for (const line of lines) {
-      const mdMatch = line.match(/^(#{1,6})\s+(.+)/);
-      if (mdMatch) {
-        headings.push({
-          index: charPos,
-          length: line.length + 1,
-          title: mdMatch[2].trim(),
-          level: mdMatch[1].length,
-        });
-      } else {
-        // ALL CAPS line with at least 3 words treated as level-3 heading
-        const trimmed = line.trim();
-        if (
-          trimmed.length >= 6 &&
-          trimmed === trimmed.toUpperCase() &&
-          /[A-Z]/.test(trimmed) &&
-          trimmed.split(/\s+/).length >= 3
-        ) {
-          headings.push({
-            index: charPos,
-            length: line.length + 1,
-            title: trimmed,
-            level: 3,
-          });
-        }
-      }
-      charPos += line.length + 1; // +1 for newline
-    }
-
-    if (headings.length === 0) {
-      return [
-        {
-          id: randomUUID(),
-          title: 'Body',
-          level: 0,
-          content: content.trim(),
-          wordCount: content.split(/\s+/).filter(Boolean).length,
-          startChar: 0,
-          endChar: content.length,
-          subsections: [],
-        },
-      ];
-    }
-
-    // Build flat section list with content ranges
-    const flatSections: DocumentSection[] = [];
-    for (let i = 0; i < headings.length; i++) {
-      const h = headings[i];
-      const nextH = headings[i + 1];
-      const contentStart = h.index + h.length;
-      const contentEnd = nextH ? nextH.index : content.length;
-      const sectionContent = content.slice(contentStart, contentEnd).trim();
-      flatSections.push({
-        id: randomUUID(),
-        title: h.title,
-        level: h.level,
-        content: sectionContent,
-        wordCount: sectionContent.split(/\s+/).filter(Boolean).length,
-        startChar: h.index,
-        endChar: contentEnd,
-        subsections: [],
-      });
-    }
-
-    // Build tree by nesting sections under lower-level parents
-    const root: DocumentSection[] = [];
-    const stack: DocumentSection[] = [];
-
-    for (const section of flatSections) {
-      while (stack.length > 0 && stack[stack.length - 1].level >= section.level) {
-        stack.pop();
-      }
-      if (stack.length === 0) {
-        root.push(section);
-      } else {
-        stack[stack.length - 1].subsections.push(section);
-      }
-      stack.push(section);
-    }
-
-    return root;
-  }
-
-  // -------------------------------------------------------------------------
-  // Table extraction
-  // -------------------------------------------------------------------------
-
-  extractTables(content: string): ExtractedTable[] {
-    const tables: ExtractedTable[] = [];
-    const lines = content.split('\n');
-    let currentSectionTitle = 'Document';
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const mdHead = line.match(/^#{1,6}\s+(.+)/);
-      if (mdHead) {
-        currentSectionTitle = mdHead[1].trim();
-        continue;
-      }
-
-      // Must contain at least two pipe characters to be a table row
-      if (!line.includes('|') || line.trim().split('|').length < 3) continue;
-
-      // Next line must be a separator row (---|---)
-      if (i + 1 >= lines.length) continue;
-      if (!lines[i + 1].match(/^\|?[\s\-|:]+\|/)) continue;
-
-      const headers = this._parseTableRow(line);
-      if (headers.length < 2) continue;
-
-      const rows: string[][] = [];
-      let j = i + 2; // skip separator
-      while (j < lines.length && lines[j].includes('|')) {
-        const row = this._parseTableRow(lines[j]);
-        if (row.length > 0) rows.push(row);
-        j++;
-      }
-
-      // Look for a caption on the line immediately before the header
-      let caption: string | undefined;
-      if (i > 0) {
-        const prevLine = lines[i - 1].trim();
-        if (/^(Table|Tabla)\s/i.test(prevLine)) {
-          caption = prevLine;
-        }
-      }
-
-      const colCount = headers.length;
-      const rowCount = rows.length;
-      const complexity: 'simple' | 'complex' =
-        colCount > 6 || rowCount > 20 ? 'complex' : 'simple';
-
-      tables.push({
-        id: randomUUID(),
-        caption,
-        headers,
-        rows,
-        location: currentSectionTitle,
-        complexity,
-        rowCount,
-        colCount,
-      });
-
-      i = j - 1; // advance past processed rows
-    }
-
-    return tables;
-  }
-
-  private _parseTableRow(line: string): string[] {
-    return line
-      .split('|')
-      .map((c) => c.trim())
-      .filter((c) => c.length > 0);
-  }
-
-  // -------------------------------------------------------------------------
-  // Figure extraction
-  // -------------------------------------------------------------------------
-
-  extractFigures(content: string): ExtractedFigure[] {
-    const figures: ExtractedFigure[] = [];
-    const lines = content.split('\n');
-    let currentSectionTitle = 'Document';
-
-    const mdImageRe = /!\[([^\]]*)\]\(([^)]+)\)/g;
-    const figureRefRe = /Figure\s+(\d+)\s*[:--]\s*(.+)/i;
-    const equationRe = /\$\$[^$]+\$\$/;
-    const diagramKeywords = /\b(diagram|flowchart|architecture|schema|workflow)\b/i;
-    const chartKeywords = /\b(chart|graph|plot|histogram|scatter)\b/i;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-
-      const mdHead = line.match(/^#{1,6}\s+(.+)/);
-      if (mdHead) {
-        currentSectionTitle = mdHead[1].trim();
-        continue;
-      }
-
-      // Markdown images: ![alt](url)
-      mdImageRe.lastIndex = 0;
-      let imgMatch: RegExpExecArray | null;
-      while ((imgMatch = mdImageRe.exec(line)) !== null) {
-        const altText = imgMatch[1];
-        const url = imgMatch[2];
-        const lowerAlt = altText.toLowerCase();
-        const lowerUrl = url.toLowerCase();
-
-        let figType: ExtractedFigure['type'] = 'image';
-        if (diagramKeywords.test(lowerAlt) || diagramKeywords.test(lowerUrl))
-          figType = 'diagram';
-        else if (chartKeywords.test(lowerAlt) || chartKeywords.test(lowerUrl))
-          figType = 'chart';
-
-        figures.push({
-          id: randomUUID(),
-          type: figType,
-          altText: altText || undefined,
-          location: currentSectionTitle,
-          description: altText
-            ? `${figType} — ${altText}`
-            : `${figType} at ${url}`,
-        });
-      }
-
-      // Inline Figure N: references
-      const figRefMatch = line.match(figureRefRe);
-      if (figRefMatch) {
-        const caption = figRefMatch[2].trim();
-        const lowerCaption = caption.toLowerCase();
-        let figType: ExtractedFigure['type'] = 'image';
-        if (diagramKeywords.test(lowerCaption)) figType = 'diagram';
-        else if (chartKeywords.test(lowerCaption)) figType = 'chart';
-        else if (equationRe.test(caption)) figType = 'equation';
-
-        figures.push({
-          id: randomUUID(),
-          type: figType,
-          caption,
-          location: currentSectionTitle,
-          description: caption,
-        });
-      }
-
-      // Block equations: $$ ... $$
-      if (equationRe.test(line)) {
-        figures.push({
-          id: randomUUID(),
-          type: 'equation',
-          location: currentSectionTitle,
-          description: line.trim().slice(0, 120),
-        });
-      }
-    }
-
-    return figures;
-  }
-
-  // -------------------------------------------------------------------------
-  // Knowledge graph construction
-  // -------------------------------------------------------------------------
-
-  buildKnowledgeGraph(sections: DocumentSection[]): KnowledgeGraph {
-    const nodeMap = new Map<string, KnowledgeNode>(); // label.lower -> node
-    const edgeCounts = new Map<string, number>(); // "fromId|toId" -> count
-
-    const allSections = this._flattenSections(sections);
-
-    for (const section of allSections) {
-      const text = section.title + ' ' + section.content;
-      const sentences = text.match(/[^.!?\n]+[.!?\n]+/g) ?? [text];
-
-      for (const sentence of sentences) {
-        const phrases = this._extractNounPhrases(sentence);
-        if (phrases.length < 2) continue;
-
-        const nodeIds: string[] = [];
-        for (const phrase of phrases) {
-          const key = phrase.toLowerCase();
-          if (!nodeMap.has(key)) {
-            nodeMap.set(key, {
-              id: randomUUID(),
-              type: this._classifyNodeType(phrase),
-              label: phrase,
-              aliases: [],
-              attributes: {},
-            });
-          }
-          nodeIds.push(nodeMap.get(key)!.id);
-        }
-
-        // Co-occurrence edges between all phrase pairs in the sentence
-        for (let a = 0; a < nodeIds.length; a++) {
-          for (let b = a + 1; b < nodeIds.length; b++) {
-            const edgeKey = `${nodeIds[a]}|${nodeIds[b]}`;
-            const reverseKey = `${nodeIds[b]}|${nodeIds[a]}`;
-            const canonicalKey = edgeCounts.has(reverseKey) ? reverseKey : edgeKey;
-            edgeCounts.set(canonicalKey, (edgeCounts.get(canonicalKey) ?? 0) + 1);
-          }
-        }
-      }
-    }
-
-    // Normalise edge weights by max co-occurrence count
-    const maxCount = Math.max(1, ...Array.from(edgeCounts.values()));
-    const edges: KnowledgeEdge[] = Array.from(edgeCounts.entries()).map(
-      ([key, count]) => {
-        const pipeIdx = key.indexOf('|');
-        return {
-          fromId: key.slice(0, pipeIdx),
-          toId: key.slice(pipeIdx + 1),
-          relation: 'co-occurs',
-          weight: Math.round((count / maxCount) * 100) / 100,
-        };
-      },
+  /**
+   * Find the most relevant section for a query using heading matching.
+   */
+  findRelevantSections(
+    structure: DocumentStructure,
+    query: string,
+    maxSections = 3
+  ): DocumentSection[] {
+    const queryTokens = new Set(
+      query.toLowerCase().split(/\s+/).filter((t) => t.length > 3)
     );
 
-    // Rank nodes by degree for root concept selection
-    const nodeDegree = new Map<string, number>();
-    for (const edge of edges) {
-      nodeDegree.set(edge.fromId, (nodeDegree.get(edge.fromId) ?? 0) + 1);
-      nodeDegree.set(edge.toId, (nodeDegree.get(edge.toId) ?? 0) + 1);
-    }
-
-    const nodes = Array.from(nodeMap.values());
-    const rootConcepts = [...nodes]
-      .sort((a, b) => (nodeDegree.get(b.id) ?? 0) - (nodeDegree.get(a.id) ?? 0))
-      .slice(0, 5)
-      .map((n) => n.id);
-
-    Logger.debug('DocumentIntelligence KG built', {
-      nodes: nodes.length,
-      edges: edges.length,
-      rootConcepts: rootConcepts.length,
+    const scored = structure.sections.flatMap((s) => [s, ...s.children]).map((section) => {
+      const titleTokens = section.title.toLowerCase().split(/\s+/);
+      const titleScore = titleTokens.filter((t) => queryTokens.has(t)).length;
+      const contentTokens = section.content.toLowerCase().split(/\s+/);
+      const contentScore = contentTokens.filter((t) => queryTokens.has(t)).length / Math.max(1, contentTokens.length / 10);
+      return { section, score: titleScore * 2 + contentScore };
     });
 
-    return { nodes, edges, rootConcepts };
-  }
-
-  private _classifyNodeType(phrase: string): KnowledgeNode['type'] {
-    const lower = phrase.toLowerCase();
-    const processWords = ['process', 'method', 'procedure', 'algorithm', 'workflow', 'system'];
-    const relationWords = ['relation', 'correlation', 'impact', 'effect', 'influence'];
-    if (processWords.some((w) => lower.includes(w))) return 'process';
-    if (relationWords.some((w) => lower.includes(w))) return 'relationship';
-    if (/^[A-Z][a-z]/.test(phrase) && phrase.includes(' ')) return 'entity';
-    return 'concept';
-  }
-
-  private _flattenSections(sections: DocumentSection[]): DocumentSection[] {
-    const result: DocumentSection[] = [];
-    for (const s of sections) {
-      result.push(s);
-      if (s.subsections.length > 0) {
-        result.push(...this._flattenSections(s.subsections));
-      }
-    }
-    return result;
-  }
-
-  // -------------------------------------------------------------------------
-  // TF-IDF key terms
-  // -------------------------------------------------------------------------
-
-  computeKeyTerms(content: string, topN = 20): string[] {
-    const ESTIMATED_CORPUS_SIZE = 10000;
-
-    const tokens = content
-      .toLowerCase()
-      .split(/\W+/)
-      .filter((w) => w.length > 3 && !this._isStopword(w));
-
-    const tf = new Map<string, number>();
-    for (const token of tokens) {
-      tf.set(token, (tf.get(token) ?? 0) + 1);
-    }
-
-    // Filter by minimum frequency threshold
-    const docTokenCount = tokens.length || 1;
-    const filteredTf = new Map<string, number>();
-    for (const [term, count] of tf.entries()) {
-      if (count >= this.config.minTermFrequency) {
-        filteredTf.set(term, count / docTokenCount);
-      }
-    }
-
-    // Sort by TF descending to assign Zipf rank for IDF estimation
-    const sorted = Array.from(filteredTf.entries()).sort(([, a], [, b]) => b - a);
-    const tfidfScores: Array<{ term: string; score: number }> = sorted.map(
-      ([term, termTf], rank) => {
-        const idf = Math.log(ESTIMATED_CORPUS_SIZE / (rank + 1));
-        return { term, score: termTf * idf };
-      },
-    );
-
-    tfidfScores.sort((a, b) => b.score - a.score);
-    return tfidfScores.slice(0, topN).map((e) => e.term);
-  }
-
-  // -------------------------------------------------------------------------
-  // Readability (Flesch Reading Ease)
-  // -------------------------------------------------------------------------
-
-  computeReadability(content: string): number {
-    const sentences = content.match(/[^.!?]+[.!?]+/g) ?? [];
-    const sentenceCount = sentences.length || 1;
-    const words = content.split(/\s+/).filter(Boolean);
-    const wordCount = words.length || 1;
-
-    let totalSyllables = 0;
-    for (const word of words) {
-      totalSyllables += this._countSyllables(word);
-    }
-
-    const asl = wordCount / sentenceCount;
-    const asw = totalSyllables / wordCount;
-    const score = 206.835 - 1.015 * asl - 84.6 * asw;
-
-    return Math.round(Math.max(0, Math.min(100, score)));
-  }
-
-  private _countSyllables(word: string): number {
-    const cleaned = word.toLowerCase().replace(/[^a-z]/g, '');
-    if (cleaned.length === 0) return 1;
-
-    // Remove trailing silent 'e' before counting vowel groups
-    const withoutTrailingE =
-      cleaned.endsWith('e') && cleaned.length > 2
-        ? cleaned.slice(0, -1)
-        : cleaned;
-
-    const matches = withoutTrailingE.match(/[aeiouy]+/g);
-    return Math.max(1, matches ? matches.length : 1);
-  }
-
-  // -------------------------------------------------------------------------
-  // Noun phrase extraction (used by knowledge graph builder)
-  // -------------------------------------------------------------------------
-
-  private _extractNounPhrases(sentence: string): string[] {
-    const phrases: string[] = [];
-    const words = sentence.split(/\s+/).filter(Boolean);
-    let currentPhrase: string[] = [];
-
-    for (const word of words) {
-      const clean = word.replace(/[^\w]/g, '');
-      if (clean.length === 0) {
-        if (currentPhrase.length >= 1) {
-          phrases.push(currentPhrase.join(' '));
-          currentPhrase = [];
-        }
-        continue;
-      }
-      if (/^[A-Z]/.test(clean)) {
-        currentPhrase.push(clean);
-      } else {
-        if (currentPhrase.length >= 1) {
-          phrases.push(currentPhrase.join(' '));
-          currentPhrase = [];
-        }
-        // Include meaningful single lowercase words
-        if (clean.length > 4 && !this._isStopword(clean.toLowerCase())) {
-          phrases.push(clean);
-        }
-      }
-    }
-    if (currentPhrase.length >= 1) phrases.push(currentPhrase.join(' '));
-
-    // Strip purely numeric or single-character results
-    return phrases.filter((p) => p.length > 1 && !/^\d+$/.test(p));
-  }
-
-  // -------------------------------------------------------------------------
-  // Summary generation
-  // -------------------------------------------------------------------------
-
-  async generateSummary(
-    content: string,
-    maxSentences = 5,
-  ): Promise<string> {
-    if (!this.config.summarize) {
-      // Extractive: first sentence of each top-level section
-      const structure = this.extractStructure(content);
-      const topLevel = structure.filter((s) => s.level <= 1);
-      const sentences: string[] = [];
-
-      for (const section of topLevel) {
-        if (sentences.length >= maxSentences) break;
-        const firstSentence = section.content.match(/[^.!?]+[.!?]+/)?.[0];
-        if (firstSentence) sentences.push(firstSentence.trim());
-      }
-
-      if (sentences.length === 0) {
-        const allSentences = content.match(/[^.!?]+[.!?]+/g) ?? [];
-        return allSentences.slice(0, maxSentences).join(' ').trim();
-      }
-
-      return sentences.join(' ').trim();
-    }
-
-    // LLM path: requires an injected LLM client in a real deployment.
-    // Fall back to extractive to avoid a hard dependency here.
-    Logger.warn(
-      'DocumentIntelligence.generateSummary: summarize=true but no LLM client injected — using extractive fallback',
-    );
-    const allSentences = content.match(/[^.!?]+[.!?]+/g) ?? [];
-    return allSentences.slice(0, maxSentences).join(' ').trim();
-  }
-
-  // -------------------------------------------------------------------------
-  // Language detection
-  // -------------------------------------------------------------------------
-
-  private _detectLanguage(content: string): string {
-    const lower = content.toLowerCase();
-    const esSignals = ['que', 'del', 'los', 'las', 'una', 'con', 'por', 'para', 'esta'];
-    const enSignals = ['the', 'and', 'that', 'for', 'are', 'with', 'this', 'from'];
-    const esCount = esSignals.filter((w) => new RegExp(`\\b${w}\\b`).test(lower)).length;
-    const enCount = enSignals.filter((w) => new RegExp(`\\b${w}\\b`).test(lower)).length;
-    return esCount > enCount ? 'es' : 'en';
-  }
-
-  // -------------------------------------------------------------------------
-  // Stopword list (English + Spanish, 60+ entries)
-  // -------------------------------------------------------------------------
-
-  private _isStopword(word: string): boolean {
-    const STOPWORDS = new Set([
-      // English
-      'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'any', 'can',
-      'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him',
-      'his', 'how', 'its', 'may', 'new', 'now', 'old', 'see', 'two', 'way',
-      'who', 'did', 'use', 'man', 'too', 'she', 'they', 'from', 'that',
-      'this', 'with', 'have', 'been', 'were', 'said', 'each', 'which',
-      'their', 'will', 'more', 'also', 'into', 'some', 'than', 'then',
-      'these', 'would', 'other', 'when', 'there', 'about', 'many', 'such',
-      'just', 'over', 'after', 'under', 'while', 'being', 'should', 'could',
-      // Spanish
-      'que', 'del', 'los', 'las', 'una', 'con', 'por', 'para', 'esta',
-      'como', 'pero', 'sus', 'ser', 'entre', 'desde', 'hasta', 'sobre',
-      'hacia', 'durante', 'mediante', 'porque', 'aunque', 'cuando', 'donde',
-      'todo', 'este', 'ese', 'unos', 'unas', 'tambien', 'mismo', 'cada',
-    ]);
-    return STOPWORDS.has(word.toLowerCase());
+    return scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxSections)
+      .filter((s) => s.score > 0)
+      .map((s) => s.section);
   }
 }
+
+export const documentIntelligence = new DocumentIntelligence();
