@@ -5048,6 +5048,8 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       const userProfile = userSettings?.userProfile || null;
 
       let detectedWebSources: any[] = [];
+      let capturedSearchQueries: Array<{ query: string; resultCount: number; status: string }> = [];
+      let capturedTotalSearches = 0;
       let webSearchContextForLLM = ""; // Will be injected into system prompt
 
       const requestedWebSearch = !!forceWebSearch || !!webSearchAuto;
@@ -5109,9 +5111,13 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
                 }));
 
                 console.log("[Stream] Academic search complete", { papers: engineResult.papers.length });
+                capturedSearchQueries.push({ query: userQuery, resultCount: engineResult.papers.length, status: "completed" });
+                capturedTotalSearches = 1;
               }
             } catch (academicError) {
               console.error('[Stream] Academic search error:', academicError);
+              capturedSearchQueries.push({ query: userQuery, resultCount: 0, status: "failed" });
+              capturedTotalSearches = 1;
             }
           } else if (doWeb) {
             console.log("[Stream] Web search", {
@@ -5162,9 +5168,13 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
                 }));
 
                 console.log("[Stream] Web search complete", { results: searchResults.results.length, contentsCount: searchResults.contents?.length || 0 });
+                capturedSearchQueries.push({ query: userQuery, resultCount: searchResults.results.length, status: "completed" });
+                capturedTotalSearches = 1;
               }
             } catch (webError) {
               console.error('[Stream] Web search error:', webError);
+              capturedSearchQueries.push({ query: userQuery, resultCount: 0, status: "failed" });
+              capturedTotalSearches = 1;
             }
           }
         } catch (importError) {
@@ -6499,6 +6509,18 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
       if (shouldRouteThroughAgentLoop) {
         const activeIntent = unifiedContext?.requestSpec?.intent || "unknown";
         console.log(`[Stream] 🤖 AGENT LOOP: routing intent=${activeIntent} through executeAgentLoop`);
+        const origSseWrite = (res as any).sseWrite;
+        if (origSseWrite) {
+          (res as any).sseWrite = (event: string, data: any) => {
+            if (event === "search_progress") {
+              capturedTotalSearches = data?.total || capturedTotalSearches;
+              if (data?.completed && Array.isArray(data?.queryLog)) {
+                capturedSearchQueries = data.queryLog;
+              }
+            }
+            return origSseWrite.call(res, event, data);
+          };
+        }
         try {
           const agentMessages = [
             { role: "system", content: typeof systemMessage.content === "string" ? systemMessage.content : "" },
@@ -6520,6 +6542,14 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             markFirstToken();
           }
           agentLoopHandled = true;
+          if (capturedSearchQueries.length > 0) {
+            detectedWebSources.forEach((ws: any) => {
+              if (!ws.query) {
+                const matchingQuery = capturedSearchQueries.find(q => q.status === "completed");
+                if (matchingQuery) ws.query = matchingQuery.query;
+              }
+            });
+          }
           console.log(`[Stream] Agent loop completed, fullContent length: ${fullContent.length}`);
         } catch (agentError: any) {
           console.error(`[Stream] Agent loop error:`, agentError?.message || agentError);
@@ -6657,6 +6687,8 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
               intent: unifiedContext?.requestSpec.intent,
               latencyLane: resolvedLane,
               webSources: detectedWebSources.length > 0 ? detectedWebSources : undefined,
+              searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
+              totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
               provider: activeStreamProvider || undefined,
               traceId: requestId,
               timings: buildTimingPayload(),
@@ -6716,6 +6748,8 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           const metadata: Record<string, any> = {};
           if (detectedWebSources.length > 0) metadata.webSources = detectedWebSources;
           if (cotSteps.length > 0) metadata.steps = cotSteps;
+          if (capturedSearchQueries.length > 0) metadata.searchQueries = capturedSearchQueries;
+          if (capturedTotalSearches > 0) metadata.totalSearches = capturedTotalSearches;
 
           const finalMetadata = Object.keys(metadata).length > 0 ? metadata : undefined;
 
@@ -6780,6 +6814,8 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             assistantMessageId,
             latencyLane: resolvedLane,
             webSources: detectedWebSources.length > 0 ? detectedWebSources : undefined,
+            searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
+            totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
             provider: activeStreamProvider || undefined,
             traceId: requestId,
             timings: finalTimings,
@@ -6865,6 +6901,8 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           writeSse(res, 'done', {
             requestId,
             runId: errorRunId,
+            searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
+            totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
             provider: activeStreamProvider || undefined,
             traceId: requestId,
             timings: errorTimings,

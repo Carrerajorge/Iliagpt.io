@@ -6661,8 +6661,8 @@ IMPORTANTE:
                     confidence: uncertainty?.confidence,
                     uncertaintyReason: uncertainty?.reason,
                     webSources: data?.webSources || streamWebSources,
-                    searchQueries: streamSearchQueries.length > 0 ? streamSearchQueries : undefined,
-                    totalSearches: streamTotalSearches > 0 ? streamTotalSearches : undefined,
+                    searchQueries: streamSearchQueries.length > 0 ? streamSearchQueries : (data?.searchQueries || undefined),
+                    totalSearches: streamTotalSearches > 0 ? streamTotalSearches : (data?.totalSearches || undefined),
                   };
                   if (cerebroTimeline.subtasks.length > 0 || cerebroTimeline.judgeResult || cerebroTimeline.budget) {
                     finalMsg.cerebroTimeline = { ...cerebroTimeline };

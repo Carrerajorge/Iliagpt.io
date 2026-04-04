@@ -759,6 +759,8 @@ export function createChatsRouter() {
         gmailPreview,
         generatedImage,
         webSources,
+        searchQueries,
+        totalSearches,
         confidence,
         uncertaintyReason,
         retrievalSteps,
@@ -946,8 +948,10 @@ export function createChatsRouter() {
         googleFormPreview: googleFormPreview || null,
         gmailPreview: gmailPreview || null,
         generatedImage: generatedImage || null,
-        metadata: webSources || confidence || uncertaintyReason || retrievalSteps ? {
+        metadata: webSources || searchQueries || totalSearches || confidence || uncertaintyReason || retrievalSteps ? {
           webSources: webSources || undefined,
+          searchQueries: searchQueries || undefined,
+          totalSearches: totalSearches || undefined,
           confidence: confidence || undefined,
           uncertaintyReason: uncertaintyReason || undefined,
           retrievalSteps: retrievalSteps || undefined,

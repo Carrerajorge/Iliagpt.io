@@ -24,11 +24,14 @@ const ACADEMIC_DOMAINS = new Set([
   "researchgate.net", "arxiv.org", "doi.org", "scopus.com", "webofscience.com",
   "semanticscholar.org", "academia.edu", "springer.com", "wiley.com",
   "nature.com", "science.org", "ieee.org", "acm.org", "elsevier.com",
+  "tandfonline.com", "sagepub.com", "nih.gov", "plos.org",
 ]);
 
 const isAcademic = (source: WebSource): boolean => {
   const domain = (source.domain || "").replace(/^www\./, "").toLowerCase();
-  return ACADEMIC_DOMAINS.has(domain);
+  return ACADEMIC_DOMAINS.has(domain) ||
+    /\b(doi|issn|isbn|pmid|arxiv)\b/i.test(source.snippet || "") ||
+    /\b(journal|peer.?review|abstract|methodology|findings)\b/i.test(source.snippet || "");
 };
 
 function inferDatabase(domain: string): string {
@@ -43,6 +46,10 @@ function inferDatabase(domain: string): string {
   if (d.includes("ieee")) return "IEEE";
   if (d.includes("springer")) return "Springer";
   if (d.includes("nature.com")) return "Nature";
+  if (d.includes("science.org")) return "Science";
+  if (d.includes("elsevier")) return "Elsevier";
+  if (d.includes("wiley")) return "Wiley";
+  if (d.includes("semanticscholar")) return "Semantic Scholar";
   return "";
 }
 
