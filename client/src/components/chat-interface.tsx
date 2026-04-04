@@ -3556,7 +3556,11 @@ export function ChatInterface({
     const items = clipboard?.items;
     if (!clipboard) return;
 
+    const pastedText = clipboard.getData("text/plain");
+    const hasTextContent = !!pastedText.trim();
+
     const filesToUpload: File[] = [];
+    let allFilesAreImages = true;
 
     const itemsArray = items ? (Array.from(items) as any[]) : [];
     for (const item of itemsArray) {
@@ -3564,9 +3568,10 @@ export function ChatInterface({
       const file = item.getAsFile?.();
       if (!file) continue;
 
-      const originalName = (file.name || "").trim();
       const declaredType = (file.type || item.type || "").trim();
+      if (!declaredType.startsWith("image/")) allFilesAreImages = false;
 
+      const originalName = (file.name || "").trim();
       const isGenericImageName = !originalName || originalName === "image.png" || originalName === "image.jpg";
       const subtype = declaredType.includes("/") ? declaredType.split("/")[1] : "";
       const cleanedSubtype = subtype.split("+")[0].split(".")[0];
@@ -3577,14 +3582,18 @@ export function ChatInterface({
       filesToUpload.push(normalized);
     }
 
-    // Some browsers expose pasted files via clipboardData.files instead of items.
     if (clipboard.files && clipboard.files.length > 0) {
       for (const f of Array.from(clipboard.files)) {
+        const declaredType = (f.type || "").trim();
+        if (!declaredType.startsWith("image/")) allFilesAreImages = false;
         filesToUpload.push(normalizeFileForUpload(f));
       }
     }
 
     if (filesToUpload.length > 0) {
+      if (hasTextContent && allFilesAreImages) {
+        return;
+      }
       e.preventDefault();
       await processFilesForUpload(filesToUpload);
       return;
