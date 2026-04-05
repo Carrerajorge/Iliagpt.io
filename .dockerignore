@@ -5,10 +5,6 @@
 
 # Rust build artifacts (~881 MB, dev-only)
 native/
-native/target/
-native/src/
-native/Cargo.toml
-native/Cargo.lock
 
 # Python dev libraries (~215 MB)
 .pythonlibs/
@@ -82,7 +78,7 @@ eslint.config.mjs
 Shimmer
 *.log
 
-# node_modules: dev-only large packages (~800 MB)
+# node_modules: dev-only and build-only packages
 node_modules/.cache
 node_modules/.vite
 node_modules/.package-lock.json
@@ -90,6 +86,7 @@ node_modules/electron/
 node_modules/electron-builder/
 node_modules/app-builder-bin/
 node_modules/app-builder-lib/
+node_modules/7zip-bin/
 node_modules/@opentelemetry/
 node_modules/happy-dom/
 node_modules/drizzle-kit/
@@ -104,9 +101,47 @@ node_modules/wait-on/
 node_modules/@types/
 node_modules/three/
 node_modules/3d-force-graph/
+node_modules/react-force-graph-3d/
+node_modules/three-render-objects/
+node_modules/vite/
+node_modules/@vitejs/
+node_modules/@esbuild/
+node_modules/@esbuild-kit/
+node_modules/esbuild/
+node_modules/tsx/
+node_modules/prettier/
+node_modules/playwright-core/
+node_modules/lightningcss-linux-x64-musl/
+node_modules/lightningcss-linux-x64-gnu/
+node_modules/core-js/
+node_modules/@babel/
+
+# node_modules: frontend packages (already bundled into dist/)
+node_modules/react/
+node_modules/react-dom/
+node_modules/react-day-picker/
+node_modules/lucide-react/
+node_modules/@radix-ui/
+node_modules/@tanstack/
+node_modules/react-syntax-highlighter/
+node_modules/@tiptap/
+node_modules/mermaid/
+node_modules/echarts/
+node_modules/cytoscape/
+node_modules/cytoscape-fcose/
+node_modules/handsontable/
+node_modules/swagger-ui-dist/
+node_modules/@mixmark-io/
+node_modules/rehype-highlight/
+node_modules/date-fns/
+node_modules/date-fns-jalali/
+node_modules/tailwindcss/
+node_modules/autoprefixer/
+node_modules/postcss/
 
 # Frontend source (already built into dist/public/)
 client/src/
+client/public/
 
 # Dev/test scripts (not needed at runtime)
 scripts/
