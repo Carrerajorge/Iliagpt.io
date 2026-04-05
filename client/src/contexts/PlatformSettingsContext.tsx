@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 export type PlatformThemeMode = "dark" | "light" | "auto";
@@ -137,30 +137,29 @@ export function PlatformSettingsProvider({ children }: { children: ReactNode }) 
     retry: 1,
   });
 
-  const settings: PlatformSettings = { ...FALLBACK_SETTINGS, ...(data?.settings || {}) };
+  const settings: PlatformSettings = useMemo(
+    () => ({ ...FALLBACK_SETTINGS, ...(data?.settings || {}) }),
+    [data?.settings],
+  );
 
   useEffect(() => {
-    // App name in browser chrome.
     document.title = settings.app_name || FALLBACK_SETTINGS.app_name;
   }, [settings.app_name]);
 
   useEffect(() => {
-    // Branding variables used by shadcn/ui theme.
     applyBrandingCss(settings);
-    
-    // REMOVED: Do not force theme mode from platform settings. 
-    // Let user preferences (SettingsContext) handle light/dark mode.
-    // document.documentElement.dataset.platformThemeMode = settings.theme_mode;
   }, [settings.primary_color, settings.secondary_color, settings.theme_mode]);
 
+  const errorStr = error ? String(error) : null;
+
+  const contextValue = useMemo(() => ({
+    settings,
+    isLoading,
+    error: errorStr,
+  }), [settings, isLoading, errorStr]);
+
   return (
-    <PlatformSettingsContext.Provider
-      value={{
-        settings,
-        isLoading,
-        error: error ? String(error) : null,
-      }}
-    >
+    <PlatformSettingsContext.Provider value={contextValue}>
       {children}
     </PlatformSettingsContext.Provider>
   );

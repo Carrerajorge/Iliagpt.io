@@ -1352,15 +1352,16 @@ export function useChats() {
   }, []);
 
   // Fetch details for active chat when selected
+  const chatsRef = useRef(chats);
+  chatsRef.current = chats;
   useEffect(() => {
     if (activeChatId && !isPendingChat(activeChatId)) {
-      // Check if we already have messages
-      const chat = chats.find(c => c.id === activeChatId);
+      const chat = chatsRef.current.find(c => c.id === activeChatId);
       if (chat && chat.messages.length === 0) {
         fetchChatDetails(activeChatId);
       }
     }
-  }, [activeChatId, fetchChatDetails, chats]);
+  }, [activeChatId, fetchChatDetails]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1490,12 +1491,16 @@ export function useChats() {
     window.addEventListener("refresh-chat-title", handleTitleRefresh);
     return () => window.removeEventListener("refresh-chat-title", handleTitleRefresh);
   }, []);
+  const isLoadingRef = useRef(isLoading);
+  isLoadingRef.current = isLoading;
+  const chatsLengthRef = useRef(chats.length);
+  chatsLengthRef.current = chats.length;
   useEffect(() => {
-    if (!isLoading && chats.length > 0) {
-      // Use debounced save to prevent excessive writes during streaming
+    if (!isLoadingRef.current && chatsLengthRef.current > 0) {
       debouncedLocalStorageSave(chats, STORAGE_KEY);
     }
-  }, [chats, isLoading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chats]);
 
   // Flush pending saves on page unload
   useEffect(() => {
@@ -2088,16 +2093,15 @@ export function useChats() {
     }
     return null;
   }, [activeChatId, chats]);
-  const sortedChats = [...chats].sort((a, b) => b.timestamp - a.timestamp);
-  const visibleChats = sortedChats.filter(c => !c.hidden);
-  const archivedChats = sortedChats.filter(c => c.archived && !c.hidden);
-  const hiddenChats = sortedChats.filter(c => c.hidden);
-  const pinnedChats = sortedChats.filter(c => c.pinned && !c.hidden).sort((a, b) => {
-    // Sort pinned chats by pinnedAt date (newest first)
+  const sortedChats = useMemo(() => [...chats].sort((a, b) => b.timestamp - a.timestamp), [chats]);
+  const visibleChats = useMemo(() => sortedChats.filter(c => !c.hidden), [sortedChats]);
+  const archivedChats = useMemo(() => sortedChats.filter(c => c.archived && !c.hidden), [sortedChats]);
+  const hiddenChats = useMemo(() => sortedChats.filter(c => c.hidden), [sortedChats]);
+  const pinnedChats = useMemo(() => sortedChats.filter(c => c.pinned && !c.hidden).sort((a, b) => {
     const aDate = a.pinnedAt ? new Date(a.pinnedAt).getTime() : 0;
     const bDate = b.pinnedAt ? new Date(b.pinnedAt).getTime() : 0;
     return bDate - aDate;
-  });
+  }), [sortedChats]);
 
   const getChatDateLabel = (timestamp: number) => {
     const date = new Date(timestamp);

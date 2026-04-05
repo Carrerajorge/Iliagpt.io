@@ -4,16 +4,16 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as SonnerToaster } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { useEffect, useState, useCallback, useRef, lazy, Suspense } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo, lazy, Suspense } from "react";
 import { SettingsProvider } from "@/contexts/SettingsContext";
 import { useSettingsContext } from "@/contexts/SettingsContext";
 import { ModelAvailabilityProvider } from "@/contexts/ModelAvailabilityContext";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
-import { useChats } from "@/hooks/use-chats";
 import { SearchModal } from "@/components/search-modal";
 import { ToolCatalog } from "@/components/tool-catalog";
 import { BackgroundNotificationContainer } from "@/components/background-notification";
 import { CommandPalette } from "@/components/command-palette";
+import { useChats } from "@/hooks/use-chats";
 import { KeyboardShortcutsModal } from "@/components/modals/KeyboardShortcutsModal";
 import { OfflineIndicator } from "@/components/OfflineIndicator";
 import { SkipLink } from "@/lib/accessibility";
@@ -188,13 +188,22 @@ const ProtectedMonitoringDashboard = requireAuth(MonitoringDashboard);
 const ProtectedRunReplayPage = requireAuth(RunReplayPage);
 const ProtectedOrchestrationDAGPage = requireAuth(OrchestrationDAGPage);
 
+function SearchModalWithChats(props: Omit<React.ComponentProps<typeof SearchModal>, 'chats'>) {
+  const { chats } = useChats();
+  return <SearchModal {...props} chats={chats} />;
+}
+
+function CommandPaletteWithChats(props: Omit<React.ComponentProps<typeof CommandPalette>, 'chats'>) {
+  const { chats } = useChats();
+  return <CommandPalette {...props} chats={chats} />;
+}
+
 function GlobalKeyboardShortcuts() {
   const [, setLocation] = useLocation();
   const [searchOpen, setSearchOpen] = useState(false);
   const [toolCatalogOpen, setToolCatalogOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false);
-  const { chats } = useChats();
   const { settings } = useSettingsContext();
 
   const handleNewChat = useCallback(() => {
@@ -207,7 +216,7 @@ function GlobalKeyboardShortcuts() {
   }, [setLocation]);
 
   const handleOpenSearch = useCallback(() => {
-    setCommandPaletteOpen(true); // Now opens Command Palette instead
+    setCommandPaletteOpen(true);
     void trackWorkspaceEvent({
       eventType: "action",
       action: "command_palette_opened",
@@ -261,36 +270,40 @@ function GlobalKeyboardShortcuts() {
     window.dispatchEvent(new CustomEvent("tool-selected", { detail: { tool } }));
   }, []);
 
-  useKeyboardShortcuts([
+  const shortcutsConfig = useMemo(() => [
     { key: "n", ctrl: true, action: handleNewChat, description: "Nuevo chat" },
     { key: "k", ctrl: true, action: handleOpenSearch, description: "Command Palette" },
     { key: "k", ctrl: true, shift: true, action: handleOpenToolCatalog, description: "Tool Catalog" },
     { key: "Escape", action: handleCloseDialogs, description: "Cerrar diálogo" },
     { key: ",", ctrl: true, action: handleOpenSettings, description: "Configuración" },
-  ], { enabled: settings.keyboardShortcuts });
+  ], [handleNewChat, handleOpenSearch, handleOpenToolCatalog, handleCloseDialogs, handleOpenSettings]);
+
+  useKeyboardShortcuts(shortcutsConfig, { enabled: settings.keyboardShortcuts });
 
   return (
     <>
-      <SearchModal
-        open={searchOpen}
-        onOpenChange={setSearchOpen}
-        chats={chats}
-        onSelectChat={handleSelectChat}
-      />
+      {searchOpen && (
+        <SearchModalWithChats
+          open={searchOpen}
+          onOpenChange={setSearchOpen}
+          onSelectChat={handleSelectChat}
+        />
+      )}
       <ToolCatalog
         open={toolCatalogOpen}
         onOpenChange={setToolCatalogOpen}
         onSelectTool={handleSelectTool}
       />
-      <CommandPalette
-        isOpen={commandPaletteOpen}
-        onClose={() => setCommandPaletteOpen(false)}
-        onNewChat={handleNewChat}
-        onOpenSettings={() => { setCommandPaletteOpen(false); setLocation("/settings"); }}
-        onOpenShortcuts={handleOpenShortcuts}
-        chats={chats}
-        onSelectChat={handleSelectChat}
-      />
+      {commandPaletteOpen && (
+        <CommandPaletteWithChats
+          isOpen={commandPaletteOpen}
+          onClose={() => setCommandPaletteOpen(false)}
+          onNewChat={handleNewChat}
+          onOpenSettings={() => { setCommandPaletteOpen(false); setLocation("/settings"); }}
+          onOpenShortcuts={handleOpenShortcuts}
+          onSelectChat={handleSelectChat}
+        />
+      )}
       <KeyboardShortcutsModal
         isOpen={shortcutsModalOpen}
         onClose={() => setShortcutsModalOpen(false)}

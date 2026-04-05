@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, ReactNode } from "react";
+import { createContext, useContext, useEffect, useCallback, useMemo, ReactNode } from "react";
 import { useSettings, applyTheme, applyAccentColor, UserSettings } from "@/hooks/use-settings";
 import { useAuth } from "@/hooks/use-auth";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
@@ -31,16 +31,12 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const { settings: platformSettings } = usePlatformSettings();
 
   useEffect(() => {
-    // Enforce a simple invariant: advanced voice requires voice mode.
-    // This prevents "advancedVoice=true" from lingering if voiceMode is later disabled
-    // (e.g. from an older local storage state).
     if (!settings.voiceMode && settings.advancedVoice) {
       updateSettings({ advancedVoice: false });
     }
   }, [settings.voiceMode, settings.advancedVoice, updateSettings]);
 
   useEffect(() => {
-    // Platform theme mode is global; users can only override when platform is "auto".
     const effectiveAppearance: UserSettings["appearance"] =
       platformSettings.theme_mode === "dark"
         ? "dark"
@@ -63,8 +59,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, [settings.appearance, settings.accentColor, platformSettings.theme_mode]);
 
   useEffect(() => {
-    // Apply per-user accent color after platform branding. This lets users pick an accent
-    // while keeping platform primary/secondary as the default.
     applyAccentColor(settings.accentColor);
   }, [platformSettings.primary_color, platformSettings.secondary_color, settings.accentColor, settings.appearance]);
 
@@ -75,11 +69,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const root = document.documentElement;
 
-    // Accessibility
     root.classList.toggle("high-contrast", settings.highContrast);
     root.classList.toggle("reduce-motion", settings.reducedMotion);
 
-    // Font size: scale the app consistently (Tailwind uses rem units).
     root.style.fontSize =
       settings.fontSize === "small"
         ? "14px"
@@ -87,7 +79,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
           ? "18px"
           : "16px";
 
-    // Density: expose a few control sizing vars used by shared UI components.
     const density = settings.density;
     root.dataset.density = density;
 
@@ -136,19 +127,19 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }
   }, [settings.highContrast, settings.reducedMotion, settings.fontSize, settings.density]);
 
-  const wrappedUpdateSettings = (updates: Partial<UserSettings>) => {
+  const themeMode = platformSettings.theme_mode;
+
+  const wrappedUpdateSettings = useCallback((updates: Partial<UserSettings>) => {
     const normalized: Partial<UserSettings> = { ...updates };
-    // If voice mode is disabled, advanced voice must be disabled as well.
     if (normalized.voiceMode === false) {
       normalized.advancedVoice = false;
     } else if (normalized.advancedVoice === true) {
-      // Enabling advanced voice should enable voice mode too.
       normalized.voiceMode = true;
     }
     updateSettings(normalized);
-  };
+  }, [updateSettings]);
 
-  const wrappedUpdateSetting = <K extends keyof UserSettings>(key: K, value: UserSettings[K]) => {
+  const wrappedUpdateSetting = useCallback(<K extends keyof UserSettings>(key: K, value: UserSettings[K]) => {
     if (key === "voiceMode" && value === false) {
       wrappedUpdateSettings({ voiceMode: false, advancedVoice: false });
       return;
@@ -162,9 +153,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
     if (key === "appearance") {
       const effectiveAppearance: UserSettings["appearance"] =
-        platformSettings.theme_mode === "dark"
+        themeMode === "dark"
           ? "dark"
-          : platformSettings.theme_mode === "light"
+          : themeMode === "light"
             ? "light"
             : (value as UserSettings["appearance"]);
 
@@ -174,19 +165,21 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     if (key === "accentColor") {
       applyAccentColor("default");
     }
-  };
+  }, [updateSetting, wrappedUpdateSettings, themeMode]);
+
+  const contextValue = useMemo<SettingsContextType>(() => ({
+    settings,
+    updateSetting: wrappedUpdateSetting,
+    updateSettings: wrappedUpdateSettings,
+    resetSettings,
+    syncSettingsToServer,
+    loadSettingsFromServer,
+    isSyncing,
+    isAuthenticated,
+  }), [settings, wrappedUpdateSetting, wrappedUpdateSettings, resetSettings, syncSettingsToServer, loadSettingsFromServer, isSyncing, isAuthenticated]);
 
   return (
-    <SettingsContext.Provider value={{
-      settings,
-      updateSetting: wrappedUpdateSetting,
-      updateSettings: wrappedUpdateSettings,
-      resetSettings,
-      syncSettingsToServer,
-      loadSettingsFromServer,
-      isSyncing,
-      isAuthenticated,
-    }}>
+    <SettingsContext.Provider value={contextValue}>
       {children}
     </SettingsContext.Provider>
   );

@@ -1,6 +1,6 @@
 
 
-import { createContext, ReactNode, useContext, useEffect, useCallback } from "react";
+import { createContext, ReactNode, useContext, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { User } from "@shared/schema";
 
@@ -336,16 +336,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     );
   }, [user]);
 
+  const resolvedUser = user ?? null;
+  const isReady = isFetched;
+  const isAuth = !!user && !isAnonymousUser(user);
+
+  const contextValue = useMemo(() => ({
+    user: resolvedUser,
+    isLoading,
+    isReady,
+    isAuthenticated: isAuth,
+    login,
+    logout,
+    refreshAuth,
+  }), [resolvedUser, isLoading, isReady, isAuth, login, logout, refreshAuth]);
+
   return (
-    <AuthContext.Provider value={{
-      user: user ?? null,
-      isLoading,
-      isReady: isFetched,
-      isAuthenticated: !!user && !isAnonymousUser(user),
-      login,
-      logout,
-      refreshAuth
-    }}>
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );

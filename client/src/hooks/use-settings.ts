@@ -384,6 +384,7 @@ export function useSettings(userId?: string | null) {
     value: UserSettings[K]
   ) => {
     setSettingsState((prev) => {
+      if (prev[key] === value) return prev;
       const updated = { ...prev, [key]: value };
       saveSettings(updated);
       debouncedSyncToServer(updated);

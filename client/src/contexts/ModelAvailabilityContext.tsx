@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode, useRef } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, ReactNode, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useSettingsContext } from "@/contexts/SettingsContext";
@@ -59,7 +59,7 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
     refetchOnWindowFocus: false,
   });
 
-  const localMockModels: AvailableModel[] = [
+  const localMockModels: AvailableModel[] = useMemo(() => [
     {
       id: "llama3-8b",
       name: "Llama 3 (M\u00e1quina Local / Ollama)",
@@ -74,12 +74,19 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
       modelType: "chat",
       contextWindow: 128000
     }
-  ];
+  ], []);
 
-  const allModels = [...localMockModels, ...(modelsData?.models || [])];
-  const enabledModels = allModels
-    .map(m => ({ ...m, isEnabled: "true" }))
-    .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+  const allModels = useMemo(
+    () => [...localMockModels, ...(modelsData?.models || [])],
+    [localMockModels, modelsData?.models],
+  );
+
+  const enabledModels = useMemo(
+    () => allModels
+      .map(m => ({ ...m, isEnabled: "true" as const }))
+      .sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0)),
+    [allModels],
+  );
 
   const availableModels = enabledModels;
 
@@ -109,70 +116,65 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
     }
   }, [enabledModels, selectedModelId, toast]);
 
-  // Initialize selected model from Settings -> Default Model.
-  useEffect(() => {
-    if (selectedModelId) return;
-
-    const legacyDefaultModelIds = new Set(["gemini-2.5-flash"]);
-
-    const findEnabled = (id: string) =>
-      enabledModels.find((m) => m.modelId === id || m.id === id);
-
-    const userDefault = settings.defaultModel;
-    const platformDefault = platformSettings.default_model;
-    const preferPlatformDefault =
-      !userDefault || legacyDefaultModelIds.has(userDefault);
-
-    const primary = preferPlatformDefault ? platformDefault : userDefault;
-    const secondary = preferPlatformDefault ? userDefault : platformDefault;
-
-    const target = (primary ? findEnabled(primary) : undefined) || (secondary ? findEnabled(secondary) : undefined);
-    if (target) {
-      setSelectedModelIdState(target.id);
-      return;
-    }
-    if (enabledModels[0]) {
-      // Fall back to the first enabled model so the rest of the app has a stable selection.
-      setSelectedModelIdState(enabledModels[0].id);
-    }
-  }, [enabledModels, selectedModelId, settings.defaultModel, platformSettings.default_model]);
-
-  // Keep Settings -> Default Model in sync with the selector.
-  useEffect(() => {
-    if (!selectedModelId) return;
-    const model = enabledModels.find((m) => m.id === selectedModelId || m.modelId === selectedModelId);
-    if (!model?.modelId) return;
-    if (model.modelId !== settings.defaultModel) {
-      updateSetting("defaultModel", model.modelId);
-    }
-  }, [enabledModels, selectedModelId, settings.defaultModel, updateSetting]);
-
   const isFreeUser = isFreeTierUser(user ? { plan: (user as any).plan, role: (user as any).role, subscriptionStatus: (user as any).subscriptionStatus, subscriptionPlan: (user as any).subscriptionPlan } : null);
-
-  useEffect(() => {
-    if (!isFreeUser || !selectedModelId || enabledModels.length === 0) return;
-    const current = enabledModels.find(m => m.id === selectedModelId || m.modelId === selectedModelId);
-    if (current && current.modelId !== FREE_MODEL_ID && current.id !== FREE_MODEL_ID) {
-      const freeModel = enabledModels.find(m => m.modelId === FREE_MODEL_ID || m.id === FREE_MODEL_ID);
-      if (freeModel) {
-        setSelectedModelIdState(freeModel.id);
-      }
-    }
-  }, [isFreeUser, selectedModelId, enabledModels]);
 
   const prevDefaultModelRef = useRef(settings.defaultModel);
 
-  // If the user changes Default Model from Settings, reflect it in the selector.
   useEffect(() => {
+    const findEnabled = (id: string) =>
+      enabledModels.find((m) => m.modelId === id || m.id === id);
+
+    const legacyDefaultModelIds = new Set(["gemini-2.5-flash"]);
+
+    let resolvedId = selectedModelId;
+
+    if (!resolvedId) {
+      const userDefault = settings.defaultModel;
+      const platformDefault = platformSettings.default_model;
+      const preferPlatformDefault =
+        !userDefault || legacyDefaultModelIds.has(userDefault);
+      const primary = preferPlatformDefault ? platformDefault : userDefault;
+      const secondary = preferPlatformDefault ? userDefault : platformDefault;
+      const target =
+        (primary ? findEnabled(primary) : undefined) ||
+        (secondary ? findEnabled(secondary) : undefined);
+      resolvedId = target?.id ?? enabledModels[0]?.id ?? null;
+    }
+
+    if (isFreeUser && resolvedId && enabledModels.length > 0) {
+      const current = findEnabled(resolvedId);
+      if (current && current.modelId !== FREE_MODEL_ID && current.id !== FREE_MODEL_ID) {
+        const freeModel = enabledModels.find(
+          (m) => m.modelId === FREE_MODEL_ID || m.id === FREE_MODEL_ID,
+        );
+        if (freeModel) {
+          resolvedId = freeModel.id;
+        }
+      }
+    }
+
     if (settings.defaultModel !== prevDefaultModelRef.current) {
       prevDefaultModelRef.current = settings.defaultModel;
-      if (!settings.defaultModel) return;
-      const target = enabledModels.find((m) => m.modelId === settings.defaultModel || m.id === settings.defaultModel);
-      if (!target) return;
-      if (selectedModelId === target.id || selectedModelId === target.modelId) return;
-      setSelectedModelIdState(target.id);
+      if (settings.defaultModel && !isFreeUser) {
+        const target = findEnabled(settings.defaultModel);
+        if (target && resolvedId !== target.id && resolvedId !== target.modelId) {
+          resolvedId = target.id;
+        }
+      }
     }
-  }, [enabledModels, selectedModelId, settings.defaultModel]);
+
+    if (resolvedId && resolvedId !== selectedModelId) {
+      setSelectedModelIdState(resolvedId);
+    }
+
+    if (resolvedId) {
+      const model = findEnabled(resolvedId);
+      if (model?.modelId && model.modelId !== settings.defaultModel) {
+        updateSetting("defaultModel", model.modelId);
+        prevDefaultModelRef.current = model.modelId;
+      }
+    }
+  }, [enabledModels, selectedModelId, settings.defaultModel, platformSettings.default_model, updateSetting, isFreeUser]);
 
   const toggleMutation = useMutation({
     mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
@@ -191,33 +193,33 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
     },
   });
 
-  const enableModel = async (id: string) => {
+  const enableModel = useCallback(async (id: string) => {
     await toggleMutation.mutateAsync({ id, enabled: true });
-  };
+  }, [toggleMutation]);
 
-  const disableModel = async (id: string) => {
+  const disableModel = useCallback(async (id: string) => {
     await toggleMutation.mutateAsync({ id, enabled: false });
-  };
+  }, [toggleMutation]);
 
-  const toggleModel = async (id: string, enabled: boolean) => {
+  const toggleModel = useCallback(async (id: string, enabled: boolean) => {
     await toggleMutation.mutateAsync({ id, enabled });
-  };
+  }, [toggleMutation]);
+
+  const contextValue = useMemo(() => ({
+    availableModels,
+    allModels,
+    isLoading,
+    isAnyModelAvailable,
+    enableModel,
+    disableModel,
+    toggleModel,
+    refetch,
+    selectedModelId,
+    setSelectedModelId,
+  }), [availableModels, allModels, isLoading, isAnyModelAvailable, enableModel, disableModel, toggleModel, refetch, selectedModelId, setSelectedModelId]);
 
   return (
-    <ModelAvailabilityContext.Provider
-      value={{
-        availableModels,
-        allModels,
-        isLoading,
-        isAnyModelAvailable,
-        enableModel,
-        disableModel,
-        toggleModel,
-        refetch,
-        selectedModelId,
-        setSelectedModelId,
-      }}
-    >
+    <ModelAvailabilityContext.Provider value={contextValue}>
       {children}
     </ModelAvailabilityContext.Provider>
   );
