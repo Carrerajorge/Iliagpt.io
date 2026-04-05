@@ -687,6 +687,22 @@ export async function registerRoutes(
   );
 
 
+  const openclawControlUiRoot = path.join(process.cwd(), "node_modules", "openclaw", "dist", "control-ui");
+  if (fs.existsSync(path.join(openclawControlUiRoot, "index.html"))) {
+    app.use("/openclaw-ui", express.static(openclawControlUiRoot, {
+      index: "index.html",
+      setHeaders: (res) => {
+        res.setHeader("X-Content-Type-Options", "nosniff");
+      },
+    }));
+    app.get("/openclaw-ui/*", (_req: Request, res: Response) => {
+      res.sendFile(path.join(openclawControlUiRoot, "index.html"));
+    });
+    console.log("[OpenClaw] Control UI mounted at /openclaw-ui");
+  } else {
+    console.warn("[OpenClaw] Control UI assets not found at", openclawControlUiRoot);
+  }
+
     app.use("/api/ppt", pptExportRouter);
 
     // Get platform setting by key
