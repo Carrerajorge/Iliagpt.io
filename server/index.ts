@@ -357,6 +357,11 @@ export function log(message: string, source = "express") {
   // Idempotency for mutations
   app.use("/api", idempotency);
 
+  // Attach OpenClaw WebSocket gateway for the control UI (must be before route registration
+  // which creates other WebSocket servers that may reject unmatched upgrades)
+  const { attachOpenClawGateway } = await import("./services/openclawGateway");
+  attachOpenClawGateway(httpServer);
+
   await registerRoutes(httpServer, app);
 
   // Initialize OpenClaw agentic integration layer (feature-flagged)

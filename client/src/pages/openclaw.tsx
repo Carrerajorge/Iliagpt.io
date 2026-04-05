@@ -1,8 +1,15 @@
 import { useLocation } from "wouter";
+import { useMemo } from "react";
 import { ChevronLeft } from "lucide-react";
 
 export default function OpenClawPage() {
   const [, setLocation] = useLocation();
+
+  const iframeSrc = useMemo(() => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${proto}//${window.location.host}/openclaw-ws`;
+    return `/openclaw-ui#gatewayUrl=${encodeURIComponent(wsUrl)}`;
+  }, []);
 
   return (
     <div className="flex flex-col h-screen bg-background" data-testid="openclaw-page">
@@ -19,7 +26,7 @@ export default function OpenClawPage() {
         <span className="text-sm font-medium">OpenClaw</span>
       </div>
       <iframe
-        src="/openclaw-ui"
+        src={iframeSrc}
         className="flex-1 w-full border-0"
         title="OpenClaw Control UI"
         data-testid="iframe-openclaw"
