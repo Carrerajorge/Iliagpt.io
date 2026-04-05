@@ -30,12 +30,12 @@ function send(ws: WebSocket, obj: any) {
   } catch {}
 }
 
-function reply(ws: WebSocket, id: number | string, result: any) {
-  send(ws, { type: "response", id, result });
+function reply(ws: WebSocket, id: number | string, payload: any) {
+  send(ws, { type: "res", id, ok: true, payload });
 }
 
-function replyError(ws: WebSocket, id: number | string, code: number, message: string) {
-  send(ws, { type: "response", id, error: { code, message } });
+function replyError(ws: WebSocket, id: number | string, code: string | number, message: string) {
+  send(ws, { type: "res", id, ok: false, error: { code: String(code), message } });
 }
 
 function handleMethod(client: GatewayClient, id: number | string, method: string, params: any) {
@@ -51,11 +51,10 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       }
       console.log(`[OpenClaw Gateway] Client authenticated: ${client.clientName} (role=${client.role})`);
       reply(ws, id, {
-        ok: true,
         version: VERSION,
         gatewayId: "iliagpt-gateway",
         features: ["chat", "agents", "sessions", "cron", "channels", "skills", "nodes", "config"],
-        auth: { mode: "token", accepted: true },
+        auth: { mode: "token", accepted: true, role: client.role, scopes: ["operator.read", "operator.write"] },
         presence: [],
       });
       send(ws, {

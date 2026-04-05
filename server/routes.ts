@@ -700,38 +700,55 @@ export async function registerRoutes(
       return `gatewayUrl=${encodeURIComponent(wsUrl)}&token=${encodeURIComponent(token)}`;
     }
     function serveControlUiWithAutoConnect(req: Request, res: Response) {
-      console.log(`[OpenClaw] Serving control UI for: ${req.originalUrl}`);
       const userId = (req as any).user?.id || (req as any).session?.passport?.user || "anon-" + (req.ip || "unknown");
       const token = generateGatewayToken(userId);
+      const safeToken = token.replace(/[<>&"'\\]/g, '');
 
-      const bootScript = `<script type="module">(async function(){
-var tk=${JSON.stringify(token)};
+      const preSeedScript = `<script>(function(){
 try{
-  var p=location.protocol==="https:"?"wss:":"ws:";
-  var w=p+"//"+location.host+"/openclaw-ws";
-  await customElements.whenDefined("openclaw-app");
-  var app=document.querySelector("openclaw-app");
-  if(!app)return;
-  await new Promise(function(r){setTimeout(r,300)});
-  if(app.pendingGatewayUrl){
-    app.pendingGatewayUrl=w;
-    app.pendingGatewayToken=tk;
-    if(typeof app.handleGatewayUrlConfirm==="function"){app.handleGatewayUrlConfirm();return;}
-  }
-  var s=app.settings||{};
-  var ns={gatewayUrl:w,token:tk,autoConnect:true,version:1,sessionKey:s.sessionKey||"main",lastActiveSessionKey:s.lastActiveSessionKey||"main",sidebarWidth:s.sidebarWidth||220,navGroupsCollapsed:s.navGroupsCollapsed||{},borderRadius:s.borderRadius!=null?s.borderRadius:50,theme:s.theme||"claw",themeMode:s.themeMode||"system",chatFocusMode:!!s.chatFocusMode,chatShowThinking:s.chatShowThinking!==false,chatShowToolCalls:s.chatShowToolCalls!==false};
-  if(typeof app.applySettings==="function"){app.applySettings(ns);}
-  await new Promise(function(r){setTimeout(r,200)});
-  if(!app.connected&&typeof app.connect==="function"){app.connect();}
-}catch(e){console.error("[OC-Boot]",e)}
+  var w=(location.protocol==="https:"?"wss:":"ws:")+"//"+location.host+"/openclaw-ws";
+  var tk="${safeToken}";
+  var SK="openclaw.control.settings.v1";
+  var TK="openclaw.control.token.v1";
+  var existing=null;
+  var keys=Object.keys(localStorage);
+  for(var i=0;i<keys.length;i++){if(keys[i].indexOf(SK)===0){existing=localStorage.getItem(keys[i]);if(existing)break;}}
+  var s={};try{if(existing)s=JSON.parse(existing)||{};}catch{}
+  s.gatewayUrl=w;
+  s.token=tk;
+  s.autoConnect=true;
+  s.version=s.version||1;
+  s.sessionKey=s.sessionKey||"main";
+  s.lastActiveSessionKey=s.lastActiveSessionKey||"main";
+  s.sidebarWidth=s.sidebarWidth||220;
+  s.navGroupsCollapsed=s.navGroupsCollapsed||{};
+  s.borderRadius=s.borderRadius!=null?s.borderRadius:50;
+  s.theme=s.theme||"claw";
+  s.themeMode=s.themeMode||"system";
+  s.chatShowThinking=s.chatShowThinking!==false;
+  s.chatShowToolCalls=s.chatShowToolCalls!==false;
+  var h=w.replace(/^wss?:\\/\\//,"").replace(/[\\/\\?#].*/,"");
+  var p=w.replace(/^wss?:\\/\\/[^\\/]*/,"");
+  var gk=h+(p||"/");
+  localStorage.setItem(SK+":"+gk,JSON.stringify(s));
+  localStorage.setItem(SK+":default",JSON.stringify(s));
+  localStorage.setItem(SK,JSON.stringify(s));
+  localStorage.setItem(TK+":"+gk,tk);
+  localStorage.setItem(TK,tk);
+}catch(e){console.error("[OC-Pre]",e)}
 })()</script>`;
       const modifiedHtml = controlUiHtml
         .replace("<head>", '<head><base href="/openclaw-ui/">')
-        .replace("</body>", bootScript + "</body>");
+        .replace('</head>', preSeedScript + '</head>');
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       res.send(modifiedHtml);
     }
+
+    app.get("/openclaw-ui/__openclaw/control-ui-config.json", (req: Request, res: Response) => {
+      res.json({ assistantName: "IliaGPT OpenClaw", assistantAvatar: null });
+    });
+
     app.get("/openclaw-boot", (req: Request, res: Response) => {
       res.redirect("/openclaw-ui");
     });
@@ -743,7 +760,12 @@ try{
         res.setHeader("X-Content-Type-Options", "nosniff");
       },
     }));
-    app.get("/openclaw-ui/*", serveControlUiWithAutoConnect);
+    app.get("/openclaw-ui/*", (req: Request, res: Response, next: Function) => {
+      if (req.path.includes(".") && !req.path.endsWith(".html")) {
+        return res.status(404).send("Not found");
+      }
+      serveControlUiWithAutoConnect(req, res);
+    });
     console.log("[OpenClaw] Control UI mounted at /openclaw-ui");
   } else {
     console.warn("[OpenClaw] Control UI assets not found at", openclawControlUiRoot);
