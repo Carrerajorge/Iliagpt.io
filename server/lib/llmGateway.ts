@@ -45,19 +45,41 @@ interface LLMRequestOptions {
   disableImageGeneration?: boolean;
 }
 
+interface LLMResponseUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+interface LLMResponseUsageDetailed {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  inputTokensDetails?: {
+    cachedTokens: number;
+  };
+  outputTokensDetails?: {
+    reasoningTokens: number;
+  };
+}
+
+type ResponseStatus = "completed" | "incomplete" | "failed";
+
+interface IncompleteDetails {
+  reason: "max_output_tokens" | "content_filter" | "stream_error" | "provider_error" | "timeout" | "truncated";
+}
+
 interface LLMResponse {
   content: string;
-  usage?: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-  };
+  usage?: LLMResponseUsage;
   requestId: string;
   latencyMs: number;
   model: string;
   provider: LLMProvider;
   cached?: boolean;
   fromFallback?: boolean;
+  status?: ResponseStatus;
+  incompleteDetails?: IncompleteDetails | null;
 }
 
 interface StreamChunk {
@@ -904,12 +926,30 @@ class LLMGateway {
     }
   }
 
-  normalizeUsage(usage: LLMResponse["usage"]): { inputTokens: number; outputTokens: number; totalTokens: number } {
+  normalizeUsage(usage: LLMResponse["usage"], raw?: any): LLMResponseUsageDetailed {
     if (!usage) return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
     const inputTokens = usage.promptTokens || 0;
     const outputTokens = usage.completionTokens || 0;
     const totalTokens = usage.totalTokens || (inputTokens + outputTokens);
-    return { inputTokens, outputTokens, totalTokens };
+
+    const detailed: LLMResponseUsageDetailed = { inputTokens, outputTokens, totalTokens };
+
+    const cachedTokens = raw?.prompt_tokens_details?.cached_tokens
+      ?? raw?.input_tokens_details?.cached_tokens
+      ?? (raw as any)?.cache_read_input_tokens
+      ?? 0;
+    if (cachedTokens > 0) {
+      detailed.inputTokensDetails = { cachedTokens };
+    }
+
+    const reasoningTokens = raw?.completion_tokens_details?.reasoning_tokens
+      ?? raw?.output_tokens_details?.reasoning_tokens
+      ?? 0;
+    if (reasoningTokens > 0) {
+      detailed.outputTokensDetails = { reasoningTokens };
+    }
+
+    return detailed;
   }
 
   isResponseComplete(content: string): boolean {
@@ -991,7 +1031,12 @@ class LLMGateway {
     }
 
     if (lastResult && lastResult.content && lastResult.content.trim().length > 0) {
-      return lastResult;
+      const isComplete = this.isResponseComplete(lastResult.content);
+      return {
+        ...lastResult,
+        status: isComplete ? "completed" as ResponseStatus : "incomplete" as ResponseStatus,
+        incompleteDetails: isComplete ? null : { reason: "max_output_tokens" as const },
+      };
     }
 
     const requestId = options.requestId || this.generateRequestId();
@@ -1004,6 +1049,8 @@ class LLMGateway {
       provider: "openai" as LLMProvider,
       cached: false,
       fromFallback: true,
+      status: "failed" as ResponseStatus,
+      incompleteDetails: { reason: "provider_error" as const },
     };
   }
 

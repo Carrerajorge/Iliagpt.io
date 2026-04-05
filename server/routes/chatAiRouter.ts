@@ -49,6 +49,9 @@ type StreamProviderSwitch = {
   fromProvider: string;
   toProvider: string;
 };
+type StreamResponseStatus = "completed" | "incomplete" | "failed";
+type StreamIncompleteReason = "max_output_tokens" | "content_filter" | "stream_error" | "provider_error" | "timeout" | "truncated";
+
 type StreamChunkEnvelope = {
   content: string;
   done?: boolean;
@@ -56,6 +59,8 @@ type StreamChunkEnvelope = {
   providerSwitch?: StreamProviderSwitch;
   sequenceId?: number;
   requestId?: string;
+  status?: StreamResponseStatus;
+  incompleteDetails?: { reason: StreamIncompleteReason } | null;
 };
 
 import { v4 as uuidv4 } from "uuid";
@@ -173,13 +178,20 @@ async function* withStreamGuard(
 
     if (chunkCount === 0 || totalContent.trim().length === 0) {
       console.warn("[StreamGuard] Stream completed with no content", { requestId, chunkCount });
-      yield { content: "", done: true, provider: undefined };
+      yield { content: "", done: true, provider: undefined, status: "incomplete", incompleteDetails: { reason: "stream_error" } };
+      return;
+    }
+
+    const hasUnclosedCode = (totalContent.match(/```/g) || []).length % 2 !== 0;
+    const midSentenceEnd = /[,;:\-–—]$/.test(totalContent.trim()) && totalContent.trim().length > 20;
+    if (hasUnclosedCode || midSentenceEnd) {
+      yield { content: "", done: true, provider: undefined, status: "incomplete", incompleteDetails: { reason: "max_output_tokens" } };
+    } else {
+      yield { content: "", done: true, provider: undefined, status: "completed", incompleteDetails: null };
     }
   } catch (err) {
     console.error("[StreamGuard] Stream error caught", { requestId, error: (err as Error).message, chunkCount });
-    if (totalContent.trim().length > 0) {
-      yield { content: "", done: true, provider: undefined };
-    }
+    yield { content: "", done: true, provider: undefined, status: "failed", incompleteDetails: { reason: "stream_error" } };
     throw err;
   }
 }
@@ -243,6 +255,62 @@ function estimateMemoryTokens(messages: ConversationMemoryChatMessage[]): number
   }
 
   return messages.reduce((total, message) => total + Math.ceil(String(message?.content || "").length / 4) + 4, 0);
+}
+
+const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+  "gpt-4o": 128000,
+  "gpt-4o-mini": 128000,
+  "gpt-4-turbo": 128000,
+  "gpt-4": 8192,
+  "gpt-3.5-turbo": 16385,
+  "gemini-2.0-flash": 1048576,
+  "gemini-1.5-pro": 1048576,
+  "grok-beta": 131072,
+  "grok-3": 131072,
+  "moonshotai/kimi-k2.5": 131072,
+};
+const DEFAULT_CONTEXT_LIMIT = 128000;
+const CONTEXT_RESERVE_RATIO = 0.15;
+
+function autoTruncateMessages(
+  messages: Array<{ role: string; content: string | any }>,
+  modelId?: string,
+): { messages: Array<{ role: string; content: string | any }>; truncated: boolean; droppedCount: number } {
+  const contextLimit = MODEL_CONTEXT_LIMITS[modelId || ""] || DEFAULT_CONTEXT_LIMIT;
+  const maxInputTokens = Math.floor(contextLimit * (1 - CONTEXT_RESERVE_RATIO));
+
+  const estimateTokens = (msg: { content: string | any }) => {
+    const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content || "");
+    return Math.ceil(text.length / 4) + 4;
+  };
+
+  let totalTokens = messages.reduce((sum, m) => sum + estimateTokens(m), 0);
+  if (totalTokens <= maxInputTokens) {
+    return { messages, truncated: false, droppedCount: 0 };
+  }
+
+  const systemMessages = messages.filter(m => m.role === "system");
+  const nonSystemMessages = messages.filter(m => m.role !== "system");
+
+  const systemTokens = systemMessages.reduce((sum, m) => sum + estimateTokens(m), 0);
+  let budget = maxInputTokens - systemTokens;
+
+  let startIdx = 0;
+  let currentTokens = nonSystemMessages.reduce((sum, m) => sum + estimateTokens(m), 0);
+
+  while (currentTokens > budget && startIdx < nonSystemMessages.length - 2) {
+    currentTokens -= estimateTokens(nonSystemMessages[startIdx]);
+    startIdx++;
+  }
+
+  const keptMessages = [...systemMessages, ...nonSystemMessages.slice(startIdx)];
+  const droppedCount = startIdx;
+
+  if (droppedCount > 0) {
+    console.log(`[AutoTruncate] Dropped ${droppedCount} oldest messages to fit context window (${modelId || "default"}, limit: ${contextLimit})`);
+  }
+
+  return { messages: keptMessages, truncated: droppedCount > 0, droppedCount };
 }
 
 function createMemoryDiagnosticsFallback(
@@ -6855,10 +6923,16 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
       if (shouldRunModel && !agentLoopHandled) {
         const modelStreamStageStart = performance.now();
-        const modelMessages = [systemMessage, ...formattedMessages] as any[];
+        let modelMessages = [systemMessage, ...formattedMessages] as any[];
         if (skillSeedForModel) {
           modelMessages.push({ role: "assistant", content: skillSeedForModel });
         }
+
+        const truncation = autoTruncateMessages(modelMessages, effectiveModel);
+        if (truncation.truncated) {
+          modelMessages = truncation.messages as any[];
+        }
+
         const streamLlmOptions = {
           userId: userId || streamConversationId || "anonymous",
           requestId,
