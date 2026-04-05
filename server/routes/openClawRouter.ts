@@ -649,4 +649,239 @@ router.get("/instance/check-update", (_req: Request, res: Response) => {
   }
 });
 
+import {
+  getOrCreateInstance,
+  getUserInstance,
+  getAllInstances,
+  updateInstanceTokenLimit,
+  updateInstanceStatus,
+  getUserTokenHistory,
+  checkTokenBudget,
+  getAdminConfig,
+  updateAdminConfig,
+  resetUserTokens,
+  getGlobalStats,
+  deleteInstance,
+} from "../services/openclawInstanceService";
+import { users } from "@shared/schema";
+import { db } from "../db";
+import { eq } from "drizzle-orm";
+
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "carrerajorge874@gmail.com").toLowerCase().trim();
+
+function isAdminUser(req: Request): boolean {
+  const user = (req as any).user;
+  if (!user) return false;
+  const email = (user.email || "").toLowerCase().trim();
+  const role = (user.role || "").toLowerCase();
+  return email === ADMIN_EMAIL || role === "admin";
+}
+
+router.get("/instance", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    if (!userId) return res.status(401).json({ success: false, error: "Not authenticated" });
+
+    const instance = await getOrCreateInstance(userId);
+    const budget = await checkTokenBudget(userId);
+
+    res.json({
+      success: true,
+      instance: {
+        ...instance,
+        budget,
+      },
+    });
+  } catch (error: any) {
+    console.error("[OpenClaw] Error getting instance:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/instance/tokens", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    if (!userId) return res.status(401).json({ success: false, error: "Not authenticated" });
+
+    const limit = parseInt(req.query.limit as string) || 50;
+    const history = await getUserTokenHistory(userId, limit);
+    const budget = await checkTokenBudget(userId);
+
+    res.json({ success: true, budget, history });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/admin/instances", requireAuth, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
+
+    const stats = await getGlobalStats();
+    const config = await getAdminConfig();
+
+    const instancesWithUsers = await Promise.all(
+      stats.instances.map(async (inst) => {
+        const [user] = await db.select({ email: users.email, firstName: users.firstName, lastName: users.lastName, plan: users.plan })
+          .from(users)
+          .where(eq(users.id, inst.userId))
+          .limit(1);
+        return { ...inst, user: user || null };
+      })
+    );
+
+    res.json({
+      success: true,
+      stats: {
+        totalInstances: stats.totalInstances,
+        activeInstances: stats.activeInstances,
+        totalTokensUsed: stats.totalTokensUsed,
+        totalRequests: stats.totalRequests,
+      },
+      config,
+      instances: instancesWithUsers,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch("/admin/instances/:id/tokens", requireAuth, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
+
+    const { tokensLimit } = req.body;
+    if (typeof tokensLimit !== "number" || tokensLimit < 0) {
+      return res.status(400).json({ success: false, error: "Invalid tokens limit" });
+    }
+
+    const updated = await updateInstanceTokenLimit(req.params.id, tokensLimit);
+    res.json({ success: true, instance: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch("/admin/instances/:id/status", requireAuth, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
+
+    const { status } = req.body;
+    if (!["active", "suspended", "disabled"].includes(status)) {
+      return res.status(400).json({ success: false, error: "Invalid status" });
+    }
+
+    const updated = await updateInstanceStatus(req.params.id, status);
+    res.json({ success: true, instance: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/admin/instances/:id/reset-tokens", requireAuth, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
+
+    const updated = await resetUserTokens(req.params.id);
+    res.json({ success: true, instance: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete("/admin/instances/:id", requireAuth, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
+
+    await deleteInstance(req.params.id);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/admin/config", requireAuth, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
+
+    const config = await getAdminConfig();
+    res.json({ success: true, config });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch("/admin/config", requireAuth, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
+
+    const { defaultTokensLimit, globalEnabled, autoProvisionOnLogin } = req.body;
+    const updates: Record<string, unknown> = {};
+    if (typeof defaultTokensLimit === "number") updates.defaultTokensLimit = defaultTokensLimit;
+    if (typeof globalEnabled === "boolean") updates.globalEnabled = globalEnabled;
+    if (typeof autoProvisionOnLogin === "boolean") updates.autoProvisionOnLogin = autoProvisionOnLogin;
+
+    const config = await updateAdminConfig(updates as any);
+    res.json({ success: true, config });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+import { getOpenClawReleaseSnapshot } from "../services/openClawReleaseService";
+
+router.post("/admin/sync", requireAuth, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
+
+    const snapshot = await getOpenClawReleaseSnapshot("latest");
+
+    await updateAdminConfig({
+      currentVersion: snapshot.bundled.version || "v2026.4.1",
+      lastSyncAt: new Date(),
+    });
+
+    res.json({
+      success: true,
+      sync: snapshot.sync,
+      bundledVersion: snapshot.bundled.version,
+      requestedTag: snapshot.requestedTag,
+      latestRelease: snapshot.latestRelease
+        ? {
+            tagName: snapshot.latestRelease.tagName,
+            name: snapshot.latestRelease.name,
+            overview: snapshot.latestRelease.overview,
+            highlights: snapshot.latestRelease.highlights,
+            publishedAt: snapshot.latestRelease.publishedAt,
+          }
+        : null,
+      errors: snapshot.errors,
+    });
+  } catch (error: any) {
+    console.error("[OpenClaw] Sync error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/admin/sync/status", requireAuth, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
+
+    const config = await getAdminConfig();
+    const snapshot = await getOpenClawReleaseSnapshot(config.currentVersion || "latest");
+
+    res.json({
+      success: true,
+      currentVersion: config.currentVersion,
+      lastSyncAt: config.lastSyncAt,
+      githubRepo: config.githubRepo,
+      sync: snapshot.sync,
+      updateAvailable: snapshot.sync.status === "update_available",
+      latestVersion: snapshot.latestRelease?.tagName || null,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 export default router;

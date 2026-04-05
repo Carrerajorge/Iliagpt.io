@@ -150,3 +150,25 @@ PostgreSQL with Drizzle ORM is used for persistent data storage. Client-side per
 - **Ctrl/Cmd+N** → navigates to `/chat/new`
 - **Project card click** (dashboard) → navigates to `/chat/:id`
 - **`/ads`** → `IliaAdsPage` — IliaADS ad management dashboard (requires auth)
+
+## Per-User OpenClaw Instances
+Logical isolation: each user gets a unique OpenClaw instance (same process, isolated data). Admin email `carrerajorge874@gmail.com` controls token limits for all users.
+
+**Schema** (`shared/schema/openclaw.ts`): 3 tables — `openclaw_instances` (per-user instance tracking with tokensUsed/tokensLimit/requestCount), `openclaw_token_ledger` (per-request usage history), `openclaw_admin_config` (global defaults: defaultTokensLimit, globalEnabled, autoProvisionOnLogin, githubRepo, currentVersion).
+
+**Service** (`server/services/openclawInstanceService.ts`): `getOrCreateInstance(userId)` auto-provisions on first access, `checkTokenBudget(userId)` enforces limits, `recordTokenUsage()` logs each tool execution, `getGlobalStats()` aggregates for admin dashboard.
+
+**API Routes** (on `/api/openclaw/*`):
+- `GET /instance` — get/create user's own instance with budget info
+- `GET /instance/tokens` — user's token usage history
+- `GET /admin/instances` — all instances with user info & stats (admin only)
+- `PATCH /admin/instances/:id/tokens` — set per-user token limit (admin only)
+- `PATCH /admin/instances/:id/status` — suspend/activate instance (admin only)
+- `POST /admin/instances/:id/reset-tokens` — reset user's token counter (admin only)
+- `DELETE /admin/instances/:id` — delete instance (admin only)
+- `GET /admin/config` — global OpenClaw config (admin only)
+- `PATCH /admin/config` — update global defaults (admin only)
+- `POST /admin/sync` — trigger GitHub release sync (admin only)
+- `GET /admin/sync/status` — check update availability (admin only)
+
+**Frontend** (`client/src/components/openclaw-panel.tsx`): Tabbed dialog with "Mi instancia" (user's own instance status, token usage bar, request count, history), "Instancias" (admin: all user instances with suspend/reset/delete/edit-limit controls), "Configuración" (admin: global settings, GitHub repo, auto-provision toggle).

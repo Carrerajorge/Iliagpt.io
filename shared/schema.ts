@@ -3259,3 +3259,5 @@ export { oauthTokensGlobal, oauthTokensUser } from "./schema/oauthProviderTokens
 export type { OAuthTokenGlobal, InsertOAuthTokenGlobal, OAuthTokenUser, InsertOAuthTokenUser } from "./schema/oauthProviderTokens";
 export { iliaAds, adImpressions, insertIliaAdSchema, insertAdImpressionSchema } from "./schema/ads";
 export type { IliaAd, InsertIliaAd, AdImpression, InsertAdImpression } from "./schema/ads";
+export { openclawInstances, openclawTokenLedger, openclawAdminConfig, insertOpenclawInstanceSchema, insertOpenclawTokenLedgerSchema, insertOpenclawAdminConfigSchema } from "./schema/openclaw";
+export type { OpenclawInstance, InsertOpenclawInstance, OpenclawTokenLedger, InsertOpenclawTokenLedger, OpenclawAdminConfig, InsertOpenclawAdminConfig } from "./schema/openclaw";
