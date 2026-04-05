@@ -386,9 +386,9 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       break;
 
     case "chat.send": {
-      const runId = randomUUID();
       const userMessage = params?.message || params?.content || "";
       const chatSessionKey = params?.sessionKey || "main";
+      const runId = params?.idempotencyKey || randomUUID();
 
       console.log(`[OpenClaw Gateway] chat.send params:`, JSON.stringify(params, null, 0)?.slice(0, 500));
 
@@ -421,8 +421,6 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
 
       (async () => {
         let fullResponse = "";
-        let tokensIn = 0;
-        let tokensOut = 0;
 
         try {
           console.log(`[OpenClaw Gateway] chat.send: model=${selectedModel}, provider=${mappedProvider}, historyLen=${client.chatHistory.length}`);
@@ -439,6 +437,20 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
           for await (const chunk of stream) {
             if (!client.activeRuns.has(runId)) {
               console.log(`[OpenClaw Gateway] Run ${runId} was aborted`);
+              send(ws, {
+                type: "event",
+                event: "chat",
+                payload: {
+                  sessionKey: chatSessionKey,
+                  runId,
+                  state: "aborted",
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: fullResponse }],
+                    timestamp: Date.now(),
+                  },
+                },
+              });
               break;
             }
 
@@ -446,14 +458,20 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
               fullResponse += chunk.content;
               send(ws, {
                 type: "event",
-                event: "chat.delta",
-                payload: { runId, delta: chunk.content, done: false },
+                event: "chat",
+                payload: {
+                  sessionKey: chatSessionKey,
+                  runId,
+                  state: "delta",
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: fullResponse }],
+                  },
+                },
               });
             }
 
             if (chunk.done) {
-              tokensIn = 0;
-              tokensOut = Math.ceil(fullResponse.length / 4);
               break;
             }
           }
@@ -464,29 +482,34 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
             client.chatHistory.splice(1, client.chatHistory.length - 40);
           }
 
-          send(ws, {
-            type: "event",
-            event: "chat.delta",
-            payload: {
-              runId,
-              delta: "",
-              done: true,
-              usage: { tokensIn, tokensOut },
-            },
-          });
+          if (client.activeRuns.has(runId)) {
+            send(ws, {
+              type: "event",
+              event: "chat",
+              payload: {
+                sessionKey: chatSessionKey,
+                runId,
+                state: "final",
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: fullResponse }],
+                  timestamp: Date.now(),
+                },
+              },
+            });
+          }
         } catch (err: any) {
           console.error(`[OpenClaw Gateway] chat.send error:`, err?.message || err);
 
-          const errorMsg = `Error: ${err?.message || "Failed to get AI response"}. Please try again.`;
           send(ws, {
             type: "event",
-            event: "chat.delta",
-            payload: { runId, delta: errorMsg, done: false },
-          });
-          send(ws, {
-            type: "event",
-            event: "chat.delta",
-            payload: { runId, delta: "", done: true, usage: { tokensIn: 0, tokensOut: 0 } },
+            event: "chat",
+            payload: {
+              sessionKey: chatSessionKey,
+              runId,
+              state: "error",
+              errorMessage: err?.message || "Failed to get AI response",
+            },
           });
         } finally {
           client.activeRuns.delete(runId);
