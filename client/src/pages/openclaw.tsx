@@ -19,7 +19,7 @@ export default function OpenClawPage() {
         <span className="text-sm font-medium">OpenClaw</span>
       </div>
       <iframe
-        src="/openclaw-boot"
+        src="/openclaw-ui"
         className="flex-1 w-full border-0"
         title="OpenClaw Control UI"
         data-testid="iframe-openclaw"

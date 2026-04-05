@@ -324,7 +324,9 @@ export function attachOpenClawGateway(httpServer: HttpServer) {
       const socket = args[1];
       const head = args[2];
       const pathname = (req.url || "").split("?")[0];
+      console.log(`[OpenClaw Gateway] Upgrade request: ${pathname}`);
       if (pathname === "/openclaw-ws") {
+        console.log(`[OpenClaw Gateway] Handling upgrade for /openclaw-ws`);
         wss.handleUpgrade(req, socket, head, (ws) => {
           wss.emit("connection", ws, req);
         });
@@ -339,6 +341,7 @@ export function attachOpenClawGateway(httpServer: HttpServer) {
     const nonce = randomUUID();
     const client: GatewayClient = { connId, ws, authenticated: false };
     clients.set(connId, client);
+    console.log(`[OpenClaw Gateway] New connection: ${connId}`);
 
     send(ws, {
       type: "event",
@@ -349,19 +352,24 @@ export function attachOpenClawGateway(httpServer: HttpServer) {
     ws.on("message", (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
+        console.log(`[OpenClaw Gateway] Message from ${connId}: ${msg.method || msg.type || "unknown"}`);
         if (msg.type === "request" && msg.method && msg.id !== undefined) {
           handleMethod(client, msg.id, msg.method, msg.params);
         } else if (msg.method && msg.id !== undefined) {
           handleMethod(client, msg.id, msg.method, msg.params);
         }
-      } catch {}
+      } catch (e) {
+        console.error(`[OpenClaw Gateway] Parse error:`, e);
+      }
     });
 
     ws.on("close", () => {
+      console.log(`[OpenClaw Gateway] Connection closed: ${connId}`);
       clients.delete(connId);
     });
 
-    ws.on("error", () => {
+    ws.on("error", (err) => {
+      console.error(`[OpenClaw Gateway] Connection error for ${connId}:`, err);
       clients.delete(connId);
     });
   });
