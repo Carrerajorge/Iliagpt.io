@@ -4309,6 +4309,8 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
     let skillSeedForModel = "";
     let skillExecutionResult: SkillExecutionResult | null = null;
     let latencyMode: LatencyMode = "auto";
+    let capturedSearchQueries: Array<{ query: string; resultCount: number; status: string }> = [];
+    let capturedTotalSearches = 0;
 
     const STREAM_HARD_TIMEOUT_MS = 180_000;
     const STREAM_IDLE_TIMEOUT_MS = 90_000; // must exceed llmGateway idle timeout (60s)
@@ -5234,8 +5236,6 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       const userProfile = userSettings?.userProfile || null;
 
       let detectedWebSources: any[] = [];
-      let capturedSearchQueries: Array<{ query: string; resultCount: number; status: string }> = [];
-      let capturedTotalSearches = 0;
       let webSearchContextForLLM = ""; // Will be injected into system prompt
 
       const requestedWebSearch = !!forceWebSearch || !!webSearchAuto;
