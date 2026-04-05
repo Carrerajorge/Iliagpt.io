@@ -1,8 +1,9 @@
 import { WebSocketServer, WebSocket } from "ws";
-import { randomUUID } from "crypto";
+import { randomUUID, createHmac } from "crypto";
 import type { Server as HttpServer } from "http";
 
 const VERSION = "2026.4.2";
+const TOKEN_SECRET = process.env.ENCRYPTION_KEY || randomUUID();
 
 interface GatewayClient {
   connId: string;
@@ -10,9 +11,16 @@ interface GatewayClient {
   authenticated: boolean;
   clientName?: string;
   role?: string;
+  userId?: string;
 }
 
 const clients = new Map<string, GatewayClient>();
+
+export function generateGatewayToken(userId: string): string {
+  const hmac = createHmac("sha256", TOKEN_SECRET);
+  hmac.update(`openclaw-gateway:${userId}`);
+  return hmac.digest("hex").slice(0, 32);
+}
 
 function send(ws: WebSocket, obj: any) {
   try {
@@ -38,12 +46,16 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       client.authenticated = true;
       client.clientName = params?.client?.name || "control-ui";
       client.role = params?.client?.role || "control";
+      if (params?.auth?.authToken) {
+        client.userId = `token:${params.auth.authToken.slice(0, 8)}`;
+      }
+      console.log(`[OpenClaw Gateway] Client authenticated: ${client.clientName} (role=${client.role})`);
       reply(ws, id, {
         ok: true,
         version: VERSION,
         gatewayId: "iliagpt-gateway",
         features: ["chat", "agents", "sessions", "cron", "channels", "skills", "nodes", "config"],
-        auth: { mode: "none" },
+        auth: { mode: "token", accepted: true },
         presence: [],
       });
       send(ws, {

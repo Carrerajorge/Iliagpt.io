@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { type AuthenticatedRequest, getUserId } from "./types/express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
+import { generateGatewayToken } from "./services/openclawGateway";
 import { storage } from "./storage";
 import { ObjectStorageService } from "./objectStorage";
 import { processDocument } from "./services/documentProcessing";
@@ -690,29 +691,41 @@ export async function registerRoutes(
   const openclawControlUiRoot = path.join(process.cwd(), "node_modules", "openclaw", "dist", "control-ui");
   if (fs.existsSync(path.join(openclawControlUiRoot, "index.html"))) {
     const controlUiHtml = fs.readFileSync(path.join(openclawControlUiRoot, "index.html"), "utf-8");
-    function serveControlUiWithGateway(req: Request, res: Response) {
+    function buildGatewayHash(req: Request): string {
+      const userId = (req as any).user?.id || (req as any).session?.passport?.user || "anon-" + (req.ip || "unknown");
+      const token = generateGatewayToken(userId);
       const proto = req.headers["x-forwarded-proto"] === "https" ? "wss:" : (req.protocol === "https" ? "wss:" : "ws:");
       const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost:5000";
       const wsUrl = `${proto}//${host}/openclaw-ws`;
-      const preConnectScript = `<script>(function(){var w=${JSON.stringify(wsUrl)};try{var keys=Object.keys(localStorage);for(var i=0;i<keys.length;i++){if(keys[i].indexOf("openclaw.control.settings")===0)localStorage.removeItem(keys[i]);}var s={gatewayUrl:w,autoConnect:true,version:1,sidebarWidth:220,navGroupsCollapsed:{},borderRadius:50};var j=JSON.stringify(s);var u=new URL(w,location.href);var n=u.protocol+"//"+u.host+(u.pathname==="/"?"":u.pathname.replace(/\\/+$/,""));localStorage.setItem("openclaw.control.settings.v1:"+n,j);localStorage.setItem("openclaw.control.settings.v1:default",j);localStorage.setItem("openclaw.control.settings.v1",j);console.log("[OpenClaw Boot] Settings saved for",n)}catch(e){console.error("[OpenClaw Boot] Error:",e)}})()</script>`;
-      const autoClickScript = `<script>(function(){function findInShadow(root,sel){var el=root.querySelector(sel);if(el)return el;var all=root.querySelectorAll("*");for(var i=0;i<all.length;i++){if(all[i].shadowRoot){el=findInShadow(all[i].shadowRoot,sel);if(el)return el;}}return null;}function findButton(root){var btns=root.querySelectorAll("button");for(var i=0;i<btns.length;i++){var t=(btns[i].textContent||"").trim().toLowerCase();if(t==="conectar"||t==="connect")return btns[i];}var all=root.querySelectorAll("*");for(var i=0;i<all.length;i++){if(all[i].shadowRoot){var b=findButton(all[i].shadowRoot);if(b)return b;}}return null;}var attempts=0;function tryClick(){attempts++;var app=document.querySelector("openclaw-app");if(!app||!app.shadowRoot){if(attempts<30)return setTimeout(tryClick,300);return;}var btn=findButton(app.shadowRoot);if(btn){console.log("[OpenClaw Boot] Auto-clicking connect button");btn.click();}else if(attempts<30){setTimeout(tryClick,300);}else{console.log("[OpenClaw Boot] Connect button not found after 30 attempts");}}setTimeout(tryClick,500);})()</script>`;
-      const modifiedHtml = controlUiHtml.replace("<head>", "<head>" + preConnectScript).replace("</body>", autoClickScript + "</body>");
+      return `gatewayUrl=${encodeURIComponent(wsUrl)}&token=${encodeURIComponent(token)}`;
+    }
+    app.get("/openclaw-ui/_connect", (req: Request, res: Response) => {
+      const hash = buildGatewayHash(req);
+      const bootPage = `<!DOCTYPE html><html><head><meta charset="utf-8"><script>window.location.replace("/openclaw-ui/#${hash}");</script></head><body></body></html>`;
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-      res.send(modifiedHtml);
-    }
-    app.get("/openclaw-boot", (req: Request, res: Response) => {
-      res.redirect("/openclaw-ui");
+      res.send(bootPage);
     });
-    app.get("/openclaw-ui", serveControlUiWithGateway);
-    app.get("/openclaw-ui/", serveControlUiWithGateway);
+    app.get("/openclaw-boot", (req: Request, res: Response) => {
+      res.redirect("/openclaw-ui/_connect");
+    });
+    function serveControlUiHtml(_req: Request, res: Response) {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.send(controlUiHtml);
+    }
+    app.get("/openclaw-ui", serveControlUiHtml);
+    app.get("/openclaw-ui/", serveControlUiHtml);
     app.use("/openclaw-ui", express.static(openclawControlUiRoot, {
       index: false,
       setHeaders: (res) => {
         res.setHeader("X-Content-Type-Options", "nosniff");
       },
     }));
-    app.get("/openclaw-ui/*", serveControlUiWithGateway);
+    app.get("/openclaw-ui/*", (req: Request, res: Response) => {
+      if (req.path.endsWith("/_connect")) return;
+      serveControlUiHtml(req, res);
+    });
     console.log("[OpenClaw] Control UI mounted at /openclaw-ui");
   } else {
     console.warn("[OpenClaw] Control UI assets not found at", openclawControlUiRoot);
