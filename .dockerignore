@@ -143,8 +143,6 @@ node_modules/postcss/
 client/src/
 client/public/
 
-# Dev/test scripts (not needed at runtime)
-scripts/
 
 # Large dev-only files
 *.map
