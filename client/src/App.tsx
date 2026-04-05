@@ -323,7 +323,7 @@ function Router() {
           <Switch>
             <Route path={HOME_ROUTE_REGEX} component={RootRoute} />
             <Route path="/project/:type" component={ProjectWorkspace} />
-            <Route path="/welcome" component={LandingPage} />
+            <Route path="/welcome">{() => import.meta.env.DEV ? <RootRoute /> : <LandingPage />}</Route>
             <Route path="/login" component={LoginPage} />
             <Route path="/login/approve" component={LoginApprovePage} />
             <Route path="/signup" component={SignupPage} />

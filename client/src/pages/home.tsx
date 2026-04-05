@@ -66,8 +66,7 @@ export default function Home() {
 
 
   useEffect(() => {
-    // Allow anonymous/guest sessions to use the chat UI. Only redirect when we
-    // couldn't establish any identity at all (e.g. auth fetch and anon identity failed).
+    if (import.meta.env.DEV) return;
     if (isReady && !isLoading && !user) {
       setLocation("/welcome");
     }
