@@ -699,33 +699,51 @@ export async function registerRoutes(
       const wsUrl = `${proto}//${host}/openclaw-ws`;
       return `gatewayUrl=${encodeURIComponent(wsUrl)}&token=${encodeURIComponent(token)}`;
     }
-    app.get("/openclaw-ui/_connect", (req: Request, res: Response) => {
-      const hash = buildGatewayHash(req);
-      const bootPage = `<!DOCTYPE html><html><head><meta charset="utf-8"><script>window.location.replace("/openclaw-ui/#${hash}");</script></head><body></body></html>`;
+    function serveControlUiWithAutoConnect(req: Request, res: Response) {
+      console.log(`[OpenClaw] Serving control UI for: ${req.originalUrl}`);
+      const userId = (req as any).user?.id || (req as any).session?.passport?.user || "anon-" + (req.ip || "unknown");
+      const token = generateGatewayToken(userId);
+
+      const bootScript = `<script type="module">(async function(){
+var tk=${JSON.stringify(token)};
+try{
+  var p=location.protocol==="https:"?"wss:":"ws:";
+  var w=p+"//"+location.host+"/openclaw-ws";
+  await customElements.whenDefined("openclaw-app");
+  var app=document.querySelector("openclaw-app");
+  if(!app)return;
+  await new Promise(function(r){setTimeout(r,300)});
+  if(app.pendingGatewayUrl){
+    app.pendingGatewayUrl=w;
+    app.pendingGatewayToken=tk;
+    if(typeof app.handleGatewayUrlConfirm==="function"){app.handleGatewayUrlConfirm();return;}
+  }
+  var s=app.settings||{};
+  var ns={gatewayUrl:w,token:tk,autoConnect:true,version:1,sessionKey:s.sessionKey||"main",lastActiveSessionKey:s.lastActiveSessionKey||"main",sidebarWidth:s.sidebarWidth||220,navGroupsCollapsed:s.navGroupsCollapsed||{},borderRadius:s.borderRadius!=null?s.borderRadius:50,theme:s.theme||"claw",themeMode:s.themeMode||"system",chatFocusMode:!!s.chatFocusMode,chatShowThinking:s.chatShowThinking!==false,chatShowToolCalls:s.chatShowToolCalls!==false};
+  if(typeof app.applySettings==="function"){app.applySettings(ns);}
+  await new Promise(function(r){setTimeout(r,200)});
+  if(!app.connected&&typeof app.connect==="function"){app.connect();}
+}catch(e){console.error("[OC-Boot]",e)}
+})()</script>`;
+      const modifiedHtml = controlUiHtml
+        .replace("<head>", '<head><base href="/openclaw-ui/">')
+        .replace("</body>", bootScript + "</body>");
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-      res.send(bootPage);
-    });
-    app.get("/openclaw-boot", (req: Request, res: Response) => {
-      res.redirect("/openclaw-ui/_connect");
-    });
-    function serveControlUiHtml(_req: Request, res: Response) {
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-      res.send(controlUiHtml);
+      res.send(modifiedHtml);
     }
-    app.get("/openclaw-ui", serveControlUiHtml);
-    app.get("/openclaw-ui/", serveControlUiHtml);
+    app.get("/openclaw-boot", (req: Request, res: Response) => {
+      res.redirect("/openclaw-ui");
+    });
+    app.get("/openclaw-ui", serveControlUiWithAutoConnect);
+    app.get("/openclaw-ui/", serveControlUiWithAutoConnect);
     app.use("/openclaw-ui", express.static(openclawControlUiRoot, {
       index: false,
       setHeaders: (res) => {
         res.setHeader("X-Content-Type-Options", "nosniff");
       },
     }));
-    app.get("/openclaw-ui/*", (req: Request, res: Response) => {
-      if (req.path.endsWith("/_connect")) return;
-      serveControlUiHtml(req, res);
-    });
+    app.get("/openclaw-ui/*", serveControlUiWithAutoConnect);
     console.log("[OpenClaw] Control UI mounted at /openclaw-ui");
   } else {
     console.warn("[OpenClaw] Control UI assets not found at", openclawControlUiRoot);

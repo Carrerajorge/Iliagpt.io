@@ -337,8 +337,8 @@ export function attachOpenClawGateway(httpServer: HttpServer) {
       const head = args[2];
       const pathname = (req.url || "").split("?")[0];
       console.log(`[OpenClaw Gateway] Upgrade request: ${pathname}`);
-      if (pathname === "/openclaw-ws") {
-        console.log(`[OpenClaw Gateway] Handling upgrade for /openclaw-ws`);
+      if (pathname === "/openclaw-ws" || pathname === "/openclaw-ui") {
+        console.log(`[OpenClaw Gateway] Handling upgrade for ${pathname}`);
         wss.handleUpgrade(req, socket, head, (ws) => {
           wss.emit("connection", ws, req);
         });

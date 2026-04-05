@@ -33,11 +33,14 @@ export async function setupVite(server: Server, app: Express) {
   app.use("*", async (req, res, next) => {
     const url = req.originalUrl;
 
-    // Skip if this looks like an API route or a file that Vite should handle
+    // Skip if this looks like an API route, OpenClaw UI, or a file that Vite should handle
     if (url.startsWith("/api") || 
         url.startsWith("/src/") || 
         url.startsWith("/@") ||
         url.startsWith("/node_modules/") ||
+        url.startsWith("/openclaw-ui") ||
+        url.startsWith("/openclaw-ws") ||
+        url.startsWith("/openclaw-boot") ||
         url.includes(".") && !url.endsWith(".html")) {
       return next();
     }
