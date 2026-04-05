@@ -1,293 +1,376 @@
 /**
- * OpenAI Provider
- * Supports: GPT-4o, GPT-4o-mini, GPT-4-turbo, GPT-3.5-turbo, o1, o3, embeddings
+ * OpenAIProvider — GPT-4o, GPT-4o-mini, o1, o3-mini, text-embedding-3
  */
 
-import OpenAI from 'openai';
+import OpenAI from "openai";
+import { BaseProvider } from "../core/BaseProvider.js";
 import {
-  IProviderConfig,
-  IChatRequest,
-  IChatResponse,
-  IStreamChunk,
-  IEmbedRequest,
-  IEmbedResponse,
-  IModelInfo,
-  ModelCapability,
-  MessageRole,
-  ProviderError,
   AuthenticationError,
+  ContextLengthError,
+  FinishReason,
+  type IChatMessage,
+  type IChatOptions,
+  type IChatResponse,
+  type IEmbeddingOptions,
+  type IEmbeddingResponse,
+  type IModelInfo,
+  type IProviderConfig,
+  type IStreamChunk,
+  MessageRole,
+  ModelCapability,
+  ProviderError,
   RateLimitError,
-  ModelNotFoundError,
-} from '../core/types';
-import { BaseProvider } from '../core/BaseProvider';
+} from "../core/types.js";
 
-// ─── Static model catalogue (updated 2025) ────────────────────────────────────
+// ─────────────────────────────────────────────
+// Model Catalog
+// ─────────────────────────────────────────────
 
 const OPENAI_MODELS: IModelInfo[] = [
   {
-    id: 'gpt-4o',
-    name: 'GPT-4o',
-    provider: 'openai',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.JsonMode, ModelCapability.Streaming, ModelCapability.ImageUnderstanding, ModelCapability.CodeGeneration],
+    id: "gpt-4o",
+    name: "GPT-4o",
+    provider: "openai",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.FUNCTION_CALLING,
+    ],
     contextWindow: 128_000,
     maxOutputTokens: 16_384,
-    pricing: { inputPerMillion: 2.5, outputPerMillion: 10 },
-    latencyClass: 'fast',
-    qualityScore: 0.92,
+    pricing: { inputPerMillion: 2.5, outputPerMillion: 10.0 },
   },
   {
-    id: 'gpt-4o-mini',
-    name: 'GPT-4o Mini',
-    provider: 'openai',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.JsonMode, ModelCapability.Streaming, ModelCapability.ImageUnderstanding],
+    id: "gpt-4o-mini",
+    name: "GPT-4o Mini",
+    provider: "openai",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.FUNCTION_CALLING,
+    ],
     contextWindow: 128_000,
     maxOutputTokens: 16_384,
     pricing: { inputPerMillion: 0.15, outputPerMillion: 0.6 },
-    latencyClass: 'ultra_fast',
-    qualityScore: 0.78,
   },
   {
-    id: 'gpt-4-turbo',
-    name: 'GPT-4 Turbo',
-    provider: 'openai',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.JsonMode, ModelCapability.Streaming, ModelCapability.ImageUnderstanding, ModelCapability.CodeGeneration],
-    contextWindow: 128_000,
-    maxOutputTokens: 4_096,
-    pricing: { inputPerMillion: 10, outputPerMillion: 30 },
-    latencyClass: 'medium',
-    qualityScore: 0.91,
+    id: "gpt-4.1",
+    name: "GPT-4.1",
+    provider: "openai",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.FUNCTION_CALLING,
+    ],
+    contextWindow: 1_047_576,
+    maxOutputTokens: 32_768,
+    pricing: { inputPerMillion: 2.0, outputPerMillion: 8.0 },
   },
   {
-    id: 'o1',
-    name: 'o1',
-    provider: 'openai',
-    capabilities: [ModelCapability.Chat, ModelCapability.Reasoning, ModelCapability.CodeGeneration],
+    id: "gpt-4.1-mini",
+    name: "GPT-4.1 Mini",
+    provider: "openai",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.FUNCTION_CALLING,
+    ],
+    contextWindow: 1_047_576,
+    maxOutputTokens: 32_768,
+    pricing: { inputPerMillion: 0.4, outputPerMillion: 1.6 },
+  },
+  {
+    id: "o1",
+    name: "OpenAI o1",
+    provider: "openai",
+    capabilities: [ModelCapability.CHAT, ModelCapability.CODE, ModelCapability.REASONING],
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
-    pricing: { inputPerMillion: 15, outputPerMillion: 60 },
-    latencyClass: 'slow',
-    qualityScore: 0.97,
+    pricing: { inputPerMillion: 15.0, outputPerMillion: 60.0 },
   },
   {
-    id: 'o3-mini',
-    name: 'o3-mini',
-    provider: 'openai',
-    capabilities: [ModelCapability.Chat, ModelCapability.Reasoning, ModelCapability.CodeGeneration, ModelCapability.Streaming],
+    id: "o3-mini",
+    name: "OpenAI o3-mini",
+    provider: "openai",
+    capabilities: [ModelCapability.CHAT, ModelCapability.CODE, ModelCapability.REASONING],
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
     pricing: { inputPerMillion: 1.1, outputPerMillion: 4.4 },
-    latencyClass: 'medium',
-    qualityScore: 0.88,
   },
   {
-    id: 'text-embedding-3-small',
-    name: 'text-embedding-3-small',
-    provider: 'openai',
-    capabilities: [ModelCapability.Embedding],
+    id: "text-embedding-3-large",
+    name: "Text Embedding 3 Large",
+    provider: "openai",
+    capabilities: [ModelCapability.EMBEDDING],
     contextWindow: 8_191,
-    maxOutputTokens: 0,
-    pricing: { inputPerMillion: 0.02, outputPerMillion: 0 },
-    latencyClass: 'ultra_fast',
-    qualityScore: 0.75,
+    pricing: { inputPerMillion: 0.13, outputPerMillion: 0, embeddingPerMillion: 0.13 },
   },
   {
-    id: 'text-embedding-3-large',
-    name: 'text-embedding-3-large',
-    provider: 'openai',
-    capabilities: [ModelCapability.Embedding],
+    id: "text-embedding-3-small",
+    name: "Text Embedding 3 Small",
+    provider: "openai",
+    capabilities: [ModelCapability.EMBEDDING],
     contextWindow: 8_191,
-    maxOutputTokens: 0,
-    pricing: { inputPerMillion: 0.13, outputPerMillion: 0 },
-    latencyClass: 'fast',
-    qualityScore: 0.88,
+    pricing: { inputPerMillion: 0.02, outputPerMillion: 0, embeddingPerMillion: 0.02 },
   },
 ];
 
-// ─── Provider ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// OpenAIProvider
+// ─────────────────────────────────────────────
 
 export class OpenAIProvider extends BaseProvider {
-  private client!: OpenAI;
+  readonly id = "openai";
+  readonly name = "OpenAI";
 
-  get name(): string {
-    return 'openai';
-  }
+  private readonly client: OpenAI;
 
-  override async initialize(config: IProviderConfig): Promise<void> {
-    await super.initialize(config);
+  constructor(config: Partial<IProviderConfig> & { apiKey: string }) {
+    super({
+      id: "openai",
+      name: "OpenAI",
+      defaultModel: "gpt-4o",
+      timeout: 60_000,
+      maxRetries: 3,
+      rateLimitRpm: 500,
+      ...config,
+    });
+
     this.client = new OpenAI({
       apiKey: config.apiKey,
-      organization: config.organization,
-      project: config.project,
+      organization: config.organizationId,
       baseURL: config.baseUrl,
-      timeout: config.timeout ?? 60_000,
-      maxRetries: 0, // we handle retries in BaseProvider
-      defaultHeaders: config.headers,
+      timeout: this.config.timeout,
+      maxRetries: 0, // We handle retries ourselves
     });
+
+    this._models = OPENAI_MODELS;
   }
 
-  protected async _chat(request: IChatRequest): Promise<IChatResponse> {
-    const model = request.model ?? this.config.defaultModel ?? 'gpt-4o-mini';
-    const t0 = Date.now();
+  isCapable(capability: ModelCapability): boolean {
+    return [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.FUNCTION_CALLING,
+      ModelCapability.EMBEDDING,
+      ModelCapability.REASONING,
+    ].includes(capability);
+  }
+
+  protected async _chat(
+    messages: IChatMessage[],
+    options: IChatOptions,
+  ): Promise<IChatResponse> {
+    const start = Date.now();
+    const model = options.model ?? this.config.defaultModel ?? "gpt-4o";
+
+    const openaiMessages = this.toOpenAIMessages(messages, options.systemPrompt);
+    const tools = options.tools?.map((t) => ({
+      type: "function" as const,
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    }));
 
     try {
       const response = await this.client.chat.completions.create({
         model,
-        messages: request.messages as OpenAI.ChatCompletionMessageParam[],
-        temperature: request.temperature,
-        max_completion_tokens: request.maxTokens,
-        top_p: request.topP,
-        frequency_penalty: request.frequencyPenalty,
-        presence_penalty: request.presencePenalty,
-        stop: request.stop,
-        tools: request.tools as OpenAI.ChatCompletionTool[] | undefined,
-        tool_choice: request.toolChoice as OpenAI.ChatCompletionToolChoiceOption | undefined,
-        response_format: request.responseFormat as OpenAI.ResponseFormatJSONObject | undefined,
+        messages: openaiMessages,
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        top_p: options.topP,
+        frequency_penalty: options.frequencyPenalty,
+        presence_penalty: options.presencePenalty,
+        stop: options.stop,
+        tools: tools?.length ? tools : undefined,
+        tool_choice: tools?.length ? (options.toolChoice as OpenAI.ChatCompletionToolChoiceOption ?? "auto") : undefined,
+        response_format: options.responseFormat === "json" ? { type: "json_object" } : undefined,
+        seed: options.seed,
+        user: options.userId,
         stream: false,
       });
 
       const choice = response.choices[0];
-      const usage = response.usage!;
-      const modelInfo = OPENAI_MODELS.find((m) => m.id === model);
-      const cost = modelInfo
-        ? this.calculateCost(
-            this.buildUsage(usage.prompt_tokens, usage.completion_tokens),
-            modelInfo.pricing,
-          )
-        : undefined;
+      const toolCalls = choice.message.tool_calls?.map((tc) => ({
+        id: tc.id,
+        name: tc.function.name,
+        arguments: JSON.parse(tc.function.arguments || "{}"),
+      }));
+
+      const usage = {
+        promptTokens: response.usage?.prompt_tokens ?? 0,
+        completionTokens: response.usage?.completion_tokens ?? 0,
+        totalTokens: response.usage?.total_tokens ?? 0,
+        cachedTokens: (response.usage as { prompt_tokens_details?: { cached_tokens?: number } })?.prompt_tokens_details?.cached_tokens,
+      };
 
       return {
         id: response.id,
-        content: choice.message.content ?? '',
-        role: MessageRole.Assistant,
         model: response.model,
-        provider: this.name,
-        usage: this.buildUsage(usage.prompt_tokens, usage.completion_tokens, {
-          cachedTokens: (usage as any).prompt_tokens_details?.cached_tokens,
-          reasoningTokens: (usage as any).completion_tokens_details?.reasoning_tokens,
-        }),
-        finishReason: this.normalizeFinishReason(choice.finish_reason),
-        toolCalls: choice.message.tool_calls?.map((tc) => ({
-          id: tc.id,
-          type: 'function' as const,
-          function: { name: tc.function.name, arguments: tc.function.arguments },
-        })),
-        latencyMs: Date.now() - t0,
-        cost,
+        provider: this.id,
+        content: choice.message.content ?? "",
+        toolCalls: toolCalls?.length ? toolCalls : undefined,
+        finishReason: this.mapFinishReason(choice.finish_reason),
+        usage,
+        cost: this.calculateCost(model, usage.promptTokens, usage.completionTokens),
+        latencyMs: Date.now() - start,
+        createdAt: new Date(response.created * 1000),
       };
-    } catch (err: any) {
-      throw this._mapError(err);
+    } catch (err) {
+      throw this.mapError(err);
     }
   }
 
-  protected async *_stream(request: IChatRequest): AsyncGenerator<IStreamChunk> {
-    const model = request.model ?? this.config.defaultModel ?? 'gpt-4o-mini';
-    const id = this.generateId('openai');
+  protected async *_stream(
+    messages: IChatMessage[],
+    options: IChatOptions,
+  ): AsyncIterable<IStreamChunk> {
+    const model = options.model ?? this.config.defaultModel ?? "gpt-4o";
+    const openaiMessages = this.toOpenAIMessages(messages, options.systemPrompt);
 
     try {
       const stream = await this.client.chat.completions.create({
         model,
-        messages: request.messages as OpenAI.ChatCompletionMessageParam[],
-        temperature: request.temperature,
-        max_completion_tokens: request.maxTokens,
+        messages: openaiMessages,
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        top_p: options.topP,
         stream: true,
         stream_options: { include_usage: true },
       });
 
       for await (const chunk of stream) {
         const choice = chunk.choices[0];
-        if (!choice) {
-          // Usage chunk
-          if (chunk.usage) {
-            yield {
-              type: 'usage',
-              id,
-              model,
-              provider: this.name,
-              usage: this.buildUsage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens),
-              finishReason: 'stop',
-            };
-          }
-          continue;
-        }
+        if (!choice) continue;
 
-        const delta = choice.delta?.content;
-        if (delta) {
-          yield {
-            type: 'delta',
-            id,
-            model,
-            provider: this.name,
-            delta,
-            finishReason: null,
-          };
-        }
-
-        if (choice.finish_reason) {
-          yield {
-            type: 'done',
-            id,
-            model,
-            provider: this.name,
-            finishReason: this.normalizeFinishReason(choice.finish_reason),
-          };
-        }
+        yield {
+          id: chunk.id,
+          delta: choice.delta?.content ?? "",
+          finishReason: choice.finish_reason
+            ? this.mapFinishReason(choice.finish_reason)
+            : undefined,
+          usage: chunk.usage
+            ? {
+                promptTokens: chunk.usage.prompt_tokens,
+                completionTokens: chunk.usage.completion_tokens,
+                totalTokens: chunk.usage.total_tokens,
+              }
+            : undefined,
+        };
       }
-    } catch (err: any) {
-      yield {
-        type: 'error',
-        id,
-        model,
-        provider: this.name,
-        error: err.message ?? 'Stream error',
-        finishReason: null,
-      };
-      throw this._mapError(err);
+    } catch (err) {
+      throw this.mapError(err);
     }
   }
 
-  protected async _embed(request: IEmbedRequest): Promise<IEmbedResponse> {
-    const model = request.model ?? 'text-embedding-3-small';
+  protected async _embed(
+    texts: string[],
+    options: IEmbeddingOptions,
+  ): Promise<IEmbeddingResponse> {
+    const start = Date.now();
+    const model = options.model ?? "text-embedding-3-small";
 
     try {
       const response = await this.client.embeddings.create({
         model,
-        input: request.input,
-        dimensions: request.dimensions,
+        input: texts,
+        dimensions: options.dimensions,
+        user: options.userId,
       });
 
       return {
+        id: `${this.id}-embed-${Date.now()}`,
+        provider: this.id,
+        model,
         embeddings: response.data.map((d) => d.embedding),
-        model: response.model,
-        provider: this.name,
-        usage: {
-          promptTokens: response.usage.prompt_tokens,
-          totalTokens: response.usage.total_tokens,
-        },
+        usage: { totalTokens: response.usage.total_tokens },
+        cost: (response.usage.total_tokens / 1_000_000) * 0.02,
+        latencyMs: Date.now() - start,
       };
-    } catch (err: any) {
-      throw this._mapError(err);
+    } catch (err) {
+      throw this.mapError(err);
     }
   }
 
-  async listModels(): Promise<IModelInfo[]> {
+  protected async _listModels(): Promise<IModelInfo[]> {
     return OPENAI_MODELS;
   }
 
-  async healthCheck(): Promise<boolean> {
-    try {
-      await this.client.models.list();
-      return true;
-    } catch {
-      return false;
+  // ─── Format Conversion ───
+
+  private toOpenAIMessages(
+    messages: IChatMessage[],
+    systemPrompt?: string,
+  ): OpenAI.ChatCompletionMessageParam[] {
+    const result: OpenAI.ChatCompletionMessageParam[] = [];
+
+    if (systemPrompt) {
+      result.push({ role: "system", content: systemPrompt });
+    }
+
+    for (const msg of messages) {
+      if (msg.role === MessageRole.SYSTEM) {
+        result.push({ role: "system", content: this.normalizeContent(msg.content) });
+      } else if (msg.role === MessageRole.USER) {
+        const content = msg.content;
+        if (typeof content === "string") {
+          result.push({ role: "user", content });
+        } else if (Array.isArray(content)) {
+          const parts: OpenAI.ChatCompletionContentPart[] = content.map((part) => {
+            if (typeof part === "object" && "type" in part && part.type === "image") {
+              const imgPart = part as { type: "image"; url?: string; base64?: string; mimeType?: string };
+              return {
+                type: "image_url" as const,
+                image_url: {
+                  url: imgPart.url ?? `data:${imgPart.mimeType ?? "image/jpeg"};base64,${imgPart.base64}`,
+                },
+              };
+            }
+            return { type: "text" as const, text: typeof part === "object" && "text" in part ? (part as {text: string}).text : "" };
+          });
+          result.push({ role: "user", content: parts });
+        } else {
+          result.push({ role: "user", content: this.normalizeContent(content) });
+        }
+      } else if (msg.role === MessageRole.ASSISTANT) {
+        result.push({ role: "assistant", content: this.normalizeContent(msg.content) });
+      } else if (msg.role === MessageRole.TOOL) {
+        result.push({
+          role: "tool",
+          content: this.normalizeContent(msg.content),
+          tool_call_id: msg.toolCallId ?? "",
+        });
+      }
+    }
+
+    return result;
+  }
+
+  private mapFinishReason(reason: string | null): FinishReason {
+    switch (reason) {
+      case "stop": return FinishReason.STOP;
+      case "length": return FinishReason.LENGTH;
+      case "tool_calls": return FinishReason.TOOL_CALL;
+      case "content_filter": return FinishReason.CONTENT_FILTER;
+      default: return FinishReason.STOP;
     }
   }
 
-  private _mapError(err: any): Error {
-    if (err instanceof ProviderError) return err;
-    const status = err.status ?? err.statusCode;
-    if (status === 401) return new AuthenticationError(this.name);
-    if (status === 429) return new RateLimitError(this.name, err.headers?.['retry-after-ms'] ? parseInt(err.headers['retry-after-ms']) : undefined);
-    if (status === 404) return new ModelNotFoundError(this.name, 'unknown');
-    return new ProviderError(err.message ?? 'Unknown OpenAI error', this.name, 'OPENAI_ERROR', status >= 500);
+  private mapError(err: unknown): ProviderError {
+    if (err instanceof OpenAI.APIError) {
+      if (err.status === 401) return new AuthenticationError(this.id, err);
+      if (err.status === 429) {
+        const retryAfter = parseInt(err.headers?.["retry-after"] ?? "0", 10) * 1000;
+        return new RateLimitError(this.id, retryAfter || undefined, err);
+      }
+      if (err.status === 400 && err.message.includes("context_length")) {
+        return new ContextLengthError(this.id, 128_000, 0);
+      }
+      return new ProviderError(err.message, this.id, `OPENAI_${err.code ?? err.status}`, err.status, err.status >= 500, err);
+    }
+    return new ProviderError(String(err), this.id, "UNKNOWN", undefined, true, err);
   }
 }

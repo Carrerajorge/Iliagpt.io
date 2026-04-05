@@ -1,500 +1,691 @@
-/**
- * Chat GraphQL Resolvers
- * Handles: Chats, Messages, search, and real-time subscriptions
- */
+import { GraphQLError } from 'graphql';
+import { eq, and, desc, asc, ilike, lt, gt, sql } from 'drizzle-orm';
+import { PubSub, withFilter } from 'graphql-subscriptions';
+import { db } from '../../db';
+import { Logger } from '../../lib/logger';
+import { chats, messages } from '../../../shared/schema';
+import type { GraphQLContext } from '../index';
 
-import { EventEmitter } from "events";
-import { GraphQLError } from "graphql";
-import { eq, desc, and, sql, like, gt, lt } from "drizzle-orm";
-import { db, db as dbRead } from "../../db.js";
-import { Logger } from "../../lib/logger.js";
-import { chats, chatMessages } from "../../../shared/schema.js";
-import type { GraphQLContext } from "../middleware/auth.js";
-
-// ─── Simple PubSub backed by EventEmitter ────────────────────────────────────
-
-class PubSub {
-  private emitter = new EventEmitter();
-
-  constructor() {
-    this.emitter.setMaxListeners(200);
-  }
-
-  publish(topic: string, payload: unknown): void {
-    this.emitter.emit(topic, payload);
-  }
-
-  asyncIterator<T>(topics: string | string[]): AsyncIterator<T> {
-    const topicList = Array.isArray(topics) ? topics : [topics];
-    const queue: T[] = [];
-    const resolvers: Array<(value: IteratorResult<T>) => void> = [];
-    let done = false;
-
-    const listener = (payload: T) => {
-      if (resolvers.length > 0) {
-        const resolve = resolvers.shift()!;
-        resolve({ value: payload, done: false });
-      } else {
-        queue.push(payload);
-      }
-    };
-
-    topicList.forEach((t) => this.emitter.on(t, listener));
-
-    return {
-      next(): Promise<IteratorResult<T>> {
-        if (queue.length > 0) {
-          return Promise.resolve({ value: queue.shift()!, done: false });
-        }
-        if (done) {
-          return Promise.resolve({ value: undefined as any, done: true });
-        }
-        return new Promise<IteratorResult<T>>((resolve) => resolvers.push(resolve));
-      },
-      return(): Promise<IteratorResult<T>> {
-        done = true;
-        topicList.forEach((t) => this.emitter.off(t, listener));
-        resolvers.forEach((r) => r({ value: undefined as any, done: true }));
-        return Promise.resolve({ value: undefined as any, done: true });
-      },
-      throw(error?: unknown): Promise<IteratorResult<T>> {
-        done = true;
-        topicList.forEach((t) => this.emitter.off(t, listener));
-        return Promise.reject(error);
-      },
-      [Symbol.asyncIterator]() {
-        return this;
-      },
-    };
-  }
-}
+// ─── PubSub Events ────────────────────────────────────────────────────────────
 
 export const pubsub = new PubSub();
 
-// ─── Topic helpers ────────────────────────────────────────────────────────────
-const TOPICS = {
-  MESSAGE_ADDED: (chatId: string) => `MESSAGE_ADDED_${chatId}`,
-  CHAT_UPDATED: (userId: string) => `CHAT_UPDATED_${userId}`,
-  AGENT_STATUS: (agentId: string) => `AGENT_STATUS_${agentId}`,
-};
+const EVENTS = {
+  MESSAGE_STREAM: 'MESSAGE_STREAM',
+  CHAT_UPDATED: 'CHAT_UPDATED',
+} as const;
 
-// ─── Cursor helpers ───────────────────────────────────────────────────────────
-function encodeCursor(val: string): string {
-  return Buffer.from(val).toString("base64");
-}
-function decodeCursor(cursor: string): string {
-  return Buffer.from(cursor, "base64").toString("utf-8");
+// ─── Pagination Helpers ────────────────────────────────────────────────────────
+
+interface PaginationInput {
+  first?: number | null;
+  after?: string | null;
+  last?: number | null;
+  before?: string | null;
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-function assertAuth(ctx: GraphQLContext): asserts ctx is GraphQLContext & { user: NonNullable<GraphQLContext["user"]> } {
-  if (!ctx.user?.id) {
-    throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHENTICATED" } });
+interface Edge<T> {
+  node: T;
+  cursor: string;
+}
+
+interface Connection<T> {
+  edges: Edge<T>[];
+  pageInfo: {
+    hasNextPage: boolean;
+    hasPreviousPage: boolean;
+    startCursor: string | null;
+    endCursor: string | null;
+    totalCount: number;
+  };
+}
+
+function encodeCursor(id: string, createdAt: Date): string {
+  return Buffer.from(JSON.stringify({ id, t: createdAt.getTime() })).toString('base64');
+}
+
+function decodeCursor(cursor: string): { id: string; t: number } {
+  try {
+    return JSON.parse(Buffer.from(cursor, 'base64').toString('utf-8'));
+  } catch {
+    throw new GraphQLError('Invalid cursor', { extensions: { code: 'BAD_USER_INPUT' } });
   }
 }
 
-function mapChatStatus(c: typeof chats.$inferSelect) {
-  if (c.deletedAt) return "DELETED";
-  if (c.archived === "true") return "ARCHIVED";
-  return "ACTIVE";
+function buildConnection<T extends { id: string; createdAt: Date }>(
+  items: T[],
+  totalCount: number,
+  pagination: PaginationInput,
+  hasMore: boolean,
+): Connection<T> {
+  const edges = items.map((node) => ({
+    node,
+    cursor: encodeCursor(node.id, node.createdAt),
+  }));
+
+  return {
+    edges,
+    pageInfo: {
+      hasNextPage: pagination.first != null ? hasMore : false,
+      hasPreviousPage: pagination.last != null ? hasMore : false,
+      startCursor: edges.length > 0 ? edges[0].cursor : null,
+      endCursor: edges.length > 0 ? edges[edges.length - 1].cursor : null,
+      totalCount,
+    },
+  };
 }
 
-// ─── Resolvers ────────────────────────────────────────────────────────────────
-export const chatResolvers = {
-  Query: {
-    async chats(
-      _: unknown,
-      args: { filter?: { status?: string; search?: string; gptId?: string; from?: string; to?: string }; limit?: number; offset?: number },
-      ctx: GraphQLContext
-    ) {
-      assertAuth(ctx);
-      const limit = Math.min(args.limit ?? 20, 100);
-      const offset = args.offset ?? 0;
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 100;
 
-      try {
-        Logger.info("[GraphQL] chats query", { userId: ctx.user.id, limit, offset });
+function normalizePageSize(first?: number | null, last?: number | null): number {
+  const size = first ?? last ?? DEFAULT_PAGE_SIZE;
+  return Math.min(Math.max(1, size), MAX_PAGE_SIZE);
+}
 
-        const conditions = [eq(chats.userId, ctx.user.id)];
+// ─── Authorization Helpers ────────────────────────────────────────────────────
 
-        // Status filter
-        if (args.filter?.status === "ARCHIVED") {
-          conditions.push(eq(chats.archived, "true"));
-        } else if (args.filter?.status === "DELETED") {
-          // show deleted only for admins – regular users can't see deleted
-          if (ctx.user.role !== "admin") {
-            throw new GraphQLError("Forbidden", { extensions: { code: "FORBIDDEN" } });
-          }
-        } else {
-          // Default: exclude deleted
-          conditions.push(sql`${chats.deletedAt} IS NULL`);
-        }
+function requireAuth(ctx: GraphQLContext): string {
+  if (!ctx.userId) {
+    throw new GraphQLError('Not authenticated', {
+      extensions: { code: 'UNAUTHENTICATED' },
+    });
+  }
+  return ctx.userId;
+}
 
-        if (args.filter?.gptId) {
-          conditions.push(eq(chats.gptId, args.filter.gptId));
-        }
+async function requireChatOwner(
+  chatId: string,
+  userId: string,
+): Promise<typeof chats.$inferSelect> {
+  const [chat] = await db
+    .select()
+    .from(chats)
+    .where(eq(chats.id, chatId))
+    .limit(1);
 
-        const rows = await dbRead
+  if (!chat) {
+    throw new GraphQLError('Chat not found', {
+      extensions: { code: 'NOT_FOUND' },
+    });
+  }
+
+  if (chat.userId !== userId) {
+    throw new GraphQLError('Forbidden: you do not own this chat', {
+      extensions: { code: 'FORBIDDEN' },
+    });
+  }
+
+  return chat;
+}
+
+// ─── Query Resolvers ──────────────────────────────────────────────────────────
+
+const chatQueryResolvers = {
+  async chats(
+    _: unknown,
+    args: { pagination?: PaginationInput | null; userId?: string | null },
+    ctx: GraphQLContext,
+  ) {
+    const requesterId = requireAuth(ctx);
+    // Admins may query any userId; regular users can only query their own
+    const targetUserId =
+      ctx.role === 'ADMIN' && args.userId ? args.userId : requesterId;
+
+    const pagination = args.pagination ?? {};
+    const limit = normalizePageSize(pagination.first, pagination.last);
+
+    try {
+      let cursorCondition;
+      if (pagination.after) {
+        const { t } = decodeCursor(pagination.after);
+        cursorCondition = lt(chats.createdAt, new Date(t));
+      } else if (pagination.before) {
+        const { t } = decodeCursor(pagination.before);
+        cursorCondition = gt(chats.createdAt, new Date(t));
+      }
+
+      const baseWhere = and(
+        eq(chats.userId, targetUserId),
+        cursorCondition,
+      );
+
+      const [rows, countResult] = await Promise.all([
+        db
           .select()
           .from(chats)
-          .where(and(...conditions))
-          .orderBy(desc(chats.updatedAt))
-          .limit(limit + 1)
-          .offset(offset);
+          .where(baseWhere)
+          .orderBy(pagination.last ? asc(chats.createdAt) : desc(chats.createdAt))
+          .limit(limit + 1),
+        db
+          .select({ count: sql<number>`count(*)` })
+          .from(chats)
+          .where(eq(chats.userId, targetUserId)),
+      ]);
 
-        const hasNextPage = rows.length > limit;
-        const items = hasNextPage ? rows.slice(0, limit) : rows;
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const totalCount = Number(countResult[0]?.count ?? 0);
 
-        return {
-          edges: items.map((c) => ({ node: { ...c, status: mapChatStatus(c), archived: c.archived === "true", pinned: c.pinned === "true" }, cursor: encodeCursor(c.id) })),
-          pageInfo: {
-            hasNextPage,
-            hasPreviousPage: offset > 0,
-            startCursor: items.length > 0 ? encodeCursor(items[0].id) : null,
-            endCursor: items.length > 0 ? encodeCursor(items[items.length - 1].id) : null,
-            totalCount: items.length,
-          },
-        };
-      } catch (err) {
-        Logger.error("[GraphQL] chats query failed", err);
-        throw err instanceof GraphQLError ? err : new GraphQLError("Failed to fetch chats");
+      Logger.info('Fetched chats', { userId: targetUserId, count: items.length });
+      return buildConnection(items, totalCount, pagination, hasMore);
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to fetch chats', err);
+      throw new GraphQLError('Failed to fetch chats', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+
+  async chat(_: unknown, args: { id: string }, ctx: GraphQLContext) {
+    const userId = requireAuth(ctx);
+
+    try {
+      const [chat] = await db
+        .select()
+        .from(chats)
+        .where(eq(chats.id, args.id))
+        .limit(1);
+
+      if (!chat) return null;
+
+      // Allow owners or admins
+      if (chat.userId !== userId && ctx.role !== 'ADMIN') {
+        // Check if shared
+        const meta = chat.metadata as Record<string, unknown> | null;
+        if (!meta?.isPublic) {
+          throw new GraphQLError('Forbidden', {
+            extensions: { code: 'FORBIDDEN' },
+          });
+        }
       }
-    },
 
-    async chat(_: unknown, args: { id: string }, ctx: GraphQLContext) {
-      assertAuth(ctx);
-      try {
-        Logger.info("[GraphQL] chat query", { chatId: args.id, userId: ctx.user.id });
+      return chat;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to fetch chat', err);
+      throw new GraphQLError('Failed to fetch chat', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
 
-        const [row] = await dbRead
+  async searchChats(
+    _: unknown,
+    args: { query: string; userId?: string | null; pagination?: PaginationInput | null },
+    ctx: GraphQLContext,
+  ) {
+    const requesterId = requireAuth(ctx);
+    const targetUserId =
+      ctx.role === 'ADMIN' && args.userId ? args.userId : requesterId;
+
+    if (!args.query || args.query.trim().length < 2) {
+      throw new GraphQLError('Search query must be at least 2 characters', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
+
+    const pagination = args.pagination ?? {};
+    const limit = normalizePageSize(pagination.first, pagination.last);
+
+    try {
+      const searchTerm = `%${args.query.trim()}%`;
+      const [rows, countResult] = await Promise.all([
+        db
           .select()
           .from(chats)
-          .where(and(eq(chats.id, args.id), eq(chats.userId, ctx.user.id)))
-          .limit(1);
-
-        if (!row) return null;
-        return { ...row, status: mapChatStatus(row), archived: row.archived === "true", pinned: row.pinned === "true" };
-      } catch (err) {
-        Logger.error("[GraphQL] chat query failed", err);
-        throw new GraphQLError("Failed to fetch chat");
-      }
-    },
-
-    async messages(
-      _: unknown,
-      args: { chatId: string; limit?: number; cursor?: string },
-      ctx: GraphQLContext
-    ) {
-      assertAuth(ctx);
-      const limit = Math.min(args.limit ?? 30, 100);
-
-      try {
-        Logger.info("[GraphQL] messages query", { chatId: args.chatId, userId: ctx.user.id });
-
-        // Verify chat ownership
-        const [chat] = await dbRead
-          .select({ id: chats.id })
-          .from(chats)
-          .where(and(eq(chats.id, args.chatId), eq(chats.userId, ctx.user.id)))
-          .limit(1);
-
-        if (!chat) {
-          throw new GraphQLError("Chat not found or access denied", { extensions: { code: "NOT_FOUND" } });
-        }
-
-        const conditions = [eq(chatMessages.chatId, args.chatId)];
-        if (args.cursor) {
-          const decodedCursor = decodeCursor(args.cursor);
-          conditions.push(lt(chatMessages.createdAt, new Date(decodedCursor)));
-        }
-
-        const rows = await dbRead
-          .select()
-          .from(chatMessages)
-          .where(and(...conditions))
-          .orderBy(desc(chatMessages.createdAt))
-          .limit(limit + 1);
-
-        const hasNextPage = rows.length > limit;
-        const items = hasNextPage ? rows.slice(0, limit) : rows;
-
-        return {
-          edges: items.map((m) => ({
-            node: {
-              ...m,
-              role: m.role.toUpperCase() as string,
-              status: (m.status ?? "done").toUpperCase(),
-            },
-            cursor: encodeCursor(m.createdAt.toISOString()),
-          })),
-          pageInfo: {
-            hasNextPage,
-            hasPreviousPage: !!args.cursor,
-            startCursor: items.length > 0 ? encodeCursor(items[0].createdAt.toISOString()) : null,
-            endCursor: items.length > 0 ? encodeCursor(items[items.length - 1].createdAt.toISOString()) : null,
-            totalCount: items.length,
-          },
-        };
-      } catch (err) {
-        Logger.error("[GraphQL] messages query failed", err);
-        throw err instanceof GraphQLError ? err : new GraphQLError("Failed to fetch messages");
-      }
-    },
-
-    async searchMessages(
-      _: unknown,
-      args: { query: string; limit?: number },
-      ctx: GraphQLContext
-    ) {
-      assertAuth(ctx);
-      const limit = Math.min(args.limit ?? 10, 50);
-      const searchTerm = `%${args.query}%`;
-
-      try {
-        Logger.info("[GraphQL] searchMessages", { userId: ctx.user.id, query: args.query });
-
-        // Join messages with chats to ensure ownership
-        const rows = await dbRead
-          .select({
-            message: chatMessages,
-            chatTitle: chats.title,
-          })
-          .from(chatMessages)
-          .innerJoin(chats, eq(chatMessages.chatId, chats.id))
           .where(
             and(
-              eq(chats.userId, ctx.user.id),
-              like(chatMessages.content, searchTerm),
-              sql`${chats.deletedAt} IS NULL`
-            )
+              eq(chats.userId, targetUserId),
+              ilike(chats.title, searchTerm),
+            ),
           )
-          .orderBy(desc(chatMessages.createdAt))
-          .limit(limit);
-
-        return rows.map((r) => ({
-          message: {
-            ...r.message,
-            role: r.message.role.toUpperCase(),
-            status: (r.message.status ?? "done").toUpperCase(),
-          },
-          chatTitle: r.chatTitle,
-          score: 1.0, // Would be real FTS score in production
-          highlight: r.message.content.substring(0, 200),
-        }));
-      } catch (err) {
-        Logger.error("[GraphQL] searchMessages failed", err);
-        throw new GraphQLError("Search failed");
-      }
-    },
-  },
-
-  Mutation: {
-    async createChat(
-      _: unknown,
-      args: { input: { title?: string; gptId?: string; initialMessage?: string } },
-      ctx: GraphQLContext
-    ) {
-      assertAuth(ctx);
-      try {
-        Logger.info("[GraphQL] createChat", { userId: ctx.user.id, gptId: args.input.gptId });
-
-        const [newChat] = await db
-          .insert(chats)
-          .values({
-            userId: ctx.user.id,
-            title: args.input.title ?? "New Chat",
-            gptId: args.input.gptId ?? null,
-          })
-          .returning();
-
-        pubsub.publish(TOPICS.CHAT_UPDATED(ctx.user.id), {
-          chatUpdated: { ...newChat, status: "ACTIVE", archived: false, pinned: false },
-        });
-
-        return { ...newChat, status: "ACTIVE", archived: false, pinned: false };
-      } catch (err) {
-        Logger.error("[GraphQL] createChat failed", err);
-        throw new GraphQLError("Failed to create chat");
-      }
-    },
-
-    async sendMessage(
-      _: unknown,
-      args: { input: { chatId: string; content: string; role?: string; attachments?: unknown; modelId?: string } },
-      ctx: GraphQLContext
-    ) {
-      assertAuth(ctx);
-      try {
-        Logger.info("[GraphQL] sendMessage", { userId: ctx.user.id, chatId: args.input.chatId });
-
-        // Verify chat ownership
-        const [chat] = await db
-          .select()
+          .orderBy(desc(chats.updatedAt))
+          .limit(limit + 1),
+        db
+          .select({ count: sql<number>`count(*)` })
           .from(chats)
-          .where(and(eq(chats.id, args.input.chatId), eq(chats.userId, ctx.user.id)))
-          .limit(1);
+          .where(
+            and(
+              eq(chats.userId, targetUserId),
+              ilike(chats.title, searchTerm),
+            ),
+          ),
+      ]);
 
-        if (!chat) {
-          throw new GraphQLError("Chat not found or access denied", { extensions: { code: "NOT_FOUND" } });
-        }
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const totalCount = Number(countResult[0]?.count ?? 0);
 
-        const role = (args.input.role ?? "user").toLowerCase();
+      return buildConnection(items, totalCount, pagination, hasMore);
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to search chats', err);
+      throw new GraphQLError('Failed to search chats', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+};
 
-        const [message] = await db
-          .insert(chatMessages)
-          .values({
-            chatId: args.input.chatId,
-            role,
-            content: args.input.content,
-            status: "done",
-            attachments: args.input.attachments as any ?? null,
-          })
-          .returning();
+// ─── Mutation Resolvers ───────────────────────────────────────────────────────
 
-        // Update chat lastMessageAt and messageCount
-        await db
-          .update(chats)
-          .set({
-            lastMessageAt: new Date(),
-            messageCount: sql`${chats.messageCount} + 1`,
-            aiModelUsed: args.input.modelId ?? chat.aiModelUsed,
-            updatedAt: new Date(),
-          })
-          .where(eq(chats.id, args.input.chatId));
+const chatMutationResolvers = {
+  async createChat(
+    _: unknown,
+    args: { input: { title: string; model: string; systemPrompt?: string; metadata?: unknown } },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
 
-        const normalized = {
-          ...message,
-          role: message.role.toUpperCase(),
-          status: (message.status ?? "done").toUpperCase(),
-        };
+    if (!args.input.title?.trim()) {
+      throw new GraphQLError('Title is required', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
+    if (!args.input.model?.trim()) {
+      throw new GraphQLError('Model is required', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
 
-        pubsub.publish(TOPICS.MESSAGE_ADDED(args.input.chatId), { messageAdded: normalized });
+    try {
+      const [chat] = await db
+        .insert(chats)
+        .values({
+          title: args.input.title.trim(),
+          userId,
+          model: args.input.model,
+          status: 'ACTIVE',
+          metadata: (args.input.metadata as Record<string, unknown>) ?? {},
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning();
 
-        return normalized;
-      } catch (err) {
-        Logger.error("[GraphQL] sendMessage failed", err);
-        throw err instanceof GraphQLError ? err : new GraphQLError("Failed to send message");
-      }
-    },
+      Logger.info('Chat created', { chatId: chat.id, userId });
 
-    async deleteChat(_: unknown, args: { id: string }, ctx: GraphQLContext) {
-      assertAuth(ctx);
-      try {
-        Logger.info("[GraphQL] deleteChat", { userId: ctx.user.id, chatId: args.id });
+      pubsub.publish(EVENTS.CHAT_UPDATED, {
+        onChatUpdated: {
+          type: 'CHAT_CREATED',
+          chatId: chat.id,
+          userId,
+          payload: chat,
+          timestamp: new Date(),
+        },
+      });
 
-        const result = await db
-          .update(chats)
-          .set({ deletedAt: new Date(), updatedAt: new Date() })
-          .where(and(eq(chats.id, args.id), eq(chats.userId, ctx.user.id)));
-
-        return true;
-      } catch (err) {
-        Logger.error("[GraphQL] deleteChat failed", err);
-        throw new GraphQLError("Failed to delete chat");
-      }
-    },
-
-    async archiveChat(_: unknown, args: { id: string }, ctx: GraphQLContext) {
-      assertAuth(ctx);
-      try {
-        Logger.info("[GraphQL] archiveChat", { userId: ctx.user.id, chatId: args.id });
-
-        const [updated] = await db
-          .update(chats)
-          .set({ archived: "true", updatedAt: new Date() })
-          .where(and(eq(chats.id, args.id), eq(chats.userId, ctx.user.id)))
-          .returning();
-
-        if (!updated) {
-          throw new GraphQLError("Chat not found", { extensions: { code: "NOT_FOUND" } });
-        }
-
-        const result = { ...updated, status: "ARCHIVED" as const, archived: true, pinned: updated.pinned === "true" };
-        pubsub.publish(TOPICS.CHAT_UPDATED(ctx.user.id), { chatUpdated: result });
-        return result;
-      } catch (err) {
-        Logger.error("[GraphQL] archiveChat failed", err);
-        throw err instanceof GraphQLError ? err : new GraphQLError("Failed to archive chat");
-      }
-    },
+      return chat;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to create chat', err);
+      throw new GraphQLError('Failed to create chat', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
   },
 
-  Subscription: {
-    messageAdded: {
-      subscribe(_: unknown, args: { chatId: string }, ctx: GraphQLContext) {
-        assertAuth(ctx);
-        Logger.info("[GraphQL] subscription messageAdded", { chatId: args.chatId, userId: ctx.user?.id });
-        return pubsub.asyncIterator(TOPICS.MESSAGE_ADDED(args.chatId));
-      },
-      resolve(payload: { messageAdded: unknown }) {
-        return payload.messageAdded;
-      },
-    },
+  async updateChat(
+    _: unknown,
+    args: { id: string; input: { title?: string; model?: string; metadata?: unknown } },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
+    await requireChatOwner(args.id, userId);
 
-    chatUpdated: {
-      subscribe(_: unknown, args: { userId: string }, ctx: GraphQLContext) {
-        assertAuth(ctx);
-        // Users can only subscribe to their own updates unless admin
-        const targetUserId = ctx.user.role === "admin" ? args.userId : ctx.user.id;
-        Logger.info("[GraphQL] subscription chatUpdated", { userId: targetUserId });
-        return pubsub.asyncIterator(TOPICS.CHAT_UPDATED(targetUserId));
-      },
-      resolve(payload: { chatUpdated: unknown }) {
-        return payload.chatUpdated;
-      },
-    },
+    try {
+      const updateData: Partial<typeof chats.$inferInsert> = {
+        updatedAt: new Date(),
+      };
+      if (args.input.title != null) updateData.title = args.input.title.trim();
+      if (args.input.model != null) updateData.model = args.input.model;
+      if (args.input.metadata != null)
+        updateData.metadata = args.input.metadata as Record<string, unknown>;
 
-    agentStatusChanged: {
-      subscribe(_: unknown, args: { agentId: string }, ctx: GraphQLContext) {
-        assertAuth(ctx);
-        Logger.info("[GraphQL] subscription agentStatusChanged", { agentId: args.agentId });
-        return pubsub.asyncIterator(TOPICS.AGENT_STATUS(args.agentId));
-      },
-      resolve(payload: { agentStatusChanged: unknown }) {
-        return payload.agentStatusChanged;
-      },
-    },
+      const [updated] = await db
+        .update(chats)
+        .set(updateData)
+        .where(eq(chats.id, args.id))
+        .returning();
+
+      pubsub.publish(EVENTS.CHAT_UPDATED, {
+        onChatUpdated: {
+          type: 'CHAT_UPDATED',
+          chatId: updated.id,
+          userId,
+          payload: updated,
+          timestamp: new Date(),
+        },
+      });
+
+      return updated;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to update chat', err);
+      throw new GraphQLError('Failed to update chat', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
   },
 
-  // Field resolvers
+  async deleteChat(_: unknown, args: { id: string }, ctx: GraphQLContext) {
+    const userId = requireAuth(ctx);
+    await requireChatOwner(args.id, userId);
+
+    try {
+      await db.delete(messages).where(eq(messages.chatId, args.id));
+      await db.delete(chats).where(eq(chats.id, args.id));
+
+      Logger.info('Chat deleted', { chatId: args.id, userId });
+
+      pubsub.publish(EVENTS.CHAT_UPDATED, {
+        onChatUpdated: {
+          type: 'CHAT_DELETED',
+          chatId: args.id,
+          userId,
+          payload: { id: args.id },
+          timestamp: new Date(),
+        },
+      });
+
+      return true;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to delete chat', err);
+      throw new GraphQLError('Failed to delete chat', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+
+  async archiveChat(_: unknown, args: { id: string }, ctx: GraphQLContext) {
+    const userId = requireAuth(ctx);
+    await requireChatOwner(args.id, userId);
+
+    try {
+      const [updated] = await db
+        .update(chats)
+        .set({
+          status: 'ARCHIVED',
+          updatedAt: new Date(),
+          metadata: sql`jsonb_set(COALESCE(metadata, '{}'::jsonb), '{archivedAt}', to_jsonb(now()::text))`,
+        })
+        .where(eq(chats.id, args.id))
+        .returning();
+
+      return updated;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to archive chat', err);
+      throw new GraphQLError('Failed to archive chat', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+
+  async shareChat(_: unknown, args: { id: string }, ctx: GraphQLContext) {
+    const userId = requireAuth(ctx);
+    await requireChatOwner(args.id, userId);
+
+    try {
+      const shareToken = Buffer.from(`${args.id}:${Date.now()}`).toString('base64url');
+
+      const [updated] = await db
+        .update(chats)
+        .set({
+          status: 'SHARED',
+          updatedAt: new Date(),
+          metadata: sql`jsonb_set(
+            jsonb_set(COALESCE(metadata, '{}'::jsonb), '{isPublic}', 'true'),
+            '{shareToken}', to_jsonb(${shareToken}::text)
+          )`,
+        })
+        .where(eq(chats.id, args.id))
+        .returning();
+
+      Logger.info('Chat shared', { chatId: args.id, userId, shareToken });
+      return updated;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to share chat', err);
+      throw new GraphQLError('Failed to share chat', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+
+  async addMessage(
+    _: unknown,
+    args: {
+      input: {
+        chatId: string;
+        role: string;
+        content: string;
+        parentId?: string;
+        metadata?: unknown;
+      };
+    },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
+    await requireChatOwner(args.input.chatId, userId);
+
+    if (!args.input.content?.trim()) {
+      throw new GraphQLError('Message content cannot be empty', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
+
+    try {
+      const [message] = await db
+        .insert(messages)
+        .values({
+          chatId: args.input.chatId,
+          role: args.input.role,
+          content: args.input.content,
+          parentId: args.input.parentId ?? null,
+          metadata: (args.input.metadata as Record<string, unknown>) ?? {},
+          timestamp: new Date(),
+          isStreaming: false,
+        })
+        .returning();
+
+      // Update chat updatedAt
+      await db
+        .update(chats)
+        .set({ updatedAt: new Date() })
+        .where(eq(chats.id, args.input.chatId));
+
+      pubsub.publish(EVENTS.CHAT_UPDATED, {
+        onChatUpdated: {
+          type: 'MESSAGE_ADDED',
+          chatId: args.input.chatId,
+          userId,
+          payload: message,
+          timestamp: new Date(),
+        },
+      });
+
+      return message;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to add message', err);
+      throw new GraphQLError('Failed to add message', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+
+  async deleteMessage(_: unknown, args: { id: string }, ctx: GraphQLContext) {
+    const userId = requireAuth(ctx);
+
+    try {
+      const [message] = await db
+        .select()
+        .from(messages)
+        .where(eq(messages.id, args.id))
+        .limit(1);
+
+      if (!message) {
+        throw new GraphQLError('Message not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
+
+      await requireChatOwner(message.chatId, userId);
+
+      await db.delete(messages).where(eq(messages.id, args.id));
+      Logger.info('Message deleted', { messageId: args.id, userId });
+      return true;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to delete message', err);
+      throw new GraphQLError('Failed to delete message', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+
+  async editMessage(
+    _: unknown,
+    args: { input: { messageId: string; content: string } },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
+
+    if (!args.input.content?.trim()) {
+      throw new GraphQLError('Message content cannot be empty', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
+
+    try {
+      const [message] = await db
+        .select()
+        .from(messages)
+        .where(eq(messages.id, args.input.messageId))
+        .limit(1);
+
+      if (!message) {
+        throw new GraphQLError('Message not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
+
+      await requireChatOwner(message.chatId, userId);
+
+      const [updated] = await db
+        .update(messages)
+        .set({
+          content: args.input.content,
+          metadata: sql`jsonb_set(
+            jsonb_set(COALESCE(metadata, '{}'::jsonb), '{isEdited}', 'true'),
+            '{editedAt}', to_jsonb(now()::text)
+          )`,
+        })
+        .where(eq(messages.id, args.input.messageId))
+        .returning();
+
+      return updated;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to edit message', err);
+      throw new GraphQLError('Failed to edit message', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+};
+
+// ─── Subscription Resolvers ───────────────────────────────────────────────────
+
+const chatSubscriptionResolvers = {
+  onMessageStream: {
+    subscribe: withFilter(
+      () => pubsub.asyncIterableIterator(EVENTS.MESSAGE_STREAM),
+      (payload: { onMessageStream: { chatId: string } }, variables: { chatId: string }) => {
+        return payload.onMessageStream.chatId === variables.chatId;
+      },
+    ),
+  },
+
+  onChatUpdated: {
+    subscribe: withFilter(
+      () => pubsub.asyncIterableIterator(EVENTS.CHAT_UPDATED),
+      (payload: { onChatUpdated: { userId: string } }, variables: { userId: string }, ctx: GraphQLContext) => {
+        // Only deliver events for the authenticated user
+        return (
+          payload.onChatUpdated.userId === variables.userId &&
+          ctx.userId === variables.userId
+        );
+      },
+    ),
+  },
+};
+
+// ─── Field Resolvers ──────────────────────────────────────────────────────────
+
+const chatFieldResolvers = {
   Chat: {
-    async messages(parent: { id: string }, args: { limit?: number; cursor?: string }, ctx: GraphQLContext) {
-      const limit = Math.min(args.limit ?? 20, 100);
-      try {
-        const conditions = [eq(chatMessages.chatId, parent.id)];
-        if (args.cursor) {
-          conditions.push(lt(chatMessages.createdAt, new Date(decodeCursor(args.cursor))));
-        }
-        const rows = await dbRead
+    async messages(
+      parent: { id: string },
+      args: { first?: number; after?: string; last?: number; before?: string },
+    ) {
+      const limit = normalizePageSize(args.first, args.last);
+
+      let cursorCondition;
+      if (args.after) {
+        const { t } = decodeCursor(args.after);
+        cursorCondition = gt(messages.timestamp, new Date(t));
+      } else if (args.before) {
+        const { t } = decodeCursor(args.before);
+        cursorCondition = lt(messages.timestamp, new Date(t));
+      }
+
+      const [rows, countResult] = await Promise.all([
+        db
           .select()
-          .from(chatMessages)
-          .where(and(...conditions))
-          .orderBy(desc(chatMessages.createdAt))
-          .limit(limit);
+          .from(messages)
+          .where(and(eq(messages.chatId, parent.id), cursorCondition))
+          .orderBy(asc(messages.timestamp))
+          .limit(limit + 1),
+        db
+          .select({ count: sql<number>`count(*)` })
+          .from(messages)
+          .where(eq(messages.chatId, parent.id)),
+      ]);
 
-        return {
-          edges: rows.map((m) => ({
-            node: { ...m, role: m.role.toUpperCase(), status: (m.status ?? "done").toUpperCase() },
-            cursor: encodeCursor(m.createdAt.toISOString()),
-          })),
-          pageInfo: { hasNextPage: false, hasPreviousPage: !!args.cursor, startCursor: null, endCursor: null, totalCount: rows.length },
-        };
-      } catch (err) {
-        Logger.error("[GraphQL] Chat.messages resolver failed", err);
-        return { edges: [], pageInfo: { hasNextPage: false, hasPreviousPage: false, startCursor: null, endCursor: null, totalCount: 0 } };
-      }
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const totalCount = Number(countResult[0]?.count ?? 0);
+
+      const pagination: PaginationInput = { first: args.first, after: args.after, last: args.last, before: args.before };
+      return buildConnection(
+        items.map((m) => ({ ...m, createdAt: m.timestamp })),
+        totalCount,
+        pagination,
+        hasMore,
+      );
     },
-  },
 
-  Message: {
-    async chat(parent: { chatId: string }, _: unknown, ctx: GraphQLContext) {
-      if (!ctx.user?.id) return null;
-      try {
-        const [row] = await dbRead.select().from(chats).where(eq(chats.id, parent.chatId)).limit(1);
-        if (!row) return null;
-        return { ...row, status: mapChatStatus(row), archived: row.archived === "true", pinned: row.pinned === "true" };
-      } catch {
-        return null;
-      }
+    async messageCount(parent: { id: string }) {
+      const [result] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(messages)
+        .where(eq(messages.chatId, parent.id));
+      return Number(result?.count ?? 0);
     },
   },
 };
+
+// ─── Export ───────────────────────────────────────────────────────────────────
+
+export const chatResolvers = {
+  Query: chatQueryResolvers,
+  Mutation: chatMutationResolvers,
+  Subscription: chatSubscriptionResolvers,
+  ...chatFieldResolvers,
+};
+
+export { EVENTS as CHAT_EVENTS };

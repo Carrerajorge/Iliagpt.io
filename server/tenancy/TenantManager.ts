@@ -1,377 +1,739 @@
-import Redis from "ioredis";
-import { LRUCache } from "lru-cache";
-import { Logger } from "../lib/logger";
-import { env } from "../config/env";
-import { pool } from "../db";
-import { getDefaultLimits } from "./TenantContext";
-import type { TenantLimits } from "./TenantContext";
+/**
+ * TenantManager.ts
+ * Multi-tenant lifecycle management: creation, suspension, quotas, membership.
+ */
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+import { EventEmitter } from 'events';
+import { pool } from '../db';
+import { redis } from '../lib/redis';
+import { createLogger } from '../lib/productionLogger';
 
-export interface TenantConfig {
-  allowedDomains?: string[];
-  ssoProvider?: string;
-  defaultLocale?: string;
-  customBranding?: Record<string, string>;
-  webhookUrl?: string;
-  ipAllowList?: string[];
-  [key: string]: unknown;
+const logger = createLogger('TenantManager');
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+export enum TenantStatus {
+  Active    = 'active',
+  Suspended = 'suspended',
+  Deleted   = 'deleted',
+}
+
+export enum TenantPlan {
+  Free       = 'free',
+  Starter    = 'starter',
+  Pro        = 'pro',
+  Enterprise = 'enterprise',
+}
+
+export enum MemberRole {
+  Owner  = 'owner',
+  Admin  = 'admin',
+  Member = 'member',
+  Viewer = 'viewer',
+}
+
+export enum QuotaResource {
+  Messages           = 'messages',
+  Storage            = 'storage',
+  ApiCalls           = 'api_calls',
+  ConcurrentSessions = 'concurrent_sessions',
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface TenantSettings {
+  maxUsers:        number;
+  maxChats:        number;
+  maxAgents:       number;
+  allowedModels:   string[];
+  customBranding:  boolean;
+  ssoConfig:       SsoConfig | null;
+  featureFlags:    Record<string, boolean>;
+}
+
+export interface SsoConfig {
+  provider:   string;
+  entryPoint: string;
+  cert:       string;
+  issuer:     string;
+}
+
+export interface TenantQuotas {
+  messagesPerMonth:    number;
+  storageGB:           number;
+  apiCallsPerDay:      number;
+  concurrentSessions:  number;
 }
 
 export interface Tenant {
-  id: string;
-  slug: string;
-  name: string;
-  plan: "free" | "pro" | "enterprise";
-  status: "active" | "suspended" | "deleted";
-  features: string[];
-  limits: TenantLimits;
-  config: TenantConfig;
-  createdAt: Date;
+  id:           string;
+  name:         string;
+  slug:         string;
+  plan:         TenantPlan;
+  status:       TenantStatus;
+  ownerId:      string;
+  settings:     TenantSettings;
+  customDomain: string | null;
+  createdAt:    Date;
+  updatedAt:    Date;
+  deletedAt:    Date | null;
+}
+
+export interface TenantMember {
+  tenantId:  string;
+  userId:    string;
+  role:      MemberRole;
+  joinedAt:  Date;
   updatedAt: Date;
 }
 
-export interface CreateTenantInput {
-  slug: string;
-  name: string;
-  plan?: "free" | "pro" | "enterprise";
-  features?: string[];
-  config?: Partial<TenantConfig>;
+export interface CreateTenantOptions {
+  name:          string;
+  slug:          string;
+  plan:          TenantPlan;
+  ownerId:       string;
+  settings?:     Partial<TenantSettings>;
+  customDomain?: string;
 }
 
 export interface TenantFilter {
-  status?: "active" | "suspended" | "deleted";
-  plan?: "free" | "pro" | "enterprise";
-  search?: string;
-  limit?: number;
-  offset?: number;
+  status?:  TenantStatus;
+  plan?:    TenantPlan;
+  ownerId?: string;
+  search?:  string;
+  limit?:   number;
+  offset?:  number;
 }
 
-// ---------------------------------------------------------------------------
-// TenantManager
-// ---------------------------------------------------------------------------
+export interface QuotaCheck {
+  allowed:  boolean;
+  current:  number;
+  limit:    number;
+  resetAt?: Date;
+}
 
-class TenantManager {
-  private cache: LRUCache<string, Tenant>;
-  private redis: Redis;
-  private readonly REDIS_PREFIX = "tenant:";
-  private readonly REDIS_TTL = 300; // 5 minutes
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-  constructor() {
-    this.cache = new LRUCache<string, Tenant>({
-      max: 500,
-      ttl: 5 * 60 * 1000, // 5 minutes in-process
-    });
+const TENANT_CACHE_TTL_SECONDS = 300; // 5 minutes
+const CACHE_PREFIX              = 'tenant:';
 
-    this.redis = new Redis(env.REDIS_URL ?? "redis://localhost:6379", {
-      maxRetriesPerRequest: 2,
-      enableReadyCheck: false,
-      lazyConnect: true,
-    });
+const DEFAULT_SETTINGS: TenantSettings = {
+  maxUsers:       5,
+  maxChats:       100,
+  maxAgents:      3,
+  allowedModels:  ['gpt-4o-mini', 'claude-haiku'],
+  customBranding: false,
+  ssoConfig:      null,
+  featureFlags:   {},
+};
 
-    this.redis.on("error", (err) => {
-      Logger.warn("[TenantManager] Redis error (non-fatal)", { error: err.message });
-    });
+const DEFAULT_QUOTAS: Record<TenantPlan, TenantQuotas> = {
+  [TenantPlan.Free]: {
+    messagesPerMonth:   500,
+    storageGB:          1,
+    apiCallsPerDay:     100,
+    concurrentSessions: 2,
+  },
+  [TenantPlan.Starter]: {
+    messagesPerMonth:   5_000,
+    storageGB:          10,
+    apiCallsPerDay:     1_000,
+    concurrentSessions: 10,
+  },
+  [TenantPlan.Pro]: {
+    messagesPerMonth:   50_000,
+    storageGB:          100,
+    apiCallsPerDay:     10_000,
+    concurrentSessions: 50,
+  },
+  [TenantPlan.Enterprise]: {
+    messagesPerMonth:   -1,   // unlimited
+    storageGB:          -1,
+    apiCallsPerDay:     -1,
+    concurrentSessions: -1,
+  },
+};
 
-    this.ensureSchema().catch((err) =>
-      Logger.error("[TenantManager] Schema init error", err)
-    );
+// ─── Event types ─────────────────────────────────────────────────────────────
+
+export interface TenantEvents {
+  TenantCreated:     (tenant: Tenant)                                            => void;
+  TenantUpdated:     (tenant: Tenant)                                            => void;
+  TenantSuspended:   (tenantId: string, reason: string)                          => void;
+  TenantReactivated: (tenantId: string)                                          => void;
+  TenantDeleted:     (tenantId: string)                                          => void;
+  MemberAdded:       (member: TenantMember)                                      => void;
+  MemberRemoved:     (tenantId: string, userId: string)                          => void;
+  MemberRoleUpdated: (tenantId: string, userId: string, role: MemberRole)        => void;
+  QuotaExceeded:     (tenantId: string, resource: QuotaResource, current: number) => void;
+}
+
+// ─── TenantManager ────────────────────────────────────────────────────────────
+
+export class TenantManager extends EventEmitter {
+
+  private static instance: TenantManager | null = null;
+  private initialized = false;
+
+  private constructor() {
+    super();
+    this.setMaxListeners(50);
   }
 
-  // ---------------------------------------------------------------------------
-  // Schema bootstrap (idempotent)
-  // ---------------------------------------------------------------------------
-
-  private async ensureSchema(): Promise<void> {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS tenants (
-        id          TEXT PRIMARY KEY,
-        slug        TEXT UNIQUE NOT NULL,
-        name        TEXT NOT NULL,
-        plan        TEXT NOT NULL DEFAULT 'free',
-        status      TEXT NOT NULL DEFAULT 'active',
-        features    TEXT[]  NOT NULL DEFAULT '{}',
-        limits      JSONB   NOT NULL DEFAULT '{}',
-        config      JSONB   NOT NULL DEFAULT '{}',
-        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
+  public static getInstance(): TenantManager {
+    if (!TenantManager.instance) {
+      TenantManager.instance = new TenantManager();
+    }
+    return TenantManager.instance;
   }
 
-  // ---------------------------------------------------------------------------
-  // CRUD
-  // ---------------------------------------------------------------------------
+  // ── Schema Bootstrap ───────────────────────────────────────────────────────
 
-  async createTenant(input: CreateTenantInput): Promise<Tenant> {
-    const plan = input.plan ?? "free";
-    const id = crypto.randomUUID();
+  public async initialize(): Promise<void> {
+    if (this.initialized) return;
+    await this.createTablesIfNotExists();
+    this.initialized = true;
+    logger.info('TenantManager initialized');
+  }
 
-    const tenant: Tenant = {
-      id,
-      slug: input.slug,
-      name: input.name,
-      plan,
-      status: "active",
-      features: input.features ?? [],
-      limits: getDefaultLimits(plan),
-      config: input.config ?? {},
-      createdAt: new Date(),
-      updatedAt: new Date(),
+  private async createTablesIfNotExists(): Promise<void> {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS tenants (
+          id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+          name          TEXT        NOT NULL,
+          slug          TEXT        NOT NULL UNIQUE,
+          plan          TEXT        NOT NULL DEFAULT 'free',
+          status        TEXT        NOT NULL DEFAULT 'active',
+          owner_id      TEXT        NOT NULL,
+          settings      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+          custom_domain TEXT,
+          created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at    TIMESTAMPTZ
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS tenants_slug_idx     ON tenants (slug)     WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS tenants_owner_idx    ON tenants (owner_id) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS tenants_status_idx   ON tenants (status)   WHERE deleted_at IS NULL;
+      `);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS tenant_members (
+          tenant_id  UUID        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+          user_id    TEXT        NOT NULL,
+          role       TEXT        NOT NULL DEFAULT 'member',
+          joined_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (tenant_id, user_id)
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS tenant_members_user_idx ON tenant_members (user_id);
+      `);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS tenant_quotas (
+          tenant_id             UUID        PRIMARY KEY REFERENCES tenants (id) ON DELETE CASCADE,
+          messages_per_month    INT         NOT NULL DEFAULT 500,
+          storage_gb            INT         NOT NULL DEFAULT 1,
+          api_calls_per_day     INT         NOT NULL DEFAULT 100,
+          concurrent_sessions   INT         NOT NULL DEFAULT 2,
+          updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS tenant_usage (
+          tenant_id   UUID        NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+          resource    TEXT        NOT NULL,
+          period      TEXT        NOT NULL,  -- e.g. '2024-01' for monthly, '2024-01-15' for daily
+          amount      BIGINT      NOT NULL DEFAULT 0,
+          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (tenant_id, resource, period)
+        )
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS tenant_usage_resource_idx ON tenant_usage (tenant_id, resource, period);
+      `);
+
+      await client.query('COMMIT');
+      logger.info('Tenant tables verified/created');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      logger.error('Failed to create tenant tables', err);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  // ── CRUD ───────────────────────────────────────────────────────────────────
+
+  public async createTenant(options: CreateTenantOptions): Promise<Tenant> {
+    const { name, slug, plan, ownerId, settings, customDomain } = options;
+
+    const mergedSettings: TenantSettings = {
+      ...DEFAULT_SETTINGS,
+      ...(plan === TenantPlan.Enterprise ? { maxUsers: -1, maxChats: -1, maxAgents: -1, customBranding: true } : {}),
+      ...settings,
     };
 
-    const result = await pool.query<Tenant>(
-      `INSERT INTO tenants (id, slug, name, plan, status, features, limits, config, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10)
-       RETURNING *`,
-      [
-        tenant.id,
-        tenant.slug,
-        tenant.name,
-        tenant.plan,
-        tenant.status,
-        tenant.features,
-        JSON.stringify(tenant.limits),
-        JSON.stringify(tenant.config),
-        tenant.createdAt,
-        tenant.updatedAt,
-      ]
-    );
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    const created = this.mapRow(result.rows[0]);
-    this.setCache(created);
-    Logger.info(`[TenantManager] Created tenant: ${created.slug} (${created.id})`);
-    return created;
+      const { rows } = await client.query<{
+        id: string; name: string; slug: string; plan: string; status: string;
+        owner_id: string; settings: TenantSettings; custom_domain: string | null;
+        created_at: Date; updated_at: Date; deleted_at: Date | null;
+      }>(
+        `INSERT INTO tenants (name, slug, plan, status, owner_id, settings, custom_domain)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *`,
+        [name, slug, plan, TenantStatus.Active, ownerId, JSON.stringify(mergedSettings), customDomain ?? null],
+      );
+
+      const tenant = this.rowToTenant(rows[0]);
+
+      const defaultQuotas = DEFAULT_QUOTAS[plan];
+      await client.query(
+        `INSERT INTO tenant_quotas
+           (tenant_id, messages_per_month, storage_gb, api_calls_per_day, concurrent_sessions)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [tenant.id, defaultQuotas.messagesPerMonth, defaultQuotas.storageGB,
+          defaultQuotas.apiCallsPerDay, defaultQuotas.concurrentSessions],
+      );
+
+      // Owner is automatically a member with Owner role
+      await client.query(
+        `INSERT INTO tenant_members (tenant_id, user_id, role) VALUES ($1, $2, $3)`,
+        [tenant.id, ownerId, MemberRole.Owner],
+      );
+
+      await client.query('COMMIT');
+
+      await this.cacheTenant(tenant);
+      this.emit('TenantCreated', tenant);
+      logger.info('Tenant created', { tenantId: tenant.id, slug: tenant.slug, plan });
+
+      return tenant;
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      if (err.code === '23505') {
+        throw new Error(`Tenant slug '${slug}' is already taken`);
+      }
+      logger.error('Failed to create tenant', err);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
-  async getTenant(id: string): Promise<Tenant | null> {
-    // L1 — in-process LRU
-    const cached = this.cache.get(id);
+  public async getTenant(tenantId: string): Promise<Tenant | null> {
+    const cached = await this.getCachedTenant(tenantId);
     if (cached) return cached;
 
-    // L2 — Redis
-    const redisKey = `${this.REDIS_PREFIX}${id}`;
-    try {
-      const raw = await this.redis.get(redisKey);
-      if (raw) {
-        const tenant = JSON.parse(raw) as Tenant;
-        tenant.createdAt = new Date(tenant.createdAt);
-        tenant.updatedAt = new Date(tenant.updatedAt);
-        this.cache.set(id, tenant);
-        return tenant;
-      }
-    } catch {
-      // fall through to DB
-    }
-
-    // L3 — Database
-    const result = await pool.query<any>(
-      `SELECT * FROM tenants WHERE id = $1 AND status != 'deleted'`,
-      [id]
+    const { rows } = await pool.query(
+      `SELECT * FROM tenants WHERE id = $1 AND deleted_at IS NULL`,
+      [tenantId],
     );
-    if (result.rows.length === 0) return null;
-    const tenant = this.mapRow(result.rows[0]);
-    this.setCache(tenant);
+    if (!rows.length) return null;
+
+    const tenant = this.rowToTenant(rows[0]);
+    await this.cacheTenant(tenant);
     return tenant;
   }
 
-  async getTenantBySlug(slug: string): Promise<Tenant | null> {
-    // Check LRU by iterating values (slug isn't a primary key)
-    for (const t of this.cache.values()) {
-      if (t.slug === slug) return t;
-    }
-
-    const result = await pool.query<any>(
-      `SELECT * FROM tenants WHERE slug = $1 AND status != 'deleted'`,
-      [slug]
+  public async getTenantBySlug(slug: string): Promise<Tenant | null> {
+    const { rows } = await pool.query(
+      `SELECT * FROM tenants WHERE slug = $1 AND deleted_at IS NULL`,
+      [slug],
     );
-    if (result.rows.length === 0) return null;
-    const tenant = this.mapRow(result.rows[0]);
-    this.setCache(tenant);
+    if (!rows.length) return null;
+
+    const tenant = this.rowToTenant(rows[0]);
+    await this.cacheTenant(tenant);
     return tenant;
   }
 
-  async updateTenant(id: string, updates: Partial<Tenant>): Promise<Tenant> {
-    const fields: string[] = [];
-    const values: any[] = [];
-    let paramIdx = 1;
-
-    const allowed: (keyof Tenant)[] = ["name", "plan", "features", "limits", "config"];
-    for (const key of allowed) {
-      if (key in updates) {
-        const val = updates[key];
-        if (key === "limits" || key === "config") {
-          fields.push(`${this.toSnakeCase(key)} = $${paramIdx}::jsonb`);
-          values.push(JSON.stringify(val));
-        } else if (key === "features") {
-          fields.push(`features = $${paramIdx}`);
-          values.push(val);
-        } else {
-          fields.push(`${this.toSnakeCase(key)} = $${paramIdx}`);
-          values.push(val);
-        }
-        paramIdx++;
-      }
-    }
-
-    if (fields.length === 0) {
-      const existing = await this.getTenant(id);
-      if (!existing) throw new Error(`Tenant ${id} not found`);
-      return existing;
-    }
-
-    fields.push(`updated_at = NOW()`);
-    values.push(id);
-
-    const result = await pool.query<any>(
-      `UPDATE tenants SET ${fields.join(", ")} WHERE id = $${paramIdx} RETURNING *`,
-      values
+  public async getTenantByDomain(domain: string): Promise<Tenant | null> {
+    const { rows } = await pool.query(
+      `SELECT * FROM tenants WHERE custom_domain = $1 AND deleted_at IS NULL AND status = 'active'`,
+      [domain],
     );
+    if (!rows.length) return null;
 
-    if (result.rows.length === 0) throw new Error(`Tenant ${id} not found`);
-    const tenant = this.mapRow(result.rows[0]);
-
-    await this.invalidateCache(id);
-    this.setCache(tenant);
-    Logger.info(`[TenantManager] Updated tenant ${id}`);
+    const tenant = this.rowToTenant(rows[0]);
+    await this.cacheTenant(tenant);
     return tenant;
   }
 
-  async suspendTenant(id: string, reason: string): Promise<void> {
-    await pool.query(
-      `UPDATE tenants SET status = 'suspended', updated_at = NOW(),
-       config = config || $2::jsonb
-       WHERE id = $1`,
-      [id, JSON.stringify({ suspendedReason: reason, suspendedAt: new Date() })]
+  public async updateTenant(tenantId: string, updates: Partial<TenantSettings>): Promise<Tenant> {
+    const existing = await this.getTenant(tenantId);
+    if (!existing) throw new Error(`Tenant ${tenantId} not found`);
+
+    const newSettings: TenantSettings = { ...existing.settings, ...updates };
+
+    const { rows } = await pool.query(
+      `UPDATE tenants
+       SET settings = $1, updated_at = NOW()
+       WHERE id = $2 AND deleted_at IS NULL
+       RETURNING *`,
+      [JSON.stringify(newSettings), tenantId],
     );
-    await this.invalidateCache(id);
-    Logger.warn(`[TenantManager] Suspended tenant ${id}: ${reason}`);
+
+    if (!rows.length) throw new Error(`Tenant ${tenantId} not found`);
+
+    const tenant = this.rowToTenant(rows[0]);
+    await this.invalidateTenantCache(tenantId);
+    await this.cacheTenant(tenant);
+    this.emit('TenantUpdated', tenant);
+    logger.info('Tenant updated', { tenantId });
+
+    return tenant;
   }
 
-  async deleteTenant(id: string): Promise<void> {
-    // Soft delete
-    await pool.query(
-      `UPDATE tenants SET status = 'deleted', updated_at = NOW() WHERE id = $1`,
-      [id]
+  public async suspendTenant(tenantId: string, reason: string): Promise<void> {
+    const { rowCount } = await pool.query(
+      `UPDATE tenants
+       SET status = $1, updated_at = NOW()
+       WHERE id = $2 AND deleted_at IS NULL`,
+      [TenantStatus.Suspended, tenantId],
     );
-    await this.invalidateCache(id);
-    Logger.info(`[TenantManager] Soft-deleted tenant ${id}`);
+    if (!rowCount) throw new Error(`Tenant ${tenantId} not found`);
 
-    // Schedule cleanup (fire-and-forget; real cleanup via worker)
-    this.scheduleCleanup(id);
+    await this.invalidateTenantCache(tenantId);
+    this.emit('TenantSuspended', tenantId, reason);
+    logger.warn('Tenant suspended', { tenantId, reason });
   }
 
-  async listTenants(filter: TenantFilter = {}): Promise<Tenant[]> {
-    const conditions: string[] = ["status != 'deleted'"];
-    const values: any[] = [];
-    let idx = 1;
+  public async reactivateTenant(tenantId: string): Promise<void> {
+    const { rowCount } = await pool.query(
+      `UPDATE tenants
+       SET status = $1, updated_at = NOW()
+       WHERE id = $2 AND deleted_at IS NULL AND status = $3`,
+      [TenantStatus.Active, tenantId, TenantStatus.Suspended],
+    );
+    if (!rowCount) throw new Error(`Tenant ${tenantId} not found or not suspended`);
 
-    if (filter.status) {
-      conditions.push(`status = $${idx++}`);
-      values.push(filter.status);
-    }
-    if (filter.plan) {
-      conditions.push(`plan = $${idx++}`);
-      values.push(filter.plan);
-    }
+    await this.invalidateTenantCache(tenantId);
+    this.emit('TenantReactivated', tenantId);
+    logger.info('Tenant reactivated', { tenantId });
+  }
+
+  /**
+   * Soft-delete: marks tenant deleted, but retains data for retention policy.
+   * Hard purge must be done via a scheduled job after the retention window.
+   */
+  public async deleteTenant(tenantId: string): Promise<void> {
+    const { rowCount } = await pool.query(
+      `UPDATE tenants
+       SET status = $1, deleted_at = NOW(), updated_at = NOW()
+       WHERE id = $2 AND deleted_at IS NULL`,
+      [TenantStatus.Deleted, tenantId],
+    );
+    if (!rowCount) throw new Error(`Tenant ${tenantId} not found`);
+
+    await this.invalidateTenantCache(tenantId);
+    this.emit('TenantDeleted', tenantId);
+    logger.info('Tenant soft-deleted', { tenantId });
+  }
+
+  public async listTenants(filter: TenantFilter = {}): Promise<Tenant[]> {
+    const conditions: string[] = ['deleted_at IS NULL'];
+    const params: unknown[]    = [];
+    let   idx                  = 1;
+
+    if (filter.status) { conditions.push(`status = $${idx++}`);   params.push(filter.status); }
+    if (filter.plan)   { conditions.push(`plan = $${idx++}`);      params.push(filter.plan); }
+    if (filter.ownerId){ conditions.push(`owner_id = $${idx++}`);  params.push(filter.ownerId); }
     if (filter.search) {
       conditions.push(`(name ILIKE $${idx} OR slug ILIKE $${idx})`);
-      values.push(`%${filter.search}%`);
+      params.push(`%${filter.search}%`);
       idx++;
     }
 
-    const limit = filter.limit ?? 100;
+    const where  = conditions.join(' AND ');
+    const limit  = filter.limit  ?? 50;
     const offset = filter.offset ?? 0;
 
-    const result = await pool.query<any>(
-      `SELECT * FROM tenants WHERE ${conditions.join(" AND ")}
-       ORDER BY created_at DESC LIMIT $${idx} OFFSET $${idx + 1}`,
-      [...values, limit, offset]
+    const { rows } = await pool.query(
+      `SELECT * FROM tenants WHERE ${where} ORDER BY created_at DESC LIMIT $${idx++} OFFSET $${idx}`,
+      [...params, limit, offset],
     );
 
-    return result.rows.map((r) => this.mapRow(r));
+    return rows.map(r => this.rowToTenant(r));
   }
 
-  async getTenantConfig(id: string): Promise<TenantConfig> {
-    const tenant = await this.getTenant(id);
-    if (!tenant) throw new Error(`Tenant ${id} not found`);
-    return tenant.config;
-  }
+  // ── Quotas ─────────────────────────────────────────────────────────────────
 
-  async updateFeatureFlags(id: string, features: string[]): Promise<void> {
-    await pool.query(
-      `UPDATE tenants SET features = $2, updated_at = NOW() WHERE id = $1`,
-      [id, features]
+  public async getQuotas(tenantId: string): Promise<TenantQuotas> {
+    const { rows } = await pool.query(
+      `SELECT * FROM tenant_quotas WHERE tenant_id = $1`,
+      [tenantId],
     );
-    await this.invalidateCache(id);
-    Logger.info(`[TenantManager] Updated feature flags for tenant ${id}`, { features });
-  }
+    if (!rows.length) throw new Error(`Quotas not found for tenant ${tenantId}`);
 
-  async enforceIsolation(tenantId: string, resourceOwnerId: string): Promise<void> {
-    if (tenantId !== resourceOwnerId) {
-      Logger.security?.(
-        `[TenantManager] Isolation violation: tenant ${tenantId} tried to access resource owned by ${resourceOwnerId}`
-      );
-      throw new Error("Access denied: cross-tenant resource access");
-    }
-  }
-
-  async invalidateCache(tenantId: string): Promise<void> {
-    this.cache.delete(tenantId);
-    try {
-      await this.redis.del(`${this.REDIS_PREFIX}${tenantId}`);
-    } catch {
-      // non-fatal
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Internals
-  // ---------------------------------------------------------------------------
-
-  private setCache(tenant: Tenant): void {
-    this.cache.set(tenant.id, tenant);
-    this.redis
-      .setex(
-        `${this.REDIS_PREFIX}${tenant.id}`,
-        this.REDIS_TTL,
-        JSON.stringify(tenant)
-      )
-      .catch(() => {});
-  }
-
-  private mapRow(row: any): Tenant {
     return {
-      id: row.id,
-      slug: row.slug,
-      name: row.name,
-      plan: row.plan as "free" | "pro" | "enterprise",
-      status: row.status as "active" | "suspended" | "deleted",
-      features: row.features ?? [],
-      limits: typeof row.limits === "object" ? row.limits : JSON.parse(row.limits ?? "{}"),
-      config: typeof row.config === "object" ? row.config : JSON.parse(row.config ?? "{}"),
-      createdAt: new Date(row.created_at),
-      updatedAt: new Date(row.updated_at),
+      messagesPerMonth:   rows[0].messages_per_month,
+      storageGB:          rows[0].storage_gb,
+      apiCallsPerDay:     rows[0].api_calls_per_day,
+      concurrentSessions: rows[0].concurrent_sessions,
     };
   }
 
-  private toSnakeCase(key: string): string {
-    return key.replace(/([A-Z])/g, "_$1").toLowerCase();
+  public async updateQuotas(tenantId: string, quotas: Partial<TenantQuotas>): Promise<void> {
+    const sets: string[]  = ['updated_at = NOW()'];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    if (quotas.messagesPerMonth    !== undefined) { sets.push(`messages_per_month = $${idx++}`);  params.push(quotas.messagesPerMonth); }
+    if (quotas.storageGB           !== undefined) { sets.push(`storage_gb = $${idx++}`);          params.push(quotas.storageGB); }
+    if (quotas.apiCallsPerDay      !== undefined) { sets.push(`api_calls_per_day = $${idx++}`);   params.push(quotas.apiCallsPerDay); }
+    if (quotas.concurrentSessions  !== undefined) { sets.push(`concurrent_sessions = $${idx++}`); params.push(quotas.concurrentSessions); }
+
+    if (sets.length === 1) return; // nothing to update
+
+    params.push(tenantId);
+    await pool.query(
+      `UPDATE tenant_quotas SET ${sets.join(', ')} WHERE tenant_id = $${idx}`,
+      params,
+    );
+    logger.info('Tenant quotas updated', { tenantId, quotas });
   }
 
-  private scheduleCleanup(tenantId: string): void {
-    // Emit a delayed cleanup event — real worker picks this up
-    setTimeout(async () => {
-      try {
-        await this.redis.lpush("tenant:cleanup:queue", tenantId);
-        Logger.info(`[TenantManager] Enqueued cleanup for tenant ${tenantId}`);
-      } catch {
-        Logger.warn(`[TenantManager] Could not enqueue cleanup for tenant ${tenantId}`);
+  public async checkQuota(tenantId: string, resource: QuotaResource): Promise<QuotaCheck> {
+    const quotas  = await this.getQuotas(tenantId);
+    const limit   = this.getLimit(quotas, resource);
+
+    // Unlimited
+    if (limit === -1) return { allowed: true, current: 0, limit: -1 };
+
+    const period  = this.getPeriodKey(resource);
+    const current = await this.getUsageCount(tenantId, resource, period);
+    const allowed = current < limit;
+
+    if (!allowed) {
+      this.emit('QuotaExceeded', tenantId, resource, current);
+      logger.warn('Quota exceeded', { tenantId, resource, current, limit });
+    }
+
+    return { allowed, current, limit, resetAt: this.getResetDate(resource) };
+  }
+
+  public async incrementUsage(tenantId: string, resource: QuotaResource, amount = 1): Promise<void> {
+    const period = this.getPeriodKey(resource);
+
+    await pool.query(
+      `INSERT INTO tenant_usage (tenant_id, resource, period, amount)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, resource, period)
+       DO UPDATE SET amount = tenant_usage.amount + EXCLUDED.amount, updated_at = NOW()`,
+      [tenantId, resource, period, amount],
+    );
+  }
+
+  // ── Membership ─────────────────────────────────────────────────────────────
+
+  public async getTenantMembers(tenantId: string): Promise<TenantMember[]> {
+    const { rows } = await pool.query(
+      `SELECT * FROM tenant_members WHERE tenant_id = $1 ORDER BY joined_at ASC`,
+      [tenantId],
+    );
+    return rows.map(r => this.rowToMember(r));
+  }
+
+  public async getMember(tenantId: string, userId: string): Promise<TenantMember | null> {
+    const { rows } = await pool.query(
+      `SELECT * FROM tenant_members WHERE tenant_id = $1 AND user_id = $2`,
+      [tenantId, userId],
+    );
+    return rows.length ? this.rowToMember(rows[0]) : null;
+  }
+
+  public async addMember(tenantId: string, userId: string, role: MemberRole): Promise<TenantMember> {
+    // Enforce maxUsers quota
+    const tenant = await this.getTenant(tenantId);
+    if (!tenant) throw new Error(`Tenant ${tenantId} not found`);
+
+    if (tenant.settings.maxUsers > 0) {
+      const { rows } = await pool.query(
+        `SELECT COUNT(*) AS cnt FROM tenant_members WHERE tenant_id = $1`,
+        [tenantId],
+      );
+      const count = parseInt(rows[0].cnt, 10);
+      if (count >= tenant.settings.maxUsers) {
+        throw new Error(`Tenant has reached the maximum number of users (${tenant.settings.maxUsers})`);
       }
-    }, 5_000);
+    }
+
+    const { rows } = await pool.query(
+      `INSERT INTO tenant_members (tenant_id, user_id, role)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = $3, updated_at = NOW()
+       RETURNING *`,
+      [tenantId, userId, role],
+    );
+
+    const member = this.rowToMember(rows[0]);
+    this.emit('MemberAdded', member);
+    logger.info('Tenant member added', { tenantId, userId, role });
+    return member;
+  }
+
+  public async removeMember(tenantId: string, userId: string): Promise<void> {
+    // Prevent removing the owner
+    const tenant = await this.getTenant(tenantId);
+    if (tenant?.ownerId === userId) {
+      throw new Error('Cannot remove the tenant owner');
+    }
+
+    const { rowCount } = await pool.query(
+      `DELETE FROM tenant_members WHERE tenant_id = $1 AND user_id = $2`,
+      [tenantId, userId],
+    );
+    if (!rowCount) throw new Error(`Member not found in tenant ${tenantId}`);
+
+    this.emit('MemberRemoved', tenantId, userId);
+    logger.info('Tenant member removed', { tenantId, userId });
+  }
+
+  public async updateMemberRole(tenantId: string, userId: string, role: MemberRole): Promise<void> {
+    const tenant = await this.getTenant(tenantId);
+    if (tenant?.ownerId === userId && role !== MemberRole.Owner) {
+      throw new Error('Cannot change the role of the tenant owner');
+    }
+
+    const { rowCount } = await pool.query(
+      `UPDATE tenant_members SET role = $1, updated_at = NOW()
+       WHERE tenant_id = $2 AND user_id = $3`,
+      [role, tenantId, userId],
+    );
+    if (!rowCount) throw new Error(`Member not found in tenant ${tenantId}`);
+
+    this.emit('MemberRoleUpdated', tenantId, userId, role);
+    logger.info('Tenant member role updated', { tenantId, userId, role });
+  }
+
+  // ── Cache helpers ──────────────────────────────────────────────────────────
+
+  private async cacheTenant(tenant: Tenant): Promise<void> {
+    try {
+      await redis.setex(
+        `${CACHE_PREFIX}${tenant.id}`,
+        TENANT_CACHE_TTL_SECONDS,
+        JSON.stringify(tenant),
+      );
+    } catch (err) {
+      logger.warn('Failed to cache tenant', { tenantId: tenant.id, err });
+    }
+  }
+
+  private async getCachedTenant(tenantId: string): Promise<Tenant | null> {
+    try {
+      const raw = await redis.get(`${CACHE_PREFIX}${tenantId}`);
+      if (!raw) return null;
+      const data = JSON.parse(raw) as Tenant;
+      // Revive Date objects
+      data.createdAt = new Date(data.createdAt);
+      data.updatedAt = new Date(data.updatedAt);
+      if (data.deletedAt) data.deletedAt = new Date(data.deletedAt);
+      return data;
+    } catch (err) {
+      logger.warn('Failed to read tenant cache', { tenantId, err });
+      return null;
+    }
+  }
+
+  private async invalidateTenantCache(tenantId: string): Promise<void> {
+    try {
+      await redis.del(`${CACHE_PREFIX}${tenantId}`);
+    } catch (err) {
+      logger.warn('Failed to invalidate tenant cache', { tenantId, err });
+    }
+  }
+
+  // ── Private helpers ────────────────────────────────────────────────────────
+
+  private rowToTenant(row: Record<string, unknown>): Tenant {
+    return {
+      id:           row.id           as string,
+      name:         row.name         as string,
+      slug:         row.slug         as string,
+      plan:         row.plan         as TenantPlan,
+      status:       row.status       as TenantStatus,
+      ownerId:      row.owner_id     as string,
+      settings:     row.settings     as TenantSettings,
+      customDomain: row.custom_domain as string | null,
+      createdAt:    row.created_at   as Date,
+      updatedAt:    row.updated_at   as Date,
+      deletedAt:    row.deleted_at   as Date | null,
+    };
+  }
+
+  private rowToMember(row: Record<string, unknown>): TenantMember {
+    return {
+      tenantId:  row.tenant_id  as string,
+      userId:    row.user_id    as string,
+      role:      row.role       as MemberRole,
+      joinedAt:  row.joined_at  as Date,
+      updatedAt: row.updated_at as Date,
+    };
+  }
+
+  private getLimit(quotas: TenantQuotas, resource: QuotaResource): number {
+    switch (resource) {
+      case QuotaResource.Messages:           return quotas.messagesPerMonth;
+      case QuotaResource.Storage:            return quotas.storageGB;
+      case QuotaResource.ApiCalls:           return quotas.apiCallsPerDay;
+      case QuotaResource.ConcurrentSessions: return quotas.concurrentSessions;
+    }
+  }
+
+  private getPeriodKey(resource: QuotaResource): string {
+    const now = new Date();
+    if (resource === QuotaResource.ApiCalls || resource === QuotaResource.ConcurrentSessions) {
+      // Daily period
+      return now.toISOString().slice(0, 10); // 'YYYY-MM-DD'
+    }
+    // Monthly period
+    return now.toISOString().slice(0, 7); // 'YYYY-MM'
+  }
+
+  private getResetDate(resource: QuotaResource): Date {
+    const now = new Date();
+    if (resource === QuotaResource.ApiCalls || resource === QuotaResource.ConcurrentSessions) {
+      // Reset at midnight UTC
+      const next = new Date(now);
+      next.setUTCDate(next.getUTCDate() + 1);
+      next.setUTCHours(0, 0, 0, 0);
+      return next;
+    }
+    // Reset at start of next month
+    const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+    return next;
+  }
+
+  private async getUsageCount(tenantId: string, resource: QuotaResource, period: string): Promise<number> {
+    const { rows } = await pool.query(
+      `SELECT COALESCE(SUM(amount), 0) AS total
+       FROM tenant_usage
+       WHERE tenant_id = $1 AND resource = $2 AND period = $3`,
+      [tenantId, resource, period],
+    );
+    return parseInt(rows[0].total, 10);
   }
 }
 
-export const tenantManager = new TenantManager();
+// ─── Singleton export ─────────────────────────────────────────────────────────
+
+export const tenantManager = TenantManager.getInstance();
+export default tenantManager;

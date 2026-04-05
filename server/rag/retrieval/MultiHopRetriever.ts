@@ -1,383 +1,325 @@
-import { Logger } from '../../lib/logger';
-import { llmGateway } from '../../lib/llmGateway';
-import { HybridRetriever } from './HybridRetriever';
+/**
+ * MultiHopRetriever — Chain-of-retrieval where each hop generates a sub-query
+ * based on previously retrieved information.
+ *
+ * Design: iterative deepening — start with the original query, then use
+ * retrieved content to identify missing information for the next hop.
+ * Stop when convergence detected (no new chunks) or maxHops reached.
+ */
 
-// ---------------------------------------------------------------------------
-// Shared types (local definitions — not imported from UnifiedRAGPipeline)
-// ---------------------------------------------------------------------------
+import { createLogger } from "../../utils/logger";
+import type {
+  RetrieveStage,
+  RetrievedChunk,
+  RetrieveOptions,
+} from "../UnifiedRAGPipeline";
 
-interface RetrievedChunk {
-  id: string;
-  documentId: string;
-  content: string;
-  chunkIndex: number;
-  metadata: Record<string, unknown>;
-  tokens: number;
-  score: number;
-  source: string;
-  retrievalMethod: 'vector' | 'bm25' | 'hybrid' | 'metadata';
-}
+const logger = createLogger("MultiHopRetriever");
 
-interface RetrievedQuery {
-  text: string;
-  namespace: string;
-  topK: number;
-  filter?: Record<string, unknown>;
-  hybridAlpha?: number;
-  minScore?: number;
-}
-
-// ---------------------------------------------------------------------------
-// Exported types
-// ---------------------------------------------------------------------------
-
-export interface Hop {
-  index: number;
-  subQuery: string;
-  results: RetrievedChunk[];
-  reasoning: string;
-  converged: boolean;
-}
-
-export interface EvidenceChain {
-  hops: Hop[];
-  finalResults: RetrievedChunk[];
-  totalHops: number;
-  converged: boolean;
-  confidenceScore: number; // 0-1
-}
+// ─── Configuration ────────────────────────────────────────────────────────────
 
 export interface MultiHopConfig {
-  maxHops: number;            // default 5
-  minScore: number;           // default 0.35
-  convergenceThreshold: number; // default 0.85 — overlap ratio
-  subQueryModel: string;      // default 'gpt-4o-mini'
-  maxResultsPerHop: number;   // default 10
-  enableReasoning: boolean;   // default true
+  maxHops: number;
+  minNewChunksPerHop: number;
+  subQueryModel: string;
+  subQueryMaxTokens: number;
+  /** Score weight for chunks found in later hops (slight penalty to prefer direct evidence) */
+  hopPenaltyFactor: number;
 }
 
-// ---------------------------------------------------------------------------
-// Defaults
-// ---------------------------------------------------------------------------
-
-const DEFAULT_MULTI_HOP_CONFIG: MultiHopConfig = {
-  maxHops: 5,
-  minScore: 0.35,
-  convergenceThreshold: 0.85,
-  subQueryModel: 'gpt-4o-mini',
-  maxResultsPerHop: 10,
-  enableReasoning: true,
+const DEFAULT_CONFIG: MultiHopConfig = {
+  maxHops: 3,
+  minNewChunksPerHop: 1,
+  subQueryModel: "gpt-4o-mini",
+  subQueryMaxTokens: 120,
+  hopPenaltyFactor: 0.05,
 };
 
-// ---------------------------------------------------------------------------
-// MultiHopRetriever
-// ---------------------------------------------------------------------------
+// ─── Evidence chain ───────────────────────────────────────────────────────────
 
-export class MultiHopRetriever {
-  private baseRetriever: HybridRetriever;
-  private config: MultiHopConfig;
+export interface HopResult {
+  hopIndex: number;
+  subQuery: string;
+  chunksFound: number;
+  newChunksFound: number;
+}
 
-  constructor(baseRetriever: HybridRetriever, config?: Partial<MultiHopConfig>) {
+export interface MultiHopResult {
+  chunks: RetrievedChunk[];
+  subQueries: string[];
+  hops: HopResult[];
+  hopsUsed: number;
+  converged: boolean;
+}
+
+// ─── Sub-query generation ─────────────────────────────────────────────────────
+
+async function generateSubQuery(
+  originalQuery: string,
+  context: string,
+  hopIndex: number,
+  previousSubQueries: string[],
+  model: string,
+  maxTokens: number
+): Promise<string> {
+  const { llmGateway } = await import("../../lib/llmGateway");
+
+  const prevQueriesText =
+    previousSubQueries.length > 0
+      ? `\nPrevious sub-queries used:\n${previousSubQueries.map((q, i) => `${i + 1}. ${q}`).join("\n")}`
+      : "";
+
+  const response = await llmGateway.chat(
+    [
+      {
+        role: "system",
+        content:
+          "You are a search query specialist. Given an original question and context retrieved so far, identify the MOST IMPORTANT piece of missing information and write ONE specific search query to find it. Return ONLY the query text — no explanations, no quotes, no numbering.",
+      },
+      {
+        role: "user",
+        content: `Original question: ${originalQuery}
+
+Already retrieved context (summary):
+${context}
+${prevQueriesText}
+
+Hop ${hopIndex + 1}: What critical information is still missing to fully answer the original question? Write a targeted search query:`,
+      },
+    ],
+    { model, maxTokens, temperature: 0.2 }
+  );
+
+  return response.content.trim().replace(/^["']|["']$/g, "");
+}
+
+// ─── Convergence detection ────────────────────────────────────────────────────
+
+function hasConverged(
+  existingIds: Set<string>,
+  newChunks: RetrievedChunk[],
+  minNewChunks: number
+): boolean {
+  const genuinelyNew = newChunks.filter((c) => !existingIds.has(c.id));
+  return genuinelyNew.length < minNewChunks;
+}
+
+function buildContextSummary(chunks: RetrievedChunk[], maxChars = 800): string {
+  const sorted = [...chunks].sort((a, b) => b.score - a.score);
+  let summary = "";
+  for (const chunk of sorted) {
+    const snippet = chunk.content.slice(0, 200).replace(/\n+/g, " ").trim();
+    if (summary.length + snippet.length > maxChars) break;
+    summary += `- ${snippet}\n`;
+  }
+  return summary || "No context retrieved yet.";
+}
+
+// ─── MultiHopRetriever ────────────────────────────────────────────────────────
+
+export class MultiHopRetriever implements RetrieveStage {
+  private readonly config: MultiHopConfig;
+  private readonly baseRetriever: RetrieveStage;
+  private embedQuery: (query: string) => Promise<number[]>;
+
+  constructor(
+    baseRetriever: RetrieveStage,
+    embedQuery: (query: string) => Promise<number[]>,
+    config: Partial<MultiHopConfig> = {}
+  ) {
     this.baseRetriever = baseRetriever;
-    this.config = { ...DEFAULT_MULTI_HOP_CONFIG, ...(config ?? {}) };
-
-    Logger.debug('MultiHopRetriever initialized', { config: this.config });
+    this.embedQuery = embedQuery;
+    this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
   async retrieve(
-    initialQuery: string,
-    namespace: string,
-    topK: number,
-  ): Promise<EvidenceChain> {
-    Logger.info('MultiHopRetriever.retrieve started', {
-      initialQuery,
-      namespace,
-      topK,
-      maxHops: this.config.maxHops,
+    query: string,
+    queryEmbedding: number[],
+    options: RetrieveOptions = {}
+  ): Promise<RetrievedChunk[]> {
+    const startTime = Date.now();
+    const multiHopResult = await this.multiHopRetrieve(query, queryEmbedding, options);
+
+    logger.info("MultiHopRetriever complete", {
+      query: query.slice(0, 60),
+      hopsUsed: multiHopResult.hopsUsed,
+      converged: multiHopResult.converged,
+      totalChunks: multiHopResult.chunks.length,
+      durationMs: Date.now() - startTime,
     });
 
-    const hops: Hop[] = [];
-    let evidencePool: RetrievedChunk[] = [];
-    let prevResultIds: string[] = [];
-    let chainConverged = false;
+    return multiHopResult.chunks;
+  }
 
-    // -----------------------------------------------------------------------
-    // Hop 0: direct retrieval with initialQuery
-    // -----------------------------------------------------------------------
-    const firstQuery: RetrievedQuery = {
-      text: initialQuery,
-      namespace,
-      topK: this.config.maxResultsPerHop,
-      minScore: this.config.minScore,
-    };
+  async multiHopRetrieve(
+    query: string,
+    queryEmbedding: number[],
+    options: RetrieveOptions = {}
+  ): Promise<MultiHopResult> {
+    const seenIds = new Set<string>();
+    let accumulated: RetrievedChunk[] = [];
+    const subQueries: string[] = [];
+    const hops: HopResult[] = [];
+    let converged = false;
 
-    const firstResults = await this.baseRetriever.retrieve(firstQuery);
-    const firstHop: Hop = {
-      index: 0,
-      subQuery: initialQuery,
-      results: firstResults,
-      reasoning: 'Initial retrieval using the original query.',
-      converged: false,
-    };
+    // Hop 0: original query
+    let currentQuery = query;
+    let currentEmbedding = queryEmbedding;
 
-    hops.push(firstHop);
-    evidencePool = this._deduplicateAndRank([...evidencePool, ...firstResults]);
-    prevResultIds = firstResults.map(r => r.id);
-
-    Logger.debug('MultiHopRetriever hop 0 complete', {
-      resultsCount: firstResults.length,
-    });
-
-    // -----------------------------------------------------------------------
-    // Subsequent hops
-    // -----------------------------------------------------------------------
-    for (let hopIdx = 1; hopIdx < this.config.maxHops; hopIdx++) {
-      // Generate sub-query from previous results
-      let subQuery: string;
+    for (let hopIdx = 0; hopIdx < this.config.maxHops; hopIdx++) {
+      let hopChunks: RetrievedChunk[];
       try {
-        subQuery = await this._generateSubQuery(
-          evidencePool.slice(0, 5),
-          initialQuery,
-          hopIdx,
-        );
-      } catch (err) {
-        Logger.warn('MultiHopRetriever: sub-query generation failed', {
-          hopIdx,
-          error: err instanceof Error ? err.message : String(err),
+        hopChunks = await this.baseRetriever.retrieve(currentQuery, currentEmbedding, {
+          ...options,
+          topK: Math.max(options.topK ?? 10, 5),
         });
+      } catch (err) {
+        logger.error("Base retriever failed on hop", { hopIdx, error: String(err) });
         break;
       }
 
-      Logger.debug('MultiHopRetriever sub-query generated', { hopIdx, subQuery });
+      // Apply hop penalty to later hops
+      const penalizedChunks = hopChunks.map((c) => ({
+        ...c,
+        score: c.score * (1 - hopIdx * this.config.hopPenaltyFactor),
+      }));
 
-      // Retrieve with sub-query
-      const subQuery_q: RetrievedQuery = {
-        text: subQuery,
-        namespace,
-        topK: this.config.maxResultsPerHop,
-        minScore: this.config.minScore,
+      const newChunks = penalizedChunks.filter((c) => !seenIds.has(c.id));
+      for (const c of newChunks) seenIds.add(c.id);
+      accumulated = [...accumulated, ...newChunks];
+
+      const hopResult: HopResult = {
+        hopIndex: hopIdx,
+        subQuery: currentQuery,
+        chunksFound: hopChunks.length,
+        newChunksFound: newChunks.length,
       };
+      hops.push(hopResult);
 
-      let hopResults: RetrievedChunk[];
-      try {
-        hopResults = await this.baseRetriever.retrieve(subQuery_q);
-      } catch (err) {
-        Logger.warn('MultiHopRetriever: retrieval failed on hop', {
-          hopIdx,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        break;
-      }
+      if (hopIdx > 0) subQueries.push(currentQuery);
 
-      const currResultIds = hopResults.map(r => r.id);
-      const overlap = this._computeConvergence(prevResultIds, currResultIds);
+      // Check convergence (skip on last hop)
+      if (hopIdx < this.config.maxHops - 1) {
+        if (hasConverged(seenIds, hopChunks, this.config.minNewChunksPerHop)) {
+          logger.debug("MultiHop converged", { hopIdx, newChunks: newChunks.length });
+          converged = true;
+          break;
+        }
 
-      const converged = overlap >= this.config.convergenceThreshold;
+        // Generate next sub-query
+        const context = buildContextSummary(accumulated);
+        try {
+          const subQuery = await generateSubQuery(
+            query,
+            context,
+            hopIdx,
+            subQueries,
+            this.config.subQueryModel,
+            this.config.subQueryMaxTokens
+          );
 
-      // Build reasoning
-      const reasoning = this.config.enableReasoning
-        ? this._buildReasoning(
-            { index: hopIdx, subQuery, results: hopResults, reasoning: '', converged },
-            hops,
-          )
-        : `Hop ${hopIdx}: retrieved ${hopResults.length} results with overlap ${(overlap * 100).toFixed(1)}%.`;
+          if (!subQuery || subQuery.trim() === "" || subQuery === query) {
+            logger.debug("Sub-query generation returned empty or duplicate, stopping", { hopIdx });
+            converged = true;
+            break;
+          }
 
-      const hop: Hop = {
-        index: hopIdx,
-        subQuery,
-        results: hopResults,
-        reasoning,
-        converged,
-      };
-
-      hops.push(hop);
-      evidencePool = this._deduplicateAndRank([...evidencePool, ...hopResults]);
-      prevResultIds = currResultIds;
-
-      Logger.debug('MultiHopRetriever hop complete', {
-        hopIdx,
-        resultsCount: hopResults.length,
-        overlap,
-        converged,
-      });
-
-      if (converged) {
-        chainConverged = true;
-        Logger.info('MultiHopRetriever converged', { hopIdx, overlap });
-        break;
+          currentQuery = subQuery;
+          currentEmbedding = await this.embedQuery(subQuery);
+        } catch (err) {
+          logger.warn("Sub-query generation failed, stopping multi-hop", {
+            hopIdx,
+            error: String(err),
+          });
+          break;
+        }
       }
     }
 
-    // -----------------------------------------------------------------------
-    // Build final evidence chain
-    // -----------------------------------------------------------------------
-    const finalResults = evidencePool.slice(0, topK);
-    const confidenceScore = this._computeConfidence(hops);
+    // Deduplicate and sort by score
+    const unique = deduplicateChunks(accumulated);
+    unique.sort((a, b) => b.score - a.score);
 
-    const chain: EvidenceChain = {
+    return {
+      chunks: unique,
+      subQueries,
       hops,
-      finalResults,
-      totalHops: hops.length,
-      converged: chainConverged,
-      confidenceScore,
+      hopsUsed: hops.length,
+      converged,
     };
-
-    Logger.info('MultiHopRetriever.retrieve complete', {
-      totalHops: chain.totalHops,
-      finalResults: chain.finalResults.length,
-      converged: chain.converged,
-      confidenceScore: chain.confidenceScore,
-    });
-
-    return chain;
   }
+}
 
-  private async _generateSubQuery(
-    previousResults: RetrievedChunk[],
-    originalQuery: string,
-    hopIndex: number,
-  ): Promise<string> {
-    const passagesSummary = previousResults
-      .slice(0, 5)
-      .map((r, i) => `[${i + 1}] ${r.content.slice(0, 300)}`)
-      .join('\n\n');
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-    const prompt = [
-      `You are an expert at formulating precise search queries for information retrieval.`,
-      ``,
-      `Original question: "${originalQuery}"`,
-      ``,
-      `Retrieved passages so far (hop ${hopIndex}):`,
-      passagesSummary,
-      ``,
-      `Based on these passages and the original question, generate a specific follow-up search query`,
-      `to find information that is MISSING or not yet covered by the above passages.`,
-      `The follow-up query must be:`,
-      `- Different from the original question`,
-      `- Specific and focused on a gap in the retrieved information`,
-      `- A short phrase or sentence (under 20 words)`,
-      ``,
-      `Respond with ONLY the follow-up query, no explanation.`,
-    ].join('\n');
-
-    const response = await llmGateway.complete({
-      model: this.config.subQueryModel,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-      maxTokens: 80,
-    });
-
-    const subQuery = (response.content ?? '').trim().replace(/^["']|["']$/g, '');
-
-    if (!subQuery || subQuery.length < 3) {
-      throw new Error('LLM returned empty or too-short sub-query');
+function deduplicateChunks(chunks: RetrievedChunk[]): RetrievedChunk[] {
+  const best = new Map<string, RetrievedChunk>();
+  for (const chunk of chunks) {
+    const existing = best.get(chunk.id);
+    if (!existing || chunk.score > existing.score) {
+      best.set(chunk.id, chunk);
     }
-
-    return subQuery;
   }
+  return Array.from(best.values());
+}
 
-  private _computeConvergence(prev: string[], curr: string[]): number {
-    if (prev.length === 0 && curr.length === 0) return 1;
-    if (prev.length === 0 || curr.length === 0) return 0;
+// ─── Graph traversal: find related chunks by source document ─────────────────
 
-    const prevSet = new Set(prev);
-    const currSet = new Set(curr);
+export async function expandByDocument(
+  seeds: RetrievedChunk[],
+  userId: string,
+  windowSize = 2
+): Promise<RetrievedChunk[]> {
+  if (seeds.length === 0) return seeds;
 
-    let intersectionSize = 0;
-    for (const id of currSet) {
-      if (prevSet.has(id)) intersectionSize++;
-    }
+  const { db } = await import("../../db");
+  const { ragChunks } = await import("@shared/schema/rag");
+  const { eq, and, between, sql } = await import("drizzle-orm");
 
-    const unionSize = prevSet.size + currSet.size - intersectionSize;
-    return unionSize === 0 ? 0 : intersectionSize / unionSize;
-  }
+  const expanded = [...seeds];
+  const seenIds = new Set(seeds.map((s) => s.id));
 
-  private _deduplicateAndRank(allChunks: RetrievedChunk[]): RetrievedChunk[] {
-    const best = new Map<string, RetrievedChunk>();
+  for (const seed of seeds.slice(0, 5)) { // Limit expansion to top-5 seeds
+    const sourceId = seed.metadata?.sourceFile;
+    if (!sourceId) continue;
 
-    for (const chunk of allChunks) {
-      const existing = best.get(chunk.id);
-      if (!existing || chunk.score > existing.score) {
-        best.set(chunk.id, chunk);
+    try {
+      const neighbors = await db
+        .select()
+        .from(ragChunks)
+        .where(
+          and(
+            eq(ragChunks.sourceId, sourceId),
+            eq(ragChunks.userId, userId),
+            sql`${ragChunks.chunkIndex} BETWEEN ${seed.chunkIndex - windowSize} AND ${seed.chunkIndex + windowSize}`
+          )
+        )
+        .limit(windowSize * 2 + 1);
+
+      for (const neighbor of neighbors) {
+        if (!seenIds.has(neighbor.id)) {
+          seenIds.add(neighbor.id);
+          expanded.push({
+            id: neighbor.id,
+            content: neighbor.content,
+            chunkIndex: neighbor.chunkIndex,
+            score: seed.score * 0.6, // Context window gets lower score
+            matchType: "hybrid",
+            metadata: {
+              chunkType: (neighbor.chunkType ?? "text") as import("../UnifiedRAGPipeline").ChunkType,
+              sectionTitle: neighbor.sectionTitle ?? undefined,
+              sourceFile: neighbor.sourceId ?? undefined,
+              pageNumber: neighbor.pageNumber ?? undefined,
+              startOffset: 0,
+              endOffset: 0,
+            },
+          });
+        }
       }
+    } catch (err) {
+      logger.warn("Document expansion failed for seed", { seedId: seed.id, error: String(err) });
     }
-
-    return Array.from(best.values()).sort((a, b) => b.score - a.score);
   }
 
-  private _computeConfidence(chain: Hop[]): number {
-    if (chain.length === 0) return 0;
-
-    // Collect all final results across hops
-    const allResults: RetrievedChunk[] = [];
-    for (const hop of chain) {
-      allResults.push(...hop.results);
-    }
-
-    const deduped = this._deduplicateAndRank(allResults);
-    const top5 = deduped.slice(0, 5);
-
-    if (top5.length === 0) return 0;
-
-    const avgScore = top5.reduce((sum, r) => sum + r.score, 0) / top5.length;
-
-    // More hops = slightly lower confidence (factor 0.95^hops)
-    const hopPenalty = Math.pow(0.95, chain.length);
-
-    return Math.min(1, Math.max(0, avgScore * hopPenalty));
-  }
-
-  private _buildReasoning(hop: Hop, previousHops: Hop[]): string {
-    if (previousHops.length === 0) {
-      return `Initial retrieval using the original query "${hop.subQuery}".`;
-    }
-
-    const prevHop = previousHops[previousHops.length - 1];
-    const prevResultCount = prevHop.results.length;
-    const currResultCount = hop.results.length;
-
-    const prevTopics = this._extractTopics(prevHop.results);
-    const prevTopicStr = prevTopics.length > 0
-      ? `covering: ${prevTopics.slice(0, 3).join(', ')}`
-      : 'with limited coverage';
-
-    if (hop.converged) {
-      return (
-        `Hop ${hop.index}: The sub-query "${hop.subQuery}" retrieved ${currResultCount} result(s). ` +
-        `Previous hop found ${prevResultCount} result(s) ${prevTopicStr}. ` +
-        `High overlap with previous results indicates convergence — the retrieval chain has stabilized.`
-      );
-    }
-
-    return (
-      `Hop ${hop.index}: Previous results (${prevResultCount} chunks ${prevTopicStr}) did not fully answer the question. ` +
-      `Generated sub-query "${hop.subQuery}" to explore missing information. ` +
-      `Retrieved ${currResultCount} new result(s) to expand the evidence pool.`
-    );
-  }
-
-  private _extractTopics(chunks: RetrievedChunk[]): string[] {
-    const wordFreq = new Map<string, number>();
-    const stopWords = new Set([
-      'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to',
-      'for', 'of', 'with', 'is', 'are', 'was', 'were', 'be', 'been',
-      'this', 'that', 'it', 'its', 'by', 'from', 'as', 'not',
-    ]);
-
-    for (const chunk of chunks.slice(0, 5)) {
-      const words = chunk.content
-        .toLowerCase()
-        .split(/\W+/)
-        .filter(w => w.length > 4 && !stopWords.has(w));
-
-      for (const word of words) {
-        wordFreq.set(word, (wordFreq.get(word) ?? 0) + 1);
-      }
-    }
-
-    return Array.from(wordFreq.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([word]) => word);
-  }
+  return expanded;
 }

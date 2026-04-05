@@ -1,426 +1,327 @@
-import { Logger } from '../../lib/logger';
+/**
+ * FeedbackReranker — Learns from user interaction signals to boost/degrade
+ * chunks over time. Supports per-user and global feedback models.
+ *
+ * Signals: click, copy, cite, thumbs_up, thumbs_down, dwell_time, dismiss
+ * Decay: feedback contribution decays exponentially (half-life configurable).
+ */
 
-// ─── Shared chunk types ────────────────────────────────────────────────────────
+import crypto from "crypto";
+import { createLogger } from "../../utils/logger";
+import type { RerankStage, RetrievedChunk } from "../UnifiedRAGPipeline";
 
-interface RetrievedChunk {
-  id: string;
-  documentId: string;
-  content: string;
-  chunkIndex: number;
-  metadata: Record<string, unknown>;
-  tokens: number;
-  score: number;
-  source: string;
-  retrievalMethod: string;
-}
+const logger = createLogger("FeedbackReranker");
 
-export interface RankedChunk extends RetrievedChunk {
-  rank: number;
-  rerankScore?: number;
-}
+// ─── Feedback types ───────────────────────────────────────────────────────────
 
-// ─── Signal types ─────────────────────────────────────────────────────────────
+export type FeedbackSignal =
+  | "click"
+  | "copy"
+  | "cite"
+  | "thumbs_up"
+  | "thumbs_down"
+  | "dwell_short"   // < 3 seconds dwell
+  | "dwell_medium"  // 3–15 seconds
+  | "dwell_long"    // > 15 seconds
+  | "dismiss";
 
-export type SignalType =
-  | 'click'
-  | 'copy'
-  | 'cite'
-  | 'thumbs_up'
-  | 'thumbs_down'
-  | 'dwell'
-  | 'ignore';
+const SIGNAL_WEIGHTS: Record<FeedbackSignal, number> = {
+  click: 0.5,
+  copy: 1.0,
+  cite: 1.5,
+  thumbs_up: 2.0,
+  thumbs_down: -2.0,
+  dwell_short: -0.2,
+  dwell_medium: 0.3,
+  dwell_long: 0.8,
+  dismiss: -1.0,
+};
 
-// ─── Public types ─────────────────────────────────────────────────────────────
-
-export interface FeedbackSignal {
+export interface FeedbackEvent {
   chunkId: string;
-  documentId: string;
-  signalType: SignalType;
-  userId: string;
-  query: string;
-  timestamp: Date;
-  dwellMs?: number;
-  weight: number;
-}
-
-export interface ChunkFeedbackProfile {
-  chunkId: string;
-  positiveWeight: number;
-  negativeWeight: number;
-  signalCount: number;
-  lastSignalAt: Date;
-  decayedScore: number;
-}
-
-export interface FeedbackConfig {
-  signalWeights: Record<SignalType, number>;
-  decayHalfLifeMs: number;
-  maxBoost: number;
-  minPenalty: number;
-  persistenceEnabled: boolean;
+  queryHash: string;
+  signal: FeedbackSignal;
   userId?: string;
+  timestamp: number;
+  /** Content hash for matching similar chunks in the future */
+  contentHash?: string;
+}
+
+export interface FeedbackScore {
+  chunkId: string;
+  queryHash: string;
+  cumulativeScore: number;
+  eventCount: number;
+  lastUpdated: number;
+}
+
+// ─── Configuration ────────────────────────────────────────────────────────────
+
+export interface FeedbackRerankerConfig {
+  /** Feedback half-life in milliseconds */
+  halfLifeMs: number;
+  /** Max adjustment to original score (±) */
+  maxAdjustment: number;
+  /** Weight of global (cross-user) feedback vs per-user */
+  globalFeedbackWeight: number;
+  /** Minimum events before feedback influences ranking */
+  minEventsToInfluence: number;
+  /** Similarity threshold for query matching (Jaccard on tokens) */
+  querySimilarityThreshold: number;
+}
+
+const DEFAULT_FEEDBACK_CONFIG: FeedbackRerankerConfig = {
+  halfLifeMs: 14 * 24 * 60 * 60 * 1000, // 2 weeks
+  maxAdjustment: 0.3,
+  globalFeedbackWeight: 0.4,
+  minEventsToInfluence: 2,
+  querySimilarityThreshold: 0.6,
+};
+
+// ─── Storage (in-process; production should use Redis/DB) ────────────────────
+
+interface FeedbackStore {
+  /** chunkId → queryHash → user events */
+  userFeedback: Map<string, Map<string, FeedbackEvent[]>>;
+  /** chunkId → queryHash → global events */
+  globalFeedback: Map<string, Map<string, FeedbackEvent[]>>;
+  /** queryHash → original query tokens */
+  queryRegistry: Map<string, string[]>;
+}
+
+const store: FeedbackStore = {
+  userFeedback: new Map(),
+  globalFeedback: new Map(),
+  queryRegistry: new Map(),
+};
+
+function hashQuery(query: string): string {
+  return crypto.createHash("sha256").update(query.toLowerCase().trim()).digest("hex").slice(0, 12);
+}
+
+function tokenizeQuery(query: string): string[] {
+  return query.toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter((t) => t.length > 2);
+}
+
+function jaccardSimilarity(a: string[], b: string[]): number {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  const intersection = [...setA].filter((x) => setB.has(x)).length;
+  const union = new Set([...setA, ...setB]).size;
+  return union === 0 ? 0 : intersection / union;
+}
+
+// ─── Decay function ───────────────────────────────────────────────────────────
+
+function decayedScore(events: FeedbackEvent[], halfLifeMs: number): number {
+  const now = Date.now();
+  return events.reduce((sum, event) => {
+    const ageMs = now - event.timestamp;
+    const decay = Math.exp(-Math.log(2) * ageMs / halfLifeMs);
+    return sum + SIGNAL_WEIGHTS[event.signal] * decay;
+  }, 0);
 }
 
 // ─── FeedbackReranker ─────────────────────────────────────────────────────────
 
-const DEFAULT_SIGNAL_WEIGHTS: Record<SignalType, number> = {
-  click: 0.3,
-  copy: 0.6,
-  cite: 0.8,
-  thumbs_up: 1.0,
-  thumbs_down: -1.0,
-  dwell: 0.2,
-  ignore: -0.1,
-};
+export class FeedbackReranker implements RerankStage {
+  private readonly config: FeedbackRerankerConfig;
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-
-export class FeedbackReranker {
-  private readonly config: FeedbackConfig;
-  private readonly profiles: Map<string, ChunkFeedbackProfile>;
-
-  constructor(config?: Partial<FeedbackConfig>) {
-    this.config = {
-      signalWeights: { ...DEFAULT_SIGNAL_WEIGHTS },
-      decayHalfLifeMs: SEVEN_DAYS_MS,
-      maxBoost: 0.3,
-      minPenalty: -0.2,
-      persistenceEnabled: false,
-      ...config,
-      // merge signalWeights override properly
-      signalWeights: {
-        ...DEFAULT_SIGNAL_WEIGHTS,
-        ...(config?.signalWeights ?? {}),
-      },
-    };
-    this.profiles = new Map();
+  constructor(config: Partial<FeedbackRerankerConfig> = {}) {
+    this.config = { ...DEFAULT_FEEDBACK_CONFIG, ...config };
   }
 
-  recordSignal(signal: Omit<FeedbackSignal, 'weight'>): void {
-    // Filter by userId if configured
-    if (this.config.userId && signal.userId !== this.config.userId) {
-      return;
+  /**
+   * Record a feedback event for a chunk retrieved for a given query.
+   */
+  recordFeedback(event: FeedbackEvent): void {
+    const qHash = event.queryHash;
+    const tokens = tokenizeQuery(event.queryHash);
+    store.queryRegistry.set(qHash, tokens);
+
+    // Per-user feedback
+    if (event.userId) {
+      const userKey = `${event.userId}:${event.chunkId}`;
+      if (!store.userFeedback.has(userKey)) store.userFeedback.set(userKey, new Map());
+      const userMap = store.userFeedback.get(userKey)!;
+      if (!userMap.has(qHash)) userMap.set(qHash, []);
+      userMap.get(qHash)!.push(event);
     }
 
-    const weight = this.config.signalWeights[signal.signalType];
+    // Global feedback
+    if (!store.globalFeedback.has(event.chunkId)) store.globalFeedback.set(event.chunkId, new Map());
+    const globalMap = store.globalFeedback.get(event.chunkId)!;
+    if (!globalMap.has(qHash)) globalMap.set(qHash, []);
+    globalMap.get(qHash)!.push(event);
 
-    // For 'dwell' signals, scale weight by dwell time (cap at 30s)
-    let effectiveWeight = weight;
-    if (signal.signalType === 'dwell' && signal.dwellMs !== undefined) {
-      const cappedMs = Math.min(signal.dwellMs, 30_000);
-      effectiveWeight = weight * (cappedMs / 10_000); // normalize to ~10s baseline
-    }
-
-    const existing = this.profiles.get(signal.chunkId);
-    const now = signal.timestamp;
-
-    if (existing) {
-      if (effectiveWeight >= 0) {
-        existing.positiveWeight += effectiveWeight;
-      } else {
-        existing.negativeWeight += Math.abs(effectiveWeight);
-      }
-      existing.signalCount++;
-      existing.lastSignalAt = now;
-      existing.decayedScore = this._applyDecay(existing);
-    } else {
-      const newProfile: ChunkFeedbackProfile = {
-        chunkId: signal.chunkId,
-        positiveWeight: effectiveWeight >= 0 ? effectiveWeight : 0,
-        negativeWeight: effectiveWeight < 0 ? Math.abs(effectiveWeight) : 0,
-        signalCount: 1,
-        lastSignalAt: now,
-        decayedScore: effectiveWeight,
-      };
-      this.profiles.set(signal.chunkId, newProfile);
-    }
-
-    Logger.debug('[FeedbackReranker] Signal recorded', {
-      chunkId: signal.chunkId,
-      signalType: signal.signalType,
-      effectiveWeight,
-      userId: signal.userId,
+    logger.debug("Feedback recorded", {
+      chunkId: event.chunkId,
+      signal: event.signal,
+      userId: event.userId,
     });
   }
 
-  async rerank(query: string, chunks: RetrievedChunk[]): Promise<RankedChunk[]> {
+  /**
+   * Compute feedback adjustment for a chunk given the current query.
+   * Returns a value in range [-maxAdjustment, +maxAdjustment].
+   */
+  getFeedbackAdjustment(
+    chunkId: string,
+    query: string,
+    userId?: string
+  ): number {
+    const queryTokens = tokenizeQuery(query);
+    const halfLife = this.config.halfLifeMs;
+
+    // Find matching query hashes by similarity
+    const matchingHashes: string[] = [];
+    for (const [qHash, tokens] of store.queryRegistry) {
+      const sim = jaccardSimilarity(queryTokens, tokens);
+      if (sim >= this.config.querySimilarityThreshold) {
+        matchingHashes.push(qHash);
+      }
+    }
+
+    if (matchingHashes.length === 0) return 0;
+
+    // Per-user adjustment
+    let userAdjustment = 0;
+    let userEventCount = 0;
+    if (userId) {
+      const userKey = `${userId}:${chunkId}`;
+      const userMap = store.userFeedback.get(userKey);
+      if (userMap) {
+        for (const qHash of matchingHashes) {
+          const events = userMap.get(qHash) ?? [];
+          userEventCount += events.length;
+          userAdjustment += decayedScore(events, halfLife);
+        }
+      }
+    }
+
+    // Global adjustment
+    let globalAdjustment = 0;
+    let globalEventCount = 0;
+    const globalMap = store.globalFeedback.get(chunkId);
+    if (globalMap) {
+      for (const qHash of matchingHashes) {
+        const events = globalMap.get(qHash) ?? [];
+        globalEventCount += events.length;
+        globalAdjustment += decayedScore(events, halfLife);
+      }
+    }
+
+    const totalEvents = Math.max(userEventCount, globalEventCount);
+    if (totalEvents < this.config.minEventsToInfluence) return 0;
+
+    // Blend user and global
+    const blended = userId && userEventCount >= this.config.minEventsToInfluence
+      ? userAdjustment * (1 - this.config.globalFeedbackWeight) +
+        globalAdjustment * this.config.globalFeedbackWeight
+      : globalAdjustment;
+
+    // Normalize and clamp
+    const normalized = blended / Math.max(1, totalEvents);
+    return Math.max(
+      -this.config.maxAdjustment,
+      Math.min(this.config.maxAdjustment, normalized * 0.1)
+    );
+  }
+
+  async rerank(
+    query: string,
+    chunks: RetrievedChunk[],
+    userId?: string
+  ): Promise<RetrievedChunk[]> {
     if (chunks.length === 0) return [];
 
-    Logger.debug('[FeedbackReranker] Applying feedback rerank', {
-      query,
-      chunkCount: chunks.length,
-      profileCount: this.profiles.size,
-    });
-
-    const adjusted = chunks.map((chunk) => {
-      const boost = this._getFeedbackBoost(chunk.id);
-      const adjustedScore = Math.min(1.0, Math.max(0.0, chunk.score + boost));
+    const reranked = chunks.map((chunk) => {
+      const adjustment = this.getFeedbackAdjustment(chunk.id, query, userId);
       return {
         ...chunk,
-        score: adjustedScore,
-        rerankScore: adjustedScore,
-        rank: 0,
+        score: Math.max(0, Math.min(1, chunk.score + adjustment)),
       };
     });
 
-    adjusted.sort((a, b) => b.score - a.score);
+    reranked.sort((a, b) => b.score - a.score);
 
-    return adjusted.map((chunk, idx) => ({ ...chunk, rank: idx + 1 }));
+    logger.debug("FeedbackReranker applied", {
+      query: query.slice(0, 50),
+      chunks: chunks.length,
+      userId,
+    });
+
+    return reranked;
   }
 
-  private _getFeedbackBoost(chunkId: string): number {
-    const profile = this.profiles.get(chunkId);
-    if (!profile) return 0;
-
-    const decayedScore = this._applyDecay(profile);
-
-    // Normalize raw signal net score to [minPenalty, maxBoost] using a tanh-like clamp.
-    // A net score of ±2 maps roughly to ±full boost/penalty.
-    const normalized = Math.tanh(decayedScore / 2);
-
-    if (normalized >= 0) {
-      return normalized * this.config.maxBoost;
-    } else {
-      return normalized * Math.abs(this.config.minPenalty);
-    }
-  }
-
-  private _applyDecay(profile: ChunkFeedbackProfile): number {
-    const elapsedMs = Date.now() - profile.lastSignalAt.getTime();
-    const netScore = profile.positiveWeight - profile.negativeWeight;
-    const decayFactor = Math.pow(0.5, elapsedMs / this.config.decayHalfLifeMs);
-    const decayedScore = netScore * decayFactor;
-
-    // Update stored decayed score
-    profile.decayedScore = decayedScore;
-    return decayedScore;
-  }
-
-  getProfile(chunkId: string): ChunkFeedbackProfile | undefined {
-    const profile = this.profiles.get(chunkId);
-    if (!profile) return undefined;
-    // Return a copy with freshly computed decayed score
-    const decayedScore = this._applyDecay(profile);
-    return { ...profile, decayedScore };
-  }
-
-  clearProfile(chunkId: string): void {
-    this.profiles.delete(chunkId);
-    Logger.debug('[FeedbackReranker] Profile cleared', { chunkId });
-  }
-
-  getTopChunks(limit = 10): ChunkFeedbackProfile[] {
-    const profiles = [...this.profiles.values()].map((p) => ({
-      ...p,
-      decayedScore: this._applyDecay(p),
-    }));
-    profiles.sort((a, b) => b.decayedScore - a.decayedScore);
-    return profiles.slice(0, limit);
-  }
-
-  getStats(): {
-    profileCount: number;
-    totalSignals: number;
-    avgDecayedScore: number;
-    mostBoostedChunkId?: string;
+  /** Get feedback statistics for a chunk */
+  getChunkStats(chunkId: string): {
+    totalEvents: number;
+    positiveSignals: number;
+    negativeSignals: number;
+    latestEvent?: number;
   } {
-    if (this.profiles.size === 0) {
-      return {
-        profileCount: 0,
-        totalSignals: 0,
-        avgDecayedScore: 0,
-      };
-    }
+    const globalMap = store.globalFeedback.get(chunkId);
+    if (!globalMap) return { totalEvents: 0, positiveSignals: 0, negativeSignals: 0 };
 
-    let totalSignals = 0;
-    let totalDecayed = 0;
-    let mostBoostedChunkId: string | undefined;
-    let maxDecayed = -Infinity;
+    let totalEvents = 0;
+    let positiveSignals = 0;
+    let negativeSignals = 0;
+    let latestEvent: number | undefined;
 
-    for (const profile of this.profiles.values()) {
-      totalSignals += profile.signalCount;
-      const decayed = this._applyDecay(profile);
-      totalDecayed += decayed;
-      if (decayed > maxDecayed) {
-        maxDecayed = decayed;
-        mostBoostedChunkId = profile.chunkId;
+    for (const events of globalMap.values()) {
+      for (const event of events) {
+        totalEvents++;
+        const weight = SIGNAL_WEIGHTS[event.signal];
+        if (weight > 0) positiveSignals++;
+        else if (weight < 0) negativeSignals++;
+        if (!latestEvent || event.timestamp > latestEvent) latestEvent = event.timestamp;
       }
     }
 
-    return {
-      profileCount: this.profiles.size,
-      totalSignals,
-      avgDecayedScore: totalDecayed / this.profiles.size,
-      mostBoostedChunkId,
-    };
+    return { totalEvents, positiveSignals, negativeSignals, latestEvent };
   }
 
-  exportProfiles(): ChunkFeedbackProfile[] {
-    return [...this.profiles.values()].map((p) => ({
-      ...p,
-      decayedScore: this._applyDecay(p),
-    }));
-  }
-
-  importProfiles(profiles: ChunkFeedbackProfile[]): void {
-    let imported = 0;
-    let skipped = 0;
-
-    for (const profile of profiles) {
-      if (
-        typeof profile.chunkId !== 'string' ||
-        typeof profile.positiveWeight !== 'number' ||
-        typeof profile.negativeWeight !== 'number' ||
-        typeof profile.signalCount !== 'number'
-      ) {
-        skipped++;
-        continue;
-      }
-      // Ensure lastSignalAt is a Date instance
-      const lastSignalAt =
-        profile.lastSignalAt instanceof Date
-          ? profile.lastSignalAt
-          : new Date(profile.lastSignalAt);
-
-      this.profiles.set(profile.chunkId, {
-        ...profile,
-        lastSignalAt,
-        decayedScore: this._applyDecay({ ...profile, lastSignalAt }),
-      });
-      imported++;
-    }
-
-    Logger.info('[FeedbackReranker] Profiles imported', { imported, skipped });
-  }
-
-  /**
-   * Merge another FeedbackReranker's profiles into this one.
-   * If a chunkId already exists, weighted averages are used for positive/negative
-   * weights and signal counts are summed.
-   */
-  mergeFrom(other: FeedbackReranker): void {
-    const otherProfiles = other.exportProfiles();
-    let merged = 0;
-    let added = 0;
-
-    for (const otherProfile of otherProfiles) {
-      const existing = this.profiles.get(otherProfile.chunkId);
-      if (existing) {
-        existing.positiveWeight += otherProfile.positiveWeight;
-        existing.negativeWeight += otherProfile.negativeWeight;
-        existing.signalCount += otherProfile.signalCount;
-        // Keep most recent signal timestamp
-        const otherDate =
-          otherProfile.lastSignalAt instanceof Date
-            ? otherProfile.lastSignalAt
-            : new Date(otherProfile.lastSignalAt);
-        if (otherDate > existing.lastSignalAt) {
-          existing.lastSignalAt = otherDate;
-        }
-        existing.decayedScore = this._applyDecay(existing);
-        merged++;
-      } else {
-        const lastSignalAt =
-          otherProfile.lastSignalAt instanceof Date
-            ? otherProfile.lastSignalAt
-            : new Date(otherProfile.lastSignalAt);
-        this.profiles.set(otherProfile.chunkId, {
-          ...otherProfile,
-          lastSignalAt,
-          decayedScore: this._applyDecay({ ...otherProfile, lastSignalAt }),
-        });
-        added++;
-      }
-    }
-
-    Logger.info('[FeedbackReranker] Profiles merged', { merged, added });
-  }
-
-  /**
-   * Remove all profiles older than the given age in milliseconds (based on lastSignalAt).
-   * Useful for periodic cleanup to free memory when persistenceEnabled is false.
-   */
-  pruneOldProfiles(maxAgeMs: number): number {
-    const cutoff = Date.now() - maxAgeMs;
+  /** Prune expired feedback to prevent unbounded memory growth */
+  pruneExpired(): number {
+    const cutoff = Date.now() - this.config.halfLifeMs * 4; // Keep 4x half-life of history
     let pruned = 0;
 
-    for (const [chunkId, profile] of this.profiles.entries()) {
-      if (profile.lastSignalAt.getTime() < cutoff) {
-        this.profiles.delete(chunkId);
-        pruned++;
+    for (const [key, queryMap] of store.userFeedback) {
+      for (const [qHash, events] of queryMap) {
+        const fresh = events.filter((e) => e.timestamp > cutoff);
+        pruned += events.length - fresh.length;
+        if (fresh.length === 0) queryMap.delete(qHash);
+        else queryMap.set(qHash, fresh);
       }
+      if (queryMap.size === 0) store.userFeedback.delete(key);
     }
 
-    if (pruned > 0) {
-      Logger.info('[FeedbackReranker] Pruned old profiles', { pruned, maxAgeMs });
+    for (const [chunkId, queryMap] of store.globalFeedback) {
+      for (const [qHash, events] of queryMap) {
+        const fresh = events.filter((e) => e.timestamp > cutoff);
+        pruned += events.length - fresh.length;
+        if (fresh.length === 0) queryMap.delete(qHash);
+        else queryMap.set(qHash, fresh);
+      }
+      if (queryMap.size === 0) store.globalFeedback.delete(chunkId);
     }
 
+    logger.info("Feedback pruned", { prunedEvents: pruned });
     return pruned;
   }
-
-  /**
-   * Compute a ranked list of signal types by their cumulative absolute weight across
-   * all profiles, useful for understanding which signals drive the most reranking impact.
-   */
-  getSignalImpactReport(): Array<{ signalType: SignalType; weight: number; configuredWeight: number }> {
-    const impactByType = new Map<SignalType, number>();
-    const signalTypes: SignalType[] = [
-      'click', 'copy', 'cite', 'thumbs_up', 'thumbs_down', 'dwell', 'ignore',
-    ];
-
-    for (const signalType of signalTypes) {
-      impactByType.set(signalType, 0);
-    }
-
-    // We cannot reconstruct per-signal-type totals from aggregated positiveWeight/negativeWeight
-    // without individual logs, so instead report configured weights with profile context.
-    const report = signalTypes.map((signalType) => ({
-      signalType,
-      weight: impactByType.get(signalType) ?? 0,
-      configuredWeight: this.config.signalWeights[signalType],
-    }));
-
-    return report.sort((a, b) => Math.abs(b.configuredWeight) - Math.abs(a.configuredWeight));
-  }
-
-  /**
-   * Reset all tracking state — profiles, but preserve config.
-   */
-  reset(): void {
-    const profileCount = this.profiles.size;
-    this.profiles.clear();
-    Logger.info('[FeedbackReranker] Reset complete', { clearedProfiles: profileCount });
-  }
-
-  /**
-   * Compute a bucket histogram of decayed scores across all profiles.
-   * Returns an array of {bucket, count} where buckets span from -1 to +1
-   * in increments of 0.2.
-   */
-  getScoreDistribution(): Array<{ bucket: string; count: number }> {
-    const buckets: Record<string, number> = {
-      '-1.0 to -0.6': 0,
-      '-0.6 to -0.2': 0,
-      '-0.2 to 0.2': 0,
-      '0.2 to 0.6': 0,
-      '0.6 to 1.0': 0,
-    };
-
-    for (const profile of this.profiles.values()) {
-      const score = this._applyDecay(profile);
-      if (score < -0.6) {
-        buckets['-1.0 to -0.6']++;
-      } else if (score < -0.2) {
-        buckets['-0.6 to -0.2']++;
-      } else if (score < 0.2) {
-        buckets['-0.2 to 0.2']++;
-      } else if (score < 0.6) {
-        buckets['0.2 to 0.6']++;
-      } else {
-        buckets['0.6 to 1.0']++;
-      }
-    }
-
-    return Object.entries(buckets).map(([bucket, count]) => ({ bucket, count }));
-  }
 }
+
+// ─── Singleton + helpers ─────────────────────────────────────────────────────
+
+export const feedbackReranker = new FeedbackReranker();
+
+export function recordFeedback(event: Omit<FeedbackEvent, "queryHash"> & { query: string }): void {
+  const { query, ...rest } = event;
+  feedbackReranker.recordFeedback({
+    ...rest,
+    queryHash: hashQuery(query),
+  });
+}
+
+export { hashQuery as hashQueryForFeedback };

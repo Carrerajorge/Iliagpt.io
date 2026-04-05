@@ -1,271 +1,333 @@
 /**
- * Anthropic Provider
- * Supports: Claude 3.5 Sonnet, Claude 3 Opus/Haiku, Claude 3.5 Haiku, embeddings via Voyage
+ * AnthropicProvider — Claude Opus 4.6, Sonnet 4.6, Haiku 4.5
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic from "@anthropic-ai/sdk";
+import { BaseProvider } from "../core/BaseProvider.js";
 import {
-  IProviderConfig,
-  IChatRequest,
-  IChatResponse,
-  IStreamChunk,
-  IEmbedRequest,
-  IEmbedResponse,
-  IModelInfo,
-  IChatMessage,
-  ModelCapability,
-  MessageRole,
-  ProviderError,
   AuthenticationError,
+  ContextLengthError,
+  FinishReason,
+  type IChatMessage,
+  type IChatOptions,
+  type IChatResponse,
+  type IEmbeddingOptions,
+  type IEmbeddingResponse,
+  type IModelInfo,
+  type IProviderConfig,
+  type IStreamChunk,
+  MessageRole,
+  ModelCapability,
+  ProviderError,
   RateLimitError,
-  ModelNotFoundError,
-} from '../core/types';
-import { BaseProvider } from '../core/BaseProvider';
+} from "../core/types.js";
 
-// ─── Static model catalogue ────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// Model Catalog
+// ─────────────────────────────────────────────
 
 const ANTHROPIC_MODELS: IModelInfo[] = [
   {
-    id: 'claude-opus-4-5',
-    name: 'Claude Opus 4.5',
-    provider: 'anthropic',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.ImageUnderstanding, ModelCapability.CodeGeneration, ModelCapability.Reasoning, ModelCapability.LongContext],
+    id: "claude-opus-4-6",
+    name: "Claude Opus 4.6",
+    provider: "anthropic",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.REASONING,
+      ModelCapability.FUNCTION_CALLING,
+    ],
     contextWindow: 200_000,
     maxOutputTokens: 32_000,
-    pricing: { inputPerMillion: 15, outputPerMillion: 75 },
-    latencyClass: 'slow',
-    qualityScore: 0.98,
+    pricing: { inputPerMillion: 15.0, outputPerMillion: 75.0 },
   },
   {
-    id: 'claude-sonnet-4-5',
-    name: 'Claude Sonnet 4.5',
-    provider: 'anthropic',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.ImageUnderstanding, ModelCapability.CodeGeneration, ModelCapability.LongContext],
+    id: "claude-sonnet-4-6",
+    name: "Claude Sonnet 4.6",
+    provider: "anthropic",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.REASONING,
+      ModelCapability.FUNCTION_CALLING,
+    ],
     contextWindow: 200_000,
     maxOutputTokens: 16_000,
-    pricing: { inputPerMillion: 3, outputPerMillion: 15 },
-    latencyClass: 'fast',
-    qualityScore: 0.93,
+    pricing: { inputPerMillion: 3.0, outputPerMillion: 15.0 },
   },
   {
-    id: 'claude-haiku-4-5-20251001',
-    name: 'Claude Haiku 4.5',
-    provider: 'anthropic',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.ImageUnderstanding],
+    id: "claude-haiku-4-5-20251001",
+    name: "Claude Haiku 4.5",
+    provider: "anthropic",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.FUNCTION_CALLING,
+    ],
     contextWindow: 200_000,
     maxOutputTokens: 8_192,
-    pricing: { inputPerMillion: 0.8, outputPerMillion: 4 },
-    latencyClass: 'ultra_fast',
-    qualityScore: 0.79,
+    pricing: { inputPerMillion: 0.8, outputPerMillion: 4.0 },
   },
   {
-    id: 'claude-3-5-sonnet-20241022',
-    name: 'Claude 3.5 Sonnet',
-    provider: 'anthropic',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.ImageUnderstanding, ModelCapability.CodeGeneration, ModelCapability.LongContext],
+    id: "claude-3-5-sonnet-20241022",
+    name: "Claude 3.5 Sonnet (legacy)",
+    provider: "anthropic",
+    capabilities: [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.FUNCTION_CALLING,
+    ],
     contextWindow: 200_000,
     maxOutputTokens: 8_192,
-    pricing: { inputPerMillion: 3, outputPerMillion: 15 },
-    latencyClass: 'fast',
-    qualityScore: 0.93,
+    pricing: { inputPerMillion: 3.0, outputPerMillion: 15.0 },
   },
 ];
 
-// ─── Provider ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// AnthropicProvider
+// ─────────────────────────────────────────────
 
 export class AnthropicProvider extends BaseProvider {
-  private client!: Anthropic;
+  readonly id = "anthropic";
+  readonly name = "Anthropic";
 
-  get name(): string {
-    return 'anthropic';
-  }
+  private readonly client: Anthropic;
 
-  override async initialize(config: IProviderConfig): Promise<void> {
-    await super.initialize(config);
+  constructor(config: Partial<IProviderConfig> & { apiKey: string }) {
+    super({
+      id: "anthropic",
+      name: "Anthropic",
+      defaultModel: "claude-sonnet-4-6",
+      timeout: 120_000,
+      maxRetries: 3,
+      rateLimitRpm: 60,
+      ...config,
+    });
+
     this.client = new Anthropic({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
-      timeout: config.timeout ?? 60_000,
+      timeout: this.config.timeout,
       maxRetries: 0,
-      defaultHeaders: config.headers,
     });
+
+    this._models = ANTHROPIC_MODELS;
   }
 
-  private _toAnthropicMessages(messages: IChatMessage[]): {
-    system?: string;
-    messages: Anthropic.MessageParam[];
-  } {
-    let system: string | undefined;
-    const anthropicMessages: Anthropic.MessageParam[] = [];
-
-    for (const msg of messages) {
-      if (msg.role === MessageRole.System) {
-        system = typeof msg.content === 'string' ? msg.content : msg.content.map((c) => c.text ?? '').join(' ');
-        continue;
-      }
-
-      const content: Anthropic.ContentBlockParam[] = typeof msg.content === 'string'
-        ? [{ type: 'text', text: msg.content }]
-        : msg.content.flatMap((c): Anthropic.ContentBlockParam[] => {
-            if (c.type === 'text' && c.text) return [{ type: 'text', text: c.text }];
-            if (c.type === 'image_url' && c.image_url) {
-              return [{
-                type: 'image',
-                source: { type: 'url', url: c.image_url.url },
-              } as Anthropic.ImageBlockParam];
-            }
-            if (c.type === 'image_base64' && c.image_base64) {
-              return [{
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: c.image_base64.media_type as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
-                  data: c.image_base64.data,
-                },
-              } as Anthropic.ImageBlockParam];
-            }
-            return [];
-          });
-
-      anthropicMessages.push({
-        role: msg.role === MessageRole.User ? 'user' : 'assistant',
-        content,
-      });
-    }
-
-    return { system, messages: anthropicMessages };
+  isCapable(capability: ModelCapability): boolean {
+    return [
+      ModelCapability.CHAT,
+      ModelCapability.VISION,
+      ModelCapability.CODE,
+      ModelCapability.REASONING,
+      ModelCapability.FUNCTION_CALLING,
+    ].includes(capability);
   }
 
-  protected async _chat(request: IChatRequest): Promise<IChatResponse> {
-    const model = request.model ?? this.config.defaultModel ?? 'claude-haiku-4-5-20251001';
-    const { system, messages } = this._toAnthropicMessages(request.messages);
+  protected async _chat(
+    messages: IChatMessage[],
+    options: IChatOptions,
+  ): Promise<IChatResponse> {
+    const start = Date.now();
+    const model = options.model ?? this.config.defaultModel ?? "claude-sonnet-4-6";
+
+    const { system, anthropicMessages } = this.toAnthropicMessages(messages, options.systemPrompt);
+    const tools = options.tools?.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters as Anthropic.Tool["input_schema"],
+    }));
 
     try {
       const response = await this.client.messages.create({
         model,
+        messages: anthropicMessages,
         system,
-        messages,
-        max_tokens: request.maxTokens ?? 4096,
-        temperature: request.temperature,
-        top_p: request.topP,
-        stop_sequences: Array.isArray(request.stop) ? request.stop : request.stop ? [request.stop] : undefined,
-        tools: request.tools?.map((t) => ({
-          name: t.function.name,
-          description: t.function.description,
-          input_schema: t.function.parameters as Anthropic.Tool['input_schema'],
-        })),
+        max_tokens: options.maxTokens ?? 4096,
+        temperature: options.temperature,
+        top_p: options.topP,
+        stop_sequences: options.stop,
+        tools: tools?.length ? tools : undefined,
+        tool_choice: tools?.length ? { type: "auto" } : undefined,
         stream: false,
       });
 
-      const textContent = response.content
-        .filter((c): c is Anthropic.TextBlock => c.type === 'text')
-        .map((c) => c.text)
-        .join('');
+      const content = response.content
+        .filter((c) => c.type === "text")
+        .map((c) => (c as { type: "text"; text: string }).text)
+        .join("");
 
-      const toolUseBlocks = response.content.filter(
-        (c): c is Anthropic.ToolUseBlock => c.type === 'tool_use',
-      );
+      const toolCalls = response.content
+        .filter((c) => c.type === "tool_use")
+        .map((c) => {
+          const tc = c as { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
+          return { id: tc.id, name: tc.name, arguments: tc.input };
+        });
 
-      const modelInfo = ANTHROPIC_MODELS.find((m) => m.id === model);
-      const usage = this.buildUsage(response.usage.input_tokens, response.usage.output_tokens, {
-        cachedTokens: (response.usage as any).cache_read_input_tokens,
-      });
-      const cost = modelInfo ? this.calculateCost(usage, modelInfo.pricing) : undefined;
+      const usage = {
+        promptTokens: response.usage.input_tokens,
+        completionTokens: response.usage.output_tokens,
+        totalTokens: response.usage.input_tokens + response.usage.output_tokens,
+        cachedTokens: (response.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens,
+      };
 
       return {
         id: response.id,
-        content: textContent,
-        role: MessageRole.Assistant,
         model: response.model,
-        provider: this.name,
+        provider: this.id,
+        content,
+        toolCalls: toolCalls.length ? toolCalls : undefined,
+        finishReason: this.mapFinishReason(response.stop_reason),
         usage,
-        finishReason: this.normalizeFinishReason(response.stop_reason),
-        toolCalls: toolUseBlocks.map((tb) => ({
-          id: tb.id,
-          type: 'function' as const,
-          function: { name: tb.name, arguments: JSON.stringify(tb.input) },
-        })),
-        latencyMs: 0,
-        cost,
+        cost: this.calculateCost(model, usage.promptTokens, usage.completionTokens),
+        latencyMs: Date.now() - start,
+        createdAt: new Date(),
       };
-    } catch (err: any) {
-      throw this._mapError(err);
+    } catch (err) {
+      throw this.mapError(err);
     }
   }
 
-  protected async *_stream(request: IChatRequest): AsyncGenerator<IStreamChunk> {
-    const model = request.model ?? this.config.defaultModel ?? 'claude-haiku-4-5-20251001';
-    const { system, messages } = this._toAnthropicMessages(request.messages);
-    const id = this.generateId('anthropic');
+  protected async *_stream(
+    messages: IChatMessage[],
+    options: IChatOptions,
+  ): AsyncIterable<IStreamChunk> {
+    const model = options.model ?? this.config.defaultModel ?? "claude-sonnet-4-6";
+    const { system, anthropicMessages } = this.toAnthropicMessages(messages, options.systemPrompt);
+    const requestId = this.generateRequestId();
 
     try {
       const stream = this.client.messages.stream({
         model,
+        messages: anthropicMessages,
         system,
-        messages,
-        max_tokens: request.maxTokens ?? 4096,
-        temperature: request.temperature,
+        max_tokens: options.maxTokens ?? 4096,
+        temperature: options.temperature,
       });
 
       for await (const event of stream) {
-        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          yield { id: requestId, delta: event.delta.text };
+        } else if (event.type === "message_stop") {
+          const finalMessage = await stream.finalMessage();
           yield {
-            type: 'delta',
-            id,
-            model,
-            provider: this.name,
-            delta: event.delta.text,
-            finishReason: null,
+            id: requestId,
+            delta: "",
+            finishReason: this.mapFinishReason(finalMessage.stop_reason),
+            usage: {
+              promptTokens: finalMessage.usage.input_tokens,
+              completionTokens: finalMessage.usage.output_tokens,
+              totalTokens: finalMessage.usage.input_tokens + finalMessage.usage.output_tokens,
+            },
           };
-        } else if (event.type === 'message_delta' && event.usage) {
-          // We don't have input tokens at this point — estimate from totals
-          yield {
-            type: 'usage',
-            id,
-            model,
-            provider: this.name,
-            usage: this.buildUsage(0, event.usage.output_tokens),
-            finishReason: this.normalizeFinishReason(event.delta.stop_reason ?? null) ?? 'stop',
-          };
-        } else if (event.type === 'message_stop') {
-          yield { type: 'done', id, model, provider: this.name, finishReason: 'stop' };
         }
       }
-    } catch (err: any) {
-      yield { type: 'error', id, model, provider: this.name, error: err.message, finishReason: null };
-      throw this._mapError(err);
+    } catch (err) {
+      throw this.mapError(err);
     }
   }
 
-  protected async _embed(_request: IEmbedRequest): Promise<IEmbedResponse> {
-    // Anthropic does not natively provide embeddings; placeholder for Voyage via SDK
+  protected async _embed(
+    _texts: string[],
+    _options: IEmbeddingOptions,
+  ): Promise<IEmbeddingResponse> {
     throw new ProviderError(
-      'Anthropic does not support embeddings natively. Use a dedicated embedding provider.',
-      this.name,
-      'NOT_SUPPORTED',
+      "Anthropic does not support embeddings. Use OpenAI or Cohere instead.",
+      this.id,
+      "NOT_SUPPORTED",
+      undefined,
       false,
     );
   }
 
-  async listModels(): Promise<IModelInfo[]> {
+  protected async _listModels(): Promise<IModelInfo[]> {
     return ANTHROPIC_MODELS;
   }
 
-  async healthCheck(): Promise<boolean> {
-    try {
-      await this.client.models.list();
-      return true;
-    } catch {
-      return false;
+  // ─── Format Conversion ───
+
+  private toAnthropicMessages(
+    messages: IChatMessage[],
+    systemPrompt?: string,
+  ): {
+    system: string | undefined;
+    anthropicMessages: Anthropic.MessageParam[];
+  } {
+    const systemMessages = messages
+      .filter((m) => m.role === MessageRole.SYSTEM)
+      .map((m) => this.normalizeContent(m.content));
+
+    const system = [systemPrompt, ...systemMessages].filter(Boolean).join("\n\n") || undefined;
+
+    const anthropicMessages: Anthropic.MessageParam[] = messages
+      .filter((m) => m.role !== MessageRole.SYSTEM)
+      .map((m): Anthropic.MessageParam => {
+        if (m.role === MessageRole.USER) {
+          const content = m.content;
+          if (typeof content === "string") {
+            return { role: "user", content };
+          }
+          if (Array.isArray(content)) {
+            const parts: Anthropic.ContentBlockParam[] = content.map((part) => {
+              if (typeof part === "object" && "type" in part && part.type === "image") {
+                const img = part as { type: "image"; url?: string; base64?: string; mimeType?: string };
+                if (img.base64) {
+                  return {
+                    type: "image" as const,
+                    source: {
+                      type: "base64" as const,
+                      media_type: (img.mimeType ?? "image/jpeg") as Anthropic.Base64ImageSource["media_type"],
+                      data: img.base64,
+                    },
+                  };
+                }
+                return {
+                  type: "image" as const,
+                  source: { type: "url" as const, url: img.url ?? "" },
+                };
+              }
+              return { type: "text" as const, text: typeof part === "object" && "text" in part ? (part as {text: string}).text : "" };
+            });
+            return { role: "user", content: parts };
+          }
+          return { role: "user", content: this.normalizeContent(content) };
+        }
+
+        return {
+          role: "assistant",
+          content: this.normalizeContent(m.content),
+        };
+      });
+
+    return { system, anthropicMessages };
+  }
+
+  private mapFinishReason(reason: string | null): FinishReason {
+    switch (reason) {
+      case "end_turn": return FinishReason.STOP;
+      case "max_tokens": return FinishReason.LENGTH;
+      case "tool_use": return FinishReason.TOOL_CALL;
+      case "stop_sequence": return FinishReason.STOP;
+      default: return FinishReason.STOP;
     }
   }
 
-  private _mapError(err: any): Error {
-    if (err instanceof ProviderError) return err;
-    const status = err.status ?? err.statusCode;
-    if (status === 401) return new AuthenticationError(this.name);
-    if (status === 429) return new RateLimitError(this.name);
-    if (status === 404) return new ModelNotFoundError(this.name, 'unknown');
-    return new ProviderError(err.message ?? 'Unknown Anthropic error', this.name, 'ANTHROPIC_ERROR', status >= 500);
+  private mapError(err: unknown): ProviderError {
+    if (err instanceof Anthropic.APIError) {
+      if (err.status === 401) return new AuthenticationError(this.id, err);
+      if (err.status === 429) {
+        const retryAfter = parseInt(err.headers?.["retry-after"] ?? "0", 10) * 1000;
+        return new RateLimitError(this.id, retryAfter || undefined, err);
+      }
+      if (err.status === 400 && err.message.includes("too large")) {
+        return new ContextLengthError(this.id, 200_000, 0);
+      }
+      return new ProviderError(err.message, this.id, `ANTHROPIC_${err.status}`, err.status, err.status >= 500, err);
+    }
+    return new ProviderError(String(err), this.id, "UNKNOWN", undefined, true, err);
   }
 }

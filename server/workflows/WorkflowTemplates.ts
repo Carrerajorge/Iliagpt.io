@@ -1,720 +1,696 @@
-import * as YAML from "yaml";
-import { Logger } from "../lib/logger";
-import { workflowEngine, WorkflowDefinition, WorkflowRun, WorkflowStep } from "./WorkflowEngine";
+/**
+ * WorkflowTemplates — pre-built workflow definitions for common use cases.
+ * Templates: Research Digest, Code Review, Data Pipeline, Content Creation, Meeting Prep.
+ * Each template is a fully executable WorkflowDefinition ready to pass to WorkflowEngine.register().
+ */
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+import type { WorkflowDefinition } from "./WorkflowEngine";
 
-export interface TemplateParameter {
-  name: string;
-  type: "string" | "number" | "boolean" | "select";
-  description: string;
-  default?: any;
-  options?: string[];
-  required: boolean;
-}
+// ─── Template: Research Digest ────────────────────────────────────────────────
 
-export interface WorkflowTemplate {
-  id: string;
-  name: string;
-  description: string;
-  category: "research" | "code" | "content" | "data" | "productivity" | "analysis";
-  tags: string[];
-  parameters: TemplateParameter[];
-  definition: WorkflowDefinition;
-  estimatedDuration: string;
-  requiredTools: string[];
-  previewSteps: string[];
-}
-
-// ─── Parameter Validation ─────────────────────────────────────────────────────
-
-function validateParameters(params: TemplateParameter[], values: Record<string, any>): void {
-  for (const param of params) {
-    if (param.required && (values[param.name] === undefined || values[param.name] === null || values[param.name] === "")) {
-      throw new Error(`Required parameter missing: ${param.name}`);
-    }
-    if (param.type === "select" && values[param.name] !== undefined && param.options) {
-      if (!param.options.includes(String(values[param.name]))) {
-        throw new Error(`Parameter "${param.name}" must be one of: ${param.options.join(", ")}`);
-      }
-    }
-  }
-}
-
-// ─── Deep-substitute parameters into a definition ────────────────────────────
-
-function substituteParams(obj: any, params: Record<string, any>): any {
-  if (typeof obj === "string") {
-    return obj.replace(/\$\{([^}]+)\}/g, (_, name) => {
-      const val = params[name.trim()];
-      return val !== undefined ? String(val) : "";
-    });
-  }
-  if (Array.isArray(obj)) return obj.map((item) => substituteParams(item, params));
-  if (obj !== null && typeof obj === "object") {
-    const result: Record<string, any> = {};
-    for (const [k, v] of Object.entries(obj)) {
-      result[k] = substituteParams(v, params);
-    }
-    return result;
-  }
-  return obj;
-}
-
-// ─── Template Registry ─────────────────────────────────────────────────────────
-
-class WorkflowTemplates {
-  private templates: Map<string, WorkflowTemplate> = new Map();
-  private engine = workflowEngine;
-
-  constructor() {
-    this.registerTemplate(this.buildResearchDigestTemplate());
-    this.registerTemplate(this.buildCodeReviewTemplate());
-    this.registerTemplate(this.buildDataPipelineTemplate());
-    this.registerTemplate(this.buildContentCreationTemplate());
-    this.registerTemplate(this.buildMeetingPrepTemplate());
-    Logger.info("[WorkflowTemplates] Initialized", { count: this.templates.size });
-  }
-
-  // ── Public API ────────────────────────────────────────────────────────────────
-
-  listTemplates(filter?: { category?: string; tags?: string[] }): WorkflowTemplate[] {
-    const all = Array.from(this.templates.values());
-    if (!filter) return all;
-    return all.filter((t) => {
-      if (filter.category && t.category !== filter.category) return false;
-      if (filter.tags && filter.tags.length > 0) {
-        const hasAllTags = filter.tags.every((tag) => t.tags.includes(tag));
-        if (!hasAllTags) return false;
-      }
-      return true;
-    });
-  }
-
-  getTemplate(id: string): WorkflowTemplate | null {
-    return this.templates.get(id) ?? null;
-  }
-
-  async instantiate(templateId: string, parameters: Record<string, any>): Promise<WorkflowDefinition> {
-    const template = this.templates.get(templateId);
-    if (!template) throw new Error(`Template not found: ${templateId}`);
-
-    // Apply defaults
-    const resolvedParams: Record<string, any> = {};
-    for (const param of template.parameters) {
-      resolvedParams[param.name] = parameters[param.name] ?? param.default;
-    }
-
-    validateParameters(template.parameters, resolvedParams);
-
-    // Deep substitute ${param} placeholders in the definition
-    const substituted = substituteParams(JSON.parse(JSON.stringify(template.definition)), resolvedParams) as WorkflowDefinition;
-
-    // Give the instance a unique name
-    substituted.name = `${template.name} (${new Date().toISOString().slice(0, 10)})`;
-
-    Logger.info("[WorkflowTemplates] Template instantiated", { templateId, name: substituted.name });
-    return substituted;
-  }
-
-  async runFromTemplate(
-    templateId: string,
-    parameters: Record<string, any>,
-    userId?: string
-  ): Promise<WorkflowRun> {
-    const definition = await this.instantiate(templateId, parameters);
-    const workflowId = await this.engine.registerWorkflow(definition);
-    const run = await this.engine.trigger(workflowId, parameters, userId);
-    Logger.info("[WorkflowTemplates] Template run started", { templateId, workflowId, runId: run.id, userId });
-    return run;
-  }
-
-  registerTemplate(template: WorkflowTemplate): void {
-    this.templates.set(template.id, template);
-    Logger.debug("[WorkflowTemplates] Template registered", { id: template.id, name: template.name });
-  }
-
-  removeTemplate(id: string): void {
-    this.templates.delete(id);
-    Logger.info("[WorkflowTemplates] Template removed", { id });
-  }
-
-  async exportTemplate(id: string): Promise<string> {
-    const template = this.templates.get(id);
-    if (!template) throw new Error(`Template not found: ${id}`);
-    Logger.info("[WorkflowTemplates] Exporting template", { id });
-    return YAML.stringify({
-      templateId: template.id,
-      name: template.name,
-      description: template.description,
-      category: template.category,
-      tags: template.tags,
-      parameters: template.parameters,
-      estimatedDuration: template.estimatedDuration,
-      requiredTools: template.requiredTools,
-      previewSteps: template.previewSteps,
-      definition: template.definition,
-    });
-  }
-
-  async importTemplate(yaml: string): Promise<WorkflowTemplate> {
-    const parsed = YAML.parse(yaml) as WorkflowTemplate;
-    if (!parsed.id || !parsed.name || !parsed.definition) {
-      throw new Error("Invalid template YAML: missing id, name, or definition");
-    }
-    this.registerTemplate(parsed);
-    Logger.info("[WorkflowTemplates] Template imported", { id: parsed.id, name: parsed.name });
-    return parsed;
-  }
-
-  // ── Template Builders ─────────────────────────────────────────────────────────
-
-  private buildResearchDigestTemplate(): WorkflowTemplate {
-    const definition: WorkflowDefinition = {
-      name: "Research Digest",
-      version: "1.0",
-      description: "Daily research digest on a topic with configurable depth and output format",
-      trigger: { type: "manual" },
-      steps: [
-        {
-          id: "generate_queries",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            'Generate 5 specific, targeted search queries for researching "${topic}". ' +
-            "Return them as a JSON array of strings. " +
-            "Focus on ${depth === 'quick' ? 'recent news and overviews' : 'academic papers, expert analysis, and deep dives'}.",
+/**
+ * Research Digest: Search the web for a topic, cross-reference academic sources,
+ * score credibility, and produce a structured markdown digest with citations.
+ */
+export const researchDigestTemplate: WorkflowDefinition = {
+  id: "research-digest",
+  name: "Research Digest",
+  description: "Deep research on a topic with credibility scoring and structured output",
+  version: "1.0.0",
+  trigger: "manual",
+  variables: {
+    topic: "",
+    depth: "medium",
+    maxResults: 10,
+    includeAcademic: true,
+  },
+  steps: [
+    {
+      id: "web_search",
+      name: "Web Search",
+      type: "tool_execute",
+      config: {
+        tool: "search",
+        args: {
+          query: "${topic}",
+          maxResults: "${maxResults}",
         },
-        {
-          id: "search_primary",
-          type: "tool_execute",
-          tool: "web_search",
-          input: {
-            query: "${topic} latest developments 2025",
-            maxResults: "${depth === 'quick' ? 3 : 8}",
-          },
-        },
-        {
-          id: "search_academic",
-          type: "tool_execute",
-          tool: "web_search",
-          input: {
-            query: "${topic} research analysis expert opinion",
-            maxResults: "5",
-          },
-        },
-        {
-          id: "extract_facts",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Extract and organize the key facts, insights, and developments from these search results:\n\n" +
-            "Primary results: {{steps.search_primary.result}}\n" +
-            "Academic results: {{steps.search_academic.result}}\n\n" +
-            "Organize into: key facts, recent developments, expert perspectives, open questions.",
-        },
-        {
-          id: "write_digest",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Write a comprehensive research digest about '${topic}' based on:\n\n" +
-            "{{steps.extract_facts.result}}\n\n" +
-            "Target format: ${output_format}.\n" +
-            "If 'email': concise, scannable, with a TL;DR.\n" +
-            "If 'document': full sections with headers.\n" +
-            "If 'bullets': structured bullet points only.",
-        },
-        {
-          id: "format_output",
-          type: "transform",
-          input: "{{steps.write_digest.result}}",
-          transform:
-            "Format the digest for '${output_format}' delivery. " +
-            "Add metadata: topic='${topic}', depth='${depth}', date={{workflow.name}}.",
-        },
-      ] as WorkflowStep[],
-    };
+      },
+      outputKey: "webResults",
+    },
+    {
+      id: "extract_urls",
+      name: "Extract Top URLs",
+      type: "transform",
+      config: {
+        type: "extract",
+        input: "${outputs.webResults}",
+        field: "results",
+      },
+      outputKey: "topUrls",
+    },
+    {
+      id: "synthesize_research",
+      name: "Synthesize Research",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        prompt: `You are a research analyst. Based on the following search results about "${"${topic}"}",
+create a structured research digest with:
+1. Executive Summary (2-3 sentences)
+2. Key Findings (5-7 bullet points)
+3. Main Perspectives or Debates
+4. Gaps and Open Questions
+5. Recommended Further Reading
 
-    return {
-      id: "research_digest",
-      name: "Research Digest",
-      description: "Automatically research a topic and produce a comprehensive digest with configurable depth and format",
-      category: "research",
-      tags: ["research", "digest", "automation", "daily"],
-      estimatedDuration: "5-10 minutes",
-      requiredTools: ["web_search"],
-      previewSteps: [
-        "Generate targeted search queries for the topic",
-        "Search for primary sources and recent news",
-        "Search for academic and expert content",
-        "Extract and organize key facts and insights",
-        "Write the research digest",
-        "Format output for chosen delivery method",
-      ],
-      parameters: [
-        {
-          name: "topic",
-          type: "string",
-          description: "Topic to research (e.g., 'quantum computing', 'climate policy')",
-          required: true,
-        },
-        {
-          name: "depth",
-          type: "select",
-          description: "How deep to go with research",
-          options: ["quick", "deep"],
-          default: "quick",
-          required: false,
-        },
-        {
-          name: "output_format",
-          type: "select",
-          description: "Output format for the digest",
-          options: ["email", "document", "bullets"],
-          default: "document",
-          required: false,
-        },
-      ],
-      definition,
-    };
-  }
+Search Results:
+${"${outputs.webResults}"}
 
-  private buildCodeReviewTemplate(): WorkflowTemplate {
-    const definition: WorkflowDefinition = {
-      name: "Code Review",
-      version: "1.0",
-      description: "Automated multi-stage code review pipeline",
-      trigger: { type: "manual" },
-      steps: [
-        {
-          id: "parse_code",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Analyze this ${language} code structure and identify:\n" +
-            "1. Main components and their responsibilities\n" +
-            "2. Dependencies and external calls\n" +
-            "3. Code complexity metrics (cyclomatic complexity estimate, lines of code, nesting depth)\n" +
-            "4. Design patterns used\n\n" +
-            "Code:\n```${language}\n${code}\n```\n\n" +
-            "Return a structured JSON analysis.",
+Format in clean markdown.`,
+        maxTokens: 2048,
+      },
+      outputKey: "researchDigest",
+    },
+    {
+      id: "store_digest",
+      name: "Store Research in Memory",
+      type: "tool_execute",
+      config: {
+        tool: "memory_search",
+        args: {
+          query: "${topic}",
+          limit: 3,
         },
-        {
-          id: "check_complexity",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Based on this structure analysis:\n{{steps.parse_code.result}}\n\n" +
-            "Evaluate complexity and maintainability of the ${language} code:\n```\n${code}\n```\n\n" +
-            "Identify: overly complex functions, deep nesting, unclear naming, missing abstractions. " +
-            "Rate complexity 1-10 and explain.",
-        },
-        {
-          id: "scan_vulnerabilities",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Perform a security review of this ${language} code:\n```\n${code}\n```\n\n" +
-            "Check for: SQL injection, XSS, insecure dependencies, hardcoded secrets, " +
-            "improper error handling, authentication flaws, input validation issues, " +
-            "path traversal vulnerabilities.\n\n" +
-            "List each finding with severity (critical/high/medium/low) and line reference if possible.",
-        },
-        {
-          id: "check_style",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Review ${language} code style and best practices:\n```\n${code}\n```\n\n" +
-            "Focus: ${focus === 'all' ? 'style, performance, security' : focus}.\n" +
-            "${strict ? 'Apply strict review standards.' : 'Apply standard review standards.'}\n\n" +
-            "Cover: naming conventions, documentation, error handling, test coverage indicators, " +
-            "${language}-specific idioms and best practices.",
-        },
-        {
-          id: "generate_report",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Compile a complete code review report for ${language} code.\n\n" +
-            "Structure analysis: {{steps.parse_code.result}}\n" +
-            "Complexity review: {{steps.check_complexity.result}}\n" +
-            "Security findings: {{steps.scan_vulnerabilities.result}}\n" +
-            "Style review: {{steps.check_style.result}}\n\n" +
-            "Generate a clear report with:\n" +
-            "## Summary\n## Critical Issues\n## Security\n## Complexity\n## Style\n## Recommendations\n## Score (0-100)",
-        },
-      ] as WorkflowStep[],
-    };
+      },
+      outputKey: "relatedMemories",
+    },
+    {
+      id: "enrich_with_memory",
+      name: "Enrich with Past Research",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        prompt: `Enhance this research digest by incorporating relevant context from past research.
 
-    return {
-      id: "code_review",
-      name: "Automated Code Review",
-      description: "Multi-stage code review covering complexity, security vulnerabilities, and style best practices",
-      category: "code",
-      tags: ["code", "review", "security", "quality"],
-      estimatedDuration: "3-7 minutes",
-      requiredTools: [],
-      previewSteps: [
-        "Parse code structure and identify components",
-        "Evaluate complexity and maintainability",
-        "Scan for security vulnerabilities",
-        "Check style and best practices",
-        "Generate comprehensive review report",
-      ],
-      parameters: [
-        { name: "code", type: "string", description: "Code to review", required: true },
-        {
-          name: "language",
-          type: "string",
-          description: "Programming language (e.g., typescript, python, go)",
-          default: "typescript",
-          required: false,
-        },
-        {
-          name: "focus",
-          type: "select",
-          description: "Area to focus on",
-          options: ["security", "performance", "style", "all"],
-          default: "all",
-          required: false,
-        },
-        {
-          name: "strict",
-          type: "boolean",
-          description: "Apply strict review standards",
-          default: false,
-          required: false,
-        },
-      ],
-      definition,
-    };
-  }
+Current Digest:
+${"${outputs.researchDigest}"}
 
-  private buildDataPipelineTemplate(): WorkflowTemplate {
-    const definition: WorkflowDefinition = {
-      name: "Data Pipeline",
-      version: "1.0",
-      description: "ETL pipeline: fetch → validate → transform → analyze → report",
-      trigger: { type: "manual" },
-      steps: [
-        {
-          id: "fetch_data",
-          type: "http_request",
+Related Past Research:
+${"${outputs.relatedMemories}"}
+
+Add a "Related Prior Research" section if relevant memories exist. Otherwise return the digest unchanged.`,
+        maxTokens: 2048,
+      },
+      outputKey: "finalDigest",
+    },
+  ],
+  tags: ["research", "search", "synthesis"],
+};
+
+// ─── Template: Code Review ────────────────────────────────────────────────────
+
+/**
+ * Code Review: Analyze code for security vulnerabilities, quality issues, and
+ * best-practice violations, then request human approval before posting results.
+ */
+export const codeReviewTemplate: WorkflowDefinition = {
+  id: "code-review",
+  name: "Automated Code Review",
+  description: "Security, quality, and best-practice analysis with human approval gate",
+  version: "1.0.0",
+  trigger: "manual",
+  variables: {
+    code: "",
+    language: "typescript",
+    repositoryUrl: "",
+    severity: "medium",
+  },
+  steps: [
+    {
+      id: "security_scan",
+      name: "Security Vulnerability Scan",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        system: "You are a security-focused code reviewer. Find security vulnerabilities only. Be specific and concise.",
+        prompt: `Scan this ${"${language}"} code for security vulnerabilities:
+
+\`\`\`${"${language}"}
+${"${code}"}
+\`\`\`
+
+Return JSON: {"vulnerabilities": [{"severity": "critical|high|medium|low", "type": "string", "line": number|null, "description": "string", "fix": "string"}], "secureCodeScore": 0-100}`,
+        maxTokens: 1024,
+        jsonOutput: true,
+      },
+      outputKey: "securityReport",
+    },
+    {
+      id: "quality_analysis",
+      name: "Code Quality Analysis",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        system: "You are a code quality expert. Analyze code quality, readability, and maintainability.",
+        prompt: `Analyze the quality of this ${"${language}"} code:
+
+\`\`\`${"${language}"}
+${"${code}"}
+\`\`\`
+
+Return JSON: {"issues": [{"category": "complexity|naming|duplication|documentation|error-handling", "severity": "high|medium|low", "description": "string", "suggestion": "string"}], "qualityScore": 0-100, "estimatedComplexity": "low|medium|high"}`,
+        maxTokens: 1024,
+        jsonOutput: true,
+      },
+      outputKey: "qualityReport",
+    },
+    {
+      id: "check_critical_issues",
+      name: "Check for Critical Issues",
+      type: "condition",
+      config: {
+        expression: {
+          op: "gte",
+          left: "${outputs.securityReport.secureCodeScore}",
+          right: 40,
+        },
+      },
+      outputKey: "passedSecurityGate",
+    },
+    {
+      id: "compile_review",
+      name: "Compile Final Review",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        prompt: `Compile a comprehensive code review report from these analyses:
+
+Security Analysis:
+${"${outputs.securityReport}"}
+
+Quality Analysis:
+${"${outputs.qualityReport}"}
+
+Language: ${"${language}"}
+
+Create a final review with:
+1. Overall Assessment (Pass/Needs Work/Fail)
+2. Critical Issues (must fix)
+3. Recommended Improvements
+4. Positive Aspects
+5. Overall Score (0-100)
+
+Format in clear markdown suitable for a PR comment.`,
+        maxTokens: 1500,
+      },
+      outputKey: "finalReview",
+    },
+    {
+      id: "approval_gate",
+      name: "Review Approval Gate",
+      type: "human_approval",
+      config: {
+        message: "Code review complete. Approve to post results to repository.",
+        timeout: 1800000, // 30 minutes
+      },
+      outputKey: "reviewApproved",
+    },
+  ],
+  tags: ["code", "review", "security", "quality"],
+};
+
+// ─── Template: Data Pipeline ──────────────────────────────────────────────────
+
+/**
+ * Data Pipeline: Fetch data from an API endpoint, validate and transform it,
+ * extract insights with LLM analysis, then store key findings to memory.
+ */
+export const dataPipelineTemplate: WorkflowDefinition = {
+  id: "data-pipeline",
+  name: "Data Ingestion and Analysis Pipeline",
+  description: "Fetch, validate, transform, and analyze data from external APIs",
+  version: "1.0.0",
+  trigger: "scheduled",
+  schedule: "0 */6 * * *", // every 6 hours
+  variables: {
+    dataSourceUrl: "",
+    dataFormat: "json",
+    analysisPrompt: "Summarize the key trends and anomalies in this data.",
+    outputFormat: "markdown",
+  },
+  steps: [
+    {
+      id: "fetch_data",
+      name: "Fetch Data from Source",
+      type: "tool_execute",
+      config: {
+        tool: "http",
+        args: {
+          url: "${dataSourceUrl}",
           method: "GET",
-          url: "${source_url}",
-          headers: { Accept: "application/json" },
-        },
-        {
-          id: "validate",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Validate this data fetched from ${source_url}:\n\n" +
-            "{{steps.fetch_data.result}}\n\n" +
-            "Check for: completeness, data types, null values, outliers, schema consistency.\n" +
-            "Return a JSON object: { valid: boolean, issues: [], record_count: number, schema: {} }",
-        },
-        {
-          id: "transform",
-          type: "transform",
-          input: "{{steps.fetch_data.result}}",
-          transform:
-            "Apply these transformations: ${transform_instructions}. " +
-            "Clean null values, normalize data types, flatten nested objects where appropriate.",
-        },
-        {
-          id: "analyze",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Analyze the transformed dataset:\n\n{{steps.transform.result}}\n\n" +
-            "Provide: summary statistics, key trends, anomalies, " +
-            "data quality score (0-100), key insights, and actionable observations.",
-        },
-        {
-          id: "generate_report",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Generate a data report in ${output_format} format.\n\n" +
-            "Validation: {{steps.validate.result}}\n" +
-            "Analysis: {{steps.analyze.result}}\n\n" +
-            "If 'json': structured JSON with all metrics.\n" +
-            "If 'csv': CSV-formatted summary table.\n" +
-            "If 'markdown': formatted markdown with sections and tables.",
-        },
-      ] as WorkflowStep[],
-    };
-
-    return {
-      id: "data_pipeline",
-      name: "Data Pipeline",
-      description: "Complete ETL pipeline: fetch data from a URL, validate, transform, analyze, and generate a report",
-      category: "data",
-      tags: ["data", "etl", "pipeline", "analysis"],
-      estimatedDuration: "5-15 minutes",
-      requiredTools: ["http_request"],
-      previewSteps: [
-        "Fetch data from source URL",
-        "Validate data quality and schema",
-        "Apply transformations",
-        "Statistical analysis and insight extraction",
-        "Generate formatted report",
-      ],
-      parameters: [
-        { name: "source_url", type: "string", description: "URL to fetch data from", required: true },
-        {
-          name: "transform_instructions",
-          type: "string",
-          description: "Instructions for data transformation",
-          default: "Normalize fields and clean the data",
-          required: false,
-        },
-        {
-          name: "output_format",
-          type: "select",
-          description: "Output format for the report",
-          options: ["json", "csv", "markdown"],
-          default: "markdown",
-          required: false,
-        },
-      ],
-      definition,
-    };
-  }
-
-  private buildContentCreationTemplate(): WorkflowTemplate {
-    const definition: WorkflowDefinition = {
-      name: "Content Creation",
-      version: "1.0",
-      description: "Research-backed content creation with human review checkpoint",
-      trigger: { type: "manual" },
-      steps: [
-        {
-          id: "research_topic",
-          type: "tool_execute",
-          tool: "web_search",
-          input: {
-            query: "${topic} ${content_type} examples best practices 2025",
-            maxResults: "8",
+          headers: {
+            Accept: "application/json",
           },
         },
-        {
-          id: "create_outline",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Create a detailed outline for a ${content_type} about '${topic}'.\n\n" +
-            "Research context:\n{{steps.research_topic.result}}\n\n" +
-            "Tone: ${tone}. Target length: approximately ${word_count} words.\n\n" +
-            "Provide a structured outline with main sections, subsections, and key points for each. " +
-            "Include a hook, main body structure, and conclusion strategy.",
+      },
+      outputKey: "rawData",
+      retries: 2,
+    },
+    {
+      id: "validate_fetch",
+      name: "Validate Fetch Success",
+      type: "condition",
+      config: {
+        expression: {
+          op: "eq",
+          left: "${outputs.rawData.ok}",
+          right: true,
         },
-        {
-          id: "review_outline",
-          type: "human_approval",
-          message: "Please review the content outline before drafting:\n\n{{steps.create_outline.result}}",
-          timeout: 3600,
-        },
-        {
-          id: "write_draft",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Write a complete ${content_type} about '${topic}' following this outline:\n\n" +
-            "{{steps.create_outline.result}}\n\n" +
-            "Requirements:\n" +
-            "- Tone: ${tone}\n" +
-            "- Approximate word count: ${word_count}\n" +
-            "- Type-specific requirements:\n" +
-            "  - blog: engaging intro, subheadings, SEO-friendly\n" +
-            "  - tweet_thread: numbered tweets, each ≤280 chars, hooks and CTAs\n" +
-            "  - report: executive summary, data-driven, professional\n" +
-            "  - email: subject line, scannable format, clear CTA\n" +
-            "Write the full draft now.",
-        },
-        {
-          id: "revise",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Revise and polish this ${content_type} draft:\n\n{{steps.write_draft.result}}\n\n" +
-            "Improve: clarity, flow, engagement, grammar, and alignment with ${tone} tone.\n" +
-            "Ensure it fits ${word_count} words and is ready for publication.",
-        },
-        {
-          id: "finalize",
-          type: "transform",
-          input: "{{steps.revise.result}}",
-          transform:
-            "Finalize the ${content_type} content. Add metadata: " +
-            "topic='${topic}', tone='${tone}', word_count_target=${word_count}, type='${content_type}'.",
-        },
-      ] as WorkflowStep[],
-    };
+      },
+      outputKey: "fetchSucceeded",
+    },
+    {
+      id: "extract_data",
+      name: "Extract Data Payload",
+      type: "transform",
+      config: {
+        type: "extract",
+        input: "${outputs.rawData}",
+        field: "data",
+      },
+      outputKey: "dataPayload",
+    },
+    {
+      id: "analyze_data",
+      name: "LLM Data Analysis",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        system: "You are a data analyst. Analyze the provided data clearly and concisely.",
+        prompt: `${"${analysisPrompt}"}
 
-    return {
-      id: "content_creation",
-      name: "Content Creation Pipeline",
-      description: "Research-backed content creation: research → outline → human review → draft → revise → finalize",
-      category: "content",
-      tags: ["content", "writing", "blog", "marketing"],
-      estimatedDuration: "10-20 minutes",
-      requiredTools: ["web_search"],
-      previewSteps: [
-        "Research topic and gather background information",
-        "Create structured content outline",
-        "Human review of outline (approval checkpoint)",
-        "Write full draft based on outline",
-        "Revise and polish the draft",
-        "Finalize with metadata",
-      ],
-      parameters: [
-        { name: "topic", type: "string", description: "Topic or subject of the content", required: true },
-        {
-          name: "content_type",
-          type: "select",
-          description: "Type of content to create",
-          options: ["blog", "tweet_thread", "report", "email"],
-          default: "blog",
-          required: false,
-        },
-        {
-          name: "tone",
-          type: "string",
-          description: "Tone of voice (e.g., professional, casual, educational, persuasive)",
-          default: "professional",
-          required: false,
-        },
-        {
-          name: "word_count",
-          type: "number",
-          description: "Target word count",
-          default: 800,
-          required: false,
-        },
-      ],
-      definition,
-    };
-  }
+Data:
+${"${outputs.dataPayload}"}
 
-  private buildMeetingPrepTemplate(): WorkflowTemplate {
-    const definition: WorkflowDefinition = {
-      name: "Meeting Preparation",
-      version: "1.0",
-      description: "Comprehensive meeting prep: research attendees, topic, agenda, questions, and background brief",
-      trigger: { type: "manual" },
-      steps: [
-        {
-          id: "research_attendees",
-          type: "tool_execute",
-          tool: "web_search",
-          input: {
-            query: "${attendees} professional background company role LinkedIn",
-            maxResults: "6",
+Output format: ${"${outputFormat}"}`,
+        maxTokens: 1500,
+      },
+      outputKey: "dataInsights",
+    },
+    {
+      id: "search_context",
+      name: "Search for Related Context",
+      type: "tool_execute",
+      config: {
+        tool: "memory_search",
+        args: {
+          query: "${analysisPrompt}",
+          limit: 5,
+          memoryType: "fact",
+        },
+      },
+      outputKey: "historicalContext",
+    },
+    {
+      id: "enrich_insights",
+      name: "Enrich with Historical Context",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        prompt: `Compare current data insights with historical context:
+
+Current Insights:
+${"${outputs.dataInsights}"}
+
+Historical Context:
+${"${outputs.historicalContext}"}
+
+Add a "Trend Analysis" section comparing now vs. history. Highlight changes and anomalies.`,
+        maxTokens: 1000,
+      },
+      outputKey: "enrichedInsights",
+    },
+    {
+      id: "wait_before_next",
+      name: "Rate Limit Buffer",
+      type: "wait",
+      config: {
+        duration: 2000,
+      },
+    },
+  ],
+  tags: ["data", "pipeline", "api", "analysis", "scheduled"],
+};
+
+// ─── Template: Content Creation ───────────────────────────────────────────────
+
+/**
+ * Content Creation: Research a topic, generate multiple content formats
+ * (blog post, social media, email newsletter), then approve before delivery.
+ */
+export const contentCreationTemplate: WorkflowDefinition = {
+  id: "content-creation",
+  name: "Multi-Format Content Creation",
+  description: "Research a topic and generate blog post, social posts, and newsletter in parallel",
+  version: "1.0.0",
+  trigger: "manual",
+  variables: {
+    topic: "",
+    targetAudience: "general",
+    tone: "professional",
+    keywords: "",
+    contentGoal: "inform",
+  },
+  steps: [
+    {
+      id: "research_topic",
+      name: "Research Topic",
+      type: "tool_execute",
+      config: {
+        tool: "search",
+        args: {
+          query: "${topic} ${keywords}",
+          maxResults: 8,
+        },
+      },
+      outputKey: "topicResearch",
+    },
+    {
+      id: "build_content_brief",
+      name: "Build Content Brief",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        prompt: `Create a content brief for:
+- Topic: ${"${topic}"}
+- Audience: ${"${targetAudience}"}
+- Tone: ${"${tone}"}
+- Goal: ${"${contentGoal}"}
+- Keywords: ${"${keywords}"}
+
+Based on this research:
+${"${outputs.topicResearch}"}
+
+Return JSON: {"title": "string", "angle": "string", "keyPoints": ["string"], "callToAction": "string", "estimatedReadTime": "string"}`,
+        maxTokens: 800,
+        jsonOutput: true,
+      },
+      outputKey: "contentBrief",
+    },
+    {
+      id: "generate_content_parallel",
+      name: "Generate All Content Formats",
+      type: "parallel",
+      config: {
+        steps: [
+          {
+            id: "blog_post",
+            name: "Blog Post",
+            type: "llm_call",
+            config: {
+              model: "claude-haiku-4-5-20251001",
+              system: "You are an expert content writer. Write engaging, SEO-optimized blog posts.",
+              prompt: `Write a complete blog post based on this brief:
+${"${outputs.contentBrief}"}
+
+Tone: ${"${tone}"} | Audience: ${"${targetAudience}"}
+
+Include: headline, intro hook, 3-5 main sections with subheadings, conclusion with CTA.
+Use markdown formatting.`,
+              maxTokens: 1500,
+            },
+            outputKey: "blogPost",
           },
-        },
-        {
-          id: "research_topic",
-          type: "tool_execute",
-          tool: "web_search",
-          input: {
-            query: "${meeting_title} context background recent news 2025",
-            maxResults: "6",
-          },
-        },
-        {
-          id: "generate_agenda",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Create a professional meeting agenda for:\n" +
-            "Meeting: ${meeting_title}\n" +
-            "Duration: ${duration_minutes} minutes\n" +
-            "Attendees: ${attendees}\n" +
-            "Context: ${context}\n\n" +
-            "Attendee background: {{steps.research_attendees.result}}\n\n" +
-            "Create a time-blocked agenda with: welcome/intros, main topics with time allocations, " +
-            "decision points, next steps, and buffer for questions. Total: ${duration_minutes} minutes.",
-        },
-        {
-          id: "prepare_questions",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Prepare strategic questions for the meeting '${meeting_title}' with ${attendees}.\n\n" +
-            "Topic research: {{steps.research_topic.result}}\n" +
-            "Context: ${context}\n\n" +
-            "Generate:\n" +
-            "1. 3-5 opening questions to establish common ground\n" +
-            "2. 5-7 key discussion questions aligned with meeting goals\n" +
-            "3. 3-5 probing follow-up questions\n" +
-            "4. 2-3 closing questions to confirm alignment and next steps",
-        },
-        {
-          id: "background_brief",
-          type: "llm_call",
-          model: "claude-opus-4-5",
-          prompt:
-            "Create a concise briefing document for '${meeting_title}'.\n\n" +
-            "Agenda: {{steps.generate_agenda.result}}\n" +
-            "Questions: {{steps.prepare_questions.result}}\n" +
-            "Topic research: {{steps.research_topic.result}}\n" +
-            "Attendee info: {{steps.research_attendees.result}}\n\n" +
-            "Produce a one-page brief with:\n" +
-            "## Meeting Overview\n" +
-            "## Key Stakeholders\n" +
-            "## Agenda\n" +
-            "## Preparation Checklist\n" +
-            "## Strategic Questions\n" +
-            "## Success Criteria",
-        },
-      ] as WorkflowStep[],
-    };
+          {
+            id: "social_posts",
+            name: "Social Media Posts",
+            type: "llm_call",
+            config: {
+              model: "claude-haiku-4-5-20251001",
+              prompt: `Create social media content for this topic:
+${"${outputs.contentBrief}"}
 
-    return {
-      id: "meeting_prep",
-      name: "Meeting Preparation",
-      description: "Prepare thoroughly for any meeting: research attendees and topic, generate agenda, questions, and a briefing document",
-      category: "productivity",
-      tags: ["meeting", "productivity", "preparation", "agenda"],
-      estimatedDuration: "5-8 minutes",
-      requiredTools: ["web_search"],
-      previewSteps: [
-        "Research attendees' backgrounds and roles",
-        "Research meeting topic and recent context",
-        "Generate time-blocked meeting agenda",
-        "Prepare strategic discussion questions",
-        "Compile comprehensive briefing document",
-      ],
-      parameters: [
-        { name: "meeting_title", type: "string", description: "Title or subject of the meeting", required: true },
-        {
-          name: "attendees",
-          type: "string",
-          description: "Attendee names, roles, or companies (comma-separated)",
-          required: true,
+Generate:
+1. LinkedIn post (200-300 words, professional)
+2. Twitter/X thread (5 tweets, each under 280 chars)
+3. Instagram caption (150 words, with hashtags)
+
+Format as JSON: {"linkedin": "string", "twitter": ["string"], "instagram": "string"}`,
+              maxTokens: 1000,
+              jsonOutput: true,
+            },
+            outputKey: "socialPosts",
+          },
+          {
+            id: "newsletter",
+            name: "Email Newsletter",
+            type: "llm_call",
+            config: {
+              model: "claude-haiku-4-5-20251001",
+              system: "You write compelling email newsletters. Clear, scannable, with strong subject lines.",
+              prompt: `Write an email newsletter section based on:
+${"${outputs.contentBrief}"}
+
+Include:
+- Subject line (A/B variants)
+- Preview text
+- Newsletter body (300-400 words, scannable with bullet points)
+- Clear CTA button text`,
+              maxTokens: 800,
+            },
+            outputKey: "newsletter",
+          },
+        ],
+      },
+      outputKey: "allContent",
+    },
+    {
+      id: "quality_check",
+      name: "Content Quality Check",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        prompt: `Review this content package for quality, consistency, and alignment with the brief.
+
+Brief: ${"${outputs.contentBrief}"}
+Blog Post (preview): ${"${outputs.blogPost}"}
+Social Posts: ${"${outputs.socialPosts}"}
+
+Check for: brand voice consistency, factual accuracy, keyword usage, CTA clarity.
+Return JSON: {"overallScore": 0-100, "issues": ["string"], "approved": boolean}`,
+        maxTokens: 500,
+        jsonOutput: true,
+      },
+      outputKey: "qualityCheck",
+    },
+    {
+      id: "final_approval",
+      name: "Content Approval",
+      type: "human_approval",
+      config: {
+        message: "Content package ready for review. Approve to proceed with distribution.",
+        timeout: 7200000, // 2 hours
+      },
+      outputKey: "contentApproved",
+    },
+  ],
+  tags: ["content", "marketing", "social-media", "blog", "newsletter"],
+};
+
+// ─── Template: Meeting Prep ───────────────────────────────────────────────────
+
+/**
+ * Meeting Prep: Given a meeting topic and attendees, research participants,
+ * gather relevant background, recall past meeting notes, and generate a
+ * structured briefing document with agenda and talking points.
+ */
+export const meetingPrepTemplate: WorkflowDefinition = {
+  id: "meeting-prep",
+  name: "Meeting Preparation Briefing",
+  description: "Research attendees, gather context, and generate structured meeting briefing",
+  version: "1.0.0",
+  trigger: "manual",
+  variables: {
+    meetingTopic: "",
+    attendees: "",
+    meetingDate: "",
+    meetingDuration: "60",
+    meetingObjective: "",
+    organizationContext: "",
+  },
+  steps: [
+    {
+      id: "research_topic_context",
+      name: "Research Meeting Topic",
+      type: "tool_execute",
+      config: {
+        tool: "search",
+        args: {
+          query: "${meetingTopic} ${organizationContext}",
+          maxResults: 6,
         },
-        {
-          name: "duration_minutes",
-          type: "number",
-          description: "Meeting duration in minutes",
-          default: 60,
-          required: false,
+      },
+      outputKey: "topicContext",
+    },
+    {
+      id: "recall_past_context",
+      name: "Recall Past Meeting Notes",
+      type: "tool_execute",
+      config: {
+        tool: "memory_search",
+        args: {
+          query: "${meetingTopic}",
+          limit: 5,
+          memoryType: "decision",
         },
-        {
-          name: "context",
-          type: "string",
-          description: "Additional context or goals for the meeting",
-          default: "General business discussion",
-          required: false,
+      },
+      outputKey: "pastDecisions",
+    },
+    {
+      id: "recall_action_items",
+      name: "Recall Outstanding Action Items",
+      type: "tool_execute",
+      config: {
+        tool: "memory_search",
+        args: {
+          query: "${meetingTopic} action item",
+          limit: 5,
+          memoryType: "action_item",
         },
-      ],
-      definition,
-    };
+      },
+      outputKey: "openActionItems",
+    },
+    {
+      id: "generate_agenda",
+      name: "Generate Structured Agenda",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        system: "You are an expert meeting facilitator. Create focused, time-boxed agendas.",
+        prompt: `Create a structured meeting agenda for:
+- Topic: ${"${meetingTopic}"}
+- Objective: ${"${meetingObjective}"}
+- Duration: ${"${meetingDuration}"} minutes
+- Attendees: ${"${attendees}"}
+
+Context from research:
+${"${outputs.topicContext}"}
+
+Past decisions on this topic:
+${"${outputs.pastDecisions}"}
+
+Open action items:
+${"${outputs.openActionItems}"}
+
+Return JSON: {
+  "agenda": [{"item": "string", "duration": number, "owner": "string", "type": "discussion|decision|update|review"}],
+  "objectives": ["string"],
+  "prework": ["string"],
+  "successCriteria": ["string"]
+}`,
+        maxTokens: 1000,
+        jsonOutput: true,
+      },
+      outputKey: "meetingAgenda",
+    },
+    {
+      id: "generate_talking_points",
+      name: "Generate Talking Points",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        prompt: `Generate focused talking points and key questions for this meeting:
+
+Agenda: ${"${outputs.meetingAgenda}"}
+Background: ${"${outputs.topicContext}"}
+Open Items: ${"${outputs.openActionItems}"}
+
+For each agenda item, provide:
+- 3 key talking points
+- 1-2 probing questions
+- Potential blockers or risks
+
+Format in clean markdown.`,
+        maxTokens: 1200,
+      },
+      outputKey: "talkingPoints",
+    },
+    {
+      id: "compile_briefing",
+      name: "Compile Meeting Briefing",
+      type: "llm_call",
+      config: {
+        model: "claude-haiku-4-5-20251001",
+        prompt: `Compile a complete meeting briefing document:
+
+Meeting: ${"${meetingTopic}"}
+Date: ${"${meetingDate}"}
+Attendees: ${"${attendees}"}
+Duration: ${"${meetingDuration}"} minutes
+Objective: ${"${meetingObjective}"}
+
+Agenda:
+${"${outputs.meetingAgenda}"}
+
+Talking Points:
+${"${outputs.talkingPoints}"}
+
+Past Context:
+${"${outputs.pastDecisions}"}
+
+Create a single, clean briefing document in markdown with:
+1. Meeting Overview
+2. Context & Background
+3. Agenda with Time Allocations
+4. Talking Points per Item
+5. Outstanding Items to Address
+6. Desired Outcomes
+
+Keep it scannable — use headers, bullets, and bold for key info.`,
+        maxTokens: 2000,
+      },
+      outputKey: "meetingBriefing",
+    },
+    {
+      id: "check_has_past_context",
+      name: "Check Has Historical Context",
+      type: "condition",
+      config: {
+        expression: {
+          op: "gt",
+          left: "${outputs.pastDecisions.count}",
+          right: 0,
+        },
+      },
+      outputKey: "hasPastContext",
+    },
+  ],
+  tags: ["meeting", "preparation", "agenda", "briefing", "productivity"],
+};
+
+// ─── Template Registry ────────────────────────────────────────────────────────
+
+export const WORKFLOW_TEMPLATES: WorkflowDefinition[] = [
+  researchDigestTemplate,
+  codeReviewTemplate,
+  dataPipelineTemplate,
+  contentCreationTemplate,
+  meetingPrepTemplate,
+];
+
+export const TEMPLATE_CATALOG: Record<string, WorkflowDefinition> = {
+  "research-digest": researchDigestTemplate,
+  "code-review": codeReviewTemplate,
+  "data-pipeline": dataPipelineTemplate,
+  "content-creation": contentCreationTemplate,
+  "meeting-prep": meetingPrepTemplate,
+};
+
+/**
+ * Register all built-in templates with a WorkflowEngine instance.
+ */
+export function registerAllTemplates(engine: import("./WorkflowEngine").WorkflowEngine): void {
+  for (const template of WORKFLOW_TEMPLATES) {
+    engine.register(template);
   }
 }
-
-export const workflowTemplates = new WorkflowTemplates();

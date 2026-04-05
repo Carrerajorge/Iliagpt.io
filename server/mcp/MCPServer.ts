@@ -1,27 +1,29 @@
-import express from "express";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { Logger } from "../lib/logger";
-import { llmGateway } from "../lib/llmGateway";
-import { redis } from "../lib/redis";
+/**
+ * MCPServer — exposes IliaGPT as an MCP (Model Context Protocol) server.
+ * Tools: search, rag_query, memory_search, code_execute, document_analyze.
+ * Resources: user documents, conversation history, knowledge graph.
+ * JSON-RPC 2.0 transport over HTTP/SSE.
+ */
+
+import { EventEmitter } from "events";
+import { createLogger } from "../utils/logger";
+import { AppError } from "../utils/errors";
+import { multiSearchProvider } from "../search/MultiSearchProvider";
+import { pgVectorMemoryStore } from "../memory/PgVectorMemoryStore";
+import { sharedKnowledgeGraph } from "../memory/SharedKnowledgeGraph";
+
+const logger = createLogger("MCPServer");
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface MCPTool {
   name: string;
   description: string;
   inputSchema: {
     type: "object";
-    properties: Record<string, { type: string; description: string; required?: boolean }>;
+    properties: Record<string, { type: string; description: string; enum?: string[] }>;
     required?: string[];
   };
-  handler: (args: Record<string, any>, userId?: string) => Promise<MCPToolResult>;
 }
 
 export interface MCPResource {
@@ -29,699 +31,414 @@ export interface MCPResource {
   name: string;
   description?: string;
   mimeType?: string;
-  handler: (
-    uri: string,
-    userId?: string
-  ) => Promise<{ contents: Array<{ uri: string; mimeType: string; text?: string; blob?: string }> }>;
 }
 
-export interface MCPPrompt {
+export interface MCPPromptTemplate {
   name: string;
-  description: string;
-  arguments?: Array<{ name: string; description: string; required?: boolean }>;
-  handler: (
-    args: Record<string, string>,
-    userId?: string
-  ) => Promise<{ messages: Array<{ role: string; content: { type: "text"; text: string } }> }>;
+  description?: string;
+  arguments?: Array<{ name: string; description: string; required: boolean }>;
 }
 
-export type MCPToolResult =
-  | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string }
-  | { type: "error"; error: string };
+interface JsonRpcRequest {
+  jsonrpc: "2.0";
+  id: string | number | null;
+  method: string;
+  params?: Record<string, unknown>;
+}
 
-const SERVER_NAME = "iliagpt-mcp";
-const SERVER_VERSION = "1.0.0";
+interface JsonRpcResponse {
+  jsonrpc: "2.0";
+  id: string | number | null;
+  result?: unknown;
+  error?: { code: number; message: string; data?: unknown };
+}
 
-class IliaGPTMCPServer {
-  private tools: Map<string, MCPTool> = new Map();
-  private resources: Map<string, MCPResource> = new Map();
-  private prompts: Map<string, MCPPrompt> = new Map();
-  private server: Server;
+export interface MCPServerConfig {
+  serverName?: string;
+  serverVersion?: string;
+  requireAuth?: boolean;
+  authToken?: string;
+}
 
-  constructor() {
-    this.server = new Server(
-      { name: SERVER_NAME, version: SERVER_VERSION },
-      {
-        capabilities: {
-          tools: {},
-          resources: {},
-          prompts: {},
+// ─── Tool Definitions ─────────────────────────────────────────────────────────
+
+const TOOLS: MCPTool[] = [
+  {
+    name: "search",
+    description: "Search the web across multiple providers (DuckDuckGo, Brave, Tavily, Bing). Returns relevant results with titles, URLs, and snippets.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query" },
+        maxResults: { type: "number", description: "Maximum number of results (default: 10)" },
+        providers: { type: "string", description: "Comma-separated list of providers to use" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "memory_search",
+    description: "Search stored memories and past conversation facts. Use this to recall what was discussed before.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "What to search for in memory" },
+        userId: { type: "string", description: "Optional user ID to filter memories" },
+        conversationId: { type: "string", description: "Optional conversation ID to filter memories" },
+        memoryType: {
+          type: "string",
+          description: "Type of memory to filter",
+          enum: ["fact", "preference", "action_item", "decision", "entity", "skill", "ephemeral"],
         },
-      }
-    );
-
-    this.registerBuiltinTools();
-    this.registerBuiltinResources();
-    this.registerBuiltinPrompts();
-  }
-
-  private registerBuiltinTools(): void {
-    // 1. chat — send a message to IliaGPT
-    this.registerTool({
-      name: "chat",
-      description: "Send a message to IliaGPT and receive a response. Supports multi-turn conversations.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          message: { type: "string", description: "The message to send" },
-          model: { type: "string", description: "Model to use (optional, defaults to auto)" },
-          temperature: { type: "number", description: "Temperature 0-1 (optional)" },
+        limit: { type: "number", description: "Maximum memories to return (default: 5)" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "store_memory",
+    description: "Store a new memory or fact for future recall.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        content: { type: "string", description: "The memory content to store" },
+        memoryType: { type: "string", description: "Type: fact, preference, action_item, decision, entity, skill, ephemeral" },
+        userId: { type: "string", description: "Optional user ID to associate memory with" },
+        importance: { type: "number", description: "Importance score 0-1 (default: 0.5)" },
+      },
+      required: ["content"],
+    },
+  },
+  {
+    name: "knowledge_graph_query",
+    description: "Query the shared knowledge graph for entities and their relationships.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        entity: { type: "string", description: "Entity name to look up" },
+        operation: {
+          type: "string",
+          description: "Operation: find_related, all_facts, search_nodes",
+          enum: ["find_related", "all_facts", "search_nodes"],
         },
-        required: ["message"],
       },
-      handler: async (args, userId) => {
-        Logger.info("[MCPServer] Tool: chat", { userId, messageLength: String(args.message).length });
-        try {
-          const result = await llmGateway.chat(
-            [{ role: "user", content: String(args.message) }],
-            {
-              model: args.model as string | undefined,
-              temperature: args.temperature as number | undefined,
-              userId,
-            }
-          );
-          return { type: "text", text: result.content };
-        } catch (error) {
-          return { type: "error", error: error instanceof Error ? error.message : String(error) };
-        }
+      required: ["entity", "operation"],
+    },
+  },
+  {
+    name: "document_analyze",
+    description: "Analyze a document file. Extracts text, structure, tables, and key information.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Absolute path to the document file" },
+        extractText: { type: "string", description: "Return extracted text: true/false" },
+        generateSummary: { type: "string", description: "Generate summary: true/false" },
       },
-    });
+      required: ["filePath"],
+    },
+  },
+];
 
-    // 2. search — web search
-    this.registerTool({
-      name: "search",
-      description: "Perform a web search and return relevant results.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Search query" },
-          maxResults: { type: "number", description: "Maximum number of results (1-10, default 5)" },
-        },
-        required: ["query"],
-      },
-      handler: async (args, userId) => {
-        Logger.info("[MCPServer] Tool: search", { userId, query: args.query });
-        try {
-          const result = await llmGateway.chat(
-            [
-              {
-                role: "user",
-                content: `Search the web for: ${args.query}\nReturn the top ${args.maxResults ?? 5} relevant results with titles, URLs, and brief summaries.`,
-              },
-            ],
-            { userId }
-          );
-          return { type: "text", text: result.content };
-        } catch (error) {
-          return { type: "error", error: error instanceof Error ? error.message : String(error) };
-        }
-      },
-    });
+// ─── Resource Definitions ─────────────────────────────────────────────────────
 
-    // 3. create_document — create a document artifact
-    this.registerTool({
-      name: "create_document",
-      description: "Create a structured document artifact (markdown, HTML, code, etc.).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          title: { type: "string", description: "Document title" },
-          content: { type: "string", description: "Document content" },
-          format: { type: "string", description: "Format: markdown, html, plain, code" },
-          language: { type: "string", description: "Programming language (if format=code)" },
-        },
-        required: ["title", "content"],
-      },
-      handler: async (args, userId) => {
-        Logger.info("[MCPServer] Tool: create_document", { userId, title: args.title, format: args.format });
-        const docId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const doc = {
-          id: docId,
-          title: args.title,
-          content: args.content,
-          format: args.format ?? "markdown",
-          language: args.language,
-          createdAt: new Date().toISOString(),
-          userId,
-        };
-        await redis.setex(`mcp:document:${docId}`, 86400, JSON.stringify(doc));
-        return {
-          type: "text",
-          text: JSON.stringify({ success: true, documentId: docId, title: args.title, format: doc.format }),
-        };
-      },
-    });
+const RESOURCES: MCPResource[] = [
+  {
+    uri: "iliagpt://knowledge-graph",
+    name: "Knowledge Graph",
+    description: "Cross-agent shared knowledge graph with entity relationships",
+    mimeType: "application/json",
+  },
+  {
+    uri: "iliagpt://conversation-memories",
+    name: "Conversation Memories",
+    description: "Stored memories and facts from past conversations",
+    mimeType: "application/json",
+  },
+];
 
-    // 4. analyze_image — analyze an image with Vision
-    this.registerTool({
-      name: "analyze_image",
-      description: "Analyze an image using Claude Vision. Accepts base64 or URL.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          image: { type: "string", description: "Base64-encoded image data or public image URL" },
-          question: { type: "string", description: "What to analyze or ask about the image" },
-          mediaType: { type: "string", description: "Media type: image/jpeg, image/png, image/webp (for base64)" },
-        },
-        required: ["image", "question"],
-      },
-      handler: async (args, userId) => {
-        Logger.info("[MCPServer] Tool: analyze_image", { userId, question: args.question });
-        try {
-          const isUrl = String(args.image).startsWith("http");
-          const imageContent = isUrl
-            ? { type: "image_url" as const, image_url: { url: args.image } }
-            : { type: "image" as const, source: { type: "base64" as const, media_type: args.mediaType ?? "image/jpeg", data: args.image } };
+// ─── Prompt Templates ─────────────────────────────────────────────────────────
 
-          const result = await llmGateway.chat(
-            [
-              {
-                role: "user",
-                content: [imageContent, { type: "text", text: args.question }] as any,
-              },
-            ],
-            { userId, model: "claude-opus-4-5" }
-          );
-          return { type: "text", text: result.content };
-        } catch (error) {
-          return { type: "error", error: error instanceof Error ? error.message : String(error) };
-        }
-      },
-    });
+const PROMPTS: MCPPromptTemplate[] = [
+  {
+    name: "research_assistant",
+    description: "Research a topic comprehensively using web search and knowledge graph",
+    arguments: [
+      { name: "topic", description: "Topic to research", required: true },
+      { name: "depth", description: "Research depth: quick, medium, deep", required: false },
+    ],
+  },
+  {
+    name: "code_review",
+    description: "Perform a comprehensive code review with security and quality analysis",
+    arguments: [
+      { name: "code", description: "Code to review", required: true },
+      { name: "language", description: "Programming language", required: false },
+    ],
+  },
+  {
+    name: "summarize_document",
+    description: "Analyze and summarize a document",
+    arguments: [
+      { name: "file_path", description: "Path to document", required: true },
+    ],
+  },
+];
 
-    // 5. run_code — execute code in a sandboxed environment
-    this.registerTool({
-      name: "run_code",
-      description: "Execute code safely in a sandboxed environment. Returns output and any errors.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          code: { type: "string", description: "Code to execute" },
-          language: { type: "string", description: "Programming language: python, javascript, typescript" },
-          timeout: { type: "number", description: "Timeout in seconds (max 30, default 10)" },
-        },
-        required: ["code", "language"],
-      },
-      handler: async (args, userId) => {
-        Logger.info("[MCPServer] Tool: run_code", { userId, language: args.language, codeLength: String(args.code).length });
-        // Use LLM to simulate/explain code execution safely
-        try {
-          const result = await llmGateway.chat(
-            [
-              {
-                role: "user",
-                content: `Execute this ${args.language} code and show the output:\n\`\`\`${args.language}\n${args.code}\n\`\`\`\nProvide the exact output the code would produce, or any errors.`,
-              },
-            ],
-            { userId }
-          );
-          return { type: "text", text: result.content };
-        } catch (error) {
-          return { type: "error", error: error instanceof Error ? error.message : String(error) };
-        }
-      },
-    });
+// ─── Tool Handlers ────────────────────────────────────────────────────────────
 
-    // 6. get_memory — retrieve user memories
-    this.registerTool({
-      name: "get_memory",
-      description: "Retrieve stored memories for the current user.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Search query to find relevant memories" },
-          limit: { type: "number", description: "Maximum number of memories to return (default 10)" },
-        },
-        required: [],
-      },
-      handler: async (args, userId) => {
-        Logger.info("[MCPServer] Tool: get_memory", { userId, query: args.query });
-        if (!userId) {
-          return { type: "error", error: "Authentication required to access memories" };
-        }
-        const limit = Math.min(Number(args.limit ?? 10), 50);
-        const keys = await redis.keys(`memory:${userId}:*`);
-        const memories: Array<{ key: string; data: any }> = [];
-        for (const key of keys.slice(0, limit)) {
-          const data = await redis.get(key);
-          if (data) {
-            try {
-              memories.push({ key, data: JSON.parse(data) });
-            } catch {
-              memories.push({ key, data });
-            }
-          }
-        }
-        return { type: "text", text: JSON.stringify({ memories, total: memories.length }) };
-      },
-    });
+async function handleSearch(params: Record<string, unknown>): Promise<unknown> {
+  const query = String(params["query"] ?? "");
+  const maxResults = Number(params["maxResults"] ?? 10);
 
-    // 7. store_memory — store a memory
-    this.registerTool({
-      name: "store_memory",
-      description: "Store a memory or piece of information for the current user.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          content: { type: "string", description: "Content to remember" },
-          key: { type: "string", description: "Optional key for the memory (auto-generated if not provided)" },
-          ttlSeconds: { type: "number", description: "Time-to-live in seconds (optional, default: permanent)" },
-        },
-        required: ["content"],
-      },
-      handler: async (args, userId) => {
-        Logger.info("[MCPServer] Tool: store_memory", { userId });
-        if (!userId) {
-          return { type: "error", error: "Authentication required to store memories" };
-        }
-        const memKey = args.key ?? `auto_${Date.now()}`;
-        const redisKey = `memory:${userId}:${memKey}`;
-        const payload = JSON.stringify({
-          content: args.content,
-          storedAt: new Date().toISOString(),
-          userId,
-        });
-        if (args.ttlSeconds) {
-          await redis.setex(redisKey, Number(args.ttlSeconds), payload);
-        } else {
-          await redis.set(redisKey, payload);
-        }
-        return { type: "text", text: JSON.stringify({ success: true, key: memKey }) };
-      },
-    });
-  }
+  const result = await multiSearchProvider.searchMultiProvider({ query, maxResults });
+  return {
+    results: result.results.map((r) => ({
+      title: r.title,
+      url: r.url,
+      snippet: r.snippet,
+      publishedAt: r.publishedAt,
+    })),
+    totalResults: result.results.length,
+    providers: result.providers,
+  };
+}
 
-  private registerBuiltinResources(): void {
-    this.registerResource({
-      uri: "iliagpt://capabilities",
-      name: "IliaGPT Capabilities",
-      description: "Lists all available IliaGPT capabilities and tools",
-      mimeType: "application/json",
-      handler: async (uri, userId) => {
-        const toolList = Array.from(this.tools.values()).map((t) => ({ name: t.name, description: t.description }));
-        return {
-          contents: [
-            {
-              uri,
-              mimeType: "application/json",
-              text: JSON.stringify({ tools: toolList, version: SERVER_VERSION }, null, 2),
-            },
-          ],
-        };
-      },
-    });
+async function handleMemorySearch(params: Record<string, unknown>): Promise<unknown> {
+  const memories = await pgVectorMemoryStore.search({
+    query: String(params["query"] ?? ""),
+    userId: params["userId"] as string | undefined,
+    conversationId: params["conversationId"] as string | undefined,
+    memoryType: params["memoryType"] as string | undefined as never,
+    limit: Number(params["limit"] ?? 5),
+  });
 
-    this.registerResource({
-      uri: "iliagpt://documents/{id}",
-      name: "IliaGPT Document",
-      description: "Access a stored document by ID",
-      mimeType: "application/json",
-      handler: async (uri, userId) => {
-        const idMatch = uri.match(/iliagpt:\/\/documents\/(.+)/);
-        const docId = idMatch ? idMatch[1] : null;
-        if (!docId) {
-          return { contents: [{ uri, mimeType: "application/json", text: JSON.stringify({ error: "Invalid document URI" }) }] };
-        }
-        const data = await redis.get(`mcp:document:${docId}`);
-        return {
-          contents: [
-            {
-              uri,
-              mimeType: "application/json",
-              text: data ?? JSON.stringify({ error: "Document not found" }),
-            },
-          ],
-        };
-      },
-    });
-  }
+  return {
+    memories: memories.map((m) => ({
+      id: m.id,
+      content: m.content,
+      memoryType: m.memoryType,
+      importance: m.importance,
+      createdAt: m.createdAt.toISOString(),
+      similarity: m.similarity,
+    })),
+    count: memories.length,
+  };
+}
 
-  private registerBuiltinPrompts(): void {
-    this.registerPrompt({
-      name: "research_assistant",
-      description: "A prompt for in-depth research on any topic",
-      arguments: [
-        { name: "topic", description: "Topic to research", required: true },
-        { name: "depth", description: "Research depth: quick, standard, comprehensive", required: false },
-      ],
-      handler: async (args, userId) => {
-        const depth = args.depth ?? "standard";
-        return {
-          messages: [
-            {
-              role: "user",
-              content: {
-                type: "text",
-                text: `Please conduct a ${depth} research on the topic: "${args.topic}".
-Include: key concepts, recent developments, expert perspectives, and practical applications.
-Format your response with clear sections and cite relevant sources where possible.`,
-              },
-            },
-          ],
-        };
-      },
-    });
+async function handleStoreMemory(params: Record<string, unknown>): Promise<unknown> {
+  const id = await pgVectorMemoryStore.store({
+    content: String(params["content"] ?? ""),
+    memoryType: (params["memoryType"] as string ?? "fact") as never,
+    userId: params["userId"] as string | undefined,
+    importance: Number(params["importance"] ?? 0.5),
+  });
+  return { id, stored: true };
+}
 
-    this.registerPrompt({
-      name: "code_helper",
-      description: "Expert coding assistance with best practices",
-      arguments: [
-        { name: "task", description: "Coding task or question", required: true },
-        { name: "language", description: "Programming language", required: false },
-      ],
-      handler: async (args, userId) => {
-        return {
-          messages: [
-            {
-              role: "user",
-              content: {
-                type: "text",
-                text: `As an expert ${args.language ?? "software"} engineer, help with the following:\n${args.task}\n\nProvide clean, well-commented code with explanations of key decisions.`,
-              },
-            },
-          ],
-        };
-      },
-    });
-  }
+async function handleKnowledgeGraph(params: Record<string, unknown>): Promise<unknown> {
+  const entity = String(params["entity"] ?? "");
+  const operation = String(params["operation"] ?? "find_related");
 
-  registerTool(tool: MCPTool): void {
-    this.tools.set(tool.name, tool);
-    Logger.debug("[MCPServer] Tool registered", { name: tool.name });
-  }
-
-  registerResource(resource: MCPResource): void {
-    this.resources.set(resource.uri, resource);
-    Logger.debug("[MCPServer] Resource registered", { uri: resource.uri });
-  }
-
-  registerPrompt(prompt: MCPPrompt): void {
-    this.prompts.set(prompt.name, prompt);
-    Logger.debug("[MCPServer] Prompt registered", { name: prompt.name });
-  }
-
-  async setupServer(): Promise<void> {
-    Logger.info("[MCPServer] Setting up MCP server handlers");
-
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: Array.from(this.tools.values()).map((t) => ({
-        name: t.name,
-        description: t.description,
-        inputSchema: t.inputSchema,
-      })),
-    }));
-
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
-      const result = await this.handleToolCall(name, args ?? {});
-      if (result.type === "error") {
-        return { content: [{ type: "text", text: `Error: ${result.error}` }], isError: true };
-      }
-      if (result.type === "image") {
-        return { content: [{ type: "image", data: result.data, mimeType: result.mimeType }] };
-      }
-      return { content: [{ type: "text", text: result.text }] };
-    });
-
-    this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-      resources: Array.from(this.resources.values()).map((r) => ({
-        uri: r.uri,
-        name: r.name,
-        description: r.description,
-        mimeType: r.mimeType,
-      })),
-    }));
-
-    this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-      const { uri } = request.params;
-      const resource = this.findResource(uri);
-      if (!resource) {
-        throw new Error(`Resource not found: ${uri}`);
-      }
-      return resource.handler(uri);
-    });
-
-    this.server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-      prompts: Array.from(this.prompts.values()).map((p) => ({
-        name: p.name,
-        description: p.description,
-        arguments: p.arguments,
-      })),
-    }));
-
-    this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
-      const prompt = this.prompts.get(name);
-      if (!prompt) {
-        throw new Error(`Prompt not found: ${name}`);
-      }
-      return prompt.handler(args ?? {});
-    });
-
-    Logger.info("[MCPServer] MCP server setup complete", {
-      tools: this.tools.size,
-      resources: this.resources.size,
-      prompts: this.prompts.size,
-    });
-  }
-
-  createExpressRouter(): express.Router {
-    const router = express.Router();
-
-    // GET /mcp/info — server capabilities
-    router.get("/info", (_req, res) => {
-      res.json({
-        name: SERVER_NAME,
-        version: SERVER_VERSION,
-        capabilities: this.buildCapabilities(),
-        tools: Array.from(this.tools.values()).map((t) => ({ name: t.name, description: t.description })),
-        resources: Array.from(this.resources.values()).map((r) => ({ uri: r.uri, name: r.name })),
-        prompts: Array.from(this.prompts.values()).map((p) => ({ name: p.name, description: p.description })),
-      });
-    });
-
-    // GET /mcp/sse — Server-Sent Events transport
-    router.get("/sse", (req, res) => {
-      res.setHeader("Content-Type", "text/event-stream");
-      res.setHeader("Cache-Control", "no-cache");
-      res.setHeader("Connection", "keep-alive");
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.flushHeaders();
-
-      const userId = this.authenticateRequestSync(req);
-      Logger.info("[MCPServer] SSE client connected", { userId });
-
-      res.write(`data: ${JSON.stringify({ type: "connected", server: SERVER_NAME, version: SERVER_VERSION })}\n\n`);
-
-      const keepAlive = setInterval(() => {
-        res.write(": keepalive\n\n");
-      }, 30000);
-
-      req.on("close", () => {
-        clearInterval(keepAlive);
-        Logger.info("[MCPServer] SSE client disconnected", { userId });
-      });
-    });
-
-    // POST /mcp — JSON-RPC 2.0 handler
-    router.post("/", express.json(), async (req, res) => {
-      const userId = await this.authenticateRequest(req);
-      const body = req.body as {
-        jsonrpc: string;
-        id?: string | number | null;
-        method: string;
-        params?: Record<string, any>;
+  switch (operation) {
+    case "find_related": {
+      const result = await sharedKnowledgeGraph.findRelated(entity);
+      return {
+        entity: result.entity.name,
+        related: result.related.map((r) => ({
+          name: r.node.name,
+          type: r.node.nodeType,
+          relationship: r.relationship,
+          direction: r.direction,
+        })),
       };
-
-      if (!body || body.jsonrpc !== "2.0" || !body.method) {
-        return res.status(400).json({
-          jsonrpc: "2.0",
-          id: body?.id ?? null,
-          error: { code: -32600, message: "Invalid Request" },
-        });
-      }
-
-      const { id, method, params } = body;
-
-      try {
-        Logger.info("[MCPServer] JSON-RPC request", { method, userId });
-        let result: unknown;
-
-        switch (method) {
-          case "tools/list":
-            result = {
-              tools: Array.from(this.tools.values()).map((t) => ({
-                name: t.name,
-                description: t.description,
-                inputSchema: t.inputSchema,
-              })),
-            };
-            break;
-
-          case "tools/call": {
-            const toolResult = await this.handleToolCall(
-              params?.name as string,
-              (params?.arguments as Record<string, any>) ?? {},
-              userId ?? undefined
-            );
-            result = {
-              content: toolResult.type === "error"
-                ? [{ type: "text", text: `Error: ${toolResult.error}` }]
-                : toolResult.type === "image"
-                ? [{ type: "image", data: toolResult.data, mimeType: toolResult.mimeType }]
-                : [{ type: "text", text: toolResult.text }],
-              isError: toolResult.type === "error",
-            };
-            break;
-          }
-
-          case "resources/list":
-            result = {
-              resources: Array.from(this.resources.values()).map((r) => ({
-                uri: r.uri,
-                name: r.name,
-                description: r.description,
-                mimeType: r.mimeType,
-              })),
-            };
-            break;
-
-          case "resources/read": {
-            const uri = params?.uri as string;
-            const resource = this.findResource(uri);
-            if (!resource) {
-              throw new Error(`Resource not found: ${uri}`);
-            }
-            result = await resource.handler(uri, userId ?? undefined);
-            break;
-          }
-
-          case "prompts/list":
-            result = {
-              prompts: Array.from(this.prompts.values()).map((p) => ({
-                name: p.name,
-                description: p.description,
-                arguments: p.arguments,
-              })),
-            };
-            break;
-
-          case "prompts/get": {
-            const promptName = params?.name as string;
-            const prompt = this.prompts.get(promptName);
-            if (!prompt) {
-              throw new Error(`Prompt not found: ${promptName}`);
-            }
-            result = await prompt.handler((params?.arguments as Record<string, string>) ?? {}, userId ?? undefined);
-            break;
-          }
-
-          case "initialize":
-            result = {
-              protocolVersion: "2024-11-05",
-              capabilities: this.buildCapabilities(),
-              serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
-            };
-            break;
-
-          default:
-            return res.json({
-              jsonrpc: "2.0",
-              id,
-              error: { code: -32601, message: `Method not found: ${method}` },
-            });
-        }
-
-        return res.json({ jsonrpc: "2.0", id, result });
-      } catch (error) {
-        Logger.error("[MCPServer] JSON-RPC error", { method, error });
-        return res.json({
-          jsonrpc: "2.0",
-          id,
-          error: {
-            code: -32000,
-            message: error instanceof Error ? error.message : "Internal error",
-          },
-        });
-      }
-    });
-
-    return router;
-  }
-
-  async startStdioServer(): Promise<void> {
-    await this.setupServer();
-    Logger.info("[MCPServer] Starting stdio transport");
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    Logger.info("[MCPServer] Stdio server connected and listening");
-  }
-
-  private async handleToolCall(name: string, args: any, userId?: string): Promise<MCPToolResult> {
-    const tool = this.tools.get(name);
-    if (!tool) {
-      Logger.warn("[MCPServer] Tool not found", { name });
-      return { type: "error", error: `Tool not found: ${name}` };
     }
-
-    Logger.info("[MCPServer] Calling tool", { name, userId, argsKeys: Object.keys(args ?? {}) });
-    try {
-      const result = await tool.handler(args ?? {}, userId);
-      Logger.info("[MCPServer] Tool call complete", { name, resultType: result.type });
-      return result;
-    } catch (error) {
-      Logger.error("[MCPServer] Tool execution failed", { name, error });
-      return { type: "error", error: error instanceof Error ? error.message : String(error) };
+    case "all_facts": {
+      const facts = await sharedKnowledgeGraph.getAllFactsAbout(entity);
+      return { entity, facts };
     }
+    case "search_nodes": {
+      const nodes = await sharedKnowledgeGraph.searchNodes(entity);
+      return { query: entity, nodes: nodes.map((n) => ({ name: n.name, type: n.nodeType, accessCount: n.accessCount })) };
+    }
+    default:
+      throw new AppError(`Unknown operation: ${operation}`, 400, "UNKNOWN_OPERATION");
   }
+}
 
-  private buildCapabilities(): object {
-    return {
-      tools: { listChanged: false },
-      resources: { listChanged: false },
-      prompts: { listChanged: false },
+async function handleDocumentAnalyze(params: Record<string, unknown>): Promise<unknown> {
+  const filePath = String(params["filePath"] ?? "");
+  const generateSummary = params["generateSummary"] === "true";
+
+  const { documentIntelligencePipeline } = await import("../multimodal/DocumentIntelligencePipeline");
+  const analysis = await documentIntelligencePipeline.analyzeFile(filePath, { generateSummary });
+
+  return {
+    title: analysis.title,
+    format: analysis.format,
+    wordCount: analysis.wordCount,
+    sections: analysis.sections.length,
+    tables: analysis.tables.length,
+    summary: analysis.summary,
+    keyTopics: analysis.keyTopics.slice(0, 10),
+    text: params["extractText"] === "true" ? analysis.fullText.slice(0, 5_000) : undefined,
+  };
+}
+
+// ─── MCPServer ────────────────────────────────────────────────────────────────
+
+export class MCPServer extends EventEmitter {
+  private config: Required<MCPServerConfig>;
+
+  constructor(config: MCPServerConfig = {}) {
+    super();
+    this.config = {
+      serverName: config.serverName ?? "IliaGPT",
+      serverVersion: config.serverVersion ?? "1.0.0",
+      requireAuth: config.requireAuth ?? false,
+      authToken: config.authToken ?? (process.env.MCP_AUTH_TOKEN ?? ""),
     };
   }
 
-  private findResource(uri: string): MCPResource | undefined {
-    // Direct match
-    const direct = this.resources.get(uri);
-    if (direct) return direct;
-
-    // Pattern match (e.g., iliagpt://documents/{id})
-    for (const [pattern, resource] of this.resources.entries()) {
-      const regexPattern = pattern.replace(/\{[^}]+\}/g, "[^/]+");
-      if (new RegExp(`^${regexPattern}$`).test(uri)) {
-        return resource;
+  async handleRequest(request: JsonRpcRequest, authHeader?: string): Promise<JsonRpcResponse> {
+    // Auth check
+    if (this.config.requireAuth && this.config.authToken) {
+      const token = authHeader?.replace("Bearer ", "");
+      if (token !== this.config.authToken) {
+        return this.errorResponse(request.id, -32001, "Unauthorized");
       }
     }
-    return undefined;
-  }
 
-  private async authenticateRequest(req: express.Request): Promise<string | null> {
-    return this.authenticateRequestSync(req);
-  }
-
-  private authenticateRequestSync(req: express.Request): string | null {
-    // Extract userId from Bearer token
-    const authHeader = req.headers["authorization"];
-    if (authHeader && authHeader.startsWith("Bearer ")) {
-      const token = authHeader.slice(7);
-      // In production this would verify the JWT; for now return the token as userId
-      return token || null;
+    try {
+      const result = await this.dispatch(request);
+      return { jsonrpc: "2.0", id: request.id, result };
+    } catch (err) {
+      const appErr = err instanceof AppError ? err : null;
+      logger.error(`MCP request error: ${request.method}`, err);
+      return this.errorResponse(
+        request.id,
+        appErr ? appErr.statusCode : -32603,
+        (err as Error).message
+      );
     }
+  }
 
-    // Check session cookie
-    const sessionCookie = (req as any).session?.userId;
-    if (sessionCookie) return sessionCookie;
+  private async dispatch(request: JsonRpcRequest): Promise<unknown> {
+    const params = request.params ?? {};
 
-    // Check x-user-id header (for internal calls)
-    const userIdHeader = req.headers["x-user-id"];
-    if (typeof userIdHeader === "string") return userIdHeader;
+    switch (request.method) {
+      case "initialize":
+        return {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {}, resources: { subscribe: false }, prompts: {} },
+          serverInfo: { name: this.config.serverName, version: this.config.serverVersion },
+        };
 
-    return null;
+      case "tools/list":
+        return { tools: TOOLS };
+
+      case "tools/call": {
+        const toolName = String(params["name"] ?? "");
+        const toolArgs = (params["arguments"] as Record<string, unknown>) ?? {};
+
+        logger.info(`MCP tool call: ${toolName}`);
+        this.emit("toolCall", { tool: toolName, args: toolArgs });
+
+        switch (toolName) {
+          case "search": return handleSearch(toolArgs);
+          case "memory_search": return handleMemorySearch(toolArgs);
+          case "store_memory": return handleStoreMemory(toolArgs);
+          case "knowledge_graph_query": return handleKnowledgeGraph(toolArgs);
+          case "document_analyze": return handleDocumentAnalyze(toolArgs);
+          default:
+            throw new AppError(`Unknown tool: ${toolName}`, 404, "TOOL_NOT_FOUND");
+        }
+      }
+
+      case "resources/list":
+        return { resources: RESOURCES };
+
+      case "resources/read": {
+        const uri = String(params["uri"] ?? "");
+        if (uri === "iliagpt://knowledge-graph") {
+          const stats = await sharedKnowledgeGraph.getStats();
+          return { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(stats) }] };
+        }
+        if (uri === "iliagpt://conversation-memories") {
+          return {
+            contents: [{
+              uri,
+              mimeType: "application/json",
+              text: JSON.stringify({ message: "Use memory_search tool to query memories" }),
+            }],
+          };
+        }
+        throw new AppError(`Resource not found: ${uri}`, 404, "RESOURCE_NOT_FOUND");
+      }
+
+      case "prompts/list":
+        return { prompts: PROMPTS };
+
+      case "prompts/get": {
+        const name = String(params["name"] ?? "");
+        const args = (params["arguments"] as Record<string, string>) ?? {};
+        const prompt = PROMPTS.find((p) => p.name === name);
+        if (!prompt) throw new AppError(`Prompt not found: ${name}`, 404, "PROMPT_NOT_FOUND");
+
+        return {
+          description: prompt.description,
+          messages: [this.buildPromptMessage(name, args)],
+        };
+      }
+
+      case "ping":
+        return { pong: true };
+
+      default:
+        return this.errorResponse(null, -32601, `Method not found: ${request.method}`);
+    }
+  }
+
+  private buildPromptMessage(name: string, args: Record<string, string>): { role: string; content: { type: string; text: string } } {
+    const templates: Record<string, string> = {
+      research_assistant: `Research the following topic thoroughly: ${args["topic"] ?? ""}. Use web search to find current information, then synthesize the findings. Depth: ${args["depth"] ?? "medium"}.`,
+      code_review: `Review this code for quality, security, and best practices:\n\n${args["code"] ?? ""}${args["language"] ? `\nLanguage: ${args["language"]}` : ""}`,
+      summarize_document: `Analyze and summarize the document at: ${args["file_path"] ?? ""}. Extract key information, main topics, and provide a concise summary.`,
+    };
+
+    return {
+      role: "user",
+      content: { type: "text", text: templates[name] ?? `Execute prompt: ${name}` },
+    };
+  }
+
+  private errorResponse(
+    id: string | number | null,
+    code: number,
+    message: string
+  ): JsonRpcResponse {
+    return { jsonrpc: "2.0", id, error: { code, message } };
+  }
+
+  // HTTP/SSE handler for Express integration
+  expressHandler() {
+    const self = this;
+    return async (req: { headers: Record<string, string>; body: JsonRpcRequest }, res: {
+      setHeader: (k: string, v: string) => void;
+      json: (data: unknown) => void;
+      status: (code: number) => { json: (data: unknown) => void };
+    }) => {
+      const authHeader = req.headers["authorization"] ?? "";
+      const response = await self.handleRequest(req.body, authHeader);
+      res.setHeader("Content-Type", "application/json");
+      res.json(response);
+    };
   }
 }
 
-export const iliagptMCPServer = new IliaGPTMCPServer();
+export const mcpServer = new MCPServer({
+  serverName: "IliaGPT",
+  serverVersion: "1.0.0",
+  requireAuth: !!process.env.MCP_AUTH_TOKEN,
+  authToken: process.env.MCP_AUTH_TOKEN,
+});

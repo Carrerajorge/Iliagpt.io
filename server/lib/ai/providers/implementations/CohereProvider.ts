@@ -1,216 +1,284 @@
 /**
- * Cohere Provider — REST API (not OpenAI-compatible)
- * Uses native fetch. Models: Command R+, Command R, embed-english
+ * CohereProvider — Command R+, Command R, Embed v3
+ * Uses Cohere's native REST API
  */
 
+import { BaseProvider } from "../core/BaseProvider.js";
 import {
-  IProviderConfig, IChatRequest, IChatResponse, IStreamChunk,
-  IEmbedRequest, IEmbedResponse, IModelInfo, IChatMessage,
-  ModelCapability, MessageRole, ProviderError, AuthenticationError, RateLimitError,
-} from '../core/types';
-import { BaseProvider } from '../core/BaseProvider';
+  AuthenticationError,
+  FinishReason,
+  type IChatMessage,
+  type IChatOptions,
+  type IChatResponse,
+  type IEmbeddingOptions,
+  type IEmbeddingResponse,
+  type IModelInfo,
+  type IProviderConfig,
+  type IStreamChunk,
+  MessageRole,
+  ModelCapability,
+  ProviderError,
+  RateLimitError,
+} from "../core/types.js";
 
 const COHERE_MODELS: IModelInfo[] = [
   {
-    id: 'command-r-plus-08-2024',
-    name: 'Command R+',
-    provider: 'cohere',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming, ModelCapability.LongContext, ModelCapability.Reasoning],
+    id: "command-r-plus-08-2024",
+    name: "Command R+ (2024)",
+    provider: "cohere",
+    capabilities: [ModelCapability.CHAT, ModelCapability.CODE, ModelCapability.FUNCTION_CALLING, ModelCapability.SEARCH],
     contextWindow: 128_000,
     maxOutputTokens: 4_096,
-    pricing: { inputPerMillion: 2.5, outputPerMillion: 10 },
-    latencyClass: 'medium',
-    qualityScore: 0.85,
+    pricing: { inputPerMillion: 2.5, outputPerMillion: 10.0 },
   },
   {
-    id: 'command-r-08-2024',
-    name: 'Command R',
-    provider: 'cohere',
-    capabilities: [ModelCapability.Chat, ModelCapability.FunctionCalling, ModelCapability.Streaming],
+    id: "command-r-08-2024",
+    name: "Command R (2024)",
+    provider: "cohere",
+    capabilities: [ModelCapability.CHAT, ModelCapability.CODE, ModelCapability.SEARCH],
     contextWindow: 128_000,
     maxOutputTokens: 4_096,
     pricing: { inputPerMillion: 0.15, outputPerMillion: 0.6 },
-    latencyClass: 'fast',
-    qualityScore: 0.77,
   },
   {
-    id: 'embed-english-v3.0',
-    name: 'Embed English v3',
-    provider: 'cohere',
-    capabilities: [ModelCapability.Embedding],
+    id: "command-light",
+    name: "Command Light",
+    provider: "cohere",
+    capabilities: [ModelCapability.CHAT],
+    contextWindow: 4_096,
+    pricing: { inputPerMillion: 0.3, outputPerMillion: 0.6 },
+  },
+  {
+    id: "embed-english-v3.0",
+    name: "Embed English v3",
+    provider: "cohere",
+    capabilities: [ModelCapability.EMBEDDING],
     contextWindow: 512,
-    maxOutputTokens: 0,
-    pricing: { inputPerMillion: 0.1, outputPerMillion: 0 },
-    latencyClass: 'ultra_fast',
-    qualityScore: 0.82,
+    pricing: { inputPerMillion: 0.1, outputPerMillion: 0, embeddingPerMillion: 0.1 },
+  },
+  {
+    id: "embed-multilingual-v3.0",
+    name: "Embed Multilingual v3",
+    provider: "cohere",
+    capabilities: [ModelCapability.EMBEDDING],
+    contextWindow: 512,
+    pricing: { inputPerMillion: 0.1, outputPerMillion: 0, embeddingPerMillion: 0.1 },
   },
 ];
 
-interface CohereMessage { role: 'USER' | 'CHATBOT' | 'SYSTEM'; message: string; }
+interface CohereChatMessage {
+  role: "USER" | "CHATBOT" | "SYSTEM";
+  message: string;
+}
 
 export class CohereProvider extends BaseProvider {
-  private _baseUrl = 'https://api.cohere.ai/v1';
-  private _headers: Record<string, string> = {};
+  readonly id = "cohere";
+  readonly name = "Cohere";
+  private readonly baseUrl: string;
+  private readonly apiKey: string;
 
-  get name(): string { return 'cohere'; }
+  constructor(config: Partial<IProviderConfig> & { apiKey: string }) {
+    super({
+      id: "cohere",
+      name: "Cohere",
+      defaultModel: "command-r-plus-08-2024",
+      timeout: 60_000,
+      maxRetries: 3,
+      rateLimitRpm: 60,
+      ...config,
+    });
 
-  override async initialize(config: IProviderConfig): Promise<void> {
-    await super.initialize(config);
-    this._baseUrl = config.baseUrl ?? 'https://api.cohere.ai/v1';
-    this._headers = {
-      'Authorization': `Bearer ${config.apiKey}`,
-      'Content-Type': 'application/json',
-      ...config.headers,
-    };
+    this.apiKey = config.apiKey;
+    this.baseUrl = config.baseUrl ?? "https://api.cohere.ai/v1";
+    this._models = COHERE_MODELS;
   }
 
-  private _buildMessages(messages: IChatMessage[]): { preamble?: string; chatHistory: CohereMessage[]; message: string } {
-    let preamble: string | undefined;
-    const chatHistory: CohereMessage[] = [];
-    let lastUserMessage = '';
-
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      const content = typeof msg.content === 'string' ? msg.content : msg.content.map((c) => c.text ?? '').join(' ');
-
-      if (msg.role === MessageRole.System) {
-        preamble = content;
-      } else if (msg.role === MessageRole.User) {
-        if (i === messages.length - 1) {
-          lastUserMessage = content;
-        } else {
-          chatHistory.push({ role: 'USER', message: content });
-        }
-      } else if (msg.role === MessageRole.Assistant) {
-        chatHistory.push({ role: 'CHATBOT', message: content });
-      }
-    }
-
-    return { preamble, chatHistory, message: lastUserMessage };
+  isCapable(capability: ModelCapability): boolean {
+    return [
+      ModelCapability.CHAT,
+      ModelCapability.CODE,
+      ModelCapability.EMBEDDING,
+      ModelCapability.FUNCTION_CALLING,
+      ModelCapability.SEARCH,
+    ].includes(capability);
   }
 
-  protected async _chat(request: IChatRequest): Promise<IChatResponse> {
-    const model = request.model ?? this.config.defaultModel ?? 'command-r-08-2024';
-    const { preamble, chatHistory, message } = this._buildMessages(request.messages);
+  protected async _chat(messages: IChatMessage[], options: IChatOptions): Promise<IChatResponse> {
+    const start = Date.now();
+    const model = options.model ?? this.config.defaultModel ?? "command-r-plus-08-2024";
+
+    const { preamble, chatHistory, message } = this.formatMessages(messages, options.systemPrompt);
 
     try {
-      const body: Record<string, unknown> = {
-        model, message, chat_history: chatHistory, preamble,
-        temperature: request.temperature,
-        max_tokens: request.maxTokens,
-        p: request.topP,
-      };
-
-      const res = await fetch(`${this._baseUrl}/chat`, {
-        method: 'POST',
-        headers: this._headers,
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.config.timeout ?? 60_000),
+      const response = await this.request("/chat", {
+        model,
+        preamble,
+        chat_history: chatHistory,
+        message,
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        p: options.topP,
+        stream: false,
       });
 
-      if (!res.ok) throw await this._httpError(res);
-
-      const data = await res.json();
-      const usage = this.buildUsage(data.meta?.tokens?.input_tokens ?? 0, data.meta?.tokens?.output_tokens ?? 0);
-      const modelInfo = COHERE_MODELS.find((m) => m.id === model);
+      const usage = {
+        promptTokens: response.meta?.tokens?.input_tokens ?? this.estimateTokens(message),
+        completionTokens: response.meta?.tokens?.output_tokens ?? this.estimateTokens(response.text),
+        totalTokens: 0,
+      };
+      usage.totalTokens = usage.promptTokens + usage.completionTokens;
 
       return {
-        id: data.generation_id ?? this.generateId('cohere'),
-        content: data.text ?? '',
-        role: MessageRole.Assistant,
-        model, provider: this.name, usage,
-        finishReason: this.normalizeFinishReason(data.finish_reason),
-        latencyMs: 0,
-        cost: modelInfo ? this.calculateCost(usage, modelInfo.pricing) : undefined,
+        id: response.generation_id ?? this.generateRequestId(),
+        model,
+        provider: this.id,
+        content: response.text ?? "",
+        finishReason: response.finish_reason === "COMPLETE" ? FinishReason.STOP : FinishReason.LENGTH,
+        usage,
+        cost: this.calculateCost(model, usage.promptTokens, usage.completionTokens),
+        latencyMs: Date.now() - start,
+        createdAt: new Date(),
       };
-    } catch (err: any) { throw this._mapError(err); }
+    } catch (err) {
+      throw this.mapError(err);
+    }
   }
 
-  protected async *_stream(request: IChatRequest): AsyncGenerator<IStreamChunk> {
-    const model = request.model ?? this.config.defaultModel ?? 'command-r-08-2024';
-    const { preamble, chatHistory, message } = this._buildMessages(request.messages);
-    const id = this.generateId('cohere');
+  protected async *_stream(messages: IChatMessage[], options: IChatOptions): AsyncIterable<IStreamChunk> {
+    const model = options.model ?? this.config.defaultModel ?? "command-r-plus-08-2024";
+    const { preamble, chatHistory, message } = this.formatMessages(messages, options.systemPrompt);
+    const requestId = this.generateRequestId();
 
     try {
-      const res = await fetch(`${this._baseUrl}/chat`, {
-        method: 'POST',
-        headers: this._headers,
-        body: JSON.stringify({ model, message, chat_history: chatHistory, preamble, stream: true }),
+      const response = await fetch(`${this.baseUrl}/chat`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({
+          model, preamble, chat_history: chatHistory, message,
+          temperature: options.temperature, max_tokens: options.maxTokens,
+          stream: true,
+        }),
         signal: AbortSignal.timeout(this.config.timeout ?? 60_000),
       });
 
-      if (!res.ok) throw await this._httpError(res);
+      if (!response.ok) await this.handleHttpError(response);
+      if (!response.body) throw new ProviderError("No stream body", this.id, "NO_BODY");
 
-      const reader = res.body!.getReader();
+      const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = '';
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
 
+        const lines = decoder.decode(value, { stream: true }).split("\n").filter(Boolean);
         for (const line of lines) {
-          if (!line.trim()) continue;
           try {
-            const event = JSON.parse(line);
-            if (event.event_type === 'text-generation' && event.text) {
-              yield { type: 'delta', id, model, provider: this.name, delta: event.text, finishReason: null };
-            } else if (event.event_type === 'stream-end') {
-              const usage = this.buildUsage(event.response?.meta?.tokens?.input_tokens ?? 0, event.response?.meta?.tokens?.output_tokens ?? 0);
-              yield { type: 'usage', id, model, provider: this.name, usage, finishReason: this.normalizeFinishReason(event.finish_reason) ?? 'stop' };
-              yield { type: 'done', id, model, provider: this.name, finishReason: this.normalizeFinishReason(event.finish_reason) };
+            const event = JSON.parse(line) as { event_type: string; text?: string; finish_reason?: string };
+            if (event.event_type === "text-generation" && event.text) {
+              yield { id: requestId, delta: event.text };
+            } else if (event.event_type === "stream-end") {
+              yield {
+                id: requestId,
+                delta: "",
+                finishReason: event.finish_reason === "COMPLETE" ? FinishReason.STOP : FinishReason.LENGTH,
+              };
             }
-          } catch { /* partial JSON */ }
+          } catch {
+            // Skip malformed JSON lines
+          }
         }
       }
-    } catch (err: any) {
-      yield { type: 'error', id, model, provider: this.name, error: err.message, finishReason: null };
-      throw this._mapError(err);
+    } catch (err) {
+      throw this.mapError(err);
     }
   }
 
-  protected async _embed(request: IEmbedRequest): Promise<IEmbedResponse> {
-    const model = request.model ?? 'embed-english-v3.0';
-    const inputs = Array.isArray(request.input) ? request.input : [request.input];
+  protected async _embed(texts: string[], options: IEmbeddingOptions): Promise<IEmbeddingResponse> {
+    const start = Date.now();
+    const model = options.model ?? "embed-english-v3.0";
 
     try {
-      const res = await fetch(`${this._baseUrl}/embed`, {
-        method: 'POST',
-        headers: this._headers,
-        body: JSON.stringify({ model, texts: inputs, input_type: 'search_document' }),
+      const response = await this.request("/embed", {
+        model,
+        texts,
+        input_type: "search_document",
+        embedding_types: ["float"],
       });
-      if (!res.ok) throw await this._httpError(res);
-      const data = await res.json();
+
       return {
-        embeddings: data.embeddings,
-        model, provider: this.name,
-        usage: { promptTokens: data.meta?.billed_units?.input_tokens ?? 0, totalTokens: data.meta?.billed_units?.input_tokens ?? 0 },
+        id: response.id ?? this.generateRequestId(),
+        provider: this.id,
+        model,
+        embeddings: response.embeddings?.float ?? [],
+        usage: { totalTokens: response.meta?.billed_units?.input_tokens ?? 0 },
+        latencyMs: Date.now() - start,
       };
-    } catch (err: any) { throw this._mapError(err); }
+    } catch (err) {
+      throw this.mapError(err);
+    }
   }
 
-  async listModels(): Promise<IModelInfo[]> { return COHERE_MODELS; }
-
-  async healthCheck(): Promise<boolean> {
-    try {
-      const res = await fetch(`${this._baseUrl}/models`, { headers: this._headers });
-      return res.ok;
-    } catch { return false; }
+  protected async _listModels(): Promise<IModelInfo[]> {
+    return COHERE_MODELS;
   }
 
-  private async _httpError(res: Response): Promise<ProviderError> {
-    const body = await res.json().catch(() => ({}));
-    const msg = body.message ?? body.error ?? `HTTP ${res.status}`;
-    if (res.status === 401) return new AuthenticationError(this.name);
-    if (res.status === 429) return new RateLimitError(this.name);
-    return new ProviderError(msg, this.name, 'COHERE_ERROR', res.status >= 500, res.status);
+  private formatMessages(
+    messages: IChatMessage[],
+    systemPrompt?: string,
+  ): { preamble: string | undefined; chatHistory: CohereChatMessage[]; message: string } {
+    const systemParts = messages
+      .filter((m) => m.role === MessageRole.SYSTEM)
+      .map((m) => this.normalizeContent(m.content));
+    const preamble = [systemPrompt, ...systemParts].filter(Boolean).join("\n\n") || undefined;
+
+    const nonSystem = messages.filter((m) => m.role !== MessageRole.SYSTEM);
+    const lastMsg = nonSystem[nonSystem.length - 1];
+    const message = this.normalizeContent(lastMsg?.content ?? "");
+
+    const chatHistory: CohereChatMessage[] = nonSystem.slice(0, -1).map((m) => ({
+      role: m.role === MessageRole.ASSISTANT ? "CHATBOT" : "USER",
+      message: this.normalizeContent(m.content),
+    }));
+
+    return { preamble, chatHistory, message };
   }
 
-  private _mapError(err: any): Error {
+  private headers(): Record<string, string> {
+    return {
+      Authorization: `Bearer ${this.apiKey}`,
+      "Content-Type": "application/json",
+      "Request-Source": "iliagpt",
+    };
+  }
+
+  private async request(path: string, body: unknown): Promise<Record<string, unknown>> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.config.timeout ?? 60_000),
+    });
+
+    if (!response.ok) await this.handleHttpError(response);
+    return response.json() as Promise<Record<string, unknown>>;
+  }
+
+  private async handleHttpError(response: Response): Promise<never> {
+    const body = await response.text().catch(() => "");
+    if (response.status === 401) throw new AuthenticationError(this.id);
+    if (response.status === 429) throw new RateLimitError(this.id);
+    throw new ProviderError(
+      `HTTP ${response.status}: ${body}`,
+      this.id,
+      `COHERE_${response.status}`,
+      response.status,
+      response.status >= 500,
+    );
+  }
+
+  private mapError(err: unknown): ProviderError {
     if (err instanceof ProviderError) return err;
-    return new ProviderError(err.message ?? 'Cohere error', this.name, 'COHERE_ERROR', false);
+    return new ProviderError(String(err), this.id, "UNKNOWN", undefined, true, err);
   }
 }

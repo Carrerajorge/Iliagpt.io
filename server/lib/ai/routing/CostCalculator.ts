@@ -1,284 +1,247 @@
 /**
- * Cost Calculator
- * Real-time cost estimation and budget tracking for LLM requests.
- *
- * Features:
- *   - Pre-request cost estimation (from token count + model pricing)
- *   - Post-request actual cost recording
- *   - Rolling budget windows (per-minute, per-hour, per-day)
- *   - Per-provider and aggregate spend tracking
- *   - Budget alert thresholds
+ * CostCalculator — Real-time cost calculation, budget tracking, and usage projection
  */
 
-import { EventEmitter } from 'events';
-import { IModelInfo, ITokenUsage, IChatRequest } from '../providers/core/types';
+import type { IModelInfo } from "../providers/core/types.js";
+import type { IBudgetConfig, IBudgetStatus } from "./types.js";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// In-memory usage store (production would use Redis/DB)
+// ─────────────────────────────────────────────
 
-export interface CostEstimate {
-  provider: string;
-  model: string;
-  estimatedInputTokens: number;
-  estimatedOutputTokens: number;
-  estimatedCostUsd: number;
-  breakdown: {
-    inputCost: number;
-    outputCost: number;
-  };
-}
-
-export interface CostRecord {
-  id: string;
-  provider: string;
-  model: string;
-  usage: ITokenUsage;
-  costUsd: number;
+interface UsageEntry {
   timestamp: Date;
-  requestId?: string;
+  cost: number;
+  promptTokens: number;
+  completionTokens: number;
+  model: string;
+  provider: string;
+  userId?: string;
 }
 
-export interface BudgetConfig {
-  dailyLimitUsd?: number;
-  hourlyLimitUsd?: number;
-  minuteLimitUsd?: number;
-  perProviderDailyLimitUsd?: Record<string, number>;
-  alertThreshold?: number; // 0-1, default 0.8 (alert at 80% of limit)
-}
+// ─────────────────────────────────────────────
+// CostCalculator
+// ─────────────────────────────────────────────
 
-export interface BudgetStatus {
-  daily: { spent: number; limit?: number; pct?: number; exceeded: boolean };
-  hourly: { spent: number; limit?: number; pct?: number; exceeded: boolean };
-  minute: { spent: number; limit?: number; pct?: number; exceeded: boolean };
-  perProvider: Record<string, { daily: number; limit?: number }>;
-  totalAllTime: number;
-}
+export class CostCalculator {
+  private readonly usageLog: UsageEntry[] = [];
+  private readonly MAX_LOG_SIZE = 10_000;
 
-// ─── Rolling window ───────────────────────────────────────────────────────────
-
-class RollingWindow {
-  private _records: Array<{ ts: number; cost: number }> = [];
-
-  add(cost: number): void {
-    this._records.push({ ts: Date.now(), cost });
-  }
-
-  sum(windowMs: number): number {
-    const cutoff = Date.now() - windowMs;
-    this._records = this._records.filter((r) => r.ts > cutoff);
-    return this._records.reduce((s, r) => s + r.cost, 0);
-  }
-}
-
-// ─── Calculator ───────────────────────────────────────────────────────────────
-
-export class CostCalculator extends EventEmitter {
-  private _records: CostRecord[] = [];
-  private _window = new RollingWindow();
-  private _budgetConfig: BudgetConfig = {};
-  private _totalSpend = 0;
-  private _providerSpend: Record<string, number> = {};
-  private static _MAX_RECORDS = 10_000; // cap in-memory history
-
-  configureBudget(config: BudgetConfig): void {
-    this._budgetConfig = config;
-  }
-
-  // ── Estimation ───────────────────────────────────────────────────────────────
-
-  estimate(request: IChatRequest, modelInfo: IModelInfo, avgOutputTokens = 512): CostEstimate {
-    // Rough input token count from message lengths
-    const inputTokens = request.messages.reduce((sum, msg) => {
-      const text = typeof msg.content === 'string'
-        ? msg.content
-        : msg.content.map((c) => c.text ?? '').join(' ');
-      return sum + Math.ceil(text.length / 4) + 4;
-    }, 0);
-
-    const outputTokens = request.maxTokens
-      ? Math.min(request.maxTokens, avgOutputTokens)
-      : avgOutputTokens;
-
-    const inputCost = (inputTokens / 1_000_000) * modelInfo.pricing.inputPerMillion;
-    const outputCost = (outputTokens / 1_000_000) * modelInfo.pricing.outputPerMillion;
-
-    return {
-      provider: modelInfo.provider,
-      model: modelInfo.id,
-      estimatedInputTokens: inputTokens,
-      estimatedOutputTokens: outputTokens,
-      estimatedCostUsd: inputCost + outputCost,
-      breakdown: { inputCost, outputCost },
-    };
-  }
-
-  estimateFromTokens(
-    inputTokens: number,
-    outputTokens: number,
-    modelInfo: IModelInfo,
+  /**
+   * Calculate exact cost for a completed request
+   */
+  calculate(
+    model: IModelInfo,
+    promptTokens: number,
+    completionTokens: number,
+    cachedTokens = 0,
   ): number {
-    return (inputTokens / 1_000_000) * modelInfo.pricing.inputPerMillion
-      + (outputTokens / 1_000_000) * modelInfo.pricing.outputPerMillion;
+    const p = model.pricing;
+    const effectivePromptTokens = Math.max(0, promptTokens - cachedTokens);
+
+    const inputCost = (effectivePromptTokens / 1_000_000) * p.inputPerMillion;
+    const cachedCost = p.cachedInputPerMillion
+      ? (cachedTokens / 1_000_000) * p.cachedInputPerMillion
+      : (cachedTokens / 1_000_000) * (p.inputPerMillion * 0.1); // default 90% discount
+    const outputCost = (completionTokens / 1_000_000) * p.outputPerMillion;
+
+    return inputCost + cachedCost + outputCost;
   }
 
-  // ── Recording ────────────────────────────────────────────────────────────────
-
-  record(provider: string, model: string, usage: ITokenUsage, modelInfo: IModelInfo, requestId?: string): CostRecord {
-    const costUsd = this.estimateFromTokens(usage.promptTokens, usage.completionTokens, modelInfo);
-
-    const record: CostRecord = {
-      id: `cost_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      provider, model, usage, costUsd,
-      timestamp: new Date(),
-      requestId,
+  /**
+   * Estimate cost before making a request (using approximate token counts)
+   */
+  estimate(
+    model: IModelInfo,
+    estimatedPromptTokens: number,
+    estimatedCompletionTokens: number,
+  ): { min: number; max: number; expected: number } {
+    const expected = this.calculate(model, estimatedPromptTokens, estimatedCompletionTokens);
+    // ±30% range for estimates
+    return {
+      min: expected * 0.7,
+      max: expected * 1.3,
+      expected,
     };
-
-    this._records.push(record);
-    if (this._records.length > CostCalculator._MAX_RECORDS) {
-      this._records.shift(); // drop oldest
-    }
-
-    this._window.add(costUsd);
-    this._totalSpend += costUsd;
-    this._providerSpend[provider] = (this._providerSpend[provider] ?? 0) + costUsd;
-
-    this._checkBudgets(provider, costUsd);
-    return record;
   }
 
-  // ── Budget status ────────────────────────────────────────────────────────────
+  /**
+   * Compare cost across models for the same workload
+   */
+  compare(
+    models: IModelInfo[],
+    estimatedPromptTokens: number,
+    estimatedCompletionTokens: number,
+  ): Array<{ model: IModelInfo; cost: number; costPerToken: number }> {
+    return models
+      .map((model) => {
+        const cost = this.calculate(model, estimatedPromptTokens, estimatedCompletionTokens);
+        const totalTokens = estimatedPromptTokens + estimatedCompletionTokens;
+        return {
+          model,
+          cost,
+          costPerToken: totalTokens > 0 ? cost / totalTokens : 0,
+        };
+      })
+      .sort((a, b) => a.cost - b.cost);
+  }
 
-  getBudgetStatus(): BudgetStatus {
-    const now = Date.now();
-    const dayMs = 86_400_000;
-    const hourMs = 3_600_000;
-    const minMs = 60_000;
+  /**
+   * Record a completed request for budget tracking
+   */
+  record(entry: Omit<UsageEntry, "timestamp">): void {
+    this.usageLog.push({ ...entry, timestamp: new Date() });
+    // Evict old entries to prevent memory leak
+    if (this.usageLog.length > this.MAX_LOG_SIZE) {
+      this.usageLog.splice(0, Math.floor(this.MAX_LOG_SIZE * 0.1));
+    }
+  }
 
-    const dailySpent = this._records
-      .filter((r) => now - r.timestamp.getTime() < dayMs)
-      .reduce((s, r) => s + r.costUsd, 0);
+  /**
+   * Get budget status for a user/org
+   */
+  getBudgetStatus(config: IBudgetConfig): IBudgetStatus {
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const hourlySpent = this._records
-      .filter((r) => now - r.timestamp.getTime() < hourMs)
-      .reduce((s, r) => s + r.costUsd, 0);
+    const userEntries = this.usageLog.filter((e) => {
+      if (config.userId && e.userId !== config.userId) return false;
+      return true;
+    });
 
-    const minuteSpent = this._window.sum(minMs);
+    const dailySpent = userEntries
+      .filter((e) => e.timestamp >= startOfDay)
+      .reduce((sum, e) => sum + e.cost, 0);
 
-    const dailyLimit = this._budgetConfig.dailyLimitUsd;
-    const hourlyLimit = this._budgetConfig.hourlyLimitUsd;
-    const minuteLimit = this._budgetConfig.minuteLimitUsd;
+    const monthlySpent = userEntries
+      .filter((e) => e.timestamp >= startOfMonth)
+      .reduce((sum, e) => sum + e.cost, 0);
 
-    const perProvider: BudgetStatus['perProvider'] = {};
-    for (const [p, spent] of Object.entries(this._providerSpend)) {
-      perProvider[p] = {
-        daily: spent,
-        limit: this._budgetConfig.perProviderDailyLimitUsd?.[p],
+    const dailyRemaining = config.dailyLimitUsd !== undefined
+      ? Math.max(0, config.dailyLimitUsd - dailySpent)
+      : undefined;
+
+    const monthlyRemaining = config.monthlyLimitUsd !== undefined
+      ? Math.max(0, config.monthlyLimitUsd - monthlySpent)
+      : undefined;
+
+    const isExceeded = (dailyRemaining !== undefined && dailyRemaining <= 0) ||
+      (monthlyRemaining !== undefined && monthlyRemaining <= 0);
+
+    return { dailySpent, monthlySpent, dailyRemaining, monthlyRemaining, isExceeded };
+  }
+
+  /**
+   * Check if a request would exceed budget limits
+   */
+  wouldExceedBudget(
+    estimatedCost: number,
+    config: IBudgetConfig,
+  ): { exceeds: boolean; reason?: string } {
+    if (config.perRequestLimitUsd !== undefined && estimatedCost > config.perRequestLimitUsd) {
+      return {
+        exceeds: true,
+        reason: `Estimated cost $${estimatedCost.toFixed(4)} exceeds per-request limit $${config.perRequestLimitUsd.toFixed(4)}`,
       };
     }
 
+    const status = this.getBudgetStatus(config);
+
+    if (status.dailyRemaining !== undefined && estimatedCost > status.dailyRemaining) {
+      return {
+        exceeds: true,
+        reason: `Estimated cost $${estimatedCost.toFixed(4)} would exceed daily budget (remaining: $${status.dailyRemaining.toFixed(4)})`,
+      };
+    }
+
+    if (status.monthlyRemaining !== undefined && estimatedCost > status.monthlyRemaining) {
+      return {
+        exceeds: true,
+        reason: `Estimated cost $${estimatedCost.toFixed(4)} would exceed monthly budget (remaining: $${status.monthlyRemaining.toFixed(4)})`,
+      };
+    }
+
+    return { exceeds: false };
+  }
+
+  /**
+   * Project monthly spend based on current daily average
+   */
+  projectMonthlySpend(userId?: string): number {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const daysElapsed = Math.max(1, (now.getTime() - startOfMonth.getTime()) / (1000 * 60 * 60 * 24));
+
+    const monthlyEntries = this.usageLog.filter((e) => {
+      if (userId && e.userId !== userId) return false;
+      return e.timestamp >= startOfMonth;
+    });
+
+    const monthlySpend = monthlyEntries.reduce((sum, e) => sum + e.cost, 0);
+    const dailyAverage = monthlySpend / daysElapsed;
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+    return dailyAverage * daysInMonth;
+  }
+
+  /**
+   * Get cost breakdown by provider and model
+   */
+  getBreakdown(
+    since: Date,
+    userId?: string,
+  ): {
+    total: number;
+    byProvider: Record<string, number>;
+    byModel: Record<string, number>;
+    requestCount: number;
+    avgCostPerRequest: number;
+    totalTokens: number;
+  } {
+    const entries = this.usageLog.filter((e) => {
+      if (userId && e.userId !== userId) return false;
+      return e.timestamp >= since;
+    });
+
+    const byProvider: Record<string, number> = {};
+    const byModel: Record<string, number> = {};
+    let totalCost = 0;
+    let totalTokens = 0;
+
+    for (const entry of entries) {
+      byProvider[entry.provider] = (byProvider[entry.provider] ?? 0) + entry.cost;
+      byModel[entry.model] = (byModel[entry.model] ?? 0) + entry.cost;
+      totalCost += entry.cost;
+      totalTokens += entry.promptTokens + entry.completionTokens;
+    }
+
     return {
-      daily: {
-        spent: dailySpent,
-        limit: dailyLimit,
-        pct: dailyLimit ? dailySpent / dailyLimit : undefined,
-        exceeded: dailyLimit ? dailySpent >= dailyLimit : false,
-      },
-      hourly: {
-        spent: hourlySpent,
-        limit: hourlyLimit,
-        pct: hourlyLimit ? hourlySpent / hourlyLimit : undefined,
-        exceeded: hourlyLimit ? hourlySpent >= hourlyLimit : false,
-      },
-      minute: {
-        spent: minuteSpent,
-        limit: minuteLimit,
-        pct: minuteLimit ? minuteSpent / minuteLimit : undefined,
-        exceeded: minuteLimit ? minuteSpent >= minuteLimit : false,
-      },
-      perProvider,
-      totalAllTime: this._totalSpend,
+      total: totalCost,
+      byProvider,
+      byModel,
+      requestCount: entries.length,
+      avgCostPerRequest: entries.length > 0 ? totalCost / entries.length : 0,
+      totalTokens,
     };
   }
 
-  isBudgetExceeded(provider?: string): boolean {
-    const status = this.getBudgetStatus();
-    if (status.daily.exceeded || status.hourly.exceeded || status.minute.exceeded) return true;
-    if (provider && status.perProvider[provider]?.limit) {
-      return status.perProvider[provider].daily >= status.perProvider[provider].limit!;
-    }
-    return false;
-  }
-
-  /** Check if a new estimated cost would exceed remaining budget. */
-  wouldExceedBudget(estimatedCostUsd: number): boolean {
-    const status = this.getBudgetStatus();
-    if (status.daily.limit && status.daily.spent + estimatedCostUsd > status.daily.limit) return true;
-    if (status.hourly.limit && status.hourly.spent + estimatedCostUsd > status.hourly.limit) return true;
-    return false;
-  }
-
-  // ── Analytics ────────────────────────────────────────────────────────────────
-
-  getSpendByProvider(windowMs?: number): Record<string, number> {
-    const records = windowMs
-      ? this._records.filter((r) => Date.now() - r.timestamp.getTime() < windowMs)
-      : this._records;
-
-    return records.reduce((acc, r) => {
-      acc[r.provider] = (acc[r.provider] ?? 0) + r.costUsd;
-      return acc;
-    }, {} as Record<string, number>);
-  }
-
-  getSpendByModel(windowMs?: number): Record<string, number> {
-    const records = windowMs
-      ? this._records.filter((r) => Date.now() - r.timestamp.getTime() < windowMs)
-      : this._records;
-
-    return records.reduce((acc, r) => {
-      const key = `${r.provider}/${r.model}`;
-      acc[key] = (acc[key] ?? 0) + r.costUsd;
-      return acc;
-    }, {} as Record<string, number>);
-  }
-
-  getRecentRecords(limit = 100): CostRecord[] {
-    return this._records.slice(-limit);
-  }
-
-  reset(): void {
-    this._records = [];
-    this._totalSpend = 0;
-    this._providerSpend = {};
-  }
-
-  // ── Private ──────────────────────────────────────────────────────────────────
-
-  private _checkBudgets(provider: string, newCostUsd: number): void {
-    const status = this.getBudgetStatus();
-    const threshold = this._budgetConfig.alertThreshold ?? 0.8;
-
-    if (status.daily.limit && status.daily.pct !== undefined) {
-      if (status.daily.pct >= threshold) {
-        this.emit('budget:alert', { window: 'daily', pct: status.daily.pct, spent: status.daily.spent, limit: status.daily.limit });
-      }
-      if (status.daily.exceeded) {
-        this.emit('budget:exceeded', { window: 'daily', spent: status.daily.spent, limit: status.daily.limit });
-      }
-    }
-
-    if (status.hourly.limit && status.hourly.pct !== undefined && status.hourly.pct >= threshold) {
-      this.emit('budget:alert', { window: 'hourly', pct: status.hourly.pct, spent: status.hourly.spent, limit: status.hourly.limit });
-    }
-
-    const providerDailyLimit = this._budgetConfig.perProviderDailyLimitUsd?.[provider];
-    if (providerDailyLimit) {
-      const providerSpent = (this._providerSpend[provider] ?? 0);
-      const pct = providerSpent / providerDailyLimit;
-      if (pct >= threshold) {
-        this.emit('budget:provider:alert', { provider, pct, spent: providerSpent, limit: providerDailyLimit });
-      }
-    }
+  /**
+   * Find cheapest model capable of a given workload
+   */
+  findCheapestModel(
+    models: IModelInfo[],
+    estimatedPromptTokens: number,
+    estimatedCompletionTokens: number,
+    maxCostUsd?: number,
+  ): IModelInfo | undefined {
+    const compared = this.compare(models, estimatedPromptTokens, estimatedCompletionTokens);
+    const eligible = maxCostUsd !== undefined
+      ? compared.filter((c) => c.cost <= maxCostUsd)
+      : compared;
+    return eligible[0]?.model;
   }
 }
 
+// Singleton instance
 export const costCalculator = new CostCalculator();

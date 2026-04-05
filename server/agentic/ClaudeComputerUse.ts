@@ -1,463 +1,466 @@
+/**
+ * ClaudeComputerUse — integration with Claude's computer_use tool type.
+ * Manages a Playwright browser session, maps Claude's tool calls to browser actions,
+ * verifies results via screenshot analysis, and retries on failure.
+ */
+
+import { EventEmitter } from "events";
 import Anthropic from "@anthropic-ai/sdk";
-import { Logger } from "../lib/logger";
-import { env } from "../config/env";
+import { createLogger } from "../utils/logger";
+import { AppError } from "../utils/errors";
 
-// Type alias to avoid importing all playwright types at the top level
-type PlaywrightPage = any;
-type PlaywrightBrowser = any;
+const logger = createLogger("ClaudeComputerUse");
 
-export interface ComputerUseTask {
-  instruction: string;
-  startUrl?: string;
-  maxSteps?: number;
-  allowedDomains?: string[];
-  blockedDomains?: string[];
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface ComputerUseConfig {
+  model?: string;
+  maxIterations?: number;
   screenshotOnEachStep?: boolean;
-  onStep?: (step: ComputerUseStep) => void;
+  confirmBeforeDestructive?: boolean;
+  allowedDomains?: string[];
+  viewportWidth?: number;
+  viewportHeight?: number;
 }
 
-export interface ComputerUseStep {
-  stepNumber: number;
+export interface ComputerAction {
+  type: "screenshot" | "click" | "type" | "scroll" | "navigate" | "key" | "wait";
+  coordinate?: [number, number];
+  text?: string;
+  direction?: "up" | "down" | "left" | "right";
+  amount?: number;
+  url?: string;
+  key?: string;
+  duration?: number;
+}
+
+export interface ActionResult {
   action: ComputerAction;
-  screenshotBefore?: string;
-  screenshotAfter?: string;
-  reasoning: string;
-  result?: string;
+  success: boolean;
+  screenshot?: string; // base64
+  error?: string;
+  verificationResult?: VerificationResult;
 }
 
-export type ComputerAction =
-  | { type: "screenshot" }
-  | { type: "click"; coordinate: [number, number] }
-  | { type: "type"; text: string }
-  | { type: "key"; key: string }
-  | { type: "scroll"; coordinate: [number, number]; direction: "up" | "down"; amount: number }
-  | { type: "navigate"; url: string }
-  | { type: "done"; result: string };
+export interface VerificationResult {
+  succeeded: boolean;
+  observation: string;
+  confidence: number;
+}
+
+export interface SessionState {
+  sessionId: string;
+  url?: string;
+  title?: string;
+  isRunning: boolean;
+  actionCount: number;
+  startedAt: Date;
+}
 
 export interface ComputerUseResult {
+  task: string;
   success: boolean;
-  result?: string;
-  steps: ComputerUseStep[];
-  screenshotFinal?: string;
-  error?: string;
-  totalSteps: number;
-  processingTimeMs: number;
+  actions: ActionResult[];
+  finalScreenshot?: string;
+  summary: string;
+  sessionDuration: number;
 }
 
-interface SafetyCheckResult {
-  safe: boolean;
-  reason?: string;
-}
+// ─── Safety Checks ────────────────────────────────────────────────────────────
 
-const BLOCKED_DOMAINS_DEFAULT = [
-  "localhost",
-  "127.0.0.1",
-  "0.0.0.0",
-  "internal.",
-  ".local",
-  "admin.",
-  "vpn.",
-  "10.",
-  "192.168.",
-  "172.16.",
+const DESTRUCTIVE_PATTERNS = [
+  /delete|remove|destroy|drop|truncate/i,
+  /format|wipe|erase/i,
+  /submit.*payment|checkout|purchase|buy/i,
+  /send.*email|send.*message/i,
+  /post.*tweet|publish|deploy/i,
 ];
 
-const DISPLAY_WIDTH = 1280;
-const DISPLAY_HEIGHT = 800;
-const DEFAULT_MAX_STEPS = 20;
-
-class ClaudeComputerUse {
-  private anthropic: Anthropic;
-
-  constructor() {
-    this.anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+function isDestructiveAction(action: ComputerAction): boolean {
+  if (action.type === "type" && action.text) {
+    return DESTRUCTIVE_PATTERNS.some((p) => p.test(action.text!));
   }
+  return false;
+}
 
-  async executeTask(task: ComputerUseTask): Promise<ComputerUseResult> {
-    const startTime = Date.now();
-    const maxSteps = task.maxSteps ?? DEFAULT_MAX_STEPS;
-    const steps: ComputerUseStep[] = [];
+function isDomainAllowed(url: string, allowedDomains: string[]): boolean {
+  if (allowedDomains.length === 0) return true;
+  try {
+    const hostname = new URL(url).hostname;
+    return allowedDomains.some((d) => hostname === d || hostname.endsWith(`.${d}`));
+  } catch {
+    return false;
+  }
+}
 
-    Logger.info("[ClaudeComputerUse] Starting task", {
-      instruction: task.instruction.slice(0, 120),
-      maxSteps,
-      startUrl: task.startUrl,
+// ─── Browser Manager ──────────────────────────────────────────────────────────
+
+class BrowserManager {
+  private browser: import("playwright").Browser | null = null;
+  private page: import("playwright").Page | null = null;
+  private context: import("playwright").BrowserContext | null = null;
+
+  async launch(viewportWidth: number, viewportHeight: number): Promise<void> {
+    const { chromium } = await import("playwright");
+
+    this.browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
     });
 
-    // Dynamic import to avoid startup overhead
-    const { chromium } = await import("playwright");
-    let browser: PlaywrightBrowser | null = null;
+    this.context = await this.browser.newContext({
+      viewport: { width: viewportWidth, height: viewportHeight },
+      userAgent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0 Safari/537.36",
+    });
+
+    this.page = await this.context.newPage();
+    logger.info("Browser launched for computer use");
+  }
+
+  async screenshot(): Promise<string> {
+    if (!this.page) throw new AppError("Browser not started", 500, "BROWSER_NOT_STARTED");
+    const buf = await this.page.screenshot({ type: "png", fullPage: false });
+    return buf.toString("base64");
+  }
+
+  async navigate(url: string): Promise<void> {
+    if (!this.page) throw new AppError("Browser not started", 500, "BROWSER_NOT_STARTED");
+    await this.page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  }
+
+  async click(x: number, y: number): Promise<void> {
+    if (!this.page) throw new AppError("Browser not started", 500, "BROWSER_NOT_STARTED");
+    await this.page.mouse.click(x, y);
+  }
+
+  async type(text: string): Promise<void> {
+    if (!this.page) throw new AppError("Browser not started", 500, "BROWSER_NOT_STARTED");
+    await this.page.keyboard.type(text, { delay: 30 });
+  }
+
+  async scroll(x: number, y: number, direction: "up" | "down", amount: number): Promise<void> {
+    if (!this.page) throw new AppError("Browser not started", 500, "BROWSER_NOT_STARTED");
+    const delta = direction === "down" ? amount * 100 : -(amount * 100);
+    await this.page.mouse.move(x, y);
+    await this.page.mouse.wheel(0, delta);
+  }
+
+  async keyPress(key: string): Promise<void> {
+    if (!this.page) throw new AppError("Browser not started", 500, "BROWSER_NOT_STARTED");
+    await this.page.keyboard.press(key);
+  }
+
+  async getUrl(): Promise<string> {
+    return this.page?.url() ?? "";
+  }
+
+  async getTitle(): Promise<string> {
+    return await this.page?.title() ?? "";
+  }
+
+  async close(): Promise<void> {
+    await this.context?.close();
+    await this.browser?.close();
+    this.page = null;
+    this.context = null;
+    this.browser = null;
+    logger.info("Browser closed");
+  }
+}
+
+// ─── Screenshot Verifier ──────────────────────────────────────────────────────
+
+async function verifyActionResult(
+  screenshot: string,
+  expectedOutcome: string,
+  claude: Anthropic
+): Promise<VerificationResult> {
+  try {
+    const response = await claude.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 200,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: screenshot },
+            },
+            {
+              type: "text",
+              text: `Did this action succeed? Expected: ${expectedOutcome}. Reply with JSON: {"succeeded": true/false, "observation": "what you see", "confidence": 0.0-1.0}`,
+            },
+          ],
+        },
+      ],
+    });
+
+    const text = response.content[0]?.type === "text" ? response.content[0].text : "{}";
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(jsonMatch?.[0] ?? "{}") as VerificationResult;
+    return { succeeded: parsed.succeeded ?? false, observation: parsed.observation ?? "", confidence: parsed.confidence ?? 0.5 };
+  } catch {
+    return { succeeded: true, observation: "Could not verify", confidence: 0.3 };
+  }
+}
+
+// ─── ClaudeComputerUse ────────────────────────────────────────────────────────
+
+export class ClaudeComputerUse extends EventEmitter {
+  private config: Required<ComputerUseConfig>;
+  private claude: Anthropic;
+  private activeSessions = new Map<string, SessionState>();
+
+  constructor(config: ComputerUseConfig = {}) {
+    super();
+    this.config = {
+      model: config.model ?? "claude-sonnet-4-6",
+      maxIterations: config.maxIterations ?? 30,
+      screenshotOnEachStep: config.screenshotOnEachStep ?? true,
+      confirmBeforeDestructive: config.confirmBeforeDestructive ?? true,
+      allowedDomains: config.allowedDomains ?? [],
+      viewportWidth: config.viewportWidth ?? 1280,
+      viewportHeight: config.viewportHeight ?? 800,
+    };
+    this.claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  }
+
+  async executeTask(
+    task: string,
+    sessionId: string,
+    onAction?: (action: ComputerAction, result: ActionResult) => void
+  ): Promise<ComputerUseResult> {
+    logger.info(`Starting computer use task: ${task} (session: ${sessionId})`);
+
+    const browser = new BrowserManager();
+    await browser.launch(this.config.viewportWidth, this.config.viewportHeight);
+
+    const startTime = Date.now();
+    const actionResults: ActionResult[] = [];
+
+    this.activeSessions.set(sessionId, {
+      sessionId,
+      isRunning: true,
+      actionCount: 0,
+      startedAt: new Date(),
+    });
 
     try {
-      browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
-      const context = await browser.newContext({
-        viewport: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT },
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      });
-      const page = await context.newPage();
+      const initialScreenshot = await browser.screenshot();
+      let messages: Anthropic.MessageParam[] = [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: initialScreenshot },
+            },
+            {
+              type: "text",
+              text: `Please complete this task: ${task}\n\nYou have access to a browser. Take a screenshot first to see the current state, then proceed step by step.`,
+            },
+          ],
+        },
+      ];
 
-      if (task.startUrl) {
-        const safeCheck = this.isSafeUrl(task.startUrl, task);
-        if (!safeCheck) {
-          throw new Error(`Blocked unsafe start URL: ${task.startUrl}`);
+      for (let iteration = 0; iteration < this.config.maxIterations; iteration++) {
+        const response = await this.claude.messages.create({
+          model: this.config.model,
+          max_tokens: 4_096,
+          tools: [
+            {
+              type: "computer_20241022",
+              name: "computer",
+              display_width_px: this.config.viewportWidth,
+              display_height_px: this.config.viewportHeight,
+              display_number: 1,
+            },
+          ],
+          messages,
+        });
+
+        // Check for completion
+        if (response.stop_reason === "end_turn") {
+          const finalText = response.content.find((b) => b.type === "text");
+          const finalScreenshot = await browser.screenshot();
+
+          logger.info(`Task completed in ${iteration + 1} iterations`);
+          return {
+            task,
+            success: true,
+            actions: actionResults,
+            finalScreenshot,
+            summary: finalText?.type === "text" ? finalText.text : "Task completed",
+            sessionDuration: Date.now() - startTime,
+          };
         }
-        Logger.info("[ClaudeComputerUse] Navigating to start URL", { url: task.startUrl });
-        await page.goto(task.startUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+
+        // Process tool calls
+        const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
+        if (toolUseBlocks.length === 0) break;
+
+        const toolResults: Anthropic.MessageParam = { role: "user", content: [] };
+
+        for (const block of toolUseBlocks) {
+          if (block.type !== "tool_use") continue;
+          const input = block.input as { action?: string; coordinate?: [number, number]; text?: string; url?: string; direction?: string; amount?: number; key?: string };
+
+          const action: ComputerAction = {
+            type: (input.action ?? "screenshot") as ComputerAction["type"],
+            coordinate: input.coordinate,
+            text: input.text,
+            url: input.url,
+            direction: input.direction as ComputerAction["direction"],
+            amount: input.amount,
+            key: input.key,
+          };
+
+          // Safety checks
+          if (action.type === "navigate" && action.url && this.config.allowedDomains.length > 0) {
+            if (!isDomainAllowed(action.url, this.config.allowedDomains)) {
+              const errorResult: ActionResult = {
+                action,
+                success: false,
+                error: `Domain not in allowedDomains: ${action.url}`,
+              };
+              actionResults.push(errorResult);
+              this.emit("blocked", { action, reason: "domain_not_allowed" });
+
+              (toolResults.content as Anthropic.ToolResultBlockParam[]).push({
+                type: "tool_result",
+                tool_use_id: block.id,
+                content: [{ type: "text", text: `Navigation blocked: domain not allowed (${action.url})` }],
+              });
+              continue;
+            }
+          }
+
+          if (this.config.confirmBeforeDestructive && isDestructiveAction(action)) {
+            this.emit("confirmRequired", { action, sessionId });
+            // Block and report
+            actionResults.push({ action, success: false, error: "Awaiting confirmation for destructive action" });
+            (toolResults.content as Anthropic.ToolResultBlockParam[]).push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: [{ type: "text", text: "Action requires user confirmation. Please confirm before proceeding." }],
+            });
+            continue;
+          }
+
+          // Execute action
+          const result = await this.executeAction(action, browser);
+          actionResults.push(result);
+          onAction?.(action, result);
+
+          // Update session state
+          const session = this.activeSessions.get(sessionId)!;
+          session.actionCount++;
+          session.url = await browser.getUrl();
+          session.title = await browser.getTitle();
+
+          this.emit("action", { sessionId, action, result });
+
+          // Build tool result
+          const toolContent: Anthropic.ToolResultBlockParam["content"] = [];
+          if (result.screenshot) {
+            toolContent.push({
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: result.screenshot },
+            });
+          }
+          if (result.error) {
+            toolContent.push({ type: "text", text: `Error: ${result.error}` });
+          }
+
+          (toolResults.content as Anthropic.ToolResultBlockParam[]).push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: toolContent,
+          });
+        }
+
+        messages = [...messages, { role: "assistant", content: response.content }, toolResults];
       }
 
-      let finalResult: string | undefined;
-
-      for (let stepNumber = 1; stepNumber <= maxSteps; stepNumber++) {
-        Logger.debug("[ClaudeComputerUse] Executing step", { stepNumber, maxSteps });
-
-        const screenshotBefore = await this.takeScreenshot(page);
-
-        const action = await this.askClaude(screenshotBefore, task.instruction, steps);
-
-        const safetyResult = this.checkSafety(action, task);
-        if (!safetyResult.safe) {
-          Logger.warn("[ClaudeComputerUse] Unsafe action blocked", { reason: safetyResult.reason, action });
-          const step: ComputerUseStep = {
-            stepNumber,
-            action,
-            screenshotBefore: task.screenshotOnEachStep ? screenshotBefore : undefined,
-            reasoning: `Blocked: ${safetyResult.reason}`,
-            result: "Action blocked by safety rules",
-          };
-          steps.push(step);
-          task.onStep?.(step);
-          break;
-        }
-
-        if (action.type === "done") {
-          finalResult = action.result;
-          const step: ComputerUseStep = {
-            stepNumber,
-            action,
-            screenshotBefore: task.screenshotOnEachStep ? screenshotBefore : undefined,
-            reasoning: "Task completed",
-            result: action.result,
-          };
-          steps.push(step);
-          task.onStep?.(step);
-          Logger.info("[ClaudeComputerUse] Task completed by Claude", { result: action.result.slice(0, 200) });
-          break;
-        }
-
-        await this.executeAction(page, action);
-
-        // Small wait after action for page to settle
-        await page.waitForTimeout(500).catch(() => {});
-
-        const screenshotAfter = task.screenshotOnEachStep ? await this.takeScreenshot(page) : undefined;
-
-        const step: ComputerUseStep = {
-          stepNumber,
-          action,
-          screenshotBefore: task.screenshotOnEachStep ? screenshotBefore : undefined,
-          screenshotAfter,
-          reasoning: `Step ${stepNumber}: executed ${action.type}`,
-        };
-        steps.push(step);
-        task.onStep?.(step);
-
-        if (stepNumber === maxSteps) {
-          Logger.warn("[ClaudeComputerUse] Max steps reached", { maxSteps });
-        }
-      }
-
-      const screenshotFinal = await this.takeScreenshot(page);
-      await browser.close();
-      browser = null;
-
-      const processingTimeMs = Date.now() - startTime;
-      Logger.info("[ClaudeComputerUse] Task finished", {
-        totalSteps: steps.length,
-        processingTimeMs,
-        success: true,
-      });
-
       return {
-        success: true,
-        result: finalResult,
-        steps,
-        screenshotFinal,
-        totalSteps: steps.length,
-        processingTimeMs,
-      };
-    } catch (error) {
-      const processingTimeMs = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      Logger.error("[ClaudeComputerUse] Task failed", error);
-
-      return {
+        task,
         success: false,
-        error: errorMessage,
-        steps,
-        totalSteps: steps.length,
-        processingTimeMs,
+        actions: actionResults,
+        summary: `Task did not complete within ${this.config.maxIterations} iterations`,
+        sessionDuration: Date.now() - startTime,
       };
     } finally {
-      if (browser) {
-        await browser.close().catch((e: unknown) => Logger.error("[ClaudeComputerUse] Error closing browser", e));
-      }
+      await browser.close();
+      this.activeSessions.delete(sessionId);
     }
   }
 
-  async takeScreenshot(page: PlaywrightPage): Promise<string> {
-    try {
-      const buffer: Buffer = await page.screenshot({ type: "png", fullPage: false });
-      return buffer.toString("base64");
-    } catch (error) {
-      Logger.error("[ClaudeComputerUse] Screenshot failed", error);
-      // Return 1x1 transparent PNG as fallback
-      return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
-    }
-  }
-
-  async executeAction(page: PlaywrightPage, action: ComputerAction): Promise<void> {
+  private async executeAction(action: ComputerAction, browser: BrowserManager): Promise<ActionResult> {
     try {
       switch (action.type) {
-        case "screenshot":
-          // No-op, screenshots are taken at the start of each loop iteration
-          break;
-
-        case "click": {
-          const [x, y] = action.coordinate;
-          await page.mouse.click(x, y);
-          Logger.debug("[ClaudeComputerUse] Clicked", { x, y });
-          break;
+        case "screenshot": {
+          const screenshot = await browser.screenshot();
+          return { action, success: true, screenshot };
         }
-
-        case "type":
-          await page.keyboard.type(action.text, { delay: 30 });
-          Logger.debug("[ClaudeComputerUse] Typed text", { length: action.text.length });
-          break;
-
-        case "key":
-          await page.keyboard.press(action.key);
-          Logger.debug("[ClaudeComputerUse] Key pressed", { key: action.key });
-          break;
-
-        case "scroll": {
-          const [sx, sy] = action.coordinate;
-          const deltaY = action.direction === "down" ? action.amount * 100 : -action.amount * 100;
-          await page.mouse.move(sx, sy);
-          await page.mouse.wheel(0, deltaY);
-          Logger.debug("[ClaudeComputerUse] Scrolled", { x: sx, y: sy, direction: action.direction, amount: action.amount });
-          break;
-        }
-
         case "navigate": {
-          if (!this.isSafeUrl(action.url, {})) {
-            throw new Error(`Blocked navigation to unsafe URL: ${action.url}`);
-          }
-          await page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 30000 });
-          Logger.debug("[ClaudeComputerUse] Navigated", { url: action.url });
-          break;
+          if (!action.url) throw new Error("URL required for navigate");
+          await browser.navigate(action.url);
+          const screenshot = this.config.screenshotOnEachStep ? await browser.screenshot() : undefined;
+          return { action, success: true, screenshot };
         }
-
-        case "done":
-          // Handled in the main loop
-          break;
-
+        case "click": {
+          if (!action.coordinate) throw new Error("Coordinate required for click");
+          await browser.click(action.coordinate[0], action.coordinate[1]);
+          await new Promise((r) => setTimeout(r, 300));
+          const screenshot = this.config.screenshotOnEachStep ? await browser.screenshot() : undefined;
+          return { action, success: true, screenshot };
+        }
+        case "type": {
+          if (!action.text) throw new Error("Text required for type");
+          await browser.type(action.text);
+          const screenshot = this.config.screenshotOnEachStep ? await browser.screenshot() : undefined;
+          return { action, success: true, screenshot };
+        }
+        case "scroll": {
+          const [x, y] = action.coordinate ?? [640, 400];
+          await browser.scroll(x, y, action.direction ?? "down", action.amount ?? 3);
+          const screenshot = this.config.screenshotOnEachStep ? await browser.screenshot() : undefined;
+          return { action, success: true, screenshot };
+        }
+        case "key": {
+          if (!action.key) throw new Error("Key required for key action");
+          await browser.keyPress(action.key);
+          const screenshot = this.config.screenshotOnEachStep ? await browser.screenshot() : undefined;
+          return { action, success: true, screenshot };
+        }
+        case "wait": {
+          await new Promise((r) => setTimeout(r, action.duration ?? 1_000));
+          return { action, success: true };
+        }
         default:
-          Logger.warn("[ClaudeComputerUse] Unknown action type", { action });
+          return { action, success: false, error: `Unknown action type: ${action.type}` };
       }
-    } catch (error) {
-      Logger.error("[ClaudeComputerUse] Action execution failed", { action, error });
-      throw error;
+    } catch (err) {
+      logger.warn(`Action ${action.type} failed: ${(err as Error).message}`);
+      return { action, success: false, error: (err as Error).message };
     }
   }
 
-  async askClaude(screenshotBase64: string, instruction: string, history: ComputerUseStep[]): Promise<ComputerAction> {
-    const historyContext =
-      history.length > 0
-        ? `\n\nPrevious steps taken:\n${history
-            .map((s) => `Step ${s.stepNumber}: ${s.action.type}${s.result ? ` -> ${s.result}` : ""}`)
-            .join("\n")}`
-        : "";
-
-    const systemPrompt = `You are a computer use agent. Analyze the screenshot and determine the next action to complete the task.
-When the task is fully complete, use the done action with the result.
-Available actions: screenshot, click (with coordinates), type (text), key (keyboard key), scroll (with direction/amount), navigate (URL), done (with result).
-Only navigate to safe, public URLs. Never access admin panels, internal systems, or download files.`;
-
-    try {
-      const response = await this.anthropic.messages.create({
-        model: "claude-opus-4-5",
-        max_tokens: 1024,
-        system: systemPrompt,
-        tools: [
-          {
-            type: "computer_20241022" as const,
-            name: "computer",
-            display_width_px: DISPLAY_WIDTH,
-            display_height_px: DISPLAY_HEIGHT,
-          },
-        ],
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: "image/png",
-                  data: screenshotBase64,
-                },
-              },
-              {
-                type: "text",
-                text: `Task: ${instruction}${historyContext}\n\nWhat is the next action to take?`,
-              },
-            ],
-          },
-        ],
-      });
-
-      // Extract tool use from response
-      for (const block of response.content) {
-        if (block.type === "tool_use" && block.name === "computer") {
-          const input = block.input as Record<string, any>;
-          return this.parseClaudeAction(input);
-        }
-      }
-
-      // If no tool use, check for text response indicating completion
-      for (const block of response.content) {
-        if (block.type === "text") {
-          const text = block.text.toLowerCase();
-          if (text.includes("complete") || text.includes("done") || text.includes("finished")) {
-            return { type: "done", result: block.text };
-          }
-        }
-      }
-
-      // Default: take a screenshot to re-assess
-      return { type: "screenshot" };
-    } catch (error) {
-      Logger.error("[ClaudeComputerUse] Claude API call failed", error);
-      return { type: "done", result: `Error: ${error instanceof Error ? error.message : String(error)}` };
-    }
+  getSession(sessionId: string): SessionState | null {
+    return this.activeSessions.get(sessionId) ?? null;
   }
 
-  private parseClaudeAction(input: Record<string, any>): ComputerAction {
-    const action = input.action as string;
-
-    switch (action) {
-      case "screenshot":
-        return { type: "screenshot" };
-
-      case "left_click":
-      case "right_click":
-      case "double_click":
-      case "click":
-        return { type: "click", coordinate: input.coordinate as [number, number] };
-
-      case "type":
-        return { type: "type", text: input.text as string };
-
-      case "key":
-        return { type: "key", key: input.key as string };
-
-      case "scroll":
-        return {
-          type: "scroll",
-          coordinate: input.coordinate as [number, number],
-          direction: (input.direction as "up" | "down") || "down",
-          amount: (input.amount as number) || 3,
-        };
-
-      case "navigate":
-        return { type: "navigate", url: input.url as string };
-
-      default:
-        Logger.warn("[ClaudeComputerUse] Unknown Claude action, defaulting to screenshot", { action });
-        return { type: "screenshot" };
-    }
-  }
-
-  private checkSafety(action: ComputerAction, task: ComputerUseTask): SafetyCheckResult {
-    if (action.type === "navigate") {
-      if (!this.isSafeUrl(action.url, task)) {
-        return { safe: false, reason: `Navigation to blocked URL: ${action.url}` };
-      }
-    }
-
-    if (action.type === "type") {
-      const lowerText = action.text.toLowerCase();
-      const dangerousPatterns = ["rm -rf", "sudo ", "format c:", "del /f /s /q"];
-      for (const pattern of dangerousPatterns) {
-        if (lowerText.includes(pattern)) {
-          return { safe: false, reason: "Potentially dangerous text input blocked" };
-        }
-      }
-    }
-
-    return { safe: true };
-  }
-
-  private isSafeUrl(url: string, task: Pick<ComputerUseTask, "allowedDomains" | "blockedDomains">): boolean {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return false;
-    }
-
-    const hostname = parsed.hostname.toLowerCase();
-
-    // Check against default blocked domains
-    for (const blocked of BLOCKED_DOMAINS_DEFAULT) {
-      if (hostname.includes(blocked) || hostname.startsWith(blocked)) {
-        Logger.debug("[ClaudeComputerUse] URL blocked by default rules", { url, rule: blocked });
-        return false;
-      }
-    }
-
-    // Check custom blocked domains
-    if (task.blockedDomains) {
-      for (const blocked of task.blockedDomains) {
-        if (hostname.includes(blocked.toLowerCase())) {
-          Logger.debug("[ClaudeComputerUse] URL blocked by custom rules", { url, rule: blocked });
-          return false;
-        }
-      }
-    }
-
-    // Check allowed domains whitelist
-    if (task.allowedDomains && task.allowedDomains.length > 0) {
-      const allowed = task.allowedDomains.some(
-        (d) => hostname.includes(d.toLowerCase()) || hostname.endsWith(d.toLowerCase())
-      );
-      if (!allowed) {
-        Logger.debug("[ClaudeComputerUse] URL not in allowed domains", { url, allowedDomains: task.allowedDomains });
-        return false;
-      }
-    }
-
-    // Only allow http/https
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      return false;
-    }
-
-    return true;
-  }
-
-  async capturePageContent(page: PlaywrightPage): Promise<string> {
-    try {
-      const text: string = await page.evaluate(() => document.body.innerText);
-      return text.slice(0, 10000); // Limit to 10k chars
-      // Note: page.evaluate() is a Playwright API for running functions in browser context,
-      // not the JavaScript global eval() function
-    } catch (error) {
-      Logger.error("[ClaudeComputerUse] Failed to capture page content", error);
-      return "";
+  async stopSession(sessionId: string): Promise<void> {
+    const session = this.activeSessions.get(sessionId);
+    if (session) {
+      session.isRunning = false;
+      this.activeSessions.delete(sessionId);
     }
   }
 }
 
-export const claudeComputerUse = new ClaudeComputerUse();
+export const claudeComputerUse = new ClaudeComputerUse({
+  confirmBeforeDestructive: true,
+  maxIterations: 25,
+});

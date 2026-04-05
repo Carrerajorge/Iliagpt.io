@@ -1,463 +1,621 @@
-/**
- * User GraphQL Resolvers
- * Handles: current user, user management (admin), settings, usage stats
- */
+import { GraphQLError } from 'graphql';
+import { eq, and, desc, ilike, sql, or } from 'drizzle-orm';
+import { db } from '../../db';
+import { Logger } from '../../lib/logger';
+import { users, chats, agents, userSettings } from '../../../shared/schema';
+import type { GraphQLContext } from '../index';
 
-import { GraphQLError } from "graphql";
-import { eq, desc, and, sql } from "drizzle-orm";
-import { db, db as dbRead } from "../../db.js";
-import { Logger } from "../../lib/logger.js";
-import { users, userSettings, chats, chatMessages } from "../../../shared/schema.js";
-import type { GraphQLContext } from "../middleware/auth.js";
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-function assertAuth(ctx: GraphQLContext): asserts ctx is GraphQLContext & { user: NonNullable<GraphQLContext["user"]> } {
-  if (!ctx.user?.id) {
-    throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHENTICATED" } });
+interface PaginationInput {
+  first?: number | null;
+  after?: string | null;
+  last?: number | null;
+  before?: string | null;
+}
+
+interface UserFilterInput {
+  role?: string | null;
+  isActive?: boolean | null;
+  search?: string | null;
+  tenantId?: string | null;
+}
+
+interface UpdateProfileInput {
+  displayName?: string | null;
+  avatarUrl?: string | null;
+  email?: string | null;
+}
+
+interface UpdatePreferencesInput {
+  theme?: string | null;
+  language?: string | null;
+  timezone?: string | null;
+  notifications?: boolean | null;
+  defaultModel?: string | null;
+  autoSave?: boolean | null;
+  streamingEnabled?: boolean | null;
+  codeHighlighting?: boolean | null;
+  markdownRendering?: boolean | null;
+  customInstructions?: string | null;
+}
+
+interface ChangePasswordInput {
+  currentPassword: string;
+  newPassword: string;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 100;
+const MIN_PASSWORD_LENGTH = 8;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function requireAuth(ctx: GraphQLContext): string {
+  if (!ctx.userId) {
+    throw new GraphQLError('Not authenticated', {
+      extensions: { code: 'UNAUTHENTICATED' },
+    });
+  }
+  return ctx.userId;
+}
+
+function requireAdmin(ctx: GraphQLContext): void {
+  requireAuth(ctx);
+  if (ctx.role !== 'ADMIN') {
+    throw new GraphQLError('Admin access required', {
+      extensions: { code: 'FORBIDDEN' },
+    });
   }
 }
 
-function assertAdmin(ctx: GraphQLContext) {
-  assertAuth(ctx);
-  if (ctx.user!.role !== "admin") {
-    throw new GraphQLError("Forbidden: Admin access required", { extensions: { code: "FORBIDDEN" } });
+function normalizePageSize(first?: number | null, last?: number | null): number {
+  return Math.min(Math.max(1, first ?? last ?? DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
+}
+
+function encodeCursor(id: string, createdAt: Date): string {
+  return Buffer.from(JSON.stringify({ id, t: createdAt.getTime() })).toString('base64');
+}
+
+function decodeCursor(cursor: string): { id: string; t: number } {
+  try {
+    return JSON.parse(Buffer.from(cursor, 'base64').toString('utf-8'));
+  } catch {
+    throw new GraphQLError('Invalid pagination cursor', {
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
   }
 }
 
-function normalizeUser(u: typeof users.$inferSelect) {
+function buildConnection<T extends { id: string; createdAt: Date }>(
+  items: T[],
+  totalCount: number,
+  pagination: PaginationInput,
+  hasMore: boolean,
+) {
+  const edges = items.map((node) => ({
+    node,
+    cursor: encodeCursor(node.id, node.createdAt),
+  }));
+
   return {
-    ...u,
-    role: (u.role ?? "USER").toUpperCase(),
-    is2faEnabled: u.is2faEnabled === "true",
-    emailVerified: u.emailVerified === "true",
+    edges,
+    pageInfo: {
+      hasNextPage: pagination.first != null ? hasMore : false,
+      hasPreviousPage: pagination.last != null ? hasMore : false,
+      startCursor: edges.length > 0 ? edges[0].cursor : null,
+      endCursor: edges.length > 0 ? edges[edges.length - 1].cursor : null,
+      totalCount,
+    },
   };
 }
 
-function getPeriodDates(period?: string): { from: Date; to: Date } {
-  const to = new Date();
-  const from = new Date();
-  switch (period) {
-    case "HOUR": from.setHours(from.getHours() - 1); break;
-    case "DAY": from.setDate(from.getDate() - 1); break;
-    case "WEEK": from.setDate(from.getDate() - 7); break;
-    case "QUARTER": from.setMonth(from.getMonth() - 3); break;
-    case "YEAR": from.setFullYear(from.getFullYear() - 1); break;
-    default: from.setMonth(from.getMonth() - 1);
-  }
-  return { from, to };
+function mapUserToGql(user: typeof users.$inferSelect) {
+  return {
+    ...user,
+    role: (user.role?.toUpperCase() ?? 'USER') as string,
+    isEmailVerified: user.emailVerified === 'true',
+    isActive: user.status === 'active',
+    displayName: user.fullName ?? user.username ?? null,
+    avatarUrl: user.profileImageUrl ?? null,
+    tenantId: user.orgId ?? null,
+    // Preferences stored in separate userSettings table — resolved via field resolver
+    preferences: null,
+  };
 }
 
-// ─── Resolvers ────────────────────────────────────────────────────────────────
-export const userResolvers = {
-  Query: {
-    async me(_: unknown, __: unknown, ctx: GraphQLContext) {
-      assertAuth(ctx);
-      try {
-        Logger.info("[GraphQL] me query", { userId: ctx.user.id });
+// ─── Query Resolvers ──────────────────────────────────────────────────────────
 
-        const [user] = await dbRead
-          .select()
-          .from(users)
-          .where(eq(users.id, ctx.user.id))
-          .limit(1);
+const userQueryResolvers = {
+  async me(_: unknown, _args: unknown, ctx: GraphQLContext) {
+    const userId = requireAuth(ctx);
 
-        if (!user) {
-          throw new GraphQLError("User not found", { extensions: { code: "NOT_FOUND" } });
-        }
+    try {
+      const [user] = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
 
-        return normalizeUser(user);
-      } catch (err) {
-        Logger.error("[GraphQL] me query failed", err);
-        throw err instanceof GraphQLError ? err : new GraphQLError("Failed to fetch user");
+      if (!user) {
+        throw new GraphQLError('User not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
       }
-    },
 
-    async users(
-      _: unknown,
-      args: { limit?: number; offset?: number },
-      ctx: GraphQLContext
-    ) {
-      assertAdmin(ctx);
-      const limit = Math.min(args.limit ?? 20, 100);
-      const offset = args.offset ?? 0;
+      return mapUserToGql(user);
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to fetch current user', err);
+      throw new GraphQLError('Failed to fetch user', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
 
-      try {
-        Logger.info("[GraphQL] users query (admin)", { userId: ctx.user.id, limit, offset });
+  async user(_: unknown, args: { id: string }, ctx: GraphQLContext) {
+    requireAdmin(ctx);
 
-        const rows = await dbRead
+    try {
+      const [user] = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, args.id))
+        .limit(1);
+
+      if (!user) return null;
+      return mapUserToGql(user);
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to fetch user by id', err);
+      throw new GraphQLError('Failed to fetch user', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+
+  async users(
+    _: unknown,
+    args: { pagination?: PaginationInput | null; filter?: UserFilterInput | null },
+    ctx: GraphQLContext,
+  ) {
+    requireAdmin(ctx);
+
+    const pagination = args.pagination ?? {};
+    const limit = normalizePageSize(pagination.first, pagination.last);
+
+    try {
+      let cursorCondition;
+      if (pagination.after) {
+        const { t } = decodeCursor(pagination.after);
+        cursorCondition = sql`${users.createdAt} < ${new Date(t)}`;
+      }
+
+      const filterConditions = [];
+      if (args.filter?.role) {
+        filterConditions.push(eq(users.role, args.filter.role.toLowerCase()));
+      }
+      if (args.filter?.isActive != null) {
+        filterConditions.push(
+          eq(users.status, args.filter.isActive ? 'active' : 'inactive'),
+        );
+      }
+      if (args.filter?.search) {
+        const term = `%${args.filter.search.trim()}%`;
+        filterConditions.push(
+          or(
+            ilike(users.email, term),
+            ilike(users.fullName, term),
+            ilike(users.username, term),
+          ),
+        );
+      }
+      if (args.filter?.tenantId) {
+        filterConditions.push(eq(users.orgId, args.filter.tenantId));
+      }
+
+      const whereClause =
+        filterConditions.length > 0 || cursorCondition
+          ? and(...filterConditions, cursorCondition)
+          : undefined;
+
+      const [rows, countResult] = await Promise.all([
+        db
           .select()
           .from(users)
+          .where(whereClause)
           .orderBy(desc(users.createdAt))
-          .limit(limit + 1)
-          .offset(offset);
-
-        const hasNextPage = rows.length > limit;
-        const items = hasNextPage ? rows.slice(0, limit) : rows;
-
-        return {
-          edges: items.map((u) => ({
-            node: normalizeUser(u),
-            cursor: Buffer.from(u.id).toString("base64"),
-          })),
-          pageInfo: {
-            hasNextPage,
-            hasPreviousPage: offset > 0,
-            startCursor: items.length > 0 ? Buffer.from(items[0].id).toString("base64") : null,
-            endCursor: items.length > 0 ? Buffer.from(items[items.length - 1].id).toString("base64") : null,
-            totalCount: items.length,
-          },
-        };
-      } catch (err) {
-        Logger.error("[GraphQL] users query failed", err);
-        throw new GraphQLError("Failed to fetch users");
-      }
-    },
-
-    async userSettings(_: unknown, args: { userId: string }, ctx: GraphQLContext) {
-      assertAuth(ctx);
-
-      // Users can only view their own settings unless admin
-      if (args.userId !== ctx.user.id && ctx.user.role !== "admin") {
-        throw new GraphQLError("Forbidden", { extensions: { code: "FORBIDDEN" } });
-      }
-
-      try {
-        Logger.info("[GraphQL] userSettings query", { targetUserId: args.userId, requesterId: ctx.user.id });
-
-        const [settings] = await dbRead
-          .select()
-          .from(userSettings)
-          .where(eq(userSettings.userId, args.userId))
-          .limit(1);
-
-        if (!settings) return null;
-
-        // Flatten JSON settings fields
-        const prefs = (settings.responsePreferences as any) ?? {};
-        const flags = (settings.featureFlags as any) ?? {};
-
-        return {
-          id: settings.id,
-          userId: settings.userId,
-          responseStyle: prefs.responseStyle ?? "default",
-          responseTone: prefs.responseTone ?? "",
-          customInstructions: prefs.customInstructions ?? "",
-          memoryEnabled: flags.memoryEnabled ?? false,
-          webSearchAuto: flags.webSearchAuto ?? true,
-          codeInterpreterEnabled: flags.codeInterpreterEnabled ?? true,
-          canvasEnabled: flags.canvasEnabled ?? true,
-          voiceEnabled: flags.voiceEnabled ?? true,
-          theme: "system",   // Not in DB yet — would be added to userSettings
-          language: "en",    // Not in DB yet — would be added to userSettings
-          updatedAt: settings.updatedAt,
-        };
-      } catch (err) {
-        Logger.error("[GraphQL] userSettings query failed", err);
-        throw new GraphQLError("Failed to fetch user settings");
-      }
-    },
-
-    async usage(
-      _: unknown,
-      args: { userId?: string; period?: string },
-      ctx: GraphQLContext
-    ) {
-      assertAuth(ctx);
-
-      // Non-admins can only view their own usage
-      const targetUserId = args.userId ?? ctx.user.id;
-      if (targetUserId !== ctx.user.id && ctx.user.role !== "admin") {
-        throw new GraphQLError("Forbidden", { extensions: { code: "FORBIDDEN" } });
-      }
-
-      const { from, to } = getPeriodDates(args.period);
-
-      try {
-        Logger.info("[GraphQL] usage query", { targetUserId, requesterId: ctx.user.id });
-
-        // Count chats and messages in period
-        // In production: use a proper analytics table with pre-aggregated stats
-        const chatCount = await dbRead
-          .select({ count: sql<number>`COUNT(*)` })
-          .from(chats)
-          .where(
-            and(
-              eq(chats.userId, targetUserId),
-              sql`${chats.createdAt} >= ${from}`,
-              sql`${chats.createdAt} <= ${to}`
-            )
-          );
-
-        const msgCount = await dbRead
-          .select({
-            count: sql<number>`COUNT(*)`,
-          })
-          .from(chatMessages)
-          .innerJoin(chats, eq(chatMessages.chatId, chats.id))
-          .where(
-            and(
-              eq(chats.userId, targetUserId),
-              sql`${chatMessages.createdAt} >= ${from}`,
-              sql`${chatMessages.createdAt} <= ${to}`
-            )
-          );
-
-        const [userRow] = await dbRead
-          .select({ tokensConsumed: users.tokensConsumed })
+          .limit(limit + 1),
+        db
+          .select({ count: sql<number>`count(*)` })
           .from(users)
-          .where(eq(users.id, targetUserId))
-          .limit(1);
+          .where(and(...filterConditions)),
+      ]);
 
-        const totalChats = Number(chatCount[0]?.count ?? 0);
-        const totalMessages = Number(msgCount[0]?.count ?? 0);
-        const tokensConsumed = userRow?.tokensConsumed ?? 0;
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const totalCount = Number(countResult[0]?.count ?? 0);
 
-        return {
-          userId: targetUserId,
-          period: args.period ?? "MONTH",
-          totalChats,
-          totalMessages,
-          totalTokensConsumed: tokensConsumed,
-          totalInputTokens: Math.round(tokensConsumed * 0.7),
-          totalOutputTokens: Math.round(tokensConsumed * 0.3),
-          estimatedCost: (tokensConsumed / 1000) * 0.002,
-          modelsUsed: [],  // Would aggregate from chats.ai_model_used
-          averageMessagesPerChat: totalChats > 0 ? totalMessages / totalChats : 0,
-          from,
-          to,
-        };
-      } catch (err) {
-        Logger.error("[GraphQL] usage query failed", err);
-        throw new GraphQLError("Failed to fetch usage stats");
+      return buildConnection(
+        items.map(mapUserToGql),
+        totalCount,
+        pagination,
+        hasMore,
+      );
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to fetch users', err);
+      throw new GraphQLError('Failed to fetch users', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+};
+
+// ─── Mutation Resolvers ───────────────────────────────────────────────────────
+
+const userMutationResolvers = {
+  async updateProfile(
+    _: unknown,
+    args: { input: UpdateProfileInput },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
+    const input = args.input;
+
+    if (input.email != null) {
+      if (!EMAIL_REGEX.test(input.email)) {
+        throw new GraphQLError('Invalid email address', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
       }
-    },
+      // Check email uniqueness
+      const [existing] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.email, input.email), sql`id != ${userId}`))
+        .limit(1);
+
+      if (existing) {
+        throw new GraphQLError('Email address is already in use', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+    }
+
+    try {
+      const updateData: Partial<typeof users.$inferInsert> = {
+        updatedAt: new Date(),
+      };
+
+      if (input.displayName != null) {
+        updateData.fullName = input.displayName.trim() || null;
+      }
+      if (input.avatarUrl != null) {
+        updateData.profileImageUrl = input.avatarUrl || null;
+      }
+      if (input.email != null) {
+        updateData.email = input.email.toLowerCase().trim();
+        updateData.emailVerified = 'false'; // require re-verification
+      }
+
+      const [updated] = await db
+        .update(users)
+        .set(updateData)
+        .where(eq(users.id, userId))
+        .returning();
+
+      Logger.info('User profile updated', { userId });
+      return mapUserToGql(updated);
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to update profile', err);
+      throw new GraphQLError('Failed to update profile', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
   },
 
-  Mutation: {
-    async updateSettings(
-      _: unknown,
-      args: {
-        input: {
-          responseStyle?: string;
-          responseTone?: string;
-          customInstructions?: string;
-          memoryEnabled?: boolean;
-          webSearchAuto?: boolean;
-          codeInterpreterEnabled?: boolean;
-          canvasEnabled?: boolean;
-          voiceEnabled?: boolean;
-          theme?: string;
-          language?: string;
-        };
-      },
-      ctx: GraphQLContext
-    ) {
-      assertAuth(ctx);
+  async updatePreferences(
+    _: unknown,
+    args: { input: UpdatePreferencesInput },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
+    const input = args.input;
 
-      try {
-        Logger.info("[GraphQL] updateSettings", { userId: ctx.user.id });
+    // Build preferences JSON patch from non-null inputs
+    const prefPatch: Record<string, unknown> = {};
+    const keys: Array<keyof UpdatePreferencesInput> = [
+      'theme', 'language', 'timezone', 'notifications', 'defaultModel',
+      'autoSave', 'streamingEnabled', 'codeHighlighting', 'markdownRendering',
+      'customInstructions',
+    ];
+    for (const key of keys) {
+      if (input[key] != null) prefPatch[key] = input[key];
+    }
 
-        // Load current settings
-        const [existing] = await db
-          .select()
-          .from(userSettings)
-          .where(eq(userSettings.userId, ctx.user.id))
-          .limit(1);
+    if (Object.keys(prefPatch).length === 0) {
+      throw new GraphQLError('No preferences provided to update', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
 
-        const currentPrefs = (existing?.responsePreferences as any) ?? {};
-        const currentFlags = (existing?.featureFlags as any) ?? {};
-
-        const newPrefs = {
-          ...currentPrefs,
-          ...(args.input.responseStyle !== undefined && { responseStyle: args.input.responseStyle }),
-          ...(args.input.responseTone !== undefined && { responseTone: args.input.responseTone }),
-          ...(args.input.customInstructions !== undefined && { customInstructions: args.input.customInstructions }),
-        };
-
-        const newFlags = {
-          ...currentFlags,
-          ...(args.input.memoryEnabled !== undefined && { memoryEnabled: args.input.memoryEnabled }),
-          ...(args.input.webSearchAuto !== undefined && { webSearchAuto: args.input.webSearchAuto }),
-          ...(args.input.codeInterpreterEnabled !== undefined && { codeInterpreterEnabled: args.input.codeInterpreterEnabled }),
-          ...(args.input.canvasEnabled !== undefined && { canvasEnabled: args.input.canvasEnabled }),
-          ...(args.input.voiceEnabled !== undefined && { voiceEnabled: args.input.voiceEnabled }),
-        };
-
-        let updated: typeof userSettings.$inferSelect;
-
-        if (existing) {
-          const [result] = await db
-            .update(userSettings)
-            .set({
-              responsePreferences: newPrefs,
-              featureFlags: newFlags,
-              // theme/language not yet in userSettings schema — extend schema to add them
-              updatedAt: new Date(),
-            })
-            .where(eq(userSettings.userId, ctx.user.id))
-            .returning();
-          updated = result;
-        } else {
-          const [result] = await db
-            .insert(userSettings)
-            .values({
-              userId: ctx.user.id,
-              responsePreferences: newPrefs,
-              featureFlags: newFlags,
-            })
-            .returning();
-          updated = result;
-        }
-
-        return {
-          id: updated.id,
-          userId: updated.userId,
-          responseStyle: newPrefs.responseStyle ?? "default",
-          responseTone: newPrefs.responseTone ?? "",
-          customInstructions: newPrefs.customInstructions ?? "",
-          memoryEnabled: newFlags.memoryEnabled ?? false,
-          webSearchAuto: newFlags.webSearchAuto ?? true,
-          codeInterpreterEnabled: newFlags.codeInterpreterEnabled ?? true,
-          canvasEnabled: newFlags.canvasEnabled ?? true,
-          voiceEnabled: newFlags.voiceEnabled ?? true,
-          theme: "system",
-          language: "en",
-          updatedAt: updated.updatedAt,
-        };
-      } catch (err) {
-        Logger.error("[GraphQL] updateSettings failed", err);
-        throw new GraphQLError("Failed to update settings");
-      }
-    },
-
-    async updateProfile(
-      _: unknown,
-      args: {
-        input: {
-          firstName?: string;
-          lastName?: string;
-          username?: string;
-          profileImageUrl?: string;
-          company?: string;
-          phone?: string;
-        };
-      },
-      ctx: GraphQLContext
-    ) {
-      assertAuth(ctx);
-
-      try {
-        Logger.info("[GraphQL] updateProfile", { userId: ctx.user.id });
-
-        const updateData: Partial<typeof users.$inferInsert> = {
+    try {
+      // Upsert into userSettings table
+      await db
+        .insert(userSettings)
+        .values({
+          userId,
+          preferences: prefPatch,
+          createdAt: new Date(),
           updatedAt: new Date(),
-        };
+        })
+        .onConflictDoUpdate({
+          target: userSettings.userId,
+          set: {
+            preferences: sql`userSettings.preferences || ${JSON.stringify(prefPatch)}::jsonb`,
+            updatedAt: new Date(),
+          },
+        });
 
-        if (args.input.firstName !== undefined) updateData.firstName = args.input.firstName;
-        if (args.input.lastName !== undefined) updateData.lastName = args.input.lastName;
-        if (args.input.username !== undefined) updateData.username = args.input.username;
-        if (args.input.profileImageUrl !== undefined) updateData.profileImageUrl = args.input.profileImageUrl;
-        if (args.input.company !== undefined) updateData.company = args.input.company;
-        if (args.input.phone !== undefined) updateData.phone = args.input.phone;
+      const [user] = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
 
-        // Update fullName if first/last changed
-        if (args.input.firstName !== undefined || args.input.lastName !== undefined) {
-          const [current] = await db.select({ firstName: users.firstName, lastName: users.lastName }).from(users).where(eq(users.id, ctx.user.id)).limit(1);
-          const fn = args.input.firstName ?? current?.firstName ?? "";
-          const ln = args.input.lastName ?? current?.lastName ?? "";
-          updateData.fullName = `${fn} ${ln}`.trim() || null;
-        }
-
-        const [updated] = await db
-          .update(users)
-          .set(updateData)
-          .where(eq(users.id, ctx.user.id))
-          .returning();
-
-        if (!updated) {
-          throw new GraphQLError("User not found", { extensions: { code: "NOT_FOUND" } });
-        }
-
-        return normalizeUser(updated);
-      } catch (err) {
-        Logger.error("[GraphQL] updateProfile failed", err);
-        throw err instanceof GraphQLError ? err : new GraphQLError("Failed to update profile");
-      }
-    },
+      Logger.info('User preferences updated', { userId });
+      return mapUserToGql(user);
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to update preferences', err);
+      throw new GraphQLError('Failed to update preferences', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
   },
 
-  // Field resolvers
+  async deleteAccount(
+    _: unknown,
+    args: { confirm: boolean },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
+
+    if (!args.confirm) {
+      throw new GraphQLError(
+        'You must confirm account deletion by passing confirm: true',
+        { extensions: { code: 'BAD_USER_INPUT' } },
+      );
+    }
+
+    try {
+      // Soft-delete: mark as inactive and anonymize PII
+      await db
+        .update(users)
+        .set({
+          status: 'inactive',
+          email: sql`'deleted_' || id || '@deleted.invalid'`,
+          fullName: null,
+          username: null,
+          profileImageUrl: null,
+          phone: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, userId));
+
+      Logger.info('Account deleted (soft)', { userId });
+      return true;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to delete account', err);
+      throw new GraphQLError('Failed to delete account', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+
+  async changePassword(
+    _: unknown,
+    args: { input: ChangePasswordInput },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
+    const { currentPassword, newPassword } = args.input;
+
+    if (!currentPassword || !newPassword) {
+      throw new GraphQLError('Both current and new passwords are required', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
+
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      throw new GraphQLError(
+        `New password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+        { extensions: { code: 'BAD_USER_INPUT' } },
+      );
+    }
+
+    if (currentPassword === newPassword) {
+      throw new GraphQLError('New password must be different from current password', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
+
+    try {
+      const [user] = await db
+        .select({ id: users.id, password: users.password })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+
+      if (!user) {
+        throw new GraphQLError('User not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
+
+      // In production: verify currentPassword against bcrypt hash
+      // const valid = await bcrypt.compare(currentPassword, user.password ?? '');
+      // if (!valid) throw new GraphQLError('Current password is incorrect', ...);
+
+      // Hash new password
+      // const hashed = await bcrypt.hash(newPassword, 12);
+      const hashed = `hashed:${newPassword}`; // placeholder — swap with bcrypt in prod
+
+      await db
+        .update(users)
+        .set({ password: hashed, updatedAt: new Date() })
+        .where(eq(users.id, userId));
+
+      Logger.info('Password changed', { userId });
+      return true;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to change password', err);
+      throw new GraphQLError('Failed to change password', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+
+  async requestEmailVerification(_: unknown, _args: unknown, ctx: GraphQLContext) {
+    const userId = requireAuth(ctx);
+
+    try {
+      const [user] = await db
+        .select({ id: users.id, email: users.email, emailVerified: users.emailVerified })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+
+      if (!user) {
+        throw new GraphQLError('User not found', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
+
+      if (user.emailVerified === 'true') {
+        throw new GraphQLError('Email is already verified', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      // In production: send verification email via email service
+      // await emailService.sendVerification(user.email, userId);
+      Logger.info('Email verification requested', { userId, email: user.email });
+      return true;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to request email verification', err);
+      throw new GraphQLError('Failed to request email verification', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+};
+
+// ─── Field Resolvers ──────────────────────────────────────────────────────────
+
+const userFieldResolvers = {
   User: {
-    async settings(parent: { id: string }, _: unknown, ctx: GraphQLContext) {
+    async preferences(parent: { id: string }) {
       try {
-        const [settings] = await dbRead
+        const [settings] = await db
           .select()
           .from(userSettings)
           .where(eq(userSettings.userId, parent.id))
           .limit(1);
+
         if (!settings) return null;
-        const prefs = (settings.responsePreferences as any) ?? {};
-        const flags = (settings.featureFlags as any) ?? {};
-        return {
-          id: settings.id,
-          userId: settings.userId,
-          responseStyle: prefs.responseStyle ?? "default",
-          responseTone: prefs.responseTone ?? "",
-          customInstructions: prefs.customInstructions ?? "",
-          memoryEnabled: flags.memoryEnabled ?? false,
-          webSearchAuto: flags.webSearchAuto ?? true,
-          codeInterpreterEnabled: flags.codeInterpreterEnabled ?? true,
-          canvasEnabled: flags.canvasEnabled ?? true,
-          voiceEnabled: flags.voiceEnabled ?? true,
-          theme: "system",   // Not in DB yet — would be added to userSettings
-          language: "en",    // Not in DB yet — would be added to userSettings
-          updatedAt: settings.updatedAt,
-        };
+        return settings.preferences ?? null;
       } catch {
         return null;
       }
     },
 
-    async chats(parent: { id: string }, args: { limit?: number; offset?: number }) {
-      const limit = Math.min(args.limit ?? 10, 50);
-      const offset = args.offset ?? 0;
+    async chats(parent: { id: string }, args: { first?: number; after?: string }) {
+      const limit = Math.min(args.first ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+      const rows = await db
+        .select()
+        .from(chats)
+        .where(eq(chats.userId, parent.id))
+        .orderBy(desc(chats.updatedAt))
+        .limit(limit + 1);
+
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+
+      return buildConnection(items, items.length, { first: args.first }, hasMore);
+    },
+
+    async agents(parent: { id: string }, args: { first?: number; after?: string }) {
+      const limit = Math.min(args.first ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+      const rows = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.userId, parent.id))
+        .orderBy(desc(agents.createdAt))
+        .limit(limit + 1);
+
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+
+      return buildConnection(items, items.length, { first: args.first }, hasMore);
+    },
+
+    async documents(_parent: { id: string }, _args: unknown) {
+      // Placeholder — wire up once a `documents` table exists in schema
+      return { edges: [], pageInfo: { hasNextPage: false, hasPreviousPage: false, startCursor: null, endCursor: null, totalCount: 0 } };
+    },
+
+    async usage(parent: { id: string }) {
       try {
-        const rows = await dbRead
-          .select()
+        const [user] = await db
+          .select({
+            tokensConsumed: users.tokensConsumed,
+            queryCount: users.queryCount,
+            lastLoginAt: users.lastLoginAt,
+          })
+          .from(users)
+          .where(eq(users.id, parent.id))
+          .limit(1);
+
+        const [chatCount] = await db
+          .select({ count: sql<number>`count(*)` })
           .from(chats)
-          .where(and(eq(chats.userId, parent.id), sql`${chats.deletedAt} IS NULL`))
-          .orderBy(desc(chats.updatedAt))
-          .limit(limit)
-          .offset(offset);
+          .where(eq(chats.userId, parent.id));
 
         return {
-          edges: rows.map((c) => ({
-            node: { ...c, status: c.archived === "true" ? "ARCHIVED" : "ACTIVE", archived: c.archived === "true", pinned: c.pinned === "true" },
-            cursor: Buffer.from(c.id).toString("base64"),
-          })),
-          pageInfo: { hasNextPage: false, hasPreviousPage: offset > 0, startCursor: null, endCursor: null, totalCount: rows.length },
+          totalTokens: user?.tokensConsumed ?? 0,
+          totalChats: Number(chatCount?.count ?? 0),
+          totalMessages: user?.queryCount ?? 0,
+          totalDocuments: 0,
+          lastActiveAt: user?.lastLoginAt ?? null,
+          monthlyTokens: 0, // Would require a monthly rollup query
         };
       } catch {
-        return { edges: [], pageInfo: { hasNextPage: false, hasPreviousPage: false, startCursor: null, endCursor: null, totalCount: 0 } };
+        return {
+          totalTokens: 0,
+          totalChats: 0,
+          totalMessages: 0,
+          totalDocuments: 0,
+          lastActiveAt: null,
+          monthlyTokens: 0,
+        };
       }
     },
-
-    async usage(parent: { id: string }, args: { period?: string }) {
-      const { from, to } = getPeriodDates(args.period);
-      return {
-        userId: parent.id,
-        period: args.period ?? "MONTH",
-        totalChats: 0,
-        totalMessages: 0,
-        totalTokensConsumed: 0,
-        totalInputTokens: 0,
-        totalOutputTokens: 0,
-        estimatedCost: 0,
-        modelsUsed: [],
-        averageMessagesPerChat: 0,
-        from,
-        to,
-      };
-    },
   },
+};
+
+// ─── Export ───────────────────────────────────────────────────────────────────
+
+export const userResolvers = {
+  Query: userQueryResolvers,
+  Mutation: userMutationResolvers,
+  ...userFieldResolvers,
 };

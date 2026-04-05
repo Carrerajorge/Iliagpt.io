@@ -1,479 +1,368 @@
-import { Logger } from '../../lib/logger';
+/**
+ * HybridRetriever — Reciprocal Rank Fusion across BM25, vector, metadata,
+ * and freshness rankers. Applies MMR for diversity enforcement.
+ *
+ * RRF formula: score = Σ 1/(k + rank_i) across all rankers
+ * Default k=60 (empirically robust across IR benchmarks).
+ */
 
-// ---------------------------------------------------------------------------
-// Shared types (local definitions — not imported from UnifiedRAGPipeline)
-// ---------------------------------------------------------------------------
+import { createLogger } from "../../utils/logger";
+import { db } from "../../db";
+import { ragChunks } from "@shared/schema/rag";
+import { eq, and, inArray, sql, gte } from "drizzle-orm";
+import type { RetrieveStage, RetrievedChunk, RetrieveOptions, ChunkType, PipelineChunk, ChunkMetadata } from "../UnifiedRAGPipeline";
+import { cosineSimilarity } from "../UnifiedRAGPipeline";
 
-interface RetrievedChunk {
-  id: string;
-  documentId: string;
-  content: string;
-  chunkIndex: number;
-  metadata: Record<string, unknown>;
-  tokens: number;
-  score: number;
-  source: string;
-  retrievalMethod: 'vector' | 'bm25' | 'hybrid' | 'metadata';
-}
+const logger = createLogger("HybridRetriever");
 
-interface RetrievedQuery {
-  text: string;
-  namespace: string;
-  topK: number;
-  filter?: Record<string, unknown>;
-  hybridAlpha?: number;
-  minScore?: number;
-}
-
-// ---------------------------------------------------------------------------
-// Exported types
-// ---------------------------------------------------------------------------
-
-export interface RankerResult {
-  chunkId: string;
-  rank: number; // 1-based
-  score: number;
-  rankerName: string;
-}
-
-export interface RankerConfig {
-  name: string;
-  weight: number; // default 1.0
-  enabled: boolean;
-}
-
-export interface BM25Config {
-  k1: number; // default 1.5
-  b: number;  // default 0.75
-}
-
-export interface MMRConfig {
-  lambda: number; // default 0.5 — tradeoff relevance vs diversity
-  topK: number;
-}
+// ─── Configuration ────────────────────────────────────────────────────────────
 
 export interface HybridRetrieverConfig {
-  rankers: RankerConfig[];
-  bm25: BM25Config;
-  mmr: MMRConfig;
-  rrfK: number; // default 60
+  /** RRF rank offset. Larger = smoother fusion. Default 60. */
+  rrfK: number;
+  /** Ranker weights for RRF score blending (purely additive) */
+  weights: {
+    bm25: number;
+    vector: number;
+    metadata: number;
+    freshness: number;
+  };
+  /** Minimum final RRF score to include in results */
+  minScore: number;
+  /** MMR lambda: 0 = max diversity, 1 = max relevance */
+  mmrLambda: number;
+  /** Half-life for freshness decay in milliseconds */
+  freshnessHalfLifeMs: number;
 }
 
-// ---------------------------------------------------------------------------
-// English stopwords
-// ---------------------------------------------------------------------------
-
-const STOPWORDS = new Set([
-  'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-  'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
-  'could', 'should', 'may', 'might', 'shall', 'can', 'need',
-  'dare', 'ought', 'used', 'a', 'an', 'and', 'but', 'or',
-  'for', 'nor', 'on', 'at', 'to', 'in', 'of',
-]);
-
-// ---------------------------------------------------------------------------
-// InMemoryBM25 (private)
-// ---------------------------------------------------------------------------
-
-interface BM25Document {
-  id: string;
-  tokens: string[];
-  content: string;
-}
-
-class InMemoryBM25 {
-  private documents: Map<string, BM25Document> = new Map();
-  private config: BM25Config;
-  private dfCache: Map<string, number> = new Map();
-  private avgdl = 0;
-
-  constructor(config: BM25Config) {
-    this.config = config;
-  }
-
-  addDocument(id: string, content: string): void {
-    const tokens = this._tokenize(content);
-    this.documents.set(id, { id, tokens, content });
-    this._rebuildDf();
-  }
-
-  search(query: string, topK: number): RankerResult[] {
-    const queryTokens = this._tokenize(query).filter(t => !STOPWORDS.has(t));
-    if (queryTokens.length === 0 || this.documents.size === 0) return [];
-
-    const N = this.documents.size;
-    const scores: Array<{ id: string; score: number }> = [];
-
-    for (const [id, doc] of this.documents) {
-      const tfMap = this._tfMap(doc.tokens);
-      const dl = doc.tokens.length;
-      let score = 0;
-
-      for (const term of queryTokens) {
-        const tf = tfMap.get(term) ?? 0;
-        if (tf === 0) continue;
-
-        const df = this.dfCache.get(term) ?? 0;
-        const idf = Math.log((N - df + 0.5) / (df + 0.5) + 1);
-        const { k1, b } = this.config;
-        const numerator = tf * (k1 + 1);
-        const denominator = tf + k1 * (1 - b + b * (dl / (this.avgdl || 1)));
-        score += idf * (numerator / denominator);
-      }
-
-      if (score > 0) scores.push({ id, score });
-    }
-
-    scores.sort((a, b) => b.score - a.score);
-    const topResults = scores.slice(0, topK);
-
-    return topResults.map((item, idx) => ({
-      chunkId: item.id,
-      rank: idx + 1,
-      score: item.score,
-      rankerName: 'bm25',
-    }));
-  }
-
-  removeDocument(id: string): void {
-    this.documents.delete(id);
-    this._rebuildDf();
-  }
-
-  clear(): void {
-    this.documents.clear();
-    this.dfCache.clear();
-    this.avgdl = 0;
-  }
-
-  get size(): number {
-    return this.documents.size;
-  }
-
-  private _tokenize(text: string): string[] {
-    return text
-      .toLowerCase()
-      .split(/\W+/)
-      .filter(t => t.length > 1 && !STOPWORDS.has(t));
-  }
-
-  private _tfMap(tokens: string[]): Map<string, number> {
-    const map = new Map<string, number>();
-    for (const t of tokens) map.set(t, (map.get(t) ?? 0) + 1);
-    return map;
-  }
-
-  private _rebuildDf(): void {
-    this.dfCache.clear();
-    let totalTokens = 0;
-
-    for (const doc of this.documents.values()) {
-      totalTokens += doc.tokens.length;
-      const unique = new Set(doc.tokens);
-      for (const term of unique) {
-        this.dfCache.set(term, (this.dfCache.get(term) ?? 0) + 1);
-      }
-    }
-
-    this.avgdl = this.documents.size > 0
-      ? totalTokens / this.documents.size
-      : 0;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// VectorRanker (private)
-// ---------------------------------------------------------------------------
-
-interface VectorDocument {
-  id: string;
-  vector: number[];
-  content: string;
-}
-
-class VectorRanker {
-  private documents: Map<string, VectorDocument> = new Map();
-
-  addDocument(id: string, vector: number[], content: string): void {
-    this.documents.set(id, { id, vector, content });
-  }
-
-  search(queryVector: number[], topK: number): RankerResult[] {
-    if (this.documents.size === 0 || queryVector.length === 0) return [];
-
-    const scores: Array<{ id: string; score: number }> = [];
-
-    for (const [id, doc] of this.documents) {
-      const sim = this.cosineSimilarity(queryVector, doc.vector);
-      scores.push({ id, score: sim });
-    }
-
-    scores.sort((a, b) => b.score - a.score);
-    const topResults = scores.slice(0, topK);
-
-    return topResults.map((item, idx) => ({
-      chunkId: item.id,
-      rank: idx + 1,
-      score: item.score,
-      rankerName: 'vector',
-    }));
-  }
-
-  cosineSimilarity(a: number[], b: number[]): number {
-    if (a.length === 0 || b.length === 0) return 0;
-    const len = Math.min(a.length, b.length);
-    let dot = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < len; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-
-    const denom = Math.sqrt(normA) * Math.sqrt(normB);
-    return denom === 0 ? 0 : dot / denom;
-  }
-
-  removeDocument(id: string): void {
-    this.documents.delete(id);
-  }
-
-  get size(): number {
-    return this.documents.size;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Default configs
-// ---------------------------------------------------------------------------
-
-const DEFAULT_BM25_CONFIG: BM25Config = { k1: 1.5, b: 0.75 };
-
-const DEFAULT_MMR_CONFIG: MMRConfig = { lambda: 0.5, topK: 10 };
-
-const DEFAULT_HYBRID_CONFIG: HybridRetrieverConfig = {
-  rankers: [
-    { name: 'bm25', weight: 1.0, enabled: true },
-    { name: 'vector', weight: 1.0, enabled: true },
-  ],
-  bm25: DEFAULT_BM25_CONFIG,
-  mmr: DEFAULT_MMR_CONFIG,
+const DEFAULT_CONFIG: HybridRetrieverConfig = {
   rrfK: 60,
+  weights: { bm25: 1.0, vector: 1.0, metadata: 0.5, freshness: 0.3 },
+  minScore: 0.0,
+  mmrLambda: 0.7,
+  freshnessHalfLifeMs: 7 * 24 * 60 * 60 * 1000,
 };
 
-// ---------------------------------------------------------------------------
-// HybridRetriever (exported)
-// ---------------------------------------------------------------------------
+// ─── BM25 in-process implementation ──────────────────────────────────────────
 
-export class HybridRetriever {
-  private bm25: InMemoryBM25;
-  private vector: VectorRanker;
-  private documents: Map<string, RetrievedChunk> = new Map();
-  private config: HybridRetrieverConfig;
+const STOP_WORDS_EN = new Set(["the","is","are","of","and","to","in","for","with","that","this","have","it","at","be","from","or","an","by","we","you"]);
+const STOP_WORDS_ES = new Set(["el","la","los","las","de","que","en","un","una","es","por","con","del","al","se","no","a","su","si","más","pero","hay"]);
+const STOP_WORDS = new Set([...STOP_WORDS_EN, ...STOP_WORDS_ES]);
 
-  constructor(config?: Partial<HybridRetrieverConfig>) {
-    this.config = {
-      ...DEFAULT_HYBRID_CONFIG,
-      ...config,
-      bm25: { ...DEFAULT_BM25_CONFIG, ...(config?.bm25 ?? {}) },
-      mmr: { ...DEFAULT_MMR_CONFIG, ...(config?.mmr ?? {}) },
-      rankers: config?.rankers ?? DEFAULT_HYBRID_CONFIG.rankers,
-    };
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\sáéíóúüñÁÉÍÓÚÜÑ]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 1 && !STOP_WORDS.has(t));
+}
 
-    this.bm25 = new InMemoryBM25(this.config.bm25);
-    this.vector = new VectorRanker();
+function bm25Score(
+  queryTerms: string[],
+  docTerms: string[],
+  avgDocLength: number,
+  docFreq: Map<string, number>,
+  totalDocs: number,
+  k1 = 1.5,
+  b = 0.75
+): number {
+  const docLength = docTerms.length;
+  const termFreq = new Map<string, number>();
+  for (const t of docTerms) termFreq.set(t, (termFreq.get(t) ?? 0) + 1);
 
-    Logger.debug('HybridRetriever initialized', { config: this.config });
+  let score = 0;
+  for (const term of queryTerms) {
+    const tf = termFreq.get(term) ?? 0;
+    if (tf === 0) continue;
+    const df = docFreq.get(term) ?? 0;
+    const idf = Math.log((totalDocs - df + 0.5) / (df + 0.5) + 1);
+    const numerator = tf * (k1 + 1);
+    const denominator = tf + k1 * (1 - b + b * (docLength / avgDocLength));
+    score += idf * (numerator / denominator);
+  }
+  return score;
+}
+
+// ─── Metadata ranker ─────────────────────────────────────────────────────────
+
+function metadataScore(query: string, chunk: { content: string; sectionTitle?: string | null; chunkType?: string | null }): number {
+  const q = query.toLowerCase();
+  let score = 0;
+
+  // Boost for heading chunks
+  if (chunk.chunkType === "heading") score += 0.3;
+
+  // Section title match
+  if (chunk.sectionTitle) {
+    const titleWords = tokenize(chunk.sectionTitle);
+    const queryWords = tokenize(query);
+    const overlap = queryWords.filter((w) => titleWords.includes(w)).length;
+    score += overlap * 0.2;
   }
 
-  addChunk(chunk: RetrievedChunk, vector?: number[]): void {
-    this.documents.set(chunk.id, chunk);
+  // Table match for data queries
+  if (chunk.chunkType === "table" && /\b(tabla|table|datos|data|total|suma|sum|average|promedio)\b/i.test(q)) score += 0.4;
 
-    const bm25Ranker = this.config.rankers.find(r => r.name === 'bm25');
-    if (bm25Ranker?.enabled !== false) {
-      this.bm25.addDocument(chunk.id, chunk.content);
-    }
+  // Code match for code queries
+  if (chunk.chunkType === "code" && /\b(function|code|función|clase|class|implement|ejemplo|example)\b/i.test(q)) score += 0.3;
 
-    const vectorRanker = this.config.rankers.find(r => r.name === 'vector');
-    if (vectorRanker?.enabled !== false && vector && vector.length > 0) {
-      this.vector.addDocument(chunk.id, vector, chunk.content);
-    }
-  }
+  return Math.min(1, score);
+}
 
-  addChunks(chunks: Array<{ chunk: RetrievedChunk; vector?: number[] }>): void {
-    for (const { chunk, vector } of chunks) {
-      this.addChunk(chunk, vector);
-    }
-    Logger.debug('HybridRetriever.addChunks', { count: chunks.length });
-  }
+// ─── Freshness ranker ─────────────────────────────────────────────────────────
 
-  async retrieve(query: RetrievedQuery, queryVector?: number[]): Promise<RetrievedChunk[]> {
-    Logger.info('HybridRetriever.retrieve', {
-      query: query.text,
-      namespace: query.namespace,
-      topK: query.topK,
-    });
+function freshnessScore(createdAt: Date | null | undefined, halfLifeMs: number): number {
+  if (!createdAt) return 0.5;
+  const ageMs = Date.now() - createdAt.getTime();
+  return Math.exp(-Math.log(2) * ageMs / halfLifeMs);
+}
 
-    const rankerResultsMap = new Map<string, RankerResult[]>();
-    const expandedTopK = query.topK * 4; // retrieve more candidates before MMR
+// ─── MMR (Maximal Marginal Relevance) ────────────────────────────────────────
 
-    // BM25 ranker
-    const bm25Config = this.config.rankers.find(r => r.name === 'bm25');
-    if (bm25Config?.enabled !== false) {
-      const bm25Results = this.bm25.search(query.text, expandedTopK);
-      if (bm25Results.length > 0) {
-        rankerResultsMap.set('bm25', bm25Results);
-        Logger.debug('BM25 ranker results', { count: bm25Results.length });
+function mmrRerank(
+  candidates: Array<RetrievedChunk & { embedding?: number[] }>,
+  queryEmbedding: number[],
+  lambda: number,
+  topK: number
+): RetrievedChunk[] {
+  if (candidates.length === 0) return [];
+
+  const selected: typeof candidates = [];
+  const remaining = [...candidates];
+
+  while (selected.length < topK && remaining.length > 0) {
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const cand = remaining[i];
+      const relevance = cand.embedding ? cosineSimilarity(queryEmbedding, cand.embedding) : cand.score;
+
+      // Penalty: similarity to already selected chunks
+      let maxSim = 0;
+      for (const sel of selected) {
+        if (cand.embedding && sel.embedding) {
+          const sim = cosineSimilarity(cand.embedding, sel.embedding);
+          if (sim > maxSim) maxSim = sim;
+        }
+      }
+
+      const mmrScore = lambda * relevance - (1 - lambda) * maxSim;
+      if (mmrScore > bestScore) {
+        bestScore = mmrScore;
+        bestIdx = i;
       }
     }
 
-    // Vector ranker
-    const vectorConfig = this.config.rankers.find(r => r.name === 'vector');
-    if (vectorConfig?.enabled !== false && queryVector && queryVector.length > 0) {
-      const vectorResults = this.vector.search(queryVector, expandedTopK);
-      if (vectorResults.length > 0) {
-        rankerResultsMap.set('vector', vectorResults);
-        Logger.debug('Vector ranker results', { count: vectorResults.length });
-      }
+    selected.push(remaining[bestIdx]);
+    remaining.splice(bestIdx, 1);
+  }
+
+  return selected;
+}
+
+// ─── DB query ─────────────────────────────────────────────────────────────────
+
+interface RawChunk {
+  id: string;
+  content: string;
+  embedding: number[] | null;
+  chunkType: string | null;
+  sectionTitle: string | null;
+  source: string;
+  sourceId: string | null;
+  pageNumber: number | null;
+  language: string | null;
+  title: string | null;
+  tags: string[] | null;
+  importance: number | null;
+  createdAt: Date;
+  metadata: Record<string, unknown>;
+  chunkIndex: number;
+}
+
+async function fetchCandidates(options: RetrieveOptions): Promise<RawChunk[]> {
+  const conditions = [];
+
+  if (options.filterUserId) {
+    conditions.push(eq(ragChunks.userId, options.filterUserId));
+  }
+  if (options.filterSourceIds && options.filterSourceIds.length > 0) {
+    conditions.push(inArray(ragChunks.sourceId, options.filterSourceIds));
+  }
+  if (options.filterLanguage) {
+    conditions.push(eq(ragChunks.language, options.filterLanguage));
+  }
+  if (options.filterChunkTypes && options.filterChunkTypes.length > 0) {
+    conditions.push(inArray(ragChunks.chunkType, options.filterChunkTypes));
+  }
+
+  conditions.push(eq(ragChunks.isActive, true));
+
+  const rows = await db
+    .select({
+      id: ragChunks.id,
+      content: ragChunks.content,
+      embedding: ragChunks.embedding,
+      chunkType: ragChunks.chunkType,
+      sectionTitle: ragChunks.sectionTitle,
+      source: ragChunks.source,
+      sourceId: ragChunks.sourceId,
+      pageNumber: ragChunks.pageNumber,
+      language: ragChunks.language,
+      title: ragChunks.title,
+      tags: ragChunks.tags,
+      importance: ragChunks.importance,
+      createdAt: ragChunks.createdAt,
+      metadata: ragChunks.metadata,
+      chunkIndex: ragChunks.chunkIndex,
+    })
+    .from(ragChunks)
+    .where(conditions.length > 0 ? and(...conditions) : sql`TRUE`)
+    .limit(2000); // Safety cap before in-process scoring
+
+  return rows as RawChunk[];
+}
+
+// ─── HybridRetriever ──────────────────────────────────────────────────────────
+
+export class HybridRetriever implements RetrieveStage {
+  private readonly config: HybridRetrieverConfig;
+
+  constructor(config: Partial<HybridRetrieverConfig> = {}) {
+    this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  async retrieve(
+    query: string,
+    queryEmbedding: number[],
+    options: RetrieveOptions = {}
+  ): Promise<RetrievedChunk[]> {
+    const topK = options.topK ?? 10;
+    const minScore = options.minScore ?? this.config.minScore;
+
+    let candidates: RawChunk[];
+    try {
+      candidates = await fetchCandidates(options);
+    } catch (err) {
+      logger.error("Failed to fetch candidates from DB", { error: String(err) });
+      throw err;
     }
 
-    if (rankerResultsMap.size === 0) {
-      Logger.warn('HybridRetriever: no ranker produced results', { query: query.text });
+    if (candidates.length === 0) {
+      logger.debug("No candidates found", { options });
       return [];
     }
 
-    // RRF fusion
-    const fusedScores = this._rrfFuse(rankerResultsMap);
+    logger.debug("Candidates fetched", { count: candidates.length, query: query.slice(0, 50) });
 
-    // Build candidate list sorted by fused score
-    const minScore = query.minScore ?? 0;
-    const candidates: RetrievedChunk[] = [];
+    const queryTerms = tokenize(query);
 
-    const sortedEntries = Array.from(fusedScores.entries())
-      .sort((a, b) => b[1] - a[1]);
+    // Compute BM25 corpus stats
+    const docFreq = new Map<string, number>();
+    let totalTerms = 0;
+    const tokenizedDocs: string[][] = candidates.map((c) => {
+      const terms = tokenize(c.content);
+      totalTerms += terms.length;
+      for (const t of new Set(terms)) {
+        docFreq.set(t, (docFreq.get(t) ?? 0) + 1);
+      }
+      return terms;
+    });
+    const avgDocLength = totalTerms / Math.max(1, candidates.length);
 
-    for (const [chunkId, fusedScore] of sortedEntries) {
-      if (fusedScore < minScore) continue;
-      const chunk = this.documents.get(chunkId);
-      if (!chunk) continue;
+    // Score each candidate across all rankers
+    const scored: Array<{
+      chunk: RawChunk;
+      bm25: number;
+      vector: number;
+      metadata: number;
+      freshness: number;
+    }> = candidates.map((chunk, i) => ({
+      chunk,
+      bm25: bm25Score(queryTerms, tokenizedDocs[i], avgDocLength, docFreq, candidates.length),
+      vector: chunk.embedding ? cosineSimilarity(queryEmbedding, chunk.embedding) : 0,
+      metadata: metadataScore(query, chunk),
+      freshness: freshnessScore(chunk.createdAt, this.config.freshnessHalfLifeMs),
+    }));
 
-      candidates.push({
-        ...chunk,
-        score: fusedScore,
-        retrievalMethod: 'hybrid',
+    // Build ranked lists per ranker (descending)
+    const rankBy = (key: "bm25" | "vector" | "metadata" | "freshness") =>
+      [...scored].sort((a, b) => b[key] - a[key]);
+
+    const bm25Ranked = rankBy("bm25");
+    const vectorRanked = rankBy("vector");
+    const metaRanked = rankBy("metadata");
+    const freshnessRanked = rankBy("freshness");
+
+    // Build rank maps
+    const getRankMap = (ranked: typeof scored): Map<string, number> => {
+      const m = new Map<string, number>();
+      ranked.forEach((s, i) => m.set(s.chunk.id, i + 1));
+      return m;
+    };
+
+    const bm25Ranks = getRankMap(bm25Ranked);
+    const vectorRanks = getRankMap(vectorRanked);
+    const metaRanks = getRankMap(metaRanked);
+    const freshnessRanks = getRankMap(freshnessRanked);
+
+    const { rrfK, weights } = this.config;
+
+    // Compute RRF scores
+    const rrfScores: Array<{ chunk: RawChunk; rrfScore: number; vectorScore: number; embedding: number[] | null }> =
+      scored.map(({ chunk }) => {
+        const rrf =
+          weights.bm25 * (1 / (rrfK + (bm25Ranks.get(chunk.id) ?? candidates.length))) +
+          weights.vector * (1 / (rrfK + (vectorRanks.get(chunk.id) ?? candidates.length))) +
+          weights.metadata * (1 / (rrfK + (metaRanks.get(chunk.id) ?? candidates.length))) +
+          weights.freshness * (1 / (rrfK + (freshnessRanks.get(chunk.id) ?? candidates.length)));
+
+        return {
+          chunk,
+          rrfScore: rrf,
+          vectorScore: chunk.embedding ? cosineSimilarity(queryEmbedding, chunk.embedding) : 0,
+          embedding: chunk.embedding,
+        };
       });
-    }
 
-    // Apply MMR diversity
-    const mmrTopK = Math.min(query.topK, this.config.mmr.topK);
-    const diverseResults = this._applyMMR([], candidates, this.config.mmr.lambda, mmrTopK);
+    // Sort by RRF score
+    rrfScores.sort((a, b) => b.rrfScore - a.rrfScore);
 
-    Logger.info('HybridRetriever.retrieve complete', {
+    // Filter by min score and take candidate pool for MMR
+    const pool = rrfScores.filter((s) => s.rrfScore >= minScore).slice(0, topK * 3);
+
+    // MMR reranking for diversity
+    const diverse = mmrRerank(
+      pool.map((s) => ({
+        id: s.chunk.id,
+        content: s.chunk.content,
+        chunkIndex: s.chunk.chunkIndex,
+        embedding: s.embedding ?? undefined,
+        score: s.rrfScore,
+        rrfScore: s.rrfScore,
+        matchType: "hybrid" as const,
+        metadata: {
+          chunkType: (s.chunk.chunkType ?? "text") as ChunkType,
+          sectionTitle: s.chunk.sectionTitle ?? undefined,
+          sourceFile: s.chunk.sourceId ?? undefined,
+          pageNumber: s.chunk.pageNumber ?? undefined,
+          language: s.chunk.language ?? undefined,
+          startOffset: 0,
+          endOffset: 0,
+        } satisfies ChunkMetadata,
+      })),
+      queryEmbedding,
+      this.config.mmrLambda,
+      topK
+    );
+
+    logger.info("HybridRetriever complete", {
+      query: query.slice(0, 60),
       candidates: candidates.length,
-      returned: diverseResults.length,
+      returned: diverse.length,
     });
 
-    return diverseResults;
-  }
-
-  private _rrfFuse(rankerResults: Map<string, RankerResult[]>): Map<string, number> {
-    const fusedScores = new Map<string, number>();
-    const k = this.config.rrfK;
-
-    for (const [rankerName, results] of rankerResults) {
-      const rankerConfig = this.config.rankers.find(r => r.name === rankerName);
-      const weight = rankerConfig?.weight ?? 1.0;
-
-      for (const result of results) {
-        const contribution = weight * (1 / (k + result.rank));
-        fusedScores.set(
-          result.chunkId,
-          (fusedScores.get(result.chunkId) ?? 0) + contribution,
-        );
-      }
-    }
-
-    return fusedScores;
-  }
-
-  private _applyMMR(
-    selected: RetrievedChunk[],
-    candidates: RetrievedChunk[],
-    lambda: number,
-    topK: number,
-  ): RetrievedChunk[] {
-    const result: RetrievedChunk[] = [...selected];
-    const remaining = [...candidates];
-
-    while (result.length < topK && remaining.length > 0) {
-      let bestIdx = -1;
-      let bestScore = -Infinity;
-
-      for (let i = 0; i < remaining.length; i++) {
-        const candidate = remaining[i];
-        const relevance = candidate.score;
-
-        let maxSimilarityToSelected = 0;
-        for (const selectedChunk of result) {
-          const sim = this._jaccardSimilarity(candidate.content, selectedChunk.content);
-          if (sim > maxSimilarityToSelected) maxSimilarityToSelected = sim;
-        }
-
-        const mmrScore = lambda * relevance - (1 - lambda) * maxSimilarityToSelected;
-
-        if (mmrScore > bestScore) {
-          bestScore = mmrScore;
-          bestIdx = i;
-        }
-      }
-
-      if (bestIdx === -1) break;
-
-      result.push(remaining[bestIdx]);
-      remaining.splice(bestIdx, 1);
-    }
-
-    return result;
-  }
-
-  private _jaccardSimilarity(textA: string, textB: string): number {
-    const wordsA = new Set(textA.toLowerCase().split(/\W+/).filter(w => w.length > 1));
-    const wordsB = new Set(textB.toLowerCase().split(/\W+/).filter(w => w.length > 1));
-
-    if (wordsA.size === 0 && wordsB.size === 0) return 1;
-    if (wordsA.size === 0 || wordsB.size === 0) return 0;
-
-    let intersectionSize = 0;
-    for (const word of wordsA) {
-      if (wordsB.has(word)) intersectionSize++;
-    }
-
-    const unionSize = wordsA.size + wordsB.size - intersectionSize;
-    return unionSize === 0 ? 0 : intersectionSize / unionSize;
-  }
-
-  remove(chunkId: string): void {
-    this.documents.delete(chunkId);
-    this.bm25.removeDocument(chunkId);
-    this.vector.removeDocument(chunkId);
-    Logger.debug('HybridRetriever.remove', { chunkId });
-  }
-
-  clear(): void {
-    this.documents.clear();
-    this.bm25.clear();
-    // Re-instantiate vector ranker since it has no clear() method
-    this.vector = new VectorRanker();
-    Logger.info('HybridRetriever cleared');
-  }
-
-  getStats(): { documents: number; bm25Indexed: number; vectorIndexed: number } {
-    return {
-      documents: this.documents.size,
-      bm25Indexed: this.bm25.size,
-      vectorIndexed: this.vector.size,
-    };
+    return diverse;
   }
 }

@@ -1,420 +1,395 @@
-import { Logger } from '../../lib/logger';
+/**
+ * CitationGenerator — Generates precise citations for every claim in a response.
+ * Supports inline [Source: doc, p.X] format, and APA/MLA/Chicago bibliography formats.
+ * Verifies each citation: checks that cited text actually supports the claim.
+ */
 
-// ─── Shared chunk types ────────────────────────────────────────────────────────
+import { createLogger } from "../../utils/logger";
+import type {
+  GenerateStage,
+  GenerateOptions,
+  RetrievedChunk,
+  Citation,
+  CitationFormat,
+} from "../UnifiedRAGPipeline";
 
-interface RetrievedChunk {
-  id: string;
-  documentId: string;
-  content: string;
-  chunkIndex: number;
-  metadata: Record<string, unknown>;
-  tokens: number;
-  score: number;
-  source: string;
-  retrievalMethod: string;
+const logger = createLogger("CitationGenerator");
+
+// ─── Citation formats ─────────────────────────────────────────────────────────
+
+function formatAPA(citation: CitationBase): string {
+  const { author, title, pageNumber, year, sourceFile } = citation;
+  const doc = title ?? sourceFile ?? "Unknown Document";
+  const page = pageNumber ? `, p. ${pageNumber}` : "";
+  const authorPart = author ? `${author}. ` : "";
+  const yearPart = year ? `(${year}). ` : "";
+  return `${authorPart}${yearPart}${doc}${page}.`;
 }
 
-export interface RankedChunk extends RetrievedChunk {
-  rank: number;
-  rerankScore?: number;
+function formatMLA(citation: CitationBase): string {
+  const { author, title, pageNumber, year, sourceFile } = citation;
+  const doc = title ?? sourceFile ?? "Unknown Document";
+  const page = pageNumber ? ` ${pageNumber}` : "";
+  const authorPart = author ? `${author}. ` : "";
+  return `${authorPart}"${doc}."${page} ${year ?? "n.d."}.`;
 }
 
-// ─── Public types ─────────────────────────────────────────────────────────────
-
-export type CitationStyle = 'inline' | 'bibliography' | 'both' | 'none';
-
-export interface Citation {
-  id: string;
-  chunkId: string;
-  documentId: string;
-  source: string;
-  page?: number;
-  section?: string;
-  snippet: string;
-  confidence: number;
+function formatChicago(citation: CitationBase): string {
+  const { author, title, pageNumber, year, sourceFile } = citation;
+  const doc = title ?? sourceFile ?? "Unknown Document";
+  const page = pageNumber ? `, ${pageNumber}` : "";
+  const authorPart = author ? `${author}, ` : "";
+  return `${authorPart}*${doc}*${page} (${year ?? "n.d."}).`;
 }
 
-export interface InlineCitation {
-  marker: string;
-  citation: Citation;
-  position: number;
+function formatInline(citation: CitationBase, index: number): string {
+  const parts: string[] = [];
+  if (citation.sourceFile) parts.push(citation.sourceFile.split("/").pop() ?? citation.sourceFile);
+  if (citation.sectionTitle) parts.push(citation.sectionTitle);
+  if (citation.pageNumber) parts.push(`p. ${citation.pageNumber}`);
+  return `[${index}: ${parts.join(", ") || "Source"}]`;
 }
 
-export interface BibEntry {
-  id: string;
-  authors?: string[];
-  title: string;
-  source: string;
-  year?: number;
-  page?: string;
-  url?: string;
-  accessedAt: Date;
+interface CitationBase {
+  sourceFile?: string;
+  title?: string;
+  author?: string;
+  year?: string;
+  pageNumber?: number;
+  sectionTitle?: string;
 }
 
-export interface Bibliography {
-  entries: BibEntry[];
-  style: 'apa' | 'mla' | 'chicago' | 'simple';
+// ─── Claim extraction ─────────────────────────────────────────────────────────
+
+interface Claim {
+  text: string;
+  startIndex: number;
+  endIndex: number;
+  supportingChunkIds: string[];
 }
 
-export interface CitedAnswer {
-  content: string;
-  inlineCitations: InlineCitation[];
-  bibliography: Bibliography;
-  verificationScore: number;
-  unverifiedClaims: string[];
+async function extractClaimsWithCitations(
+  responseText: string,
+  chunks: RetrievedChunk[],
+  model: string
+): Promise<Claim[]> {
+  const { llmGateway } = await import("../../lib/llmGateway");
+
+  const chunkContext = chunks
+    .map((c, i) => `[CHUNK ${i + 1} | id=${c.id} | source=${c.metadata.sourceFile ?? "?"} | p=${c.metadata.pageNumber ?? "?"}]\n${c.content.slice(0, 300)}`)
+    .join("\n\n---\n\n");
+
+  const prompt = `Given a RESPONSE and the SOURCE CHUNKS it was generated from, identify which chunks support which claims in the response.
+
+RESPONSE:
+${responseText}
+
+SOURCE CHUNKS:
+${chunkContext}
+
+For each factual claim in the response, return JSON:
+{
+  "claims": [
+    {
+      "text": "<exact claim sentence from response>",
+      "supporting_chunk_ids": ["<chunk_id1>", ...]
+    }
+  ]
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
+Include only claims that have supporting evidence in the chunks. Return valid JSON only.`;
 
-// Common English stop words to exclude from term overlap computation
-const STOP_WORDS = new Set([
-  'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-  'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'be',
-  'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
-  'would', 'could', 'should', 'may', 'might', 'shall', 'can', 'this',
-  'that', 'these', 'those', 'it', 'its', 'not', 'also', 'which', 'what',
-  'how', 'when', 'where', 'who', 'why', 'there', 'their', 'they', 'we',
-  'he', 'she', 'i', 'you', 'my', 'your', 'his', 'her', 'our', 'up',
-  'out', 'if', 'then', 'than', 'so', 'no', 'just', 'more', 'about',
-]);
+  try {
+    const result = await llmGateway.chat(
+      [{ role: "user", content: prompt }],
+      { model, maxTokens: 800, temperature: 0 }
+    );
 
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
-}
+    const jsonMatch = result.content.match(/\{[\s\S]*"claims"[\s\S]*\}/);
+    if (!jsonMatch) return [];
 
-function jaccardSimilarity(a: string[], b: string[]): number {
-  if (a.length === 0 || b.length === 0) return 0;
-  const setA = new Set(a);
-  const setB = new Set(b);
-  let intersection = 0;
-  for (const t of setA) {
-    if (setB.has(t)) intersection++;
+    const parsed = JSON.parse(jsonMatch[0]) as {
+      claims: Array<{ text: string; supporting_chunk_ids: string[] }>;
+    };
+
+    return (parsed.claims ?? []).map((claim) => {
+      const startIndex = responseText.indexOf(claim.text);
+      return {
+        text: claim.text,
+        startIndex: Math.max(0, startIndex),
+        endIndex: startIndex + claim.text.length,
+        supportingChunkIds: claim.supporting_chunk_ids ?? [],
+      };
+    });
+  } catch (err) {
+    logger.warn("Claim extraction failed", { error: String(err) });
+    return [];
   }
-  const union = setA.size + setB.size - intersection;
-  return union > 0 ? intersection / union : 0;
 }
 
-function splitIntoSentences(text: string): string[] {
-  // Split on . ! ? followed by space or end of string, but preserve the punctuation
-  return text
-    .split(/(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+// ─── Inline citation insertion ────────────────────────────────────────────────
+
+function insertInlineCitations(
+  text: string,
+  claims: Claim[],
+  citationMap: Map<string, string> // chunkId → inline marker
+): string {
+  // Sort claims by position descending (insert from end to preserve indices)
+  const sorted = [...claims].sort((a, b) => b.startIndex - a.startIndex);
+  let result = text;
+
+  for (const claim of sorted) {
+    const markers = claim.supportingChunkIds
+      .map((id) => citationMap.get(id))
+      .filter(Boolean)
+      .join("");
+    if (!markers) continue;
+
+    const insertAt = claim.endIndex < result.length ? claim.endIndex : result.indexOf(claim.text) + claim.text.length;
+    if (insertAt <= 0) continue;
+    result = result.slice(0, insertAt) + markers + result.slice(insertAt);
+  }
+
+  return result;
 }
 
-function isNoun(word: string): boolean {
-  // Heuristic: capitalized (after first position), or longer words not in stop words
-  return word.length >= 4 && !STOP_WORDS.has(word.toLowerCase());
+// ─── Citation verification ────────────────────────────────────────────────────
+
+function verifyCitation(claimText: string, chunkContent: string): boolean {
+  // Simple: at least 30% of claim tokens appear in the chunk
+  const claimTokens = new Set(
+    claimText.toLowerCase().split(/\s+/).filter((t) => t.length > 3)
+  );
+  if (claimTokens.size === 0) return false;
+
+  const chunkLower = chunkContent.toLowerCase();
+  let matches = 0;
+  for (const token of claimTokens) {
+    if (chunkLower.includes(token)) matches++;
+  }
+  return matches / claimTokens.size >= 0.3;
 }
 
 // ─── CitationGenerator ────────────────────────────────────────────────────────
 
-export class CitationGenerator {
-  private readonly style: CitationStyle;
-  private readonly bibStyle: Bibliography['style'];
+export interface CitationGeneratorConfig {
+  model: string;
+  format: CitationFormat;
+  includeInlineCitations: boolean;
+  includeSourceList: boolean;
+  verifyAccuracy: boolean;
+  maxContextTokens: number;
+}
 
-  constructor(style: CitationStyle = 'both', bibStyle: Bibliography['style'] = 'simple') {
-    this.style = style;
-    this.bibStyle = bibStyle;
+const DEFAULT_CG_CONFIG: CitationGeneratorConfig = {
+  model: process.env.RAG_RERANK_MODEL ?? "gpt-4o-mini",
+  format: "inline",
+  includeInlineCitations: true,
+  includeSourceList: true,
+  verifyAccuracy: true,
+  maxContextTokens: 4000,
+};
+
+export class CitationGenerator implements GenerateStage {
+  private readonly config: CitationGeneratorConfig;
+
+  constructor(config: Partial<CitationGeneratorConfig> = {}) {
+    this.config = { ...DEFAULT_CG_CONFIG, ...config };
   }
 
-  generate(answer: string, chunks: RankedChunk[]): CitedAnswer {
-    if (this.style === 'none') {
-      const { score, unverified } = this.verify(answer, chunks);
-      return {
-        content: answer,
-        inlineCitations: [],
-        bibliography: { entries: [], style: this.bibStyle },
-        verificationScore: score,
-        unverifiedClaims: unverified,
-      };
+  async generate(
+    query: string,
+    chunks: RetrievedChunk[],
+    options: GenerateOptions = {}
+  ): Promise<{ prompt: string; answer?: string; citations: Citation[] }> {
+    const format = options.citationFormat ?? this.config.format;
+    const language = options.language ?? "es";
+    const maxTokens = options.maxContextTokens ?? this.config.maxContextTokens;
+
+    // Build prompt
+    const { prompt, contextParts } = this.buildPrompt(query, chunks, language, maxTokens, options.includePageNumbers ?? true);
+
+    // Generate answer
+    let answer: string | undefined;
+    try {
+      const { llmGateway } = await import("../../lib/llmGateway");
+      const response = await llmGateway.chat(
+        [{ role: "user", content: prompt }],
+        { model: this.config.model, maxTokens: 1200, temperature: 0.3 }
+      );
+      answer = response.content;
+    } catch (err) {
+      logger.warn("Answer generation failed", { error: String(err) });
     }
 
-    const sentences = splitIntoSentences(answer);
-    const citationMap = new Map<string, { chunk: RankedChunk; confidence: number }>();
-    // Map from sentence index to citation assignment
-    const sentenceCitations: Array<{ sentence: string; match: { chunk: RankedChunk; confidence: number } | null }> = [];
+    // Build citation objects
+    const rawCitations: Citation[] = chunks.map((chunk, i) => ({
+      chunkId: chunk.id,
+      text: chunk.content.slice(0, 250) + (chunk.content.length > 250 ? "…" : ""),
+      pageNumber: chunk.metadata.pageNumber,
+      sectionTitle: chunk.metadata.sectionTitle,
+      sourceFile: chunk.metadata.sourceFile,
+      relevanceScore: chunk.score,
+    }));
 
-    for (const sentence of sentences) {
-      const match = this._matchClaim(sentence, chunks);
-      sentenceCitations.push({ sentence, match });
-      if (match) {
-        citationMap.set(match.chunk.id, match);
+    // If answer available, annotate with claim-level citations
+    let annotatedAnswer: string | undefined = answer;
+    if (answer && this.config.includeInlineCitations && format === "inline") {
+      try {
+        const claims = await extractClaimsWithCitations(answer, chunks, this.config.model);
+
+        // Build inline markers
+        const citationMap = new Map<string, string>();
+        chunks.forEach((c, i) => citationMap.set(c.id, `[${i + 1}]`));
+
+        // Verify citations if enabled
+        const verifiedClaims = this.config.verifyAccuracy
+          ? claims.map((claim) => ({
+              ...claim,
+              supportingChunkIds: claim.supportingChunkIds.filter((cid) => {
+                const chunk = chunks.find((c) => c.id === cid);
+                return chunk ? verifyCitation(claim.text, chunk.content) : false;
+              }),
+            }))
+          : claims;
+
+        // Annotate claims on answer
+        annotatedAnswer = insertInlineCitations(answer, verifiedClaims, citationMap);
+
+        // Update citations with claim text
+        for (const claim of verifiedClaims) {
+          for (const cid of claim.supportingChunkIds) {
+            const cit = rawCitations.find((c) => c.chunkId === cid);
+            if (cit && !cit.claimText) {
+              cit.claimText = claim.text.slice(0, 150);
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn("Inline citation insertion failed", { error: String(err) });
       }
     }
 
-    // Build ordered citations from unique chunks (in order of first mention)
-    const orderedChunks: RankedChunk[] = [];
-    const seenChunkIds = new Set<string>();
-    for (const { match } of sentenceCitations) {
-      if (match && !seenChunkIds.has(match.chunk.id)) {
-        orderedChunks.push(match.chunk);
-        seenChunkIds.add(match.chunk.id);
-      }
-    }
-
-    // Build Citation objects
-    const citationObjects = new Map<string, Citation>();
-    orderedChunks.forEach((chunk, idx) => {
-      const match = citationMap.get(chunk.id)!;
-      const citation: Citation = {
-        id: `cite-${idx + 1}`,
-        chunkId: chunk.id,
-        documentId: chunk.documentId,
-        source: chunk.source,
-        page: typeof chunk.metadata['page'] === 'number' ? chunk.metadata['page'] : undefined,
-        section: typeof chunk.metadata['section'] === 'string' ? chunk.metadata['section'] : undefined,
-        snippet: chunk.content.slice(0, 150),
-        confidence: match.confidence,
+    // Format citations per requested format
+    const formattedCitations = rawCitations.map((cit, i) => {
+      const base: CitationBase = {
+        sourceFile: cit.sourceFile,
+        sectionTitle: cit.sectionTitle,
+        pageNumber: cit.pageNumber,
+        title: cit.sectionTitle,
       };
-      citationObjects.set(chunk.id, citation);
+
+      let formatted: string;
+      switch (format) {
+        case "apa":
+          formatted = formatAPA(base);
+          break;
+        case "mla":
+          formatted = formatMLA(base);
+          break;
+        case "chicago":
+          formatted = formatChicago(base);
+          break;
+        default:
+          formatted = formatInline(base, i + 1);
+      }
+
+      return { ...cit, format, formatted };
     });
 
-    // Build inline citations with positions
-    const inlineCitations: InlineCitation[] = [];
-    let charOffset = 0;
-    const annotatedSentences: string[] = [];
-
-    for (const { sentence, match } of sentenceCitations) {
-      if (match && (this.style === 'inline' || this.style === 'both')) {
-        const citation = citationObjects.get(match.chunk.id)!;
-        const markerNum = orderedChunks.indexOf(match.chunk) + 1;
-        const marker = `[${markerNum}]`;
-        const annotatedSentence = `${sentence} ${marker}`;
-        const position = charOffset + sentence.length + 1;
-        inlineCitations.push({ marker, citation, position });
-        annotatedSentences.push(annotatedSentence);
-        charOffset += annotatedSentence.length + 1;
-      } else {
-        annotatedSentences.push(sentence);
-        charOffset += sentence.length + 1;
-      }
+    // Append source list to answer if requested
+    if (annotatedAnswer && this.config.includeSourceList && formattedCitations.length > 0) {
+      const sourceListLabel = language === "es" ? "\n\n**Fuentes:**\n" : "\n\n**Sources:**\n";
+      const sourceList = formattedCitations
+        .map((c, i) => `${i + 1}. ${c.formatted}`)
+        .join("\n");
+      annotatedAnswer = annotatedAnswer + sourceListLabel + sourceList;
     }
 
-    const finalContent =
-      this.style === 'inline' || this.style === 'both'
-        ? annotatedSentences.join(' ')
-        : answer;
-
-    // Build bibliography
-    const bibEntries: BibEntry[] = orderedChunks.map((chunk, idx) =>
-      this._buildBibEntry(chunk, idx + 1),
-    );
-    const bibliography: Bibliography = { entries: bibEntries, style: this.bibStyle };
-
-    // Verification
-    const { score, unverified } = this.verify(answer, chunks);
-
-    Logger.info('[CitationGenerator] Citations generated', {
-      sentenceCount: sentences.length,
-      citedSentences: inlineCitations.length,
-      uniqueSources: orderedChunks.length,
-      verificationScore: score,
+    logger.info("CitationGenerator complete", {
+      query: query.slice(0, 60),
+      chunks: chunks.length,
+      citations: formattedCitations.length,
+      format,
     });
 
     return {
-      content: finalContent,
-      inlineCitations,
-      bibliography,
-      verificationScore: score,
-      unverifiedClaims: unverified,
+      prompt,
+      answer: annotatedAnswer,
+      citations: formattedCitations,
     };
   }
 
-  private _matchClaim(
-    claim: string,
-    chunks: RankedChunk[],
-  ): { chunk: RankedChunk; confidence: number } | null {
-    const claimTokens = tokenize(claim);
-    if (claimTokens.length === 0) return null;
-
-    let bestScore = 0;
-    let bestChunk: RankedChunk | null = null;
+  private buildPrompt(
+    query: string,
+    chunks: RetrievedChunk[],
+    language: "es" | "en",
+    maxTokens: number,
+    includePageNumbers: boolean
+  ): { prompt: string; contextParts: string[] } {
+    const contextParts: string[] = [];
+    let estimatedTokens = 0;
 
     for (const chunk of chunks) {
-      const chunkTokens = tokenize(chunk.content);
-      const similarity = jaccardSimilarity(claimTokens, chunkTokens);
+      const chunkTokens = Math.ceil(chunk.content.length / 4);
+      if (estimatedTokens + chunkTokens > maxTokens) break;
 
-      // Weight by chunk rank score to prefer higher-ranked sources
-      const weightedScore = similarity * (0.7 + 0.3 * chunk.score);
+      const ref = includePageNumbers && chunk.metadata.pageNumber
+        ? `[p. ${chunk.metadata.pageNumber}${chunk.metadata.sectionTitle ? ` — ${chunk.metadata.sectionTitle}` : ""}]`
+        : chunk.metadata.sectionTitle ? `[${chunk.metadata.sectionTitle}]` : "";
 
-      if (weightedScore > bestScore) {
-        bestScore = weightedScore;
-        bestChunk = chunk;
-      }
+      contextParts.push(`${ref}\n${chunk.content}`);
+      estimatedTokens += chunkTokens;
     }
 
-    const JACCARD_THRESHOLD = 0.15;
-    if (bestScore < JACCARD_THRESHOLD || !bestChunk) return null;
+    const systemLine = language === "es"
+      ? "Eres un asistente experto. Responde basándote ÚNICAMENTE en el contexto. Cita las páginas con [p. X] cuando proporciones datos específicos. Si la información no está en el contexto, indícalo."
+      : "You are an expert assistant. Answer based ONLY on the provided context. Cite page numbers with [p. X] when providing specific data. If the information is not in the context, clearly state that.";
 
-    return { chunk: bestChunk, confidence: Math.min(1, bestScore * 2) };
+    const prompt = `${systemLine}
+
+## Context:
+${contextParts.join("\n\n---\n\n")}
+
+## Question:
+${query}
+
+## Answer:`;
+
+    return { prompt, contextParts };
   }
+}
 
-  private _insertInlineMarkers(text: string, citations: InlineCitation[]): string {
-    // Build a sentence-level mapping and re-annotate
-    const sentences = splitIntoSentences(text);
-    const positionToCitation = new Map<number, InlineCitation>();
-    for (const ic of citations) {
-      positionToCitation.set(ic.position, ic);
+// ─── Standalone helper ────────────────────────────────────────────────────────
+
+export function extractSourceList(
+  chunks: RetrievedChunk[],
+  format: CitationFormat = "inline"
+): Citation[] {
+  return chunks.map((chunk, i) => {
+    const base: CitationBase = {
+      sourceFile: chunk.metadata.sourceFile,
+      sectionTitle: chunk.metadata.sectionTitle,
+      pageNumber: chunk.metadata.pageNumber,
+    };
+
+    let formatted: string;
+    switch (format) {
+      case "apa": formatted = formatAPA(base); break;
+      case "mla": formatted = formatMLA(base); break;
+      case "chicago": formatted = formatChicago(base); break;
+      default: formatted = formatInline(base, i + 1);
     }
-
-    // Simple approach: append marker after sentence if citation exists for it
-    const markerBySentence = new Map<string, string>();
-    for (const ic of citations) {
-      // Match by sentence content
-      markerBySentence.set(ic.citation.snippet.slice(0, 50), ic.marker);
-    }
-
-    return sentences
-      .map((s) => {
-        const citation = citations.find((ic) =>
-          s.includes(ic.citation.snippet.slice(0, 30)),
-        );
-        return citation ? `${s} ${citation.marker}` : s;
-      })
-      .join(' ');
-  }
-
-  private _buildBibEntry(chunk: RankedChunk, index: number): BibEntry {
-    const title =
-      typeof chunk.metadata['title'] === 'string'
-        ? (chunk.metadata['title'] as string)
-        : chunk.content.slice(0, 80).replace(/\n/g, ' ').trim();
-
-    const authors: string[] = [];
-    if (Array.isArray(chunk.metadata['authors'])) {
-      for (const a of chunk.metadata['authors'] as unknown[]) {
-        if (typeof a === 'string') authors.push(a);
-      }
-    } else if (typeof chunk.metadata['author'] === 'string') {
-      authors.push(chunk.metadata['author'] as string);
-    }
-
-    const year =
-      typeof chunk.metadata['year'] === 'number'
-        ? chunk.metadata['year']
-        : typeof chunk.metadata['publishedAt'] === 'string'
-        ? new Date(chunk.metadata['publishedAt'] as string).getFullYear()
-        : undefined;
-
-    const page =
-      typeof chunk.metadata['page'] === 'number'
-        ? String(chunk.metadata['page'])
-        : typeof chunk.metadata['pages'] === 'string'
-        ? (chunk.metadata['pages'] as string)
-        : undefined;
-
-    const url =
-      typeof chunk.metadata['url'] === 'string'
-        ? (chunk.metadata['url'] as string)
-        : undefined;
 
     return {
-      id: `ref-${index}`,
-      authors: authors.length > 0 ? authors : undefined,
-      title,
-      source: chunk.source,
-      year,
-      page,
-      url,
-      accessedAt: new Date(),
+      chunkId: chunk.id,
+      text: chunk.content.slice(0, 200),
+      pageNumber: chunk.metadata.pageNumber,
+      sectionTitle: chunk.metadata.sectionTitle,
+      sourceFile: chunk.metadata.sourceFile,
+      relevanceScore: chunk.score,
+      format,
+      formatted,
     };
-  }
-
-  private _formatBibEntry(entry: BibEntry, style: Bibliography['style']): string {
-    const authorsStr =
-      entry.authors && entry.authors.length > 0
-        ? entry.authors.join(', ')
-        : 'Unknown Author';
-    const yearStr = entry.year ? `${entry.year}` : 'n.d.';
-    const pageStr = entry.page ? `, p.${entry.page}` : '';
-    const urlStr = entry.url ? ` Retrieved from ${entry.url}` : '';
-
-    switch (style) {
-      case 'simple':
-        return `[${entry.id}] ${entry.source}${pageStr}: "${entry.title.slice(0, 80)}"`;
-
-      case 'apa':
-        return `${authorsStr} (${yearStr}). ${entry.title}. ${entry.source}.${urlStr}`;
-
-      case 'mla':
-        return `${authorsStr}. "${entry.title}." ${entry.source}, ${yearStr}.${urlStr}`;
-
-      case 'chicago':
-        return `${authorsStr}. ${entry.title}. ${entry.source}: Publisher, ${yearStr}.${urlStr}`;
-
-      default:
-        return `${authorsStr} (${yearStr}). ${entry.title}. ${entry.source}.`;
-    }
-  }
-
-  verify(
-    answer: string,
-    chunks: RankedChunk[],
-  ): { score: number; unverified: string[] } {
-    const sentences = splitIntoSentences(answer);
-    if (sentences.length === 0) return { score: 1.0, unverified: [] };
-
-    const unverified: string[] = [];
-    let verifiedCount = 0;
-
-    for (const sentence of sentences) {
-      const words = sentence
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .filter((w) => isNoun(w));
-
-      if (words.length < 2) {
-        // Short or stop-word-only sentences are considered verified by default
-        verifiedCount++;
-        continue;
-      }
-
-      const keyNouns = words.slice(0, 8); // Use up to 8 key nouns
-      let supported = false;
-
-      for (const chunk of chunks) {
-        const chunkLower = chunk.content.toLowerCase();
-        const matchCount = keyNouns.filter((noun) => chunkLower.includes(noun)).length;
-        if (matchCount >= 2) {
-          supported = true;
-          break;
-        }
-      }
-
-      if (supported) {
-        verifiedCount++;
-      } else {
-        unverified.push(sentence);
-      }
-    }
-
-    const score = sentences.length > 0 ? verifiedCount / sentences.length : 1.0;
-
-    Logger.debug('[CitationGenerator] Verification complete', {
-      totalSentences: sentences.length,
-      verifiedCount,
-      unverifiedCount: unverified.length,
-      score,
-    });
-
-    return { score, unverified };
-  }
-
-  formatBibliography(entries: BibEntry[]): string {
-    if (entries.length === 0) return '';
-
-    const lines: string[] = ['References:', ''];
-    entries.forEach((entry, idx) => {
-      const entryWithId: BibEntry = { ...entry, id: String(idx + 1) };
-      lines.push(this._formatBibEntry(entryWithId, this.bibStyle));
-    });
-
-    return lines.join('\n');
-  }
+  });
 }

@@ -1,30 +1,23 @@
-/**
- * GraphQL SDL Schema — IliaGPT Gateway
- * Covers: Users, Chats, Messages, Agents, Models, Documents, Analytics
- */
+import { gql } from 'graphql-tag';
+import type { DocumentNode } from 'graphql';
 
-export const typeDefs = /* GraphQL */ `
-  # ─── Scalars ────────────────────────────────────────────────────────────────
-  scalar JSON
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+// ─── Full Schema Definition ───────────────────────────────────────────────────
+
+export const typeDefs: DocumentNode = gql`
+  # ─── Scalars ─────────────────────────────────────────────────────────────────
   scalar DateTime
+  scalar JSON
+  scalar Upload
 
-  # ─── Directives ─────────────────────────────────────────────────────────────
-  directive @auth(requires: Role = USER) on FIELD_DEFINITION | OBJECT
-  directive @rateLimit(max: Int!, window: String!) on FIELD_DEFINITION
-  directive @deprecated(reason: String) on FIELD_DEFINITION | ENUM_VALUE
+  # ─── Enums ───────────────────────────────────────────────────────────────────
 
-  # ─── Enums ──────────────────────────────────────────────────────────────────
-  enum Role {
-    GUEST
-    USER
-    EDITOR
+  enum UserRole {
     ADMIN
-  }
-
-  enum ChatStatus {
-    ACTIVE
-    ARCHIVED
-    DELETED
+    USER
+    GUEST
+    MODERATOR
   }
 
   enum MessageRole {
@@ -34,52 +27,55 @@ export const typeDefs = /* GraphQL */ `
     TOOL
   }
 
-  enum MessageStatus {
-    PENDING
-    PROCESSING
-    DONE
-    FAILED
+  enum ModelProvider {
+    OPENAI
+    ANTHROPIC
+    GOOGLE
+    MISTRAL
+    COHERE
+    LLAMA
+    CUSTOM
+  }
+
+  enum ModelCapability {
+    CHAT
+    COMPLETION
+    EMBEDDING
+    IMAGE_GENERATION
+    IMAGE_ANALYSIS
+    AUDIO_TRANSCRIPTION
+    FUNCTION_CALLING
+    CODE_GENERATION
+    REASONING
   }
 
   enum AgentStatus {
-    IDLE
-    RUNNING
-    PAUSED
-    FAILED
-    COMPLETED
+    DRAFT
+    ACTIVE
+    ARCHIVED
+    PUBLISHED
   }
 
-  enum TaskStatus {
-    QUEUED
+  enum ChatStatus {
+    ACTIVE
+    ARCHIVED
+    DELETED
+    SHARED
+  }
+
+  enum ExecutionStatus {
+    PENDING
     RUNNING
     COMPLETED
     FAILED
     CANCELLED
   }
 
-  enum ModelProvider {
-    OPENAI
-    ANTHROPIC
-    GOOGLE
-    MISTRAL
-    GROQ
-    LOCAL
-  }
-
   enum DocumentStatus {
-    PENDING
+    UPLOADING
     PROCESSING
     READY
-    FAILED
-  }
-
-  enum Period {
-    HOUR
-    DAY
-    WEEK
-    MONTH
-    QUARTER
-    YEAR
+    ERROR
   }
 
   enum SortOrder {
@@ -87,7 +83,8 @@ export const typeDefs = /* GraphQL */ `
     DESC
   }
 
-  # ─── Pagination ──────────────────────────────────────────────────────────────
+  # ─── Pagination ───────────────────────────────────────────────────────────────
+
   type PageInfo {
     hasNextPage: Boolean!
     hasPreviousPage: Boolean!
@@ -96,82 +93,13 @@ export const typeDefs = /* GraphQL */ `
     totalCount: Int!
   }
 
-  # ─── User Types ─────────────────────────────────────────────────────────────
-  type User {
-    id: ID!
-    username: String
-    email: String
-    firstName: String
-    lastName: String
-    fullName: String
-    profileImageUrl: String
-    role: Role!
-    plan: String!
-    status: String!
-    queryCount: Int!
-    tokensConsumed: Int!
-    tokensLimit: Int!
-    creditsBalance: Int!
-    dailyRequestsUsed: Int!
-    dailyRequestsLimit: Int!
-    is2faEnabled: Boolean!
-    emailVerified: Boolean!
-    authProvider: String!
-    createdAt: DateTime!
-    updatedAt: DateTime!
-    settings: UserSettings
-    chats(limit: Int, offset: Int): ChatConnection!
-    usage(period: Period): UsageStats
-  }
-
-  type UserSettings {
-    id: ID!
-    userId: ID!
-    responseStyle: String
-    responseTone: String
-    customInstructions: String
-    memoryEnabled: Boolean!
-    webSearchAuto: Boolean!
-    codeInterpreterEnabled: Boolean!
-    canvasEnabled: Boolean!
-    voiceEnabled: Boolean!
-    theme: String
-    language: String
-    updatedAt: DateTime!
-  }
-
-  type UserConnection {
-    edges: [UserEdge!]!
-    pageInfo: PageInfo!
-  }
-
   type UserEdge {
     node: User!
     cursor: String!
   }
 
-  # ─── Chat Types ─────────────────────────────────────────────────────────────
-  type Chat {
-    id: ID!
-    userId: ID!
-    title: String!
-    gptId: String
-    status: ChatStatus!
-    archived: Boolean!
-    pinned: Boolean!
-    pinnedAt: DateTime
-    messageCount: Int!
-    tokensUsed: Int!
-    aiModelUsed: String
-    lastMessageAt: DateTime
-    createdAt: DateTime!
-    updatedAt: DateTime!
-    messages(limit: Int, cursor: String): MessageConnection!
-    user: User
-  }
-
-  type ChatConnection {
-    edges: [ChatEdge!]!
+  type UserConnection {
+    edges: [UserEdge!]!
     pageInfo: PageInfo!
   }
 
@@ -180,21 +108,8 @@ export const typeDefs = /* GraphQL */ `
     cursor: String!
   }
 
-  type Message {
-    id: ID!
-    chatId: ID!
-    role: MessageRole!
-    content: String!
-    status: MessageStatus!
-    attachments: JSON
-    sources: JSON
-    metadata: JSON
-    createdAt: DateTime!
-    chat: Chat
-  }
-
-  type MessageConnection {
-    edges: [MessageEdge!]!
+  type ChatConnection {
+    edges: [ChatEdge!]!
     pageInfo: PageInfo!
   }
 
@@ -203,168 +118,18 @@ export const typeDefs = /* GraphQL */ `
     cursor: String!
   }
 
-  type SearchResult {
-    message: Message!
-    chatTitle: String!
-    score: Float!
-    highlight: String
-  }
-
-  # ─── Agent Types ─────────────────────────────────────────────────────────────
-  type Agent {
-    id: ID!
-    name: String!
-    description: String
-    type: String!
-    status: AgentStatus!
-    capabilities: [String!]!
-    config: JSON
-    lastActiveAt: DateTime
-    createdAt: DateTime!
-    updatedAt: DateTime!
-    tasks(limit: Int, offset: Int): TaskConnection!
-    health: AgentHealth!
-  }
-
-  type AgentHealth {
-    agentId: ID!
-    status: AgentStatus!
-    uptime: Float!
-    tasksCompleted: Int!
-    tasksFailed: Int!
-    averageLatencyMs: Float!
-    lastError: String
-    checkedAt: DateTime!
-  }
-
-  type AgentTask {
-    id: ID!
-    agentId: ID!
-    type: String!
-    status: TaskStatus!
-    input: JSON
-    output: JSON
-    error: String
-    progress: Float
-    startedAt: DateTime
-    completedAt: DateTime
-    createdAt: DateTime!
-    agent: Agent
-  }
-
-  type TaskConnection {
-    edges: [TaskEdge!]!
+  type MessageConnection {
+    edges: [MessageEdge!]!
     pageInfo: PageInfo!
   }
 
-  type TaskEdge {
-    node: AgentTask!
+  type AgentEdge {
+    node: Agent!
     cursor: String!
   }
 
-  type TaskProgressEvent {
-    taskId: ID!
-    agentId: ID!
-    progress: Float!
-    status: TaskStatus!
-    message: String
-    timestamp: DateTime!
-  }
-
-  type AgentLogEvent {
-    agentId: ID!
-    level: String!
-    message: String!
-    data: JSON
-    timestamp: DateTime!
-  }
-
-  # ─── Model Types ─────────────────────────────────────────────────────────────
-  type Model {
-    id: ID!
-    name: String!
-    displayName: String!
-    provider: ModelProvider!
-    contextWindow: Int!
-    maxOutputTokens: Int
-    supportsVision: Boolean!
-    supportsTools: Boolean!
-    supportsStreaming: Boolean!
-    costPer1kInputTokens: Float
-    costPer1kOutputTokens: Float
-    enabled: Boolean!
-    isDefault: Boolean!
-    config: JSON
-    createdAt: DateTime!
-    updatedAt: DateTime!
-    health: ModelHealth
-    usage(period: Period): ModelUsage
-  }
-
-  type ModelHealth {
-    modelId: ID!
-    available: Boolean!
-    latencyMs: Float
-    errorRate: Float!
-    requestsLastHour: Int!
-    checkedAt: DateTime!
-  }
-
-  type ModelUsage {
-    modelId: ID!
-    period: Period!
-    totalRequests: Int!
-    totalInputTokens: Int!
-    totalOutputTokens: Int!
-    totalCost: Float!
-    averageLatencyMs: Float!
-    errorCount: Int!
-    from: DateTime!
-    to: DateTime!
-  }
-
-  type ProviderStatus {
-    provider: ModelProvider!
-    available: Boolean!
-    models: [Model!]!
-    rateLimitRemaining: Int
-    rateLimitReset: DateTime
-    checkedAt: DateTime!
-  }
-
-  # ─── Document Types ──────────────────────────────────────────────────────────
-  type Document {
-    id: ID!
-    userId: ID!
-    name: String!
-    mimeType: String!
-    size: Int!
-    status: DocumentStatus!
-    path: String
-    extractedText: String
-    chunkCount: Int!
-    embeddingCount: Int!
-    metadata: JSON
-    tags: [String!]!
-    createdAt: DateTime!
-    updatedAt: DateTime!
-    user: User
-    analysisResult: DocumentAnalysis
-  }
-
-  type DocumentAnalysis {
-    documentId: ID!
-    summary: String
-    keyTopics: [String!]!
-    language: String
-    wordCount: Int
-    sentiment: String
-    entities: JSON
-    analyzedAt: DateTime!
-  }
-
-  type DocumentConnection {
-    edges: [DocumentEdge!]!
+  type AgentConnection {
+    edges: [AgentEdge!]!
     pageInfo: PageInfo!
   }
 
@@ -373,284 +138,419 @@ export const typeDefs = /* GraphQL */ `
     cursor: String!
   }
 
-  type DocumentSearchResult {
-    document: Document!
-    score: Float!
-    matchedChunks: [String!]!
+  type DocumentConnection {
+    edges: [DocumentEdge!]!
+    pageInfo: PageInfo!
   }
 
-  # ─── Analytics Types ─────────────────────────────────────────────────────────
-  type DashboardMetrics {
-    period: Period!
-    totalUsers: Int!
-    activeUsers: Int!
-    newUsers: Int!
-    totalChats: Int!
-    totalMessages: Int!
-    totalTokensConsumed: Int!
-    totalCost: Float!
-    averageSessionDuration: Float!
-    topModels: [ModelUsageSummary!]!
-    userGrowth: [TimeSeriesPoint!]!
-    messageVolume: [TimeSeriesPoint!]!
-    costByDay: [TimeSeriesPoint!]!
-    from: DateTime!
-    to: DateTime!
-  }
+  # ─── Core Types ───────────────────────────────────────────────────────────────
 
-  type UsageStats {
-    userId: ID
-    period: Period!
-    totalChats: Int!
-    totalMessages: Int!
-    totalTokensConsumed: Int!
-    totalInputTokens: Int!
-    totalOutputTokens: Int!
-    estimatedCost: Float!
-    modelsUsed: [String!]!
-    averageMessagesPerChat: Float!
-    from: DateTime!
-    to: DateTime!
-  }
-
-  type CostBreakdown {
-    period: Period!
-    totalCost: Float!
-    byProvider: [ProviderCost!]!
-    byModel: [ModelCost!]!
-    byUser: [UserCost!]!
-    from: DateTime!
-    to: DateTime!
-  }
-
-  type ProviderCost {
-    provider: ModelProvider!
-    cost: Float!
-    percentage: Float!
-    tokens: Int!
-  }
-
-  type ModelCost {
-    modelId: ID!
-    modelName: String!
-    cost: Float!
-    percentage: Float!
-    requests: Int!
-  }
-
-  type UserCost {
-    userId: ID!
-    username: String
-    cost: Float!
-    tokens: Int!
-  }
-
-  type ModelPerformance {
-    period: Period!
-    models: [ModelPerfEntry!]!
-    from: DateTime!
-    to: DateTime!
-  }
-
-  type ModelPerfEntry {
-    modelId: ID!
-    modelName: String!
-    provider: ModelProvider!
-    totalRequests: Int!
-    successRate: Float!
-    averageLatencyMs: Float!
-    p95LatencyMs: Float!
-    tokensPerSecond: Float!
-    costEfficiency: Float!
-  }
-
-  type ModelUsageSummary {
-    modelId: ID!
-    modelName: String!
-    requests: Int!
-    percentage: Float!
-  }
-
-  type TimeSeriesPoint {
-    timestamp: DateTime!
-    value: Float!
-    label: String
-  }
-
-  # ─── Input Types ─────────────────────────────────────────────────────────────
-  input CreateChatInput {
-    title: String
-    gptId: String
-    initialMessage: String
-  }
-
-  input SendMessageInput {
-    chatId: ID!
-    content: String!
-    role: MessageRole
-    attachments: JSON
-    modelId: String
-  }
-
-  input UpdateSettingsInput {
-    responseStyle: String
-    responseTone: String
-    customInstructions: String
-    memoryEnabled: Boolean
-    webSearchAuto: Boolean
-    codeInterpreterEnabled: Boolean
-    canvasEnabled: Boolean
-    voiceEnabled: Boolean
+  type UserPreferences {
     theme: String
     language: String
+    timezone: String
+    notifications: Boolean
+    defaultModel: String
+    autoSave: Boolean
+    streamingEnabled: Boolean
+    codeHighlighting: Boolean
+    markdownRendering: Boolean
+    customInstructions: String
   }
 
-  input UpdateProfileInput {
-    firstName: String
-    lastName: String
-    username: String
-    profileImageUrl: String
-    company: String
-    phone: String
+  type UserUsage {
+    totalTokens: Int!
+    totalChats: Int!
+    totalMessages: Int!
+    totalDocuments: Int!
+    lastActiveAt: DateTime
+    monthlyTokens: Int!
+  }
+
+  type User {
+    id: ID!
+    email: String!
+    role: UserRole!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+    preferences: UserPreferences
+    tenantId: String
+    displayName: String
+    avatarUrl: String
+    isEmailVerified: Boolean!
+    isActive: Boolean!
+    # Field resolvers
+    chats(first: Int, after: String): ChatConnection!
+    agents(first: Int, after: String): AgentConnection!
+    documents(first: Int, after: String): DocumentConnection!
+    usage: UserUsage!
+  }
+
+  type TokenUsage {
+    promptTokens: Int!
+    completionTokens: Int!
+    totalTokens: Int!
+    cost: Float
+  }
+
+  type MessageMetadata {
+    model: String
+    temperature: Float
+    stopReason: String
+    latencyMs: Int
+    toolCalls: JSON
+    citations: JSON
+    isEdited: Boolean
+    editedAt: DateTime
+  }
+
+  type Message {
+    id: ID!
+    chatId: ID!
+    role: MessageRole!
+    content: String!
+    tokens: TokenUsage
+    timestamp: DateTime!
+    metadata: MessageMetadata
+    parentId: ID
+    isStreaming: Boolean!
+  }
+
+  type ChatMetadata {
+    isPublic: Boolean
+    shareToken: String
+    archivedAt: DateTime
+    tags: [String!]
+    summary: String
+    lastModel: String
+    totalTokens: Int
+    pinned: Boolean
+  }
+
+  type Chat {
+    id: ID!
+    title: String!
+    userId: ID!
+    model: String!
+    status: ChatStatus!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+    metadata: ChatMetadata
+    # Field resolvers
+    messages(first: Int, after: String, last: Int, before: String): MessageConnection!
+    user: User
+    messageCount: Int!
+  }
+
+  type AgentTool {
+    name: String!
+    description: String
+    schema: JSON
+    enabled: Boolean!
+  }
+
+  type Agent {
+    id: ID!
+    name: String!
+    description: String
+    instructions: String!
+    model: String!
+    tools: [AgentTool!]!
+    userId: ID!
+    status: AgentStatus!
+    isPublic: Boolean!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+    metadata: JSON
+    # Field resolvers
+    user: User
+    executionCount: Int!
+  }
+
+  type ModelPricing {
+    inputPer1kTokens: Float!
+    outputPer1kTokens: Float!
+    currency: String!
+  }
+
+  type Model {
+    id: ID!
+    provider: ModelProvider!
+    name: String!
+    displayName: String!
+    contextWindow: Int!
+    capabilities: [ModelCapability!]!
+    pricing: ModelPricing!
+    enabled: Boolean!
+    isDefault: Boolean!
+    maxOutputTokens: Int
+    supportsStreaming: Boolean!
+    supportsVision: Boolean!
+    supportsFunctionCalling: Boolean!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+  }
+
+  type ModelUsageStat {
+    modelId: ID!
+    totalRequests: Int!
+    totalTokens: Int!
+    totalCost: Float!
+    avgLatencyMs: Float!
+    errorRate: Float!
+    period: String!
+  }
+
+  type Document {
+    id: ID!
+    name: String!
+    mimeType: String!
+    size: Int!
+    url: String!
+    userId: ID!
+    status: DocumentStatus!
+    uploadedAt: DateTime!
+    processedAt: DateTime
+    metadata: JSON
+    # Field resolvers
+    user: User
+  }
+
+  type AgentExecution {
+    id: ID!
+    agentId: ID!
+    chatId: ID
+    status: ExecutionStatus!
+    input: String!
+    output: String
+    startedAt: DateTime!
+    completedAt: DateTime
+    tokensUsed: Int
+    error: String
+  }
+
+  # ─── Streaming / Subscription Types ──────────────────────────────────────────
+
+  type MessageStreamChunk {
+    chatId: ID!
+    messageId: ID!
+    delta: String!
+    isComplete: Boolean!
+    tokensUsed: Int
+    metadata: JSON
+  }
+
+  type ChatEvent {
+    type: String!
+    chatId: ID!
+    userId: ID!
+    payload: JSON!
+    timestamp: DateTime!
+  }
+
+  # ─── Input Types ──────────────────────────────────────────────────────────────
+
+  input PaginationInput {
+    first: Int
+    after: String
+    last: Int
+    before: String
+  }
+
+  input CreateChatInput {
+    title: String!
+    model: String!
+    systemPrompt: String
+    metadata: JSON
+  }
+
+  input UpdateChatInput {
+    title: String
+    model: String
+    metadata: JSON
+  }
+
+  input AddMessageInput {
+    chatId: ID!
+    role: MessageRole!
+    content: String!
+    parentId: ID
+    metadata: JSON
+  }
+
+  input EditMessageInput {
+    messageId: ID!
+    content: String!
   }
 
   input CreateAgentInput {
     name: String!
     description: String
-    type: String!
-    capabilities: [String!]!
-    config: JSON
+    instructions: String!
+    model: String!
+    tools: [AgentToolInput!]
+    isPublic: Boolean
+    metadata: JSON
   }
 
-  input ExecuteTaskInput {
-    agentId: ID!
-    type: String!
-    input: JSON
-    priority: Int
-    timeoutMs: Int
-  }
-
-  input ConfigureAgentInput {
+  input UpdateAgentInput {
     name: String
     description: String
-    config: JSON
-    capabilities: [String!]
+    instructions: String
+    model: String
+    tools: [AgentToolInput!]
+    isPublic: Boolean
+    metadata: JSON
   }
 
-  input ConfigureProviderInput {
-    provider: ModelProvider!
-    apiKey: String
-    baseUrl: String
-    config: JSON
-    enabled: Boolean
-  }
-
-  input CreateDocumentInput {
+  input AgentToolInput {
     name: String!
-    mimeType: String!
-    content: String
-    tags: [String!]
-    metadata: JSON
+    description: String
+    schema: JSON
+    enabled: Boolean!
   }
 
-  input UpdateDocumentInput {
-    name: String
-    tags: [String!]
-    metadata: JSON
+  input ExecuteAgentInput {
+    agentId: ID!
+    input: String!
+    chatId: ID
+    stream: Boolean
   }
 
-  input DocumentFilterInput {
-    status: DocumentStatus
-    mimeType: String
-    tags: [String!]
+  input UpdateProfileInput {
+    displayName: String
+    avatarUrl: String
+    email: String
+  }
+
+  input UpdatePreferencesInput {
+    theme: String
+    language: String
+    timezone: String
+    notifications: Boolean
+    defaultModel: String
+    autoSave: Boolean
+    streamingEnabled: Boolean
+    codeHighlighting: Boolean
+    markdownRendering: Boolean
+    customInstructions: String
+  }
+
+  input ChangePasswordInput {
+    currentPassword: String!
+    newPassword: String!
+  }
+
+  input UpdateModelConfigInput {
+    displayName: String
+    enabled: Boolean
+    isDefault: Boolean
+    pricing: ModelPricingInput
+    maxOutputTokens: Int
+    capabilities: [ModelCapability!]
+  }
+
+  input ModelPricingInput {
+    inputPer1kTokens: Float!
+    outputPer1kTokens: Float!
+    currency: String!
+  }
+
+  input ModelFilterInput {
+    provider: ModelProvider
+    capability: ModelCapability
+    enabled: Boolean
+    supportsVision: Boolean
+    supportsFunctionCalling: Boolean
+  }
+
+  input UserFilterInput {
+    role: UserRole
+    isActive: Boolean
     search: String
-    from: DateTime
-    to: DateTime
+    tenantId: String
   }
 
-  input ChatFilterInput {
-    status: ChatStatus
-    search: String
-    gptId: String
-    from: DateTime
-    to: DateTime
+  input TimeRangeInput {
+    from: DateTime!
+    to: DateTime!
   }
 
-  # ─── Root Types ──────────────────────────────────────────────────────────────
+  # ─── Queries ──────────────────────────────────────────────────────────────────
+
   type Query {
     # Chat queries
-    chats(filter: ChatFilterInput, limit: Int, offset: Int): ChatConnection! @auth
-    chat(id: ID!): Chat @auth
-    messages(chatId: ID!, limit: Int, cursor: String): MessageConnection! @auth
-    searchMessages(query: String!, limit: Int): [SearchResult!]! @auth
+    chats(pagination: PaginationInput, userId: ID): ChatConnection!
+    chat(id: ID!): Chat
+    searchChats(query: String!, userId: ID, pagination: PaginationInput): ChatConnection!
+
+    # Message queries
+    messages(chatId: ID!, pagination: PaginationInput): MessageConnection!
 
     # Agent queries
-    agents: [Agent!]! @auth
-    agent(id: ID!): Agent @auth
-    agentTasks(agentId: ID!, limit: Int, offset: Int): TaskConnection! @auth
-    agentHealth: [AgentHealth!]! @auth
+    agents(userId: ID, pagination: PaginationInput): AgentConnection!
+    agent(id: ID!): Agent
+    publicAgents(pagination: PaginationInput): AgentConnection!
 
     # Model queries
-    models: [Model!]! @auth
-    modelHealth(modelId: ID!): ModelHealth @auth
-    modelUsage(modelId: ID!, period: Period): ModelUsage @auth
-    providerStatus: [ProviderStatus!]! @auth
+    models(filter: ModelFilterInput): [Model!]!
+    model(id: ID!): Model
+    availableModels(userId: ID): [Model!]!
+    modelPricing: [Model!]!
+    modelUsageStats(modelId: ID!, timeRange: TimeRangeInput!): ModelUsageStat
 
     # User queries
-    me: User @auth
-    users(limit: Int, offset: Int): UserConnection! @auth(requires: ADMIN)
-    userSettings(userId: ID!): UserSettings @auth
-    usage(userId: ID, period: Period): UsageStats @auth
+    me: User
+    user(id: ID!): User
+    users(pagination: PaginationInput, filter: UserFilterInput): UserConnection!
 
     # Document queries
-    documents(filter: DocumentFilterInput, limit: Int, offset: Int): DocumentConnection! @auth
-    document(id: ID!): Document @auth
-    searchDocuments(query: String!, limit: Int): [DocumentSearchResult!]! @auth
-
-    # Analytics queries
-    dashboardMetrics(period: Period): DashboardMetrics! @auth(requires: ADMIN)
-    usageStats(userId: ID, period: Period): UsageStats! @auth
-    costBreakdown(period: Period): CostBreakdown! @auth(requires: ADMIN)
-    modelPerformance(period: Period): ModelPerformance! @auth(requires: ADMIN)
+    documents(userId: ID, pagination: PaginationInput): DocumentConnection!
+    document(id: ID!): Document
   }
+
+  # ─── Mutations ────────────────────────────────────────────────────────────────
 
   type Mutation {
     # Chat mutations
-    createChat(input: CreateChatInput!): Chat! @auth
-    sendMessage(input: SendMessageInput!): Message! @auth @rateLimit(max: 60, window: "1m")
-    deleteChat(id: ID!): Boolean! @auth
-    archiveChat(id: ID!): Chat! @auth
+    createChat(input: CreateChatInput!): Chat!
+    updateChat(id: ID!, input: UpdateChatInput!): Chat!
+    deleteChat(id: ID!): Boolean!
+    archiveChat(id: ID!): Chat!
+    shareChat(id: ID!): Chat!
+    addMessage(input: AddMessageInput!): Message!
+    deleteMessage(id: ID!): Boolean!
+    editMessage(input: EditMessageInput!): Message!
 
     # Agent mutations
-    createAgent(input: CreateAgentInput!): Agent! @auth(requires: ADMIN)
-    executeTask(input: ExecuteTaskInput!): AgentTask! @auth
-    cancelTask(id: ID!): AgentTask! @auth
-    configureAgent(id: ID!, input: ConfigureAgentInput!): Agent! @auth(requires: ADMIN)
+    createAgent(input: CreateAgentInput!): Agent!
+    updateAgent(id: ID!, input: UpdateAgentInput!): Agent!
+    deleteAgent(id: ID!): Boolean!
+    cloneAgent(id: ID!, name: String): Agent!
+    publishAgent(id: ID!): Agent!
+    executeAgent(input: ExecuteAgentInput!): AgentExecution!
 
-    # Model mutations
-    setDefaultModel(modelId: ID!): Model! @auth(requires: ADMIN)
-    configureProvider(input: ConfigureProviderInput!): ProviderStatus! @auth(requires: ADMIN)
-    enableModel(modelId: ID!, enabled: Boolean!): Model! @auth(requires: ADMIN)
+    # Model mutations (admin only)
+    enableModel(id: ID!): Model!
+    disableModel(id: ID!): Model!
+    updateModelConfig(id: ID!, input: UpdateModelConfigInput!): Model!
+    setDefaultModel(id: ID!): Model!
 
     # User mutations
-    updateSettings(input: UpdateSettingsInput!): UserSettings! @auth
-    updateProfile(input: UpdateProfileInput!): User! @auth
-
-    # Document mutations
-    createDocument(input: CreateDocumentInput!): Document! @auth
-    updateDocument(id: ID!, input: UpdateDocumentInput!): Document! @auth
-    analyzeDocument(id: ID!): DocumentAnalysis! @auth
-    deleteDocument(id: ID!): Boolean! @auth
+    updateProfile(input: UpdateProfileInput!): User!
+    updatePreferences(input: UpdatePreferencesInput!): User!
+    deleteAccount(confirm: Boolean!): Boolean!
+    changePassword(input: ChangePasswordInput!): Boolean!
+    requestEmailVerification: Boolean!
   }
+
+  # ─── Subscriptions ────────────────────────────────────────────────────────────
 
   type Subscription {
-    # Chat subscriptions
-    messageAdded(chatId: ID!): Message! @auth
-    chatUpdated(userId: ID!): Chat! @auth
-    agentStatusChanged(agentId: ID!): AgentHealth! @auth
-
-    # Agent subscriptions
-    taskProgress(taskId: ID!): TaskProgressEvent! @auth
-    agentLog(agentId: ID!): AgentLogEvent! @auth
+    onMessageStream(chatId: ID!): MessageStreamChunk!
+    onChatUpdated(userId: ID!): ChatEvent!
+    onAgentExecution(executionId: ID!): AgentExecution!
   }
 `;
+
+export default typeDefs;

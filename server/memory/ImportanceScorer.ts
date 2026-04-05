@@ -1,315 +1,268 @@
 /**
- * ImportanceScorer — Ebbinghaus forgetting curve + multi-factor importance scoring.
- * Scores memories 0-1; drives garbage collection, spaced repetition, and promotion.
+ * ImportanceScorer — scores memory importance 0–1 using access patterns,
+ * Ebbinghaus forgetting curve with reinforcement, and content signals.
  */
 
-import { Logger } from "../lib/logger"
-import { pgVectorMemoryStore, type MemoryEntry } from "./PgVectorMemoryStore"
+import { createLogger } from "../utils/logger";
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
+const logger = createLogger("ImportanceScorer");
 
-export interface ScoringFactors {
-  accessCount: number
-  daysSinceLastAccess: number
-  daysSinceCreation: number
-  explicitFeedback?: "positive" | "negative" | "neutral"
-  taskRelevanceSignals?: number
-  isExplicitInstruction?: boolean
-  isFrequentlyContradicted?: boolean
-  sourceAuthority?: number
-  uniqueness?: number
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type MemoryPriority = "critical" | "important" | "normal" | "ephemeral";
+
+export interface MemoryRecord {
+  id: string;
+  content: string;
+  memoryType: string;
+  createdAt: Date;
+  lastAccessedAt: Date;
+  accessCount: number;
+  importance?: number;
+  userFeedback?: number; // -1 to 1
+  taskSuccessCorrelations?: number; // 0–1
 }
 
-export interface ScoringResult {
-  score: number
-  components: {
-    retentionScore: number
-    frequencyScore: number
-    recencyScore: number
-    feedbackScore: number
-    relevanceScore: number
-    authorityScore: number
-  }
-  explanation: string
-  suggestDeletion: boolean
-  suggestPromotion: boolean
+export interface ImportanceResult {
+  score: number; // 0–1
+  priority: MemoryPriority;
+  retentionDays: number;
+  factors: ImportanceFactor[];
+  shouldForget: boolean;
 }
 
-// ─── Constants ─────────────────────────────────────────────────────────────────
-
-const LAMBDA = 0.1           // recency decay rate (~7-day half-life)
-const MAX_EXPECTED_ACCESS = 100
-const WEIGHTS = {
-  retention: 0.30,
-  frequency: 0.15,
-  recency: 0.20,
-  feedback: 0.15,
-  relevance: 0.12,
-  authority: 0.08,
+export interface ImportanceFactor {
+  name: string;
+  contribution: number;
+  description: string;
 }
 
-// ─── Scorer ───────────────────────────────────────────────────────────────────
+// ─── Ebbinghaus Forgetting Curve ──────────────────────────────────────────────
 
-class ImportanceScorer {
-  private readonly store = pgVectorMemoryStore
+/**
+ * Ebbinghaus retention formula: R = e^(-t/S)
+ * where t = elapsed time, S = stability (increases with each reinforcement)
+ */
+function ebbinghausRetention(elapsedDays: number, stability: number): number {
+  if (stability <= 0) return 0;
+  return Math.exp(-elapsedDays / stability);
+}
 
-  // ── score ────────────────────────────────────────────────────────────────────
+/**
+ * SM-2 inspired stability update: stability increases with each access.
+ * More consistent access → slower forgetting.
+ */
+function computeStability(accessCount: number, daysSinceCreation: number): number {
+  // Base stability: 1 day per access, with diminishing returns
+  const baseStability = 1 + Math.log2(1 + accessCount) * 3;
 
-  score(factors: ScoringFactors): ScoringResult {
-    const {
-      accessCount,
-      daysSinceLastAccess,
-      daysSinceCreation,
-      explicitFeedback,
-      taskRelevanceSignals = 0,
-      isExplicitInstruction = false,
-      isFrequentlyContradicted = false,
-      sourceAuthority = 0.7,
-      uniqueness = 0.8,
-    } = factors
+  // Spaced repetition bonus: if accessed often relative to age
+  const accessFrequency = daysSinceCreation > 0 ? accessCount / daysSinceCreation : accessCount;
+  const spacingBonus = Math.min(3, accessFrequency * 2);
 
-    // ── component scores ─────────────────────────────────────────────────────
+  return baseStability + spacingBonus;
+}
 
-    const retentionScore = this.calculateRetentionScore(daysSinceLastAccess, accessCount)
-    const frequencyScore = this.calculateFrequencyScore(accessCount)
-    const recencyScore = this.calculateRecencyScore(daysSinceLastAccess)
-    const feedbackScore = this.calculateFeedbackScore(explicitFeedback)
-    const relevanceScore = this.calculateRelevanceScore(taskRelevanceSignals)
-    const authorityScore = Math.max(0, Math.min(1, sourceAuthority)) * uniqueness
+// ─── Content Importance Signals ───────────────────────────────────────────────
 
-    // ── weighted combination ─────────────────────────────────────────────────
+const HIGH_VALUE_PATTERNS = [
+  /\d{4}-\d{2}-\d{2}/, // dates
+  /\$[\d,]+/, // dollar amounts
+  /\d+\s*%/, // percentages
+  /deadline|due date|expire|by\s+\w+\s+\d+/i, // deadlines
+  /password|api key|token|secret|credential/i, // credentials (flag as critical)
+  /contact|email|phone|address/i, // contact info
+  /agreed|confirmed|approved|decided/i, // decisions
+];
 
-    let rawScore =
-      retentionScore * WEIGHTS.retention +
-      frequencyScore * WEIGHTS.frequency +
-      recencyScore * WEIGHTS.recency +
-      feedbackScore * WEIGHTS.feedback +
-      relevanceScore * WEIGHTS.relevance +
-      authorityScore * WEIGHTS.authority
+const LOW_VALUE_PATTERNS = [
+  /^(ok|okay|yes|no|sure|thanks|thank you|got it)\.?$/i,
+  /^[\s\S]{1,20}$/, // very short
+  /small talk|chitchat/i,
+];
 
-    // ── modifiers ────────────────────────────────────────────────────────────
+function scoreContentSignals(content: string): ImportanceFactor {
+  const highMatches = HIGH_VALUE_PATTERNS.filter((p) => p.test(content)).length;
+  const lowMatches = LOW_VALUE_PATTERNS.filter((p) => p.test(content)).length;
 
-    if (isExplicitInstruction) {
-      rawScore = Math.min(1, rawScore * 1.4) // explicit instructions get boosted
+  const contribution = Math.min(0.3, highMatches * 0.07) - Math.min(0.2, lowMatches * 0.1);
+
+  return {
+    name: "content_signals",
+    contribution,
+    description: `High-value patterns: ${highMatches}, low-value patterns: ${lowMatches}`,
+  };
+}
+
+// ─── Memory Type Weights ──────────────────────────────────────────────────────
+
+const TYPE_BASE_SCORES: Record<string, number> = {
+  decision: 0.75,
+  action_item: 0.80,
+  fact: 0.55,
+  preference: 0.65,
+  entity: 0.50,
+  skill: 0.70,
+  ephemeral: 0.25,
+};
+
+// ─── Priority Thresholds ──────────────────────────────────────────────────────
+
+function toPriority(score: number): MemoryPriority {
+  if (score >= 0.85) return "critical";
+  if (score >= 0.60) return "important";
+  if (score >= 0.35) return "normal";
+  return "ephemeral";
+}
+
+function toRetentionDays(priority: MemoryPriority, stability: number): number {
+  const base: Record<MemoryPriority, number> = {
+    critical: Infinity,
+    important: 365,
+    normal: 90,
+    ephemeral: 7,
+  };
+  const d = base[priority];
+  return d === Infinity ? Infinity : Math.min(d, Math.ceil(stability * 5));
+}
+
+// ─── ImportanceScorer ─────────────────────────────────────────────────────────
+
+export class ImportanceScorer {
+  score(memory: MemoryRecord): ImportanceResult {
+    const now = new Date();
+    const ageMs = now.getTime() - memory.createdAt.getTime();
+    const ageDays = ageMs / 86_400_000;
+    const daysSinceAccess = (now.getTime() - memory.lastAccessedAt.getTime()) / 86_400_000;
+
+    const stability = computeStability(memory.accessCount, ageDays);
+    const retention = ebbinghausRetention(daysSinceAccess, stability);
+
+    const factors: ImportanceFactor[] = [];
+
+    // Factor 1: Base type weight
+    const typeBase = TYPE_BASE_SCORES[memory.memoryType] ?? 0.5;
+    factors.push({
+      name: "type_base",
+      contribution: typeBase,
+      description: `Memory type "${memory.memoryType}" base score`,
+    });
+
+    // Factor 2: Retention / forgetting curve
+    const retentionContrib = retention * 0.2;
+    factors.push({
+      name: "retention",
+      contribution: retentionContrib,
+      description: `Ebbinghaus retention: ${(retention * 100).toFixed(0)}% (stability: ${stability.toFixed(1)} days)`,
+    });
+
+    // Factor 3: Access frequency bonus
+    const accessBonus = Math.min(0.15, Math.log2(1 + memory.accessCount) * 0.03);
+    factors.push({
+      name: "access_frequency",
+      contribution: accessBonus,
+      description: `${memory.accessCount} total accesses`,
+    });
+
+    // Factor 4: Content signal analysis
+    const contentFactor = scoreContentSignals(memory.content);
+    factors.push(contentFactor);
+
+    // Factor 5: User feedback (if available)
+    let feedbackContrib = 0;
+    if (memory.userFeedback !== undefined) {
+      feedbackContrib = memory.userFeedback * 0.15;
+      factors.push({
+        name: "user_feedback",
+        contribution: feedbackContrib,
+        description: `User feedback: ${memory.userFeedback > 0 ? "positive" : "negative"}`,
+      });
     }
-    if (isFrequentlyContradicted) {
-      rawScore *= 0.5 // contradicted memories lose half importance
+
+    // Factor 6: Task success correlation
+    if (memory.taskSuccessCorrelations !== undefined && memory.taskSuccessCorrelations > 0) {
+      const taskContrib = memory.taskSuccessCorrelations * 0.1;
+      factors.push({
+        name: "task_success",
+        contribution: taskContrib,
+        description: `Task success correlation: ${(memory.taskSuccessCorrelations * 100).toFixed(0)}%`,
+      });
     }
-    if (daysSinceCreation < 1) {
-      rawScore = Math.min(1, rawScore + 0.1) // freshness bonus for brand-new memories
-    }
 
-    const score = Math.max(0, Math.min(1, rawScore))
+    // Combine factors (type_base is the anchor, others are additive deltas)
+    const totalScore = Math.min(1, Math.max(0,
+      typeBase + retentionContrib + accessBonus + contentFactor.contribution + feedbackContrib
+    ));
 
-    // ── explanation ──────────────────────────────────────────────────────────
+    const priority = toPriority(totalScore);
+    const retentionDays = toRetentionDays(priority, stability);
 
-    const parts: string[] = [
-      `retention=${retentionScore.toFixed(3)}`,
-      `frequency=${frequencyScore.toFixed(3)}`,
-      `recency=${recencyScore.toFixed(3)}`,
-      `feedback=${feedbackScore.toFixed(3)}`,
-      `relevance=${relevanceScore.toFixed(3)}`,
-      `authority=${authorityScore.toFixed(3)}`,
-    ]
-    const modifiers: string[] = []
-    if (isExplicitInstruction) modifiers.push("explicit_instruction_boost")
-    if (isFrequentlyContradicted) modifiers.push("contradiction_penalty")
-    if (daysSinceCreation < 1) modifiers.push("freshness_bonus")
+    // Forget if retention has decayed below threshold and low priority
+    const shouldForget = priority === "ephemeral" && retention < 0.1 && memory.accessCount < 2;
 
-    const explanation =
-      `Score ${score.toFixed(3)}: [${parts.join(", ")}]` +
-      (modifiers.length ? ` | modifiers: ${modifiers.join(", ")}` : "")
+    logger.debug(
+      `Scored memory ${memory.id}: ${totalScore.toFixed(3)} (${priority}) — ` +
+      `retention: ${(retention * 100).toFixed(0)}%, stability: ${stability.toFixed(1)}d`
+    );
 
     return {
-      score,
-      components: {
-        retentionScore,
-        frequencyScore,
-        recencyScore,
-        feedbackScore,
-        relevanceScore,
-        authorityScore,
-      },
-      explanation,
-      suggestDeletion: score < 0.05,
-      suggestPromotion: score > 0.9,
-    }
+      score: Math.round(totalScore * 1000) / 1000,
+      priority,
+      retentionDays,
+      factors,
+      shouldForget,
+    };
   }
 
-  // ── scoreMemoryEntry ─────────────────────────────────────────────────────────
-
-  async scoreMemoryEntry(entry: MemoryEntry): Promise<ScoringResult> {
-    const now = new Date()
-    const lastAccess = entry.metadata.lastAccessedAt
-    const created = entry.metadata.createdAt
-
-    const daysSinceLastAccess =
-      (now.getTime() - lastAccess.getTime()) / (1000 * 60 * 60 * 24)
-    const daysSinceCreation =
-      (now.getTime() - created.getTime()) / (1000 * 60 * 60 * 24)
-
-    const factors: ScoringFactors = {
-      accessCount: entry.metadata.accessCount,
-      daysSinceLastAccess,
-      daysSinceCreation,
-      isExplicitInstruction: entry.type === "instruction",
-      sourceAuthority: 0.7,
-      uniqueness: 0.8,
-    }
-
-    return this.score(factors)
+  scoreMany(memories: MemoryRecord[]): Array<MemoryRecord & { importanceResult: ImportanceResult }> {
+    return memories
+      .map((m) => ({ ...m, importanceResult: this.score(m) }))
+      .sort((a, b) => b.importanceResult.score - a.importanceResult.score);
   }
 
-  // ── scoreAndUpdateBatch ───────────────────────────────────────────────────────
+  getToForget(memories: MemoryRecord[]): MemoryRecord[] {
+    return memories.filter((m) => this.score(m).shouldForget);
+  }
 
-  async scoreAndUpdateBatch(entries: MemoryEntry[]): Promise<void> {
-    Logger.info("[ImportanceScorer] scoring batch", { count: entries.length })
-    let deletions = 0
-    let promotions = 0
-    let updates = 0
+  /**
+   * Simulate how importance decays over time for planning retention schedules.
+   */
+  forecastDecay(memory: MemoryRecord, daysAhead: number[]): Array<{ days: number; score: number; priority: MemoryPriority }> {
+    const ageMs = Date.now() - memory.createdAt.getTime();
+    const ageDays = ageMs / 86_400_000;
+    const stability = computeStability(memory.accessCount, ageDays);
 
-    for (const entry of entries) {
-      try {
-        const result = await this.scoreMemoryEntry(entry)
+    return daysAhead.map((days) => {
+      const retention = ebbinghausRetention(days, stability);
+      const typeBase = TYPE_BASE_SCORES[memory.memoryType] ?? 0.5;
+      const score = Math.min(1, Math.max(0, typeBase + retention * 0.2));
+      return { days, score, priority: toPriority(score) };
+    });
+  }
 
-        if (result.score !== entry.importance) {
-          await this.store.updateImportance(entry.id, result.score)
-          updates++
-        }
+  /**
+   * Compute optimal review schedule using spaced repetition principles.
+   * Returns days from now when the memory should be reviewed.
+   */
+  getReviewSchedule(memory: MemoryRecord): number[] {
+    const ageMs = Date.now() - memory.createdAt.getTime();
+    const ageDays = ageMs / 86_400_000;
+    const stability = computeStability(memory.accessCount, ageDays);
 
-        if (result.suggestDeletion) {
-          Logger.debug("[ImportanceScorer] suggesting deletion", {
-            id: entry.id,
-            score: result.score,
-          })
-          deletions++
-        }
-        if (result.suggestPromotion) {
-          Logger.debug("[ImportanceScorer] suggesting promotion", {
-            id: entry.id,
-            score: result.score,
-          })
-          promotions++
-        }
-      } catch (err) {
-        Logger.warn("[ImportanceScorer] failed to score entry", { id: entry.id, err })
+    // Review when retention drops to 90%, then 80%, then 70%
+    const thresholds = [0.9, 0.8, 0.7, 0.5];
+    const schedule: number[] = [];
+
+    for (const threshold of thresholds) {
+      // Solve: threshold = e^(-t/S) → t = -S * ln(threshold)
+      const daysUntilThreshold = -stability * Math.log(threshold);
+      if (daysUntilThreshold > 0 && daysUntilThreshold < 365) {
+        schedule.push(Math.ceil(daysUntilThreshold));
       }
     }
 
-    Logger.info("[ImportanceScorer] batch complete", { updates, deletions, promotions })
-  }
-
-  // ── calculateRetentionScore ───────────────────────────────────────────────────
-
-  /**
-   * Ebbinghaus retention: R = e^(-t/S)
-   * S (stability) increases with each successful retrieval:
-   *   S = 1 + log(1 + accessCount) * 2
-   */
-  calculateRetentionScore(daysSinceLastAccess: number, accessCount: number): number {
-    const stability = 1 + Math.log(1 + accessCount) * 2
-    const R = Math.exp(-daysSinceLastAccess / stability)
-    return Math.max(0, Math.min(1, R))
-  }
-
-  // ── calculateFrequencyScore ───────────────────────────────────────────────────
-
-  /**
-   * Log-normalized frequency: log(1 + n) / log(1 + maxExpected)
-   */
-  calculateFrequencyScore(accessCount: number): number {
-    if (accessCount === 0) return 0
-    return Math.min(1, Math.log(1 + accessCount) / Math.log(1 + MAX_EXPECTED_ACCESS))
-  }
-
-  // ── calculateRecencyScore ─────────────────────────────────────────────────────
-
-  /**
-   * Exponential decay: e^(-λt) where λ = 0.1 (~7-day half-life)
-   */
-  calculateRecencyScore(daysSinceLastAccess: number): number {
-    return Math.exp(-LAMBDA * daysSinceLastAccess)
-  }
-
-  // ── calculateFeedbackScore ────────────────────────────────────────────────────
-
-  calculateFeedbackScore(
-    feedback?: "positive" | "negative" | "neutral"
-  ): number {
-    switch (feedback) {
-      case "positive":
-        return 1.0
-      case "negative":
-        return 0.1
-      case "neutral":
-        return 0.5
-      default:
-        return 0.5 // no feedback → neutral
-    }
-  }
-
-  // ── calculateRelevanceScore ───────────────────────────────────────────────────
-
-  /**
-   * Task relevance: log(1 + signals) / log(1 + 10), capped at 1.
-   */
-  calculateRelevanceScore(taskSignals: number): number {
-    if (taskSignals <= 0) return 0
-    return Math.min(1, Math.log(1 + taskSignals) / Math.log(1 + 10))
-  }
-
-  // ── simulateForgetting ────────────────────────────────────────────────────────
-
-  /**
-   * Project the importance score forward `days` days without any new access.
-   * Uses the same Ebbinghaus curve with current score as the effective retention seed.
-   */
-  simulateForgetting(initialScore: number, days: number): number {
-    // Approximate stability from initial score (inverse of retention formula)
-    // We treat initial score as the current retention ratio and project forward.
-    // stable: s = -1/ln(initialScore) * ... — approximate by assuming stability=1
-    const stability = 1 + initialScore * 4 // linear approximation
-    return Math.max(0, initialScore * Math.exp(-days / stability))
-  }
-
-  // ── getOptimalReviewSchedule ──────────────────────────────────────────────────
-
-  /**
-   * Spaced repetition: compute next review dates using expanding intervals.
-   * Returns dates when projected score would fall below 0.5.
-   */
-  getOptimalReviewSchedule(accessCount: number, currentScore: number): Date[] {
-    const dates: Date[] = []
-    const now = new Date()
-
-    // Intervals based on access count (SuperMemo SM-2 inspired)
-    const baseIntervals = [1, 3, 7, 14, 30, 90, 180]
-    const stability = 1 + Math.log(1 + accessCount) * 2
-
-    for (const intervalDays of baseIntervals) {
-      const projected = Math.exp(-intervalDays / stability)
-      if (projected < 0.5) {
-        // The score will drop below 0.5 before this interval — schedule review sooner
-        const reviewDay = -stability * Math.log(0.5) // day when R=0.5
-        const reviewDate = new Date(now.getTime() + reviewDay * 24 * 60 * 60 * 1000)
-        if (dates.length === 0 || reviewDate.getTime() !== dates[dates.length - 1].getTime()) {
-          dates.push(reviewDate)
-        }
-        break
-      } else {
-        // Schedule review at this interval
-        dates.push(new Date(now.getTime() + intervalDays * 24 * 60 * 60 * 1000))
-      }
-    }
-
-    // Ensure we always have at least one review date
-    if (dates.length === 0) {
-      const defaultReview = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
-      dates.push(defaultReview)
-    }
-
-    return dates
+    return [...new Set(schedule)].sort((a, b) => a - b);
   }
 }
 
-export const importanceScorer = new ImportanceScorer()
+export const importanceScorer = new ImportanceScorer();

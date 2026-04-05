@@ -45,13 +45,30 @@ import { terminalController } from "../agent/terminalController";
 import type { CommandRequest, CommandResult, ProcessInfo } from "../agent/terminalController";
 
 type AttachmentSpec = z.infer<typeof AttachmentSpecSchema>;
+type StreamProviderSwitch = {
+  fromProvider: string;
+  toProvider: string;
+};
+type StreamChunkEnvelope = {
+  content: string;
+  done?: boolean;
+  provider?: string;
+  providerSwitch?: StreamProviderSwitch;
+  sequenceId?: number;
+  requestId?: string;
+};
 
 import { v4 as uuidv4 } from "uuid";
 import type { Response } from "express";
 import type { AuthenticatedRequest } from "../types/express";
 import { auditLog } from "../services/auditLogger";
 import { usageQuotaService, type UsageCheckResult } from "../services/usageQuotaService";
-import { conversationMemoryManager } from "../services/conversationMemory";
+import {
+  conversationMemoryManager,
+  type ChatMessage as ConversationMemoryChatMessage,
+  type ConversationContextResult,
+  type MemoryCompressionDiagnostics,
+} from "../services/conversationMemory";
 import { conversationStateService } from "../services/conversationStateService";
 import { generateAndPersistChatTitle } from "../lib/chatTitleGenerator";
 import { validate } from "../lib/requestValidator";
@@ -87,6 +104,119 @@ const VALID_STREAM_SCOPE_SET = new Set<SkillScope>([
 const STREAM_IDENTIFIER_RE = /^[a-zA-Z0-9._-]{1,140}$/;
 const STREAM_ATTACHMENT_NAME_RE = /^[^<>:\"/\\|?*\u0000-\u001f]{1,220}$/;
 const STREAM_MIME_RE = /^[a-zA-Z0-9][a-zA-Z0-9.+-\/]*/;
+
+function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
+  return value != null && typeof (value as AsyncIterable<T>)[Symbol.asyncIterator] === "function";
+}
+
+function detachAsyncTask(task: () => unknown, label: string): void {
+  try {
+    void Promise.resolve(task()).catch((error) => {
+      console.warn(`[ChatRouter] ${label} failed:`, error);
+    });
+  } catch (error) {
+    console.warn(`[ChatRouter] ${label} failed:`, error);
+  }
+}
+
+async function* chunkStreamFromChatResponse(
+  response: Awaited<ReturnType<typeof llmGateway.chat>>,
+): AsyncGenerator<StreamChunkEnvelope, void, unknown> {
+  const content = typeof response?.content === "string" ? response.content : "";
+  const provider = typeof response?.provider === "string" ? response.provider : undefined;
+
+  if (content) {
+    yield {
+      content,
+      done: false,
+      provider,
+    };
+  }
+
+  yield {
+    content: "",
+    done: true,
+    provider,
+  };
+}
+
+async function resolveModelStream(
+  messages: any[],
+  options: Record<string, unknown>,
+): Promise<AsyncIterable<StreamChunkEnvelope>> {
+  try {
+    const rawStream = llmGateway.streamChat(messages, options as any);
+
+    if (isAsyncIterable<StreamChunkEnvelope>(rawStream)) {
+      return rawStream;
+    }
+
+    const resolved = await Promise.resolve(rawStream);
+    if (isAsyncIterable<StreamChunkEnvelope>(resolved)) {
+      return resolved;
+    }
+
+    if (resolved && typeof resolved === "object" && "content" in resolved) {
+      console.warn("[Stream] llmGateway.streamChat returned a non-stream response; converting to single-response stream");
+      return chunkStreamFromChatResponse(resolved as Awaited<ReturnType<typeof llmGateway.chat>>);
+    }
+  } catch (streamError) {
+    console.warn("[Stream] llmGateway.streamChat failed before producing a stream; falling back to llmGateway.chat", streamError);
+  }
+
+  const fallbackResponse = await llmGateway.chat(messages, options as any);
+  return chunkStreamFromChatResponse(fallbackResponse);
+}
+
+function estimateMemoryTokens(messages: ConversationMemoryChatMessage[]): number {
+  if (typeof conversationMemoryManager.estimateMessagesTokens === "function") {
+    return conversationMemoryManager.estimateMessagesTokens(messages);
+  }
+
+  return messages.reduce((total, message) => total + Math.ceil(String(message?.content || "").length / 4) + 4, 0);
+}
+
+function createMemoryDiagnosticsFallback(
+  messages: ConversationMemoryChatMessage[],
+): MemoryCompressionDiagnostics {
+  const totalTokens = estimateMemoryTokens(messages);
+  const nonSystemMessageCount = messages.filter((message) => message.role !== "system").length;
+
+  return {
+    compressionApplied: false,
+    originalTokens: totalTokens,
+    finalTokens: totalTokens,
+    originalMessageCount: messages.length,
+    finalMessageCount: messages.length,
+    recentMessagesKept: nonSystemMessageCount,
+    relevantMessagesKept: 0,
+    summarizedMessages: 0,
+    summaryApplied: false,
+  };
+}
+
+async function augmentHistoryWithCompatibility(
+  chatId: string | undefined,
+  clientMessages: ConversationMemoryChatMessage[],
+  maxTokens = 8000,
+): Promise<ConversationContextResult> {
+  if (typeof conversationMemoryManager.augmentWithHistoryWithDiagnostics === "function") {
+    return conversationMemoryManager.augmentWithHistoryWithDiagnostics(chatId, clientMessages, maxTokens);
+  }
+
+  if (typeof conversationMemoryManager.augmentWithHistory === "function") {
+    const messages = await conversationMemoryManager.augmentWithHistory(chatId, clientMessages, maxTokens);
+    return {
+      messages,
+      diagnostics: createMemoryDiagnosticsFallback(messages),
+    };
+  }
+
+  return {
+    messages: clientMessages,
+    diagnostics: createMemoryDiagnosticsFallback(clientMessages),
+  };
+}
 
 function extractUserText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -3376,6 +3506,25 @@ function writeSse(res: Response, event: string, data: object): boolean {
   }
 }
 
+function emitDoneEvent(res: Response, data: Record<string, unknown>): boolean {
+  const response = res as any;
+  if (response.__doneSent) {
+    return false;
+  }
+  response.__doneSent = true;
+  return writeSse(res, "done", {
+    ...data,
+    timestamp: data.timestamp ?? Date.now(),
+  });
+}
+
+function emitCompleteEvent(res: Response, data: Record<string, unknown>): boolean {
+  return writeSse(res, "complete", {
+    ...data,
+    timestamp: data.timestamp ?? Date.now(),
+  });
+}
+
 interface CategorizedError {
   category: ErrorCategory;
   userMessage: string;
@@ -3565,7 +3714,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
       }
 
       // CONTEXT FIX: Augment client messages with server-side history
-      const { messages, diagnostics: memoryDiagnostics } = await conversationMemoryManager.augmentWithHistoryWithDiagnostics(
+      const { messages, diagnostics: memoryDiagnostics } = await augmentHistoryWithCompatibility(
         conversationId,
         clientMessages,
         8000 // token budget
@@ -4150,8 +4299,16 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
     let claimedRun: any = null;
     let runFinalized = false; // true once run status has been set to done/failed
     let assistantMessageId: string | null = null;
+    let activeStreamProvider: string | null = null;
     let streamHardTimeout: NodeJS.Timeout | null = null;
     let streamIdleTimeout: NodeJS.Timeout | null = null;
+    let fullContent = "";
+    let lastAckSequence = -1;
+    let agentLoopHandled = false;
+    let shouldRunModel = true;
+    let skillSeedForModel = "";
+    let skillExecutionResult: SkillExecutionResult | null = null;
+    let latencyMode: LatencyMode = "auto";
 
     const STREAM_HARD_TIMEOUT_MS = 180_000;
     const STREAM_IDLE_TIMEOUT_MS = 90_000; // must exceed llmGateway idle timeout (60s)
@@ -4244,7 +4401,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         skill,
         skillScopes
       } = req.body;
-      let latencyMode: LatencyMode = ['fast', 'deep', 'auto'].includes(rawLatencyMode) ? rawLatencyMode : 'auto';
+      latencyMode = ['fast', 'deep', 'auto'].includes(rawLatencyMode) ? rawLatencyMode : 'auto';
       const effectiveUserId = getOrCreateSecureUserId(req);
       const streamConversationId = sanitizeStreamIdentifier(
         typeof conversationId === "string" && conversationId.trim().length > 0
@@ -4763,18 +4920,11 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         });
       }
 
-      let fullContent = "";
-      let lastAckSequence = -1;
-      let agentLoopHandled = false;
-      let shouldRunModel = true;
-      let skillSeedForModel = "";
-      let activeStreamProvider: string | null = null;
       // NOTE: doneSent is attached to `res` so that the bundler cannot
       // rename or tree-shake it across try/catch/finally boundaries.
       // Previous attempts with local variables (`let doneSent`, `const streamFlags`)
       // were broken by the bundler renaming the variable in try but not catch/finally.
       (res as any).__doneSent = false;
-      let skillExecutionResult: SkillExecutionResult | null = null;
 
       const effectiveSkillRunId = claimedRun?.id || sanitizeStreamText(runId, MAX_STREAM_REQUEST_ID_LEN) || requestId;
       const emitSkillTrace = (trace: { stage: string; status: string; message: string; details?: Record<string, unknown> }) => {
@@ -4947,14 +5097,31 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           runId: runId || requestId,
           timestamp: Date.now(),
         });
-        writeSse(res, 'done', {
+        const greetingTimings = reportTimings("greeting_fast_path");
+        emitDoneEvent(res, {
           sequenceId: 1,
           requestId,
           runId: runId || requestId,
           latencyMode,
+          latencyLane: resolveLatencyLane(latencyMode),
+          totalSequences: 1,
+          contentLength: content.length,
+          completionReason: "greeting_fast_path",
           traceId: requestId,
-          timings: reportTimings("greeting_fast_path"),
-          timestamp: Date.now(),
+          timings: greetingTimings,
+        });
+        emitCompleteEvent(res, {
+          requestId,
+          runId: runId || requestId,
+          latencyMode,
+          latencyLane: resolveLatencyLane(latencyMode),
+          totalSequences: 1,
+          contentLength: content.length,
+          durationMs: 0,
+          status: "completed",
+          completionReason: "greeting_fast_path",
+          traceId: requestId,
+          timings: greetingTimings,
         });
         return res.end();
       }
@@ -5004,14 +5171,33 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             timestamp: Date.now(),
             provider: quick.provider,
           });
-          writeSse(res, 'done', {
+          const fastPathTimings = reportTimings("simple_fast_path");
+          emitDoneEvent(res, {
             sequenceId: 1,
             requestId,
             runId: runId || requestId,
             latencyMode,
+            latencyLane: resolveLatencyLane(latencyMode),
+            totalSequences: 1,
+            contentLength: (quick.content || "").length,
+            completionReason: "simple_fast_path",
             traceId: requestId,
-            timings: reportTimings("simple_fast_path"),
-            timestamp: Date.now(),
+            timings: fastPathTimings,
+            provider: quick.provider,
+            model: quick.model,
+          });
+          emitCompleteEvent(res, {
+            requestId,
+            runId: runId || requestId,
+            latencyMode,
+            latencyLane: resolveLatencyLane(latencyMode),
+            totalSequences: 1,
+            contentLength: (quick.content || "").length,
+            durationMs: 0,
+            status: "completed",
+            completionReason: "simple_fast_path",
+            traceId: requestId,
+            timings: fastPathTimings,
             provider: quick.provider,
             model: quick.model,
           });
@@ -5184,7 +5370,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       // CONTEXT FIX: Augment client messages with server-side history
       const effectiveChatId = chatId || conversationId || streamConversationId;
-      const { messages, diagnostics: memoryDiagnostics } = await conversationMemoryManager.augmentWithHistoryWithDiagnostics(
+      const { messages, diagnostics: memoryDiagnostics } = await augmentHistoryWithCompatibility(
         effectiveChatId,
         clientMessages,
         8000 // token budget
@@ -6413,42 +6599,50 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         });
       }
 
-      emitTraceEvent(effectiveRunId, 'task_start', {
-        metadata: {
-          chatId,
-          userId,
-          message: messages[messages.length - 1]?.content?.slice(0, 200) || '',
-          intent: unifiedContext?.requestSpec.intent,
-          intentConfidence: unifiedContext?.requestSpec.intentConfidence,
-          deliverableType: unifiedContext?.requestSpec.deliverableType,
-          attachmentsCount: attachmentsCount,
-          isAgenticMode: unifiedContext?.isAgenticMode
-        }
-      }).catch(() => { });
+      detachAsyncTask(() =>
+        emitTraceEvent(effectiveRunId, 'task_start', {
+          metadata: {
+            chatId,
+            userId,
+            message: messages[messages.length - 1]?.content?.slice(0, 200) || '',
+            intent: unifiedContext?.requestSpec.intent,
+            intentConfidence: unifiedContext?.requestSpec.intentConfidence,
+            deliverableType: unifiedContext?.requestSpec.deliverableType,
+            attachmentsCount: attachmentsCount,
+            isAgenticMode: unifiedContext?.isAgenticMode
+          }
+        }),
+      "trace task_start");
 
       if (unifiedContext?.requestSpec.sessionState) {
-        emitTraceEvent(effectiveRunId, 'memory_loaded', {
-          memory: {
-            keys: unifiedContext.requestSpec.sessionState.memoryKeys,
-            loaded: unifiedContext.requestSpec.sessionState.turnNumber
-          }
-        }).catch(() => { });
+        detachAsyncTask(() =>
+          emitTraceEvent(effectiveRunId, 'memory_loaded', {
+            memory: {
+              keys: unifiedContext.requestSpec.sessionState.memoryKeys,
+              loaded: unifiedContext.requestSpec.sessionState.turnNumber
+            }
+          }),
+        "trace memory_loaded");
       }
 
       if (unifiedContext?.isAgenticMode) {
-        emitTraceEvent(effectiveRunId, 'agent_delegated', {
-          agent: {
-            name: unifiedContext.requestSpec.primaryAgent,
-            role: 'primary',
-            status: 'active'
-          }
-        }).catch(() => { });
+        detachAsyncTask(() =>
+          emitTraceEvent(effectiveRunId, 'agent_delegated', {
+            agent: {
+              name: unifiedContext.requestSpec.primaryAgent,
+              role: 'primary',
+              status: 'active'
+            }
+          }),
+        "trace agent_delegated");
       }
 
-      emitTraceEvent(effectiveRunId, 'thinking', {
-        content: `Analyzing request: ${unifiedContext?.requestSpec.intent || 'chat'}`,
-        phase: 'planning'
-      }).catch(() => { });
+      detachAsyncTask(() =>
+        emitTraceEvent(effectiveRunId, 'thinking', {
+          content: `Analyzing request: ${unifiedContext?.requestSpec.intent || 'chat'}`,
+          phase: 'planning'
+        }),
+      "trace thinking");
 
       // Apply dynamic token limit based on question type (Answer-First)
       const hasWebSearchContext = webSearchContextForLLM.length > 0;
@@ -6593,7 +6787,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           disableImageGeneration: hasAttachments,
           maxTokens: laneMaxTokens,
         };
-        const streamGenerator = llmGateway.streamChat(
+        const streamGenerator = await resolveModelStream(
           modelMessages,
           streamLlmOptions,
         );
@@ -6648,6 +6842,10 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
         for await (const chunk of streamGenerator) {
           if (isConnectionClosed) break;
+          const chunkSequenceId = Number.isFinite(chunk.sequenceId)
+            ? Number(chunk.sequenceId)
+            : lastAckSequence + 1;
+          const chunkRequestId = chunk.requestId || requestId;
 
           if (chunk.providerSwitch && !isConnectionClosed) {
             writeSse(res, "notice", {
@@ -6667,11 +6865,11 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             markFirstToken();
           }
           fullContent += chunk.content;
-          lastAckSequence = Math.max(lastAckSequence, chunk.sequenceId);
+          lastAckSequence = Math.max(lastAckSequence, chunkSequenceId);
 
           // Update run's lastSeq for deduplication on reconnect
-          if (claimedRun && chunk.sequenceId > (claimedRun.lastSeq || 0)) {
-            await storage.updateChatRunLastSeq(claimedRun.id, chunk.sequenceId);
+          if (claimedRun && chunkSequenceId > (claimedRun.lastSeq || 0)) {
+            await storage.updateChatRunLastSeq(claimedRun.id, chunkSequenceId);
           }
 
           if (chunk.done) {
@@ -6679,20 +6877,22 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             writer.finalize();
 
             console.log(`[Stream] Sending 'done' event with ${detectedWebSources.length} webSources`);
-            (res as any).__doneSent = true;
-            writeSse(res, 'done', {
-              sequenceId: chunk.sequenceId,
-              requestId: chunk.requestId,
+            emitDoneEvent(res, {
+              sequenceId: chunkSequenceId,
+              requestId: chunkRequestId,
               runId: effectiveRunId,
               intent: unifiedContext?.requestSpec.intent,
               latencyLane: resolvedLane,
+              latencyMode,
+              totalSequences: Math.max(0, lastAckSequence + 1),
+              contentLength: fullContent.length,
+              completionReason: "model_stream_done",
               webSources: detectedWebSources.length > 0 ? detectedWebSources : undefined,
               searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
               totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
               provider: activeStreamProvider || undefined,
               traceId: requestId,
               timings: buildTimingPayload(),
-              timestamp: Date.now(),
               ...sessionMetadata
             });
           } else {
@@ -6782,11 +6982,13 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
       // Fire-and-forget: Generate an AI-powered descriptive title for this chat
       // based on the user's message and the assistant's response.
       if (effectiveChatIdForPersistence && userMessageText && fullContent.trim()) {
-        void generateAndPersistChatTitle(
-          effectiveChatIdForPersistence,
-          userMessageText,
-          fullContent,
-        ).catch(e => console.warn('[Stream] Async title generation failed:', e));
+        detachAsyncTask(() =>
+          generateAndPersistChatTitle(
+            effectiveChatIdForPersistence,
+            userMessageText,
+            fullContent,
+          ),
+        "stream title generation");
       }
 
       const durationMs = unifiedContext ? Date.now() - unifiedContext.startTime : 0;
@@ -6795,35 +6997,39 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
       if (!isConnectionClosed) {
         if (unifiedContext?.isAgenticMode) {
-          emitTraceEvent(effectiveRunId, 'agent_completed', {
-            agent: {
-              name: unifiedContext.requestSpec.primaryAgent,
-              role: 'primary',
-              status: 'completed'
-            },
-            durationMs
-          }).catch(() => { });
+          detachAsyncTask(() =>
+            emitTraceEvent(effectiveRunId, 'agent_completed', {
+              agent: {
+                name: unifiedContext.requestSpec.primaryAgent,
+                role: 'primary',
+                status: 'completed'
+              },
+              durationMs
+            }),
+          "trace agent_completed");
         }
 
         // Send done event with webSources for frontend NewsCards
         if (!(res as any).__doneSent) {
-          (res as any).__doneSent = true;
-          writeSse(res, 'done', {
+          emitDoneEvent(res, {
             requestId,
             runId: effectiveRunId,
             assistantMessageId,
+            latencyMode,
             latencyLane: resolvedLane,
+            totalSequences: finalSequenceCount,
+            contentLength: fullContent.length,
+            completionReason: "finalized",
             webSources: detectedWebSources.length > 0 ? detectedWebSources : undefined,
             searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
             totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
             provider: activeStreamProvider || undefined,
             traceId: requestId,
             timings: finalTimings,
-            timestamp: Date.now()
           });
         }
 
-        writeSse(res, 'complete', {
+        emitCompleteEvent(res, {
           requestId,
           runId: effectiveRunId,
           assistantMessageId,
@@ -6834,19 +7040,22 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           intent: unifiedContext?.requestSpec.intent,
           deliverableType: unifiedContext?.requestSpec.deliverableType,
           durationMs,
+          status: "completed",
+          completionReason: "finalized",
           traceId: requestId,
           provider: activeStreamProvider || undefined,
           timings: finalTimings,
-          timestamp: Date.now(),
           ...sessionMetadata
         });
 
-        emitTraceEvent(effectiveRunId, 'done', {
-          summary: fullContent.slice(0, 200),
-          durationMs,
-          phase: 'completed',
-          metadata: { contentLength: fullContent.length, sequences: finalSequenceCount }
-        }).catch(() => { });
+        detachAsyncTask(() =>
+          emitTraceEvent(effectiveRunId, 'done', {
+            summary: fullContent.slice(0, 200),
+            durationMs,
+            phase: 'completed',
+            metadata: { contentLength: fullContent.length, sequences: finalSequenceCount }
+          }),
+        "trace done");
       }
 
       try {
@@ -6882,6 +7091,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
       const errorRunId = claimedRun?.id || requestId;
       const errorTimings = reportTimings("error");
+      const errorSequenceCount = fullContent.trim() && lastAckSequence < 0 ? 1 : Math.max(0, lastAckSequence + 1);
       if (!isConnectionClosed) {
         writeSse(res, 'error', {
           error: error.message,
@@ -6896,24 +7106,42 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         // Always send a done event after error so the client can finalize.
         // Without this, the client relies on its own timeout to detect the stream
         // ended, which can leave the UI spinner stuck for up to 45s.
-        if (!(res as any).__doneSent) {
-          (res as any).__doneSent = true;
-          writeSse(res, 'done', {
-            requestId,
-            runId: errorRunId,
-            searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
-            totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
-            provider: activeStreamProvider || undefined,
-            traceId: requestId,
-            timings: errorTimings,
-            timestamp: Date.now(),
-            error: true,
-          });
-        }
+        emitDoneEvent(res, {
+          requestId,
+          runId: errorRunId,
+          latencyMode,
+          totalSequences: errorSequenceCount,
+          contentLength: fullContent.length,
+          searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
+          totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
+          provider: activeStreamProvider || undefined,
+          traceId: requestId,
+          timings: errorTimings,
+          completionReason: "error",
+          error: true,
+        });
+        emitCompleteEvent(res, {
+          requestId,
+          runId: errorRunId,
+          assistantMessageId,
+          latencyMode,
+          totalSequences: errorSequenceCount,
+          contentLength: fullContent.length,
+          durationMs: errorTimings.totalMs ?? 0,
+          status: "error",
+          provider: activeStreamProvider || undefined,
+          traceId: requestId,
+          timings: errorTimings,
+          completionReason: "error",
+          error: true,
+        });
 
-        emitTraceEvent(errorRunId, 'error', {
-          error: { message: error.message, code: String(error.code || 'UNKNOWN') }
-        }).catch(() => { });
+
+        detachAsyncTask(() =>
+          emitTraceEvent(errorRunId, 'error', {
+            error: { message: error.message, code: String(error.code || 'UNKNOWN') }
+          }),
+        "trace error");
       }
     } finally {
       if (heartbeatInterval) {
@@ -6947,11 +7175,31 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
       // emit one now so the client can finalize its UI state (spinner, etc.).
       if (!(res as any).__doneSent && !isConnectionClosed && !(res as any).writableEnded) {
         try {
-          writeSse(res, 'done', {
+          const safetyNetTimings = buildTimingPayload();
+          const safetyNetSequenceCount = fullContent.trim() && lastAckSequence < 0 ? 1 : Math.max(0, lastAckSequence + 1);
+          emitDoneEvent(res, {
             requestId,
             runId: claimedRun?.id || requestId,
+            latencyMode,
+            totalSequences: safetyNetSequenceCount,
+            contentLength: fullContent.length,
             traceId: requestId,
-            timestamp: Date.now(),
+            timings: safetyNetTimings,
+            completionReason: "safety_net",
+            safety_net: true,
+          });
+          emitCompleteEvent(res, {
+            requestId,
+            runId: claimedRun?.id || requestId,
+            assistantMessageId,
+            latencyMode,
+            totalSequences: safetyNetSequenceCount,
+            contentLength: fullContent.length,
+            durationMs: safetyNetTimings.totalMs ?? 0,
+            status: "safety_net",
+            traceId: requestId,
+            timings: safetyNetTimings,
+            completionReason: "safety_net",
             safety_net: true,
           });
         } catch { /* connection may have closed between our check and this write */ }

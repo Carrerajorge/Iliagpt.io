@@ -1,595 +1,335 @@
 /**
- * Universal LLM Provider System — ProviderRegistry
+ * ProviderRegistry — Singleton registry for all LLM providers
  *
- * Singleton registry that owns the lifecycle of every registered IProvider.
- * Responsibilities:
- *
- *   • register / unregister providers
- *   • route requests to the best available provider (by composite score)
- *   • run a periodic health-check loop (setTimeout recursion, not setInterval)
- *   • emit typed events for monitoring / telemetry consumers
- *   • provide a fallback chain when a primary provider is unavailable
- *   • graceful shutdown (dispose all providers in parallel)
- *
- * Usage:
- *   import { providerRegistry } from './ProviderRegistry';
- *   providerRegistry.register(new OpenAIProvider(config));
- *   const provider = providerRegistry.getBest({ capability: ModelCapability.VISION });
+ * Features:
+ * - Runtime hot-swap (add/remove providers without restart)
+ * - Periodic health monitoring with configurable intervals
+ * - Event emission for provider status changes
+ * - Capability-based provider lookup
  */
 
-import { EventEmitter } from 'events';
-import { Logger } from '../../logger';
+import EventEmitter from "events";
+import { type BaseProvider } from "./BaseProvider.js";
 import {
-  type IProvider,
-  type IProviderRegistry,
-  type IHealthCheckResult,
   type IModelInfo,
-  type StatusChangedPayload,
+  type IProvider,
+  type IProviderEvent,
+  type IProviderHealth,
   ModelCapability,
-  ProviderStatus,
-  ProviderStatusSeverity,
-  ProviderEvents,
   ProviderError,
-} from './types';
+  ProviderStatus,
+} from "./types.js";
 
-// ============================================================================
-// Query types for provider selection
-// ============================================================================
+// ─────────────────────────────────────────────
+// Registry Configuration
+// ─────────────────────────────────────────────
 
-/**
- * Criteria passed to `getBest()` to select the optimal provider.
- * All fields are optional — omitting them returns the highest-scoring
- * available provider regardless of capability or preference.
- */
-export interface ProviderQuery {
-  /** Bitmask of capabilities the selected provider MUST support. */
-  capability?       : number;
-  /** Prefer this provider name if it is currently healthy. */
-  preferredProvider?: string;
-  /** Explicitly exclude these provider names. */
-  excludeProviders? : string[];
-  /**
-   * Weighting strategy:
-   *   'reliability' — maximise historical uptime (default)
-   *   'latency'     — minimise average response time
-   *   'cost'        — placeholder for future cost-based routing
-   */
-  strategy?         : 'reliability' | 'latency' | 'cost';
+export interface RegistryConfig {
+  healthCheckIntervalMs: number;   // How often to run health checks
+  healthCheckTimeoutMs: number;    // Timeout for individual health checks
+  autoEvictUnhealthy: boolean;     // Auto-disable consistently unhealthy providers
+  maxConsecutiveFailuresBeforeEvict: number;
 }
 
-/**
- * Detailed selection result — includes the winning provider and the
- * full scored list so callers can implement their own fallback iteration.
- */
-export interface ProviderSelectionResult {
-  provider : IProvider;
-  score    : number;
-  allScored: Array<{ provider: IProvider; score: number }>;
-}
+const DEFAULT_REGISTRY_CONFIG: RegistryConfig = {
+  healthCheckIntervalMs: 60_000,     // 1 minute
+  healthCheckTimeoutMs: 10_000,      // 10 seconds
+  autoEvictUnhealthy: false,
+  maxConsecutiveFailuresBeforeEvict: 10,
+};
 
-// ============================================================================
-// Internal stored entry
-// ============================================================================
-
-interface ProviderEntry {
-  provider         : IProvider;
-  registeredAt     : Date;
-  lastHealthCheck? : IHealthCheckResult;
-}
-
-// ============================================================================
+// ─────────────────────────────────────────────
 // ProviderRegistry
-// ============================================================================
+// ─────────────────────────────────────────────
 
-class ProviderRegistry extends EventEmitter implements IProviderRegistry {
-  private readonly _providers = new Map<string, ProviderEntry>();
+export class ProviderRegistry extends EventEmitter {
+  private static _instance: ProviderRegistry | null = null;
 
-  /** How often to run health checks (ms). Adjustable at runtime. */
-  public healthCheckIntervalMs = 60_000; // 1 minute
+  private readonly _providers = new Map<string, BaseProvider>();
+  private readonly _disabledProviders = new Set<string>();
+  private _healthCheckTimer?: ReturnType<typeof setInterval>;
+  private readonly _config: RegistryConfig;
 
-  private _healthLoopTimer: ReturnType<typeof setTimeout> | null = null;
-  private _healthLoopRunning = false;
-  private _disposed = false;
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Registration
-  // ──────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Register a provider.  If a provider with the same name is already
-   * registered it will be replaced (the old one is disposed first).
-   */
-  register(provider: IProvider): void {
-    if (this._disposed) {
-      throw new Error('[ProviderRegistry] Cannot register on a disposed registry.');
-    }
-
-    const existing = this._providers.get(provider.name);
-    if (existing) {
-      Logger.warn(`[Registry] Replacing existing provider "${provider.name}"`);
-      // Dispose old provider asynchronously — don't await to avoid blocking.
-      existing.provider.dispose().catch(err =>
-        Logger.error(`[Registry] Error disposing replaced provider "${provider.name}"`, err),
-      );
-    }
-
-    // Forward provider-level events to the registry so consumers only need
-    // to subscribe to one EventEmitter.
-    this._forwardProviderEvents(provider);
-
-    this._providers.set(provider.name, {
-      provider,
-      registeredAt: new Date(),
-    });
-
-    Logger.info(`[Registry] Registered provider "${provider.name}"`);
-    this.emit(ProviderEvents.REGISTERED, { provider: provider.name, timestamp: new Date() });
+  private constructor(config: Partial<RegistryConfig> = {}) {
+    super();
+    this._config = { ...DEFAULT_REGISTRY_CONFIG, ...config };
+    this.startHealthMonitoring();
   }
 
-  /**
-   * Remove a provider from the registry and dispose it.
-   * Returns `true` if the provider existed, `false` otherwise.
-   */
-  unregister(name: string): boolean {
-    const entry = this._providers.get(name);
-    if (!entry) return false;
+  static getInstance(config?: Partial<RegistryConfig>): ProviderRegistry {
+    if (!ProviderRegistry._instance) {
+      ProviderRegistry._instance = new ProviderRegistry(config);
+    }
+    return ProviderRegistry._instance;
+  }
 
-    this._providers.delete(name);
-    entry.provider.dispose().catch(err =>
-      Logger.error(`[Registry] Error disposing provider "${name}"`, err),
-    );
+  /** Reset singleton — for testing only */
+  static resetInstance(): void {
+    if (ProviderRegistry._instance) {
+      ProviderRegistry._instance.stopHealthMonitoring();
+      ProviderRegistry._instance = null;
+    }
+  }
 
-    Logger.info(`[Registry] Unregistered provider "${name}"`);
-    this.emit(ProviderEvents.UNREGISTERED, { provider: name, timestamp: new Date() });
+  // ─── Registration ───
+
+  register(provider: BaseProvider): void {
+    const existing = this._providers.get(provider.id);
+    if (existing) {
+      console.warn(`[ProviderRegistry] Provider '${provider.id}' is being replaced (hot-swap).`);
+    }
+
+    // Forward provider health events to registry
+    provider.on("health_changed", (data: unknown) => {
+      const event: IProviderEvent = {
+        type: "health_changed",
+        providerId: provider.id,
+        timestamp: new Date(),
+        data,
+      };
+      this.emit("provider_event", event);
+
+      if (
+        this._config.autoEvictUnhealthy &&
+        provider.health.consecutiveErrors >= this._config.maxConsecutiveFailuresBeforeEvict
+      ) {
+        console.error(
+          `[ProviderRegistry] Auto-evicting '${provider.id}' after ${provider.health.consecutiveErrors} consecutive failures.`,
+        );
+        this._disabledProviders.add(provider.id);
+        this.emitEvent("health_changed", provider.id, { disabled: true });
+      }
+    });
+
+    this._providers.set(provider.id, provider);
+    this._disabledProviders.delete(provider.id);
+
+    console.log(`[ProviderRegistry] Registered provider '${provider.id}' (${provider.name}).`);
+    this.emitEvent("registered", provider.id);
+  }
+
+  unregister(providerId: string): boolean {
+    const provider = this._providers.get(providerId);
+    if (!provider) return false;
+
+    provider.removeAllListeners();
+    this._providers.delete(providerId);
+    this._disabledProviders.delete(providerId);
+
+    console.log(`[ProviderRegistry] Unregistered provider '${providerId}'.`);
+    this.emitEvent("unregistered", providerId);
     return true;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Retrieval
-  // ──────────────────────────────────────────────────────────────────────────
-
-  /** Returns the provider with `name`, or `undefined`. */
-  get(name: string): IProvider | undefined {
-    return this._providers.get(name)?.provider;
+  enable(providerId: string): void {
+    this._disabledProviders.delete(providerId);
   }
 
-  /** Returns the provider with `name` or throws if not registered. */
-  getOrThrow(name: string): IProvider {
-    const p = this.get(name);
-    if (!p) throw new Error(`[ProviderRegistry] Provider "${name}" is not registered.`);
-    return p;
+  disable(providerId: string): void {
+    this._disabledProviders.add(providerId);
   }
 
-  /**
-   * Returns all providers whose status is ACTIVE or DEGRADED (i.e. they can
-   * still accept requests), sorted by composite reliability score descending.
-   */
-  getHealthy(): IProvider[] {
-    return this._allScoredProviders({ strategy: 'reliability' })
-      .filter(s => this._isHealthy(s.provider))
-      .map(s => s.provider);
-  }
+  // ─── Lookup ───
 
-  /** Returns ALL registered providers sorted by score descending. */
-  list(): IProvider[] {
-    return this._allScoredProviders({ strategy: 'reliability' }).map(s => s.provider);
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Smart routing
-  // ──────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Select the best provider for a given query.
-   *
-   * Selection algorithm:
-   *  1. Filter by required capabilities (bitmask AND).
-   *  2. Exclude providers listed in `excludeProviders`.
-   *  3. Keep only healthy providers (ACTIVE or DEGRADED).
-   *  4. If `preferredProvider` is healthy & passes filters, return it immediately.
-   *  5. Score remaining candidates and return highest score.
-   *
-   * Throws if no provider meets the criteria.
-   */
-  getBest(query: ProviderQuery = {}): ProviderSelectionResult {
-    const {
-      capability        = ModelCapability.NONE,
-      preferredProvider,
-      excludeProviders  = [],
-      strategy          = 'reliability',
-    } = query;
-
-    // Step 1 + 2 + 3: filter candidates.
-    const candidates = Array.from(this._providers.values())
-      .map(e => e.provider)
-      .filter(p => !excludeProviders.includes(p.name))
-      .filter(p => this._isHealthy(p))
-      .filter(p => capability === ModelCapability.NONE || this._providerSupports(p, capability));
-
-    if (candidates.length === 0) {
-      const reason = capability !== ModelCapability.NONE
-        ? `capability mask 0x${capability.toString(16)}`
-        : 'any capability';
-      throw new ProviderError({
-        message  : `[Registry] No healthy provider available for ${reason}.`,
-        provider : 'registry',
-        requestId: 'routing',
-        retryable: true,
-      });
-    }
-
-    // Step 4: short-circuit to preferred.
-    if (preferredProvider) {
-      const preferred = candidates.find(p => p.name === preferredProvider);
-      if (preferred) {
-        const allScored = this._scoreProviders(candidates, strategy);
-        return {
-          provider : preferred,
-          score    : allScored.find(s => s.provider === preferred)?.score ?? 1,
-          allScored,
-        };
-      }
-      Logger.warn(
-        `[Registry] Preferred provider "${preferredProvider}" is unavailable — ` +
-        `falling back to scored selection.`,
+  getProvider(providerId: string): BaseProvider {
+    const provider = this._providers.get(providerId);
+    if (!provider) {
+      throw new ProviderError(
+        `Provider '${providerId}' not registered`,
+        providerId,
+        "PROVIDER_NOT_FOUND",
       );
     }
-
-    // Step 5: score and pick best.
-    const allScored = this._scoreProviders(candidates, strategy);
-    const best      = allScored[0];
-
-    Logger.debug(
-      `[Registry] Routing to "${best.provider.name}" ` +
-      `(score=${best.score.toFixed(3)}, strategy=${strategy})`,
-    );
-
-    return { provider: best.provider, score: best.score, allScored };
-  }
-
-  /**
-   * Build an ordered fallback chain starting from `primaryName`.
-   * Returns a list of provider names that are currently healthy, excluding
-   * any names in `exclude`.  Respects the provider's own `config.fallbackChain`
-   * if configured; otherwise falls back to registry-scored ordering.
-   */
-  buildFallbackChain(primaryName: string, exclude: string[] = []): IProvider[] {
-    const primary  = this.get(primaryName);
-    const excluded = new Set([primaryName, ...exclude]);
-
-    // Use explicit chain if configured on the primary.
-    if (primary?.config.fallbackChain) {
-      return primary.config.fallbackChain
-        .filter(name => !excluded.has(name))
-        .map(name => this.get(name))
-        .filter((p): p is IProvider => p !== undefined && this._isHealthy(p));
+    if (this._disabledProviders.has(providerId)) {
+      throw new ProviderError(
+        `Provider '${providerId}' is disabled`,
+        providerId,
+        "PROVIDER_DISABLED",
+      );
     }
-
-    // Default: registry scoring, excluding the primary.
-    return this.getHealthy().filter(p => !excluded.has(p.name));
+    return provider;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Health-check loop
-  // ──────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Start the periodic health-check loop.
-   * Safe to call multiple times — only one loop will run.
-   */
-  startHealthCheckLoop(): void {
-    if (this._healthLoopRunning) return;
-    this._healthLoopRunning = true;
-    Logger.info(`[Registry] Health-check loop started (interval=${this.healthCheckIntervalMs}ms)`);
-    this._scheduleNextHealthCheck();
+  tryGetProvider(providerId: string): BaseProvider | undefined {
+    if (this._disabledProviders.has(providerId)) return undefined;
+    return this._providers.get(providerId);
   }
 
-  /** Stop the health-check loop (does not dispose providers). */
-  stopHealthCheckLoop(): void {
-    if (this._healthLoopTimer) {
-      clearTimeout(this._healthLoopTimer);
-      this._healthLoopTimer = null;
-    }
-    this._healthLoopRunning = false;
-    Logger.info('[Registry] Health-check loop stopped.');
-  }
-
-  /**
-   * Run a single health-check round across all registered providers in parallel.
-   * Updates each entry's `lastHealthCheck` and emits HEALTH_CHECK_DONE.
-   */
-  async runHealthChecks(): Promise<IHealthCheckResult[]> {
-    const entries = Array.from(this._providers.values());
-    if (entries.length === 0) return [];
-
-    Logger.debug(`[Registry] Running health checks for ${entries.length} provider(s)…`);
-
-    const results = await Promise.allSettled(
-      entries.map(async (entry) => {
-        const result = await entry.provider.healthCheck();
-        entry.lastHealthCheck = result;
-        return result;
-      }),
+  listProviders(): IProvider[] {
+    return Array.from(this._providers.values()).filter(
+      (p) => !this._disabledProviders.has(p.id),
     );
+  }
 
-    const healthResults: IHealthCheckResult[] = results.map((r, i) => {
-      if (r.status === 'fulfilled') return r.value;
-      // If healthCheck() itself threw, create a synthetic result.
-      const name = entries[i].provider.name;
-      Logger.error(`[Registry] healthCheck() threw for "${name}"`, r.reason);
-      return {
-        provider   : name,
-        status     : ProviderStatus.UNAVAILABLE,
-        latencyMs  : 0,
-        checkedAt  : new Date(),
-        message    : String(r.reason),
-        configValid: false,
-      };
+  listAllProviders(): IProvider[] {
+    return Array.from(this._providers.values());
+  }
+
+  hasProvider(providerId: string): boolean {
+    return this._providers.has(providerId) && !this._disabledProviders.has(providerId);
+  }
+
+  /**
+   * Find providers that support a specific capability.
+   * Optionally filter by health status.
+   */
+  getProvidersByCapability(
+    capability: ModelCapability,
+    requireHealthy = true,
+  ): BaseProvider[] {
+    return Array.from(this._providers.values()).filter((p) => {
+      if (this._disabledProviders.has(p.id)) return false;
+      if (requireHealthy && p.health.status === ProviderStatus.UNAVAILABLE) return false;
+      return p.isCapable(capability);
     });
-
-    this.emit(ProviderEvents.HEALTH_CHECK_DONE, healthResults);
-    return healthResults;
   }
 
   /**
-   * Return the most recent health-check result for a provider.
-   * Returns `undefined` if no check has been run yet.
+   * Find a provider that has a specific model available.
    */
-  getLastHealthCheck(name: string): IHealthCheckResult | undefined {
-    return this._providers.get(name)?.lastHealthCheck;
+  async getProviderForModel(modelId: string): Promise<BaseProvider | undefined> {
+    for (const provider of this._providers.values()) {
+      if (this._disabledProviders.has(provider.id)) continue;
+      const models = await provider.listModels().catch(() => []);
+      if (models.some((m) => m.id === modelId)) return provider;
+    }
+    return undefined;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Model catalogue
-  // ──────────────────────────────────────────────────────────────────────────
-
   /**
-   * Aggregate model lists from all healthy providers.
-   * Annotates each model with `available` = true only if the provider is
-   * currently ACTIVE or DEGRADED.
+   * Get all models across all healthy providers.
    */
-  async listAllModels(): Promise<IModelInfo[]> {
-    const healthy = this.getHealthy();
-    const results = await Promise.allSettled(healthy.map(p => p.listModels()));
+  async getAllModels(): Promise<IModelInfo[]> {
+    const modelSets = await Promise.allSettled(
+      Array.from(this._providers.values())
+        .filter((p) => !this._disabledProviders.has(p.id))
+        .map((p) => p.listModels()),
+    );
 
     const models: IModelInfo[] = [];
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      if (r.status === 'fulfilled') {
-        for (const model of r.value) {
-          models.push({ ...model, available: this._isHealthy(healthy[i]) });
-        }
-      } else {
-        Logger.warn(`[Registry] listModels() failed for "${healthy[i].name}"`, r.reason);
-      }
+    for (const result of modelSets) {
+      if (result.status === "fulfilled") models.push(...result.value);
     }
-
     return models;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Introspection / Diagnostics
-  // ──────────────────────────────────────────────────────────────────────────
+  // ─── Health ───
 
-  /** Snapshot of all provider statuses for admin dashboards. */
-  statusSnapshot(): Array<{
-    name         : string;
-    status       : ProviderStatus;
-    score        : number;
-    reliability  : number;
-    avgLatencyMs : number;
-    registeredAt : Date;
-    lastCheck?   : IHealthCheckResult;
-  }> {
-    const scored = this._allScoredProviders({ strategy: 'reliability' });
-    return scored.map(({ provider, score }) => {
-      const entry = this._providers.get(provider.name)!;
-      const p     = provider as any; // access BaseProvider getters
-
-      return {
-        name        : provider.name,
-        status      : provider.status,
-        score,
-        reliability : p.reliabilityScore  ?? 0,
-        avgLatencyMs: p.averageLatencyMs   ?? 0,
-        registeredAt: entry.registeredAt,
-        lastCheck   : entry.lastHealthCheck,
+  getHealthStatus(): Record<string, IProviderHealth> {
+    const status: Record<string, IProviderHealth> = {};
+    for (const [id, provider] of this._providers) {
+      status[id] = {
+        ...provider.health,
+        status: this._disabledProviders.has(id) ? ProviderStatus.UNAVAILABLE : provider.health.status,
       };
-    });
-  }
-
-  /** Returns a count breakdown by status. */
-  statusCounts(): Record<ProviderStatus, number> {
-    const counts = Object.fromEntries(
-      Object.values(ProviderStatus).map(s => [s, 0]),
-    ) as Record<ProviderStatus, number>;
-
-    for (const entry of this._providers.values()) {
-      counts[entry.provider.status]++;
     }
-    return counts;
+    return status;
   }
 
-  /** True if at least one provider is currently healthy. */
-  get hasHealthyProvider(): boolean {
-    return Array.from(this._providers.values()).some(e => this._isHealthy(e.provider));
-  }
+  getHealthySummary(): {
+    total: number;
+    healthy: number;
+    degraded: number;
+    unavailable: number;
+    disabled: number;
+  } {
+    let healthy = 0;
+    let degraded = 0;
+    let unavailable = 0;
+    const disabled = this._disabledProviders.size;
 
-  /** Total number of registered providers. */
-  get size(): number {
-    return this._providers.size;
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Lifecycle
-  // ──────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Gracefully dispose all providers and stop the health-check loop.
-   * After calling this, the registry should not be used.
-   */
-  async dispose(): Promise<void> {
-    if (this._disposed) return;
-    this._disposed = true;
-
-    this.stopHealthCheckLoop();
-
-    const names   = Array.from(this._providers.keys());
-    const entries = Array.from(this._providers.values());
-    this._providers.clear();
-
-    await Promise.allSettled(entries.map(e => e.provider.dispose()));
-    Logger.info(`[Registry] Disposed ${names.length} provider(s): ${names.join(', ')}`);
-    this.removeAllListeners();
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Private helpers
-  // ──────────────────────────────────────────────────────────────────────────
-
-  private _scheduleNextHealthCheck(): void {
-    if (!this._healthLoopRunning || this._disposed) return;
-
-    this._healthLoopTimer = setTimeout(async () => {
-      try {
-        await this.runHealthChecks();
-      } catch (err) {
-        Logger.error('[Registry] Unexpected error in health-check loop', err);
-      } finally {
-        // Schedule the NEXT check only after this one finishes — prevents pileup.
-        this._scheduleNextHealthCheck();
+    for (const [id, provider] of this._providers) {
+      if (this._disabledProviders.has(id)) continue;
+      switch (provider.health.status) {
+        case ProviderStatus.HEALTHY:
+          healthy++;
+          break;
+        case ProviderStatus.DEGRADED:
+        case ProviderStatus.RATE_LIMITED:
+          degraded++;
+          break;
+        default:
+          unavailable++;
       }
-    }, this.healthCheckIntervalMs);
+    }
+
+    return { total: this._providers.size, healthy, degraded, unavailable, disabled };
   }
 
-  /**
-   * Score all providers under the given strategy and sort descending.
-   *
-   * Composite score formula:
-   *   reliability strategy → reliability × statusWeight × (1 − latencyNorm)
-   *   latency strategy     → (1 − latencyNorm) × statusWeight
-   *
-   * statusWeight:
-   *   ACTIVE   → 1.0
-   *   DEGRADED → 0.6
-   *   others   → 0.0  (filtered out by callers, but score remains correct)
-   */
-  private _scoreProviders(
-    providers: IProvider[],
-    strategy : 'reliability' | 'latency' | 'cost',
-  ): Array<{ provider: IProvider; score: number }> {
-    if (providers.length === 0) return [];
+  async runHealthChecks(): Promise<Record<string, IProviderHealth>> {
+    const results: Record<string, IProviderHealth> = {};
+    const checks = Array.from(this._providers.entries()).map(async ([id, provider]) => {
+      try {
+        const health = await Promise.race([
+          provider.checkHealth(),
+          this.timeout(this._config.healthCheckTimeoutMs, id),
+        ]);
+        results[id] = health;
+      } catch (err) {
+        results[id] = {
+          ...provider.health,
+          status: ProviderStatus.UNAVAILABLE,
+          lastError: err instanceof Error ? err.message : "Health check timeout",
+          lastCheckedAt: new Date(),
+        };
+      }
+    });
 
-    // Find max latency for normalisation.
-    const latencies = providers.map(p => (p as any).averageLatencyMs ?? 9999);
-    const maxLatency = Math.max(...latencies, 1);
-
-    return providers
-      .map((provider, i) => {
-        const reliability  = (provider as any).reliabilityScore  ?? 0.5;
-        const latencyNorm  = latencies[i] / maxLatency;           // 0–1, lower is better
-        const statusWeight = this._statusWeight(provider.status);
-
-        let score: number;
-        switch (strategy) {
-          case 'latency':
-            score = (1 - latencyNorm) * statusWeight;
-            break;
-          case 'cost':
-            // TODO: integrate real cost data from IModelInfo.pricing.
-            // For now fall through to reliability.
-            score = reliability * statusWeight * (1 - latencyNorm * 0.3);
-            break;
-          default: // 'reliability'
-            score = reliability * statusWeight * (1 - latencyNorm * 0.2);
-        }
-
-        return { provider, score };
-      })
-      .sort((a, b) => b.score - a.score);
+    await Promise.allSettled(checks);
+    return results;
   }
 
-  private _allScoredProviders(query: Pick<ProviderQuery, 'strategy'>): Array<{ provider: IProvider; score: number }> {
-    const all = Array.from(this._providers.values()).map(e => e.provider);
-    return this._scoreProviders(all, query.strategy ?? 'reliability');
-  }
+  // ─── Health Monitoring ───
 
-  private _statusWeight(status: ProviderStatus): number {
-    switch (status) {
-      case ProviderStatus.ACTIVE      : return 1.0;
-      case ProviderStatus.DEGRADED    : return 0.6;
-      case ProviderStatus.RATE_LIMITED: return 0.3;
-      default                         : return 0.0;
+  private startHealthMonitoring(): void {
+    if (this._healthCheckTimer) return;
+    this._healthCheckTimer = setInterval(async () => {
+      try {
+        const results = await this.runHealthChecks();
+        this.emit("health_check_complete", results);
+      } catch (err) {
+        console.error("[ProviderRegistry] Health check cycle failed:", err);
+      }
+    }, this._config.healthCheckIntervalMs);
+
+    // Don't block process exit
+    if (this._healthCheckTimer.unref) {
+      this._healthCheckTimer.unref();
     }
   }
 
-  private _isHealthy(provider: IProvider): boolean {
-    return (
-      provider.status === ProviderStatus.ACTIVE ||
-      provider.status === ProviderStatus.DEGRADED
+  stopHealthMonitoring(): void {
+    if (this._healthCheckTimer) {
+      clearInterval(this._healthCheckTimer);
+      this._healthCheckTimer = undefined;
+    }
+  }
+
+  // ─── Helpers ───
+
+  private timeout(ms: number, providerId: string): Promise<never> {
+    return new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`Health check timed out for '${providerId}' after ${ms}ms`)),
+        ms,
+      ),
     );
   }
 
-  /**
-   * Check whether a provider has all the required capabilities.
-   * Tries to call `listModels()` result first; falls back to
-   * checking `provider.config.extra.capabilities` if set.
-   * If neither is available, assume the provider supports everything
-   * (conservative — avoids false negatives at startup).
-   */
-  private _providerSupports(provider: IProvider, capMask: number): boolean {
-    const extra = provider.config.extra as any;
-    if (typeof extra?.capabilities === 'number') {
-      return (extra.capabilities & capMask) === capMask;
-    }
-    // No capability metadata available — assume supported.
-    return true;
-  }
-
-  /** Forward typed events from an individual provider up to the registry bus. */
-  private _forwardProviderEvents(provider: IProvider): void {
-    provider.on(ProviderEvents.REQUEST_SUCCESS, (payload) => {
-      this.emit(ProviderEvents.REQUEST_SUCCESS, payload);
-    });
-
-    provider.on(ProviderEvents.REQUEST_FAILURE, (payload) => {
-      this.emit(ProviderEvents.REQUEST_FAILURE, payload);
-    });
-
-    provider.on(ProviderEvents.STATUS_CHANGED, (payload: StatusChangedPayload) => {
-      this.emit(ProviderEvents.STATUS_CHANGED, payload);
-
-      // Log at appropriate severity based on how bad the change is.
-      const prevSev = ProviderStatusSeverity[payload.previous];
-      const currSev = ProviderStatusSeverity[payload.current];
-      const msg = `[Registry] "${payload.provider}" ${payload.previous} → ${payload.current}`;
-
-      if (currSev > prevSev) {
-        Logger.warn(msg);
-      } else {
-        Logger.info(msg);
-      }
-    });
+  private emitEvent(
+    type: IProviderEvent["type"],
+    providerId: string,
+    data?: unknown,
+  ): void {
+    const event: IProviderEvent = {
+      type,
+      providerId,
+      timestamp: new Date(),
+      data,
+    };
+    this.emit("provider_event", event);
   }
 }
 
-// ============================================================================
-// Module-level singleton — the idiomatic Node.js pattern.
-// Import this object everywhere; never instantiate ProviderRegistry directly.
-// ============================================================================
-
-export const providerRegistry = new ProviderRegistry();
-
-/**
- * Convenience: register the process shutdown hooks so the registry disposes
- * cleanly on SIGTERM / SIGINT.  Call this once from server/index.ts.
- */
-export function registerRegistryShutdownHooks(): void {
-  const handler = async (signal: string) => {
-    Logger.info(`[Registry] Received ${signal} — disposing providers…`);
-    await providerRegistry.dispose();
-  };
-
-  process.once('SIGTERM', () => handler('SIGTERM'));
-  process.once('SIGINT',  () => handler('SIGINT'));
-}
+// Convenience export for the singleton instance
+export const providerRegistry = ProviderRegistry.getInstance();

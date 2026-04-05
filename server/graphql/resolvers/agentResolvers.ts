@@ -1,394 +1,603 @@
-/**
- * Agent GraphQL Resolvers
- * Handles: Agents, Tasks, subscriptions for real-time task progress
- */
+import { GraphQLError } from 'graphql';
+import { eq, and, desc, sql, or } from 'drizzle-orm';
+import { db } from '../../db';
+import { Logger } from '../../lib/logger';
+import { agents } from '../../../shared/schema';
+import type { GraphQLContext } from '../index';
 
-import { GraphQLError } from "graphql";
-import { eq, desc, and, sql } from "drizzle-orm";
-import { db, db as dbRead } from "../../db.js";
-import { Logger } from "../../lib/logger.js";
-import { agentRuns } from "../../../shared/schema.js";
-import { pubsub } from "./chatResolvers.js";
-import type { GraphQLContext } from "../middleware/auth.js";
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-// ─── Topic helpers ────────────────────────────────────────────────────────────
-const TOPICS = {
-  TASK_PROGRESS: (taskId: string) => `TASK_PROGRESS_${taskId}`,
-  AGENT_LOG: (agentId: string) => `AGENT_LOG_${agentId}`,
-};
-
-// ─── In-memory agent registry (would be replaced by DB-backed agents table) ──
-interface AgentRecord {
-  id: string;
+interface AgentToolInput {
   name: string;
-  description: string | null;
-  type: string;
-  status: string;
-  capabilities: string[];
-  config: Record<string, unknown> | null;
-  lastActiveAt: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
+  description?: string;
+  schema?: unknown;
+  enabled: boolean;
 }
 
-// Stub registry — in production, these come from a `agents` DB table
-const agentRegistry = new Map<string, AgentRecord>([
-  [
-    "agent-orchestrator",
-    {
-      id: "agent-orchestrator",
-      name: "Orchestrator",
-      description: "Main multi-step task orchestrator",
-      type: "orchestrator",
-      status: "IDLE",
-      capabilities: ["web_search", "code_exec", "file_ops", "llm"],
-      config: null,
-      lastActiveAt: null,
-      createdAt: new Date("2024-01-01"),
-      updatedAt: new Date(),
-    },
-  ],
-  [
-    "agent-researcher",
-    {
-      id: "agent-researcher",
-      name: "Researcher",
-      description: "Deep web research agent",
-      type: "researcher",
-      status: "IDLE",
-      capabilities: ["web_search", "document_analysis", "summarization"],
-      config: null,
-      lastActiveAt: null,
-      createdAt: new Date("2024-01-01"),
-      updatedAt: new Date(),
-    },
-  ],
+interface CreateAgentInput {
+  name: string;
+  description?: string;
+  instructions: string;
+  model: string;
+  tools?: AgentToolInput[];
+  isPublic?: boolean;
+  metadata?: unknown;
+}
+
+interface UpdateAgentInput {
+  name?: string;
+  description?: string;
+  instructions?: string;
+  model?: string;
+  tools?: AgentToolInput[];
+  isPublic?: boolean;
+  metadata?: unknown;
+}
+
+interface ExecuteAgentInput {
+  agentId: string;
+  input: string;
+  chatId?: string;
+  stream?: boolean;
+}
+
+interface PaginationInput {
+  first?: number | null;
+  after?: string | null;
+  last?: number | null;
+  before?: string | null;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const VALID_TOOLS = new Set([
+  'web_search',
+  'code_interpreter',
+  'file_browser',
+  'calculator',
+  'image_generation',
+  'weather',
+  'calendar',
+  'email',
+  'database_query',
+  'http_request',
 ]);
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-function assertAuth(ctx: GraphQLContext): asserts ctx is GraphQLContext & { user: NonNullable<GraphQLContext["user"]> } {
-  if (!ctx.user?.id) {
-    throw new GraphQLError("Unauthorized", { extensions: { code: "UNAUTHENTICATED" } });
+const SUPPORTED_MODELS = new Set([
+  'gpt-4o',
+  'gpt-4o-mini',
+  'gpt-4-turbo',
+  'gpt-3.5-turbo',
+  'claude-3-5-sonnet-20241022',
+  'claude-3-5-haiku-20241022',
+  'claude-3-opus-20240229',
+  'gemini-1.5-pro',
+  'gemini-1.5-flash',
+  'mistral-large-latest',
+]);
+
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 100;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function requireAuth(ctx: GraphQLContext): string {
+  if (!ctx.userId) {
+    throw new GraphQLError('Not authenticated', {
+      extensions: { code: 'UNAUTHENTICATED' },
+    });
   }
+  return ctx.userId;
 }
 
-function assertAdmin(ctx: GraphQLContext) {
-  assertAuth(ctx);
-  if (ctx.user!.role !== "admin") {
-    throw new GraphQLError("Forbidden: Admin access required", { extensions: { code: "FORBIDDEN" } });
-  }
+function normalizePageSize(first?: number | null, last?: number | null): number {
+  return Math.min(Math.max(1, first ?? last ?? DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
 }
 
-function mapRunToTask(run: typeof agentRuns.$inferSelect) {
+function encodeCursor(id: string, createdAt: Date): string {
+  return Buffer.from(JSON.stringify({ id, t: createdAt.getTime() })).toString('base64');
+}
+
+function buildConnection<T extends { id: string; createdAt: Date }>(
+  items: T[],
+  totalCount: number,
+  pagination: PaginationInput,
+  hasMore: boolean,
+) {
+  const edges = items.map((node) => ({
+    node,
+    cursor: encodeCursor(node.id, node.createdAt),
+  }));
+
   return {
-    id: run.id,
-    agentId: "system",                           // agentRuns uses conversationId not agentId
-    type: run.routerDecision ?? "generic",       // closest field available
-    status: (run.status ?? "pending").toUpperCase(),
-    input: run.objective ? { objective: run.objective } : null,
-    output: null,                                // not stored in agentRuns directly
-    error: run.error ?? null,
-    progress: 0,                                 // not stored — would derive from agentSteps
-    startedAt: run.startedAt ?? null,
-    completedAt: run.completedAt ?? null,
-    createdAt: run.startedAt,                    // agentRuns has no separate createdAt
+    edges,
+    pageInfo: {
+      hasNextPage: pagination.first != null ? hasMore : false,
+      hasPreviousPage: pagination.last != null ? hasMore : false,
+      startCursor: edges.length > 0 ? edges[0].cursor : null,
+      endCursor: edges.length > 0 ? edges[edges.length - 1].cursor : null,
+      totalCount,
+    },
   };
 }
 
-// ─── Resolvers ────────────────────────────────────────────────────────────────
-export const agentResolvers = {
-  Query: {
-    async agents(_: unknown, __: unknown, ctx: GraphQLContext) {
-      assertAuth(ctx);
-      Logger.info("[GraphQL] agents query", { userId: ctx.user.id });
-      return Array.from(agentRegistry.values());
-    },
+async function requireAgentOwner(
+  agentId: string,
+  userId: string,
+): Promise<typeof agents.$inferSelect> {
+  const [agent] = await db
+    .select()
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .limit(1);
 
-    async agent(_: unknown, args: { id: string }, ctx: GraphQLContext) {
-      assertAuth(ctx);
-      Logger.info("[GraphQL] agent query", { agentId: args.id, userId: ctx.user.id });
-      return agentRegistry.get(args.id) ?? null;
-    },
+  if (!agent) {
+    throw new GraphQLError('Agent not found', {
+      extensions: { code: 'NOT_FOUND' },
+    });
+  }
 
-    async agentTasks(
-      _: unknown,
-      args: { agentId: string; limit?: number; offset?: number },
-      ctx: GraphQLContext
-    ) {
-      assertAuth(ctx);
-      const limit = Math.min(args.limit ?? 20, 100);
-      const offset = args.offset ?? 0;
+  if (agent.userId !== userId) {
+    throw new GraphQLError('Forbidden: you do not own this agent', {
+      extensions: { code: 'FORBIDDEN' },
+    });
+  }
 
-      try {
-        Logger.info("[GraphQL] agentTasks query", { agentId: args.agentId, userId: ctx.user.id });
+  return agent;
+}
 
-        const rows = await dbRead
-          .select()
-          .from(agentRuns)
-          .where(eq(agentRuns.conversationId, args.agentId))
-          .orderBy(desc(agentRuns.startedAt))
-          .limit(limit + 1)
-          .offset(offset);
+function validateAgentConfig(input: CreateAgentInput | UpdateAgentInput): void {
+  if ('name' in input && input.name !== undefined && !input.name.trim()) {
+    throw new GraphQLError('Agent name cannot be empty', {
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
+  }
 
-        const hasNextPage = rows.length > limit;
-        const items = hasNextPage ? rows.slice(0, limit) : rows;
+  if ('instructions' in input && input.instructions !== undefined && !input.instructions.trim()) {
+    throw new GraphQLError('Agent instructions cannot be empty', {
+      extensions: { code: 'BAD_USER_INPUT' },
+    });
+  }
 
-        return {
-          edges: items.map((r) => ({ node: mapRunToTask(r), cursor: Buffer.from(r.id).toString("base64") })),
-          pageInfo: {
-            hasNextPage,
-            hasPreviousPage: offset > 0,
-            startCursor: items.length > 0 ? Buffer.from(items[0].id).toString("base64") : null,
-            endCursor: items.length > 0 ? Buffer.from(items[items.length - 1].id).toString("base64") : null,
-            totalCount: items.length,
-          },
-        };
-      } catch (err) {
-        Logger.error("[GraphQL] agentTasks query failed", err);
-        throw new GraphQLError("Failed to fetch agent tasks");
+  if ('model' in input && input.model !== undefined) {
+    if (!SUPPORTED_MODELS.has(input.model)) {
+      throw new GraphQLError(`Unsupported model: ${input.model}`, {
+        extensions: { code: 'BAD_USER_INPUT', supportedModels: [...SUPPORTED_MODELS] },
+      });
+    }
+  }
+
+  if (input.tools) {
+    for (const tool of input.tools) {
+      if (!tool.name?.trim()) {
+        throw new GraphQLError('Tool name cannot be empty', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
       }
-    },
+      if (!VALID_TOOLS.has(tool.name)) {
+        Logger.warn('Unknown tool specified in agent config', { tool: tool.name });
+        // We warn but don't block — custom tools are allowed
+      }
+    }
+  }
+}
 
-    async agentHealth(_: unknown, __: unknown, ctx: GraphQLContext) {
-      assertAuth(ctx);
-      Logger.info("[GraphQL] agentHealth query", { userId: ctx.user.id });
+// ─── Simulated async agent execution ─────────────────────────────────────────
 
-      // Return health for all registered agents
-      return Array.from(agentRegistry.values()).map((agent) => ({
-        agentId: agent.id,
-        status: agent.status,
-        uptime: process.uptime(),
-        tasksCompleted: 0, // Would query agentRuns WHERE status='completed'
-        tasksFailed: 0,    // Would query agentRuns WHERE status='failed'
-        averageLatencyMs: 0,
-        lastError: null,
-        checkedAt: new Date(),
-      }));
-    },
+async function runAgentExecution(
+  agentId: string,
+  input: string,
+  chatId?: string,
+): Promise<{
+  id: string;
+  agentId: string;
+  chatId: string | null;
+  status: string;
+  input: string;
+  output: string | null;
+  startedAt: Date;
+  completedAt: Date | null;
+  tokensUsed: number | null;
+  error: string | null;
+}> {
+  const executionId = `exec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const startedAt = new Date();
+
+  // In a real implementation this would call an LLM/tool-runner
+  // and persist to an executions table. Here we return a pending record.
+  return {
+    id: executionId,
+    agentId,
+    chatId: chatId ?? null,
+    status: 'PENDING',
+    input,
+    output: null,
+    startedAt,
+    completedAt: null,
+    tokensUsed: null,
+    error: null,
+  };
+}
+
+// ─── Query Resolvers ──────────────────────────────────────────────────────────
+
+const agentQueryResolvers = {
+  async agents(
+    _: unknown,
+    args: { userId?: string | null; pagination?: PaginationInput | null },
+    ctx: GraphQLContext,
+  ) {
+    const requesterId = requireAuth(ctx);
+    const targetUserId =
+      ctx.role === 'ADMIN' && args.userId ? args.userId : requesterId;
+
+    const pagination = args.pagination ?? {};
+    const limit = normalizePageSize(pagination.first, pagination.last);
+
+    try {
+      const [rows, countResult] = await Promise.all([
+        db
+          .select()
+          .from(agents)
+          .where(eq(agents.userId, targetUserId))
+          .orderBy(desc(agents.createdAt))
+          .limit(limit + 1),
+        db
+          .select({ count: sql<number>`count(*)` })
+          .from(agents)
+          .where(eq(agents.userId, targetUserId)),
+      ]);
+
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const totalCount = Number(countResult[0]?.count ?? 0);
+
+      return buildConnection(items, totalCount, pagination, hasMore);
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to fetch agents', err);
+      throw new GraphQLError('Failed to fetch agents', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
   },
 
-  Mutation: {
-    async createAgent(
-      _: unknown,
-      args: { input: { name: string; description?: string; type: string; capabilities: string[]; config?: unknown } },
-      ctx: GraphQLContext
-    ) {
-      assertAdmin(ctx);
-      Logger.info("[GraphQL] createAgent", { name: args.input.name, userId: ctx.user.id });
+  async agent(_: unknown, args: { id: string }, ctx: GraphQLContext) {
+    const userId = requireAuth(ctx);
 
-      const agent: AgentRecord = {
-        id: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        name: args.input.name,
-        description: args.input.description ?? null,
-        type: args.input.type,
-        status: "IDLE",
-        capabilities: args.input.capabilities,
-        config: (args.input.config as Record<string, unknown>) ?? null,
-        lastActiveAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
+    try {
+      const [agent] = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, args.id))
+        .limit(1);
 
-      agentRegistry.set(agent.id, agent);
-      Logger.info("[GraphQL] agent created", { agentId: agent.id });
+      if (!agent) return null;
+
+      // Owners, admins, or if the agent is public
+      if (agent.userId !== userId && ctx.role !== 'ADMIN' && !agent.isPublic) {
+        throw new GraphQLError('Forbidden', {
+          extensions: { code: 'FORBIDDEN' },
+        });
+      }
+
       return agent;
-    },
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to fetch agent', err);
+      throw new GraphQLError('Failed to fetch agent', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
 
-    async executeTask(
-      _: unknown,
-      args: { input: { agentId: string; type: string; input?: unknown; priority?: number; timeoutMs?: number } },
-      ctx: GraphQLContext
-    ) {
-      assertAuth(ctx);
+  async publicAgents(
+    _: unknown,
+    args: { pagination?: PaginationInput | null },
+    ctx: GraphQLContext,
+  ) {
+    requireAuth(ctx);
 
-      const agent = agentRegistry.get(args.input.agentId);
-      if (!agent) {
-        throw new GraphQLError("Agent not found", { extensions: { code: "NOT_FOUND" } });
-      }
+    const pagination = args.pagination ?? {};
+    const limit = normalizePageSize(pagination.first, pagination.last);
 
-      try {
-        Logger.info("[GraphQL] executeTask", { agentId: args.input.agentId, type: args.input.type, userId: ctx.user.id });
+    try {
+      const [rows, countResult] = await Promise.all([
+        db
+          .select()
+          .from(agents)
+          .where(and(eq(agents.isPublic, true), eq(agents.status, 'PUBLISHED')))
+          .orderBy(desc(agents.createdAt))
+          .limit(limit + 1),
+        db
+          .select({ count: sql<number>`count(*)` })
+          .from(agents)
+          .where(and(eq(agents.isPublic, true), eq(agents.status, 'PUBLISHED'))),
+      ]);
 
-        const [run] = await db
-          .insert(agentRuns)
-          .values({
-            conversationId: args.input.agentId, // map agentId to conversationId
-            status: "pending",
-            routerDecision: args.input.type,
-            objective: args.input.input ? JSON.stringify(args.input.input) : null,
-          })
-          .returning();
+      const hasMore = rows.length > limit;
+      const items = hasMore ? rows.slice(0, limit) : rows;
+      const totalCount = Number(countResult[0]?.count ?? 0);
 
-        const task = mapRunToTask(run);
+      return buildConnection(items, totalCount, pagination, hasMore);
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to fetch public agents', err);
+      throw new GraphQLError('Failed to fetch public agents', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+};
 
-        // Update agent lastActiveAt
-        agentRegistry.set(agent.id, { ...agent, lastActiveAt: new Date(), status: "RUNNING" });
+// ─── Mutation Resolvers ───────────────────────────────────────────────────────
 
-        // Publish initial progress event
-        pubsub.publish(TOPICS.TASK_PROGRESS(run.id), {
-          taskProgress: {
-            taskId: run.id,
-            agentId: args.input.agentId,
-            progress: 0,
-            status: "RUNNING",
-            message: "Task queued",
-            timestamp: new Date(),
-          },
-        });
+const agentMutationResolvers = {
+  async createAgent(
+    _: unknown,
+    args: { input: CreateAgentInput },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
+    validateAgentConfig(args.input);
 
-        return task;
-      } catch (err) {
-        Logger.error("[GraphQL] executeTask failed", err);
-        throw new GraphQLError("Failed to execute task");
-      }
-    },
+    try {
+      const [agent] = await db
+        .insert(agents)
+        .values({
+          name: args.input.name.trim(),
+          description: args.input.description?.trim() ?? null,
+          instructions: args.input.instructions.trim(),
+          model: args.input.model,
+          tools: (args.input.tools ?? []) as unknown[],
+          userId,
+          status: 'DRAFT',
+          isPublic: args.input.isPublic ?? false,
+          metadata: (args.input.metadata as Record<string, unknown>) ?? {},
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning();
 
-    async cancelTask(_: unknown, args: { id: string }, ctx: GraphQLContext) {
-      assertAuth(ctx);
+      Logger.info('Agent created', { agentId: agent.id, userId });
+      return agent;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to create agent', err);
+      throw new GraphQLError('Failed to create agent', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
 
-      try {
-        Logger.info("[GraphQL] cancelTask", { taskId: args.id, userId: ctx.user.id });
+  async updateAgent(
+    _: unknown,
+    args: { id: string; input: UpdateAgentInput },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
+    await requireAgentOwner(args.id, userId);
+    validateAgentConfig(args.input);
 
-        const [updated] = await db
-          .update(agentRuns)
-          .set({ status: "cancelled", completedAt: new Date() })
-          .where(eq(agentRuns.id, args.id))
-          .returning();
-
-        if (!updated) {
-          throw new GraphQLError("Task not found or access denied", { extensions: { code: "NOT_FOUND" } });
-        }
-
-        const task = mapRunToTask(updated);
-
-        pubsub.publish(TOPICS.TASK_PROGRESS(args.id), {
-          taskProgress: {
-            taskId: args.id,
-            agentId: updated.conversationId ?? "unknown",
-            progress: updated.progress ?? 0,
-            status: "CANCELLED",
-            message: "Task cancelled by user",
-            timestamp: new Date(),
-          },
-        });
-
-        return task;
-      } catch (err) {
-        Logger.error("[GraphQL] cancelTask failed", err);
-        throw err instanceof GraphQLError ? err : new GraphQLError("Failed to cancel task");
-      }
-    },
-
-    async configureAgent(
-      _: unknown,
-      args: { id: string; input: { name?: string; description?: string; config?: unknown; capabilities?: string[] } },
-      ctx: GraphQLContext
-    ) {
-      assertAdmin(ctx);
-
-      const agent = agentRegistry.get(args.id);
-      if (!agent) {
-        throw new GraphQLError("Agent not found", { extensions: { code: "NOT_FOUND" } });
-      }
-
-      Logger.info("[GraphQL] configureAgent", { agentId: args.id, userId: ctx.user.id });
-
-      const updated: AgentRecord = {
-        ...agent,
-        name: args.input.name ?? agent.name,
-        description: args.input.description ?? agent.description,
-        capabilities: args.input.capabilities ?? agent.capabilities,
-        config: (args.input.config as Record<string, unknown>) ?? agent.config,
+    try {
+      const updateData: Partial<typeof agents.$inferInsert> = {
         updatedAt: new Date(),
       };
+      if (args.input.name != null) updateData.name = args.input.name.trim();
+      if (args.input.description != null) updateData.description = args.input.description.trim();
+      if (args.input.instructions != null) updateData.instructions = args.input.instructions.trim();
+      if (args.input.model != null) updateData.model = args.input.model;
+      if (args.input.tools != null) updateData.tools = args.input.tools as unknown[];
+      if (args.input.isPublic != null) updateData.isPublic = args.input.isPublic;
+      if (args.input.metadata != null) updateData.metadata = args.input.metadata as Record<string, unknown>;
 
-      agentRegistry.set(args.id, updated);
+      const [updated] = await db
+        .update(agents)
+        .set(updateData)
+        .where(eq(agents.id, args.id))
+        .returning();
+
+      Logger.info('Agent updated', { agentId: args.id, userId });
       return updated;
-    },
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to update agent', err);
+      throw new GraphQLError('Failed to update agent', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
   },
 
-  Subscription: {
-    taskProgress: {
-      subscribe(_: unknown, args: { taskId: string }, ctx: GraphQLContext) {
-        assertAuth(ctx);
-        Logger.info("[GraphQL] subscription taskProgress", { taskId: args.taskId, userId: ctx.user?.id });
-        return pubsub.asyncIterator(TOPICS.TASK_PROGRESS(args.taskId));
-      },
-      resolve(payload: { taskProgress: unknown }) {
-        return payload.taskProgress;
-      },
-    },
+  async deleteAgent(_: unknown, args: { id: string }, ctx: GraphQLContext) {
+    const userId = requireAuth(ctx);
+    await requireAgentOwner(args.id, userId);
 
-    agentLog: {
-      subscribe(_: unknown, args: { agentId: string }, ctx: GraphQLContext) {
-        assertAuth(ctx);
-        Logger.info("[GraphQL] subscription agentLog", { agentId: args.agentId, userId: ctx.user?.id });
-        return pubsub.asyncIterator(TOPICS.AGENT_LOG(args.agentId));
-      },
-      resolve(payload: { agentLog: unknown }) {
-        return payload.agentLog;
-      },
-    },
+    try {
+      await db.delete(agents).where(eq(agents.id, args.id));
+      Logger.info('Agent deleted', { agentId: args.id, userId });
+      return true;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to delete agent', err);
+      throw new GraphQLError('Failed to delete agent', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
   },
 
-  // Field resolvers
-  Agent: {
-    async tasks(parent: { id: string }, args: { limit?: number; offset?: number }, ctx: GraphQLContext) {
-      if (!ctx.user?.id) return { edges: [], pageInfo: { hasNextPage: false, hasPreviousPage: false, startCursor: null, endCursor: null, totalCount: 0 } };
-      const limit = Math.min(args.limit ?? 10, 50);
-      try {
-        const rows = await dbRead
-          .select()
-          .from(agentRuns)
-          .where(eq(agentRuns.conversationId, parent.id))
-          .orderBy(desc(agentRuns.startedAt))
-          .limit(limit);
+  async cloneAgent(
+    _: unknown,
+    args: { id: string; name?: string | null },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
 
-        return {
-          edges: rows.map((r) => ({ node: mapRunToTask(r), cursor: Buffer.from(r.id).toString("base64") })),
-          pageInfo: { hasNextPage: false, hasPreviousPage: false, startCursor: null, endCursor: null, totalCount: rows.length },
-        };
-      } catch {
-        return { edges: [], pageInfo: { hasNextPage: false, hasPreviousPage: false, startCursor: null, endCursor: null, totalCount: 0 } };
+    try {
+      const [source] = await db
+        .select()
+        .from(agents)
+        .where(
+          and(
+            eq(agents.id, args.id),
+            or(eq(agents.userId, userId), eq(agents.isPublic, true)),
+          ),
+        )
+        .limit(1);
+
+      if (!source) {
+        throw new GraphQLError('Agent not found or not accessible', {
+          extensions: { code: 'NOT_FOUND' },
+        });
       }
-    },
 
-    health(parent: { id: string; status: string }) {
-      return {
-        agentId: parent.id,
-        status: parent.status,
-        uptime: process.uptime(),
-        tasksCompleted: 0,
-        tasksFailed: 0,
-        averageLatencyMs: 0,
-        lastError: null,
-        checkedAt: new Date(),
-      };
-    },
+      const cloneName = args.name?.trim() ?? `${source.name} (copy)`;
+
+      const [cloned] = await db
+        .insert(agents)
+        .values({
+          name: cloneName,
+          description: source.description,
+          instructions: source.instructions,
+          model: source.model,
+          tools: source.tools as unknown[],
+          userId,
+          status: 'DRAFT',
+          isPublic: false,
+          metadata: { clonedFrom: source.id },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning();
+
+      Logger.info('Agent cloned', {
+        sourceId: source.id,
+        clonedId: cloned.id,
+        userId,
+      });
+      return cloned;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to clone agent', err);
+      throw new GraphQLError('Failed to clone agent', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
   },
 
-  AgentTask: {
-    agent(parent: { agentId: string }) {
-      return agentRegistry.get(parent.agentId) ?? null;
+  async publishAgent(_: unknown, args: { id: string }, ctx: GraphQLContext) {
+    const userId = requireAuth(ctx);
+    const agent = await requireAgentOwner(args.id, userId);
+
+    if (!agent.instructions?.trim()) {
+      throw new GraphQLError('Cannot publish an agent without instructions', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
+
+    try {
+      const [updated] = await db
+        .update(agents)
+        .set({
+          status: 'PUBLISHED',
+          isPublic: true,
+          updatedAt: new Date(),
+        })
+        .where(eq(agents.id, args.id))
+        .returning();
+
+      Logger.info('Agent published', { agentId: args.id, userId });
+      return updated;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to publish agent', err);
+      throw new GraphQLError('Failed to publish agent', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+
+  async executeAgent(
+    _: unknown,
+    args: { input: ExecuteAgentInput },
+    ctx: GraphQLContext,
+  ) {
+    const userId = requireAuth(ctx);
+
+    if (!args.input.input?.trim()) {
+      throw new GraphQLError('Execution input cannot be empty', {
+        extensions: { code: 'BAD_USER_INPUT' },
+      });
+    }
+
+    try {
+      const [agent] = await db
+        .select()
+        .from(agents)
+        .where(
+          and(
+            eq(agents.id, args.input.agentId),
+            or(eq(agents.userId, userId), eq(agents.isPublic, true)),
+          ),
+        )
+        .limit(1);
+
+      if (!agent) {
+        throw new GraphQLError('Agent not found or not accessible', {
+          extensions: { code: 'NOT_FOUND' },
+        });
+      }
+
+      if (agent.status === 'ARCHIVED') {
+        throw new GraphQLError('Cannot execute an archived agent', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        });
+      }
+
+      const execution = await runAgentExecution(
+        args.input.agentId,
+        args.input.input,
+        args.input.chatId,
+      );
+
+      Logger.info('Agent execution started', {
+        executionId: execution.id,
+        agentId: args.input.agentId,
+        userId,
+      });
+
+      return execution;
+    } catch (err) {
+      if (err instanceof GraphQLError) throw err;
+      Logger.error('Failed to execute agent', err);
+      throw new GraphQLError('Failed to execute agent', {
+        extensions: { code: 'INTERNAL_SERVER_ERROR' },
+      });
+    }
+  },
+};
+
+// ─── Field Resolvers ──────────────────────────────────────────────────────────
+
+const agentFieldResolvers = {
+  Agent: {
+    async executionCount(parent: { id: string }) {
+      // Would query an executions table in real implementation
+      try {
+        const [result] = await db.execute<{ count: string }>(
+          sql`SELECT count(*) FROM agent_executions WHERE agent_id = ${parent.id}`,
+        );
+        return Number((result as unknown as { count: string })?.count ?? 0);
+      } catch {
+        return 0;
+      }
     },
   },
 };
 
-// ─── Helper to publish task progress from outside ─────────────────────────────
-export function publishTaskProgress(
-  taskId: string,
-  agentId: string,
-  progress: number,
-  status: string,
-  message?: string
-) {
-  pubsub.publish(TOPICS.TASK_PROGRESS(taskId), {
-    taskProgress: { taskId, agentId, progress, status, message: message ?? null, timestamp: new Date() },
-  });
-}
+// ─── Export ───────────────────────────────────────────────────────────────────
 
-export function publishAgentLog(agentId: string, level: string, message: string, data?: unknown) {
-  pubsub.publish(TOPICS.AGENT_LOG(agentId), {
-    agentLog: { agentId, level, message, data: data ?? null, timestamp: new Date() },
-  });
-}
+export const agentResolvers = {
+  Query: agentQueryResolvers,
+  Mutation: agentMutationResolvers,
+  ...agentFieldResolvers,
+};

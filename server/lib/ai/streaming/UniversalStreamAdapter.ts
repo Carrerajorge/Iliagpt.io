@@ -1,335 +1,317 @@
 /**
- * Universal Stream Adapter
+ * UniversalStreamAdapter — Normalizes streaming from all providers into one format
  *
- * Normalizes streaming output from all providers into a consistent
- * IStreamChunk sequence. Provides utilities:
- *   - adaptStream()      — pass-through with buffering/error recovery
- *   - collectToResponse() — buffer entire stream → IChatResponse
- *   - toSSE()            — convert to Server-Sent Events text
- *   - tee()              — fork one generator into two independent readers
- *   - merge()            — interleave multiple provider streams
- *   - withHeartbeat()    — inject keepalive chunks on long silences
+ * Handles:
+ * - OpenAI SSE chunks
+ * - Anthropic SSE events
+ * - Google streaming
+ * - Custom/local provider formats
+ * - Auto-reconnection with backoff
+ * - Backpressure via StreamBuffer
+ * - Metrics via StreamMetrics
  */
 
+import { ProviderRegistry } from "../providers/core/ProviderRegistry.js";
 import {
-  IStreamChunk,
-  IStreamDeltaChunk,
-  IChatResponse,
-  ITokenUsage,
-  MessageRole,
-} from '../providers/core/types';
+  type IChatMessage,
+  type IChatOptions,
+  type IStreamChunk,
+  FinishReason,
+  ProviderError,
+} from "../providers/core/types.js";
+import { StreamBuffer, type IBufferConfig } from "./StreamBuffer.js";
+import { streamMetrics } from "./StreamMetrics.js";
 
-// ─── SSE formatting ───────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// Interfaces
+// ─────────────────────────────────────────────
 
-export function chunkToSSE(chunk: IStreamChunk): string {
-  return `data: ${JSON.stringify(chunk)}\n\n`;
+export interface IAdapterConfig {
+  buffering: Partial<IBufferConfig>;
+  autoReconnect: boolean;
+  maxReconnectAttempts: number;
+  reconnectDelayMs: number;
+  metricsEnabled: boolean;
+  fallbackProviders?: Array<{ providerId: string; modelId: string }>;
 }
 
-export function sseTerminator(): string {
-  return 'data: [DONE]\n\n';
+export interface IUniversalStreamEvent {
+  type: "token" | "tool_call_start" | "tool_call_delta" | "done" | "error";
+  content?: string;
+  toolCallId?: string;
+  toolCallName?: string;
+  toolCallArgDelta?: string;
+  finishReason?: FinishReason;
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  error?: string;
+  metadata?: Record<string, unknown>;
 }
 
-// ─── Tee: split one async generator into two ─────────────────────────────────
-
-export function tee<T>(source: AsyncGenerator<T>): [AsyncGenerator<T>, AsyncGenerator<T>] {
-  const queue1: T[] = [];
-  const queue2: T[] = [];
-  const resolvers1: Array<(v: IteratorResult<T>) => void> = [];
-  const resolvers2: Array<(v: IteratorResult<T>) => void> = [];
-  let done = false;
-  let error: unknown;
-
-  async function pump() {
-    try {
-      for await (const item of source) {
-        queue1.push(item);
-        queue2.push(item);
-        if (resolvers1.length) resolvers1.shift()!({ value: item, done: false });
-        if (resolvers2.length) resolvers2.shift()!({ value: item, done: false });
-      }
-    } catch (err) {
-      error = err;
-    } finally {
-      done = true;
-      const sentinel: IteratorResult<T> = { value: undefined as T, done: true };
-      resolvers1.forEach((r) => r(sentinel));
-      resolvers2.forEach((r) => r(sentinel));
-    }
-  }
-
-  pump();
-
-  function makeReader(queue: T[], resolvers: Array<(v: IteratorResult<T>) => void>): AsyncGenerator<T> {
-    return {
-      [Symbol.asyncIterator]() { return this; },
-      async next(): Promise<IteratorResult<T>> {
-        if (queue.length > 0) return { value: queue.shift()!, done: false };
-        if (done) {
-          if (error) throw error;
-          return { value: undefined as T, done: true };
-        }
-        return new Promise((resolve) => resolvers.push(resolve));
-      },
-      async return() { return { value: undefined as T, done: true }; },
-      async throw(err: unknown) { throw err; },
-    };
-  }
-
-  return [makeReader(queue1, resolvers1), makeReader(queue2, resolvers2)];
+export interface IStreamSession {
+  streamId: string;
+  providerId: string;
+  modelId: string;
+  startedAt: Date;
+  events: AsyncIterable<IUniversalStreamEvent>;
+  cancel: () => void;
 }
 
-// ─── Merge: interleave multiple streams ──────────────────────────────────────
+const DEFAULT_ADAPTER_CONFIG: IAdapterConfig = {
+  buffering: {},
+  autoReconnect: true,
+  maxReconnectAttempts: 2,
+  reconnectDelayMs: 1_000,
+  metricsEnabled: true,
+};
 
-export async function* merge<T>(generators: AsyncGenerator<T>[]): AsyncGenerator<T> {
-  type Item = { index: number; result: IteratorResult<T> };
-  const pending = new Map<number, Promise<Item>>();
-
-  generators.forEach((gen, i) => {
-    pending.set(i, gen.next().then((result) => ({ index: i, result })));
-  });
-
-  while (pending.size > 0) {
-    const { index, result } = await Promise.race(pending.values());
-    if (result.done) {
-      pending.delete(index);
-    } else {
-      yield result.value;
-      pending.set(
-        index,
-        generators[index].next().then((r) => ({ index, result: r })),
-      );
-    }
-  }
-}
-
-// ─── Main adapter ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// UniversalStreamAdapter
+// ─────────────────────────────────────────────
 
 export class UniversalStreamAdapter {
+  private readonly config: IAdapterConfig;
 
-  /**
-   * Pass-through adapter that validates and re-emits chunks.
-   * Catches errors from the underlying generator and yields error chunks.
-   */
-  async *adaptStream(
-    source: AsyncGenerator<IStreamChunk>,
-    options: { onChunk?: (chunk: IStreamChunk) => void } = {},
-  ): AsyncGenerator<IStreamChunk> {
-    try {
-      for await (const chunk of source) {
-        options.onChunk?.(chunk);
-        yield chunk;
-        if (chunk.type === 'done' || chunk.type === 'error') break;
-      }
-    } catch (err) {
-      const errorChunk: IStreamChunk = {
-        type: 'error',
-        id: 'adapter_error',
-        model: 'unknown',
-        provider: 'adapter',
-        error: err instanceof Error ? err.message : String(err),
-        finishReason: null,
-      };
-      options.onChunk?.(errorChunk);
-      yield errorChunk;
-    }
+  constructor(
+    private readonly registry: ProviderRegistry,
+    config: Partial<IAdapterConfig> = {},
+  ) {
+    this.config = { ...DEFAULT_ADAPTER_CONFIG, ...config };
   }
 
   /**
-   * Injects keepalive comment chunks if no data arrives within silenceMs.
-   * Prevents proxies/clients from timing out on long generations.
+   * Start a streaming session. Returns an IStreamSession with an async iterator
+   * of normalized IUniversalStreamEvent objects.
    */
-  async *withHeartbeat(
-    source: AsyncGenerator<IStreamChunk>,
-    silenceMs = 15_000,
-  ): AsyncGenerator<IStreamChunk | { type: 'heartbeat' }> {
-    let lastActivity = Date.now();
-    let heartbeatInterval: NodeJS.Timeout | null = null;
-    const queue: Array<IStreamChunk | { type: 'heartbeat' }> = [];
-    let resolve: (() => void) | null = null;
-    let sourceDone = false;
+  async startSession(
+    providerId: string,
+    modelId: string,
+    messages: IChatMessage[],
+    options: IChatOptions = {},
+  ): Promise<IStreamSession> {
+    const streamId = `${providerId}-${modelId}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    let cancelled = false;
+    let currentStream: AsyncIterable<IStreamChunk> | null = null;
 
-    heartbeatInterval = setInterval(() => {
-      if (Date.now() - lastActivity >= silenceMs) {
-        queue.push({ type: 'heartbeat' });
-        resolve?.();
-        resolve = null;
-      }
-    }, Math.min(silenceMs, 5_000));
+    if (this.config.metricsEnabled) {
+      streamMetrics.start(streamId, providerId, modelId);
+    }
 
-    const consumeSource = async () => {
-      try {
-        for await (const chunk of source) {
-          lastActivity = Date.now();
-          queue.push(chunk);
-          resolve?.();
-          resolve = null;
-          if (chunk.type === 'done' || chunk.type === 'error') break;
-        }
-      } finally {
-        sourceDone = true;
-        resolve?.();
-        resolve = null;
+    const cancel = () => {
+      cancelled = true;
+      if (this.config.metricsEnabled) {
+        streamMetrics.recordError(streamId, "Cancelled by user");
       }
     };
 
-    consumeSource();
+    const events = this.generateEvents(
+      streamId,
+      providerId,
+      modelId,
+      messages,
+      options,
+      () => cancelled,
+      (s) => { currentStream = s; },
+    );
 
+    return {
+      streamId,
+      providerId,
+      modelId,
+      startedAt: new Date(),
+      events,
+      cancel,
+    };
+  }
+
+  /**
+   * Pipe a stream session to Server-Sent Events (SSE) format.
+   * Writes directly to a Response-compatible writer.
+   */
+  async pipeToSSE(
+    session: IStreamSession,
+    write: (data: string) => void,
+    end: () => void,
+  ): Promise<void> {
     try {
-      while (!sourceDone || queue.length > 0) {
-        if (queue.length === 0) {
-          await new Promise<void>((r) => { resolve = r; });
-        }
-        while (queue.length > 0) {
-          yield queue.shift()!;
+      for await (const event of session.events) {
+        const sseData = JSON.stringify(event);
+
+        if (event.type === "done") {
+          write(`data: ${sseData}\n\n`);
+          write("data: [DONE]\n\n");
+          break;
+        } else if (event.type === "error") {
+          write(`data: ${sseData}\n\n`);
+          break;
+        } else {
+          write(`data: ${sseData}\n\n`);
         }
       }
     } finally {
-      if (heartbeatInterval) clearInterval(heartbeatInterval);
+      end();
     }
   }
 
   /**
-   * Collect an entire stream into a single IChatResponse.
-   * Useful for providers where you want to expose a non-streaming API
-   * but only have a streaming backend.
+   * Collect entire stream into a single string (for non-streaming callers).
    */
-  async collectToResponse(
-    stream: AsyncGenerator<IStreamChunk>,
-    defaults: { provider: string; model: string },
-  ): Promise<IChatResponse> {
-    let content = '';
-    let id = this._generateId();
-    let finishReason: IChatResponse['finishReason'] = null;
-    let usage: ITokenUsage | undefined;
-    const toolCallBuffers: Record<number, { id: string; name: string; args: string }> = {};
+  async collectToString(
+    providerId: string,
+    modelId: string,
+    messages: IChatMessage[],
+    options: IChatOptions = {},
+  ): Promise<{ content: string; usage?: IUniversalStreamEvent["usage"] }> {
+    const session = await this.startSession(providerId, modelId, messages, options);
+    let content = "";
+    let usage: IUniversalStreamEvent["usage"] | undefined;
 
-    for await (const chunk of stream) {
-      switch (chunk.type) {
-        case 'delta':
-          content += chunk.delta;
-          id = chunk.id;
-          break;
-
-        case 'tool_call_delta': {
-          const buf = toolCallBuffers[chunk.toolCallIndex] ?? { id: chunk.toolCallId ?? '', name: chunk.functionName ?? '', args: '' };
-          if (chunk.toolCallId) buf.id = chunk.toolCallId;
-          if (chunk.functionName) buf.name = chunk.functionName;
-          buf.args += chunk.argumentsDelta;
-          toolCallBuffers[chunk.toolCallIndex] = buf;
-          break;
-        }
-
-        case 'usage':
-          usage = chunk.usage;
-          finishReason = chunk.finishReason;
-          break;
-
-        case 'done':
-          if (chunk.finishReason) finishReason = chunk.finishReason;
-          break;
-
-        case 'error':
-          throw new Error(`Stream error: ${chunk.error}`);
+    for await (const event of session.events) {
+      if (event.type === "token" && event.content) {
+        content += event.content;
+      } else if (event.type === "done") {
+        usage = event.usage;
+        break;
+      } else if (event.type === "error") {
+        throw new Error(event.error);
       }
     }
 
-    const toolCalls = Object.values(toolCallBuffers).map((buf) => ({
-      id: buf.id,
-      type: 'function' as const,
-      function: { name: buf.name, arguments: buf.args },
-    }));
-
-    return {
-      id,
-      content,
-      role: MessageRole.Assistant,
-      model: defaults.model,
-      provider: defaults.provider,
-      usage: usage ?? { promptTokens: 0, completionTokens: Math.ceil(content.length / 4), totalTokens: Math.ceil(content.length / 4) },
-      finishReason,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      latencyMs: 0,
-    };
+    return { content, usage };
   }
 
-  /**
-   * Convert a stream to SSE text suitable for streaming HTTP responses.
-   * Each yielded string can be directly written to a response.
-   */
-  async *toSSE(stream: AsyncGenerator<IStreamChunk>): AsyncGenerator<string> {
-    for await (const chunk of stream) {
-      yield chunkToSSE(chunk);
-      if (chunk.type === 'done' || chunk.type === 'error') break;
-    }
-    yield sseTerminator();
-  }
+  // ─── Core Stream Generator ───
 
-  /**
-   * Convert a stream to NDJSON (newline-delimited JSON).
-   * Useful for non-browser consumers.
-   */
-  async *toNDJSON(stream: AsyncGenerator<IStreamChunk>): AsyncGenerator<string> {
-    for await (const chunk of stream) {
-      yield JSON.stringify(chunk) + '\n';
-      if (chunk.type === 'done' || chunk.type === 'error') break;
-    }
-  }
+  private async *generateEvents(
+    streamId: string,
+    providerId: string,
+    modelId: string,
+    messages: IChatMessage[],
+    options: IChatOptions,
+    isCancelled: () => boolean,
+    onStream: (s: AsyncIterable<IStreamChunk>) => void,
+  ): AsyncGenerator<IUniversalStreamEvent> {
+    let attempt = 0;
+    const maxAttempts = this.config.autoReconnect ? this.config.maxReconnectAttempts + 1 : 1;
 
-  /**
-   * Extract only the text delta content from a stream.
-   * Useful for building text UIs without handling all chunk types.
-   */
-  async *textOnly(stream: AsyncGenerator<IStreamChunk>): AsyncGenerator<string> {
-    for await (const chunk of stream) {
-      if (chunk.type === 'delta') yield chunk.delta;
-      if (chunk.type === 'done' || chunk.type === 'error') break;
-    }
-  }
+    while (attempt < maxAttempts) {
+      if (isCancelled()) return;
 
-  /**
-   * Merge streams from multiple providers and yield chunks in arrival order.
-   * Each chunk is tagged with its source provider (already in chunk.provider).
-   */
-  async *mergeStreams(streams: AsyncGenerator<IStreamChunk>[]): AsyncGenerator<IStreamChunk> {
-    yield* merge(streams);
-  }
+      try {
+        const provider = this.registry.getProvider(providerId);
+        const rawStream = provider.stream(messages, { ...options, model: modelId });
+        onStream(rawStream);
 
-  /**
-   * Buffer chunks and yield them in fixed-size token batches.
-   * Useful for reducing UI update frequency on fast models.
-   */
-  async *batch(
-    stream: AsyncGenerator<IStreamChunk>,
-    minChars = 20,
-  ): AsyncGenerator<IStreamChunk> {
-    let buffer = '';
-    let lastDeltaChunk: IStreamDeltaChunk | null = null;
+        yield* this.normalizeStream(streamId, rawStream, isCancelled);
+        return; // Completed successfully
 
-    for await (const chunk of stream) {
-      if (chunk.type === 'delta') {
-        buffer += chunk.delta;
-        lastDeltaChunk = chunk;
-        if (buffer.length >= minChars) {
-          yield { ...lastDeltaChunk, delta: buffer };
-          buffer = '';
-          lastDeltaChunk = null;
+      } catch (err) {
+        attempt++;
+        const isRetryable = err instanceof ProviderError && err.retryable;
+
+        if (attempt >= maxAttempts || !isRetryable) {
+          if (this.config.metricsEnabled) {
+            streamMetrics.recordError(streamId, String(err));
+          }
+
+          // Try fallback providers
+          if (this.config.fallbackProviders?.length) {
+            const fallback = this.config.fallbackProviders[0];
+            try {
+              console.warn(`[UniversalStreamAdapter] Falling back to ${fallback.providerId}/${fallback.modelId}`);
+              const fbProvider = this.registry.getProvider(fallback.providerId);
+              const fbStream = fbProvider.stream(messages, { ...options, model: fallback.modelId });
+              yield* this.normalizeStream(streamId, fbStream, isCancelled);
+              return;
+            } catch (fbErr) {
+              yield {
+                type: "error",
+                error: `Primary failed: ${err instanceof Error ? err.message : String(err)}. Fallback also failed: ${fbErr instanceof Error ? fbErr.message : String(fbErr)}`,
+              };
+              return;
+            }
+          }
+
+          yield {
+            type: "error",
+            error: err instanceof Error ? err.message : String(err),
+          };
+          return;
         }
-      } else {
-        // Flush remaining buffer
-        if (buffer && lastDeltaChunk) {
-          yield { ...lastDeltaChunk, delta: buffer };
-          buffer = '';
-          lastDeltaChunk = null;
-        }
-        yield chunk;
-        if (chunk.type === 'done' || chunk.type === 'error') break;
+
+        console.warn(
+          `[UniversalStreamAdapter] Attempt ${attempt} failed, retrying in ${this.config.reconnectDelayMs}ms:`,
+          err,
+        );
+        await new Promise((resolve) => setTimeout(resolve, this.config.reconnectDelayMs * attempt));
       }
     }
   }
 
-  private _generateId(): string {
-    return `stream_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  private async *normalizeStream(
+    streamId: string,
+    rawStream: AsyncIterable<IStreamChunk>,
+    isCancelled: () => boolean,
+  ): AsyncGenerator<IUniversalStreamEvent> {
+    const buffer = new StreamBuffer(this.config.buffering);
+    let finalUsage: IUniversalStreamEvent["usage"] | undefined;
+
+    try {
+      // Consume provider stream in parallel with buffer drain
+      const providerDone = { value: false };
+
+      // Start consuming provider stream
+      const consumeProvider = async () => {
+        for await (const chunk of rawStream) {
+          if (isCancelled()) break;
+
+          if (chunk.delta) {
+            buffer.push(chunk.delta);
+            if (this.config.metricsEnabled) {
+              streamMetrics.recordChunk(streamId, chunk.delta);
+            }
+          }
+
+          // Handle tool calls
+          if (chunk.toolCallDelta) {
+            yield {
+              type: chunk.toolCallDelta.name ? "tool_call_start" : "tool_call_delta",
+              toolCallId: chunk.toolCallDelta.id,
+              toolCallName: chunk.toolCallDelta.name,
+              toolCallArgDelta: JSON.stringify(chunk.toolCallDelta.arguments),
+            };
+          }
+
+          if (chunk.finishReason) {
+            finalUsage = chunk.usage;
+          }
+        }
+        providerDone.value = true;
+        buffer.end();
+      };
+
+      const providerPromise = consumeProvider();
+
+      // Yield buffered tokens
+      for await (const text of buffer) {
+        if (isCancelled()) break;
+        yield { type: "token", content: text };
+      }
+
+      await providerPromise;
+
+      if (this.config.metricsEnabled) {
+        streamMetrics.complete(streamId);
+      }
+
+      yield {
+        type: "done",
+        finishReason: FinishReason.STOP,
+        usage: finalUsage,
+      };
+
+    } catch (err) {
+      buffer.destroy();
+      throw err;
+    }
   }
 }
-
-export const streamAdapter = new UniversalStreamAdapter();

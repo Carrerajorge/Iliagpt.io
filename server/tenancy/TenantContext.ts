@@ -1,199 +1,482 @@
-import { AsyncLocalStorage } from "async_hooks";
-import type { Request, Response, NextFunction } from "express";
-import { Logger } from "../lib/logger";
+/**
+ * TenantContext.ts
+ * Request-scoped tenant context, Express middleware, and AsyncLocalStorage propagation.
+ */
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+import { AsyncLocalStorage } from 'async_hooks';
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
+import { createLogger } from '../lib/productionLogger';
+import {
+  tenantManager,
+  Tenant,
+  TenantSettings,
+  TenantQuotas,
+  MemberRole,
+  TenantStatus,
+  QuotaResource,
+} from './TenantManager';
 
-export interface TenantLimits {
-  maxUsers: number;
-  maxMessages: number;      // per day
-  maxTokens: number;        // per day
-  maxDocuments: number;     // total stored
-  maxStorageBytes: number;
-  maxApiCallsPerMin: number;
-}
+const logger = createLogger('TenantContext');
 
-export interface TenantContext {
-  tenantId: string;
-  tenantSlug: string;
-  plan: "free" | "pro" | "enterprise";
-  features: string[];
-  limits: TenantLimits;
-  metadata?: Record<string, any>;
-}
+// ─── Module augmentation ──────────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// Default limits per plan
-// ---------------------------------------------------------------------------
-
-const DEFAULT_LIMITS: Record<string, TenantLimits> = {
-  free: {
-    maxUsers: 5,
-    maxMessages: 100,
-    maxTokens: 50_000,
-    maxDocuments: 10,
-    maxStorageBytes: 100 * 1024 * 1024,   // 100 MB
-    maxApiCallsPerMin: 10,
-  },
-  pro: {
-    maxUsers: 50,
-    maxMessages: 5_000,
-    maxTokens: 2_000_000,
-    maxDocuments: 500,
-    maxStorageBytes: 5 * 1024 * 1024 * 1024,  // 5 GB
-    maxApiCallsPerMin: 100,
-  },
-  enterprise: {
-    maxUsers: 10_000,
-    maxMessages: 1_000_000,
-    maxTokens: 100_000_000,
-    maxDocuments: 100_000,
-    maxStorageBytes: 1024 * 1024 * 1024 * 1024, // 1 TB
-    maxApiCallsPerMin: 5_000,
-  },
-};
-
-// ---------------------------------------------------------------------------
-// AsyncLocalStorage for non-request contexts (workers, queues, etc.)
-// ---------------------------------------------------------------------------
-
-export const tenantStorage = new AsyncLocalStorage<TenantContext>();
-
-export function runWithTenant<T>(
-  tenant: TenantContext,
-  fn: () => Promise<T>
-): Promise<T> {
-  return tenantStorage.run(tenant, fn);
-}
-
-// ---------------------------------------------------------------------------
-// Helpers — tenant resolution
-// ---------------------------------------------------------------------------
-
-function extractTenantIdFromHeader(req: Request): string | null {
-  const header = req.headers["x-tenant-id"];
-  if (typeof header === "string" && header.trim()) return header.trim();
-  return null;
-}
-
-function extractTenantSlugFromSubdomain(req: Request): string | null {
-  const host = req.hostname ?? req.headers.host ?? "";
-  // Accept pattern: {slug}.example.com or {slug}.localhost
-  const parts = host.split(".");
-  if (parts.length >= 2) {
-    const slug = parts[0];
-    if (slug && slug !== "www" && slug !== "api") return slug;
+declare global {
+  namespace Express {
+    interface Request {
+      tenantContext?: TenantContext;
+    }
   }
-  return null;
 }
 
-function extractTenantFromJwt(req: Request): string | null {
-  // If auth middleware already decoded the JWT and attached the payload, read from it
-  const user = (req as any).user ?? (req as any).jwtPayload;
-  if (user?.tenantId && typeof user.tenantId === "string") return user.tenantId;
-  if (user?.tenant_id && typeof user.tenant_id === "string") return user.tenant_id;
-  return null;
+// ─── TenantContext class ──────────────────────────────────────────────────────
+
+export class TenantContext {
+  public readonly tenantId:   string;
+  public readonly tenant:     Tenant;
+  public readonly userId:     string;
+  public readonly memberRole: MemberRole;
+  public readonly quotas:     TenantQuotas;
+  public readonly settings:   TenantSettings;
+
+  constructor(params: {
+    tenant:     Tenant;
+    userId:     string;
+    memberRole: MemberRole;
+    quotas:     TenantQuotas;
+  }) {
+    this.tenantId   = params.tenant.id;
+    this.tenant     = params.tenant;
+    this.userId     = params.userId;
+    this.memberRole = params.memberRole;
+    this.quotas     = params.quotas;
+    this.settings   = params.tenant.settings;
+  }
+
+  // ── Role helpers ──────────────────────────────────────────────────────────
+
+  public isOwner(): boolean {
+    return this.memberRole === MemberRole.Owner;
+  }
+
+  public isAdmin(): boolean {
+    return this.memberRole === MemberRole.Owner || this.memberRole === MemberRole.Admin;
+  }
+
+  public isMember(): boolean {
+    return (
+      this.memberRole === MemberRole.Owner  ||
+      this.memberRole === MemberRole.Admin  ||
+      this.memberRole === MemberRole.Member
+    );
+  }
+
+  /**
+   * Coarse-grained resource access check.
+   * Extend with a proper ACL matrix as your permission model grows.
+   */
+  public canAccess(resource: string): boolean {
+    const adminOnlyResources = new Set([
+      'tenant:settings',
+      'tenant:billing',
+      'tenant:members:manage',
+      'tenant:quotas',
+      'tenant:integrations',
+      'tenant:audit-log',
+    ]);
+
+    const ownerOnlyResources = new Set([
+      'tenant:delete',
+      'tenant:transfer',
+      'tenant:sso',
+    ]);
+
+    if (ownerOnlyResources.has(resource)) return this.isOwner();
+    if (adminOnlyResources.has(resource)) return this.isAdmin();
+    return this.isMember();
+  }
+
+  /**
+   * Check a boolean feature flag stored in tenant settings.
+   */
+  public checkFeatureFlag(flag: string): boolean {
+    const flags = this.settings.featureFlags ?? {};
+    return flags[flag] === true;
+  }
+
+  /**
+   * Convenience: build a logger child tagged with tenant/user metadata.
+   */
+  public get logMeta(): Record<string, string> {
+    return {
+      tenantId:   this.tenantId,
+      tenantSlug: this.tenant.slug,
+      userId:     this.userId,
+      role:       this.memberRole,
+    };
+  }
 }
 
-// ---------------------------------------------------------------------------
-// Middleware
-// ---------------------------------------------------------------------------
+// ─── AsyncLocalStorage integration ───────────────────────────────────────────
+
+export const tenantContextStorage = new AsyncLocalStorage<TenantContext>();
 
 /**
- * Resolves the current tenant from the request and attaches it as
- * `req.tenantContext`.  Resolution order:
- *   1. x-tenant-id header
- *   2. Subdomain
- *   3. JWT claim
- *
- * If no tenant can be resolved the middleware continues without setting
- * `req.tenantContext`.  Use `requireTenant` to enforce its presence.
+ * Returns the TenantContext bound to the current async execution chain,
+ * or undefined if called outside a tenant-aware request.
  */
-export function tenantContextMiddleware(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): void {
-  try {
-    let tenantId =
-      extractTenantIdFromHeader(req) ??
-      extractTenantFromJwt(req);
+export function getCurrentTenant(): TenantContext | undefined {
+  return tenantContextStorage.getStore();
+}
 
-    let tenantSlug = extractTenantSlugFromSubdomain(req);
+/**
+ * Runs `fn` inside an async context bound to `ctx`.
+ * Any code called inside `fn` (including awaited promises) can call
+ * `getCurrentTenant()` and will receive `ctx`.
+ */
+export async function runWithTenant<T>(ctx: TenantContext, fn: () => Promise<T>): Promise<T> {
+  return tenantContextStorage.run(ctx, fn);
+}
 
-    if (!tenantId && !tenantSlug) {
-      return next();
+// ─── Resolution helpers ───────────────────────────────────────────────────────
+
+/**
+ * Parses the subdomain from the Host header.
+ * e.g.  "acme.app.example.com"  → "acme"
+ *        "app.example.com"       → null  (no subdomain)
+ *        "localhost:3000"         → null
+ */
+function extractSubdomainSlug(req: Request, appDomain: string): string | null {
+  const host = (req.headers['host'] ?? '').split(':')[0].toLowerCase();
+  const base = appDomain.toLowerCase();
+
+  // Strip port if present in appDomain
+  const basePure = base.split(':')[0];
+
+  if (!host.endsWith(`.${basePure}`)) return null;
+
+  const sub = host.slice(0, host.length - basePure.length - 1);
+  // Reject double-level subdomains or empty results
+  if (!sub || sub.includes('.')) return null;
+
+  // Ignore common non-tenant subdomains
+  const RESERVED = new Set(['www', 'api', 'app', 'admin', 'mail', 'static', 'cdn', 'assets']);
+  if (RESERVED.has(sub)) return null;
+
+  return sub;
+}
+
+/**
+ * Extracts the tenantId from a decoded JWT payload if present.
+ * Assumes the JWT has already been verified and attached to `req.user` by
+ * an upstream auth middleware.
+ */
+function extractTenantIdFromJwt(req: Request): string | null {
+  const user = (req as any).user as Record<string, unknown> | undefined;
+  if (!user) return null;
+  const id = user['tenantId'] ?? user['tenant_id'];
+  return typeof id === 'string' ? id : null;
+}
+
+// ─── Middleware ───────────────────────────────────────────────────────────────
+
+/**
+ * Resolves the tenant for the current request from (in priority order):
+ *  1. X-Tenant-ID header        (UUID)
+ *  2. X-Tenant-Slug header      (slug string)
+ *  3. Subdomain                 (e.g. acme.app.com → slug = acme)
+ *  4. JWT claims                (tenantId field)
+ *
+ * On success: attaches `req.tenantContext` and calls `next()`.
+ * On failure: returns 401 JSON.
+ */
+export function resolveTenant(
+  options: { appDomain?: string } = {},
+): RequestHandler {
+  const appDomain = options.appDomain ?? (process.env.APP_DOMAIN ?? 'localhost');
+
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      let tenant: Tenant | null = null;
+
+      // 1. X-Tenant-ID header
+      const headerTenantId = req.headers['x-tenant-id'];
+      if (typeof headerTenantId === 'string' && headerTenantId.trim()) {
+        tenant = await tenantManager.getTenant(headerTenantId.trim());
+      }
+
+      // 2. X-Tenant-Slug header
+      if (!tenant) {
+        const headerSlug = req.headers['x-tenant-slug'];
+        if (typeof headerSlug === 'string' && headerSlug.trim()) {
+          tenant = await tenantManager.getTenantBySlug(headerSlug.trim());
+        }
+      }
+
+      // 3. Subdomain
+      if (!tenant) {
+        const subSlug = extractSubdomainSlug(req, appDomain);
+        if (subSlug) {
+          tenant = await tenantManager.getTenantBySlug(subSlug);
+        }
+      }
+
+      // 4. JWT claims
+      if (!tenant) {
+        const jwtTenantId = extractTenantIdFromJwt(req);
+        if (jwtTenantId) {
+          tenant = await tenantManager.getTenant(jwtTenantId);
+        }
+      }
+
+      if (!tenant) {
+        res.status(401).json({
+          error:   'tenant_not_found',
+          message: 'Could not resolve tenant for this request',
+        });
+        return;
+      }
+
+      if (tenant.status === TenantStatus.Suspended) {
+        res.status(401).json({
+          error:   'tenant_suspended',
+          message: 'This tenant account has been suspended',
+        });
+        return;
+      }
+
+      if (tenant.status === TenantStatus.Deleted) {
+        res.status(401).json({
+          error:   'tenant_not_found',
+          message: 'Could not resolve tenant for this request',
+        });
+        return;
+      }
+
+      // Resolve membership for the authenticated user (if any)
+      const authUserId = (req as any).user?.id as string | undefined;
+      let memberRole: MemberRole = MemberRole.Viewer;
+
+      if (authUserId) {
+        const member = await tenantManager.getMember(tenant.id, authUserId);
+        if (member) {
+          memberRole = member.role;
+        }
+      }
+
+      // Load quotas
+      let quotas: TenantQuotas;
+      try {
+        quotas = await tenantManager.getQuotas(tenant.id);
+      } catch {
+        logger.warn('Failed to load quotas, using defaults', { tenantId: tenant.id });
+        quotas = {
+          messagesPerMonth:   0,
+          storageGB:          0,
+          apiCallsPerDay:     0,
+          concurrentSessions: 0,
+        };
+      }
+
+      const ctx = new TenantContext({
+        tenant,
+        userId:     authUserId ?? '',
+        memberRole,
+        quotas,
+      });
+
+      req.tenantContext = ctx;
+
+      // Run the rest of the chain inside the ALS context so background tasks
+      // spawned by route handlers can also access the tenant context.
+      await runWithTenant(ctx, () =>
+        new Promise<void>((resolve, reject) => {
+          next();
+          // Express calls next() synchronously for the immediate handler chain;
+          // wrapping in a promise lets ALS propagate into async route handlers.
+          resolve();
+        }),
+      );
+    } catch (err) {
+      logger.error('Error resolving tenant', err);
+      res.status(500).json({
+        error:   'internal_error',
+        message: 'An error occurred while resolving the tenant',
+      });
+    }
+  };
+}
+
+/**
+ * Requires the request to have a resolved TenantContext with a known member.
+ * Must be placed after `resolveTenant()`.
+ */
+export function requireTenantMember(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const ctx = req.tenantContext;
+
+    if (!ctx) {
+      res.status(401).json({
+        error:   'tenant_required',
+        message: 'No tenant context found on request',
+      });
+      return;
     }
 
-    // Build a minimal context — full hydration happens in TenantManager
-    // when the route needs it.  We set what we know here.
-    const ctx: TenantContext = {
-      tenantId: tenantId ?? tenantSlug ?? "unknown",
-      tenantSlug: tenantSlug ?? tenantId ?? "unknown",
-      plan: "free",
-      features: [],
-      limits: DEFAULT_LIMITS.free,
-    };
+    if (!ctx.userId) {
+      res.status(401).json({
+        error:   'authentication_required',
+        message: 'You must be authenticated to access this resource',
+      });
+      return;
+    }
 
-    (req as any).tenantContext = ctx;
+    if (!ctx.isMember()) {
+      res.status(403).json({
+        error:   'not_a_member',
+        message: 'You are not a member of this tenant',
+      });
+      return;
+    }
 
-    // Run the rest of the request inside the AsyncLocalStorage context so
-    // downstream code (services, workers spawned inline) can call
-    // `tenantStorage.getStore()` without threading the request object.
-    tenantStorage.run(ctx, () => next());
-  } catch (err) {
-    Logger.error("[TenantContext] Error in middleware", err);
     next();
-  }
+  };
 }
 
 /**
- * Returns the tenant context attached to the request.
- * Throws if not present — use after `tenantContextMiddleware`.
+ * Role-based access guard. Roles are hierarchical:
+ *   Owner > Admin > Member > Viewer
  */
-export function getTenantContext(req: Request): TenantContext {
-  const ctx = (req as any).tenantContext as TenantContext | undefined;
-  if (!ctx) {
-    throw new Error("Tenant context not available on request");
-  }
-  return ctx;
+export function requireTenantRole(minimumRole: MemberRole): RequestHandler {
+  const ROLE_WEIGHT: Record<MemberRole, number> = {
+    [MemberRole.Owner]:  4,
+    [MemberRole.Admin]:  3,
+    [MemberRole.Member]: 2,
+    [MemberRole.Viewer]: 1,
+  };
+
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const ctx = req.tenantContext;
+
+    if (!ctx) {
+      res.status(401).json({
+        error:   'tenant_required',
+        message: 'No tenant context found on request',
+      });
+      return;
+    }
+
+    const actualWeight  = ROLE_WEIGHT[ctx.memberRole]  ?? 0;
+    const requiredWeight = ROLE_WEIGHT[minimumRole]    ?? 0;
+
+    if (actualWeight < requiredWeight) {
+      res.status(403).json({
+        error:        'insufficient_role',
+        message:      `This action requires the '${minimumRole}' role or higher`,
+        yourRole:     ctx.memberRole,
+        requiredRole: minimumRole,
+      });
+      return;
+    }
+
+    next();
+  };
 }
 
 /**
- * Middleware that sends 401 if no tenant context has been resolved.
+ * Feature-flag gate. Returns 403 if the tenant does not have the flag enabled.
  */
-export function requireTenant(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): void {
-  const ctx = (req as any).tenantContext as TenantContext | undefined;
-  if (!ctx) {
-    Logger.warn("[TenantContext] requireTenant: no tenant resolved", {
-      path: req.path,
-      ip: req.ip,
-    });
-    res.status(401).json({ error: "Tenant identification required" });
-    return;
-  }
-  next();
+export function requireTenantFeature(feature: string): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const ctx = req.tenantContext;
+
+    if (!ctx) {
+      res.status(401).json({
+        error:   'tenant_required',
+        message: 'No tenant context found on request',
+      });
+      return;
+    }
+
+    if (!ctx.checkFeatureFlag(feature)) {
+      res.status(403).json({
+        error:   'feature_not_available',
+        message: `The feature '${feature}' is not enabled for your plan`,
+        feature,
+      });
+      return;
+    }
+
+    next();
+  };
 }
 
 /**
- * Helper to get current tenant from the AsyncLocalStorage store.
- * Returns null when called outside a tenant-scoped context.
+ * Quota gate. Checks the given resource quota before allowing the request
+ * to proceed. Returns 429 if the limit has been reached.
  */
-export function getCurrentTenant(): TenantContext | null {
-  return tenantStorage.getStore() ?? null;
+export function requireQuota(resource: QuotaResource): RequestHandler {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const ctx = req.tenantContext;
+
+    if (!ctx) {
+      res.status(401).json({
+        error:   'tenant_required',
+        message: 'No tenant context found on request',
+      });
+      return;
+    }
+
+    try {
+      const check = await tenantManager.checkQuota(ctx.tenantId, resource);
+
+      if (!check.allowed) {
+        const headers: Record<string, string> = {
+          'X-RateLimit-Resource': resource,
+          'X-RateLimit-Limit':    String(check.limit),
+          'X-RateLimit-Current':  String(check.current),
+        };
+        if (check.resetAt) {
+          headers['X-RateLimit-Reset'] = check.resetAt.toISOString();
+          headers['Retry-After']       = String(
+            Math.ceil((check.resetAt.getTime() - Date.now()) / 1000),
+          );
+        }
+
+        res.set(headers).status(429).json({
+          error:    'quota_exceeded',
+          message:  `You have exceeded your ${resource} quota`,
+          resource,
+          limit:    check.limit,
+          current:  check.current,
+          resetAt:  check.resetAt?.toISOString(),
+        });
+        return;
+      }
+
+      // Set informational headers for allowed requests
+      res.set({
+        'X-RateLimit-Resource': resource,
+        'X-RateLimit-Limit':    String(check.limit === -1 ? 'unlimited' : check.limit),
+        'X-RateLimit-Current':  String(check.current),
+        ...(check.resetAt ? { 'X-RateLimit-Reset': check.resetAt.toISOString() } : {}),
+      });
+
+      next();
+    } catch (err) {
+      logger.error('Error checking quota', { tenantId: ctx.tenantId, resource, err });
+      // Fail open: allow the request but log the error
+      next();
+    }
+  };
 }
 
-/**
- * Build default limits for a given plan (exported for use in TenantManager).
- */
-export function getDefaultLimits(
-  plan: "free" | "pro" | "enterprise"
-): TenantLimits {
-  return { ...DEFAULT_LIMITS[plan] };
-}
+// ─── Re-export types that consumers of this module need ───────────────────────
+
+export {
+  Tenant,
+  TenantSettings,
+  TenantQuotas,
+  MemberRole,
+  TenantStatus,
+  QuotaResource,
+} from './TenantManager';

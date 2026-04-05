@@ -1,249 +1,368 @@
-/**
- * GraphQL Gateway — IliaGPT
- *
- * Sets up graphql-http handler on /graphql, GraphiQL on /graphiql (dev only),
- * and registers complexity + depth validation rules.
- *
- * Subscription WebSocket setup is noted in comments — requires a separate ws server.
- */
+import { ApolloServer, BaseContext } from '@apollo/server';
+import { expressMiddleware } from '@apollo/server/express4';
+import { ApolloServerPluginDrainHttpServer } from '@apollo/server/plugin/drainHttpServer';
+import { makeExecutableSchema } from '@graphql-tools/schema';
+import { mergeResolvers } from '@graphql-tools/merge';
+import { useServer } from 'graphql-ws/lib/use/ws';
+import { WebSocketServer } from 'ws';
+import { GraphQLError, GraphQLFormattedError } from 'graphql';
+import depthLimit from 'graphql-depth-limit';
+import express from 'express';
+import type { Application } from 'express';
+import type { Server as HttpServer } from 'http';
+import { json } from 'body-parser';
+import cors from 'cors';
 
-import type { Express, Request, Response } from "express";
-import { createHandler } from "graphql-http/lib/use/express";
-import { buildSchema, addResolversToSchema, validateSchema, GraphQLError } from "graphql";
-import { makeExecutableSchema } from "@graphql-tools/schema";
-import { Logger } from "../lib/logger.js";
-import { typeDefs } from "./schema.js";
-import { resolvers } from "./resolvers/index.js";
-import { buildContext, authDirectiveTransformer } from "./middleware/auth.js";
-import { createComplexityPlugin } from "./middleware/complexity.js";
+import { typeDefs } from './schema';
+import { chatResolvers } from './resolvers/chatResolvers';
+import { agentResolvers } from './resolvers/agentResolvers';
+import { modelResolvers } from './resolvers/modelResolvers';
+import { userResolvers } from './resolvers/userResolvers';
+import { Logger } from '../lib/logger';
+import { getSecureUserId } from '../lib/anonUserHelper';
 
-// ─── Configuration ────────────────────────────────────────────────────────────
-const GRAPHQL_PATH = "/graphql";
-const GRAPHIQL_PATH = "/graphiql";
-const MAX_COMPLEXITY = 1000;
-const MAX_DEPTH = 12;
-const isDev = process.env.NODE_ENV !== "production";
+// ─── Context ──────────────────────────────────────────────────────────────────
 
-// ─── Schema construction ──────────────────────────────────────────────────────
-function buildExecutableSchema() {
-  // 1. Build schema from SDL + resolvers
-  let schema = makeExecutableSchema({
-    typeDefs,
-    resolvers: resolvers as any,
-    // Allow field resolvers to return their own types (lenient resolution)
-    inheritResolversFromInterfaces: false,
-  });
-
-  // 2. Apply @auth directive transformer
-  schema = authDirectiveTransformer(schema);
-
-  // 3. Validate schema
-  const errors = validateSchema(schema);
-  if (errors.length > 0) {
-    for (const err of errors) {
-      Logger.error("[GraphQL] Schema validation error", err);
-    }
-    throw new Error(`GraphQL schema has ${errors.length} validation error(s)`);
-  }
-
-  Logger.info("[GraphQL] Schema built and validated successfully");
-  return schema;
+export interface GraphQLContext extends BaseContext {
+  userId: string | null;
+  role: string | null;
+  requestId: string;
+  ip: string | null;
 }
 
-// ─── setupGraphQL ─────────────────────────────────────────────────────────────
-/**
- * Registers the GraphQL HTTP handler and (in dev) GraphiQL UI on the Express app.
- * Call this after all other middleware is registered in server/index.ts.
- */
-export function setupGraphQL(app: Express): void {
-  Logger.info("[GraphQL] Initializing gateway", { path: GRAPHQL_PATH, dev: isDev });
+// ─── Scalar resolvers ─────────────────────────────────────────────────────────
 
-  // Build schema once at startup
-  const schema = buildExecutableSchema();
+import { GraphQLScalarType, Kind } from 'graphql';
 
-  // Complexity + depth validation rules
-  const { rules: complexityRules } = createComplexityPlugin({
-    maxComplexity: MAX_COMPLEXITY,
-    maxDepth: MAX_DEPTH,
-    onComplexity(score, depth) {
-      Logger.debug("[GraphQL] Query metrics", { complexity: score, depth });
+const DateTimeScalar = new GraphQLScalarType({
+  name: 'DateTime',
+  description: 'ISO-8601 date-time string',
+  serialize(value: unknown) {
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === 'string') return new Date(value).toISOString();
+    if (typeof value === 'number') return new Date(value).toISOString();
+    throw new Error('DateTime cannot represent non-date value');
+  },
+  parseValue(value: unknown) {
+    if (typeof value === 'string') {
+      const d = new Date(value);
+      if (isNaN(d.getTime())) throw new Error('Invalid DateTime string');
+      return d;
+    }
+    throw new Error('DateTime must be a string');
+  },
+  parseLiteral(ast) {
+    if (ast.kind === Kind.STRING) {
+      const d = new Date(ast.value);
+      if (isNaN(d.getTime())) throw new Error('Invalid DateTime literal');
+      return d;
+    }
+    throw new Error('DateTime must be a string literal');
+  },
+});
+
+const JSONScalar = new GraphQLScalarType({
+  name: 'JSON',
+  description: 'Arbitrary JSON value',
+  serialize: (v) => v,
+  parseValue: (v) => v,
+  parseLiteral(ast) {
+    if (ast.kind === Kind.STRING) {
+      try { return JSON.parse(ast.value); } catch { return ast.value; }
+    }
+    if (ast.kind === Kind.INT || ast.kind === Kind.FLOAT) return parseFloat(ast.value);
+    if (ast.kind === Kind.BOOLEAN) return ast.value;
+    if (ast.kind === Kind.NULL) return null;
+    // Object or List literals — handled by GraphQL's built-in literal walking
+    return ast;
+  },
+});
+
+const scalarResolvers = {
+  DateTime: DateTimeScalar,
+  JSON: JSONScalar,
+};
+
+// ─── Persisted queries (in-memory store, swap for Redis in prod) ──────────────
+
+const persistedQueryCache = new Map<string, string>();
+
+// ─── Query complexity / depth limits ─────────────────────────────────────────
+
+const MAX_QUERY_DEPTH = 10;
+// Simple field-count heuristic; replace with graphql-query-complexity for fine-grained limits
+const MAX_QUERY_COMPLEXITY = 500;
+
+function buildComplexityPlugin() {
+  return {
+    requestDidStart() {
+      return {
+        didResolveOperation({ document }: { document: import('graphql').DocumentNode }) {
+          // Basic node-count complexity heuristic
+          let count = 0;
+          function walk(node: import('graphql').ASTNode) {
+            count++;
+            if ('selectionSet' in node && node.selectionSet) {
+              for (const sel of node.selectionSet.selections) walk(sel);
+            }
+          }
+          for (const def of document.definitions) walk(def);
+
+          if (count > MAX_QUERY_COMPLEXITY) {
+            throw new GraphQLError(
+              `Query too complex (${count} > ${MAX_QUERY_COMPLEXITY})`,
+              { extensions: { code: 'QUERY_TOO_COMPLEX' } },
+            );
+          }
+        },
+      };
     },
-  });
-
-  // ── graphql-http handler ──────────────────────────────────────────────────
-  const graphqlHandler = createHandler({
-    schema,
-    context: (req) => {
-      // req.raw is the underlying Express Request on graphql-http
-      const expressReq = (req.raw as unknown as Request) ?? (req as unknown as Request);
-      return buildContext(expressReq);
-    },
-    validationRules: complexityRules,
-    onSubscribe(_req, params) {
-      Logger.debug("[GraphQL] Operation", {
-        operationName: params.operationName,
-        variables: params.variables ? "[present]" : undefined,
-      });
-    },
-  });
-
-  // Mount handler — support GET and POST
-  app.all(GRAPHQL_PATH, (req: Request, res: Response) => {
-    graphqlHandler(req, res);
-  });
-
-  Logger.info("[GraphQL] Handler mounted", { path: GRAPHQL_PATH });
-
-  // ── GraphiQL (development only) ───────────────────────────────────────────
-  if (isDev) {
-    app.get(GRAPHIQL_PATH, (_req: Request, res: Response) => {
-      res.setHeader("Content-Type", "text/html");
-      res.send(buildGraphiQLHTML());
-    });
-    Logger.info("[GraphQL] GraphiQL mounted (dev)", { path: GRAPHIQL_PATH });
-  }
-
-  // ── Subscription WebSocket (setup hint) ──────────────────────────────────
-  // To enable subscriptions over WebSocket, add the following in server/index.ts
-  // after `const httpServer = createServer(app)`:
-  //
-  //   import { WebSocketServer } from "ws";
-  //   import { useServer } from "graphql-ws/lib/use/ws";
-  //   import { pubsub } from "./graphql/resolvers/index.js";
-  //
-  //   const wsServer = new WebSocketServer({ server: httpServer, path: "/graphql" });
-  //   useServer(
-  //     {
-  //       schema,
-  //       context: (ctx) => buildContext(ctx.extra.request),
-  //       onConnect: (ctx) => Logger.info("[GraphQL WS] Client connected"),
-  //       onDisconnect: (ctx) => Logger.info("[GraphQL WS] Client disconnected"),
-  //     },
-  //     wsServer
-  //   );
-  //
-  // Packages needed: graphql-ws, ws
-  // See: https://the-guild.dev/graphql/ws
-
-  Logger.info("[GraphQL] Gateway ready", {
-    graphql: GRAPHQL_PATH,
-    graphiql: isDev ? GRAPHIQL_PATH : "disabled",
-    maxComplexity: MAX_COMPLEXITY,
-    maxDepth: MAX_DEPTH,
-  });
+  };
 }
 
-// ─── GraphiQL HTML ────────────────────────────────────────────────────────────
-function buildGraphiQLHTML(): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>IliaGPT — GraphiQL</title>
-  <link rel="stylesheet" href="https://unpkg.com/graphiql/graphiql.min.css" />
-  <style>
-    body { margin: 0; height: 100vh; display: flex; flex-direction: column; }
-    #graphiql { flex: 1; }
-    .header {
-      background: #1a1a2e;
-      color: #e0e0e0;
-      padding: 8px 20px;
-      font-family: system-ui, sans-serif;
-      font-size: 14px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    .header strong { color: #7c6ef7; }
-    .badge {
-      background: #7c6ef7;
-      color: white;
-      padding: 2px 8px;
-      border-radius: 12px;
-      font-size: 11px;
-    }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <strong>IliaGPT</strong>
-    GraphQL Gateway
-    <span class="badge">DEV</span>
-    <span style="margin-left:auto;opacity:.6">Max complexity: ${MAX_COMPLEXITY} &nbsp;|&nbsp; Max depth: ${MAX_DEPTH}</span>
-  </div>
-  <div id="graphiql"></div>
+// ─── Error formatter ──────────────────────────────────────────────────────────
 
-  <script crossorigin src="https://unpkg.com/react/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom/umd/react-dom.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/graphiql/graphiql.min.js"></script>
+const isProd = process.env.NODE_ENV === 'production';
 
-  <script>
-    const fetcher = GraphiQL.createFetcher({
-      url: '${GRAPHQL_PATH}',
-      // Subscriptions (uncomment once ws server is running):
-      // subscriptionUrl: 'ws://' + location.host + '${GRAPHQL_PATH}',
-    });
+function formatError(
+  formattedError: GraphQLFormattedError,
+  error: unknown,
+): GraphQLFormattedError {
+  const code = (formattedError.extensions?.code as string | undefined) ?? 'INTERNAL_SERVER_ERROR';
 
-    ReactDOM.render(
-      React.createElement(GraphiQL, {
-        fetcher,
-        defaultEditorToolsVisibility: true,
-        defaultTabs: [
-          {
-            query: \`# Welcome to IliaGPT GraphQL Gateway
-# Try a query:
+  // Always expose client-safe errors
+  const safeCode = new Set([
+    'BAD_USER_INPUT',
+    'UNAUTHENTICATED',
+    'FORBIDDEN',
+    'NOT_FOUND',
+    'QUERY_TOO_COMPLEX',
+    'GRAPHQL_PARSE_FAILED',
+    'GRAPHQL_VALIDATION_FAILED',
+    'PERSISTED_QUERY_NOT_FOUND',
+  ]);
 
-query Me {
-  me {
-    id
-    email
-    role
-    plan
-    tokensConsumed
+  if (safeCode.has(code)) return formattedError;
+
+  // Hide internals in production
+  if (isProd) {
+    Logger.error('GraphQL internal error', { error, formattedError });
+    return {
+      message: 'An internal error occurred',
+      locations: formattedError.locations,
+      path: formattedError.path,
+      extensions: { code: 'INTERNAL_SERVER_ERROR' },
+    };
   }
+
+  return formattedError;
 }
 
-query Chats {
-  chats(limit: 10) {
-    edges {
-      node {
-        id
-        title
-        status
-        messageCount
-        updatedAt
+// ─── Context builder ──────────────────────────────────────────────────────────
+
+async function buildContext({ req }: { req: express.Request }): Promise<GraphQLContext> {
+  let userId: string | null = null;
+  let role: string | null = null;
+
+  try {
+    // Primary: session-based auth (passport)
+    const sessionUser = (req.session as Record<string, unknown> & { passport?: { user?: { id?: string; role?: string } } })?.passport?.user;
+    if (sessionUser?.id) {
+      userId = sessionUser.id;
+      role = sessionUser.role?.toUpperCase() ?? 'USER';
+    }
+
+    // Fallback: Bearer JWT
+    if (!userId) {
+      const authHeader = req.headers.authorization;
+      if (authHeader?.startsWith('Bearer ')) {
+        const token = authHeader.slice(7);
+        // In production: verify JWT and decode claims
+        // const claims = jwt.verify(token, process.env.JWT_SECRET!);
+        // userId = claims.sub as string;
+        // role = (claims.role as string)?.toUpperCase() ?? 'USER';
+        void token; // suppress unused var warning until jwt integration is wired
       }
     }
-    pageInfo {
-      hasNextPage
-      totalCount
+
+    // Fallback: helper used by existing routes
+    if (!userId) {
+      const secureId = getSecureUserId(req);
+      if (secureId && !String(secureId).startsWith('anon_')) {
+        userId = secureId;
+        role = 'USER';
+      }
     }
+  } catch (err) {
+    Logger.warn('Failed to resolve GraphQL context user', { err });
   }
+
+  const requestId =
+    (req.headers['x-request-id'] as string | undefined) ??
+    `gql_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+  return {
+    userId,
+    role,
+    requestId,
+    ip: req.ip ?? null,
+  };
 }
 
-query Models {
-  models {
-    id
-    displayName
-    provider
-    contextWindow
-    isDefault
-    enabled
+async function buildWsContext(ctx: {
+  connectionParams?: Record<string, unknown> | null;
+}): Promise<Omit<GraphQLContext, keyof BaseContext>> {
+  // WebSocket subscriptions auth via connectionParams
+  const token = ctx.connectionParams?.authorization as string | undefined;
+  let userId: string | null = null;
+  let role: string | null = null;
+
+  if (token?.startsWith('Bearer ')) {
+    const raw = token.slice(7);
+    // In production: verify JWT
+    void raw;
   }
-}
-\`,
-          },
-        ],
-      }),
-      document.getElementById('graphiql')
-    );
-  </script>
-</body>
-</html>`;
+
+  return {
+    userId,
+    role,
+    requestId: `ws_${Date.now()}`,
+    ip: null,
+  };
 }
 
-// Re-export for convenience
-export { buildContext } from "./middleware/auth.js";
-export { resolvers } from "./resolvers/index.js";
-export { typeDefs } from "./schema.js";
+// ─── Schema assembly ──────────────────────────────────────────────────────────
+
+const mergedResolvers = mergeResolvers([
+  scalarResolvers,
+  chatResolvers,
+  agentResolvers,
+  modelResolvers,
+  userResolvers,
+]);
+
+export const schema = makeExecutableSchema({
+  typeDefs,
+  resolvers: mergedResolvers,
+});
+
+// ─── Apollo Server factory ────────────────────────────────────────────────────
+
+export async function setupGraphQL(
+  app: Application,
+  httpServer: HttpServer,
+): Promise<ApolloServer<GraphQLContext>> {
+  // ── WebSocket server for subscriptions ──────────────────────────────────────
+  const wsServer = new WebSocketServer({
+    server: httpServer,
+    path: '/graphql',
+  });
+
+  const wsServerCleanup = useServer(
+    {
+      schema,
+      context: buildWsContext,
+      onConnect(ctx) {
+        Logger.info('WS client connected', {
+          protocol: ctx.extra.socket.protocol,
+        });
+      },
+      onDisconnect() {
+        Logger.info('WS client disconnected');
+      },
+      onError(ctx, _msg, errors) {
+        Logger.error('WS error', { errors });
+      },
+    },
+    wsServer,
+  );
+
+  // ── Apollo server ────────────────────────────────────────────────────────────
+  const server = new ApolloServer<GraphQLContext>({
+    schema,
+    validationRules: [depthLimit(MAX_QUERY_DEPTH)],
+    formatError,
+    introspection: !isProd,
+    plugins: [
+      // Graceful HTTP shutdown
+      ApolloServerPluginDrainHttpServer({ httpServer }),
+
+      // Graceful WS shutdown
+      {
+        async serverWillStart() {
+          return {
+            async drainServer() {
+              await wsServerCleanup.dispose();
+            },
+          };
+        },
+      },
+
+      // Request complexity limiter
+      buildComplexityPlugin() as Parameters<typeof ApolloServer.prototype.addPlugin>[0],
+
+      // Request logging plugin
+      {
+        requestDidStart() {
+          const start = Date.now();
+          return {
+            willSendResponse({ request, response }) {
+              const elapsed = Date.now() - start;
+              const opName = request.operationName ?? 'anonymous';
+              const errors = (response.body as Record<string, unknown>)?.errors;
+
+              if (errors) {
+                Logger.warn('GraphQL request with errors', {
+                  operationName: opName,
+                  elapsedMs: elapsed,
+                });
+              } else {
+                Logger.info('GraphQL request completed', {
+                  operationName: opName,
+                  elapsedMs: elapsed,
+                });
+              }
+            },
+          };
+        },
+      },
+    ],
+  });
+
+  await server.start();
+
+  // ── Express middleware ───────────────────────────────────────────────────────
+  app.use(
+    '/graphql',
+    cors<cors.CorsRequest>({
+      origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : true,
+      credentials: true,
+    }),
+    json({ limit: '10mb' }),
+    expressMiddleware(server, {
+      context: buildContext,
+    }),
+  );
+
+  Logger.info('GraphQL endpoint ready', {
+    path: '/graphql',
+    introspection: !isProd,
+    subscriptions: 'ws://[host]/graphql',
+    depthLimit: MAX_QUERY_DEPTH,
+    complexityLimit: MAX_QUERY_COMPLEXITY,
+  });
+
+  return server;
+}
+
+// ─── Persisted query helpers (exported for use by route handlers if needed) ───
+
+export function getPersistedQuery(queryId: string): string | undefined {
+  return persistedQueryCache.get(queryId);
+}
+
+export function setPersistedQuery(queryId: string, query: string): void {
+  persistedQueryCache.set(queryId, query);
+}
+
+export type { GraphQLContext as GqlContext };
