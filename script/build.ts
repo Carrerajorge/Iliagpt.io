@@ -67,6 +67,17 @@ const __dirname = dirname(__filename);
     },
     minify: true,
     external: externals,
+    plugins: [
+      {
+        name: "native-node-modules",
+        setup(build) {
+          build.onResolve({ filter: /\.node$/ }, (args) => ({
+            path: args.path,
+            external: true,
+          }));
+        },
+      },
+    ],
     logLevel: "info",
   });
 

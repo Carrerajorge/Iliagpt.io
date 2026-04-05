@@ -356,7 +356,7 @@
     "drizzle-kit": "^0.31.4",
     "electron": "^40.6.0",
     "electron-builder": "^26.8.1",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.25.12",
     "eslint": "^9.39.0",
     "fast-check": "^4.5.3",
     "globals": "^17.3.0",
