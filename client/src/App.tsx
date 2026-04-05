@@ -47,6 +47,7 @@ const lazyWithRetry = <T extends React.ComponentType<any>>(
 
 const Home = lazyWithRetry(() => import("@/pages/home"));
 const ProjectWorkspace = lazyWithRetry(() => import("@/pages/project-workspace"));
+const OpenClawPage = lazyWithRetry(() => import("@/pages/openclaw"));
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { PlatformSettingsProvider, usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { isAdminUser } from "@/lib/admin";
@@ -354,6 +355,7 @@ function Router() {
             <Route path="/monitoring" component={ProtectedMonitoringDashboard} />
             <Route path="/agent/replay/:runId" component={ProtectedRunReplayPage} />
             <Route path="/agent/dag/:runId" component={ProtectedOrchestrationDAGPage} />
+            <Route path="/openclaw" component={OpenClawPage} />
             <Route path="/about" component={AboutPage} />
             <Route path="/learn" component={LearnPage} />
             <Route path="/pricing" component={PricingPage} />
