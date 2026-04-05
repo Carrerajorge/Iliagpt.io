@@ -420,7 +420,7 @@ function UsersSection() {
   const [viewingUser, setViewingUser] = useState<any>(null);
   const [showAddUserModal, setShowAddUserModal] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
-  const [filters, setFilters] = useState({ plan: "", status: "", role: "" });
+  const [filters, setFilters] = useState({ plan: "", status: "", role: "", authProvider: "" });
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" }>({ key: "createdAt", direction: "desc" });
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 20;
@@ -497,7 +497,8 @@ function UsersSection() {
       const matchesPlan = !filters.plan || u.plan === filters.plan;
       const matchesStatus = !filters.status || u.status === filters.status;
       const matchesRole = !filters.role || u.role === filters.role;
-      return matchesSearch && matchesPlan && matchesStatus && matchesRole;
+      const matchesAuth = !filters.authProvider || u.authProvider === filters.authProvider;
+      return matchesSearch && matchesPlan && matchesStatus && matchesRole && matchesAuth;
     })
     .sort((a: any, b: any) => {
       const aVal = a[sortConfig.key] || "";
@@ -635,9 +636,41 @@ function UsersSection() {
               <SelectItem value="api_only">API Only</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="ghost" size="sm" onClick={() => setFilters({ plan: "", status: "", role: "" })}>Clear</Button>
+          <Select value={filters.authProvider} onValueChange={(v) => setFilters({ ...filters, authProvider: v })}>
+            <SelectTrigger className="w-[140px] h-8"><SelectValue placeholder="Auth" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">All Auth</SelectItem>
+              <SelectItem value="google">Google</SelectItem>
+              <SelectItem value="email">Email</SelectItem>
+              <SelectItem value="anonymous">Anonymous</SelectItem>
+              <SelectItem value="sso">SSO</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button variant="ghost" size="sm" onClick={() => setFilters({ plan: "", status: "", role: "", authProvider: "" })}>Clear</Button>
         </div>
       )}
+
+      {(() => {
+        const anonCount = users.filter((u: any) => u.authProvider === "anonymous").length;
+        const suspendedAnonCount = users.filter((u: any) => u.authProvider === "anonymous" && u.status === "suspended").length;
+        const noEmailCount = users.filter((u: any) => !u.email).length;
+        const verifiedCount = users.filter((u: any) => u.emailVerified === "true").length;
+        if (anonCount === 0 && noEmailCount === 0) return null;
+        return (
+          <div className="flex items-center gap-4 p-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5">
+            <AlertTriangle className="h-5 w-5 text-yellow-500 shrink-0" />
+            <div className="flex-1 text-sm space-y-1">
+              <p className="font-medium text-yellow-700 dark:text-yellow-400">Security Overview</p>
+              <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                {anonCount > 0 && <span data-testid="text-anon-count">Anonymous: <strong className="text-yellow-600">{anonCount}</strong> ({suspendedAnonCount} suspended)</span>}
+                {noEmailCount > 0 && <span data-testid="text-no-email-count">No email: <strong className="text-red-500">{noEmailCount}</strong></span>}
+                <span>Verified: <strong className="text-green-500">{verifiedCount}</strong></span>
+                <span>Total: <strong>{users.length}</strong></span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="rounded-lg border overflow-hidden">
         <div className="overflow-x-auto">
@@ -670,12 +703,12 @@ function UsersSection() {
                 <tr key={user.id} className="border-b last:border-0 hover:bg-muted/30">
                   <td className="p-3">
                     <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-medium">
-                        {(user.fullName || user.email || "?")[0].toUpperCase()}
+                      <div className={cn("w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium", user.authProvider === "anonymous" ? "bg-red-500/10 text-red-500" : "bg-primary/10")}>
+                        {user.authProvider === "anonymous" ? <ShieldAlert className="h-4 w-4" /> : (user.fullName || user.email || "?")[0].toUpperCase()}
                       </div>
                       <div>
-                        <p className="font-medium truncate max-w-[150px]">{user.fullName || user.username || user.email?.split("@")[0] || "-"}</p>
-                        <p className="text-xs text-muted-foreground truncate max-w-[150px]">{user.email || "-"}</p>
+                        <p className={cn("font-medium truncate max-w-[150px]", user.authProvider === "anonymous" && "text-red-500")}>{user.fullName || user.username || user.email?.split("@")[0] || "-"}</p>
+                        <p className="text-xs text-muted-foreground truncate max-w-[150px]">{user.email || <span className="text-red-400 italic">no email</span>}</p>
                       </div>
                     </div>
                   </td>
@@ -690,7 +723,9 @@ function UsersSection() {
                   <td className="p-3 text-muted-foreground">{(user.tokensConsumed || 0).toLocaleString()}</td>
                   <td className="p-3">
                     <div className="flex items-center gap-1">
-                      <span className="text-xs text-muted-foreground">{user.authProvider || "email"}</span>
+                      <Badge variant={user.authProvider === "anonymous" ? "destructive" : user.authProvider === "google" ? "default" : "secondary"} className="text-xs">
+                        {user.authProvider || "email"}
+                      </Badge>
                       {user.emailVerified === "true" && <CheckCircle className="h-3 w-3 text-green-500" />}
                       {user.is2faEnabled === "true" && <Shield className="h-3 w-3 text-blue-500" />}
                     </div>

@@ -23,6 +23,13 @@ A SuperOrchestrator v1 (EXPERIMENTAL) provides distributed agent execution with 
 
 The system is designed for scalability, supporting 100M simultaneous users with optimized DB pools, Redis-backed rate limiting, compression, response caching, and socket hardening. Free users are restricted to specific free-tier models. Cerebras Direct Provider is integrated for faster inference when `CEREBRAS_API_KEY` is set. OCR for non-vision models extracts text from images when the active model doesn't support vision. A Workspace Agent System provides an agentic coding engine for the Codex VC workspace with SSE-streaming endpoints.
 
+### Security: Anonymous User Protection (2026-04-05)
+- **Anonymous users are blocked** from creating chat sessions (POST /chat, /chat/stream, /voice-chat). All chat endpoints now require Google OAuth authentication.
+- **`ensureUserRowExists`** no longer creates database rows for anonymous (`anon_*`) users, preventing untraceable account proliferation.
+- **IP/User-Agent tracking**: Authenticated user creation now captures `lastIp` and `userAgent` from the request.
+- **50 anonymous users suspended**: Existing anonymous "Guest-anon" accounts with `authProvider: "anonymous"` were bulk-suspended.
+- **Admin panel enhanced**: Security overview banner shows anonymous/no-email/verified counts; auth provider filter added; anonymous users display red shield warning indicators.
+
 ## External Dependencies
 ### AI Services
 - **OpenRouter**: Primary AI provider for various models.

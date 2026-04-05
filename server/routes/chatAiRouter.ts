@@ -3679,11 +3679,17 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
         return res.status(400).json({ error: "Messages array is required" });
       }
 
-      // `getUserId` returns an authenticated user (if present). For anonymous users,
-      // fall back to a stable, secure cookie-based ID so we can load settings and
-      // persist conversation state.
-      const effectiveUserId = getUserId(req) || getOrCreateSecureUserId(req);
+      const authenticatedUserId = getUserId(req);
+      const effectiveUserId = authenticatedUserId || getOrCreateSecureUserId(req);
       const userId = effectiveUserId;
+
+      if (!authenticatedUserId && userId.startsWith("anon_")) {
+        console.warn(`[Chat] Blocked anonymous chat attempt from IP=${req.ip}, UA=${(req.headers["user-agent"] || "").slice(0, 80)}`);
+        return res.status(401).json({
+          error: "Authentication required. Please sign in with Google to use the chat.",
+          code: "AUTH_REQUIRED"
+        });
+      }
 
       // Local control commands (safe mode): /local ..., DETENEROFF/DETENERON, and desktop-folder shortcut.
       const latestUserMessage = [...clientMessages].reverse().find((m: any) => m?.role === "user");
@@ -3726,7 +3732,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
       if (userId) {
         // Anonymous users (anon_*) won't have a `users` row yet. Ensure one exists so
         // quota checks and FK-backed features work instead of hard-failing.
-        await ensureUserRowExists(userId);
+        await ensureUserRowExists(userId, req);
 
         // 1. Token Quota Check (Read-only)
         const hasTokenQuota = await usageQuotaService.hasTokenQuota(userId);
@@ -4004,7 +4010,14 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
 
       console.log("[VoiceChat] Processing voice input:", message);
 
-      const userId = getOrCreateSecureUserId(req);
+      const authenticatedVoiceUser = getUserId(req);
+      const userId = authenticatedVoiceUser || getOrCreateSecureUserId(req);
+      if (!authenticatedVoiceUser && userId.startsWith("anon_")) {
+        return res.status(401).json({
+          error: "Authentication required. Please sign in to use voice chat.",
+          code: "AUTH_REQUIRED"
+        });
+      }
       let featureFlags = {
         voiceEnabled: true,
         voiceAdvanced: false,
@@ -4404,7 +4417,14 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         skillScopes
       } = req.body;
       latencyMode = ['fast', 'deep', 'auto'].includes(rawLatencyMode) ? rawLatencyMode : 'auto';
-      const effectiveUserId = getOrCreateSecureUserId(req);
+      const authenticatedStreamUser = getUserId(req);
+      const effectiveUserId = authenticatedStreamUser || getOrCreateSecureUserId(req);
+      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_")) {
+        console.warn(`[Stream] Blocked anonymous stream attempt from IP=${req.ip}`);
+        res.setHeader("Content-Type", "text/event-stream");
+        res.write(`data: ${JSON.stringify({ type: "error", error: "Authentication required. Please sign in with Google.", code: "AUTH_REQUIRED" })}\n\n`);
+        return res.end();
+      }
       const streamConversationId = sanitizeStreamIdentifier(
         typeof conversationId === "string" && conversationId.trim().length > 0
           ? conversationId

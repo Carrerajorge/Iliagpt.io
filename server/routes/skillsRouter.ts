@@ -5,6 +5,7 @@ import { db } from "../db";
 import { customSkills, users } from "@shared/schema";
 import { generateSkillFromPrompt } from "../services/skillGenerator";
 import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
+import { ensureUserRowExists } from "../lib/ensureUserRowExists";
 import { createCustomRateLimiter } from "../middleware/userRateLimiter";
 import { getOpenClawSkillsRuntimeSnapshot } from "../services/openclawSkillsRuntimeAdapter";
 import { FLUID_FUNCTIONAL_SKILLS } from "../config/fluidFunctionalSkills";
@@ -102,26 +103,6 @@ function toClientSkill(row: any) {
 
 function normalizeName(name: string): string {
   return name.trim().toLowerCase();
-}
-
-async function ensureUserRowExists(userId: string): Promise<void> {
-  try {
-    const isAnon = userId.startsWith("anon_");
-    await db
-      .insert(users)
-      .values({
-        id: userId,
-        username: isAnon ? `Guest-${userId.slice(0, 4)}` : `User-${userId.slice(0, 4)}`,
-        authProvider: isAnon ? "anonymous" : "unknown",
-        role: "user",
-        plan: "free",
-        status: "active",
-      })
-      .onConflictDoNothing();
-  } catch (e: any) {
-    // If DB is down, let callers handle the failure when they write skills.
-    console.warn("[SkillsRouter] Failed to ensure user row:", e?.message || e);
-  }
 }
 
 export function createSkillsRouter(): Router {

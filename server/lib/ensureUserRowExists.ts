@@ -1,28 +1,37 @@
 import { db } from "../db";
 import { users } from "@shared/schema";
+import type { Request } from "express";
 
 /**
  * Some tables (e.g. user_settings, semantic_memory_chunks) FK to users.id.
- * For anonymous sessions (anon_* ids), we still want those features to work.
- *
- * This helper creates a minimal users row if missing.
+ * Only creates rows for AUTHENTICATED users. Anonymous users are blocked
+ * from persisting to the users table to prevent untraceable account creation.
  */
-export async function ensureUserRowExists(userId: string): Promise<void> {
+export async function ensureUserRowExists(userId: string, req?: Request): Promise<void> {
   const id = String(userId || "").trim();
   if (!id || id === "anonymous") return;
 
   const isAnon = id.startsWith("anon_");
+  if (isAnon) {
+    console.warn(`[ensureUserRowExists] Blocked anonymous user creation: ${id.slice(0, 12)}...`);
+    return;
+  }
+
+  const ip = req ? (req.headers["x-forwarded-for"] as string || req.ip || "unknown") : undefined;
+  const ua = req ? (req.headers["user-agent"] as string || undefined) : undefined;
 
   try {
     await db
       .insert(users)
       .values({
         id,
-        username: isAnon ? `Guest-${id.slice(0, 4)}` : `User-${id.slice(0, 4)}`,
-        authProvider: isAnon ? "anonymous" : "unknown",
+        username: `User-${id.slice(0, 8)}`,
+        authProvider: "unknown",
         role: "user",
         plan: "free",
         status: "active",
+        ...(ip ? { lastIp: ip } : {}),
+        ...(ua ? { userAgent: ua } : {}),
       })
       .onConflictDoNothing();
   } catch (e: any) {
