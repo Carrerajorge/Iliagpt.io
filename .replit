@@ -7,8 +7,8 @@ channel = "stable-24_05"
 packages = ["alsa-lib", "at-spi2-atk", "atk", "cairo", "cups", "dbus", "expat", "ffmpeg-full", "fontconfig", "freetype", "ghostscript", "glib", "gobject-introspection", "gtk3", "jq", "lcms2", "libdrm", "libiconv", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "libxkbcommon", "mesa", "nspr", "nss", "openjpeg", "pango", "pkg-config", "qhull", "tcl", "tk", "unzip", "xorg.libX11", "xorg.libXScrnSaver", "xorg.libXcomposite", "xorg.libXcursor", "xorg.libXdamage", "xorg.libXext", "xorg.libXfixes", "xorg.libXi", "xorg.libXrandr", "xorg.libXrender", "xorg.libXtst", "xorg.libxcb", "zlib"]
 
 [deployment]
-deploymentTarget = "vm"
-build = ["npm", "run", "build"]
+deploymentTarget = "autoscale"
+build = ["bash", "script/deploy-build.sh"]
 run = ["node", "dist/index.cjs"]
 
 [[ports]]
