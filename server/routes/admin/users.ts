@@ -26,7 +26,7 @@ const MAX_CSV_CELL_LENGTH = 4096;
 const MAX_CONVERSATIONS_VIEW = 500;
 
 type SortOrder = "asc" | "desc";
-type UserSortField = "createdAt" | "email" | "queryCount" | "tokensConsumed" | "lastLoginAt";
+type UserSortField = "createdAt" | "email" | "queryCount" | "tokensConsumed" | "openclawTokensConsumed" | "lastLoginAt";
 type ConversationRecord = { id: string; [key: string]: unknown };
 type RequestWithActor = Request & { user?: { id?: string; email?: string } };
 
@@ -35,6 +35,7 @@ const VALID_SORT_FIELDS = new Set<UserSortField>([
   "email",
   "queryCount",
   "tokensConsumed",
+  "openclawTokensConsumed",
   "lastLoginAt",
 ]);
 const VALID_USER_ROLES = new Set(["user", "admin", "moderator", "editor", "viewer", "api_only"]);
@@ -449,7 +450,7 @@ usersRouter.get("/export", async (req, res) => {
     const filenameBase = `users_${actorId(req) || "admin"}_${new Date().toISOString().replace(/[:.]/g, "-")}`;
 
     if (format === "csv") {
-      const headers = ["id", "email", "fullName", "plan", "role", "status", "queryCount", "tokensConsumed", "createdAt", "lastLoginAt"];
+      const headers = ["id", "email", "fullName", "plan", "role", "status", "queryCount", "tokensConsumed", "openclawTokensConsumed", "createdAt", "lastLoginAt"];
       const csvRows = [headers.map(sanitizeCsvField).join(",")];
       rows.forEach((u) => {
         const fullName = [u.fullName || "", u.firstName || "", u.lastName || ""]
@@ -465,6 +466,7 @@ usersRouter.get("/export", async (req, res) => {
           u.status || "",
           u.queryCount || 0,
           u.tokensConsumed || 0,
+          (u as any).openclawTokensConsumed || 0,
           u.createdAt instanceof Date ? u.createdAt.toISOString() : String(u.createdAt || ""),
           u.lastLoginAt instanceof Date ? u.lastLoginAt.toISOString() : String(u.lastLoginAt || ""),
         ].map(sanitizeCsvField).join(","));

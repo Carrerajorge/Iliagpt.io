@@ -689,6 +689,12 @@ function UsersSection() {
                 <th className="text-left p-3 font-medium cursor-pointer hover:bg-muted/70" onClick={() => handleSort("tokensConsumed")}>
                   <div className="flex items-center gap-1">Tokens {sortConfig.key === "tokensConsumed" && (sortConfig.direction === "asc" ? "↑" : "↓")}</div>
                 </th>
+                <th className="text-left p-3 font-medium cursor-pointer hover:bg-muted/70" onClick={() => handleSort("openclawTokensConsumed")}>
+                  <div className="flex items-center gap-1 whitespace-nowrap">
+                    <span className="text-red-500">🦞</span> OpenClaw
+                    {sortConfig.key === "openclawTokensConsumed" && (sortConfig.direction === "asc" ? " ↑" : " ↓")}
+                  </div>
+                </th>
                 <th className="text-left p-3 font-medium">Auth</th>
                 <th className="text-left p-3 font-medium cursor-pointer hover:bg-muted/70" onClick={() => handleSort("createdAt")}>
                   <div className="flex items-center gap-1">Created {sortConfig.key === "createdAt" && (sortConfig.direction === "asc" ? "↑" : "↓")}</div>
@@ -698,7 +704,7 @@ function UsersSection() {
             </thead>
             <tbody>
               {paginatedUsers.length === 0 ? (
-                <tr><td colSpan={9} className="p-4 text-center text-muted-foreground">No users found</td></tr>
+                <tr><td colSpan={10} className="p-4 text-center text-muted-foreground">No users found</td></tr>
               ) : paginatedUsers.map((user: any) => (
                 <tr key={user.id} className="border-b last:border-0 hover:bg-muted/30">
                   <td className="p-3">
@@ -721,6 +727,9 @@ function UsersSection() {
                   </td>
                   <td className="p-3 text-muted-foreground">{(user.queryCount || 0).toLocaleString()}</td>
                   <td className="p-3 text-muted-foreground">{(user.tokensConsumed || 0).toLocaleString()}</td>
+                  <td className="p-3 text-muted-foreground">
+                    <span className={user.openclawTokensConsumed > 0 ? "text-red-500 font-medium" : ""}>{(user.openclawTokensConsumed || 0).toLocaleString()}</span>
+                  </td>
                   <td className="p-3">
                     <div className="flex items-center gap-1">
                       <Badge variant={user.authProvider === "anonymous" ? "destructive" : user.authProvider === "google" ? "default" : "secondary"} className="text-xs">
@@ -777,6 +786,7 @@ function UsersSection() {
                 <div><span className="text-muted-foreground">Status:</span> <Badge variant={viewingUser.status === "active" ? "default" : "outline"}>{viewingUser.status || "active"}</Badge></div>
                 <div><span className="text-muted-foreground">Queries:</span> {(viewingUser.queryCount || 0).toLocaleString()}</div>
                 <div><span className="text-muted-foreground">Tokens Used:</span> {(viewingUser.tokensConsumed || 0).toLocaleString()} / {(viewingUser.tokensLimit || 100000).toLocaleString()}</div>
+                <div><span className="text-muted-foreground">OpenClaw Tokens:</span> <span className="text-red-500 font-medium">{(viewingUser.openclawTokensConsumed || 0).toLocaleString()}</span></div>
                 <div><span className="text-muted-foreground">Credits:</span> {(viewingUser.creditsBalance || 0).toLocaleString()}</div>
                 <div><span className="text-muted-foreground">Auth Provider:</span> {viewingUser.authProvider || "email"}</div>
                 <div><span className="text-muted-foreground">Email Verified:</span> {viewingUser.emailVerified === "true" ? "Yes" : "No"}</div>

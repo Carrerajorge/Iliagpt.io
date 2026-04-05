@@ -3,6 +3,7 @@ import { randomUUID, createHmac } from "crypto";
 import type { Server as HttpServer } from "http";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { llmGateway } from "../lib/llmGateway";
+import { usageQuotaService } from "./usageQuotaService";
 
 const VERSION = "2026.4.2";
 const TOKEN_SECRET = process.env.ENCRYPTION_KEY || randomUUID();
@@ -37,10 +38,18 @@ const PROVIDER_MAP: Record<string, "openai" | "gemini" | "xai" | "anthropic" | "
   cerebras: "cerebras",
 };
 
+const tokenToUserMap = new Map<string, string>();
+
 export function generateGatewayToken(userId: string): string {
   const hmac = createHmac("sha256", TOKEN_SECRET);
   hmac.update(`openclaw-gateway:${userId}`);
-  return hmac.digest("hex").slice(0, 32);
+  const token = hmac.digest("hex").slice(0, 32);
+  tokenToUserMap.set(token, userId);
+  return token;
+}
+
+export function resolveUserIdFromToken(token: string): string | null {
+  return tokenToUserMap.get(token) || null;
 }
 
 function send(ws: WebSocket, obj: any) {
@@ -68,7 +77,8 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       client.clientName = params?.client?.name || "control-ui";
       client.role = params?.client?.role || "control";
       if (params?.auth?.authToken) {
-        client.userId = `token:${params.auth.authToken.slice(0, 8)}`;
+        const resolvedUserId = resolveUserIdFromToken(params.auth.authToken);
+        client.userId = resolvedUserId || `token:${params.auth.authToken.slice(0, 8)}`;
       }
       console.log(`[OpenClaw Gateway] Client authenticated: ${client.clientName} (role=${client.role})`);
       reply(ws, id, {
@@ -481,6 +491,9 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
           if (client.chatHistory.length > 60) {
             client.chatHistory.splice(1, client.chatHistory.length - 40);
           }
+
+          const estimatedTokens = Math.ceil(fullResponse.length / 4) + Math.ceil(userMessage.length / 4);
+          usageQuotaService.recordOpenClawTokenUsage(client.userId || "", estimatedTokens).catch(() => {});
 
           if (client.activeRuns.has(runId)) {
             send(ws, {

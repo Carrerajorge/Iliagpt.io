@@ -409,6 +409,23 @@ export class UsageQuotaService {
       }
     });
   }
+
+  async recordOpenClawTokenUsage(userId: string, tokens: number): Promise<void> {
+    if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens <= 0) return;
+    if (!userId || userId === "openclaw-user") return;
+
+    try {
+      await db.execute(sql`
+        UPDATE users
+        SET
+          openclaw_tokens_consumed = COALESCE(openclaw_tokens_consumed, 0) + ${Math.round(tokens)},
+          updated_at = NOW()
+        WHERE id = ${userId}
+      `);
+    } catch (err: any) {
+      console.error(`[UsageQuota] Failed to record OpenClaw tokens for ${userId}:`, err?.message);
+    }
+  }
 }
 
 export const usageQuotaService = new UsageQuotaService();

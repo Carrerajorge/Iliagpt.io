@@ -44,6 +44,7 @@ export const users = pgTable("users", {
   status: text("status").default("active"), // active, inactive, suspended, pending_verification
   queryCount: integer("query_count").default(0),
   tokensConsumed: integer("tokens_consumed").default(0),
+  openclawTokensConsumed: integer("openclaw_tokens_consumed").default(0),
   tokensLimit: integer("tokens_limit").default(100000),
   creditsBalance: integer("credits_balance").default(0),
   lastLoginAt: timestamp("last_login_at"),
