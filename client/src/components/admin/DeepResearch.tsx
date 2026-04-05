@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { startTransition, useEffect, useEffectEvent, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -116,7 +116,19 @@ export default function DeepResearch() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {showNewResearch && <NewResearchForm onClose={() => setShowNewResearch(false)} />}
+            {showNewResearch && (
+              <NewResearchForm
+                onClose={() => setShowNewResearch(false)}
+                onCreated={(sessionId) => {
+                  startTransition(() => {
+                    setSelectedSessionId(sessionId);
+                    setShowNewResearch(false);
+                  });
+                  queryClient.invalidateQueries({ queryKey: ["/api/research/sessions"] });
+                  queryClient.invalidateQueries({ queryKey: ["/api/research/stats"] });
+                }}
+              />
+            )}
             <div className="space-y-3 mt-4">
               {sessions.length === 0 ? (
                 <p className="text-muted-foreground text-center py-8" data-testid="text-no-sessions">No research sessions yet</p>
@@ -266,7 +278,9 @@ export default function DeepResearch() {
 }
 
 function SessionDetail({ sessionId }: { sessionId: string }) {
+  const queryClient = useQueryClient();
   const [evidenceTab, setEvidenceTab] = useState<"phases" | "sources" | "claims">("phases");
+  const [sessionState, setSessionState] = useState<any | null>(null);
 
   const { data } = useQuery({
     queryKey: ["/api/research/sessions", sessionId],
@@ -274,10 +288,117 @@ function SessionDetail({ sessionId }: { sessionId: string }) {
       const res = await apiRequest("GET", `/api/research/sessions/${sessionId}`);
       return res.json();
     },
-    refetchInterval: 3000,
   });
 
-  if (!data) {
+  useEffect(() => {
+    if (data) {
+      setSessionState(data);
+    }
+  }, [data, sessionId]);
+
+  const applyStreamEvent = useEffectEvent((payload: any) => {
+    startTransition(() => {
+      setSessionState((current: any) => {
+        const base = current || data;
+
+        if (payload?.type === "snapshot") {
+          return payload.session;
+        }
+
+        if (!base) {
+          return current;
+        }
+
+        if (payload?.type === "progress" && payload.uiPhase) {
+          const nextPhase = {
+            ...(base.phases?.[payload.uiPhase] || {}),
+            status:
+              payload.status === "failed"
+                ? "failed"
+                : payload.status === "completed"
+                  ? "completed"
+                  : "running",
+            progress: payload.progress ?? base.phases?.[payload.uiPhase]?.progress ?? 0,
+            message: payload.message || base.phases?.[payload.uiPhase]?.message,
+            updatedAt: new Date().toISOString(),
+          };
+
+          return {
+            ...base,
+            status: payload.status === "failed" ? "failed" : base.status,
+            phases: {
+              ...(base.phases || {}),
+              [payload.uiPhase]: nextPhase,
+            },
+          };
+        }
+
+        if (payload?.type === "complete") {
+          return {
+            ...base,
+            status: "completed",
+            partial: Boolean(payload.partial),
+            completedAt: payload.completedAt || base.completedAt,
+          };
+        }
+
+        if (payload?.type === "error") {
+          return {
+            ...base,
+            status: "failed",
+            error: payload.message || base.error,
+            completedAt: new Date().toISOString(),
+          };
+        }
+
+        if (payload?.type === "cancelled") {
+          return {
+            ...base,
+            status: "cancelled",
+            completedAt: payload.completedAt || base.completedAt,
+          };
+        }
+
+        return base;
+      });
+    });
+
+    if (payload?.type === "complete" || payload?.type === "error" || payload?.type === "cancelled") {
+      queryClient.invalidateQueries({ queryKey: ["/api/research/sessions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/research/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/research/sessions", sessionId] });
+    }
+  });
+
+  useEffect(() => {
+    const eventSource = new EventSource(`/api/research/sessions/${sessionId}/stream`, {
+      withCredentials: true,
+    });
+
+    eventSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        applyStreamEvent(payload);
+        if (payload?.type === "complete" || payload?.type === "error" || payload?.type === "cancelled") {
+          eventSource.close();
+        }
+      } catch {
+        // Ignore malformed SSE payloads; the detail view still has query-based fallback.
+      }
+    };
+
+    eventSource.onerror = () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/research/sessions", sessionId] });
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, [sessionId, queryClient]);
+
+  const session = sessionState || data;
+
+  if (!session) {
     return (
       <div className="mt-3 flex items-center justify-center py-4" data-testid="session-loading">
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -285,12 +406,22 @@ function SessionDetail({ sessionId }: { sessionId: string }) {
     );
   }
 
-  const phases = data.phases || {};
-  const sources: any[] = data.sources || data.evidence?.sources || [];
-  const claims: any[] = data.claims || data.evidence?.claims || [];
+  const phases = session.phases || {};
+  const sources: any[] = session.sources || session.evidence?.sources || [];
+  const claims: any[] = session.claims || session.evidence?.claims || [];
+  const issues: any[] = Array.isArray(session.issues) ? session.issues : [];
 
   const completedPhases = PHASES.filter(p => phases[p]?.status === "completed").length;
-  const progressPercent = (completedPhases / PHASES.length) * 100;
+  const progressPercent = PHASES.reduce((sum, phase) => {
+    const phaseData = phases[phase] || {};
+    const phaseProgress =
+      typeof phaseData.progress === "number"
+        ? phaseData.progress
+        : phaseData.status === "completed"
+          ? 100
+          : 0;
+    return sum + phaseProgress;
+  }, 0) / PHASES.length;
 
   return (
     <div className="mt-4 space-y-4 border-t border-border pt-4" data-testid={`detail-session-${sessionId}`}>
@@ -301,6 +432,39 @@ function SessionDetail({ sessionId }: { sessionId: string }) {
         </div>
         <span className="text-sm text-muted-foreground">{completedPhases}/{PHASES.length} phases</span>
       </div>
+
+      {(session.error || issues.length > 0) && (
+        <div
+          className={`rounded-lg border p-3 ${
+            session.partial
+              ? "border-yellow-500/40 bg-yellow-500/10"
+              : "border-red-500/40 bg-red-500/10"
+          }`}
+          data-testid="research-issues-summary"
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-4 w-4 mt-0.5 text-yellow-400" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium">
+                {session.partial ? "Research completed with partial results" : "Research execution reported issues"}
+              </p>
+              {session.error && (
+                <p className="text-xs text-muted-foreground">{session.error}</p>
+              )}
+              {issues.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">{issues.length} recorded issues</p>
+                  {issues.slice(0, 3).map((issue: any) => (
+                    <p key={issue.id || issue.message} className="text-xs text-muted-foreground">
+                      {issue.phase}: {issue.message}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-2 border-b border-border pb-2">
         {(["phases", "sources", "claims"] as const).map((tab) => (
@@ -483,7 +647,13 @@ function ViewReportButton({ sessionId }: { sessionId: string }) {
   );
 }
 
-function NewResearchForm({ onClose }: { onClose: () => void }) {
+function NewResearchForm({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (sessionId: string) => void;
+}) {
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
   const [depth, setDepth] = useState("");
@@ -497,10 +667,14 @@ function NewResearchForm({ onClose }: { onClose: () => void }) {
       const res = await apiRequest("POST", "/api/research/start", body);
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (result: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/research/sessions"] });
       queryClient.invalidateQueries({ queryKey: ["/api/research/stats"] });
-      onClose();
+      if (result?.id) {
+        onCreated(result.id);
+      } else {
+        onClose();
+      }
     },
   });
 

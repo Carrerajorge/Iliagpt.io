@@ -922,7 +922,21 @@ class LLMGateway {
     }
 
     // T100-2: Budget Guardrails (Deny execution if wallet is fully exhausted)
-    await costEngine.enforceGuardrails(options.userId || "anonymous", 0);
+    // If the FinOps ledger/schema is unavailable in a given environment, don't let that
+    // infrastructure dependency block the model request itself.
+    try {
+      await costEngine.enforceGuardrails(options.userId || "anonymous", 0);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/relation .* does not exist|token_ledger_usage|pricing_catalog|no such table/i.test(message)) {
+        console.warn("[LLMGateway] FinOps guardrails unavailable; continuing without budget enforcement.", {
+          userId: options.userId || "anonymous",
+          error: message,
+        });
+      } else {
+        throw error;
+      }
+    }
 
     // Respect explicit provider selection / auto selection.
     const selected = this.selectProvider(options);

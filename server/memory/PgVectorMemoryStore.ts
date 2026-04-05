@@ -10,6 +10,7 @@ import { AppError } from "../utils/errors";
 import { db } from "../db";
 import { sql, and, eq, lt, desc, gte } from "drizzle-orm";
 import { pgTable, uuid, text, real, timestamp, jsonb, integer, boolean, index } from "drizzle-orm/pg-core";
+import { getSemanticEmbeddingVector } from "../services/semanticEmbeddings";
 
 const logger = createLogger("PgVectorMemoryStore");
 
@@ -109,68 +110,16 @@ export interface GarbageCollectionResult {
 // ─── Embedding Provider ───────────────────────────────────────────────────────
 
 async function generateEmbedding(text: string): Promise<number[]> {
-  // Try OpenAI text-embedding-3-small first, fall back to simple hash-based embedding
-  const apiKey = process.env.OPENAI_API_KEY;
-
-  if (apiKey) {
-    try {
-      const resp = await fetch("https://api.openai.com/v1/embeddings", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "text-embedding-3-small", input: text.slice(0, 8_000), dimensions: 512 }),
-        signal: AbortSignal.timeout(10_000),
-      });
-
-      if (resp.ok) {
-        const data = (await resp.json()) as { data: Array<{ embedding: number[] }> };
-        return data.data[0]?.embedding ?? [];
-      }
-    } catch (err) {
-      logger.warn(`OpenAI embedding failed: ${(err as Error).message}`);
-    }
+  try {
+    return await getSemanticEmbeddingVector(text, {
+      dimensions: 512,
+      purpose: "document",
+      cacheNamespace: "pgvector-memory",
+    });
+  } catch (err) {
+    logger.warn(`Semantic embedding failed, using empty vector fallback: ${(err as Error).message}`);
+    return [];
   }
-
-  // Gemini embedding fallback
-  const geminiKey = process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY;
-  if (geminiKey) {
-    try {
-      const resp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent?key=${geminiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "models/embedding-001", content: { parts: [{ text: text.slice(0, 8_000) }] } }),
-          signal: AbortSignal.timeout(10_000),
-        }
-      );
-      if (resp.ok) {
-        const data = (await resp.json()) as { embedding?: { values: number[] } };
-        return data.embedding?.values ?? [];
-      }
-    } catch (err) {
-      logger.warn(`Gemini embedding failed: ${(err as Error).message}`);
-    }
-  }
-
-  // Local fallback: TF-IDF style sparse embedding (poor quality but functional)
-  return sparseEmbedding(text, 512);
-}
-
-function sparseEmbedding(text: string, dims: number): number[] {
-  const embedding = new Array<number>(dims).fill(0);
-  const words = text.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
-  for (const word of words) {
-    let hash = 5381;
-    for (let i = 0; i < word.length; i++) {
-      hash = ((hash << 5) + hash) ^ word.charCodeAt(i);
-      hash = hash >>> 0; // unsigned 32-bit
-    }
-    const idx = hash % dims;
-    embedding[idx] = (embedding[idx] ?? 0) + 1 / Math.sqrt(words.length);
-  }
-  // L2 normalize
-  const norm = Math.sqrt(embedding.reduce((s, v) => s + v * v, 0));
-  return norm > 0 ? embedding.map((v) => v / norm) : embedding;
 }
 
 // ─── pgvector Setup ───────────────────────────────────────────────────────────

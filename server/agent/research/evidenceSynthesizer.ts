@@ -1,5 +1,7 @@
 import { llmGateway } from "../../lib/llmGateway";
-import type { EvidenceFragment, SourceResult, CrossReference } from "./deepResearchEngine";
+import { Logger } from "../../lib/logger";
+import { withRetry } from "../../utils/retry";
+import type { CrossReference, EvidenceFragment, ResearchIssue, ResearchPhase, SourceResult } from "./deepResearchEngine";
 
 const SYNTHESIS_MODEL = process.env.RESEARCH_MODEL || "gpt-4o-mini";
 
@@ -46,6 +48,10 @@ export interface SynthesisReport {
   synthesizedAt: number;
 }
 
+interface SynthesisOptions {
+  onIssue?: (issue: Omit<ResearchIssue, "id" | "timestamp">) => void;
+}
+
 function generateId(): string {
   return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -55,7 +61,8 @@ export class EvidenceSynthesizer {
     query: string,
     evidence: EvidenceFragment[],
     sources: SourceResult[],
-    crossRefs: CrossReference[]
+    crossRefs: CrossReference[],
+    options: SynthesisOptions = {},
   ): Promise<SynthesisReport> {
     const citationChains = this.buildCitationChains(evidence, sources, crossRefs);
     const contradictions = this.detectContradictions(evidence, sources, crossRefs);
@@ -66,7 +73,8 @@ export class EvidenceSynthesizer {
       query,
       citationChains,
       contradictions,
-      consensusMap
+      consensusMap,
+      options,
     );
 
     const evidenceQuality = this.assessEvidenceQuality(evidence, sources, crossRefs);
@@ -305,14 +313,15 @@ export class EvidenceSynthesizer {
     query: string,
     chains: CitationChain[],
     contradictions: SynthesisReport["contradictions"],
-    consensus: ConsensusMapping[]
+    consensus: ConsensusMapping[],
+    options: SynthesisOptions,
   ): Promise<{ overallSummary: string; keyFindings: string[] }> {
     const topChains = chains
       .filter((c) => c.confidence > 0.3)
-      .slice(0, 10)
+      .slice(0, 12)
       .map(
         (c) =>
-          `- ${c.claim} (confidence: ${c.confidence.toFixed(2)}, consensus: ${c.consensusLevel})`
+          `- Claim: ${c.claim}\n  Confidence: ${c.confidence.toFixed(2)}\n  Consensus: ${c.consensusLevel}\n  Source IDs: ${c.sourceIds.join(", ")}`
       )
       .join("\n");
 
@@ -324,19 +333,44 @@ export class EvidenceSynthesizer {
             .join("\n")
         : "None detected";
 
+    const consensusText =
+      consensus.length > 0
+        ? consensus
+            .slice(0, 8)
+            .map(
+              (item) =>
+                `- Topic: ${item.topic}; agreement: ${item.agreementLevel.toFixed(2)}; supporting: ${item.supportingCount}; contradicting: ${item.contradictingCount}; summary: ${item.summary}`,
+            )
+            .join("\n")
+        : "No consensus map available";
+
     try {
-      const response = await llmGateway.chat(
-        [
-          {
-            role: "system" as const,
-            content: `You are a research synthesizer. Given citation chains and contradictions about a research query, produce a structured synthesis. Output ONLY a JSON object with: "summary" (string, 2-4 paragraphs), "keyFindings" (string[], 3-7 bullet points). Be objective and note uncertainties. No markdown, no explanation outside JSON.`,
-          },
-          {
-            role: "user" as const,
-            content: `Query: ${query}\n\nTop Evidence Chains:\n${topChains}\n\nContradictions:\n${contradictionText}`,
-          },
-        ],
-        { model: SYNTHESIS_MODEL, temperature: 0.3, maxTokens: 2000, timeout: 20000 }
+      const response = await withRetry(
+        () =>
+          llmGateway.chat(
+            [
+              {
+                role: "system" as const,
+                content:
+                  "You are a research synthesizer. Produce a grounded, evidence-heavy synthesis with explicit source traceability. " +
+                  'Output ONLY a JSON object with: "summary" (string, 3-5 paragraphs), "keyFindings" (string[], 5-8 items). ' +
+                  "Every key finding should mention the relevant source IDs inline, for example: \"Finding text (sources: src_1, src_2)\". " +
+                  "Be objective, call out uncertainty, and do not invent evidence.",
+              },
+              {
+                role: "user" as const,
+                content:
+                  `Query: ${query}\n\nTop Evidence Chains:\n${topChains}\n\nConsensus Map:\n${consensusText}\n\nContradictions:\n${contradictionText}`,
+              },
+            ],
+            { model: SYNTHESIS_MODEL, temperature: 0.25, maxTokens: 2600, timeout: 25000 },
+          ),
+        {
+          maxRetries: 2,
+          baseDelay: 500,
+          maxDelay: 4_000,
+          shouldRetry: () => true,
+        },
       );
 
       const parsed = JSON.parse(
@@ -349,14 +383,30 @@ export class EvidenceSynthesizer {
           ? parsed.keyFindings.map(String)
           : [],
       };
-    } catch {
+    } catch (error) {
+      Logger.warn("[EvidenceSynthesizer] Summary generation failed, using fallback synthesis", {
+        query,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      options.onIssue?.({
+        phase: "hypothesis_generation" as ResearchPhase,
+        severity: "warning",
+        message: "Falló la síntesis LLM; se devolvió un resumen de respaldo.",
+        detail: error instanceof Error ? error.message : String(error),
+        query,
+        recoverable: true,
+      });
+
       const findings = chains
         .filter((c) => c.confidence > 0.4)
         .slice(0, 5)
-        .map((c) => c.claim);
+        .map((c) => `${c.claim} (sources: ${c.sourceIds.join(", ")})`);
 
       return {
-        overallSummary: `Research on "${query}" yielded ${chains.length} citation chains across multiple sources. ${contradictions.length > 0 ? `${contradictions.length} contradictions were detected.` : "No major contradictions found."}`,
+        overallSummary:
+          `Research on "${query}" yielded ${chains.length} citation chains across multiple sources. ` +
+          `${contradictions.length > 0 ? `${contradictions.length} contradictions were detected and should be reviewed carefully.` : "No major contradictions were found."} ` +
+          `Consensus coverage included ${consensus.length} thematic clusters.`,
         keyFindings: findings.length > 0 ? findings : ["Insufficient evidence for key findings"],
       };
     }

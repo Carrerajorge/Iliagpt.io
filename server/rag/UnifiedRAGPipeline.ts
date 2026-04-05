@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { Logger } from '../lib/logger';
 import { llmGateway } from '../lib/llmGateway';
+import { getSemanticEmbeddingVector } from '../services/semanticEmbeddings';
 
 // ─── Core document types ────────────────────────────────────────────────────
 
@@ -197,31 +198,20 @@ export class DefaultPreprocessStage implements PreprocessStage {
   }
 }
 
-// ─── Default embed stage (stub using llmGateway for demo) ───────────────────
+// ─── Default embed stage (real semantic embeddings with controlled fallback) ──
 
 class DefaultEmbedStage implements EmbedStage {
   async embed(chunks: Chunk[]): Promise<EmbeddedChunk[]> {
-    return chunks.map((chunk) => {
-      // Deterministic 1536-dim hash embedding when a real embeddings API isn't wired
-      const vector = this._hashEmbed(chunk.content, 1536);
-      return { ...chunk, vector };
-    });
-  }
-
-  private _hashEmbed(text: string, dims: number): number[] {
-    const vec = new Array<number>(dims).fill(0);
-    const words = text.toLowerCase().split(/\W+/).filter(Boolean);
-    for (const word of words) {
-      let h = 2166136261;
-      for (let i = 0; i < word.length; i++) {
-        h ^= word.charCodeAt(i);
-        h = (h * 16777619) >>> 0;
-      }
-      vec[h % dims] += 1;
-    }
-    // L2 normalize
-    const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
-    return vec.map((v) => v / norm);
+    return Promise.all(
+      chunks.map(async (chunk) => {
+        const vector = await getSemanticEmbeddingVector(chunk.content, {
+          dimensions: 1536,
+          purpose: "document",
+          cacheNamespace: "unified-rag",
+        });
+        return { ...chunk, vector };
+      }),
+    );
   }
 }
 
@@ -245,7 +235,11 @@ class DefaultIndexStage implements IndexStage {
 
 class DefaultRetrieveStage implements RetrieveStage {
   async retrieve(query: RetrievedQuery): Promise<RetrievedChunk[]> {
-    const queryVec = this._hashEmbed(query.text, 1536);
+    const queryVec = await getSemanticEmbeddingVector(query.text, {
+      dimensions: 1536,
+      purpose: "query",
+      cacheNamespace: "unified-rag",
+    });
     const candidates = _inMemoryStore
       .filter((s) => s.namespace === query.namespace)
       .map((s) => {
@@ -258,24 +252,10 @@ class DefaultRetrieveStage implements RetrieveStage {
     return candidates;
   }
 
-  private _hashEmbed(text: string, dims: number): number[] {
-    const vec = new Array<number>(dims).fill(0);
-    const words = text.toLowerCase().split(/\W+/).filter(Boolean);
-    for (const word of words) {
-      let h = 2166136261;
-      for (let i = 0; i < word.length; i++) {
-        h ^= word.charCodeAt(i);
-        h = (h * 16777619) >>> 0;
-      }
-      vec[h % dims] += 1;
-    }
-    const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
-    return vec.map((v) => v / norm);
-  }
-
   private _cosine(a: number[], b: number[]): number {
     let dot = 0;
-    for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+    const maxLength = Math.min(a.length, b.length);
+    for (let i = 0; i < maxLength; i++) dot += a[i] * b[i];
     return dot; // already L2-normalized
   }
 }

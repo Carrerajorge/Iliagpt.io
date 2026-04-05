@@ -72,7 +72,7 @@ export class DuckDuckGoSearchAdapter implements ISearchAdapter {
       
       const results: WebSearchResult[] = [];
       
-      for (const result of response.results) {
+      for (const result of response) {
         try {
           const canonicalUrl = canonicalizeUrl(result.url);
           

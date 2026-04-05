@@ -254,10 +254,19 @@ export class UniversalStreamAdapter {
   ): AsyncGenerator<IUniversalStreamEvent> {
     const buffer = new StreamBuffer(this.config.buffering);
     let finalUsage: IUniversalStreamEvent["usage"] | undefined;
+    let providerDone = false;
+    const bufferedTokens: string[] = [];
+    const pendingEvents: IUniversalStreamEvent[] = [];
+    const flushIntervalMs = this.config.buffering.flushIntervalMs ?? 16;
+
+    const onBufferData = (text: string) => {
+      if (text) {
+        bufferedTokens.push(text);
+      }
+    };
 
     try {
-      // Consume provider stream in parallel with buffer drain
-      const providerDone = { value: false };
+      buffer.on("data", onBufferData);
 
       // Start consuming provider stream
       const consumeProvider = async () => {
@@ -273,28 +282,38 @@ export class UniversalStreamAdapter {
 
           // Handle tool calls
           if (chunk.toolCallDelta) {
-            yield {
+            pendingEvents.push({
               type: chunk.toolCallDelta.name ? "tool_call_start" : "tool_call_delta",
               toolCallId: chunk.toolCallDelta.id,
               toolCallName: chunk.toolCallDelta.name,
               toolCallArgDelta: JSON.stringify(chunk.toolCallDelta.arguments),
-            };
+            });
           }
 
           if (chunk.finishReason) {
             finalUsage = chunk.usage;
           }
         }
-        providerDone.value = true;
+        providerDone = true;
         buffer.end();
       };
 
       const providerPromise = consumeProvider();
 
-      // Yield buffered tokens
-      for await (const text of buffer) {
+      while (!providerDone || pendingEvents.length > 0 || bufferedTokens.length > 0 || !buffer.isEmpty) {
         if (isCancelled()) break;
-        yield { type: "token", content: text };
+
+        if (pendingEvents.length > 0) {
+          yield pendingEvents.shift()!;
+          continue;
+        }
+
+        if (bufferedTokens.length > 0) {
+          yield { type: "token", content: bufferedTokens.shift()! };
+          continue;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, flushIntervalMs));
       }
 
       await providerPromise;
@@ -312,6 +331,8 @@ export class UniversalStreamAdapter {
     } catch (err) {
       buffer.destroy();
       throw err;
+    } finally {
+      buffer.off("data", onBufferData);
     }
   }
 }

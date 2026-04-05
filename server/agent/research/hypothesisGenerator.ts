@@ -1,5 +1,7 @@
 import { llmGateway } from "../../lib/llmGateway";
-import type { EvidenceFragment } from "./deepResearchEngine";
+import { Logger } from "../../lib/logger";
+import { withRetry } from "../../utils/retry";
+import type { EvidenceFragment, ResearchIssue } from "./deepResearchEngine";
 import type { SynthesisReport } from "./evidenceSynthesizer";
 
 const HYPOTHESIS_MODEL = process.env.RESEARCH_MODEL || "gpt-4o-mini";
@@ -51,6 +53,10 @@ export interface HypothesisReport {
   queryContext: string;
 }
 
+interface HypothesisOptions {
+  onIssue?: (issue: Omit<ResearchIssue, "id" | "timestamp">) => void;
+}
+
 function generateId(): string {
   return `hyp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -59,11 +65,12 @@ export class HypothesisGenerator {
   async generate(
     query: string,
     evidence: EvidenceFragment[],
-    synthesis: SynthesisReport
+    synthesis: SynthesisReport,
+    options: HypothesisOptions = {},
   ): Promise<HypothesisReport> {
-    const hypotheses = await this.generateHypotheses(query, evidence, synthesis);
+    const hypotheses = await this.generateHypotheses(query, evidence, synthesis, options);
     const causalChains = this.extractCausalChains(evidence, synthesis);
-    const counterfactuals = await this.generateCounterfactuals(query, evidence, hypotheses);
+    const counterfactuals = await this.generateCounterfactuals(query, evidence, hypotheses, options);
 
     for (const h of hypotheses) {
       h.overallScore = this.computeOverallScore(h);
@@ -84,7 +91,8 @@ export class HypothesisGenerator {
   private async generateHypotheses(
     query: string,
     evidence: EvidenceFragment[],
-    synthesis: SynthesisReport
+    synthesis: SynthesisReport,
+    options: HypothesisOptions,
   ): Promise<Hypothesis[]> {
     const evidenceSummary = evidence
       .filter((e) => e.confidence > 0.3)
@@ -100,18 +108,30 @@ export class HypothesisGenerator {
     const findingsSummary = synthesis.keyFindings.slice(0, 5).join("\n- ");
 
     try {
-      const response = await llmGateway.chat(
-        [
-          {
-            role: "system" as const,
-            content: `You are a hypothesis generator for scientific research. Given evidence and knowledge gaps, generate 3-6 testable hypotheses. Output ONLY a JSON array of objects with: "statement" (clear testable hypothesis), "type" ("causal"|"correlational"|"descriptive"|"counterfactual"), "plausibility" (0-1), "novelty" (0-1), "impact" (0-1), "assumptions" (string[]), "validationApproaches" (array of {"method": string, "description": string, "feasibility": "high"|"medium"|"low", "estimatedEffort": "minimal"|"moderate"|"substantial"}), "counterarguments" (string[]). No explanation.`,
-          },
-          {
-            role: "user" as const,
-            content: `Research Query: ${query}\n\nKey Findings:\n- ${findingsSummary}\n\nEvidence:\n${evidenceSummary}\n\nKnowledge Gaps:\n${gapsSummary}`,
-          },
-        ],
-        { model: HYPOTHESIS_MODEL, temperature: 0.5, maxTokens: 3000, timeout: 25000 }
+      const response = await withRetry(
+        () =>
+          llmGateway.chat(
+            [
+              {
+                role: "system" as const,
+                content:
+                  "You are a hypothesis generator for scientific research. Given evidence and knowledge gaps, generate 3-6 testable hypotheses. " +
+                  'Output ONLY a JSON array of objects with: "statement", "type", "plausibility", "novelty", "impact", "assumptions", ' +
+                  '"validationApproaches", and "counterarguments". Keep hypotheses tightly linked to the supplied evidence and gaps. No explanation.',
+              },
+              {
+                role: "user" as const,
+                content: `Research Query: ${query}\n\nKey Findings:\n- ${findingsSummary}\n\nEvidence:\n${evidenceSummary}\n\nKnowledge Gaps:\n${gapsSummary}`,
+              },
+            ],
+            { model: HYPOTHESIS_MODEL, temperature: 0.45, maxTokens: 3000, timeout: 25000 },
+          ),
+        {
+          maxRetries: 2,
+          baseDelay: 500,
+          maxDelay: 4_000,
+          shouldRetry: () => true,
+        },
       );
 
       const parsed = JSON.parse(
@@ -141,7 +161,20 @@ export class HypothesisGenerator {
           generatedAt: Date.now(),
         }));
       }
-    } catch {}
+    } catch (error) {
+      Logger.warn("[HypothesisGenerator] Hypothesis generation failed, using fallback", {
+        query,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      options.onIssue?.({
+        phase: "hypothesis_generation",
+        severity: "warning",
+        message: "Falló la generación LLM de hipótesis; se devolvieron hipótesis de respaldo.",
+        detail: error instanceof Error ? error.message : String(error),
+        query,
+        recoverable: true,
+      });
+    }
 
     return this.fallbackHypotheses(query, evidence);
   }
@@ -254,7 +287,8 @@ export class HypothesisGenerator {
   private async generateCounterfactuals(
     query: string,
     evidence: EvidenceFragment[],
-    hypotheses: Hypothesis[]
+    hypotheses: Hypothesis[],
+    options: HypothesisOptions,
   ): Promise<CounterfactualAnalysis[]> {
     if (hypotheses.length === 0) return [];
 
@@ -265,18 +299,29 @@ export class HypothesisGenerator {
       .join("\n- ");
 
     try {
-      const response = await llmGateway.chat(
-        [
-          {
-            role: "system" as const,
-            content: `You are a counterfactual analyst. Given hypotheses, generate 2-4 counterfactual scenarios. Output ONLY a JSON array of objects with: "premise" (string), "counterfactual" (string), "predictedOutcome" (string), "confidence" (0-1), "reasoning" (string). No explanation.`,
-          },
-          {
-            role: "user" as const,
-            content: `Query: ${query}\n\nHypotheses:\n- ${topHypotheses}`,
-          },
-        ],
-        { model: HYPOTHESIS_MODEL, temperature: 0.5, maxTokens: 1500, timeout: 15000 }
+      const response = await withRetry(
+        () =>
+          llmGateway.chat(
+            [
+              {
+                role: "system" as const,
+                content:
+                  "You are a counterfactual analyst. Given hypotheses, generate 2-4 counterfactual scenarios. " +
+                  'Output ONLY a JSON array of objects with: "premise", "counterfactual", "predictedOutcome", "confidence", and "reasoning". No explanation.',
+              },
+              {
+                role: "user" as const,
+                content: `Query: ${query}\n\nHypotheses:\n- ${topHypotheses}`,
+              },
+            ],
+            { model: HYPOTHESIS_MODEL, temperature: 0.5, maxTokens: 1500, timeout: 15000 },
+          ),
+        {
+          maxRetries: 2,
+          baseDelay: 500,
+          maxDelay: 4_000,
+          shouldRetry: () => true,
+        },
       );
 
       const parsed = JSON.parse(
@@ -292,7 +337,20 @@ export class HypothesisGenerator {
           reasoning: String(cf.reasoning || ""),
         }));
       }
-    } catch {}
+    } catch (error) {
+      Logger.warn("[HypothesisGenerator] Counterfactual generation failed", {
+        query,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      options.onIssue?.({
+        phase: "hypothesis_generation",
+        severity: "warning",
+        message: "Falló la generación de contrafactuales; se devolvió un conjunto vacío.",
+        detail: error instanceof Error ? error.message : String(error),
+        query,
+        recoverable: true,
+      });
+    }
 
     return [];
   }

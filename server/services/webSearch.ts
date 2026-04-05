@@ -1,6 +1,7 @@
 import { JSDOM } from "jsdom";
 import { Readability } from "@mozilla/readability";
 import { HTTP_HEADERS, TIMEOUTS, LIMITS } from "../lib/constants";
+import { Logger } from "../lib/logger";
 
 export interface SearchResult {
   title: string;
@@ -19,6 +20,11 @@ export interface WebSearchResponse {
   query: string;
   results: SearchResult[];
   contents: { url: string; title: string; content: string; imageUrl?: string; siteName?: string; publishedDate?: string }[];
+}
+
+interface SearchCacheEntry {
+  expiresAt: number;
+  response: WebSearchResponse;
 }
 
 const ACADEMIC_PATTERNS = [
@@ -120,9 +126,29 @@ const WEB_SEARCH_PATTERNS = [
   /\brecent(ly)?\b/i,
 ];
 
-function getHeaders() {
+const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
+const FULL_CONTENT_COUNT = 8;
+const FULL_CONTENT_MAX_CHARS = 4500;
+const TOTAL_FETCH_TIMEOUT = 15000;
+const USER_AGENTS = [
+  HTTP_HEADERS.USER_AGENT,
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+] as const;
+
+const searchCache = new Map<string, SearchCacheEntry>();
+let userAgentCursor = 0;
+
+function nextUserAgent(): string {
+  const userAgent = USER_AGENTS[userAgentCursor % USER_AGENTS.length];
+  userAgentCursor += 1;
+  return userAgent;
+}
+
+function getHeaders(userAgent: string = nextUserAgent()) {
   return {
-    "User-Agent": HTTP_HEADERS.USER_AGENT,
+    "User-Agent": userAgent,
     "Accept": HTTP_HEADERS.ACCEPT_HTML,
     "Accept-Language": HTTP_HEADERS.ACCEPT_LANGUAGE
   };
@@ -145,7 +171,7 @@ export async function fetchUrl(url: string, options?: { extractText?: boolean; m
 export async function fetchPageContent(url: string): Promise<PageMetadata | null> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), TIMEOUTS.PAGE_FETCH);
+    const timeout = setTimeout(() => controller.abort(), Math.max(TIMEOUTS.PAGE_FETCH, 5000));
 
     const response = await fetch(url, {
       signal: controller.signal,
@@ -216,7 +242,11 @@ export async function fetchPageContent(url: string): Promise<PageMetadata | null
       siteName: siteName || undefined,
       publishedDate: publishedDate || undefined
     };
-  } catch {
+  } catch (error) {
+    Logger.warn("[WebSearch] Full page fetch failed", {
+      url,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
@@ -225,7 +255,7 @@ export async function fetchPageContent(url: string): Promise<PageMetadata | null
 export async function fetchPageMetadata(url: string): Promise<Omit<PageMetadata, "text"> | null> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000); // 2s timeout for metadata only
+    const timeout = setTimeout(() => controller.abort(), 2500);
 
     const response = await fetch(url, {
       signal: controller.signal,
@@ -270,7 +300,11 @@ export async function fetchPageMetadata(url: string): Promise<Omit<PageMetadata,
       doc.querySelector("title")?.textContent || "";
 
     return { title, imageUrl, canonicalUrl: canonicalUrl || undefined, siteName: siteName || undefined, publishedDate: publishedDate || undefined };
-  } catch {
+  } catch (error) {
+    Logger.warn("[WebSearch] Metadata fetch failed", {
+      url,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
@@ -289,10 +323,19 @@ function sanitizeWebQuery(raw: string): string {
 export async function searchWeb(query: string, maxResults: number = LIMITS.MAX_SEARCH_RESULTS): Promise<WebSearchResponse> {
   const sanitized = sanitizeWebQuery(query);
   if (!sanitized) return { query, results: [], contents: [] };
+
+  const cacheKey = `${sanitized}:${maxResults}`;
+  const cached = searchCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    Logger.debug("[WebSearch] Cache hit", { query: sanitized, maxResults });
+    return cached.response;
+  }
+
   const results: SearchResult[] = [];
   const domainCounts = new Map<string, number>();
   const seenUrls = new Set<string>();
   const MAX_PER_DOMAIN = 5; // Allow up to 5 results per domain for more coverage
+  let ddgBlockedReason: string | null = null;
 
   // Helper to extract domain from URL
   const extractDomain = (url: string): string => {
@@ -301,6 +344,17 @@ export async function searchWeb(query: string, maxResults: number = LIMITS.MAX_S
     } catch {
       return url.split("/")[2]?.replace(/^www\./, "") || "";
     }
+  };
+
+  const detectDuckDuckGoBlock = (html: string, status: number): string | null => {
+    if (status === 429) return "DuckDuckGo rate limited the request (HTTP 429)";
+    if (status === 403 && /captcha|challenge|automated|unusual traffic/i.test(html)) {
+      return "DuckDuckGo returned a challenge/captcha page";
+    }
+    if (/captcha|unusual traffic|automated requests|robot verification|please verify/i.test(html)) {
+      return "DuckDuckGo challenge page detected in HTML response";
+    }
+    return null;
   };
 
   // Parse results from a DuckDuckGo HTML page
@@ -343,35 +397,91 @@ export async function searchWeb(query: string, maxResults: number = LIMITS.MAX_S
   };
 
   // Fetch a single DuckDuckGo search page with timeout
-  const fetchDDGPage = async (pageUrl: string, timeoutMs: number = 4000): Promise<string | null> => {
+  const fetchDDGPage = async (
+    pageUrl: string,
+    init?: RequestInit,
+    timeoutMs: number = 4000,
+  ): Promise<{ html: string | null; blockedReason: string | null }> => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const userAgent = nextUserAgent();
+
     try {
       const response = await fetch(pageUrl, {
-        headers: getHeaders(),
+        ...init,
+        headers: {
+          ...getHeaders(userAgent),
+          ...(init?.headers || {}),
+        },
         signal: controller.signal,
       });
       clearTimeout(timeout);
-      if (!response.ok) return null;
-      return await response.text();
-    } catch {
+      if (!response.ok) {
+        return {
+          html: null,
+          blockedReason: response.status === 429 ? "DuckDuckGo rate limited the request (HTTP 429)" : null,
+        };
+      }
+      const html = await response.text();
+      return {
+        html,
+        blockedReason: detectDuckDuckGoBlock(html, response.status),
+      };
+    } catch (error) {
       clearTimeout(timeout);
-      return null;
+      Logger.warn("[WebSearch] DuckDuckGo HTML fetch failed", {
+        pageUrl,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { html: null, blockedReason: null };
+    }
+  };
+
+  const fallbackSearchWithScraper = async (): Promise<void> => {
+    try {
+      const ddg = await import("duck-duck-scrape");
+      const searchResults = await ddg.search(sanitized, {
+        safeSearch: ddg.SafeSearchType.OFF,
+      });
+
+      for (const result of (searchResults.results || []).slice(0, maxResults)) {
+        if (!result?.url || seenUrls.has(result.url)) continue;
+
+        const domain = extractDomain(result.url);
+        const count = domainCounts.get(domain) || 0;
+        if (count >= MAX_PER_DOMAIN) continue;
+
+        domainCounts.set(domain, count + 1);
+        seenUrls.add(result.url);
+        results.push({
+          title: result.title || "",
+          url: result.url || "",
+          snippet: result.description || "",
+        });
+      }
+    } catch (error) {
+      Logger.warn("[WebSearch] duck-duck-scrape fallback failed", {
+        query: sanitized,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
   try {
     // Page 1: Initial search
     const baseUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(sanitized)}`;
-    const page1Html = await fetchDDGPage(baseUrl);
-    if (page1Html) {
-      parseDDGPage(page1Html);
+    const page1 = await fetchDDGPage(baseUrl);
+    if (page1.blockedReason) {
+      ddgBlockedReason = page1.blockedReason;
+    }
+    if (page1.html) {
+      parseDDGPage(page1.html);
     }
 
     // Pages 2+ : DuckDuckGo HTML paginates via POST with form data (s=offset, dc=offset+1)
     // Each page returns ~25-30 results. Fetch more pages concurrently if we need more results.
     const resultsAfterPage1 = results.length;
-    if (results.length < maxResults) {
+    if (results.length < maxResults && !ddgBlockedReason) {
       const pagesToFetch: number[] = [];
       const resultsPerPage = 30;
       for (let offset = resultsPerPage; offset < maxResults * 2; offset += resultsPerPage) {
@@ -381,39 +491,47 @@ export async function searchWeb(query: string, maxResults: number = LIMITS.MAX_S
 
       const extraPages = await Promise.allSettled(
         pagesToFetch.map(async (offset) => {
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 5000);
-          try {
-            const formBody = `q=${encodeURIComponent(sanitized)}&s=${offset}&dc=${offset + 1}&o=json&api=d.js`;
-            const response = await fetch("https://html.duckduckgo.com/html/", {
+          const formBody = `q=${encodeURIComponent(sanitized)}&s=${offset}&dc=${offset + 1}&o=json&api=d.js`;
+          return fetchDDGPage(
+            "https://html.duckduckgo.com/html/",
+            {
               method: "POST",
               headers: {
-                ...getHeaders(),
                 "Content-Type": "application/x-www-form-urlencoded",
               },
               body: formBody,
-              signal: controller.signal,
-            });
-            clearTimeout(timeout);
-            if (!response.ok) return null;
-            return await response.text();
-          } catch {
-            clearTimeout(timeout);
-            return null;
-          }
+            },
+            5000,
+          );
         })
       );
 
       for (const pageResult of extraPages) {
         if (results.length >= maxResults) break;
         if (pageResult.status === "fulfilled" && pageResult.value) {
-          parseDDGPage(pageResult.value);
+          if (pageResult.value.blockedReason && !ddgBlockedReason) {
+            ddgBlockedReason = pageResult.value.blockedReason;
+          }
+          if (pageResult.value.html) {
+            parseDDGPage(pageResult.value.html);
+          }
         }
       }
     }
     console.log(`[WebSearch] Pagination complete: page1=${resultsAfterPage1}, total=${results.length}/${maxResults}`);
   } catch (error) {
-    console.error("Search error:", error);
+    Logger.warn("[WebSearch] DuckDuckGo HTML parsing pipeline failed", {
+      query: sanitized,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  if (ddgBlockedReason || results.length === 0) {
+    Logger.warn("[WebSearch] Falling back to duck-duck-scrape", {
+      query: sanitized,
+      reason: ddgBlockedReason || "DuckDuckGo HTML returned no usable results",
+    });
+    await fallbackSearchWithScraper();
   }
 
   console.log(`[WebSearch] Total unique results: ${results.length}, unique domains: ${domainCounts.size}`);
@@ -422,11 +540,6 @@ export async function searchWeb(query: string, maxResults: number = LIMITS.MAX_S
 
   // Create metadata map to enrich results (include canonicalUrl)
   const metadataMap = new Map<string, { imageUrl?: string; siteName?: string; publishedDate?: string; canonicalUrl?: string }>();
-
-  // Fetch FULL page content for top 5 results (for LLM context), metadata-only for the rest
-  const FULL_CONTENT_COUNT = 5;
-  const FULL_CONTENT_MAX_CHARS = 1500; // Enough text per source for meaningful LLM context
-  const TOTAL_FETCH_TIMEOUT = 10000; // Allow more time for 50+ results
 
   // Phase 1: Fetch full content for top results (these give the LLM real information)
   const fullContentPromises = results.slice(0, FULL_CONTENT_COUNT).map(async (result) => {
@@ -448,7 +561,12 @@ export async function searchWeb(query: string, maxResults: number = LIMITS.MAX_S
           publishedDate: page.publishedDate
         });
       }
-    } catch { }
+    } catch (error) {
+      Logger.warn("[WebSearch] Full content enrichment failed", {
+        url: result.url,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 
   // Phase 2: Fetch metadata-only for remaining results (fast, for UI enrichment)
@@ -471,7 +589,12 @@ export async function searchWeb(query: string, maxResults: number = LIMITS.MAX_S
           publishedDate: metadata.publishedDate
         });
       }
-    } catch { }
+    } catch (error) {
+      Logger.warn("[WebSearch] Metadata enrichment failed", {
+        url: result.url,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 
   // Race all fetches against timeout
@@ -497,7 +620,13 @@ export async function searchWeb(query: string, maxResults: number = LIMITS.MAX_S
 
   console.log(`[WebSearch] Query: "${query}" - Found ${results.length} unique sources, fetched ${contents.length} pages, ${Array.from(metadataMap.values()).filter(m => m.imageUrl).length} with images`);
 
-  return { query, results: enrichedResults, contents };
+  const response = { query, results: enrichedResults, contents };
+  searchCache.set(cacheKey, {
+    expiresAt: Date.now() + SEARCH_CACHE_TTL_MS,
+    response,
+  });
+
+  return response;
 }
 
 export async function searchScholar(query: string, maxResults: number = LIMITS.MAX_SEARCH_RESULTS): Promise<SearchResult[]> {

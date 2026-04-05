@@ -2029,6 +2029,25 @@ try{
 
   // ===== Deep Research API =====
   const researchSessions = new Map<string, any>();
+  const researchSessionStreams = new Map<string, Set<Response>>();
+  const researchPhaseToUiPhase: Record<string, "decomposition" | "search" | "extraction" | "verification" | "synthesis"> = {
+    query_decomposition: "decomposition",
+    literature_search: "search",
+    evidence_extraction: "extraction",
+    cross_reference: "verification",
+    hypothesis_generation: "synthesis",
+    confidence_scoring: "synthesis",
+  };
+
+  const broadcastResearchEvent = (sessionId: string, event: Record<string, unknown>) => {
+    const clients = researchSessionStreams.get(sessionId);
+    if (!clients || clients.size === 0) return;
+
+    for (const client of clients) {
+      if (client.writableEnded) continue;
+      client.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+  };
 
   app.post("/api/research/start", requireAdminMiddleware, async (req: Request, res: Response) => {
     try {
@@ -2048,6 +2067,8 @@ try{
         sources: [],
         claims: [],
         report: null,
+        partial: false,
+        issues: [],
         createdAt: new Date().toISOString(),
         completedAt: null,
         error: null,
@@ -2056,28 +2077,94 @@ try{
 
       (async () => {
         try {
-          const { deepResearchEngine } = await import("./agent/research/deepResearchEngine");
+          const { deepResearchEngine, defaultDeepResearchSearch } = await import("./agent/research/deepResearchEngine");
           session.phases.decomposition.status = "running";
           const result = await deepResearchEngine.conduct(req.body.query, {
-            onPhaseUpdate: (phase: string, progress: number) => {
-              if (session.phases[phase as keyof typeof session.phases]) {
-                session.phases[phase as keyof typeof session.phases].status = progress >= 100 ? "completed" : "running";
-                session.phases[phase as keyof typeof session.phases].progress = progress;
+            depthLevel: req.body.depth,
+            searchFn: defaultDeepResearchSearch,
+            onProgress: (event) => {
+              const uiPhase = researchPhaseToUiPhase[event.phase];
+              if (uiPhase && session.phases[uiPhase]) {
+                session.phases[uiPhase].status =
+                  event.status === "failed"
+                    ? "failed"
+                    : event.status === "completed"
+                      ? "completed"
+                      : "running";
+                session.phases[uiPhase].progress = event.progress;
+                session.phases[uiPhase].message = event.message;
+                session.phases[uiPhase].updatedAt = new Date().toISOString();
               }
+              broadcastResearchEvent(id, {
+                type: "progress",
+                sessionId: id,
+                uiPhase,
+                ...event,
+              });
             },
           });
           session.status = "completed";
           session.report = result;
           session.sources = result?.sources || [];
           session.claims = result?.evidence || [];
+          session.partial = Boolean(result?.partial);
+          session.issues = result?.issues || [];
+          session.error = result?.partial ? result?.statusMessage || null : null;
           session.completedAt = new Date().toISOString();
+          broadcastResearchEvent(id, {
+            type: "complete",
+            sessionId: id,
+            status: session.status,
+            partial: session.partial,
+            issues: session.issues.length,
+            completedAt: session.completedAt,
+          });
         } catch (err: any) {
           session.status = "failed";
           session.error = err.message;
+          session.completedAt = new Date().toISOString();
+          broadcastResearchEvent(id, {
+            type: "error",
+            sessionId: id,
+            message: err.message,
+          });
         }
       })();
 
       res.json({ id, status: "running" });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/research/sessions/:id/stream", requireAdminMiddleware, async (req: Request, res: Response) => {
+    try {
+      const session = researchSessions.get(req.params.id);
+      if (!session) return res.status(404).json({ error: "Session not found" });
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders?.();
+
+      let listeners = researchSessionStreams.get(req.params.id);
+      if (!listeners) {
+        listeners = new Set<Response>();
+        researchSessionStreams.set(req.params.id, listeners);
+      }
+      listeners.add(res);
+
+      res.write(`data: ${JSON.stringify({ type: "snapshot", session })}\n\n`);
+
+      req.on("close", () => {
+        const activeListeners = researchSessionStreams.get(req.params.id);
+        if (!activeListeners) return;
+        activeListeners.delete(res);
+        if (activeListeners.size === 0) {
+          researchSessionStreams.delete(req.params.id);
+        }
+      });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -2110,6 +2197,11 @@ try{
       if (!session) return res.status(404).json({ error: "Session not found" });
       session.status = "cancelled";
       session.completedAt = new Date().toISOString();
+      broadcastResearchEvent(req.params.id, {
+        type: "cancelled",
+        sessionId: req.params.id,
+        completedAt: session.completedAt,
+      });
       res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
