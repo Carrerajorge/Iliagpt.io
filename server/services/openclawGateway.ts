@@ -1,9 +1,16 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { randomUUID, createHmac } from "crypto";
 import type { Server as HttpServer } from "http";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import { llmGateway } from "../lib/llmGateway";
 
 const VERSION = "2026.4.2";
 const TOKEN_SECRET = process.env.ENCRYPTION_KEY || randomUUID();
+
+interface ChatMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+}
 
 interface GatewayClient {
   connId: string;
@@ -12,9 +19,23 @@ interface GatewayClient {
   clientName?: string;
   role?: string;
   userId?: string;
+  chatHistory: ChatMessage[];
+  activeRuns: Set<string>;
 }
 
 const clients = new Map<string, GatewayClient>();
+
+const sessionModelOverrides = new Map<string, { model: string; provider: string }>();
+
+const PROVIDER_MAP: Record<string, "openai" | "gemini" | "xai" | "anthropic" | "deepseek" | "cerebras"> = {
+  openrouter: "openai",
+  openai: "openai",
+  gemini: "gemini",
+  xai: "xai",
+  anthropic: "anthropic",
+  deepseek: "deepseek",
+  cerebras: "cerebras",
+};
 
 export function generateGatewayToken(userId: string): string {
   const hmac = createHmac("sha256", TOKEN_SECRET);
@@ -123,9 +144,25 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       break;
 
     case "config.set":
-    case "config.apply":
+    case "config.apply": {
+      const rawConfig = params?.raw || params?.config || "";
+      const sessionKeyForConfig = params?.sessionKey || "main";
+      if (typeof rawConfig === "string" && rawConfig.includes("model")) {
+        try {
+          const parsed = typeof rawConfig === "string" ? JSON.parse(rawConfig) : rawConfig;
+          if (parsed?.model?.model) {
+            const providerForModel = parsed.model.provider || "openrouter";
+            sessionModelOverrides.set(sessionKeyForConfig, {
+              model: parsed.model.model,
+              provider: providerForModel,
+            });
+            console.log(`[OpenClaw Gateway] Model override set for session ${sessionKeyForConfig}: ${parsed.model.model} (${providerForModel})`);
+          }
+        } catch {}
+      }
       reply(ws, id, { ok: true });
       break;
+    }
 
     case "config.openFile":
       reply(ws, id, { ok: true });
@@ -186,9 +223,29 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       reply(ws, id, { ok: true });
       break;
 
-    case "sessions.list":
-      reply(ws, id, { sessions: [] });
+    case "sessions.list": {
+      const mainOverride = sessionModelOverrides.get("main");
+      reply(ws, id, {
+        sessions: [
+          {
+            key: "main",
+            agentId: "main",
+            label: "main",
+            status: "idle",
+            model: mainOverride?.model || "moonshotai/kimi-k2.5",
+            provider: mainOverride?.provider || "openrouter",
+            createdAt: Date.now() - 60000,
+            updatedAt: Date.now(),
+          },
+        ],
+        defaults: {
+          model: "moonshotai/kimi-k2.5",
+          provider: "openrouter",
+          agentId: "main",
+        },
+      });
       break;
+    }
 
     case "sessions.subscribe":
       reply(ws, id, { ok: true });
@@ -214,7 +271,37 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
     case "sessions.delete":
     case "sessions.reset":
     case "sessions.compact":
-    case "sessions.patch":
+      reply(ws, id, { ok: true });
+      break;
+
+    case "sessions.patch": {
+      const patchKey = params?.key || params?.sessionKey || "main";
+      if (params?.model) {
+        const modelId = params.model.trim();
+        const modelsList = [
+          { id: "moonshotai/kimi-k2.5", provider: "openrouter" },
+          { id: "gemini-2.5-flash-preview-05-20", provider: "gemini" },
+          { id: "gemini-2.5-pro-preview-05-06", provider: "gemini" },
+          { id: "gpt-4o", provider: "openai" },
+          { id: "gpt-4.1", provider: "openai" },
+          { id: "claude-sonnet-4-20250514", provider: "anthropic" },
+          { id: "grok-3-mini-fast", provider: "xai" },
+        ];
+        const found = modelsList.find(m => m.id === modelId);
+        const patchProvider = params.provider || found?.provider || (modelId.includes("/") ? "openrouter" : "openai");
+        sessionModelOverrides.set(patchKey, { model: modelId, provider: patchProvider });
+        console.log(`[OpenClaw Gateway] sessions.patch model override: ${patchKey} -> ${modelId} (${patchProvider})`);
+      }
+      reply(ws, id, {
+        ok: true,
+        resolved: {
+          model: params?.model || sessionModelOverrides.get(patchKey)?.model || "moonshotai/kimi-k2.5",
+          modelProvider: params?.provider || sessionModelOverrides.get(patchKey)?.provider || "openrouter",
+        },
+      });
+      break;
+    }
+
     case "sessions.steer":
       reply(ws, id, { ok: true });
       break;
@@ -288,38 +375,134 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       break;
 
     case "chat.history":
-      reply(ws, id, { messages: [] });
-      break;
-
-    case "chat.send":
-      const chatId = randomUUID();
-      reply(ws, id, { ok: true, runId: chatId });
-      send(ws, {
-        type: "event",
-        event: "chat.delta",
-        payload: {
-          runId: chatId,
-          delta: "Conectado a IliaGPT OpenClaw. Escribe tu mensaje para comenzar.",
-          done: false,
-        },
+      reply(ws, id, {
+        messages: client.chatHistory.map((m, i) => ({
+          id: `msg-${i}`,
+          role: m.role,
+          content: m.content,
+          timestamp: Date.now(),
+        })),
       });
-      setTimeout(() => {
-        send(ws, {
-          type: "event",
-          event: "chat.delta",
-          payload: {
-            runId: chatId,
-            delta: "",
-            done: true,
-            usage: { tokensIn: 0, tokensOut: 15 },
-          },
-        });
-      }, 100);
       break;
 
-    case "chat.abort":
+    case "chat.send": {
+      const runId = randomUUID();
+      const userMessage = params?.message || params?.content || "";
+      const chatSessionKey = params?.sessionKey || "main";
+
+      console.log(`[OpenClaw Gateway] chat.send params:`, JSON.stringify(params, null, 0)?.slice(0, 500));
+
+      const sessionOverride = sessionModelOverrides.get(chatSessionKey);
+      const selectedModel = params?.model || sessionOverride?.model || "moonshotai/kimi-k2.5";
+      const selectedProvider = params?.provider || sessionOverride?.provider || "openrouter";
+
+      if (!userMessage.trim()) {
+        replyError(ws, id, "EMPTY_MESSAGE", "Message cannot be empty");
+        break;
+      }
+
+      reply(ws, id, { ok: true, runId });
+
+      client.chatHistory.push({ role: "user", content: userMessage });
+      client.activeRuns.add(runId);
+
+      const llmMessages: ChatCompletionMessageParam[] = [
+        {
+          role: "system" as const,
+          content: "You are IliaGPT, a helpful AI assistant. You are running inside the OpenClaw control interface. Respond clearly and helpfully. You can use markdown formatting.",
+        },
+        ...client.chatHistory.map((m) => ({
+          role: m.role as "user" | "assistant" | "system",
+          content: m.content,
+        })),
+      ];
+
+      const mappedProvider = PROVIDER_MAP[selectedProvider] || "openai";
+
+      (async () => {
+        let fullResponse = "";
+        let tokensIn = 0;
+        let tokensOut = 0;
+
+        try {
+          console.log(`[OpenClaw Gateway] chat.send: model=${selectedModel}, provider=${mappedProvider}, historyLen=${client.chatHistory.length}`);
+
+          const stream = llmGateway.streamChat(llmMessages, {
+            model: selectedModel,
+            provider: mappedProvider,
+            userId: client.userId || "openclaw-user",
+            requestId: runId,
+            maxTokens: 4096,
+            temperature: 0.7,
+          });
+
+          for await (const chunk of stream) {
+            if (!client.activeRuns.has(runId)) {
+              console.log(`[OpenClaw Gateway] Run ${runId} was aborted`);
+              break;
+            }
+
+            if (chunk.content) {
+              fullResponse += chunk.content;
+              send(ws, {
+                type: "event",
+                event: "chat.delta",
+                payload: { runId, delta: chunk.content, done: false },
+              });
+            }
+
+            if (chunk.done) {
+              tokensIn = 0;
+              tokensOut = Math.ceil(fullResponse.length / 4);
+              break;
+            }
+          }
+
+          client.chatHistory.push({ role: "assistant", content: fullResponse });
+
+          if (client.chatHistory.length > 60) {
+            client.chatHistory.splice(1, client.chatHistory.length - 40);
+          }
+
+          send(ws, {
+            type: "event",
+            event: "chat.delta",
+            payload: {
+              runId,
+              delta: "",
+              done: true,
+              usage: { tokensIn, tokensOut },
+            },
+          });
+        } catch (err: any) {
+          console.error(`[OpenClaw Gateway] chat.send error:`, err?.message || err);
+
+          const errorMsg = `Error: ${err?.message || "Failed to get AI response"}. Please try again.`;
+          send(ws, {
+            type: "event",
+            event: "chat.delta",
+            payload: { runId, delta: errorMsg, done: false },
+          });
+          send(ws, {
+            type: "event",
+            event: "chat.delta",
+            payload: { runId, delta: "", done: true, usage: { tokensIn: 0, tokensOut: 0 } },
+          });
+        } finally {
+          client.activeRuns.delete(runId);
+        }
+      })();
+      break;
+    }
+
+    case "chat.abort": {
+      const abortRunId = params?.runId;
+      if (abortRunId) {
+        client.activeRuns.delete(abortRunId);
+      }
       reply(ws, id, { ok: true });
       break;
+    }
 
     default:
       replyError(ws, id, -32601, `Method not found: ${method}`);
@@ -352,7 +535,7 @@ export function attachOpenClawGateway(httpServer: HttpServer) {
   wss.on("connection", (ws) => {
     const connId = randomUUID();
     const nonce = randomUUID();
-    const client: GatewayClient = { connId, ws, authenticated: false };
+    const client: GatewayClient = { connId, ws, authenticated: false, chatHistory: [], activeRuns: new Set() };
     clients.set(connId, client);
     console.log(`[OpenClaw Gateway] New connection: ${connId}`);
 
