@@ -35,6 +35,7 @@ import { type SkillScope } from "@shared/schema/skillPlatform";
 import { MAX_CHAT_ATTACHMENT_SIZE_BYTES } from "@shared/chatLimits";
 import { handleEmailChatRequest } from "../services/gmailChatIntegration";
 import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
+import { FREE_MODEL_ID } from "../lib/modelRegistry";
 import { ensureUserRowExists } from "../lib/ensureUserRowExists";
 import { buildSkillSystemPromptSection, drizzleSkillStore, resolveSkillContextFromRequest } from "../services/skillContextResolver";
 import { getSkillPlatformService, type SkillExecutionResult } from "../services/skillPlatform";
@@ -4556,11 +4557,16 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       latencyMode = ['fast', 'deep', 'auto'].includes(rawLatencyMode) ? rawLatencyMode : 'auto';
       const authenticatedStreamUser = getUserId(req);
       const effectiveUserId = authenticatedStreamUser || getOrCreateSecureUserId(req);
-      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_")) {
-        console.warn(`[Stream] Blocked anonymous stream attempt from IP=${req.ip}`);
+      const requestedModel = typeof model === "string" ? model.trim() : "";
+      const isUsingFreeModel = !requestedModel || requestedModel === FREE_MODEL_ID || requestedModel === "google/gemma-4-31b-it";
+      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && !isUsingFreeModel) {
+        console.warn(`[Stream] Blocked anonymous stream attempt from IP=${req.ip}, model=${requestedModel}`);
         res.setHeader("Content-Type", "text/event-stream");
-        res.write(`data: ${JSON.stringify({ type: "error", error: "Authentication required. Please sign in with Google.", code: "AUTH_REQUIRED" })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: "error", error: "Authentication required. Please sign in with Google to use this model.", code: "AUTH_REQUIRED" })}\n\n`);
         return res.end();
+      }
+      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && isUsingFreeModel) {
+        console.log(`[Stream] Anonymous user allowed with free model (${FREE_MODEL_ID}) from IP=${req.ip}`);
       }
       const streamConversationId = sanitizeStreamIdentifier(
         typeof conversationId === "string" && conversationId.trim().length > 0
