@@ -10,6 +10,7 @@
 import type { ScoredChunk } from "./hybridRetriever";
 import type { ShortTermMemory, LongTermMemory } from "./memoryService";
 import type { EpisodicSummary, UserMemory } from "@shared/schema/rag";
+import { sanitizeRAGContent } from "../../rag/UnifiedRAGPipeline";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -231,7 +232,7 @@ export function buildPromptContext(
         for (let i = 0; i < chunks.length; i++) {
             const chunk = chunks[i];
             const ref = `[${prefix} ${i + 1}${chunk.pageNumber ? `, p.${chunk.pageNumber}` : ""}]`;
-            const line = `${ref}\n${chunk.content}`;
+            const line = `${ref}\n${sanitizeRAGContent(chunk.content)}`;
             const lineTokens = estimateTokens(line);
 
             if (ragTokensUsed + lineTokens > ragBudget) break;

@@ -1,8 +1,12 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
+import crypto from 'crypto';
 import { Logger } from '../lib/logger';
 import { llmGateway } from '../lib/llmGateway';
 import { getSemanticEmbeddingVector } from '../services/semanticEmbeddings';
+import { db } from '../db';
+import { ragChunks } from '@shared/schema/rag';
+import { eq, and, sql, inArray } from 'drizzle-orm';
 
 // ─── Core document types ────────────────────────────────────────────────────
 
@@ -46,6 +50,8 @@ export interface RetrievedQuery {
   filter?: Record<string, unknown>;
   hybridAlpha?: number;
   minScore?: number;
+  userId?: string;
+  tenantId?: string;
 }
 
 export interface RetrievedChunk extends Chunk {
@@ -82,6 +88,60 @@ export interface GeneratedAnswer {
   tokensUsed: number;
   model: string;
   durationMs: number;
+}
+
+// ─── Types expected by external retriever modules ───────────────────────────
+
+export type ChunkType = 'text' | 'heading' | 'paragraph' | 'list' | 'code' | 'table';
+
+export interface ChunkMetadata {
+  chunkType: ChunkType;
+  sectionTitle?: string;
+  sourceFile?: string;
+  pageNumber?: number;
+  language?: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+export interface PipelineChunk {
+  id: string;
+  content: string;
+  chunkIndex: number;
+  embedding?: number[];
+  score: number;
+  rrfScore?: number;
+  matchType: 'vector' | 'bm25' | 'hybrid' | 'metadata';
+  metadata: ChunkMetadata;
+}
+
+export interface RetrieveOptions {
+  topK?: number;
+  minScore?: number;
+  filterUserId?: string;
+  filterSourceIds?: string[];
+  filterLanguage?: string;
+  filterChunkTypes?: string[];
+}
+
+export function generateChunkId(content: string, documentId: string, chunkIndex: number): string {
+  return crypto
+    .createHash('sha256')
+    .update(`${documentId}:${chunkIndex}:${content.slice(0, 256)}`)
+    .digest('hex')
+    .slice(0, 32);
+}
+
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const mag = Math.sqrt(normA) * Math.sqrt(normB);
+  return mag === 0 ? 0 : dot / mag;
 }
 
 // ─── Stage interfaces ────────────────────────────────────────────────────────
@@ -133,6 +193,8 @@ export interface PipelineConfig {
     metricsEnabled?: boolean;
     maxRetries?: number;
     timeoutMs?: number;
+    relevanceThreshold?: number;
+    ragTemplate?: string;
   };
 }
 
@@ -150,17 +212,163 @@ export interface PipelineTrace {
   totalMs: number;
 }
 
+// ─── Prompt injection sanitization ──────────────────────────────────────────
+
+const SYSTEM_TAG_PATTERNS = [
+  /<\/?system>/gi,
+  /<\|[^|]*\|>/g,
+  /<\/?instruction>/gi,
+  /<\/?prompt>/gi,
+  /\[INST\]|\[\/INST\]/gi,
+  /<<SYS>>|<<\/SYS>>/gi,
+  /\{\{#system\}\}|\{\{\/system\}\}/gi,
+];
+
+export function sanitizeRAGContent(content: string): string {
+  let sanitized = content;
+  for (const pattern of SYSTEM_TAG_PATTERNS) {
+    sanitized = sanitized.replace(pattern, (match) => {
+      return match.replace(/</g, '＜').replace(/>/g, '＞').replace(/\[/g, '［').replace(/\]/g, '］');
+    });
+  }
+
+  sanitized = sanitized
+    .replace(/You are now|Ignore (all )?previous|Forget (all )?instructions|Disregard (all )?(above|previous)/gi,
+      (m) => `[FILTERED: ${m.slice(0, 20)}...]`);
+
+  return sanitized;
+}
+
+export function detectPlaceholderInjection(content: string, placeholders: string[]): boolean {
+  for (const ph of placeholders) {
+    if (content.includes(ph)) return true;
+  }
+  return false;
+}
+
+// ─── Configurable RAG template ──────────────────────────────────────────────
+
+const DEFAULT_RAG_TEMPLATE = `You are a knowledgeable assistant. Answer the user's question using ONLY the provided context.
+
+RULES:
+1. Use ONLY information from the context below. Do NOT use prior knowledge.
+2. Cite sources using [N] references matching the numbered context blocks.
+3. If the context does not contain sufficient information, explicitly state: "The available documents do not contain enough information to answer this question."
+4. Never fabricate data, statistics, or facts not present in the context.
+
+--- BEGIN CONTEXT ---
+[context]
+--- END CONTEXT ---
+
+Question: [query]`;
+
+export function buildRAGPrompt(
+  template: string,
+  context: string,
+  query: string,
+): { systemPrompt: string; userPrompt: string } {
+  let safeTemplate = template;
+  if (!safeTemplate.includes('[context]') || !safeTemplate.includes('[query]')) {
+    Logger.warn('[RAG] Invalid template missing required placeholders, using default');
+    safeTemplate = DEFAULT_RAG_TEMPLATE;
+  }
+  if (safeTemplate.length > 5000) {
+    Logger.warn('[RAG] Template exceeds max length, using default');
+    safeTemplate = DEFAULT_RAG_TEMPLATE;
+  }
+
+  const sanitizedContext = sanitizeRAGContent(context);
+
+  if (detectPlaceholderInjection(sanitizedContext, ['[context]', '[query]'])) {
+    Logger.warn('[RAG] Placeholder injection detected in context, stripping placeholders');
+    const cleanContext = sanitizedContext.replace(/\[context\]/g, '[ctx]').replace(/\[query\]/g, '[q]');
+    const rendered = safeTemplate.replace('[context]', cleanContext).replace('[query]', query);
+    return { systemPrompt: '', userPrompt: rendered };
+  }
+
+  const rendered = safeTemplate.replace('[context]', sanitizedContext).replace('[query]', query);
+  return { systemPrompt: '', userPrompt: rendered };
+}
+
+// ─── LLM response validation ───────────────────────────────────────────────
+
+const REFUSAL_PATTERNS = [
+  /^I('m| am) (sorry|unable|not able),? (but )?(I )?(can't|cannot|am unable)/i,
+  /^(Sorry|Unfortunately),? (I |but )(can't|cannot|am not able|don't have)/i,
+  /^No puedo (ayud|respond|proporcion)/i,
+  /^Lo siento,? (pero )?(no puedo|no tengo)/i,
+  /^I (can't|cannot) (help|assist|answer|respond|provide)/i,
+  /^As an AI,? I (can't|cannot|am unable)/i,
+];
+
+const GARBAGE_PATTERNS = [
+  /(.{10,})\1{3,}/,
+  /^[^\w\s]{20,}$/,
+  /(\b\w+\b)(\s+\1){5,}/i,
+];
+
+export interface ResponseValidation {
+  isValid: boolean;
+  reason?: string;
+}
+
+export function validateLLMResponse(
+  response: string,
+  contextLength: number,
+): ResponseValidation {
+  if (!response || response.trim().length === 0) {
+    return { isValid: false, reason: 'empty_response' };
+  }
+
+  if (response.trim().length < 5) {
+    return { isValid: false, reason: 'too_short' };
+  }
+
+  for (const pat of REFUSAL_PATTERNS) {
+    if (pat.test(response.trim())) {
+      return { isValid: false, reason: 'generic_refusal' };
+    }
+  }
+
+  for (const pat of GARBAGE_PATTERNS) {
+    if (pat.test(response.trim())) {
+      return { isValid: false, reason: 'garbage_content' };
+    }
+  }
+
+  if (contextLength > 500 && response.trim().length < 20) {
+    return { isValid: false, reason: 'disproportionately_short' };
+  }
+
+  return { isValid: true };
+}
+
+// ─── Failed response metrics tracking ───────────────────────────────────────
+
+const _failedResponseMetrics = new Map<string, { count: number; lastReason: string; lastAt: number }>();
+
+function recordFailedResponse(provider: string, reason: string): void {
+  const existing = _failedResponseMetrics.get(provider) || { count: 0, lastReason: '', lastAt: 0 };
+  _failedResponseMetrics.set(provider, {
+    count: existing.count + 1,
+    lastReason: reason,
+    lastAt: Date.now(),
+  });
+}
+
+export function getFailedResponseMetrics(): Record<string, { count: number; lastReason: string; lastAt: number }> {
+  return Object.fromEntries(_failedResponseMetrics);
+}
+
 // ─── Default preprocess stage ────────────────────────────────────────────────
 
-const ES_STOPWORDS = ['es', 'la', 'de', 'que', 'en', 'el', 'los', 'las', 'un', 'una', 'por', 'con', 'se', 'del', 'al'];
-const EN_STOPWORDS = ['the', 'is', 'are', 'of', 'to', 'and', 'in', 'it', 'for', 'on', 'with', 'at', 'by', 'this', 'that'];
+const ES_STOPWORDS = new Set(['es', 'la', 'de', 'que', 'en', 'el', 'los', 'las', 'un', 'una', 'por', 'con', 'se', 'del', 'al']);
+const EN_STOPWORDS = new Set(['the', 'is', 'are', 'of', 'to', 'and', 'in', 'it', 'for', 'on', 'with', 'at', 'by', 'this', 'that']);
 
 export class DefaultPreprocessStage implements PreprocessStage {
   async process(doc: RawDocument): Promise<ProcessedDocument> {
-    // Strip HTML tags
     const stripped = doc.content.replace(/<[^>]+>/g, ' ');
 
-    // Normalize whitespace: collapse runs of spaces/tabs, trim lines
     const cleaned = stripped
       .split('\n')
       .map((line) => line.replace(/[ \t]+/g, ' ').trim())
@@ -170,21 +378,19 @@ export class DefaultPreprocessStage implements PreprocessStage {
 
     const wordCount = cleaned.split(/\s+/).filter(Boolean).length;
 
-    // Language detection via stopword frequency
     const tokens = cleaned.toLowerCase().split(/\W+/).filter(Boolean);
     let esScore = 0;
     let enScore = 0;
     for (const token of tokens) {
-      if (ES_STOPWORDS.includes(token)) esScore++;
-      if (EN_STOPWORDS.includes(token)) enScore++;
+      if (ES_STOPWORDS.has(token)) esScore++;
+      if (EN_STOPWORDS.has(token)) enScore++;
     }
     const detectedLanguage = doc.language ?? (esScore > enScore ? 'es' : 'en');
 
-    // Structure analysis
     const lines = cleaned.split('\n');
     const headings = lines.filter((l) => /^#{1,6}\s/.test(l)).length;
     const tableLines = lines.filter((l) => /\|/.test(l)).length;
-    const tables = Math.floor(tableLines / 2); // rough table count
+    const tables = Math.floor(tableLines / 2);
     const codeBlockMatches = cleaned.match(/```/g);
     const codeBlocks = codeBlockMatches ? Math.floor(codeBlockMatches.length / 2) : 0;
 
@@ -198,133 +404,496 @@ export class DefaultPreprocessStage implements PreprocessStage {
   }
 }
 
-// ─── Default embed stage (real semantic embeddings with controlled fallback) ──
+// ─── Default embed stage (real semantic embeddings with fallback chain) ──────
+
+const EMBED_BATCH_SIZE = 16;
 
 class DefaultEmbedStage implements EmbedStage {
   async embed(chunks: Chunk[]): Promise<EmbeddedChunk[]> {
-    return Promise.all(
-      chunks.map(async (chunk) => {
-        const vector = await getSemanticEmbeddingVector(chunk.content, {
-          dimensions: 1536,
-          purpose: "document",
-          cacheNamespace: "unified-rag",
-        });
-        return { ...chunk, vector };
-      }),
-    );
-  }
-}
+    const results: EmbeddedChunk[] = [];
 
-// ─── Default in-memory index/retrieve stages ────────────────────────────────
-
-interface StoredChunk {
-  chunk: EmbeddedChunk;
-  namespace: string;
-}
-
-const _inMemoryStore: StoredChunk[] = [];
-
-class DefaultIndexStage implements IndexStage {
-  async index(chunks: EmbeddedChunk[], namespace: string): Promise<void> {
-    for (const chunk of chunks) {
-      _inMemoryStore.push({ chunk, namespace });
+    for (let i = 0; i < chunks.length; i += EMBED_BATCH_SIZE) {
+      const batch = chunks.slice(i, i + EMBED_BATCH_SIZE);
+      const embedded = await Promise.all(
+        batch.map(async (chunk) => {
+          const vector = await getSemanticEmbeddingVector(chunk.content, {
+            dimensions: 1536,
+            purpose: 'document',
+            cacheNamespace: 'unified-rag',
+          });
+          return { ...chunk, vector };
+        }),
+      );
+      results.push(...embedded);
     }
-    Logger.debug('DefaultIndexStage: indexed chunks', { count: chunks.length, namespace });
+    return results;
   }
 }
 
-class DefaultRetrieveStage implements RetrieveStage {
+// ─── BM25 enriched text for metadata boosting ───────────────────────────────
+
+function buildEnrichedBM25Text(chunk: EmbeddedChunk, namespace: string): string {
+  const parts: string[] = [];
+
+  const source = (chunk.metadata?.source as string) || '';
+  if (source) {
+    const filename = source.split('/').pop()?.replace(/\.[^.]+$/, '') || '';
+    const tokenized = filename.replace(/[-_]/g, ' ');
+    parts.push(tokenized, tokenized);
+  }
+
+  const title = (chunk.metadata?.title as string) || '';
+  if (title) parts.push(title, title);
+
+  const sectionTitle = (chunk.metadata?.sectionTitle as string) || '';
+  if (sectionTitle) parts.push(sectionTitle);
+
+  const headings = (chunk.metadata?.headings as string[]) || [];
+  if (headings.length > 0) parts.push(...headings);
+
+  parts.push(chunk.content);
+
+  if (namespace) parts.push(namespace);
+
+  return parts.join(' ');
+}
+
+// ─── PgVector Index Stage (replaces in-memory) ─────────────────────────────
+
+class PgVectorIndexStage implements IndexStage {
+  async index(chunks: EmbeddedChunk[], namespace: string): Promise<void> {
+    if (chunks.length === 0) return;
+
+    const BATCH_INSERT_SIZE = 50;
+    let indexed = 0;
+    let deduped = 0;
+
+    for (let i = 0; i < chunks.length; i += BATCH_INSERT_SIZE) {
+      const batch = chunks.slice(i, i + BATCH_INSERT_SIZE);
+
+      for (const chunk of batch) {
+        const contentHash = crypto.createHash('sha256').update(chunk.content).digest('hex');
+        const enrichedText = buildEnrichedBM25Text(chunk, namespace);
+        const userId = (chunk.metadata?.userId as string) || 'system';
+        const tenantId = (chunk.metadata?.tenantId as string) || 'default';
+        const source = (chunk.metadata?.source as string) || 'document';
+        const sourceId = (chunk.metadata?.sourceId as string) || chunk.documentId;
+
+        try {
+          await db.execute(sql`
+            INSERT INTO rag_chunks (
+              id, tenant_id, user_id, source, source_id, content, content_hash,
+              embedding, search_vector, chunk_index, title, section_title,
+              chunk_type, language, tags, metadata, is_active
+            ) VALUES (
+              ${chunk.id},
+              ${tenantId},
+              ${userId},
+              ${source},
+              ${sourceId},
+              ${chunk.content},
+              ${contentHash},
+              ${sql.raw(`'[${chunk.vector.join(',')}]'::vector`)},
+              to_tsvector('simple', ${enrichedText}),
+              ${chunk.chunkIndex},
+              ${(chunk.metadata?.title as string) || null},
+              ${(chunk.metadata?.sectionTitle as string) || null},
+              ${(chunk.metadata?.chunkType as string) || 'paragraph'},
+              ${(chunk.metadata?.language as string) || null},
+              ${sql.raw(`ARRAY[${namespace ? `'${namespace.replace(/'/g, "''")}'` : ''}]::text[]`)},
+              ${JSON.stringify(chunk.metadata || {})}::jsonb,
+              true
+            )
+            ON CONFLICT (user_id, content_hash) DO UPDATE SET
+              embedding = EXCLUDED.embedding,
+              search_vector = EXCLUDED.search_vector,
+              tags = (
+                SELECT array_agg(DISTINCT t) FROM unnest(rag_chunks.tags || EXCLUDED.tags) AS t
+              ),
+              source = EXCLUDED.source,
+              source_id = EXCLUDED.source_id,
+              metadata = rag_chunks.metadata || EXCLUDED.metadata,
+              updated_at = NOW()
+          `);
+          indexed++;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('duplicate') || msg.includes('unique')) {
+            deduped++;
+          } else {
+            Logger.warn('[PgVectorIndex] Failed to index chunk', { chunkId: chunk.id, error: msg });
+          }
+        }
+      }
+    }
+
+    Logger.info('[PgVectorIndex] Batch complete', { indexed, deduped, total: chunks.length, namespace });
+  }
+}
+
+// ─── BM25 scoring helpers ───────────────────────────────────────────────────
+
+const STOP_WORDS = new Set([
+  'the', 'is', 'are', 'of', 'and', 'to', 'in', 'for', 'with', 'that', 'this',
+  'have', 'it', 'at', 'be', 'from', 'or', 'an', 'by', 'we', 'you',
+  'el', 'la', 'los', 'las', 'de', 'que', 'en', 'un', 'una', 'es', 'por',
+  'con', 'del', 'al', 'se', 'no', 'a', 'su', 'si',
+]);
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\sáéíóúüñ]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 1 && !STOP_WORDS.has(t));
+}
+
+function bm25Score(
+  queryTerms: string[],
+  docTerms: string[],
+  avgDocLen: number,
+  docFreq: Map<string, number>,
+  totalDocs: number,
+  k1 = 1.5,
+  b = 0.75,
+): number {
+  const tf = new Map<string, number>();
+  for (const t of docTerms) tf.set(t, (tf.get(t) ?? 0) + 1);
+  let score = 0;
+  for (const term of queryTerms) {
+    const freq = tf.get(term) ?? 0;
+    if (freq === 0) continue;
+    const df = docFreq.get(term) ?? 0;
+    const idf = Math.log((totalDocs - df + 0.5) / (df + 0.5) + 1);
+    const num = freq * (k1 + 1);
+    const den = freq + k1 * (1 - b + b * (docTerms.length / avgDocLen));
+    score += idf * (num / den);
+  }
+  return score;
+}
+
+// ─── PgVector Hybrid Retrieve Stage (BM25 + vector with RRF) ────────────────
+
+const RRF_K = 60;
+const DEFAULT_BM25_WEIGHT = 0.3;
+const DEFAULT_VECTOR_WEIGHT = 0.7;
+
+class PgVectorHybridRetrieveStage implements RetrieveStage {
   async retrieve(query: RetrievedQuery): Promise<RetrievedChunk[]> {
     const queryVec = await getSemanticEmbeddingVector(query.text, {
       dimensions: 1536,
-      purpose: "query",
-      cacheNamespace: "unified-rag",
+      purpose: 'query',
+      cacheNamespace: 'unified-rag',
     });
-    const candidates = _inMemoryStore
-      .filter((s) => s.namespace === query.namespace)
-      .map((s) => {
-        const score = this._cosine(queryVec, s.chunk.vector);
-        return { ...s.chunk, score, source: s.chunk.metadata?.source as string ?? 'unknown', retrievalMethod: 'vector' as const };
-      })
-      .filter((c) => (query.minScore !== undefined ? c.score >= query.minScore : true))
-      .sort((a, b) => b.score - a.score)
+
+    const rawAlpha = query.hybridAlpha ?? DEFAULT_BM25_WEIGHT;
+    const bm25Weight = Math.max(0, Math.min(1, rawAlpha));
+    const vectorWeight = 1 - bm25Weight;
+    const candidateLimit = Math.max(query.topK * 5, 50);
+
+    const nsEscaped = (query.namespace || 'default').replace(/'/g, "''");
+    const userFilter = query.userId
+      ? sql`AND user_id = ${query.userId}`
+      : sql``;
+    const tenantFilter = query.tenantId
+      ? sql`AND tenant_id = ${query.tenantId}`
+      : sql``;
+
+    let vectorResults: Array<{ id: string; content: string; score: number; embedding: number[] | null; chunkIndex: number; source: string; metadata: any }> = [];
+    try {
+      const vecRows = await db.execute(sql`
+        SELECT id, content, chunk_index, source, source_id, metadata,
+               embedding,
+               1 - (embedding <=> ${sql.raw(`'[${queryVec.join(',')}]'::vector`)}) as similarity
+        FROM rag_chunks
+        WHERE is_active = true
+          AND tags @> ${sql.raw(`ARRAY['${nsEscaped}']::text[]`)}
+          ${userFilter}
+          ${tenantFilter}
+        ORDER BY embedding <=> ${sql.raw(`'[${queryVec.join(',')}]'::vector`)}
+        LIMIT ${candidateLimit}
+      `);
+      vectorResults = (vecRows as any).rows || [];
+    } catch (err) {
+      Logger.warn('[PgVectorRetrieve] Vector search failed, falling back', { error: (err as Error).message });
+    }
+
+    let tsResults: Array<{ id: string; content: string; rank: number; chunkIndex: number; source: string; metadata: any }> = [];
+    try {
+      const tsRows = await db.execute(sql`
+        SELECT id, content, chunk_index, source, source_id, metadata,
+               ts_rank_cd(search_vector, plainto_tsquery('simple', ${query.text})) as rank
+        FROM rag_chunks
+        WHERE is_active = true
+          AND tags @> ${sql.raw(`ARRAY['${nsEscaped}']::text[]`)}
+          ${userFilter}
+          ${tenantFilter}
+          AND search_vector @@ plainto_tsquery('simple', ${query.text})
+        ORDER BY rank DESC
+        LIMIT ${candidateLimit}
+      `);
+      tsResults = (tsRows as any).rows || [];
+    } catch (err) {
+      Logger.warn('[PgVectorRetrieve] BM25/tsvector search failed', { error: (err as Error).message });
+    }
+
+    const seenHashes = new Set<string>();
+    const allCandidates = new Map<string, {
+      id: string;
+      content: string;
+      chunkIndex: number;
+      source: string;
+      metadata: Record<string, unknown>;
+      vectorRank: number;
+      bm25Rank: number;
+      vectorScore: number;
+    }>();
+
+    vectorResults.forEach((row: any, idx: number) => {
+      const contentHash = crypto.createHash('sha256').update(row.content).digest('hex');
+      if (seenHashes.has(contentHash)) return;
+      seenHashes.add(contentHash);
+
+      allCandidates.set(row.id, {
+        id: row.id,
+        content: row.content,
+        chunkIndex: row.chunk_index ?? 0,
+        source: row.source || 'unknown',
+        metadata: (typeof row.metadata === 'object' ? row.metadata : {}) as Record<string, unknown>,
+        vectorRank: idx + 1,
+        bm25Rank: candidateLimit + 1,
+        vectorScore: parseFloat(row.similarity) || 0,
+      });
+    });
+
+    tsResults.forEach((row: any, idx: number) => {
+      const contentHash = crypto.createHash('sha256').update(row.content).digest('hex');
+      if (seenHashes.has(contentHash) && !allCandidates.has(row.id)) return;
+      if (!seenHashes.has(contentHash)) seenHashes.add(contentHash);
+
+      const existing = allCandidates.get(row.id);
+      if (existing) {
+        existing.bm25Rank = idx + 1;
+      } else {
+        allCandidates.set(row.id, {
+          id: row.id,
+          content: row.content,
+          chunkIndex: row.chunk_index ?? 0,
+          source: row.source || 'unknown',
+          metadata: (typeof row.metadata === 'object' ? row.metadata : {}) as Record<string, unknown>,
+          vectorRank: candidateLimit + 1,
+          bm25Rank: idx + 1,
+          vectorScore: 0,
+        });
+      }
+    });
+
+    const rrfScored = Array.from(allCandidates.values()).map((c) => {
+      const rrfScore =
+        vectorWeight * (1 / (RRF_K + c.vectorRank)) +
+        bm25Weight * (1 / (RRF_K + c.bm25Rank));
+
+      return {
+        id: c.id,
+        documentId: (c.metadata?.sourceId as string) || c.source,
+        content: c.content,
+        chunkIndex: c.chunkIndex,
+        metadata: c.metadata,
+        tokens: Math.ceil(c.content.split(/\s+/).length * 1.3),
+        score: rrfScore,
+        source: c.source,
+        retrievalMethod: (c.vectorRank < candidateLimit + 1 && c.bm25Rank < candidateLimit + 1)
+          ? 'hybrid' as const
+          : c.vectorRank < candidateLimit + 1
+            ? 'vector' as const
+            : 'bm25' as const,
+      };
+    });
+
+    rrfScored.sort((a, b) => b.score - a.score);
+
+    const minScore = query.minScore ?? 0;
+    const results = rrfScored
+      .filter((c) => c.score >= minScore)
       .slice(0, query.topK);
-    return candidates;
-  }
 
-  private _cosine(a: number[], b: number[]): number {
-    let dot = 0;
-    const maxLength = Math.min(a.length, b.length);
-    for (let i = 0; i < maxLength; i++) dot += a[i] * b[i];
-    return dot; // already L2-normalized
+    Logger.info('[PgVectorRetrieve] Hybrid search complete', {
+      vectorCandidates: vectorResults.length,
+      bm25Candidates: tsResults.length,
+      afterDedup: allCandidates.size,
+      returned: results.length,
+    });
+
+    return results;
   }
 }
 
-// ─── Default rerank stage ────────────────────────────────────────────────────
+// ─── Score-based rerank with relevance threshold ────────────────────────────
 
-class DefaultRerankStage implements RerankStage {
+class ScoreBasedRerankStage implements RerankStage {
+  private readonly _relevanceThreshold: number;
+
+  constructor(relevanceThreshold = 0.0) {
+    this._relevanceThreshold = relevanceThreshold;
+  }
+
   async rerank(query: string, chunks: RetrievedChunk[]): Promise<RankedChunk[]> {
-    // Simple keyword overlap reranking
-    const queryTokens = new Set(query.toLowerCase().split(/\W+/).filter(Boolean));
-    return chunks
-      .map((chunk) => {
-        const chunkTokens = chunk.content.toLowerCase().split(/\W+/).filter(Boolean);
-        const overlap = chunkTokens.filter((t) => queryTokens.has(t)).length;
-        const rerankScore = overlap / (queryTokens.size || 1);
-        return { ...chunk, rerankScore };
-      })
-      .sort((a, b) => (b.rerankScore ?? 0) - (a.rerankScore ?? 0))
-      .map((chunk, idx) => ({ ...chunk, rank: idx + 1 }));
+    if (chunks.length === 0) return [];
+
+    const queryTerms = new Set(tokenize(query));
+
+    const scored = chunks.map((chunk) => {
+      const chunkTerms = tokenize(chunk.content);
+
+      const overlap = chunkTerms.filter((t) => queryTerms.has(t)).length;
+      const overlapScore = queryTerms.size > 0 ? overlap / queryTerms.size : 0;
+
+      let proximityBoost = 0;
+      const queryArr = Array.from(queryTerms);
+      const contentLower = chunk.content.toLowerCase();
+      const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      for (let i = 0; i < queryArr.length - 1; i++) {
+        try {
+          const pattern = new RegExp(`\\b${escapeRegex(queryArr[i])}\\b.{0,30}\\b${escapeRegex(queryArr[i + 1])}\\b`, 'i');
+          if (pattern.test(contentLower)) proximityBoost += 0.05;
+        } catch {
+          // skip invalid regex patterns from adversarial input
+        }
+      }
+
+      let typeBoost = 0;
+      const chunkType = (chunk.metadata?.chunkType as string) || '';
+      if (chunkType === 'heading') typeBoost = 0.04;
+      if (chunkType === 'table' && /tabla|table|datos|data/i.test(query)) typeBoost = 0.08;
+      if (chunkType === 'code' && /código|code|function|función/i.test(query)) typeBoost = 0.08;
+
+      const compositeScore = chunk.score * 0.6 + overlapScore * 0.25 + proximityBoost + typeBoost;
+
+      return { ...chunk, rerankScore: compositeScore };
+    });
+
+    scored.sort((a, b) => (b.rerankScore ?? 0) - (a.rerankScore ?? 0));
+
+    const aboveThreshold = scored.filter((c) => (c.rerankScore ?? 0) >= this._relevanceThreshold);
+
+    if (aboveThreshold.length === 0 && this._relevanceThreshold > 0) {
+      Logger.info('[Rerank] All chunks below relevance threshold', {
+        threshold: this._relevanceThreshold,
+        topScore: scored[0]?.rerankScore ?? 0,
+      });
+      return [];
+    }
+
+    const results = (aboveThreshold.length > 0 ? aboveThreshold : scored);
+    return results.map((chunk, idx) => ({ ...chunk, rank: idx + 1 }));
   }
 }
 
-// ─── Default generate stage ──────────────────────────────────────────────────
+// ─── Robust generate stage with multi-provider retry ────────────────────────
 
-class DefaultGenerateStage implements GenerateStage {
+const PROVIDER_MODELS = [
+  { provider: 'openai', model: 'gpt-4o' },
+  { provider: 'openrouter', model: 'moonshotai/kimi-k2.5' },
+  { provider: 'gemini', model: 'gemini-2.0-flash' },
+  { provider: 'xai', model: 'grok-beta' },
+];
+
+class RobustGenerateStage implements GenerateStage {
+  private readonly _ragTemplate: string;
+
+  constructor(ragTemplate?: string) {
+    this._ragTemplate = ragTemplate || DEFAULT_RAG_TEMPLATE;
+  }
+
   async generate(
     query: string,
     context: RankedChunk[],
     options: GenerateOptions,
   ): Promise<GeneratedAnswer> {
     const start = Date.now();
-    const citationStyle = options.citationStyle ?? 'inline';
     const maxTokens = options.maxTokens ?? 1024;
     const temperature = options.temperature ?? 0.2;
+    const citationStyle = options.citationStyle ?? 'inline';
+
+    if (context.length === 0) {
+      const lang = options.language ?? 'en';
+      const noContextMsg = lang === 'es'
+        ? 'No se encontraron documentos relevantes para responder esta consulta. Por favor, intenta reformular tu pregunta o proporciona más contexto.'
+        : 'No relevant documents were found to answer this query. Please try rephrasing your question or providing more context.';
+
+      return {
+        content: noContextMsg,
+        citations: [],
+        tokensUsed: 0,
+        model: 'none',
+        durationMs: Date.now() - start,
+      };
+    }
 
     const contextBlocks = context
-      .map((c, i) => `[${i + 1}] (source: ${c.source})\n${c.content}`)
+      .map((c, i) => {
+        const sanitized = sanitizeRAGContent(c.content);
+        return `[${i + 1}] (source: ${c.source})\n${sanitized}`;
+      })
       .join('\n\n');
 
-    const systemPrompt =
-      citationStyle === 'none'
-        ? 'You are a helpful assistant. Answer the question based on the provided context.'
-        : 'You are a helpful assistant. Answer the question based on the provided context. ' +
-          'When citing, use [N] inline references matching the numbered sources.';
+    const contextLength = contextBlocks.length;
+    const { userPrompt } = buildRAGPrompt(this._ragTemplate, contextBlocks, query);
 
-    const userPrompt = `Context:\n${contextBlocks}\n\nQuestion: ${query}`;
-
-    const response = await llmGateway.chat(
-      [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      { maxTokens, temperature },
-    );
-
-    const citations: Citation[] = context.map((chunk, i) => ({
+    const citations: Citation[] = citationStyle === 'none' ? [] : context.map((chunk) => ({
       chunkId: chunk.id,
       documentId: chunk.documentId,
       source: chunk.source,
       snippet: chunk.content.slice(0, 120),
     }));
 
-    return {
-      content: response.content,
-      citations: citationStyle === 'none' ? [] : citations,
-      tokensUsed: response.usage?.totalTokens ?? 0,
-      model: response.model,
-      durationMs: Date.now() - start,
-    };
+    let lastError: Error | undefined;
+
+    for (const { provider, model } of PROVIDER_MODELS) {
+      try {
+        const response = await llmGateway.chat(
+          [
+            { role: 'system', content: 'You are a helpful assistant that answers questions based on the provided context. Cite sources using [N] notation when relevant.' },
+            { role: 'user', content: userPrompt },
+          ],
+          {
+            maxTokens,
+            temperature,
+            model,
+            provider: provider as any,
+            skipCache: true,
+            enableFallback: false,
+          },
+        );
+
+        const validation = validateLLMResponse(response.content, contextLength);
+
+        if (!validation.isValid) {
+          Logger.warn('[RobustGenerate] Response validation failed, trying next provider', {
+            provider,
+            model,
+            reason: validation.reason,
+          });
+          recordFailedResponse(provider, validation.reason!);
+          continue;
+        }
+
+        return {
+          content: response.content,
+          citations,
+          tokensUsed: response.usage?.totalTokens ?? 0,
+          model: response.model || model,
+          durationMs: Date.now() - start,
+        };
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        Logger.warn('[RobustGenerate] Provider failed', { provider, model, error: lastError.message });
+        recordFailedResponse(provider, `error:${lastError.message.slice(0, 50)}`);
+      }
+    }
+
+    Logger.error('[RobustGenerate] All providers failed', { error: lastError?.message });
+    throw lastError || new Error('All LLM providers failed to generate a valid response');
   }
 }
 
@@ -374,8 +943,6 @@ export class UnifiedRAGPipeline extends EventEmitter {
     this._tracing = config.options?.tracing ?? false;
   }
 
-  // ── Ingest ──────────────────────────────────────────────────────────────────
-
   async ingest(
     doc: RawDocument,
     namespace: string,
@@ -420,8 +987,6 @@ export class UnifiedRAGPipeline extends EventEmitter {
     }
   }
 
-  // ── Batch ingest ────────────────────────────────────────────────────────────
-
   async ingestBatch(
     docs: RawDocument[],
     namespace: string,
@@ -450,8 +1015,6 @@ export class UnifiedRAGPipeline extends EventEmitter {
 
     return { indexed, failed, durationMs: Date.now() - start };
   }
-
-  // ── Query ───────────────────────────────────────────────────────────────────
 
   async query(
     queryText: string,
@@ -517,8 +1080,6 @@ export class UnifiedRAGPipeline extends EventEmitter {
     }
   }
 
-  // ── Private helpers ─────────────────────────────────────────────────────────
-
   private _buildTrace(query: string): PipelineTrace {
     return {
       pipelineId: randomUUID(),
@@ -567,22 +1128,25 @@ export class UnifiedRAGPipeline extends EventEmitter {
     throw lastError;
   }
 
-  // ── Static factory ──────────────────────────────────────────────────────────
-
   static create(overrides?: Partial<PipelineConfig>): UnifiedRAGPipeline {
+    const relevanceThreshold = overrides?.options?.relevanceThreshold ?? 0.0;
+    const ragTemplate = overrides?.options?.ragTemplate;
+
     const defaults: PipelineConfig = {
       preprocess: new DefaultPreprocessStage(),
       chunk: new DefaultChunkStage(),
       embed: new DefaultEmbedStage(),
-      index: new DefaultIndexStage(),
-      retrieve: new DefaultRetrieveStage(),
-      rerank: new DefaultRerankStage(),
-      generate: new DefaultGenerateStage(),
+      index: new PgVectorIndexStage(),
+      retrieve: new PgVectorHybridRetrieveStage(),
+      rerank: new ScoreBasedRerankStage(relevanceThreshold),
+      generate: new RobustGenerateStage(ragTemplate),
       options: {
         tracing: false,
         metricsEnabled: true,
         maxRetries: 2,
         timeoutMs: 30_000,
+        relevanceThreshold,
+        ragTemplate,
       },
     };
 

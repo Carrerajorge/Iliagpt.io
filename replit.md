@@ -53,3 +53,12 @@ The system is designed for scalability, supporting 100M simultaneous users with 
 - **OpenClaw Control UI** (`openclaw@2026.4.2`): Served at `/openclaw-ui` with auto-connect boot script. A `<base href="/openclaw-ui/">` tag is injected so relative asset paths resolve correctly. The boot script calls `applySettings()` with the correct WebSocket URL (`ws://host/openclaw-ws`) and then `connect()` — no manual user interaction required.
 - **WebSocket Gateway**: `server/services/openclawGateway.ts` accepts upgrades at `/openclaw-ws` (primary) and `/openclaw-ui` (fallback). Attached before routes in `server/index.ts`.
 - **Key files**: `server/routes.ts` (`serveControlUiWithAutoConnect`), `server/vite.ts` (SPA fallback exclusions for `/openclaw-ui`, `/openclaw-ws`, `/openclaw-boot`), `client/src/pages/openclaw.tsx` (iframe wrapper).
+
+### RAG Pipeline (Production-Grade)
+- **File**: `server/rag/UnifiedRAGPipeline.ts` — complete production pipeline with 4 stages:
+  1. **PgVectorIndexStage**: Inserts chunks into `rag_chunks` table with content-hash dedup (`ON CONFLICT (user_id, content_hash)`), updates tags/source/metadata on conflict, BM25-enriched `search_vector` with filename/heading/title boosting.
+  2. **PgVectorHybridRetrieveStage**: Hybrid search combining pgvector cosine similarity + PostgreSQL `ts_rank_cd` BM25, fused via Reciprocal Rank Fusion (RRF). Supports `userId`/`tenantId` isolation for multi-tenant security. `hybridAlpha` clamped to [0,1].
+  3. **ScoreBasedRerankStage**: Composite scoring (60% retrieval + 25% term overlap + proximity boost + type boost). Regex-escaped query tokens prevent adversarial injection. Configurable relevance threshold filters low-quality results.
+  4. **RobustGenerateStage**: Multi-provider retry (openai → openrouter/kimi-k2.5 → gemini → xai) with explicit provider/model per attempt, `skipCache: true`, `enableFallback: false`. System prompt included. LLM response validation (empty/refusal/garbage/length checks).
+- **Security**: `sanitizeRAGContent()` strips system tags; `detectPlaceholderInjection()` blocks template injection; `buildRAGPrompt()` validates template has required `[context]`/`[query]` placeholders and enforces max length.
+- **Supporting files**: `server/services/rag/promptContextBuilder.ts` (sanitizes all RAG chunks), `server/services/responseQuality.ts` (per-provider response quality metrics).

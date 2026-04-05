@@ -215,3 +215,49 @@ export function getComprehensiveAnalysis(
     ],
   };
 }
+
+const REFUSAL_PATTERNS_RAG = [
+  /^I('m| am) (sorry|unable|not able),? (but )?(I )?(can't|cannot|am unable)/i,
+  /^(Sorry|Unfortunately),? (I |but )(can't|cannot|am not able|don't have)/i,
+  /^No puedo (ayud|respond|proporcion)/i,
+  /^Lo siento,? (pero )?(no puedo|no tengo)/i,
+  /^I (can't|cannot) (help|assist|answer|respond|provide)/i,
+  /^As an AI,? I (can't|cannot|am unable)/i,
+];
+
+const GARBAGE_PATTERNS_RAG = [
+  /(.{10,})\1{3,}/,
+  /^[^\w\s]{20,}$/,
+  /(\b\w+\b)(\s+\1){5,}/i,
+];
+
+export function isRAGResponseUsable(
+  response: string,
+  contextLength: number,
+): { usable: boolean; reason?: string } {
+  if (!response || response.trim().length === 0) {
+    return { usable: false, reason: 'empty_response' };
+  }
+
+  if (response.trim().length < 5) {
+    return { usable: false, reason: 'too_short' };
+  }
+
+  for (const pat of REFUSAL_PATTERNS_RAG) {
+    if (pat.test(response.trim())) {
+      return { usable: false, reason: 'generic_refusal' };
+    }
+  }
+
+  for (const pat of GARBAGE_PATTERNS_RAG) {
+    if (pat.test(response.trim())) {
+      return { usable: false, reason: 'garbage_content' };
+    }
+  }
+
+  if (contextLength > 500 && response.trim().length < 20) {
+    return { usable: false, reason: 'disproportionately_short' };
+  }
+
+  return { usable: true };
+}
