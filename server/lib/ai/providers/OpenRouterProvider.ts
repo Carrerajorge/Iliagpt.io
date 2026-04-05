@@ -114,6 +114,14 @@ const OPENROUTER_MODELS: IModelInfo[] = [
     latencyScore: 15, reliabilityScore: 0.97, available: true,
     tags: ['xai', 'long-context'],
   },
+  {
+    id: 'moonshotai/kimi-k2.5', provider: 'openrouter', displayName: 'Kimi K2.5 (via OpenRouter)',
+    capabilities: ModelCapability.CHAT | ModelCapability.STREAMING | ModelCapability.FUNCTION_CALLING | ModelCapability.VISION | ModelCapability.CODE | ModelCapability.REASONING,
+    contextWindow: 131_072,
+    pricing: { inputPer1M: 0.60, outputPer1M: 2.40 },
+    latencyScore: 20, reliabilityScore: 0.93, available: true,
+    tags: ['moonshot', 'reasoning', 'vision', 'code'],
+  },
 ];
 
 export class OpenRouterProvider extends OpenAICompatBase {

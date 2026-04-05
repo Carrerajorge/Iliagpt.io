@@ -104,8 +104,9 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
     case "config.get":
       reply(ws, id, {
         models: {
-          default: { provider: "gemini", model: "gemini-2.5-flash-preview-05-20" },
+          default: { provider: "openrouter", model: "moonshotai/kimi-k2.5" },
           providers: {
+            openrouter: { enabled: true },
             gemini: { enabled: true },
             openai: { enabled: true },
             xai: { enabled: true },
@@ -144,6 +145,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
     case "models.list":
       reply(ws, id, {
         models: [
+          { id: "moonshotai/kimi-k2.5", provider: "openrouter", name: "Kimi K2.5", available: true },
           { id: "gemini-2.5-flash-preview-05-20", provider: "gemini", name: "Gemini 2.5 Flash", available: true },
           { id: "gemini-2.5-pro-preview-05-06", provider: "gemini", name: "Gemini 2.5 Pro", available: true },
           { id: "gpt-4o", provider: "openai", name: "GPT-4o", available: true },
@@ -151,7 +153,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
           { id: "claude-sonnet-4-20250514", provider: "anthropic", name: "Claude Sonnet 4", available: true },
           { id: "grok-3-mini-fast", provider: "xai", name: "Grok 3 Mini Fast", available: true },
         ],
-        default: { provider: "gemini", model: "gemini-2.5-flash-preview-05-20" },
+        default: { provider: "openrouter", model: "moonshotai/kimi-k2.5" },
       });
       break;
 
