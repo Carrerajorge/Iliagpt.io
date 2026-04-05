@@ -279,14 +279,37 @@ export function buildRAGPrompt(
 
   const sanitizedContext = sanitizeRAGContent(context);
 
-  if (detectPlaceholderInjection(sanitizedContext, ['[context]', '[query]'])) {
-    Logger.warn('[RAG] Placeholder injection detected in context, stripping placeholders');
-    const cleanContext = sanitizedContext.replace(/\[context\]/g, '[ctx]').replace(/\[query\]/g, '[q]');
-    const rendered = safeTemplate.replace('[context]', cleanContext).replace('[query]', query);
-    return { systemPrompt: '', userPrompt: rendered };
+  const queryPlaceholders: Array<{ uuid: string; original: string }> = [];
+
+  if (sanitizedContext.includes('[query]')) {
+    const uuid = `{{QUERY_${crypto.randomUUID().replace(/-/g, '')}}}`;
+    safeTemplate = safeTemplate.replace('[query]', uuid);
+    queryPlaceholders.push({ uuid, original: '[query]' });
+    Logger.warn('[RAG] Context contains [query] placeholder — using UUID isolation');
   }
 
-  const rendered = safeTemplate.replace('[context]', sanitizedContext).replace('[query]', query);
+  if (sanitizedContext.includes('{{QUERY}}')) {
+    const uuid = `{{QUERY_${crypto.randomUUID().replace(/-/g, '')}}}`;
+    safeTemplate = safeTemplate.replace('{{QUERY}}', uuid);
+    queryPlaceholders.push({ uuid, original: '{{QUERY}}' });
+  }
+
+  if (sanitizedContext.includes('[context]')) {
+    Logger.warn('[RAG] Context contains [context] placeholder — potential injection');
+  }
+
+  let rendered = safeTemplate
+    .replace('[context]', sanitizedContext)
+    .replace('{{CONTEXT}}', sanitizedContext);
+
+  rendered = rendered
+    .replace('[query]', query)
+    .replace('{{QUERY}}', query);
+
+  for (const { uuid } of queryPlaceholders) {
+    rendered = rendered.replace(uuid, query);
+  }
+
   return { systemPrompt: '', userPrompt: rendered };
 }
 

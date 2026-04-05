@@ -904,6 +904,109 @@ class LLMGateway {
     }
   }
 
+  normalizeUsage(usage: LLMResponse["usage"]): { inputTokens: number; outputTokens: number; totalTokens: number } {
+    if (!usage) return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    const inputTokens = usage.promptTokens || 0;
+    const outputTokens = usage.completionTokens || 0;
+    const totalTokens = usage.totalTokens || (inputTokens + outputTokens);
+    return { inputTokens, outputTokens, totalTokens };
+  }
+
+  isResponseComplete(content: string): boolean {
+    if (!content || content.trim().length === 0) return false;
+
+    const trimmed = content.trim();
+
+    if (trimmed.length < 3) return false;
+
+    const codeBlockCount = (trimmed.match(/```/g) || []).length;
+    if (codeBlockCount % 2 !== 0) return false;
+
+    const lastChar = trimmed[trimmed.length - 1];
+    const midSentenceEndings = /[,;:\-–—]$/;
+    if (midSentenceEndings.test(trimmed) && trimmed.length > 20) {
+      return false;
+    }
+
+    const openParens = (trimmed.match(/\(/g) || []).length;
+    const closeParens = (trimmed.match(/\)/g) || []).length;
+    if (openParens > closeParens + 1) return false;
+
+    return true;
+  }
+
+  async guaranteeResponse(
+    messages: ChatCompletionMessageParam[],
+    options: LLMRequestOptions = {},
+  ): Promise<LLMResponse> {
+    const MAX_GUARANTEE_ATTEMPTS = 3;
+    let lastResult: LLMResponse | null = null;
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < MAX_GUARANTEE_ATTEMPTS; attempt++) {
+      try {
+        const attemptOptions: LLMRequestOptions = {
+          ...options,
+          skipCache: attempt > 0,
+          enableFallback: attempt > 0,
+        };
+
+        if (attempt > 0 && options.provider) {
+          delete (attemptOptions as any).provider;
+        }
+
+        const result = await this.chat(messages, attemptOptions);
+        lastResult = result;
+
+        if (!result.content || result.content.trim().length === 0) {
+          console.warn(`[LLMGateway] guaranteeResponse attempt ${attempt + 1}: empty response from ${result.provider}`);
+          continue;
+        }
+
+        const refusalPatterns = [
+          /^I('m| am) (sorry|unable),? (but )?(I )?(can't|cannot)/i,
+          /^(Sorry|Unfortunately),? (I |but )(can't|cannot)/i,
+        ];
+        const isRefusal = refusalPatterns.some(p => p.test(result.content.trim()));
+
+        if (isRefusal && attempt < MAX_GUARANTEE_ATTEMPTS - 1) {
+          console.warn(`[LLMGateway] guaranteeResponse attempt ${attempt + 1}: refusal detected, retrying`);
+          continue;
+        }
+
+        if (!this.isResponseComplete(result.content) && attempt < MAX_GUARANTEE_ATTEMPTS - 1) {
+          console.warn(`[LLMGateway] guaranteeResponse attempt ${attempt + 1}: incomplete response detected, retrying`);
+          continue;
+        }
+
+        return result;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.warn(`[LLMGateway] guaranteeResponse attempt ${attempt + 1} failed: ${lastError.message}`);
+
+        if (attempt < MAX_GUARANTEE_ATTEMPTS - 1) {
+          await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+        }
+      }
+    }
+
+    if (lastResult && lastResult.content && lastResult.content.trim().length > 0) {
+      return lastResult;
+    }
+
+    const requestId = options.requestId || this.generateRequestId();
+    return {
+      content: "I'm currently experiencing issues processing your request. Please try again in a moment.",
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      requestId,
+      latencyMs: 0,
+      model: "fallback",
+      provider: "openai" as LLMProvider,
+      cached: false,
+      fromFallback: true,
+    };
+  }
+
   private async executeWithFallback(
     messages: ChatCompletionMessageParam[],
     options: LLMRequestOptions & { requestId: string; timeout: number },

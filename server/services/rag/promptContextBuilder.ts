@@ -11,6 +11,7 @@ import type { ScoredChunk } from "./hybridRetriever";
 import type { ShortTermMemory, LongTermMemory } from "./memoryService";
 import type { EpisodicSummary, UserMemory } from "@shared/schema/rag";
 import { sanitizeRAGContent } from "../../rag/UnifiedRAGPipeline";
+import crypto from "crypto";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -223,16 +224,34 @@ export function buildPromptContext(
         }
     }
 
-    // RAG chunks with citations
     let ragTokensUsed = 0;
     if (chunks.length > 0) {
         const prefix = citationStyle === "numbered" ? "Fuente" : "Source";
         const chunkLines: string[] = [];
 
-        for (let i = 0; i < chunks.length; i++) {
-            const chunk = chunks[i];
-            const ref = `[${prefix} ${i + 1}${chunk.pageNumber ? `, p.${chunk.pageNumber}` : ""}]`;
-            const line = `${ref}\n${sanitizeRAGContent(chunk.content)}`;
+        const seenHashes = new Set<string>();
+        const dedupedChunks = chunks.filter((chunk) => {
+            const hash = crypto.createHash("sha256").update(chunk.content).digest("hex");
+            if (seenHashes.has(hash)) return false;
+            seenHashes.add(hash);
+            return true;
+        });
+
+        const MIN_RELEVANCE_SCORE = 0.01;
+        const qualityChunks = dedupedChunks.filter((chunk) => {
+            if (!Number.isFinite(chunk.score) || chunk.score < MIN_RELEVANCE_SCORE) return false;
+            if (chunk.content.trim().length < 10) return false;
+            return true;
+        });
+
+        let citationIdx = 0;
+        for (const chunk of qualityChunks) {
+            const sanitized = sanitizeRAGContent(chunk.content);
+            if (sanitized.trim().length < 5) continue;
+
+            citationIdx++;
+            const ref = `[${prefix} ${citationIdx}${chunk.pageNumber ? `, p.${chunk.pageNumber}` : ""}]`;
+            const line = `${ref}\n${sanitized}`;
             const lineTokens = estimateTokens(line);
 
             if (ragTokensUsed + lineTokens > ragBudget) break;

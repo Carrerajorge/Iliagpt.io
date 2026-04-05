@@ -140,32 +140,101 @@ async function* chunkStreamFromChatResponse(
   };
 }
 
+async function* withStreamGuard(
+  source: AsyncIterable<StreamChunkEnvelope>,
+  requestId: string,
+): AsyncGenerator<StreamChunkEnvelope, void, unknown> {
+  let totalContent = "";
+  let chunkCount = 0;
+  const MAX_CHUNK_BYTES = 64 * 1024;
+
+  try {
+    for await (const chunk of source) {
+      chunkCount++;
+
+      const chunkByteLen = chunk.content ? Buffer.byteLength(chunk.content, "utf8") : 0;
+      if (chunkByteLen > MAX_CHUNK_BYTES) {
+        console.warn(`[StreamGuard] Oversized chunk (${chunkByteLen} bytes), truncating`, { requestId });
+        let truncated = chunk.content!;
+        while (Buffer.byteLength(truncated, "utf8") > MAX_CHUNK_BYTES) {
+          truncated = truncated.slice(0, Math.floor(truncated.length * MAX_CHUNK_BYTES / Buffer.byteLength(truncated, "utf8")));
+        }
+        yield { ...chunk, content: truncated };
+        totalContent += truncated;
+      } else {
+        yield chunk;
+        totalContent += chunk.content || "";
+      }
+
+      if (chunk.done) {
+        return;
+      }
+    }
+
+    if (chunkCount === 0 || totalContent.trim().length === 0) {
+      console.warn("[StreamGuard] Stream completed with no content", { requestId, chunkCount });
+      yield { content: "", done: true, provider: undefined };
+    }
+  } catch (err) {
+    console.error("[StreamGuard] Stream error caught", { requestId, error: (err as Error).message, chunkCount });
+    if (totalContent.trim().length > 0) {
+      yield { content: "", done: true, provider: undefined };
+    }
+    throw err;
+  }
+}
+
 async function resolveModelStream(
   messages: any[],
   options: Record<string, unknown>,
 ): Promise<AsyncIterable<StreamChunkEnvelope>> {
-  try {
-    const rawStream = llmGateway.streamChat(messages, options as any);
+  const MAX_STREAM_ATTEMPTS = 2;
+  let lastError: unknown;
 
-    if (isAsyncIterable<StreamChunkEnvelope>(rawStream)) {
-      return rawStream;
-    }
+  for (let attempt = 0; attempt < MAX_STREAM_ATTEMPTS; attempt++) {
+    try {
+      const rawStream = llmGateway.streamChat(messages, options as any);
 
-    const resolved = await Promise.resolve(rawStream);
-    if (isAsyncIterable<StreamChunkEnvelope>(resolved)) {
-      return resolved;
-    }
+      if (isAsyncIterable<StreamChunkEnvelope>(rawStream)) {
+        const requestId = (options as any).requestId || `stream_${Date.now()}`;
+        return withStreamGuard(rawStream, requestId);
+      }
 
-    if (resolved && typeof resolved === "object" && "content" in resolved) {
-      console.warn("[Stream] llmGateway.streamChat returned a non-stream response; converting to single-response stream");
-      return chunkStreamFromChatResponse(resolved as Awaited<ReturnType<typeof llmGateway.chat>>);
+      const resolved = await Promise.resolve(rawStream);
+      if (isAsyncIterable<StreamChunkEnvelope>(resolved)) {
+        const requestId = (options as any).requestId || `stream_${Date.now()}`;
+        return withStreamGuard(resolved, requestId);
+      }
+
+      if (resolved && typeof resolved === "object" && "content" in resolved) {
+        console.warn("[Stream] llmGateway.streamChat returned a non-stream response; converting to single-response stream");
+        return chunkStreamFromChatResponse(resolved as Awaited<ReturnType<typeof llmGateway.chat>>);
+      }
+    } catch (streamError) {
+      lastError = streamError;
+      const errMsg = streamError instanceof Error ? streamError.message : String(streamError);
+      console.warn(`[Stream] Attempt ${attempt + 1}/${MAX_STREAM_ATTEMPTS} failed: ${errMsg}`);
+
+      if (attempt < MAX_STREAM_ATTEMPTS - 1) {
+        const retryOpts = { ...options, enableFallback: true, skipCache: true };
+        if ((options as any).provider) {
+          delete (retryOpts as any).provider;
+        }
+        options = retryOpts;
+        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+        continue;
+      }
     }
-  } catch (streamError) {
-    console.warn("[Stream] llmGateway.streamChat failed before producing a stream; falling back to llmGateway.chat", streamError);
   }
 
-  const fallbackResponse = await llmGateway.chat(messages, options as any);
-  return chunkStreamFromChatResponse(fallbackResponse);
+  try {
+    console.warn("[Stream] All stream attempts failed; falling back to llmGateway.guaranteeResponse");
+    const fallbackResponse = await llmGateway.guaranteeResponse(messages, { ...(options as any), skipCache: true, enableFallback: true });
+    return chunkStreamFromChatResponse(fallbackResponse);
+  } catch (chatError) {
+    console.error("[Stream] Final guaranteeResponse fallback also failed", chatError);
+    throw lastError || chatError;
+  }
 }
 
 function estimateMemoryTokens(messages: ConversationMemoryChatMessage[]): number {

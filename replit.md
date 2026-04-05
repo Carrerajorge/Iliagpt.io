@@ -60,5 +60,15 @@ The system is designed for scalability, supporting 100M simultaneous users with 
   2. **PgVectorHybridRetrieveStage**: Hybrid search combining pgvector cosine similarity + PostgreSQL `ts_rank_cd` BM25, fused via Reciprocal Rank Fusion (RRF). Supports `userId`/`tenantId` isolation for multi-tenant security. `hybridAlpha` clamped to [0,1].
   3. **ScoreBasedRerankStage**: Composite scoring (60% retrieval + 25% term overlap + proximity boost + type boost). Regex-escaped query tokens prevent adversarial injection. Configurable relevance threshold filters low-quality results.
   4. **RobustGenerateStage**: Multi-provider retry (openai → openrouter/kimi-k2.5 → gemini → xai) with explicit provider/model per attempt, `skipCache: true`, `enableFallback: false`. System prompt included. LLM response validation (empty/refusal/garbage/length checks).
-- **Security**: `sanitizeRAGContent()` strips system tags; `detectPlaceholderInjection()` blocks template injection; `buildRAGPrompt()` validates template has required `[context]`/`[query]` placeholders and enforces max length.
-- **Supporting files**: `server/services/rag/promptContextBuilder.ts` (sanitizes all RAG chunks), `server/services/responseQuality.ts` (per-provider response quality metrics).
+- **Security**: `sanitizeRAGContent()` strips system tags; `detectPlaceholderInjection()` blocks template injection; `buildRAGPrompt()` uses UUID-replacement defense (from open-webui) — if context contains `[query]`, the template placeholder is swapped for `{{QUERY_<uuid>}}` before context substitution, preventing hijack. Validates template has required `[context]`/`[query]` placeholders and enforces 5000-char max.
+- **Context Builder** (`server/services/rag/promptContextBuilder.ts`): SHA-256 content-hash dedup, min relevance score (0.01) quality gate, min content length filter, post-sanitize validation, token budget enforcement with priority allocation.
+- **Response Quality**: `server/services/responseQuality.ts` (per-provider response quality metrics).
+
+### Stream Resilience Layer
+- **StreamGuard** (`server/routes/chatAiRouter.ts`): `withStreamGuard()` async generator wraps all streams — 64KB chunk cap with truncation, guaranteed `done` event on empty/error streams, content accumulation tracking.
+- **Retry logic**: `resolveModelStream()` retries up to 2 attempts with provider rotation and backoff before falling back to `llmGateway.chat()`.
+
+### LLM Response Guarantee Layer
+- **`guaranteeResponse()`** (`server/lib/llmGateway.ts`): 3-attempt retry with provider rotation on each attempt, refusal pattern detection (retries on "I'm sorry, I can't..."), graceful degradation message on total failure.
+- **`normalizeUsage()`**: Consistent `{inputTokens, outputTokens, totalTokens}` from any provider's usage format.
+- **`isResponseComplete()`**: Detects truncated responses — unclosed code blocks, mid-sentence endings, unbalanced parentheses.
