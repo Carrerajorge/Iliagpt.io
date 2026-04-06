@@ -564,6 +564,30 @@ const BUILTIN_SKILLS: Array<{ slug: string; spec: SkillSpec }> = [
 ];
 
 const SKILL_MATCH_THRESHOLD = 0.28;
+const SKILL_EXPLICIT_REFERENCE_BOOST = 0.995;
+const OUTPUT_FORMAT_ALIASES: Record<string, string[]> = {
+  docx: ["docx", "word", "documento", "document", "informe", "report"],
+  pdf: ["pdf", "portable", "document", "documento"],
+  pptx: ["ppt", "pptx", "powerpoint", "slides", "presentacion", "presentation", "diapositivas"],
+  xlsx: ["xlsx", "excel", "spreadsheet", "sheet", "tabla", "hoja", "calculo"],
+  csv: ["csv", "comma", "table", "tabular", "datos"],
+};
+const INTENT_HINT_ALIASES: Record<string, string[]> = {
+  create_document: ["documento", "document", "word", "docx", "reporte", "report", "pdf"],
+  create_presentation: ["presentacion", "presentation", "slides", "powerpoint", "ppt", "pptx", "diapositivas"],
+  create_spreadsheet: ["excel", "xlsx", "spreadsheet", "tabla", "datos", "csv"],
+  summarize: ["resumen", "summary", "resumir", "summarize", "sintesis"],
+  translate: ["traducir", "translate", "idioma", "language"],
+  search_web: ["buscar", "search", "web", "internet", "research", "investigar"],
+  analyze_document: ["analizar", "analyze", "documento", "archivo", "file", "pdf", "docx", "xlsx"],
+};
+const SKILL_CATEGORY_ALIASES: Record<string, string[]> = {
+  general: ["general"],
+  documents: ["document", "documents", "documento", "pdf", "word", "ppt", "presentation", "slides"],
+  data: ["data", "datos", "excel", "xlsx", "csv", "analytics", "analysis", "tabla"],
+  integrations: ["integration", "integrations", "gmail", "calendar", "slack", "notion", "drive", "web"],
+  custom: ["custom", "personalized", "personalizado"],
+};
 const MAX_WORKFLOW_STEPS = 12;
 const MAX_AUTO_WORKFLOW_STEPS = 4;
 const SKILL_SCOPE_SET = new Set<SkillScope>([
@@ -931,6 +955,130 @@ function computeJaccardSimilarity(a: string[], b: string[]): number {
     if (setB.has(token)) intersection++;
   }
   return intersection / (setA.size + setB.size - intersection);
+}
+
+function computeTokenCoverage(targetTokens: string[], corpusTokens: string[]): number {
+  if (targetTokens.length === 0 || corpusTokens.length === 0) return 0;
+  const corpus = new Set(corpusTokens);
+  const target = Array.from(new Set(targetTokens));
+  let matches = 0;
+  for (const token of target) {
+    if (corpus.has(token)) matches += 1;
+  }
+  return matches / target.length;
+}
+
+function parseExplicitSkillReference(input: string): { raw: string; name: string; normalizedName: string; stripped: string } | null {
+  const trimmed = input.trimStart();
+  if (!trimmed.startsWith("@")) return null;
+
+  const braceMatch = trimmed.match(/^@\{([^}]{1,64})\}/);
+  if (braceMatch) {
+    const raw = braceMatch[0];
+    const name = braceMatch[1].trim();
+    return {
+      raw,
+      name,
+      normalizedName: normalizeText(name),
+      stripped: trimmed.slice(raw.length).trim(),
+    };
+  }
+
+  const tokenMatch = trimmed.match(/^@([^\s]{1,64})/);
+  if (tokenMatch) {
+    const raw = tokenMatch[0];
+    const name = tokenMatch[1].trim();
+    return {
+      raw,
+      name,
+      normalizedName: normalizeText(name),
+      stripped: trimmed.slice(raw.length).trim(),
+    };
+  }
+
+  return null;
+}
+
+function getOutputFormatTokens(outputFormat?: string | null): string[] {
+  if (!outputFormat) return [];
+  const normalized = normalizeText(outputFormat).replace(/\s+/g, "");
+  return OUTPUT_FORMAT_ALIASES[normalized] || tokenize(outputFormat);
+}
+
+function getIntentHintTokens(intent?: string | null): string[] {
+  if (!intent) return [];
+  const normalized = normalizeText(intent).replace(/\s+/g, "_");
+  return INTENT_HINT_ALIASES[normalized] || tokenize(intent);
+}
+
+function getCategoryTokens(category?: string | null): string[] {
+  if (!category) return [];
+  const normalized = normalizeText(category).replace(/\s+/g, "_");
+  return SKILL_CATEGORY_ALIASES[normalized] || tokenize(category);
+}
+
+function inferRequestedCategories(
+  request: SkillExecutionRequest,
+  outputTokens: string[],
+  attachmentTokens: string[]
+): string[] {
+  const categories = new Set<string>();
+  const intent = normalizeText(request.intentHint?.intent || "").replace(/\s+/g, "_");
+  const outputFormat = normalizeText(request.intentHint?.output_format || "").replace(/\s+/g, "");
+  const aggregate = new Set<string>([...outputTokens, ...attachmentTokens]);
+
+  if (intent === "create_spreadsheet" || outputFormat === "xlsx" || outputFormat === "csv") {
+    categories.add("data");
+  }
+  if (
+    intent === "create_document" ||
+    intent === "create_presentation" ||
+    intent === "analyze_document" ||
+    outputFormat === "docx" ||
+    outputFormat === "pdf" ||
+    outputFormat === "pptx"
+  ) {
+    categories.add("documents");
+  }
+  if (intent === "search_web") {
+    categories.add("integrations");
+  }
+  if (aggregate.has("xlsx") || aggregate.has("excel") || aggregate.has("csv")) {
+    categories.add("data");
+  }
+  if (
+    aggregate.has("pdf") ||
+    aggregate.has("docx") ||
+    aggregate.has("word") ||
+    aggregate.has("pptx") ||
+    aggregate.has("powerpoint")
+  ) {
+    categories.add("documents");
+  }
+
+  return Array.from(categories);
+}
+
+function getAttachmentSignalTokens(attachments: SkillExecutionAttachment[] | undefined): string[] {
+  const tokens = new Set<string>();
+  for (const attachment of attachments || []) {
+    for (const token of tokenize(attachment.name || "")) {
+      tokens.add(token);
+    }
+    for (const token of tokenize((attachment.mimeType || "").replace(/[/.+-]/g, " "))) {
+      tokens.add(token);
+    }
+
+    const ext = (attachment.name || "").toLowerCase().match(/\.([a-z0-9]{2,8})$/)?.[1];
+    if (ext) {
+      tokens.add(ext);
+      for (const alias of OUTPUT_FORMAT_ALIASES[ext] || []) {
+        tokens.add(alias);
+      }
+    }
+  }
+
+  return Array.from(tokens);
 }
 
 function safeStringify(value: unknown): string {
@@ -1507,9 +1655,14 @@ export class SkillPlatformService {
     }
   }
 
-  private computeIntentFromHint(hint?: SkillExecutionRequest["intentHint"]): string | null {
-    if (!hint?.intent) return null;
-    return normalizeText(hint.intent);
+  private buildMatchReason(parts: Array<[string, number]>): string {
+    const meaningful = parts
+      .filter(([, score]) => score > 0.01)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([label, score]) => `${label} ${(score * 100).toFixed(0)}%`);
+
+    return meaningful.length > 0 ? meaningful.join(" · ") : "heuristic_match";
   }
 
   private async withServiceSpan<T>(
@@ -2934,30 +3087,115 @@ export class SkillPlatformService {
   }
 
   private matchSkills(request: SkillExecutionRequest, input: string): ExecutionPlanMatch[] {
-    const textTokens = tokenize(input);
-    const intentToken = this.computeIntentFromHint(request.intentHint);
+    const explicitReference = parseExplicitSkillReference(input);
+    const strippedInput = explicitReference?.stripped || input;
+    const textTokens = tokenize(strippedInput);
+    const intentTokens = getIntentHintTokens(request.intentHint?.intent);
+    const outputTokens = getOutputFormatTokens(request.intentHint?.output_format);
+    const attachmentTokens = getAttachmentSignalTokens(request.attachments);
+    const requestedCategories = inferRequestedCategories(request, outputTokens, attachmentTokens);
     const matches: ExecutionPlanMatch[] = [];
-    const target = new Set(textTokens.concat(intentToken ? intentToken.split(" ") : []));
+    const target = new Set([
+      ...textTokens,
+      ...intentTokens,
+      ...outputTokens,
+      ...attachmentTokens,
+    ]);
+
+    if (explicitReference?.normalizedName) {
+      for (const skill of this.skillsBySlug.values()) {
+        if (skill.status !== "active" || !skill.spec) continue;
+        const normalizedName = normalizeText(skill.name);
+        const normalizedSlug = normalizeText(skill.slug.replace(/[_-]+/g, " "));
+        if (
+          normalizedName === explicitReference.normalizedName ||
+          normalizedSlug === explicitReference.normalizedName
+        ) {
+          return [{
+            skill,
+            score: SKILL_EXPLICIT_REFERENCE_BOOST,
+            reason: `explicit_skill_reference ${explicitReference.name}`,
+          }];
+        }
+      }
+    }
 
     for (const skill of this.skillsBySlug.values()) {
       if (skill.status !== "active") continue;
       if (!skill.spec) continue;
-      const corpus = [
+      const corpusParts = [
         skill.slug,
         skill.name,
         skill.description,
+        skill.category,
         ...(skill.spec.tags || []),
         ...(skill.spec.examples || []),
-      ]
-        .filter(Boolean)
-        .join(" ");
-      const similarity = computeJaccardSimilarity(Array.from(target), tokenize(corpus));
-      const confidence = Math.min(0.99, similarity + (skill.spec.permissions.includes("storage.read") ? 0.02 : 0));
+      ];
+      const corpus = corpusParts.filter(Boolean).join(" ");
+      const corpusTokens = tokenize(corpus);
+      const tagTokens = tokenize((skill.spec.tags || []).join(" "));
+      const exampleTokens = tokenize((skill.spec.examples || []).join(" "));
+      const categoryTokens = getCategoryTokens(skill.category);
+      const normalizedName = normalizeText(skill.name);
+      const normalizedSlug = normalizeText(skill.slug.replace(/[_-]+/g, " "));
+      const normalizedInput = normalizeText(strippedInput);
+
+      const lexicalScore = computeJaccardSimilarity(Array.from(target), corpusTokens);
+      const tagScore = computeJaccardSimilarity(textTokens, tagTokens);
+      const exampleScore = computeJaccardSimilarity(textTokens, exampleTokens);
+      const intentScore = computeTokenCoverage(intentTokens, corpusTokens);
+      const formatScore = computeTokenCoverage(outputTokens, corpusTokens);
+      const attachmentScore = computeTokenCoverage(attachmentTokens, corpusTokens);
+      const categoryScore =
+        requestedCategories.includes(normalizeText(skill.category).replace(/\s+/g, "_"))
+          ? 1
+          : computeTokenCoverage(requestedCategories, categoryTokens);
+
+      let exactScore = 0;
+      if (normalizedInput && (normalizedInput === normalizedName || normalizedInput === normalizedSlug)) {
+        exactScore = 1;
+      } else if (
+        normalizedInput &&
+        (
+          normalizedInput.includes(normalizedName) ||
+          normalizedInput.includes(normalizedSlug) ||
+          normalizedName.includes(normalizedInput) ||
+          normalizedSlug.includes(normalizedInput)
+        )
+      ) {
+        exactScore = 0.65;
+      }
+
+      const attachmentPermissionBoost =
+        attachmentTokens.length > 0 && (skill.spec.permissions || []).includes("storage.read") ? 0.04 : 0;
+      const confidence = Math.min(
+        0.99,
+        Number((
+          (lexicalScore * 0.40) +
+          (tagScore * 0.14) +
+          (exampleScore * 0.08) +
+          (intentScore * 0.18) +
+          (formatScore * 0.18) +
+          (attachmentScore * 0.16) +
+          (categoryScore * 0.10) +
+          (exactScore * 0.25) +
+          attachmentPermissionBoost
+        ).toFixed(4))
+      );
       if (confidence >= SKILL_MATCH_THRESHOLD) {
         matches.push({
           skill,
-          score: Number(confidence.toFixed(4)),
-          reason: `Token overlap ${(similarity * 100).toFixed(1)}%`,
+          score: confidence,
+          reason: this.buildMatchReason([
+            ["lexical", lexicalScore],
+            ["tags", tagScore],
+            ["examples", exampleScore],
+            ["intent", intentScore],
+            ["format", formatScore],
+            ["attachment", attachmentScore],
+            ["category", categoryScore],
+            ["exact", exactScore],
+          ]),
         });
       }
     }

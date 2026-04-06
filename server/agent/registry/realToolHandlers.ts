@@ -2,6 +2,7 @@ import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 import crypto from "crypto";
+import { EnterpriseDocumentService, type DocumentSection as EnterpriseDocumentSection } from "../../services/enterpriseDocumentService";
 
 const ARTIFACTS_DIR = path.join(process.cwd(), "artifacts");
 
@@ -17,6 +18,69 @@ export interface RealToolResult {
   message: string;
   artifacts?: string[];
   validationPassed: boolean;
+}
+
+function buildDocumentSectionsFromContent(title: string, content: string): EnterpriseDocumentSection[] {
+  const normalized = String(content || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [{
+      id: "section-1",
+      title: "Contenido",
+      content: title,
+      level: 1,
+    }];
+  }
+
+  const headingRe = /^(#{1,3})\s+(.+)$/;
+  const lines = normalized.split("\n");
+  const sections: EnterpriseDocumentSection[] = [];
+  let currentSection: EnterpriseDocumentSection | null = null;
+
+  const flushCurrentSection = () => {
+    if (!currentSection) return;
+    currentSection.content = currentSection.content.trim() || "Contenido generado automáticamente.";
+    sections.push(currentSection);
+    currentSection = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const headingMatch = line.match(headingRe);
+
+    if (headingMatch) {
+      flushCurrentSection();
+      const hashes = headingMatch[1].length;
+      currentSection = {
+        id: `section-${sections.length + 1}`,
+        title: headingMatch[2].trim(),
+        content: "",
+        level: hashes === 1 ? 1 : hashes === 2 ? 2 : 3,
+      };
+      continue;
+    }
+
+    if (!currentSection) {
+      currentSection = {
+        id: `section-${sections.length + 1}`,
+        title: "Contenido",
+        content: "",
+        level: 1,
+      };
+    }
+
+    currentSection.content += `${line}\n`;
+  }
+
+  flushCurrentSection();
+
+  return sections.length > 0
+    ? sections
+    : [{
+        id: "section-1",
+        title: "Contenido",
+        content: normalized,
+        level: 1,
+      }];
 }
 
 export async function realWebSearch(input: { query: string; maxResults?: number }): Promise<RealToolResult> {
@@ -150,17 +214,45 @@ export async function realDocumentCreate(input: { title: string; content: string
   try {
     ensureArtifactsDir();
     const sanitizedTitle = title.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 50);
-    const filename = `${sanitizedTitle}_${Date.now()}.${type === "docx" ? "txt" : type}`;
+    const filename = `${sanitizedTitle}_${Date.now()}.${type}`;
     const filePath = path.join(ARTIFACTS_DIR, filename);
 
-    let fileContent = content;
-    if (type === "md") {
-      fileContent = `# ${title}\n\n${content}`;
-    } else if (type === "txt") {
-      fileContent = `${title}\n${"=".repeat(title.length)}\n\n${content}`;
-    }
+    let mimeType = "text/plain";
 
-    fs.writeFileSync(filePath, fileContent, "utf-8");
+    if (type === "docx" || type === "pdf") {
+      const documentService = EnterpriseDocumentService.create("professional");
+      const sections = buildDocumentSectionsFromContent(title, content);
+      const documentResult = await documentService.generateDocument({
+        type: type === "docx" ? "docx" : "pdf",
+        title,
+        author: "ILIAGPT AI",
+        sections,
+        options: {
+          includeTableOfContents: sections.length > 1,
+          includePageNumbers: true,
+          includeHeader: true,
+          includeFooter: true,
+        },
+      });
+
+      if (!documentResult.success || !documentResult.buffer) {
+        throw new Error(documentResult.error || `Unable to generate ${type.toUpperCase()} document`);
+      }
+
+      mimeType = documentResult.mimeType;
+      fs.writeFileSync(filePath, documentResult.buffer);
+    } else {
+      let fileContent = content;
+      if (type === "md") {
+        mimeType = "text/markdown";
+        fileContent = `# ${title}\n\n${content}`;
+      } else if (type === "txt") {
+        mimeType = "text/plain";
+        fileContent = `${title}\n${"=".repeat(title.length)}\n\n${content}`;
+      }
+
+      fs.writeFileSync(filePath, fileContent, "utf-8");
+    }
 
     const stats = fs.statSync(filePath);
     const isValid = fs.existsSync(filePath) && stats.size > 0;
@@ -172,6 +264,7 @@ export async function realDocumentCreate(input: { title: string; content: string
         title,
         type,
         filePath,
+        mimeType,
         fileSize: stats.size,
         created: new Date().toISOString(),
       },
@@ -202,47 +295,25 @@ export async function realPdfGenerate(input: { title: string; content: string; o
       fs.mkdirSync(dir, { recursive: true });
     }
 
-    const pdfContent = `%PDF-1.4
-1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
-endobj
-2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
-endobj
-3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
-endobj
-4 0 obj
-<< /Length 200 >>
-stream
-BT
-/F1 24 Tf
-50 700 Td
-(${title}) Tj
-0 -40 Td
-/F1 12 Tf
-(${content.slice(0, 200).replace(/[()\\]/g, "\\$&")}) Tj
-ET
-endstream
-endobj
-5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
-endobj
-xref
-0 6
-0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000266 00000 n 
-0000000518 00000 n 
-trailer
-<< /Size 6 /Root 1 0 R >>
-startxref
-595
-%%EOF`;
+    const documentService = EnterpriseDocumentService.create("professional");
+    const sections = buildDocumentSectionsFromContent(title, content);
+    const pdfResult = await documentService.generateDocument({
+      type: "pdf",
+      title,
+      author: "ILIAGPT AI",
+      sections,
+      options: {
+        includePageNumbers: true,
+        includeHeader: true,
+        includeFooter: true,
+      },
+    });
 
-    fs.writeFileSync(filename, pdfContent);
+    if (!pdfResult.success || !pdfResult.buffer) {
+      throw new Error(pdfResult.error || "Unable to generate PDF");
+    }
+
+    fs.writeFileSync(filename, pdfResult.buffer);
 
     const stats = fs.statSync(filename);
     const isValid = fs.existsSync(filename) && stats.size > 100;
@@ -253,6 +324,7 @@ startxref
         pdfId: crypto.randomUUID(),
         title,
         filePath: filename,
+        mimeType: "application/pdf",
         fileSize: stats.size,
         pageCount: 1,
         created: new Date().toISOString(),

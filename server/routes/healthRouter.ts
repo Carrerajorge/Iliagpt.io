@@ -6,7 +6,7 @@
  *   GET /api/health/detailed — per-subsystem status with diagnostics
  *   GET /api/health/ready    — Kubernetes readiness probe
  *   GET /api/health/live     — Kubernetes liveness probe
- *   GET /api/health/metrics  — Prometheus metrics for DB pool
+ *   GET /api/health/metrics  — Prometheus metrics for DB + LLM gateway
  *
  * Status levels:
  *   "healthy"   — all checked systems responding normally
@@ -23,6 +23,7 @@ import os from "os";
 import pino from "pino";
 import { getHealthStatus, isHealthy, getDbMetricsText } from "../db.js";
 import { getTaskScheduler } from "../agentic/TaskScheduler.js";
+import { getLlmGatewayMetricsText } from "../lib/llmGatewayMetrics";
 
 const logger = pino({ name: "HealthRouter" });
 
@@ -410,12 +411,16 @@ healthRouter.get("/live", (req, res) => {
   });
 });
 
-/** GET /api/health/metrics — Prometheus-format DB metrics */
+/** GET /api/health/metrics — Prometheus-format DB + LLM gateway metrics */
 healthRouter.get("/metrics", async (req, res) => {
   try {
-    const metricsText = await getDbMetricsText();
+    const [dbMetricsText, llmMetricsText] = await Promise.all([
+      getDbMetricsText(),
+      getLlmGatewayMetricsText(),
+    ]);
+    const metricsText = [dbMetricsText.trim(), llmMetricsText.trim()].filter(Boolean).join("\n\n");
     res.setHeader("Content-Type", "text/plain; version=0.0.4");
-    res.send(metricsText);
+    res.send(`${metricsText}\n`);
   } catch (err) {
     res.status(500).json({ error: "Metrics unavailable", message: (err as Error).message });
   }

@@ -10,6 +10,7 @@ import {
   parseExcelFromText,
   parseSlidesFromText,
 } from "../services/documentGeneration";
+import { EnterpriseDocumentService, type DocumentSection as EnterpriseDocumentSection } from "../services/enterpriseDocumentService";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
@@ -1532,15 +1533,78 @@ const browseUrlTool: ToolDefinition = {
   },
 };
 
+function buildDocumentSectionsFromText(title: string, content: string): EnterpriseDocumentSection[] {
+  const normalized = String(content || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [{
+      id: "section-1",
+      title: "Contenido",
+      content: title,
+      level: 1,
+    }];
+  }
+
+  const headingRe = /^(#{1,3})\s+(.+)$/;
+  const lines = normalized.split("\n");
+  const sections: EnterpriseDocumentSection[] = [];
+  let currentSection: EnterpriseDocumentSection | null = null;
+
+  const flushCurrentSection = () => {
+    if (!currentSection) return;
+    currentSection.content = currentSection.content.trim() || "Contenido generado automáticamente.";
+    sections.push(currentSection);
+    currentSection = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const headingMatch = line.match(headingRe);
+
+    if (headingMatch) {
+      flushCurrentSection();
+      const level = Math.min(3, headingMatch[1].length) as 1 | 2 | 3;
+      currentSection = {
+        id: `section-${sections.length + 1}`,
+        title: headingMatch[2].trim(),
+        content: "",
+        level,
+      };
+      continue;
+    }
+
+    if (!currentSection) {
+      currentSection = {
+        id: `section-${sections.length + 1}`,
+        title: "Contenido",
+        content: "",
+        level: 1,
+      };
+    }
+
+    currentSection.content += `${line}\n`;
+  }
+
+  flushCurrentSection();
+
+  return sections.length > 0
+    ? sections
+    : [{
+        id: "section-1",
+        title: "Contenido",
+        content: normalized,
+        level: 1,
+      }];
+}
+
 const generateDocumentSchema = z.object({
-  type: z.enum(["word", "excel", "ppt", "csv"]).describe("Type of document to generate"),
+  type: z.enum(["word", "excel", "ppt", "csv", "pdf"]).describe("Type of document to generate"),
   title: z.string().describe("Document title"),
   content: z.string().describe("Document content (text for Word, data for Excel/CSV, slide structure for PPT)"),
 });
 
 const generateDocumentTool: ToolDefinition = {
   name: "generate_document",
-  description: "Generate Office documents (Word, Excel, PowerPoint, CSV). For Word: provide markdown/text content. For Excel/CSV: provide tabular data (rows separated by newlines, columns by tabs or commas). For PowerPoint: provide slide content.",
+  description: "Generate Office documents (Word, Excel, PowerPoint, PDF, CSV). For Word/PDF: provide markdown/text content. For Excel/CSV: provide tabular data (rows separated by newlines, columns by tabs or commas). For PowerPoint: provide slide content.",
   inputSchema: generateDocumentSchema,
   capabilities: ["produces_artifacts", "writes_files"],
   execute: async (input, context): Promise<ToolResult> => {
@@ -1600,6 +1664,30 @@ const generateDocumentTool: ToolDefinition = {
           break;
         }
 
+        case "pdf": {
+          const documentService = EnterpriseDocumentService.create("professional");
+          const pdfResult = await documentService.generateDocument({
+            type: "pdf",
+            title: input.title,
+            author: "ILIAGPT AI",
+            sections: buildDocumentSectionsFromText(input.title, input.content),
+            options: {
+              includePageNumbers: true,
+              includeHeader: true,
+              includeFooter: true,
+            },
+          });
+
+          if (!pdfResult.success || !pdfResult.buffer) {
+            throw new Error(pdfResult.error || "PDF generation failed");
+          }
+
+          buffer = pdfResult.buffer;
+          mimeType = "application/pdf";
+          extension = "pdf";
+          break;
+        }
+
         default:
           throw new Error(`Unsupported document type: ${input.type}`);
       }
@@ -1630,7 +1718,14 @@ const generateDocumentTool: ToolDefinition = {
         });
 
         const ext = extension;
-        const fileType = input.type === "word" ? "document" : input.type === "excel" ? "spreadsheet" : input.type === "ppt" ? "presentation" : "other";
+        const fileType =
+          input.type === "word" || input.type === "pdf"
+            ? "document"
+            : input.type === "excel"
+              ? "spreadsheet"
+              : input.type === "ppt"
+                ? "presentation"
+                : "other";
 
         const saved = await libraryService.saveFileMetadata(context.userId, upload.objectPath, {
           name: filename,

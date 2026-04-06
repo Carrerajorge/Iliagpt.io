@@ -18,6 +18,19 @@ export interface PlanLimits {
   model: string;
 }
 
+export interface DailyTokenQuotaStatus {
+  allowed: boolean;
+  resetAt: Date | null;
+  inputUsed: number;
+  outputUsed: number;
+  totalUsed: number;
+  inputLimit: number | null;
+  outputLimit: number | null;
+  inputRemaining: number | null;
+  outputRemaining: number | null;
+  message?: string;
+}
+
 const PLAN_LIMITS: Record<string, PlanLimits> = {
   free: { dailyRequests: 3, model: "grok-4-1-fast-non-reasoning" },
   go: { dailyRequests: 50, model: "grok-4-1-fast-non-reasoning" },
@@ -108,6 +121,10 @@ function getNextMidnight(): Date {
   tomorrow.setDate(tomorrow.getDate() + 1);
   tomorrow.setHours(0, 0, 0, 0);
   return tomorrow;
+}
+
+function normalizeTokenLimit(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 export class UsageQuotaService {
@@ -261,6 +278,95 @@ export class UsageQuotaService {
       .where(eq(users.id, userId));
   }
 
+  async getDailyTokenQuotaStatus(userId: string, estimatedInputTokens = 0): Promise<DailyTokenQuotaStatus> {
+    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+
+    if (!user) {
+      return {
+        allowed: false,
+        resetAt: null,
+        inputUsed: 0,
+        outputUsed: 0,
+        totalUsed: 0,
+        inputLimit: null,
+        outputLimit: null,
+        inputRemaining: null,
+        outputRemaining: null,
+        message: "Usuario no encontrado",
+      };
+    }
+
+    const now = new Date();
+    const nextReset = getNextMidnight();
+    let resetAt = user.dailyTokenUsageResetAt ?? null;
+    let inputUsed = user.dailyInputTokensUsed ?? 0;
+    let outputUsed = user.dailyOutputTokensUsed ?? 0;
+
+    if (!resetAt || now.getTime() >= resetAt.getTime()) {
+      await db
+        .update(users)
+        .set({
+          dailyInputTokensUsed: 0,
+          dailyOutputTokensUsed: 0,
+          dailyTokenUsageResetAt: nextReset,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, userId));
+
+      resetAt = nextReset;
+      inputUsed = 0;
+      outputUsed = 0;
+    }
+
+    const inputLimit = normalizeTokenLimit(user.dailyInputTokensLimit);
+    const outputLimit = normalizeTokenLimit(user.dailyOutputTokensLimit);
+    const inputRemaining = inputLimit === null ? null : Math.max(0, inputLimit - inputUsed);
+    const outputRemaining = outputLimit === null ? null : Math.max(0, outputLimit - outputUsed);
+    const totalUsed = inputUsed + outputUsed;
+
+    if (inputLimit !== null && estimatedInputTokens > inputRemaining) {
+      return {
+        allowed: false,
+        resetAt,
+        inputUsed,
+        outputUsed,
+        totalUsed,
+        inputLimit,
+        outputLimit,
+        inputRemaining,
+        outputRemaining,
+        message: "El usuario alcanzó su límite diario de tokens de entrada.",
+      };
+    }
+
+    if (outputLimit !== null && outputRemaining <= 0) {
+      return {
+        allowed: false,
+        resetAt,
+        inputUsed,
+        outputUsed,
+        totalUsed,
+        inputLimit,
+        outputLimit,
+        inputRemaining,
+        outputRemaining,
+        message: "El usuario alcanzó su límite diario de tokens de salida.",
+      };
+    }
+
+    return {
+      allowed: true,
+      resetAt,
+      inputUsed,
+      outputUsed,
+      totalUsed,
+      inputLimit,
+      outputLimit,
+      inputRemaining,
+      outputRemaining,
+    };
+  }
+
   async hasTokenQuota(userId: string): Promise<boolean> {
     const [user] = await db.select().from(users).where(eq(users.id, userId));
     if (!user) return false;
@@ -356,6 +462,113 @@ export class UsageQuotaService {
       const monthlyUsedBefore = Math.max(0, monthlyUsedAfter - tokens);
 
       // Charge only the portion of *this call* that exceeded the monthly allowance.
+      let overageToCharge = 0;
+      if (limitTokens !== null) {
+        const overAfter = Math.max(0, monthlyUsedAfter - limitTokens);
+        const overBefore = Math.max(0, monthlyUsedBefore - limitTokens);
+        overageToCharge = Math.max(0, overAfter - overBefore);
+      }
+
+      if (overageToCharge <= 0) return;
+
+      let remainingToCharge = overageToCharge;
+      let charged = 0;
+
+      const grants = await tx
+        .select({
+          id: billingCreditGrants.id,
+          creditsRemaining: billingCreditGrants.creditsRemaining,
+        })
+        .from(billingCreditGrants)
+        .where(
+          and(
+            eq(billingCreditGrants.userId, userId),
+            gt(billingCreditGrants.creditsRemaining, 0),
+            gt(billingCreditGrants.expiresAt, now)
+          )
+        )
+        .orderBy(asc(billingCreditGrants.expiresAt), asc(billingCreditGrants.createdAt));
+
+      for (const grant of grants) {
+        if (remainingToCharge <= 0) break;
+        const remaining = typeof grant.creditsRemaining === "number" ? grant.creditsRemaining : Number(grant.creditsRemaining || 0);
+        if (!Number.isFinite(remaining) || remaining <= 0) continue;
+
+        const take = Math.min(remaining, remainingToCharge);
+        await tx
+          .update(billingCreditGrants)
+          .set({ creditsRemaining: Math.max(0, remaining - take) })
+          .where(eq(billingCreditGrants.id, grant.id));
+
+        remainingToCharge -= take;
+        charged += take;
+      }
+
+      if (charged > 0) {
+        await tx
+          .update(users)
+          .set({
+            creditsBalance: sql<number>`GREATEST(COALESCE(${users.creditsBalance}, 0) - ${charged}, 0)`,
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, userId));
+      }
+    });
+  }
+
+  async recordTokenUsageDetailed(userId: string, inputTokens: number, outputTokens: number): Promise<void> {
+    const normalizedInput = Math.max(0, Math.round(Number.isFinite(inputTokens) ? inputTokens : 0));
+    const normalizedOutput = Math.max(0, Math.round(Number.isFinite(outputTokens) ? outputTokens : 0));
+    const totalTokens = normalizedInput + normalizedOutput;
+
+    if (totalTokens <= 0) return;
+
+    await db.transaction(async (tx) => {
+      const [user] = await tx.select().from(users).where(eq(users.id, userId)).limit(1);
+      if (!user) return;
+
+      const isAdmin = isSystemAdminUser(user);
+      const planKey = getEffectivePlanKey(user, isAdmin);
+      const limitTokens = getMonthlyTokenLimitTokens(user, planKey);
+      const now = new Date();
+      const cycleEnd = getCurrentCycleEnd(user, now);
+      const nextReset = getNextMidnight();
+
+      const usageUpdate = await tx.execute(sql`
+        UPDATE users
+        SET
+          tokens_consumed = COALESCE(tokens_consumed, 0) + ${totalTokens},
+          monthly_tokens_used = CASE
+            WHEN tokens_reset_at IS NULL OR NOW() >= tokens_reset_at
+            THEN ${totalTokens}
+            ELSE COALESCE(monthly_tokens_used, 0) + ${totalTokens}
+          END,
+          daily_input_tokens_used = CASE
+            WHEN daily_token_usage_reset_at IS NULL OR NOW() >= daily_token_usage_reset_at
+            THEN ${normalizedInput}
+            ELSE COALESCE(daily_input_tokens_used, 0) + ${normalizedInput}
+          END,
+          daily_output_tokens_used = CASE
+            WHEN daily_token_usage_reset_at IS NULL OR NOW() >= daily_token_usage_reset_at
+            THEN ${normalizedOutput}
+            ELSE COALESCE(daily_output_tokens_used, 0) + ${normalizedOutput}
+          END,
+          daily_token_usage_reset_at = CASE
+            WHEN daily_token_usage_reset_at IS NULL OR NOW() >= daily_token_usage_reset_at
+            THEN ${nextReset}
+            ELSE daily_token_usage_reset_at
+          END,
+          tokens_reset_at = ${cycleEnd},
+          updated_at = NOW()
+        WHERE id = ${userId}
+        RETURNING monthly_tokens_used as monthly_used
+      `);
+
+      if (!usageUpdate?.rows?.length) return;
+
+      const monthlyUsedAfter = Number((usageUpdate.rows[0] as any)?.monthly_used || 0);
+      const monthlyUsedBefore = Math.max(0, monthlyUsedAfter - totalTokens);
+
       let overageToCharge = 0;
       if (limitTokens !== null) {
         const overAfter = Math.max(0, monthlyUsedAfter - limitTokens);

@@ -4,6 +4,8 @@ import { createHttpTestClient } from "../../tests/helpers/httpTestClient";
 
 const chatMock = vi.fn();
 const llmChatMock = vi.fn();
+const llmStreamChatMock = vi.fn();
+const llmGuaranteeResponseMock = vi.fn();
 const resolveSkillContextMock = vi.fn();
 const buildSkillSectionMock = vi.fn();
 
@@ -17,10 +19,8 @@ vi.mock("../services/ChatServiceV2", () => ({
 vi.mock("../lib/llmGateway", () => ({
   llmGateway: {
     chat: llmChatMock,
-    // Defensive stub: some paths use streamChat; tests for skill-context injection should never hit it.
-    streamChat: vi.fn(async () => {
-      throw new Error("simulated stream bootstrap failure");
-    }),
+    streamChat: llmStreamChatMock,
+    guaranteeResponse: llmGuaranteeResponseMock,
   },
 }));
 
@@ -49,8 +49,20 @@ vi.mock("../services/conversationMemory", () => ({
 vi.mock("../services/usageQuotaService", () => ({
   usageQuotaService: {
     hasTokenQuota: vi.fn(async () => true),
+    getDailyTokenQuotaStatus: vi.fn(async () => ({
+      allowed: true,
+      resetAt: null,
+      inputUsed: 0,
+      outputUsed: 0,
+      totalUsed: 0,
+      inputLimit: null,
+      outputLimit: null,
+      inputRemaining: null,
+      outputRemaining: null,
+    })),
     checkAndIncrementUsage: vi.fn(async () => ({ allowed: true })),
     recordTokenUsage: vi.fn(async () => null),
+    recordTokenUsageDetailed: vi.fn(async () => null),
   },
 }));
 
@@ -189,6 +201,23 @@ function parseSsePayloads(raw: string): Array<{ event: string; data: any }> {
     .filter((item): item is { event: string; data: any } => !!item);
 }
 
+async function* createMockStream(content: string) {
+  yield {
+    content,
+    done: false,
+    provider: "xai",
+    requestId: "stream_test",
+    sequenceId: 1,
+  };
+  yield {
+    content: "",
+    done: true,
+    provider: "xai",
+    requestId: "stream_test",
+    sequenceId: 2,
+  };
+}
+
 async function makeApp() {
   const { createChatAiRouter } = await import("../routes/chatAiRouter");
   const app = express();
@@ -210,6 +239,8 @@ describe("chat skill integration", () => {
     buildSkillSectionMock.mockReturnValue("\n\n[SKILL_CONTEXT]\nPrioriza respuesta ejecutiva.\n[/SKILL_CONTEXT]");
     chatMock.mockResolvedValue({ content: "ok", role: "assistant", usage: { totalTokens: 10 } });
     llmChatMock.mockResolvedValue({ content: "stream ok", provider: "xai", model: "grok-3-fast" });
+    llmGuaranteeResponseMock.mockResolvedValue({ content: "stream ok", provider: "xai", model: "grok-3-fast" });
+    llmStreamChatMock.mockImplementation((messages: any[]) => createMockStream(`stream:${String(messages[messages.length - 1]?.content || "")}`));
   });
 
   it("injects skill context into /api/chat request pipeline", async () => {
@@ -250,7 +281,7 @@ describe("chat skill integration", () => {
 
       // Fast-path behavior can vary (direct short-circuit vs full pipeline).
       // Always require successful stream completion and skill context resolution.
-      const llmMessages = llmChatMock.mock.calls[0]?.[0];
+      const llmMessages = llmStreamChatMock.mock.calls[0]?.[0] || llmChatMock.mock.calls[0]?.[0];
       const chatMessages = chatMock.mock.calls[0]?.[0];
       const outboundMessages = llmMessages || chatMessages;
 
@@ -259,7 +290,7 @@ describe("chat skill integration", () => {
         expect(outboundMessages[0].content).toContain("[SKILL_CONTEXT]");
       }
 
-      expect(llmChatMock).toHaveBeenCalled();
+      expect(llmStreamChatMock).toHaveBeenCalled();
       expect(res.text.includes("event: done")).toBe(true);
       expect(res.text.includes("event: complete")).toBe(true);
       expect(res.text.includes("event: error")).toBe(false);
@@ -269,7 +300,10 @@ describe("chat skill integration", () => {
   }, 60000);
 
   it("emits done and complete after a terminal model failure", async () => {
-    llmChatMock.mockRejectedValueOnce(new Error("provider unavailable"));
+    llmStreamChatMock.mockImplementationOnce(async function* () {
+      throw new Error("provider unavailable");
+    });
+    llmGuaranteeResponseMock.mockRejectedValueOnce(new Error("provider unavailable"));
 
     const app = await makeApp();
     const { client, close } = await createHttpTestClient(app);
@@ -288,10 +322,12 @@ describe("chat skill integration", () => {
       expect(events.some((event) => event.event === "done")).toBe(true);
       expect(events.some((event) => event.event === "complete")).toBe(true);
 
+      const errorEvent = events.find((event) => event.event === "error");
       const doneEvent = events.find((event) => event.event === "done");
       const completeEvent = events.find((event) => event.event === "complete");
 
-      expect(doneEvent?.data?.error).toBe(true);
+      expect(errorEvent).toBeTruthy();
+      expect(doneEvent).toBeTruthy();
       expect(completeEvent?.data?.status).toBe("error");
     } finally {
       await close();

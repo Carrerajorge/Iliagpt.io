@@ -33,6 +33,7 @@
     { "idx": 28, "version": "7", "when": 1771712600000, "tag": "0021_admin_user_projection",                                  "breakpoints": true },
     { "idx": 29, "version": "7", "when": 1771712700000, "tag": "0022_automation_triggers_and_features",                       "breakpoints": true },
     { "idx": 30, "version": "7", "when": 1771712800000, "tag": "0023_prompt_audit_trail",                                     "breakpoints": true },
-    { "idx": 31, "version": "7", "when": 1775440000000, "tag": "0024_users_indexes_and_sanitize_fields",                      "breakpoints": true }
+    { "idx": 31, "version": "7", "when": 1775440000000, "tag": "0024_users_indexes_and_sanitize_fields",                      "breakpoints": true },
+    { "idx": 32, "version": "7", "when": 1775450000000, "tag": "0025_daily_user_token_limits",                                "breakpoints": true }
   ]
 }
