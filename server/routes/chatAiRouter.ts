@@ -42,6 +42,7 @@ import { FREE_MODEL_ID } from "../lib/modelRegistry";
 import { ensureUserRowExists } from "../lib/ensureUserRowExists";
 import { buildSkillSystemPromptSection, drizzleSkillStore, resolveSkillContextFromRequest } from "../services/skillContextResolver";
 import { getSkillPlatformService, type SkillExecutionResult } from "../services/skillPlatform";
+import { skillAutoDispatcher, type SkillDispatchResult } from "../services/skillAutoDispatcher";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -5625,7 +5626,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         });
       };
 
-      const skillTimeoutMs = 12000;
+      const skillTimeoutMs = 45000;
       const normalizedUserQuery = typeof userQuery === "string" ? userQuery.trim() : "";
       if (normalizedUserQuery && !isConnectionClosed) {
         emitSkillTrace({ stage: 'planner', status: 'ok', message: 'skill_router_started', details: { hasAttachments: hasAnyAttachments } });
@@ -6149,6 +6150,123 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
               return;
             }
           } catch (imgError: any) {
+            console.error('[Stream] Image generation failed, falling back to chat:', imgError?.message);
+          }
+
+          // SKILL AUTO-DISPATCHER - Handle non-production skills automatically
+          // This catches ANALYZE_DATA, EXECUTE_CODE, MANAGE_EMAIL, SEND_MESSAGE, etc.
+          if (intentResult && !isProductionIntent(intentResult, userMessageText)) {
+            try {
+              const skillDispatchResult: SkillDispatchResult = await skillAutoDispatcher.dispatch({
+                message: userMessageText,
+                intentResult,
+                userId,
+                chatId: chatId || conversationId || streamConversationId,
+                conversationId: streamConversationId,
+                requestId,
+                assistantMessageId,
+                locale: intentResult.language_detected || 'es',
+                attachments: sanitizedRunAttachments,
+              });
+
+              if (skillDispatchResult.handled && (skillDispatchResult.artifacts.length > 0 || skillDispatchResult.textResponse)) {
+                console.log(`[Stream] Skill auto-dispatch handled: ${skillDispatchResult.skillName} (${skillDispatchResult.artifacts.length} artifacts)`);
+
+                if (!res.headersSent) {
+                  res.setHeader("Content-Type", "text/event-stream");
+                  applySseSecurityHeaders(res);
+                  res.setHeader("Cache-Control", "no-cache");
+                  res.setHeader("Connection", "keep-alive");
+                  res.setHeader("X-Accel-Buffering", "no");
+                  res.flushHeaders();
+                }
+
+                // Emit skill start event
+                res.write(`data: ${JSON.stringify({
+                  type: "skill_auto_start",
+                  skillId: skillDispatchResult.skillId,
+                  skillName: skillDispatchResult.skillName,
+                  category: skillDispatchResult.category,
+                  conversationId: streamConversationId,
+                  requestId,
+                  timestamp: Date.now(),
+                })}\n\n`);
+
+                // Emit artifacts
+                for (const artifact of skillDispatchResult.artifacts) {
+                  res.write(`data: ${JSON.stringify({
+                    type: "artifact",
+                    filename: artifact.filename,
+                    downloadUrl: artifact.downloadUrl,
+                    mimeType: artifact.mimeType,
+                    size: artifact.size,
+                    artifactType: artifact.type,
+                    library: artifact.library,
+                    conversationId: streamConversationId,
+                    requestId,
+                    timestamp: Date.now(),
+                  })}\n\n`);
+                }
+
+                // Emit text response as streamed tokens
+                if (skillDispatchResult.textResponse) {
+                  const chunks = skillDispatchResult.textResponse.match(/.{1,200}/gs) || [skillDispatchResult.textResponse];
+                  for (const chunk of chunks) {
+                    res.write(`data: ${JSON.stringify({ type: "token", content: chunk })}\n\n`);
+                  }
+                }
+
+                // Emit skill complete
+                res.write(`data: ${JSON.stringify({
+                  type: "skill_auto_complete",
+                  skillId: skillDispatchResult.skillId,
+                  skillName: skillDispatchResult.skillName,
+                  artifactCount: skillDispatchResult.artifacts.length,
+                  latencyMs: skillDispatchResult.metrics?.latencyMs,
+                  conversationId: streamConversationId,
+                  requestId,
+                  timestamp: Date.now(),
+                })}\n\n`);
+
+                if (sessionMetadata) {
+                  res.write(`data: ${JSON.stringify({ type: "session_metadata", ...sessionMetadata })}\n\n`);
+                }
+                res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+                res.end();
+                return;
+              }
+            } catch (skillDispatchError: any) {
+              console.warn('[Stream] Skill auto-dispatch error (non-blocking):', skillDispatchError?.message);
+              // Continue to production handler or normal chat flow
+            }
+          }
+
+          // PRODUCTION MODE INTERCEPT - Check immediately after intent detection
+          // Pass userMessageText to detect if user wants to search for articles first
+          if (featureFlags.canvasEnabled && isProductionIntent(intentResult, userMessageText) && intentResult.confidence >= 0.5) {
+            console.log(`[Stream] PRODUCTION MODE ACTIVATED: intent=${intentResult.intent}, topic=${intentResult.slots.topic}`);
+
+            try {
+              const effectiveChatId = chatId || conversationId || streamConversationId;
+
+              await handleProductionRequest(
+                {
+                  message: userMessageText,
+                  userId: userId,
+                  chatId: effectiveChatId,
+                  conversationId: streamConversationId,
+                  requestId,
+                  assistantMessageId,
+                  intentResult,
+                  locale: intentResult.language_detected || 'es',
+                },
+                res
+              );
+
+              // Production handler completed, exit early
+              return;
+            }
+          } catch (imgError: any) {
             console.error("[Stream] Image generation failed, falling back to chat:", imgError?.message);
           }
         }
@@ -6472,11 +6590,69 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           }
         }
 
+        // SKILL AUTO-DISPATCHER (second intercept for non-production skills)
+        if (intentResult && !isProductionIntent(intentResult, userMessageText) && !detectImageRequest(userMessageText)) {
+          try {
+            const skillDispatch2 = await skillAutoDispatcher.dispatch({
+              message: userMessageText,
+              intentResult,
+              userId,
+              chatId: chatId || conversationId || streamConversationId,
+              conversationId: streamConversationId,
+              requestId,
+              assistantMessageId,
+              locale: intentResult.language_detected || 'es',
+              attachments: resolvedAttachments,
+            });
+
+            if (skillDispatch2.handled && (skillDispatch2.artifacts.length > 0 || skillDispatch2.textResponse)) {
+              console.log(`[Stream] Skill auto-dispatch (2nd) handled: ${skillDispatch2.skillName}`);
+
+              writeSse(res, 'skill_auto_start', {
+                skillId: skillDispatch2.skillId,
+                skillName: skillDispatch2.skillName,
+                category: skillDispatch2.category,
+                conversationId: streamConversationId,
+                requestId,
+                timestamp: Date.now(),
+              });
+
+              for (const artifact of skillDispatch2.artifacts) {
+                writeSse(res, 'artifact', {
+                  filename: artifact.filename,
+                  downloadUrl: artifact.downloadUrl,
+                  mimeType: artifact.mimeType,
+                  size: artifact.size,
+                  artifactType: artifact.type,
+                  library: artifact.library,
+                  conversationId: streamConversationId,
+                  requestId,
+                });
+              }
+
+              if (skillDispatch2.textResponse) {
+                writeSse(res, 'token', { content: skillDispatch2.textResponse });
+              }
+
+              writeSse(res, 'skill_auto_complete', {
+                skillId: skillDispatch2.skillId,
+                skillName: skillDispatch2.skillName,
+                artifactCount: skillDispatch2.artifacts.length,
+                latencyMs: skillDispatch2.metrics?.latencyMs,
+              });
+
+              writeSse(res, 'done', {});
+              if (heartbeatInterval) clearInterval(heartbeatInterval);
+              res.end();
+              return;
+            }
+          } catch (sd2Err: any) {
+            console.warn('[Stream] Skill auto-dispatch (2nd) error:', sd2Err?.message);
+          }
+        }
+
         // PRODUCTION MODE INTERCEPT: Handle document creation requests
-        // Debug log to trace production mode evaluation
-        console.log(`\n\n🔥🔥🔥 [Stream] PRODUCTION CHECK START 🔥🔥🔥`);
         console.log(`[Stream] PRODUCTION CHECK: intent=${intentResult.intent}, confidence=${intentResult.confidence.toFixed(2)}, isProductionIntent=${isProductionIntent(intentResult, userMessageText)}`);
-        console.log(`🔥🔥🔥 [Stream] PRODUCTION CHECK END 🔥🔥🔥\n\n`);
 
         // Pass userMessageText to detect if user wants to search for articles first
         // Skip production mode if this is an image generation request

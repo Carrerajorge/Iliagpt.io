@@ -11,7 +11,20 @@ export const IntentTypeSchema = z.enum([
   "SEARCH_WEB",
   "ANALYZE_DOCUMENT",
   "CHAT_GENERAL",
-  "NEED_CLARIFICATION"
+  "NEED_CLARIFICATION",
+  // Extended skill intents
+  "ANALYZE_DATA",
+  "EXECUTE_CODE",
+  "MANAGE_EMAIL",
+  "MANAGE_CALENDAR",
+  "MANAGE_TASKS",
+  "SEND_MESSAGE",
+  "MANAGE_DATABASE",
+  "AUTOMATE_WORKFLOW",
+  "MANAGE_INFRASTRUCTURE",
+  "SECURITY_AUDIT",
+  "MEDIA_GENERATE",
+  "INTEGRATION_ACTION",
 ]);
 
 export const OutputFormatSchema = z.enum([
