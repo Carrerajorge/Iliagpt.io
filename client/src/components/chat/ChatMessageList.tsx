@@ -20,6 +20,18 @@ import { AgentArtifact } from "@/components/agent-steps-display";
 // preventing Virtuoso from unmounting/remounting the DOM node.
 const STREAMING_MSG_ID_FALLBACK = "__streaming__";
 
+function getProcessStepText(
+    step: { step?: string; title?: string; description?: string; message?: string } | undefined,
+): string {
+    if (!step) return "";
+
+    const rawText = [step.step, step.title, step.description, step.message].find(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
+
+    return rawText?.toLowerCase() ?? "";
+}
+
 export interface ChatMessageListProps {
     messages: Message[];
     variant: "compact" | "default";
@@ -153,7 +165,13 @@ export function ChatMessageList({
         const activeStep = aiProcessSteps.find(s => s.status === 'active') || aiProcessSteps[aiProcessSteps.length - 1];
         if (!activeStep) return undefined;
 
-        const stepText = activeStep.step.toLowerCase();
+        const stepText = getProcessStepText(activeStep as typeof activeStep & {
+            title?: string;
+            description?: string;
+            message?: string;
+        });
+        if (!stepText) return 'processing';
+
         if (stepText.includes('connect') || stepText.includes('start')) return 'connecting';
         if (stepText.includes('search') || stepText.includes('query')) return 'searching';
         if (stepText.includes('analyz') || stepText.includes('read') || stepText.includes('review')) return 'analyzing';
@@ -237,8 +255,15 @@ export function ChatMessageList({
                             </div>
                             {aiProcessSteps.length > 0 && (() => {
                                 const active = aiProcessSteps.find(s => s.status === 'active');
+                                const activeStepText = getProcessStepText(active as typeof active & {
+                                    title?: string;
+                                    description?: string;
+                                    message?: string;
+                                });
                                 if (active) return (
-                                    <span className="text-xs text-muted-foreground ml-1 animate-in fade-in">{active.step}</span>
+                                    <span className="text-xs text-muted-foreground ml-1 animate-in fade-in">
+                                        {activeStepText || 'Procesando...'}
+                                    </span>
                                 );
                                 return null;
                             })()}

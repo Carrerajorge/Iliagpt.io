@@ -114,7 +114,8 @@ export interface AiProcessStep {
     title?: string;
     description?: string;
     status: 'pending' | 'active' | 'done';
-    step: string; // Legacy
+    step?: string; // Legacy
+    message?: string;
 }
 export type UIPhase = 'idle' | 'thinking' | 'console' | 'done';
 

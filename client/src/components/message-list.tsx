@@ -2490,6 +2490,21 @@ export function MessageList({
     return lastUserMsg ? detectClientIntent(lastUserMsg.content) : undefined;
   }, [messages]);
 
+  const getProcessStepText = useCallback((step: {
+    step?: string;
+    title?: string;
+    description?: string;
+    message?: string;
+  } | undefined): string => {
+    if (!step) return '';
+
+    const rawText = [step.step, step.title, step.description, step.message].find(
+      (value): value is string => typeof value === 'string' && value.trim().length > 0
+    );
+
+    return rawText?.toLowerCase() ?? '';
+  }, []);
+
   // Map backend steps to thinking phases for real-time sync
   const realTimePhase = useMemo(() => {
     if (!aiProcessSteps.length) return undefined;
@@ -2498,7 +2513,12 @@ export function MessageList({
     const activeStep = aiProcessSteps.find(s => s.status === 'active') || aiProcessSteps[aiProcessSteps.length - 1];
     if (!activeStep) return undefined;
 
-    const stepText = activeStep.step.toLowerCase();
+    const stepText = getProcessStepText(activeStep as typeof activeStep & {
+      title?: string;
+      description?: string;
+      message?: string;
+    });
+    if (!stepText) return 'processing';
 
     if (stepText.includes('connect') || stepText.includes('start')) return 'connecting';
     if (stepText.includes('search') || stepText.includes('query')) return 'searching';
@@ -2509,7 +2529,7 @@ export function MessageList({
     if (stepText.includes('final') || stepText.includes('don') || stepText.includes('complet')) return 'finalizing';
 
     return 'processing'; // Default fallback
-  }, [aiProcessSteps]);
+  }, [aiProcessSteps, getProcessStepText]);
 
   const isLastMessageAssistant = messages.length > 0 && messages[messages.length - 1].role === "assistant";
   const showSuggestedReplies = variant === "default" && aiState === "idle" && isLastMessageAssistant && lastAssistantMessage && !streamingContent;
@@ -2655,8 +2675,15 @@ export function MessageList({
               </div>
               {aiProcessSteps.length > 0 && (() => {
                 const active = aiProcessSteps.find(s => s.status === 'active');
+                const activeStepText = getProcessStepText(active as typeof active & {
+                  title?: string;
+                  description?: string;
+                  message?: string;
+                });
                 if (active) return (
-                  <span className="text-xs text-muted-foreground ml-1 animate-in fade-in">{active.step}</span>
+                  <span className="text-xs text-muted-foreground ml-1 animate-in fade-in">
+                    {activeStepText || 'Procesando...'}
+                  </span>
                 );
                 return null;
               })()}
