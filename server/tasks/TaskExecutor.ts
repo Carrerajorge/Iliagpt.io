@@ -28,7 +28,7 @@ import {
   READ_ONLY_PROFILE,
 } from '../agentic/toolCalling/ToolRegistry';
 import { BUILT_IN_TOOLS }           from '../agentic/toolCalling/BuiltInTools';
-import { resolveModel }             from '../integration/modelWiring';
+import { getAgenticModelReadiness, resolveModel } from '../integration/modelWiring';
 
 // ─── Executor options ─────────────────────────────────────────────────────────
 
@@ -239,6 +239,10 @@ export class TaskExecutor {
 
     const systemPrompt  = buildTaskSystemPrompt(task);
     const executionModel = resolveTaskModel(task);
+    const modelReadiness = getAgenticModelReadiness(executionModel);
+    if (!modelReadiness.ok) {
+      throw new Error(modelReadiness.reason ?? 'No LLM providers configured.');
+    }
     const initialMessages: AgentMessage[] = checkpoint?.conversation ?? [
       { role: 'user', content: task.objective },
     ];

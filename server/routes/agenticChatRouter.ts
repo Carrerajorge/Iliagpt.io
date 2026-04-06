@@ -25,6 +25,7 @@ import { backgroundTaskManager }                from '../tasks/BackgroundTaskMan
 import { createUnifiedRun }                     from '../agent/unifiedChatHandler';
 import { streamAgentRuntime }                   from '../agent/runtime/agentRuntimeFacade';
 import { toolRegistry }                         from '../agent/toolRegistry';
+import { getAgenticModelReadiness }             from '../integration/modelWiring';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -185,6 +186,19 @@ export function createAgenticChatRouter(): Router {
     }
 
     const userId = getUserId(req);
+    const readiness = getAgenticModelReadiness();
+    if (!readiness.ok) {
+      return res.status(503).json({
+        error: readiness.reason,
+        code: 'AGENTIC_LLM_UNAVAILABLE',
+        details: {
+          model: readiness.model,
+          provider: readiness.provider,
+          availableProviders: readiness.availableProviders,
+        },
+      });
+    }
+
     try {
       const task = await backgroundTaskManager.spawn({
         userId,

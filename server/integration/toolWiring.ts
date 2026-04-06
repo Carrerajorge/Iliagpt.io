@@ -17,6 +17,7 @@ import { Logger } from '../lib/logger';
 import { globalToolRegistry } from '../agentic/toolCalling/ToolRegistry';
 import { BUILT_IN_TOOLS }     from '../agentic/toolCalling/BuiltInTools';
 import type { ToolExecutionContext, ToolResult } from '../agentic/toolCalling/ToolRegistry';
+import { getAgenticModelReadiness } from './modelWiring';
 
 // ─── Lazy imports ─────────────────────────────────────────────────────────────
 // These are imported lazily so missing optional dependencies don't crash startup.
@@ -453,6 +454,21 @@ async function wireSpawnTaskTool(): Promise<void> {
         : Array.isArray(tools) && tools.length > 0
           ? tools
           : undefined;
+    const start = Date.now();
+    const readiness = getAgenticModelReadiness();
+    if (!readiness.ok) {
+      return {
+        success: false,
+        output: readiness.reason,
+        error: {
+          code: 'AGENTIC_LLM_UNAVAILABLE',
+          message: readiness.reason ?? 'No LLM providers configured.',
+          retryable: false,
+        },
+        durationMs: Date.now() - start,
+      };
+    }
+
     try {
       const mgr  = await getBackgroundTaskManager();
       const task = await mgr.spawn({
@@ -476,9 +492,19 @@ async function wireSpawnTaskTool(): Promise<void> {
           message: `Task ${task.id} queued in background.`,
         },
         metadata: { taskId: task.id, status: task.status },
+        durationMs: Date.now() - start,
       };
     } catch (e) {
-      return { success: false, output: `spawn_task error: ${(e as Error).message}` };
+      return {
+        success: false,
+        output: `spawn_task error: ${(e as Error).message}`,
+        error: {
+          code: 'SPAWN_ERROR',
+          message: (e as Error).message,
+          retryable: true,
+        },
+        durationMs: Date.now() - start,
+      };
     }
   };
 }
