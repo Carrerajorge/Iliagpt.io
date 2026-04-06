@@ -26,6 +26,24 @@ export interface AgentSessionSnapshot {
   artifacts: Array<{ type: string; url: string; name: string }>;
   totalTokensUsed: number;
   lastActiveAt: number;
+  runtimeProfile?: {
+    executionMode?: string;
+    intent?: string;
+    objective?: string;
+    definitionOfDone?: string[];
+    requestMessage?: string;
+  } | null;
+  workingMemory?: {
+    retrievedContext?: string;
+    workspaceContext?: string;
+    evidencePack?: unknown;
+    verification?: {
+      status: string;
+      message: string;
+      confidence?: number;
+      iteration?: number;
+    };
+  } | null;
 }
 
 async function upsertSessionKey(sessionId: string, key: string, value: any): Promise<void> {
@@ -65,6 +83,8 @@ export class SessionPersistenceManager {
       { key: "lastActiveAt", value: snapshot.lastActiveAt },
       { key: "chatId", value: snapshot.chatId },
       { key: "userId", value: snapshot.userId },
+      { key: "runtimeProfile", value: snapshot.runtimeProfile ?? null },
+      { key: "workingMemory", value: snapshot.workingMemory ?? null },
     ];
 
     try {
@@ -130,6 +150,8 @@ export class SessionPersistenceManager {
         artifacts: data.artifacts || [],
         totalTokensUsed: data.totalTokensUsed || 0,
         lastActiveAt: data.lastActiveAt || Date.now(),
+        runtimeProfile: data.runtimeProfile || null,
+        workingMemory: data.workingMemory || null,
       };
     } catch (err: any) {
       console.error(`[SessionPersistence] Failed to load session ${runId}:`, err.message);

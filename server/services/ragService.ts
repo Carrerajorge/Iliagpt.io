@@ -7,6 +7,7 @@
 import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { llmGateway } from "../lib/llmGateway";
+import { getSemanticEmbeddingVector } from "./semanticEmbeddings";
 
 const EMBEDDING_DIM = 256;
 const CHUNK_SIZE = 800;
@@ -74,6 +75,32 @@ function localEmbed(text: string): number[] {
 
   const magnitude = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
   return magnitude > 0 ? vector.map(v => v / magnitude) : vector;
+}
+
+async function embedText(
+  text: string,
+  purpose: "document" | "query",
+  cacheNamespace: string,
+): Promise<number[]> {
+  try {
+    const vector = await getSemanticEmbeddingVector(text, {
+      dimensions: EMBEDDING_DIM,
+      purpose,
+      cacheNamespace,
+      maxChars: 8_000,
+    });
+    if (Array.isArray(vector) && vector.length > 0) {
+      return vector;
+    }
+  } catch (error) {
+    console.warn("[RAGService] Semantic embedding failed, using local fallback", {
+      purpose,
+      cacheNamespace,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  return localEmbed(text);
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -243,6 +270,7 @@ async function rewriteQueryWithLLM(query: string): Promise<string[]> {
       return [query, ...parsed.map((q: any) => String(q)).filter((q: string) => q.length > 3)].slice(0, 5);
     }
   } catch {
+    console.warn("[RAGService] LLM query rewrite failed, using local rewrite fallback");
   }
   return rewriteQueryLocal(query);
 }
@@ -283,6 +311,7 @@ async function rerankWithLLM(
       }
     }
   } catch {
+    console.warn("[RAGService] LLM reranking failed, using score-order fallback");
   }
   return results.map(r => r.index);
 }
@@ -336,6 +365,7 @@ const ensureTables = async () => {
       )
     `);
   } catch (e) {
+    console.warn("[RAGService] ensureTables failed", e);
   }
 };
 
@@ -350,7 +380,7 @@ export class RAGService {
   ): Promise<void> {
     if (content.length < 20) return;
 
-    const embedding = localEmbed(content);
+    const embedding = await embedText(content, "document", `rag:message:${userId}`);
     const keyPhrases = extractKeyPhrases(content);
 
     await db.execute(sql`
@@ -376,7 +406,7 @@ export class RAGService {
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
-      const embedding = localEmbed(chunk);
+      const embedding = await embedText(chunk, "document", `rag:document:${userId}`);
       const keyPhrases = extractKeyPhrases(chunk);
 
       await db.execute(sql`
@@ -411,7 +441,7 @@ export class RAGService {
   ): Promise<Array<{ content: string; score: number; chatId: string; metadata?: any }>> {
     const { limit = 5, chatId, minScore = 0.2, contentTypes } = options;
 
-    const queryEmbedding = localEmbed(query);
+    const queryEmbedding = await embedText(query, "query", `rag:search:${userId}`);
 
     const result = chatId
       ? await db.execute(sql`
@@ -653,7 +683,8 @@ export class RAGService {
 
       const stats = `hops=${evidencePack.hopsUsed}, queries=${evidencePack.subQueries.length}, total_candidates=${evidencePack.totalResults}`;
       return `\n\n[RAG++ - ${results.length} evidencias | ${stats}]\n${contextParts.join("\n\n")}\n`;
-    } catch {
+    } catch (error) {
+      console.warn("[RAGService] Enhanced context fallback activated", error);
       const results = await this.search(userId, message, {
         limit: 5,
         chatId: currentChatId,
@@ -705,7 +736,8 @@ export class RAGService {
 
       const context = `\n\n[RAG++ Evidence Pack - ${results.length} resultados]\n${contextParts.join("\n\n")}\n`;
       return { context, evidencePack };
-    } catch {
+    } catch (error) {
+      console.warn("[RAGService] Evidence context generation failed", error);
       return { context: "", evidencePack: null };
     }
   }
@@ -864,7 +896,7 @@ export class WorkspaceContextService {
     fileType: string
   ): Promise<void> {
     const summary = content.substring(0, 500);
-    const embedding = localEmbed(content);
+    const embedding = await embedText(content, "document", `workspace:file:${userId}`);
 
     await db.execute(sql`
       INSERT INTO workspace_context (user_id, file_path, file_type, content_summary, embedding)
@@ -878,7 +910,7 @@ export class WorkspaceContextService {
     query: string,
     limit = 3
   ): Promise<Array<{ filePath: string; summary: string; score: number }>> {
-    const queryEmbedding = localEmbed(query);
+    const queryEmbedding = await embedText(query, "query", `workspace:query:${userId}`);
 
     const result = await db.execute(sql`
       SELECT file_path, content_summary, embedding FROM workspace_context

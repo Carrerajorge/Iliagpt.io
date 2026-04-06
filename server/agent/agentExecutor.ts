@@ -986,14 +986,25 @@ export async function executeAgentLoop(
   let totalTokensUsed = 0;
   let consecutiveLoopErrors = 0;
   let inferenceProgressInterval: ReturnType<typeof setInterval> | null = null;
+  let existingSession: AgentSessionSnapshot | null = null;
+  let operationalRagContext = "";
+  let workspaceOperationalContext = "";
+  let operationalEvidencePack: any = null;
+  let definitionOfDone: string[] = [];
+  let verificationState: { status: string; message: string; confidence?: number; iteration?: number } | undefined;
 
   try {
-    const existingSession = await sessionPersistence.loadSession(runId);
+    existingSession = await sessionPersistence.loadSession(runId);
     if (existingSession && (existingSession.status === "paused" || existingSession.status === "running") && existingSession.conversationHistory.length > 0 && existingSession.currentIteration > 0) {
       console.log(`[AgentExecutor] Resuming session ${runId} from iteration ${existingSession.currentIteration} (was ${existingSession.status})`);
       conversationHistory = existingSession.conversationHistory as typeof conversationHistory;
       iteration = existingSession.currentIteration;
       totalTokensUsed = existingSession.totalTokensUsed || 0;
+      definitionOfDone = existingSession.runtimeProfile?.definitionOfDone || [];
+      operationalRagContext = existingSession.workingMemory?.retrievedContext || "";
+      workspaceOperationalContext = existingSession.workingMemory?.workspaceContext || "";
+      operationalEvidencePack = existingSession.workingMemory?.evidencePack || null;
+      verificationState = existingSession.workingMemory?.verification;
       if (existingSession.artifacts?.length) {
         artifacts.push(...existingSession.artifacts);
       }
@@ -1008,6 +1019,44 @@ export async function executeAgentLoop(
 
   const recentUserText = collectRecentUserText(messages) || requestSpec.rawMessage || "";
   const isLocalFsRequest = LOCAL_FILESYSTEM_SIGNAL_REGEX.test(recentUserText || requestSpec.rawMessage || "");
+
+  if (!existingSession?.workingMemory) {
+    try {
+      const { ragService, workspaceContextService } = await import("../services/ragService");
+      const [ragResult, workspaceContext] = await Promise.all([
+        ragService.getContextWithEvidence(userId, recentUserText || requestSpec.rawMessage || "", chatId),
+        workspaceContextService.getWorkspaceContext(userId, recentUserText || requestSpec.rawMessage || ""),
+      ]);
+
+      operationalRagContext = ragResult.context || "";
+      operationalEvidencePack = ragResult.evidencePack || null;
+      workspaceOperationalContext = workspaceContext || "";
+
+      const operationalBlocks = [operationalRagContext, workspaceOperationalContext].filter(Boolean);
+      if (operationalBlocks.length > 0) {
+        conversationHistory = [
+          {
+            role: "system",
+            content:
+              "Operational memory loaded for this run. Use it as supporting context, but do not claim completion without fresh evidence from the current execution.\n\n" +
+              operationalBlocks.join("\n"),
+          },
+          ...conversationHistory,
+        ];
+      }
+
+      sse.write("thinking", {
+        runId,
+        step: "memory",
+        message: operationalEvidencePack
+          ? `Memoria operativa cargada con ${operationalEvidencePack.citations?.length || 0} evidencias.`
+          : "Memoria operativa cargada.",
+        timestamp: Date.now(),
+      });
+    } catch (memoryError: any) {
+      console.warn("[AgentExecutor] Operational memory retrieval failed (non-fatal):", memoryError?.message || memoryError);
+    }
+  }
 
   try {
     const { promptInjectionDetector } = await import("./security/promptInjectionDetector");
@@ -1054,6 +1103,17 @@ export async function executeAgentLoop(
       runId,
       brief: requestBrief,
     });
+
+    definitionOfDone = requestBrief.definition_of_done?.length
+      ? requestBrief.definition_of_done
+      : requestBrief.success_criteria || [];
+
+    if (definitionOfDone.length > 0) {
+      conversationHistory.push({
+        role: "system",
+        content: `Definition of done for this run:\n- ${definitionOfDone.join("\n- ")}`,
+      });
+    }
 
     if (requestBrief.blocker?.is_blocked) {
       const blockerReason = String(requestBrief.blocker.question || "").toLowerCase();
@@ -1323,6 +1383,58 @@ MANDATORY RULES:
     timestamp: Date.now(),
   });
 
+  const serializeConversationHistory = () =>
+    conversationHistory.map(m => {
+      const msg: any = {
+        role: (m as any).role,
+        content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || ""),
+      };
+      if ((m as any).tool_call_id) msg.tool_call_id = (m as any).tool_call_id;
+      if ((m as any).tool_calls) msg.tool_calls = (m as any).tool_calls;
+      return msg;
+    });
+
+  const buildSessionSnapshot = (
+    status: AgentSessionSnapshot["status"],
+    overrides: Partial<AgentSessionSnapshot> = {},
+  ): AgentSessionSnapshot => ({
+    runId,
+    chatId,
+    userId,
+    status,
+    currentIteration: iteration,
+    maxIterations,
+    plan: {
+      intent: requestSpec?.intent || "chat",
+      steps: planSteps.map((label, i) => ({
+        id: `step_${i}`,
+        label,
+        status: i <= Math.min(iteration - 1, planSteps.length - 1) ? "done" : "pending",
+      })),
+      currentStepIndex: Math.max(0, Math.min(iteration - 1, planSteps.length - 1)),
+    },
+    toolProgress: [],
+    conversationSummary: fullResponse.substring(0, 2000),
+    conversationHistory: serializeConversationHistory(),
+    artifacts: artifacts.map(a => ({ type: a.type, url: a.url || "", name: a.name || "" })),
+    totalTokensUsed,
+    lastActiveAt: Date.now(),
+    runtimeProfile: {
+      executionMode: existingSession?.runtimeProfile?.executionMode || "direct_agent_loop",
+      intent: requestSpec?.intent || "chat",
+      objective: requestBrief?.objective || recentUserText || requestSpec.rawMessage || "",
+      definitionOfDone,
+      requestMessage: recentUserText || requestSpec.rawMessage || "",
+    },
+    workingMemory: {
+      retrievedContext: operationalRagContext,
+      workspaceContext: workspaceOperationalContext,
+      evidencePack: operationalEvidencePack,
+      verification: verificationState,
+    },
+    ...overrides,
+  });
+
   const keepaliveInterval = setInterval(() => {
     sse.write("keepalive", { runId, timestamp: Date.now() });
   }, 10000);
@@ -1355,20 +1467,9 @@ MANDATORY RULES:
         const currentSession = await sessionPersistence.loadSession(runId);
         if (currentSession && currentSession.status === "paused") {
           console.log(`[AgentExecutor] Pause detected for session ${runId} at iteration ${iteration}, saving state and stopping...`);
-          await sessionPersistence.saveSession({
-            ...currentSession,
+          await sessionPersistence.saveSession(buildSessionSnapshot("paused", {
             currentIteration: iteration,
-            conversationHistory: conversationHistory.map(m => {
-              const msg: any = { role: (m as any).role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || "") };
-              if ((m as any).tool_call_id) msg.tool_call_id = (m as any).tool_call_id;
-              if ((m as any).tool_calls) msg.tool_calls = (m as any).tool_calls;
-              return msg;
-            }),
-            conversationSummary: fullResponse.substring(0, 2000),
-            artifacts: artifacts.map(a => ({ type: a.type, url: a.url || "", name: a.name || "" })),
-            totalTokensUsed,
-            lastActiveAt: Date.now(),
-          });
+          }));
           sse.write("paused", { runId, iteration, message: "Session paused by user request" });
           break;
         }
@@ -2184,31 +2285,7 @@ Please rewrite your response addressing these issues.`
 
       if (iteration % 3 === 0) {
         try {
-          await sessionPersistence.saveSession({
-            runId, chatId, userId,
-            status: "running",
-            currentIteration: iteration,
-            maxIterations,
-            plan: {
-              intent: requestSpec?.intent || "chat",
-              steps: planSteps.map((label, i) => ({
-                id: `step_${i}`, label,
-                status: i <= Math.min(iteration - 1, planSteps.length - 1) ? "done" : "pending",
-              })),
-              currentStepIndex: Math.min(iteration - 1, planSteps.length - 1),
-            },
-            toolProgress: [],
-            conversationSummary: fullResponse.substring(0, 2000),
-            conversationHistory: conversationHistory.map(m => {
-              const msg: any = { role: (m as any).role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || "") };
-              if ((m as any).tool_call_id) msg.tool_call_id = (m as any).tool_call_id;
-              if ((m as any).tool_calls) msg.tool_calls = (m as any).tool_calls;
-              return msg;
-            }),
-            artifacts: artifacts.map(a => ({ type: a.type, url: a.url || "", name: a.name || "" })),
-            totalTokensUsed,
-            lastActiveAt: Date.now(),
-          });
+          await sessionPersistence.saveSession(buildSessionSnapshot("running"));
         } catch {}
       }
 
@@ -2218,28 +2295,14 @@ Please rewrite your response addressing these issues.`
         inferenceProgressInterval = null;
       }
       try {
-        await sessionPersistence.saveSession({
-          runId, chatId, userId,
-          status: "failed",
-          currentIteration: iteration,
-          maxIterations,
+        await sessionPersistence.saveSession(buildSessionSnapshot("failed", {
+          conversationSummary: `Failed at iteration ${iteration}: ${error?.message || "Unknown error"}`,
           plan: {
             intent: requestSpec?.intent || "chat",
             steps: planSteps.map((label, i) => ({ id: `step_${i}`, label, status: "pending" })),
             currentStepIndex: 0,
           },
-          toolProgress: [],
-          conversationSummary: `Failed at iteration ${iteration}: ${error?.message || "Unknown error"}`,
-          conversationHistory: conversationHistory.map(m => {
-            const msg: any = { role: (m as any).role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || "") };
-            if ((m as any).tool_call_id) msg.tool_call_id = (m as any).tool_call_id;
-            if ((m as any).tool_calls) msg.tool_calls = (m as any).tool_calls;
-            return msg;
-          }),
-          artifacts: artifacts.map(a => ({ type: a.type, url: a.url || "", name: a.name || "" })),
-          totalTokensUsed,
-          lastActiveAt: Date.now(),
-        });
+        }));
       } catch {}
 
       console.error(`[AgentExecutor] Error in iteration ${iteration}:`, error?.message || error);
@@ -2352,39 +2415,76 @@ Please rewrite your response addressing these issues.`
     });
   }
 
+  const toolsUsed = conversationHistory
+    .filter((m: any) => m.tool_calls)
+    .flatMap((m: any) => m.tool_calls?.map((tc: any) => tc.function?.name) || []);
+  const uniqueTools = [...new Set(toolsUsed.filter(Boolean))];
+
   budgetMgr.emitBudgetUpdate(sse.write);
 
-  try {
-    await sessionPersistence.saveSession({
+  const evidenceCount = Array.isArray(operationalEvidencePack?.citations)
+    ? operationalEvidencePack.citations.length
+    : 0;
+  const hasOperationalEvidence = artifacts.length > 0 || uniqueTools.length > 0 || evidenceCount > 0;
+  const hasSubstantiveResponse = fullResponse.trim().length >= 80;
+  const needsRepair = requestSpec.intent !== "chat" && (!hasOperationalEvidence || !hasSubstantiveResponse);
+  const verificationConfidence = Math.min(
+    0.97,
+    0.3 +
+      (artifacts.length > 0 ? 0.24 : 0) +
+      (uniqueTools.length > 0 ? 0.2 : 0) +
+      (evidenceCount > 0 ? 0.12 : 0) +
+      (hasSubstantiveResponse ? 0.08 : 0) +
+      (definitionOfDone.length > 0 ? 0.08 : 0),
+  );
+  const verificationMessage = needsRepair
+    ? "Resultado parcial: la respuesta final no tiene suficiente evidencia operativa para afirmar completion total."
+    : "Verificacion operativa aprobada con evidencia de herramientas, artifacts o memoria recuperada.";
+
+  verificationState = {
+    status: needsRepair ? "repair_needed" : "passed",
+    message: verificationMessage,
+    confidence: Number(verificationConfidence.toFixed(3)),
+    iteration,
+  };
+
+  await emitTraceEvent(runId, needsRepair ? "verification_failed" : "verification", {
+    phase: "verifying",
+    summary: verificationMessage,
+    confidence: verificationState.confidence,
+    metadata: {
+      toolCount: uniqueTools.length,
+      tools: uniqueTools,
+      artifactCount: artifacts.length,
+      evidenceCount,
+      definitionOfDoneCount: definitionOfDone.length,
+    },
+  });
+
+  if (requestSpec.intent !== "chat") {
+    const verificationAppendix = [
+      "",
+      "[Verificacion operativa]",
+      verificationMessage,
+      uniqueTools.length > 0 ? `Tools: ${uniqueTools.join(", ")}` : "Tools: sin uso confirmado",
+      artifacts.length > 0 ? `Artifacts: ${artifacts.map((artifact) => artifact.name).join(", ")}` : "Artifacts: ninguno",
+      evidenceCount > 0 ? `Evidencias recuperadas: ${evidenceCount}` : "Evidencias recuperadas: 0",
+    ].join("\n");
+
+    fullResponse = `${fullResponse.trim()}\n\n${verificationAppendix}`.trim();
+    sse.write("chunk", {
+      content: `\n\n${verificationAppendix}`,
+      sequence: 1,
       runId,
-      chatId,
-      userId,
-      status: "completed",
-      currentIteration: iteration,
-      maxIterations,
-      plan: {
-        intent: requestSpec?.intent || "chat",
-        steps: planSteps.map((label, i) => ({
-          id: `step_${i}`,
-          label,
-          status: i <= Math.min(iteration - 1, planSteps.length - 1) ? "done" : "pending",
-        })),
-        currentStepIndex: Math.min(iteration - 1, planSteps.length - 1),
-      },
+    });
+  }
+
+  try {
+    await sessionPersistence.saveSession(buildSessionSnapshot("completed", {
       toolProgress: reflectionEngine.getStats().totalCalls > 0
         ? [{ toolName: "summary", iteration, success: true, durationMs: 0, timestamp: Date.now() }]
         : [],
-      conversationSummary: fullResponse.substring(0, 2000),
-      conversationHistory: conversationHistory.map(m => {
-        const msg: any = { role: (m as any).role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || "") };
-        if ((m as any).tool_call_id) msg.tool_call_id = (m as any).tool_call_id;
-        if ((m as any).tool_calls) msg.tool_calls = (m as any).tool_calls;
-        return msg;
-      }),
-      artifacts: artifacts.map(a => ({ type: a.type, url: a.url || "", name: a.name || "" })),
-      totalTokensUsed,
-      lastActiveAt: Date.now(),
-    });
+    }));
   } catch (persistErr: any) {
     console.warn(`[AgentExecutor] Session persistence save failed (non-fatal):`, persistErr?.message);
   }
@@ -2407,16 +2507,12 @@ Please rewrite your response addressing these issues.`
       healthStatus: modelRouter.getHealthStatus(),
     },
     budget: budgetMgr.snapshot(),
+    verification: verificationState,
   });
 
   try {
     const { ragService } = await import("../services/ragService");
     if (fullResponse && fullResponse.length > 50) {
-      const toolsUsed = conversationHistory
-        .filter((m: any) => m.tool_calls)
-        .flatMap((m: any) => m.tool_calls?.map((tc: any) => tc.function?.name) || []);
-      const uniqueTools = [...new Set(toolsUsed)];
-
       await ragService.indexMessage(userId, chatId, fullResponse, "assistant");
 
       if (artifacts.length > 0 || uniqueTools.length > 0) {

@@ -218,7 +218,8 @@ export class ChatEnhancer {
       isAgentic = this.detectAgenticIntent(text);
     }
 
-    const resolvedUrl = isAgentic ? this.agenticEndpoint : this.normalEndpoint;
+    // Server-side routing is authoritative; the client sends only a hint.
+    const resolvedUrl = this.normalEndpoint;
     const requestId = this.generateRequestId();
     const resolvedThinkingMode = thinkingMode ?? (isAgentic ? this.estimateThinkingMode(text) : 'fast');
 
@@ -227,8 +228,14 @@ export class ChatEnhancer {
       messages: [{ role: 'user', content: text }],
       chatId,
       thinkingMode: resolvedThinkingMode,
-      agentic: isAgentic,
+      agenticHint: isAgentic ? 'agentic' : 'normal',
     };
+
+    if (forceAgentic === true) {
+      bodyObject.agentic = true;
+    } else if (forceNormal === true) {
+      bodyObject.agentic = false;
+    }
 
     if (files && files.length > 0) {
       bodyObject.hasFiles = true;

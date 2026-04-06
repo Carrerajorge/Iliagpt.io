@@ -15,10 +15,10 @@ import { db } from "../db";
 import { agentModeRuns, agentModeSteps, agentMemoryStore, requestSpecHistory, chats } from "@shared/schema";
 import { llmGateway } from "../lib/llmGateway";
 import type { TraceEventType } from "@shared/schema";
-import { executeAgentLoop } from "./agentExecutor";
 import { agentManager } from "./agentOrchestrator";
 import { routeAgentRequest } from "./agentRouter";
 import { buildNativeAgenticFusion, hasNativeAgenticSignal } from "./nativeAgenticFusion";
+import { selectAgentExecutionMode, streamAgentRuntime, type AgentExecutionMode } from "./runtime/agentRuntimeFacade";
 
 // ============================================================================
 // Latency Mode types
@@ -43,8 +43,11 @@ export interface UnifiedChatContext {
   runId: string;
   startTime: number;
   isAgenticMode: boolean;
+  executionMode: AgentExecutionMode;
   latencyMode: LatencyMode;
   resolvedLane: 'fast' | 'deep';
+  runtimeProfile: 'conversational' | 'operational';
+  serverAuthoritative: boolean;
   accessLevel: 'owner' | 'trusted' | 'unknown';
   agentTask?: AgentTask;
 }
@@ -369,7 +372,6 @@ export async function createUnifiedRun(
 
   const hasAttachments = !!(request.attachments && request.attachments.length > 0);
   const hasAgenticSignal = hasNativeAgenticSignal(lastUserMessage);
-  const isAgenticMode: boolean = true;
 
   let resolvedLane = resolveLatencyLane(
     latencyMode,
@@ -379,6 +381,16 @@ export async function createUnifiedRun(
   if (latencyMode === "auto" && hasAgenticSignal) {
     resolvedLane = "deep";
   }
+
+  const executionMode = selectAgentExecutionMode({
+    requestSpec,
+    rawMessage: lastUserMessage,
+    resolvedLane,
+    hasAttachments,
+    hasAgenticSignal,
+  });
+  const isAgenticMode = executionMode !== "conversation";
+  const runtimeProfile = isAgenticMode ? "operational" : "conversational";
 
   try {
     // Ensure the chat exists before persisting agent runs (FK: agent_mode_runs.chat_id -> chats.id).
@@ -403,7 +415,7 @@ export async function createUnifiedRun(
   }
 
   console.log(
-    `[UnifiedChat] Created run ${runId} - intent: ${requestSpec.intent}, agentic: ${isAgenticMode}, lane: ${resolvedLane}, nativeSignal: ${hasAgenticSignal}`,
+    `[UnifiedChat] Created run ${runId} - intent: ${requestSpec.intent}, agentic: ${isAgenticMode}, mode: ${executionMode}, lane: ${resolvedLane}, nativeSignal: ${hasAgenticSignal}`,
   );
 
   return {
@@ -411,8 +423,11 @@ export async function createUnifiedRun(
     runId,
     startTime,
     isAgenticMode,
+    executionMode,
     latencyMode: resolvedLane,
     resolvedLane,
+    runtimeProfile,
+    serverAuthoritative: true,
     accessLevel: request.accessLevel || 'owner',
     agentTask: request.agentTask,
   };
@@ -440,7 +455,7 @@ export async function executeUnifiedChat(
     systemPrompt?: string;
   } = {}
 ): Promise<void> {
-  const { requestSpec, runId, isAgenticMode, resolvedLane } = context;
+  const { requestSpec, runId, isAgenticMode, executionMode, resolvedLane } = context;
 
   // Guard: chatAiRouter already opens SSE early for low-TTFT.
   // Only set headers if they haven't been sent yet.
@@ -453,6 +468,7 @@ export async function executeUnifiedChat(
     res.setHeader("X-Run-Id", runId);
     res.setHeader("X-Intent", requestSpec.intent);
     res.setHeader("X-Agentic-Mode", String(isAgenticMode));
+    res.setHeader("X-Agent-Execution-Mode", executionMode);
     res.setHeader("X-Latency-Lane", resolvedLane);
     res.flushHeaders();
   }
@@ -487,7 +503,8 @@ export async function executeUnifiedChat(
       deliverableType: requestSpec.deliverableType,
       targetAgents: requestSpec.targetAgents,
       attachmentsCount: requestSpec.attachments.length,
-      isAgenticMode
+      isAgenticMode,
+      executionMode,
     }
   });
 
@@ -511,6 +528,7 @@ export async function executeUnifiedChat(
     intent: requestSpec.intent,
     deliverableType: requestSpec.deliverableType,
     isAgenticMode,
+    executionMode,
     latencyLane: resolvedLane,
     timestamp: Date.now()
   });
@@ -623,13 +641,16 @@ export async function executeUnifiedChat(
     let chunkCount = 0;
 
     if (isAgenticMode) {
-      await executeAgentLoop(formattedMessages, res, {
+      await streamAgentRuntime({
+        res,
         runId,
         userId: request.userId,
         chatId: request.chatId,
         requestSpec,
+        executionMode: executionMode === "conversation" ? "direct_agent_loop" : executionMode,
+        initialMessages: formattedMessages,
         maxIterations: 10,
-        accessLevel: context.accessLevel
+        accessLevel: context.accessLevel,
       });
 
       await emitTraceEvent(runId, 'done', {
@@ -644,6 +665,7 @@ export async function executeUnifiedChat(
         durationMs: Date.now() - context.startTime,
         intent: requestSpec.intent,
         isAgenticMode: true,
+        executionMode,
         latencyLane: resolvedLane,
         timestamp: Date.now()
       });

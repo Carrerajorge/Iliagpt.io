@@ -20,9 +20,9 @@ import { ObjectStorageService } from "../replit_integrations/object_storage/obje
 import type { DocumentSemanticModel, Table, Metric, Anomaly, Insight, SuggestedQuestion, SheetSummary } from "../../shared/schemas/documentSemanticModel";
 import { agentEventBus } from "../agent/eventBus";
 import { createUnifiedRun, hydrateSessionState, emitTraceEvent, SseBufferedWriter, resolveLatencyLane } from "../agent/unifiedChatHandler";
-import { executeAgentLoop } from "../agent/agentExecutor";
 import type { UnifiedChatRequest, UnifiedChatContext, LatencyMode } from "../agent/unifiedChatHandler";
 import { createRequestSpec, AttachmentSpecSchema } from "../agent/requestSpec";
+import { streamAgentRuntime } from "../agent/runtime/agentRuntimeFacade";
 import { routeIntent, type IntentResult } from "../services/intentRouter";
 import { questionClassifier, type QuestionClassification } from "../services/questionClassifier";
 import { answerFirstEnforcer } from "../services/answerFirstEnforcer";
@@ -6629,7 +6629,8 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             intentConfidence: unifiedContext?.requestSpec.intentConfidence,
             deliverableType: unifiedContext?.requestSpec.deliverableType,
             attachmentsCount: attachmentsCount,
-            isAgenticMode: unifiedContext?.isAgenticMode
+            isAgenticMode: unifiedContext?.isAgenticMode,
+            executionMode: unifiedContext?.executionMode,
           }
         }),
       "trace task_start");
@@ -6698,31 +6699,16 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         });
       }
 
-      // ── AGENT LOOP INTERCEPT ──────────────────────────────────
-      // Route agentic intents through executeAgentLoop so tools run natively
-      // instead of falling back to plain text instructions.
-      const localFsSignal =
-        /\b(?:carpetas?|caprteas?|careptas?|carpteas?|folders?|directorios?|directories?|archivos?|files?)\b.*\b(?:mac|computadora|pc|laptop|sistema|escritorio|desktop|descargas|downloads|documentos|documents|home|disco)\b|\b(?:analiza|explora|listar|list|revisa|cuenta|count|cu[aá]ntas?)\b.*\b(?:mi\s+(?:mac|computadora|pc)|desktop|escritorio|home)\b/i.test(
-          userMessageText || "",
-        );
-      const agentLoopIntents = new Set(["web_automation", "multi_step_task", "research", "data_analysis", "document_analysis", "coding", "file_management", "system_admin", "creative_coding", "automation", "devops", "scraping"]);
-      const agenticKeywordSignal = /\b(?:busca(?:r|me)?|search|investiga|fetch|navega|browse|ejecuta|run|terminal|command|consola|instala|install|crea\s+(?:un[ao]?\s+)?(?:archivo|carpeta|file|folder|script|programa|app|aplicación|proyecto|project)|escribe?\s+(?:en|un)|edita|edit|descarga|download|analiza|analyze|escanea|scan|compila|compile|construye|build|despliega|deploy|clona|clone|encuentra|find|verifica|check|prueba|test|configura|configure|actualiza|update|modifica|modify|elimina|delete|mueve|move|copia|copy|renombra|rename|extrae|extract|convierte|convert|procesa|process|calcula|calculate|resuelve|solve|programa|program|script|código|code|archivo|file|carpeta|folder|directorio|directory|servidor|server|base de datos|database|api|endpoint|url|http|curl|wget|pip|npm|git|python|node|docker|scrape|crawl|automate|schedule|benchmark|optimize|refactor|migrate|publish)\b/i.test(userMessageText || "");
-      const complexitySignal = (userMessageText || "").length > 120 &&
-        /\b(?:step|steps|first|then|next|after|finally|también|luego|después|además)\b/i.test(userMessageText || "");
-      const shouldRouteThroughAgentLoop =
+      const shouldRouteThroughAgentRuntime =
         shouldRunModel &&
         !!unifiedContext?.requestSpec &&
-        (
-          agenticKeywordSignal
-          || (Boolean(unifiedContext.isAgenticMode) && (
-            agentLoopIntents.has(unifiedContext.requestSpec.intent) || localFsSignal
-          ))
-          || (complexitySignal && agentLoopIntents.has(unifiedContext.requestSpec.intent))
-        );
+        !!unifiedContext?.isAgenticMode &&
+        unifiedContext.executionMode !== "conversation";
 
-      if (shouldRouteThroughAgentLoop) {
+      if (shouldRouteThroughAgentRuntime) {
         const activeIntent = unifiedContext?.requestSpec?.intent || "unknown";
-        console.log(`[Stream] 🤖 AGENT LOOP: routing intent=${activeIntent} through executeAgentLoop`);
+        const activeExecutionMode = unifiedContext?.executionMode || "direct_agent_loop";
+        console.log(`[Stream] 🤖 AGENT RUNTIME: routing intent=${activeIntent} through ${activeExecutionMode}`);
         const origSseWrite = (res as any).sseWrite;
         if (origSseWrite) {
           (res as any).sseWrite = (event: string, data: any) => {
@@ -6741,17 +6727,22 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             ...formattedMessages.map((m: any) => ({ role: m.role as string, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content) }))
           ];
 
-          const agentResponse = await executeAgentLoop(agentMessages, res, {
+          const agentRun = await streamAgentRuntime({
+            res,
             runId: effectiveRunId,
             userId: userId || streamConversationId || "anonymous",
             chatId: effectiveChatIdForPersistence,
             requestSpec: unifiedContext.requestSpec,
-            maxIterations: 25
+            executionMode: unifiedContext.executionMode === "conversation"
+              ? "direct_agent_loop"
+              : unifiedContext.executionMode,
+            initialMessages: agentMessages,
+            maxIterations: 25,
+            accessLevel: unifiedContext.accessLevel,
+            transport: "native_sse",
           });
 
-          // Use the real response from the agent loop (not a placeholder)
-          // The agent loop already wrote chunk SSE events — fullContent is used for DB persistence
-          fullContent = agentResponse || "He procesado tu solicitud de automatización web.";
+          fullContent = agentRun.finalAnswer || "He procesado tu solicitud.";
           if (fullContent.trim()) {
             markFirstToken();
           }
@@ -6764,9 +6755,9 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
               }
             });
           }
-          console.log(`[Stream] Agent loop completed, fullContent length: ${fullContent.length}`);
+          console.log(`[Stream] Agent runtime completed, fullContent length: ${fullContent.length}`);
         } catch (agentError: any) {
-          console.error(`[Stream] Agent loop error:`, agentError?.message || agentError);
+          console.error(`[Stream] Agent runtime error:`, agentError?.message || agentError);
           // If the agent already sent some chunks (e.g. browse_and_act ran but
           // the follow-up LLM failed), use whatever was sent as the final content
           // rather than falling back to a completely different LLM stream.

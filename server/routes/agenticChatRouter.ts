@@ -21,11 +21,10 @@ import { Router, type Request, type Response } from 'express';
 import { randomUUID }                           from 'crypto';
 import { z }                                    from 'zod';
 import { Logger }                               from '../lib/logger';
-import { AgenticLoop, type AgenticEvent }       from '../agentic/core/AgenticLoop';
-import { globalToolRegistry }                   from '../agentic/toolCalling/ToolRegistry';
-import { BUILT_IN_TOOLS }                       from '../agentic/toolCalling/BuiltInTools';
 import { backgroundTaskManager }                from '../tasks/BackgroundTaskManager';
-import type { AgentMessage }                    from '../agentic/toolCalling/UniversalToolCaller';
+import { createUnifiedRun }                     from '../agent/unifiedChatHandler';
+import { streamAgentRuntime }                   from '../agent/runtime/agentRuntimeFacade';
+import { toolRegistry }                         from '../agent/toolRegistry';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -45,20 +44,18 @@ function sseHeaders(res: Response): void {
   res.flushHeaders?.();
 }
 
-/** Parse messages array from request body into AgentMessage[] */
-function parseMessages(raw: unknown): AgentMessage[] {
+type AgenticMessage = {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+};
+
+/** Parse messages array from request body into AgenticMessage[] */
+function parseMessages(raw: unknown): AgenticMessage[] {
   if (!Array.isArray(raw)) return [];
   return (raw as Array<Record<string, unknown>>).map(m => ({
-    role   : (m['role'] as string) ?? 'user',
+    role   : ((m['role'] as string) ?? 'user') as AgenticMessage['role'],
     content: (m['content'] as string) ?? '',
   }));
-}
-
-// Ensure built-in tools are always registered
-function ensureBuiltIns(): void {
-  for (const t of BUILT_IN_TOOLS) {
-    if (!globalToolRegistry.has(t.name)) globalToolRegistry.register(t);
-  }
 }
 
 // ─── Request schemas ──────────────────────────────────────────────────────────
@@ -93,7 +90,6 @@ const InvokeToolSchema = z.object({
 // ─── Router factory ───────────────────────────────────────────────────────────
 
 export function createAgenticChatRouter(): Router {
-  ensureBuiltIns();
   const router = Router();
 
   // ── POST /api/agentic/chat/stream ──────────────────────────────────────────
@@ -108,43 +104,68 @@ export function createAgenticChatRouter(): Router {
     const userId  = getUserId(req);
     const runId   = randomUUID();
     const { messages, model, systemPrompt, maxTurns, temperature, allowedTools, chatId } = parsed.data;
+    const effectiveChatId = chatId ?? `agentic-${runId}`;
 
     sseHeaders(res);
-    sendSse(res, { type: 'run_start', runId, model: model ?? 'auto' });
-
-    const ctrl = new AbortController();
-    req.on('close', () => ctrl.abort());
-
-    // Configure tool permissions
-    const registry = globalToolRegistry;
-    if (allowedTools?.length) {
-      const denied = BUILT_IN_TOOLS
-        .map(t => t.name)
-        .filter(n => !allowedTools.includes(n));
-      registry.setProfile({ deniedTools: denied });
-    }
-
-    const initialMessages: AgentMessage[] = parseMessages(messages);
-    const loop = new AgenticLoop();
-
-    loop.on('event', (event: AgenticEvent) => {
-      sendSse(res, event as Record<string, unknown>);
+    sendSse(res, {
+      type: 'run_start',
+      runId,
+      model: model ?? 'auto',
+      chatId: effectiveChatId,
     });
 
     try {
-      const finalAnswer = await loop.run(initialMessages, {
-        model,
-        systemPrompt,
-        maxTurns,
-        temperature,
+      const initialMessages = parseMessages(messages);
+      const agentMessages = systemPrompt
+        ? [{ role: 'system' as const, content: systemPrompt }, ...initialMessages]
+        : initialMessages;
+
+      const unifiedContext = await createUnifiedRun({
+        messages: agentMessages,
+        chatId: effectiveChatId,
         userId,
-        chatId      : chatId ?? '',
         runId,
-        signal      : ctrl.signal,
-        toolRegistry: registry,
+        latencyMode: 'deep',
       });
 
-      sendSse(res, { type: 'run_complete', runId, finalAnswer });
+      const executionMode =
+        unifiedContext.executionMode === 'conversation'
+          ? 'direct_agent_loop'
+          : unifiedContext.executionMode;
+
+      if (allowedTools?.length) {
+        sendSse(res, {
+          type: 'thinking_delta',
+          runId,
+          thinking: `Restriccion de tools recibida (${allowedTools.length}). El runtime principal aplicara su politica server-side.`,
+          metadata: {
+            allowedTools,
+            executionMode,
+          },
+        });
+      }
+
+      const result = await streamAgentRuntime({
+        res,
+        runId,
+        userId,
+        chatId: effectiveChatId,
+        requestSpec: unifiedContext.requestSpec,
+        executionMode,
+        initialMessages: agentMessages,
+        maxIterations: maxTurns,
+        model,
+        transport: 'agentic_json',
+      });
+
+      sendSse(res, {
+        type: 'run_complete',
+        runId,
+        finalAnswer: result.finalAnswer,
+        executionMode,
+        status: result.status,
+        temperature,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       Logger.error('[AgenticRouter] stream error', { runId, error: msg });
@@ -280,12 +301,11 @@ export function createAgenticChatRouter(): Router {
   // ── GET /api/agentic/tools ─────────────────────────────────────────────────
 
   router.get('/tools', (_req: Request, res: Response) => {
-    const tools = globalToolRegistry.list().map(t => ({
+    const tools = toolRegistry.list().map(t => ({
       name       : t.name,
       description: t.description,
-      category   : t.category,
-      permissions: t.permissions,
-      parameters : t.parameters,
+      safetyPolicy: t.safetyPolicy ?? 'safe',
+      capabilities: t.capabilities ?? [],
     }));
     res.json({ tools });
   });
@@ -301,16 +321,16 @@ export function createAgenticChatRouter(): Router {
     const userId = getUserId(req);
     const { toolName, input } = parsed.data;
 
-    if (!globalToolRegistry.has(toolName)) {
+    if (!toolRegistry.get(toolName)) {
       return res.status(404).json({ error: `Tool '${toolName}' not found` });
     }
 
     try {
-      const result = await globalToolRegistry.execute(toolName, input ?? {}, {
+      const result = await toolRegistry.execute(toolName, input ?? {}, {
         userId,
-        chatId      : '',
-        runId       : randomUUID(),
-        workspaceRoot: process.env['AGENT_WORKSPACE_ROOT'] ?? '/tmp/ilia-workspace',
+        chatId: '',
+        runId: randomUUID(),
+        userPlan: 'free',
       });
 
       res.json(result);
@@ -323,14 +343,19 @@ export function createAgenticChatRouter(): Router {
   // ── GET /api/agentic/stats ─────────────────────────────────────────────────
 
   router.get('/stats', (_req: Request, res: Response) => {
+    const tools = toolRegistry.list();
+    const bySafetyPolicy = Object.fromEntries(
+      (['safe', 'requires_confirmation', 'dangerous'] as const).map((policy) => [
+        policy,
+        tools.filter((tool) => (tool.safetyPolicy ?? 'safe') === policy).length,
+      ]),
+    );
+
     res.json({
       tasks: backgroundTaskManager.stats(),
       tools: {
-        total    : globalToolRegistry.list().length,
-        byCategory: Object.fromEntries(
-          (['file', 'shell', 'web', 'memory', 'agent', 'document', 'code', 'custom'] as const)
-            .map(c => [c, globalToolRegistry.list({ category: c }).length])
-        ),
+        total: tools.length,
+        bySafetyPolicy,
       },
     });
   });
