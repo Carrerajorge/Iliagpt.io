@@ -98,6 +98,20 @@ export function validatePassword(password: string): ValidationResult {
     return { isValid: false, error: 'Esta contraseña es muy común y fácil de adivinar' };
   }
 
+  if (!/[A-Z]/.test(password)) {
+    return {
+      isValid: false,
+      error: 'La contraseña debe incluir al menos una letra mayúscula'
+    };
+  }
+
+  if (!/[0-9]/.test(password)) {
+    return {
+      isValid: false,
+      error: 'La contraseña debe incluir al menos un número'
+    };
+  }
+
   // Check for sequential characters
   if (/(.)\1{3,}/.test(password)) {
     warnings.push('Evita caracteres repetidos consecutivos');

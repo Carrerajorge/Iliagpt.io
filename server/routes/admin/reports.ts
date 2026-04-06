@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { AuthenticatedRequest } from "../../types/express";
 import { storage } from "../../storage";
-import { auditLog, AuditActions } from "../../services/auditLogger";
+import { queryAdminUsers } from "../../services/adminProjection";
 import ExcelJS from "exceljs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
@@ -314,9 +314,14 @@ reportsRouter.post("/generate", async (req, res) => {
                 let rowCount = 0;
 
                 switch (reportType) {
-                    case "user_report":
-                        const users = await storage.getAllUsers();
-                        data = users.map(u => ({
+                    case "user_report": {
+                        const userReport = await queryAdminUsers({
+                            page: 1,
+                            limit: 2000,
+                            sortBy: "createdAt",
+                            sortOrder: "desc",
+                        });
+                        data = userReport.users.map((u: any) => ({
                             email: u.email,
                             fullName: u.fullName || u.username,
                             plan: u.plan,
@@ -325,6 +330,7 @@ reportsRouter.post("/generate", async (req, res) => {
                             createdAt: u.createdAt
                         }));
                         break;
+                    }
 
                     case "ai_models_report":
                         const models = await storage.getAiModels();

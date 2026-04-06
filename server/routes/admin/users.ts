@@ -1,13 +1,16 @@
 import { Request, Router } from "express";
 import { storage } from "../../storage";
 import { db } from "../../db";
-import { users } from "@shared/schema";
+import { apiLogs, users } from "@shared/schema";
 import { hashPassword } from "../../utils/password";
 import { validateBody } from "../../middleware/validateRequest";
 import { asyncHandler } from "../../middleware/errorHandler";
 import { createUserBodySchema } from "../../schemas/apiSchemas";
 import { auditLog, AuditActions } from "../../services/auditLogger";
 import { requireRecentAuth } from "../../middleware/jitElevation";
+import { usageQuotaService } from "../../services/usageQuotaService";
+import { queryAdminUsers } from "../../services/adminProjection";
+import { sql } from "drizzle-orm";
 
 export const usersRouter = Router();
 const USER_ID_PARAM_PATTERN = /^[a-zA-Z0-9_-]{4,128}$/;
@@ -26,7 +29,7 @@ const MAX_CSV_CELL_LENGTH = 4096;
 const MAX_CONVERSATIONS_VIEW = 500;
 
 type SortOrder = "asc" | "desc";
-type UserSortField = "createdAt" | "email" | "queryCount" | "tokensConsumed" | "openclawTokensConsumed" | "lastLoginAt";
+type UserSortField = "createdAt" | "email" | "queryCount" | "tokensConsumed" | "openclawTokensConsumed" | "dailyTokensUsed" | "lastLoginAt";
 type ConversationRecord = { id: string; [key: string]: unknown };
 type RequestWithActor = Request & { user?: { id?: string; email?: string } };
 
@@ -36,6 +39,7 @@ const VALID_SORT_FIELDS = new Set<UserSortField>([
   "queryCount",
   "tokensConsumed",
   "openclawTokensConsumed",
+  "dailyTokensUsed",
   "lastLoginAt",
 ]);
 const VALID_USER_ROLES = new Set(["user", "admin", "moderator", "editor", "viewer", "api_only"]);
@@ -112,15 +116,6 @@ function actorEmail(req: Request): string | undefined {
   return (req as RequestWithActor).user?.email;
 }
 
-function safeToNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = Number(value.trim());
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
 function sanitizeTextInput(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.replace(/[\u0000-\u001f]/g, " ").trim();
@@ -183,6 +178,15 @@ function sanitizeCsvField(value: unknown): string {
 
 function parseNumericField(value: unknown, min = 0): number | undefined {
   if (value === undefined) return undefined;
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed) || parsed < min || !Number.isSafeInteger(parsed)) return undefined;
+  return parsed;
+}
+
+function parseNullableNumericField(value: unknown, min = 0): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === "string" && value.trim() === "") return null;
   const parsed = Number.parseInt(String(value), 10);
   if (!Number.isFinite(parsed) || parsed < min || !Number.isSafeInteger(parsed)) return undefined;
   return parsed;
@@ -305,63 +309,44 @@ function sanitizePatchPayload(payload: unknown): { updates?: Record<string, unkn
     updates.tokensConsumed = tokensConsumed;
   }
 
+  if (input.tokensLimit !== undefined) {
+    const tokensLimit = parseNumericField(input.tokensLimit, 0);
+    if (tokensLimit === undefined) return { error: "Invalid tokensLimit" };
+    updates.tokensLimit = tokensLimit;
+  }
+
+  if (input.dailyInputTokensLimit !== undefined) {
+    const dailyInputTokensLimit = parseNullableNumericField(input.dailyInputTokensLimit, 0);
+    if (dailyInputTokensLimit === undefined) return { error: "Invalid dailyInputTokensLimit" };
+    updates.dailyInputTokensLimit = dailyInputTokensLimit;
+  }
+
+  if (input.dailyOutputTokensLimit !== undefined) {
+    const dailyOutputTokensLimit = parseNullableNumericField(input.dailyOutputTokensLimit, 0);
+    if (dailyOutputTokensLimit === undefined) return { error: "Invalid dailyOutputTokensLimit" };
+    updates.dailyOutputTokensLimit = dailyOutputTokensLimit;
+  }
+
+  if (input.internalNotes !== undefined) {
+    if (input.internalNotes === null) {
+      updates.internalNotes = null;
+    } else {
+      const internalNotes = sanitizeTextInput(input.internalNotes, 4000);
+      if (typeof input.internalNotes === "string" && input.internalNotes.trim() === "") {
+        updates.internalNotes = null;
+      } else if (!internalNotes) {
+        return { error: "Invalid internalNotes" };
+      } else {
+        updates.internalNotes = internalNotes;
+      }
+    }
+  }
+
   if (Object.keys(updates).length === 0) {
     return { error: "No valid fields to update" };
   }
 
   return { updates };
-}
-
-function filterUsers(usersPayload: unknown, filters: {
-  search?: string;
-  status?: string;
-  role?: string;
-  plan?: string;
-  sortBy: UserSortField;
-  sortOrder: SortOrder;
-}): Array<Record<string, unknown>> {
-  if (!Array.isArray(usersPayload)) return [];
-
-  const search = filters.search ? filters.search.toLowerCase() : "";
-  const filtered = usersPayload.filter((row: unknown) => {
-    if (!row || typeof row !== "object") return false;
-    const user = row as Record<string, unknown>;
-    if (filters.status && user.status !== filters.status) return false;
-    if (filters.role && user.role !== filters.role) return false;
-    if (filters.plan && user.plan !== filters.plan) return false;
-
-    if (!search) return true;
-
-    return (
-      String(user.email || "").toLowerCase().includes(search) ||
-      String(user.firstName || "").toLowerCase().includes(search) ||
-      String(user.lastName || "").toLowerCase().includes(search) ||
-      String(user.fullName || "").toLowerCase().includes(search)
-    );
-  });
-
-  const direction = filters.sortOrder === "asc" ? 1 : -1;
-  const sortField = filters.sortBy;
-
-  return filtered.sort((a: Record<string, unknown>, b: Record<string, unknown>) => {
-    const aValue = a?.[sortField];
-    const bValue = b?.[sortField];
-
-    const aNum = safeToNumber(aValue);
-    const bNum = safeToNumber(bValue);
-    if (aNum !== null && bNum !== null) {
-      return (aNum - bNum) * direction;
-    }
-
-    const aDate = aValue instanceof Date ? aValue.getTime() : Date.parse(String(aValue ?? ""));
-    const bDate = bValue instanceof Date ? bValue.getTime() : Date.parse(String(bValue ?? ""));
-    if (!Number.isNaN(aDate) && !Number.isNaN(bDate)) {
-      return (aDate - bDate) * direction;
-    }
-
-    return String(aValue || "")
-      .localeCompare(String(bValue || ""), undefined, { sensitivity: "base", numeric: true }) * direction;
-  });
 }
 
 usersRouter.param("id", (req, res, next, value) => {
@@ -389,29 +374,30 @@ usersRouter.get("/", async (req, res) => {
   try {
     const page = parsePositiveInt(req.query.page, 1, 1, 10000);
     const limit = parsePositiveInt(req.query.limit, 20, 1, MAX_USER_LIST_LIMIT);
-    const offset = (page - 1) * limit;
     const search = sanitizeTextInput(req.query.search, MAX_SEARCH_LENGTH);
     const sortBy = parseSortField(req.query.sortBy);
     const sortOrder = parseSortOrder(req.query.sortOrder);
     const status = parseSetValue(req.query.status, VALID_USER_STATUS);
     const role = parseSetValue(req.query.role, VALID_USER_ROLES);
     const plan = parseSetValue(req.query.plan, VALID_USER_PLANS);
+    const authProvider = sanitizeTextInput(req.query.authProvider, MAX_ENUM_INPUT_LENGTH)?.toLowerCase();
 
-    const allUsers = await storage.getAllUsers();
-    const filteredUsers = filterUsers(allUsers, { search, status, role, plan, sortBy, sortOrder });
-    const paginatedUsers = filteredUsers.slice(offset, offset + limit);
-    const total = filteredUsers.length;
+    const result = await queryAdminUsers({
+      page,
+      limit,
+      search,
+      status,
+      role,
+      plan,
+      authProvider,
+      sortBy,
+      sortOrder,
+    });
 
     res.json({
-      users: paginatedUsers,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: limit > 0 ? Math.ceil(total / limit) : 0,
-        hasNext: page * limit < total,
-        hasPrev: page > 1,
-      },
+      users: result.users,
+      pagination: result.pagination,
+      summary: result.summary,
     });
   } catch (error: unknown) {
     res.status(500).json({ error: safeAdminError(error) });
@@ -435,22 +421,47 @@ usersRouter.get("/export", async (req, res) => {
       : "json";
     const page = parsePositiveInt(req.query.page, 1, 1, 10000);
     const limit = parsePositiveInt(req.query.limit, MAX_USER_EXPORT_LIMIT, 1, MAX_USER_EXPORT_LIMIT);
-    const offset = (page - 1) * limit;
     const search = sanitizeTextInput(req.query.search, MAX_SEARCH_LENGTH);
     const sortBy = parseSortField(req.query.sortBy);
     const sortOrder = parseSortOrder(req.query.sortOrder);
     const status = parseSetValue(req.query.status, VALID_USER_STATUS);
     const role = parseSetValue(req.query.role, VALID_USER_ROLES);
     const plan = parseSetValue(req.query.plan, VALID_USER_PLANS);
-
-    const allUsers = await storage.getAllUsers();
-    const filteredUsers = filterUsers(allUsers, { search, status, role, plan, sortBy, sortOrder });
-    const rows = filteredUsers.slice(offset, offset + limit);
-    const total = filteredUsers.length;
+    const authProvider = sanitizeTextInput(req.query.authProvider, MAX_ENUM_INPUT_LENGTH)?.toLowerCase();
+    const result = await queryAdminUsers({
+      page,
+      limit,
+      search,
+      status,
+      role,
+      plan,
+      authProvider,
+      sortBy,
+      sortOrder,
+    });
+    const rows = result.users;
     const filenameBase = `users_${actorId(req) || "admin"}_${new Date().toISOString().replace(/[:.]/g, "-")}`;
 
     if (format === "csv") {
-      const headers = ["id", "email", "fullName", "plan", "role", "status", "queryCount", "tokensConsumed", "openclawTokensConsumed", "createdAt", "lastLoginAt"];
+      const headers = [
+        "id",
+        "email",
+        "fullName",
+        "plan",
+        "role",
+        "status",
+        "queryCount",
+        "tokensConsumed",
+        "openclawTokensConsumed",
+        "dailyInputTokensUsed",
+        "dailyOutputTokensUsed",
+        "dailyTotalTokensUsed",
+        "dailyInputTokensLimit",
+        "dailyOutputTokensLimit",
+        "dailyLimitReached",
+        "createdAt",
+        "lastLoginAt",
+      ];
       const csvRows = [headers.map(sanitizeCsvField).join(",")];
       rows.forEach((u) => {
         const fullName = [u.fullName || "", u.firstName || "", u.lastName || ""]
@@ -467,6 +478,12 @@ usersRouter.get("/export", async (req, res) => {
           u.queryCount || 0,
           u.tokensConsumed || 0,
           (u as any).openclawTokensConsumed || 0,
+          (u as any).dailyInputTokensUsed || 0,
+          (u as any).dailyOutputTokensUsed || 0,
+          (u as any).dailyTotalTokensUsed || 0,
+          (u as any).dailyInputTokensLimit ?? "",
+          (u as any).dailyOutputTokensLimit ?? "",
+          (u as any).dailyLimitReached ? "true" : "false",
           u.createdAt instanceof Date ? u.createdAt.toISOString() : String(u.createdAt || ""),
           u.lastLoginAt instanceof Date ? u.lastLoginAt.toISOString() : String(u.lastLoginAt || ""),
         ].map(sanitizeCsvField).join(","));
@@ -480,7 +497,14 @@ usersRouter.get("/export", async (req, res) => {
 
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename=${filenameBase}.json`);
-    res.json({ users: rows, pagination: { page, limit, total, returned: rows.length } });
+    res.json({
+      users: rows,
+      pagination: {
+        ...result.pagination,
+        returned: rows.length,
+      },
+      summary: result.summary,
+    });
   } catch (error: unknown) {
     res.status(500).json({ error: safeAdminError(error) });
   }
@@ -493,10 +517,7 @@ usersRouter.post("/", requireRecentAuth(), validateBody(createUserBodySchema), a
         return res.status(400).json({ error: "Invalid email address" });
     }
 
-    const existingUsers = await storage.getAllUsers();
-    const existingUser = existingUsers.find(
-      (u) => String(u.email || "").toLowerCase() === normalizedEmail
-    );
+    const existingUser = await storage.getUserByEmail(normalizedEmail);
     if (existingUser) {
         return res.status(409).json({ error: "A user with this email already exists" });
     }
@@ -611,6 +632,96 @@ usersRouter.delete("/:id", requireRecentAuth(), async (req, res) => {
     } catch (error: unknown) {
         res.status(500).json({ error: safeAdminError(error) });
     }
+});
+
+usersRouter.get("/:id/token-report", async (req, res) => {
+  try {
+    const user = await storage.getUser(req.params.id);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const quota = await usageQuotaService.getDailyTokenQuotaStatus(req.params.id, 0);
+    const historyStart = new Date();
+    historyStart.setHours(0, 0, 0, 0);
+    historyStart.setDate(historyStart.getDate() - 6);
+
+    const historyResult = await db.execute(sql`
+      SELECT
+        TO_CHAR(DATE(${apiLogs.createdAt}), 'YYYY-MM-DD') AS day,
+        COALESCE(SUM(${apiLogs.tokensIn}), 0)::int AS input_tokens,
+        COALESCE(SUM(${apiLogs.tokensOut}), 0)::int AS output_tokens,
+        COUNT(*)::int AS request_count
+      FROM ${apiLogs}
+      WHERE ${apiLogs.userId} = ${req.params.id}
+        AND ${apiLogs.createdAt} >= ${historyStart}
+      GROUP BY DATE(${apiLogs.createdAt})
+      ORDER BY DATE(${apiLogs.createdAt}) DESC
+    `);
+
+    const rawHistory = Array.isArray(historyResult.rows) ? historyResult.rows : [];
+    const historyByDay = new Map<string, { inputTokens: number; outputTokens: number; requestCount: number }>();
+
+    for (const row of rawHistory as Array<Record<string, unknown>>) {
+      const day = String(row.day || "");
+      if (!day) continue;
+      const inputTokens = Number(row.input_tokens || 0);
+      const outputTokens = Number(row.output_tokens || 0);
+      const requestCount = Number(row.request_count || 0);
+      historyByDay.set(day, {
+        inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
+        outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
+        requestCount: Number.isFinite(requestCount) ? requestCount : 0,
+      });
+    }
+
+    const dailyHistory: Array<{
+      day: string;
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+      requestCount: number;
+    }> = [];
+
+    for (let offset = 0; offset < 7; offset += 1) {
+      const day = new Date(historyStart);
+      day.setDate(historyStart.getDate() + offset);
+      const key = day.toISOString().slice(0, 10);
+      const entry = historyByDay.get(key) || { inputTokens: 0, outputTokens: 0, requestCount: 0 };
+      dailyHistory.push({
+        day: key,
+        inputTokens: entry.inputTokens,
+        outputTokens: entry.outputTokens,
+        totalTokens: entry.inputTokens + entry.outputTokens,
+        requestCount: entry.requestCount,
+      });
+    }
+
+    dailyHistory.reverse();
+
+    res.json({
+      today: {
+        inputTokensUsed: quota.inputUsed,
+        outputTokensUsed: quota.outputUsed,
+        totalTokensUsed: quota.totalUsed,
+        inputTokensLimit: quota.inputLimit,
+        outputTokensLimit: quota.outputLimit,
+        inputTokensRemaining: quota.inputRemaining,
+        outputTokensRemaining: quota.outputRemaining,
+        withinLimits:
+          (quota.inputLimit === null || (quota.inputRemaining ?? 0) > 0) &&
+          (quota.outputLimit === null || (quota.outputRemaining ?? 0) > 0),
+        resetAt: quota.resetAt,
+      },
+      lifetime: {
+        totalTokensUsed: user.tokensConsumed || 0,
+        openclawTokensUsed: (user as any).openclawTokensConsumed || 0,
+      },
+      dailyHistory,
+    });
+  } catch (error: unknown) {
+    res.status(500).json({ error: safeAdminError(error) });
+  }
 });
 
 // GET /api/admin/users/:id - Get single user details
@@ -820,7 +931,7 @@ usersRouter.delete("/:id/conversations", requireRecentAuth(), async (req, res) =
     }
 });
 
-// POST /api/admin/users/:id/impersonate - Generate impersonation token (for support)
+// POST /api/admin/users/:id/impersonate - Intentionally disabled until a secure session-scoped flow exists
 usersRouter.post("/:id/impersonate", requireRecentAuth(), async (req, res) => {
     try {
         const userId = req.params.id;
@@ -828,37 +939,20 @@ usersRouter.post("/:id/impersonate", requireRecentAuth(), async (req, res) => {
         if (!adminId) {
             return res.status(401).json({ error: "Unauthorized" });
         }
-        const tokenTTLMs = 60 * 60 * 1000;
-        const user = await storage.getUser(userId);
-        if (!user) {
-            return res.status(404).json({ error: "User not found" });
-        }
-
-        // Generate a temporary token for impersonation (valid for 1 hour)
-        const crypto = await import("crypto");
-        const token = crypto.randomBytes(32).toString("hex");
-        const expiresAt = new Date(Date.now() + tokenTTLMs); // 1 hour
-
-        // Store impersonation token
-        await storage.createImpersonationToken({
-            token,
-            adminId,
-            targetUserId: userId,
-            expiresAt
-        });
 
         await storage.createAuditLog({
-            action: "admin_impersonate_user",
+            action: "admin_impersonation_blocked",
             resource: "users",
             resourceId: userId,
-            details: { expiresAt: expiresAt.toISOString() }
+            details: {
+              adminId,
+              reason: "disabled_until_secure_session_scoped_implementation",
+            }
         });
 
-        res.json({ 
-            success: true, 
-            token,
-            expiresAt,
-            warning: "Use this token responsibly. All actions will be logged."
+        return res.status(403).json({
+            error: "Admin impersonation is disabled until a secure session-scoped implementation is available.",
+            code: "IMPERSONATION_DISABLED",
         });
     } catch (error: unknown) {
         res.status(500).json({ error: safeAdminError(error) });

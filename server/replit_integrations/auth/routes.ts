@@ -13,8 +13,6 @@ import { computeMfaForUser, startMfaLoginChallenge } from "../../services/mfaLog
 import { createLogger } from "../../lib/structuredLogger";
 import { getSettingValue } from "../../services/settingsConfigService";
 import { setLogoutMarker, clearLogoutMarker } from "../../lib/logoutMarker";
-import { db } from "../../db";
-import { sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 const authLoginLogger = createLogger("auth-login");
@@ -52,6 +50,11 @@ function sanitizeUser(user: any): any {
   const { password, ...safeUser } = user;
   return safeUser;
 }
+
+const selfServiceRegisterSchema = registerSchema.pick({
+  email: true,
+  password: true,
+});
 
 // MFA + WebPush helpers live in ../../services/mfaLogin
 
@@ -403,7 +406,7 @@ export function registerAuthRoutes(app: Express): void {
   // Keeps compatibility with legacy schemas by using minimal SQL columns plus fallback.
   app.post("/api/auth/register", authRateLimiter, async (req: any, res) => {
     try {
-      const validation = loginSchema.safeParse(req.body);
+      const validation = selfServiceRegisterSchema.safeParse(req.body);
       if (!validation.success) {
         return res.status(400).json({
           message: "Datos inválidos",
@@ -414,10 +417,6 @@ export function registerAuthRoutes(app: Express): void {
       const email = validation.data.email.toLowerCase().trim();
       const password = validation.data.password;
 
-      if (password.length < 6) {
-        return res.status(400).json({ message: "La contraseña debe tener al menos 6 caracteres" });
-      }
-
       const allowRegistration = await getSettingValue<boolean>("allow_registration", true);
       if (!allowRegistration) {
         return res.status(403).json({ message: "El registro está deshabilitado" });
@@ -425,73 +424,42 @@ export function registerAuthRoutes(app: Express): void {
 
       const existing = await authStorage.getUserByEmail(email);
       const hashedPassword = await hashPassword(password);
-
-      if (existing) {
-        if (existing.password) {
-          return res.status(409).json({ message: "El usuario ya existe" });
-        }
-
-        // Convert a previously passwordless account into email/password account.
-        try {
-          await db.execute(sql`
-            UPDATE users
-            SET password = ${hashedPassword},
-                status = 'active',
-                auth_provider = 'email',
-                email_verified = 'true',
-                updated_at = NOW()
-            WHERE id = ${existing.id}
-          `);
-        } catch (error: any) {
-          const sqlCode = error?.cause?.code || error?.code;
-          if (sqlCode === "42703") {
-            await db.execute(sql`
-              UPDATE users
-              SET password = ${hashedPassword},
-                  status = 'active'
-              WHERE id = ${existing.id}
-            `);
-          } else {
-            throw error;
-          }
-        }
-
-        return res.json({ success: true, message: "Cuenta activada correctamente" });
+      if (existing?.password) {
+        return res.status(409).json({ message: "El usuario ya existe" });
       }
 
-      const newUserId = randomUUID();
-      const username = email.split("@")[0]?.slice(0, 80) || `user_${newUserId.slice(0, 8)}`;
+      const seedSource = existing?.id || email;
+      const normalizedUsername =
+        existing?.username?.trim() ||
+        email.split("@")[0]?.replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 80) ||
+        `user_${seedSource.slice(0, 8)}`;
 
-      try {
-        await db.execute(sql`
-          INSERT INTO users (
-            id, org_id, email, username, password, first_name, last_name,
-            role, plan, status, auth_provider, email_verified, created_at, updated_at
-          )
-          VALUES (
-            ${newUserId}, ${newUserId}, ${email}, ${username}, ${hashedPassword}, ${username}, '',
-            'free', 'free', 'active', 'email', 'true', NOW(), NOW()
-          )
-          ON CONFLICT (email) DO NOTHING
-        `);
-      } catch (error: any) {
-        const sqlCode = error?.cause?.code || error?.code;
-        if (sqlCode === "42703") {
-          await db.execute(sql`
-            INSERT INTO users (id, email, username, password, role, status, created_at, updated_at)
-            VALUES (${newUserId}, ${email}, ${username}, ${hashedPassword}, 'user', 'active', NOW(), NOW())
-            ON CONFLICT (email) DO NOTHING
-          `);
-        } else {
-          throw error;
-        }
-      }
+      await authStorage.upsertUser({
+        id: existing?.id || randomUUID(),
+        email,
+        username: normalizedUsername,
+        fullName: existing?.fullName || normalizedUsername,
+        firstName: existing?.firstName || normalizedUsername,
+        lastName: existing?.lastName || "",
+        role: existing?.role || "user",
+        plan: existing?.plan || "free",
+        status: "active",
+        password: hashedPassword,
+        authProvider: "email",
+        emailVerified: "true",
+        providerSubject: existing?.id || email,
+      });
 
       try {
         await auditLog(req, {
-          action: AuditActions.AUTH_LOGIN,
+          action: existing ? AuditActions.USER_UPDATED : AuditActions.USER_CREATED,
           resource: "auth",
-          details: { email, via: "self_register" },
+          details: {
+            email,
+            via: existing ? "self_register_activate" : "self_register",
+            role: existing?.role || "user",
+            plan: existing?.plan || "free",
+          },
           category: "auth",
           severity: "info",
         });
@@ -499,7 +467,10 @@ export function registerAuthRoutes(app: Express): void {
         console.error("Failed to create audit log:", auditError);
       }
 
-      res.json({ success: true, message: "Cuenta creada correctamente" });
+      res.json({
+        success: true,
+        message: existing ? "Cuenta activada correctamente" : "Cuenta creada correctamente",
+      });
     } catch (error) {
       console.error("[Auth] Register error:", error);
       res.status(500).json({ message: "Error al registrar usuario" });
@@ -516,7 +487,7 @@ export function registerAuthRoutes(app: Express): void {
       }
 
       // Verify admin is configured and credentials match
-	      if (!isAdminConfigured() || email.toLowerCase() !== ADMIN_EMAIL!.toLowerCase() || password !== ADMIN_PASSWORD) {
+	      if (!isAdminConfigured() || email.toLowerCase() !== ADMIN_EMAIL!.toLowerCase() || !(await verifyEnvAdminPassword(password))) {
 	        try {
 	          await auditLog(req, {
 	            action: AuditActions.AUTH_LOGIN_FAILED,

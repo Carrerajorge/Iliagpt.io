@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { X, Chrome, Apple, Building2, Phone, ArrowLeft, Eye, EyeOff, AlertCircle, CheckCircle } from "lucide-react";
 import { validateEmail, validatePassword, validatePasswordMatch, getPasswordStrength } from "@/lib/validation";
+import { apiFetch } from "@/lib/apiClient";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 
 export default function SignupPage() {
@@ -19,6 +20,8 @@ export default function SignupPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
 
   // Validation results
   const emailValidation = useMemo(() => validateEmail(email), [email]);
@@ -35,13 +38,36 @@ export default function SignupPage() {
     }
   };
 
-  const handleSignup = () => {
+  const handleSignup = async () => {
     setTouched({ email: true, password: true, confirmPassword: true });
-    if (isFormValid) {
-      // Email/password signup is completed in the first-party login flow.
-      // Keep the email context and avoid legacy Replit-only redirects.
-      const emailParam = encodeURIComponent(email);
-      window.location.href = `/login?email=${emailParam}`;
+    if (!isFormValid) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    setSubmitError("");
+    try {
+      const response = await apiFetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email.trim(),
+          password,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({} as any));
+      if (!response.ok || !(data as any)?.success) {
+        setSubmitError((data as any)?.message || "No se pudo crear la cuenta");
+        return;
+      }
+
+      const emailParam = encodeURIComponent(email.trim());
+      setLocation(`/login?email=${emailParam}&registered=1`);
+    } catch {
+      setSubmitError("No se pudo crear la cuenta");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -248,12 +274,19 @@ export default function SignupPage() {
 
             <Button
               className="w-full h-12 text-base mt-4 bg-black text-white hover:bg-zinc-900 border border-black/10 rounded-xl font-semibold"
-              onClick={handleSignup}
-              disabled={!isFormValid}
+              onClick={() => void handleSignup()}
+              disabled={!isFormValid || isSubmitting}
               data-testid="button-create-account"
             >
-              Crear cuenta
+              {isSubmitting ? "Creando cuenta..." : "Crear cuenta"}
             </Button>
+
+            {submitError && (
+              <p className="text-sm text-red-600 flex items-center gap-1" data-testid="text-signup-error">
+                <AlertCircle className="h-3 w-3" />
+                {submitError}
+              </p>
+            )}
           </div>
 
           <p className="text-center text-xs text-zinc-500 mt-6">

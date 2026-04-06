@@ -2,7 +2,7 @@ import { Router } from "express";
 import { storage } from "../../storage";
 import { llmGateway } from "../../lib/llmGateway";
 import { getRealtimeMetrics, getExtendedDashboardStats } from "../../services/realtimeMetrics";
-import { auditLog } from "../../services/auditLogger";
+import { getActiveAdminSessions, getAdminUserAggregateSnapshot, getRecentAdminUsers } from "../../services/adminProjection";
 
 export const dashboardRouter = Router();
 
@@ -30,27 +30,27 @@ dashboardRouter.get("/", async (req, res) => {
     try {
         const [
             userStats,
+            userAggregate,
             paymentStats,
             aiModels,
             invoices,
             auditLogs,
             reports,
             settings,
-            allUsers,
             healthStatus
         ] = await Promise.all([
             storage.getUserStats(),
+            getAdminUserAggregateSnapshot(),
             storage.getPaymentStats(),
             storage.getAiModels(),
             storage.getInvoices(),
             storage.getAuditLogs(10),
             storage.getReports(),
             storage.getSettings(),
-            storage.getAllUsers(),
             llmGateway.healthCheck().catch(() => ({ xai: { available: false }, gemini: { available: false } }))
         ]);
 
-        const totalQueries = allUsers.reduce((sum, u) => sum + (u.queryCount || 0), 0);
+        const totalQueries = userAggregate.totalQueries;
         const pendingInvoices = invoices.filter(i => i.status === "pending").length;
         const paidInvoices = invoices.filter(i => i.status === "paid").length;
         const activeModels = aiModels.filter(m => m.status === "active").length;
@@ -115,21 +115,9 @@ dashboardRouter.get("/", async (req, res) => {
 dashboardRouter.get("/new-users", async (req, res) => {
     try {
         const { hours = "24" } = req.query;
-        const hoursNum = parseInt(hours as string, 10) || 24;
+        const hoursNum = Math.max(1, Math.min(24 * 365, parseInt(hours as string, 10) || 24));
         const since = new Date(Date.now() - hoursNum * 60 * 60 * 1000);
-
-        const allUsers = await storage.getAllUsers();
-        const newUsers = allUsers
-            .filter(u => u.createdAt && new Date(u.createdAt) >= since)
-            .sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime())
-            .map(u => ({
-                id: u.id,
-                email: u.email,
-                fullName: u.fullName,
-                authProvider: u.authProvider,
-                createdAt: u.createdAt,
-                status: u.status
-            }));
+        const newUsers = await getRecentAdminUsers(hoursNum, 250);
 
         res.json({
             newUsers,
@@ -145,19 +133,7 @@ dashboardRouter.get("/new-users", async (req, res) => {
 // GET /api/admin/dashboard/active-sessions - Currently active users
 dashboardRouter.get("/active-sessions", async (req, res) => {
     try {
-        const allUsers = await storage.getAllUsers();
-        const now = Date.now();
-        const fifteenMinutesAgo = now - 15 * 60 * 1000;
-
-        const activeSessions = allUsers
-            .filter(u => u.lastLoginAt && new Date(u.lastLoginAt).getTime() >= fifteenMinutesAgo)
-            .map(u => ({
-                id: u.id,
-                email: u.email,
-                fullName: u.fullName,
-                lastLoginAt: u.lastLoginAt,
-                plan: u.plan
-            }));
+        const activeSessions = await getActiveAdminSessions(250);
 
         res.json({
             activeSessions,
