@@ -12,6 +12,10 @@ import { MarkdownRenderer, MarkdownErrorBoundary } from "@/components/markdown-r
 import { CleanDataTableComponents, DocumentBlock, parseDocumentBlocks } from "./MessageParts";
 import { detectClientIntent } from "@/lib/clientIntentDetector";
 import { messageLogger } from "@/lib/logger";
+import {
+    dedupeRenderableMessages,
+    normalizeMessageContentForDedup,
+} from "@/lib/chatMessageIdentity";
 import { AgentArtifact } from "@/components/agent-steps-display";
 
 // Fallback ID for the synthetic streaming message. When a pre-generated
@@ -193,16 +197,23 @@ export function ChatMessageList({
     // streaming text occupies the EXACT SAME position as the final message,
     // resulting in zero visual jump on finalize.
     const mergedMessages = useMemo(() => {
-        if (streamingContent && variant === "default") {
+        const dedupedMessages = dedupeRenderableMessages(messages);
+        const lastAssistant = [...dedupedMessages].reverse().find((msg) => msg.role === "assistant");
+        const shouldSuppressStreaming =
+            !!streamingContent &&
+            !!lastAssistant &&
+            normalizeMessageContentForDedup(lastAssistant.content) === normalizeMessageContentForDedup(streamingContent);
+
+        if (streamingContent && variant === "default" && !shouldSuppressStreaming) {
             const streamingMsg: Message = {
                 id: effectiveStreamingId,
                 role: "assistant",
                 content: streamingContent,
                 timestamp: new Date(),
             };
-            return [...messages, streamingMsg];
+            return dedupeRenderableMessages([...dedupedMessages, streamingMsg]);
         }
-        return messages;
+        return dedupedMessages;
     }, [messages, streamingContent, variant, effectiveStreamingId]);
 
     const assistantIndexMap = useMemo(() => {

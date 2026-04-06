@@ -31,12 +31,18 @@ vi.mock("../storage", () => ({
     getChat: vi.fn(async () => null),
     createChat: vi.fn(async () => null),
     createChatMessage: vi.fn(async () => ({ id: "m1" })),
+    createChatRun: vi.fn(async () => ({ id: "run_created" })),
+    createUserMessageAndRun: vi.fn(async () => ({
+      message: { id: "m_user" },
+      run: { id: "run_created", chatId: "chat_created", clientRequestId: "cr_created", userMessageId: "m_user", status: "pending" },
+    })),
     updateChatMessageContent: vi.fn(async () => null),
     getChatMessages: vi.fn(async () => []),
     getChatRun: vi.fn(async () => null),
     getChatRunByClientRequestId: vi.fn(async () => null),
     claimPendingRun: vi.fn(async () => null),
     updateChatRunStatus: vi.fn(async () => null),
+    findMessageByRequestId: vi.fn(async () => null),
   },
 }));
 
@@ -312,6 +318,55 @@ describe("chat stream isolation", () => {
       const statuses = [first.status, second.status];
       expect(statuses.includes(200)).toBe(true);
       expect(statuses.includes(409)).toBe(true);
+    } finally {
+      await close();
+    }
+  }, 60000);
+
+  it("waits for the run created by /messages and never recreates the user message in /chat/stream", async () => {
+    const app = await makeApp();
+    const { client, close } = await createHttpTestClient(app);
+    const { storage } = await import("../storage");
+
+    const pendingRun = {
+      id: "run_wait",
+      chatId: "chat_wait",
+      clientRequestId: "cr_wait",
+      userMessageId: "msg_wait",
+      assistantMessageId: null,
+      status: "pending",
+      lastSeq: 0,
+      startedAt: null,
+    };
+
+    vi.mocked(storage.getChatRunByClientRequestId)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(pendingRun as any);
+    vi.mocked(storage.claimPendingRun).mockResolvedValue({
+      ...pendingRun,
+      status: "processing",
+      startedAt: new Date(),
+    } as any);
+
+    try {
+      const response = await client
+        .post("/api/chat/stream")
+        .set("x-request-id", "req_wait")
+        .send({
+          messages: [{ role: "user", content: "Hola" }],
+          conversationId: "chat_wait",
+          chatId: "chat_wait",
+          clientRequestId: "cr_wait",
+          userRequestId: "user_req_wait",
+          latencyMode: "fast",
+        });
+
+      expect(response.status).toBe(200);
+      expect(storage.getChatRunByClientRequestId).toHaveBeenCalledTimes(3);
+      expect(storage.claimPendingRun).toHaveBeenCalledWith("chat_wait", "cr_wait");
+      expect((storage as any).createUserMessageAndRun).not.toHaveBeenCalled();
+      expect((storage as any).createChatRun).not.toHaveBeenCalled();
     } finally {
       await close();
     }

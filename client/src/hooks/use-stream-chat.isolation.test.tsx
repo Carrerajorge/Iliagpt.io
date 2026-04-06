@@ -271,6 +271,88 @@ describe("useStreamChat conversation isolation", () => {
     expect(streamingSnapshots.some((v) => v.includes("LONG_RUNNING_TOKEN"))).toBe(false);
   });
 
+  it("supports custom chunk handling without duplicating the default streaming buffer", async () => {
+    const customChunks: string[] = [];
+    const sentMessages: any[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const payload = JSON.parse(String(init?.body || "{}"));
+
+        return makeSseResponse([
+          {
+            event: "chunk",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              content: "hola ",
+            },
+          },
+          {
+            event: "chunk",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              content: "mundo",
+            },
+          },
+          {
+            event: "done",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+            },
+          },
+        ]);
+      })
+    );
+
+    const { result } = renderHook(() => {
+      const [optimisticMessages, setOptimisticMessages] = useState<any[]>([]);
+      const [streamingContent, setStreamingContent] = useState("");
+      const [aiState, setAiState] = useState<any>("idle");
+      const [steps, setAiProcessSteps] = useState<any[]>([]);
+      const streamingContentRef = useRef("");
+
+      const hook = useStreamChat({
+        setOptimisticMessages,
+        onSendMessage: async (message) => {
+          sentMessages.push(message);
+          return undefined;
+        },
+        setStreamingContent,
+        streamingContentRef,
+        setAiState,
+        setAiProcessSteps,
+        getActiveConversationId: () => "chat_custom_chunk",
+      });
+
+      return { hook, optimisticMessages, streamingContent, aiState, steps };
+    });
+
+    await act(async () => {
+      await result.current.hook.stream("/api/chat/stream", {
+        conversationId: "chat_custom_chunk",
+        chatId: "chat_custom_chunk",
+        body: {
+          messages: [{ role: "user", content: "hola" }],
+          conversationId: "chat_custom_chunk",
+          requestId: "req_custom_chunk",
+        },
+        onChunk: (chunk, _event, fullContent) => {
+          customChunks.push(`${chunk}|${fullContent}`);
+          return false;
+        },
+      });
+    });
+
+    expect(customChunks).toEqual(["hola |hola ", "mundo|hola mundo"]);
+    expect(result.current.streamingContent).toBe("");
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].content).toBe("hola mundo");
+  });
+
   it("recovers to idle if stale busy state is set after stream completion", async () => {
     vi.useFakeTimers();
 

@@ -5,6 +5,11 @@ import { useStreamingTransition } from "@/hooks/use-streaming-transition";
 import { useStreamChat } from "@/hooks/use-stream-chat";
 import { apiFetch, getAnonUserIdHeader } from "@/lib/apiClient";
 import {
+  collectMessageIdentitySet,
+  dedupeMessagesByIdentity,
+  upsertMessageByIdentity,
+} from "@/lib/chatMessageIdentity";
+import {
   clearSubmitLock,
   isSubmitLocked,
   normalizeSubmitLockScope,
@@ -813,12 +818,17 @@ export function ChatInterface({
   // Clean up optimistic messages once they appear in props.messages
   useEffect(() => {
     if (optimisticMessages.length > 0 && messages.length > 0) {
-      const propsMessageIds = new Set(messages.map(m => m.id));
-      const propsTempIds = new Set(
-        messages.map((m: any) => m.clientTempId).filter((id: any): id is string => typeof id === "string" && id.length > 0)
-      );
+      const persistedIdentitySet = collectMessageIdentitySet(messages);
       setOptimisticMessages((prev: Message[]) =>
-        prev.filter((m: any) => !propsMessageIds.has(m.id) && !propsTempIds.has(m.id))
+        prev.filter((m: any) => {
+          const identities = collectMessageIdentitySet([m]);
+          for (const identity of identities) {
+            if (persistedIdentitySet.has(identity)) {
+              return false;
+            }
+          }
+          return true;
+        })
       );
     }
   }, [messages, optimisticMessages.length]);
@@ -884,21 +894,15 @@ export function ChatInterface({
 
   // Combined messages: prop messages + optimistic messages + agent runs from store
   const displayMessages = useMemo(() => {
-    const messageKey = (m: any): string => (m?.clientTempId && typeof m.clientTempId === "string" ? m.clientTempId : m.id);
-
-    // Start with optimistic messages, then merge prop messages (prop messages take priority)
-    const msgMap = new Map(optimisticMessages.map((m: any) => [messageKey(m), m]));
-    // Override with prop messages (they are the source of truth once available)
-    messages.forEach((m: any) => msgMap.set(messageKey(m), m));
+    const combinedMessages: Message[] = [...optimisticMessages, ...messages];
 
     // Merge agent runs from the store into messages (use reactive allAgentRuns)
     Object.entries(allAgentRuns).forEach(([messageId, runState]: [string, any]) => {
       // Only include runs for the current chat
       if (runState.chatId === chatId || (!chatId && runState.chatId)) {
-        const existingMsg = msgMap.get(messageId);
+        const existingMsg = combinedMessages.find((msg: any) => msg.id === messageId || msg.clientTempId === messageId);
         if (existingMsg) {
-          // Update existing message with agent run data
-          msgMap.set(messageId, {
+          combinedMessages.push({
             ...existingMsg,
             agentRun: {
               runId: runState.runId,
@@ -911,8 +915,7 @@ export function ChatInterface({
             }
           });
         } else {
-          // Create new message for agent run
-          msgMap.set(messageId, {
+          combinedMessages.push({
             id: messageId,
             role: "assistant" as const,
             content: "",
@@ -931,7 +934,7 @@ export function ChatInterface({
       }
     });
 
-    return Array.from(msgMap.values()).sort((a: any, b: any) =>
+    return dedupeMessagesByIdentity(combinedMessages).sort((a: any, b: any) =>
       new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
     );
   }, [messages, optimisticMessages, allAgentRuns, chatId]);
@@ -1820,6 +1823,68 @@ export function ChatInterface({
     ));
   }, [setOptimisticMessages]);
 
+  const appendOptimisticMessage = useCallback((message: Message) => {
+    setOptimisticMessages((prev) => upsertMessageByIdentity(prev, message));
+  }, [setOptimisticMessages]);
+
+  const setOptimisticDeliveryState = useCallback((
+    messageKey: string,
+    deliveryStatus: Message["deliveryStatus"],
+    deliveryError?: string,
+  ) => {
+    setOptimisticMessages((prev) => prev.map((m: Message) => {
+      if (m.id !== messageKey && m.clientTempId !== messageKey) {
+        return m;
+      }
+
+      if (deliveryStatus === "sent" && m.deliveryStatus === "delivered") {
+        return { ...m, deliveryStatus: "delivered", deliveryError: undefined };
+      }
+
+      return {
+        ...m,
+        deliveryStatus,
+        deliveryError: deliveryStatus === "error" ? deliveryError : undefined,
+      };
+    }));
+  }, [setOptimisticMessages]);
+
+  const clearMessageDeliveryError = useCallback((messageKey: string) => {
+    setOptimisticDeliveryState(messageKey, "sent");
+  }, [setOptimisticDeliveryState]);
+
+  const formatStreamFailureMessage = useCallback((error?: unknown): string => {
+    const rawMessage = (error instanceof Error ? error.message : String(error || "")).trim();
+    const normalizedMessage = rawMessage.toLowerCase();
+
+    if (!normalizedMessage) {
+      return "No se pudo completar la respuesta. Puedes reintentar.";
+    }
+    if (normalizedMessage.includes("quota exceeded") || normalizedMessage.includes("límite") || normalizedMessage.includes("cuota")) {
+      return "Se alcanzó el límite disponible para esta respuesta.";
+    }
+    if (normalizedMessage.includes("run not ready") || normalizedMessage.includes("run_not_ready")) {
+      return "La conversación todavía se estaba preparando. Puedes reintentar.";
+    }
+    if (normalizedMessage.includes("no se recibió ningún evento") || normalizedMessage.includes("first-token")) {
+      return "La respuesta no llegó a tiempo. Puedes reintentar.";
+    }
+    if (normalizedMessage.includes("timeout") || normalizedMessage.includes("demoró demasiado")) {
+      return "La conexión tardó demasiado. Puedes reintentar.";
+    }
+    if (normalizedMessage.includes("failed to fetch") || normalizedMessage.includes("network")) {
+      return "No se pudo mantener la conexión con el servidor. Puedes reintentar.";
+    }
+    if (normalizedMessage.startsWith("http 5")) {
+      return "El servidor no respondió correctamente. Puedes reintentar.";
+    }
+    return rawMessage;
+  }, []);
+
+  const markMessageStreamRetryable = useCallback((messageKey: string, error?: unknown) => {
+    markMessageDeliveryError(messageKey, formatStreamFailureMessage(error));
+  }, [formatStreamFailureMessage, markMessageDeliveryError]);
+
   const runDocumentAnalysisAsync = useCallback(async (opts: {
     userMessageId: string;
     conversationId?: string | null;
@@ -1904,11 +1969,7 @@ export function ChatInterface({
       if (!result.ok && result.error) {
         markMessageDeliveryError(opts.userMessageId, result.error.message);
       } else {
-        setOptimisticMessages((prev) => prev.map((m: Message) =>
-          (m.id === opts.userMessageId || m.clientTempId === opts.userMessageId)
-            ? { ...m, deliveryStatus: "sent", deliveryError: undefined }
-            : m
-        ));
+        clearMessageDeliveryError(opts.userMessageId);
       }
     } catch (analysisError: any) {
       if (analysisError?.name === "AbortError") {
@@ -1922,10 +1983,10 @@ export function ChatInterface({
       throw analysisError;
     }
   }, [
+    clearMessageDeliveryError,
     markMessageDeliveryError,
     setAiProcessStepsForChat,
     setAiStateForChat,
-    setOptimisticMessages,
     chatId,
     streamChat,
   ]);
@@ -2158,7 +2219,7 @@ export function ChatInterface({
       buildErrorMessage: (error, messageId) => ({
         id: messageId || `error-${Date.now()}`,
         role: "assistant",
-        content: error.message || "Error de conexión. Por favor, intenta de nuevo.",
+        content: formatStreamFailureMessage(error),
         timestamp: new Date(),
         requestId: generateRequestId(),
         userMessageId: msgKey,
@@ -2166,11 +2227,18 @@ export function ChatInterface({
     });
 
     if (result.ok) {
+      clearMessageDeliveryError(msgKey);
       requestTitleRefresh(stableChatId);
+      return;
     }
+
+    markMessageStreamRetryable(msgKey, result.error);
   }, [
+    clearMessageDeliveryError,
     displayMessages,
+    formatStreamFailureMessage,
     latencyMode,
+    markMessageStreamRetryable,
     onSendMessage,
     requestTitleRefresh,
     runDocumentAnalysisAsync,
@@ -4629,7 +4697,7 @@ export function ChatInterface({
           requestId: `req_${Date.now()}`
         };
         // Show user message immediately (optimistic update) — BEFORE any async work
-        setOptimisticMessages((prev: Message[]) => [...prev, userMessage]);
+        appendOptimisticMessage(userMessage);
         onSendMessage(userMessage);
 
         // Stream the response using the all-in-one hook
@@ -4685,14 +4753,19 @@ export function ChatInterface({
             content: fullContent,
             fallbackContent: "No se recibió respuesta del servidor.",
           }),
-          buildErrorMessage: (_error, messageId) => ({
+          buildErrorMessage: (error, messageId) => ({
             id: messageId || `error-${Date.now()}`,
             role: "assistant",
-            content: "Error de conexión. Por favor, verifica tu conexión e intenta de nuevo.",
+            content: formatStreamFailureMessage(error),
             timestamp: new Date(),
           }),
         });
-        if (streamResult.ok) requestTitleRefresh(effectiveChatIdForStream);
+        if (streamResult.ok) {
+          clearMessageDeliveryError(userMsgId);
+          requestTitleRefresh(effectiveChatIdForStream);
+        } else {
+          markMessageStreamRetryable(userMsgId, streamResult.error);
+        }
         return;
       }
 
@@ -4755,7 +4828,7 @@ export function ChatInterface({
             attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
           };
           // Show message immediately (optimistic update)
-          setOptimisticMessages((prev: Message[]) => [...prev, userMessage]);
+          appendOptimisticMessage(userMessage);
           onSendMessage(userMessage);
 
           // Clear input IMMEDIATELY after capturing the value to prevent duplicates
@@ -4948,7 +5021,7 @@ export function ChatInterface({
           promptMessageId: genPromptMessageId,
         } as any;
         // Show message immediately (optimistic update) — ZERO async delay
-        setOptimisticMessages((prev: Message[]) => [...prev, userMsg]);
+        appendOptimisticMessage(userMsg);
         // Await hash (was computing in parallel) before server send
         try {
           const genIntegrity = await genIntegrityPromise;
@@ -5201,10 +5274,10 @@ export function ChatInterface({
                 totalSearches: data?.totalSearches,
                 followUpSuggestions: data?.followUpSuggestions,
               }),
-              buildErrorMessage: (_error, messageId) => ({
+              buildErrorMessage: (error, messageId) => ({
                 id: messageId || `error-${Date.now()}`,
                 role: "assistant",
-                content: "Error de conexión. Por favor, intenta de nuevo.",
+                content: formatStreamFailureMessage(error),
                 timestamp: new Date(),
                 requestId: generateRequestId(),
                 userMessageId: userMsgId,
@@ -5212,6 +5285,7 @@ export function ChatInterface({
             });
 
             if (!generationResult.ok) {
+              markMessageStreamRetryable(userMsgId, generationResult.error);
               const quotaCode = (generationResult.error as any)?.payload?.code;
               if (generationResult.response?.status === 402 && quotaCode === "QUOTA_EXCEEDED") {
                 const quota = (generationResult.error as any)?.payload?.quota;
@@ -5225,15 +5299,17 @@ export function ChatInterface({
                 }
               }
             } else {
+              clearMessageDeliveryError(userMsgId);
               requestTitleRefresh(effectiveChatIdForStream);
             }
           } catch (error: any) {
             if (error.name === "AbortError") return;
             console.error("[Generation] Stream Error:", error);
+            markMessageStreamRetryable(userMsgId, error);
             streamTransition.finalize({
               id: (Date.now() + 1).toString(),
               role: "assistant",
-              content: error.message || "Error de conexión. Por favor, intenta de nuevo.",
+              content: formatStreamFailureMessage(error),
               timestamp: new Date(),
               requestId: generateRequestId(),
               userMessageId: userMsgId,
@@ -5276,7 +5352,7 @@ export function ChatInterface({
         };
 
         // Show user message immediately
-        setOptimisticMessages((prev: Message[]) => [...prev, userMessage]);
+        appendOptimisticMessage(userMessage);
         onSendMessage(userMessage);
 
         // Create assistant message placeholder for Super Agent display
@@ -5291,7 +5367,7 @@ export function ChatInterface({
         };
 
         // Add assistant message that will show SuperAgentDisplay
-        setOptimisticMessages((prev: Message[]) => [...prev, assistantMessage]);
+        appendOptimisticMessage(assistantMessage);
 
         // Start Super Agent run in store
         const { startRun, updateState, completeRun } = useSuperAgentStore.getState();
@@ -5697,7 +5773,7 @@ export function ChatInterface({
 
       // Apply Optimistic Update IMMEDIATELY — ZERO async delay
       const optimisticStart = import.meta.env.DEV && typeof performance !== "undefined" ? performance.now() : null;
-      setOptimisticMessages((prev: Message[]) => [...prev, userMsg]);
+      appendOptimisticMessage(userMsg);
       if (optimisticStart !== null) {
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
@@ -5984,7 +6060,7 @@ export function ChatInterface({
               }
             };
 
-            setOptimisticMessages((prev: Message[]) => [...prev, formPreviewMsg]);
+            appendOptimisticMessage(formPreviewMsg);
             onSendMessage(formPreviewMsg);
             // Note: markRequestComplete is called inside addMessage after persistence
             setAiStateForChat("idle", submitConversationId);
@@ -6050,7 +6126,7 @@ export function ChatInterface({
                 webSources: data.webSources,
                 followUpSuggestions: data.followUpSuggestions,
               };
-              setOptimisticMessages((prev: Message[]) => [...prev, gmailResponseMsg]);
+              appendOptimisticMessage(gmailResponseMsg);
               onSendMessage(gmailResponseMsg);
             } else {
               const gmailErrorMsg: Message = {
@@ -6061,7 +6137,7 @@ export function ChatInterface({
                 requestId: generateRequestId(),
                 userMessageId: userMsgId
               };
-              setOptimisticMessages((prev: Message[]) => [...prev, gmailErrorMsg]);
+              appendOptimisticMessage(gmailErrorMsg);
               onSendMessage(gmailErrorMsg);
             }
           } catch (error) {
@@ -6074,7 +6150,7 @@ export function ChatInterface({
               requestId: generateRequestId(),
               userMessageId: userMsgId
             };
-            setOptimisticMessages((prev: Message[]) => [...prev, gmailErrorMsg]);
+            appendOptimisticMessage(gmailErrorMsg);
             onSendMessage(gmailErrorMsg);
           }
 
@@ -6106,7 +6182,7 @@ export function ChatInterface({
               requestId: generateRequestId(),
               userMessageId: userMsgId
             };
-            setOptimisticMessages((prev: Message[]) => [...prev, orchestratorMsg]);
+            appendOptimisticMessage(orchestratorMsg);
             onSendMessage(orchestratorMsg);
           } catch (err) {
             console.error("[Orchestrator] Error:", err);
@@ -6118,7 +6194,7 @@ export function ChatInterface({
               requestId: generateRequestId(),
               userMessageId: userMsgId
             };
-            setOptimisticMessages((prev: Message[]) => [...prev, errorMsg]);
+            appendOptimisticMessage(errorMsg);
             onSendMessage(errorMsg);
           }
 
@@ -6216,7 +6292,7 @@ export function ChatInterface({
                   requestId: generateRequestId(),
                   userMessageId: userMsgId,
                 };
-                setOptimisticMessages((prev: Message[]) => [...prev, aiMsg]);
+                appendOptimisticMessage(aiMsg);
                 onSendMessage(aiMsg);
 
                 setIsGeneratingImage(false);
@@ -6853,8 +6929,6 @@ IMPORTANTE:
                   }
 
                   if (isExcelMode && shouldWriteToDoc) {
-                    streamingContentRef.current = fullContent;
-                    setStreamingContent(fullContent);
                     return true;
                   }
 
@@ -6870,8 +6944,6 @@ IMPORTANTE:
                     return false;
                   }
 
-                  streamingContentRef.current = fullContent;
-                  setStreamingContent(fullContent);
                   return true;
                 },
                 buildFinalMessage: (fullContent, data, messageId) => {
@@ -6922,8 +6994,6 @@ IMPORTANTE:
                   if (isExcelMode && shouldWriteToDoc && docInsertContentRef.current && !isProductionStream) {
                     if (docInsertContentRef.current) {
                       try {
-                        streamingContentRef.current = "";
-                        setStreamingContent("");
                         docInsertContentRef.current(fullContent);
                       } catch (err) {
                         console.error('[ChatInterface] Error streaming to Excel:', err);
@@ -6982,7 +7052,7 @@ IMPORTANTE:
                 buildErrorMessage: (error, messageId) => ({
                   id: messageId || `error-${Date.now()}`,
                   role: "assistant",
-                  content: error?.message || "Error de conexión. Por favor, intenta de nuevo.",
+                  content: formatStreamFailureMessage(error),
                   timestamp: new Date(),
                   requestId: generateRequestId(),
                   userMessageId: userMsgId,
@@ -6990,8 +7060,10 @@ IMPORTANTE:
               });
 
               if (streamResult.ok) {
+                clearMessageDeliveryError(userMsgId);
                 requestTitleRefresh(effectiveStreamChatId);
               } else {
+                markMessageStreamRetryable(userMsgId, streamResult.error);
                 if (streamResult.response?.status === 402 && (streamResult.error as any)?.payload?.code === "QUOTA_EXCEEDED") {
                   const quota = (streamResult.error as any)?.payload?.quota;
                   if (quota) {
@@ -7237,6 +7309,7 @@ IMPORTANTE:
             setUploadedFiles(savedMainFiles);
           }
           if (error?.name !== "AbortError") {
+            markMessageStreamRetryable(userMsgId, error);
             toast({
               title: "Error al procesar",
               description: "Hubo un error al enviar tu mensaje. Tus archivos fueron restaurados.",
@@ -7264,7 +7337,8 @@ IMPORTANTE:
         abortControllerRef.current = null;
       }
     } finally {
-      // Always release the submit lock so the user can send again.
+      // Always release the scoped submit lock so other sends in the same
+      // conversation can proceed while other chats keep running independently.
       clearSubmitLock(submitLockScope);
     }
   };
@@ -7796,19 +7870,17 @@ IMPORTANTE:
                   </div>
                 ) : (
                   /* Welcome Screen */
-                  <div className="relative w-full max-w-4xl flex flex-col items-center justify-center pt-8 pb-12">
-                    {/* Ambient Glow */}
-                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] bg-gradient-to-br from-blue-500/10 via-purple-500/10 to-pink-500/10 blur-[100px] rounded-full pointer-events-none" />
+                  <div className="relative w-full max-w-3xl flex flex-col items-center justify-center py-4 sm:py-6">
+                    <div className="pointer-events-none absolute left-1/2 top-[52%] h-72 w-[34rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/[0.05] blur-[110px]" />
                     
                     <motion.div
                       initial={{ scale: 0.9, opacity: 0, y: 10 }}
                       animate={{ scale: 1, opacity: 1, y: 0 }}
                       transition={{ type: "spring", stiffness: 200, damping: 20 }}
-                      className="mb-8 relative z-10"
+                      className="relative z-10 mb-5"
                     >
                       {activeGpt?.avatar ? (
-                        <div className="relative group">
-                          <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 to-purple-500 rounded-[28px] blur opacity-25 group-hover:opacity-60 transition duration-500"></div>
+                        <div className="relative">
                           <AvatarWithFallback
                             src={activeGpt.avatar}
                             alt={activeGpt.name}
@@ -7816,9 +7888,8 @@ IMPORTANTE:
                           />
                         </div>
                       ) : (
-                        <div className="relative group p-1 flex items-center justify-center">
-                          <div className="absolute -inset-3 bg-gradient-to-r from-blue-500/30 via-purple-500/30 to-pink-500/30 rounded-full blur-xl opacity-0 group-hover:opacity-100 transition duration-700"></div>
-                          <IliaGPTLogo size={88} className="drop-shadow-xl" />
+                        <div className="flex items-center justify-center rounded-[26px] border border-border/50 bg-background/80 p-3.5 shadow-[0_18px_50px_-40px_rgba(15,23,42,0.45)]">
+                          <IliaGPTLogo size={64} />
                         </div>
                       )}
                     </motion.div>
@@ -7827,7 +7898,7 @@ IMPORTANTE:
                       initial={{ y: 20, opacity: 0 }}
                       animate={{ y: 0, opacity: 1 }}
                       transition={{ duration: 0.5, delay: 0.1, ease: "easeOut" }}
-                      className="text-4xl sm:text-5xl font-extrabold text-center mb-5 tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-foreground via-foreground/90 to-muted-foreground relative z-10"
+                      className="relative z-10 mb-3 text-center text-4xl font-semibold tracking-tight text-foreground sm:text-[3.35rem]"
                     >
                       {activeGpt ? activeGpt.name : "¿En qué puedo ayudarte?"}
                     </motion.h1>
@@ -7836,7 +7907,7 @@ IMPORTANTE:
                       initial={{ y: 20, opacity: 0 }}
                       animate={{ y: 0, opacity: 1 }}
                       transition={{ duration: 0.5, delay: 0.2, ease: "easeOut" }}
-                      className="text-muted-foreground text-center max-w-lg text-base sm:text-lg mb-10 leading-relaxed relative z-10 font-medium"
+                      className="relative z-10 mb-6 max-w-2xl text-center text-sm leading-7 text-muted-foreground sm:text-base"
                     >
                       {activeGpt
                         ? (activeGpt.welcomeMessage || activeGpt.description || "¿En qué puedo ayudarte?")
@@ -7855,7 +7926,7 @@ IMPORTANTE:
                         initial={{ y: 20, opacity: 0 }}
                         animate={{ y: 0, opacity: 1 }}
                         transition={{ duration: 0.5, delay: 0.3 }}
-                        className="flex flex-wrap gap-3 justify-center max-w-3xl relative z-10"
+                        className="relative z-10 flex max-w-3xl flex-wrap justify-center gap-2.5"
                       >
                         {activeGpt.conversationStarters
                           .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
@@ -7863,7 +7934,7 @@ IMPORTANTE:
                             <button
                               key={idx}
                               onClick={() => setInput(starter)}
-                              className="px-5 py-3 text-sm border border-border/40 bg-background/60 backdrop-blur-md rounded-2xl hover:bg-muted/80 hover:border-primary/30 hover:shadow-lg transition-all duration-300 text-left font-medium text-foreground/80 hover:text-foreground hover:-translate-y-1 shadow-sm"
+                              className="rounded-full border border-border/55 bg-background/85 px-4 py-2.5 text-left text-sm font-medium text-foreground/80 transition-colors hover:border-foreground/15 hover:bg-muted/40 hover:text-foreground"
                               data-testid={`button-starter-${idx}`}
                             >
                               {starter}
@@ -7878,12 +7949,12 @@ IMPORTANTE:
                         initial={{ y: 20, opacity: 0 }}
                         animate={{ y: 0, opacity: 1 }}
                         transition={{ duration: 0.5, delay: 0.3 }}
-                        className="w-full relative z-10"
+                        className="relative z-10 w-full"
                       >
                         <PromptSuggestions
                           onSelect={handleApplyPromptSuggestion}
                           hasAttachment={uploadedFiles.length > 0}
-                          className="justify-center max-w-3xl mx-auto"
+                          className="mx-auto justify-center"
                         />
                       </motion.div>
                     )}

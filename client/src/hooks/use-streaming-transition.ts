@@ -22,6 +22,7 @@
 
 import { useCallback, useRef } from "react";
 import type { Message } from "@/hooks/use-chats";
+import { upsertMessageByIdentity } from "@/lib/chatMessageIdentity";
 
 import { type AIState, type AiProcessStep } from "@/components/chat-interface/types";
 
@@ -78,7 +79,7 @@ export function useStreamingTransition(deps: StreamingTransitionDeps) {
       finalizingRef.current = true;
 
       // STEP 1: Insert into optimistic messages — immediate DOM presence
-      setOptimisticMessages((prev) => [...prev, message]);
+      setOptimisticMessages((prev) => upsertMessageByIdentity(prev, message));
 
       // STEP 2: Persist to backend (fire-and-forget, errors handled by caller or retry queue)
       onSendMessage(message).catch((err) => {

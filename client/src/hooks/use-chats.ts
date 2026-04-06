@@ -4,6 +4,10 @@ import { apiFetch, getAnonUserIdHeader } from "@/lib/apiClient";
 import { trackWorkspaceEvent } from "@/lib/analytics";
 import { buildAssistantMessage } from "@shared/assistantMessage";
 import { normalizeFollowUpSuggestions } from "@shared/followUpSuggestions";
+import {
+  dedupeMessagesByIdentity,
+  messagesShareIdentity,
+} from "@/lib/chatMessageIdentity";
 
 import { type AgentRunStatus } from "@/stores/agent-store";
 
@@ -1455,17 +1459,7 @@ export function useChats() {
             });
           }
 
-          const byId = new Map<string, Message>();
-          for (const msg of updated) {
-            const existing = byId.get(msg.id);
-            if (!existing) {
-              byId.set(msg.id, msg);
-              continue;
-            }
-            byId.set(msg.id, { ...existing, ...msg });
-          }
-
-          return { ...chat, messages: Array.from(byId.values()) };
+          return { ...chat, messages: dedupeMessagesByIdentity(updated) };
         }));
       };
 
@@ -1789,7 +1783,7 @@ export function useChats() {
         return {
           ...chat,
           messages: chat.messages.map(m => {
-            if (m.id !== tempId && m.clientTempId !== tempId) return m;
+            if (!messagesShareIdentity(m, normalizedMessage) && m.id !== tempId && m.clientTempId !== tempId) return m;
             const nextStatus =
               patch.deliveryStatus === "sent" && m.deliveryStatus === "delivered"
                 ? "delivered"
@@ -1807,7 +1801,7 @@ export function useChats() {
 
         let changed = false;
         let updated = chat.messages.map(m => {
-          if (m.id === tempId || m.clientTempId === tempId) {
+          if (m.id === tempId || m.clientTempId === tempId || messagesShareIdentity(m, normalizedMessage)) {
             changed = true;
             return {
               ...m,
@@ -1839,17 +1833,7 @@ export function useChats() {
           });
         }
 
-        const byId = new Map<string, Message>();
-        for (const msg of updated) {
-          const existing = byId.get(msg.id);
-          if (!existing) {
-            byId.set(msg.id, msg);
-            continue;
-          }
-          byId.set(msg.id, { ...existing, ...msg });
-        }
-
-        return { ...chat, messages: Array.from(byId.values()) };
+        return { ...chat, messages: dedupeMessagesByIdentity(updated) };
       }));
     };
 
@@ -1898,8 +1882,8 @@ export function useChats() {
     }
 
     // Insert into local state (optimistic) if not present.
-    setChats(prev => {
-      const chatExists = prev.some(chat => chat.id === safeChatId || chat.id === resolvedChatId);
+      setChats(prev => {
+        const chatExists = prev.some(chat => chat.id === safeChatId || chat.id === resolvedChatId);
 
       if (!chatExists && isPending) {
         return [...prev, {
@@ -1911,9 +1895,9 @@ export function useChats() {
         }];
       }
 
-      return prev.map(chat => {
-        const matchId = chat.id === safeChatId || chat.id === resolvedChatId;
-        if (!matchId) return chat;
+        return prev.map(chat => {
+          const matchId = chat.id === safeChatId || chat.id === resolvedChatId;
+          if (!matchId) return chat;
 
         const maybeMarkDelivered = (msgs: Message[]): Message[] => {
           if (normalizedMessage.role !== "assistant" || !normalizedMessage.userMessageId) return msgs;
@@ -1930,19 +1914,20 @@ export function useChats() {
           return changed ? patched : msgs;
         };
 
-        const messageExists = chat.messages.some(m => m.id === tempId || m.clientTempId === tempId);
+        const messageExists = chat.messages.some((m) => messagesShareIdentity(m, normalizedMessage));
         if (messageExists) {
           // Retry path: do not mark as complete here. The server ACK is the source of truth.
-          const nextMessages = maybeMarkDelivered(
-            chat.messages.map(m => (m.id === tempId || m.clientTempId === tempId)
+          const nextMessages = maybeMarkDelivered(dedupeMessagesByIdentity(
+            chat.messages.map((m) => messagesShareIdentity(m, normalizedMessage)
               ? {
                 ...m,
+                ...normalizedMessage,
                 deliveryStatus: normalizedMessage.deliveryStatus,
                 deliveryError: normalizedMessage.deliveryError,
               }
               : m
             )
-          );
+          ));
           return {
             ...chat,
             messages: nextMessages,
@@ -1950,7 +1935,7 @@ export function useChats() {
         }
 
         const isFirstMessage = chat.messages.length === 0;
-        const nextMessages = maybeMarkDelivered([...chat.messages, normalizedMessage]);
+        const nextMessages = maybeMarkDelivered(dedupeMessagesByIdentity([...chat.messages, normalizedMessage]));
         return {
           ...chat,
           messages: nextMessages,
