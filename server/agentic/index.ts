@@ -113,10 +113,25 @@ toolRegistry.register({
   parameters  : { query: { type: 'string', description: 'Search query', required: true } },
   parallelSafe: true,
   tokenCost   : 300,
-  handler     : async ({ query }) => ({
-    results: [`[web_search stub] Results for: ${query}`],
-    note   : 'Configure a real search provider to enable web search',
-  }),
+  handler     : async ({ query }) => {
+    // Delegate to DuckDuckGo instant answer API — no API key required
+    try {
+      const url  = `https://api.duckduckgo.com/?q=${encodeURIComponent(String(query))}&format=json&no_redirect=1&no_html=1&skip_disambig=1`;
+      const res  = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      const data = await res.json() as {
+        AbstractText?: string;
+        RelatedTopics?: Array<{ Text?: string; FirstURL?: string }>;
+      };
+      const parts: string[] = [];
+      if (data.AbstractText) parts.push(data.AbstractText);
+      for (const t of (data.RelatedTopics ?? []).slice(0, 4)) {
+        if (t.Text) parts.push(`${t.Text}${t.FirstURL ? `\n${t.FirstURL}` : ''}`);
+      }
+      return { results: parts.length ? parts : [`No results found for: ${query}`] };
+    } catch (err) {
+      return { results: [`Search unavailable: ${(err as Error).message}`] };
+    }
+  },
 });
 
 toolRegistry.register({

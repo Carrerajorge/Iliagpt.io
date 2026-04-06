@@ -258,6 +258,25 @@ async function wireJsTool(): Promise<void> {
   };
 }
 
+// ─── Path sandboxing ──────────────────────────────────────────────────────────
+
+/**
+ * Resolve `filePath` relative to `root` and reject any path that escapes the
+ * sandbox via `..` traversal or absolute references outside the workspace.
+ */
+function resolveSafe(filePath: string, root: string): string {
+  // Always resolve to absolute first
+  const abs = path.isAbsolute(filePath) ? filePath : path.resolve(root, filePath);
+  // Normalize to collapse any ../.. sequences
+  const normalized = path.normalize(abs);
+  // Enforce containment
+  const sandboxRoot = path.normalize(root + path.sep);
+  if (!normalized.startsWith(sandboxRoot) && normalized !== path.normalize(root)) {
+    throw new Error(`Path '${filePath}' escapes workspace sandbox (${root})`);
+  }
+  return normalized;
+}
+
 // ─── Wire file tools ──────────────────────────────────────────────────────────
 
 async function wireFileTools(): Promise<void> {
@@ -267,7 +286,7 @@ async function wireFileTools(): Promise<void> {
       const { path: filePath, encoding } = input as { path: string; encoding?: string };
       try {
         const root = ctx.workspaceRoot ?? os.tmpdir();
-        const abs  = path.isAbsolute(filePath) ? filePath : path.join(root, filePath);
+        const abs  = resolveSafe(filePath, root);
         const text = await fs.readFile(abs, (encoding as BufferEncoding | undefined) ?? 'utf8');
         return { success: true, output: text.toString() };
       } catch (e) {
@@ -282,7 +301,7 @@ async function wireFileTools(): Promise<void> {
       const { path: filePath, content } = input as { path: string; content: string };
       try {
         const root = ctx.workspaceRoot ?? os.tmpdir();
-        const abs  = path.isAbsolute(filePath) ? filePath : path.join(root, filePath);
+        const abs  = resolveSafe(filePath, root);
         await fs.mkdir(path.dirname(abs), { recursive: true });
         await fs.writeFile(abs, content, 'utf8');
         return { success: true, output: `Written ${abs}` };
@@ -300,7 +319,7 @@ async function wireFileTools(): Promise<void> {
       };
       try {
         const root = ctx.workspaceRoot ?? os.tmpdir();
-        const abs  = path.isAbsolute(filePath) ? filePath : path.join(root, filePath);
+        const abs  = resolveSafe(filePath, root);
         const orig = await fs.readFile(abs, 'utf8');
         if (!orig.includes(oldString)) {
           return { success: false, output: `String not found in file: ${filePath}` };
@@ -319,7 +338,7 @@ async function wireFileTools(): Promise<void> {
       const { path: dir, recursive } = input as { path?: string; recursive?: boolean };
       try {
         const root   = ctx.workspaceRoot ?? os.tmpdir();
-        const target = dir ? (path.isAbsolute(dir) ? dir : path.join(root, dir)) : root;
+        const target = dir ? resolveSafe(dir, root) : root;
         const entries = await (recursive
           ? readdirRecursive(target)
           : fs.readdir(target));

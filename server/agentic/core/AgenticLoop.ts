@@ -132,6 +132,11 @@ export class AgenticLoop extends EventEmitter {
     let   finalAnswer  = '';
     let   turn         = 0;
 
+    // ── Reliability guards ─────────────────────────────────────────────────────
+    let rateLimitRetries = 0;                       // cap at 3 retries
+    let noOutputTurns    = 0;                       // detect silent hang turns
+    const toolCallHistory: string[] = [];           // detect stuck loops
+
     Logger.info('[AgenticLoop] starting', { model, provider, maxTurns, tools: tools.length, runId });
 
     const toolCtx: ToolExecutionContext = {
@@ -170,9 +175,37 @@ export class AgenticLoop extends EventEmitter {
       turn++;
 
       try {
-        const { text, toolCalls, stopReason } = useNative
-          ? await this._callNative(model, provider, conversation, tools, maxTokens, temperature, opts.signal)
-          : await this._callGeneric(model, conversation, maxTokens, temperature, opts.signal);
+        // ── Per-turn 60 s timeout via AbortController ────────────────────────
+        const turnController = new AbortController();
+        const turnTimer = setTimeout(() => turnController.abort(), 60_000);
+        const turnSignal = opts.signal
+          ? (AbortSignal as unknown as { any: (s: AbortSignal[]) => AbortSignal }).any
+            ? (AbortSignal as unknown as { any: (s: AbortSignal[]) => AbortSignal }).any([opts.signal, turnController.signal])
+            : turnController.signal
+          : turnController.signal;
+
+        let text: string;
+        let toolCalls: ParsedToolCall[];
+        let stopReason: string;
+        try {
+          ({ text, toolCalls, stopReason } = useNative
+            ? await this._callNative(model, provider, conversation, tools, maxTokens, temperature, turnSignal)
+            : await this._callGeneric(model, conversation, maxTokens, temperature, turnSignal));
+        } finally {
+          clearTimeout(turnTimer);
+        }
+
+        // ── No-output stuck detection ────────────────────────────────────────
+        if (!text && toolCalls.length === 0) {
+          noOutputTurns++;
+          if (noOutputTurns >= 3) {
+            Logger.warn('[AgenticLoop] 3 consecutive empty turns — aborting loop', { runId });
+            finalAnswer = '[Agent produced no output for 3 consecutive turns. Stopping.]';
+            break;
+          }
+        } else {
+          noOutputTurns = 0;
+        }
 
         // Append assistant reply to conversation
         const assistantMsg: AgentMessage = {
@@ -187,9 +220,21 @@ export class AgenticLoop extends EventEmitter {
         } satisfies AgenticEvent);
 
         if (toolCalls.length === 0) {
-          // No tool calls → done
           finalAnswer = text;
           break;
+        }
+
+        // ── Stuck-loop detection: same tool+args 3× in a row ─────────────────
+        for (const call of toolCalls) {
+          const sig = `${call.toolName}:${JSON.stringify(call.input)}`;
+          toolCallHistory.push(sig);
+          const last3 = toolCallHistory.slice(-3);
+          if (last3.length === 3 && last3.every(s => s === sig)) {
+            Logger.warn('[AgenticLoop] stuck loop — same call repeated 3×', { tool: call.toolName, runId });
+            this.emit('event', { type: 'error', message: `Stuck loop: ${call.toolName} called identically 3 times`, retryable: false } satisfies AgenticEvent);
+            finalAnswer = `[Agent stuck in loop calling '${call.toolName}' repeatedly. Stopping.]`;
+            return finalAnswer;
+          }
         }
 
         // Execute tool calls (possibly in parallel for independent calls)
@@ -209,8 +254,17 @@ export class AgenticLoop extends EventEmitter {
         Logger.error('[AgenticLoop] error in turn', { turn, error: msg });
         this.emit('event', { type: 'error', message: msg, retryable: true } satisfies AgenticEvent);
 
+        // ── Exponential backoff for rate limits — max 3 retries (2s/4s/8s) ──
         if (msg.includes('overloaded') || msg.includes('rate_limit')) {
-          await new Promise(r => setTimeout(r, 3000));
+          if (rateLimitRetries >= 3) {
+            Logger.warn('[AgenticLoop] rate-limit retry cap reached', { runId });
+            break;
+          }
+          const delayMs = Math.pow(2, rateLimitRetries + 1) * 1000; // 2s, 4s, 8s
+          rateLimitRetries++;
+          Logger.info('[AgenticLoop] rate limit — backing off', { delayMs, attempt: rateLimitRetries, runId });
+          await new Promise(r => setTimeout(r, delayMs));
+          turn--; // don't consume a turn for the retry
           continue;
         }
         break;
