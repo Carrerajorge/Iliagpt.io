@@ -49,6 +49,67 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "qué tal", "cómo estás", "buenos días", "buenas tardes", "buenas noches",
       "por favor", "ayuda"
     ],
+    ANALYZE_DATA: [
+      "analizar datos", "análisis de datos", "estadísticas", "estadisticas", "visualización",
+      "visualizacion", "gráfico", "grafico", "dashboard", "métricas", "metricas",
+      "tendencias", "correlación", "regresión", "pivot", "tabla dinámica",
+      "kpi", "indicadores", "reporte de datos", "big data", "dataset"
+    ],
+    EXECUTE_CODE: [
+      "ejecutar código", "ejecutar codigo", "python", "javascript", "script",
+      "programar", "compilar", "correr código", "correr script", "código python",
+      "código javascript", "nodejs", "algoritmo", "función", "automatizar con código"
+    ],
+    MANAGE_EMAIL: [
+      "correo", "email", "gmail", "enviar correo", "leer correos", "bandeja de entrada",
+      "enviar email", "redactar correo", "responder correo", "reenviar correo",
+      "correo electrónico", "outlook", "inbox", "mail"
+    ],
+    MANAGE_CALENDAR: [
+      "calendario", "evento", "recordatorio", "cita", "agendar", "programar reunión",
+      "reunión", "meeting", "agenda", "horario", "disponibilidad", "crear evento",
+      "añadir recordatorio", "google calendar", "programar cita"
+    ],
+    MANAGE_TASKS: [
+      "tarea", "tareas", "to-do", "todo", "lista de tareas", "pendiente", "pendientes",
+      "checklist", "asignar tarea", "crear tarea", "completar tarea", "prioridad",
+      "trello", "jira", "asana", "linear", "things"
+    ],
+    SEND_MESSAGE: [
+      "whatsapp", "wsp", "mensaje", "enviar mensaje", "sms", "slack", "telegram",
+      "discord", "teams", "enviar por whatsapp", "mandar mensaje", "chat",
+      "notificar", "avisar", "mensajería"
+    ],
+    MANAGE_DATABASE: [
+      "base de datos", "sql", "consulta", "query", "postgres", "mysql", "mongodb",
+      "firebase", "supabase", "redis", "elasticsearch", "tabla sql", "insertar datos",
+      "consultar base", "migración", "schema"
+    ],
+    AUTOMATE_WORKFLOW: [
+      "automatizar", "automatización", "flujo", "workflow", "cron", "programar tarea",
+      "trigger", "webhook", "pipeline", "proceso automático", "rutina", "bot",
+      "zapier", "n8n", "make", "integromat"
+    ],
+    MANAGE_INFRASTRUCTURE: [
+      "docker", "kubernetes", "k8s", "aws", "azure", "gcp", "servidor", "deploy",
+      "desplegar", "terraform", "ansible", "contenedor", "pod", "ec2", "s3",
+      "lambda", "vercel", "heroku", "devops", "ci/cd", "pipeline ci"
+    ],
+    SECURITY_AUDIT: [
+      "seguridad", "auditoría", "vulnerabilidad", "escaneo", "nmap", "pentesting",
+      "firewall", "ssl", "certificado", "hacking ético", "owasp", "hardening",
+      "encriptación", "contraseña", "1password", "burpsuite"
+    ],
+    MEDIA_GENERATE: [
+      "imagen", "generar imagen", "foto", "ilustración", "diseño", "logo",
+      "video", "generar video", "audio", "voz", "tts", "text to speech",
+      "dall-e", "midjourney", "stable diffusion", "música", "podcast"
+    ],
+    INTEGRATION_ACTION: [
+      "integración", "conectar", "sincronizar", "api", "webhook", "notion",
+      "figma", "github", "gitlab", "stripe", "hubspot", "salesforce",
+      "zendesk", "intercom", "twilio", "sendgrid", "mixpanel", "amplitude"
+    ],
     NEED_CLARIFICATION: []
   },
   en: {
@@ -88,6 +149,65 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "hello", "hi", "hey", "thanks", "thank you", "ok", "yes", "no",
       "good morning", "good afternoon", "good evening", "please", "help"
     ],
+    ANALYZE_DATA: [
+      "analyze data", "data analysis", "statistics", "visualization", "chart",
+      "graph", "dashboard", "metrics", "trends", "correlation", "regression",
+      "pivot table", "kpi", "indicators", "data report", "big data", "dataset"
+    ],
+    EXECUTE_CODE: [
+      "execute code", "run code", "python", "javascript", "script", "program",
+      "compile", "run script", "python code", "javascript code", "nodejs",
+      "algorithm", "function", "automate with code", "coding"
+    ],
+    MANAGE_EMAIL: [
+      "email", "gmail", "send email", "read emails", "inbox", "compose email",
+      "reply email", "forward email", "outlook", "mail", "electronic mail"
+    ],
+    MANAGE_CALENDAR: [
+      "calendar", "event", "reminder", "appointment", "schedule meeting",
+      "meeting", "agenda", "schedule", "availability", "create event",
+      "add reminder", "google calendar", "schedule appointment"
+    ],
+    MANAGE_TASKS: [
+      "task", "tasks", "to-do", "todo", "task list", "pending", "checklist",
+      "assign task", "create task", "complete task", "priority",
+      "trello", "jira", "asana", "linear", "things"
+    ],
+    SEND_MESSAGE: [
+      "whatsapp", "message", "send message", "sms", "slack", "telegram",
+      "discord", "teams", "send via whatsapp", "chat message",
+      "notify", "alert", "messaging"
+    ],
+    MANAGE_DATABASE: [
+      "database", "sql", "query", "postgres", "mysql", "mongodb",
+      "firebase", "supabase", "redis", "elasticsearch", "sql table",
+      "insert data", "query database", "migration", "schema"
+    ],
+    AUTOMATE_WORKFLOW: [
+      "automate", "automation", "workflow", "cron", "schedule task",
+      "trigger", "webhook", "pipeline", "automated process", "routine",
+      "bot", "zapier", "n8n", "make", "integromat"
+    ],
+    MANAGE_INFRASTRUCTURE: [
+      "docker", "kubernetes", "k8s", "aws", "azure", "gcp", "server", "deploy",
+      "terraform", "ansible", "container", "pod", "ec2", "s3",
+      "lambda", "vercel", "heroku", "devops", "ci/cd", "ci pipeline"
+    ],
+    SECURITY_AUDIT: [
+      "security", "audit", "vulnerability", "scan", "nmap", "pentesting",
+      "firewall", "ssl", "certificate", "ethical hacking", "owasp", "hardening",
+      "encryption", "password", "1password", "burpsuite"
+    ],
+    MEDIA_GENERATE: [
+      "image", "generate image", "photo", "illustration", "design", "logo",
+      "video", "generate video", "audio", "voice", "tts", "text to speech",
+      "dall-e", "midjourney", "stable diffusion", "music", "podcast"
+    ],
+    INTEGRATION_ACTION: [
+      "integration", "connect", "sync", "api", "webhook", "notion",
+      "figma", "github", "gitlab", "stripe", "hubspot", "salesforce",
+      "zendesk", "intercom", "twilio", "sendgrid", "mixpanel", "amplitude"
+    ],
     NEED_CLARIFICATION: []
   },
   pt: {
@@ -121,6 +241,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "ola", "olá", "obrigado", "obrigada", "ok", "sim", "não", "bom dia",
       "boa tarde", "boa noite", "por favor", "ajuda"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   },
   fr: {
@@ -153,6 +285,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "bonjour", "salut", "merci", "ok", "oui", "non", "bonsoir",
       "s'il vous plait", "s'il vous plaît", "aide"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   },
   de: {
@@ -186,6 +330,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "hallo", "guten tag", "guten morgen", "danke", "ok", "ja", "nein",
       "guten abend", "bitte", "hilfe"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   },
   it: {
@@ -217,6 +373,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "ciao", "buongiorno", "buonasera", "grazie", "ok", "sì", "no",
       "per favore", "aiuto"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   },
   ar: {
@@ -252,6 +420,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "مرحبا", "أهلا", "شكرا", "نعم", "لا", "حسنا",
       "صباح الخير", "مساء الخير", "من فضلك", "مساعدة"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   },
   hi: {
@@ -287,6 +467,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "नमस्ते", "हैलो", "धन्यवाद", "हां", "नहीं", "ठीक है",
       "शुभ प्रभात", "कृपया", "मदद"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   },
   ja: {
@@ -322,6 +514,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "こんにちは", "おはよう", "ありがとう", "はい", "いいえ",
       "よろしく", "助けて", "お願いします"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   },
   ko: {
@@ -357,6 +561,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "안녕하세요", "안녕", "감사합니다", "네", "아니요",
       "좋아요", "도와주세요", "부탁해요"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   },
   zh: {
@@ -392,6 +608,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "你好", "嗨", "谢谢", "是", "不是", "好的",
       "早上好", "请", "帮忙"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   },
   ru: {
@@ -427,6 +655,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "привет", "здравствуйте", "спасибо", "да", "нет", "хорошо",
       "доброе утро", "пожалуйста", "помощь"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   },
   tr: {
@@ -462,6 +702,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "merhaba", "selam", "teşekkürler", "evet", "hayır", "tamam",
       "günaydın", "lütfen", "yardım"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   },
   id: {
@@ -497,6 +749,18 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
       "halo", "hai", "terima kasih", "ya", "tidak", "oke",
       "selamat pagi", "tolong", "bantuan"
     ],
+    ANALYZE_DATA: [],
+    EXECUTE_CODE: [],
+    MANAGE_EMAIL: [],
+    MANAGE_CALENDAR: [],
+    MANAGE_TASKS: [],
+    SEND_MESSAGE: [],
+    MANAGE_DATABASE: [],
+    AUTOMATE_WORKFLOW: [],
+    MANAGE_INFRASTRUCTURE: [],
+    SECURITY_AUDIT: [],
+    MEDIA_GENERATE: [],
+    INTEGRATION_ACTION: [],
     NEED_CLARIFICATION: []
   }
 };
@@ -931,7 +1195,19 @@ export function ruleBasedMatch(
     SEARCH_WEB: { score: 0, patterns: [] },
     ANALYZE_DOCUMENT: { score: 0, patterns: [] },
     CHAT_GENERAL: { score: 0, patterns: [] },
-    NEED_CLARIFICATION: { score: 0, patterns: [] }
+    NEED_CLARIFICATION: { score: 0, patterns: [] },
+    ANALYZE_DATA: { score: 0, patterns: [] },
+    EXECUTE_CODE: { score: 0, patterns: [] },
+    MANAGE_EMAIL: { score: 0, patterns: [] },
+    MANAGE_CALENDAR: { score: 0, patterns: [] },
+    MANAGE_TASKS: { score: 0, patterns: [] },
+    SEND_MESSAGE: { score: 0, patterns: [] },
+    MANAGE_DATABASE: { score: 0, patterns: [] },
+    AUTOMATE_WORKFLOW: { score: 0, patterns: [] },
+    MANAGE_INFRASTRUCTURE: { score: 0, patterns: [] },
+    SECURITY_AUDIT: { score: 0, patterns: [] },
+    MEDIA_GENERATE: { score: 0, patterns: [] },
+    INTEGRATION_ACTION: { score: 0, patterns: [] }
   };
 
   const isNonLatin = NON_LATIN_LOCALES.includes(locale);

@@ -946,6 +946,43 @@ export function useStreamChat(deps: StreamChatDeps) {
                 onAiStateChange?.("agent_working");
               }
 
+              // Skill Auto-Dispatcher events
+              if (!isStaleConversation && currentEventType === "skill_auto_start") {
+                setAiState("agent_working", conversationId);
+                onAiStateChange?.("agent_working");
+                const skillName = typeof data?.skillName === "string" ? data.skillName : "Skill";
+                setAiProcessSteps?.(
+                  (prev: any[]) => [
+                    ...prev,
+                    {
+                      id: `skill-${data?.skillId || Date.now()}`,
+                      step: "skill_execution",
+                      title: `Ejecutando ${skillName}...`,
+                      message: `Generando resultado profesional con ${skillName}`,
+                      status: "active",
+                    },
+                  ],
+                  conversationId
+                );
+              }
+
+              if (!isStaleConversation && currentEventType === "skill_auto_complete") {
+                setAiProcessSteps?.(
+                  (prev: any[]) =>
+                    prev.map((s: any) =>
+                      s.step === "skill_execution"
+                        ? { ...s, status: "done", title: `${data?.skillName || "Skill"} completado` }
+                        : s
+                    ),
+                  conversationId
+                );
+              }
+
+              // Handle artifact events (from skill dispatcher and production pipeline)
+              if (!isStaleConversation && currentEventType === "artifact" && data?.downloadUrl) {
+                onEvent?.(currentEventType, data);
+              }
+
               if (!isStaleConversation && currentEventType === "task_spawned") {
                 setAiState("agent_working", conversationId);
                 onAiStateChange?.("agent_working");
