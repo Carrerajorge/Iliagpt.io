@@ -32,14 +32,24 @@ export async function getGmailClient(token: GmailOAuthToken): Promise<gmail_v1.G
     expiry_date: token.expiresAt.getTime(),
   });
 
-  // Refresh if expiring within 60s
   if (token.expiresAt.getTime() < Date.now() + 60_000) {
-    const { credentials } = await oauth2Client.refreshAccessToken();
-    await storage.updateGmailOAuthToken(token.userId, {
-      accessToken: credentials.access_token!,
-      expiresAt: new Date(credentials.expiry_date!),
-    });
-    oauth2Client.setCredentials(credentials);
+    try {
+      const { credentials } = await oauth2Client.refreshAccessToken();
+      await storage.updateGmailOAuthToken(token.userId, {
+        accessToken: credentials.access_token!,
+        expiresAt: new Date(credentials.expiry_date!),
+      });
+      oauth2Client.setCredentials(credentials);
+    } catch (error: any) {
+      const msg = error?.message || String(error);
+      if (msg.includes('invalid_grant')) {
+        console.warn('[Gmail OAuth] Refresh token revoked/expired for user:', token.userId);
+        try { await storage.deleteGmailOAuthToken(token.userId); } catch {}
+        throw new Error('Gmail connection expired. Please reconnect your Gmail account.');
+      }
+      console.warn('[Gmail OAuth] Token refresh failed:', msg.substring(0, 150));
+      throw new Error('Gmail token refresh failed. Please reconnect your Gmail account.');
+    }
   }
 
   return google.gmail({ version: "v1", auth: oauth2Client });
