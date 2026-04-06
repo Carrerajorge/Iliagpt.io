@@ -774,6 +774,147 @@ class PgVectorHybridRetrieveStage implements RetrieveStage {
   }
 }
 
+// ─── Qdrant Retrieve Stage (optional, gracefully degrades) ──────────────────
+
+class QdrantRetrieveStage implements RetrieveStage {
+  private _available: boolean | null = null;
+
+  private async isAvailable(): Promise<boolean> {
+    if (this._available !== null) return this._available;
+    if (!process.env.QDRANT_URL) {
+      this._available = false;
+      return false;
+    }
+    try {
+      const qdrant = await import('../lib/integrations/qdrantProvider');
+      const health = await qdrant.healthCheck();
+      this._available = health.ok;
+    } catch {
+      this._available = false;
+    }
+    return this._available;
+  }
+
+  async retrieve(query: RetrievedQuery): Promise<RetrievedChunk[]> {
+    if (!(await this.isAvailable())) return [];
+
+    try {
+      const qdrant = await import('../lib/integrations/qdrantProvider');
+      const queryVec = await getSemanticEmbeddingVector(query.text, {
+        dimensions: 1536,
+        purpose: 'query',
+        cacheNamespace: 'unified-rag',
+      });
+
+      const mustFilters: Array<Record<string, unknown>> = [];
+      if (query.userId) {
+        mustFilters.push({ key: 'userId', match: { value: query.userId } });
+      }
+      if (query.tenantId) {
+        mustFilters.push({ key: 'tenantId', match: { value: query.tenantId } });
+      }
+      const filter: Record<string, unknown> = mustFilters.length > 0 ? { must: mustFilters } : {};
+
+      const results = await qdrant.searchVectors(
+        queryVec,
+        query.topK * 2,
+        Object.keys(filter).length > 0 ? filter : undefined,
+      );
+
+      return results.map((r, idx) => ({
+        id: String(r.payload?.pgChunkId || r.id),
+        documentId: String(r.payload?.sourceId || r.payload?.source || 'unknown'),
+        content: String(r.payload?.content || ''),
+        chunkIndex: Number(r.payload?.chunkIndex || 0),
+        metadata: (r.payload || {}) as Record<string, unknown>,
+        tokens: Math.ceil(String(r.payload?.content || '').split(/\s+/).length * 1.3),
+        score: r.score,
+        source: String(r.payload?.source || 'qdrant'),
+        retrievalMethod: 'vector' as const,
+      }));
+    } catch (err) {
+      Logger.warn('[QdrantRetrieve] Search failed, skipping', { error: (err as Error).message });
+      return [];
+    }
+  }
+}
+
+// ─── Fused Retrieve Stage (merges pgvector + Qdrant via RRF) ────────────────
+
+class FusedRetrieveStage implements RetrieveStage {
+  private _pgStage: PgVectorHybridRetrieveStage;
+  private _qdrantStage: QdrantRetrieveStage;
+
+  constructor() {
+    this._pgStage = new PgVectorHybridRetrieveStage();
+    this._qdrantStage = new QdrantRetrieveStage();
+  }
+
+  async retrieve(query: RetrievedQuery): Promise<RetrievedChunk[]> {
+    const [pgResults, qdrantResults] = await Promise.allSettled([
+      this._pgStage.retrieve(query),
+      this._qdrantStage.retrieve(query),
+    ]);
+
+    const pgChunks = pgResults.status === 'fulfilled' ? pgResults.value : [];
+    const qdChunks = qdrantResults.status === 'fulfilled' ? qdrantResults.value : [];
+
+    if (qdChunks.length === 0) return pgChunks;
+
+    const merged = new Map<string, RetrievedChunk & { pgRank: number; qdRank: number }>();
+    const seenContent = new Set<string>();
+
+    pgChunks.forEach((chunk, idx) => {
+      const hash = crypto.createHash('sha256').update(chunk.content).digest('hex').slice(0, 16);
+      seenContent.add(hash);
+      merged.set(chunk.id, { ...chunk, pgRank: idx + 1, qdRank: pgChunks.length + qdChunks.length + 1 });
+    });
+
+    qdChunks.forEach((chunk, idx) => {
+      if (!chunk.content) return;
+      const hash = crypto.createHash('sha256').update(chunk.content).digest('hex').slice(0, 16);
+      if (seenContent.has(hash)) {
+        const existing = [...merged.values()].find(m => {
+          const mHash = crypto.createHash('sha256').update(m.content).digest('hex').slice(0, 16);
+          return mHash === hash;
+        });
+        if (existing) {
+          existing.qdRank = idx + 1;
+        }
+        return;
+      }
+      seenContent.add(hash);
+      merged.set(`qd-${chunk.id}`, { ...chunk, pgRank: pgChunks.length + qdChunks.length + 1, qdRank: idx + 1 });
+    });
+
+    const fused = Array.from(merged.values()).map(c => {
+      const rrfScore = 0.6 * (1 / (RRF_K + c.pgRank)) + 0.4 * (1 / (RRF_K + c.qdRank));
+      return {
+        id: c.id,
+        documentId: c.documentId,
+        content: c.content,
+        chunkIndex: c.chunkIndex,
+        metadata: c.metadata,
+        tokens: c.tokens,
+        score: rrfScore,
+        source: c.source,
+        retrievalMethod: (c.pgRank <= pgChunks.length && c.qdRank <= qdChunks.length ? 'hybrid' : c.pgRank <= pgChunks.length ? 'vector' : 'vector') as 'vector' | 'bm25' | 'hybrid' | 'metadata',
+      };
+    });
+
+    fused.sort((a, b) => b.score - a.score);
+
+    Logger.info('[FusedRetrieve] Merged results', {
+      pgCount: pgChunks.length,
+      qdrantCount: qdChunks.length,
+      fusedCount: fused.length,
+      returned: Math.min(fused.length, query.topK),
+    });
+
+    return fused.slice(0, query.topK);
+  }
+}
+
 // ─── Score-based rerank with relevance threshold ────────────────────────────
 
 class ScoreBasedRerankStage implements RerankStage {
@@ -1183,7 +1324,7 @@ export class UnifiedRAGPipeline extends EventEmitter {
       chunk: new DefaultChunkStage(),
       embed: new DefaultEmbedStage(),
       index: new PgVectorIndexStage(),
-      retrieve: new PgVectorHybridRetrieveStage(),
+      retrieve: new FusedRetrieveStage(),
       rerank: new ScoreBasedRerankStage(relevanceThreshold),
       generate: new RobustGenerateStage(ragTemplate),
       options: {

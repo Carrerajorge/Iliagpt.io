@@ -1,15 +1,12 @@
 import {
   Document,
   VectorStoreIndex,
-  serviceContextFromDefaults,
-  SimpleDirectoryReader,
+  Settings,
   storageContextFromDefaults,
-  OpenAI as LlamaOpenAI,
-  OpenAIEmbedding,
 } from "llamaindex";
+import { Logger } from "../logger";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 
 export interface LlamaIndexConfig {
   model?: string;
@@ -29,33 +26,27 @@ const DEFAULT_CONFIG: LlamaIndexConfig = {
   similarityTopK: 5,
 };
 
-export function createServiceContext(config: Partial<LlamaIndexConfig> = {}) {
+let _settingsConfigured = false;
+
+function ensureSettings(config: Partial<LlamaIndexConfig> = {}) {
+  if (_settingsConfigured) return;
   const merged = { ...DEFAULT_CONFIG, ...config };
-
-  const llm = new LlamaOpenAI({
-    model: merged.model!,
-    temperature: merged.temperature,
-    apiKey: OPENAI_API_KEY,
-  });
-
-  const embedModel = new OpenAIEmbedding({
-    model: merged.embeddingModel!,
-    apiKey: OPENAI_API_KEY,
-  });
-
-  return serviceContextFromDefaults({
-    llm,
-    embedModel,
-    chunkSize: merged.chunkSize,
-    chunkOverlap: merged.chunkOverlap,
-  });
+  try {
+    Settings.chunkSize = merged.chunkSize ?? 1024;
+    Settings.chunkOverlap = merged.chunkOverlap ?? 200;
+    _settingsConfigured = true;
+  } catch (err) {
+    Logger.warn("[LlamaIndex] Settings configuration warning", {
+      error: (err as Error).message,
+    });
+  }
 }
 
 export async function indexDocuments(
   documents: Array<{ text: string; metadata?: Record<string, unknown> }>,
   config?: Partial<LlamaIndexConfig>,
 ): Promise<VectorStoreIndex> {
-  const serviceContext = createServiceContext(config);
+  ensureSettings(config);
 
   const docs = documents.map(
     (d) =>
@@ -65,7 +56,7 @@ export async function indexDocuments(
       }),
   );
 
-  const index = await VectorStoreIndex.fromDocuments(docs, { serviceContext });
+  const index = await VectorStoreIndex.fromDocuments(docs);
   return index;
 }
 
@@ -102,17 +93,6 @@ export async function queryIndex(
   };
 }
 
-export async function indexDirectory(
-  dirPath: string,
-  config?: Partial<LlamaIndexConfig>,
-): Promise<VectorStoreIndex> {
-  const serviceContext = createServiceContext(config);
-  const reader = new SimpleDirectoryReader();
-  const docs = await reader.loadData(dirPath);
-  const index = await VectorStoreIndex.fromDocuments(docs, { serviceContext });
-  return index;
-}
-
 export async function ragQuery(
   documents: Array<{ text: string; metadata?: Record<string, unknown> }>,
   query: string,
@@ -120,6 +100,26 @@ export async function ragQuery(
 ): Promise<QueryResult> {
   const index = await indexDocuments(documents, config);
   return queryIndex(index, query, config);
+}
+
+let _cachedIndex: VectorStoreIndex | null = null;
+let _cachedDocCount = 0;
+
+export async function getOrCreateIndex(
+  documents: Array<{ text: string; metadata?: Record<string, unknown> }>,
+  config?: Partial<LlamaIndexConfig>,
+): Promise<VectorStoreIndex> {
+  if (_cachedIndex && _cachedDocCount === documents.length) {
+    return _cachedIndex;
+  }
+  _cachedIndex = await indexDocuments(documents, config);
+  _cachedDocCount = documents.length;
+  return _cachedIndex;
+}
+
+export function invalidateCache(): void {
+  _cachedIndex = null;
+  _cachedDocCount = 0;
 }
 
 export function isAvailable(): boolean {

@@ -11,6 +11,8 @@ import { ragChunks, type InsertRagChunk } from "@shared/schema/rag";
 import { eq, and, sql } from "drizzle-orm";
 import { getEmbedding } from "../embeddings";
 import { chunkDocument, type SemanticChunk, type ChunkingOptions } from "../semanticChunker";
+import { Logger } from "../../lib/logger";
+import * as qdrant from "../../lib/integrations/qdrantProvider";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -70,6 +72,62 @@ function contentHash(text: string): string {
 
 function estimateTokens(text: string): number {
     return Math.ceil(text.length / 4);
+}
+
+let _qdrantAvailable: boolean | null = null;
+
+async function isQdrantAvailable(): Promise<boolean> {
+    if (_qdrantAvailable !== null) return _qdrantAvailable;
+    if (!process.env.QDRANT_URL) {
+        _qdrantAvailable = false;
+        return false;
+    }
+    try {
+        const health = await qdrant.healthCheck();
+        _qdrantAvailable = health.ok;
+        if (health.ok) {
+            await qdrant.ensureCollection(1536, "Cosine");
+            Logger.info("[Ingestion] Qdrant dual-write enabled");
+        }
+    } catch {
+        _qdrantAvailable = false;
+    }
+    return _qdrantAvailable;
+}
+
+function chunkIdToQdrantId(id: string): string {
+    const hash = crypto.createHash("md5").update(id).digest("hex");
+    return [
+        hash.slice(0, 8),
+        hash.slice(8, 12),
+        hash.slice(12, 16),
+        hash.slice(16, 20),
+        hash.slice(20, 32),
+    ].join("-");
+}
+
+async function qdrantDualWrite(
+    chunkId: string,
+    vector: number[],
+    payload: Record<string, unknown>,
+): Promise<void> {
+    const available = await isQdrantAvailable();
+    if (!available) return;
+
+    try {
+        await qdrant.upsertVectors([
+            {
+                id: chunkIdToQdrantId(chunkId),
+                vector,
+                payload: { ...payload, pgChunkId: chunkId },
+            },
+        ]);
+    } catch (err) {
+        Logger.warn("[Ingestion] Qdrant dual-write failed for chunk", {
+            chunkId,
+            error: (err as Error).message,
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +282,21 @@ export async function ingest(
         const [inserted] = await db.insert(ragChunks).values(row).returning({ id: ragChunks.id });
         chunkIds.push(inserted.id);
         created++;
+
+        if (embeddings[i] && embeddings[i].length > 0) {
+            try {
+                await qdrantDualWrite(inserted.id, embeddings[i], {
+                    content: chunk.content,
+                    userId: options.userId,
+                    tenantId: options.tenantId,
+                    source: source.source,
+                    sourceId: source.sourceId,
+                    title: source.title,
+                    chunkIndex: chunk.chunkIndex,
+                    contentHash: hash,
+                });
+            } catch {}
+        }
     }
 
     // 4. Update tsvector via raw SQL (drizzle doesn't support generated tsvectors easily)
@@ -261,6 +334,26 @@ export async function deleteBySource(
         .delete(ragChunks)
         .where(and(...conditions))
         .returning({ id: ragChunks.id });
+
+    if (deleted.length > 0) {
+        try {
+            const available = await isQdrantAvailable();
+            if (available) {
+                const filter: Record<string, unknown> = {
+                    must: [
+                        { key: "userId", match: { value: userId } },
+                        { key: "source", match: { value: source } },
+                        ...(sourceId ? [{ key: "sourceId", match: { value: sourceId } }] : []),
+                    ],
+                };
+                await qdrant.deleteByFilter(filter);
+            }
+        } catch (err) {
+            Logger.warn("[Ingestion] Qdrant delete sync failed", {
+                error: (err as Error).message,
+            });
+        }
+    }
 
     return deleted.length;
 }

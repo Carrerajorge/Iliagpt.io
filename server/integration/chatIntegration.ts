@@ -30,6 +30,7 @@ import {
   sendSse,
 } from './streamingWiring';
 import type { AgentMessage } from '../agentic/toolCalling/UniversalToolCaller';
+import * as openaiAgents from '../lib/integrations/openaiAgents';
 
 // ─── Triage ───────────────────────────────────────────────────────────────────
 
@@ -164,6 +165,67 @@ async function handleAgentically(
   }
 }
 
+// ─── OpenAI Agents SDK handler (alternative to AgenticLoop) ─────────────────
+
+function shouldUseOpenAIAgents(model: string): boolean {
+  if (!openaiAgents.isAvailable()) return false;
+  return /^gpt-/.test(model) || model.includes('openai/');
+}
+
+async function handleWithOpenAIAgents(
+  req : Request,
+  res : Response,
+  body: ChatStreamBody,
+): Promise<void> {
+  const userId = getUserId(req);
+  const runId  = randomUUID();
+  const model  = resolveModel(body.model);
+
+  Logger.info('[ChatIntegration] routing to OpenAI Agents SDK', { runId, userId, model });
+
+  try {
+    const toolCtx = { userId, chatId: body.chatId ?? '', runId, workspaceRoot: '/tmp/ilia-workspace' };
+
+    const registry = globalToolRegistry;
+    let filteredRegistry = registry;
+    if (body.allowedTools?.length) {
+      const denied = registry
+        .list()
+        .map(t => t.name)
+        .filter(n => !body.allowedTools!.includes(n));
+      registry.setProfile({ deniedTools: denied });
+      filteredRegistry = registry;
+    }
+
+    const agentTools = await openaiAgents.convertToolRegistryToAgentTools(
+      filteredRegistry,
+      toolCtx,
+    );
+
+    const agent = await openaiAgents.createAgent({
+      name: 'IliaGPT-Agent',
+      instructions: body.systemPrompt || 'You are IliaGPT, a helpful AI assistant. Respond in the same language as the user.',
+      model: model.replace('openai/', ''),
+      tools: agentTools.slice(0, 20),
+    });
+
+    const lastUser = [...body.messages].reverse().find(m => m.role === 'user');
+    const userInput = typeof lastUser?.content === 'string' ? lastUser.content : JSON.stringify(lastUser?.content || '');
+
+    const result = await openaiAgents.runAgent(agent, userInput);
+
+    const session = createSseSession(res, runId);
+    sendSse(res, { type: 'run_start', runId, model, engine: 'openai-agents-sdk' });
+    sendSse(res, { type: 'content_delta', delta: result.output, snapshot: result.output });
+    sendSse(res, { type: 'run_complete', runId, finalAnswer: result.output });
+    session.close();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    Logger.warn('[ChatIntegration] OpenAI Agents SDK failed, falling back to AgenticLoop', { runId, error: msg });
+    await handleAgentically(req, res, body);
+  }
+}
+
 // ─── Middleware factory ───────────────────────────────────────────────────────
 
 /**
@@ -185,7 +247,12 @@ export function createAgenticInterceptor() {
 
     // Explicit opt-in
     if (body.agentic === true) {
-      await handleAgentically(req, res, body);
+      const model = resolveModel(body.model);
+      if (shouldUseOpenAIAgents(model)) {
+        await handleWithOpenAIAgents(req, res, body);
+      } else {
+        await handleAgentically(req, res, body);
+      }
       return;
     }
 

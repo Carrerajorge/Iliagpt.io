@@ -47,6 +47,12 @@ Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment varia
 - **Playwright**: Browser automation.
 - **Tesseract.js**: OCR for image text extraction.
 
+### Runtime Integration Modules
+- **Qdrant Dual-Write**: Ingestion pipeline writes to both pgvector and Qdrant (when `QDRANT_URL` env var is set). `FusedRetrieveStage` merges results via RRF fusion. Gracefully skips when Qdrant is unavailable.
+- **LlamaIndex RAG**: Available at `POST /api/rag/llamaindex/query` for advanced document Q&A. Uses OpenAI embeddings and LLM via `OPENAI_API_KEY`.
+- **OpenAI Agents SDK**: Auto-routes GPT-model agentic requests through the SDK. Falls back to built-in `AgenticLoop` on failure. Respects `allowedTools` restrictions.
+- **Integration Health**: `GET /api/integrations/status` returns availability and latency for all three integrations.
+
 ### OpenClaw Integration
 - **OpenClaw Control UI**: Served at `/openclaw-ui` with auto-connect.
 - **WebSocket Gateway**: For OpenClaw communication.

@@ -715,4 +715,57 @@ router.post('/advanced/index', upload.single('file'), async (req: Request, res: 
   }
 });
 
+router.post('/llamaindex/query', async (req: Request, res: Response) => {
+  try {
+    const { query, documents, config } = req.body;
+
+    if (!query || typeof query !== 'string') {
+      return res.status(400).json({ error: 'Query string is required' });
+    }
+
+    const llamaIndex = await import('../lib/integrations/llamaIndexRAG');
+
+    if (!llamaIndex.isAvailable()) {
+      return res.status(503).json({ error: 'LlamaIndex not available (missing OPENAI_API_KEY)' });
+    }
+
+    let docs: Array<{ text: string; metadata?: Record<string, unknown> }> = [];
+
+    if (documents && Array.isArray(documents) && documents.length > 0) {
+      docs = documents.map((d: any) => ({
+        text: typeof d === 'string' ? d : d.text || d.content || JSON.stringify(d),
+        metadata: typeof d === 'object' && d !== null ? (d.metadata || {}) : {},
+      }));
+    } else {
+      const { fileIds } = req.body;
+      if (fileIds && Array.isArray(fileIds) && fileIds.length > 0) {
+        const chunks = await db
+          .select({ content: fileChunks.content })
+          .from(fileChunks)
+          .where(inArray(fileChunks.fileId, fileIds));
+        docs = chunks.map(c => ({ text: c.content }));
+      }
+    }
+
+    if (docs.length === 0) {
+      return res.status(400).json({ error: 'No documents provided. Send `documents` array or `fileIds`.' });
+    }
+
+    const result = await llamaIndex.ragQuery(docs, query, config);
+
+    res.json({
+      success: true,
+      engine: 'llamaindex',
+      response: result.response,
+      sourceNodes: result.sourceNodes,
+    });
+  } catch (error) {
+    console.error('[RAG Router] LlamaIndex query error:', error);
+    res.status(500).json({
+      error: 'LlamaIndex query failed',
+      details: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 export default router;

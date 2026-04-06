@@ -1581,6 +1581,26 @@ try{
     res.json(getExecutionIntentGuardStatus());
   });
 
+  app.get("/api/integrations/status", async (_req: Request, res: Response) => {
+    try {
+      const { checkAllIntegrations } = await import("./lib/integrations/index");
+      const statuses = await checkAllIntegrations();
+      const allAvailable = statuses.every((s) => s.available);
+      const anyAvailable = statuses.some((s) => s.available);
+      res.json({
+        status: allAvailable ? "all_available" : anyAvailable ? "partial" : "none_available",
+        integrations: statuses,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      res.status(500).json({
+        status: "error",
+        error: err instanceof Error ? err.message : "Unknown error",
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
   // API Documentation
   app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
