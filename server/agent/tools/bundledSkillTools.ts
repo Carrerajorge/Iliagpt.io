@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { ToolDefinition, ToolContext, ToolResult } from "../toolRegistry";
-import { defaultToolRegistry as sandboxToolRegistry } from "../sandbox/tools";
 import { BUNDLED_SKILLS } from "../../data/bundledSkills";
+import { skillRegistry } from "../../openclaw/skills/skillRegistry";
+import { normalizeOpenClawSkillStatus } from "@shared/skillsRuntime";
 
 export const BUNDLED_SKILL_TOOLS: ToolDefinition[] = BUNDLED_SKILLS.map(skill => {
     // Replace invalid characters in tool name (Zod/Gemini allows a-zA-Z0-9_-)
@@ -15,36 +16,75 @@ export const BUNDLED_SKILL_TOOLS: ToolDefinition[] = BUNDLED_SKILLS.map(skill =>
             data: z.any().optional().describe("Optional structured data or parameters required for the skill execution.")
         }),
         capabilities: ["executes_code", "requires_network"],
-        execute: async (input: { instruction: string; data?: any }, context: ToolContext): Promise<ToolResult> => {
+        execute: async (
+            input: { instruction: string; data?: unknown },
+            _context: ToolContext,
+        ): Promise<ToolResult> => {
             const startTime = Date.now();
             try {
-                // Mock Implementation / Base Handler for the skill
-                // We delegate to the sandbox shell to simulate execution
+                const runtimeSkill = skillRegistry.get(skill.id);
+                if (!runtimeSkill) {
+                    return {
+                        success: false,
+                        output: null,
+                        error: {
+                            code: "SKILL_CATALOG_ONLY",
+                            message: `La skill ${skill.name} está listada en el catálogo, pero no tiene un runtime ejecutable activo.`,
+                            retryable: false,
+                            details: {
+                                skillId: skill.id,
+                                reason: "runtime_missing",
+                            },
+                        },
+                        metrics: { durationMs: Date.now() - startTime }
+                    };
+                }
 
-                const shellCommand = `echo "=== SKILL EXECUTION STARTED ===" && echo "Skill: ${skill.name} (${skill.category})" && echo "Instruction: ${input.instruction.replace(/"/g, '\\"')}" && echo "Data provided: ${input.data ? 'Yes' : 'No'}" && echo "=== EXECUTING ===" && sleep 1 && echo "Execution succeeded."`;
+                const runtimeStatus = normalizeOpenClawSkillStatus(runtimeSkill.status);
+                if (runtimeStatus !== "ready") {
+                    return {
+                        success: false,
+                        output: null,
+                        error: {
+                            code: "SKILL_NOT_READY",
+                            message: `La skill ${skill.name} existe en runtime, pero su estado actual es ${runtimeStatus}.`,
+                            retryable: false,
+                            details: {
+                                skillId: skill.id,
+                                status: runtimeStatus,
+                                source: runtimeSkill.source || "builtin",
+                            },
+                        },
+                        metrics: { durationMs: Date.now() - startTime }
+                    };
+                }
 
-                const sandboxResult = await sandboxToolRegistry.execute("shell", {
-                    command: shellCommand
-                });
-
-                // Simulate a successful structured extraction/result
                 return {
-                    success: sandboxResult.success,
-                    output: {
-                        message: `Successfully executed skill: ${skill.name}`,
-                        agentic_result: sandboxResult.data || sandboxResult.message,
-                        provided_instruction: input.instruction
+                    success: false,
+                    output: null,
+                    error: {
+                        code: "SKILL_BRIDGE_NOT_IMPLEMENTED",
+                        message: `La skill ${skill.name} está registrada en OpenClaw, pero este bridge aún no tiene una ruta de ejecución nativa segura.`,
+                        retryable: false,
+                        details: {
+                            skillId: skill.id,
+                            status: runtimeStatus,
+                            source: runtimeSkill.source || "builtin",
+                            requestedInstruction: input.instruction,
+                            hasStructuredData: input.data !== undefined,
+                        },
                     },
                     metrics: { durationMs: Date.now() - startTime }
                 };
-            } catch (error: any) {
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : String(error);
                 return {
                     success: false,
                     output: null,
                     error: {
                         code: "SKILL_EXECUTION_ERROR",
-                        message: `Failed to execute skill ${skill.name}: ${error.message}`,
-                        retryable: true
+                        message: `Failed to execute skill ${skill.name}: ${message}`,
+                        retryable: true,
                     },
                     metrics: { durationMs: Date.now() - startTime }
                 };

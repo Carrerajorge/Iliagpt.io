@@ -1,6 +1,4 @@
-export type BundledSkill = {
-    id: string; name: string; description: string; category: "documents" | "data" | "integrations" | "custom" | "automation"; features?: string[];
-};
+import type { BundledSkill } from "@shared/skillsRuntime";
 
 export const BUNDLED_SKILLS: BundledSkill[] = [
     // User-provided 50 skills

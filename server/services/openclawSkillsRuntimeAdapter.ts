@@ -1,40 +1,64 @@
 import { BUNDLED_SKILLS } from "../data/bundledSkills";
+import { listAnthropicCatalogRuntimeSkills } from "../lib/anthropicSkillsRepo";
 import { getOpenClawConfig } from "../openclaw/config";
 import { initSkills } from "../openclaw/skills/skillLoader";
 import { skillRegistry } from "../openclaw/skills/skillRegistry";
+import {
+  createCatalogOnlyRuntimeSkill,
+  normalizeOpenClawSkillStatus,
+  type OpenClawSkillsRuntimeSnapshot,
+  type RuntimeSkillDescriptor,
+} from "@shared/skillsRuntime";
 
-type RuntimeSkill = {
-  id: string;
-  name: string;
-  description?: string;
-  enabled?: boolean;
-  status: "available" | "disabled" | "unknown";
-};
-
-export interface OpenClawSkillsRuntimeSnapshot {
-  runtimeAvailable: boolean;
-  source: "remote_runtime" | "fallback" | "bundled";
-  fallback: boolean;
-  fetchedAt: string;
-  skills: RuntimeSkill[];
-  message?: string;
+function buildCatalogFallbackSkills(workspaceDir?: string): RuntimeSkillDescriptor[] {
+  const merged = new Map<string, RuntimeSkillDescriptor>();
+  for (const skill of BUNDLED_SKILLS.map(createCatalogOnlyRuntimeSkill)) {
+    merged.set(skill.id, skill);
+  }
+  for (const skill of listAnthropicCatalogRuntimeSkills(workspaceDir)) {
+    merged.set(skill.id, skill);
+  }
+  return Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function getOpenClawSkillsRuntimeSnapshot(): Promise<OpenClawSkillsRuntimeSnapshot> {
   try {
     const config = getOpenClawConfig();
+    if (!config.skills.enabled) {
+      return {
+        runtimeAvailable: false,
+        source: "fallback",
+        fallback: true,
+        fetchedAt: new Date().toISOString(),
+        skills: buildCatalogFallbackSkills(config.skills.workspaceDirectory),
+        message: "OpenClaw skills runtime is disabled; showing catalog metadata only.",
+      };
+    }
+
     if (config.skills.enabled && skillRegistry.list().length === 0) {
       await initSkills(config);
     }
 
     const runtimeSkills = skillRegistry.list();
     if (runtimeSkills.length > 0) {
-      const skills: RuntimeSkill[] = runtimeSkills.map(skill => ({
+      const skills: RuntimeSkillDescriptor[] = runtimeSkills.map(skill => ({
         id: skill.id,
         name: skill.name,
         description: skill.description,
-        enabled: true,
-        status: "available",
+        enabled: skill.status !== "disabled",
+        status: normalizeOpenClawSkillStatus(skill.status),
+        certification: "runtime",
+        source: skill.source === "filesystem" ? "filesystem" : "builtin",
+        fallback: false,
+        tools: skill.tools || [],
+        filePath: skill.filePath,
+        updatedAt: skill.updatedAt,
+        vendor:
+          typeof skill.metadata?.vendor === "string" ? (skill.metadata.vendor as string) : undefined,
+        homepage:
+          typeof skill.metadata?.homepage === "string"
+            ? (skill.metadata.homepage as string)
+            : undefined,
       }));
 
       return {
@@ -45,23 +69,26 @@ export async function getOpenClawSkillsRuntimeSnapshot(): Promise<OpenClawSkills
         skills,
       };
     }
-  } catch {
-    // Fall through to bundled fallback snapshot.
+
+    return {
+      runtimeAvailable: false,
+      source: "fallback",
+      fallback: true,
+      fetchedAt: new Date().toISOString(),
+      skills: buildCatalogFallbackSkills(config.skills.workspaceDirectory),
+      message: "OpenClaw skills runtime is enabled, but no skills were registered.",
+    };
+  } catch (error) {
+    const config = getOpenClawConfig();
+    return {
+      runtimeAvailable: false,
+      source: "fallback",
+      fallback: true,
+      fetchedAt: new Date().toISOString(),
+      skills: buildCatalogFallbackSkills(config.skills.workspaceDirectory),
+      message: error instanceof Error
+        ? error.message
+        : "Runtime unavailable; showing catalog metadata only.",
+    };
   }
-
-  const skills: RuntimeSkill[] = BUNDLED_SKILLS.map(skill => ({
-    id: skill.id,
-    name: skill.name,
-    description: skill.description,
-    enabled: true,
-    status: "available"
-  }));
-
-  return {
-    runtimeAvailable: true,
-    source: "bundled",
-    fallback: false,
-    fetchedAt: new Date().toISOString(),
-    skills,
-  };
 }
