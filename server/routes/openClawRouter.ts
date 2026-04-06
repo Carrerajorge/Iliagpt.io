@@ -28,6 +28,7 @@ import {
   getOpenClaw1000ExecutionRoadmap,
 } from "../services/openClaw1000Service";
 import { requireAuth } from "../middleware/auth";
+import { getSecureUserId } from "../lib/anonUserHelper";
 
 
 const router = Router();
@@ -882,6 +883,48 @@ router.get("/admin/sync/status", requireAuth, async (req: Request, res: Response
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+function requireIdentity(req: Request, res: Response, next: Function) {
+  const userId = getSecureUserId(req);
+  if (!userId) {
+    return res.status(401).json({ error: "Authentication required" });
+  }
+  (req as any)._internetUserId = userId;
+  next();
+}
+
+router.post("/internet/fetch", requireIdentity as any, async (req: Request, res: Response) => {
+  try {
+    const { webFetch } = await import("../openclaw/lib/internetAccess");
+    const { url, extractLinks } = req.body;
+    if (!url) return res.status(400).json({ error: "url is required" });
+    const result = await webFetch(url, { extractLinks });
+    res.json({ ok: true, result });
+  } catch (error: any) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+router.post("/internet/search", requireIdentity as any, async (req: Request, res: Response) => {
+  try {
+    const { webSearch } = await import("../openclaw/lib/internetAccess");
+    const { query } = req.body;
+    if (!query) return res.status(400).json({ error: "query is required" });
+    const result = await webSearch(query);
+    res.json({ ok: true, result });
+  } catch (error: any) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+router.get("/internet/status", (_req: Request, res: Response) => {
+  res.json({
+    ok: true,
+    version: "2026.4.5",
+    capabilities: ["web-fetch", "web-search"],
+    provider: "openclaw-internet-access",
+  });
 });
 
 export default router;

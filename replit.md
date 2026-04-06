@@ -60,6 +60,12 @@ Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment varia
 - **OpenAI Agents SDK**: Auto-routes GPT-model agentic requests through the SDK. Falls back to built-in `AgenticLoop` on failure. Respects `allowedTools` restrictions.
 - **Integration Health**: `GET /api/integrations/status` returns availability and latency for all three integrations.
 
-### OpenClaw Integration
+### OpenClaw Integration (v2026.4.5)
 - **OpenClaw Control UI**: Served at `/openclaw-ui` with auto-connect.
-- **WebSocket Gateway**: For OpenClaw communication.
+- **WebSocket Gateway**: For OpenClaw communication at `/openclaw-ws`.
+- **Internet Access Library**: `server/openclaw/lib/internetAccess.ts` — programmatic web fetch and search.
+  - `POST /api/openclaw/internet/fetch` — fetch and parse any URL, extract clean text and links.
+  - `POST /api/openclaw/internet/search` — DuckDuckGo search with structured results.
+  - `GET /api/openclaw/internet/status` — internet capability status.
+  - Gateway tools: `openclaw.web.fetch`, `openclaw.web.search` available via `tools.execute` WebSocket method.
+- **Fusion Features**: task-board, searxng-search, model-switch-queue, gateway-resilience, internet-access.

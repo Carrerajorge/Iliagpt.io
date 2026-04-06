@@ -4,8 +4,9 @@ import type { Server as HttpServer } from "http";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { llmGateway } from "../lib/llmGateway";
 import { usageQuotaService } from "./usageQuotaService";
+import { internetToolDefinitions, executeInternetTool } from "../openclaw/lib/internetAccess";
 
-const VERSION = "2026.4.2";
+const VERSION = "2026.4.5";
 const TOKEN_SECRET = process.env.ENCRYPTION_KEY || randomUUID();
 
 interface ChatMessage {
@@ -84,7 +85,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       reply(ws, id, {
         version: VERSION,
         gatewayId: "iliagpt-gateway",
-        features: ["chat", "agents", "sessions", "cron", "channels", "skills", "nodes", "config"],
+        features: ["chat", "agents", "sessions", "cron", "channels", "skills", "nodes", "config", "internet", "web-fetch", "web-search"],
         auth: { mode: "token", accepted: true, role: client.role, scopes: ["operator.read", "operator.write"] },
         presence: [],
       });
@@ -318,8 +319,49 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
 
     case "tools.catalog":
     case "tools.effective":
-      reply(ws, id, { tools: [] });
+      reply(ws, id, {
+        tools: internetToolDefinitions.map((t) => ({
+          ...t,
+          enabled: true,
+          source: "openclaw-internet",
+        })),
+      });
       break;
+
+    case "tools.execute": {
+      if (!client.authenticated) {
+        replyError(ws, id, "UNAUTHORIZED", "Authentication required for tool execution");
+        break;
+      }
+      const toolId = params?.toolId || params?.id || "";
+      const toolParams = params?.params || params?.arguments || {};
+      const toolRunId = params?.runId || randomUUID();
+
+      send(ws, {
+        type: "event",
+        event: "tool.status",
+        payload: { toolId, runId: toolRunId, state: "running" },
+      });
+
+      executeInternetTool(toolId, toolParams)
+        .then((result) => {
+          reply(ws, id, { ok: result.ok, runId: toolRunId, ...result });
+          send(ws, {
+            type: "event",
+            event: "tool.status",
+            payload: { toolId, runId: toolRunId, state: "done", ok: result.ok },
+          });
+        })
+        .catch((err: any) => {
+          replyError(ws, id, "TOOL_ERROR", err?.message || "Tool execution failed");
+          send(ws, {
+            type: "event",
+            event: "tool.status",
+            payload: { toolId, runId: toolRunId, state: "error", error: err?.message },
+          });
+        });
+      break;
+    }
 
     case "skills.status":
       reply(ws, id, { skills: [], installed: [] });
@@ -373,7 +415,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       break;
 
     case "update.run":
-      reply(ws, id, { ok: true, version: VERSION });
+      reply(ws, id, { ok: true, version: VERSION, updated: true, features: ["internet-access"] });
       break;
 
     case "web.login.start":

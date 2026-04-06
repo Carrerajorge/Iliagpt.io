@@ -1,9 +1,9 @@
 import { Logger } from '../../../lib/logger';
 import type { OpenClawConfig } from '../../config';
 
-export const OPENCLAW_VERSION = '2026.4.1';
-export const OPENCLAW_RELEASE_DATE = '2026-04-01T16:58:00Z';
-export const OPENCLAW_COMMIT = 'da64a97';
+export const OPENCLAW_VERSION = '2026.4.5';
+export const OPENCLAW_RELEASE_DATE = '2026-04-05T00:00:00Z';
+export const OPENCLAW_COMMIT = 'v2026.4.5';
 
 export interface OpenClaw2026_4_1Features {
   taskBoard: boolean;
@@ -16,6 +16,7 @@ export interface OpenClaw2026_4_1Features {
   telegramErrorPolicy: boolean;
   whatsappReactions: boolean;
   agentCompaction: boolean;
+  internetAccess: boolean;
 }
 
 export function getEnabledFeatures(): OpenClaw2026_4_1Features {
@@ -30,6 +31,7 @@ export function getEnabledFeatures(): OpenClaw2026_4_1Features {
     telegramErrorPolicy: process.env.ENABLE_TELEGRAM === 'true',
     whatsappReactions: process.env.ENABLE_WHATSAPP === 'true',
     agentCompaction: true,
+    internetAccess: true,
   };
 }
 
@@ -77,6 +79,10 @@ export async function initializeV2026_4_1(config: OpenClawConfig): Promise<strin
 
   if (features.agentCompaction) {
     initialized.push('agent-compaction');
+  }
+
+  if (features.internetAccess) {
+    initialized.push('internet-access');
   }
 
   Logger.info(`[OpenClaw v${OPENCLAW_VERSION}] Fusion initialized: [${initialized.join(', ')}]`);

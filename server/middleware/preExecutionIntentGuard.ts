@@ -236,6 +236,9 @@ const isSafePythonAgentReadOnly =
     /^\/api\/python-agent\/browse$/.test(pathOnly)
   );
 
+const isOpenClawInternet =
+  req.method === "POST" && /^\/api\/openclaw\/internet\/(fetch|search)$/.test(pathOnly);
+
 const isSafeReadOnlyHealth =
   req.method === "GET" && (/^\/api\/python-agent\/health$/.test(pathOnly) || /^\/api\/python-agent\/status$/.test(pathOnly));
 
@@ -246,7 +249,8 @@ if (
   isTerminalExecNoApi ||
   isTerminalFileNoApi ||
   isSafePythonAgentReadOnly ||
-  isSafeReadOnlyHealth
+  isSafeReadOnlyHealth ||
+  isOpenClawInternet
 ) {
   return next();
 }
