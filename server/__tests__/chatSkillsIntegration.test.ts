@@ -73,6 +73,11 @@ vi.mock("../services/questionClassifier", () => ({
   },
 }));
 
+// Real hasNativeAgenticSignal treats messages >= 15 chars as "agentic", which skips the simple LLM fast path.
+vi.mock("../agent/nativeAgenticFusion", () => ({
+  hasNativeAgenticSignal: vi.fn(() => false),
+}));
+
 vi.mock("../services/skillContextResolver", () => ({
   drizzleSkillStore: {},
   resolveSkillContextFromRequest: resolveSkillContextMock,
@@ -250,8 +255,8 @@ describe("chat skill integration", () => {
       const outboundMessages = llmMessages || chatMessages;
 
       if (outboundMessages?.[0]) {
-      expect(outboundMessages[0].role).toBe("system");
-      expect(outboundMessages[0].content).toContain("[SKILL_CONTEXT]");
+        expect(outboundMessages[0].role).toBe("system");
+        expect(outboundMessages[0].content).toContain("[SKILL_CONTEXT]");
       }
 
       expect(llmChatMock).toHaveBeenCalled();
