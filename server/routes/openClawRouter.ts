@@ -380,17 +380,22 @@ router.get("/roadmap-1000", (req: Request, res: Response) => {
   }
 });
 
-import { OPENCLAW_VERSION, getEnabledFeatures } from "../openclaw/fusion/v2026_4_1";
-import { getTaskBoard } from "../openclaw/fusion/v2026_4_1/taskBoard";
-import { getGatewayResilience } from "../openclaw/fusion/v2026_4_1/gatewayResilience";
-import { getModelSwitchQueue } from "../openclaw/fusion/v2026_4_1/modelSwitchQueue";
+import {
+  OPENCLAW_COMMIT,
+  OPENCLAW_RELEASE_DATE,
+  OPENCLAW_VERSION,
+  getEnabledFeatures,
+} from "../openclaw/fusion/v2026_4_2";
+import { getTaskBoard } from "../openclaw/fusion/v2026_4_2/taskBoard";
+import { getGatewayResilience } from "../openclaw/fusion/v2026_4_2/gatewayResilience";
+import { getModelSwitchQueue } from "../openclaw/fusion/v2026_4_2/modelSwitchQueue";
 
 router.get("/version", (_req: Request, res: Response) => {
   res.json({
     version: OPENCLAW_VERSION,
     features: getEnabledFeatures(),
-    commit: 'da64a97',
-    releaseDate: '2026-04-01T16:58:00Z',
+    commit: OPENCLAW_COMMIT,
+    releaseDate: OPENCLAW_RELEASE_DATE,
   });
 });
 

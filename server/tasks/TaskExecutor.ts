@@ -20,7 +20,13 @@ import { Logger }       from '../lib/logger';
 import type { TaskRecord, TaskStep } from './BackgroundTaskManager';
 import type { AgentMessage }         from '../agentic/toolCalling/UniversalToolCaller';
 import type { AgenticEvent }         from '../agentic/core/AgenticLoop';
-import { ToolRegistry, SAFE_CODING_PROFILE, PERMISSIVE_PROFILE, READ_ONLY_PROFILE } from '../agentic/toolCalling/ToolRegistry';
+import {
+  ToolRegistry,
+  FULL_AGENT_PROFILE,
+  SAFE_CODING_PROFILE,
+  PERMISSIVE_PROFILE,
+  READ_ONLY_PROFILE,
+} from '../agentic/toolCalling/ToolRegistry';
 import { BUILT_IN_TOOLS }           from '../agentic/toolCalling/BuiltInTools';
 
 // ─── Executor options ─────────────────────────────────────────────────────────
@@ -73,6 +79,33 @@ async function clearCheckpoint(taskId: string): Promise<void> {
 
 // ─── Permission scoping ───────────────────────────────────────────────────────
 
+type TaskPermissionProfile = 'read_only' | 'safe_coding' | 'full_agent' | 'permissive';
+
+function resolveTaskPermissionProfile(task: TaskRecord): TaskPermissionProfile {
+  const raw = typeof task.metadata?.['permissionProfile'] === 'string'
+    ? String(task.metadata?.['permissionProfile']).trim().toLowerCase()
+    : '';
+
+  switch (raw) {
+    case 'read_only':
+    case 'readonly':
+    case 'read-only':
+      return 'read_only';
+    case 'full':
+    case 'full_agent':
+    case 'agent_full':
+      return 'full_agent';
+    case 'permissive':
+      return 'permissive';
+    case 'safe':
+    case 'safe_coding':
+    case 'coding':
+      return 'safe_coding';
+    default:
+      return 'safe_coding';
+  }
+}
+
 function buildRegistry(task: TaskRecord): ToolRegistry {
   const registry = new ToolRegistry();
   registry.registerMany(BUILT_IN_TOOLS);
@@ -87,8 +120,24 @@ function buildRegistry(task: TaskRecord): ToolRegistry {
         .filter(name => !allowed.has(name)),
     });
   } else {
-    // Default: safe coding profile (no shell, no agent spawn)
-    registry.setProfile(SAFE_CODING_PROFILE);
+    const permissionProfile = resolveTaskPermissionProfile(task);
+
+    switch (permissionProfile) {
+      case 'read_only':
+        registry.setProfile(READ_ONLY_PROFILE);
+        break;
+      case 'full_agent':
+        registry.setProfile(FULL_AGENT_PROFILE);
+        break;
+      case 'permissive':
+        registry.setProfile(PERMISSIVE_PROFILE);
+        break;
+      case 'safe_coding':
+      default:
+        // Default: safe coding profile (no shell, no agent spawn)
+        registry.setProfile(SAFE_CODING_PROFILE);
+        break;
+    }
   }
 
   return registry;

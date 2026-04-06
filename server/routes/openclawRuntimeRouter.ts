@@ -226,12 +226,16 @@ export function createOpenClawRuntimeRouter(): Router {
       const plan = orchestrationEngine.buildExecutionPlan(subtasks);
 
       const delegatedRuns = parsed.spawnSubagents
-        ? subtasks.slice(0, parsed.maxSubagents).map((subtask) =>
-            openclawSubagentService.spawn({
-              requesterUserId: userId,
-              objective: subtask.description,
-              planHint: subtask.toolId ? [`use:${subtask.toolId}`] : [],
-            }),
+        ? await Promise.all(
+            subtasks.slice(0, parsed.maxSubagents).map((subtask) =>
+              openclawSubagentService.spawn({
+                requesterUserId: userId,
+                chatId: 'openclaw-runtime',
+                objective: subtask.description,
+                planHint: subtask.toolId ? [`use:${subtask.toolId}`] : [],
+                permissionProfile: 'full_agent',
+              }),
+            ),
           )
         : [];
 
@@ -257,15 +261,17 @@ export function createOpenClawRuntimeRouter(): Router {
     }
   });
 
-  router.post("/subagents", (req, res) => {
+  router.post("/subagents", async (req, res) => {
     const userId = getOrCreateSecureUserId(req);
     try {
       const parsed = spawnSubagentSchema.parse(req.body || {});
-      const run = openclawSubagentService.spawn({
+      const run = await openclawSubagentService.spawn({
         requesterUserId: userId,
+        chatId: parsed.parentRunId || 'openclaw-runtime',
         objective: parsed.objective,
         planHint: parsed.planHint || [],
         parentRunId: parsed.parentRunId,
+        permissionProfile: 'full_agent',
       });
       return res.status(202).json(run);
     } catch (error) {
@@ -273,12 +279,12 @@ export function createOpenClawRuntimeRouter(): Router {
     }
   });
 
-  router.get("/subagents", (req, res) => {
+  router.get("/subagents", async (req, res) => {
     const userId = getOrCreateSecureUserId(req);
     const status = parseSubagentStatus(req.query.status);
     const limit = parseLimit(req.query.limit, 50);
     const parentRunId = typeof req.query.parentRunId === "string" ? req.query.parentRunId : undefined;
-    const runs = openclawSubagentService.list({
+    const runs = await openclawSubagentService.list({
       requesterUserId: userId,
       status,
       limit,
@@ -290,23 +296,23 @@ export function createOpenClawRuntimeRouter(): Router {
     });
   });
 
-  router.get("/subagents/:runId", (req, res) => {
+  router.get("/subagents/:runId", async (req, res) => {
     const userId = getOrCreateSecureUserId(req);
-    const run = openclawSubagentService.get(req.params.runId);
+    const run = await openclawSubagentService.get(req.params.runId);
     if (!run || run.requesterUserId !== userId) {
       return res.status(404).json({ error: "Subagent run not found" });
     }
     return res.json(run);
   });
 
-  router.post("/subagents/:runId/cancel", (req, res) => {
+  router.post("/subagents/:runId/cancel", async (req, res) => {
     const userId = getOrCreateSecureUserId(req);
-    const run = openclawSubagentService.get(req.params.runId);
+    const run = await openclawSubagentService.get(req.params.runId);
     if (!run || run.requesterUserId !== userId) {
       return res.status(404).json({ error: "Subagent run not found" });
     }
 
-    const cancelled = openclawSubagentService.cancel(run.id);
+    const cancelled = await openclawSubagentService.cancel(run.id);
     return res.json({
       runId: run.id,
       cancelled,

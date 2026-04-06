@@ -139,13 +139,15 @@ handlers.set('subagents.spawn', async (req, ctx) => {
     throw Object.assign(new Error('Missing subagent objective'), { code: 'INVALID_PARAMS' });
   }
 
-  const run = openclawSubagentService.spawn({
+  const run = await openclawSubagentService.spawn({
     requesterUserId: ctx.userId,
+    chatId: params?.parentRunId || 'openclaw-gateway',
     objective,
     planHint: Array.isArray(params?.planHint)
       ? params?.planHint.map(step => String(step).trim()).filter(Boolean)
       : [],
     parentRunId: params?.parentRunId,
+    permissionProfile: 'full_agent',
   });
 
   return run;
@@ -153,7 +155,7 @@ handlers.set('subagents.spawn', async (req, ctx) => {
 
 handlers.set('subagents.list', async (req, ctx) => {
   const params = req.params as { parentRunId?: string; status?: any; limit?: number } | undefined;
-  const runs = openclawSubagentService.list({
+  const runs = await openclawSubagentService.list({
     requesterUserId: ctx.userId,
     parentRunId: params?.parentRunId,
     status: params?.status,
@@ -167,7 +169,7 @@ handlers.set('subagents.get', async (req, ctx) => {
   if (!params?.runId) {
     throw Object.assign(new Error('Missing runId'), { code: 'INVALID_PARAMS' });
   }
-  const run = openclawSubagentService.get(params.runId);
+  const run = await openclawSubagentService.get(params.runId);
   if (!run || run.requesterUserId !== ctx.userId) {
     throw Object.assign(new Error('Subagent run not found'), { code: 'NOT_FOUND' });
   }
@@ -179,11 +181,11 @@ handlers.set('subagents.cancel', async (req, ctx) => {
   if (!params?.runId) {
     throw Object.assign(new Error('Missing runId'), { code: 'INVALID_PARAMS' });
   }
-  const run = openclawSubagentService.get(params.runId);
+  const run = await openclawSubagentService.get(params.runId);
   if (!run || run.requesterUserId !== ctx.userId) {
     throw Object.assign(new Error('Subagent run not found'), { code: 'NOT_FOUND' });
   }
-  const cancelled = openclawSubagentService.cancel(params.runId);
+  const cancelled = await openclawSubagentService.cancel(params.runId);
   return { runId: params.runId, cancelled };
 });
 
