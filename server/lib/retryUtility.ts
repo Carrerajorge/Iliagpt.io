@@ -7,6 +7,8 @@
  * - External services
  */
 
+import pRetry from "p-retry";
+
 import { createLogger } from './productionLogger';
 
 const logger = createLogger('Retry');
@@ -29,30 +31,8 @@ const defaultOptions: Required<Omit<RetryOptions, 'onRetry' | 'retryCondition'>>
     jitter: true,
 };
 
-/**
- * Calculate delay with exponential backoff and optional jitter
- */
-function calculateDelay(
-    attempt: number,
-    options: Required<Omit<RetryOptions, 'onRetry' | 'retryCondition'>>
-): number {
-    let delay = options.initialDelayMs * Math.pow(options.backoffMultiplier, attempt - 1);
-    delay = Math.min(delay, options.maxDelayMs);
-
-    if (options.jitter) {
-        // Add random jitter between 0% and 25%
-        const jitterFactor = 1 + Math.random() * 0.25;
-        delay = Math.floor(delay * jitterFactor);
-    }
-
-    return delay;
-}
-
-/**
- * Sleep for specified milliseconds
- */
-function sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+function normalizeError(error: unknown): Error {
+    return error instanceof Error ? error : new Error(String(error));
 }
 
 /**
@@ -95,39 +75,41 @@ export async function withRetry<T>(
         ...options,
         retryCondition: options.retryCondition || defaultRetryCondition,
     };
+    const retries = Math.max(0, opts.maxAttempts - 1);
 
-    let lastError: Error | null = null;
-
-    for (let attempt = 1; attempt <= opts.maxAttempts; attempt++) {
-        try {
-            return await fn();
-        } catch (error) {
-            lastError = error instanceof Error ? error : new Error(String(error));
-
-            // Check if we should retry
-            if (attempt === opts.maxAttempts || !opts.retryCondition(lastError)) {
-                throw lastError;
+    return pRetry(
+        async () => {
+            try {
+                return await fn();
+            } catch (error) {
+                throw normalizeError(error);
             }
+        },
+        {
+            retries,
+            factor: opts.backoffMultiplier,
+            minTimeout: opts.initialDelayMs,
+            maxTimeout: opts.maxDelayMs,
+            randomize: opts.jitter,
+            onFailedAttempt: ({ error, attemptNumber, retriesLeft, retryDelay }) => {
+                const normalizedError = normalizeError(error);
+                const shouldRetry = retriesLeft > 0 && opts.retryCondition(normalizedError);
+                if (!shouldRetry) {
+                    return;
+                }
 
-            const delayMs = calculateDelay(attempt, opts);
+                logger.warn(`Attempt ${attemptNumber} failed, retrying in ${retryDelay}ms`, {
+                    error: normalizedError.message,
+                    attempt: attemptNumber,
+                    maxAttempts: opts.maxAttempts,
+                    delay: retryDelay,
+                });
 
-            logger.warn(`Attempt ${attempt} failed, retrying in ${delayMs}ms`, {
-                error: lastError.message,
-                attempt,
-                maxAttempts: opts.maxAttempts,
-                delay: delayMs,
-            });
-
-            if (opts.onRetry) {
-                opts.onRetry(lastError, attempt, delayMs);
-            }
-
-            await sleep(delayMs);
+                opts.onRetry?.(normalizedError, attemptNumber, retryDelay);
+            },
+            shouldRetry: ({ error }) => opts.retryCondition(normalizeError(error)),
         }
-    }
-
-    // This should never be reached, but TypeScript needs it
-    throw lastError || new Error('Retry failed');
+    );
 }
 
 /**

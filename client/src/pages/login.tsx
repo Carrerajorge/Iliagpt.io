@@ -87,17 +87,22 @@ export default function LoginPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const prefilledEmail = (params.get("email") || "").trim();
+    const registered = params.get("registered");
     if (prefilledEmail) {
       setEmail(prefilledEmail);
+    }
+    if (registered === "1") {
+      setSuccessMessage("Cuenta creada correctamente. Inicia sesión para continuar.");
     }
     const errorCode = params.get("error");
     if (errorCode && OAUTH_ERROR_MESSAGES[errorCode]) {
       setError(OAUTH_ERROR_MESSAGES[errorCode]);
     }
 
-    if (prefilledEmail || errorCode) {
+    if (prefilledEmail || errorCode || registered) {
       params.delete("email");
       params.delete("error");
+      params.delete("registered");
       const rest = params.toString();
       const nextUrl = rest ? `${window.location.pathname}?${rest}` : window.location.pathname;
       window.history.replaceState({}, "", nextUrl);
@@ -709,6 +714,14 @@ export default function LoginPage() {
                   className="h-12 text-base rounded-xl bg-background border-input text-foreground placeholder:text-muted-foreground"
                   data-testid="input-login-password"
                 />
+                {successMessage && !error && (
+                  <p
+                    className="text-sm text-green-700 text-center bg-green-50 border border-green-200 py-2 px-3 rounded-lg"
+                    data-testid="text-login-success"
+                  >
+                    {successMessage}
+                  </p>
+                )}
                 {error && (
                   <p
                     className="text-sm text-red-700 text-center bg-red-50 border border-red-200 py-2 px-3 rounded-lg"

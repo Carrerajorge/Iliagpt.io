@@ -92,6 +92,7 @@ import { randomUUID } from "crypto";
 import { db, dbRead } from "./db";
 import { eq, sql, desc, and, isNull, ilike, inArray, or, type SQL } from "drizzle-orm";
 import { knowledgeBaseService } from "./services/knowledgeBase";
+import { normalizeStoredMoneyFields } from "./lib/money";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -1468,7 +1469,8 @@ export class MemStorage implements IStorage {
 
   // Admin: Payments
   async createPayment(payment: InsertPayment): Promise<Payment> {
-    const [result] = await db.insert(payments).values(payment).returning();
+    const normalizedPayment = normalizeStoredMoneyFields(payment);
+    const [result] = await db.insert(payments).values(normalizedPayment).returning();
     return result;
   }
 
@@ -1477,7 +1479,14 @@ export class MemStorage implements IStorage {
   }
 
   async updatePayment(id: string, updates: Partial<InsertPayment>): Promise<Payment | undefined> {
-    const [result] = await db.update(payments).set(updates).where(eq(payments.id, id)).returning();
+    const normalizedUpdates =
+      updates.amount !== undefined ||
+      updates.amountValue !== undefined ||
+      updates.amountMinor !== undefined ||
+      updates.currency !== undefined
+        ? normalizeStoredMoneyFields(updates)
+        : updates;
+    const [result] = await db.update(payments).set(normalizedUpdates).where(eq(payments.id, id)).returning();
     return result;
   }
 
@@ -1505,7 +1514,8 @@ export class MemStorage implements IStorage {
 
   // Admin: Invoices
   async createInvoice(invoice: InsertInvoice): Promise<Invoice> {
-    const [result] = await db.insert(invoices).values(invoice).returning();
+    const normalizedInvoice = normalizeStoredMoneyFields(invoice);
+    const [result] = await db.insert(invoices).values(normalizedInvoice).returning();
     return result;
   }
 
@@ -1514,7 +1524,14 @@ export class MemStorage implements IStorage {
   }
 
   async updateInvoice(id: string, updates: Partial<InsertInvoice>): Promise<Invoice | undefined> {
-    const [result] = await db.update(invoices).set(updates).where(eq(invoices.id, id)).returning();
+    const normalizedUpdates =
+      updates.amount !== undefined ||
+      updates.amountValue !== undefined ||
+      updates.amountMinor !== undefined ||
+      updates.currency !== undefined
+        ? normalizeStoredMoneyFields(updates)
+        : updates;
+    const [result] = await db.update(invoices).set(normalizedUpdates).where(eq(invoices.id, id)).returning();
     return result;
   }
 

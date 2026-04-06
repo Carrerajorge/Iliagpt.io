@@ -54,6 +54,9 @@ export type UpsertUser = {
   lastName?: string | null;
   profileImageUrl?: string | null;
   role?: string | null;
+  plan?: string | null;
+  status?: string | null;
+  password?: string | null;
   authProvider?: string | null;
   emailVerified?: string | null;
   providerSubject?: string | null;
@@ -246,6 +249,9 @@ class AuthStorage implements IAuthStorage {
                 firstName: userData.firstName ?? existingUser.firstName,
                 lastName: userData.lastName ?? existingUser.lastName,
                 profileImageUrl: userData.profileImageUrl ?? existingUser.profileImageUrl,
+                ...(userData.password !== undefined ? { password: userData.password } : {}),
+                ...(userData.plan !== undefined ? { plan: userData.plan } : {}),
+                ...(userData.status !== undefined ? { status: userData.status } : {}),
                 authProvider: userData.authProvider ?? existingUser.authProvider,
                 emailVerified: userData.emailVerified ?? existingUser.emailVerified,
                 updatedAt: new Date(),
@@ -277,6 +283,9 @@ class AuthStorage implements IAuthStorage {
             firstName: userData.firstName ?? existingById.firstName,
             lastName: userData.lastName ?? existingById.lastName,
             profileImageUrl: userData.profileImageUrl ?? existingById.profileImageUrl,
+            ...(userData.password !== undefined ? { password: userData.password } : {}),
+            ...(userData.plan !== undefined ? { plan: userData.plan } : {}),
+            ...(userData.status !== undefined ? { status: userData.status } : {}),
             authProvider: userData.authProvider ?? existingById.authProvider,
             emailVerified: userData.emailVerified ?? existingById.emailVerified,
             updatedAt: new Date(),
@@ -297,11 +306,15 @@ class AuthStorage implements IAuthStorage {
           const [updatedUser] = await db
             .update(users)
             .set({
+              email: userData.email ?? existingByEmail.email,
               username: userData.username ?? existingByEmail.username,
               fullName: userData.fullName ?? existingByEmail.fullName,
               firstName: userData.firstName ?? existingByEmail.firstName,
               lastName: userData.lastName ?? existingByEmail.lastName,
               profileImageUrl: userData.profileImageUrl ?? existingByEmail.profileImageUrl,
+              ...(userData.password !== undefined ? { password: userData.password } : {}),
+              ...(userData.plan !== undefined ? { plan: userData.plan } : {}),
+              ...(userData.status !== undefined ? { status: userData.status } : {}),
               authProvider: userData.authProvider ?? existingByEmail.authProvider,
               emailVerified: userData.emailVerified ?? existingByEmail.emailVerified,
               updatedAt: new Date(),
@@ -329,7 +342,9 @@ class AuthStorage implements IAuthStorage {
         authProvider: userData.authProvider ?? "email",
         emailVerified: userData.emailVerified ?? "false",
         role: userData.role ?? "user",
-        plan: "free",
+        plan: userData.plan ?? "free",
+        status: userData.status ?? "active",
+        password: userData.password ?? null,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -359,11 +374,15 @@ class AuthStorage implements IAuthStorage {
             const [updatedUser] = await db
               .update(users)
               .set({
+                email: userData.email,
                 username: userData.username,
                 fullName: userData.fullName,
                 firstName: userData.firstName,
                 lastName: userData.lastName,
                 profileImageUrl: userData.profileImageUrl,
+                ...(userData.password !== undefined ? { password: userData.password } : {}),
+                ...(userData.plan !== undefined ? { plan: userData.plan } : {}),
+                ...(userData.status !== undefined ? { status: userData.status } : {}),
                 authProvider: userData.authProvider,
                 emailVerified: userData.emailVerified,
                 emailCanonical: canonical,
@@ -404,6 +423,8 @@ class AuthStorage implements IAuthStorage {
 
   private bestEffortPostLogin(userId: string): void {
     Promise.resolve().then(async () => {
+      try { await db.insert(userSettings).values({ userId }).onConflictDoNothing(); } catch {}
+      try { await db.insert(libraryStorage).values({ userId }).onConflictDoNothing(); } catch {}
       try { await autoAcceptWorkspaceInvitationForUser(userId); } catch {}
     });
   }

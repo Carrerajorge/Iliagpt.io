@@ -3951,21 +3951,6 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
             code: "TOKEN_QUOTA_EXCEEDED"
           });
         }
-
-        // 2. Daily Request Limit Check (Increments)
-        const usageCheck = await usageQuotaService.checkAndIncrementUsage(userId);
-        if (!usageCheck.allowed) {
-          return res.status(402).json({
-            error: usageCheck.message || "Límite de solicitudes alcanzado",
-            code: "QUOTA_EXCEEDED",
-            quota: {
-              remaining: usageCheck.remaining,
-              limit: usageCheck.limit,
-              resetAt: usageCheck.resetAt,
-              plan: usageCheck.plan
-            }
-          });
-        }
       }
 
       // GPT Session Contract Resolution
@@ -4115,6 +4100,44 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
         ? [{ role: "system" as const, content: skillSystemSection }, ...formattedMessages]
         : formattedMessages;
 
+      if (userId) {
+        const estimatedInputTokens = messagesWithSkill.reduce((sum, msg) => {
+          const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? "");
+          return sum + Math.ceil(content.length / 4);
+        }, 0);
+
+        const dailyTokenQuota = await usageQuotaService.getDailyTokenQuotaStatus(userId, estimatedInputTokens);
+        if (!dailyTokenQuota.allowed) {
+          return res.status(402).json({
+            error: dailyTokenQuota.message || "Límite diario de tokens alcanzado",
+            code: "DAILY_TOKEN_LIMIT_EXCEEDED",
+            quota: {
+              inputUsed: dailyTokenQuota.inputUsed,
+              outputUsed: dailyTokenQuota.outputUsed,
+              inputLimit: dailyTokenQuota.inputLimit,
+              outputLimit: dailyTokenQuota.outputLimit,
+              inputRemaining: dailyTokenQuota.inputRemaining,
+              outputRemaining: dailyTokenQuota.outputRemaining,
+              resetAt: dailyTokenQuota.resetAt,
+            }
+          });
+        }
+
+        const usageCheck = await usageQuotaService.checkAndIncrementUsage(userId);
+        if (!usageCheck.allowed) {
+          return res.status(402).json({
+            error: usageCheck.message || "Límite de solicitudes alcanzado",
+            code: "QUOTA_EXCEEDED",
+            quota: {
+              remaining: usageCheck.remaining,
+              limit: usageCheck.limit,
+              resetAt: usageCheck.resetAt,
+              plan: usageCheck.plan
+            }
+          });
+        }
+      }
+
       // Build gptSession info - prefer contract-based session over legacy gptConfig
       const gptSession = gptSessionContract ? {
         contract: gptSessionContract,
@@ -4143,8 +4166,12 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
       });
 
       // Token Usage Accounting
-      if (userId && response.usage?.totalTokens) {
-        usageQuotaService.recordTokenUsage(userId, response.usage.totalTokens).catch(err => {
+      if (userId && response.usage && (response.usage.promptTokens || response.usage.completionTokens)) {
+        usageQuotaService.recordTokenUsageDetailed(
+          userId,
+          response.usage.promptTokens || 0,
+          response.usage.completionTokens || 0
+        ).catch(err => {
           console.error(`[Chat API] Failed to record token usage for user ${userId}:`, err);
         });
       }
@@ -4163,7 +4190,9 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
               hasImages: !!images && images.length > 0,
               gptId: gptSessionContract?.gptId || gptConfig?.id || null,
               configVersion: gptSessionContract?.configVersion || null,
-              tokens: response.usage?.totalTokens || 0
+              tokens: response.usage?.totalTokens || 0,
+              promptTokens: response.usage?.promptTokens || 0,
+              completionTokens: response.usage?.completionTokens || 0,
             }
           });
         } catch (auditError) {

@@ -15,6 +15,13 @@
       "when": 1768285293978,
       "tag": "0001_faulty_vance_astro",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1775450000000,
+      "tag": "0002_daily_user_token_limits",
+      "breakpoints": true
     }
   ]
 }

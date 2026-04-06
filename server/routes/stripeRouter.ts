@@ -9,6 +9,7 @@ import { sendEmail } from "../services/genericEmailService";
 import { requireAdmin } from "./admin/utils";
 import { auditLog, AuditActions } from "../services/auditLogger";
 import { isSystemAdminRole, isWorkspaceAdminRole, normalizeRoleKey, resolveRolePermissionsForOrg } from "../services/workspaceRoleService";
+import { decimalFromMinorUnits, parseMoneyDecimal, toMinorUnits } from "../lib/money";
 
 const PLAN_PRICE_MAPPING: Record<string, { name: string; amount: number; interval?: string }> = {
   price_go_monthly: { name: "Go", amount: 500, interval: "month" },
@@ -579,8 +580,8 @@ export function createStripeRouter() {
               const now = new Date();
               const amountMinorRaw = typeof session?.amount_total === "number" ? session.amount_total : 0;
               const currency = typeof session?.currency === "string" ? session.currency : "usd";
-              const amountUsd = Math.round(amountMinorRaw / 100);
-              const creditsFromAmount = Math.max(0, amountUsd) * CREDITS_PER_USD;
+              const amountValue = decimalFromMinorUnits(amountMinorRaw, currency);
+              const creditsFromAmount = Math.max(0, amountValue.mul(CREDITS_PER_USD).toNumber());
               const creditsRaw = Number(session?.metadata?.creditsGranted || session?.metadata?.credits || 0);
               const creditsGranted = Number.isFinite(creditsRaw) && creditsRaw > 0 ? Math.floor(creditsRaw) : creditsFromAmount;
 
@@ -1120,7 +1121,7 @@ export function createStripeRouter() {
         }
       }
 
-      const amountMinor = amountUsd * 100;
+      const amountMinor = toMinorUnits(parseMoneyDecimal(amountUsd), "USD");
       const creditsGranted = amountUsd * CREDITS_PER_USD;
 
       const session = await withRetry(

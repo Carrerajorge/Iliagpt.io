@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { dbRead } from "../../db";
 import { storage } from "../../storage";
 import { llmGateway } from "../../lib/llmGateway";
+import { getAdminUserAggregateSnapshot } from "../../services/adminProjection";
 
 export const analyticsRouter = Router();
 
@@ -435,16 +436,17 @@ analyticsRouter.get("/costs", async (req, res) => {
 
 analyticsRouter.get("/funnel", async (req, res) => {
     try {
-        const allUsers = await storage.getAllUsers();
+        const [userAggregate, eventStats] = await Promise.all([
+            getAdminUserAggregateSnapshot(),
+            storage.getAnalyticsEventStats(),
+        ]);
 
-        const eventStats = await storage.getAnalyticsEventStats();
-
-        const visitors = eventStats["page_view"] || allUsers.length * 3;
-        const signups = allUsers.length;
-        const activeUsers = allUsers.filter(u => u.status === "active").length;
-        const trialUsers = allUsers.filter(u => u.plan === "free" && u.status === "active").length;
-        const proUsers = allUsers.filter(u => u.plan === "pro").length;
-        const enterpriseUsers = allUsers.filter(u => u.plan === "enterprise").length;
+        const visitors = eventStats["page_view"] || userAggregate.totalUsers * 3;
+        const signups = userAggregate.totalUsers;
+        const activeUsers = userAggregate.activeUsers;
+        const trialUsers = userAggregate.activeFreeUsers;
+        const proUsers = userAggregate.proUsers;
+        const enterpriseUsers = userAggregate.enterpriseUsers;
 
         const funnel = [
             { stage: "visitors", count: visitors, percentage: 100 },

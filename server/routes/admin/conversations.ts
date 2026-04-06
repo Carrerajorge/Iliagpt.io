@@ -4,6 +4,7 @@ import { db } from "../../db";
 import { users, chats, chatMessages } from "@shared/schema";
 import { eq, desc, and, gte, lte, ilike, sql, inArray } from "drizzle-orm";
 import { auditLog, AuditActions } from "../../services/auditLogger";
+import { getAdminUserAggregateSnapshot } from "../../services/adminProjection";
 
 export const conversationsRouter = Router();
 
@@ -129,9 +130,9 @@ conversationsRouter.get("/stats/summary", async (req, res) => {
             }).from(chats)
         ]);
 
-        const allUsers = await storage.getAllUsers();
+        const userAggregate = await getAdminUserAggregateSnapshot();
         const totalMessages = allConversations.reduce((sum, c) => sum + (c.messageCount || 0), 0);
-        const avgMessagesPerUser = allUsers.length > 0 ? Math.round(totalMessages / allUsers.length) : 0;
+        const avgMessagesPerUser = userAggregate.totalUsers > 0 ? Math.round(totalMessages / userAggregate.totalUsers) : 0;
         const totalConvCount = Number(totalConversations[0]?.count || 0);
         const avgMessagesPerConversation = totalConvCount > 0 ? Math.round(totalMessages / totalConvCount) : 0;
 

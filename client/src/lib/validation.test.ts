@@ -43,7 +43,7 @@ describe("validateEmail", () => {
 describe("validatePassword", () => {
   it("accepts valid passwords", () => {
     expect(validatePassword("SecureP@ss1").isValid).toBe(true);
-    expect(validatePassword("longpassword").isValid).toBe(true);
+    expect(validatePassword("Longpassword1").isValid).toBe(true);
   });
   it("rejects empty/null", () => {
     expect(validatePassword("").isValid).toBe(false);
@@ -60,13 +60,19 @@ describe("validatePassword", () => {
     expect(validatePassword("12345678").isValid).toBe(false);
     expect(validatePassword("qwerty123").isValid).toBe(false);
   });
+  it("rejects passwords without uppercase letters", () => {
+    expect(validatePassword("lowercase123").isValid).toBe(false);
+  });
+  it("rejects passwords without numbers", () => {
+    expect(validatePassword("PasswordOnly").isValid).toBe(false);
+  });
   it("warns on repeated characters", () => {
-    const result = validatePassword("aaaaabcdef");
+    const result = validatePassword("Aaaaabcdef1");
     expect(result.isValid).toBe(true);
     expect(result.warnings).toBeDefined();
   });
   it("warns on sequential numbers", () => {
-    const result = validatePassword("abc12345def");
+    const result = validatePassword("Abc12345def");
     expect(result.isValid).toBe(true);
     expect(result.warnings).toBeDefined();
   });

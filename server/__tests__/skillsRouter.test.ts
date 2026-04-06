@@ -8,6 +8,7 @@ const deleteReturningQueue: any[] = [];
 let lastUpdatePatch: any | null = null;
 const generateSkillFromPromptMock = vi.fn();
 const getOpenClawSkillsRuntimeSnapshotMock = vi.fn();
+const optimizeOpenClawSkillsMock = vi.fn();
 
 const dbMock = {
   select: vi.fn(),
@@ -43,6 +44,9 @@ vi.mock("../services/skillGenerator", () => ({ generateSkillFromPrompt: generate
 vi.mock("../services/openclawSkillsRuntimeAdapter", () => ({
   getOpenClawSkillsRuntimeSnapshot: getOpenClawSkillsRuntimeSnapshotMock,
 }));
+vi.mock("../services/openclawSkillOptimizer", () => ({
+  optimizeOpenClawSkills: optimizeOpenClawSkillsMock,
+}));
 
 async function createTestApp() {
   const { createSkillsRouter } = await import("../routes/skillsRouter");
@@ -66,6 +70,38 @@ describe("skillsRouter", () => {
       fetchedAt: new Date("2026-02-16T00:00:00.000Z").toISOString(),
       skills: [],
       message: "fallback",
+    });
+    optimizeOpenClawSkillsMock.mockResolvedValue({
+      mode: "ready-only",
+      changed: false,
+      configUpdated: false,
+      configChanges: [],
+      summaryBefore: {
+        total: 0,
+        ready: 0,
+        disabled: 0,
+        installable: 0,
+        authRequired: 0,
+        configRequired: 0,
+        unsupportedPlatform: 0,
+        blocked: 0,
+        manual: 0,
+      },
+      summaryAfter: {
+        total: 0,
+        ready: 0,
+        disabled: 0,
+        installable: 0,
+        authRequired: 0,
+        configRequired: 0,
+        unsupportedPlatform: 0,
+        blocked: 0,
+        manual: 0,
+      },
+      attempted: [],
+      installed: [],
+      failed: [],
+      skipped: [],
     });
   });
 
@@ -176,6 +212,83 @@ describe("skillsRouter", () => {
       expect(res.status).toBe(200);
       expect(res.body.fallback).toBe(true);
       expect(Array.isArray(res.body.skills)).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+
+  it("POST /api/skills/openclaw/optimize returns optimization result", async () => {
+    optimizeOpenClawSkillsMock.mockResolvedValueOnce({
+      mode: "all-installable",
+      changed: true,
+      configUpdated: true,
+      configChanges: ["Enabled web search tool."],
+      summaryBefore: {
+        total: 56,
+        ready: 0,
+        disabled: 0,
+        installable: 12,
+        authRequired: 8,
+        configRequired: 0,
+        unsupportedPlatform: 2,
+        blocked: 0,
+        manual: 34,
+      },
+      summaryAfter: {
+        total: 56,
+        ready: 18,
+        disabled: 0,
+        installable: 4,
+        authRequired: 8,
+        configRequired: 0,
+        unsupportedPlatform: 2,
+        blocked: 0,
+        manual: 24,
+      },
+      attempted: [{ skillKey: "weather", name: "weather", reason: "uv-0" }],
+      installed: [
+        {
+          skillKey: "weather",
+          name: "weather",
+          installId: "uv-0",
+          message: "Installed",
+          warnings: [],
+        },
+      ],
+      failed: [],
+      skipped: [],
+    });
+
+    const app = await createTestApp();
+    const { client, close } = await createHttpTestClient(app);
+    try {
+      const res = await client
+        .post("/api/skills/openclaw/optimize")
+        .send({ mode: "all-installable", timeoutMs: 120000 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.changed).toBe(true);
+      expect(res.body.summaryAfter.ready).toBe(18);
+      expect(optimizeOpenClawSkillsMock).toHaveBeenCalledWith({
+        mode: "all-installable",
+        timeoutMs: 120000,
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it("POST /api/skills/openclaw/optimize rejects invalid payloads", async () => {
+    const app = await createTestApp();
+    const { client, close } = await createHttpTestClient(app);
+    try {
+      const res = await client
+        .post("/api/skills/openclaw/optimize")
+        .send({ mode: "everything", timeoutMs: 1000 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("Invalid request");
+      expect(optimizeOpenClawSkillsMock).not.toHaveBeenCalled();
     } finally {
       await close();
     }

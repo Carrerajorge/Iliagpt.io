@@ -4,6 +4,8 @@ import { createHttpTestClient } from "../../tests/helpers/httpTestClient";
 
 const chatMock = vi.fn();
 const llmChatMock = vi.fn();
+const llmStreamChatMock = vi.fn();
+const llmGuaranteeResponseMock = vi.fn();
 const resolveSkillContextMock = vi.fn();
 const buildSkillSectionMock = vi.fn();
 
@@ -15,7 +17,11 @@ vi.mock("../services/ChatServiceV2", () => ({
 }));
 
 vi.mock("../lib/llmGateway", () => ({
-  llmGateway: { chat: llmChatMock },
+  llmGateway: {
+    chat: llmChatMock,
+    streamChat: llmStreamChatMock,
+    guaranteeResponse: llmGuaranteeResponseMock,
+  },
 }));
 
 vi.mock("../storage", () => ({
@@ -25,6 +31,12 @@ vi.mock("../storage", () => ({
     getChat: vi.fn(async () => null),
     createChat: vi.fn(async () => null),
     createChatMessage: vi.fn(async () => ({ id: "m1" })),
+    updateChatMessageContent: vi.fn(async () => null),
+    getChatMessages: vi.fn(async () => []),
+    getChatRun: vi.fn(async () => null),
+    getChatRunByClientRequestId: vi.fn(async () => null),
+    claimPendingRun: vi.fn(async () => null),
+    updateChatRunStatus: vi.fn(async () => null),
   },
 }));
 
@@ -37,13 +49,26 @@ vi.mock("../services/conversationMemory", () => ({
 vi.mock("../services/usageQuotaService", () => ({
   usageQuotaService: {
     hasTokenQuota: vi.fn(async () => true),
+    getDailyTokenQuotaStatus: vi.fn(async () => ({
+      allowed: true,
+      resetAt: null,
+      inputUsed: 0,
+      outputUsed: 0,
+      totalUsed: 0,
+      inputLimit: null,
+      outputLimit: null,
+      inputRemaining: null,
+      outputRemaining: null,
+    })),
     checkAndIncrementUsage: vi.fn(async () => ({ allowed: true })),
     recordTokenUsage: vi.fn(async () => null),
+    recordTokenUsageDetailed: vi.fn(async () => null),
   },
 }));
 
 vi.mock("../lib/anonUserHelper", () => ({
   getOrCreateSecureUserId: vi.fn(() => "user_test"),
+  getSecureUserId: vi.fn(() => "user_test"),
 }));
 
 vi.mock("../types/express", () => ({
@@ -107,6 +132,23 @@ function parseSsePayloads(raw: string): Array<{ event: string; data: any }> {
     .filter((item): item is { event: string; data: any } => !!item);
 }
 
+async function* createMockStream(content: string, requestId = "stream_test") {
+  yield {
+    content,
+    done: false,
+    provider: "xai",
+    requestId,
+    sequenceId: 1,
+  };
+  yield {
+    content: "",
+    done: true,
+    provider: "xai",
+    requestId,
+    sequenceId: 2,
+  };
+}
+
 async function makeApp() {
   const { createChatAiRouter } = await import("../routes/chatAiRouter");
   const app = express();
@@ -130,6 +172,14 @@ describe("chat stream isolation", () => {
         model: "grok-3-fast",
       };
     });
+    llmGuaranteeResponseMock.mockImplementation(async (messages: any[]) => ({
+      content: `stream:${String(messages[messages.length - 1]?.content || "")}`,
+      provider: "xai",
+      model: "grok-3-fast",
+    }));
+    llmStreamChatMock.mockImplementation((messages: any[], options?: { requestId?: string }) =>
+      createMockStream(`stream:${String(messages[messages.length - 1]?.content || "")}`, options?.requestId || "stream_test")
+    );
   });
 
   it("keeps SSE metadata isolated across concurrent conversations", async () => {

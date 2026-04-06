@@ -415,6 +415,7 @@ function MonitoringSection() {
 
 function UsersSection() {
   const queryClient = useQueryClient();
+  const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [editingUser, setEditingUser] = useState<any>(null);
   const [viewingUser, setViewingUser] = useState<any>(null);
@@ -425,16 +426,94 @@ function UsersSection() {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 20;
   const [newUser, setNewUser] = useState({ email: "", password: "", plan: "free", role: "user" });
+  const isEnabledFlag = (value: unknown) => value === true || value === "true";
 
-  const { data: users = [], isLoading } = useQuery({
-    queryKey: ["/api/admin/users"],
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSearchQuery(searchInput.trim());
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, filters.plan, filters.status, filters.role, filters.authProvider, sortConfig.key, sortConfig.direction]);
+
+  const { data: usersResponse, isLoading, isFetching } = useQuery({
+    queryKey: [
+      "/api/admin/users",
+      currentPage,
+      itemsPerPage,
+      searchQuery,
+      filters.plan,
+      filters.status,
+      filters.role,
+      filters.authProvider,
+      sortConfig.key,
+      sortConfig.direction,
+    ],
     queryFn: async () => {
-      const res = await apiFetch("/api/admin/users", { credentials: "include" });
-      const data = await res.json();
-      // Handle both array response and paginated response
-      if (Array.isArray(data)) return data;
-      if (data?.users && Array.isArray(data.users)) return data.users;
-      return [];
+      const params = new URLSearchParams({
+        page: String(currentPage),
+        limit: String(itemsPerPage),
+        sortBy: sortConfig.key,
+        sortOrder: sortConfig.direction,
+      });
+      if (searchQuery.trim()) params.set("search", searchQuery.trim());
+      if (filters.plan) params.set("plan", filters.plan);
+      if (filters.status) params.set("status", filters.status);
+      if (filters.role) params.set("role", filters.role);
+      if (filters.authProvider) params.set("authProvider", filters.authProvider);
+
+      const res = await apiFetch(`/api/admin/users?${params.toString()}`, { credentials: "include" });
+      if (!res.ok) {
+        throw new Error("No se pudieron cargar los usuarios");
+      }
+      return res.json();
+    },
+    placeholderData: (previousData) => previousData,
+  });
+
+  const users = Array.isArray(usersResponse?.users) ? usersResponse.users : [];
+  const pagination = usersResponse?.pagination || {
+    page: currentPage,
+    limit: itemsPerPage,
+    total: users.length,
+    totalPages: users.length > 0 ? 1 : 0,
+    hasNext: false,
+    hasPrev: currentPage > 1,
+  };
+  const summary = usersResponse?.summary || {
+    totalUsers: typeof pagination.total === "number" ? pagination.total : users.length,
+    anonymousUsers: 0,
+    suspendedAnonymousUsers: 0,
+    usersWithoutEmail: 0,
+    verifiedUsers: 0,
+    usersWithDailyLimits: 0,
+    usersAtDailyLimit: 0,
+    usersActiveToday: 0,
+  };
+
+  useEffect(() => {
+    if (pagination.totalPages === 0 && currentPage !== 1) {
+      setCurrentPage(1);
+      return;
+    }
+    if (pagination.totalPages > 0 && currentPage > pagination.totalPages) {
+      setCurrentPage(pagination.totalPages);
+    }
+  }, [currentPage, pagination.totalPages]);
+
+  const { data: viewingUserTokenReport, isLoading: isLoadingViewingUserTokenReport } = useQuery({
+    queryKey: ["/api/admin/users", viewingUser?.id, "token-report"],
+    enabled: !!viewingUser?.id,
+    queryFn: async () => {
+      const res = await apiFetch(`/api/admin/users/${viewingUser.id}/token-report`, { credentials: "include" });
+      if (!res.ok) {
+        throw new Error("No se pudo cargar el reporte de tokens");
+      }
+      return res.json();
     }
   });
 
@@ -446,11 +525,22 @@ function UsersSection() {
         body: JSON.stringify(updates),
         credentials: "include"
       });
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.error || "No se pudo actualizar el usuario");
+      }
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (updatedUser) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
-      setEditingUser(null);
+      if (updatedUser?.id) {
+        queryClient.invalidateQueries({ queryKey: ["/api/admin/users", updatedUser.id, "token-report"] });
+        setEditingUser((current: any) => current?.id === updatedUser.id ? updatedUser : current);
+        setViewingUser((current: any) => current?.id === updatedUser.id ? { ...current, ...updatedUser } : current);
+      }
+    },
+    onError: (error: any) => {
+      toast.error(error?.message || "No se pudo actualizar el usuario");
     }
   });
 
@@ -485,30 +575,23 @@ function UsersSection() {
   });
 
   const handleExport = (format: "csv" | "json") => {
-    // FRONTEND FIX #34: Add noopener,noreferrer to prevent window.opener attacks
-    window.open(`/api/admin/users/export?format=${format}`, "_blank", "noopener,noreferrer");
-  };
-
-  const filteredAndSortedUsers = users
-    .filter((u: any) => {
-      const matchesSearch = u.username?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        u.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        u.fullName?.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesPlan = !filters.plan || u.plan === filters.plan;
-      const matchesStatus = !filters.status || u.status === filters.status;
-      const matchesRole = !filters.role || u.role === filters.role;
-      const matchesAuth = !filters.authProvider || u.authProvider === filters.authProvider;
-      return matchesSearch && matchesPlan && matchesStatus && matchesRole && matchesAuth;
-    })
-    .sort((a: any, b: any) => {
-      const aVal = a[sortConfig.key] || "";
-      const bVal = b[sortConfig.key] || "";
-      if (sortConfig.direction === "asc") return aVal > bVal ? 1 : -1;
-      return aVal < bVal ? 1 : -1;
+    const params = new URLSearchParams({
+      format,
+      page: "1",
+      limit: "2000",
+      sortBy: sortConfig.key,
+      sortOrder: sortConfig.direction,
     });
-
-  const totalPages = Math.ceil(filteredAndSortedUsers.length / itemsPerPage);
-  const paginatedUsers = filteredAndSortedUsers.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+    if (searchQuery.trim()) params.set("search", searchQuery.trim());
+    if (filters.plan) params.set("plan", filters.plan);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.role) params.set("role", filters.role);
+    if (filters.authProvider) params.set("authProvider", filters.authProvider);
+    // FRONTEND FIX #34: Add noopener,noreferrer to prevent window.opener attacks
+    window.open(`/api/admin/users/export?${params.toString()}`, "_blank", "noopener,noreferrer");
+  };
+  const totalUsers = typeof summary.totalUsers === "number" ? summary.totalUsers : users.length;
+  const totalPages = Math.max(1, pagination.totalPages || 1);
 
   const handleSort = (key: string) => {
     setSortConfig(prev => ({
@@ -517,14 +600,27 @@ function UsersSection() {
     }));
   };
 
-  if (isLoading) {
-    return <div className="flex items-center justify-center py-12"><Loader2 className="h-6 w-6 animate-spin" /></div>;
+  const formatOptionalLimit = (value: number | null | undefined) =>
+    typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "Sin limite";
+
+  const parseLimitInput = (value: string): number | null => {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number.parseInt(trimmed, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  };
+
+  if (isLoading && !usersResponse) {
+    return <TableSkeleton rows={8} columns={11} />;
   }
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-medium">Users ({filteredAndSortedUsers.length})</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-lg font-medium">Users ({totalUsers.toLocaleString()})</h2>
+          {isFetching && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+        </div>
         <div className="flex items-center gap-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -596,7 +692,7 @@ function UsersSection() {
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search users..." className="pl-9 h-9" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} data-testid="input-search-users" />
+          <Input placeholder="Search users..." className="pl-9 h-9" value={searchInput} onChange={(e) => setSearchInput(e.target.value)} data-testid="input-search-users" />
         </div>
         <Button variant="outline" size="sm" onClick={() => setShowFilters(!showFilters)} className="gap-1">
           <Filter className="h-4 w-4" />
@@ -651,26 +747,66 @@ function UsersSection() {
       )}
 
       {(() => {
-        const anonCount = users.filter((u: any) => u.authProvider === "anonymous").length;
-        const suspendedAnonCount = users.filter((u: any) => u.authProvider === "anonymous" && u.status === "suspended").length;
-        const noEmailCount = users.filter((u: any) => !u.email).length;
-        const verifiedCount = users.filter((u: any) => u.emailVerified === "true").length;
-        if (anonCount === 0 && noEmailCount === 0) return null;
+        if (summary.totalUsers === 0) return null;
         return (
           <div className="flex items-center gap-4 p-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5">
             <AlertTriangle className="h-5 w-5 text-yellow-500 shrink-0" />
             <div className="flex-1 text-sm space-y-1">
               <p className="font-medium text-yellow-700 dark:text-yellow-400">Security Overview</p>
               <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                {anonCount > 0 && <span data-testid="text-anon-count">Anonymous: <strong className="text-yellow-600">{anonCount}</strong> ({suspendedAnonCount} suspended)</span>}
-                {noEmailCount > 0 && <span data-testid="text-no-email-count">No email: <strong className="text-red-500">{noEmailCount}</strong></span>}
-                <span>Verified: <strong className="text-green-500">{verifiedCount}</strong></span>
-                <span>Total: <strong>{users.length}</strong></span>
+                <span data-testid="text-anon-count">Anonymous: <strong className="text-yellow-600">{summary.anonymousUsers.toLocaleString()}</strong> ({summary.suspendedAnonymousUsers.toLocaleString()} suspended)</span>
+                <span data-testid="text-no-email-count">No email: <strong className="text-red-500">{summary.usersWithoutEmail.toLocaleString()}</strong></span>
+                <span>Verified: <strong className="text-green-500">{summary.verifiedUsers.toLocaleString()}</strong></span>
+                <span>Page rows: <strong>{users.length.toLocaleString()}</strong></span>
+                <span>Filtered total: <strong>{totalUsers.toLocaleString()}</strong></span>
               </div>
             </div>
           </div>
         );
       })()}
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-lg border bg-card p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Daily Limits</p>
+              <p className="mt-2 text-2xl font-semibold tabular-nums">{summary.usersWithDailyLimits.toLocaleString()}</p>
+            </div>
+            <Timer className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">Usuarios con control diario configurado.</p>
+        </div>
+        <div className="rounded-lg border bg-card p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">At Limit</p>
+              <p className="mt-2 text-2xl font-semibold tabular-nums text-red-500">{summary.usersAtDailyLimit.toLocaleString()}</p>
+            </div>
+            <ShieldAlert className="h-5 w-5 text-red-500" />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">Usuarios que ya agotaron su límite diario.</p>
+        </div>
+        <div className="rounded-lg border bg-card p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Active Today</p>
+              <p className="mt-2 text-2xl font-semibold tabular-nums">{summary.usersActiveToday.toLocaleString()}</p>
+            </div>
+            <Activity className="h-5 w-5 text-blue-500" />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">Usuarios con consumo efectivo de tokens hoy.</p>
+        </div>
+        <div className="rounded-lg border bg-card p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Verified</p>
+              <p className="mt-2 text-2xl font-semibold tabular-nums">{summary.verifiedUsers.toLocaleString()}</p>
+            </div>
+            <CheckCircle className="h-5 w-5 text-green-500" />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">Cuentas verificadas dentro del conjunto filtrado.</p>
+        </div>
+      </div>
 
       <div className="rounded-lg border overflow-hidden">
         <div className="overflow-x-auto">
@@ -695,6 +831,11 @@ function UsersSection() {
                     {sortConfig.key === "openclawTokensConsumed" && (sortConfig.direction === "asc" ? " ↑" : " ↓")}
                   </div>
                 </th>
+                <th className="text-left p-3 font-medium cursor-pointer hover:bg-muted/70" onClick={() => handleSort("dailyTokensUsed")}>
+                  <div className="flex items-center gap-1 whitespace-nowrap">
+                    Today {sortConfig.key === "dailyTokensUsed" && (sortConfig.direction === "asc" ? "↑" : "↓")}
+                  </div>
+                </th>
                 <th className="text-left p-3 font-medium">Auth</th>
                 <th className="text-left p-3 font-medium cursor-pointer hover:bg-muted/70" onClick={() => handleSort("createdAt")}>
                   <div className="flex items-center gap-1">Created {sortConfig.key === "createdAt" && (sortConfig.direction === "asc" ? "↑" : "↓")}</div>
@@ -703,9 +844,9 @@ function UsersSection() {
               </tr>
             </thead>
             <tbody>
-              {paginatedUsers.length === 0 ? (
-                <tr><td colSpan={10} className="p-4 text-center text-muted-foreground">No users found</td></tr>
-              ) : paginatedUsers.map((user: any) => (
+              {users.length === 0 ? (
+                <tr><td colSpan={11} className="p-4 text-center text-muted-foreground">No users found</td></tr>
+              ) : users.map((user: any) => (
                 <tr key={user.id} className="border-b last:border-0 hover:bg-muted/30">
                   <td className="p-3">
                     <div className="flex items-center gap-2">
@@ -731,12 +872,27 @@ function UsersSection() {
                     <span className={user.openclawTokensConsumed > 0 ? "text-red-500 font-medium" : ""}>{(user.openclawTokensConsumed || 0).toLocaleString()}</span>
                   </td>
                   <td className="p-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium tabular-nums">{(user.dailyTotalTokensUsed || 0).toLocaleString()}</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        In {(user.dailyInputTokensUsed || 0).toLocaleString()} / Out {(user.dailyOutputTokensUsed || 0).toLocaleString()}
+                      </p>
+                      {(user.dailyInputTokensLimit !== null && user.dailyInputTokensLimit !== undefined) || (user.dailyOutputTokensLimit !== null && user.dailyOutputTokensLimit !== undefined) ? (
+                        <Badge variant={user.dailyLimitReached ? "destructive" : "secondary"} className="text-[10px]">
+                          {user.dailyLimitReached ? "Limit reached" : "Tracked"}
+                        </Badge>
+                      ) : (
+                        <span className="text-[11px] text-muted-foreground">No daily limit</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="p-3">
                     <div className="flex items-center gap-1">
                       <Badge variant={user.authProvider === "anonymous" ? "destructive" : user.authProvider === "google" ? "default" : "secondary"} className="text-xs">
                         {user.authProvider || "email"}
                       </Badge>
-                      {user.emailVerified === "true" && <CheckCircle className="h-3 w-3 text-green-500" />}
-                      {user.is2faEnabled === "true" && <Shield className="h-3 w-3 text-blue-500" />}
+                      {isEnabledFlag(user.emailVerified) && <CheckCircle className="h-3 w-3 text-green-500" />}
+                      {isEnabledFlag(user.is2faEnabled) && <Shield className="h-3 w-3 text-blue-500" />}
                     </div>
                   </td>
                   <td className="p-3 text-xs text-muted-foreground">{user.createdAt ? format(new Date(user.createdAt), "dd/MM/yy") : "-"}</td>
@@ -762,10 +918,15 @@ function UsersSection() {
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Page {currentPage} of {totalPages}</span>
+          <span className="text-sm text-muted-foreground">
+            Showing {users.length === 0 ? 0 : ((pagination.page || currentPage) - 1) * (pagination.limit || itemsPerPage) + 1}
+            {" "}-{" "}
+            {Math.min((pagination.page || currentPage) * (pagination.limit || itemsPerPage), totalUsers)}
+            {" "}of {totalUsers.toLocaleString()}
+          </span>
           <div className="flex gap-1">
-            <Button variant="outline" size="sm" disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)}>Previous</Button>
-            <Button variant="outline" size="sm" disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)}>Next</Button>
+            <Button variant="outline" size="sm" disabled={!pagination.hasPrev} onClick={() => setCurrentPage(p => Math.max(1, p - 1))}>Previous</Button>
+            <Button variant="outline" size="sm" disabled={!pagination.hasNext} onClick={() => setCurrentPage(p => p + 1)}>Next</Button>
           </div>
         </div>
       )}
@@ -789,8 +950,8 @@ function UsersSection() {
                 <div><span className="text-muted-foreground">OpenClaw Tokens:</span> <span className="text-red-500 font-medium">{(viewingUser.openclawTokensConsumed || 0).toLocaleString()}</span></div>
                 <div><span className="text-muted-foreground">Credits:</span> {(viewingUser.creditsBalance || 0).toLocaleString()}</div>
                 <div><span className="text-muted-foreground">Auth Provider:</span> {viewingUser.authProvider || "email"}</div>
-                <div><span className="text-muted-foreground">Email Verified:</span> {viewingUser.emailVerified === "true" ? "Yes" : "No"}</div>
-                <div><span className="text-muted-foreground">2FA Enabled:</span> {viewingUser.is2faEnabled === "true" ? "Yes" : "No"}</div>
+                <div><span className="text-muted-foreground">Email Verified:</span> {isEnabledFlag(viewingUser.emailVerified) ? "Yes" : "No"}</div>
+                <div><span className="text-muted-foreground">2FA Enabled:</span> {isEnabledFlag(viewingUser.is2faEnabled) ? "Yes" : "No"}</div>
                 <div><span className="text-muted-foreground">Last IP:</span> {viewingUser.lastIp || "-"}</div>
                 <div><span className="text-muted-foreground">Country:</span> {viewingUser.countryCode || "-"}</div>
                 <div><span className="text-muted-foreground">Last Login:</span> {viewingUser.lastLoginAt ? format(new Date(viewingUser.lastLoginAt), "dd/MM/yyyy HH:mm") : "-"}</div>
@@ -799,6 +960,98 @@ function UsersSection() {
                 <div><span className="text-muted-foreground">Referred By:</span> {viewingUser.referredBy || "-"}</div>
                 <div className="col-span-2"><span className="text-muted-foreground">Tags:</span> {viewingUser.tags?.length ? viewingUser.tags.map((t: string) => <Badge key={t} variant="secondary" className="mr-1">{t}</Badge>) : "-"}</div>
                 <div className="col-span-2"><span className="text-muted-foreground">Internal Notes:</span> <p className="mt-1 text-xs">{viewingUser.internalNotes || "-"}</p></div>
+              </div>
+
+              <div className="space-y-3 rounded-lg border p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">Control Diario de Tokens</p>
+                    <p className="text-xs text-muted-foreground">Entrada, salida y consumo reciente del usuario.</p>
+                  </div>
+                  {viewingUserTokenReport?.today && (
+                    <Badge variant={viewingUserTokenReport.today.withinLimits ? "secondary" : "destructive"}>
+                      {viewingUserTokenReport.today.withinLimits ? "Dentro del limite" : "Limite alcanzado"}
+                    </Badge>
+                  )}
+                </div>
+
+                {isLoadingViewingUserTokenReport ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Cargando reporte de tokens...
+                  </div>
+                ) : viewingUserTokenReport?.today ? (
+                  <>
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                      <div className="rounded-md border p-3">
+                        <p className="text-xs text-muted-foreground">Input hoy</p>
+                        <p className="text-lg font-semibold tabular-nums">
+                          {viewingUserTokenReport.today.inputTokensUsed.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Limite: {formatOptionalLimit(viewingUserTokenReport.today.inputTokensLimit)}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Restante: {formatOptionalLimit(viewingUserTokenReport.today.inputTokensRemaining)}
+                        </p>
+                      </div>
+                      <div className="rounded-md border p-3">
+                        <p className="text-xs text-muted-foreground">Output hoy</p>
+                        <p className="text-lg font-semibold tabular-nums">
+                          {viewingUserTokenReport.today.outputTokensUsed.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Limite: {formatOptionalLimit(viewingUserTokenReport.today.outputTokensLimit)}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Restante: {formatOptionalLimit(viewingUserTokenReport.today.outputTokensRemaining)}
+                        </p>
+                      </div>
+                      <div className="rounded-md border p-3">
+                        <p className="text-xs text-muted-foreground">Total hoy</p>
+                        <p className="text-lg font-semibold tabular-nums">
+                          {viewingUserTokenReport.today.totalTokensUsed.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Lifetime: {(viewingUserTokenReport.lifetime?.totalTokensUsed || 0).toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Reset: {viewingUserTokenReport.today.resetAt ? format(new Date(viewingUserTokenReport.today.resetAt), "dd/MM/yyyy HH:mm") : "-"}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium">Ultimos 7 dias</p>
+                      <div className="rounded-md border overflow-hidden">
+                        <table className="w-full text-xs">
+                          <thead className="bg-muted/40">
+                            <tr>
+                              <th className="p-2 text-left font-medium">Dia</th>
+                              <th className="p-2 text-right font-medium">Requests</th>
+                              <th className="p-2 text-right font-medium">Input</th>
+                              <th className="p-2 text-right font-medium">Output</th>
+                              <th className="p-2 text-right font-medium">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {viewingUserTokenReport.dailyHistory?.map((entry: any) => (
+                              <tr key={entry.day} className="border-t">
+                                <td className="p-2">{entry.day}</td>
+                                <td className="p-2 text-right tabular-nums">{(entry.requestCount || 0).toLocaleString()}</td>
+                                <td className="p-2 text-right tabular-nums">{(entry.inputTokens || 0).toLocaleString()}</td>
+                                <td className="p-2 text-right tabular-nums">{(entry.outputTokens || 0).toLocaleString()}</td>
+                                <td className="p-2 text-right tabular-nums font-medium">{(entry.totalTokens || 0).toLocaleString()}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No hay reporte diario disponible.</p>
+                )}
               </div>
             </div>
           )}
@@ -852,7 +1105,44 @@ function UsersSection() {
               </div>
               <div className="space-y-2">
                 <Label>Tokens Limit</Label>
-                <Input type="number" defaultValue={editingUser.tokensLimit || 100000} onBlur={(e) => updateUserMutation.mutate({ id: editingUser.id, updates: { tokensLimit: parseInt(e.target.value) } })} />
+                <Input
+                  type="number"
+                  defaultValue={editingUser.tokensLimit || 100000}
+                  onBlur={(e) => {
+                    const parsed = Number.parseInt(e.target.value, 10);
+                    if (Number.isFinite(parsed) && parsed >= 0) {
+                      updateUserMutation.mutate({ id: editingUser.id, updates: { tokensLimit: parsed } });
+                    }
+                  }}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Daily Input Limit</Label>
+                  <Input
+                    type="number"
+                    placeholder="Sin limite"
+                    defaultValue={editingUser.dailyInputTokensLimit ?? ""}
+                    onBlur={(e) => updateUserMutation.mutate({
+                      id: editingUser.id,
+                      updates: { dailyInputTokensLimit: parseLimitInput(e.target.value) }
+                    })}
+                  />
+                  <p className="text-xs text-muted-foreground">Vacío = sin límite diario de entrada.</p>
+                </div>
+                <div className="space-y-2">
+                  <Label>Daily Output Limit</Label>
+                  <Input
+                    type="number"
+                    placeholder="Sin limite"
+                    defaultValue={editingUser.dailyOutputTokensLimit ?? ""}
+                    onBlur={(e) => updateUserMutation.mutate({
+                      id: editingUser.id,
+                      updates: { dailyOutputTokensLimit: parseLimitInput(e.target.value) }
+                    })}
+                  />
+                  <p className="text-xs text-muted-foreground">Vacío = sin límite diario de salida.</p>
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>Internal Notes</Label>

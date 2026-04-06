@@ -17,6 +17,7 @@ const CSRF_TOKEN_BYTES = 16;
 const logger = createLogger("csrf");
 const CSRF_EXEMPT_PATHS = new Set([
   "/api/auth/login",
+  "/api/auth/register",
   "/api/auth/admin-login",
   "/api/auth/logout",
   "/api/auth/google",

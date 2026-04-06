@@ -8,6 +8,7 @@ import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
 import { ensureUserRowExists } from "../lib/ensureUserRowExists";
 import { createCustomRateLimiter } from "../middleware/userRateLimiter";
 import { getOpenClawSkillsRuntimeSnapshot } from "../services/openclawSkillsRuntimeAdapter";
+import { optimizeOpenClawSkills } from "../services/openclawSkillOptimizer";
 import { FLUID_FUNCTIONAL_SKILLS } from "../config/fluidFunctionalSkills";
 
 const generateSchema = z.object({
@@ -51,6 +52,11 @@ const importSkillsSchema = z.object({
 
 const setActiveSkillSchema = z.object({
   activeSkillId: z.string().min(1).max(64).nullable().optional(),
+});
+
+const optimizeOpenClawSchema = z.object({
+  mode: z.enum(["ready-only", "all-installable"]).optional().default("ready-only"),
+  timeoutMs: z.number().int().min(5_000).max(600_000).optional(),
 });
 
 function normalizeCategory(raw: unknown): z.infer<typeof skillCategorySchema> {
@@ -247,6 +253,28 @@ export function createSkillsRouter(): Router {
         fetchedAt: new Date().toISOString(),
         skills: [],
         message: error?.message || "Runtime unavailable",
+      });
+    }
+  });
+
+  // POST /api/skills/openclaw/optimize
+  // Enable core OpenClaw web capabilities and bootstrap installable free skills.
+  router.post("/openclaw/optimize", async (req, res) => {
+    const parsed = optimizeOpenClawSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid request",
+        details: parsed.error.flatten(),
+      });
+    }
+
+    try {
+      const result = await optimizeOpenClawSkills(parsed.data);
+      return res.json(result);
+    } catch (error: any) {
+      console.error("[SkillsRouter] openclaw optimize error:", error);
+      return res.status(500).json({
+        error: error?.message || "OpenClaw optimization failed",
       });
     }
   });
