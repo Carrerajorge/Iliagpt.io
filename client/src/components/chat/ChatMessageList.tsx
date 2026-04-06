@@ -155,10 +155,13 @@ export function ChatMessageList({
         return messages.filter(m => m.role === "assistant").pop();
     }, [messages]);
 
-    const detectedIntent = useMemo(() => {
-        const lastUserMsg = messages.filter(m => m.role === "user").pop();
-        return lastUserMsg ? detectClientIntent(lastUserMsg.content) : undefined;
+    const lastUserMessage = useMemo(() => {
+        return messages.filter(m => m.role === "user").pop();
     }, [messages]);
+
+    const detectedIntent = useMemo(() => {
+        return lastUserMessage ? detectClientIntent(lastUserMessage.content) : undefined;
+    }, [lastUserMessage]);
 
     const realTimePhase = useMemo(() => {
         if (!aiProcessSteps.length) return undefined;
@@ -219,8 +222,22 @@ export function ChatMessageList({
     const showSuggestedReplies = variant === "default" && isIdleLike && isLastMessageAssistant && lastAssistantMessage && !streamingContent;
 
     const suggestions = useMemo(() => {
-        return showSuggestedReplies && lastAssistantMessage ? generateSuggestions(lastAssistantMessage.content) : [];
-    }, [showSuggestedReplies, lastAssistantMessage?.content]);
+        if (!showSuggestedReplies || !lastAssistantMessage) return [];
+
+        return generateSuggestions(lastAssistantMessage.content, {
+            preferred: lastAssistantMessage.followUpSuggestions || lastAssistantMessage.metadata?.followUpSuggestions,
+            userMessage: lastUserMessage?.content,
+            hasWebSources: Boolean(lastAssistantMessage.webSources?.length),
+        });
+    }, [
+        showSuggestedReplies,
+        lastAssistantMessage,
+        lastAssistantMessage?.content,
+        lastAssistantMessage?.followUpSuggestions,
+        lastAssistantMessage?.metadata,
+        lastAssistantMessage?.webSources,
+        lastUserMessage?.content,
+    ]);
 
     // Footer — only for non-streaming overlays (thinking indicator, suggested replies, execution console)
     const ListFooter = useMemo(() => {

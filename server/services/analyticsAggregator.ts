@@ -1,10 +1,9 @@
-import { db, isHealthy } from "../db";
+import { dbRead, getHealthStatus, isTransientDatabaseError } from "../db";
 import { apiLogs } from "@shared/schema";
 import { sql, gte, and, count, isNotNull } from "drizzle-orm";
 import { storage } from "../storage";
 
 const AGGREGATION_INTERVAL_MS = 60 * 1000;
-const QUERY_TIMEOUT_MS = 10_000;
 const COST_PER_1K_TOKENS: Record<string, number> = {
   xai: 0.002,
   gemini: 0.001,
@@ -15,22 +14,10 @@ const COST_PER_1K_TOKENS: Record<string, number> = {
 
 const DEFAULT_BUDGET_EUR = "100.00";
 const TABLE_EXISTS_CACHE_TTL_MS = 5 * 60 * 1000;
-const MAX_CONSECUTIVE_FAILURES = 5;
 
 let aggregatorInterval: NodeJS.Timeout | null = null;
 let isRunning = false;
-let consecutiveFailures = 0;
-let lastErrorLog = 0;
 const tableExistsCache = new Map<string, { exists: boolean; checkedAt: number }>();
-
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`[Analytics] ${label} timed out after ${ms}ms`)), ms)
-    ),
-  ]);
-}
 
 interface ProviderStats {
   provider: string;
@@ -41,6 +28,29 @@ interface ProviderStats {
   latencies: number[];
   tokensIn: number;
   tokensOut: number;
+}
+
+function getDatabaseReadiness():
+  | { ready: true }
+  | { ready: false; reason: string } {
+  const dbHealth = getHealthStatus();
+
+  if (dbHealth.status === "HEALTHY") {
+    return { ready: true };
+  }
+
+  const reasonParts = [`status=${dbHealth.status}`];
+  if (dbHealth.isReconnecting) {
+    reasonParts.push(`reconnecting=${dbHealth.reconnectAttempts}`);
+  }
+  if (dbHealth.lastError) {
+    reasonParts.push(`lastError=${dbHealth.lastError}`);
+  }
+
+  return {
+    ready: false,
+    reason: reasonParts.join(", "),
+  };
 }
 
 function calculatePercentile(sortedValues: number[], percentile: number): number {
@@ -59,7 +69,7 @@ async function tableExists(tableName: string): Promise<boolean> {
   if (cached && Date.now() - cached.checkedAt < TABLE_EXISTS_CACHE_TTL_MS) {
     return cached.exists;
   }
-  const result = await db.execute(sql`select to_regclass(${tableName}) as table_name`);
+  const result = await dbRead.execute(sql`select to_regclass(${tableName}) as table_name`);
   const row = result.rows?.[0] as { table_name?: string | null } | undefined;
   const exists = Boolean(row?.table_name);
   tableExistsCache.set(tableName, { exists, checkedAt: Date.now() });
@@ -95,26 +105,15 @@ async function ensureCostBudgetExists(provider: string): Promise<void> {
 }
 
 export async function runAggregation(): Promise<void> {
-  if (isRunning) return;
-
-  if (!isHealthy()) {
-    const now = Date.now();
-    if (now - lastErrorLog > 120_000) {
-      console.warn("[Analytics] Skipping aggregation — DB is unhealthy");
-      lastErrorLog = now;
-    }
+  if (isRunning) {
+    console.log("[Analytics] Aggregation already in progress, skipping...");
     return;
   }
 
-  if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-    const now = Date.now();
-    if (now - lastErrorLog > 300_000) {
-      consecutiveFailures = 0;
-      console.warn("[Analytics] Circuit breaker reset after cooldown. Retrying aggregation.");
-      lastErrorLog = now;
-    } else {
-      return;
-    }
+  const dbReadiness = getDatabaseReadiness();
+  if (!dbReadiness.ready) {
+    console.warn(`[Analytics] Skipping aggregation while database is unavailable (${dbReadiness.reason})`);
+    return;
   }
 
   isRunning = true;
@@ -122,17 +121,22 @@ export async function runAggregation(): Promise<void> {
   const windowStart = new Date(windowEnd.getTime() - AGGREGATION_INTERVAL_MS);
 
   try {
-    const missingTables = await withTimeout(
-      getMissingTables(["public.api_logs", "public.provider_metrics", "public.cost_budgets", "public.kpi_snapshots"]),
-      QUERY_TIMEOUT_MS, "table check"
-    );
+    console.log(`[Analytics] Running aggregation for window: ${windowStart.toISOString()} - ${windowEnd.toISOString()}`);
+
+    const missingTables = await getMissingTables([
+      "public.api_logs",
+      "public.provider_metrics",
+      "public.cost_budgets",
+      "public.kpi_snapshots",
+    ]);
 
     if (missingTables.length > 0) {
+      console.warn(`[Analytics] Skipping aggregation; missing tables: ${missingTables.join(", ")}`);
       return;
     }
 
-    const logs = await withTimeout(
-      db.select({
+    const logs = await dbRead
+      .select({
         provider: apiLogs.provider,
         statusCode: apiLogs.statusCode,
         latencyMs: apiLogs.latencyMs,
@@ -140,9 +144,12 @@ export async function runAggregation(): Promise<void> {
         tokensOut: apiLogs.tokensOut,
       })
       .from(apiLogs)
-      .where(and(gte(apiLogs.createdAt, windowStart), isNotNull(apiLogs.provider))),
-      QUERY_TIMEOUT_MS, "fetch logs"
-    );
+      .where(
+        and(
+          gte(apiLogs.createdAt, windowStart),
+          isNotNull(apiLogs.provider)
+        )
+      );
 
     const providerMap = new Map<string, ProviderStats>();
 
@@ -236,16 +243,15 @@ export async function runAggregation(): Promise<void> {
       }
     }
 
-    await withTimeout(calculateKpis(), QUERY_TIMEOUT_MS, "KPI calculation");
+    await calculateKpis();
 
-    consecutiveFailures = 0;
     console.log(`[Analytics] Aggregation completed. Processed ${logs.length} logs from ${providerMap.size} providers.`);
-  } catch (error: any) {
-    consecutiveFailures++;
-    const now = Date.now();
-    if (consecutiveFailures <= 3 || now - lastErrorLog > 60_000) {
-      console.warn(`[Analytics] Aggregation failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${(error?.message || String(error)).substring(0, 150)}`);
-      lastErrorLog = now;
+  } catch (error) {
+    if (isTransientDatabaseError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[Analytics] Aggregation skipped because database became unavailable: ${message}`);
+    } else {
+      console.error("[Analytics] Error during aggregation:", error);
     }
   } finally {
     isRunning = false;
@@ -253,6 +259,12 @@ export async function runAggregation(): Promise<void> {
 }
 
 export async function calculateKpis(): Promise<void> {
+  const dbReadiness = getDatabaseReadiness();
+  if (!dbReadiness.ready) {
+    console.warn(`[Analytics] Skipping KPI calculation while database is unavailable (${dbReadiness.reason})`);
+    return;
+  }
+
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const oneMinuteAgo = new Date(now.getTime() - 60 * 1000);
@@ -272,7 +284,7 @@ export async function calculateKpis(): Promise<void> {
 
     // "Active users now" should reflect distinct accounts, not message volume.
     // We use api_logs (LLM calls) as the most reliable cross-feature activity signal.
-    const [activeUsersResult] = await db
+    const [activeUsersResult] = await dbRead
       .select({ count: sql<number>`COUNT(DISTINCT ${apiLogs.userId})` })
       .from(apiLogs)
       .where(and(
@@ -281,13 +293,13 @@ export async function calculateKpis(): Promise<void> {
       ));
     const activeUsersNow = Number(activeUsersResult?.count || 0);
 
-    const [queriesResult] = await db
+    const [queriesResult] = await dbRead
       .select({ count: count() })
       .from(apiLogs)
       .where(gte(apiLogs.createdAt, oneMinuteAgo));
     const queriesPerMinute = queriesResult?.count || 0;
 
-    const [tokensResult] = await db
+    const [tokensResult] = await dbRead
       .select({
         totalIn: sql<number>`COALESCE(SUM(${apiLogs.tokensIn}), 0)`,
         totalOut: sql<number>`COALESCE(SUM(${apiLogs.tokensOut}), 0)`,
@@ -296,7 +308,7 @@ export async function calculateKpis(): Promise<void> {
       .where(gte(apiLogs.createdAt, todayStart));
     const tokensConsumedToday = (tokensResult?.totalIn || 0) + (tokensResult?.totalOut || 0);
 
-    const [latencyResult] = await db
+    const [latencyResult] = await dbRead
       .select({
         avg: sql<number>`COALESCE(AVG(${apiLogs.latencyMs}), 0)`,
       })
@@ -304,7 +316,7 @@ export async function calculateKpis(): Promise<void> {
       .where(gte(apiLogs.createdAt, todayStart));
     const avgLatencyMs = Math.round(latencyResult?.avg || 0);
 
-    const [errorResult] = await db
+    const [errorResult] = await dbRead
       .select({
         total: count(),
         errors: sql<number>`SUM(CASE WHEN ${apiLogs.statusCode} >= 400 THEN 1 ELSE 0 END)`,
@@ -335,12 +347,18 @@ export async function calculateKpis(): Promise<void> {
 
     console.log(`[Analytics] KPI snapshot created - Active: ${activeUsersNow}, QPM: ${queriesPerMinute}, Tokens: ${tokensConsumedToday}`);
   } catch (error) {
-    console.error("[Analytics] Error calculating KPIs:", error);
+    if (isTransientDatabaseError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[Analytics] KPI calculation skipped because database became unavailable: ${message}`);
+    } else {
+      console.error("[Analytics] Error calculating KPIs:", error);
+    }
   }
 }
 
 export function startAggregator(): void {
   if (aggregatorInterval) {
+    console.log("[Analytics] Aggregator already running");
     return;
   }
 
@@ -350,10 +368,10 @@ export function startAggregator(): void {
 
   console.log(`[Analytics] Starting analytics aggregator (${intervalMs / 1000}s interval)`);
 
-  setTimeout(() => runAggregation().catch(() => {}), 10_000);
+  runAggregation().catch(console.error);
 
   aggregatorInterval = setInterval(() => {
-    runAggregation().catch(() => {});
+    runAggregation().catch(console.error);
   }, intervalMs);
 }
 

@@ -138,6 +138,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useSettingsContext } from "@/contexts/SettingsContext";
 import { useConversationState } from "@/hooks/use-conversation-state";
 import { useAgentMode } from "@/hooks/use-agent-mode";
+import { buildAssistantMessage } from "@shared/assistantMessage";
 import { Database, Sparkles, AudioLines } from "lucide-react";
 import { useModelAvailability, type AvailableModel } from "@/contexts/ModelAvailabilityContext";
 import { getFileTheme, getFileCategory, FileCategory } from "@/lib/fileTypeTheme";
@@ -1870,19 +1871,18 @@ export function ChatInterface({
             analyzeMetadata = data || {};
           }
         },
-        buildFinalMessage: (fullContent, lastEventData, messageId) => {
-          const finalText = lastEventData?.answer_text || fullContent || "No se pudo analizar el documento.";
-          return {
+        buildFinalMessage: (fullContent, lastEventData, messageId) => ({
+          ...buildAssistantMessage({
             id: messageId || `analysis-${opts.userMessageId}`,
-            role: "assistant" as const,
-            content: finalText,
             timestamp: new Date(),
             requestId: generateRequestId(),
             userMessageId: opts.userMessageId,
-            deliveryStatus: "sent" as const,
+            content: lastEventData?.answer_text || fullContent,
+            fallbackContent: "No se pudo analizar el documento.",
             ui_components: lastEventData?.ui_components || analyzeMetadata?.ui_components || [],
-          };
-        },
+          }),
+          deliveryStatus: "sent" as const,
+        }),
         buildErrorMessage: (error, messageId) => ({
           id: messageId || `analysis-${opts.userMessageId}`,
           role: "assistant" as const,
@@ -2146,15 +2146,18 @@ export function ChatInterface({
         model: selectedModel,
         latencyMode,
       },
-      buildFinalMessage: (fullContent, data, messageId) => ({
+      buildFinalMessage: (fullContent, data, messageId) => buildAssistantMessage({
         id: messageId || `assistant-${Date.now()}`,
-        role: "assistant",
-        content: fullContent || "No se recibió respuesta del servidor.",
         timestamp: new Date(),
         requestId: data?.requestId || generateRequestId(),
         userMessageId: msgKey,
+        content: fullContent,
+        fallbackContent: "No se recibió respuesta del servidor.",
         artifact: data?.artifact,
         webSources: data?.webSources,
+        searchQueries: data?.searchQueries,
+        totalSearches: data?.totalSearches,
+        followUpSuggestions: data?.followUpSuggestions,
       }),
       buildErrorMessage: (error, messageId) => ({
         id: messageId || `error-${Date.now()}`,
@@ -2734,14 +2737,16 @@ export function ChatInterface({
           }
         }
       },
-      buildFinalMessage: (content, data, messageId) => ({
+      buildFinalMessage: (content, data, messageId) => buildAssistantMessage({
         id: messageId || (Date.now() + 1).toString(),
-        role: "assistant",
-        content,
         timestamp: new Date(),
         requestId: data?.requestId || generateRequestId(),
-        webSources: data?.webSources,
+        content,
         artifact: data?.artifact,
+        webSources: data?.webSources,
+        searchQueries: data?.searchQueries,
+        totalSearches: data?.totalSearches,
+        followUpSuggestions: data?.followUpSuggestions,
       }),
       buildErrorMessage: (error, messageId) => ({
         id: messageId || (Date.now() + 1).toString(),
@@ -2932,6 +2937,7 @@ export function ChatInterface({
           timestamp: new Date(),
           requestId: generateRequestId(),
           webSources: data.webSources,
+          followUpSuggestions: data.followUpSuggestions,
         };
         onSendMessage(aiMsg);
       }
@@ -4170,11 +4176,11 @@ export function ChatInterface({
               if (!isBrowserOpen) setIsBrowserOpen(true);
             }
           },
-          buildFinalMessage: (content, _lastEvent, messageId) => ({
+          buildFinalMessage: (content, _lastEvent, messageId) => buildAssistantMessage({
             id: messageId || `emergency-${Date.now()}`,
-            role: "assistant",
-            content: content || "No response received",
             timestamp: new Date(),
+            content,
+            fallbackContent: "No response received",
           }),
         });
         if (emergencyResult.ok) requestTitleRefresh(effectiveChatIdForStream);
@@ -4676,12 +4682,12 @@ export function ChatInterface({
               }
             }
           },
-          buildFinalMessage: (fullContent, _lastEvent, messageId) => ({
+          buildFinalMessage: (fullContent, _lastEvent, messageId) => buildAssistantMessage({
             id: messageId || `assistant-${Date.now()}`,
-            role: "assistant",
-            content: fullContent || "No se recibió respuesta del servidor.",
             timestamp: new Date(),
             userMessageId: userMsgId,
+            content: fullContent,
+            fallbackContent: "No se recibió respuesta del servidor.",
           }),
           buildErrorMessage: (_error, messageId) => ({
             id: messageId || `error-${Date.now()}`,
@@ -5186,15 +5192,18 @@ export function ChatInterface({
               onAiStateChange: (nextState) => {
                 setAiStateForChat(nextState, effectiveChatIdForStream);
               },
-              buildFinalMessage: (fullContent, data, messageId) => ({
+              buildFinalMessage: (fullContent, data, messageId) => buildAssistantMessage({
                 id: messageId || `assistant-${Date.now()}`,
-                role: "assistant",
-                content: fullContent || "No se recibió respuesta del servidor.",
                 timestamp: new Date(),
                 requestId: data?.requestId || generateRequestId(),
                 userMessageId: userMsgId,
+                content: fullContent,
+                fallbackContent: "No se recibió respuesta del servidor.",
                 artifact: data?.artifact,
                 webSources: data?.webSources,
+                searchQueries: data?.searchQueries,
+                totalSearches: data?.totalSearches,
+                followUpSuggestions: data?.followUpSuggestions,
               }),
               buildErrorMessage: (_error, messageId) => ({
                 id: messageId || `error-${Date.now()}`,
@@ -6043,6 +6052,7 @@ export function ChatInterface({
                 requestId: generateRequestId(),
                 userMessageId: userMsgId,
                 webSources: data.webSources,
+                followUpSuggestions: data.followUpSuggestions,
               };
               setOptimisticMessages((prev: Message[]) => [...prev, gmailResponseMsg]);
               onSendMessage(gmailResponseMsg);
@@ -6954,19 +6964,20 @@ IMPORTANTE:
                     };
                   }
 
-                  const finalMsg: any = {
+                  const finalMsg: any = buildAssistantMessage({
                     id: messageId || `assistant-${Date.now()}`,
-                    role: "assistant",
-                    content: fullContent || "No se recibió respuesta del servidor.",
                     timestamp: new Date(),
                     requestId: data?.requestId || generateRequestId(),
                     userMessageId: userMsgId,
+                    content: fullContent,
+                    fallbackContent: "No se recibió respuesta del servidor.",
                     confidence: uncertainty?.confidence,
                     uncertaintyReason: uncertainty?.reason,
                     webSources: data?.webSources || streamWebSources,
                     searchQueries: streamSearchQueries.length > 0 ? streamSearchQueries : (data?.searchQueries || undefined),
                     totalSearches: streamTotalSearches > 0 ? streamTotalSearches : (data?.totalSearches || undefined),
-                  };
+                    followUpSuggestions: data?.followUpSuggestions,
+                  });
                   if (cerebroTimeline.subtasks.length > 0 || cerebroTimeline.judgeResult || cerebroTimeline.budget) {
                     finalMsg.cerebroTimeline = { ...cerebroTimeline };
                   }

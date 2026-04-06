@@ -10,6 +10,7 @@ import {
   MAX_CHAT_ATTACHMENTS,
   MAX_CHAT_ATTACHMENT_SIZE_BYTES,
 } from "@shared/chatLimits";
+import { buildAssistantMessage, buildAssistantMessageMetadata } from "@shared/assistantMessage";
 
 // Higher body limit middleware for message creation endpoints.
 // The global limit is 1MB, but messages with attachment metadata can be larger.
@@ -761,6 +762,7 @@ export function createChatsRouter() {
         webSources,
         searchQueries,
         totalSearches,
+        followUpSuggestions,
         confidence,
         uncertaintyReason,
         retrievalSteps,
@@ -934,22 +936,23 @@ export function createChatsRouter() {
         }
       }
 
-      if (normalizedRole === 'assistant' && userMessageId) {
-        const tAssistDedup = performance.now();
-        try {
-          const existingAssistant = await storage.findAssistantResponseForUserMessage(userMessageId);
-          addTiming("assistant_dedup", tAssistDedup);
-          if (existingAssistant && existingAssistant.chatId === req.params.id) {
-            console.log(`[Dedup] Assistant message for userMessageId ${userMessageId} already exists (${existingAssistant.id})`);
-            setServerTiming();
-            return res.json(existingAssistant);
-          }
-        } catch (e) {
-          addTiming("assistant_dedup", tAssistDedup);
-        }
-      }
-
       const tCreateLegacy = performance.now();
+      const assistantPayload = normalizedRole === "assistant"
+        ? buildAssistantMessage({
+            content: safeContent,
+            webSources,
+            searchQueries,
+            totalSearches,
+            followUpSuggestions,
+            confidence,
+            uncertaintyReason,
+            retrievalSteps,
+          })
+        : null;
+      const assistantMetadata = assistantPayload
+        ? buildAssistantMessageMetadata(assistantPayload)
+        : undefined;
+
       const message = await storage.createChatMessage({
         chatId: req.params.id,
         role: normalizedRole,
@@ -963,14 +966,7 @@ export function createChatsRouter() {
         googleFormPreview: googleFormPreview || null,
         gmailPreview: gmailPreview || null,
         generatedImage: generatedImage || null,
-        metadata: webSources || searchQueries || totalSearches || confidence || uncertaintyReason || retrievalSteps ? {
-          webSources: webSources || undefined,
-          searchQueries: searchQueries || undefined,
-          totalSearches: totalSearches || undefined,
-          confidence: confidence || undefined,
-          uncertaintyReason: uncertaintyReason || undefined,
-          retrievalSteps: retrievalSteps || undefined,
-        } : null
+        metadata: assistantMetadata || null,
       });
       addTiming("create_message", tCreateLegacy);
 

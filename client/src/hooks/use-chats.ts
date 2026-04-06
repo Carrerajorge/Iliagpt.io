@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { format, isToday, isYesterday, isThisWeek, isThisYear } from "date-fns";
 import { apiFetch, getAnonUserIdHeader } from "@/lib/apiClient";
 import { trackWorkspaceEvent } from "@/lib/analytics";
+import { buildAssistantMessage } from "@shared/assistantMessage";
+import { normalizeFollowUpSuggestions } from "@shared/followUpSuggestions";
 
 import { type AgentRunStatus } from "@/stores/agent-store";
 
@@ -110,6 +112,7 @@ export interface Message {
   webSources?: WebSource[]; // Web search sources for citations
   searchQueries?: Array<{ query: string; resultCount: number; status: string }>;
   totalSearches?: number;
+  followUpSuggestions?: string[];
   
   ui_components?: string[]; // Components to render: 'executive_summary', 'suggested_questions', 'insights_panel'
   confidence?: 'high' | 'medium' | 'low';
@@ -218,10 +221,40 @@ function sanitizeSendMessage(message: Message): Message {
     throw new Error("Message content too long (max 500K characters)");
   }
 
+  const normalizedAssistantMessage = role === "assistant"
+    ? buildAssistantMessage({
+        content: sanitizedContent,
+        figmaDiagram: message.figmaDiagram,
+        generatedImage: message.generatedImage,
+        googleFormPreview: message.googleFormPreview,
+        gmailPreview: message.gmailPreview,
+        webSources: message.webSources,
+        searchQueries: message.searchQueries,
+        totalSearches: message.totalSearches,
+        followUpSuggestions: message.followUpSuggestions,
+        confidence: message.confidence,
+        uncertaintyReason: message.uncertaintyReason,
+        retrievalSteps: message.retrievalSteps,
+        steps: message.steps,
+      })
+    : null;
+
   return {
     ...message,
-    content: sanitizedContent,
+    content: normalizedAssistantMessage?.content ?? sanitizedContent,
     requestId: sanitizeRequestId(message.requestId),
+    figmaDiagram: normalizedAssistantMessage?.figmaDiagram ?? message.figmaDiagram,
+    generatedImage: normalizedAssistantMessage?.generatedImage ?? message.generatedImage,
+    googleFormPreview: normalizedAssistantMessage?.googleFormPreview ?? message.googleFormPreview,
+    gmailPreview: normalizedAssistantMessage?.gmailPreview ?? message.gmailPreview,
+    webSources: normalizedAssistantMessage?.webSources ?? message.webSources,
+    searchQueries: normalizedAssistantMessage?.searchQueries ?? message.searchQueries,
+    totalSearches: normalizedAssistantMessage?.totalSearches ?? message.totalSearches,
+    followUpSuggestions: normalizedAssistantMessage?.followUpSuggestions ?? normalizeFollowUpSuggestions(message.followUpSuggestions),
+    confidence: normalizedAssistantMessage?.confidence ?? message.confidence,
+    uncertaintyReason: normalizedAssistantMessage?.uncertaintyReason ?? message.uncertaintyReason,
+    retrievalSteps: normalizedAssistantMessage?.retrievalSteps ?? message.retrievalSteps,
+    steps: normalizedAssistantMessage?.steps ?? message.steps,
   };
 }
 
@@ -1105,7 +1138,7 @@ export function useChats() {
         }
       }
 
-      let messages: Message[] = (fullChat.messages || []).map((msg: any) => {
+      const messages: Message[] = (fullChat.messages || []).map((msg: any) => {
         if (msg.requestId) markRequestPersisted(msg.requestId);
 
         let hydratedAttachments = msg.attachments;
@@ -1138,26 +1171,45 @@ export function useChats() {
           });
         }
 
+        const assistantMessage = msg.role === "assistant"
+          ? buildAssistantMessage({
+              content: msg.content,
+              figmaDiagram: msg.figmaDiagram,
+              generatedImage: msg.generatedImage,
+              googleFormPreview: msg.googleFormPreview,
+              gmailPreview: msg.gmailPreview,
+              webSources: msg.webSources || msg.metadata?.webSources,
+              searchQueries: msg.searchQueries || msg.metadata?.searchQueries,
+              totalSearches: msg.totalSearches || msg.metadata?.totalSearches,
+              followUpSuggestions: msg.followUpSuggestions || msg.metadata?.followUpSuggestions,
+              confidence: msg.confidence || msg.metadata?.confidence,
+              uncertaintyReason: msg.uncertaintyReason || msg.metadata?.uncertaintyReason,
+              retrievalSteps: msg.retrievalSteps || msg.metadata?.retrievalSteps,
+              steps: msg.steps || msg.metadata?.steps,
+            })
+          : null;
+
         return {
           id: msg.id,
           role: msg.role,
-          content: msg.content,
+          content: assistantMessage?.content ?? msg.content,
           timestamp: new Date(msg.createdAt),
           requestId: msg.requestId,
           userMessageId: msg.userMessageId,
           attachments: hydratedAttachments,
           sources: msg.sources,
-          figmaDiagram: msg.figmaDiagram,
-          googleFormPreview: msg.googleFormPreview,
-          gmailPreview: msg.gmailPreview,
-          generatedImage: msg.generatedImage,
-          webSources: msg.webSources || msg.metadata?.webSources,
-          searchQueries: msg.searchQueries || msg.metadata?.searchQueries,
-          totalSearches: msg.totalSearches || msg.metadata?.totalSearches,
-          confidence: msg.confidence || msg.metadata?.confidence,
-          uncertaintyReason: msg.uncertaintyReason || msg.metadata?.uncertaintyReason,
-          retrievalSteps: msg.retrievalSteps || msg.metadata?.retrievalSteps,
-          steps: msg.steps || msg.metadata?.steps,
+          figmaDiagram: assistantMessage?.figmaDiagram ?? msg.figmaDiagram,
+          googleFormPreview: assistantMessage?.googleFormPreview ?? msg.googleFormPreview,
+          gmailPreview: assistantMessage?.gmailPreview ?? msg.gmailPreview,
+          generatedImage: assistantMessage?.generatedImage ?? msg.generatedImage,
+          webSources: assistantMessage?.webSources,
+          searchQueries: assistantMessage?.searchQueries,
+          totalSearches: assistantMessage?.totalSearches,
+          followUpSuggestions: assistantMessage?.followUpSuggestions,
+          confidence: assistantMessage?.confidence,
+          uncertaintyReason: assistantMessage?.uncertaintyReason,
+          retrievalSteps: assistantMessage?.retrievalSteps,
+          steps: assistantMessage?.steps,
         };
       });
 
@@ -1894,14 +1946,6 @@ export function useChats() {
     });
 
     try {
-      if ((normalizedMessage as any).serverPersisted) {
-        if (normalizedMessage.requestId) {
-          markRequestComplete(normalizedMessage.requestId);
-          removeFailedMessageFromRecoveryQueue(normalizedMessage.requestId);
-        }
-        return { chatId: resolvedChatId };
-      }
-
       if (normalizedMessage.role === "user") {
         setDeliveryPatch({ deliveryStatus: "sending", deliveryError: undefined });
       }
@@ -1932,6 +1976,7 @@ export function useChats() {
             webSources: normalizedMessage.webSources,
             searchQueries: normalizedMessage.searchQueries,
             totalSearches: normalizedMessage.totalSearches,
+            followUpSuggestions: normalizedMessage.followUpSuggestions,
             confidence: normalizedMessage.confidence,
             uncertaintyReason: normalizedMessage.uncertaintyReason,
             retrievalSteps: normalizedMessage.retrievalSteps,

@@ -5,6 +5,16 @@ import { useStreamChat } from "@/hooks/use-stream-chat";
 
 vi.mock("@/lib/apiClient", () => ({
   getAnonUserIdHeader: () => ({}),
+  apiFetch: vi.fn(async (_url: string, init?: RequestInit) => {
+    const method = init?.method || "GET";
+    if (method === "DELETE") {
+      return new Response("", { status: 200 });
+    }
+    return new Response("{}", {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  }),
 }));
 
 function makeSseResponse(events: Array<{ event: string; data: Record<string, unknown> }>, delayMs = 0): Response {

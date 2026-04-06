@@ -261,10 +261,11 @@ export function log(message: string, source = "express") {
     process.exit(1);
   }
 
+  startHealthChecks();
+  log("Database health checks started");
+
   if (dbConnected) {
     log("Database connection verified successfully");
-    startHealthChecks();
-    log("Database health checks started");
 
     // Setup Full-Text Search
     const { setupFts } = await import("./lib/fts");
@@ -278,7 +279,7 @@ export function log(message: string, source = "express") {
     const { actionTriggerDaemon } = await import("./services/actionTriggerDaemon");
     await actionTriggerDaemon.start();
   } else {
-    log("[WARNING] Database connection failed - some features may not work");
+    log("[WARNING] Database connection failed - health checks will continue retrying in the background");
   }
 
   // Initialize connector manifests + mount connector tools/policies.

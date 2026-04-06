@@ -34,6 +34,8 @@ import { getUserId } from "../types/express";
 import { semanticMemoryStore } from "../memory/SemanticMemoryStore";
 import { type SkillScope } from "@shared/schema/skillPlatform";
 import { MAX_CHAT_ATTACHMENT_SIZE_BYTES } from "@shared/chatLimits";
+import { buildAssistantMessage, buildAssistantMessageMetadata } from "@shared/assistantMessage";
+import { buildFollowUpSuggestions } from "@shared/followUpSuggestions";
 import { handleEmailChatRequest } from "../services/gmailChatIntegration";
 import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
 import { FREE_MODEL_ID } from "../lib/modelRegistry";
@@ -7438,6 +7440,15 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         }
       }
 
+      const followUpSuggestions = buildFollowUpSuggestions({
+        assistantContent: fullContent,
+        userMessage: userMessageText || messages[messages.length - 1]?.content || "",
+        hasWebSources:
+          detectedWebSources.length > 0 ||
+          capturedSearchQueries.length > 0 ||
+          capturedTotalSearches > 0,
+      });
+
       // Update assistant message with full content + webSources
       const finalizePersistenceStageStart = performance.now();
       if (assistantMessageId) {
@@ -7453,15 +7464,22 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
               status: "complete"
             }));
 
-          const metadata: Record<string, any> = {};
-          if (detectedWebSources.length > 0) metadata.webSources = detectedWebSources;
-          if (cotSteps.length > 0) metadata.steps = cotSteps;
-          if (capturedSearchQueries.length > 0) metadata.searchQueries = capturedSearchQueries;
-          if (capturedTotalSearches > 0) metadata.totalSearches = capturedTotalSearches;
+          const assistantPayload = buildAssistantMessage({
+            content: fullContent,
+            webSources: detectedWebSources,
+            steps: cotSteps,
+            searchQueries: capturedSearchQueries,
+            totalSearches: capturedTotalSearches,
+            followUpSuggestions,
+          });
+          const finalMetadata = buildAssistantMessageMetadata(assistantPayload);
 
-          const finalMetadata = Object.keys(metadata).length > 0 ? metadata : undefined;
-
-          await storage.updateChatMessageContent(assistantMessageId, fullContent, 'done', finalMetadata);
+          await storage.updateChatMessageContent(
+            assistantMessageId,
+            assistantPayload.content,
+            'done',
+            finalMetadata,
+          );
 
           // Also persist assistant into Conversation State so /api/memory/chats/:id/state reflects reality.
           // Best-effort + idempotent.
@@ -7519,6 +7537,13 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
         // Send done event with webSources for frontend NewsCards
         if (!(res as any).__doneSent) {
+          const assistantPayload = buildAssistantMessage({
+            content: fullContent,
+            webSources: detectedWebSources,
+            searchQueries: capturedSearchQueries,
+            totalSearches: capturedTotalSearches,
+            followUpSuggestions,
+          });
           emitDoneEvent(res, {
             requestId,
             runId: effectiveRunId,
@@ -7528,9 +7553,10 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             totalSequences: finalSequenceCount,
             contentLength: fullContent.length,
             completionReason: "finalized",
-            webSources: detectedWebSources.length > 0 ? detectedWebSources : undefined,
-            searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
-            totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
+            webSources: assistantPayload.webSources,
+            searchQueries: assistantPayload.searchQueries,
+            totalSearches: assistantPayload.totalSearches,
+            followUpSuggestions: assistantPayload.followUpSuggestions,
             provider: activeStreamProvider || undefined,
             traceId: requestId,
             timings: finalTimings,
