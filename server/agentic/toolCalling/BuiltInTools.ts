@@ -550,12 +550,21 @@ const spawnTaskTool: ToolDefinition = {
     { name: 'objective',    type: 'string', description: 'What the task should accomplish', required: true },
     { name: 'instructions', type: 'string', description: 'Detailed instructions', required: false },
     { name: 'tools',        type: 'array',  description: 'Tool names the sub-task is allowed to use', required: false },
+    { name: 'allowedTools', type: 'array',  description: 'Alias for tools. If present it overrides tools.', required: false },
   ],
   inputSchema: z.object({
     objective   : z.string().min(1),
     instructions: z.string().optional(),
     tools       : z.array(z.string()).optional(),
-  }),
+    allowedTools: z.array(z.string()).optional(),
+  }).transform((value) => ({
+    objective: value.objective,
+    instructions: value.instructions,
+    tools:
+      Array.isArray(value.allowedTools) && value.allowedTools.length > 0
+        ? value.allowedTools
+        : value.tools,
+  })),
   execute: async (input: unknown, ctx: ToolExecutionContext): Promise<ToolResult> => {
     const { objective, instructions, tools } = input as {
       objective: string; instructions?: string; tools?: string[];
@@ -570,6 +579,10 @@ const spawnTaskTool: ToolDefinition = {
         instructions,
         allowedTools: tools,
         parentRunId: ctx.runId,
+        metadata: {
+          source: 'spawn_task',
+          permissionProfile: 'full_agent',
+        },
       });
       return ok({ taskId: task.id, status: task.status }, Date.now() - start);
     } catch (err: unknown) {

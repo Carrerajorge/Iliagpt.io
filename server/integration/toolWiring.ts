@@ -440,12 +440,19 @@ async function wireSpawnTaskTool(): Promise<void> {
   if (!tool) return;
 
   tool.execute = async (input: unknown, ctx: ToolExecutionContext): Promise<ToolResult> => {
-    const { objective, instructions, allowedTools, priority } = input as {
+    const { objective, instructions, allowedTools, tools, priority } = input as {
       objective: string;
       instructions?: string;
       allowedTools?: string[];
+      tools?: string[];
       priority?: 'low' | 'normal' | 'high' | 'critical';
     };
+    const requestedTools =
+      Array.isArray(allowedTools) && allowedTools.length > 0
+        ? allowedTools
+        : Array.isArray(tools) && tools.length > 0
+          ? tools
+          : undefined;
     try {
       const mgr  = await getBackgroundTaskManager();
       const task = await mgr.spawn({
@@ -453,12 +460,21 @@ async function wireSpawnTaskTool(): Promise<void> {
         chatId      : ctx.chatId,
         objective,
         instructions,
-        allowedTools,
+        allowedTools: requestedTools,
         priority,
+        metadata: {
+          source: 'spawn_task',
+          permissionProfile: 'full_agent',
+        },
       });
       return {
         success : true,
-        output  : `Task spawned: ${task.id} (${task.status})`,
+        output  : {
+          taskId: task.id,
+          status: task.status,
+          objective,
+          message: `Task ${task.id} queued in background.`,
+        },
         metadata: { taskId: task.id, status: task.status },
       };
     } catch (e) {

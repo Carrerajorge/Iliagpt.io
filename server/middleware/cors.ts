@@ -126,6 +126,7 @@ export const corsOptions: cors.CorsOptions = {
         'X-Conversation-Id',
         'X-Requested-With',
         'X-Request-ID',
+        'X-Correlation-Id',
         'X-Idempotency-Key',
         'X-CSRF-Token',
         'Accept',
@@ -133,6 +134,7 @@ export const corsOptions: cors.CorsOptions = {
     ],
     exposedHeaders: [
         'X-Request-ID',
+        'X-Correlation-Id',
         'X-RateLimit-Limit',
         'X-RateLimit-Remaining',
         'X-RateLimit-Reset',

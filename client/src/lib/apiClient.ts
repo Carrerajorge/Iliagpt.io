@@ -59,10 +59,22 @@ function buildDevApiFallbackUrls(safeUrl: string): string[] {
   const defaultPort = current.protocol === "https:" ? "443" : "80";
   const currentPort = current.port || defaultPort;
   const pathWithQuery = `${parsed.pathname}${parsed.search}`;
+  const envBackend = typeof import.meta !== "undefined" ? import.meta.env?.VITE_DEV_BACKEND_URL : undefined;
   const ports = ["5000", "5002", "5050"];
   const hosts = Array.from(new Set([current.hostname, "localhost", "127.0.0.1"]));
 
   const urls: string[] = [];
+  if (typeof envBackend === "string" && envBackend.trim()) {
+    try {
+      const backendUrl = new URL(envBackend);
+      if (isLocalHostname(backendUrl.hostname)) {
+        urls.push(`${backendUrl.origin}${pathWithQuery}`);
+      }
+    } catch {
+      // Ignore malformed VITE_DEV_BACKEND_URL and fall back to static port probing.
+    }
+  }
+
   for (const host of hosts) {
     for (const port of ports) {
       if (host === current.hostname && port === currentPort) {
@@ -71,7 +83,7 @@ function buildDevApiFallbackUrls(safeUrl: string): string[] {
       urls.push(`${current.protocol}//${host}:${port}${pathWithQuery}`);
     }
   }
-  return urls;
+  return Array.from(new Set(urls));
 }
 
 function generateRequestId(): string {
@@ -143,22 +155,6 @@ export async function apiFetch(url: string, options: RequestInit & { timeoutMs?:
         setInMemoryCsrfToken(cookieAfterResponse);
       }
     }
-    const shouldRetryGatewayResponse =
-      fallbackUrls.length > 0 &&
-      import.meta.env.DEV &&
-      primaryResponse.status >= 500;
-    if (!shouldRetryGatewayResponse) {
-      return primaryResponse;
-    }
-
-    for (const fallbackUrl of fallbackUrls) {
-      try {
-        return await runFetch(fallbackUrl);
-      } catch {
-        // Continue trying fallback candidates.
-      }
-    }
-
     return primaryResponse;
   } catch (primaryError) {
     if (!isLikelyNetworkFailure(primaryError) || fallbackUrls.length === 0) {

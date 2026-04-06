@@ -2,6 +2,8 @@ import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 
+const PLACEHOLDER_ENV_VALUES = new Set(["undefined", "null", "missing", '""', "''"]);
+
 const resolveRepoRoot = (startDir: string): string => {
   let currentDir = path.resolve(startDir);
 
@@ -33,5 +35,13 @@ envFiles.forEach((envFile) => {
     dotenv.config({ path: envPath, override: false });
   }
 });
+
+for (const [key, value] of Object.entries(process.env)) {
+  if (typeof value !== "string") continue;
+  const trimmed = value.trim();
+  if (!trimmed || PLACEHOLDER_ENV_VALUES.has(trimmed.toLowerCase())) {
+    delete process.env[key];
+  }
+}
 
 process.env.ENV_LOADED_BY_BOOTSTRAP = "true";
