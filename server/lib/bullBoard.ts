@@ -17,6 +17,9 @@ export function setupBullBoard() {
     if (!queues.has(QUEUE_NAMES.PROCESSING)) {
         createQueue(QUEUE_NAMES.PROCESSING);
     }
+    if (!queues.has(QUEUE_NAMES.WEBHOOK_NOTIFICATION)) {
+        createQueue(QUEUE_NAMES.WEBHOOK_NOTIFICATION);
+    }
 
     const boardQueues = Array.from(queues.values())
         .filter(Boolean)

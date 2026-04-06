@@ -25,6 +25,12 @@ import {
 import { compactConversation, needsCompaction, guardContextWindow, type ConversationMessage } from "./openclaw/compaction";
 import { toolHookPipeline } from "./hooks/toolHooks";
 import { sessionPersistence, type AgentSessionSnapshot } from "./sessionPersistence";
+import {
+  getCircuitBreaker,
+  getGlobalRegistry,
+  CircuitState,
+  type CircuitBreakerConfig,
+} from "../lib/circuitBreaker";
 
 export interface AgentExecutorOptions {
   maxIterations?: number;
@@ -57,70 +63,46 @@ function isHighRiskAction(toolName: string, args: Record<string, any>): { risky:
   return { risky: false, reason: "" };
 }
 
-class CircuitBreaker {
-  private failures: Map<string, number> = new Map();
-  private tripped: Set<string> = new Set();
-  private halfOpen: Set<string> = new Set();
-  private lastTrippedAt: Map<string, number> = new Map();
-  private threshold: number;
-  private cooldownMs: number;
+/** Per agent-run tool breakers (tenant scoped) — uses shared TenantCircuitBreaker registry. */
+const AGENT_TOOL_CB_CONFIG: CircuitBreakerConfig = {
+  failureThreshold: 3,
+  successThreshold: 1,
+  timeout: 30_000,
+  resetTimeout: 600_000,
+};
 
-  constructor(threshold = 3, cooldownMs = 30000) {
-    this.threshold = threshold;
-    this.cooldownMs = cooldownMs;
-  }
+function createRunToolCircuitBreaker(runId: string) {
+  const tenant = `agent-exec:${runId}`;
+  const prefix = `${tenant}:`;
 
-  recordFailure(toolName: string): void {
-    const count = (this.failures.get(toolName) || 0) + 1;
-    this.failures.set(toolName, count);
-    if (count >= this.threshold) {
-      this.tripped.add(toolName);
-      this.halfOpen.delete(toolName);
-      this.lastTrippedAt.set(toolName, Date.now());
-      console.warn(`[CircuitBreaker] Tool "${toolName}" tripped after ${count} consecutive failures`);
-    }
-  }
+  const breakerFor = (toolName: string) =>
+    getCircuitBreaker(tenant, toolName, AGENT_TOOL_CB_CONFIG);
 
-  recordSuccess(toolName: string): void {
-    this.failures.set(toolName, 0);
-    if (this.halfOpen.has(toolName)) {
-      this.halfOpen.delete(toolName);
-      this.tripped.delete(toolName);
-      console.log(`[CircuitBreaker] Tool "${toolName}" recovered from half-open state`);
-    }
-  }
-
-  isTripped(toolName: string): boolean {
-    if (!this.tripped.has(toolName)) return false;
-
-    const trippedAt = this.lastTrippedAt.get(toolName) || 0;
-    if (Date.now() - trippedAt > this.cooldownMs) {
-      this.halfOpen.add(toolName);
-      console.log(`[CircuitBreaker] Tool "${toolName}" entering half-open state after cooldown`);
-      return false;
-    }
-
-    return true;
-  }
-
-  reset(toolName: string): void {
-    this.failures.delete(toolName);
-    this.tripped.delete(toolName);
-    this.halfOpen.delete(toolName);
-    this.lastTrippedAt.delete(toolName);
-  }
-
-  getStatus(): Record<string, { failures: number; tripped: boolean; halfOpen: boolean }> {
-    const status: Record<string, { failures: number; tripped: boolean; halfOpen: boolean }> = {};
-    this.failures.forEach((count, name) => {
-      status[name] = {
-        failures: count,
-        tripped: this.tripped.has(name),
-        halfOpen: this.halfOpen.has(name),
-      };
-    });
-    return status;
-  }
+  return {
+    isTripped(toolName: string): boolean {
+      return breakerFor(toolName).getState() === CircuitState.OPEN;
+    },
+    recordFailure(toolName: string): void {
+      breakerFor(toolName).recordFailure();
+    },
+    recordSuccess(toolName: string): void {
+      breakerFor(toolName).recordSuccess();
+    },
+    getStatus(): Record<string, { failures: number; tripped: boolean; halfOpen: boolean }> {
+      const out: Record<string, { failures: number; tripped: boolean; halfOpen: boolean }> = {};
+      const stats = getGlobalRegistry().getAllStats();
+      for (const [key, v] of Object.entries(stats)) {
+        if (!key.startsWith(prefix)) continue;
+        const name = key.slice(prefix.length);
+        out[name] = {
+          failures: v.failures,
+          tripped: v.state === CircuitState.OPEN,
+          halfOpen: v.state === CircuitState.HALF_OPEN,
+        };
+      }
+      return out;
+    },
+  };
 }
 
 interface ToolCallRecord {
@@ -985,7 +967,7 @@ export async function executeAgentLoop(
   let iteration = 0;
   let conversationHistory = [...messages];
   let fullResponse = "";
-  const circuitBreaker = new CircuitBreaker(3, 30000);
+  const circuitBreaker = createRunToolCircuitBreaker(runId);
 
   // Wall-clock budget: abort the loop if it exceeds AGENT_BUDGET_TIMEOUT_MS
   const budgetDeadline = Date.now() + env.AGENT_BUDGET_TIMEOUT_MS;

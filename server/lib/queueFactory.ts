@@ -42,6 +42,8 @@ export const QUEUE_NAMES = {
     PAYMENTS_SYNC: 'payments-sync-queue',
     CHANNEL_INGEST: 'channel-ingest-queue',
     PROMPT_ANALYSIS: 'prompt-analysis-queue',
+    /** NotificationHandler outbound webhooks (retries via BullMQ when Redis is configured) */
+    WEBHOOK_NOTIFICATION: 'webhook-notification-queue',
 };
 
 // Registry for BullBoard

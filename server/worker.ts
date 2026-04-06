@@ -5,6 +5,7 @@ import { initTracing } from "./lib/tracing";
 initTracing({ serviceName: "iliagpt-worker" });
 
 import { createWorker, QUEUE_NAMES } from "./lib/queueFactory";
+import { deliverNotificationWebhookOrThrow } from "./lib/notificationWebhookDelivery";
 import { UploadJobData } from "./services/uploadQueue";
 import { Logger } from "./lib/logger";
 type Job = any;
@@ -407,6 +408,22 @@ if (paymentsSyncWorker) {
     paymentsSyncWorker.on("ready", () => Logger.info("Payments Sync Worker ready"));
     paymentsSyncWorker.on("error", (e: any) => Logger.error("Payments Sync Worker error", e));
 }
+
+// ==========================================
+// 4. Notification webhook worker (EventBus → user webhooks)
+// ==========================================
+
+const webhookNotificationWorker = createWorker(QUEUE_NAMES.WEBHOOK_NOTIFICATION, async (job: Job) => {
+    Logger.info(`[WebhookNotification:${job.id}] deliver`);
+    await deliverNotificationWebhookOrThrow(job.data);
+    return { delivered: true };
+});
+
+if (webhookNotificationWorker) {
+    webhookNotificationWorker.on("ready", () => Logger.info("Webhook Notification Worker ready"));
+    webhookNotificationWorker.on("error", (e: any) => Logger.error("Webhook Notification Worker error", e));
+}
+
 // ==========================================
 // Lifecycle
 // ==========================================

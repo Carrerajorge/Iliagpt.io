@@ -4,6 +4,11 @@
  */
 
 import { Logger } from "../../lib/logger";
+import { createQueue, QUEUE_NAMES } from "../../lib/queueFactory";
+import {
+  deliverNotificationWebhookWithRetries,
+  type NotificationWebhookJobData,
+} from "../../lib/notificationWebhookDelivery";
 import {
   AppEvent,
   EVENT_TYPES,
@@ -54,6 +59,10 @@ type WsServerLike = {
 // NotificationHandler
 // ---------------------------------------------------------------------------
 
+function getWebhookNotificationQueue() {
+  return createQueue<NotificationWebhookJobData>(QUEUE_NAMES.WEBHOOK_NOTIFICATION);
+}
+
 export class NotificationHandler {
   private wsServer: WsServerLike | null = null;
 
@@ -96,7 +105,7 @@ export class NotificationHandler {
                   (w.eventTypes.length === 0 ||
                     w.eventTypes.includes(event.type))
               )
-              .map((w) => this.sendWebhook(w.url, { notification, event }, w.secret))
+              .map((w) => this.dispatchWebhook(w.url, { notification, event }, w.secret))
           ).then(() => undefined)
         )
       );
@@ -191,56 +200,31 @@ export class NotificationHandler {
     }
   }
 
-  private async sendWebhook(
+  /**
+   * Enqueue to BullMQ when Redis is configured (worker retries with backoff);
+   * otherwise inline retries without a queue.
+   */
+  private async dispatchWebhook(
     webhookUrl: string,
-    payload: any,
+    payload: unknown,
     secret?: string
   ): Promise<void> {
-    try {
-      const body = JSON.stringify(payload);
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        "User-Agent": "IliaGPT-Webhook/1.0",
-        "X-IliaGPT-Timestamp": Date.now().toString(),
-      };
-
-      if (secret) {
-        // HMAC-SHA256 signature in hex
-        const { createHmac } = await import("crypto");
-        const sig = createHmac("sha256", secret).update(body).digest("hex");
-        headers["X-IliaGPT-Signature"] = `sha256=${sig}`;
-      }
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10_000);
-
-      const resp = await fetch(webhookUrl, {
-        method: "POST",
-        headers,
-        body,
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!resp.ok) {
-        Logger.warn("NotificationHandler.sendWebhook non-2xx response", {
+    const job: NotificationWebhookJobData = { url: webhookUrl, payload, secret };
+    const queue = getWebhookNotificationQueue();
+    if (queue) {
+      try {
+        await queue.add("deliver", job);
+        Logger.debug("NotificationHandler.dispatchWebhook enqueued", { url: webhookUrl });
+      } catch (err: any) {
+        Logger.error("NotificationHandler.dispatchWebhook enqueue failed, falling back", {
           url: webhookUrl,
-          status: resp.status,
+          err: err?.message,
         });
-      } else {
-        Logger.debug("NotificationHandler.sendWebhook delivered", { url: webhookUrl });
+        await deliverNotificationWebhookWithRetries(job);
       }
-    } catch (err: any) {
-      if (err?.name === "AbortError") {
-        Logger.warn("NotificationHandler.sendWebhook timeout", { url: webhookUrl });
-      } else {
-        Logger.error("NotificationHandler.sendWebhook error", {
-          err,
-          url: webhookUrl,
-        });
-      }
+      return;
     }
+    await deliverNotificationWebhookWithRetries(job);
   }
 
   private async getWebhooksForUser(userId: string): Promise<WebhookConfig[]> {
