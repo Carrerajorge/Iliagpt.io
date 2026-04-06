@@ -44,6 +44,7 @@ import { getTracingMetrics, initTracing, shutdownTracing } from "./lib/tracing";
 import { seedProductionData } from "./seed-production";
 import { startAggregator } from "./services/analyticsAggregator";
 import { startChatScheduleRunner } from "./services/chatScheduleRunner";
+import { optimizeOpenClawSkills } from "./services/openclawSkillOptimizer";
 import { startTelemetryPipeline } from "./telemetry/pipeline";
 
 import { registerAuthRoutes, setupAuth } from "./replit_integrations/auth";
@@ -238,6 +239,7 @@ export function log(message: string, source = "express") {
   const isProduction = process.env.NODE_ENV === "production";
   const isTest = process.env.NODE_ENV === "test";
   const startPythonService = process.env.START_PYTHON_SERVICE === "true";
+  const autoOptimizeOpenClawSkills = process.env.OPENCLAW_AUTO_OPTIMIZE !== "false";
 
   // Start Python Agent Tools service if enabled
   if (startPythonService) {
@@ -438,6 +440,19 @@ export function log(message: string, source = "express") {
       startMemoryPurgeJob();
     } else {
       log("[Schedules] Skipping schedule runner start because DB is not connected");
+    }
+
+    if (!isTest && autoOptimizeOpenClawSkills) {
+      void optimizeOpenClawSkills({ mode: "all-installable", timeoutMs: 300_000 })
+        .then((result) => {
+          log(
+            `[OpenClawSkills] Optimized ${result.summaryAfter.ready}/${result.summaryAfter.total} skills ready; installed=${result.installed.length}; failed=${result.failed.length}; skipped=${result.skipped.length}`,
+          );
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          log(`[OpenClawSkills] Automatic optimization failed: ${message}`);
+        });
     }
 
     if (isProdEnv) {

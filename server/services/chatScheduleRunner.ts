@@ -190,17 +190,6 @@ async function executeSchedule(schedule: typeof chatSchedules.$inferSelect, plan
     return;
   }
 
-  const usageCheck = await usageQuotaService.checkAndIncrementUsage(schedule.userId);
-  if (!usageCheck.allowed) {
-    const resetAt = usageCheck.resetAt ? new Date(usageCheck.resetAt as any) : null;
-    const next =
-      resetAt && Number.isFinite(resetAt.getTime())
-        ? new Date(resetAt.getTime() + 1_000)
-        : new Date(Date.now() + 60 * 60_000);
-    await pauseScheduleUntil(schedule, next, usageCheck.message || "Límite de solicitudes alcanzado.");
-    return;
-  }
-
   const context = await fetchRecentChatMessages(schedule.chatId, DEFAULT_CONTEXT_LIMIT);
   const messagesForModel = context
     .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system")
@@ -214,15 +203,44 @@ async function executeSchedule(schedule: typeof chatSchedules.$inferSelect, plan
 
   messagesForModel.push({ role: "user", content: prompt });
 
+  const estimatedInputTokens = messagesForModel.reduce((sum, message) => {
+    const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "");
+    return sum + Math.ceil(content.length / 4);
+  }, 0);
+
+  const dailyTokenQuota = await usageQuotaService.getDailyTokenQuotaStatus(schedule.userId, estimatedInputTokens);
+  if (!dailyTokenQuota.allowed) {
+    await pauseScheduleUntil(schedule, next, dailyTokenQuota.message || "Límite diario de tokens alcanzado.");
+    return;
+  }
+
+  const usageCheck = await usageQuotaService.checkAndIncrementUsage(schedule.userId);
+  if (!usageCheck.allowed) {
+    const resetAt = usageCheck.resetAt ? new Date(usageCheck.resetAt as any) : null;
+    const nextRun =
+      resetAt && Number.isFinite(resetAt.getTime())
+        ? new Date(resetAt.getTime() + 1_000)
+        : new Date(Date.now() + 60 * 60_000);
+    await pauseScheduleUntil(schedule, nextRun, usageCheck.message || "Límite de solicitudes alcanzado.");
+    return;
+  }
+
   const response = await chatService.chat(messagesForModel, {
     conversationId: schedule.chatId,
     userId: schedule.userId,
   });
 
   // Token usage accounting.
-  const totalTokens = (response as any)?.usage?.totalTokens;
-  if (typeof totalTokens === "number" && Number.isFinite(totalTokens) && totalTokens > 0) {
-    usageQuotaService.recordTokenUsage(schedule.userId, totalTokens).catch((err) => {
+  const promptTokens = (response as any)?.usage?.promptTokens;
+  const completionTokens = (response as any)?.usage?.completionTokens;
+  if (
+    typeof promptTokens === "number" &&
+    Number.isFinite(promptTokens) &&
+    typeof completionTokens === "number" &&
+    Number.isFinite(completionTokens) &&
+    (promptTokens > 0 || completionTokens > 0)
+  ) {
+    usageQuotaService.recordTokenUsageDetailed(schedule.userId, promptTokens, completionTokens).catch((err) => {
       Logger.error(`[Schedules] Failed to record token usage userId=${schedule.userId}: ${err?.message || err}`);
     });
   }
@@ -371,10 +389,55 @@ async function processDueSchedulesOnce() {
 }
 
 let runnerTimer: NodeJS.Timeout | null = null;
+let runnerDisabledForMissingSchema = false;
+
+function isMissingChatSchedulesTableError(error: unknown): boolean {
+  const queue: unknown[] = [error];
+  const seen = new Set<unknown>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+
+    if (current instanceof Error) {
+      const anyError = current as Error & { code?: string; cause?: unknown };
+      if (anyError.code === "42P01" || /relation "chat_schedules" does not exist/i.test(anyError.message)) {
+        return true;
+      }
+      if ("cause" in anyError) {
+        queue.push(anyError.cause);
+      }
+      continue;
+    }
+
+    if (typeof current === "object") {
+      const maybeRecord = current as Record<string, unknown>;
+      if (maybeRecord.code === "42P01") {
+        return true;
+      }
+      if (typeof maybeRecord.message === "string" && /relation "chat_schedules" does not exist/i.test(maybeRecord.message)) {
+        return true;
+      }
+      if ("cause" in maybeRecord) {
+        queue.push(maybeRecord.cause);
+      }
+    }
+  }
+
+  return false;
+}
 
 export function startChatScheduleRunner() {
   if (!shouldRunRunner()) {
     Logger.info("[Schedules] Runner disabled");
+    return;
+  }
+
+  if (runnerDisabledForMissingSchema) {
+    Logger.warn("[Schedules] Runner skipped because chat_schedules is not available on this database");
     return;
   }
 
@@ -384,9 +447,21 @@ export function startChatScheduleRunner() {
   Logger.info(`[Schedules] Runner starting (instance=${INSTANCE_ID}, intervalMs=${intervalMs})`);
 
   const tick = async () => {
+    if (runnerDisabledForMissingSchema) {
+      return;
+    }
     try {
       await processDueSchedulesOnce();
     } catch (err: any) {
+      if (isMissingChatSchedulesTableError(err)) {
+        runnerDisabledForMissingSchema = true;
+        if (runnerTimer) {
+          clearInterval(runnerTimer);
+          runnerTimer = null;
+        }
+        Logger.warn("[Schedules] Runner disabled because relation \"chat_schedules\" does not exist");
+        return;
+      }
       Logger.error(`[Schedules] Runner tick failed: ${err?.message || err}`);
     }
   };

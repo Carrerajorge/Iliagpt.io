@@ -150,6 +150,7 @@ import { createOpenClawRouter } from "./routes/openClawRouter";
 import adsRouter from "./routes/adsRouter";
 
 import { createSkillPlatformRouter } from "./routes/skillPlatformRouter";
+import { createSkillsRouter } from "./routes/skillsRouter";
 import { CSRF_COOKIE_NAME, CSRF_TOKEN_PATTERN, issueCsrfCookie } from "./middleware/csrf";
 import { finopsRouter } from "./routes/finopsRouter";
 import { createGovernanceRouter } from "./routes/governanceRouter";
@@ -1611,6 +1612,9 @@ try{
   });
 
   // API Documentation
+  app.get("/api/openapi.json", (_req: Request, res: Response) => {
+    res.json(swaggerSpec);
+  });
   app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
   const metricsPublic = process.env.METRICS_PUBLIC === "true";
@@ -1631,6 +1635,7 @@ try{
   app.use("/api/agents", multiAgentRouter);
   app.use("/api/errors", errorRouter);
   app.use("/api/spreadsheet", createSpreadsheetRouter());
+  app.use("/api/skills", createSkillsRouter());
   app.use("/api/skill-platform", createSkillPlatformRouter());
   app.use("/api/chat", createChatRoutes());
   app.use("/api/agent", createAgentModeRouter());
