@@ -34,6 +34,8 @@ import { getUserId } from "../types/express";
 import { semanticMemoryStore } from "../memory/SemanticMemoryStore";
 import { type SkillScope } from "@shared/schema/skillPlatform";
 import { MAX_CHAT_ATTACHMENT_SIZE_BYTES } from "@shared/chatLimits";
+import { buildAssistantMessage, buildAssistantMessageMetadata } from "@shared/assistantMessage";
+import { buildFollowUpSuggestions } from "@shared/followUpSuggestions";
 import { handleEmailChatRequest } from "../services/gmailChatIntegration";
 import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
 import { FREE_MODEL_ID } from "../lib/modelRegistry";
@@ -71,6 +73,19 @@ type StreamChunkEnvelope = {
   requestId?: string;
   status?: StreamResponseStatus;
   incompleteDetails?: { reason: StreamIncompleteReason } | null;
+};
+
+type StreamSearchQueryLog = {
+  query: string;
+  resultCount: number;
+  status: string;
+};
+
+type StreamSearchPreflightResult = {
+  detectedWebSources: any[];
+  webSearchContextForLLM: string;
+  searchQueries: StreamSearchQueryLog[];
+  totalSearches: number;
 };
 
 import { v4 as uuidv4 } from "uuid";
@@ -165,7 +180,7 @@ async function* withStreamGuard(
   let chunkCount = 0;
   let lastProvider: string | undefined;
   const MAX_CHUNK_BYTES = 64 * 1024;
-  const CHECKPOINT_INTERVAL = 10;
+  const CHECKPOINT_INTERVAL = 5;
 
   try {
     for await (const chunk of source) {
@@ -280,7 +295,7 @@ async function resolveModelStream(
           const retryOpts = { ...options, enableFallback: true, skipCache: true };
           if ((options as any).provider) delete (retryOpts as any).provider;
           options = retryOpts;
-          await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+          await new Promise(resolve => setTimeout(resolve, 200 * (attempt + 1)));
           continue;
         }
         console.warn("[Stream] llmGateway.streamChat returned a non-stream response; converting to single-response stream");
@@ -297,7 +312,7 @@ async function resolveModelStream(
           delete (retryOpts as any).provider;
         }
         options = retryOpts;
-        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+        await new Promise(resolve => setTimeout(resolve, 200 * (attempt + 1)));
         continue;
       }
     }
@@ -429,6 +444,167 @@ async function augmentHistoryWithCompatibility(
   };
 }
 
+function createEmptySearchPreflightResult(): StreamSearchPreflightResult {
+  return {
+    detectedWebSources: [],
+    webSearchContextForLLM: "",
+    searchQueries: [],
+    totalSearches: 0,
+  };
+}
+
+async function runStreamSearchPreflight({
+  shouldSearch,
+  userQuery,
+  requestedWebSearch,
+  requestId,
+  res,
+  isConnectionClosed,
+}: {
+  shouldSearch: boolean;
+  userQuery: string;
+  requestedWebSearch: boolean;
+  requestId: string;
+  res: Response;
+  isConnectionClosed: () => boolean;
+}): Promise<StreamSearchPreflightResult> {
+  const result = createEmptySearchPreflightResult();
+  const trimmedQuery = userQuery.trim();
+
+  if (!shouldSearch || !trimmedQuery || isConnectionClosed()) {
+    return result;
+  }
+
+  if (!isConnectionClosed()) {
+    writeSse(res, "thinking", {
+      step: "searching",
+      message: "Buscando fuentes relevantes...",
+      requestId,
+      timestamp: Date.now(),
+    });
+  }
+
+  try {
+    const { needsAcademicSearch, needsWebSearch, searchWeb } = await import("../services/webSearch");
+    const { academicEngineV3, generateAPACitation } = await import("../services/academicResearchEngineV3");
+
+    const doAcademic = needsAcademicSearch(trimmedQuery);
+    const doWeb = requestedWebSearch ? !doAcademic : needsWebSearch(trimmedQuery);
+
+    if (doAcademic) {
+      console.log("[Stream] Academic search", {
+        mode: requestedWebSearch ? "requested" : "auto",
+        queryPreview: trimmedQuery.slice(0, 60),
+      });
+      try {
+        const engineResult = await academicEngineV3.search({
+          query: trimmedQuery,
+          maxResults: 15,
+          yearFrom: 2020,
+          yearTo: new Date().getFullYear(),
+          sources: ["scielo", "openalex", "semantic_scholar", "crossref", "core", "pubmed", "arxiv", "doaj"],
+        });
+
+        if (engineResult.papers.length > 0) {
+          const academicContext = engineResult.papers
+            .slice(0, 10)
+            .map((paper, index) =>
+              `[${index + 1}] ${paper.title}\nAutores: ${paper.authors.map((author) => author.name).join(", ") || "No disponible"}\nAño: ${paper.year || "N/A"}\nJournal: ${paper.journal || "N/A"}\nDOI: ${paper.doi || "N/A"}\nURL: ${paper.url || (paper.doi ? `https://doi.org/${paper.doi}` : "N/A")}\nResumen: ${(paper.abstract || "").substring(0, 300)}...\nCita APA: ${generateAPACitation(paper)}`
+            )
+            .join("\n\n");
+
+          result.webSearchContextForLLM =
+            `\n\n---\nARTÍCULOS ACADÉMICOS ENCONTRADOS (${engineResult.papers.length} resultados de ${engineResult.sources.map((source) => source.name).join(", ")}):\n\n${academicContext}\n\nINSTRUCCIÓN CRÍTICA SOBRE LA BÚSQUEDA ACADÉMICA:\n- Usa estos artículos para responder con detalle y precisión.\n- Incluye citas APA y URLs siempre que sea posible.\n- Apoya las afirmaciones importantes con referencias explícitas [número].`;
+
+          result.detectedWebSources = engineResult.papers.slice(0, 10).map((paper) => ({
+            url: paper.url || (paper.doi ? `https://doi.org/${paper.doi}` : ""),
+            title: paper.title,
+            snippet: paper.abstract?.substring(0, 200) || "",
+            domain: paper.journal || "Academic",
+            favicon: null,
+            imageUrl: null,
+            siteName: paper.journal || engineResult.sources[0]?.name || "Academic Source",
+            publishedDate: paper.year ? `${paper.year}` : null,
+          }));
+
+          console.log("[Stream] Academic search complete", { papers: engineResult.papers.length });
+          result.searchQueries.push({ query: trimmedQuery, resultCount: engineResult.papers.length, status: "completed" });
+          result.totalSearches = 1;
+        }
+      } catch (academicError) {
+        console.error("[Stream] Academic search error:", academicError);
+        result.searchQueries.push({ query: trimmedQuery, resultCount: 0, status: "failed" });
+        result.totalSearches = 1;
+      }
+    } else if (doWeb) {
+      console.log("[Stream] Web search", {
+        mode: requestedWebSearch ? "requested" : "auto",
+        queryPreview: trimmedQuery.slice(0, 60),
+      });
+      try {
+        const searchResults = await searchWeb(trimmedQuery, 50);
+
+        if (searchResults.results.length > 0) {
+          let searchContext: string;
+          if (searchResults.contents && searchResults.contents.length > 0) {
+            searchContext = searchResults.contents
+              .map((content: any, index: number) => `[${index + 1}] ${content.title} (${content.url}):\n${content.content}`)
+              .join("\n\n");
+
+            const contentUrls = new Set(searchResults.contents.map((content: any) => content.url));
+            const extraResults = searchResults.results
+              .filter((entry: any) => !contentUrls.has(entry.url))
+              .slice(0, 5);
+            if (extraResults.length > 0) {
+              const startIndex = searchResults.contents.length + 1;
+              searchContext += "\n\n" + extraResults
+                .map((entry: any, index: number) => `[${startIndex + index}] ${entry.title}: ${entry.snippet} (${entry.url})`)
+                .join("\n");
+            }
+          } else {
+            searchContext = searchResults.results
+              .map((entry: any, index: number) => `[${index + 1}] ${entry.title}\n${entry.snippet}\nFuente: ${entry.url}`)
+              .join("\n\n");
+          }
+
+          result.webSearchContextForLLM =
+            `\n\n---\nBÚSQUEDA WEB REALIZADA - RESULTADOS ACTUALIZADOS:\n${searchContext}\n\nINSTRUCCIÓN CRÍTICA SOBRE LA BÚSQUEDA WEB:\n- Usa TODA la información de los resultados de búsqueda anteriores para dar una respuesta COMPLETA y DETALLADA.\n- NO digas que no tienes acceso a internet, noticias o información actualizada.\n- Los datos anteriores son reales y actuales, obtenidos en tiempo real.\n- Cita las fuentes con [número] al final de cada punto.\n- IGNORA cualquier límite de caracteres o instrucción de brevedad anterior: esta respuesta debe ser EXTENSA y cubrir todos los resultados relevantes.\n- Presenta la información en formato de lista con bullets o numerada, con detalles de cada noticia/resultado.`;
+
+          result.detectedWebSources = searchResults.results.map((entry: any) => ({
+            url: entry.url,
+            title: entry.title,
+            snippet: entry.snippet,
+            domain: new URL(entry.url).hostname.replace("www.", ""),
+            favicon: entry.favicon || null,
+            imageUrl: entry.imageUrl || null,
+            siteName: entry.siteName || new URL(entry.url).hostname.replace("www.", ""),
+            publishedDate: entry.publishedDate || null,
+            query: entry.query || null,
+            metadata: entry.metadata || null,
+          }));
+
+          console.log("[Stream] Web search complete", {
+            results: searchResults.results.length,
+            contentsCount: searchResults.contents?.length || 0,
+          });
+          result.searchQueries.push({ query: trimmedQuery, resultCount: searchResults.results.length, status: "completed" });
+          result.totalSearches = 1;
+        }
+      } catch (webError) {
+        console.error("[Stream] Web search error:", webError);
+        result.searchQueries.push({ query: trimmedQuery, resultCount: 0, status: "failed" });
+        result.totalSearches = 1;
+      }
+    }
+  } catch (importError) {
+    console.error("[Stream] Failed to import search modules:", importError);
+    result.searchQueries.push({ query: trimmedQuery, resultCount: 0, status: "failed" });
+    result.totalSearches = 1;
+  }
+
+  return result;
+}
+
 function extractUserText(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -462,16 +638,26 @@ const SSE_CONNECTION_TRACKER = new Map<string, Set<string>>();
 type ConversationStreamLock = {
   requestId: string;
   startedAt: number;
+  lastActivityAt: number;
   cancel: (reason?: string) => void;
 };
 
-const CONVERSATION_STREAM_LOCK_TTL_MS = 15 * 60 * 1000;
+const CONVERSATION_STREAM_LOCK_TTL_MS = 60_000;
 const CONVERSATION_STREAM_LOCKS = new Map<string, ConversationStreamLock>();
+const INTERACTIVE_STALE_RUN_THRESHOLD_MS = 60_000;
+
+function refreshConversationStreamLock(conversationId: string | null | undefined, requestId: string): void {
+  if (!conversationId) return;
+  const current = CONVERSATION_STREAM_LOCKS.get(conversationId);
+  if (!current || current.requestId !== requestId) return;
+  current.lastActivityAt = Date.now();
+}
 
 function cleanConversationStreamLocks(): void {
   const now = Date.now();
   for (const [key, value] of CONVERSATION_STREAM_LOCKS.entries()) {
-    if (now - value.startedAt > CONVERSATION_STREAM_LOCK_TTL_MS) {
+    const lastSeenAt = value.lastActivityAt || value.startedAt;
+    if (now - lastSeenAt > CONVERSATION_STREAM_LOCK_TTL_MS) {
       CONVERSATION_STREAM_LOCKS.delete(key);
     }
   }
@@ -4745,6 +4931,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
     let latencyMode: LatencyMode = "auto";
     let capturedSearchQueries: Array<{ query: string; resultCount: number; status: string }> = [];
     let capturedTotalSearches = 0;
+    let streamConversationId = "";
 
     const STREAM_HARD_TIMEOUT_MS = 180_000;
     const STREAM_IDLE_TIMEOUT_MS = 90_000; // must exceed llmGateway idle timeout (60s)
@@ -4777,6 +4964,20 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         timeout: true,
         timestamp: Date.now(),
       });
+      emitDoneEvent(res, {
+        requestId,
+        runId: claimedRun?.id || requestId,
+        assistantMessageId,
+        latencyMode,
+        totalSequences: fullContent.trim() && lastAckSequence < 0 ? 1 : Math.max(0, lastAckSequence + 1),
+        contentLength: fullContent.length,
+        provider: activeStreamProvider || undefined,
+        completionReason: code,
+        timeout: true,
+        error: true,
+        traceId: requestId,
+        timings: reportTimings(code),
+      });
       if (!(res as any).writableEnded) {
         res.end();
       }
@@ -4784,6 +4985,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
     const resetIdleTimeout = (): void => {
       if (isConnectionClosed) return;
+      refreshConversationStreamLock(streamConversationId, requestId);
       if (streamIdleTimeout) {
         clearTimeout(streamIdleTimeout);
       }
@@ -4793,6 +4995,22 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           `Stream closed after ${STREAM_IDLE_TIMEOUT_MS}ms without SSE activity`
         );
       }, STREAM_IDLE_TIMEOUT_MS);
+    };
+
+    const cleanupClaimedRunIfOrphaned = async (reason: string): Promise<void> => {
+      if (!claimedRun || runFinalized) return;
+      try {
+        const currentRun = await storage.getChatRun(claimedRun.id);
+        const ourStartedAt = claimedRun.startedAt ? new Date(claimedRun.startedAt).getTime() : 0;
+        const currentStartedAt = currentRun?.startedAt ? new Date(currentRun.startedAt).getTime() : 0;
+        if (currentRun?.status === "processing" && currentStartedAt <= ourStartedAt) {
+          console.log(`[Run] Cleaning up orphaned run ${claimedRun.id} (${reason})`);
+          await storage.updateChatRunStatus(claimedRun.id, "failed", reason);
+          runFinalized = true;
+        }
+      } catch (cleanupErr) {
+        console.warn("[Run] Failed to cleanup orphaned run:", cleanupErr);
+      }
     };
 
     const skipRunStreamDedup = new Map<string, { requestId: string; startedAt: number }>();
@@ -4852,7 +5070,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && isUsingFreeModel) {
         console.log(`[Stream] Anonymous user allowed with free model (${FREE_MODEL_ID}) from IP=${req.ip}`);
       }
-      const streamConversationId = sanitizeStreamIdentifier(
+      streamConversationId = sanitizeStreamIdentifier(
         typeof conversationId === "string" && conversationId.trim().length > 0
           ? conversationId
           : (typeof chatId === "string" && chatId.trim().length > 0
@@ -4887,7 +5105,10 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         resumeLastSeq: 0,
         resumeFlushTimer: null,
         resumePersistPromise: null,
-        onWrite: () => resetIdleTimeout(),
+        onWrite: () => {
+          refreshConversationStreamLock(streamConversationId, requestId);
+          resetIdleTimeout();
+        },
       };
 
       let conversationLockReleased = false;
@@ -4898,7 +5119,12 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         if (current?.requestId === requestId) {
           CONVERSATION_STREAM_LOCKS.delete(streamConversationId);
         }
+        detachAsyncTask(
+          () => cleanupClaimedRunIfOrphaned("connection_closed"),
+          "cleanup orphaned run on connection close",
+        );
       };
+      req.on("aborted", releaseConversationLock);
       res.on("close", releaseConversationLock);
       res.on("finish", releaseConversationLock);
 
@@ -4908,6 +5134,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       CONVERSATION_STREAM_LOCKS.set(streamConversationId, {
         requestId,
         startedAt: Date.now(),
+        lastActivityAt: Date.now(),
         cancel: cancelThisStream,
       });
 
@@ -5140,81 +5367,21 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       // (before SSE headers are sent).
       if (chatId && !claimedRun && (runId || clientRequestId)) {
         const claimStageStart = performance.now();
-
-        let existingRun =
+        const resolveExistingRun = async () =>
           runId
             ? await storage.getChatRun(runId)
-            : await storage.getChatRunByClientRequestId(chatId, clientRequestId!);
+            : (clientRequestId ? await storage.getChatRunByClientRequestId(chatId, clientRequestId) : null);
 
-        // If caller did not provide runId but did provide clientRequestId,
-        // create a lightweight run here so streaming can start.
-        if (!existingRun && !runId && clientRequestId && latestUserTextForRun) {
-          const runPrepStart = performance.now();
-          try {
-            // 1) Prefer linking the run to an already-persisted user message
-            // when /chats/:id/messages used skipRun mode.
-            let runMessageIdStart = performance.now();
-            let runMessageId = userRequestId
-              ? await storage.findMessageByRequestId(userRequestId)
-              : null;
-            recordStage("user_message_lookup_ms", runMessageIdStart);
-            if (runMessageId && runMessageId.chatId === chatId) {
-              const createRunStart = performance.now();
-              const createdRun = await storage.createChatRun({
-                chatId,
-                clientRequestId,
-                userMessageId: runMessageId.id,
-                status: "pending",
-              });
-              existingRun = createdRun;
-              recordStage("run_from_existing_message_ms", createRunStart);
-            }
+        let existingRun = await resolveExistingRun();
 
-            // 2) Fallback: create user message + run atomically (legacy first-write path).
-            if (!existingRun && latestUserTextForRun) {
-              // If stream starts before /api/chats finishes, make sure the chat row exists
-              // so createUserMessageAndRun won't fail with FK violations.
-              const existingChat = await storage.getChat(chatId);
-              if (!existingChat) {
-                try {
-                  await storage.createChat({
-                    id: chatId,
-                    title: "New Chat",
-                    userId: effectiveUserId || undefined,
-                  });
-                } catch (chatCreateError: any) {
-                  if (chatCreateError?.code !== "23505") {
-                    throw chatCreateError;
-                  }
-                }
-              }
-
-              const createdRunStart = performance.now();
-              const created = await storage.createUserMessageAndRun(
-                chatId,
-                {
-                  chatId,
-                  role: "user",
-                  content: latestUserTextForRun,
-                  status: "done",
-                  requestId: userRequestId || `${requestId}:user`,
-                  userMessageId: null,
-                  attachments: sanitizedRunAttachments,
-                } as any,
-                clientRequestId
-              );
-              existingRun = created.run;
-              recordStage("create_message_run_ms", createdRunStart);
-            }
-            recordStage("run_prep_ms", runPrepStart);
-          } catch (createRunError: any) {
-            // Unique violation means another concurrent request created it first.
-            if (createRunError?.code !== "23505") {
-              throw createRunError;
-            }
-            existingRun = await storage.getChatRunByClientRequestId(chatId, clientRequestId);
-            recordStage("run_prep_ms", runPrepStart);
+        if (!existingRun) {
+          const runWaitStart = performance.now();
+          for (const waitMs of [40, 80, 160, 320, 500]) {
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+            existingRun = await resolveExistingRun();
+            if (existingRun) break;
           }
+          recordStage("run_wait_ms", runWaitStart);
         }
 
         if (!existingRun) {
@@ -5226,19 +5393,25 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
               timings: reportTimings("run_not_found"),
             });
           }
-          // No run found for clientRequestId yet: continue in legacy mode
-          // (best-effort), /chat/stream will still function.
+          if (clientRequestId) {
+            return res.status(503).json({
+              status: "run_not_ready",
+              error: "Run not ready yet",
+              retryable: true,
+              traceId: requestId,
+              timings: reportTimings("run_not_ready"),
+            });
+          }
         } else {
           if (existingRun.status === "processing") {
-            const STALE_RUN_THRESHOLD_MS = 5 * 60 * 1000;
             const runStartedAt = existingRun.startedAt ? new Date(existingRun.startedAt).getTime() : 0;
             const runAge = Date.now() - runStartedAt;
 
             // Allow run replacement in two cases:
             // 1. queueMode "replace" (default) — client explicitly wants to supersede
-            // 2. Stale run (processing > 5 min) — abandoned connection safety net
-            if (queueMode === "replace" || runAge > STALE_RUN_THRESHOLD_MS) {
-              const reason = runAge > STALE_RUN_THRESHOLD_MS ? "stale_run_recovered" : "run_replaced";
+            // 2. Stale run (processing > 60s) — abandoned connection safety net
+            if (queueMode === "replace" || runAge > INTERACTIVE_STALE_RUN_THRESHOLD_MS) {
+              const reason = runAge > INTERACTIVE_STALE_RUN_THRESHOLD_MS ? "stale_run_recovered" : "run_replaced";
               console.log(`[Run] Resetting run ${existingRun.id} to pending (${reason}, age=${Math.round(runAge / 1000)}s)`);
               await storage.updateChatRunStatus(existingRun.id, "pending", reason);
               existingRun = { ...existingRun, status: "pending" };
@@ -5380,6 +5553,10 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           }
           clearStreamTimeouts();
           detachAsyncTask(
+            () => cleanupClaimedRunIfOrphaned("client_disconnect"),
+            "cleanup orphaned run on early close",
+          );
+          detachAsyncTask(
             () => flushStreamResumeProgress(getStreamMeta(res)),
             "stream resume flush on early close",
           );
@@ -5392,6 +5569,23 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       // Previous attempts with local variables (`let doneSent`, `const streamFlags`)
       // were broken by the bundler renaming the variable in try but not catch/finally.
       (res as any).__doneSent = false;
+
+      let intentResult: IntentResult | null = null;
+      let messages: ConversationMemoryChatMessage[] = clientMessages;
+      let memoryDiagnostics: MemoryCompressionDiagnostics = createMemoryDiagnosticsFallback(clientMessages);
+      const userMessageText = userQuery || "";
+      const effectiveChatIdForMemory = chatId || conversationId || streamConversationId;
+      const userSettingsPromise = (async () => {
+        const userSettingsStageStart = performance.now();
+        try {
+          return await storage.getUserSettings(effectiveUserId);
+        } catch (error) {
+          console.warn("[Stream] Failed to load user settings:", (error as any)?.message || error);
+          return null;
+        } finally {
+          recordStage("user_settings_ms", userSettingsStageStart);
+        }
+      })();
 
       const effectiveSkillRunId = claimedRun?.id || sanitizeStreamText(runId, MAX_STREAM_REQUEST_ID_LEN) || requestId;
       const emitSkillTrace = (trace: { stage: string; status: string; message: string; details?: Record<string, unknown> }) => {
@@ -5682,16 +5876,56 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         }
       }
 
-      // Load user settings after the stream is already open to reduce perceived latency.
-      let userSettings: Awaited<ReturnType<typeof storage.getUserSettings>> = null;
-      const userSettingsStageStart = performance.now();
-      try {
-        userSettings = await storage.getUserSettings(effectiveUserId);
-      } catch (e) {
-        console.warn("[Stream] Failed to load user settings:", (e as any)?.message || e);
-      } finally {
-        recordStage("user_settings_ms", userSettingsStageStart);
+      if (!isConnectionClosed && userMessageText) {
+        writeSse(res, "thinking", {
+          step: "analyzing",
+          message: "Analizando tu mensaje...",
+          requestId,
+          timestamp: Date.now(),
+        });
       }
+      const intentPromise = userMessageText
+        ? (async () => {
+            const intentStageStart = performance.now();
+            try {
+              return await routeIntent(userMessageText);
+            } catch (intentError) {
+              console.error("[Stream] IntentRouter error:", intentError);
+              return null;
+            } finally {
+              recordStage("intent_router_ms", intentStageStart);
+            }
+          })()
+        : Promise.resolve<IntentResult | null>(null);
+
+      if (!isConnectionClosed && clientMessages.length > 0) {
+        writeSse(res, "thinking", {
+          step: "context",
+          message: "Recuperando contexto...",
+          requestId,
+          timestamp: Date.now(),
+        });
+      }
+      const memoryPromise = (async () => {
+        const memoryStageStart = performance.now();
+        try {
+          return await augmentHistoryWithCompatibility(
+            effectiveChatIdForMemory,
+            clientMessages,
+            8000,
+          );
+        } catch (memoryError) {
+          console.warn("[Stream] Failed to augment conversation history:", (memoryError as any)?.message || memoryError);
+          return {
+            messages: clientMessages,
+            diagnostics: createMemoryDiagnosticsFallback(clientMessages),
+          };
+        } finally {
+          recordStage("memory_history_ms", memoryStageStart);
+        }
+      })();
+
+      const userSettings = await userSettingsPromise;
 
       const featureFlags = {
         memoryEnabled: userSettings?.featureFlags?.memoryEnabled ?? false,
@@ -5725,175 +5959,21 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       if (!requestedWebSearch && rawShouldSearch && !ragDecision.shouldSearch) {
         console.info("[RAGGate] Skipping auto-search — not needed", { requestId, reason: ragDecision.reason, confidence: ragDecision.confidence, query: (userQuery || "").slice(0, 60) });
       }
-
-      if (shouldSearch && userQuery && !isConnectionClosed) {
-        // Emit thinking event so the user sees progress while search runs
-        if (!isConnectionClosed) {
-          writeSse(res, 'thinking', {
-            step: 'searching',
-            message: 'Buscando fuentes relevantes...',
-            requestId,
-            timestamp: Date.now(),
-          });
-        }
+      const searchPromise = (async () => {
+        const searchStageStart = performance.now();
         try {
-          const { needsAcademicSearch, needsWebSearch, searchWeb } = await import('../services/webSearch');
-          const { academicEngineV3, generateAPACitation } = await import('../services/academicResearchEngineV3');
-
-          const doAcademic = needsAcademicSearch(userQuery);
-          const doWeb = requestedWebSearch ? !doAcademic : needsWebSearch(userQuery);
-
-          if (doAcademic) {
-            console.log("[Stream] Academic search", {
-              mode: requestedWebSearch ? "requested" : "auto",
-              queryPreview: userQuery.slice(0, 60),
-            });
-            try {
-              const engineResult = await academicEngineV3.search({
-                query: userQuery,
-                maxResults: 15,
-                yearFrom: 2020,
-                yearTo: new Date().getFullYear(),
-                sources: ["scielo", "openalex", "semantic_scholar", "crossref", "core", "pubmed", "arxiv", "doaj"]
-              });
-
-              if (engineResult.papers.length > 0) {
-                const academicContext = engineResult.papers.slice(0, 10).map((paper, i) =>
-                  `[${i + 1}] ${paper.title}\nAutores: ${paper.authors.map(a => a.name).join(', ') || 'No disponible'}\nAño: ${paper.year || 'N/A'}\nJournal: ${paper.journal || 'N/A'}\nDOI: ${paper.doi || 'N/A'}\nURL: ${paper.url || (paper.doi ? `https://doi.org/${paper.doi}` : 'N/A')}\nResumen: ${(paper.abstract || '').substring(0, 300)}...\nCita APA: ${generateAPACitation(paper)}`
-                ).join('\n\n');
-
-                clientMessages.unshift({
-                  role: 'system',
-                  content: `ARTÍCULOS ACADÉMICOS ENCONTRADOS (${engineResult.papers.length} resultados de ${engineResult.sources.map(s => s.name).join(', ')}):\n\n${academicContext}\n\nUSA ESTOS ARTÍCULOS para responder al usuario. Incluye citas APA y URLs para cada referencia.`
-                });
-
-                detectedWebSources = engineResult.papers.slice(0, 10).map(paper => ({
-                  url: paper.url || (paper.doi ? `https://doi.org/${paper.doi}` : ''),
-                  title: paper.title,
-                  snippet: paper.abstract?.substring(0, 200) || '',
-                  domain: paper.journal || 'Academic',
-                  favicon: null,
-                  imageUrl: null,
-                  siteName: paper.journal || engineResult.sources[0]?.name || 'Academic Source',
-                  publishedDate: paper.year ? `${paper.year}` : null
-                }));
-
-                console.log("[Stream] Academic search complete", { papers: engineResult.papers.length });
-                capturedSearchQueries.push({ query: userQuery, resultCount: engineResult.papers.length, status: "completed" });
-                capturedTotalSearches = 1;
-              }
-            } catch (academicError) {
-              console.error('[Stream] Academic search error:', academicError);
-              capturedSearchQueries.push({ query: userQuery, resultCount: 0, status: "failed" });
-              capturedTotalSearches = 1;
-            }
-          } else if (doWeb) {
-            console.log("[Stream] Web search", {
-              mode: requestedWebSearch ? "requested" : "auto",
-              queryPreview: userQuery.slice(0, 60),
-            });
-            try {
-              const searchResults = await searchWeb(userQuery, 50);
-
-              if (searchResults.results.length > 0) {
-                // Build rich context: prefer full page content (from contents[]), fall back to snippets
-                let searchContext: string;
-                if (searchResults.contents && searchResults.contents.length > 0) {
-                  searchContext = searchResults.contents
-                    .map((c: any, i: number) => `[${i + 1}] ${c.title} (${c.url}):\n${c.content}`)
-                    .join('\n\n');
-                  // Add remaining results that only have snippets
-                  const contentUrls = new Set(searchResults.contents.map((c: any) => c.url));
-                  const extraResults = searchResults.results
-                    .filter((r: any) => !contentUrls.has(r.url))
-                    .slice(0, 5);
-                  if (extraResults.length > 0) {
-                    const startIdx = searchResults.contents.length + 1;
-                    searchContext += '\n\n' + extraResults
-                      .map((r: any, i: number) => `[${startIdx + i}] ${r.title}: ${r.snippet} (${r.url})`)
-                      .join('\n');
-                  }
-                } else {
-                  searchContext = searchResults.results
-                    .map((r: any, i: number) => `[${i + 1}] ${r.title}\n${r.snippet}\nFuente: ${r.url}`)
-                    .join('\n\n');
-                }
-
-                // Store for injection into system prompt (most reliable path)
-                webSearchContextForLLM = `\n\n---\nBÚSQUEDA WEB REALIZADA - RESULTADOS ACTUALIZADOS:\n${searchContext}\n\nINSTRUCCIÓN CRÍTICA SOBRE LA BÚSQUEDA WEB:\n- Usa TODA la información de los resultados de búsqueda anteriores para dar una respuesta COMPLETA y DETALLADA.\n- NO digas que no tienes acceso a internet, noticias o información actualizada.\n- Los datos anteriores son reales y actuales, obtenidos en tiempo real.\n- Cita las fuentes con [número] al final de cada punto.\n- IGNORA cualquier límite de caracteres o instrucción de brevedad anterior: esta respuesta debe ser EXTENSA y cubrir todos los resultados relevantes.\n- Presenta la información en formato de lista con bullets o numerada, con detalles de cada noticia/resultado.`;
-
-                detectedWebSources = searchResults.results.map((r: any) => ({
-                  url: r.url,
-                  title: r.title,
-                  snippet: r.snippet,
-                  domain: new URL(r.url).hostname.replace('www.', ''),
-                  favicon: r.favicon || null,
-                  imageUrl: r.imageUrl || null,
-                  siteName: r.siteName || new URL(r.url).hostname.replace('www.', ''),
-                  publishedDate: r.publishedDate || null,
-                  query: r.query || null,
-                  metadata: r.metadata || null,
-                }));
-
-                console.log("[Stream] Web search complete", { results: searchResults.results.length, contentsCount: searchResults.contents?.length || 0 });
-                capturedSearchQueries.push({ query: userQuery, resultCount: searchResults.results.length, status: "completed" });
-                capturedTotalSearches = 1;
-              }
-            } catch (webError) {
-              console.error('[Stream] Web search error:', webError);
-              capturedSearchQueries.push({ query: userQuery, resultCount: 0, status: "failed" });
-              capturedTotalSearches = 1;
-            }
-          }
-        } catch (importError) {
-          console.error('[Stream] Failed to import search modules:', importError);
+          return await runStreamSearchPreflight({
+            shouldSearch,
+            userQuery,
+            requestedWebSearch,
+            requestId,
+            res,
+            isConnectionClosed: () => isConnectionClosed,
+          });
+        } finally {
+          recordStage("web_search_ms", searchStageStart);
         }
-      }
-
-      // CONTEXT FIX: Augment client messages with server-side history
-      const effectiveChatId = chatId || conversationId || streamConversationId;
-      const { messages, diagnostics: memoryDiagnostics } = await augmentHistoryWithCompatibility(
-        effectiveChatId,
-        clientMessages,
-        8000 // token budget
-      );
-      console.log(`[Stream API] Context augmented: ${clientMessages.length} client msgs -> ${messages.length} total`, memoryDiagnostics);
-
-      if (memoryDiagnostics.compressionApplied && !isConnectionClosed) {
-        writeSse(res, "notice", {
-          type: "memory_compacted",
-          originalTokens: memoryDiagnostics.originalTokens,
-          finalTokens: memoryDiagnostics.finalTokens,
-          originalMessageCount: memoryDiagnostics.originalMessageCount,
-          finalMessageCount: memoryDiagnostics.finalMessageCount,
-          summarizedMessages: memoryDiagnostics.summarizedMessages,
-          relevantMessagesKept: memoryDiagnostics.relevantMessagesKept,
-          recentMessagesKept: memoryDiagnostics.recentMessagesKept,
-          requestId,
-          timestamp: Date.now(),
-        });
-
-        promptAuditStore.logTransformation({
-          chatId: effectiveChatId || undefined,
-          runId: runId || undefined,
-          requestId,
-          stage: "compress",
-          inputTokens: memoryDiagnostics.originalTokens,
-          outputTokens: memoryDiagnostics.finalTokens,
-          droppedMessages: Math.max(
-            0,
-            memoryDiagnostics.originalMessageCount - memoryDiagnostics.finalMessageCount
-          ),
-          droppedChars: 0,
-          transformationDetails: {
-            originalMessageCount: memoryDiagnostics.originalMessageCount,
-            finalMessageCount: memoryDiagnostics.finalMessageCount,
-            summarizedMessages: memoryDiagnostics.summarizedMessages,
-            relevantMessagesKept: memoryDiagnostics.relevantMessagesKept,
-            recentMessagesKept: memoryDiagnostics.recentMessagesKept,
-          },
-        });
-      }
+      })();
 
       // DOC TOOL: Stream content directly to client editor (real-time rendering)
       // Previously this routed through handleProductionRequest which generates binary files.
@@ -5979,81 +6059,130 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         session_id: serverSessionId || gptSessionContract.sessionId,
       } : null;
 
-      // Get the last user message for PARE routing
-      const lastUserMessage = [...messages].reverse().find((m: any) => m.role === 'user');
-      const userMessageText = lastUserMessage?.content || '';
+      intentResult = await intentPromise;
+      if (intentResult) {
+        console.log(`[Stream] IntentRouter: intent=${intentResult.intent}, confidence=${intentResult.confidence.toFixed(2)}, format=${intentResult.output_format || 'none'}`);
 
-      // Run Intent Router FIRST for NLU-based intent classification
-      let intentResult: IntentResult | null = null;
-      if (userMessageText) {
-        try {
-          intentResult = await routeIntent(userMessageText);
-          console.log(`[Stream] IntentRouter: intent=${intentResult.intent}, confidence=${intentResult.confidence.toFixed(2)}, format=${intentResult.output_format || 'none'}`);
+        const isImageGenRequest = detectImageRequest(userMessageText);
+        if (isImageGenRequest) {
+          console.log(`[Stream] 🖼️ IMAGE GENERATION DETECTED: "${userMessageText.slice(0, 60)}..." - bypassing production pipeline`);
+          const imagePrompt = extractImagePrompt(userMessageText);
+          try {
+            const imageResult = await generateImage(imagePrompt);
+            if (imageResult && imageResult.imageBase64) {
+              const imageDataUrl = `data:${imageResult.mimeType || 'image/png'};base64,${imageResult.imageBase64}`;
+              const markdownResponse = `![${imagePrompt}](${imageDataUrl})\n\n*Imagen generada: "${imagePrompt}"*`;
 
-          // IMAGE GENERATION INTERCEPT - Must check BEFORE production mode to prevent
-          // "crea una imagen de X" from being routed to document generation
-          const isImageGenRequest = detectImageRequest(userMessageText);
-          if (isImageGenRequest) {
-            console.log(`[Stream] 🖼️ IMAGE GENERATION DETECTED: "${userMessageText.slice(0, 60)}..." - bypassing production pipeline`);
-            const imagePrompt = extractImagePrompt(userMessageText);
-            try {
-              const imageResult = await generateImage(imagePrompt);
-              if (imageResult && imageResult.imageBase64) {
-                const imageDataUrl = `data:${imageResult.mimeType || 'image/png'};base64,${imageResult.imageBase64}`;
-                const markdownResponse = `![${imagePrompt}](${imageDataUrl})\n\n*Imagen generada: "${imagePrompt}"*`;
-                
-                res.setHeader("Content-Type", "text/event-stream");
-                applySseSecurityHeaders(res);
-                res.setHeader("Cache-Control", "no-cache");
-                res.setHeader("Connection", "keep-alive");
-                res.setHeader("X-Accel-Buffering", "no");
+              res.setHeader("Content-Type", "text/event-stream");
+              applySseSecurityHeaders(res);
+              res.setHeader("Cache-Control", "no-cache");
+              res.setHeader("Connection", "keep-alive");
+              res.setHeader("X-Accel-Buffering", "no");
 
-                res.write(`data: ${JSON.stringify({ type: "token", content: markdownResponse })}\n\n`);
-                if (sessionMetadata) {
-                  res.write(`data: ${JSON.stringify({ type: "session_metadata", ...sessionMetadata })}\n\n`);
-                }
-                res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-                res.end();
-                return;
+              res.write(`data: ${JSON.stringify({ type: "token", content: markdownResponse })}\n\n`);
+              if (sessionMetadata) {
+                res.write(`data: ${JSON.stringify({ type: "session_metadata", ...sessionMetadata })}\n\n`);
               }
-            } catch (imgError: any) {
-              console.error('[Stream] Image generation failed, falling back to chat:', imgError?.message);
-            }
-          }
-
-          // PRODUCTION MODE INTERCEPT - Check immediately after intent detection
-          // Pass userMessageText to detect if user wants to search for articles first
-          if (featureFlags.canvasEnabled && isProductionIntent(intentResult, userMessageText) && intentResult.confidence >= 0.5) {
-            console.log(`[Stream] 🚀 PRODUCTION MODE ACTIVATED: intent=${intentResult.intent}, topic=${intentResult.slots.topic}`);
-
-            try {
-              const effectiveChatId = chatId || conversationId || streamConversationId;
-
-              await handleProductionRequest(
-                {
-                  message: userMessageText,
-                  userId: userId,
-                  chatId: effectiveChatId,
-                  conversationId: streamConversationId,
-                  requestId,
-                  assistantMessageId,
-                  intentResult,
-                  locale: intentResult.language_detected || 'es',
-                },
-                res
-              );
-
-              // Production handler completed, exit early
+              res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+              res.end();
               return;
-            } catch (productionError: any) {
-              console.error('[Stream] ❌ Production handler error (first intercept), falling back to chat:', productionError?.message || productionError);
-              console.error('[Stream] ❌ Production error stack:', productionError?.stack);
-              // Continue to normal chat flow if production fails
             }
+          } catch (imgError: any) {
+            console.error("[Stream] Image generation failed, falling back to chat:", imgError?.message);
           }
-        } catch (intentError) {
-          console.error('[Stream] IntentRouter error:', intentError);
         }
+
+        if (featureFlags.canvasEnabled && isProductionIntent(intentResult, userMessageText) && intentResult.confidence >= 0.5) {
+          console.log(`[Stream] 🚀 PRODUCTION MODE ACTIVATED: intent=${intentResult.intent}, topic=${intentResult.slots.topic}`);
+
+          try {
+            const effectiveChatId = chatId || conversationId || streamConversationId;
+
+            await handleProductionRequest(
+              {
+                message: userMessageText,
+                userId: userId,
+                chatId: effectiveChatId,
+                conversationId: streamConversationId,
+                requestId,
+                assistantMessageId,
+                intentResult,
+                locale: intentResult.language_detected || "es",
+              },
+              res,
+            );
+
+            return;
+          } catch (productionError: any) {
+            console.error("[Stream] ❌ Production handler error (first intercept), falling back to chat:", productionError?.message || productionError);
+            console.error("[Stream] ❌ Production error stack:", productionError?.stack);
+          }
+        }
+      }
+
+      const [, memoryResult, searchResult] = await Promise.allSettled([
+        Promise.resolve(intentResult),
+        memoryPromise,
+        searchPromise,
+      ]);
+
+      if (memoryResult.status === "fulfilled") {
+        messages = memoryResult.value.messages;
+        memoryDiagnostics = memoryResult.value.diagnostics;
+      } else {
+        console.warn("[Stream] Memory preflight failed, using client messages:", memoryResult.reason);
+        messages = clientMessages;
+        memoryDiagnostics = createMemoryDiagnosticsFallback(clientMessages);
+      }
+      console.log(`[Stream API] Context augmented: ${clientMessages.length} client msgs -> ${messages.length} total`, memoryDiagnostics);
+
+      if (searchResult.status === "fulfilled") {
+        detectedWebSources = searchResult.value.detectedWebSources;
+        webSearchContextForLLM = searchResult.value.webSearchContextForLLM;
+        if (searchResult.value.searchQueries.length > 0) {
+          capturedSearchQueries = searchResult.value.searchQueries;
+        }
+        if (searchResult.value.totalSearches > 0) {
+          capturedTotalSearches = searchResult.value.totalSearches;
+        }
+      } else {
+        console.warn("[Stream] Search preflight failed:", searchResult.reason);
+      }
+
+      if (memoryDiagnostics.compressionApplied && !isConnectionClosed) {
+        writeSse(res, "notice", {
+          type: "memory_compacted",
+          originalTokens: memoryDiagnostics.originalTokens,
+          finalTokens: memoryDiagnostics.finalTokens,
+          originalMessageCount: memoryDiagnostics.originalMessageCount,
+          finalMessageCount: memoryDiagnostics.finalMessageCount,
+          summarizedMessages: memoryDiagnostics.summarizedMessages,
+          relevantMessagesKept: memoryDiagnostics.relevantMessagesKept,
+          recentMessagesKept: memoryDiagnostics.recentMessagesKept,
+          requestId,
+          timestamp: Date.now(),
+        });
+
+        promptAuditStore.logTransformation({
+          chatId: effectiveChatIdForMemory || undefined,
+          runId: runId || undefined,
+          requestId,
+          stage: "compress",
+          inputTokens: memoryDiagnostics.originalTokens,
+          outputTokens: memoryDiagnostics.finalTokens,
+          droppedMessages: Math.max(
+            0,
+            memoryDiagnostics.originalMessageCount - memoryDiagnostics.finalMessageCount,
+          ),
+          droppedChars: 0,
+          transformationDetails: {
+            originalMessageCount: memoryDiagnostics.originalMessageCount,
+            finalMessageCount: memoryDiagnostics.finalMessageCount,
+            summarizedMessages: memoryDiagnostics.summarizedMessages,
+            relevantMessagesKept: memoryDiagnostics.relevantMessagesKept,
+            recentMessagesKept: memoryDiagnostics.recentMessagesKept,
+          },
+        });
       }
 
       // Resolve storagePaths for all attachments first (before PARE routing)
@@ -6142,8 +6271,8 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         if (existingRun.status === 'processing') {
           const runStartedAt = existingRun.startedAt ? new Date(existingRun.startedAt).getTime() : 0;
           const runAge = Date.now() - runStartedAt;
-          if (queueMode === "replace" || runAge > 5 * 60 * 1000) {
-            const reason = runAge > 5 * 60 * 1000 ? "stale_run_recovered" : "run_replaced";
+          if (queueMode === "replace" || runAge > INTERACTIVE_STALE_RUN_THRESHOLD_MS) {
+            const reason = runAge > INTERACTIVE_STALE_RUN_THRESHOLD_MS ? "stale_run_recovered" : "run_replaced";
             console.log(`[Run] Resetting run ${runId} to pending (${reason}, age=${Math.round(runAge / 1000)}s)`);
             await storage.updateChatRunStatus(existingRun.id, "pending", reason);
             // Fall through to claim below
@@ -6331,6 +6460,10 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           }
           clearStreamTimeouts();
           detachAsyncTask(
+            () => cleanupClaimedRunIfOrphaned("client_disconnect"),
+            "cleanup orphaned run on late close",
+          );
+          detachAsyncTask(
             () => flushStreamResumeProgress(getStreamMeta(res)),
             "stream resume flush on late close",
           );
@@ -6355,9 +6488,13 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             // Connection gone — stop heartbeat
             isConnectionClosed = true;
             if (heartbeatInterval) clearInterval(heartbeatInterval);
+            detachAsyncTask(
+              () => cleanupClaimedRunIfOrphaned("heartbeat_write_failed"),
+              "cleanup orphaned run after heartbeat failure",
+            );
           }
         }
-      }, 15000);
+      }, 5000);
 
       // Process attachments using DocumentBatchProcessor for atomic batch handling
       let attachmentContext = "";
@@ -7438,6 +7575,15 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         }
       }
 
+      const followUpSuggestions = buildFollowUpSuggestions({
+        assistantContent: fullContent,
+        userMessage: userMessageText || messages[messages.length - 1]?.content || "",
+        hasWebSources:
+          detectedWebSources.length > 0 ||
+          capturedSearchQueries.length > 0 ||
+          capturedTotalSearches > 0,
+      });
+
       // Update assistant message with full content + webSources
       const finalizePersistenceStageStart = performance.now();
       if (assistantMessageId) {
@@ -7453,15 +7599,22 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
               status: "complete"
             }));
 
-          const metadata: Record<string, any> = {};
-          if (detectedWebSources.length > 0) metadata.webSources = detectedWebSources;
-          if (cotSteps.length > 0) metadata.steps = cotSteps;
-          if (capturedSearchQueries.length > 0) metadata.searchQueries = capturedSearchQueries;
-          if (capturedTotalSearches > 0) metadata.totalSearches = capturedTotalSearches;
+          const assistantPayload = buildAssistantMessage({
+            content: fullContent,
+            webSources: detectedWebSources,
+            steps: cotSteps,
+            searchQueries: capturedSearchQueries,
+            totalSearches: capturedTotalSearches,
+            followUpSuggestions,
+          });
+          const finalMetadata = buildAssistantMessageMetadata(assistantPayload);
 
-          const finalMetadata = Object.keys(metadata).length > 0 ? metadata : undefined;
-
-          await storage.updateChatMessageContent(assistantMessageId, fullContent, 'done', finalMetadata);
+          await storage.updateChatMessageContent(
+            assistantMessageId,
+            assistantPayload.content,
+            'done',
+            finalMetadata,
+          );
 
           // Also persist assistant into Conversation State so /api/memory/chats/:id/state reflects reality.
           // Best-effort + idempotent.
@@ -7519,6 +7672,13 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
         // Send done event with webSources for frontend NewsCards
         if (!(res as any).__doneSent) {
+          const assistantPayload = buildAssistantMessage({
+            content: fullContent,
+            webSources: detectedWebSources,
+            searchQueries: capturedSearchQueries,
+            totalSearches: capturedTotalSearches,
+            followUpSuggestions,
+          });
           emitDoneEvent(res, {
             requestId,
             runId: effectiveRunId,
@@ -7528,9 +7688,10 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             totalSequences: finalSequenceCount,
             contentLength: fullContent.length,
             completionReason: "finalized",
-            webSources: detectedWebSources.length > 0 ? detectedWebSources : undefined,
-            searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
-            totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
+            webSources: assistantPayload.webSources,
+            searchQueries: assistantPayload.searchQueries,
+            totalSearches: assistantPayload.totalSearches,
+            followUpSuggestions: assistantPayload.followUpSuggestions,
             provider: activeStreamProvider || undefined,
             traceId: requestId,
             timings: finalTimings,
@@ -7664,19 +7825,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
       // fell through), mark it failed so it doesn't stay "processing" forever.
       // We check startedAt to avoid clobbering a run that was re-claimed by a
       // replacement request (queueMode=replace resets startedAt).
-      if (claimedRun && !runFinalized) {
-        try {
-          const currentRun = await storage.getChatRun(claimedRun.id);
-          const ourStartedAt = claimedRun.startedAt ? new Date(claimedRun.startedAt).getTime() : 0;
-          const currentStartedAt = currentRun?.startedAt ? new Date(currentRun.startedAt).getTime() : 0;
-          if (currentRun?.status === "processing" && currentStartedAt <= ourStartedAt) {
-            console.log(`[Run] Cleaning up orphaned run ${claimedRun.id} (connection_closed=${isConnectionClosed})`);
-            await storage.updateChatRunStatus(claimedRun.id, "failed", "stream_cleanup");
-          }
-        } catch (cleanupErr) {
-          console.warn("[Run] Failed to cleanup orphaned run:", cleanupErr);
-        }
-      }
+      await cleanupClaimedRunIfOrphaned("stream_cleanup");
 
       if (!timingReported) {
         reportTimings(isConnectionClosed ? "connection_closed" : "ended");

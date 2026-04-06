@@ -31,6 +31,7 @@ export interface StreamOptions {
   conversationId?: string | null;
   signal?: AbortSignal;
   onEvent?: (eventType: string, data: any) => void;
+  onChunk?: (chunk: string, eventData: any, fullContent: string) => boolean | void;
   onAiStateChange?: (state: AIState) => void;
   buildFinalMessage?: (fullContent: string, lastEventData?: any, messageId?: string) => Message;
   buildErrorMessage?: (error: Error, messageId?: string) => Message;
@@ -96,15 +97,15 @@ function createSession(): ConversationSession {
 }
 
 const DEFAULT_STREAM_TIMEOUT_MS = 300_000;
-const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 30_000;
+const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 45_000;
 const DEFAULT_DONE_TIMEOUT_MS = 45_000;
 // Gap guard: max time between receiving any SSE event and the first content token.
 // Covers the window after firstTokenTimeout is cleared (by a non-content event like
 // "thinking") but before doneTimeout is armed (which requires a content chunk).
 const DEFAULT_CONTENT_TOKEN_TIMEOUT_MS = 60_000;
-const DEFAULT_IDLE_RECOVERY_MS = 1_500;
+const DEFAULT_IDLE_RECOVERY_MS = 800;
 const DEFAULT_MAX_RETRIES = 2;
-const DEFAULT_RETRY_BACKOFF_MS = 800;
+const DEFAULT_RETRY_BACKOFF_MS = 400;
 const DEFAULT_RETRY_JITTER_MS = 250;
 
 const isBusyAiState = (state: AIState): boolean =>
@@ -217,15 +218,13 @@ export function useStreamChat(deps: StreamChatDeps) {
     (conversationId: string) => {
       const session = getSession(conversationId);
       if (session.pendingContent === null || session.rafId !== null) return;
-      if (!isConversationActive(conversationId)) return;
 
       session.rafId = requestAnimationFrame(() => {
         session.rafId = null;
-        if (session.pendingContent !== null && isConversationActive(conversationId)) {
-          streamingContentRef.current = session.pendingContent;
-          setStreamingContent(session.pendingContent);
-          session.pendingContent = null;
-        }
+        if (session.pendingContent === null || !isConversationActive(conversationId)) return;
+        streamingContentRef.current = session.pendingContent;
+        setStreamingContent(session.pendingContent);
+        session.pendingContent = null;
       });
     },
     [getSession, isConversationActive, setStreamingContent, streamingContentRef]
@@ -522,6 +521,7 @@ export function useStreamChat(deps: StreamChatDeps) {
         chatId: rawChatId,
         signal,
         onEvent,
+        onChunk,
         onAiStateChange,
         buildFinalMessage,
         buildErrorMessage,
@@ -877,6 +877,11 @@ export function useStreamChat(deps: StreamChatDeps) {
                 }
               }
 
+              setAiProcessSteps?.(
+                (prev: any[]) => prev.filter((step: any) => step?.id !== "stream-reconnect"),
+                conversationId
+              );
+
               onEvent?.(currentEventType, data);
 
               if (currentEventType === "chunk" || currentEventType === "text") {
@@ -900,7 +905,15 @@ export function useStreamChat(deps: StreamChatDeps) {
                   }
                   fullContent += content;
                   session.fullContent = fullContent;
-                  if (isConversationActive(conversationId)) {
+                  let shouldUpdateStreamingBuffer = true;
+                  if (onChunk && isConversationActive(conversationId)) {
+                    try {
+                      shouldUpdateStreamingBuffer = onChunk(content, data, fullContent) !== false;
+                    } catch (chunkError) {
+                      console.error("[useStreamChat] onChunk handler failed:", chunkError);
+                    }
+                  }
+                  if (shouldUpdateStreamingBuffer && isConversationActive(conversationId)) {
                     session.pendingContent = fullContent;
                     scheduleFlush(conversationId);
                   }
