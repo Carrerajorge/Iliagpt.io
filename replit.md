@@ -47,6 +47,13 @@ Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment varia
 - **Playwright**: Browser automation.
 - **Tesseract.js**: OCR for image text extraction.
 
+### Session & Auth Architecture
+- **Session cookie**: `SameSite=None; Secure; HttpOnly` — works in cross-origin iframes (Replit preview, embedded contexts).
+- **Cookie-less fallback**: When third-party cookies are blocked (Safari ITP), the frontend sends `X-Anonymous-User-Id` + `X-Anonymous-Token` (HMAC-SHA256) headers. The server validates the token via `verifyAnonToken()` and recovers the user's identity without a cookie.
+- **Identity resolution order**: `req.user.claims.sub` → `req.user.id` → `session.authUserId` → `session.passport.user` → verified header token → `session.anonUserId` → new anon ID.
+- **Token generation**: `server/lib/anonToken.ts` — HMAC-SHA256 with `ANON_TOKEN_SECRET` env var (or random fallback).
+- **Key files**: `server/lib/anonUserHelper.ts` (identity resolution), `server/replit_integrations/auth/replitAuth.ts` (session config), `server/routes.ts` (`/api/session/identity`).
+
 ### Runtime Integration Modules
 - **Qdrant Dual-Write**: Ingestion pipeline writes to both pgvector and Qdrant (when `QDRANT_URL` env var is set). `FusedRetrieveStage` merges results via RRF fusion. Gracefully skips when Qdrant is unavailable.
 - **LlamaIndex RAG**: Available at `POST /api/rag/llamaindex/query` for advanced document Q&A. Uses OpenAI embeddings and LLM via `OPENAI_API_KEY`.

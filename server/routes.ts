@@ -103,7 +103,7 @@ import { listOpenClaw1000Capabilities, getOpenClaw1000QuickStats } from "./servi
 import { buildOpenClaw1000CapabilityProfile } from "./services/openClaw1000CapabilityProfiler";
 import { createAuthenticatedWebSocketHandler, AuthenticatedWebSocket } from "./lib/wsAuth";
 import { llmGateway } from "./lib/llmGateway";
-import { generateAnonToken } from "./lib/anonToken";
+import { generateAnonToken, verifyAnonToken } from "./lib/anonToken";
 import { getUserConfig, setUserConfig, getDefaultConfig, validatePatterns, getFilterStats } from "./services/contentFilter";
 import { isModelEligibleForPublic } from "./services/modelIntegration";
 import { GEMINI_MODELS_REGISTRY, XAI_MODELS } from "./lib/modelRegistry";
@@ -615,11 +615,20 @@ export async function registerRoutes(
       return res.status(401).json({ message: "Logged out" });
     }
 
-    // For anonymous users, bind ID to session (not header) to prevent impersonation
     if (session) {
       if (!session.anonUserId) {
-        const sessionId = req.sessionID;
-        session.anonUserId = sessionId ? `anon_${sessionId}` : null;
+        const headerUserId = req.headers['x-anonymous-user-id'];
+        const headerToken = req.headers['x-anonymous-token'];
+        if (
+          typeof headerUserId === 'string' && headerUserId &&
+          typeof headerToken === 'string' && headerToken &&
+          verifyAnonToken(headerUserId, headerToken)
+        ) {
+          session.anonUserId = headerUserId;
+        } else {
+          const sessionId = req.sessionID;
+          session.anonUserId = sessionId ? `anon_${sessionId}` : null;
+        }
       }
     }
 

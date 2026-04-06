@@ -175,14 +175,8 @@ const getOidcConfig = memoize(
 
 export function getSession() {
   const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week
-  const isProduction = process.env.NODE_ENV === "production" || !!process.env.REPL_SLUG;
   const isTest = process.env.NODE_ENV === "test";
-  const isReplitDeployment = !!process.env.REPL_SLUG;
 
-  const useNoneSameSite = false;
-
-  // Tests should be hermetic and must not require DB migrations just to serve a request.
-  // Use the default MemoryStore in test env.
   const sessionStore = isTest
     ? undefined
     : createResilientPgSessionStore(sessionTtl);
@@ -196,11 +190,10 @@ export function getSession() {
     proxy: true,
     cookie: {
       httpOnly: true,
-      secure: isProduction,
-      sameSite: "lax" as const,
+      secure: true,
+      sameSite: "none" as const,
       maxAge: sessionTtl,
       path: "/",
-      // Don't set domain - let browser use host-only cookie for iliagpt.com
     },
   });
 }

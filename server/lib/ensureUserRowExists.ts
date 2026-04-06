@@ -12,10 +12,7 @@ export async function ensureUserRowExists(userId: string, req?: Request): Promis
   if (!id || id === "anonymous") return;
 
   const isAnon = id.startsWith("anon_");
-  if (isAnon) {
-    console.warn(`[ensureUserRowExists] Blocked anonymous user creation: ${id.slice(0, 12)}...`);
-    return;
-  }
+  const authProvider = isAnon ? "anonymous" : "unknown";
 
   const rawIp = req ? (req.headers["x-forwarded-for"] as string || req.ip || "") : "";
   const rawUa = req ? (req.headers["user-agent"] as string || "") : "";
@@ -31,7 +28,7 @@ export async function ensureUserRowExists(userId: string, req?: Request): Promis
       .values({
         id,
         username: `User-${id.slice(0, 8)}`,
-        authProvider: "unknown",
+        authProvider,
         role: "user",
         plan: "free",
         status: "active",

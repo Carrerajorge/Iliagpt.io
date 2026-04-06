@@ -158,9 +158,13 @@ function setForcedSignedOut(enabled: boolean): void {
 
 async function fetchUser(): Promise<User | null> {
   const storedAnonId = getStoredAnonUserId();
+  const storedToken = getStoredAnonToken();
   const headers: HeadersInit = {};
   if (storedAnonId) {
     headers['X-Anonymous-User-Id'] = storedAnonId;
+  }
+  if (storedToken) {
+    headers['X-Anonymous-Token'] = storedToken;
   }
 
   const response = await fetch("/api/auth/user", {

@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 
-const SECRET = process.env.ANON_TOKEN_SECRET || crypto.randomBytes(32).toString('hex');
+const SECRET = process.env.ANON_TOKEN_SECRET || process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
 export function generateAnonToken(anonUserId: string): string {
   return crypto.createHmac('sha256', SECRET).update(anonUserId).digest('hex');

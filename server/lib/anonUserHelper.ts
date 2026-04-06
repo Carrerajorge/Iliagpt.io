@@ -1,40 +1,21 @@
 import type { Request } from "express";
 import { randomBytes } from "crypto";
+import { verifyAnonToken } from "./anonToken";
 
-/**
- * Securely retrieves the user ID from a request.
- * 
- * For authenticated users: returns the authenticated user's ID.
- * For anonymous users: returns a session-bound anonymous ID.
- * 
- * SECURITY: The X-Anonymous-User-Id header is ONLY trusted if it matches
- * the session-bound ID. This prevents impersonation attacks where malicious
- * clients send arbitrary anon_* IDs in headers.
- * 
- * @param req - Express request object
- * @returns User ID string or null if unable to determine
- */
 export function getSecureUserId(req: Request): string | null {
-  // 1. Try authenticated user first (Passport puts user here after deserialize)
   const user = (req as any).user;
   const authUserId = user?.claims?.sub || user?.id;
   if (authUserId) {
     return authUserId;
   }
 
-  // `req.session` is only present if express-session middleware has run.
-  // This helper is called very early (e.g. request logger), so it must be
-  // resilient to missing session middleware.
   const session = (req as any).session as any | undefined;
 
-  // 1.5 Check session.authUserId (workaround for Passport serialization issues)
   if (session?.authUserId) {
     return session.authUserId;
   }
 
-  // 1.6 Check session.passport.user for user info
   const passportUser = session?.passport?.user;
-  // Many Passport setups serialize just the user id (string).
   if (typeof passportUser === "string" && passportUser) {
     return passportUser;
   }
@@ -45,18 +26,24 @@ export function getSecureUserId(req: Request): string | null {
     return passportUser.id;
   }
 
-  // 2. Check X-Anonymous-User-Id header ONLY if it matches session-bound ID
   const headerUserId = req.headers['x-anonymous-user-id'];
-  if (
-    headerUserId &&
-    typeof headerUserId === 'string' &&
-    session?.anonUserId &&
-    headerUserId === session.anonUserId
-  ) {
-    return headerUserId;
+  if (headerUserId && typeof headerUserId === 'string') {
+    if (session?.anonUserId && headerUserId === session.anonUserId) {
+      return headerUserId;
+    }
+    const headerToken = req.headers['x-anonymous-token'];
+    if (
+      typeof headerToken === 'string' &&
+      headerToken &&
+      verifyAnonToken(headerUserId, headerToken)
+    ) {
+      if (session) {
+        session.anonUserId = headerUserId;
+      }
+      return headerUserId;
+    }
   }
 
-  // 3. Fallback to session-bound ID or generate new one
   if (session && !session.anonUserId) {
     const sessionId = (req as any).sessionID;
     if (sessionId) {
