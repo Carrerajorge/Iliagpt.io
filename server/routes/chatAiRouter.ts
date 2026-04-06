@@ -2,6 +2,7 @@ import { Router } from "express";
 import { storage } from "../storage";
 import { chatService, AVAILABLE_MODELS, DEFAULT_PROVIDER, DEFAULT_MODEL } from "../services/ChatServiceV2";
 import { llmGateway } from "../lib/llmGateway";
+import { applySseSecurityHeaders } from "../lib/sseSecurityHeaders";
 import { getOrCreateSession, getEnforcedModel, getSessionById, type GptSessionContract } from "../services/gptSessionService";
 import { generateImage, detectImageRequest, extractImagePrompt } from "../services/imageGeneration";
 import { generateVideo, detectVideoRequest, extractVideoPrompt } from "../services/videoGeneration";
@@ -4612,6 +4613,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && !isUsingFreeModel) {
         console.warn(`[Stream] Blocked anonymous stream attempt from IP=${req.ip}, model=${requestedModel}`);
         res.setHeader("Content-Type", "text/event-stream");
+        applySseSecurityHeaders(res);
         res.write(`data: ${JSON.stringify({ type: "error", error: "Authentication required. Please sign in with Google to use this model.", code: "AUTH_REQUIRED" })}\n\n`);
         return res.end();
       }
@@ -4825,11 +4827,11 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       if (earlyLocalControlResult.handled) {
         if (!res.headersSent) {
           res.setHeader("Content-Type", "text/event-stream");
+          applySseSecurityHeaders(res);
           res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
           res.setHeader("Connection", "keep-alive");
           res.setHeader("Transfer-Encoding", "chunked");
           res.setHeader("X-Accel-Buffering", "no");
-          res.setHeader("X-Content-Type-Options", "nosniff");
           res.setHeader("X-Request-Id", requestId);
           res.setHeader("X-Trace-Id", requestId);
           res.flushHeaders();
@@ -5106,11 +5108,11 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       const sseAlreadyOpen = res.headersSent;
       if (!sseAlreadyOpen) {
         res.setHeader("Content-Type", "text/event-stream");
+        applySseSecurityHeaders(res);
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("Transfer-Encoding", "chunked");
         res.setHeader("X-Accel-Buffering", "no");
-        res.setHeader("X-Content-Type-Options", "nosniff");
         res.setHeader("X-Request-Id", requestId);
         res.setHeader("X-Trace-Id", requestId);
         res.setHeader("X-Latency-Mode", latencyMode);
@@ -5751,6 +5753,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
                 const markdownResponse = `![${imagePrompt}](${imageDataUrl})\n\n*Imagen generada: "${imagePrompt}"*`;
                 
                 res.setHeader("Content-Type", "text/event-stream");
+                applySseSecurityHeaders(res);
                 res.setHeader("Cache-Control", "no-cache");
                 res.setHeader("Connection", "keep-alive");
                 res.setHeader("X-Accel-Buffering", "no");
@@ -5923,11 +5926,11 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       // already sent and these calls become no-ops.
       if (!res.headersSent) {
         res.setHeader("Content-Type", "text/event-stream");
+        applySseSecurityHeaders(res);
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("Transfer-Encoding", "chunked");
         res.setHeader("X-Accel-Buffering", "no");
-        res.setHeader("X-Content-Type-Options", "nosniff");
         res.setHeader("X-Request-Id", requestId);
         res.setHeader("X-Trace-Id", requestId);
         res.setHeader("X-Latency-Mode", latencyMode);
@@ -7546,6 +7549,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
         // --- SSE STREAMING: Set up early so ALL paths (including clarification) use SSE ---
         res.setHeader("Content-Type", "text/event-stream");
+        applySseSecurityHeaders(res);
         res.setHeader("Cache-Control", "no-cache, no-transform");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("X-Accel-Buffering", "no");
