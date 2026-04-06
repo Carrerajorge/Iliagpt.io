@@ -130,7 +130,7 @@ import { ChatMessageList, ChatMessageListProps } from "@/components/chat/ChatMes
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { useChatStore } from "@/stores/chatStore";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
-import { PromptSuggestions } from "@/components/prompt-suggestions";
+import { PromptSuggestions, type PromptSuggestionSelection } from "@/components/prompt-suggestions";
 import { MessageFeedback } from "@/components/message-feedback";
 import { UpgradePromptModal, useUpgradePrompt } from "@/components/upgrade-prompt-modal";
 // AgentPanel removed - progress is shown inline in chat messages
@@ -1572,6 +1572,28 @@ export function ChatInterface({
     setMinimizedDocument(null);
     onCloseSidebar?.();
   };
+
+  const handleApplyPromptSuggestion = useCallback((selection: PromptSuggestionSelection) => {
+    setInput(selection.prompt);
+
+    if (selection.selectedTool !== undefined) {
+      setSelectedTool(selection.selectedTool);
+    }
+
+    if (selection.selectedDocTool !== undefined) {
+      setSelectedDocTool(selection.selectedDocTool);
+    }
+
+    if (selection.latencyMode) {
+      setLatencyMode(selection.latencyMode);
+    }
+
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      const length = selection.prompt.length;
+      textareaRef.current?.setSelectionRange(length, length);
+    });
+  }, [setInput, setLatencyMode, textareaRef, setSelectedDocTool, setSelectedTool]);
 
   const minimizeDocEditor = () => {
     if (!activeDocEditor) return;
@@ -7853,7 +7875,7 @@ IMPORTANTE:
                         className="w-full relative z-10"
                       >
                         <PromptSuggestions
-                          onSelect={(action) => setInput(action)}
+                          onSelect={handleApplyPromptSuggestion}
                           hasAttachment={uploadedFiles.length > 0}
                           className="justify-center max-w-3xl mx-auto"
                         />
