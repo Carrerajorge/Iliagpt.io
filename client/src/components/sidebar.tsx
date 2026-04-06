@@ -43,7 +43,6 @@ import {
   Home,
 } from "lucide-react";
 import { IliaGPTLogo } from "@/components/iliagpt-logo";
-import { OpenClawLogo } from "@/components/openclaw-panel";
 import { cn } from "@/lib/utils";
 import { isAdminUser } from "@/lib/admin";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -585,32 +584,46 @@ export function Sidebar({
       </div>
       <div className="flex flex-col gap-0.5 px-2 pb-2">
         <button onClick={onOpenLibrary} data-tool-motion="library" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-library">
-          <Library className="sidebar-tool-icon h-4 w-4 text-primary shrink-0 pointer-events-none" />
+          <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
+            <Library className="sidebar-tool-icon h-4 w-4 text-primary pointer-events-none" />
+          </span>
           <span className="pointer-events-none">Biblioteca</span>
         </button>
         <button onClick={onOpenGpts} data-tool-motion="gpts" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-gpts">
-          <Bot className="sidebar-tool-icon h-4 w-4 text-amber-500 shrink-0 pointer-events-none" />
+          <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
+            <Bot className="sidebar-tool-icon h-4 w-4 text-amber-500 pointer-events-none" />
+          </span>
           <span className="pointer-events-none">GPTs</span>
         </button>
         <button onClick={() => setLocation("/openclaw")} data-tool-motion="openclaw" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-openclaw">
-          <OpenClawLogo className="sidebar-tool-icon h-4 w-4 shrink-0 pointer-events-none" />
+          <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
+            <span aria-hidden="true" className="sidebar-tool-icon text-[14px] leading-none pointer-events-none">🦞</span>
+          </span>
           <span className="pointer-events-none">OpenClaw</span>
         </button>
         <button onClick={onOpenSkills} data-tool-motion="skills" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-skills">
-          <Zap className="sidebar-tool-icon h-4 w-4 text-blue-500 shrink-0 pointer-events-none" />
+          <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
+            <Zap className="sidebar-tool-icon h-4 w-4 text-blue-500 pointer-events-none" />
+          </span>
           <span className="pointer-events-none">Skills</span>
         </button>
         <button onClick={onOpenApps} data-tool-motion="apps" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-apps">
-          <LayoutGrid className="sidebar-tool-icon h-4 w-4 text-emerald-500 shrink-0 pointer-events-none" />
+          <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
+            <LayoutGrid className="sidebar-tool-icon h-4 w-4 text-emerald-500 pointer-events-none" />
+          </span>
           <span className="pointer-events-none">Aplicaciones</span>
         </button>
         <button onClick={onOpenWhatsAppConnect} data-tool-motion="whatsapp" className="sidebar-tool-row relative flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-whatsapp-connect">
-          <MessageSquare className="sidebar-tool-icon h-4 w-4 text-green-500 shrink-0 pointer-events-none" />
+          <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
+            <MessageSquare className="sidebar-tool-icon h-4 w-4 text-green-500 pointer-events-none" />
+          </span>
           <span className="pointer-events-none">AppsWebChat (QR)</span>
           <span className={cn("ml-auto h-2 w-2 rounded-full shrink-0 pointer-events-none", waStatus.state === 'connected' ? 'bg-green-500' : waStatus.state === 'disconnected' ? 'bg-red-500' : 'bg-amber-500')} />
         </button>
         <a href="/project/website" onClick={(e) => { e.preventDefault(); window.location.href = '/project/website'; }} data-tool-motion="codex" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none no-underline" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-codex-vc">
-          <Code className="sidebar-tool-icon h-4 w-4 text-cyan-500 shrink-0 pointer-events-none" />
+          <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
+            <Code className="sidebar-tool-icon h-4 w-4 text-cyan-500 pointer-events-none" />
+          </span>
           <span className="pointer-events-none">Codex VC</span>
         </a>
       </div>

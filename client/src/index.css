@@ -674,48 +674,52 @@ html, body, #root {
   100% { transform: translate3d(0, 0, 0) skewX(0deg) scale(1); }
 }
 
-/* Sidebar Herramientas: cada icono tiene una microanimación distinta al hover/focus.
-   Gated on motion preferences so macOS "Reduce motion" / html.reduce-motion do not fight these rules. */
-@media (prefers-reduced-motion: no-preference) {
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row .sidebar-tool-icon {
-    transform-box: fill-box;
-    transform-origin: center;
-    will-change: transform;
-    transition: transform 0.22s ease-out;
-  }
+/* Sidebar Herramientas: cada icono mantiene movimiento mientras el cursor siga encima. */
+nav[data-sidebar-tools-nav] .sidebar-tool-row .sidebar-tool-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform-box: fill-box;
+  transform-origin: center;
+  will-change: transform;
+  transition: transform 0.18s ease-out !important;
+}
 
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="library"]:hover .sidebar-tool-icon,
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="library"]:focus-visible .sidebar-tool-icon {
-    animation: sidebar-library-hover 560ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
+nav[data-sidebar-tools-nav] .sidebar-tool-row .sidebar-tool-icon {
+  display: block;
+}
 
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="gpts"]:hover .sidebar-tool-icon,
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="gpts"]:focus-visible .sidebar-tool-icon {
-    animation: sidebar-gpts-hover 620ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="library"]:hover .sidebar-tool-icon-wrap,
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="library"]:focus-visible .sidebar-tool-icon-wrap {
+  animation: sidebar-library-hover 0.72s ease-in-out infinite alternate !important;
+}
 
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="openclaw"]:hover .sidebar-tool-icon,
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="openclaw"]:focus-visible .sidebar-tool-icon {
-    animation: sidebar-openclaw-hover 680ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="gpts"]:hover .sidebar-tool-icon-wrap,
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="gpts"]:focus-visible .sidebar-tool-icon-wrap {
+  animation: sidebar-gpts-hover 0.88s ease-in-out infinite alternate !important;
+}
 
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="skills"]:hover .sidebar-tool-icon,
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="skills"]:focus-visible .sidebar-tool-icon {
-    animation: sidebar-skills-hover 520ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="openclaw"]:hover .sidebar-tool-icon-wrap,
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="openclaw"]:focus-visible .sidebar-tool-icon-wrap {
+  animation: sidebar-openclaw-hover 0.82s ease-in-out infinite alternate !important;
+}
 
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="apps"]:hover .sidebar-tool-icon,
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="apps"]:focus-visible .sidebar-tool-icon {
-    animation: sidebar-apps-hover 560ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="skills"]:hover .sidebar-tool-icon-wrap,
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="skills"]:focus-visible .sidebar-tool-icon-wrap {
+  animation: sidebar-skills-hover 0.48s ease-in-out infinite alternate !important;
+}
 
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="whatsapp"]:hover .sidebar-tool-icon,
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="whatsapp"]:focus-visible .sidebar-tool-icon {
-    animation: sidebar-whatsapp-hover 620ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="apps"]:hover .sidebar-tool-icon-wrap,
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="apps"]:focus-visible .sidebar-tool-icon-wrap {
+  animation: sidebar-apps-hover 0.7s ease-in-out infinite alternate !important;
+}
 
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="codex"]:hover .sidebar-tool-icon,
-  html:not(.reduce-motion) nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="codex"]:focus-visible .sidebar-tool-icon {
-    animation: sidebar-codex-hover 540ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="whatsapp"]:hover .sidebar-tool-icon-wrap,
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="whatsapp"]:focus-visible .sidebar-tool-icon-wrap {
+  animation: sidebar-whatsapp-hover 0.76s ease-in-out infinite alternate !important;
+}
+
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="codex"]:hover .sidebar-tool-icon-wrap,
+nav[data-sidebar-tools-nav] .sidebar-tool-row[data-tool-motion="codex"]:focus-visible .sidebar-tool-icon-wrap {
+  animation: sidebar-codex-hover 0.66s ease-in-out infinite alternate !important;
 }
