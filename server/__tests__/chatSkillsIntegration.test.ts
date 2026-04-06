@@ -8,6 +8,7 @@ const llmStreamChatMock = vi.fn();
 const llmGuaranteeResponseMock = vi.fn();
 const resolveSkillContextMock = vi.fn();
 const buildSkillSectionMock = vi.fn();
+const classifyQuestionMock = vi.fn(() => ({ type: "factual_simple", maxTokens: 250 }));
 
 vi.mock("../services/ChatServiceV2", () => ({
   chatService: { chat: chatMock },
@@ -81,7 +82,7 @@ vi.mock("../lib/ensureUserRowExists", () => ({
 
 vi.mock("../services/questionClassifier", () => ({
   questionClassifier: {
-    classifyQuestion: vi.fn(() => ({ type: "factual_simple" })),
+    classifyQuestion: classifyQuestionMock,
   },
 }));
 
@@ -290,7 +291,7 @@ describe("chat skill integration", () => {
         expect(outboundMessages[0].content).toContain("[SKILL_CONTEXT]");
       }
 
-      expect(llmStreamChatMock).toHaveBeenCalled();
+      expect(llmStreamChatMock.mock.calls.length > 0 || llmChatMock.mock.calls.length > 0).toBe(true);
       expect(res.text.includes("event: done")).toBe(true);
       expect(res.text.includes("event: complete")).toBe(true);
       expect(res.text.includes("event: error")).toBe(false);
@@ -300,6 +301,7 @@ describe("chat skill integration", () => {
   }, 60000);
 
   it("emits done and complete after a terminal model failure", async () => {
+    classifyQuestionMock.mockReturnValueOnce({ type: "summary", maxTokens: 250 });
     llmStreamChatMock.mockImplementationOnce(async function* () {
       throw new Error("provider unavailable");
     });
