@@ -28,6 +28,7 @@ import {
   READ_ONLY_PROFILE,
 } from '../agentic/toolCalling/ToolRegistry';
 import { BUILT_IN_TOOLS }           from '../agentic/toolCalling/BuiltInTools';
+import { resolveModel }             from '../integration/modelWiring';
 
 // ─── Executor options ─────────────────────────────────────────────────────────
 
@@ -171,6 +172,24 @@ function buildTaskSystemPrompt(task: TaskRecord): string {
   return lines.join('\n');
 }
 
+function resolveTaskModel(task: TaskRecord): string {
+  const metadataModel = typeof task.metadata?.['model'] === 'string'
+    ? String(task.metadata?.['model']).trim()
+    : '';
+  if (metadataModel) {
+    return resolveModel(metadataModel);
+  }
+
+  const envPreferredModel = typeof process.env['DEFAULT_AGENT_MODEL'] === 'string'
+    ? process.env['DEFAULT_AGENT_MODEL'].trim()
+    : '';
+  if (envPreferredModel) {
+    return resolveModel(envPreferredModel);
+  }
+
+  return resolveModel();
+}
+
 // ─── Resource monitor ─────────────────────────────────────────────────────────
 
 class ResourceMonitor {
@@ -219,6 +238,7 @@ export class TaskExecutor {
     }
 
     const systemPrompt  = buildTaskSystemPrompt(task);
+    const executionModel = resolveTaskModel(task);
     const initialMessages: AgentMessage[] = checkpoint?.conversation ?? [
       { role: 'user', content: task.objective },
     ];
@@ -306,7 +326,7 @@ export class TaskExecutor {
 
     const finalAnswer = await loop.run(initialMessages, {
       systemPrompt,
-      model        : process.env['DEFAULT_AGENT_MODEL'] ?? 'claude-sonnet-4-6',
+      model        : executionModel,
       maxTurns     : 20,
       maxTokens    : 4096,
       userId       : task.userId,
@@ -326,3 +346,4 @@ export class TaskExecutor {
 }
 
 export const taskExecutor = new TaskExecutor();
+export { resolveTaskModel };

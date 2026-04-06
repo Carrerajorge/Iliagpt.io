@@ -5,6 +5,18 @@ const nodeEnv = process.env.NODE_ENV || "development";
 const loadEnvLocal = process.env.LOAD_ENV_LOCAL === "true";
 const envLoadedByBootstrap = process.env.ENV_LOADED_BY_BOOTSTRAP === "true";
 
+function readConfiguredEnv(name: string): string | undefined {
+  const value = process.env[name];
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const normalized = trimmed.toLowerCase();
+  if (normalized === "undefined" || normalized === "null" || normalized === "missing") {
+    return undefined;
+  }
+  return trimmed;
+}
+
 // Load local overrides first, then defaults.
 // .env.local is intended for development only; tests should be hermetic by default.
 if (!envLoadedByBootstrap) {
@@ -14,7 +26,12 @@ if (!envLoadedByBootstrap) {
   dotenv.config();
 }
 // Backward compatible aliases for xAI keys used across different parts of the codebase.
-process.env.XAI_API_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || process.env.ILIAGPT_API_KEY;
+const resolvedXaiApiKey = readConfiguredEnv("XAI_API_KEY") || readConfiguredEnv("GROK_API_KEY") || readConfiguredEnv("ILIAGPT_API_KEY");
+if (resolvedXaiApiKey) {
+  process.env.XAI_API_KEY = resolvedXaiApiKey;
+} else {
+  delete process.env.XAI_API_KEY;
+}
 
 if (nodeEnv === "test") {
   // Keep route/unit tests hermetic: many modules import env eagerly even when the

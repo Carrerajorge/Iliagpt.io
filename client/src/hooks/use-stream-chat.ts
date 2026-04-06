@@ -12,6 +12,8 @@ import { useCallback, useRef, useEffect } from "react";
 import { apiFetch, getAnonUserIdHeader } from "@/lib/apiClient";
 import type { Message } from "@/hooks/use-chats";
 import { type AIState, type AiProcessStep } from "@/components/chat-interface/types";
+import { buildAssistantMessage } from "@shared/assistantMessage";
+import { upsertMessageByIdentity } from "@/lib/chatMessageIdentity";
 
 export interface StreamChatDeps {
   setOptimisticMessages: React.Dispatch<React.SetStateAction<Message[]>>;
@@ -101,7 +103,7 @@ const DEFAULT_DONE_TIMEOUT_MS = 45_000;
 // "thinking") but before doneTimeout is armed (which requires a content chunk).
 const DEFAULT_CONTENT_TOKEN_TIMEOUT_MS = 60_000;
 const DEFAULT_IDLE_RECOVERY_MS = 1_500;
-const DEFAULT_MAX_RETRIES = 1;
+const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_RETRY_BACKOFF_MS = 800;
 const DEFAULT_RETRY_JITTER_MS = 250;
 
@@ -457,7 +459,7 @@ export function useStreamChat(deps: StreamChatDeps) {
       };
 
       if (!targetConversationId) {
-        setOptimisticMessages((prev) => [...prev, message]);
+        setOptimisticMessages((prev) => upsertMessageByIdentity(prev, message));
         onSendMessage(message).catch((err) => {
           console.error("[useStreamChat] onSendMessage failed:", err);
         });
@@ -475,7 +477,7 @@ export function useStreamChat(deps: StreamChatDeps) {
 
       flushNow(targetConversationId);
 
-      setOptimisticMessages((prev) => [...prev, message]);
+      setOptimisticMessages((prev) => upsertMessageByIdentity(prev, message));
       onSendMessage(message).catch((err) => {
         console.error("[useStreamChat] onSendMessage failed:", err);
       });
@@ -595,6 +597,24 @@ export function useStreamChat(deps: StreamChatDeps) {
       let lastError: Error | undefined;
       let lastResponse: Response | undefined;
       let lastContent = "";
+
+      const setRetryIndicator = (attemptNumber: number, retryDelayMs: number) => {
+        setAiProcessSteps?.((prev: any[]) => {
+          const reconnectStep = {
+            id: "stream-reconnect",
+            step: "stream-reconnect",
+            title: attemptNumber > 1
+              ? `Reconectando... intento ${attemptNumber}`
+              : "Reconectando...",
+            description: retryDelayMs > 0
+              ? `Reintentando en ${Math.ceil(retryDelayMs / 1000)}s`
+              : "Reintentando ahora",
+            status: "active",
+          };
+          const withoutReconnect = prev.filter((step: any) => step?.id !== reconnectStep.id);
+          return [...withoutReconnect, reconnectStep];
+        }, conversationId);
+      };
 
       for (let attempt = 0; attempt <= normalizedMaxRetries; attempt++) {
         const streamRequestId = buildAttemptRequestId(attempt);
@@ -771,12 +791,37 @@ export function useStreamChat(deps: StreamChatDeps) {
               const trimmed = line.trim();
               if (!trimmed) continue;
 
-              if (trimmed.startsWith("event: ")) {
-                currentEventType = trimmed.slice(7).trim();
-                continue;
-              }
+            if (trimmed.startsWith("event: ")) {
+              currentEventType = trimmed.slice(7).trim();
+              continue;
+            }
 
-              if (!trimmed.startsWith("data: ")) continue;
+            if (trimmed.startsWith(":")) {
+              if (trimmed.includes("heartbeat")) {
+                if (!hasReceivedEvent) {
+                  hasReceivedEvent = true;
+                  if (session.firstTokenTimeoutId) {
+                    clearTimeout(session.firstTokenTimeoutId);
+                    session.firstTokenTimeoutId = null;
+                  }
+                  if (!hasReceivedToken && !session.contentTokenTimeoutId) {
+                    session.contentTokenTimeoutId = setTimeout(() => {
+                      if (!hasReceivedToken && !session.finalizing && session.pendingRequestId === streamRequestId) {
+                        timeoutCause = "first-token";
+                        controller.abort();
+                      }
+                    }, DEFAULT_CONTENT_TOKEN_TIMEOUT_MS);
+                  }
+                }
+                onEvent?.("heartbeat", {
+                  conversationId,
+                  requestId: streamRequestId,
+                });
+              }
+              continue;
+            }
+
+            if (!trimmed.startsWith("data: ")) continue;
 
               const dataStr = trimmed.slice(6);
               if (dataStr === "[DONE]") {
@@ -901,6 +946,40 @@ export function useStreamChat(deps: StreamChatDeps) {
                 onAiStateChange?.("agent_working");
               }
 
+              if (!isStaleConversation && currentEventType === "task_spawned") {
+                setAiState("agent_working", conversationId);
+                onAiStateChange?.("agent_working");
+
+                const taskId = typeof data?.taskId === "string" ? data.taskId.trim() : "";
+                const label =
+                  typeof data?.label === "string" && data.label.trim()
+                    ? data.label.trim()
+                    : typeof data?.metadata?.label === "string" && data.metadata.label.trim()
+                      ? data.metadata.label.trim()
+                      : taskId
+                        ? `Task ${taskId}`
+                        : "Background task";
+
+                setAiProcessSteps?.(
+                  (prev: any[]) => {
+                    const stepId = taskId ? `bg-task-${taskId}` : `bg-task-${Date.now()}`;
+                    const exists = prev.find((s: any) => s.id === stepId);
+                    const nextStep = {
+                      id: stepId,
+                      step: stepId,
+                      title: `${label} en segundo plano`,
+                      message: `${label} continúa ejecutándose mientras puedes seguir usando otros chats.`,
+                      status: "active",
+                    };
+                    if (exists) {
+                      return prev.map((s: any) => (s.id === stepId ? { ...s, ...nextStep } : s));
+                    }
+                    return [...prev, nextStep];
+                  },
+                  conversationId
+                );
+              }
+
               if (!isStaleConversation && (currentEventType === "tool_status" || currentEventType === "tool_start" || currentEventType === "tool_result")) {
                 onEvent?.(currentEventType, data);
               }
@@ -937,15 +1016,21 @@ export function useStreamChat(deps: StreamChatDeps) {
                   return { ok: false, content: fullContent, message: errorMsg, response, error: terminalError };
                 }
 
-                const msg = buildFinalMessage?.(fullContent, data, messageId) ?? {
+                const msg = buildFinalMessage?.(fullContent, data, messageId) ?? buildAssistantMessage({
                   id: messageId,
-                  role: "assistant" as const,
-                  content: fullContent,
                   timestamp: new Date(),
                   requestId: data.requestId || streamRequestId,
+                  content: fullContent,
                   artifact: data.artifact,
                   webSources: data.webSources,
-                };
+                  searchQueries: data.searchQueries,
+                  totalSearches: data.totalSearches,
+                  followUpSuggestions: data.followUpSuggestions,
+                  confidence: data.confidence,
+                  uncertaintyReason: data.uncertaintyReason,
+                  retrievalSteps: data.retrievalSteps,
+                  steps: data.steps,
+                });
 
                 finalize(msg, conversationId, "done");
                 return { ok: true, content: fullContent, message: msg, response };
@@ -970,13 +1055,21 @@ export function useStreamChat(deps: StreamChatDeps) {
           if (!session.finalizing && fullContent) {
             clearTokenTimeouts();
             flushNow(conversationId);
-            const msg = buildFinalMessage?.(fullContent, lastEventData, messageId) ?? {
+            const msg = buildFinalMessage?.(fullContent, lastEventData, messageId) ?? buildAssistantMessage({
               id: messageId,
-              role: "assistant" as const,
-              content: fullContent,
               timestamp: new Date(),
               requestId: streamRequestId,
-            };
+              content: fullContent,
+              artifact: lastEventData?.artifact,
+              webSources: lastEventData?.webSources,
+              searchQueries: lastEventData?.searchQueries,
+              totalSearches: lastEventData?.totalSearches,
+              followUpSuggestions: lastEventData?.followUpSuggestions,
+              confidence: lastEventData?.confidence,
+              uncertaintyReason: lastEventData?.uncertaintyReason,
+              retrievalSteps: lastEventData?.retrievalSteps,
+              steps: lastEventData?.steps,
+            });
 
             finalize(msg, conversationId, "done");
             return { ok: true, content: fullContent, message: msg, response };
@@ -1015,7 +1108,9 @@ export function useStreamChat(deps: StreamChatDeps) {
             lastContent = fullContent;
 
             if (attempt < normalizedMaxRetries) {
-              await sleep(computeBackoff(attempt));
+              const retryDelay = computeBackoff(attempt);
+              setRetryIndicator(attempt + 1, retryDelay);
+              await sleep(retryDelay);
               continue;
             }
 
@@ -1040,7 +1135,9 @@ export function useStreamChat(deps: StreamChatDeps) {
           lastContent = fullContent;
 
           if (retryable && attempt < normalizedMaxRetries) {
-            await sleep(computeBackoff(attempt));
+            const retryDelay = computeBackoff(attempt);
+            setRetryIndicator(attempt + 1, retryDelay);
+            await sleep(retryDelay);
             continue;
           }
 
