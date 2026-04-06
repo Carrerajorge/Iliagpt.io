@@ -8,7 +8,7 @@
  *   MEMORY_PURGE_CRON       - cron expression (default "0 3 * * *" — 3am daily)
  */
 import cron from "node-cron";
-import { lt, sql } from "drizzle-orm";
+import { lt } from "drizzle-orm";
 import { db } from "../db";
 import { agentMemories } from "@shared/schema";
 import { Logger } from "../lib/logger";

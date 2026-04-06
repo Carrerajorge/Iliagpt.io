@@ -87,16 +87,20 @@ function getActor(req: Request): string {
 }
 
 export async function rateLimiter(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const actor = getActor(req);
+  try {
+    const actor = getActor(req);
 
-  const redisResult = await checkRedisLimit(actor);
-  const allowed = redisResult !== null ? redisResult : checkLocalLimit(actor);
+    const redisResult = await checkRedisLimit(actor);
+    const allowed = redisResult !== null ? redisResult : checkLocalLimit(actor);
 
-  if (!allowed) {
-    res.status(429).json({ message: "Too many requests" });
-    return;
+    if (!allowed) {
+      res.status(429).json({ message: "Too many requests" });
+      return;
+    }
+    next();
+  } catch (err) {
+    next(err);
   }
-  next();
 }
 
 // Legacy sync export — calls local fallback immediately
