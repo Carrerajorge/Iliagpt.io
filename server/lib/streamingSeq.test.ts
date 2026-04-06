@@ -126,6 +126,18 @@ describe("streamingSeq", () => {
       expect(saved.updatedAt).toBeGreaterThanOrEqual(before);
       expect(saved.updatedAt).toBeLessThanOrEqual(after);
     });
+
+    it("persists assistant message metadata for resume hydration", async () => {
+      await saveStreamingProgress("chat-meta", 7, "partial", "streaming", {
+        assistantMessageId: "assistant-123",
+        requestId: "req-123",
+      });
+
+      const callArgs = vi.mocked(memoryCache.set).mock.calls[0];
+      const saved = callArgs[1] as any;
+      expect(saved.assistantMessageId).toBe("assistant-123");
+      expect(saved.requestId).toBe("req-123");
+    });
   });
 
   describe("getStreamingProgress", () => {

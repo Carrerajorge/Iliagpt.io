@@ -52,6 +52,7 @@ import {
   streamRecoveryManager,
   type RAGRelevanceDecision,
 } from "../lib/streamReliability";
+import { saveStreamingProgress } from "../lib/streamingSeq";
 
 type AttachmentSpec = z.infer<typeof AttachmentSpecSchema>;
 type StreamProviderSwitch = {
@@ -118,6 +119,7 @@ const VALID_STREAM_SCOPE_SET = new Set<SkillScope>([
 const STREAM_IDENTIFIER_RE = /^[a-zA-Z0-9._-]{1,140}$/;
 const STREAM_ATTACHMENT_NAME_RE = /^[^<>:\"/\\|?*\u0000-\u001f]{1,220}$/;
 const STREAM_MIME_RE = /^[a-zA-Z0-9][a-zA-Z0-9.+-\/]*/;
+const STREAM_PROGRESS_FLUSH_MS = 250;
 
 function isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
   return value != null && typeof (value as AsyncIterable<T>)[Symbol.asyncIterator] === "function";
@@ -3652,13 +3654,192 @@ function normalizeStreamSkillScopes(rawScopes: unknown): SkillScope[] {
   return seen.size ? Array.from(seen) : [...DEFAULT_STREAM_SKILL_SCOPES];
 }
 
+type StreamResumeStatus = "streaming" | "completed" | "failed";
+
+type StreamMetaRecord = {
+  conversationId?: string;
+  requestId?: string;
+  assistantMessageId?: string | null;
+  getAssistantMessageId?: () => string | null | undefined;
+  onWrite?: () => void;
+  enableResumePersistence?: boolean;
+  resumeStatus?: StreamResumeStatus;
+  resumeContent?: string;
+  resumeLastSeq?: number;
+  resumeFlushTimer?: NodeJS.Timeout | null;
+  resumePersistPromise?: Promise<void> | null;
+};
+
+function getStreamMeta(res: Response): StreamMetaRecord | undefined {
+  return (res as any)?.locals?.streamMeta as StreamMetaRecord | undefined;
+}
+
+function getResumeStatusForEvent(event: string, payload: Record<string, unknown>): StreamResumeStatus | null {
+  if (event === "error" || event === "production_error") {
+    return "failed";
+  }
+
+  if (event === "done" || event === "finish" || event === "complete") {
+    return payload.error === true ? "failed" : "completed";
+  }
+
+  if (
+    event === "start" ||
+    event === "thinking" ||
+    event === "context" ||
+    event === "chunk" ||
+    event === "text" ||
+    event === "skill_chunk"
+  ) {
+    return "streaming";
+  }
+
+  return null;
+}
+
+function getSequenceIdFromPayload(payload: Record<string, unknown>): number | null {
+  const rawValue = payload.sequenceId;
+  const numericValue =
+    typeof rawValue === "number"
+      ? rawValue
+      : typeof rawValue === "string" && rawValue.trim()
+        ? Number(rawValue)
+        : NaN;
+
+  if (!Number.isFinite(numericValue) || numericValue < 0) {
+    return null;
+  }
+
+  return Math.floor(numericValue);
+}
+
+async function persistStreamResumeProgress(
+  streamMeta: StreamMetaRecord | undefined,
+  preferredStatus?: StreamResumeStatus,
+): Promise<void> {
+  if (!streamMeta?.enableResumePersistence || !streamMeta.conversationId) {
+    return;
+  }
+
+  const status = streamMeta.resumeStatus ?? preferredStatus ?? "streaming";
+  const lastSeq = Number.isFinite(streamMeta.resumeLastSeq) && (streamMeta.resumeLastSeq as number) >= 0
+    ? Math.floor(streamMeta.resumeLastSeq as number)
+    : 0;
+  const assistantMessageId =
+    streamMeta.assistantMessageId ||
+    (typeof streamMeta.getAssistantMessageId === "function"
+      ? streamMeta.getAssistantMessageId() ?? null
+      : null);
+
+  await saveStreamingProgress(
+    streamMeta.conversationId,
+    lastSeq,
+    typeof streamMeta.resumeContent === "string" ? streamMeta.resumeContent : "",
+    status,
+    {
+      assistantMessageId,
+      requestId: streamMeta.requestId ?? null,
+    },
+  );
+}
+
+function trackStreamResumeProgress(
+  streamMeta: StreamMetaRecord | undefined,
+  event: string,
+  payload: Record<string, unknown>,
+): void {
+  if (!streamMeta?.enableResumePersistence || !streamMeta.conversationId) {
+    return;
+  }
+
+  const nextStatus = getResumeStatusForEvent(event, payload);
+  if (!nextStatus) {
+    return;
+  }
+
+  if (typeof payload.assistantMessageId === "string" && payload.assistantMessageId.trim()) {
+    streamMeta.assistantMessageId = payload.assistantMessageId.trim();
+  }
+
+  const nextSequenceId = getSequenceIdFromPayload(payload);
+  if (nextSequenceId !== null) {
+    streamMeta.resumeLastSeq = Math.max(streamMeta.resumeLastSeq ?? 0, nextSequenceId);
+  }
+
+  if ((event === "chunk" || event === "text" || event === "skill_chunk") && typeof payload.content === "string") {
+    streamMeta.resumeContent = `${streamMeta.resumeContent || ""}${payload.content}`;
+  }
+
+  streamMeta.resumeStatus = nextStatus;
+}
+
+function scheduleStreamResumeProgressPersist(
+  streamMeta: StreamMetaRecord | undefined,
+  preferredStatus?: StreamResumeStatus,
+): void {
+  if (!streamMeta?.enableResumePersistence || !streamMeta.conversationId) {
+    return;
+  }
+
+  const persist = () => {
+    const operation = persistStreamResumeProgress(streamMeta, preferredStatus).finally(() => {
+      if (streamMeta.resumePersistPromise === operation) {
+        streamMeta.resumePersistPromise = null;
+      }
+    });
+    streamMeta.resumePersistPromise = operation;
+  };
+
+  const targetStatus = streamMeta.resumeStatus ?? preferredStatus ?? "streaming";
+  if (targetStatus !== "streaming") {
+    if (streamMeta.resumeFlushTimer) {
+      clearTimeout(streamMeta.resumeFlushTimer);
+      streamMeta.resumeFlushTimer = null;
+    }
+    persist();
+    return;
+  }
+
+  if (streamMeta.resumeFlushTimer) {
+    return;
+  }
+
+  streamMeta.resumeFlushTimer = setTimeout(() => {
+    streamMeta.resumeFlushTimer = null;
+    persist();
+  }, STREAM_PROGRESS_FLUSH_MS);
+  streamMeta.resumeFlushTimer.unref?.();
+}
+
+async function flushStreamResumeProgress(
+  streamMeta: StreamMetaRecord | undefined,
+  preferredStatus?: StreamResumeStatus,
+): Promise<void> {
+  if (!streamMeta?.enableResumePersistence || !streamMeta.conversationId) {
+    return;
+  }
+
+  if (streamMeta.resumeFlushTimer) {
+    clearTimeout(streamMeta.resumeFlushTimer);
+    streamMeta.resumeFlushTimer = null;
+  }
+
+  const operation = persistStreamResumeProgress(streamMeta, preferredStatus).finally(() => {
+    if (streamMeta.resumePersistPromise === operation) {
+      streamMeta.resumePersistPromise = null;
+    }
+  });
+  streamMeta.resumePersistPromise = operation;
+  await operation;
+}
+
 function writeSse(res: Response, event: string, data: object): boolean {
   try {
     // Guard: don't write to a destroyed or finished response
     const r = res as any;
     if (r.writableEnded || r.destroyed) return false;
 
-    const streamMeta = r?.locals?.streamMeta;
+    const streamMeta = getStreamMeta(res);
     const assistantMessageId =
       streamMeta?.assistantMessageId ||
       (typeof streamMeta?.getAssistantMessageId === "function"
@@ -3680,6 +3861,7 @@ function writeSse(res: Response, event: string, data: object): boolean {
     }
 
     const payload = clampSsePayload(enrichedPayload);
+    trackStreamResumeProgress(streamMeta, event, payload as Record<string, unknown>);
     let serialized: string;
     try {
       serialized = JSON.stringify(payload);
@@ -3708,6 +3890,7 @@ function writeSse(res: Response, event: string, data: object): boolean {
         console.warn("[SSE] streamMeta.onWrite failed:", observerError);
       }
     }
+    scheduleStreamResumeProgressPersist(streamMeta);
     return true;
   } catch (err) {
     console.error('[SSE] Write failed:', err);
@@ -4698,6 +4881,12 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         conversationId: streamConversationId,
         requestId,
         getAssistantMessageId: () => assistantMessageId,
+        enableResumePersistence: true,
+        resumeStatus: "streaming",
+        resumeContent: "",
+        resumeLastSeq: 0,
+        resumeFlushTimer: null,
+        resumePersistPromise: null,
         onWrite: () => resetIdleTimeout(),
       };
 
@@ -5190,6 +5379,10 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             clearInterval(heartbeatInterval);
           }
           clearStreamTimeouts();
+          detachAsyncTask(
+            () => flushStreamResumeProgress(getStreamMeta(res)),
+            "stream resume flush on early close",
+          );
           console.log("[SSE] Connection closed (early handler)", { requestId });
         });
       }
@@ -6137,6 +6330,10 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             clearInterval(heartbeatInterval);
           }
           clearStreamTimeouts();
+          detachAsyncTask(
+            () => flushStreamResumeProgress(getStreamMeta(res)),
+            "stream resume flush on late close",
+          );
           console.log(`[SSE] Connection closed (late handler): ${requestId}`);
         });
       }
@@ -7455,6 +7652,8 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         "trace error");
       }
     } finally {
+      await flushStreamResumeProgress(getStreamMeta(res));
+
       if (heartbeatInterval) {
         clearInterval(heartbeatInterval);
       }

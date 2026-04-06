@@ -225,6 +225,58 @@ function sanitizeSendMessage(message: Message): Message {
   };
 }
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const LOCAL_MESSAGE_ID_PREFIXES = ["local_", "temp-"];
+const CHAT_SYNC_VALIDATION_COOLDOWN_MS = 8_000;
+const CHAT_SYNC_VALIDATION_MAX_IDS = 300;
+
+interface ChatSyncValidationResponse {
+  valid: boolean;
+  serverMessageCount: number;
+  clientMessageCount: number;
+  difference: number;
+  missingOnClient: string[];
+  extraOnClient: string[];
+  lastServerMessageId: string | null;
+  syncRecommendation: "FULL_REFRESH" | "NONE";
+}
+
+function isUuid(value: string): boolean {
+  return UUID_REGEX.test(value);
+}
+
+function isLikelyPersistedMessage(message: Pick<Message, "id" | "deliveryStatus">): boolean {
+  const id = typeof message.id === "string" ? message.id : "";
+  const deliveryStatus =
+    typeof message.deliveryStatus === "string" ? message.deliveryStatus : undefined;
+
+  if (!id || LOCAL_MESSAGE_ID_PREFIXES.some((prefix) => id.startsWith(prefix))) {
+    return false;
+  }
+
+  return (
+    deliveryStatus === "sent" ||
+    deliveryStatus === "delivered" ||
+    (deliveryStatus !== "error" && deliveryStatus !== "sending" && isUuid(id)) ||
+    (!deliveryStatus && isUuid(id))
+  );
+}
+
+function collectPersistedMessageIds(messages: Message[]): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+
+  for (const message of messages) {
+    if (!isLikelyPersistedMessage(message)) continue;
+    if (seen.has(message.id)) continue;
+    seen.add(message.id);
+    ids.push(message.id);
+  }
+
+  return ids;
+}
+
 function safeReadLocalChatsFromStorage(storageKey: string): Chat[] {
   try {
     if (typeof localStorage === "undefined") return [];
@@ -244,15 +296,7 @@ function safeReadLocalChatsFromStorage(storageKey: string): Chat[] {
           if (msg?.requestId) {
             const id = typeof msg.id === "string" ? msg.id : "";
             const deliveryStatus = typeof msg.deliveryStatus === "string" ? msg.deliveryStatus : undefined;
-            const isUuid =
-              /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
-
-            const isLikelyPersisted =
-              deliveryStatus === "sent" ||
-              deliveryStatus === "delivered" ||
-              (deliveryStatus !== "error" && deliveryStatus !== "sending" && isUuid) ||
-              // Back-compat: older messages won't have deliveryStatus, but server IDs are UUIDs.
-              (!deliveryStatus && isUuid);
+            const isLikelyPersisted = isLikelyPersistedMessage({ id, deliveryStatus });
 
             if (isLikelyPersisted) {
               markRequestPersisted(msg.requestId);
@@ -1002,6 +1046,12 @@ export function useChats() {
   // Track if user has manually set activeChatId to prevent auto-selection
   const userHasSelectedRef = useRef(false);
   const recoveringFailedQueueRef = useRef(false);
+  const chatsRef = useRef<Chat[]>([]);
+  chatsRef.current = chats;
+  const activeChatIdRef = useRef<string | null>(null);
+  activeChatIdRef.current = activeChatId;
+  const validationInFlightRef = useRef<Set<string>>(new Set());
+  const lastValidationAtRef = useRef<Map<string, number>>(new Map());
 
   // Wrapper that tracks user selection intent
   const setActiveChatIdWithTracking = useCallback((id: string | null) => {
@@ -1189,12 +1239,93 @@ export function useChats() {
     }
   }, []);
 
+  const validateChatSync = useCallback(async (
+    chatId: string,
+    options: { force?: boolean } = {},
+  ): Promise<void> => {
+    const resolvedChatId = resolveRealChatId(chatId);
+    if (!resolvedChatId || isPendingChat(resolvedChatId)) return;
+
+    const chat = chatsRef.current.find(
+      (candidate) =>
+        candidate.id === chatId ||
+        candidate.id === resolvedChatId ||
+        resolveRealChatId(candidate.id) === resolvedChatId,
+    );
+    if (!chat || chat.messages.length === 0) return;
+
+    const now = Date.now();
+    if (!options.force) {
+      const lastValidatedAt = lastValidationAtRef.current.get(resolvedChatId) || 0;
+      if (now - lastValidatedAt < CHAT_SYNC_VALIDATION_COOLDOWN_MS) {
+        return;
+      }
+    }
+
+    if (validationInFlightRef.current.has(resolvedChatId)) return;
+
+    const persistedMessageIds = collectPersistedMessageIds(chat.messages);
+    const params = new URLSearchParams({
+      clientMessageCount: String(persistedMessageIds.length),
+    });
+    if (
+      persistedMessageIds.length > 0 &&
+      persistedMessageIds.length <= CHAT_SYNC_VALIDATION_MAX_IDS
+    ) {
+      params.set("clientMessageIds", JSON.stringify(persistedMessageIds));
+    }
+
+    lastValidationAtRef.current.set(resolvedChatId, now);
+    validationInFlightRef.current.add(resolvedChatId);
+
+    try {
+      const res = await apiFetch(`/api/chats/${resolvedChatId}/validate?${params.toString()}`, {
+        headers: { ...getAnonUserIdHeader() },
+        credentials: "include",
+      });
+
+      if (res.status === 404) {
+        window.dispatchEvent(new CustomEvent("refresh-chats"));
+        return;
+      }
+      if (!res.ok) return;
+
+      const validation = (await res.json()) as ChatSyncValidationResponse;
+      if (validation.valid || validation.syncRecommendation !== "FULL_REFRESH") {
+        return;
+      }
+
+      console.info("[ChatSync] Reconciliando chat desincronizado", {
+        chatId: resolvedChatId,
+        difference: validation.difference,
+        missingOnClient: validation.missingOnClient.length,
+        extraOnClient: validation.extraOnClient.length,
+      });
+
+      await fetchChatDetails(resolvedChatId);
+    } catch (error) {
+      console.warn(`[ChatSync] Failed to validate chat ${resolvedChatId}:`, error);
+    } finally {
+      validationInFlightRef.current.delete(resolvedChatId);
+    }
+  }, [fetchChatDetails]);
+
   const recoverFailedMessageQueue = useCallback(async () => {
+    const maybeValidateActiveChat = () => {
+      const currentActiveChatId = activeChatIdRef.current;
+      if (currentActiveChatId) {
+        void validateChatSync(currentActiveChatId, { force: true });
+      }
+    };
+
     if (recoveringFailedQueueRef.current) return;
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
 
     const failedQueue = safeReadFailedQueue();
-    if (failedQueue.length === 0) return;
+    if (failedQueue.length === 0) {
+      maybeValidateActiveChat();
+      return;
+    }
 
     recoveringFailedQueueRef.current = true;
     try {
@@ -1348,12 +1479,11 @@ export function useChats() {
       console.warn("[FailedQueue] Error processing recovery queue:", e);
     } finally {
       recoveringFailedQueueRef.current = false;
+      maybeValidateActiveChat();
     }
-  }, []);
+  }, [validateChatSync]);
 
   // Fetch details for active chat when selected
-  const chatsRef = useRef(chats);
-  chatsRef.current = chats;
   useEffect(() => {
     if (activeChatId && !isPendingChat(activeChatId)) {
       const chat = chatsRef.current.find(c => c.id === activeChatId);
@@ -1362,6 +1492,36 @@ export function useChats() {
       }
     }
   }, [activeChatId, fetchChatDetails]);
+
+  const activeChatSyncKey = useMemo(() => {
+    if (!activeChatId) return "";
+
+    const resolvedChatId = resolveRealChatId(activeChatId);
+    if (!resolvedChatId || isPendingChat(activeChatId) || isPendingChat(resolvedChatId)) {
+      return "";
+    }
+
+    const activeChatCandidate = chats.find(
+      (chat) =>
+        chat.id === activeChatId ||
+        chat.id === resolvedChatId ||
+        resolveRealChatId(chat.id) === resolvedChatId,
+    );
+    if (!activeChatCandidate || activeChatCandidate.messages.length === 0) {
+      return "";
+    }
+
+    const persistedMessageIds = collectPersistedMessageIds(activeChatCandidate.messages);
+    const lastPersistedMessageId = persistedMessageIds[persistedMessageIds.length - 1] || "none";
+    return `${resolvedChatId}:${activeChatCandidate.messages.length}:${persistedMessageIds.length}:${lastPersistedMessageId}`;
+  }, [activeChatId, chats]);
+
+  useEffect(() => {
+    if (isLoading || !activeChatId || !activeChatSyncKey) return;
+    const resolvedChatId = resolveRealChatId(activeChatId);
+    if (!resolvedChatId) return;
+    void validateChatSync(resolvedChatId);
+  }, [activeChatId, activeChatSyncKey, isLoading, validateChatSync]);
 
   useEffect(() => {
     let cancelled = false;
