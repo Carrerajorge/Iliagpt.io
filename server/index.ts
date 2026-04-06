@@ -51,6 +51,8 @@ import { getUserId } from "./types/express";
 import { updateContext } from "./middleware/correlationContext";
 import { validateApiKey } from "./routes/apiKeysRouter";
 import { AppError } from "./utils/errors";
+import { checkMigrationDrift } from "./lib/migrationDriftCheck";
+import { startMemoryPurgeJob } from "./services/memoryPurgeService";
 initTracing();
 
 const app = express();
@@ -427,8 +429,13 @@ export function log(message: string, source = "express") {
     log(`Database: ${dbConnected ? "connected" : "NOT CONNECTED"}`);
     startAggregator();
     await seedProductionData();
+
+    // Check for SQL migration files on disk not registered in the Drizzle journal
+    await checkMigrationDrift();
+
     if (dbConnected) {
       startChatScheduleRunner();
+      startMemoryPurgeJob();
     } else {
       log("[Schedules] Skipping schedule runner start because DB is not connected");
     }

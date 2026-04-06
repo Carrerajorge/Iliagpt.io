@@ -203,21 +203,20 @@ const processors: Record<TaskType, (data: any) => Promise<any>> = {
     },
 
     embed: async (data: { texts: string[] }) => {
-        // Uses OpenAI API
         const OpenAIApi = (await import("openai")).default;
-        const openai = new OpenAIApi({
-            apiKey: process.env.OPENAI_API_KEY,
-        });
-
-        const response = await openai.embeddings.create({
-            model: "text-embedding-3-small",
-            input: data.texts,
-        });
-
-        return {
-            embeddings: response.data.map(d => d.embedding),
-            usage: response.usage
-        };
+        const openai = new OpenAIApi({ apiKey: process.env.OPENAI_API_KEY });
+        const timeoutMs = Number(process.env.WORKER_EMBED_TIMEOUT_MS) || 30000;
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await openai.embeddings.create(
+                { model: "text-embedding-3-small", input: data.texts },
+                { signal: controller.signal }
+            );
+            return { embeddings: response.data.map(d => d.embedding), usage: response.usage };
+        } finally {
+            clearTimeout(tid);
+        }
     },
 
     analyze: async (data: { content: string }) => {
@@ -253,7 +252,15 @@ const processors: Record<TaskType, (data: any) => Promise<any>> = {
                 const form = new FormData();
                 form.append("file", new Blob([buffer], { type: mime }), filename);
 
-                const resp = await fetch(url.toString(), { method: "POST", body: form });
+                const ocrTimeout = Number(process.env.WORKER_OCR_TIMEOUT_MS) || 60000;
+                const ocrController = new AbortController();
+                const ocrTid = setTimeout(() => ocrController.abort(), ocrTimeout);
+                let resp: Response;
+                try {
+                    resp = await fetch(url.toString(), { method: "POST", body: form, signal: ocrController.signal });
+                } finally {
+                    clearTimeout(ocrTid);
+                }
                 if (resp.ok) {
                     const json: any = await resp.json();
                     const avg = typeof json.avg_confidence === "number" ? json.avg_confidence : undefined;
@@ -276,22 +283,28 @@ const processors: Record<TaskType, (data: any) => Promise<any>> = {
         return { text, confidence, engine: "tesseract.js" };
     },
 
-    vision: async (data: { image: string }) => {
-        // Placeholder: Vision costs money, keeping simulated for now unless explicitly requested.
-        // Real imp would use GPT-4o-mini vision
-        await new Promise(resolve => setTimeout(resolve, 500));
-        return { description: "Simulated vision analysis (Prod pending)", objects: [] };
+    vision: async (_data: { image: string }) => {
+        // Vision processing not yet implemented; raise a structured error so callers handle it explicitly.
+        throw Object.assign(new Error("Vision processor not yet implemented (PROCESSOR_NOT_IMPLEMENTED)"), {
+            code: "PROCESSOR_NOT_IMPLEMENTED",
+            processor: "vision",
+        });
     },
 
-    pii: async (data: { text: string }) => {
-        // Placeholder for PII
-        await new Promise(resolve => setTimeout(resolve, 30));
-        return { detections: 0, types: [] };
+    pii: async (_data: { text: string }) => {
+        // PII detection not yet implemented; raise explicitly rather than returning misleading zeros.
+        throw Object.assign(new Error("PII processor not yet implemented (PROCESSOR_NOT_IMPLEMENTED)"), {
+            code: "PROCESSOR_NOT_IMPLEMENTED",
+            processor: "pii",
+        });
     },
 
-    quality: async (data: { text: string }) => {
-        await new Promise(resolve => setTimeout(resolve, 20));
-        return { score: 1.0, issues: [] };
+    quality: async (_data: { text: string }) => {
+        // Quality scorer not yet implemented; raise explicitly.
+        throw Object.assign(new Error("Quality processor not yet implemented (PROCESSOR_NOT_IMPLEMENTED)"), {
+            code: "PROCESSOR_NOT_IMPLEMENTED",
+            processor: "quality",
+        });
     },
 
     custom: async (data: { fn: string }) => {

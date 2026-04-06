@@ -141,6 +141,45 @@ const envSchema = z.object({
   // Web retrieval: `fast_first` uses parallel fetch/browser with cache (default in production).
   // `legacy` uses the sequential RetrievalPipeline (Scholar, preferBrowser, no-browser privacy).
   WEB_RETRIEVAL_PIPELINE: z.enum(["fast_first", "legacy"]).optional(),
+
+  // ── Agent execution ───────────────────────────────────────────────────────
+  // Wall-clock budget for a single agent LLM call (ms). Default: 90 s.
+  AGENT_LLM_TIMEOUT_MS: z.string().transform(Number).default("90000"),
+  // Maximum total agent loop duration before forced termination (ms). Default: 10 min.
+  AGENT_BUDGET_TIMEOUT_MS: z.string().transform(Number).default("600000"),
+  // Max retry attempts inside retryWithBackoff for agent LLM calls.
+  AGENT_LLM_MAX_RETRIES: z.string().transform(Number).default("2"),
+
+  // ── LLM Gateway ──────────────────────────────────────────────────────────
+  LLM_STREAM_TIMEOUT_MS: z.string().transform(Number).default("300000"),
+  LLM_CACHE_TTL_MS: z.string().transform(Number).default("300000"),
+  LLM_CIRCUIT_RESET_TIMEOUT_MS: z.string().transform(Number).default("30000"),
+
+  // ── Web search / retrieval ────────────────────────────────────────────────
+  WEB_SEARCH_TOTAL_FETCH_TIMEOUT_MS: z.string().transform(Number).default("15000"),
+  WEB_SEARCH_CACHE_TTL_MS: z.string().transform(Number).default("300000"),
+
+  // ── Worker timeouts ──────────────────────────────────────────────────────
+  WORKER_EMBED_TIMEOUT_MS: z.string().transform(Number).default("30000"),
+  WORKER_OCR_TIMEOUT_MS: z.string().transform(Number).default("60000"),
+  WORKER_FILE_POLL_TIMEOUT_MS: z.string().transform(Number).default("3000"),
+
+  // ── BullMQ / queues ──────────────────────────────────────────────────────
+  QUEUE_STALLED_INTERVAL_MS: z.string().transform(Number).default("30000"),
+  QUEUE_MAX_STALLED_COUNT: z.string().transform(Number).default("2"),
+  QUEUE_JOB_ATTEMPTS: z.string().transform(Number).default("3"),
+
+  // ── Workflow runner ──────────────────────────────────────────────────────
+  WORKFLOW_DEFAULT_STEP_TIMEOUT_MS: z.string().transform(Number).default("300000"),
+  WORKFLOW_RUN_LOCK_TIMEOUT_MS: z.string().transform(Number).default("5000"),
+
+  // ── Rate limiting (Redis-backed) ─────────────────────────────────────────
+  USER_RATE_LIMIT_CAPACITY: z.string().transform(Number).default("50"),
+  USER_RATE_LIMIT_REFILL_PER_SEC: z.string().transform(Number).default("5"),
+
+  // ── Memory purge ─────────────────────────────────────────────────────────
+  MEMORY_PURGE_AGE_DAYS: z.string().transform(Number).default("90"),
+  MEMORY_PURGE_CRON: z.string().default("0 3 * * *"),
 });
 
 function validateEnv() {

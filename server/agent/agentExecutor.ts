@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { Response } from "express";
+import { env } from "../config/env";
 import { toolRegistry, type ToolContext, type ToolResult } from "./toolRegistry";
 import { emitTraceEvent } from "./unifiedChatHandler";
 import type { RequestSpec } from "./requestSpec";
@@ -234,7 +235,11 @@ async function retryWithBackoff<T>(
     } catch (err: any) {
       lastError = err;
       const status = err?.status || err?.statusCode || 0;
-      const isRetryable = status === 429 || status === 503 || status === 502 || err?.code === "ECONNRESET" || err?.code === "ETIMEDOUT";
+      const errMsg = String(err?.message || err?.error?.message || "").toLowerCase();
+      const isRetryable =
+        status === 429 || status === 500 || status === 502 || status === 503 || status === 524 ||
+        err?.code === "ECONNRESET" || err?.code === "ETIMEDOUT" || err?.code === "ECONNREFUSED" ||
+        errMsg.includes("overloaded") || errMsg.includes("capacity") || errMsg.includes("rate limit");
       if (!isRetryable || attempt === maxRetries) {
         throw err;
       }
@@ -981,6 +986,10 @@ export async function executeAgentLoop(
   let conversationHistory = [...messages];
   let fullResponse = "";
   const circuitBreaker = new CircuitBreaker(3, 30000);
+
+  // Wall-clock budget: abort the loop if it exceeds AGENT_BUDGET_TIMEOUT_MS
+  const budgetDeadline = Date.now() + env.AGENT_BUDGET_TIMEOUT_MS;
+  const isBudgetExceeded = () => Date.now() > budgetDeadline;
   const toolHealth = new ToolHealthTracker();
   const reflectionEngine = new ReflectionEngine(5, 3);
   let totalTokensUsed = 0;
@@ -1442,6 +1451,11 @@ MANDATORY RULES:
   try {
 
   while (iteration < maxIterations) {
+    if (isBudgetExceeded()) {
+      console.warn(`[AgentExecutor] Wall-clock budget exceeded (${env.AGENT_BUDGET_TIMEOUT_MS}ms) at iteration ${iteration}/${maxIterations}. Terminating.`);
+      writeSse("agent_timeout", { runId, iteration, budgetMs: env.AGENT_BUDGET_TIMEOUT_MS });
+      break;
+    }
     iteration++;
 
     const stepIdx = Math.min(iteration - 1, planSteps.length - 1);
@@ -1715,8 +1729,9 @@ MANDATORY RULES:
             tool_choice: dedupedTools.length > 0 ? toolChoiceValue : undefined,
           });
 
+          const agentLlmTimeoutMs = env.AGENT_LLM_TIMEOUT_MS;
           const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Agent LLM call timed out after 90s")), 90000)
+            setTimeout(() => reject(new Error(`Agent LLM call timed out after ${agentLlmTimeoutMs}ms`)), agentLlmTimeoutMs)
           );
 
           return await Promise.race([completionPromise, timeoutPromise]);
@@ -1766,11 +1781,11 @@ MANDATORY RULES:
             max_tokens: 4096,
           });
           const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Agent LLM call timed out after 90s")), 90000)
+            setTimeout(() => reject(new Error(`Agent LLM call timed out after ${env.AGENT_LLM_TIMEOUT_MS}ms`)), env.AGENT_LLM_TIMEOUT_MS)
           );
           return await Promise.race([fallbackPromise, timeoutPromise]);
         }
-      }, 2, 1500);
+      }, env.AGENT_LLM_MAX_RETRIES, 1500);
 
       if (inferenceProgressInterval) { clearInterval(inferenceProgressInterval); inferenceProgressInterval = null; }
 

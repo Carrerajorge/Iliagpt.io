@@ -21,19 +21,28 @@ export type TaskHandler = (ctx: TaskExecutionContext) => Promise<{
 const handlers = new Map<string, TaskHandler>();
 
 const defaultHandler: TaskHandler = async (ctx) => {
+  const isProduction = process.env.NODE_ENV === "production";
   const role = getRoleById(ctx.agentRole);
   const roleName = role?.name || ctx.agentRole;
 
-  console.warn(
-    `[SuperOrchestrator] EXPERIMENTAL: No real handler registered for role "${ctx.agentRole}". ` +
-    `Using stub that returns synthetic output. Register a handler via registerTaskHandler() for production use.`
-  );
+  const errorMsg =
+    `No handler registered for SuperOrchestrator role "${ctx.agentRole}" (${roleName}). ` +
+    `Register a real handler via registerTaskHandler() before enqueuing this task type.`;
 
+  if (isProduction) {
+    throw Object.assign(new Error(errorMsg), {
+      code: "HANDLER_NOT_REGISTERED",
+      agentRole: ctx.agentRole,
+    });
+  }
+
+  // In development/test: warn and return stub so callers can still iterate
+  console.warn(`[SuperOrchestrator] STUB handler invoked — ${errorMsg}`);
   return {
     output: {
       status: "stub_executed",
       experimental: true,
-      warning: "This result was produced by a stub handler. No real agent execution occurred.",
+      warning: errorMsg,
       agentRole: roleName,
       summary: `[STUB] Task processed by ${roleName} agent (no real handler registered)`,
       input: ctx.input,

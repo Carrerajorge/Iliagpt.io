@@ -19,8 +19,18 @@ const DEFAULT_CONFIG: PareRateLimiterConfig = {
   userMaxRequests: parseInt(process.env.PARE_RATE_LIMIT_USER_MAX || "150", 10),
 };
 
+// NOTE: These stores are in-process (per-replica) when Redis is not configured.
+// For multi-instance deployments, set REDIS_URL to share state across replicas
+// (Redis-backed PARE rate limiting can be added here via redis INCRBY + EXPIRE).
 const ipRateLimitStore: Map<string, SlidingWindowEntry> = new Map();
 const userRateLimitStore: Map<string, SlidingWindowEntry> = new Map();
+
+if (!process.env.REDIS_URL) {
+  console.warn(
+    "[PareRateLimiter] REDIS_URL not set — rate limits are per-process. " +
+    "Set REDIS_URL to share limits across replicas in multi-instance deployments."
+  );
+}
 
 const CLEANUP_INTERVAL_MS = 60000;
 

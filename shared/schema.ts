@@ -48,10 +48,11 @@ export const users = pgTable("users", {
   tokensLimit: integer("tokens_limit").default(100000),
   creditsBalance: integer("credits_balance").default(0),
   lastLoginAt: timestamp("last_login_at"),
-  lastIp: varchar("last_ip"),
-  userAgent: text("user_agent"),
+  lastIp: varchar("last_ip", { length: 64 }),
+  userAgent: varchar("user_agent", { length: 512 }),
   countryCode: varchar("country_code", { length: 2 }),
   authProvider: text("auth_provider").default("email"), // email, google, sso
+  // NOTE: These are text for legacy compat. New queries should coerce to boolean.
   is2faEnabled: text("is_2fa_enabled").default("false"),
   emailVerified: text("email_verified").default("false"),
   referralCode: varchar("referral_code"),
@@ -68,7 +69,15 @@ export const users = pgTable("users", {
   stripeSubscriptionId: text("stripe_subscription_id"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
-});
+}, (table) => [
+  index("users_org_id_idx").on(table.orgId),
+  index("users_role_idx").on(table.role),
+  index("users_plan_idx").on(table.plan),
+  index("users_status_idx").on(table.status),
+  index("users_stripe_customer_idx").on(table.stripeCustomerId),
+  index("users_stripe_subscription_idx").on(table.stripeSubscriptionId),
+  index("users_auth_provider_idx").on(table.authProvider),
+]);
 
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,

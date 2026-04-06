@@ -55,10 +55,11 @@ export function createQueue<T>(name: string): Queue<T> | null {
     const conn = getConnection();
     if (!conn) return null;
 
+    const jobAttempts = parseInt(process.env.QUEUE_JOB_ATTEMPTS || "3");
     const queue = new Queue<T>(name, {
         connection: conn,
         defaultJobOptions: {
-            attempts: 2,
+            attempts: jobAttempts,
             backoff: {
                 type: 'exponential',
                 delay: 300,
@@ -85,9 +86,13 @@ export function createWorker<T, R>(name: string, processor: (job: any) => Promis
     const conn = getConnection();
     if (!conn) return null;
 
+    const stalledInterval = parseInt(process.env.QUEUE_STALLED_INTERVAL_MS || "30000");
+    const maxStalledCount = parseInt(process.env.QUEUE_MAX_STALLED_COUNT || "2");
     return new Worker<T, R>(name, processor, {
         connection: conn,
         concurrency: parseInt(process.env.WORKER_CONCURRENCY || '10'),
+        stalledInterval,
+        maxStalledCount,
     });
 }
 

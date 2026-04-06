@@ -23,6 +23,20 @@ function getBearerToken(req: Request): string | null {
   return m[1]?.trim() || null;
 }
 
+function isDatabaseError(e: any): boolean {
+  const msg = String(e?.message || e || "").toLowerCase();
+  const pgCode = String(e?.code || "");
+  return (
+    msg.includes("econnrefused") ||
+    msg.includes("etimedout") ||
+    msg.includes("connection") ||
+    pgCode === "57P01" ||
+    pgCode === "08006" ||
+    pgCode === "08001" ||
+    pgCode === "08004"
+  );
+}
+
 export async function requireNodeAuth(req: Request, res: Response, next: NextFunction) {
   try {
     const token = getBearerToken(req);
@@ -46,8 +60,12 @@ export async function requireNodeAuth(req: Request, res: Response, next: NextFun
 
     return next();
   } catch (e: any) {
-    console.error("[NodeAuth] error:", e?.message || e);
-    return res.status(500).json({ success: false, error: "Node auth failed" });
+    if (isDatabaseError(e)) {
+      console.error("[NodeAuth] database error:", e?.message || e);
+      return res.status(503).json({ success: false, error: "Service temporarily unavailable" });
+    }
+    console.error("[NodeAuth] auth error:", e?.message || e);
+    return res.status(401).json({ success: false, error: "Authentication failed" });
   }
 }
 

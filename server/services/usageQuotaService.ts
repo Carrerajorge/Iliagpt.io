@@ -125,9 +125,9 @@ export class UsageQuotaService {
       };
     }
 
-    // SECURITY: Check admin status using env variable and database role
+    // Use effective plan key (subscription-aware) to avoid free-tier limits for paying users
     const isAdmin = isSystemAdminUser(user);
-    const plan = isAdmin ? "admin" : (user.plan || "free");
+    const plan = getEffectivePlanKey(user, isAdmin);
     const planLimits = PLAN_LIMITS[plan] || PLAN_LIMITS.free;
 
     if (isAdmin || planLimits.dailyRequests === -1) {
@@ -210,7 +210,7 @@ export class UsageQuotaService {
     }
 
     const isAdmin = isSystemAdminUser(user);
-    const plan = isAdmin ? "admin" : (user.plan || "free");
+    const plan = getEffectivePlanKey(user, isAdmin);
     const isPaid = plan !== "free" && plan !== "admin";
     const planLimits = PLAN_LIMITS[plan] || PLAN_LIMITS.free;
 

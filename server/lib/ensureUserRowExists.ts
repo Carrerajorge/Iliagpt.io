@@ -17,8 +17,13 @@ export async function ensureUserRowExists(userId: string, req?: Request): Promis
     return;
   }
 
-  const ip = req ? (req.headers["x-forwarded-for"] as string || req.ip || "unknown") : undefined;
-  const ua = req ? (req.headers["user-agent"] as string || undefined) : undefined;
+  const rawIp = req ? (req.headers["x-forwarded-for"] as string || req.ip || "") : "";
+  const rawUa = req ? (req.headers["user-agent"] as string || "") : "";
+  // Sanitize: remove control characters, cap to column limits (last_ip varchar(64), user_agent varchar(512))
+  const sanitize = (s: string, maxLen: number) =>
+    s.replace(/[\x00-\x1f\x7f]/g, "").slice(0, maxLen).trim();
+  const ip = rawIp ? sanitize(rawIp.split(",")[0].trim(), 64) : undefined;
+  const ua = rawUa ? sanitize(rawUa, 512) : undefined;
 
   try {
     await db

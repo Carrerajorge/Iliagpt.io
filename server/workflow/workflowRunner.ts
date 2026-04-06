@@ -22,7 +22,7 @@ import {
 
 const DEFAULT_CONCURRENCY = 1;
 const DEFAULT_BACKOFF_MS = 500;
-const DEFAULT_LOCK_TIMEOUT_MS = Number(process.env.WORKFLOW_RUN_LOCK_TIMEOUT_MS || 2000);
+const DEFAULT_LOCK_TIMEOUT_MS = Number(process.env.WORKFLOW_RUN_LOCK_TIMEOUT_MS || 5000);
 const SLOW_RUN_THRESHOLD_MS = Number(process.env.WORKFLOW_SLOW_RUN_THRESHOLD_MS || 30_000);
 const NOOP_EXECUTOR_KEY = "noop";
 const tracer = trace.getTracer("workflow.runner");
@@ -409,14 +409,14 @@ export class WorkflowRunInstance extends EventEmitter {
   }
 
   private async executeWithTimeout<T>(promise: Promise<T>, timeoutMs?: number): Promise<T> {
-    if (!timeoutMs || timeoutMs <= 0) {
-      return promise;
-    }
+    const effectiveTimeout = (timeoutMs && timeoutMs > 0)
+      ? timeoutMs
+      : (Number(process.env.WORKFLOW_DEFAULT_STEP_TIMEOUT_MS) || 300000);
 
     return Promise.race([
       promise,
       new Promise<T>((_, reject) => {
-        setTimeout(() => reject(new Error("Timeout ejecutando paso")), timeoutMs);
+        setTimeout(() => reject(new Error(`Timeout ejecutando paso (${effectiveTimeout}ms)`)), effectiveTimeout);
       }),
     ]);
   }
