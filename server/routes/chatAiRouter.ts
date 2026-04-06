@@ -5821,7 +5821,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             }))
           ];
 
-          const quick = await llmGateway.chat(llmMessages as any, {
+          const quickStream = await resolveModelStream(llmMessages as any, {
             userId: effectiveUserId || streamConversationId || "anonymous",
             requestId,
             model: model || DEFAULT_MODEL,
@@ -5832,47 +5832,108 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             enableFallback: true,
           });
 
-          markFirstToken();
-          writeSse(res, 'chunk', {
-            content: quick.content || "",
-            sequence: 1,
-            runId: runId || requestId,
-            timestamp: Date.now(),
-            provider: quick.provider,
-          });
-          const fastPathTimings = reportTimings("simple_fast_path");
-          emitDoneEvent(res, {
-            sequenceId: 1,
-            requestId,
-            runId: runId || requestId,
-            latencyMode,
-            latencyLane: resolveLatencyLane(latencyMode),
-            totalSequences: 1,
-            contentLength: (quick.content || "").length,
-            completionReason: "simple_fast_path",
-            traceId: requestId,
-            timings: fastPathTimings,
-            provider: quick.provider,
-            model: quick.model,
-          });
-          emitCompleteEvent(res, {
-            requestId,
-            runId: runId || requestId,
-            latencyMode,
-            latencyLane: resolveLatencyLane(latencyMode),
-            totalSequences: 1,
-            contentLength: (quick.content || "").length,
-            durationMs: 0,
-            status: "completed",
-            completionReason: "simple_fast_path",
-            traceId: requestId,
-            timings: fastPathTimings,
-            provider: quick.provider,
-            model: quick.model,
-          });
+          let fastPathSequence = 0;
+          let fastPathDone = false;
+          for await (const chunk of quickStream) {
+            if (isConnectionClosed) break;
+
+            const chunkSequenceId = Number.isFinite(chunk.sequenceId)
+              ? Number(chunk.sequenceId)
+              : fastPathSequence + 1;
+            fastPathSequence = Math.max(fastPathSequence, chunkSequenceId);
+
+            if (chunk.providerSwitch) {
+              writeSse(res, "notice", {
+                type: "provider_fallback",
+                fromProvider: chunk.providerSwitch.fromProvider,
+                toProvider: chunk.providerSwitch.toProvider,
+                requestId,
+                timestamp: Date.now(),
+              });
+            }
+
+            if (chunk.provider) {
+              activeStreamProvider = chunk.provider;
+            }
+
+            if (chunk.content) {
+              markFirstToken();
+              fullContent += chunk.content;
+              writeSse(res, "chunk", {
+                content: chunk.content,
+                sequence: chunkSequenceId,
+                sequenceId: chunkSequenceId,
+                requestId,
+                runId: runId || requestId,
+                timestamp: Date.now(),
+                provider: chunk.provider,
+              });
+            }
+
+            if (chunk.done) {
+              const fastPathTimings = reportTimings("simple_fast_path");
+              const totalSequences = Math.max(
+                fastPathSequence,
+                fullContent.trim() ? 1 : 0,
+              );
+              if (!fastPathDone) {
+                emitDoneEvent(res, {
+                  sequenceId: chunkSequenceId,
+                  requestId,
+                  runId: runId || requestId,
+                  latencyMode,
+                  latencyLane: resolveLatencyLane(latencyMode),
+                  totalSequences,
+                  contentLength: fullContent.length,
+                  completionReason: "simple_fast_path",
+                  traceId: requestId,
+                  timings: fastPathTimings,
+                  provider: activeStreamProvider || undefined,
+                });
+                fastPathDone = true;
+              }
+            }
+          }
+
+          if (!isConnectionClosed) {
+            const fastPathTimings = reportTimings("simple_fast_path");
+            const totalSequences = Math.max(
+              fastPathSequence,
+              fullContent.trim() ? 1 : 0,
+            );
+            if (!fastPathDone) {
+              emitDoneEvent(res, {
+                requestId,
+                runId: runId || requestId,
+                latencyMode,
+                latencyLane: resolveLatencyLane(latencyMode),
+                totalSequences,
+                contentLength: fullContent.length,
+                completionReason: "simple_fast_path",
+                traceId: requestId,
+                timings: fastPathTimings,
+                provider: activeStreamProvider || undefined,
+              });
+            }
+            emitCompleteEvent(res, {
+              requestId,
+              runId: runId || requestId,
+              latencyMode,
+              latencyLane: resolveLatencyLane(latencyMode),
+              totalSequences,
+              contentLength: fullContent.length,
+              durationMs: fastPathTimings.totalMs ?? 0,
+              status: "completed",
+              completionReason: "simple_fast_path",
+              traceId: requestId,
+              timings: fastPathTimings,
+              provider: activeStreamProvider || undefined,
+            });
+          }
           return res.end();
         } catch (e: any) {
-          console.warn("[Stream] Simple fast-path failed, falling back to full pipeline:", e?.message || e);
+          console.warn("[Stream] Simple fast-path failed:", e?.message || e);
+          throw e;
         }
       }
 
