@@ -75,6 +75,181 @@ After you get the tool result, continue reasoning naturally.
 When you're done with tools and have the final answer, just reply normally.
 `.trim();
 
+function maybeParseJsonString(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) {
+    return value;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function extractBalancedJsonCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  let startIndex = -1;
+  const stack: string[] = [];
+  let inString = false;
+  let escapeNext = false;
+
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+
+    if (inString) {
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (char === '\\') {
+        escapeNext = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === '{' || char === '[') {
+      if (stack.length === 0) {
+        startIndex = index;
+      }
+      stack.push(char);
+      continue;
+    }
+
+    if ((char === '}' || char === ']') && stack.length > 0) {
+      const expected = char === '}' ? '{' : '[';
+      if (stack[stack.length - 1] !== expected) {
+        stack.length = 0;
+        startIndex = -1;
+        continue;
+      }
+
+      stack.pop();
+      if (stack.length === 0 && startIndex >= 0) {
+        candidates.push(text.slice(startIndex, index + 1));
+        startIndex = -1;
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function normalizeGenericToolCallCandidate(candidate: unknown): Array<{ toolName: string; input: unknown }> {
+  if (!candidate) {
+    return [];
+  }
+
+  if (Array.isArray(candidate)) {
+    return candidate.flatMap((entry) => normalizeGenericToolCallCandidate(entry));
+  }
+
+  if (typeof candidate !== 'object') {
+    return [];
+  }
+
+  const record = candidate as Record<string, unknown>;
+  const nestedCollections = ['tools', 'toolCalls', 'tool_calls', 'actions', 'calls'];
+  for (const key of nestedCollections) {
+    if (Array.isArray(record[key])) {
+      return normalizeGenericToolCallCandidate(record[key]);
+    }
+  }
+
+  if (record['call']) {
+    return normalizeGenericToolCallCandidate(record['call']);
+  }
+  if (record['action']) {
+    return normalizeGenericToolCallCandidate(record['action']);
+  }
+
+  const rawFunction = record['function'];
+  const rawToolName = typeof rawFunction === 'object' && rawFunction
+    ? (rawFunction as Record<string, unknown>)['name'] ?? record['tool'] ?? record['toolName'] ?? record['name']
+    : record['tool'] ?? record['toolName'] ?? record['name'];
+
+  const toolName = typeof rawToolName === 'string' ? rawToolName.trim() : '';
+  if (!toolName) {
+    return [];
+  }
+
+  let input = record['input'] ?? record['args'] ?? record['arguments'] ?? record['parameters'];
+  if (input === undefined && typeof rawFunction === 'object' && rawFunction) {
+    input = (rawFunction as Record<string, unknown>)['arguments'] ?? (rawFunction as Record<string, unknown>)['args'];
+  }
+
+  return [{
+    toolName,
+    input: maybeParseJsonString(input ?? {}),
+  }];
+}
+
+export function parseGenericToolCallsFromText(text: string): ParsedToolCall[] {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const rawCandidates = new Set<string>();
+  rawCandidates.add(trimmed);
+
+  const fencedBlocks = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/gi) || [];
+  for (const block of fencedBlocks) {
+    const unwrapped = block
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+    if (unwrapped) {
+      rawCandidates.add(unwrapped);
+    }
+  }
+
+  for (const slice of extractBalancedJsonCandidates(trimmed)) {
+    rawCandidates.add(slice.trim());
+  }
+
+  const toolCalls: ParsedToolCall[] = [];
+  const seen = new Set<string>();
+
+  for (const candidate of rawCandidates) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+
+    for (const normalized of normalizeGenericToolCallCandidate(parsed)) {
+      const signature = `${normalized.toolName}:${JSON.stringify(normalized.input ?? {})}`;
+      if (seen.has(signature)) {
+        continue;
+      }
+      seen.add(signature);
+      toolCalls.push({
+        callId: `gc-${randomUUID()}`,
+        toolName: normalized.toolName,
+        input: normalized.input ?? {},
+      });
+    }
+  }
+
+  return toolCalls;
+}
+
 // ─── Main class ───────────────────────────────────────────────────────────────
 
 export class AgenticLoop extends EventEmitter {
@@ -438,21 +613,22 @@ export class AgenticLoop extends EventEmitter {
       if (chunk.done) break;
     }
 
-    // Parse JSON tool call from response
-    const jsonMatch = textAcc.trim().match(/^\s*\{"tool"\s*:/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(textAcc.trim()) as { tool: string; input: unknown };
-        const callId = `gc-${randomUUID()}`;
+    const toolCalls = parseGenericToolCallsFromText(textAcc);
+    if (toolCalls.length > 0) {
+      for (const toolCall of toolCalls) {
         this.emit('event', {
-          type: 'tool_call', callId, toolName: parsed.tool, input: parsed.input,
+          type: 'tool_call',
+          callId: toolCall.callId,
+          toolName: toolCall.toolName,
+          input: toolCall.input,
         } satisfies AgenticEvent);
-        return {
-          text     : '',
-          toolCalls: [{ callId, toolName: parsed.tool, input: parsed.input }],
-          stopReason: 'tool_use',
-        };
-      } catch { /* not JSON, treat as text */ }
+      }
+
+      return {
+        text: '',
+        toolCalls,
+        stopReason: 'tool_use',
+      };
     }
 
     return { text: textAcc, toolCalls: [], stopReason: 'stop' };

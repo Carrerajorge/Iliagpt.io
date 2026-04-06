@@ -1,15 +1,15 @@
-import { randomUUID } from 'crypto';
-import { AgentRunner } from '../../services/agentRunner';
-
 export type SubagentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type SubagentPermissionProfile = 'read_only' | 'safe_coding' | 'full_agent';
 
 export interface SubagentRunRecord {
   id: string;
   requesterUserId: string;
+  chatId: string;
   objective: string;
   planHint: string[];
   parentRunId?: string;
   status: SubagentRunStatus;
+  permissionProfile: SubagentPermissionProfile;
   createdAt: number;
   startedAt?: number;
   endedAt?: number;
@@ -22,6 +22,8 @@ type SpawnSubagentParams = {
   objective: string;
   planHint?: string[];
   parentRunId?: string;
+  chatId?: string;
+  permissionProfile?: SubagentPermissionProfile;
 };
 
 type ListRunsParams = {
@@ -31,125 +33,179 @@ type ListRunsParams = {
   limit?: number;
 };
 
-const MAX_RETENTION_RUNS = 500;
+type TaskRecordLike = {
+  id: string;
+  userId: string;
+  chatId: string;
+  parentRunId?: string;
+  objective: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timeout';
+  createdAt: number;
+  startedAt?: number;
+  endedAt?: number;
+  result?: unknown;
+  error?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type BackgroundTaskManagerLike = {
+  spawn: (params: {
+    userId: string;
+    chatId: string;
+    objective: string;
+    instructions?: string;
+    allowedTools?: string[];
+    parentRunId?: string;
+    priority?: 'low' | 'normal' | 'high' | 'critical';
+    timeoutMs?: number;
+    metadata?: Record<string, unknown>;
+  }) => Promise<TaskRecordLike>;
+  getOrFetch: (id: string) => Promise<TaskRecordLike | undefined>;
+  list: (params: {
+    userId?: string;
+    chatId?: string;
+    status?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timeout';
+    parentRunId?: string;
+    limit?: number;
+    offset?: number;
+  }) => TaskRecordLike[];
+  cancel: (id: string) => boolean;
+};
+
+const OPENCLAW_SUBAGENT_SOURCE = 'openclaw_subagent';
+const DEFAULT_PERMISSION_PROFILE: SubagentPermissionProfile = 'full_agent';
+
+async function getBackgroundTaskManager(): Promise<BackgroundTaskManagerLike> {
+  const { backgroundTaskManager } = await import('../../tasks/BackgroundTaskManager');
+  return backgroundTaskManager as unknown as BackgroundTaskManagerLike;
+}
+
+function buildInstructions(planHint: string[]): string | undefined {
+  const normalized = planHint.map((step) => String(step).trim()).filter(Boolean);
+  if (normalized.length === 0) {
+    return undefined;
+  }
+
+  return [
+    'Execution hints:',
+    ...normalized.map((step, index) => `${index + 1}. ${step}`),
+  ].join('\n');
+}
+
+function normalizePermissionProfile(raw: unknown): SubagentPermissionProfile {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  switch (value) {
+    case 'read_only':
+    case 'readonly':
+    case 'read-only':
+      return 'read_only';
+    case 'safe':
+    case 'safe_coding':
+    case 'coding':
+      return 'safe_coding';
+    case 'full':
+    case 'agent_full':
+    case 'full_agent':
+    default:
+      return DEFAULT_PERMISSION_PROFILE;
+  }
+}
+
+function mapStatus(
+  status: TaskRecordLike['status'],
+): SubagentRunStatus {
+  switch (status) {
+    case 'queued':
+    case 'running':
+    case 'completed':
+    case 'cancelled':
+      return status;
+    case 'timeout':
+    case 'failed':
+    default:
+      return 'failed';
+  }
+}
+
+function isOpenClawSubagent(task: TaskRecordLike | undefined): task is TaskRecordLike {
+  return Boolean(task?.metadata?.['source'] === OPENCLAW_SUBAGENT_SOURCE);
+}
+
+function toRunRecord(task: TaskRecordLike): SubagentRunRecord {
+  const metadata = task.metadata || {};
+  const rawPlanHint = Array.isArray(metadata['planHint']) ? metadata['planHint'] : [];
+  const planHint = rawPlanHint.map((step) => String(step).trim()).filter(Boolean);
+
+  return {
+    id: task.id,
+    requesterUserId: task.userId,
+    chatId: task.chatId,
+    objective: task.objective,
+    planHint,
+    parentRunId: task.parentRunId,
+    status: mapStatus(task.status),
+    permissionProfile: normalizePermissionProfile(metadata['permissionProfile']),
+    createdAt: task.createdAt,
+    startedAt: task.startedAt,
+    endedAt: task.endedAt,
+    result: task.result,
+    error: task.error,
+  };
+}
 
 class OpenClawSubagentService {
-  private runs = new Map<string, SubagentRunRecord>();
-  private runners = new Map<string, AgentRunner>();
-
-  spawn(params: SpawnSubagentParams): SubagentRunRecord {
-    const runId = `subagent_${randomUUID()}`;
-    const run: SubagentRunRecord = {
-      id: runId,
-      requesterUserId: params.requesterUserId,
+  async spawn(params: SpawnSubagentParams): Promise<SubagentRunRecord> {
+    const manager = await getBackgroundTaskManager();
+    const planHint = params.planHint?.map((step) => String(step).trim()).filter(Boolean) || [];
+    const permissionProfile = normalizePermissionProfile(params.permissionProfile);
+    const task = await manager.spawn({
+      userId: params.requesterUserId,
+      chatId: params.chatId || params.parentRunId || 'openclaw',
       objective: params.objective,
-      planHint: params.planHint || [],
+      instructions: buildInstructions(planHint),
       parentRunId: params.parentRunId,
-      status: 'queued',
-      createdAt: Date.now(),
-    };
-    this.runs.set(runId, run);
-    this.trimRetention();
-    void this.execute(runId);
-    return run;
+      priority: 'normal',
+      metadata: {
+        source: OPENCLAW_SUBAGENT_SOURCE,
+        permissionProfile,
+        planHint,
+      },
+    });
+
+    return toRunRecord(task);
   }
 
-  get(runId: string): SubagentRunRecord | undefined {
-    return this.runs.get(runId);
+  async get(runId: string): Promise<SubagentRunRecord | undefined> {
+    const manager = await getBackgroundTaskManager();
+    const task = await manager.getOrFetch(runId);
+    if (!isOpenClawSubagent(task)) {
+      return undefined;
+    }
+    return toRunRecord(task);
   }
 
-  list(params: ListRunsParams = {}): SubagentRunRecord[] {
-    const {
-      requesterUserId,
-      parentRunId,
-      status,
-      limit = 100,
-    } = params;
+  async list(params: ListRunsParams = {}): Promise<SubagentRunRecord[]> {
+    const manager = await getBackgroundTaskManager();
+    const tasks = manager.list({
+      userId: params.requesterUserId,
+      parentRunId: params.parentRunId,
+      limit: params.limit ? Math.max(1, params.limit) : 100,
+    });
 
-    return Array.from(this.runs.values())
-      .filter(run => !requesterUserId || run.requesterUserId === requesterUserId)
-      .filter(run => !parentRunId || run.parentRunId === parentRunId)
-      .filter(run => !status || run.status === status)
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, Math.max(1, limit));
+    return tasks
+      .filter(isOpenClawSubagent)
+      .map(toRunRecord)
+      .filter((run) => !params.status || run.status === params.status)
+      .slice(0, Math.max(1, params.limit || 100));
   }
 
-  cancel(runId: string): boolean {
-    const run = this.runs.get(runId);
-    if (!run) {
+  async cancel(runId: string): Promise<boolean> {
+    const manager = await getBackgroundTaskManager();
+    const task = await manager.getOrFetch(runId);
+    if (!isOpenClawSubagent(task)) {
       return false;
     }
-
-    if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
-      return false;
-    }
-
-    const runner = this.runners.get(runId);
-    if (runner) {
-      runner.cancel();
-    } else {
-      run.status = 'cancelled';
-      run.endedAt = Date.now();
-      this.runs.set(runId, run);
-    }
-    return true;
-  }
-
-  private async execute(runId: string): Promise<void> {
-    const run = this.runs.get(runId);
-    if (!run || run.status === 'cancelled') {
-      return;
-    }
-
-    const runner = new AgentRunner();
-    this.runners.set(runId, runner);
-    run.status = 'running';
-    run.startedAt = Date.now();
-    this.runs.set(runId, run);
-
-    try {
-      const result = await runner.run(run.objective, run.planHint);
-      const next = this.runs.get(runId);
-      if (!next) {
-        return;
-      }
-
-      if (result.state.status === 'cancelled') {
-        next.status = 'cancelled';
-      } else if (result.success) {
-        next.status = 'completed';
-      } else {
-        next.status = 'failed';
-      }
-
-      next.result = result.result;
-      next.error = result.success ? undefined : (result.result as any)?.error;
-      next.endedAt = Date.now();
-      this.runs.set(runId, next);
-    } catch (error: any) {
-      const next = this.runs.get(runId);
-      if (!next) {
-        return;
-      }
-      next.status = 'failed';
-      next.error = error?.message || 'Subagent execution failed';
-      next.endedAt = Date.now();
-      this.runs.set(runId, next);
-    } finally {
-      this.runners.delete(runId);
-      this.trimRetention();
-    }
-  }
-
-  private trimRetention(): void {
-    if (this.runs.size <= MAX_RETENTION_RUNS) {
-      return;
-    }
-    const ordered = Array.from(this.runs.values()).sort((a, b) => a.createdAt - b.createdAt);
-    const overflow = this.runs.size - MAX_RETENTION_RUNS;
-    for (let i = 0; i < overflow; i++) {
-      this.runs.delete(ordered[i].id);
-    }
+    return manager.cancel(runId);
   }
 }
 

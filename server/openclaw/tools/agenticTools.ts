@@ -49,11 +49,13 @@ export function createAgenticTools(): ToolDefinition[] {
     }),
     capabilities: ['long_running'],
     execute: async (input: any, context: ToolContext): Promise<ToolResult> => {
-      const run = openclawSubagentService.spawn({
+      const run = await openclawSubagentService.spawn({
         requesterUserId: context.userId,
+        chatId: context.chatId,
         objective: input.objective,
         planHint: input.planHint,
         parentRunId: input.parentRunId || context.runId,
+        permissionProfile: 'full_agent',
       });
       return ok(run);
     },
@@ -66,7 +68,7 @@ export function createAgenticTools(): ToolDefinition[] {
       runId: z.string().min(1),
     }),
     execute: async (input: any, context: ToolContext): Promise<ToolResult> => {
-      const run = openclawSubagentService.get(input.runId);
+      const run = await openclawSubagentService.get(input.runId);
       if (!run || run.requesterUserId !== context.userId) {
         return fail('NOT_FOUND', 'Subagent run not found', false);
       }
@@ -83,7 +85,7 @@ export function createAgenticTools(): ToolDefinition[] {
       limit: z.number().int().min(1).max(500).optional().default(50),
     }),
     execute: async (input: any, context: ToolContext): Promise<ToolResult> => {
-      const runs = openclawSubagentService.list({
+      const runs = await openclawSubagentService.list({
         requesterUserId: context.userId,
         parentRunId: input.parentRunId,
         status: input.status,
@@ -101,11 +103,11 @@ export function createAgenticTools(): ToolDefinition[] {
     }),
     capabilities: ['high_risk'],
     execute: async (input: any, context: ToolContext): Promise<ToolResult> => {
-      const run = openclawSubagentService.get(input.runId);
+      const run = await openclawSubagentService.get(input.runId);
       if (!run || run.requesterUserId !== context.userId) {
         return fail('NOT_FOUND', 'Subagent run not found', false);
       }
-      const cancelled = openclawSubagentService.cancel(input.runId);
+      const cancelled = await openclawSubagentService.cancel(input.runId);
       if (!cancelled) {
         return fail('CANNOT_CANCEL', `Run ${input.runId} cannot be cancelled`, false);
       }

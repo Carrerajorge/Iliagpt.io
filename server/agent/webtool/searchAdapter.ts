@@ -111,7 +111,7 @@ export class SearxngSearchAdapter implements ISearchAdapter {
   }
 
   async search(query: string, maxResults?: number): Promise<WebSearchResult[]> {
-    const { searxngSearch, isSearxngAvailable } = await import("../../openclaw/fusion/v2026_4_1/searxngSearch");
+    const { searxngSearch, isSearxngAvailable } = await import("../../openclaw/fusion/v2026_4_2/searxngSearch");
     if (!isSearxngAvailable()) {
       return new DuckDuckGoSearchAdapter(this.defaultMaxResults).search(query, maxResults);
     }
