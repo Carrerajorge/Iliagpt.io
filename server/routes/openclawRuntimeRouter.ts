@@ -33,11 +33,13 @@ const spawnSubagentSchema = z.object({
   objective: z.string().trim().min(1, "objective is required"),
   planHint: z.array(z.string().trim().min(1)).optional(),
   parentRunId: z.string().trim().optional(),
+  chatId: z.string().trim().optional(),
 });
 
 const orchestratorFlowSchema = objectiveSchema.extend({
   spawnSubagents: z.boolean().optional().default(true),
   maxSubagents: z.coerce.number().int().min(1).max(10).optional().default(3),
+  chatId: z.string().trim().optional(),
 });
 
 function normalizeComplexity(objective: string, complexity?: number): number {
@@ -66,6 +68,28 @@ function parseSubagentStatus(raw: unknown) {
     return normalized;
   }
   return undefined;
+}
+
+function buildRunStats(
+  runs: Array<{ status: "queued" | "running" | "completed" | "failed" | "cancelled" }>,
+) {
+  const stats = {
+    queued: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+    cancelled: 0,
+    active: 0,
+  };
+
+  for (const run of runs) {
+    stats[run.status] += 1;
+    if (run.status === "queued" || run.status === "running") {
+      stats.active += 1;
+    }
+  }
+
+  return stats;
 }
 
 function respondError(res: any, error: unknown) {
@@ -230,7 +254,7 @@ export function createOpenClawRuntimeRouter(): Router {
             subtasks.slice(0, parsed.maxSubagents).map((subtask) =>
               openclawSubagentService.spawn({
                 requesterUserId: userId,
-                chatId: 'openclaw-runtime',
+                chatId: parsed.chatId || 'openclaw-runtime',
                 objective: subtask.description,
                 planHint: subtask.toolId ? [`use:${subtask.toolId}`] : [],
                 permissionProfile: 'full_agent',
@@ -267,7 +291,7 @@ export function createOpenClawRuntimeRouter(): Router {
       const parsed = spawnSubagentSchema.parse(req.body || {});
       const run = await openclawSubagentService.spawn({
         requesterUserId: userId,
-        chatId: parsed.parentRunId || 'openclaw-runtime',
+        chatId: parsed.chatId || parsed.parentRunId || 'openclaw-runtime',
         objective: parsed.objective,
         planHint: parsed.planHint || [],
         parentRunId: parsed.parentRunId,
@@ -284,14 +308,17 @@ export function createOpenClawRuntimeRouter(): Router {
     const status = parseSubagentStatus(req.query.status);
     const limit = parseLimit(req.query.limit, 50);
     const parentRunId = typeof req.query.parentRunId === "string" ? req.query.parentRunId : undefined;
+    const chatId = typeof req.query.chatId === "string" ? req.query.chatId : undefined;
     const runs = await openclawSubagentService.list({
       requesterUserId: userId,
+      chatId,
       status,
       limit,
       parentRunId,
     });
     return res.json({
       count: runs.length,
+      stats: buildRunStats(runs),
       runs,
     });
   });

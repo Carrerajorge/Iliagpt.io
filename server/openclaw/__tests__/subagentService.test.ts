@@ -80,6 +80,13 @@ describe('openclawSubagentService', () => {
         objective: 'slow task',
         status: 'timeout',
         createdAt: 10,
+        updatedAt: 25,
+        progress: 72,
+        output: 'step 1\nstep 2\nfinal partial output',
+        steps: [
+          { summary: 'Investigated repo', timestamp: 20 },
+          { summary: 'Waiting for network', timestamp: 25 },
+        ],
         metadata: {
           source: 'openclaw_subagent',
           permissionProfile: 'safe_coding',
@@ -100,7 +107,14 @@ describe('openclawSubagentService', () => {
     ]);
 
     const { openclawSubagentService } = await import('../agents/subagentService');
-    const runs = await openclawSubagentService.list({ requesterUserId: 'user-1' });
+    const runs = await openclawSubagentService.list({ requesterUserId: 'user-1', chatId: 'chat-1' });
+
+    expect(listMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        chatId: 'chat-1',
+      }),
+    );
 
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({
@@ -108,6 +122,11 @@ describe('openclawSubagentService', () => {
       status: 'failed',
       permissionProfile: 'safe_coding',
       planHint: ['research'],
+      progress: 72,
+      stepCount: 2,
+      lastStepSummary: 'Waiting for network',
+      updatedAt: 25,
     });
+    expect(runs[0]?.outputExcerpt).toContain('final partial output');
   });
 });

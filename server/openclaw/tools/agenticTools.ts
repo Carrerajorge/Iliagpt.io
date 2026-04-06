@@ -46,12 +46,13 @@ export function createAgenticTools(): ToolDefinition[] {
       objective: z.string().min(1),
       planHint: z.array(z.string()).optional(),
       parentRunId: z.string().optional(),
+      chatId: z.string().optional(),
     }),
     capabilities: ['long_running'],
     execute: async (input: any, context: ToolContext): Promise<ToolResult> => {
       const run = await openclawSubagentService.spawn({
         requesterUserId: context.userId,
-        chatId: context.chatId,
+        chatId: input.chatId || context.chatId,
         objective: input.objective,
         planHint: input.planHint,
         parentRunId: input.parentRunId || context.runId,
@@ -80,6 +81,7 @@ export function createAgenticTools(): ToolDefinition[] {
     name: 'openclaw_subagent_list',
     description: 'List subagent runs for the current user.',
     inputSchema: z.object({
+      chatId: z.string().optional(),
       parentRunId: z.string().optional(),
       status: z.enum(['queued', 'running', 'completed', 'failed', 'cancelled']).optional(),
       limit: z.number().int().min(1).max(500).optional().default(50),
@@ -87,6 +89,7 @@ export function createAgenticTools(): ToolDefinition[] {
     execute: async (input: any, context: ToolContext): Promise<ToolResult> => {
       const runs = await openclawSubagentService.list({
         requesterUserId: context.userId,
+        chatId: input.chatId,
         parentRunId: input.parentRunId,
         status: input.status,
         limit: input.limit,

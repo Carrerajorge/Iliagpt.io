@@ -222,6 +222,7 @@ export class TaskExecutor {
     const initialMessages: AgentMessage[] = checkpoint?.conversation ?? [
       { role: 'user', content: task.objective },
     ];
+    let latestConversationSnapshot: AgentMessage[] = checkpoint?.conversation ?? initialMessages;
 
     let turnCount        = 0;
     let outputAcc        = '';
@@ -271,20 +272,20 @@ export class TaskExecutor {
             Logger.warn('[TaskExecutor] resource limit hit', { id: task.id, reason: res.reason });
             opts.onOutput?.(`[Warning: ${res.reason}]\n`);
           }
-
-          // Save checkpoint every 3 turns
-          if (event.turn > 0 && event.turn % 3 === 0) {
-            void saveCheckpoint({
-              taskId      : task.id,
-              turn        : event.turn,
-              conversation: initialMessages,
-              savedAt     : Date.now(),
-            });
-          }
           break;
         }
 
         case 'turn_end': {
+          if (event.conversationSnapshot && event.conversationSnapshot.length > 0) {
+            latestConversationSnapshot = event.conversationSnapshot;
+            void saveCheckpoint({
+              taskId      : task.id,
+              turn        : event.turn,
+              conversation: latestConversationSnapshot,
+              savedAt     : Date.now(),
+            });
+          }
+
           const stepRecord: TaskStep = {
             index     : event.turn,
             type      : 'llm_turn',
@@ -298,6 +299,14 @@ export class TaskExecutor {
         }
 
         case 'error': {
+          if (latestConversationSnapshot.length > 0) {
+            void saveCheckpoint({
+              taskId      : task.id,
+              turn        : turnCount,
+              conversation: latestConversationSnapshot,
+              savedAt     : Date.now(),
+            });
+          }
           opts.onOutput?.(`[Error: ${event.message}]\n`);
           break;
         }

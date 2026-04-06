@@ -35,7 +35,7 @@ export type AgenticEvent =
   | { type: 'content_delta'; delta: string; snapshot: string }
   | { type: 'tool_call';     callId: string; toolName: string; input: unknown }
   | { type: 'tool_result';   callId: string; toolName: string; success: boolean; output: unknown; durationMs: number }
-  | { type: 'turn_end';      turn: number; stopReason: string; hasToolCalls: boolean }
+  | { type: 'turn_end';      turn: number; stopReason: string; hasToolCalls: boolean; conversationSnapshot?: AgentMessage[] }
   | { type: 'loop_done';     turns: number; finalAnswer: string }
   | { type: 'error';         message: string; retryable: boolean }
   | { type: 'thinking';      text: string };
@@ -147,6 +147,17 @@ function extractBalancedJsonCandidates(text: string): string[] {
   }
 
   return candidates;
+}
+
+function cloneConversationSnapshot(conversation: AgentMessage[]): AgentMessage[] {
+  try {
+    return structuredClone(conversation);
+  } catch {
+    return conversation.map((message) => ({
+      ...message,
+      tool_calls: message.tool_calls ? JSON.parse(JSON.stringify(message.tool_calls)) : undefined,
+    }));
+  }
 }
 
 function normalizeGenericToolCallCandidate(candidate: unknown): Array<{ toolName: string; input: unknown }> {
@@ -334,7 +345,10 @@ export class AgenticLoop extends EventEmitter {
       const manifest = registry.toManifest();
       const genericSys = GENERIC_TOOL_SYSTEM + '\n\nAvailable tools:\n' + manifest;
       if (conversation[0]?.role === 'system') {
-        (conversation[0] as { role: 'system'; content: string }).content += '\n\n' + genericSys;
+        const systemMessage = conversation[0] as { role: 'system'; content: string };
+        if (!systemMessage.content.includes(GENERIC_TOOL_SYSTEM)) {
+          systemMessage.content += '\n\n' + genericSys;
+        }
       } else {
         conversation.unshift({ role: 'system', content: genericSys });
       }
@@ -390,12 +404,15 @@ export class AgenticLoop extends EventEmitter {
         };
         conversation.push(assistantMsg);
 
-        this.emit('event', {
-          type: 'turn_end', turn, stopReason, hasToolCalls: toolCalls.length > 0,
-        } satisfies AgenticEvent);
-
         if (toolCalls.length === 0) {
           finalAnswer = text;
+          this.emit('event', {
+            type: 'turn_end',
+            turn,
+            stopReason,
+            hasToolCalls: false,
+            conversationSnapshot: cloneConversationSnapshot(conversation),
+          } satisfies AgenticEvent);
           break;
         }
 
@@ -421,6 +438,14 @@ export class AgenticLoop extends EventEmitter {
             universalToolCaller.buildToolResultMessage(call.callId, call.toolName, result),
           );
         }
+
+        this.emit('event', {
+          type: 'turn_end',
+          turn,
+          stopReason,
+          hasToolCalls: true,
+          conversationSnapshot: cloneConversationSnapshot(conversation),
+        } satisfies AgenticEvent);
 
         if (stopReason === 'end_turn' && toolCalls.length === 0) break;
 
