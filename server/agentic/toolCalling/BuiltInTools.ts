@@ -27,6 +27,7 @@ import { spawn }               from 'child_process';
 import { randomUUID }          from 'crypto';
 import { z }                   from 'zod';
 import { Logger }              from '../../lib/logger';
+import { getAgenticModelReadiness } from '../../integration/modelWiring';
 import type {
   ToolDefinition,
   ToolExecutionContext,
@@ -570,6 +571,16 @@ const spawnTaskTool: ToolDefinition = {
       objective: string; instructions?: string; tools?: string[];
     };
     const start = Date.now();
+    const readiness = getAgenticModelReadiness();
+    if (!readiness.ok) {
+      return fail(
+        'AGENTIC_LLM_UNAVAILABLE',
+        readiness.reason ?? 'No LLM providers configured.',
+        Date.now() - start,
+        false,
+      );
+    }
+
     try {
       const { backgroundTaskManager } = await import('../../tasks/BackgroundTaskManager');
       const task = await backgroundTaskManager.spawn({

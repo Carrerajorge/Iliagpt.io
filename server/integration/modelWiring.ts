@@ -30,6 +30,17 @@ export interface ModelWiringConfig {
   fallbackChain  : string[];   // model ids in priority order
 }
 
+export interface AgenticModelReadiness {
+  ok                : boolean;
+  model             : string;
+  provider          : ProviderName;
+  availableProviders: ProviderName[];
+  reason?           : string;
+}
+
+export const NO_LLM_PROVIDER_MESSAGE =
+  'No LLM providers configured. Set at least one of: XAI_API_KEY, GEMINI_API_KEY/GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, or LOCAL_LLM_URL.';
+
 function readConfiguredValue(name: string): string | undefined {
   const value = process.env[name];
   if (typeof value !== 'string') return undefined;
@@ -164,6 +175,12 @@ export function resolveModel(requested?: string): string {
   return cfg.fallbackChain[0] ?? 'auto';
 }
 
+export function getAvailableProviders(): ProviderName[] {
+  return [...getModelConfig().providers.values()]
+    .filter((provider) => provider.available)
+    .map((provider) => provider.name);
+}
+
 /**
  * Detect which provider owns a model string.
  */
@@ -177,6 +194,44 @@ export function detectProvider(model: string): ProviderName {
 
   // Fall back to default configured provider
   return getModelConfig().defaultProvider;
+}
+
+export function getAgenticModelReadiness(requested?: string): AgenticModelReadiness {
+  const cfg = getModelConfig();
+  const model = resolveModel(requested);
+  const provider = detectProvider(model);
+  const availableProviders = getAvailableProviders();
+  const providerConfig = cfg.providers.get(provider);
+  const explicitRequest = typeof requested === 'string' && requested.trim().length > 0 && requested !== 'auto';
+
+  if (availableProviders.length === 0) {
+    return {
+      ok: false,
+      model,
+      provider,
+      availableProviders,
+      reason: NO_LLM_PROVIDER_MESSAGE,
+    };
+  }
+
+  if (!providerConfig?.available) {
+    return {
+      ok: false,
+      model,
+      provider,
+      availableProviders,
+      reason: explicitRequest
+        ? `Model "${model}" requires provider "${provider}", but that provider is not configured.`
+        : NO_LLM_PROVIDER_MESSAGE,
+    };
+  }
+
+  return {
+    ok: true,
+    model,
+    provider,
+    availableProviders,
+  };
 }
 
 /**
