@@ -106,6 +106,61 @@ function summarizeOutput(output: unknown): unknown {
   return output;
 }
 
+function extractBackgroundTaskEvent(
+  toolName: string | undefined,
+  output: unknown,
+): { taskId: string; label: string } | null {
+  const normalizedTool = String(toolName || "").trim();
+  if (
+    normalizedTool !== "spawn_task" &&
+    normalizedTool !== "openclaw_spawn_subagent" &&
+    normalizedTool !== "subagent_spawn"
+  ) {
+    return null;
+  }
+
+  if (output && typeof output === "object") {
+    const candidate = output as Record<string, unknown>;
+    const taskId =
+      typeof candidate["taskId"] === "string" && candidate["taskId"].trim()
+        ? candidate["taskId"].trim()
+        : typeof candidate["subagentId"] === "string" && candidate["subagentId"].trim()
+          ? candidate["subagentId"].trim()
+          : typeof candidate["id"] === "string" && candidate["id"].trim()
+            ? candidate["id"].trim()
+            : "";
+
+    if (!taskId) {
+      return null;
+    }
+
+    const label =
+      typeof candidate["objective"] === "string" && candidate["objective"].trim()
+        ? candidate["objective"].trim()
+        : typeof candidate["task"] === "string" && candidate["task"].trim()
+          ? candidate["task"].trim()
+          : typeof candidate["message"] === "string" && candidate["message"].trim()
+            ? candidate["message"].trim()
+            : normalizedTool === "spawn_task"
+              ? "Background task"
+              : "Subagent";
+
+    return { taskId, label };
+  }
+
+  if (typeof output === "string") {
+    const match = output.match(/\b(task|subagent)[-_]?[a-z0-9-]+/i);
+    if (match?.[0]) {
+      return {
+        taskId: match[0],
+        label: normalizedTool === "spawn_task" ? "Background task" : "Subagent",
+      };
+    }
+  }
+
+  return null;
+}
+
 function buildProgressMessage(progress: AgentProgress): string {
   const currentStep = progress.plan?.steps?.[progress.currentStepIndex];
   if (progress.status === "awaiting_confirmation") {
@@ -446,6 +501,10 @@ async function runStructuredOrchestrator(options: StreamAgentRuntimeOptions): Pr
       }
 
       if (event.type === "observation" && content.type === "step_result") {
+        const backgroundTask = extractBackgroundTaskEvent(
+          orchestrator.plan?.steps?.[content.stepIndex]?.toolName,
+          content.output,
+        );
         writeNativeSse(res, "tool_call_result", {
           runId,
           stepIndex: content.stepIndex,
@@ -454,6 +513,14 @@ async function runStructuredOrchestrator(options: StreamAgentRuntimeOptions): Pr
           output: summarizeOutput(content),
           timestamp: Date.now(),
         });
+        if (backgroundTask) {
+          writeNativeSse(res, "task_spawned", {
+            runId,
+            taskId: backgroundTask.taskId,
+            label: backgroundTask.label,
+            timestamp: Date.now(),
+          });
+        }
         return;
       }
 
@@ -491,6 +558,10 @@ async function runStructuredOrchestrator(options: StreamAgentRuntimeOptions): Pr
     }
 
     if (event.type === "observation" && content.type === "step_result") {
+      const backgroundTask = extractBackgroundTaskEvent(
+        orchestrator.plan?.steps?.[content.stepIndex]?.toolName,
+        content.output,
+      );
       writeJsonSse(res, {
         type: "tool_result",
         runId,
@@ -502,6 +573,16 @@ async function runStructuredOrchestrator(options: StreamAgentRuntimeOptions): Pr
           duration: content.duration,
         },
       });
+      if (backgroundTask) {
+        writeJsonSse(res, {
+          type: "task_spawned",
+          runId,
+          taskId: backgroundTask.taskId,
+          metadata: {
+            label: backgroundTask.label,
+          },
+        });
+      }
       return;
     }
 

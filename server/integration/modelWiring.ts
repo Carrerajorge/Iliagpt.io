@@ -30,12 +30,24 @@ export interface ModelWiringConfig {
   fallbackChain  : string[];   // model ids in priority order
 }
 
+function readConfiguredValue(name: string): string | undefined {
+  const value = process.env[name];
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const normalized = trimmed.toLowerCase();
+  if (normalized === 'undefined' || normalized === 'null' || normalized === 'missing') {
+    return undefined;
+  }
+  return trimmed;
+}
+
 // ─── Detection ────────────────────────────────────────────────────────────────
 
 function detectProviders(): Map<ProviderName, ProviderConfig> {
   const configs = new Map<ProviderName, ProviderConfig>();
 
-  const anthropicKey = process.env['ANTHROPIC_API_KEY'];
+  const anthropicKey = readConfiguredValue('ANTHROPIC_API_KEY');
   configs.set('anthropic', {
     name        : 'anthropic',
     available   : !!anthropicKey,
@@ -43,7 +55,7 @@ function detectProviders(): Map<ProviderName, ProviderConfig> {
     apiKey      : anthropicKey,
   });
 
-  const openaiKey = process.env['OPENAI_API_KEY'];
+  const openaiKey = readConfiguredValue('OPENAI_API_KEY');
   configs.set('openai', {
     name        : 'openai',
     available   : !!openaiKey,
@@ -51,7 +63,7 @@ function detectProviders(): Map<ProviderName, ProviderConfig> {
     apiKey      : openaiKey,
   });
 
-  const geminiKey = process.env['GEMINI_API_KEY'] ?? process.env['GOOGLE_API_KEY'];
+  const geminiKey = readConfiguredValue('GEMINI_API_KEY') ?? readConfiguredValue('GOOGLE_API_KEY');
   configs.set('gemini', {
     name        : 'gemini',
     available   : !!geminiKey,
@@ -59,7 +71,7 @@ function detectProviders(): Map<ProviderName, ProviderConfig> {
     apiKey      : geminiKey,
   });
 
-  const xaiKey = process.env['XAI_API_KEY'];
+  const xaiKey = readConfiguredValue('XAI_API_KEY');
   configs.set('xai', {
     name        : 'xai',
     available   : !!xaiKey,
@@ -67,7 +79,7 @@ function detectProviders(): Map<ProviderName, ProviderConfig> {
     apiKey      : xaiKey,
   });
 
-  const deepseekKey = process.env['DEEPSEEK_API_KEY'];
+  const deepseekKey = readConfiguredValue('DEEPSEEK_API_KEY');
   configs.set('deepseek', {
     name        : 'deepseek',
     available   : !!deepseekKey,
@@ -75,7 +87,7 @@ function detectProviders(): Map<ProviderName, ProviderConfig> {
     apiKey      : deepseekKey,
   });
 
-  const localUrl = process.env['LOCAL_LLM_URL'];
+  const localUrl = readConfiguredValue('LOCAL_LLM_URL');
   configs.set('local', {
     name        : 'local',
     available   : !!localUrl,

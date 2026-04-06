@@ -27,6 +27,7 @@ import { universalToolCaller, type AgentMessage, type ParsedToolCall, type Provi
 import { type ToolRegistry, type ToolExecutionContext } from '../toolCalling/ToolRegistry';
 import { globalToolRegistry }                           from '../toolCalling/ToolRegistry';
 import { BUILT_IN_TOOLS }                               from '../toolCalling/BuiltInTools';
+import { detectProvider as detectConfiguredProvider }   from '../../integration/modelWiring';
 
 // ─── Event types streamed to caller ───────────────────────────────────────────
 
@@ -74,6 +75,41 @@ When you want to use a tool, respond with ONLY a JSON block (no other text):
 After you get the tool result, continue reasoning naturally.
 When you're done with tools and have the final answer, just reply normally.
 `.trim();
+
+type OpenAICompatibleConfig = {
+  apiKey?: string;
+  baseURL?: string;
+};
+
+function readEnv(name: string): string | undefined {
+  const value = process.env[name];
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+export function resolveOpenAICompatibleConfig(model: string): OpenAICompatibleConfig {
+  const provider = detectConfiguredProvider(model);
+
+  switch (provider) {
+    case 'xai':
+      return {
+        apiKey: readEnv('XAI_API_KEY') ?? readEnv('OPENAI_API_KEY'),
+        baseURL: readEnv('XAI_BASE_URL') ?? readEnv('OPENAI_BASE_URL') ?? 'https://api.x.ai/v1',
+      };
+    case 'deepseek':
+      return {
+        apiKey: readEnv('DEEPSEEK_API_KEY') ?? readEnv('OPENAI_API_KEY'),
+        baseURL: readEnv('DEEPSEEK_BASE_URL') ?? readEnv('OPENAI_BASE_URL') ?? 'https://api.deepseek.com/v1',
+      };
+    case 'openai':
+    default:
+      return {
+        apiKey: readEnv('OPENROUTER_API_KEY') ?? readEnv('OPENAI_API_KEY'),
+        baseURL: readEnv('OPENAI_BASE_URL'),
+      };
+  }
+}
 
 function maybeParseJsonString(value: unknown): unknown {
   if (typeof value !== 'string') {
@@ -266,6 +302,7 @@ export function parseGenericToolCallsFromText(text: string): ParsedToolCall[] {
 export class AgenticLoop extends EventEmitter {
   private anthropicClient: Anthropic | null = null;
   private openaiClient   : OpenAI    | null = null;
+  private openaiClientConfigKey      : string | null = null;
 
   private getAnthropic(): Anthropic {
     if (!this.anthropicClient) {
@@ -277,11 +314,13 @@ export class AgenticLoop extends EventEmitter {
   }
 
   private getOpenAI(baseURL?: string, apiKey?: string): OpenAI {
-    if (!this.openaiClient) {
+    const configKey = `${baseURL ?? ''}|${apiKey ?? ''}`;
+    if (!this.openaiClient || this.openaiClientConfigKey !== configKey) {
       this.openaiClient = new OpenAI({
         apiKey : apiKey ?? process.env['OPENAI_API_KEY'],
         baseURL: baseURL,
       });
+      this.openaiClientConfigKey = configKey;
     }
     return this.openaiClient;
   }
@@ -305,7 +344,14 @@ export class AgenticLoop extends EventEmitter {
     const userId      = opts.userId         ?? 'anonymous';
     const chatId      = opts.chatId         ?? '';
     const workspace   = opts.workspaceRoot  ?? WORKSPACE_ROOT;
-    const provider    = opts.provider       ?? universalToolCaller.detectProvider(model);
+    const runtimeProvider = detectConfiguredProvider(model);
+    const provider =
+      opts.provider ??
+      (runtimeProvider === 'anthropic'
+        ? 'anthropic'
+        : runtimeProvider === 'gemini' || runtimeProvider === 'local'
+          ? 'generic'
+          : 'openai');
     const useNative   = !opts.forceGenericMode && (provider === 'anthropic' || provider === 'openai');
 
     // Ensure built-in tools are registered
@@ -323,7 +369,14 @@ export class AgenticLoop extends EventEmitter {
     let noOutputTurns    = 0;                       // detect silent hang turns
     const toolCallHistory: string[] = [];           // detect stuck loops
 
-    Logger.info('[AgenticLoop] starting', { model, provider, maxTurns, tools: tools.length, runId });
+    Logger.info('[AgenticLoop] starting', {
+      model,
+      provider,
+      runtimeProvider,
+      maxTurns,
+      tools: tools.length,
+      runId,
+    });
 
     const toolCtx: ToolExecutionContext = {
       userId,
@@ -565,12 +618,13 @@ export class AgenticLoop extends EventEmitter {
   ): Promise<{ text: string; toolCalls: ParsedToolCall[]; stopReason: string }> {
     const messages   = universalToolCaller.toProviderMessages(conversation, 'openai') as OpenAI.ChatCompletionMessageParam[];
     const oaiTools   = universalToolCaller.toProviderTools(tools, 'openai') as OpenAI.ChatCompletionTool[];
+    const { apiKey, baseURL } = resolveOpenAICompatibleConfig(model);
 
     let textAcc   = '';
     const { StreamingToolCallAssembler } = await import('../toolCalling/UniversalToolCaller');
     const assembler = new StreamingToolCallAssembler();
 
-    const stream = await this.getOpenAI().chat.completions.create({
+    const stream = await this.getOpenAI(baseURL, apiKey).chat.completions.create({
       model,
       max_tokens : maxTokens,
       temperature,
