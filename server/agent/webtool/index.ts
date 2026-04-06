@@ -1,11 +1,14 @@
 import { z } from "zod";
+import { randomUUID } from "crypto";
 import { toolRegistry, type ToolContext, type ToolResult, type ToolArtifact } from "../toolRegistry";
 import { validateOrThrow } from "../validation";
 import { metricsCollector } from "../metricsCollector";
-import { retrievalPipeline, RetrievalPipeline } from "./retrievalPipeline";
-import { RetrievalRequestSchema, type RetrievalRequest, type RetrievalPipelineResult } from "./types";
-import { randomUUID } from "crypto";
+import { retrievalPipeline } from "./retrievalPipeline";
+import { FastFirstPipeline } from "./fastFirstPipeline";
+import type { FastFirstResult, RetrievedSource } from "./fastFirstPipeline";
+import { RetrievalRequestSchema, type RetrievalRequest, type RetrievalPipelineResult, type RetrievalResult } from "./types";
 import { getUserPrivacySettings } from "../../services/privacyService";
+import { env } from "../../config/env";
 
 export * from "./types";
 export * from "./canonicalizeUrl";
@@ -22,6 +25,7 @@ const WebToolInputSchema = z.object({
   includeScholar: z.boolean().optional().default(false),
   preferBrowser: z.boolean().optional().default(false),
   extractReadable: z.boolean().optional().default(true),
+  /** Honored by the legacy pipeline; fast-first path deduplicates via content hashing in the retriever. */
   deduplicateByContent: z.boolean().optional().default(true),
   minQualityScore: z.number().min(0).max(500).optional().default(0),
   allowedDomains: z.array(z.string()).optional(),
@@ -72,9 +76,9 @@ async function executeWebTool(input: unknown, context: ToolContext): Promise<Too
       addLog("info", "Remote browser data access disabled by privacy settings; retrieval will avoid browser sessions (no cookies/DOM/screenshot session data).");
     }
     
-    addLog("debug", "Executing retrieval pipeline", { request });
-    
-    const result = await retrievalPipeline.retrieve(request);
+    addLog("debug", "Executing retrieval pipeline", { request, mode: resolveRetrievalPipelineMode() });
+
+    const result = await runRetrieval(request);
     
     addLog("info", "Retrieval completed", { 
       totalFound: result.totalFound,
@@ -209,6 +213,111 @@ function formatResultsAsMarkdown(result: RetrievalPipelineResult): string {
   md += `*Search completed in ${result.timing.totalMs}ms*\n`;
   
   return md;
+}
+
+function resolveRetrievalPipelineMode(): "fast_first" | "legacy" {
+  const explicit = env.WEB_RETRIEVAL_PIPELINE;
+  if (explicit) return explicit;
+  return env.NODE_ENV === "production" ? "fast_first" : "legacy";
+}
+
+function shouldUseFastFirst(mode: "fast_first" | "legacy", request: RetrievalRequest): boolean {
+  if (mode !== "fast_first") return false;
+  if (request.includeScholar) return false;
+  if (request.preferBrowser) return false;
+  if (!request.allowBrowser) return false;
+  return true;
+}
+
+function mapSourceToRetrievalResult(source: RetrievedSource): RetrievalResult {
+  const fetchMethod = source.fetchMethod === "browser" ? "browser" : "fetch";
+  return {
+    url: source.url,
+    canonicalUrl: source.canonicalUrl,
+    title: source.title,
+    snippet: source.snippet,
+    content: source.content,
+    contentHash: source.contentHash,
+    qualityScore: source.qualityScore,
+    fetchMethod,
+    timing: {
+      searchMs: undefined,
+      fetchMs: source.timing.fetchMs,
+      extractMs: source.timing.extractMs,
+      totalMs: source.timing.totalMs,
+    },
+    metadata: undefined,
+  };
+}
+
+function domainMatchesPolicy(url: string, allowed: string[] | undefined, blocked: string[] | undefined): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (blocked?.length) {
+      for (const b of blocked) {
+        if (b && host.includes(b.toLowerCase())) return false;
+      }
+    }
+    if (allowed?.length) {
+      return allowed.some((a) => a && host.includes(a.toLowerCase()));
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const DEFAULT_FAST_FIRST_MIN_RELEVANCE = 0.15;
+
+function mapFastFirstToPipelineResult(ff: FastFirstResult, request: RetrievalRequest): RetrievalPipelineResult {
+  let results = ff.sources.map(mapSourceToRetrievalResult);
+  if (request.allowedDomains?.length || request.blockedDomains?.length) {
+    results = results.filter((r) => domainMatchesPolicy(r.url, request.allowedDomains, request.blockedDomains));
+  }
+  if (request.minQualityScore > 0) {
+    results = results.filter((r) => r.qualityScore.total >= request.minQualityScore);
+  }
+  const success = results.length > 0;
+  const normStage = (stage: string): RetrievalPipelineResult["errors"][number]["stage"] => {
+    if (stage === "search" || stage === "fetch" || stage === "browse" || stage === "extract" || stage === "score") {
+      return stage;
+    }
+    return "fetch";
+  };
+  return {
+    success,
+    query: request.query,
+    results,
+    totalFound: ff.metrics.sourcesCount,
+    totalProcessed: ff.metrics.sourcesCount,
+    totalDeduped: ff.metrics.sourcesCount,
+    timing: {
+      totalMs: ff.metrics.totalDurationMs,
+      searchMs: ff.metrics.searchDurationMs,
+      fetchMs: ff.metrics.fetchDurationMs,
+      processMs: ff.metrics.processDurationMs,
+    },
+    errors: ff.errors.map((e) => ({ url: e.url, error: e.error, stage: normStage(e.stage) })),
+  };
+}
+
+async function runRetrieval(request: RetrievalRequest): Promise<RetrievalPipelineResult> {
+  const mode = resolveRetrievalPipelineMode();
+  if (!shouldUseFastFirst(mode, request)) {
+    return retrievalPipeline.retrieve(request);
+  }
+
+  const minRel =
+    request.minQualityScore > 0 ? Math.min(0.85, request.minQualityScore / 500) : DEFAULT_FAST_FIRST_MIN_RELEVANCE;
+
+  const ffPipeline = new FastFirstPipeline({
+    maxTotalResults: request.maxResults,
+    maxResultsPerQuery: Math.min(8, Math.max(2, request.maxResults)),
+    maxQueries: Math.min(6, Math.max(2, Math.ceil(request.maxResults / 2))),
+    minRelevanceScore: minRel,
+  });
+  const ffResult = await ffPipeline.retrieve(request.query);
+  return mapFastFirstToPipelineResult(ffResult, request);
 }
 
 export function registerWebTool(): void {

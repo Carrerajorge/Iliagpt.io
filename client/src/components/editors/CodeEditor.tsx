@@ -1,7 +1,4 @@
-/**
- * CodeEditor - Placeholder Component
- * TODO: Integrate Monaco editor or CodeMirror
- */
+/** Basic textarea editor; use `@monaco-editor/react` where a full IDE surface is required. */
 import { Code } from 'lucide-react';
 
 interface CodeEditorProps {

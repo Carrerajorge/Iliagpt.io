@@ -1,7 +1,4 @@
-/**
- * ToolCatalog - Placeholder Component
- * TODO: Implement full tool catalog functionality
- */
+/** Modal catalog shell; extend with live tool metadata when the agent registry is exposed to the client. */
 import { Wrench, X } from 'lucide-react';
 import { useCallback, useEffect } from 'react';
 

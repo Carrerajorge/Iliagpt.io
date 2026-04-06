@@ -137,6 +137,10 @@ const envSchema = z.object({
   API_JSON_BODY_LIMIT: z.string().optional(),
   CHAT_STREAM_JSON_BODY_LIMIT: z.string().optional(),
   URLENCODED_BODY_LIMIT: z.string().optional(),
+
+  // Web retrieval: `fast_first` uses parallel fetch/browser with cache (default in production).
+  // `legacy` uses the sequential RetrievalPipeline (Scholar, preferBrowser, no-browser privacy).
+  WEB_RETRIEVAL_PIPELINE: z.enum(["fast_first", "legacy"]).optional(),
 });
 
 function validateEnv() {

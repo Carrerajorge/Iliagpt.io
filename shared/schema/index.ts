@@ -7,8 +7,8 @@ export * from "./finops";
 export * from "./nodes";
 export * from "./oauthProviderTokens";
 
-// Legacy compatibility exports required by current server runtime.
-// TODO: remove after fully migrating server imports to modular schema files.
+// Agent execution and observability tables live in the canonical Drizzle schema (`../schema.ts`).
+// Re-exported here so consumers can import from the `shared/schema` entrypoint.
 export {
   toolCallLogs,
   type InsertToolCallLog,
@@ -34,7 +34,7 @@ export {
   type AgentModeStep,
   agentModeArtifacts,
   type AgentModeArtifact,
-  // agentModeEvents exists in modular schema; avoid re-exporting duplicate symbol from legacy
+  // agentModeEvents exists in modular schema; avoid re-exporting duplicate symbol
   agentMemoryStore,
   type AgentMemoryStore,
   TraceEventTypeSchema,
@@ -62,4 +62,4 @@ export {
   agentSessionState,
   type InsertAgentSessionState,
   type AgentSessionState,
-} from "../schema.bak";
+} from "../schema";

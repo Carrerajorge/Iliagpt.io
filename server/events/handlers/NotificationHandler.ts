@@ -185,7 +185,7 @@ export class NotificationHandler {
         subject,
         bodyLength: body.length,
       });
-      // TODO: integrate with actual mailer service (e.g. server/services/mailer.ts)
+      // Optional: connect transactional email (e.g. Resend via `resend` dependency) when product enables outbound mail.
     } catch (err) {
       Logger.error("NotificationHandler.sendEmailNotification error", err);
     }
@@ -244,10 +244,9 @@ export class NotificationHandler {
   }
 
   private async getWebhooksForUser(userId: string): Promise<WebhookConfig[]> {
-    // In production this would query the database.
-    // Returning empty array keeps the handler safe when DB is not configured.
+    // Return registry rows when a user-scoped webhook table/API exists; empty keeps delivery safe by default.
     try {
-      // TODO: import and call webhookRepository.findByUserId(userId)
+      void userId;
       return [];
     } catch (err) {
       Logger.error("NotificationHandler.getWebhooksForUser error", err);

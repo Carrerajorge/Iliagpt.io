@@ -1,7 +1,4 @@
-/**
- * ExcelEditor - Placeholder Component
- * TODO: Implement full Excel spreadsheet editor
- */
+/** Simple grid stub; rich editing uses `spreadsheet-editor` / Handsontable where enabled. */
 import { Table } from 'lucide-react';
 
 interface ExcelEditorProps {

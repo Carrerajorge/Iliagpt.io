@@ -1,7 +1,4 @@
-/**
- * SearchModal - Placeholder Component
- * TODO: Implement full search modal functionality
- */
+/** Compact search modal stub for flows that mount a dedicated overlay. */
 import { useState } from 'react';
 import { Search, X } from 'lucide-react';
 

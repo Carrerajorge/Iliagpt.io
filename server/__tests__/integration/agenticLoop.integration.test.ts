@@ -273,12 +273,12 @@ describe("AgenticLoop Integration", () => {
   // ── Test 5: read_file tool → returns file contents ───────────────────────────
 
   it("Test 5: read_file tool returns file contents when triggered", async () => {
-    const pkgContents = JSON.stringify({ name: "rest-express", version: "1.0.0" }, null, 2);
+    const pkgContents = JSON.stringify({ name: "iliagpt", version: "1.0.0" }, null, 2);
 
     mockCreate.mockImplementation(mockToolThenTextSequence(
       "read_file",
       { path: "package.json" },
-      `The package.json contains: name="rest-express", version="1.0.0"`,
+      `The package.json contains: name="iliagpt", version="1.0.0"`,
       "tool_read_001"
     ));
 
@@ -299,7 +299,7 @@ describe("AgenticLoop Integration", () => {
 
     expect(loop.status).toBe("completed");
     expect(handlers.read_file).toHaveBeenCalledWith({ path: "package.json" });
-    expect(loop.finalResponse).toContain("rest-express");
+    expect(loop.finalResponse).toContain("iliagpt");
   });
 
   // ── Test 6: bash tool execution ──────────────────────────────────────────────

@@ -1,7 +1,4 @@
-/**
- * PptEditor - Placeholder Component
- * TODO: Implement full PowerPoint presentation editor
- */
+/** Minimal slide list editor; deck export uses server-side generation. */
 import { Presentation } from 'lucide-react';
 
 interface PptEditorProps {

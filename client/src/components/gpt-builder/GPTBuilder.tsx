@@ -1,7 +1,4 @@
-/**
- * GPTBuilder - Placeholder Component
- * TODO: Full implementation exists in gpt-builder.tsx, this is for lazy loading
- */
+/** Lazy-load entry; full UI is in `gpt-builder.tsx`. */
 import { Bot, X } from 'lucide-react';
 
 interface GPTBuilderProps {

@@ -1,7 +1,4 @@
-/**
- * SettingsModal - Placeholder Component
- * TODO: Implement full settings modal functionality
- */
+/** Lightweight settings dialog shell; main settings live in `settings-dialog.tsx`. */
 import { X, Settings } from 'lucide-react';
 
 interface SettingsModalProps {

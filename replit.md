@@ -21,6 +21,8 @@ The system integrates live OpenRouter API for fetching a comprehensive model cat
 
 A SuperOrchestrator v1 (EXPERIMENTAL) provides distributed agent execution with DAG scheduling and BullMQ persistent queues, including governance features like kill switches and budget auto-pause. An in-chat advertising platform, IliaADS, serves contextual ads based on conversation content. The search UX has been overhauled with URL paste fixes, intent-aware search labels, a unified source panel with academic citations, and deep search capabilities with progress tracking. Content rendering is enhanced for professional-grade markdown with citation-aware formatting. The Intent Engine has been improved with new intent types (`CITATION_FORMAT`, `ACADEMIC_SEARCH`, `FACT_CHECK`) and enhanced constraint extraction.
 
+Web retrieval (`web_search_retrieve`): optional env **`WEB_RETRIEVAL_PIPELINE`** (`fast_first` \| `legacy`). Default is `fast_first` in production and `legacy` in development/test; Scholar requests, `preferBrowser`, or disabled remote-browser privacy keep the legacy sequential pipeline.
+
 The system is designed for scalability, supporting 100M simultaneous users with optimized DB pools, Redis-backed rate limiting, compression, response caching, and socket hardening. Free users are restricted to specific free-tier models. Cerebras Direct Provider is integrated for faster inference when `CEREBRAS_API_KEY` is set. OCR for non-vision models extracts text from images when the active model doesn't support vision. A Workspace Agent System provides an agentic coding engine for the Codex VC workspace with SSE-streaming endpoints.
 
 ### Security: Anonymous User Protection (2026-04-05)
