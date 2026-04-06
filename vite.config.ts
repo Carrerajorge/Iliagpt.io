@@ -5,6 +5,8 @@ import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 import { metaImagesPlugin } from "./vite-plugin-meta-images";
 
+const devBackendTarget = process.env.VITE_DEV_BACKEND_URL ?? "http://localhost:5050";
+
 export default defineConfig({
   plugins: [
     react(),
@@ -85,6 +87,30 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     allowedHosts: true,
+    proxy: {
+      "/api": {
+        target: devBackendTarget,
+        changeOrigin: true,
+        ws: true,
+      },
+      "/ws": {
+        target: devBackendTarget,
+        changeOrigin: true,
+        ws: true,
+      },
+      "/health": {
+        target: devBackendTarget,
+        changeOrigin: true,
+      },
+      "/uploads": {
+        target: devBackendTarget,
+        changeOrigin: true,
+      },
+      "/artifacts": {
+        target: devBackendTarget,
+        changeOrigin: true,
+      },
+    },
     fs: {
       strict: true,
       deny: ["**/.*"],

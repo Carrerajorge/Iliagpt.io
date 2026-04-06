@@ -6,7 +6,7 @@ import { MiniSidebar } from "@/components/mini-sidebar";
 import { ChatInterface } from "@/components/chat-interface";
 import { AiStepsRail } from "@/components/ai-steps-rail";
 import { WorkspaceProvider, useWorkspace } from "@/contexts/workspace-context";
-import { useChats, Message, resolveRealChatId } from "@/hooks/use-chats";
+import { useChats, Message, generateStableChatKey, resolveRealChatId } from "@/hooks/use-chats";
 import { useChatFolders } from "@/hooks/use-chat-folders";
 import { useAuth } from "@/hooks/use-auth";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -108,6 +108,12 @@ function WorkspaceContent() {
   const { clearBadge } = useStreamingStore();
 
   const pendingChatIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (activeChat?.id) return;
+    if (newChatStableKey) return;
+    setNewChatStableKey(generateStableChatKey());
+  }, [activeChat?.id, newChatStableKey]);
 
   const ensureConversationUiState = useCallback((conversationId: string | null | undefined) => {
     if (!conversationId) return;
@@ -240,7 +246,7 @@ function WorkspaceContent() {
   const handleNewChat = () => {
     // Keep processing state for background chats - don't clear processingChatIds
     // The previous chat will continue streaming in the background
-    const newKey = `new-chat-${Date.now()}`;
+    const newKey = generateStableChatKey();
     setActiveChatId(null);
     setIsNewChatMode(true);
     setNewChatStableKey(newKey);
@@ -249,7 +255,7 @@ function WorkspaceContent() {
   };
 
   const handleSendNewChatMessage = useCallback(async (message: Message) => {
-    const { pendingId, stableKey } = createChat();
+    const { pendingId, stableKey } = createChat(newChatStableKey);
     moveConversationUiState(newChatStableKey, pendingId);
     ensureConversationUiState(pendingId);
     pendingChatIdRef.current = pendingId;
@@ -382,6 +388,7 @@ function WorkspaceContent() {
               setMessages={setDisplayMessages}
               onSendMessage={handleSendMessage}
               chatId={activeChat?.id || pendingChatIdRef.current}
+              conversationLockScope={activeChat?.stableKey || newChatStableKey || null}
               aiState={aiState}
               setAiState={setAiState}
               aiStateChatId={aiState === "idle" ? null : activeConversationId}
@@ -455,6 +462,7 @@ function WorkspaceContent() {
                     setMessages={setDisplayMessages}
                     onSendMessage={handleSendMessage}
                     chatId={activeChat?.id || pendingChatIdRef.current}
+                    conversationLockScope={activeChat?.stableKey || newChatStableKey || null}
                     aiState={aiState}
                     setAiState={setAiState}
                     aiStateChatId={aiState === "idle" ? null : activeConversationId}

@@ -18,7 +18,7 @@ import { useLocation, useSearch } from "wouter";
 import { Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { useChats, Message, generateRequestId, resolveRealChatId } from "@/hooks/use-chats";
+import { useChats, Message, generateRequestId, generateStableChatKey, resolveRealChatId } from "@/hooks/use-chats";
 import { useChatFolders } from "@/hooks/use-chat-folders";
 import { usePinnedGpts } from "@/hooks/use-pinned-gpts";
 import { toast } from "sonner";
@@ -253,6 +253,12 @@ export default function Home() {
   // Store the pending chat ID during new chat creation
   const pendingChatIdRef = useRef<string | null>(null);
 
+  useEffect(() => {
+    if (activeChat?.id) return;
+    if (newChatStableKey) return;
+    setNewChatStableKey(generateStableChatKey());
+  }, [activeChat?.id, newChatStableKey]);
+
   const ensureConversationUiState = useCallback((conversationId: string | null | undefined) => {
     if (!conversationId) return;
     setConversationUiStateMap((prev) => {
@@ -439,7 +445,7 @@ export default function Home() {
     setDocGenerationState({ status: 'idle', progress: 0, stage: '', downloadUrl: null, fileName: null, fileSize: null });
 
     // Clear chat references - this triggers new chat mode
-    const newConversationId = `new-chat-${Date.now()}`;
+    const newConversationId = generateStableChatKey();
     setActiveChatId(null);
     setSelectedProjectId(null);
     setIsNewChatMode(true);
@@ -474,7 +480,7 @@ export default function Home() {
   }, [setActiveChatId]);
 
   const handleSendNewChatMessage = useCallback(async (message: Message) => {
-    const { pendingId, stableKey } = createChat();
+    const { pendingId, stableKey } = createChat(newChatStableKey);
     moveConversationUiState(newChatStableKey, pendingId);
     ensureConversationUiState(pendingId);
     pendingChatIdRef.current = pendingId;
@@ -517,7 +523,7 @@ export default function Home() {
       let chatId = targetChatId;
 
       if (!chatId) {
-        const { pendingId, stableKey } = createChat();
+        const { pendingId, stableKey } = createChat(newChatStableKey);
         pendingChatIdRef.current = pendingId;
         setNewChatStableKey(stableKey);
         setIsNewChatMode(false);
@@ -874,6 +880,7 @@ export default function Home() {
             aiProcessSteps={aiProcessSteps}
             setAiProcessSteps={setAiProcessSteps}
             chatId={activeChat?.id || pendingChatIdRef.current || null}
+            conversationLockScope={activeChat?.stableKey || newChatStableKey || null}
             onOpenApps={handleOpenApps}
             onUpdateMessageAttachments={updateMessageAttachments}
             onEditMessageAndTruncate={editMessageAndTruncate}

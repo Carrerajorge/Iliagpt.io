@@ -934,6 +934,18 @@ export function isPendingChat(chatId: string): boolean {
   return resolved.startsWith(PENDING_CHAT_PREFIX);
 }
 
+export function generateStableChatKey(): string {
+  try {
+    const c: any = (globalThis as any).crypto;
+    if (c && typeof c.randomUUID === "function") {
+      return `stable-${c.randomUUID()}`;
+    }
+  } catch {
+    // ignore
+  }
+  return `stable-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function generateStableServerChatId(): string {
   try {
     const c: any = (globalThis as any).crypto;
@@ -1727,12 +1739,15 @@ export function useChats() {
     };
   }, []);
 
-  const createChat = useCallback((): { pendingId: string; stableKey: string } => {
+  const createChat = useCallback((stableKeyOverride?: string | null): { pendingId: string; stableKey: string } => {
     const pendingId = `${PENDING_CHAT_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const provisionalRealId = generateStableServerChatId();
     // Pre-assign a stable server chatId so first-message stream can start immediately.
     pendingToRealIdMap.set(pendingId, provisionalRealId);
-    const stableKey = `stable-${Date.now()}`; // Stable key that won't change
+    const stableKey =
+      typeof stableKeyOverride === "string" && stableKeyOverride.trim().length > 0
+        ? stableKeyOverride.trim()
+        : generateStableChatKey();
     const pendingChat: Chat = {
       id: pendingId,
       stableKey,

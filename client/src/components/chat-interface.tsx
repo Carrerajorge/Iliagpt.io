@@ -4,6 +4,13 @@ import { useDraft } from "@/hooks/use-draft";
 import { useStreamingTransition } from "@/hooks/use-streaming-transition";
 import { useStreamChat } from "@/hooks/use-stream-chat";
 import { apiFetch, getAnonUserIdHeader } from "@/lib/apiClient";
+import {
+  clearSubmitLock,
+  isSubmitLocked,
+  normalizeSubmitLockScope,
+  resolveScopedSubmitLock,
+  setSubmitLock,
+} from "@/lib/chatSubmitLock";
 import { getFileUploader } from "@/lib/fileUploader";
 
 import { WelcomeAnimation } from "@/components/welcome-animation-simple";
@@ -275,6 +282,7 @@ interface ChatInterfaceProps {
   aiProcessSteps: AiProcessStep[];
   setAiProcessSteps: React.Dispatch<React.SetStateAction<AiProcessStep[]>>;
   chatId?: string | null;
+  conversationLockScope?: string | null;
   chatTitle?: string | null;
   onOpenApps?: () => void;
   onUpdateMessageAttachments?: (chatId: string, messageId: string, attachments: Message['attachments'], newMessage?: Message) => void;
@@ -393,26 +401,6 @@ async function triggerDocumentAnalysis(
   }
 }
 
-// ── Submit mutex ─────────────────────────────────────────────────────────
-// Uses sessionStorage because both `useRef` (reset on remount), module-level
-// `let` (duplicated by Vite code-splitting) and `window.__` properties
-// (cleared when wouter navigation triggers a full React tree unmount/remount)
-// fail to persist across the ChatInterface remount cascade.
-// sessionStorage survives within the same browser tab session.
-function isSubmitLocked(): boolean {
-  try {
-    const ts = sessionStorage.getItem("__sira_submit_lock");
-    if (!ts) return false;
-    return Date.now() - Number(ts) < 10_000;
-  } catch { return false; }
-}
-function setSubmitLock(): void {
-  try { sessionStorage.setItem("__sira_submit_lock", String(Date.now())); } catch { }
-}
-function clearSubmitLock(): void {
-  try { sessionStorage.removeItem("__sira_submit_lock"); } catch { }
-}
-
 export function ChatInterface({
   messages,
   setMessages,
@@ -427,6 +415,7 @@ export function ChatInterface({
   aiProcessSteps,
   setAiProcessSteps,
   chatId,
+  conversationLockScope,
   chatTitle,
   onOpenApps,
   onUpdateMessageAttachments,
@@ -1594,7 +1583,7 @@ export function ChatInterface({
       const length = selection.prompt.length;
       textareaRef.current?.setSelectionRange(length, length);
     });
-  }, [setInput, setLatencyMode, textareaRef, setSelectedDocTool, setSelectedTool]);
+  }, [setInput, setLatencyMode, setSelectedDocTool, setSelectedTool]);
 
   const minimizeDocEditor = () => {
     if (!activeDocEditor) return;
@@ -1658,15 +1647,22 @@ export function ChatInterface({
   const aiStateRef = useRef<AiState>("idle");
   const composerRef = useRef<HTMLDivElement>(null);
   const handleStopChatRef = useRef<(() => void) | null>(null);
-  // Mutex: see isSubmitLocked() above (sessionStorage, survives all remount/reload types).
-  const isSubmittingRef = useRef(false);
-  isSubmittingRef.current = isSubmitLocked();
+  const draftSubmitLockScope = "__draft__";
 
   const isScopedConversation = useCallback((conversationId?: string | null) => {
     const activeConversationId = latestChatIdRef.current;
     if (!conversationId || !activeConversationId) return true;
     return resolveRealChatId(activeConversationId) === resolveRealChatId(conversationId);
   }, []);
+
+  const resolveSubmitLockScope = useCallback((conversationId?: string | null) => {
+    return resolveScopedSubmitLock({
+      preferredScope: conversationLockScope,
+      conversationId,
+      latestConversationId: latestChatIdRef.current,
+      normalizeConversationId: (value) => normalizeSubmitLockScope(resolveRealChatId(value)),
+    }) || draftSubmitLockScope;
+  }, [conversationLockScope, draftSubmitLockScope]);
 
   const setAiStateForChat = useCallback((
     value: React.SetStateAction<AiState>,
@@ -4111,12 +4107,13 @@ export function ChatInterface({
   }, [input]);
 
   const handleSubmit = async () => {
+    const submitLockScope = resolveSubmitLockScope(chatId || latestChatIdRef.current);
     // ── Mutex guard: prevent re-entrant calls ──────────────────────────
-    // React re-renders (from chatId prop change after new-chat creation)
-    // can cause handleSubmit to be called again before the first async
-    // invocation completes. This ref-based lock prevents that entirely.
-    if (isSubmitLocked()) {
-      console.log("[handleSubmit] Blocked: already submitting (sessionStorage lock active)");
+    // React re-renders during pending->real chat transitions can cause the
+    // same submit to re-enter. The lock is scoped per conversation so a
+    // background stream in chat A does not block a new task in chat B.
+    if (isSubmitLocked(submitLockScope)) {
+      console.log("[handleSubmit] Blocked: already submitting for conversation scope", submitLockScope);
       return;
     }
     // Prevent double-submit while THIS chat has a request in flight.
@@ -4126,8 +4123,7 @@ export function ChatInterface({
       console.log("[handleSubmit] Blocked: aiState is", aiState, "for chatId", aiStateChatId);
       return;
     }
-    setSubmitLock();
-    isSubmittingRef.current = true;
+    setSubmitLock(submitLockScope);
     try {
       const submitConversationId = chatId || latestChatIdRef.current;
       // When sending the very first message, the parent may create a pending chatId asynchronously.
@@ -7269,8 +7265,7 @@ IMPORTANTE:
       }
     } finally {
       // Always release the submit lock so the user can send again.
-      clearSubmitLock();
-      isSubmittingRef.current = false;
+      clearSubmitLock(submitLockScope);
     }
   };
 
