@@ -5202,6 +5202,14 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             userMessage: normalizedUserQuery,
             attachments: Array.isArray(sanitizedRunAttachments) ? sanitizedRunAttachments : [],
             allowedScopes: parsedSkillScopes,
+            intentHint: intentResult
+              ? {
+                intent: intentResult.intent,
+                confidence: intentResult.confidence,
+                output_format: intentResult.output_format,
+                language_detected: intentResult.language_detected,
+              }
+              : undefined,
             autoCreate: true,
             maxRetries: 1,
             emitTrace: emitSkillTrace,
