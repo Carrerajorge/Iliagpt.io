@@ -934,6 +934,21 @@ export function createChatsRouter() {
         }
       }
 
+      if (normalizedRole === 'assistant' && userMessageId) {
+        const tAssistDedup = performance.now();
+        try {
+          const existingAssistant = await storage.findAssistantResponseForUserMessage(userMessageId);
+          addTiming("assistant_dedup", tAssistDedup);
+          if (existingAssistant && existingAssistant.chatId === req.params.id) {
+            console.log(`[Dedup] Assistant message for userMessageId ${userMessageId} already exists (${existingAssistant.id})`);
+            setServerTiming();
+            return res.json(existingAssistant);
+          }
+        } catch (e) {
+          addTiming("assistant_dedup", tAssistDedup);
+        }
+      }
+
       const tCreateLegacy = performance.now();
       const message = await storage.createChatMessage({
         chatId: req.params.id,

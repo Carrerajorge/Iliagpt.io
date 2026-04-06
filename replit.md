@@ -79,6 +79,12 @@ Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment varia
 - **Fusion Features**: task-board, searxng-search, model-switch-queue, gateway-resilience, internet-access.
 - **Skills Context in System Prompt**: `buildInternetSystemPrompt` injects up to 30 ready skills (sanitized, max 3K chars) into every OpenClaw chat session. Circuit-breaker pattern: silent fallback on registry errors.
 
+### Message Duplication Fix (v2026.4.6)
+- **Root cause**: Server creates assistant message during SSE streaming (placeholder → update with final content), then client's `finalize()` also POSTs the same message via `addMessage()`, creating a duplicate in the DB.
+- **Client-side fix**: `use-stream-chat.ts` captures `assistantMessageId` from SSE `context`/`done` events, uses it as the message ID, and marks the message with `serverPersisted: true`. `addMessage()` in `use-chats.ts` skips the server POST for `serverPersisted` messages.
+- **Server-side safety net**: `POST /api/chats/:id/messages` deduplicates assistant messages by `userMessageId` using `findAssistantResponseForUserMessage()` with primary DB fallback to avoid replica lag.
+- **Key files**: `client/src/hooks/use-stream-chat.ts` (finalize, SSE event handling), `client/src/hooks/use-chats.ts` (addMessage), `server/routes/chatsRouter.ts` (dedup guard), `server/storage.ts` (primary DB fallback).
+
 ### Memory Optimization (v2026.4.6)
 - **PerformanceAuditor**: Collection interval 60s (was 10s), history buffer 100 (was 1000), memory warning throttling (log first 3 + every 30th).
 - **TokenTracker**: Redis persist circuit breaker — disables after 5 consecutive failures. In-memory records capped at 1000 (was 10000).

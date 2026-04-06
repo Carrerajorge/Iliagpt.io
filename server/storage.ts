@@ -2134,12 +2134,19 @@ export class MemStorage implements IStorage {
   }
 
   async findAssistantResponseForUserMessage(userMessageId: string): Promise<ChatMessage | null> {
-    const [message] = await dbRead.select().from(chatMessages)
+    const [fromRead] = await dbRead.select().from(chatMessages)
       .where(and(
         eq(chatMessages.userMessageId, userMessageId),
         eq(chatMessages.role, 'assistant')
       ));
-    return message || null;
+    if (fromRead) return fromRead;
+
+    const [fromPrimary] = await db.select().from(chatMessages)
+      .where(and(
+        eq(chatMessages.userMessageId, userMessageId),
+        eq(chatMessages.role, 'assistant')
+      ));
+    return fromPrimary || null;
   }
 
   // Response Quality Metrics

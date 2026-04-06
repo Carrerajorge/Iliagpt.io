@@ -53,6 +53,7 @@ interface ConversationSession {
   abortController: AbortController | null;
   pendingRequestId: string | null;
   nextMessageId: string | null;
+  assistantMessageId: string | null;
   fullContent: string;
   pendingContent: string | null;
   rafId: number | null;
@@ -80,6 +81,7 @@ function createSession(): ConversationSession {
     abortController: null,
     pendingRequestId: null,
     nextMessageId: null,
+    assistantMessageId: null,
     fullContent: "",
     pendingContent: null,
     rafId: null,
@@ -475,8 +477,11 @@ export function useStreamChat(deps: StreamChatDeps) {
 
       flushNow(targetConversationId);
 
-      setOptimisticMessages((prev) => [...prev, message]);
-      onSendMessage(message).catch((err) => {
+      const messageWithFlag = session.assistantMessageId && message.role === "assistant"
+        ? { ...message, serverPersisted: true }
+        : message;
+      setOptimisticMessages((prev) => [...prev, messageWithFlag]);
+      onSendMessage(messageWithFlag).catch((err) => {
         console.error("[useStreamChat] onSendMessage failed:", err);
       });
 
@@ -552,8 +557,9 @@ export function useStreamChat(deps: StreamChatDeps) {
         abortConversation(conversationId);
       }
 
-      const messageId = `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      let messageId = `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       session.nextMessageId = messageId;
+      session.assistantMessageId = null;
       const baseRequestId =
         typeof body?.requestId === "string" && body.requestId.trim()
           ? body.requestId.trim()
@@ -888,6 +894,11 @@ export function useStreamChat(deps: StreamChatDeps) {
               }
 
               if (!isStaleConversation && currentEventType === "context") {
+                if (typeof data.assistantMessageId === "string" && data.assistantMessageId.trim()) {
+                  messageId = data.assistantMessageId.trim();
+                  session.nextMessageId = messageId;
+                  session.assistantMessageId = messageId;
+                }
                 setAiState("responding", conversationId);
                 onAiStateChange?.("responding");
                 setAiProcessSteps?.(
@@ -909,6 +920,11 @@ export function useStreamChat(deps: StreamChatDeps) {
                 clearTokenTimeouts();
                 streamDone = true;
                 flushNow(conversationId);
+
+                if (!session.assistantMessageId && typeof data.assistantMessageId === "string" && data.assistantMessageId.trim()) {
+                  messageId = data.assistantMessageId.trim();
+                  session.assistantMessageId = messageId;
+                }
 
                 if (pendingTerminalError || data.error === true) {
                   const terminalError =

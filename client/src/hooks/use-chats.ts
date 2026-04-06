@@ -1894,6 +1894,14 @@ export function useChats() {
     });
 
     try {
+      if ((normalizedMessage as any).serverPersisted) {
+        if (normalizedMessage.requestId) {
+          markRequestComplete(normalizedMessage.requestId);
+          removeFailedMessageFromRecoveryQueue(normalizedMessage.requestId);
+        }
+        return { chatId: resolvedChatId };
+      }
+
       if (normalizedMessage.role === "user") {
         setDeliveryPatch({ deliveryStatus: "sending", deliveryError: undefined });
       }
