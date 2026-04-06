@@ -419,7 +419,9 @@ export function useSettings(userId?: string | null) {
       if (e.key === STORAGE_KEY && e.newValue) {
         try {
           setSettingsState(JSON.parse(e.newValue));
-        } catch {}
+        } catch {
+          /* ignore corrupt JSON from other tabs */
+        }
       }
     };
     window.addEventListener("storage", handleStorage);
@@ -464,14 +466,23 @@ export function applyAccentColor(color: UserSettings["accentColor"]) {
   const isDark = root.classList.contains("dark");
   const colors = accentColors[color];
   const primaryColor = isDark ? colors.dark : colors.light;
-  
+
+  if (color === "default") {
+    // Must set inline — #platform-branding injects :root { --primary } from primary_color (e.g. indigo).
+    // Removing inline props would leave that purple, while the UI shows "Predeterminada" as black (foreground).
+    root.style.setProperty("--primary", primaryColor);
+    root.style.setProperty("--ring", primaryColor);
+    const sidebarPrimary = isDark ? "0 0% 100%" : "0 0% 0%";
+    root.style.setProperty("--sidebar-primary", sidebarPrimary);
+    root.style.setProperty("--sidebar-ring", isDark ? "0 0% 60%" : "0 0% 30%");
+    return;
+  }
+
+  root.style.removeProperty("--sidebar-primary");
+  root.style.removeProperty("--sidebar-ring");
+
   root.style.setProperty("--primary", primaryColor);
   root.style.setProperty("--ring", primaryColor);
-  
-  if (color === "default") {
-    root.style.removeProperty("--primary");
-    root.style.removeProperty("--ring");
-  }
 }
 
 export function applyTheme(theme: UserSettings["appearance"]) {

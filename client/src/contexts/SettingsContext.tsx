@@ -160,10 +160,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
             : (value as UserSettings["appearance"]);
 
       applyTheme(effectiveAppearance);
-      setTimeout(() => applyAccentColor("default"), 0);
     }
     if (key === "accentColor") {
-      applyAccentColor("default");
+      applyAccentColor(value as UserSettings["accentColor"]);
     }
   }, [updateSetting, wrappedUpdateSettings, themeMode]);
 

@@ -535,6 +535,7 @@ export function Sidebar({
     <nav
       className={cn("flex h-screen w-[260px] flex-col bg-[#fafafa] dark:bg-[#111113] border-r border-border/40 text-sidebar-foreground", className)}
       aria-label="Navegación principal y chats"
+      data-sidebar-tools-nav
       role="navigation"
     >
       <div className="flex items-center justify-between px-3 py-3">
@@ -555,7 +556,7 @@ export function Sidebar({
 
       <div className="px-3 pb-2">
         <Button
-          className="w-full justify-start gap-2 h-9 text-sm font-medium bg-gradient-to-r from-violet-500 to-blue-500 hover:from-violet-600 hover:to-blue-600 text-white rounded-lg shadow-sm"
+          className="w-full justify-start gap-2 h-9 text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg shadow-sm"
           onClick={onNewChat}
           data-testid="button-new-chat"
         >
@@ -583,33 +584,33 @@ export function Sidebar({
         <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/50">Herramientas</span>
       </div>
       <div className="flex flex-col gap-0.5 px-2 pb-2">
-        <button onClick={onOpenLibrary} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-library">
-          <Library className="h-4 w-4 text-violet-500 shrink-0 pointer-events-none" />
+        <button onClick={onOpenLibrary} data-tool-motion="library" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-library">
+          <Library className="sidebar-tool-icon h-4 w-4 text-primary shrink-0 pointer-events-none" />
           <span className="pointer-events-none">Biblioteca</span>
         </button>
-        <button onClick={onOpenGpts} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-gpts">
-          <Bot className="h-4 w-4 text-amber-500 shrink-0 pointer-events-none" />
+        <button onClick={onOpenGpts} data-tool-motion="gpts" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-gpts">
+          <Bot className="sidebar-tool-icon h-4 w-4 text-amber-500 shrink-0 pointer-events-none" />
           <span className="pointer-events-none">GPTs</span>
         </button>
-        <button onClick={() => setLocation("/openclaw")} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-openclaw">
-          <OpenClawLogo className="h-4 w-4 shrink-0 pointer-events-none" />
+        <button onClick={() => setLocation("/openclaw")} data-tool-motion="openclaw" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-openclaw">
+          <OpenClawLogo className="sidebar-tool-icon h-4 w-4 shrink-0 pointer-events-none" />
           <span className="pointer-events-none">OpenClaw</span>
         </button>
-        <button onClick={onOpenSkills} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-skills">
-          <Zap className="h-4 w-4 text-blue-500 shrink-0 pointer-events-none" />
+        <button onClick={onOpenSkills} data-tool-motion="skills" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-skills">
+          <Zap className="sidebar-tool-icon h-4 w-4 text-blue-500 shrink-0 pointer-events-none" />
           <span className="pointer-events-none">Skills</span>
         </button>
-        <button onClick={onOpenApps} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-apps">
-          <LayoutGrid className="h-4 w-4 text-emerald-500 shrink-0 pointer-events-none" />
+        <button onClick={onOpenApps} data-tool-motion="apps" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-apps">
+          <LayoutGrid className="sidebar-tool-icon h-4 w-4 text-emerald-500 shrink-0 pointer-events-none" />
           <span className="pointer-events-none">Aplicaciones</span>
         </button>
-        <button onClick={onOpenWhatsAppConnect} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none relative" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-whatsapp-connect">
-          <MessageSquare className="h-4 w-4 text-green-500 shrink-0 pointer-events-none" />
+        <button onClick={onOpenWhatsAppConnect} data-tool-motion="whatsapp" className="sidebar-tool-row relative flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-whatsapp-connect">
+          <MessageSquare className="sidebar-tool-icon h-4 w-4 text-green-500 shrink-0 pointer-events-none" />
           <span className="pointer-events-none">AppsWebChat (QR)</span>
           <span className={cn("ml-auto h-2 w-2 rounded-full shrink-0 pointer-events-none", waStatus.state === 'connected' ? 'bg-green-500' : waStatus.state === 'disconnected' ? 'bg-red-500' : 'bg-amber-500')} />
         </button>
-        <a href="/project/website" onClick={(e) => { e.preventDefault(); window.location.href = '/project/website'; }} className="flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none no-underline" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-codex-vc">
-          <Code className="h-4 w-4 text-cyan-500 shrink-0 pointer-events-none" />
+        <a href="/project/website" onClick={(e) => { e.preventDefault(); window.location.href = '/project/website'; }} data-tool-motion="codex" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none no-underline" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-codex-vc">
+          <Code className="sidebar-tool-icon h-4 w-4 text-cyan-500 shrink-0 pointer-events-none" />
           <span className="pointer-events-none">Codex VC</span>
         </a>
       </div>
@@ -839,7 +840,7 @@ export function Sidebar({
             <button className="flex w-full items-center gap-2.5 p-1 rounded-md hover:bg-accent/40 transition-colors cursor-pointer" data-testid="button-user-menu">
               <div className="relative shrink-0">
                 <Avatar className="h-8 w-8">
-                  <AvatarFallback className="bg-gradient-to-br from-violet-500 to-blue-500 text-white text-xs font-bold">
+                  <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
                     {isAdmin ? "A" : (user?.firstName?.[0] || user?.email?.[0] || "U").toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
