@@ -5,6 +5,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import { llmGateway } from "../lib/llmGateway";
 import { usageQuotaService } from "./usageQuotaService";
 import { internetToolDefinitions, executeInternetTool } from "../openclaw/lib/internetAccess";
+import { gatherInternetContext, buildInternetSystemPrompt } from "../openclaw/lib/chatInternetBridge";
 
 const VERSION = "2026.4.5";
 const TOKEN_SECRET = process.env.ENCRYPTION_KEY || randomUUID();
@@ -458,21 +459,45 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       client.chatHistory.push({ role: "user", content: userMessage });
       client.activeRuns.add(runId);
 
-      const llmMessages: ChatCompletionMessageParam[] = [
-        {
-          role: "system" as const,
-          content: "You are IliaGPT, a helpful AI assistant. You are running inside the OpenClaw control interface. Respond clearly and helpfully. You can use markdown formatting.",
-        },
-        ...client.chatHistory.map((m) => ({
-          role: m.role as "user" | "assistant" | "system",
-          content: m.content,
-        })),
-      ];
-
       const mappedProvider = PROVIDER_MAP[selectedProvider] || "openai";
 
       (async () => {
         let fullResponse = "";
+
+        send(ws, {
+          type: "event",
+          event: "chat",
+          payload: {
+            sessionKey: chatSessionKey,
+            runId,
+            state: "delta",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "" }],
+              meta: { status: "searching" },
+            },
+          },
+        });
+
+        let internetContext = null;
+        try {
+          internetContext = await gatherInternetContext(userMessage);
+          if (internetContext) {
+            console.log(`[OpenClaw Gateway] Internet context gathered: search=${!!internetContext.searchResults} fetch=${internetContext.fetchResults?.length || 0}`);
+          }
+        } catch (e: any) {
+          console.warn(`[OpenClaw Gateway] Internet context error:`, e?.message);
+        }
+
+        const systemPrompt = buildInternetSystemPrompt(internetContext);
+
+        const llmMessages: ChatCompletionMessageParam[] = [
+          { role: "system" as const, content: systemPrompt },
+          ...client.chatHistory.map((m) => ({
+            role: m.role as "user" | "assistant" | "system",
+            content: m.content,
+          })),
+        ];
 
         try {
           console.log(`[OpenClaw Gateway] chat.send: model=${selectedModel}, provider=${mappedProvider}, historyLen=${client.chatHistory.length}`);
