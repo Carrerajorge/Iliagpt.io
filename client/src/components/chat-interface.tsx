@@ -141,6 +141,7 @@ import { useAgentMode } from "@/hooks/use-agent-mode";
 import { Database, Sparkles, AudioLines } from "lucide-react";
 import { useModelAvailability, type AvailableModel } from "@/contexts/ModelAvailabilityContext";
 import { getFileTheme, getFileCategory, FileCategory } from "@/lib/fileTypeTheme";
+import type { FilePreviewData } from "@/lib/filePreviewTypes";
 import {
   dataImageUrlToFile,
   extractBareUrlsFromText,
@@ -151,6 +152,7 @@ import {
   isDataImageUrl,
   normalizeFileForUpload,
   normalizeHttpUrl,
+  peekFilesFromDataTransfer,
   uniq,
   compressImageToDataUrl,
 } from "@/lib/attachmentIngest";
@@ -327,6 +329,7 @@ interface ChatInterfaceProps {
 
 interface UploadedFile {
   id?: string;
+  localKey?: string;
   name: string;
   type: string;
   mimeType?: string;
@@ -336,6 +339,8 @@ interface UploadedFile {
   status?: string;
   content?: string;
   analysisId?: string;
+  previewStatus?: "idle" | "loading" | "ready" | "error";
+  previewData?: FilePreviewData;
   spreadsheetData?: {
     uploadId: string;
     sheets: Array<{ name: string; rowCount: number; columnCount: number }>;
@@ -346,6 +351,20 @@ interface UploadedFile {
 function isAnalyzableFile(filename: string): boolean {
   const ext = filename.toLowerCase().split('.').pop();
   return ['xlsx', 'xls', 'csv', 'pdf', 'doc', 'docx'].includes(ext || '');
+}
+
+function isRenderablePreviewFile(filename: string, mimeType?: string): boolean {
+  const ext = filename.toLowerCase().split(".").pop();
+  const normalizedMime = (mimeType || "").toLowerCase();
+  return ["doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx"].includes(ext || "") ||
+    ["txt", "md", "json", "xml", "html", "htm", "log", "yml", "yaml", "sh", "sql", "env"].includes(ext || "") ||
+    normalizedMime.includes("word") ||
+    normalizedMime.includes("sheet") ||
+    normalizedMime.includes("excel") ||
+    normalizedMime.includes("presentation") ||
+    normalizedMime.includes("powerpoint") ||
+    normalizedMime.startsWith("text/") ||
+    normalizedMime === "application/json";
 }
 
 async function triggerDocumentAnalysis(
@@ -554,6 +573,10 @@ export function ChatInterface({
     });
   }, []);
   const pendingUploadsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const previewRequestsRef = useRef<Set<string>>(new Set());
+  const localPreviewCacheRef = useRef<Map<string, Promise<Pick<UploadedFile, "dataUrl" | "previewData" | "previewStatus">>>>(new Map());
+  const dragPreviewKeyRef = useRef("");
+  const dragPreviewRequestIdRef = useRef(0);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
   const [regeneratingMsgIndex, setRegeneratingMsgIndex] = useState<number | null>(null);
@@ -568,6 +591,64 @@ export function ChatInterface({
   const [editingSelectionText, setEditingSelectionText] = useState<string>("");
   const [originalSelectionText, setOriginalSelectionText] = useState<string>("");
   const [selectedDocText, setSelectedDocText] = useState<string>("");
+  const [dragPreviewFiles, setDragPreviewFiles] = useState<UploadedFile[]>([]);
+
+  useEffect(() => {
+    uploadedFiles.forEach((file) => {
+      if (
+        file.status !== "ready" ||
+        !file.id ||
+        file.id.startsWith("temp-") ||
+        !isRenderablePreviewFile(file.name, file.mimeType || file.type) ||
+        file.previewData ||
+        file.previewStatus === "loading" ||
+        previewRequestsRef.current.has(file.id)
+      ) {
+        return;
+      }
+
+      previewRequestsRef.current.add(file.id);
+      setUploadedFiles((prev) =>
+        prev.map((candidate) =>
+          candidate.id === file.id
+            ? { ...candidate, previewStatus: "loading" }
+            : candidate
+        )
+      );
+
+      void apiFetch(`/api/files/${file.id}/preview-html`, { timeoutMs: 45000 })
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`Preview request failed (${response.status})`);
+          }
+          const previewData = await response.json();
+          setUploadedFiles((prev) =>
+            prev.map((candidate) =>
+              candidate.id === file.id
+                ? {
+                    ...candidate,
+                    previewStatus: previewData?.type === "unknown" ? "error" : "ready",
+                    previewData,
+                  }
+                : candidate
+            )
+          );
+        })
+        .catch((error) => {
+          console.warn("[ChatInterface] Failed to preload file preview:", error);
+          setUploadedFiles((prev) =>
+            prev.map((candidate) =>
+              candidate.id === file.id
+                ? { ...candidate, previewStatus: "error" }
+                : candidate
+            )
+          );
+        })
+        .finally(() => {
+          previewRequestsRef.current.delete(file.id!);
+        });
+    });
+  }, [uploadedFiles, setUploadedFiles]);
   // selectedDocTool: prefer parent prop (survives remount), fallback to local state
   const [selectedDocToolLocal, setSelectedDocToolLocal] = useState<"word" | "excel" | "ppt" | "figma" | null>(null);
   const selectedDocTool = selectedDocToolProp !== undefined ? selectedDocToolProp : selectedDocToolLocal;
@@ -1000,6 +1081,7 @@ export function ChatInterface({
     fileId?: string;
     dataUrl?: string;
     content?: string;
+    previewData?: FilePreviewData;
   } | null>(null);
   const [previewFileAttachment, setPreviewFileAttachment] = useState<{
     name: string;
@@ -2381,6 +2463,22 @@ export function ChatInterface({
     }
 
     const mime = att.mimeType || "";
+    const isRenderableDoc =
+      Boolean(att.fileId) &&
+      (isRenderablePreviewFile(att.name, mime) ||
+        mime.includes("pdf") ||
+        mime.startsWith("image/") ||
+        (att as any).documentType === "pdf");
+
+    if (isRenderableDoc) {
+      setPreviewUploadedFile({
+        name: att.name,
+        mimeType: mime,
+        fileId: att.fileId,
+      });
+      return;
+    }
+
     const isPdf = mime.includes("pdf") || att.name?.toLowerCase().endsWith(".pdf") || (att as any).documentType === "pdf";
     const isImage = mime.startsWith("image/");
 
@@ -2941,6 +3039,195 @@ export function ChatInterface({
   const MAX_FILE_SIZE_MB = 500;
   const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
   const MAX_IMAGE_PREVIEW_BYTES = 15 * 1024 * 1024;
+  const MAX_PDF_PREVIEW_BYTES = 20 * 1024 * 1024;
+  const MAX_DRAG_PREVIEW_FILES = 4;
+
+  const getUploadFileKey = useCallback((file: Pick<File, "name" | "size" | "type" | "lastModified">) => {
+    return `${file.name}::${file.size}::${file.type || ""}::${file.lastModified || 0}`;
+  }, []);
+
+  const readFileAsDataUrl = useCallback((file: File) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsDataURL(file);
+    });
+  }, []);
+
+  const canGenerateLocalPreview = useCallback((file: File) => {
+    const isImage = file.type.startsWith("image/");
+    const isPdfFile = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+
+    if (isImage) {
+      return file.size <= MAX_IMAGE_PREVIEW_BYTES;
+    }
+
+    if (isPdfFile) {
+      return file.size <= MAX_PDF_PREVIEW_BYTES;
+    }
+
+    return isRenderablePreviewFile(file.name, file.type);
+  }, [MAX_IMAGE_PREVIEW_BYTES, MAX_PDF_PREVIEW_BYTES]);
+
+  const requestLocalPreview = useCallback((file: File) => {
+    const cacheKey = getUploadFileKey(file);
+    const cached = localPreviewCacheRef.current.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const previewPromise = (async (): Promise<Pick<UploadedFile, "dataUrl" | "previewData" | "previewStatus">> => {
+      const isImage = file.type.startsWith("image/");
+      const isPdfFile = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+
+      try {
+        if (isImage && file.size <= MAX_IMAGE_PREVIEW_BYTES) {
+          try {
+            return {
+              dataUrl: await compressImageToDataUrl(file),
+              previewStatus: "ready",
+            };
+          } catch (error) {
+            console.warn("[ChatInterface] Falling back to FileReader image preview:", error);
+            return {
+              dataUrl: await readFileAsDataUrl(file),
+              previewStatus: "ready",
+            };
+          }
+        }
+
+        if (isPdfFile && file.size <= MAX_PDF_PREVIEW_BYTES) {
+          return {
+            dataUrl: await readFileAsDataUrl(file),
+            previewStatus: "ready",
+          };
+        }
+
+        if (isRenderablePreviewFile(file.name, file.type)) {
+          const formData = new FormData();
+          formData.append("file", file);
+
+          const response = await apiFetch("/api/files/preview-html", {
+            method: "POST",
+            body: formData,
+            timeoutMs: 45000,
+          });
+
+          if (!response.ok) {
+            throw new Error(`Preview request failed (${response.status})`);
+          }
+
+          const previewData = await response.json();
+          return {
+            previewData,
+            previewStatus: previewData?.type === "unknown" ? "error" : "ready",
+          };
+        }
+      } catch (error) {
+        console.warn("[ChatInterface] Local preview generation failed:", error);
+      }
+
+      return {
+        previewStatus: "error",
+      };
+    })();
+
+    localPreviewCacheRef.current.set(cacheKey, previewPromise);
+    return previewPromise;
+  }, [MAX_IMAGE_PREVIEW_BYTES, MAX_PDF_PREVIEW_BYTES, getUploadFileKey, readFileAsDataUrl]);
+
+  const primeUploadedFilePreview = useCallback((file: File, localKey: string) => {
+    if (!canGenerateLocalPreview(file)) {
+      return;
+    }
+
+    void requestLocalPreview(file).then((preview) => {
+      setUploadedFiles((prev) =>
+        prev.map((candidate) =>
+          candidate.localKey === localKey
+            ? {
+                ...candidate,
+                dataUrl: preview.dataUrl || candidate.dataUrl,
+                previewData: preview.previewData || candidate.previewData,
+                previewStatus: preview.previewStatus || candidate.previewStatus,
+              }
+            : candidate
+        )
+      );
+    });
+  }, [canGenerateLocalPreview, requestLocalPreview, setUploadedFiles]);
+
+  const clearDragPreview = useCallback(() => {
+    dragPreviewKeyRef.current = "";
+    dragPreviewRequestIdRef.current += 1;
+    setDragPreviewFiles([]);
+  }, []);
+
+  const captureDragPreview = useCallback((dataTransfer: DataTransfer | null | undefined) => {
+    const candidateFiles = peekFilesFromDataTransfer(dataTransfer, { maxFiles: MAX_DRAG_PREVIEW_FILES })
+      .map(normalizeFileForUpload);
+
+    const seen = new Set<string>();
+    const files = candidateFiles.filter((file) => {
+      const key = getUploadFileKey(file);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    if (files.length === 0) {
+      return;
+    }
+
+    const previewKey = files.map(getUploadFileKey).join("|");
+    if (dragPreviewKeyRef.current === previewKey) {
+      return;
+    }
+
+    dragPreviewKeyRef.current = previewKey;
+    const requestId = dragPreviewRequestIdRef.current + 1;
+    dragPreviewRequestIdRef.current = requestId;
+
+    setDragPreviewFiles(
+      files.map((file) => ({
+        id: `drag-${getUploadFileKey(file)}`,
+        localKey: getUploadFileKey(file),
+        name: file.name,
+        type: file.type,
+        mimeType: file.type,
+        size: file.size,
+        status: "ready",
+        previewStatus: canGenerateLocalPreview(file) ? "loading" : "idle",
+      })),
+    );
+
+    files.forEach((file) => {
+      if (!canGenerateLocalPreview(file)) {
+        return;
+      }
+
+      void requestLocalPreview(file).then((preview) => {
+        if (dragPreviewRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        const localKey = getUploadFileKey(file);
+        setDragPreviewFiles((prev) =>
+          prev.map((candidate) =>
+            candidate.localKey === localKey
+              ? {
+                  ...candidate,
+                  dataUrl: preview.dataUrl || candidate.dataUrl,
+                  previewData: preview.previewData || candidate.previewData,
+                  previewStatus: preview.previewStatus || candidate.previewStatus,
+                }
+              : candidate
+          )
+        );
+      });
+    });
+  }, [MAX_DRAG_PREVIEW_FILES, canGenerateLocalPreview, getUploadFileKey, requestLocalPreview]);
 
   const processFilesForUpload = async (files: File[]) => {
     const normalizedFiles = files.map(normalizeFileForUpload);
@@ -2949,7 +3236,7 @@ export function ChatInterface({
     const seen = new Set<string>();
     const dedupedFiles: File[] = [];
     for (const f of normalizedFiles) {
-      const key = `${f.name}::${f.size}::${f.type || ""}::${(f as any).lastModified || 0}`;
+      const key = getUploadFileKey(f);
       if (seen.has(key)) continue;
       seen.add(key);
       dedupedFiles.push(f);
@@ -2991,49 +3278,39 @@ export function ChatInterface({
 
     for (const file of validFiles) {
       const tempId = `temp-${Date.now()}-${Math.random().toString(36).substring(2)}`;
+      const localKey = getUploadFileKey(file);
       const isImage = file.type.startsWith("image/");
       const isExcel = [
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'application/vnd.ms-excel',
         'text/csv'
       ].includes(file.type) || !!file.name.match(/\.(xlsx|xls|csv)$/i);
-
-      let dataUrl: string | undefined;
       const isPdfFile = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-      if (isImage && file.size <= MAX_IMAGE_PREVIEW_BYTES) {
-        try {
-          dataUrl = await compressImageToDataUrl(file);
-        } catch (e) {
-          console.warn("Failed to compress image, falling back to basic FileReader", e);
-          dataUrl = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result as string);
-            reader.readAsDataURL(file);
-          });
-        }
-      } else if (isPdfFile && file.size <= 20 * 1024 * 1024) {
-        try {
-          dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result as string);
-            reader.onerror = reject;
-            reader.readAsDataURL(file);
-          });
-        } catch (e) {
-          console.warn("Failed to read PDF as dataUrl for preview", e);
-        }
-      }
+      const shouldAwaitInlinePreview =
+        (isImage && file.size <= MAX_IMAGE_PREVIEW_BYTES) ||
+        (isPdfFile && file.size <= MAX_PDF_PREVIEW_BYTES);
+
+      const inlinePreview = shouldAwaitInlinePreview
+        ? await requestLocalPreview(file)
+        : undefined;
 
       const tempFile: UploadedFile = {
         id: tempId,
+        localKey,
         name: file.name,
         type: file.type,
         mimeType: file.type,
         size: file.size,
         status: "uploading",
-        dataUrl,
+        dataUrl: inlinePreview?.dataUrl,
+        previewData: inlinePreview?.previewData,
+        previewStatus: inlinePreview?.previewStatus ?? (canGenerateLocalPreview(file) ? "loading" : "idle"),
       };
       setUploadedFiles((prev: any) => [...prev, tempFile]);
+
+      if (!shouldAwaitInlinePreview) {
+        primeUploadedFilePreview(file, localKey);
+      }
 
       const doUpload = async (): Promise<void> => {
         const retryFetch = async (fn: () => Promise<Response>, maxRetries = 3, timeoutMs = 15000): Promise<Response> => {
@@ -3155,7 +3432,7 @@ export function ChatInterface({
             variant: "destructive",
           });
           setUploadedFiles((prev: any[]) =>
-            prev.map((f: any) => (f.id === tempId || (f.id !== tempId && f.name === file.name && f.size === file.size) ? { ...f, status: "error", error: message } : f))
+            prev.map((f: any) => (f.localKey === localKey || f.id === tempId ? { ...f, status: "error", error: message } : f))
           );
         }
       };
@@ -3589,7 +3866,7 @@ export function ChatInterface({
     return new File([trimmed], `${label}-${timestamp}.txt`, { type: "text/plain" });
   };
 
-  const handlePaste = async (e: React.ClipboardEvent) => {
+  const handlePaste = async (e: React.ClipboardEvent<HTMLElement>) => {
     const clipboard = e.clipboardData;
     const items = clipboard?.items;
     if (!clipboard) return;
@@ -3702,6 +3979,7 @@ export function ChatInterface({
     const isFileOrUrlDrag = isFileOrUrlDragEvent(e.dataTransfer);
     if (!isFileOrUrlDrag) return;
     e.preventDefault();
+    captureDragPreview(e.dataTransfer);
   };
 
   const handleDragEnter = (e: React.DragEvent) => {
@@ -3710,6 +3988,7 @@ export function ChatInterface({
     e.preventDefault();
     dragCounterRef.current++;
     setIsDraggingOver(true);
+    captureDragPreview(e.dataTransfer);
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
@@ -3718,12 +3997,14 @@ export function ChatInterface({
     dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
     if (dragCounterRef.current === 0) {
       setIsDraggingOver(false);
+      clearDragPreview();
     }
   };
 
   const handleDrop = async (e: React.DragEvent) => {
     dragCounterRef.current = 0;
     setIsDraggingOver(false);
+    clearDragPreview();
 
     const dt = e.dataTransfer;
     const isFileOrUrlDrag = isFileOrUrlDragEvent(dt);
@@ -7250,6 +7531,7 @@ IMPORTANTE:
                   composerRef={composerRef}
                   fileInputRef={fileInputRef}
                   uploadedFiles={uploadedFiles}
+                  dragPreviewFiles={dragPreviewFiles}
                   removeFile={removeFile}
                   handleSubmit={handleSubmit}
                   handleFileUpload={handleFileUpload}
@@ -7597,6 +7879,7 @@ IMPORTANTE:
               composerRef={composerRef}
               fileInputRef={fileInputRef}
               uploadedFiles={uploadedFiles}
+              dragPreviewFiles={dragPreviewFiles}
               removeFile={removeFile}
               handleSubmit={handleSubmit}
               handleFileUpload={handleFileUpload}
@@ -7998,6 +8281,7 @@ IMPORTANTE:
                 type: previewUploadedFile.mimeType,
                 dataUrl: previewUploadedFile.dataUrl,
                 content: previewUploadedFile.content,
+                previewData: previewUploadedFile.previewData,
               }}
               onClose={() => setPreviewUploadedFile(null)}
             />

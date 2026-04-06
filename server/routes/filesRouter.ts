@@ -7,6 +7,7 @@ import { validateAttachmentSecurity } from "../lib/pareSecurityGuard";
 import { processDocument } from "../services/documentProcessing";
 import { chunkText, generateEmbeddingsBatch } from "../embeddingService";
 import { sanitizeFilename } from "../services/fileValidation";
+import { generateFilePreview } from "../services/filePreviewService";
 import crypto from "node:crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
@@ -991,6 +992,51 @@ export function createFilesRouter() {
   const router = Router();
   const objectStorageService = new ObjectStorageService();
   const uploadsDir = path.resolve(process.cwd(), "uploads");
+
+  router.post(
+    "/api/files/preview-html",
+    (req, res, next) => {
+      if (!enforceUploadRateLimit(req, res)) {
+        return;
+      }
+      next();
+    },
+    fastUpload.single("file"),
+    async (req: Request, res: Response) => {
+      const multerFile = req.file;
+
+      try {
+        if (!multerFile) {
+          return res.status(400).json({ error: "No file provided" });
+        }
+
+        const fileName = sanitizeFileName(multerFile.originalname || "preview");
+        const mimeType = normalizeUploadIntentMimeType(multerFile.mimetype, fileName) || multerFile.mimetype;
+
+        if (!ALLOWED_MIME_TYPES.includes(mimeType as any)) {
+          return res.status(400).json({ error: `Unsupported file type: ${mimeType}` });
+        }
+
+        if (multerFile.size === 0) {
+          return res.status(400).json({ error: "File is empty" });
+        }
+
+        const buffer = await fsSync.promises.readFile(multerFile.path);
+        const preview = await generateFilePreview(fileName, mimeType, buffer, {
+          sourcePath: multerFile.path,
+        });
+
+        return res.json(preview);
+      } catch (error: any) {
+        console.error("[FilePreview] Error:", error);
+        return res.status(500).json({ error: "Preview generation failed" });
+      } finally {
+        if (multerFile?.path) {
+          await fsSync.promises.unlink(multerFile.path).catch(() => {});
+        }
+      }
+    },
+  );
 
   router.post("/api/files/fast-upload", fastUpload.single("file"), async (req: Request, res: Response) => {
     try {
@@ -2521,11 +2567,9 @@ export function createFilesRouter() {
       if (!file) {
         return res.status(404).json({ error: "File not found" });
       }
-      if (process.env.NODE_ENV === "production") {
-        const actorId = getUploadActorId(req);
-        if (!canAccessFileForActor(file.userId, actorId)) {
-          return res.status(403).json({ error: "Access denied" });
-        }
+      const actorId = getUploadActorId(req);
+      if (!canAccessFileForActor(file.userId, actorId)) {
+        return res.status(403).json({ error: "Access denied" });
       }
 
       const fsSync = await import("fs");
@@ -2543,42 +2587,11 @@ export function createFilesRouter() {
         return res.status(404).json({ error: "File not found on disk" });
       }
 
-      const ext = (file.name || "").toLowerCase().split(".").pop();
       const buffer = await fsSync.promises.readFile(filePath);
-
-      if (ext === "docx" || file.type?.includes("wordprocessingml")) {
-        const mammoth = await import("mammoth");
-        const result = await mammoth.default.convertToHtml({ buffer });
-        return res.json({ html: result.value, type: "docx", messages: result.messages });
-      }
-
-      if (ext === "xlsx" || ext === "xls" || file.type?.includes("spreadsheetml")) {
-        const XLSX = await import("xlsx");
-        const workbook = XLSX.read(buffer, { type: "buffer" });
-        const sheets: Record<string, any[]> = {};
-        for (const sheetName of workbook.SheetNames) {
-          const sheet = workbook.Sheets[sheetName];
-          sheets[sheetName] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-        }
-        return res.json({ sheets, type: "xlsx", sheetNames: workbook.SheetNames });
-      }
-
-      if (ext === "pptx" || file.type?.includes("presentationml")) {
-        return res.json({ type: "pptx", message: "PowerPoint preview not supported yet" });
-      }
-
-      if (ext === "csv" || ext === "tsv") {
-        const text = buffer.toString("utf-8");
-        return res.json({ type: "text", content: text });
-      }
-
-      const textExtensions = ["txt", "md", "json", "xml", "log", "js", "ts", "tsx", "jsx", "py", "html", "css", "yaml", "yml", "sh", "sql", "env"];
-      if (textExtensions.includes(ext || "")) {
-        const text = buffer.toString("utf-8");
-        return res.json({ type: "text", content: text });
-      }
-
-      return res.json({ type: "unknown", message: "Preview not available" });
+      const preview = await generateFilePreview(file.name || "file", file.type || "", buffer, {
+        sourcePath: filePath,
+      });
+      return res.json(preview);
     } catch (error: any) {
       console.error("Error generating preview:", error);
       res.status(500).json({ error: "Failed to generate preview" });

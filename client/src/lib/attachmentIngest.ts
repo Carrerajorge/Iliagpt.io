@@ -306,6 +306,35 @@ export async function extractFilesFromDataTransfer(
   return out.length > 0 ? out : Array.from(dataTransfer.files || []);
 }
 
+/**
+ * Lightweight extraction for drag-over previews. Avoids directory traversal so the UI can
+ * show candidate files immediately while the user is still hovering over the composer.
+ */
+export function peekFilesFromDataTransfer(
+  dataTransfer: DataTransfer | null | undefined,
+  { maxFiles = 4 }: { maxFiles?: number } = {}
+): File[] {
+  if (!dataTransfer) return [];
+
+  const quickFiles: File[] = [];
+  const items = Array.from(dataTransfer.items || []);
+
+  for (const item of items) {
+    if (quickFiles.length >= maxFiles) break;
+    if ((item as DataTransferItem).kind !== "file") continue;
+    const file = item.getAsFile?.();
+    if (file) {
+      quickFiles.push(file);
+    }
+  }
+
+  if (quickFiles.length > 0) {
+    return quickFiles.slice(0, maxFiles);
+  }
+
+  return Array.from(dataTransfer.files || []).slice(0, maxFiles);
+}
+
 export async function compressImageToDataUrl(file: File, maxWidth = 1920, maxHeight = 1080, quality = 0.8): Promise<string> {
   return new Promise((resolve, reject) => {
     let settled = false;
