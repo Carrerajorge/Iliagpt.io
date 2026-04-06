@@ -164,6 +164,20 @@ export function getDeliverables(intentResult: IntentResult, message?: string): (
             break;
     }
 
+    const outputFormatToDeliverable: Record<string, 'word' | 'excel' | 'ppt' | 'pdf'> = {
+        docx: 'word',
+        xlsx: 'excel',
+        pptx: 'ppt',
+        pdf: 'pdf',
+    };
+
+    const outputDeliverable = intentResult.output_format
+        ? outputFormatToDeliverable[intentResult.output_format]
+        : undefined;
+    if (outputDeliverable && !deliverables.includes(outputDeliverable)) {
+        deliverables.push(outputDeliverable);
+    }
+
     // Check for compound requests in slots
     const topic = intentResult.slots.topic?.toLowerCase() || '';
     const combined = `${topic} ${message || ''}`.toLowerCase();
@@ -176,6 +190,9 @@ export function getDeliverables(intentResult: IntentResult, message?: string): (
     }
     if (combined.includes('word') || combined.includes('documento') || combined.includes('document') || combined.includes('docx')) {
         if (!deliverables.includes('word')) deliverables.push('word');
+    }
+    if (/\bpdf\b/i.test(combined)) {
+        if (!deliverables.includes('pdf')) deliverables.push('pdf');
     }
 
     return deliverables;
@@ -233,7 +250,14 @@ async function saveArtifact(
         });
 
         const ext = path.extname(storedFilename).replace(/^\./, "");
-        const type = artifact.type === "word" ? "document" : artifact.type === "excel" ? "spreadsheet" : artifact.type === "ppt" ? "presentation" : "other";
+        const type =
+            artifact.type === "word" || artifact.type === "pdf"
+                ? "document"
+                : artifact.type === "excel"
+                    ? "spreadsheet"
+                    : artifact.type === "ppt"
+                        ? "presentation"
+                        : "other";
 
         const saved = await libraryService.saveFileMetadata(userId, upload.objectPath, {
             name: storedFilename,

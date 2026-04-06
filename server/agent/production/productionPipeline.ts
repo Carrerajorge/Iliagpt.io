@@ -27,6 +27,7 @@ import type {
     ProductionEventHandler,
     EvidencePack,
     ContentSpec,
+    Section,
     QAReport,
     TraceMap,
     Artifact,
@@ -46,8 +47,8 @@ import { contentAgent } from '../langgraph/agents/ContentAgent';
 // Import renderers
 import { createExcelFromData } from '../../services/advancedExcelBuilder';
 import { generateWordFromMarkdown } from '../../services/markdownToDocx';
-import { generateProfessionalDocument, detectDocumentType } from '../../services/docxCodeGenerator';
-import { EnterpriseDocumentService } from '../../services/enterpriseDocumentService';
+import { generateProfessionalDocument } from '../../services/docxCodeGenerator';
+import { EnterpriseDocumentService, type DocumentSection as EnterpriseDocumentSection } from '../../services/enterpriseDocumentService';
 import { academicSearchFallback } from '../../integrations/academicSearch';
 
 // ============================================================================
@@ -632,33 +633,64 @@ export class ProductionPipeline extends EventEmitter {
 
         const deliverables = this.workOrder.deliverables;
         let completed = 0;
+        const documentSections = this.contentSpecToDocumentSections();
+        const documentService = EnterpriseDocumentService.create('professional');
 
         // Render Word
         if (deliverables.includes('word')) {
             this.updateStage('render', 'running', (completed / deliverables.length) * 100, 'Generating Word document...');
 
-            let docxBuffer: Buffer;
+            let docxBuffer: Buffer | null = null;
             let wordCount = 0;
+            const templateDocType = this.getTemplateDrivenDocxType();
 
-            try {
-                // Use direct code generation for professional documents (forms, solicitudes, contratos)
-                const docType = detectDocumentType(this.workOrder.topic);
-                console.log(`[ProductionPipeline] Using direct DOCX generation for type: ${docType}`);
+            if (templateDocType) {
+                try {
+                    console.log(`[ProductionPipeline] Using template-driven DOCX generation for type: ${templateDocType}`);
+                    const result = await generateProfessionalDocument(
+                        this.workOrder.topic,
+                        templateDocType
+                    );
+                    docxBuffer = result.buffer;
+                    wordCount = 200;
+                    console.log(`[ProductionPipeline] Template-driven DOCX generation successful: ${docxBuffer.length} bytes`);
+                } catch (error: any) {
+                    console.warn(`[ProductionPipeline] Template-driven DOCX generation failed, switching to structured renderer: ${error.message}`);
+                }
+            }
 
-                const result = await generateProfessionalDocument(
-                    this.workOrder.topic,
-                    docType
-                );
-                docxBuffer = result.buffer;
-                wordCount = 200; // Approximate for form documents
+            if (!docxBuffer) {
+                try {
+                    const wordResult = await documentService.generateDocument({
+                        type: 'docx',
+                        title: this.workOrder.topic,
+                        subtitle: this.contentSpec?.abstract,
+                        author: 'ILIAGPT AI',
+                        sections: documentSections,
+                        options: {
+                            includeTableOfContents: documentSections.length > 1,
+                            includePageNumbers: true,
+                            includeHeader: true,
+                            includeFooter: true,
+                        },
+                    });
 
-                console.log(`[ProductionPipeline] Direct DOCX generation successful: ${docxBuffer.length} bytes`);
-            } catch (error: any) {
-                // Fallback to markdown conversion if code generation fails
-                console.warn(`[ProductionPipeline] Direct generation failed, falling back to markdown: ${error.message}`);
+                    if (!wordResult.success || !wordResult.buffer) {
+                        throw new Error(wordResult.error || 'unknown error');
+                    }
+
+                    docxBuffer = wordResult.buffer;
+                    wordCount = this.countWordsFromSections(documentSections);
+                    console.log(`[ProductionPipeline] Structured DOCX generation successful: ${docxBuffer.length} bytes`);
+                } catch (error: any) {
+                    console.warn(`[ProductionPipeline] Structured DOCX generation failed, falling back to markdown: ${error.message}`);
+                }
+            }
+
+            if (!docxBuffer) {
                 const markdown = this.contentSpecToMarkdown();
                 docxBuffer = await generateWordFromMarkdown(this.workOrder.topic, markdown);
-                wordCount = markdown.split(/\s+/).length;
+                wordCount = markdown.split(/\s+/).filter(Boolean).length;
             }
 
             this.artifacts.push({
@@ -701,6 +733,41 @@ export class ProductionPipeline extends EventEmitter {
                 metadata: {
                     rows: Math.max(0, excelData.length - 1),
                     columns: excelData[0]?.length || 0,
+                },
+            });
+
+            completed++;
+        }
+
+        // Render PDF
+        if (deliverables.includes('pdf')) {
+            this.updateStage('render', 'running', (completed / deliverables.length) * 100, 'Generating PDF document...');
+
+            const pdfResult = await documentService.generateDocument({
+                type: 'pdf',
+                title: this.workOrder.topic,
+                subtitle: this.contentSpec?.abstract,
+                author: 'ILIAGPT AI',
+                sections: documentSections,
+                options: {
+                    includePageNumbers: true,
+                    includeHeader: true,
+                    includeFooter: true,
+                },
+            });
+
+            if (!pdfResult.success || !pdfResult.buffer) {
+                throw new Error(`PDF render failed: ${pdfResult.error || 'unknown error'}`);
+            }
+
+            this.artifacts.push({
+                type: 'pdf',
+                filename: `${this.sanitizeFilename(this.workOrder.topic)}.pdf`,
+                buffer: pdfResult.buffer,
+                mimeType: 'application/pdf',
+                size: pdfResult.buffer.length,
+                metadata: {
+                    sections: documentSections.length,
                 },
             });
 
@@ -906,6 +973,106 @@ export class ProductionPipeline extends EventEmitter {
 
         console.log(`[ProductionPipeline] Generated markdown total length: ${md.length}`);
         return md;
+    }
+
+    private contentSpecToDocumentSections(): EnterpriseDocumentSection[] {
+        const sections: EnterpriseDocumentSection[] = [];
+
+        if (this.contentSpec?.abstract?.trim()) {
+            sections.push({
+                id: 'executive-summary',
+                title: 'Resumen Ejecutivo',
+                content: this.contentSpec.abstract.trim(),
+                level: 1,
+            });
+        }
+
+        for (const [index, section] of (this.contentSpec?.sections || []).entries()) {
+            const converted = this.mapSectionToDocumentSection(section, index);
+            if (converted) {
+                sections.push(converted);
+            }
+        }
+
+        if (sections.length === 0) {
+            sections.push({
+                id: 'document-body',
+                title: this.workOrder.topic,
+                content: this.workOrder.description || this.workOrder.topic,
+                level: 1,
+            });
+        }
+
+        return sections;
+    }
+
+    private mapSectionToDocumentSection(section: Section, index: number): EnterpriseDocumentSection | null {
+        const title = (section.title || this.humanizeSectionTitle(section.type, index)).trim();
+        const content = (section.content || '').trim();
+        const subsections = (section.children || [])
+            .map((child, childIndex) => this.mapSectionToDocumentSection(child, childIndex))
+            .filter((value): value is EnterpriseDocumentSection => Boolean(value));
+
+        if (!title && !content && subsections.length === 0) {
+            return null;
+        }
+
+        return {
+            id: section.id || `section-${index + 1}`,
+            title: title || `Sección ${index + 1}`,
+            content: content || 'Contenido generado automáticamente.',
+            level: this.mapSectionLevel(section.type),
+            subsections: subsections.length > 0 ? subsections : undefined,
+        };
+    }
+
+    private mapSectionLevel(type: Section['type']): 1 | 2 | 3 {
+        if (type === 'h2') return 2;
+        if (type === 'h3') return 3;
+        return 1;
+    }
+
+    private humanizeSectionTitle(type: Section['type'], index: number): string {
+        switch (type) {
+            case 'quote':
+                return `Cita ${index + 1}`;
+            case 'table':
+                return `Tabla ${index + 1}`;
+            case 'figure':
+                return `Figura ${index + 1}`;
+            case 'list':
+                return `Lista ${index + 1}`;
+            case 'citation':
+                return `Referencia ${index + 1}`;
+            default:
+                return `Sección ${index + 1}`;
+        }
+    }
+
+    private countWordsFromSections(sections: EnterpriseDocumentSection[]): number {
+        let total = 0;
+
+        for (const section of sections) {
+            total += `${section.title} ${section.content}`.split(/\s+/).filter(Boolean).length;
+            if (section.subsections?.length) {
+                total += this.countWordsFromSections(section.subsections);
+            }
+        }
+
+        return total;
+    }
+
+    private getTemplateDrivenDocxType(): string | null {
+        const topic = this.workOrder.topic.toLowerCase();
+        const explicitTemplatePatterns: Array<{ pattern: RegExp; type: string }> = [
+            { pattern: /\bcontrato\b|\bacuerdo\b/i, type: 'contrato' },
+            { pattern: /\bsolicitud\b|\bpermiso\b|\boficio\b|\bmemorial\b|\bcarta\b/i, type: 'solicitud' },
+            { pattern: /\bfactura\b|\bcotizaci[oó]n\b/i, type: 'factura' },
+            { pattern: /\bcurriculum\b|\bcurr[ií]culum\b|\bcv\b/i, type: 'cv' },
+        ];
+
+        const match = explicitTemplatePatterns.find(({ pattern }) => pattern.test(topic));
+        return match?.type || null;
     }
 
     private sanitizeFilename(name: string): string {

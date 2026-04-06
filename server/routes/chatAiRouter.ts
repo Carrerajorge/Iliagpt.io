@@ -243,12 +243,22 @@ async function resolveModelStream(
 ): Promise<AsyncIterable<StreamChunkEnvelope>> {
   const MAX_STREAM_ATTEMPTS = 3;
   let lastError: unknown;
+  const gateway = llmGateway as any;
   const requestId = (options as any).requestId || `stream_${Date.now()}`;
   const promptLength = messages.reduce((acc: number, m: any) => acc + String(m?.content || "").length, 0);
 
   for (let attempt = 0; attempt < MAX_STREAM_ATTEMPTS; attempt++) {
     try {
-      const rawStream = llmGateway.streamChat(messages, options as any);
+      if (typeof gateway.streamChat !== "function") {
+        if (typeof gateway.chat === "function") {
+          console.warn("[Stream] llmGateway.streamChat unavailable; falling back to llmGateway.chat");
+          const chatResponse = await gateway.chat(messages, options as any);
+          return chunkStreamFromChatResponse(chatResponse);
+        }
+        throw new Error("llmGateway has no compatible stream or chat method");
+      }
+
+      const rawStream = gateway.streamChat(messages, options as any);
 
       if (isAsyncIterable<StreamChunkEnvelope>(rawStream)) {
         return withStreamGuard(rawStream, requestId, promptLength);
@@ -292,9 +302,19 @@ async function resolveModelStream(
   }
 
   try {
-    console.warn("[Stream] All stream attempts failed; falling back to llmGateway.guaranteeResponse");
-    const fallbackResponse = await llmGateway.guaranteeResponse(messages, { ...(options as any), skipCache: true, enableFallback: true });
-    return chunkStreamFromChatResponse(fallbackResponse);
+    if (typeof gateway.guaranteeResponse === "function") {
+      console.warn("[Stream] All stream attempts failed; falling back to llmGateway.guaranteeResponse");
+      const fallbackResponse = await gateway.guaranteeResponse(messages, { ...(options as any), skipCache: true, enableFallback: true });
+      return chunkStreamFromChatResponse(fallbackResponse);
+    }
+
+    if (typeof gateway.chat === "function") {
+      console.warn("[Stream] All stream attempts failed; guaranteeResponse unavailable, falling back to llmGateway.chat");
+      const fallbackResponse = await gateway.chat(messages, { ...(options as any), skipCache: true, enableFallback: true });
+      return chunkStreamFromChatResponse(fallbackResponse);
+    }
+
+    throw new Error("llmGateway has no compatible fallback method");
   } catch (chatError) {
     console.error("[Stream] Final guaranteeResponse fallback also failed", chatError);
     throw lastError || chatError;
@@ -5202,6 +5222,14 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             userMessage: normalizedUserQuery,
             attachments: Array.isArray(sanitizedRunAttachments) ? sanitizedRunAttachments : [],
             allowedScopes: parsedSkillScopes,
+            intentHint: intentResult
+              ? {
+                intent: intentResult.intent,
+                confidence: intentResult.confidence,
+                output_format: intentResult.output_format,
+                language_detected: intentResult.language_detected,
+              }
+              : undefined,
             autoCreate: true,
             maxRetries: 1,
             emitTrace: emitSkillTrace,
