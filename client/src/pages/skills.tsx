@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -34,69 +35,103 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import {
-  FileSpreadsheet,
-  FileText,
-  Presentation,
-  FileType,
-  Database,
-  Code,
-  Globe,
-  Mail,
-  MessageCircle,
+  Activity,
+  AlertTriangle,
+  Anchor,
+  ArrowLeft,
+  ArrowRightCircle,
+  BarChart2,
+  BarChart3,
+  Blocks,
+  BookOpen,
+  Bot,
+  Box,
+  Briefcase,
+  Bug,
+  Calendar,
   CalendarDays,
   Calculator,
-  BarChart3,
-  Search,
-  Zap,
-  Check,
-  Plus,
-  MoreVertical,
-  Pencil,
-  Trash2,
-  Copy,
-  Sparkles,
-  ArrowLeft,
-  Play,
-  Pause,
-  Settings2,
-  BookOpen,
-  Speaker, Music, FileText, LayoutTemplate, MessageSquare, ListTodo, Frame, Phone, Cloud, Box, Server, CheckSquare, RefreshCcw, UploadCloud, Paintbrush, GitBranch, AlertTriangle, Activity, ShieldAlert, CreditCard, Send, Mail, Briefcase, Users, Ticket, ZoomIn, Video, Globe, Calendar, FormInput, LineChart, PieChart, TrendingUp, BarChart2, Layers, Database, Lock, Search, List, ArrowRight, ArrowRightCircle, Anchor, PlayCircle, FastForward, Cpu, Compass, HardDrive, Wifi, Eye, Edit3, Shield, Bug,
-
-  KeyRound,
-  FileEdit,
-  ListTodo,
-  StickyNote,
-  Rss,
-  Speaker,
-  MessageSquare,
   Camera,
-  Layers,
-  Terminal,
-  Snowflake,
-  Bot,
-  Flame,
-  Image as ImageIcon,
-  LayoutTemplate,
-  Mic,
-  Music,
-  ShoppingBag,
-  Eye,
-  Activity,
-  Phone,
-
-  Download,
+  Check,
   CheckCircle2,
-  XCircle,
+  CheckSquare,
+  Cloud,
+  Code,
+  Compass,
+  Copy,
+  Cpu,
+  CreditCard,
+  Database,
+  Download,
+  Eye,
+  FastForward,
+  FileEdit,
+  FileSpreadsheet,
+  FileText,
+  FileType,
+  Flame,
+  Frame,
+  GitBranch,
+  Globe,
+  Image as ImageIcon,
+  KeyRound,
+  LayoutTemplate,
+  Layers,
+  LineChart,
+  ListTodo,
   Loader2,
-  AlertTriangle,
+  Mail,
+  MessageCircle,
+  MessageSquare,
+  Mic,
+  MoreVertical,
+  Music,
   Package,
-  Blocks,
+  Paintbrush,
+  Pause,
+  Pencil,
+  Phone,
+  PieChart,
+  Play,
+  PlayCircle,
+  Plus,
+  Presentation,
+  RefreshCcw,
+  Rss,
+  Search,
+  Server,
+  Settings2,
+  ShieldAlert,
+  ShoppingBag,
+  Snowflake,
+  Sparkles,
+  Speaker,
+  StickyNote,
+  Terminal,
+  Ticket,
+  Trash2,
+  UploadCloud,
+  Users,
+  Video,
+  Wifi,
+  XCircle,
+  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiFetch } from "@/lib/apiClient";
 import { toast } from "sonner";
 import { useUserSkills, UserSkill } from "@/hooks/use-user-skills";
 import { SkillBuilder } from "@/components/skill-builder";
 import { BUNDLED_SKILLS } from "@/data/bundledSkills";
+import {
+  createCatalogOnlyRuntimeSkill,
+  SKILL_CERTIFICATION_LABELS,
+  SKILL_RUNTIME_STATUS_LABELS,
+  type OpenClawSkillsRuntimeSnapshot,
+  type RuntimeSkillDescriptor,
+  type SkillCertificationStatus,
+  type SkillRuntimeStatus,
+} from "@shared/skillsRuntime";
 interface BuiltInSkill {
   id: string;
   name: string;
@@ -380,10 +415,115 @@ const EXTRA_SKILLS: BuiltInSkill[] = BUNDLED_SKILLS.map(skill => ({
 }));
 
 const BUILT_IN_SKILLS: BuiltInSkill[] = [...BASE_BUILT_IN_SKILLS, ...EXTRA_SKILLS];
+const BUILT_IN_SKILL_IDS = new Set(BUILT_IN_SKILLS.map((skill) => skill.id));
+const BUILT_IN_SKILL_NAMES = new Set(BUILT_IN_SKILLS.map((skill) => skill.name.toLowerCase()));
+const EXTRA_SKILL_IDS = new Set(BUNDLED_SKILLS.map((skill) => skill.id));
+
+async function fetchOpenClawRuntimeSnapshot(): Promise<OpenClawSkillsRuntimeSnapshot> {
+  const res = await apiFetch("/api/skills/openclaw/runtime", { method: "GET" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || `Error ${res.status}`);
+  }
+  return await res.json() as OpenClawSkillsRuntimeSnapshot;
+}
+
+function runtimeStatusBadgeClass(status: SkillRuntimeStatus): string {
+  switch (status) {
+    case "ready":
+      return "border-green-200 text-green-700 bg-green-50";
+    case "needs_setup":
+      return "border-amber-200 text-amber-700 bg-amber-50";
+    case "disabled":
+      return "border-slate-200 text-slate-600 bg-slate-50";
+    case "catalog_only":
+      return "border-blue-200 text-blue-700 bg-blue-50";
+    case "error":
+      return "border-red-200 text-red-700 bg-red-50";
+    default:
+      return "";
+  }
+}
+
+function certificationBadgeClass(status: SkillCertificationStatus): string {
+  switch (status) {
+    case "verified":
+      return "border-emerald-200 text-emerald-700 bg-emerald-50";
+    case "runtime":
+      return "border-violet-200 text-violet-700 bg-violet-50";
+    case "uncertified":
+      return "border-zinc-200 text-zinc-600 bg-zinc-50";
+    default:
+      return "";
+  }
+}
+
+function vendorBadgeClass(vendor?: string): string {
+  if (vendor === "anthropic") {
+    return "border-orange-200 text-orange-700 bg-orange-50";
+  }
+  return "border-zinc-200 text-zinc-600 bg-zinc-50";
+}
+
+function vendorLabel(vendor?: string): string | null {
+  if (vendor === "anthropic") {
+    return "Anthropic OSS";
+  }
+  return vendor?.trim() || null;
+}
+
+function getRuntimeDiscoveredSkillIcon(runtimeSkill: RuntimeSkillDescriptor): React.ReactNode {
+  const bundledMatch =
+    BUNDLED_SKILLS.find((item) => item.id === runtimeSkill.id) ||
+    BUNDLED_SKILLS.find((item) => item.name.toLowerCase() === runtimeSkill.name.toLowerCase());
+  if (bundledMatch) {
+    return getExtraSkillIcon(bundledMatch.id);
+  }
+  if (runtimeSkill.vendor === "anthropic") {
+    return <Blocks className="h-6 w-6 text-orange-600" />;
+  }
+  return <Sparkles className="h-6 w-6 text-emerald-600" />;
+}
+
+function toRuntimeBuiltInSkill(runtimeSkill: RuntimeSkillDescriptor): BuiltInSkill {
+  const bundledMatch =
+    BUNDLED_SKILLS.find((item) => item.id === runtimeSkill.id) ||
+    BUNDLED_SKILLS.find((item) => item.name.toLowerCase() === runtimeSkill.name.toLowerCase());
+  const fallbackFeatures =
+    runtimeSkill.tools?.length
+      ? runtimeSkill.tools.map((tool) => `Tool disponible: ${tool}`)
+      : runtimeSkill.vendor === "anthropic"
+        ? ["Catálogo detectado desde anthropics/skills"]
+        : [];
+
+  return {
+    id: runtimeSkill.id,
+    name: runtimeSkill.name,
+    description:
+      runtimeSkill.description ||
+      bundledMatch?.description ||
+      `Skill detectada dinámicamente desde ${runtimeSkill.source}.`,
+    category:
+      bundledMatch?.category === "automation"
+        ? "integrations"
+        : ((bundledMatch?.category as BuiltInSkill["category"] | undefined) ?? "custom"),
+    icon: getRuntimeDiscoveredSkillIcon(runtimeSkill),
+    enabled: runtimeSkill.enabled ?? runtimeSkill.status === "ready",
+    builtIn: true,
+    features: bundledMatch?.features?.length ? bundledMatch.features : fallbackFeatures,
+    triggers: [],
+  };
+}
 
 export default function SkillsPage() {
   const [, setLocation] = useLocation();
   const { skills: userSkills, createSkill, updateSkill, deleteSkill, toggleSkill: toggleUserSkill, duplicateSkill } = useUserSkills();
+  const runtimeQuery = useQuery({
+    queryKey: ["skills", "openclaw-runtime"],
+    queryFn: fetchOpenClawRuntimeSnapshot,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+  });
   const [builtInStates, setBuiltInStates] = useState<Record<string, boolean>>(
     Object.fromEntries(BUILT_IN_SKILLS.map(s => [s.id, s.enabled]))
   );
@@ -403,6 +543,33 @@ export default function SkillsPage() {
     catalogTotal: number;
   } | null>(null);
   const [fluidError, setFluidError] = useState<string | null>(null);
+  const runtimeSkillMap = useMemo(
+    () => new Map((runtimeQuery.data?.skills || []).map((skill) => [skill.id, skill])),
+    [runtimeQuery.data],
+  );
+  const runtimeSkillNameMap = useMemo(
+    () => new Map((runtimeQuery.data?.skills || []).map((skill) => [skill.name.toLowerCase(), skill])),
+    [runtimeQuery.data],
+  );
+  const runtimeDiscoveredSkills = useMemo(() => {
+    const userSkillIds = new Set(userSkills.map((skill) => skill.id));
+    const userSkillNames = new Set(userSkills.map((skill) => skill.name.toLowerCase()));
+
+    return (runtimeQuery.data?.skills || [])
+      .filter((skill) => !BUILT_IN_SKILL_IDS.has(skill.id))
+      .filter((skill) => !BUILT_IN_SKILL_NAMES.has(skill.name.toLowerCase()))
+      .filter((skill) => !userSkillIds.has(skill.id))
+      .filter((skill) => !userSkillNames.has(skill.name.toLowerCase()))
+      .map(toRuntimeBuiltInSkill);
+  }, [runtimeQuery.data, userSkills]);
+  const builtInSkills = useMemo(
+    () => [...BUILT_IN_SKILLS, ...runtimeDiscoveredSkills],
+    [runtimeDiscoveredSkills],
+  );
+  const builtInSkillMap = useMemo(
+    () => new Map(builtInSkills.map((skill) => [skill.id, skill])),
+    [builtInSkills],
+  );
 
   const handleInstallFluidPack = useCallback(async () => {
     setFluidInstalling(true);
@@ -423,8 +590,9 @@ export default function SkillsPage() {
       if (data.importedCount > 0) {
         toast.success(`${data.importedCount} skills importadas exitosamente`);
       }
-    } catch (err: any) {
-      setFluidError(err?.message || "Error al instalar el pack");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Error al instalar el pack";
+      setFluidError(message);
       toast.error("Error al instalar el pack Fluid 20");
     } finally {
       setFluidInstalling(false);
@@ -432,17 +600,18 @@ export default function SkillsPage() {
   }, []);
 
   const allSkills = useMemo(() => {
-    const builtIn: Skill[] = BUILT_IN_SKILLS.map(s => ({
+    const builtIn: Skill[] = builtInSkills.map(s => ({
       ...s,
       enabled: builtInStates[s.id] ?? s.enabled
     }));
     return [...builtIn, ...userSkills.map(s => ({ ...s, triggers: [] }))];
-  }, [userSkills, builtInStates]);
+  }, [builtInSkills, userSkills, builtInStates]);
 
   const toggleBuiltInSkill = (skillId: string) => {
     setBuiltInStates(prev => {
-      const newState = { ...prev, [skillId]: !prev[skillId] };
-      const skill = BUILT_IN_SKILLS.find(s => s.id === skillId);
+      const skill = builtInSkillMap.get(skillId);
+      const currentValue = prev[skillId] ?? skill?.enabled ?? false;
+      const newState = { ...prev, [skillId]: !currentValue };
       toast.success(newState[skillId] ? `${skill?.name} activado` : `${skill?.name} desactivado`);
       return newState;
     });
@@ -466,6 +635,7 @@ export default function SkillsPage() {
 
   const enabledCount = allSkills.filter(s => s.enabled).length;
   const customCount = userSkills.length;
+  const runtimeReadyCount = (runtimeQuery.data?.skills || []).filter((skill) => skill.status === "ready").length;
 
   const categoryLabels: Record<string, string> = {
     all: "Todos",
@@ -514,6 +684,25 @@ export default function SkillsPage() {
     return <Sparkles className="h-6 w-6 text-purple-500" />;
   };
 
+  const getRuntimeInfo = useCallback((skill: Skill): RuntimeSkillDescriptor | null => {
+    if (!skill.builtIn) {
+      return null;
+    }
+    const runtimeInfo = runtimeSkillMap.get(skill.id) || runtimeSkillNameMap.get(skill.name.toLowerCase());
+    if (runtimeInfo) {
+      return runtimeInfo;
+    }
+    if (!EXTRA_SKILL_IDS.has(skill.id)) {
+      return null;
+    }
+    const bundledSkill =
+      BUNDLED_SKILLS.find((item) => item.id === skill.id) ||
+      BUNDLED_SKILLS.find((item) => item.name.toLowerCase() === skill.name.toLowerCase());
+    return bundledSkill ? createCatalogOnlyRuntimeSkill(bundledSkill) : null;
+  }, [runtimeSkillMap, runtimeSkillNameMap]);
+
+  const selectedRuntimeInfo = selectedSkill ? getRuntimeInfo(selectedSkill) : null;
+
   return (
     <div className="h-screen flex flex-col bg-background">
       <header className="sticky top-0 z-20 backdrop-blur-xl bg-background/80 border-b">
@@ -549,6 +738,22 @@ export default function SkillsPage() {
                 {customCount} personalizados
               </Badge>
             )}
+            {runtimeQuery.data && (
+              <Badge
+                variant="outline"
+                className={cn(
+                  "gap-1",
+                  runtimeQuery.data.runtimeAvailable
+                    ? "border-green-200 text-green-700"
+                    : "border-amber-200 text-amber-700",
+                )}
+              >
+                <Server className="h-3 w-3" />
+                {runtimeQuery.data.runtimeAvailable
+                  ? `${runtimeReadyCount} listos en runtime`
+                  : "Runtime no disponible"}
+              </Badge>
+            )}
             <Button
               onClick={() => { setFluidResult(null); setFluidError(null); setFluidInstallOpen(true); }}
               variant="outline"
@@ -569,130 +774,161 @@ export default function SkillsPage() {
       <div className="flex-1 flex overflow-hidden">
         <div className="flex-1 flex flex-col">
           <div className="px-6 py-4 border-b bg-muted/20">
-            <div className="max-w-7xl mx-auto flex items-center gap-4">
-              <div className="relative flex-1 max-w-md">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Buscar skills..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-9 bg-background"
-                  data-testid="skills-search-input"
-                />
+            <div className="max-w-7xl mx-auto space-y-3">
+              <div className="flex items-center gap-4">
+                <div className="relative flex-1 max-w-md">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Buscar skills..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-9 bg-background"
+                    data-testid="skills-search-input"
+                  />
+                </div>
+                <Tabs value={selectedCategory} onValueChange={setSelectedCategory}>
+                  <TabsList className="bg-background">
+                    {Object.entries(categoryLabels).map(([key, label]) => (
+                      <TabsTrigger key={key} value={key} data-testid={`tab-${key}`}>
+                        {label}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
               </div>
-              <Tabs value={selectedCategory} onValueChange={setSelectedCategory}>
-                <TabsList className="bg-background">
-                  {Object.entries(categoryLabels).map(([key, label]) => (
-                    <TabsTrigger key={key} value={key} data-testid={`tab-${key}`}>
-                      {label}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
+              {runtimeQuery.data && !runtimeQuery.data.runtimeAvailable && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                  <div>
+                    <p className="font-medium">Mostrando catálogo sin runtime activo</p>
+                    <p className="text-xs text-amber-700">
+                      {runtimeQuery.data.message || "Las skills extra aparecen listadas, pero no hay un runtime ejecutable conectado en este momento."}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
           <ScrollArea className="flex-1">
             <div className="max-w-7xl mx-auto p-6">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredSkills.map((skill) => (
-                  <Card
-                    key={skill.id}
-                    className={cn(
-                      "group cursor-pointer transition-all duration-200 hover:shadow-md",
-                      skill.enabled
-                        ? "border-primary/20 bg-card"
-                        : "bg-muted/30 border-transparent",
-                      selectedSkill?.id === skill.id && "ring-2 ring-primary"
-                    )}
-                    onClick={() => setSelectedSkill(skill)}
-                    data-testid={`skill-card-${skill.id}`}
-                  >
-                    <CardContent className="p-4">
-                      <div className="flex items-start gap-4">
-                        <div className={cn(
-                          "p-3 rounded-xl transition-colors",
-                          skill.enabled ? "bg-muted" : "bg-muted/50"
-                        )}>
-                          {getSkillIcon(skill)}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between mb-1">
-                            <h3 className="font-semibold truncate">{skill.name}</h3>
-                            <div className="flex items-center gap-1">
-                              {!skill.builtIn && (
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-7 w-7 opacity-0 group-hover:opacity-100"
-                                      onClick={(e) => e.stopPropagation()}
-                                    >
-                                      <MoreVertical className="h-4 w-4" />
-                                    </Button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end">
-                                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleEditSkill(skill as UserSkill); }}>
-                                      <Pencil className="h-4 w-4 mr-2" />
-                                      Editar
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); duplicateSkill(skill.id); toast.success("Skill duplicado"); }}>
-                                      <Copy className="h-4 w-4 mr-2" />
-                                      Duplicar
-                                    </DropdownMenuItem>
-                                    <DropdownMenuSeparator />
-                                    <DropdownMenuItem
-                                      className="text-red-600"
-                                      onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(skill.id); }}
-                                    >
-                                      <Trash2 className="h-4 w-4 mr-2" />
-                                      Eliminar
-                                    </DropdownMenuItem>
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
+                {filteredSkills.map((skill) => {
+                  const runtimeInfo = getRuntimeInfo(skill);
+                  return (
+                    <Card
+                      key={skill.id}
+                      className={cn(
+                        "group cursor-pointer transition-all duration-200 hover:shadow-md",
+                        skill.enabled
+                          ? "border-primary/20 bg-card"
+                          : "bg-muted/30 border-transparent",
+                        selectedSkill?.id === skill.id && "ring-2 ring-primary"
+                      )}
+                      onClick={() => setSelectedSkill(skill)}
+                      data-testid={`skill-card-${skill.id}`}
+                    >
+                      <CardContent className="p-4">
+                        <div className="flex items-start gap-4">
+                          <div className={cn(
+                            "p-3 rounded-xl transition-colors",
+                            skill.enabled ? "bg-muted" : "bg-muted/50"
+                          )}>
+                            {getSkillIcon(skill)}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between mb-1">
+                              <h3 className="font-semibold truncate">{skill.name}</h3>
+                              <div className="flex items-center gap-1">
+                                {!skill.builtIn && (
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-7 w-7 opacity-0 group-hover:opacity-100"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <MoreVertical className="h-4 w-4" />
+                                      </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="end">
+                                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleEditSkill(skill as UserSkill); }}>
+                                        <Pencil className="h-4 w-4 mr-2" />
+                                        Editar
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); duplicateSkill(skill.id); toast.success("Skill duplicado"); }}>
+                                        <Copy className="h-4 w-4 mr-2" />
+                                        Duplicar
+                                      </DropdownMenuItem>
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem
+                                        className="text-red-600"
+                                        onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(skill.id); }}
+                                      >
+                                        <Trash2 className="h-4 w-4 mr-2" />
+                                        Eliminar
+                                      </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                )}
+                                <Switch
+                                  checked={skill.enabled}
+                                  onCheckedChange={() => handleToggleSkill(skill)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  data-testid={`skill-toggle-${skill.id}`}
+                                />
+                              </div>
+                            </div>
+                            <p className="text-sm text-muted-foreground line-clamp-2 mb-3">
+                              {skill.description}
+                            </p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {skill.builtIn ? (
+                                <Badge variant="outline" className="text-xs">Integrado</Badge>
+                              ) : (
+                                <Badge variant="outline" className="text-xs text-purple-600 border-purple-200">Personalizado</Badge>
                               )}
-                              <Switch
-                                checked={skill.enabled}
-                                onCheckedChange={() => handleToggleSkill(skill)}
-                                onClick={(e) => e.stopPropagation()}
-                                data-testid={`skill-toggle-${skill.id}`}
-                              />
+                              {runtimeInfo && (
+                                <Badge variant="outline" className={cn("text-xs", runtimeStatusBadgeClass(runtimeInfo.status))}>
+                                  {SKILL_RUNTIME_STATUS_LABELS[runtimeInfo.status]}
+                                </Badge>
+                              )}
+                              {runtimeInfo && (
+                                <Badge variant="outline" className={cn("text-xs", certificationBadgeClass(runtimeInfo.certification))}>
+                                  {SKILL_CERTIFICATION_LABELS[runtimeInfo.certification]}
+                                </Badge>
+                              )}
+                              {runtimeInfo && vendorLabel(runtimeInfo.vendor) && (
+                                <Badge variant="outline" className={cn("text-xs", vendorBadgeClass(runtimeInfo.vendor))}>
+                                  {vendorLabel(runtimeInfo.vendor)}
+                                </Badge>
+                              )}
+                              {skill.enabled && (
+                                <span className="flex items-center gap-1 text-xs text-green-600">
+                                  <CheckCircle2 className="h-3 w-3 text-green-500" />
+                                  Activo
+                                </span>
+                              )}
+                              {!skill.enabled && skill.builtIn && (
+                                <span className="flex items-center gap-1 text-xs text-amber-600">
+                                  <AlertTriangle className="h-3 w-3" />
+                                  Pendiente
+                                </span>
+                              )}
+                              {!skill.enabled && !skill.builtIn && (
+                                <span className="flex items-center gap-1 text-xs text-gray-500">
+                                  <XCircle className="h-3 w-3" />
+                                  Inactivo
+                                </span>
+                              )}
                             </div>
                           </div>
-                          <p className="text-sm text-muted-foreground line-clamp-2 mb-3">
-                            {skill.description}
-                          </p>
-                          <div className="flex items-center gap-2">
-                            {skill.builtIn ? (
-                              <Badge variant="outline" className="text-xs">Integrado</Badge>
-                            ) : (
-                              <Badge variant="outline" className="text-xs text-purple-600 border-purple-200">Personalizado</Badge>
-                            )}
-                            {skill.enabled && (
-                              <span className="flex items-center gap-1 text-xs text-green-600">
-                                <CheckCircle2 className="h-3 w-3 text-green-500" />
-                                Activo
-                              </span>
-                            )}
-                            {!skill.enabled && skill.builtIn && (
-                              <span className="flex items-center gap-1 text-xs text-amber-600">
-                                <AlertTriangle className="h-3 w-3" />
-                                Pendiente
-                              </span>
-                            )}
-                            {!skill.enabled && !skill.builtIn && (
-                              <span className="flex items-center gap-1 text-xs text-gray-500">
-                                <XCircle className="h-3 w-3" />
-                                Inactivo
-                              </span>
-                            )}
-                          </div>
                         </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
+                      </CardContent>
+                    </Card>
+                  );
+                })}
               </div>
               {filteredSkills.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -727,6 +963,11 @@ export default function SkillsPage() {
                     ) : (
                       <Badge variant="outline" className="text-purple-600">Personalizado</Badge>
                     )}
+                    {selectedRuntimeInfo && (
+                      <Badge variant="outline" className={cn("text-xs", runtimeStatusBadgeClass(selectedRuntimeInfo.status))}>
+                        {SKILL_RUNTIME_STATUS_LABELS[selectedRuntimeInfo.status]}
+                      </Badge>
+                    )}
                   </div>
                 </div>
               </div>
@@ -743,6 +984,46 @@ export default function SkillsPage() {
                     {selectedSkill.description}
                   </p>
                 </div>
+
+                {selectedRuntimeInfo && (
+                  <div>
+                    <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
+                      <Server className="h-4 w-4" />
+                      Runtime
+                    </h4>
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      <Badge variant="outline" className={cn("text-xs", runtimeStatusBadgeClass(selectedRuntimeInfo.status))}>
+                        {SKILL_RUNTIME_STATUS_LABELS[selectedRuntimeInfo.status]}
+                      </Badge>
+                      <Badge variant="outline" className={cn("text-xs", certificationBadgeClass(selectedRuntimeInfo.certification))}>
+                        {SKILL_CERTIFICATION_LABELS[selectedRuntimeInfo.certification]}
+                      </Badge>
+                      {vendorLabel(selectedRuntimeInfo.vendor) && (
+                        <Badge variant="outline" className={cn("text-xs", vendorBadgeClass(selectedRuntimeInfo.vendor))}>
+                          {vendorLabel(selectedRuntimeInfo.vendor)}
+                        </Badge>
+                      )}
+                      <Badge variant="outline" className="text-xs">
+                        {selectedRuntimeInfo.source}
+                      </Badge>
+                    </div>
+                    {selectedRuntimeInfo.reason && (
+                      <p className="text-sm text-muted-foreground">
+                        {selectedRuntimeInfo.reason}
+                      </p>
+                    )}
+                    {selectedRuntimeInfo.homepage && (
+                      <a
+                        href={selectedRuntimeInfo.homepage}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 inline-flex text-xs font-medium text-orange-700 underline underline-offset-2"
+                      >
+                        Ver repositorio fuente
+                      </a>
+                    )}
+                  </div>
+                )}
 
                 {selectedSkill.builtIn && (selectedSkill as BuiltInSkill).triggers && (
                   <div>
