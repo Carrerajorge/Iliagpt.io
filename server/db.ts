@@ -153,19 +153,24 @@ async function performHealthCheck(): Promise<boolean> {
 
   const startTime = Date.now();
   let client: PoolClient | null = null;
+  let timedOut = false;
 
   try {
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Health check timeout')), HEALTH_CHECK_TIMEOUT_MS);
-    });
+    client = await Promise.race([
+      pool.connect(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => { timedOut = true; reject(new Error('Health check connect timeout')); }, HEALTH_CHECK_TIMEOUT_MS)
+      ),
+    ]);
 
-    const queryPromise = (async () => {
-      client = await pool.connect();
-      await client.query('SELECT 1');
-      return true;
-    })();
-
-    await Promise.race([queryPromise, timeoutPromise]);
+    if (!timedOut) {
+      await Promise.race([
+        client.query('SELECT 1'),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => { timedOut = true; reject(new Error('Health check query timeout')); }, HEALTH_CHECK_TIMEOUT_MS)
+        ),
+      ]);
+    }
 
     const latencyMs = Date.now() - startTime;
     healthState.latencyMs = latencyMs;
@@ -206,10 +211,7 @@ async function performHealthCheck(): Promise<boolean> {
 
   } finally {
     if (client) {
-      try {
-        (client as any).release();
-      } catch (e) {
-      }
+      try { client.release(); } catch {}
     }
   }
 }
