@@ -1,9 +1,10 @@
-import { db } from "../db";
+import { db, isHealthy } from "../db";
 import { apiLogs } from "@shared/schema";
 import { sql, gte, and, count, isNotNull } from "drizzle-orm";
 import { storage } from "../storage";
 
 const AGGREGATION_INTERVAL_MS = 60 * 1000;
+const QUERY_TIMEOUT_MS = 10_000;
 const COST_PER_1K_TOKENS: Record<string, number> = {
   xai: 0.002,
   gemini: 0.001,
@@ -14,10 +15,22 @@ const COST_PER_1K_TOKENS: Record<string, number> = {
 
 const DEFAULT_BUDGET_EUR = "100.00";
 const TABLE_EXISTS_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_CONSECUTIVE_FAILURES = 5;
 
 let aggregatorInterval: NodeJS.Timeout | null = null;
 let isRunning = false;
+let consecutiveFailures = 0;
+let lastErrorLog = 0;
 const tableExistsCache = new Map<string, { exists: boolean; checkedAt: number }>();
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`[Analytics] ${label} timed out after ${ms}ms`)), ms)
+    ),
+  ]);
+}
 
 interface ProviderStats {
   provider: string;
@@ -82,9 +95,26 @@ async function ensureCostBudgetExists(provider: string): Promise<void> {
 }
 
 export async function runAggregation(): Promise<void> {
-  if (isRunning) {
-    console.log("[Analytics] Aggregation already in progress, skipping...");
+  if (isRunning) return;
+
+  if (!isHealthy()) {
+    const now = Date.now();
+    if (now - lastErrorLog > 120_000) {
+      console.warn("[Analytics] Skipping aggregation — DB is unhealthy");
+      lastErrorLog = now;
+    }
     return;
+  }
+
+  if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+    const now = Date.now();
+    if (now - lastErrorLog > 300_000) {
+      consecutiveFailures = 0;
+      console.warn("[Analytics] Circuit breaker reset after cooldown. Retrying aggregation.");
+      lastErrorLog = now;
+    } else {
+      return;
+    }
   }
 
   isRunning = true;
@@ -92,22 +122,17 @@ export async function runAggregation(): Promise<void> {
   const windowStart = new Date(windowEnd.getTime() - AGGREGATION_INTERVAL_MS);
 
   try {
-    console.log(`[Analytics] Running aggregation for window: ${windowStart.toISOString()} - ${windowEnd.toISOString()}`);
-
-    const missingTables = await getMissingTables([
-      "public.api_logs",
-      "public.provider_metrics",
-      "public.cost_budgets",
-      "public.kpi_snapshots",
-    ]);
+    const missingTables = await withTimeout(
+      getMissingTables(["public.api_logs", "public.provider_metrics", "public.cost_budgets", "public.kpi_snapshots"]),
+      QUERY_TIMEOUT_MS, "table check"
+    );
 
     if (missingTables.length > 0) {
-      console.warn(`[Analytics] Skipping aggregation; missing tables: ${missingTables.join(", ")}`);
       return;
     }
 
-    const logs = await db
-      .select({
+    const logs = await withTimeout(
+      db.select({
         provider: apiLogs.provider,
         statusCode: apiLogs.statusCode,
         latencyMs: apiLogs.latencyMs,
@@ -115,12 +140,9 @@ export async function runAggregation(): Promise<void> {
         tokensOut: apiLogs.tokensOut,
       })
       .from(apiLogs)
-      .where(
-        and(
-          gte(apiLogs.createdAt, windowStart),
-          isNotNull(apiLogs.provider)
-        )
-      );
+      .where(and(gte(apiLogs.createdAt, windowStart), isNotNull(apiLogs.provider))),
+      QUERY_TIMEOUT_MS, "fetch logs"
+    );
 
     const providerMap = new Map<string, ProviderStats>();
 
@@ -214,11 +236,17 @@ export async function runAggregation(): Promise<void> {
       }
     }
 
-    await calculateKpis();
+    await withTimeout(calculateKpis(), QUERY_TIMEOUT_MS, "KPI calculation");
 
+    consecutiveFailures = 0;
     console.log(`[Analytics] Aggregation completed. Processed ${logs.length} logs from ${providerMap.size} providers.`);
-  } catch (error) {
-    console.error("[Analytics] Error during aggregation:", error);
+  } catch (error: any) {
+    consecutiveFailures++;
+    const now = Date.now();
+    if (consecutiveFailures <= 3 || now - lastErrorLog > 60_000) {
+      console.warn(`[Analytics] Aggregation failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${(error?.message || String(error)).substring(0, 150)}`);
+      lastErrorLog = now;
+    }
   } finally {
     isRunning = false;
   }
@@ -313,7 +341,6 @@ export async function calculateKpis(): Promise<void> {
 
 export function startAggregator(): void {
   if (aggregatorInterval) {
-    console.log("[Analytics] Aggregator already running");
     return;
   }
 
@@ -323,10 +350,10 @@ export function startAggregator(): void {
 
   console.log(`[Analytics] Starting analytics aggregator (${intervalMs / 1000}s interval)`);
 
-  runAggregation().catch(console.error);
+  setTimeout(() => runAggregation().catch(() => {}), 10_000);
 
   aggregatorInterval = setInterval(() => {
-    runAggregation().catch(console.error);
+    runAggregation().catch(() => {});
   }, intervalMs);
 }
 

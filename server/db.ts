@@ -82,11 +82,12 @@ interface HealthCheckResult {
   consecutiveFailures: number;
 }
 
-const HEALTH_CHECK_INTERVAL_MS = process.env.NODE_ENV === 'production' ? 30000 : 120000;
+const HEALTH_CHECK_INTERVAL_MS = process.env.NODE_ENV === 'production' ? 60000 : 120000;
 const HEALTH_CHECK_TIMEOUT_MS = 5000;
 const HEALTHY_THRESHOLD = 3;
 const MAX_RECONNECT_DELAY_MS = 30000;
 const INITIAL_RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 let healthCheckIntervalId: NodeJS.Timeout | null = null;
 let reconnectTimeoutId: NodeJS.Timeout | null = null;
@@ -177,7 +178,9 @@ async function performHealthCheck(): Promise<boolean> {
     dbQueryLatencyHistogram.observe(latencyMs);
     updateHealthStatus();
 
-    console.log(`[DB Health] Check OK - ${latencyMs}ms (status: ${healthState.status})`);
+    if (healthState.consecutiveSuccesses <= 1 || healthState.consecutiveSuccesses % 60 === 0) {
+      console.log(`[DB Health] Check OK - ${latencyMs}ms (status: ${healthState.status})`);
+    }
     return true;
 
   } catch (error: any) {
@@ -191,7 +194,9 @@ async function performHealthCheck(): Promise<boolean> {
     dbQueryLatencyHistogram.observe(latencyMs);
     updateHealthStatus();
 
-    console.error(`[DB Health] Check FAILED - ${error.message} (failures: ${healthState.consecutiveFailures}, status: ${healthState.status})`);
+    if (healthState.consecutiveFailures <= 3 || healthState.consecutiveFailures % 10 === 0) {
+      console.warn(`[DB Health] Check FAILED - ${error.message} (failures: ${healthState.consecutiveFailures}, status: ${healthState.status})`);
+    }
 
     if (healthState.status === 'UNHEALTHY' && !healthState.isReconnecting) {
       scheduleReconnect();
@@ -222,14 +227,27 @@ async function attemptReconnect(): Promise<void> {
   }
 
   healthState.reconnectAttempts++;
-  const delay = calculateBackoffDelay();
 
-  console.log(`[DB Health] Attempting reconnection (attempt ${healthState.reconnectAttempts}, delay: ${delay}ms)`);
+  if (healthState.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+    console.warn(`[DB Health] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Stopping reconnection. Will retry on next health check cycle.`);
+    healthState.isReconnecting = false;
+    healthState.reconnectAttempts = 0;
+    return;
+  }
+
+  console.log(`[DB Health] Attempting reconnection (attempt ${healthState.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
 
   try {
-    const client = await pool.connect();
-    await client.query('SELECT 1');
-    client.release();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Reconnect timeout')), HEALTH_CHECK_TIMEOUT_MS)
+    );
+    const connectPromise = (async () => {
+      const client = await pool.connect();
+      await client.query('SELECT 1');
+      client.release();
+    })();
+
+    await Promise.race([connectPromise, timeoutPromise]);
 
     console.log(`[DB Health] Reconnection successful after ${healthState.reconnectAttempts} attempts`);
     healthState.isReconnecting = false;
@@ -239,7 +257,9 @@ async function attemptReconnect(): Promise<void> {
     updateHealthStatus();
 
   } catch (error: any) {
-    console.error(`[DB Health] Reconnection failed: ${error.message}`);
+    if (healthState.reconnectAttempts <= 3 || healthState.reconnectAttempts % 5 === 0) {
+      console.warn(`[DB Health] Reconnection failed (${healthState.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}): ${error.message}`);
+    }
     dbConnectionFailuresCounter.inc();
 
     if (!isShuttingDown && healthState.status === 'UNHEALTHY') {
