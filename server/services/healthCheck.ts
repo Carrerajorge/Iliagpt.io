@@ -54,26 +54,38 @@ async function checkDatabase(): Promise<ComponentHealth> {
 }
 
 /**
- * Check Redis connection (if available)
+ * Check Redis when configured (PING). Optional dependency → healthy if omitted.
  */
 async function checkRedis(): Promise<ComponentHealth> {
     const start = Date.now();
+    const configured = !!(process.env.REDIS_URL || process.env.REDIS_HOST);
 
-    try {
-        // If Redis client is available
-        // await redisClient.ping();
+    if (!configured) {
         return {
             status: 'healthy',
             latency: Date.now() - start,
-            message: 'Redis not configured',
+            message: 'Redis not configured (optional)',
             lastChecked: new Date(),
+        };
+    }
+
+    try {
+        const { isRedisAvailable } = await import('../lib/redisConfig');
+        const ok = await isRedisAvailable();
+        return {
+            status: ok ? 'healthy' : 'degraded',
+            latency: Date.now() - start,
+            message: ok ? undefined : 'Redis unreachable or not ready',
+            lastChecked: new Date(),
+            details: { configured: true, reachable: ok },
         };
     } catch (error: any) {
         return {
             status: 'degraded',
             latency: Date.now() - start,
-            message: error.message,
+            message: error?.message || 'Redis check failed',
             lastChecked: new Date(),
+            details: { configured: true, reachable: false },
         };
     }
 }

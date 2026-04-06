@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { JSDOM } from "jsdom";
 import { Readability } from "@mozilla/readability";
 import { HTTP_HEADERS, TIMEOUTS, LIMITS } from "../lib/constants";
@@ -139,6 +140,35 @@ const USER_AGENTS = [
 
 const searchCache = new Map<string, SearchCacheEntry>();
 let userAgentCursor = 0;
+
+function webSearchRedisKey(cacheKey: string): string {
+  const h = crypto.createHash("sha256").update(cacheKey).digest("hex");
+  return `websearch:v1:${h}`;
+}
+
+async function getWebSearchFromRedis(cacheKey: string): Promise<WebSearchResponse | null> {
+  try {
+    const { getRedisConnection } = await import("../lib/redisConfig");
+    const client = await getRedisConnection();
+    if (!client) return null;
+    const raw = await client.get(webSearchRedisKey(cacheKey));
+    if (!raw) return null;
+    return JSON.parse(raw) as WebSearchResponse;
+  } catch {
+    return null;
+  }
+}
+
+async function setWebSearchInRedis(cacheKey: string, response: WebSearchResponse): Promise<void> {
+  try {
+    const { getRedisConnection } = await import("../lib/redisConfig");
+    const client = await getRedisConnection();
+    if (!client) return;
+    await client.set(webSearchRedisKey(cacheKey), JSON.stringify(response), "PX", SEARCH_CACHE_TTL_MS);
+  } catch {
+    /* non-fatal */
+  }
+}
 
 function nextUserAgent(): string {
   const userAgent = USER_AGENTS[userAgentCursor % USER_AGENTS.length];
@@ -327,8 +357,18 @@ export async function searchWeb(query: string, maxResults: number = LIMITS.MAX_S
   const cacheKey = `${sanitized}:${maxResults}`;
   const cached = searchCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
-    Logger.debug("[WebSearch] Cache hit", { query: sanitized, maxResults });
+    Logger.debug("[WebSearch] Cache hit (memory)", { query: sanitized, maxResults });
     return cached.response;
+  }
+
+  const redisCached = await getWebSearchFromRedis(cacheKey);
+  if (redisCached) {
+    Logger.debug("[WebSearch] Cache hit (redis)", { query: sanitized, maxResults });
+    searchCache.set(cacheKey, {
+      expiresAt: Date.now() + SEARCH_CACHE_TTL_MS,
+      response: redisCached,
+    });
+    return redisCached;
   }
 
   const results: SearchResult[] = [];
@@ -625,6 +665,7 @@ export async function searchWeb(query: string, maxResults: number = LIMITS.MAX_S
     expiresAt: Date.now() + SEARCH_CACHE_TTL_MS,
     response,
   });
+  void setWebSearchInRedis(cacheKey, response);
 
   return response;
 }

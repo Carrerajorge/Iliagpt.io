@@ -4,6 +4,7 @@
  * freshness/TTL scoring, and multi-hop retrieval
  */
 
+import crypto from "crypto";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { llmGateway } from "../lib/llmGateway";
@@ -406,6 +407,19 @@ export class RAGService {
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
+      const sha256 = crypto.createHash("sha256").update(chunk).digest("hex");
+
+      const dup = await db.execute(sql`
+        SELECT 1 AS x FROM rag_documents
+        WHERE user_id = ${userId}
+          AND content_type = 'document_chunk'
+          AND (metadata::jsonb->>'sha256') = ${sha256}
+        LIMIT 1
+      `);
+      if (Array.isArray(dup) && dup.length > 0) {
+        continue;
+      }
+
       const embedding = await embedText(chunk, "document", `rag:document:${userId}`);
       const keyPhrases = extractKeyPhrases(chunk);
 
@@ -421,6 +435,7 @@ export class RAGService {
                   chunkIndex: i,
                   docId,
                   timestamp: Date.now(),
+                  sha256,
                 })},
                 ${i}, ${docId}, ${JSON.stringify(keyPhrases)})
       `);
