@@ -22,7 +22,7 @@ describe("PromptSuggestions", () => {
     });
   });
 
-  it("emits structured metadata for the research workflow", () => {
+  it("returns the research action and stores it as recent", () => {
     const onSelect = vi.fn();
 
     render(<PromptSuggestions onSelect={onSelect} />);
@@ -30,30 +30,22 @@ describe("PromptSuggestions", () => {
     fireEvent.click(screen.getByText("Investigar antes de actuar"));
 
     expect(onSelect).toHaveBeenCalledWith(
-      expect.objectContaining({
-        selectedTool: "web",
-        latencyMode: "deep",
-      }),
+      expect.stringContaining("Investiga primero este tema o problema."),
     );
-
     expect(window.localStorage.getItem("promptWorkflowRecents")).toBe(
       JSON.stringify(["research-first"]),
     );
   });
 
-  it("shows recent workflows when available", () => {
-    window.localStorage.setItem(
-      "promptWorkflowRecents",
-      JSON.stringify(["quality-gate", "research-first"]),
-    );
-
+  it("does not render removed workflows in the default list", () => {
     render(<PromptSuggestions onSelect={vi.fn()} />);
 
-    expect(screen.getByText("Recientes")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /revisión técnica estricta/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /plan de implementación/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /revisión técnica estricta/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /documento técnico/i })).not.toBeInTheDocument();
   });
 
-  it("supports attachment workflows with document output metadata", () => {
+  it("keeps attachment presentation output available", () => {
     const onSelect = vi.fn();
 
     render(<PromptSuggestions onSelect={onSelect} hasAttachment />);
@@ -61,10 +53,7 @@ describe("PromptSuggestions", () => {
     fireEvent.click(screen.getByText("Convertir en presentación"));
 
     expect(onSelect).toHaveBeenCalledWith(
-      expect.objectContaining({
-        selectedDocTool: "ppt",
-        latencyMode: "auto",
-      }),
+      expect.stringContaining("presentación ejecutiva"),
     );
   });
 });
