@@ -63,9 +63,17 @@ Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment varia
 ### OpenClaw Integration (v2026.4.5)
 - **OpenClaw Control UI**: Served at `/openclaw-ui` with auto-connect.
 - **WebSocket Gateway**: For OpenClaw communication at `/openclaw-ws`.
-- **Internet Access Library**: `server/openclaw/lib/internetAccess.ts` — programmatic web fetch and search.
+- **Internet Access Library**: `server/openclaw/lib/internetAccess.ts` — robust multi-engine web search and page fetcher.
+  - Multi-engine search: DuckDuckGo (primary) with automatic retry (GET→POST→alt query) + Wikipedia EN/ES fallback.
+  - URL verification: HEAD request reachability check + well-known domain whitelist for fast path.
+  - In-memory search cache (5 min TTL, 200 entries) to reduce redundant requests.
+  - SSRF protection: blocks localhost, private IPs, cloud metadata, non-HTTP protocols.
   - `POST /api/openclaw/internet/fetch` — fetch and parse any URL, extract clean text and links.
-  - `POST /api/openclaw/internet/search` — DuckDuckGo search with structured results.
+  - `POST /api/openclaw/internet/search` — multi-engine search with verified results.
   - `GET /api/openclaw/internet/status` — internet capability status.
   - Gateway tools: `openclaw.web.fetch`, `openclaw.web.search` available via `tools.execute` WebSocket method.
+- **Chat Internet Bridge**: `server/openclaw/lib/chatInternetBridge.ts` — auto-detects when user queries need internet.
+  - 40+ trigger patterns covering Spanish and English (links, news, prices, questions, brands, etc.).
+  - Automatically searches and fetches top pages before sending to LLM.
+  - System prompt injects verified URLs and instructs model to NEVER hallucinate links.
 - **Fusion Features**: task-board, searxng-search, model-switch-queue, gateway-resilience, internet-access.

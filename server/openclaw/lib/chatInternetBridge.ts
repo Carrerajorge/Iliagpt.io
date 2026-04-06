@@ -1,104 +1,155 @@
-import { webSearch, webFetch } from "./internetAccess";
+import { webSearch, webFetch, webSearchAndFetch } from "./internetAccess";
 import type { WebSearchResult, WebFetchResult } from "./internetAccess";
 
-interface InternetContext {
+export interface InternetContext {
   searchResults?: WebSearchResult;
   fetchResults?: WebFetchResult[];
   error?: string;
+  triggeredBy: string;
 }
 
 const URL_REGEX = /https?:\/\/[^\s<>"{}|\\^`\[\]]+/gi;
 
-const SEARCH_TRIGGERS_ES = [
-  "busca", "buscar", "búsqueda", "investiga", "investigar",
-  "qué es", "quién es", "cuándo", "dónde", "cómo",
-  "noticias", "últimas noticias", "actualidad",
-  "precio", "cotización", "clima", "tiempo",
-  "hoy", "ahora", "actual", "reciente", "último",
-  "2025", "2026", "2027",
-  "internet", "en línea", "en la web", "online",
+const ALWAYS_SEARCH_PATTERNS = [
+  /\b(busca|buscar|búsqueda|investiga|investigar|averigua|averiguar)\b/i,
+  /\b(search|look\s*up|find\s+me|google|browse|lookup)\b/i,
+  /\b(link|enlace|url|página|pagina|sitio\s*web|website|dirección|direccion)\b/i,
+  /\b(noticias|news|últimas|últimos|actualidad|breaking)\b/i,
+  /\b(precio|price|cotización|cotizacion|costo|cost|vale|cuánto\s+cuesta|cuanto\s+cuesta)\b/i,
+  /\b(clima|weather|temperatura|pronóstico|pronostico)\b/i,
+  /\b(reciente|recent|último|ultima|latest|nuevo|nueva|new)\b/i,
+  /\b(hoy|today|ahora|now|este\s+año|this\s+year|esta\s+semana|this\s+week)\b/i,
+  /\b(2024|2025|2026|2027)\b/,
+  /\b(acceso\s+a\s+internet|internet\s+access|tienes\s+internet|tienes\s+acceso)\b/i,
+  /\b(dónde|donde|dónde\s+puedo|where|where\s+can)\b/i,
+  /\b(quién|quien|who\s+is|who\s+are)\b/i,
+  /\b(cuándo|cuando|when\s+is|when\s+did|when\s+will)\b/i,
+  /\b(qué\s+es|que\s+es|what\s+is|what\s+are|what's)\b/i,
+  /\b(cómo|como\s+se|how\s+to|how\s+do|how\s+does)\b/i,
+  /\b(resultado|score|marcador|partido|match|game)\b/i,
+  /\b(presidente|president|gobierno|government|elección|election)\b/i,
+  /\b(empresa|company|compañía|stock|acción|acciones)\b/i,
+  /\b(descargar|download|app|aplicación|aplicacion|software)\b/i,
+  /\b(tutorial|guía|guia|guide|manual|documentación|documentation|docs)\b/i,
+  /\b(receta|recipe|ingredientes|ingredients)\b/i,
+  /\b(película|pelicula|movie|serie|series|show|tv|estreno)\b/i,
+  /\b(canción|cancion|song|álbum|album|artista|artist|música|musica|music)\b/i,
+  /\b(evento|event|festival|concierto|concert|conferencia|conference)\b/i,
+  /\b(vuelo|flight|hotel|viaje|travel|reserva|booking|aerolínea|airline)\b/i,
+  /\b(restaurante|restaurant|tienda|store|shop|negocio|business)\b/i,
+  /\b(horario|schedule|hora|hours|abierto|open|cerrado|closed)\b/i,
+  /\b(mapa|map|ubicación|ubicacion|location|dirección|address)\b/i,
+  /\b(review|reseña|opinión|opinion|rating|calificación|calificacion)\b/i,
+  /\b(comparar|compare|versus|vs|mejor|best|top|ranking)\b/i,
+  /\b(wikipedia|wiki)\b/i,
+  /\b(twitter|x\.com|instagram|facebook|tiktok|youtube|reddit|linkedin)\b/i,
+  /\b(amazon|netflix|spotify|uber|airbnb|google|apple|microsoft|meta)\b/i,
+  /\bdame\b.*\b(link|enlace|url|info|información|datos)\b/i,
+  /\bpasa\s*me\b/i,
+  /\bmuéstrame|muestrame|show\s+me\b/i,
+  /\benséñame|ensename|teach\s+me\b/i,
+  /\b(cuál|cual|which)\b.*\b(mejor|best|página|pagina|sitio|site)\b/i,
 ];
 
-const SEARCH_TRIGGERS_EN = [
-  "search", "look up", "find", "google",
-  "what is", "who is", "when", "where", "how",
-  "news", "latest", "current", "recent",
-  "price", "stock", "weather",
-  "today", "now", "2025", "2026", "2027",
-  "internet", "online", "web", "browse",
+const SKIP_SEARCH_PATTERNS = [
+  /^(hola|hi|hello|hey|saludos)[\s!.?]*$/i,
+  /^(gracias|thanks|thank\s+you|thx)[\s!.?]*$/i,
+  /^(sí|si|no|ok|vale|bien|claro|por\s+supuesto|of\s+course)[\s!.?]*$/i,
+  /^(adiós|adios|bye|chao|nos\s+vemos)[\s!.?]*$/i,
 ];
 
-const NO_SEARCH_PATTERNS = [
-  /^(hola|hi|hello|hey|buenos?\s+d[ií]as?|buenas?\s+(tardes?|noches?))/i,
-  /^(gracias|thanks|thank you)/i,
-  /^(sí|si|no|ok|vale|bien)/i,
-  /escribe|redacta|genera|crea|programa|código|code/i,
-  /traduce|translate/i,
-  /explica|explain/i,
-  /resume|summarize/i,
-];
+function shouldSearch(message: string): { shouldSearch: boolean; shouldFetch: boolean; urls: string[]; searchQuery: string; reason: string } {
+  const trimmed = message.trim();
+  const lower = trimmed.toLowerCase();
 
-function needsInternetAccess(message: string): { needsSearch: boolean; needsFetch: boolean; urls: string[]; searchQuery?: string } {
-  const lower = message.toLowerCase().trim();
+  if (SKIP_SEARCH_PATTERNS.some((p) => p.test(trimmed))) {
+    const urls = trimmed.match(URL_REGEX) || [];
+    return { shouldSearch: false, shouldFetch: urls.length > 0, urls, searchQuery: "", reason: "greeting/ack" };
+  }
 
-  if (NO_SEARCH_PATTERNS.some((p) => p.test(lower))) {
-    const urls = message.match(URL_REGEX) || [];
-    if (urls.length > 0) {
-      return { needsSearch: false, needsFetch: true, urls };
+  const urls = trimmed.match(URL_REGEX) || [];
+  const hasUrls = urls.length > 0;
+
+  for (const pattern of ALWAYS_SEARCH_PATTERNS) {
+    if (pattern.test(lower)) {
+      const searchQuery = trimmed
+        .replace(URL_REGEX, "")
+        .replace(/[?¿!¡]/g, "")
+        .trim() || trimmed;
+      return {
+        shouldSearch: true,
+        shouldFetch: hasUrls,
+        urls,
+        searchQuery,
+        reason: `matched: ${pattern.source.slice(0, 40)}`,
+      };
     }
-    return { needsSearch: false, needsFetch: false, urls: [] };
   }
 
-  const urls = message.match(URL_REGEX) || [];
-  const needsFetch = urls.length > 0;
-
-  const allTriggers = [...SEARCH_TRIGGERS_ES, ...SEARCH_TRIGGERS_EN];
-  const needsSearch = allTriggers.some((t) => lower.includes(t));
-
-  let searchQuery: string | undefined;
-  if (needsSearch) {
-    searchQuery = message
-      .replace(URL_REGEX, "")
-      .replace(/[?¿!¡.,;:]/g, "")
-      .trim();
-    if (searchQuery.length < 3) searchQuery = message;
+  if (lower.includes("?") || lower.includes("¿")) {
+    const questionWords = /\b(qué|que|quién|quien|cómo|como|cuál|cual|cuándo|cuando|dónde|donde|por\s*qué|porqué|what|who|how|which|when|where|why)\b/i;
+    if (questionWords.test(lower)) {
+      return {
+        shouldSearch: true,
+        shouldFetch: hasUrls,
+        urls,
+        searchQuery: trimmed.replace(/[?¿!¡]/g, "").trim(),
+        reason: "question detected",
+      };
+    }
   }
 
-  return { needsSearch, needsFetch, urls, searchQuery };
+  if (hasUrls) {
+    return { shouldSearch: false, shouldFetch: true, urls, searchQuery: "", reason: "url-only" };
+  }
+
+  return { shouldSearch: false, shouldFetch: false, urls: [], searchQuery: "", reason: "no-trigger" };
 }
 
 export async function gatherInternetContext(userMessage: string): Promise<InternetContext | null> {
-  const analysis = needsInternetAccess(userMessage);
+  const analysis = shouldSearch(userMessage);
 
-  if (!analysis.needsSearch && !analysis.needsFetch) {
+  if (!analysis.shouldSearch && !analysis.shouldFetch) {
     return null;
   }
 
-  const context: InternetContext = {};
+  console.log(`[ChatInternetBridge] Analysis: search=${analysis.shouldSearch}, fetch=${analysis.shouldFetch}, reason=${analysis.reason}, query="${analysis.searchQuery}"`);
+
+  const context: InternetContext = { triggeredBy: analysis.reason };
 
   try {
     const tasks: Promise<void>[] = [];
 
-    if (analysis.needsSearch && analysis.searchQuery) {
+    if (analysis.shouldSearch && analysis.searchQuery) {
       tasks.push(
-        webSearch(analysis.searchQuery)
-          .then((r) => {
-            context.searchResults = r;
-          })
-          .catch((e) => {
-            console.warn("[ChatInternetBridge] Search failed:", e?.message);
-          })
+        (async () => {
+          try {
+            const { search, pages } = await webSearchAndFetch(analysis.searchQuery, 2);
+            context.searchResults = search;
+            if (pages.length > 0) {
+              context.fetchResults = (context.fetchResults || []).concat(pages);
+            }
+          } catch (e: any) {
+            console.warn("[ChatInternetBridge] Search+fetch failed:", e?.message);
+            try {
+              context.searchResults = await webSearch(analysis.searchQuery);
+            } catch (e2: any) {
+              console.warn("[ChatInternetBridge] Fallback search also failed:", e2?.message);
+            }
+          }
+        })()
       );
     }
 
-    if (analysis.needsFetch && analysis.urls.length > 0) {
+    if (analysis.shouldFetch && analysis.urls.length > 0) {
       const fetchUrls = analysis.urls.slice(0, 3);
       tasks.push(
         Promise.allSettled(fetchUrls.map((url) => webFetch(url)))
           .then((results) => {
-            context.fetchResults = results
+            const pages = results
               .filter((r): r is PromiseFulfilledResult<WebFetchResult> => r.status === "fulfilled")
               .map((r) => r.value);
+            context.fetchResults = (context.fetchResults || []).concat(pages);
           })
       );
     }
@@ -116,34 +167,46 @@ export async function gatherInternetContext(userMessage: string): Promise<Intern
 }
 
 export function buildInternetSystemPrompt(context: InternetContext | null): string {
-  const basePrompt = `You are IliaGPT, a helpful AI assistant running inside the OpenClaw control interface. You have FULL access to the internet in real-time. You can search the web and read web pages.
+  const basePrompt = `You are IliaGPT, a powerful AI assistant with FULL real-time internet access. You are running inside the OpenClaw control interface.
 
-When users ask about current events, recent information, or anything that requires up-to-date data, you use your internet access to provide accurate, real-time information.
+CRITICAL INTERNET CAPABILITIES:
+- You CAN search the web in real-time
+- You CAN read and fetch any web page
+- You CAN provide current, up-to-date information
+- You CAN find real links, URLs, and websites
+- You ALWAYS have access to the latest information from the internet
 
-You respond in the same language as the user. You can use markdown formatting.`;
+IMPORTANT RULES ABOUT LINKS AND URLS:
+- ONLY share URLs that appear in your internet data below
+- NEVER invent, guess, or hallucinate URLs — if you don't have a verified URL, say "I found information about X but let me search for the exact link" instead of making one up
+- When sharing links, copy them EXACTLY as they appear in your search results
+- If a user asks for a link and you don't have it in your data, tell them you'll search for it
+
+You respond in the same language as the user. Use markdown formatting when helpful.`;
 
   if (!context) {
-    return basePrompt + `\n\nYou have internet access available but no web data was needed for this query. If the user asks you to search or look something up, you will automatically access the internet.`;
+    return basePrompt + `\n\nNo web search was performed for this query. You still have internet access — it activates automatically when the user asks about current events, links, prices, news, or any real-time information. If the user asks you something that needs internet data, tell them to ask and you'll search for it.`;
   }
 
-  let contextBlock = `\n\n--- REAL-TIME INTERNET DATA (fetched just now) ---\n`;
+  let contextBlock = `\n\n══════════════════════════════════════════\n📡 LIVE INTERNET DATA (fetched right now, ${new Date().toISOString()})\n══════════════════════════════════════════\n`;
 
   if (context.searchResults && context.searchResults.results.length > 0) {
-    contextBlock += `\n🔍 Web Search Results for "${context.searchResults.query}" (${context.searchResults.results.length} results, ${context.searchResults.elapsedMs}ms):\n`;
+    contextBlock += `\n🔍 SEARCH: "${context.searchResults.query}" via ${context.searchResults.engine} (${context.searchResults.results.length} results, ${context.searchResults.elapsedMs}ms)\n`;
     context.searchResults.results.forEach((r, i) => {
-      contextBlock += `\n${i + 1}. **${r.title}**\n   URL: ${r.url}\n   ${r.snippet}\n`;
+      const verifiedTag = r.verified ? " ✅" : "";
+      contextBlock += `\n  ${i + 1}. ${r.title}${verifiedTag}\n     🔗 ${r.url}\n     ${r.snippet || "(no snippet)"}\n`;
     });
   }
 
   if (context.fetchResults && context.fetchResults.length > 0) {
     context.fetchResults.forEach((page) => {
-      const textPreview = page.text.slice(0, 8000);
-      contextBlock += `\n📄 Page: ${page.title || page.url} (${page.status}, ${page.elapsedMs}ms)\nURL: ${page.url}\nContent:\n${textPreview}\n`;
+      const textPreview = page.text.slice(0, 6000);
+      contextBlock += `\n📄 PAGE CONTENT: ${page.title || "Untitled"}\n   🔗 ${page.url} (HTTP ${page.status}, ${page.elapsedMs}ms)\n   Content:\n${textPreview}\n`;
     });
   }
 
-  contextBlock += `\n--- END INTERNET DATA ---\n`;
-  contextBlock += `\nUse the above real-time data to answer the user's question accurately. Cite sources when relevant. If you need more information, tell the user you can search for more.`;
+  contextBlock += `\n══════════════════════════════════════════\n`;
+  contextBlock += `\nINSTRUCTIONS: Use ONLY the URLs and data above. Do NOT invent any URL. If the data doesn't contain what the user needs, say you can search for more specific terms. Always cite the source URL when providing information from the internet.`;
 
   return basePrompt + contextBlock;
 }
