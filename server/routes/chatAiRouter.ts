@@ -6265,9 +6265,9 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
               // Production handler completed, exit early
               return;
+            } catch (imgError: any) {
+              console.error("[Stream] Image generation failed, falling back to chat:", imgError?.message);
             }
-          } catch (imgError: any) {
-            console.error("[Stream] Image generation failed, falling back to chat:", imgError?.message);
           }
         }
 
