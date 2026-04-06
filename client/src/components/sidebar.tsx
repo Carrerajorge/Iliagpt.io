@@ -41,6 +41,8 @@ import {
   MessageCircle,
   SlidersHorizontal,
   Home,
+  Share2,
+  Plug,
 } from "lucide-react";
 import { IliaGPTLogo } from "@/components/iliagpt-logo";
 import { cn } from "@/lib/utils";
@@ -902,6 +904,18 @@ export function Sidebar({
                 <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/memory"); }} data-testid="button-memory">
                   <Brain className="h-4 w-4" />
                   Mis Memorias
+                </Button>
+                <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/knowledge-graph"); }} data-testid="button-knowledge-graph">
+                  <Share2 className="h-4 w-4" />
+                  Knowledge Graph
+                </Button>
+                <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/background-agents"); }} data-testid="button-background-agents">
+                  <Bot className="h-4 w-4" />
+                  Background Agents
+                </Button>
+                <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/mcp-manager"); }} data-testid="button-mcp-manager">
+                  <Plug className="h-4 w-4" />
+                  MCP Manager
                 </Button>
                 <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/ads"); }} data-testid="button-ilia-ads">
                   <Megaphone className="h-4 w-4" />

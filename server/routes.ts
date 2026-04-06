@@ -156,6 +156,8 @@ import { finopsRouter } from "./routes/finopsRouter";
 import { createGovernanceRouter } from "./routes/governanceRouter";
 import { budgetEventStream } from "./agent/budget/budgetEventStream";
 import { costRouter } from "./agent/budget/costRouter";
+import { createKnowledgeGraphRouter } from "./routes/knowledgeGraphRouter";
+import { createMcpClientRouter } from "./routes/mcpClientRouter";
 
 const agentClients: Map<string, Set<WebSocket>> = new Map();
 const browserClients: Map<string, Set<WebSocket>> = new Map();
@@ -2429,6 +2431,13 @@ try{
 
   // ===== Automation Triggers (Cron, File Watch, Webhooks, System Events) =====
   app.use("/api/triggers", requireAdminMiddleware, createAutomationTriggersRouter());
+  app.use("/api/automation-triggers", createAutomationTriggersRouter());
+
+  // ===== Knowledge Graph (Rowboat-inspired entity graph) =====
+  app.use("/api/knowledge-graph", createKnowledgeGraphRouter());
+
+  // ===== MCP Client Manager (external tool connections) =====
+  app.use("/api/mcp", createMcpClientRouter());
 
   // ===== Voice & Audio (TTS, STT, Recording) =====
   app.use("/api/voice", requireAdminMiddleware, createVoiceRouter());
