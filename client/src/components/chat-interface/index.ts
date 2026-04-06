@@ -8,7 +8,6 @@ export * from './types';
 
 // Hooks
 export { useChatState } from './useChatState';
-export { useChatActions } from './useChatActions';
 
 // Components
 export { StreamingIndicator } from './StreamingIndicator';
