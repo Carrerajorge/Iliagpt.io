@@ -6,6 +6,7 @@ import {
   loadSkillsFromDir,
   type Skill,
 } from "@mariozechner/pi-coding-agent";
+import { resolveAnthropicSkillsRepoDirs } from "../../../lib/anthropicSkillsRepo.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { CONFIG_DIR, resolveUserPath } from "../../utils.js";
@@ -328,11 +329,14 @@ function loadSkillEntries(
   const extraDirs = extraDirsRaw
     .map((d) => (typeof d === "string" ? d.trim() : ""))
     .filter(Boolean);
+  const anthropicSkillDirs = resolveAnthropicSkillsRepoDirs(workspaceDir);
   const pluginSkillDirs = resolvePluginSkillDirs({
     workspaceDir,
     config: opts?.config,
   });
-  const mergedExtraDirs = [...extraDirs, ...pluginSkillDirs];
+  const mergedExtraDirs = Array.from(
+    new Set([...extraDirs, ...anthropicSkillDirs, ...pluginSkillDirs]),
+  );
 
   const bundledSkills = bundledSkillsDir
     ? loadSkills({

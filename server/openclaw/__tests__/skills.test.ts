@@ -6,6 +6,7 @@ import { SkillRegistry } from '../skills/skillRegistry';
 import { skillRegistry } from '../skills/skillRegistry';
 import { initSkills } from '../skills/skillLoader';
 import { getOpenClawConfig } from '../config';
+import { ANTHROPIC_SKILLS_REPO_DIRS_ENV } from '../../lib/anthropicSkillsRepo';
 
 describe('Skill Registry', () => {
   it('registers and retrieves skills', () => {
@@ -110,5 +111,54 @@ Use this for local workflow automation.`,
 
     await fs.rm(tmpRoot, { recursive: true, force: true });
     skillRegistry.clear();
+  });
+
+  it('loads Anthropic repo skills from the configured repository path', async () => {
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'openclaw-anthropic-skills-'));
+    const repoDir = path.join(tmpRoot, 'anthropics-skills');
+    const skillDir = path.join(repoDir, 'skills', 'deck-review');
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: deck-review
+description: Review presentation decks
+tools: [openclaw_read]
+---
+
+# Deck Review
+
+Use this skill to review slide decks and presentation content.`,
+      'utf-8',
+    );
+
+    process.env[ANTHROPIC_SKILLS_REPO_DIRS_ENV] = repoDir;
+
+    try {
+      const baseConfig = getOpenClawConfig();
+      await initSkills({
+        ...baseConfig,
+        skills: {
+          ...baseConfig.skills,
+          enabled: true,
+          includeBuiltins: false,
+          autoImportClawi: false,
+          directory: path.join(tmpRoot, 'empty-skills'),
+          extraDirectories: [],
+          workspaceDirectory: tmpRoot,
+        },
+      });
+
+      const loaded = skillRegistry.get('deck-review');
+      expect(loaded).toBeTruthy();
+      expect(loaded?.source).toBe('filesystem');
+      expect(loaded?.metadata?.vendor).toBe('anthropic');
+      expect(loaded?.metadata?.homepage).toContain('github.com/anthropics/skills');
+      expect(loaded?.prompt).toContain('review slide decks');
+    } finally {
+      delete process.env[ANTHROPIC_SKILLS_REPO_DIRS_ENV];
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      skillRegistry.clear();
+    }
   });
 });
