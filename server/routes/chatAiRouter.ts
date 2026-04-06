@@ -44,6 +44,13 @@ import os from "os";
 import path from "path";
 import { terminalController } from "../agent/terminalController";
 import type { CommandRequest, CommandResult, ProcessInfo } from "../agent/terminalController";
+import {
+  validateLLMResponse,
+  shouldTriggerRAG,
+  createDeliveryAck,
+  streamRecoveryManager,
+  type RAGRelevanceDecision,
+} from "../lib/streamReliability";
 
 type AttachmentSpec = z.infer<typeof AttachmentSpecSchema>;
 type StreamProviderSwitch = {
@@ -149,14 +156,18 @@ async function* chunkStreamFromChatResponse(
 async function* withStreamGuard(
   source: AsyncIterable<StreamChunkEnvelope>,
   requestId: string,
+  promptLength: number = 0,
 ): AsyncGenerator<StreamChunkEnvelope, void, unknown> {
   let totalContent = "";
   let chunkCount = 0;
+  let lastProvider: string | undefined;
   const MAX_CHUNK_BYTES = 64 * 1024;
+  const CHECKPOINT_INTERVAL = 10;
 
   try {
     for await (const chunk of source) {
       chunkCount++;
+      if (chunk.provider) lastProvider = chunk.provider;
 
       const chunkByteLen = chunk.content ? Buffer.byteLength(chunk.content, "utf8") : 0;
       if (chunkByteLen > MAX_CHUNK_BYTES) {
@@ -172,10 +183,22 @@ async function* withStreamGuard(
         totalContent += chunk.content || "";
       }
 
+      if (chunkCount % CHECKPOINT_INTERVAL === 0) {
+        streamRecoveryManager.saveCheckpoint(requestId, {
+          accumulatedContent: totalContent,
+          lastSequenceId: chunk.sequenceId ?? chunkCount,
+          chunkCount,
+          provider: lastProvider,
+          timestamp: Date.now(),
+        });
+      }
+
       if (chunk.done) {
-        return;
+        break;
       }
     }
+
+    streamRecoveryManager.removeCheckpoint(requestId);
 
     if (chunkCount === 0 || totalContent.trim().length === 0) {
       console.warn("[StreamGuard] Stream completed with no content", { requestId, chunkCount });
@@ -183,16 +206,32 @@ async function* withStreamGuard(
       return;
     }
 
+    const validation = validateLLMResponse(totalContent, promptLength);
+    if (!validation.valid && validation.severity === "critical") {
+      console.warn(`[StreamGuard] Response validation failed: ${validation.reason}`, { requestId, chunkCount, contentLen: totalContent.length });
+      yield { content: "", done: true, provider: lastProvider, status: "incomplete", incompleteDetails: { reason: validation.reason || "validation_failed" } };
+      return;
+    }
+
     const hasUnclosedCode = (totalContent.match(/```/g) || []).length % 2 !== 0;
     const midSentenceEnd = /[,;:\-–—]$/.test(totalContent.trim()) && totalContent.trim().length > 20;
     if (hasUnclosedCode || midSentenceEnd) {
-      yield { content: "", done: true, provider: undefined, status: "incomplete", incompleteDetails: { reason: "max_output_tokens" } };
+      yield { content: "", done: true, provider: lastProvider, status: "incomplete", incompleteDetails: { reason: "max_output_tokens" } };
+    } else if (validation.severity === "warning") {
+      yield { content: "", done: true, provider: lastProvider, status: "completed", incompleteDetails: null, _validationWarning: validation.reason };
     } else {
-      yield { content: "", done: true, provider: undefined, status: "completed", incompleteDetails: null };
+      yield { content: "", done: true, provider: lastProvider, status: "completed", incompleteDetails: null };
     }
   } catch (err) {
     console.error("[StreamGuard] Stream error caught", { requestId, error: (err as Error).message, chunkCount });
-    yield { content: "", done: true, provider: undefined, status: "failed", incompleteDetails: { reason: "stream_error" } };
+    streamRecoveryManager.saveCheckpoint(requestId, {
+      accumulatedContent: totalContent,
+      lastSequenceId: chunkCount,
+      chunkCount,
+      provider: lastProvider,
+      timestamp: Date.now(),
+    });
+    yield { content: "", done: true, provider: lastProvider, status: "failed", incompleteDetails: { reason: "stream_error" } };
     throw err;
   }
 }
@@ -201,27 +240,38 @@ async function resolveModelStream(
   messages: any[],
   options: Record<string, unknown>,
 ): Promise<AsyncIterable<StreamChunkEnvelope>> {
-  const MAX_STREAM_ATTEMPTS = 2;
+  const MAX_STREAM_ATTEMPTS = 3;
   let lastError: unknown;
+  const requestId = (options as any).requestId || `stream_${Date.now()}`;
+  const promptLength = messages.reduce((acc: number, m: any) => acc + String(m?.content || "").length, 0);
 
   for (let attempt = 0; attempt < MAX_STREAM_ATTEMPTS; attempt++) {
     try {
       const rawStream = llmGateway.streamChat(messages, options as any);
 
       if (isAsyncIterable<StreamChunkEnvelope>(rawStream)) {
-        const requestId = (options as any).requestId || `stream_${Date.now()}`;
-        return withStreamGuard(rawStream, requestId);
+        return withStreamGuard(rawStream, requestId, promptLength);
       }
 
       const resolved = await Promise.resolve(rawStream);
       if (isAsyncIterable<StreamChunkEnvelope>(resolved)) {
-        const requestId = (options as any).requestId || `stream_${Date.now()}`;
-        return withStreamGuard(resolved, requestId);
+        return withStreamGuard(resolved, requestId, promptLength);
       }
 
       if (resolved && typeof resolved === "object" && "content" in resolved) {
+        const chatResponse = resolved as Awaited<ReturnType<typeof llmGateway.chat>>;
+        const responseContent = String((chatResponse as any)?.content || "");
+        const validation = validateLLMResponse(responseContent, promptLength);
+        if (!validation.valid && validation.severity === "critical" && attempt < MAX_STREAM_ATTEMPTS - 1) {
+          console.warn(`[Stream] Non-stream response failed validation (${validation.reason}), retrying...`);
+          const retryOpts = { ...options, enableFallback: true, skipCache: true };
+          if ((options as any).provider) delete (retryOpts as any).provider;
+          options = retryOpts;
+          await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+          continue;
+        }
         console.warn("[Stream] llmGateway.streamChat returned a non-stream response; converting to single-response stream");
-        return chunkStreamFromChatResponse(resolved as Awaited<ReturnType<typeof llmGateway.chat>>);
+        return chunkStreamFromChatResponse(chatResponse);
       }
     } catch (streamError) {
       lastError = streamError;
@@ -5066,11 +5116,19 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         res.setHeader("X-Latency-Mode", latencyMode);
         res.flushHeaders();
 
-        // Immediately send a start-handshake so the client knows the stream is alive
+        // Immediately send a start-handshake + delivery ACK so the client knows the stream is alive
+        // and the message was received intact (open-webui pattern: immediate feedback)
+        const deliveryAck = createDeliveryAck(
+          requestId,
+          (lastUserMsg as any)?.id || requestId,
+          userQuery || "",
+          "processing",
+        );
         writeSse(res, 'start', {
           requestId,
           latencyMode,
           timestamp: Date.now(),
+          ack: deliveryAck,
         });
 
         // Register connection-close handler as early as possible so every
@@ -5405,7 +5463,16 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       const allowAutoSearch = featureFlags.webSearchAuto && !requestedWebSearch && !hasAnyAttachments;
       // Allow web search in ALL latency lanes when auto-search is enabled
       // Previously fast lane blocked auto-search, but this prevented news/current-event queries from working
-      const shouldSearch = requestedWebSearch || allowAutoSearch;
+      const rawShouldSearch = requestedWebSearch || allowAutoSearch;
+
+      // RAG relevance gate (open-webui pattern): skip expensive search for greetings,
+      // simple follow-ups, and meta-queries that don't need external context.
+      // Only gate auto-search; never suppress explicit user-requested search.
+      const ragDecision = shouldTriggerRAG(userQuery || "", false, hasAnyAttachments);
+      const shouldSearch = requestedWebSearch || (rawShouldSearch && ragDecision.shouldSearch);
+      if (!requestedWebSearch && rawShouldSearch && !ragDecision.shouldSearch) {
+        console.info("[RAGGate] Skipping auto-search — not needed", { requestId, reason: ragDecision.reason, confidence: ragDecision.confidence, query: (userQuery || "").slice(0, 60) });
+      }
 
       if (shouldSearch && userQuery && !isConnectionClosed) {
         // Emit thinking event so the user sees progress while search runs
@@ -7068,11 +7135,35 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
       } // end if (!agentLoopHandled)
 
       // If upstream agentic pipeline produced no content, don't leave the UI hanging.
-      // Emit a fallback chunk so clients can render something, and persist it.
+      // Last-resort: attempt a single guaranteeResponse fallback before showing error (open-webui reliability pattern).
       if (!fullContent.trim()) {
-        const fallbackContent = shouldRunModel
-          ? "Lo siento, el modo agente no pudo generar una respuesta esta vez. Intenta de nuevo o desactiva el modo agente para esta pregunta."
-          : "No se pudo completar la respuesta con skills. Reintenta o reformula la consulta.";
+        let fallbackContent = "";
+        if (!isConnectionClosed && shouldRunModel && modelMessages?.length > 0) {
+          try {
+            console.warn("[Stream] Empty content detected — attempting guaranteeResponse last-resort fallback", { requestId });
+            writeSse(res, 'notice', { type: "retry_empty_response", requestId, timestamp: Date.now() });
+            const lastResortResponse = await llmGateway.guaranteeResponse(modelMessages, {
+              ...(streamLlmOptions as any),
+              skipCache: true,
+              enableFallback: true,
+              maxTokens: Math.min((streamLlmOptions as any).maxTokens || 2048, 2048),
+            });
+            const lastResortContent = String((lastResortResponse as any)?.content || "").trim();
+            const lastResortValidation = validateLLMResponse(lastResortContent, userQuery?.length || 0);
+            if (lastResortContent && lastResortValidation.valid) {
+              fallbackContent = lastResortContent;
+              console.info("[Stream] guaranteeResponse last-resort succeeded", { requestId, len: fallbackContent.length });
+            }
+          } catch (lastResortErr) {
+            console.warn("[Stream] guaranteeResponse last-resort also failed", { requestId, err: (lastResortErr as Error).message });
+          }
+        }
+
+        if (!fallbackContent) {
+          fallbackContent = shouldRunModel
+            ? "Lo siento, el modo agente no pudo generar una respuesta esta vez. Intenta de nuevo o desactiva el modo agente para esta pregunta."
+            : "No se pudo completar la respuesta con skills. Reintenta o reformula la consulta.";
+        }
         fullContent = fallbackContent;
 
         if (!isConnectionClosed) {

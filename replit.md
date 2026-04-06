@@ -64,9 +64,30 @@ The system is designed for scalability, supporting 100M simultaneous users with 
 - **Context Builder** (`server/services/rag/promptContextBuilder.ts`): SHA-256 content-hash dedup, min relevance score (0.01) quality gate, min content length filter, post-sanitize validation, token budget enforcement with priority allocation.
 - **Response Quality**: `server/services/responseQuality.ts` (per-provider response quality metrics).
 
-### Stream Resilience Layer
-- **StreamGuard** (`server/routes/chatAiRouter.ts`): `withStreamGuard()` async generator wraps all streams — 64KB chunk cap with truncation, guaranteed `done` event on empty/error streams, content accumulation tracking.
-- **Retry logic**: `resolveModelStream()` retries up to 2 attempts with provider rotation and backoff before falling back to `llmGateway.chat()`.
+### Stream Resilience Layer (open-webui / siraGPT inspired)
+- **StreamGuard** (`server/routes/chatAiRouter.ts`): `withStreamGuard()` async generator wraps all streams — 64KB chunk cap with truncation, guaranteed `done` event on empty/error streams, content accumulation tracking, **stream recovery checkpoints** (every 10 chunks saved to `StreamRecoveryManager`), **post-stream response validation** (empty/garbage/repetition/refusal detection with severity classification).
+- **Retry logic**: `resolveModelStream()` retries up to **3 attempts** (increased from 2) with provider rotation and backoff. Non-stream responses are also validated — if validation fails critically, auto-retry with fallback provider. Final fallback to `llmGateway.guaranteeResponse()`.
+- **SSE Keep-Alive Heartbeats**: 15-second interval heartbeat comments (`: heartbeat <timestamp>`) prevent proxy/CDN/browser timeout disconnections during long LLM thinking. Heartbeats also reset the server-side idle timeout.
+- **Message Delivery ACK**: `start` SSE event includes a `deliveryAck` object (`requestId`, `messageId`, `status`, `promptHash`) so the client knows the message was received intact before streaming begins.
+- **Empty Response Recovery**: If the stream produces no content, a last-resort `guaranteeResponse()` fallback is attempted with a different provider before showing the error message to the user.
+- **Connection-Alive Detection**: `req.on('close')` handler propagates abort signal, cleans up heartbeats and timeouts, and marks orphaned runs as `failed` so they don't stay in "processing" forever.
+
+### Stream Reliability Module
+- **File**: `server/lib/streamReliability.ts` — standalone module with production patterns inspired by open-webui and siraGPT:
+  - **`validateLLMResponse()`**: Validates accumulated content against garbage patterns (`undefined`, `null`, `NaN`, `[object Object]`), generic refusals (EN/ES), repetition detection (sliding window), length mismatch detection. Returns severity classification (`ok`/`warning`/`critical`) with suggested action (`none`/`retry`/`fallback`).
+  - **`shouldTriggerRAG()`**: RAG relevance gate — skips expensive search for greetings, simple follow-ups, meta-queries, and very short messages. Detects patterns in both English and Spanish. Returns `{ shouldSearch, reason, confidence }`.
+  - **`verifyPromptIntegrity()`**: SHA-256 hash + length verification to detect message corruption in transit.
+  - **`createDeliveryAck()`**: Message delivery acknowledgment protocol for client confirmation.
+  - **`ConnectionAliveMonitor`**: Tracks client connection state with `AbortController` signal propagation and cleanup callbacks.
+  - **`HeartbeatManager`**: Manages SSE heartbeat intervals with connection loss detection.
+  - **`StreamRecoveryManager`**: Stores in-memory checkpoints for mid-stream recovery with TTL-based pruning.
+  - **`withResponseValidation()`**: Async generator wrapper that validates accumulated response after stream completes.
+
+### RAG Relevance Gate
+- **Automatic skip**: Greetings ("hola", "hello", "hi"), meta-queries ("quién eres", "who are you"), math calculations, simple acknowledgments ("gracias", "ok"), and jokes don't trigger expensive web/document search.
+- **Follow-up detection**: Short follow-ups ("sí", "y", "pero", "por qué") only trigger search if there's existing document context.
+- **Relevance threshold**: RAG pipeline default relevance threshold increased from `0.0` to `0.15`, filtering out noise from low-quality matches.
+- **RAG response validation**: Enhanced with repetition detection (sliding window algorithm) and garbage literal detection (`undefined`, `null`, `NaN`).
 
 ### LLM Response Guarantee Layer
 - **`guaranteeResponse()`** (`server/lib/llmGateway.ts`): 3-attempt retry with provider rotation on each attempt, refusal pattern detection (retries on "I'm sorry, I can't..."), graceful degradation message on total failure.

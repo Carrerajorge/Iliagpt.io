@@ -343,24 +343,47 @@ export function validateLLMResponse(
     return { isValid: false, reason: 'empty_response' };
   }
 
-  if (response.trim().length < 5) {
+  const trimmed = response.trim();
+
+  if (trimmed.length < 5) {
     return { isValid: false, reason: 'too_short' };
   }
 
+  if (/^(undefined|null|NaN|\[object Object\])$/i.test(trimmed)) {
+    return { isValid: false, reason: 'garbage_literal' };
+  }
+
   for (const pat of REFUSAL_PATTERNS) {
-    if (pat.test(response.trim())) {
+    if (pat.test(trimmed)) {
       return { isValid: false, reason: 'generic_refusal' };
     }
   }
 
   for (const pat of GARBAGE_PATTERNS) {
-    if (pat.test(response.trim())) {
+    if (pat.test(trimmed)) {
       return { isValid: false, reason: 'garbage_content' };
     }
   }
 
-  if (contextLength > 500 && response.trim().length < 20) {
+  if (contextLength > 500 && trimmed.length < 20) {
     return { isValid: false, reason: 'disproportionately_short' };
+  }
+
+  if (trimmed.length > 100) {
+    const words = trimmed.split(/\s+/);
+    if (words.length >= 20) {
+      const windowSize = Math.min(15, Math.floor(words.length / 3));
+      const seen = new Set<string>();
+      let repeats = 0;
+      for (let i = 0; i <= words.length - windowSize; i++) {
+        const w = words.slice(i, i + windowSize).join(" ");
+        if (seen.has(w)) repeats++;
+        seen.add(w);
+      }
+      if (repeats / Math.max(1, words.length - windowSize) > 0.5) {
+        return { isValid: false, reason: 'excessive_repetition' };
+      }
+    }
   }
 
   return { isValid: true };
@@ -1152,7 +1175,7 @@ export class UnifiedRAGPipeline extends EventEmitter {
   }
 
   static create(overrides?: Partial<PipelineConfig>): UnifiedRAGPipeline {
-    const relevanceThreshold = overrides?.options?.relevanceThreshold ?? 0.0;
+    const relevanceThreshold = overrides?.options?.relevanceThreshold ?? 0.15;
     const ragTemplate = overrides?.options?.ragTemplate;
 
     const defaults: PipelineConfig = {
