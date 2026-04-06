@@ -171,6 +171,9 @@ const MemoryPage = lazyWithRetry(() => import("@/pages/memory"));
 const IliaAdsPage = lazyWithRetry(() => import("@/pages/ilia-ads"));
 const RunReplayPage = lazyWithRetry(() => import("@/pages/agent/RunReplayPage"));
 const OrchestrationDAGPage = lazyWithRetry(() => import("@/pages/agent/OrchestrationDAGPage"));
+const KnowledgeGraphPage = lazyWithRetry(() => import("@/pages/knowledge-graph"));
+const BackgroundAgentsPage = lazyWithRetry(() => import("@/pages/background-agents"));
+const MCPManagerPage = lazyWithRetry(() => import("@/pages/mcp-manager"));
 
 const ProtectedProfilePage = requireAuth(ProfilePage);
 const ProtectedBillingPage = requireAuth(BillingPage);
@@ -188,6 +191,9 @@ const ProtectedSpreadsheetAnalyzerPage = requireAuth(SpreadsheetAnalyzerPage);
 const ProtectedMonitoringDashboard = requireAuth(MonitoringDashboard);
 const ProtectedRunReplayPage = requireAuth(RunReplayPage);
 const ProtectedOrchestrationDAGPage = requireAuth(OrchestrationDAGPage);
+const ProtectedKnowledgeGraphPage = requireAuth(KnowledgeGraphPage);
+const ProtectedBackgroundAgentsPage = requireAuth(BackgroundAgentsPage);
+const ProtectedMCPManagerPage = requireAuth(MCPManagerPage);
 
 function SearchModalWithChats(props: Omit<React.ComponentProps<typeof SearchModal>, 'chats'>) {
   const { chats } = useChats();
@@ -350,6 +356,9 @@ function Router() {
             <Route path="/skills" component={ProtectedSkillsPage} />
             <Route path="/codex" component={ProtectedCodexPage} />
             <Route path="/memory" component={ProtectedMemoryPage} />
+            <Route path="/knowledge-graph" component={ProtectedKnowledgeGraphPage} />
+            <Route path="/background-agents" component={ProtectedBackgroundAgentsPage} />
+            <Route path="/mcp-manager" component={ProtectedMCPManagerPage} />
             <Route path="/ads" component={ProtectedIliaAdsPage} />
             <Route path="/spreadsheet-analyzer" component={ProtectedSpreadsheetAnalyzerPage} />
             <Route path="/monitoring" component={ProtectedMonitoringDashboard} />
