@@ -28,10 +28,10 @@ export async function initializeOpenClaw(httpServer: HttpServer): Promise<void> 
     enabledModules.push('plugins');
   }
 
-  if (config.skills.enabled) {
+  {
     const { initSkills } = await import('./skills/skillLoader');
     await initSkills(config);
-    enabledModules.push('skills');
+    enabledModules.push(`skills(${config.skills.enabled ? 'full' : 'builtins'})`);
   }
 
   if (config.streaming.enabled) {

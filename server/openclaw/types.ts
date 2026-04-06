@@ -86,6 +86,7 @@ export interface Skill {
   tools: string[];
   bootstrap?: Record<string, string>;
   source?: 'builtin' | 'filesystem';
+  status?: 'ready' | 'needs_setup' | 'disabled';
   filePath?: string;
   metadata?: Record<string, unknown>;
   updatedAt?: number;

@@ -6,6 +6,7 @@ import { llmGateway } from "../lib/llmGateway";
 import { usageQuotaService } from "./usageQuotaService";
 import { internetToolDefinitions, executeInternetTool } from "../openclaw/lib/internetAccess";
 import { gatherInternetContext, buildInternetSystemPrompt } from "../openclaw/lib/chatInternetBridge";
+import { skillRegistry } from "../openclaw/skills/skillRegistry";
 
 const VERSION = "2026.4.5";
 const TOKEN_SECRET = process.env.ENCRYPTION_KEY || randomUUID();
@@ -364,9 +365,25 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       break;
     }
 
-    case "skills.status":
-      reply(ws, id, { skills: [], installed: [] });
+    case "skills.status": {
+      const allSkills = skillRegistry.list();
+      const skillEntries = allSkills.map(s => ({
+        id: s.id,
+        name: s.name,
+        description: s.description,
+        status: s.status || 'ready',
+        source: s.source || 'builtin',
+        tools: s.tools || [],
+      }));
+      reply(ws, id, {
+        skills: skillEntries,
+        installed: skillEntries.filter(s => s.status === 'ready').map(s => s.id),
+        total: skillEntries.length,
+        ready: skillEntries.filter(s => s.status === 'ready').length,
+        needsSetup: skillEntries.filter(s => s.status === 'needs_setup').length,
+      });
       break;
+    }
 
     case "skills.install":
     case "skills.update":

@@ -1,5 +1,6 @@
 import { webSearch, webFetch, webSearchAndFetch } from "./internetAccess";
 import type { WebSearchResult, WebFetchResult } from "./internetAccess";
+import { skillRegistry } from "../skills/skillRegistry";
 
 export interface InternetContext {
   searchResults?: WebSearchResult;
@@ -167,6 +168,25 @@ export async function gatherInternetContext(userMessage: string): Promise<Intern
 }
 
 export function buildInternetSystemPrompt(context: InternetContext | null): string {
+  let skillsBlock = "";
+  try {
+    const allSkills = skillRegistry.list();
+    if (allSkills.length > 0) {
+      const readySkills = allSkills.filter(s => s.status === 'ready' || !s.status);
+      const setupSkills = allSkills.filter(s => s.status === 'needs_setup');
+      const sanitize = (s: string) => s.replace(/[\n\r]/g, ' ').slice(0, 120);
+      const readyLines = readySkills.slice(0, 30).map(s => `- ${sanitize(s.name)}: ${sanitize(s.description || '')}`);
+      const maxChars = 3000;
+      let joined = readyLines.join('\n');
+      if (joined.length > maxChars) joined = joined.slice(0, maxChars) + '...';
+      skillsBlock = `\n\nACTIVE SKILLS (${readySkills.length} ready):
+${joined}
+You CAN use any of these ready skills. For needs-setup skills (${setupSkills.length} total), tell the user which API key or configuration is required before you can use them.`;
+    }
+  } catch (e: any) {
+    console.warn('[chatInternetBridge] Skills injection skipped:', e?.message);
+  }
+
   const basePrompt = `You are IliaGPT, a powerful AI assistant with FULL real-time internet access. You are running inside the OpenClaw control interface.
 
 CRITICAL INTERNET CAPABILITIES:
@@ -181,7 +201,7 @@ IMPORTANT RULES ABOUT LINKS AND URLS:
 - NEVER invent, guess, or hallucinate URLs — if you don't have a verified URL, say "I found information about X but let me search for the exact link" instead of making one up
 - When sharing links, copy them EXACTLY as they appear in your search results
 - If a user asks for a link and you don't have it in your data, tell them you'll search for it
-
+${skillsBlock}
 You respond in the same language as the user. Use markdown formatting when helpful.`;
 
   if (!context) {

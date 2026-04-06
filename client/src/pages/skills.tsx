@@ -239,7 +239,7 @@ const BASE_BUILT_IN_SKILLS: BuiltInSkill[] = [
     description: "Ejecutar código Python, JavaScript para análisis y automatización.",
     category: "data",
     icon: <Code className="h-6 w-6 text-yellow-600" />,
-    enabled: false,
+    enabled: true,
     builtIn: true,
     features: ["Python", "JavaScript", "Visualizaciones", "Automatización"],
     triggers: ["código", "python", "javascript", "ejecutar"]
@@ -250,7 +250,7 @@ const BASE_BUILT_IN_SKILLS: BuiltInSkill[] = [
     description: "Consultar y analizar datos de bases de datos SQL.",
     category: "data",
     icon: <Database className="h-6 w-6 text-gray-600" />,
-    enabled: false,
+    enabled: true,
     builtIn: true,
     features: ["SQL", "Joins", "Agregaciones", "Exportar"],
     triggers: ["database", "sql", "consulta", "base de datos"]

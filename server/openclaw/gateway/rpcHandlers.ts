@@ -69,10 +69,16 @@ handlers.set('skills.list', async () => {
     description: skill.description,
     tools: skill.tools || [],
     source: skill.source || 'builtin',
+    status: skill.status || 'ready',
     filePath: skill.filePath,
     updatedAt: skill.updatedAt,
   }));
-  return { skills };
+  return {
+    skills,
+    total: skills.length,
+    ready: skills.filter(s => s.status === 'ready').length,
+    needsSetup: skills.filter(s => s.status === 'needs_setup').length,
+  };
 });
 
 handlers.set('skills.reload', async () => {
