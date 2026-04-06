@@ -611,27 +611,37 @@ export class TokenConsumptionTracker extends EventEmitter {
     };
   }
 
-  // Persistir datos
+  private persistFailures = 0;
+  private readonly MAX_PERSIST_FAILURES = 5;
+
   async persist(): Promise<void> {
+    if (this.persistFailures >= this.MAX_PERSIST_FAILURES) {
+      return;
+    }
     try {
-      // Guardar solo últimos registros
-      const recentRecords = this.records.slice(-10000);
+      const recentRecords = this.records.slice(-1000);
 
       await redis.setex(
         `${this.REDIS_PREFIX}records`,
-        7 * 24 * 60 * 60, // 7 days
+        7 * 24 * 60 * 60,
         JSON.stringify(recentRecords)
       );
 
       await redis.setex(
         `${this.REDIS_PREFIX}aggregates`,
-        30 * 24 * 60 * 60, // 30 days
+        30 * 24 * 60 * 60,
         JSON.stringify(Object.fromEntries(this.hourlyAggregates))
       );
 
+      this.persistFailures = 0;
       Logger.info('[TokenTracker] Data persisted to Redis');
-    } catch (error) {
-      Logger.error('[TokenTracker] Error persisting data:', error);
+    } catch (error: any) {
+      this.persistFailures++;
+      if (this.persistFailures >= this.MAX_PERSIST_FAILURES) {
+        Logger.warn(`[TokenTracker] Redis persist disabled after ${this.MAX_PERSIST_FAILURES} consecutive failures: ${error?.message}`);
+      } else {
+        Logger.error('[TokenTracker] Error persisting data:', error);
+      }
     }
   }
 

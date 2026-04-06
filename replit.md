@@ -77,3 +77,10 @@ Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment varia
   - Automatically searches and fetches top pages before sending to LLM.
   - System prompt injects verified URLs and instructs model to NEVER hallucinate links.
 - **Fusion Features**: task-board, searxng-search, model-switch-queue, gateway-resilience, internet-access.
+- **Skills Context in System Prompt**: `buildInternetSystemPrompt` injects up to 30 ready skills (sanitized, max 3K chars) into every OpenClaw chat session. Circuit-breaker pattern: silent fallback on registry errors.
+
+### Memory Optimization (v2026.4.6)
+- **PerformanceAuditor**: Collection interval 60s (was 10s), history buffer 100 (was 1000), memory warning throttling (log first 3 + every 30th).
+- **TokenTracker**: Redis persist circuit breaker — disables after 5 consecutive failures. In-memory records capped at 1000 (was 10000).
+- **PerformanceAuditor Redis flush**: Circuit breaker — disables after 5 consecutive failures.
+- **DB Pool**: Production write max 20 (was 100), read max 20 (was 150), min 2 (was 10/20).

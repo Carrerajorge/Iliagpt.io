@@ -7,8 +7,8 @@ const isProd = env.NODE_ENV === 'production';
 
 const pool = new Pool({
   connectionString: env.DATABASE_URL,
-  max: env.DB_POOL_MAX || (isProd ? 100 : 5),
-  min: env.DB_POOL_MIN || (isProd ? 10 : 0),
+  max: env.DB_POOL_MAX || (isProd ? 20 : 5),
+  min: env.DB_POOL_MIN || (isProd ? 2 : 0),
   idleTimeoutMillis: isProd ? 10000 : 3000,
   connectionTimeoutMillis: isProd ? 5000 : 3000,
   allowExitOnIdle: false,
@@ -19,8 +19,8 @@ const pool = new Pool({
 
 const poolRead = env.DATABASE_READ_URL ? new Pool({
   connectionString: env.DATABASE_READ_URL,
-  max: env.DB_READ_POOL_MAX || (isProd ? 150 : 5),
-  min: env.DB_READ_POOL_MIN || (isProd ? 20 : 2),
+  max: env.DB_READ_POOL_MAX || (isProd ? 20 : 5),
+  min: env.DB_READ_POOL_MIN || (isProd ? 2 : 2),
   idleTimeoutMillis: isProd ? 15000 : 10000,
   connectionTimeoutMillis: isProd ? 5000 : 5000,
   allowExitOnIdle: false,

@@ -151,8 +151,9 @@ export class PerformanceAuditor extends EventEmitter {
   private isCollecting: boolean = false;
   private collectionInterval: NodeJS.Timeout | null = null;
   private readonly REDIS_PREFIX = 'perf:audit:';
-  private readonly COLLECTION_INTERVAL = 10000; // 10 seconds
-  private readonly MAX_HISTORY_SIZE = 1000;
+  private readonly COLLECTION_INTERVAL = 60000; // 60 seconds
+  private readonly MAX_HISTORY_SIZE = 100;
+  private consecutiveMemoryWarnings = 0;
 
   private constructor() {
     super();
@@ -358,14 +359,18 @@ export class PerformanceAuditor extends EventEmitter {
       this.healthHistory.shift();
     }
 
-    // Verificar umbral de memoria
     const memoryPercent = health.heapUsed / health.heapTotal;
     if (memoryPercent > THRESHOLDS.memory.critical) {
-      this.emit('threshold-exceeded', {
-        type: 'memory',
-        value: memoryPercent,
-        threshold: THRESHOLDS.memory.critical,
-      });
+      this.consecutiveMemoryWarnings++;
+      if (this.consecutiveMemoryWarnings <= 3 || this.consecutiveMemoryWarnings % 30 === 0) {
+        this.emit('threshold-exceeded', {
+          type: 'memory',
+          value: memoryPercent,
+          threshold: THRESHOLDS.memory.critical,
+        });
+      }
+    } else {
+      this.consecutiveMemoryWarnings = 0;
     }
   }
 
@@ -632,33 +637,39 @@ export class PerformanceAuditor extends EventEmitter {
     }
   }
 
+  private redisFlushFailures = 0;
+  private readonly MAX_FLUSH_FAILURES = 5;
+
   private async flushToRedis(): Promise<void> {
+    if (this.redisFlushFailures >= this.MAX_FLUSH_FAILURES) {
+      return;
+    }
     try {
       const pipeline = redis.pipeline();
 
-      // Guardar métricas de servicios
       for (const [key, metrics] of this.metricsBuffer) {
         pipeline.hset(`${this.REDIS_PREFIX}services`, key, JSON.stringify(metrics));
       }
 
-      // Guardar métricas de endpoints
       for (const [key, metrics] of this.endpointBuffer) {
         pipeline.hset(`${this.REDIS_PREFIX}endpoints`, key, JSON.stringify(metrics));
       }
 
-      // Guardar métricas de tokens
       for (const [key, metrics] of this.tokenBuffer) {
         pipeline.hset(`${this.REDIS_PREFIX}tokens`, key, JSON.stringify(metrics));
       }
 
-      // TTL de 24 horas
       pipeline.expire(`${this.REDIS_PREFIX}services`, 86400);
       pipeline.expire(`${this.REDIS_PREFIX}endpoints`, 86400);
       pipeline.expire(`${this.REDIS_PREFIX}tokens`, 86400);
 
       await pipeline.exec();
-    } catch (error) {
-      Logger.error('[PerformanceAuditor] Error flushing to Redis:', error);
+      this.redisFlushFailures = 0;
+    } catch (error: any) {
+      this.redisFlushFailures++;
+      if (this.redisFlushFailures >= this.MAX_FLUSH_FAILURES) {
+        Logger.warn(`[PerformanceAuditor] Redis flush disabled after ${this.MAX_FLUSH_FAILURES} failures: ${error?.message}`);
+      }
     }
   }
 
