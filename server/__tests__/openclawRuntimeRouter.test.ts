@@ -135,11 +135,14 @@ vi.mock("../openclaw/agents/subagentService", () => ({
       const run = {
         id: `sub_${runtimeRuns.length + 1}`,
         requesterUserId: params.requesterUserId,
+        chatId: params.chatId,
         objective: params.objective,
         planHint: params.planHint || [],
         parentRunId: params.parentRunId,
         status: "queued",
         createdAt: Date.now(),
+        updatedAt: Date.now(),
+        stepCount: 0,
       };
       runtimeRuns.push(run);
       return run;
@@ -147,6 +150,7 @@ vi.mock("../openclaw/agents/subagentService", () => ({
     list: vi.fn((params: any = {}) => {
       return runtimeRuns
         .filter((run) => !params.requesterUserId || run.requesterUserId === params.requesterUserId)
+        .filter((run) => !params.chatId || run.chatId === params.chatId)
         .filter((run) => !params.parentRunId || run.parentRunId === params.parentRunId)
         .filter((run) => !params.status || run.status === params.status)
         .slice(0, Math.max(1, params.limit || 100));
@@ -190,14 +194,21 @@ describe("openclawRuntimeRouter smoke flow", () => {
 
       const spawnRes = await client
         .post("/api/openclaw/runtime/subagents")
-        .send({ objective: planRes.body.subtasks[0].description });
+        .send({ objective: planRes.body.subtasks[0].description, chatId: "chat-alpha" });
       expect(spawnRes.status).toBe(202);
       expect(spawnRes.body.id).toBeTruthy();
+      expect(spawnRes.body.chatId).toBe("chat-alpha");
 
-      const listRes = await client.get("/api/openclaw/runtime/subagents");
+      await client
+        .post("/api/openclaw/runtime/subagents")
+        .send({ objective: "otra tarea", chatId: "chat-beta" });
+
+      const listRes = await client.get("/api/openclaw/runtime/subagents").query({ chatId: "chat-alpha" });
       expect(listRes.status).toBe(200);
       expect(Array.isArray(listRes.body.runs)).toBe(true);
-      expect(listRes.body.runs.length).toBeGreaterThanOrEqual(1);
+      expect(listRes.body.runs).toHaveLength(1);
+      expect(listRes.body.stats.active).toBe(1);
+      expect(listRes.body.runs[0].chatId).toBe("chat-alpha");
 
       const runRes = await client
         .post("/api/openclaw/runtime/orchestrator/run")
@@ -208,14 +219,14 @@ describe("openclawRuntimeRouter smoke flow", () => {
 
       const flowRes = await client
         .post("/api/openclaw/runtime/orchestrator/flow")
-        .send({ objective, spawnSubagents: true, maxSubagents: 2 });
+        .send({ objective, spawnSubagents: true, maxSubagents: 2, chatId: "chat-flow" });
       expect(flowRes.status).toBe(200);
       expect(Array.isArray(flowRes.body.delegatedRuns)).toBe(true);
       expect(flowRes.body.delegatedRuns.length).toBeGreaterThanOrEqual(1);
+      expect(flowRes.body.delegatedRuns.every((run: any) => typeof run.id === "string")).toBe(true);
       expect(flowRes.body.combined.summary.completed).toBe(2);
     } finally {
       await close();
     }
   });
 });
-

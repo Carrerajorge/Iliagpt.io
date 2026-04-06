@@ -45,6 +45,7 @@ export interface TaskRecord {
   output       : string;      // Accumulated stdout-like output
   progress?    : number;      // 0–100
   steps        : TaskStep[];
+  updatedAt    : number;
   metadata?    : Record<string, unknown>;
 }
 
@@ -90,6 +91,7 @@ const REDIS_KEY_PREFIX    = 'ilia:task:';
 export class BackgroundTaskManager extends EventEmitter {
   private readonly tasks = new Map<string, TaskRecord>();
   private readonly aborts = new Map<string, AbortController>();
+  private readonly persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // ── Spawn ───────────────────────────────────────────────────────────────────
 
@@ -107,6 +109,7 @@ export class BackgroundTaskManager extends EventEmitter {
       status      : 'queued',
       priority    : params.priority    ?? 'normal',
       createdAt   : Date.now(),
+      updatedAt   : Date.now(),
       output      : '',
       steps       : [],
       metadata    : params.metadata,
@@ -178,6 +181,8 @@ export class BackgroundTaskManager extends EventEmitter {
       // Trim to last 400k chars
       task.output = '...[truncated]...\n' + task.output.slice(-400_000);
     }
+    this.touch(task);
+    this.schedulePersist(task);
     this.emit('task:event', { type: 'output_chunk', taskId: id, chunk } satisfies TaskEvent);
   }
 
@@ -185,6 +190,8 @@ export class BackgroundTaskManager extends EventEmitter {
     const task = this.tasks.get(id);
     if (!task) return;
     task.steps.push(step);
+    this.touch(task, step.timestamp);
+    this.schedulePersist(task);
     this.emit('task:event', { type: 'step', taskId: id, step } satisfies TaskEvent);
   }
 
@@ -192,6 +199,8 @@ export class BackgroundTaskManager extends EventEmitter {
     const task = this.tasks.get(id);
     if (!task) return;
     task.progress = Math.max(0, Math.min(100, progress));
+    this.touch(task);
+    this.schedulePersist(task);
     this.emit('task:event', { type: 'progress', taskId: id, progress: task.progress } satisfies TaskEvent);
   }
 
@@ -238,6 +247,11 @@ export class BackgroundTaskManager extends EventEmitter {
       }
     } finally {
       this.aborts.delete(task.id);
+      const pendingPersist = this.persistTimers.get(task.id);
+      if (pendingPersist) {
+        clearTimeout(pendingPersist);
+        this.persistTimers.delete(task.id);
+      }
       await this._persist(task);
     }
   }
@@ -246,7 +260,32 @@ export class BackgroundTaskManager extends EventEmitter {
 
   private _updateStatus(task: TaskRecord, status: TaskStatus): void {
     task.status = status;
+    this.touch(task);
+    this.schedulePersist(task);
     this.emit('task:event', { type: 'status_change', taskId: task.id, status } satisfies TaskEvent);
+  }
+
+  private touch(task: TaskRecord, timestamp = Date.now()): void {
+    task.updatedAt = timestamp;
+  }
+
+  private schedulePersist(task: TaskRecord, immediate = false): void {
+    const existing = this.persistTimers.get(task.id);
+    if (existing) {
+      clearTimeout(existing);
+      this.persistTimers.delete(task.id);
+    }
+
+    if (immediate) {
+      void this._persist(task);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.persistTimers.delete(task.id);
+      void this._persist(task);
+    }, 250);
+    this.persistTimers.set(task.id, timer);
   }
 
   // ── Persistence ──────────────────────────────────────────────────────────────
@@ -271,6 +310,9 @@ export class BackgroundTaskManager extends EventEmitter {
       const raw = await redis.get(`${REDIS_KEY_PREFIX}${id}`);
       if (!raw) return undefined;
       const task = JSON.parse(raw) as TaskRecord;
+      if (!Number.isFinite(task.updatedAt)) {
+        task.updatedAt = task.endedAt ?? task.startedAt ?? task.createdAt;
+      }
       this.tasks.set(id, task); // warm in-memory cache
       return task;
     } catch {
@@ -308,6 +350,11 @@ export class BackgroundTaskManager extends EventEmitter {
       .filter(t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled')
       .sort((a, b) => a.createdAt - b.createdAt);
     for (const t of evictable.slice(0, 200)) {
+      const persistTimer = this.persistTimers.get(t.id);
+      if (persistTimer) {
+        clearTimeout(persistTimer);
+        this.persistTimers.delete(t.id);
+      }
       this.tasks.delete(t.id);
     }
   }
