@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { ChatCompletionMessageParam, ChatCompletionChunk } from "openai/resources/chat/completions";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import Anthropic from "@anthropic-ai/sdk";
 import { MODELS } from "./openai";
 import { geminiChat, geminiStreamChat, GEMINI_MODELS, type GeminiChatMessage } from "./gemini";
@@ -17,11 +17,23 @@ import { storage } from "../storage";
 import { redis } from "./redis";
 import type { InsertApiLog } from "@shared/schema";
 
-import { getCircuitBreaker, CircuitBreakerOpenError, CircuitState } from "./circuitBreaker";
+import { getCircuitBreaker, CircuitState } from "./circuitBreaker";
 import type { ZodSchema } from "zod";
 import { type AgentEvent } from "./typedStreaming";
 import { costEngine } from "../services/finops/costEngine";
 import { secretManager } from "../services/secretManager";
+import { env } from "../config/env";
+import { ConcurrencyGate, type ConcurrencyGateState } from "./concurrencyGate";
+import { tokenCounter } from "./tokenCounter";
+import {
+  recordLlmGatewayCacheHit,
+  recordLlmGatewayFallback,
+  recordLlmGatewayRateLimitHit,
+  recordLlmGatewayRequest,
+  recordLlmGatewayTokens,
+  setLlmGatewayProviderConcurrency,
+  setLlmGatewayStateGauge,
+} from "./llmGatewayMetrics";
 
 interface RateLimitState {
   tokens: number;
@@ -121,11 +133,29 @@ interface TokenUsageRecord {
   fromFallback: boolean;
 }
 
+interface ProviderMetricsState {
+  requests: number;
+  tokens: number;
+  failures: number;
+  latency?: number;
+}
+
+function createInitialProviderMetrics(): Record<LLMProvider, ProviderMetricsState> {
+  return {
+    xai: { requests: 0, tokens: 0, failures: 0 },
+    gemini: { requests: 0, tokens: 0, failures: 0 },
+    openai: { requests: 0, tokens: 0, failures: 0 },
+    anthropic: { requests: 0, tokens: 0, failures: 0 },
+    deepseek: { requests: 0, tokens: 0, failures: 0 },
+    cerebras: { requests: 0, tokens: 0, failures: 0 },
+  };
+}
+
 // ===== Configuration =====
 const CIRCUIT_BREAKER_CONFIG = {
-  failureThreshold: 5,
-  resetTimeout: 30000,
-  timeout: 30000,
+  failureThreshold: env.LLM_CIRCUIT_FAILURE_THRESHOLD,
+  resetTimeout: env.LLM_CIRCUIT_RESET_TIMEOUT_MS,
+  timeout: env.LLM_CIRCUIT_TIMEOUT_MS,
 };
 
 const RATE_LIMIT_CONFIG = {
@@ -135,20 +165,20 @@ const RATE_LIMIT_CONFIG = {
 };
 
 const RETRY_CONFIG = {
-  maxRetries: 3,
-  baseDelayMs: 1000,
-  maxDelayMs: 10000,
-  jitterFactor: 0.3,
+  maxRetries: env.LLM_RETRY_MAX_RETRIES,
+  baseDelayMs: env.LLM_RETRY_BASE_DELAY_MS,
+  maxDelayMs: env.LLM_RETRY_MAX_DELAY_MS,
+  jitterFactor: env.LLM_RETRY_JITTER_FACTOR,
 };
 
-const DEFAULT_TIMEOUT_MS = 60000;
+const DEFAULT_TIMEOUT_MS = env.LLM_DEFAULT_TIMEOUT_MS;
 // Streaming can hang indefinitely if a provider never yields tokens. We enforce:
 // - total timeout: cap overall request time
 // - idle timeout: cap time with no tokens (covers TTFT and stalled streams)
-const DEFAULT_STREAM_TIMEOUT_MS = 300000; // 5 minutes
-const STREAM_IDLE_TIMEOUT_MS = 60000; // 60 seconds – covers slow TTFT from Gemini/reasoning models
-const MAX_CONTEXT_TOKENS = 8000;
-const CACHE_TTL_MS = 300000; // 5 minutes
+const DEFAULT_STREAM_TIMEOUT_MS = env.LLM_STREAM_TIMEOUT_MS;
+const STREAM_IDLE_TIMEOUT_MS = env.LLM_STREAM_IDLE_TIMEOUT_MS;
+const MAX_CONTEXT_TOKENS = env.LLM_MAX_CONTEXT_TOKENS;
+const CACHE_TTL_MS = env.LLM_CACHE_TTL_MS;
 
 /** Structured result from context truncation — replaces silent truncation. */
 export interface TruncationResult {
@@ -159,21 +189,8 @@ export interface TruncationResult {
   droppedMessages: number;
   truncatedMessageCount: number;
 }
-const IN_FLIGHT_TIMEOUT_MS = 120000; // 2 minutes
+const IN_FLIGHT_TIMEOUT_MS = env.LLM_IN_FLIGHT_TIMEOUT_MS;
 const TOKEN_HISTORY_MAX = 1000;
-
-// ===== Provider Mapping =====
-const PROVIDER_MODELS = {
-  xai: {
-    default: MODELS.TEXT,
-    vision: MODELS.VISION,
-  },
-  gemini: {
-    default: GEMINI_MODELS.FLASH,
-    pro: GEMINI_MODELS.PRO,
-    flash: GEMINI_MODELS.FLASH,
-  },
-};
 
 // Model sets sourced from the central model registry
 const KNOWN_GEMINI_MODELS = KNOWN_GEMINI_MODEL_IDS;
@@ -247,6 +264,7 @@ class LLMGateway {
   private inFlightRequests: Map<string, InFlightRequest> = new Map();
   private streamCheckpoints: Map<string, StreamCheckpoint> = new Map();
   private tokenUsageHistory: TokenUsageRecord[] = [];
+  private providerGates: Record<LLMProvider, ConcurrencyGate>;
 
   private metrics: {
     totalRequests: number;
@@ -260,16 +278,11 @@ class LLMGateway {
     fallbackSuccesses: number;
     deduplicatedRequests: number;
     streamRecoveries: number;
-    byProvider: {
-      xai: { requests: number; tokens: number; failures: number; latency?: number };
-      gemini: { requests: number; tokens: number; failures: number; latency?: number };
-      openai: { requests: number; tokens: number; failures: number; latency?: number };
-      anthropic: { requests: number; tokens: number; failures: number; latency?: number };
-      deepseek: { requests: number; tokens: number; failures: number; latency?: number };
-    };
+    byProvider: Record<LLMProvider, ProviderMetricsState>;
   };
 
   constructor() {
+    this.providerGates = this.createProviderGates();
     this.metrics = {
       totalRequests: 0,
       successfulRequests: 0,
@@ -282,13 +295,7 @@ class LLMGateway {
       fallbackSuccesses: 0,
       deduplicatedRequests: 0,
       streamRecoveries: 0,
-      byProvider: {
-        xai: { requests: 0, tokens: 0, failures: 0 },
-        gemini: { requests: 0, tokens: 0, failures: 0 },
-        openai: { requests: 0, tokens: 0, failures: 0 },
-        anthropic: { requests: 0, tokens: 0, failures: 0 },
-        deepseek: { requests: 0, tokens: 0, failures: 0 },
-      },
+      byProvider: createInitialProviderMetrics(),
     };
 
     // Cleanup intervals — store refs to prevent memory leaks on destroy
@@ -297,6 +304,7 @@ class LLMGateway {
       setInterval(() => this.cleanupInFlightRequests(), 30000),
       setInterval(() => this.cleanupStreamCheckpoints(), 60000),
     );
+    this.syncOperationalMetrics();
   }
 
   /**
@@ -312,7 +320,40 @@ class LLMGateway {
     this.inFlightRequests.clear();
     this.streamCheckpoints.clear();
     this.rateLimitByUser.clear();
+    this.syncOperationalMetrics();
     console.log('[LLMGateway] Destroyed: all intervals cleared and caches flushed');
+  }
+
+  private createProviderGates(): Record<LLMProvider, ConcurrencyGate> {
+    const buildGate = (provider: LLMProvider) => {
+      const gate = new ConcurrencyGate({
+        maxConcurrent: env.LLM_PROVIDER_MAX_CONCURRENCY,
+        maxPending: env.LLM_PROVIDER_MAX_QUEUE,
+        onStateChange: (state) => this.handleProviderGateStateChange(provider, state),
+      });
+      this.handleProviderGateStateChange(provider, gate.getState());
+      return gate;
+    };
+
+    return {
+      xai: buildGate("xai"),
+      gemini: buildGate("gemini"),
+      openai: buildGate("openai"),
+      anthropic: buildGate("anthropic"),
+      deepseek: buildGate("deepseek"),
+      cerebras: buildGate("cerebras"),
+    };
+  }
+
+  private handleProviderGateStateChange(provider: LLMProvider, state: ConcurrencyGateState): void {
+    setLlmGatewayProviderConcurrency(provider, state);
+  }
+
+  private syncOperationalMetrics(): void {
+    setLlmGatewayStateGauge("cache_entries", this.requestCache.size);
+    setLlmGatewayStateGauge("in_flight_requests", this.inFlightRequests.size);
+    setLlmGatewayStateGauge("stream_checkpoints", this.streamCheckpoints.size);
+    setLlmGatewayStateGauge("rate_limiter_entries", this.rateLimitByUser.size);
   }
 
   /**
@@ -428,6 +469,7 @@ class LLMGateway {
         this.requestCache.delete(key);
       }
     }
+    this.syncOperationalMetrics();
   }
 
   private cleanupInFlightRequests(): void {
@@ -438,6 +480,7 @@ class LLMGateway {
         this.inFlightRequests.delete(key);
       }
     }
+    this.syncOperationalMetrics();
   }
 
   private cleanupStreamCheckpoints(): void {
@@ -448,6 +491,7 @@ class LLMGateway {
         this.streamCheckpoints.delete(key);
       }
     }
+    this.syncOperationalMetrics();
   }
 
   // ===== Rate Limiting =====
@@ -458,6 +502,7 @@ class LLMGateway {
     if (!state) {
       state = { tokens: RATE_LIMIT_CONFIG.tokensPerMinute, lastRefill: now };
       this.rateLimitByUser.set(userId, state);
+      this.syncOperationalMetrics();
     }
 
     const elapsed = now - state.lastRefill;
@@ -477,6 +522,8 @@ class LLMGateway {
     }
 
     this.metrics.rateLimitHits++;
+    recordLlmGatewayRateLimitHit();
+    this.syncOperationalMetrics();
     return false;
   }
 
@@ -494,15 +541,26 @@ class LLMGateway {
   }
 
   // ===== Context Truncation =====
-  truncateContext(messages: ChatCompletionMessageParam[], maxTokens: number = MAX_CONTEXT_TOKENS): TruncationResult {
+  truncateContext(
+    messages: ChatCompletionMessageParam[],
+    maxTokens: number = MAX_CONTEXT_TOKENS,
+    model?: string,
+  ): TruncationResult {
     const toText = (msg: ChatCompletionMessageParam): string =>
       typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
 
-    const estimateTokens = (text: string): number => Math.ceil(text.length / 4);
+    const estimateTokens = (text: string): number => tokenCounter.countCached(text, model);
+
+    const estimateMaxChars = (text: string, budgetTokens: number): number => {
+      if (budgetTokens <= 0 || !text) return 0;
+      const tokenCount = Math.max(estimateTokens(text), 1);
+      const charsPerToken = Math.max(2, Math.ceil(text.length / tokenCount));
+      return budgetTokens * charsPerToken;
+    };
 
     const truncateText = (text: string, budgetTokens: number): string => {
       if (budgetTokens <= 0) return "";
-      const maxChars = budgetTokens * 4;
+      const maxChars = estimateMaxChars(text, budgetTokens);
       if (text.length <= maxChars) return text;
       // Keep the beginning: system prompts and user queries usually lead with the key info.
       return text.slice(0, Math.max(0, maxChars - 16)) + "... [truncated]";
@@ -748,7 +806,14 @@ class LLMGateway {
 
       // Hardcoded tier list for cost approximation per 1M tokens (Flash/Haiku/Chat)
       // 1 = Cheapest, 5 = Most Expensive
-      const costTiers: Record<LLMProvider, number> = { deepseek: 1, gemini: 2, xai: 3, openai: 4, anthropic: 5 };
+      const costTiers: Record<LLMProvider, number> = {
+        deepseek: 1,
+        cerebras: 2,
+        gemini: 2,
+        xai: 3,
+        openai: 4,
+        anthropic: 5,
+      };
 
       // Score Heurístico = (Costo * 1000) + Latencia_P95 + Penalización por Errores
       const scoreA = (costTiers[a] * 1000) + (latA === Infinity ? 2000 : latA) + (errA * 5000);
@@ -797,6 +862,12 @@ class LLMGateway {
     }
     this.metrics.totalTokens += record.totalTokens;
     this.metrics.byProvider[record.provider].tokens += record.totalTokens;
+    recordLlmGatewayTokens({
+      provider: record.provider,
+      promptTokens: record.promptTokens,
+      completionTokens: record.completionTokens,
+      totalTokens: record.totalTokens,
+    });
 
     // T100-2: Contabilidad FinOps Inmutable Asíncrona
     costEngine.recordTokensAndCost({
@@ -820,7 +891,14 @@ class LLMGateway {
     const cutoff = since || Date.now() - 3600000; // Last hour by default
     const relevant = this.tokenUsageHistory.filter(r => r.timestamp >= cutoff);
 
-    const byProvider: Record<string, number> = { xai: 0, gemini: 0, openai: 0, anthropic: 0, deepseek: 0 };
+    const byProvider: Record<string, number> = {
+      xai: 0,
+      gemini: 0,
+      openai: 0,
+      anthropic: 0,
+      deepseek: 0,
+      cerebras: 0,
+    };
     const byUser: Record<string, number> = {};
     let total = 0;
 
@@ -855,6 +933,12 @@ class LLMGateway {
           const parsed = JSON.parse(redisCached) as { response: LLMResponse; expiresAt: number };
           if (parsed.expiresAt > Date.now()) {
             this.metrics.cacheHits++;
+            recordLlmGatewayCacheHit({ provider: parsed.response.provider, source: "redis" });
+            recordLlmGatewayRequest({
+              provider: parsed.response.provider,
+              operation: "chat",
+              result: "cache_hit",
+            });
             console.log(`[LLMGateway] ${requestId} cache hit (Redis)`);
             return { ...parsed.response, cached: true, requestId };
           }
@@ -864,6 +948,12 @@ class LLMGateway {
         const cached = this.requestCache.get(cacheKey);
         if (cached && cached.expiresAt > Date.now()) {
           this.metrics.cacheHits++;
+          recordLlmGatewayCacheHit({ provider: cached.response.provider, source: "memory" });
+          recordLlmGatewayRequest({
+            provider: cached.response.provider,
+            operation: "chat",
+            result: "cache_hit",
+          });
           console.log(`[LLMGateway] ${requestId} cache hit (Memory Fallback)`);
           return { ...cached.response, cached: true, requestId };
         }
@@ -875,17 +965,31 @@ class LLMGateway {
     const inFlight = this.getInFlightRequest(contentHash);
     if (inFlight) {
       this.metrics.deduplicatedRequests++;
+      recordLlmGatewayRequest({
+        provider: detectProviderFromModel(options.model) ?? this.selectProvider(options),
+        operation: "chat",
+        result: "deduplicated",
+      });
       console.log(`[LLMGateway] ${requestId} deduplicated (waiting for existing request)`);
       return inFlight.promise;
     }
 
     // Rate limit check
     if (!this.checkRateLimit(userId)) {
+      recordLlmGatewayRequest({
+        provider: detectProviderFromModel(options.model) ?? this.selectProvider(options),
+        operation: "chat",
+        result: "rate_limited",
+      });
       throw new Error(`Rate limit exceeded for user ${userId}`);
     }
 
     // Truncate context (budget is independent from max output tokens; we keep a safe floor for small outputs).
-    const truncationResult = this.truncateContext(messages, this.getTruncationBudget(options.maxTokens));
+    const truncationResult = this.truncateContext(
+      messages,
+      this.getTruncationBudget(options.maxTokens),
+      options.model,
+    );
     const truncatedMessages = truncationResult.messages;
     if (truncationResult.truncationApplied) {
       console.log(`[LLMGateway] chat() context truncation: ${truncationResult.originalTokens} → ${truncationResult.finalTokens} tokens, dropped ${truncationResult.droppedMessages} msgs`);
@@ -901,6 +1005,7 @@ class LLMGateway {
 
     // Register as in-flight
     this.inFlightRequests.set(contentHash, { promise: requestPromise, startTime });
+    this.syncOperationalMetrics();
 
     try {
       const result = await requestPromise;
@@ -912,6 +1017,7 @@ class LLMGateway {
           expiresAt: Date.now() + CACHE_TTL_MS,
         };
         this.requestCache.set(cacheKey, cacheEntry);
+        this.syncOperationalMetrics();
         try {
           // Set in Redis with PX (milliseconds)
           await redis.set(cacheKey, JSON.stringify(cacheEntry), "PX", CACHE_TTL_MS);
@@ -923,6 +1029,7 @@ class LLMGateway {
       return result;
     } finally {
       this.inFlightRequests.delete(contentHash);
+      this.syncOperationalMetrics();
     }
   }
 
@@ -1110,6 +1217,14 @@ class LLMGateway {
 
         if (providers.indexOf(provider) > 0) {
           this.metrics.fallbackSuccesses++;
+          const previousProvider = providers[providers.indexOf(provider) - 1];
+          if (previousProvider) {
+            recordLlmGatewayFallback({
+              fromProvider: previousProvider,
+              toProvider: provider,
+              operation: "chat",
+            });
+          }
           console.log(`[LLMGateway] ${options.requestId} succeeded on fallback provider ${provider}`);
         }
 
@@ -1149,6 +1264,7 @@ class LLMGateway {
     startTime: number
   ): Promise<LLMResponse> {
     const modelProvider = detectProviderFromModel(options.model);
+    const providerGate = this.providerGates[provider];
 
     let model: string;
     if (provider === "xai") {
@@ -1164,36 +1280,38 @@ class LLMGateway {
       model = modelProvider === "anthropic" ? options.model! : (process.env.ANTHROPIC_MODEL || "claude-3-5-sonnet-20241022");
     }
 
-    for (let attempt = 0; attempt <= RETRY_CONFIG.maxRetries; attempt++) {
-      try {
-        if (provider === "gemini") {
-          return await this.executeGemini(messages, options, model, startTime);
-        }
-        if (provider === "anthropic") {
-          return await this.executeAnthropic(messages, options, model, startTime);
-        }
-        // xai / openai / deepseek
-        return await this.executeOpenAICompatible(provider, messages, options, model, startTime);
-      } catch (error: any) {
-        const isRetryable =
-          error.status === 429 ||
-          error.status === 500 ||
-          error.status === 502 ||
-          error.status === 503 ||
-          error.code === "ECONNRESET" ||
-          error.code === "ETIMEDOUT";
+    return providerGate.run(async () => {
+      for (let attempt = 0; attempt <= RETRY_CONFIG.maxRetries; attempt++) {
+        try {
+          if (provider === "gemini") {
+            return await this.executeGemini(messages, options, model, startTime);
+          }
+          if (provider === "anthropic") {
+            return await this.executeAnthropic(messages, options, model, startTime);
+          }
+          // xai / openai / deepseek / cerebras
+          return await this.executeOpenAICompatible(provider, messages, options, model, startTime);
+        } catch (error: any) {
+          const isRetryable =
+            error.status === 429 ||
+            error.status === 500 ||
+            error.status === 502 ||
+            error.status === 503 ||
+            error.code === "ECONNRESET" ||
+            error.code === "ETIMEDOUT";
 
-        if (!isRetryable || attempt >= RETRY_CONFIG.maxRetries) {
-          throw error;
-        }
+          if (!isRetryable || attempt >= RETRY_CONFIG.maxRetries) {
+            throw error;
+          }
 
-        const delay = this.calculateRetryDelay(attempt);
-        console.warn(`[LLMGateway] ${options.requestId} ${provider} attempt ${attempt + 1} failed, retrying in ${delay}ms`);
-        await this.sleep(delay);
+          const delay = this.calculateRetryDelay(attempt);
+          console.warn(`[LLMGateway] ${options.requestId} ${provider} attempt ${attempt + 1} failed, retrying in ${delay}ms`);
+          await this.sleep(delay);
+        }
       }
-    }
 
-    throw new Error("Max retries exceeded");
+      throw new Error("Max retries exceeded");
+    });
   }
 
   private getOpenAICompatibleClient(provider: "xai" | "openai" | "deepseek" | "cerebras"): OpenAI {
@@ -1292,6 +1410,7 @@ class LLMGateway {
 
       this.metrics.successfulRequests++;
       this.metrics.byProvider[provider].requests++;
+      this.metrics.byProvider[provider].latency = latencyMs;
       this.metrics.totalLatencyMs += latencyMs;
 
       const usageRecord: TokenUsageRecord = {
@@ -1310,6 +1429,12 @@ class LLMGateway {
       this.recordTokenUsage(usageRecord);
 
       console.log(`[LLMGateway] ${options.requestId} ${provider} completed in ${latencyMs}ms, tokens: ${usage?.total_tokens || 0}`);
+      recordLlmGatewayRequest({
+        provider,
+        operation: "chat",
+        result: "success",
+        latencyMs,
+      });
 
       recordConnectorUsage(provider, latencyMs, true);
 
@@ -1358,6 +1483,13 @@ class LLMGateway {
 
       this.metrics.failedRequests++;
       this.metrics.byProvider[provider].failures++;
+      this.metrics.byProvider[provider].latency = latencyMs;
+      recordLlmGatewayRequest({
+        provider,
+        operation: "chat",
+        result: "error",
+        latencyMs,
+      });
 
       recordConnectorUsage(provider, latencyMs, false);
 
@@ -1507,6 +1639,7 @@ class LLMGateway {
 
       this.metrics.successfulRequests++;
       this.metrics.byProvider.anthropic.requests++;
+      this.metrics.byProvider.anthropic.latency = latencyMs;
       this.metrics.totalLatencyMs += latencyMs;
 
       const usageRecord: TokenUsageRecord = {
@@ -1525,6 +1658,12 @@ class LLMGateway {
       this.recordTokenUsage(usageRecord);
 
       recordConnectorUsage("anthropic", latencyMs, true);
+      recordLlmGatewayRequest({
+        provider: "anthropic",
+        operation: "chat",
+        result: "success",
+        latencyMs,
+      });
 
       this.persistApiLog({
         provider: "anthropic",
@@ -1571,6 +1710,13 @@ class LLMGateway {
 
       this.metrics.failedRequests++;
       this.metrics.byProvider.anthropic.failures++;
+      this.metrics.byProvider.anthropic.latency = latencyMs;
+      recordLlmGatewayRequest({
+        provider: "anthropic",
+        operation: "chat",
+        result: "error",
+        latencyMs,
+      });
 
       recordConnectorUsage("anthropic", latencyMs, false);
 
@@ -1622,6 +1768,13 @@ class LLMGateway {
       const latencyMs = Date.now() - startTime;
       this.metrics.failedRequests++;
       this.metrics.byProvider.gemini.failures++;
+      this.metrics.byProvider.gemini.latency = latencyMs;
+      recordLlmGatewayRequest({
+        provider: "gemini",
+        operation: "chat",
+        result: "error",
+        latencyMs,
+      });
 
       // Record connector failure for gemini
       recordConnectorUsage("gemini", latencyMs, false);
@@ -1649,6 +1802,7 @@ class LLMGateway {
 
     this.metrics.successfulRequests++;
     this.metrics.byProvider.gemini.requests++;
+    this.metrics.byProvider.gemini.latency = latencyMs;
 
     this.metrics.totalLatencyMs += latencyMs;
 
@@ -1671,6 +1825,12 @@ class LLMGateway {
     this.recordTokenUsage(usageRecord);
 
     console.log(`[LLMGateway] ${options.requestId} gemini completed in ${latencyMs}ms, est. tokens: ${estimatedTokens}`);
+    recordLlmGatewayRequest({
+      provider: "gemini",
+      operation: "chat",
+      result: "success",
+      latencyMs,
+    });
 
     // Record connector usage for gemini
     recordConnectorUsage("gemini", latencyMs, true);
@@ -1741,15 +1901,24 @@ class LLMGateway {
     }
 
     const selected = this.selectProvider(options);
-    let currentProvider: LLMProvider = this.isProviderConfigured(selected) ? selected : configuredProviders[0];
+    const currentProvider: LLMProvider = this.isProviderConfigured(selected) ? selected : configuredProviders[0];
 
     this.metrics.totalRequests++;
 
     if (!this.checkRateLimit(userId)) {
+      recordLlmGatewayRequest({
+        provider: detectProviderFromModel(options.model) ?? this.selectProvider(options),
+        operation: "stream",
+        result: "rate_limited",
+      });
       throw new Error(`Rate limit exceeded for user ${userId}`);
     }
 
-    const truncationResult = this.truncateContext(messages, this.getTruncationBudget(options.maxTokens));
+    const truncationResult = this.truncateContext(
+      messages,
+      this.getTruncationBudget(options.maxTokens),
+      options.model,
+    );
     const truncatedMessages = truncationResult.messages;
     // Expose truncation metadata via options for callers to read
     (options as any).__truncationResult = truncationResult;
@@ -1763,6 +1932,7 @@ class LLMGateway {
       sequenceId = existingCheckpoint.sequenceId;
       accumulatedContent = existingCheckpoint.accumulatedContent;
       this.metrics.streamRecoveries++;
+      this.syncOperationalMetrics();
       console.log(`[LLMGateway] ${requestId} recovering from checkpoint at seq ${sequenceId}`);
     }
 
@@ -1776,14 +1946,19 @@ class LLMGateway {
         continue;
       }
 
+      const providerAttemptStart = Date.now();
       try {
-        const stream = provider === "gemini"
-          ? this.streamGemini(truncatedMessages, options, requestId)
-          : provider === "anthropic"
-            ? this.streamAnthropic(truncatedMessages, options, requestId)
-            : this.streamOpenAICompatible(provider, truncatedMessages, options, requestId);
+        const streamFactory = () => {
+          const stream = provider === "gemini"
+            ? this.streamGemini(truncatedMessages, options, requestId)
+            : provider === "anthropic"
+              ? this.streamAnthropic(truncatedMessages, options, requestId)
+              : this.streamOpenAICompatible(provider, truncatedMessages, options, requestId);
 
-        for await (const chunk of this.withIdleTimeout(stream, STREAM_IDLE_TIMEOUT_MS, requestId)) {
+          return this.withIdleTimeout(stream, STREAM_IDLE_TIMEOUT_MS, requestId);
+        };
+
+        for await (const chunk of this.providerGates[provider].runStream(streamFactory)) {
           accumulatedContent += chunk.content;
 
           // Some providers can return a "done" marker without any visible text (e.g. if the output
@@ -1812,13 +1987,26 @@ class LLMGateway {
           // Save checkpoint periodically
           if (sequenceId % 10 === 0) {
             this.streamCheckpoints.set(requestId, streamChunk.checkpoint!);
+            this.syncOperationalMetrics();
           }
 
           yield streamChunk;
 
           if (chunk.done) {
             this.streamCheckpoints.delete(requestId);
+            this.syncOperationalMetrics();
             getCircuitBreaker("system", provider, CIRCUIT_BREAKER_CONFIG).recordSuccess();
+            const latencyMs = Date.now() - providerAttemptStart;
+            this.metrics.successfulRequests++;
+            this.metrics.byProvider[provider].requests++;
+            this.metrics.byProvider[provider].latency = latencyMs;
+            this.metrics.totalLatencyMs += latencyMs;
+            recordLlmGatewayRequest({
+              provider,
+              operation: "stream",
+              result: "success",
+              latencyMs,
+            });
             return;
           }
         }
@@ -1830,8 +2018,19 @@ class LLMGateway {
           accumulatedContent,
           timestamp: Date.now(),
         });
+        this.syncOperationalMetrics();
 
         getCircuitBreaker("system", provider, CIRCUIT_BREAKER_CONFIG).recordFailure();
+        const latencyMs = Date.now() - providerAttemptStart;
+        this.metrics.failedRequests++;
+        this.metrics.byProvider[provider].failures++;
+        this.metrics.byProvider[provider].latency = latencyMs;
+        recordLlmGatewayRequest({
+          provider,
+          operation: "stream",
+          result: "error",
+          latencyMs,
+        });
         console.warn(`[LLMGateway] ${requestId} stream failed on ${provider}: ${error.message}`);
 
         if (!enableFallback || providers.indexOf(provider) === providers.length - 1) {
@@ -1844,6 +2043,11 @@ class LLMGateway {
             fromProvider: provider,
             toProvider: nextProvider,
           };
+          recordLlmGatewayFallback({
+            fromProvider: provider,
+            toProvider: nextProvider,
+            operation: "stream",
+          });
         }
 
         console.log(`[LLMGateway] ${requestId} attempting stream fallback to next provider`);
@@ -2253,6 +2457,7 @@ class LLMGateway {
 
   // ===== Metrics =====
   getMetrics() {
+    this.syncOperationalMetrics();
     return {
       ...this.metrics,
       averageLatencyMs:
@@ -2269,11 +2474,15 @@ class LLMGateway {
         openai: getCircuitBreaker("system", "openai").getState(),
         anthropic: getCircuitBreaker("system", "anthropic").getState(),
         deepseek: getCircuitBreaker("system", "deepseek").getState(),
+        cerebras: getCircuitBreaker("system", "cerebras").getState(),
       },
       cacheSize: this.requestCache.size,
       inFlightRequests: this.inFlightRequests.size,
       streamCheckpoints: this.streamCheckpoints.size,
       rateLimitedUsers: this.rateLimitByUser.size,
+      providerConcurrency: Object.fromEntries(
+        Object.entries(this.providerGates).map(([provider, gate]) => [provider, gate.getState()]),
+      ),
     };
   }
 
@@ -2290,13 +2499,7 @@ class LLMGateway {
       fallbackSuccesses: 0,
       deduplicatedRequests: 0,
       streamRecoveries: 0,
-      byProvider: {
-        xai: { requests: 0, tokens: 0, failures: 0 },
-        gemini: { requests: 0, tokens: 0, failures: 0 },
-        openai: { requests: 0, tokens: 0, failures: 0 },
-        anthropic: { requests: 0, tokens: 0, failures: 0 },
-        deepseek: { requests: 0, tokens: 0, failures: 0 },
-      },
+      byProvider: createInitialProviderMetrics(),
     };
   }
 
@@ -2313,6 +2516,7 @@ class LLMGateway {
       openai: { available: false },
       anthropic: { available: false },
       deepseek: { available: false },
+      cerebras: { available: false },
     };
 
     // Test xAI with quick timeout
@@ -2400,6 +2604,25 @@ class LLMGateway {
         results.deepseek = { available: true, latencyMs: Date.now() - start };
       } catch (error: any) {
         results.deepseek = { available: false, error: error.message?.slice(0, 100) };
+      }
+    }
+
+    if (process.env.CEREBRAS_API_KEY) {
+      try {
+        const start = Date.now();
+        const client = new OpenAI({
+          baseURL: "https://api.cerebras.ai/v1",
+          apiKey: process.env.CEREBRAS_API_KEY || "missing",
+          timeout: 5000,
+        });
+        await client.chat.completions.create({
+          model: "gpt-oss-120b",
+          messages: [{ role: "user", content: "hi" }],
+          max_tokens: 5,
+        });
+        results.cerebras = { available: true, latencyMs: Date.now() - start };
+      } catch (error: any) {
+        results.cerebras = { available: false, error: error.message?.slice(0, 100) };
       }
     }
 

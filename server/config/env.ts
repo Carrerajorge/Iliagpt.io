@@ -151,9 +151,21 @@ const envSchema = z.object({
   AGENT_LLM_MAX_RETRIES: z.string().transform(Number).default("2"),
 
   // ── LLM Gateway ──────────────────────────────────────────────────────────
+  LLM_DEFAULT_TIMEOUT_MS: z.string().transform(Number).default("60000"),
   LLM_STREAM_TIMEOUT_MS: z.string().transform(Number).default("300000"),
+  LLM_STREAM_IDLE_TIMEOUT_MS: z.string().transform(Number).default("60000"),
   LLM_CACHE_TTL_MS: z.string().transform(Number).default("300000"),
+  LLM_MAX_CONTEXT_TOKENS: z.string().transform(Number).default("8000"),
+  LLM_IN_FLIGHT_TIMEOUT_MS: z.string().transform(Number).default("120000"),
+  LLM_RETRY_MAX_RETRIES: z.string().transform(Number).default("3"),
+  LLM_RETRY_BASE_DELAY_MS: z.string().transform(Number).default("1000"),
+  LLM_RETRY_MAX_DELAY_MS: z.string().transform(Number).default("10000"),
+  LLM_RETRY_JITTER_FACTOR: z.string().transform(Number).default("0.3"),
   LLM_CIRCUIT_RESET_TIMEOUT_MS: z.string().transform(Number).default("30000"),
+  LLM_CIRCUIT_TIMEOUT_MS: z.string().transform(Number).default("30000"),
+  LLM_CIRCUIT_FAILURE_THRESHOLD: z.string().transform(Number).default("5"),
+  LLM_PROVIDER_MAX_CONCURRENCY: z.string().transform(Number).default("8"),
+  LLM_PROVIDER_MAX_QUEUE: z.string().transform(Number).default("64"),
 
   // ── Web search / retrieval ────────────────────────────────────────────────
   WEB_SEARCH_TOTAL_FETCH_TIMEOUT_MS: z.string().transform(Number).default("15000"),

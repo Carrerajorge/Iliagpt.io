@@ -1,5 +1,6 @@
 import { JSDOM } from "jsdom";
 import { Readability } from "@mozilla/readability";
+import pLimit from "p-limit";
 import { HTTP_HEADERS, TIMEOUTS, LIMITS } from "../lib/constants";
 import { sanitizePlainText, sanitizeSearchQuery } from "../lib/textSanitizers";
 
@@ -399,24 +400,8 @@ async function runWithConcurrencyLimit<T, R>(
   limit: number,
   fn: (item: T) => Promise<R>
 ): Promise<R[]> {
-  const results: R[] = [];
-  const executing: Promise<void>[] = [];
-
-  for (const item of items) {
-    const promise = fn(item).then(result => {
-      results.push(result);
-    });
-
-    executing.push(promise);
-
-    if (executing.length >= limit) {
-      await Promise.race(executing);
-      executing.splice(0, executing.findIndex(p => p === promise) + 1);
-    }
-  }
-
-  await Promise.all(executing);
-  return results;
+  const limiter = pLimit(limit);
+  return Promise.all(items.map((item) => limiter(() => fn(item))));
 }
 
 export class SearchOrchestrator {

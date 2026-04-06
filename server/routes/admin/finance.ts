@@ -1,4 +1,5 @@
 import { Router } from "express";
+import Decimal from "decimal.js";
 import ExcelJS from "exceljs";
 import { and, asc, desc, eq, gte, ilike, isNull, lte, or, sql, type SQL } from "drizzle-orm";
 
@@ -9,6 +10,7 @@ import { db, dbRead } from "../../db";
 import { invoices, payments, users } from "@shared/schema";
 import { createQueue, QUEUE_NAMES } from "../../lib/queueFactory";
 import { syncStripePaidInvoicesToPayments } from "../../services/stripePaymentsSyncService";
+import { parseMoneyDecimal } from "../../lib/money";
 
 export const financeRouter = Router();
 
@@ -236,22 +238,25 @@ financeRouter.get("/payments/stats", async (req, res) => {
 
         const currencyRows = await currencyQuery;
 
-        const parseAmount = (v: unknown): number => {
-            const n = Number.parseFloat(String(v ?? "0"));
-            return Number.isFinite(n) ? n : 0;
+        const parseAmount = (v: unknown) => {
+            try {
+                return parseMoneyDecimal(String(v ?? "0"));
+            } catch {
+                return parseMoneyDecimal(0);
+            }
         };
 
         type CurrencyStats = {
-            total: number;
-            thisMonth: number;
+            total: Decimal;
+            thisMonth: Decimal;
             count: number;
-            pendingTotal: number;
+            pendingTotal: Decimal;
             pendingCount: number;
-            failedTotal: number;
+            failedTotal: Decimal;
             failedCount: number;
-            refundedTotal: number;
+            refundedTotal: Decimal;
             refundedCount: number;
-            disputedTotal: number;
+            disputedTotal: Decimal;
             disputedCount: number;
         };
 
@@ -279,30 +284,30 @@ financeRouter.get("/payments/stats", async (req, res) => {
         const totals = currencies.reduce(
             (acc, cur) => {
                 const s = byCurrency[cur]!;
-                acc.total += s.total;
-                acc.thisMonth += s.thisMonth;
+                acc.total = acc.total.plus(s.total);
+                acc.thisMonth = acc.thisMonth.plus(s.thisMonth);
                 acc.count += s.count;
-                acc.pendingTotal += s.pendingTotal;
+                acc.pendingTotal = acc.pendingTotal.plus(s.pendingTotal);
                 acc.pendingCount += s.pendingCount;
-                acc.failedTotal += s.failedTotal;
+                acc.failedTotal = acc.failedTotal.plus(s.failedTotal);
                 acc.failedCount += s.failedCount;
-                acc.refundedTotal += s.refundedTotal;
+                acc.refundedTotal = acc.refundedTotal.plus(s.refundedTotal);
                 acc.refundedCount += s.refundedCount;
-                acc.disputedTotal += s.disputedTotal;
+                acc.disputedTotal = acc.disputedTotal.plus(s.disputedTotal);
                 acc.disputedCount += s.disputedCount;
                 return acc;
             },
             {
-                total: 0,
-                thisMonth: 0,
+                total: parseMoneyDecimal(0),
+                thisMonth: parseMoneyDecimal(0),
                 count: 0,
-                pendingTotal: 0,
+                pendingTotal: parseMoneyDecimal(0),
                 pendingCount: 0,
-                failedTotal: 0,
+                failedTotal: parseMoneyDecimal(0),
                 failedCount: 0,
-                refundedTotal: 0,
+                refundedTotal: parseMoneyDecimal(0),
                 refundedCount: 0,
-                disputedTotal: 0,
+                disputedTotal: parseMoneyDecimal(0),
                 disputedCount: 0,
             },
         );
