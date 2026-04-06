@@ -132,6 +132,7 @@ handlers.set('subagents.spawn', async (req, ctx) => {
     objective?: string;
     planHint?: string[];
     parentRunId?: string;
+    chatId?: string;
   } | undefined;
 
   const objective = params?.objective?.trim();
@@ -141,7 +142,7 @@ handlers.set('subagents.spawn', async (req, ctx) => {
 
   const run = await openclawSubagentService.spawn({
     requesterUserId: ctx.userId,
-    chatId: params?.parentRunId || 'openclaw-gateway',
+    chatId: params?.chatId || params?.parentRunId || 'openclaw-gateway',
     objective,
     planHint: Array.isArray(params?.planHint)
       ? params?.planHint.map(step => String(step).trim()).filter(Boolean)
@@ -154,9 +155,10 @@ handlers.set('subagents.spawn', async (req, ctx) => {
 });
 
 handlers.set('subagents.list', async (req, ctx) => {
-  const params = req.params as { parentRunId?: string; status?: any; limit?: number } | undefined;
+  const params = req.params as { parentRunId?: string; chatId?: string; status?: any; limit?: number } | undefined;
   const runs = await openclawSubagentService.list({
     requesterUserId: ctx.userId,
+    chatId: params?.chatId,
     parentRunId: params?.parentRunId,
     status: params?.status,
     limit: params?.limit,

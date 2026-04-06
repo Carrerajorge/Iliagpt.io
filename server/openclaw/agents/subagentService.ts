@@ -11,8 +11,13 @@ export interface SubagentRunRecord {
   status: SubagentRunStatus;
   permissionProfile: SubagentPermissionProfile;
   createdAt: number;
+  updatedAt: number;
   startedAt?: number;
   endedAt?: number;
+  progress?: number;
+  stepCount: number;
+  lastStepSummary?: string;
+  outputExcerpt?: string;
   result?: unknown;
   error?: string;
 }
@@ -28,6 +33,7 @@ type SpawnSubagentParams = {
 
 type ListRunsParams = {
   requesterUserId?: string;
+  chatId?: string;
   parentRunId?: string;
   status?: SubagentRunStatus;
   limit?: number;
@@ -41,8 +47,15 @@ type TaskRecordLike = {
   objective: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timeout';
   createdAt: number;
+  updatedAt?: number;
   startedAt?: number;
   endedAt?: number;
+  output?: string;
+  progress?: number;
+  steps?: Array<{
+    summary?: string;
+    timestamp?: number;
+  }>;
   result?: unknown;
   error?: string;
   metadata?: Record<string, unknown>;
@@ -131,10 +144,30 @@ function isOpenClawSubagent(task: TaskRecordLike | undefined): task is TaskRecor
   return Boolean(task?.metadata?.['source'] === OPENCLAW_SUBAGENT_SOURCE);
 }
 
+function buildOutputExcerpt(output: unknown): string | undefined {
+  if (typeof output !== 'string') {
+    return undefined;
+  }
+
+  const normalized = output.trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  return normalized.length > 280
+    ? `...${normalized.slice(-277)}`
+    : normalized;
+}
+
 function toRunRecord(task: TaskRecordLike): SubagentRunRecord {
   const metadata = task.metadata || {};
   const rawPlanHint = Array.isArray(metadata['planHint']) ? metadata['planHint'] : [];
   const planHint = rawPlanHint.map((step) => String(step).trim()).filter(Boolean);
+  const steps = Array.isArray(task.steps) ? task.steps : [];
+  const lastStep = steps.length > 0 ? steps[steps.length - 1] : undefined;
+  const updatedAt = Number.isFinite(task.updatedAt)
+    ? Number(task.updatedAt)
+    : task.endedAt ?? lastStep?.timestamp ?? task.startedAt ?? task.createdAt;
 
   return {
     id: task.id,
@@ -146,8 +179,13 @@ function toRunRecord(task: TaskRecordLike): SubagentRunRecord {
     status: mapStatus(task.status),
     permissionProfile: normalizePermissionProfile(metadata['permissionProfile']),
     createdAt: task.createdAt,
+    updatedAt,
     startedAt: task.startedAt,
     endedAt: task.endedAt,
+    progress: typeof task.progress === 'number' ? task.progress : undefined,
+    stepCount: steps.length,
+    lastStepSummary: typeof lastStep?.summary === 'string' ? lastStep.summary : undefined,
+    outputExcerpt: buildOutputExcerpt(task.output),
     result: task.result,
     error: task.error,
   };
@@ -188,6 +226,7 @@ class OpenClawSubagentService {
     const manager = await getBackgroundTaskManager();
     const tasks = manager.list({
       userId: params.requesterUserId,
+      chatId: params.chatId,
       parentRunId: params.parentRunId,
       limit: params.limit ? Math.max(1, params.limit) : 100,
     });
