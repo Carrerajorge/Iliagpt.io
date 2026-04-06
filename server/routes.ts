@@ -2562,6 +2562,7 @@ try{
     { path: "/api/auth/gemini-cli", mod: "./routes/googleGeminiCliOAuthRouter" },
     { path: "/api/telemetry/hardware", mod: "./routes/hardwareTelemetryRouter", exportName: "createHardwareTelemetryRouter", isFactory: true },
     { path: "/api/livekit", mod: "./routes/livekitRouter" },
+    { path: "/api/message", mod: "./routes/messageLifecycleRouter", exportName: "messageLifecycleRouter" },
     { path: "/api/messages", mod: "./routes/messageLifecycleRouter", exportName: "messageLifecycleRouter" },
     { path: "/api/nodes", mod: "./routes/nodesRouter", exportName: "createNodesRouter", isFactory: true },
     { path: "/api/auth/openai-codex", mod: "./routes/openAICodexOAuthRouter" },

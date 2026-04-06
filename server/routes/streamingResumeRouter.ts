@@ -22,6 +22,8 @@ const SaveProgressSchema = z.object({
     lastSeq: z.number().int().min(0),
     content: z.string(),
     status: z.enum(["streaming", "completed", "failed"]),
+    assistantMessageId: z.string().min(1).optional(),
+    requestId: z.string().min(1).optional(),
 });
 
 /**
@@ -73,9 +75,12 @@ router.post("/progress", async (req: Request, res: Response) => {
             return res.status(400).json({ error: validation.error.message });
         }
 
-        const { chatId, lastSeq, content, status } = validation.data;
+        const { chatId, lastSeq, content, status, assistantMessageId, requestId } = validation.data;
 
-        await saveStreamingProgress(chatId, lastSeq, content, status);
+        await saveStreamingProgress(chatId, lastSeq, content, status, {
+            assistantMessageId: assistantMessageId ?? null,
+            requestId: requestId ?? null,
+        });
 
         return res.json({ success: true, chatId, lastSeq });
     } catch (error) {

@@ -1,10 +1,10 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { randomUUID } from "crypto";
 import { db } from "../db";
 import { chatMessages, chats } from "@shared/schema";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { requireAuth, optionalAuth } from "../middleware/auth";
+import { optionalAuth } from "../middleware/auth";
 
 const messageSendSchema = z.object({
   clientMessageId: z.string().min(1),
@@ -40,6 +40,7 @@ const cleanupInterval = setInterval(() => {
     }
   }
 }, 30000);
+cleanupInterval.unref?.();
 
 function getPendingKey(userId: string, clientMessageId: string): string {
   return `${userId}:${clientMessageId}`;
@@ -47,7 +48,19 @@ function getPendingKey(userId: string, clientMessageId: string): string {
 
 export const messageLifecycleRouter = Router();
 
-messageLifecycleRouter.post("/send", optionalAuth, async (req, res) => {
+function buildAcceptedResponse(serverMessageId: string, conversationId: string | null, dedupeHit: boolean) {
+  return {
+    accepted: true,
+    id: serverMessageId,
+    serverMessageId,
+    streamId: serverMessageId,
+    chatId: conversationId,
+    conversationId,
+    dedupeHit,
+  };
+}
+
+async function handleSendMessage(req: Request, res: Response) {
   try {
     const parseResult = messageSendSchema.safeParse(req.body);
     if (!parseResult.success) {
@@ -67,13 +80,7 @@ messageLifecycleRouter.post("/send", optionalAuth, async (req, res) => {
 
     const existing = pendingMessages.get(pendingKey);
     if (existing) {
-      return res.json({
-        accepted: true,
-        serverMessageId: existing.serverMessageId,
-        streamId: existing.serverMessageId,
-        conversationId: existing.conversationId,
-        dedupeHit: true,
-      });
+      return res.json(buildAcceptedResponse(existing.serverMessageId, existing.conversationId, true));
     }
 
     const serverMessageId = randomUUID();
@@ -96,38 +103,33 @@ messageLifecycleRouter.post("/send", optionalAuth, async (req, res) => {
       chatExists = !!existingChat;
     }
 
-    if (!chatExists && !conversationId) {
+    if (!chatExists) {
       await db.insert(chats).values({
         id: effectiveConversationId,
         userId,
         title: text.slice(0, 60) || "Nueva conversación",
         createdAt: new Date(),
         updatedAt: new Date(),
-      });
+      }).onConflictDoNothing();
     }
 
-    const [savedMessage] = await db.insert(chatMessages).values({
+    await db.insert(chatMessages).values({
       id: serverMessageId,
       chatId: effectiveConversationId,
       role: "user",
       content: text,
       status: "pending",
       requestId: requestId || randomUUID(),
+      attachments: attachments || null,
       createdAt: new Date(),
-    }).returning();
+    });
 
     pendingMessages.set(pendingKey, {
       ...pendingMessages.get(pendingKey)!,
       status: "accepted",
     });
 
-    return res.json({
-      accepted: true,
-      serverMessageId,
-      streamId: serverMessageId,
-      conversationId: effectiveConversationId,
-      dedupeHit: false,
-    });
+    return res.json(buildAcceptedResponse(serverMessageId, effectiveConversationId, false));
   } catch (error: any) {
     console.error("[MessageLifecycle] Error in /send:", error);
     return res.status(500).json({
@@ -139,7 +141,10 @@ messageLifecycleRouter.post("/send", optionalAuth, async (req, res) => {
       },
     });
   }
-});
+}
+
+messageLifecycleRouter.post("/", optionalAuth, handleSendMessage);
+messageLifecycleRouter.post("/send", optionalAuth, handleSendMessage);
 
 messageLifecycleRouter.get("/status/:clientMessageId", optionalAuth, async (req, res) => {
   try {

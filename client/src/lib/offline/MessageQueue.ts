@@ -61,6 +61,16 @@ export type DeliveredCallback = (item: MessageQueueItem, serverMessageId: string
 export type FailedCallback = (item: MessageQueueItem, error: Error) => void;
 export type QueueEmptyCallback = () => void;
 
+interface MessageLifecycleAck {
+  accepted?: boolean;
+  id?: string;
+  serverMessageId?: string;
+  conversationId?: string;
+  error?: {
+    message?: string;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -70,7 +80,7 @@ const DB_VERSION = 1;
 const STORE_NAME = 'message_queue';
 const MAX_RETRIES = 3;
 const BACKOFF_BASE_MS = 2_000;
-const API_ENDPOINT = '/api/messages';
+const API_ENDPOINT = '/api/messages/send';
 
 // ---------------------------------------------------------------------------
 // Minimal IndexedDB helpers (self-contained to avoid circular deps)
@@ -351,16 +361,17 @@ export class MessageQueue {
 
     try {
       const response = await this.postMessage(processing);
+      const serverMessageId = response.serverMessageId;
 
       const delivered: MessageQueueItem = {
         ...processing,
         status: QueueStatus.DELIVERED,
-        serverMessageId: response.id,
+        serverMessageId,
         updatedAt: Date.now(),
       };
       await dbPut(delivered);
 
-      this.onDelivered?.(delivered, response.id);
+      this.onDelivered?.(delivered, serverMessageId);
     } catch (err) {
       await this.handleDeliveryError(processing, err instanceof Error ? err : new Error(String(err)));
     }
@@ -368,7 +379,7 @@ export class MessageQueue {
 
   private async postMessage(
     item: MessageQueueItem,
-  ): Promise<{ id: string; [key: string]: unknown }> {
+  ): Promise<{ serverMessageId: string; conversationId?: string }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
 
@@ -381,20 +392,36 @@ export class MessageQueue {
           'X-Idempotency-Key': item.id,
         },
         body: JSON.stringify({
-          chatId: item.chatId,
-          content: item.content,
-          attachments: item.attachments,
-          queuedAt: item.createdAt,
+          clientMessageId: item.id,
+          conversationId: item.chatId?.startsWith('pending-') ? null : item.chatId,
+          text: item.content,
+          attachments: item.attachments.map((attachment) => ({
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            size: attachment.sizeBytes,
+            storagePath: attachment.url,
+          })),
+          requestId: item.id,
         }),
         signal: controller.signal,
       });
 
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        throw new Error(`HTTP ${response.status}: ${body || response.statusText}`);
+      const payload = (await response.json().catch(() => null)) as MessageLifecycleAck | null;
+      if (!response.ok || !payload?.accepted) {
+        const errorMessage = payload?.error?.message || response.statusText || 'Message delivery failed';
+        throw new Error(`HTTP ${response.status}: ${errorMessage}`);
       }
 
-      return response.json() as Promise<{ id: string }>;
+      const serverMessageId = payload.serverMessageId || payload.id;
+      if (!serverMessageId) {
+        throw new Error('Message lifecycle response missing serverMessageId');
+      }
+
+      return {
+        serverMessageId,
+        conversationId: payload.conversationId,
+      };
     } finally {
       clearTimeout(timeout);
     }

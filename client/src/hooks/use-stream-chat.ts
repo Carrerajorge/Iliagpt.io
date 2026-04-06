@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useRef, useEffect } from "react";
-import { getAnonUserIdHeader } from "@/lib/apiClient";
+import { apiFetch, getAnonUserIdHeader } from "@/lib/apiClient";
 import type { Message } from "@/hooks/use-chats";
 import { type AIState, type AiProcessStep } from "@/components/chat-interface/types";
 
@@ -62,6 +62,17 @@ interface ConversationSession {
   doneTimeoutId: ReturnType<typeof setTimeout> | null;
   contentTokenTimeoutId: ReturnType<typeof setTimeout> | null;
   idleRecoveryTimeoutId: ReturnType<typeof setTimeout> | null;
+  hydratingProgress: Promise<void> | null;
+}
+
+interface RemoteStreamingProgress {
+  chatId: string;
+  lastSeq: number;
+  content: string;
+  status: "streaming" | "completed" | "failed";
+  assistantMessageId?: string | null;
+  requestId?: string | null;
+  updatedAt?: number;
 }
 
 function createSession(): ConversationSession {
@@ -78,6 +89,7 @@ function createSession(): ConversationSession {
     doneTimeoutId: null,
     contentTokenTimeoutId: null,
     idleRecoveryTimeoutId: null,
+    hydratingProgress: null,
   };
 }
 
@@ -160,6 +172,20 @@ export function useStreamChat(deps: StreamChatDeps) {
     return created;
   }, []);
 
+  const clearStreamingProgressRemote = useCallback(async (conversationId?: string | null) => {
+    const targetConversationId = typeof conversationId === "string" ? conversationId.trim() : "";
+    if (!targetConversationId) return;
+
+    try {
+      await apiFetch(`/api/streaming/progress/${encodeURIComponent(targetConversationId)}`, {
+        method: "DELETE",
+        timeoutMs: 5000,
+      });
+    } catch (error) {
+      console.warn("[useStreamChat] Failed to clear remote streaming progress:", error);
+    }
+  }, []);
+
   const isConversationActive = useCallback(
     (conversationId: string): boolean => {
       const activeConversationId = getActiveConversationId?.();
@@ -233,6 +259,7 @@ export function useStreamChat(deps: StreamChatDeps) {
     }
 
     session.pendingRequestId = null;
+    session.hydratingProgress = null;
   }, [getSession]);
 
   const abortConversation = useCallback(
@@ -243,8 +270,98 @@ export function useStreamChat(deps: StreamChatDeps) {
       }
       session.abortController = null;
       clearSessionRuntime(conversationId);
+      void clearStreamingProgressRemote(conversationId);
     },
-    [clearSessionRuntime, getSession]
+    [clearSessionRuntime, clearStreamingProgressRemote, getSession]
+  );
+
+  const hydrateStreamingProgress = useCallback(
+    async (conversationId: string): Promise<void> => {
+      const session = getSession(conversationId);
+      if (session.hydratingProgress) {
+        return session.hydratingProgress;
+      }
+
+      if (session.abortController || session.pendingRequestId || session.fullContent) {
+        return;
+      }
+
+      let hydrationPromise: Promise<void> | null = null;
+      hydrationPromise = (async () => {
+        try {
+          const response = await apiFetch(`/api/streaming/progress/${encodeURIComponent(conversationId)}`, {
+            method: "GET",
+            timeoutMs: 6000,
+          });
+
+          if (response.status === 404) {
+            return;
+          }
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const progress = (await response.json().catch(() => null)) as RemoteStreamingProgress | null;
+          if (!progress || typeof progress !== "object") {
+            return;
+          }
+
+          const latestSession = getSession(conversationId);
+          if (latestSession.hydratingProgress !== hydrationPromise) {
+            return;
+          }
+          if (latestSession.abortController || latestSession.pendingRequestId || latestSession.fullContent) {
+            return;
+          }
+
+          if (progress.status !== "streaming") {
+            await clearStreamingProgressRemote(conversationId);
+            return;
+          }
+
+          const restoredContent = typeof progress.content === "string" ? progress.content : "";
+          const restoredMessageId =
+            typeof progress.assistantMessageId === "string" && progress.assistantMessageId.trim()
+              ? progress.assistantMessageId.trim()
+              : latestSession.nextMessageId || `assistant-resume-${conversationId}`;
+          const restoredRequestId =
+            typeof progress.requestId === "string" && progress.requestId.trim()
+              ? progress.requestId.trim()
+              : null;
+
+          latestSession.fullContent = restoredContent;
+          latestSession.pendingContent = null;
+          latestSession.nextMessageId = restoredMessageId;
+          latestSession.pendingRequestId = restoredRequestId;
+
+          if (isConversationActive(conversationId)) {
+            nextMessageIdRef.current = restoredMessageId;
+            streamingContentRef.current = restoredContent;
+            setStreamingContent(restoredContent);
+            setAiState(restoredContent ? "responding" : "thinking", conversationId);
+          }
+        } catch (error) {
+          console.warn("[useStreamChat] Failed to hydrate remote streaming progress:", error);
+        } finally {
+          const latestSession = getSession(conversationId);
+          if (latestSession.hydratingProgress === hydrationPromise) {
+            latestSession.hydratingProgress = null;
+          }
+        }
+      })();
+
+      session.hydratingProgress = hydrationPromise;
+      return hydrationPromise;
+    },
+    [
+      clearStreamingProgressRemote,
+      getSession,
+      isConversationActive,
+      setAiState,
+      setStreamingContent,
+      streamingContentRef,
+    ]
   );
 
   const abort = useCallback(
@@ -291,8 +408,17 @@ export function useStreamChat(deps: StreamChatDeps) {
       nextMessageIdRef.current = session?.nextMessageId || null;
       streamingContentRef.current = content;
       setStreamingContent(content);
+
+      if (
+        !session?.abortController &&
+        !session?.pendingRequestId &&
+        !session?.fullContent &&
+        !session?.hydratingProgress
+      ) {
+        void hydrateStreamingProgress(targetConversationId);
+      }
     },
-    [getActiveConversationId, setStreamingContent, streamingContentRef]
+    [getActiveConversationId, hydrateStreamingProgress, setStreamingContent, streamingContentRef]
   );
 
   const finalize = useCallback(
@@ -339,6 +465,7 @@ export function useStreamChat(deps: StreamChatDeps) {
         setStreamingContent("");
         applyFinalState(finalState, targetConversationId);
         setAiProcessSteps?.([], targetConversationId);
+        void clearStreamingProgressRemote(targetConversationId);
         return;
       }
 
@@ -364,6 +491,7 @@ export function useStreamChat(deps: StreamChatDeps) {
 
       applyFinalState(finalState, targetConversationId);
       setAiProcessSteps?.([], targetConversationId);
+      void clearStreamingProgressRemote(targetConversationId);
 
       queueMicrotask(() => {
         const latestSession = getSession(targetConversationId);
@@ -376,6 +504,7 @@ export function useStreamChat(deps: StreamChatDeps) {
       getSession,
       isConversationActive,
       onSendMessage,
+      clearStreamingProgressRemote,
       setAiProcessSteps,
       setAiState,
       setOptimisticMessages,
@@ -489,6 +618,7 @@ export function useStreamChat(deps: StreamChatDeps) {
         session.fullContent = "";
         session.pendingContent = null;
         session.finalizing = false;
+        session.hydratingProgress = null;
         if (session.idleRecoveryTimeoutId) {
           clearTimeout(session.idleRecoveryTimeoutId);
           session.idleRecoveryTimeoutId = null;
@@ -988,7 +1118,7 @@ export function useStreamChat(deps: StreamChatDeps) {
 
   useEffect(() => {
     return () => {
-      for (const [conversationId, session] of sessionsRef.current.entries()) {
+      for (const [, session] of sessionsRef.current.entries()) {
         if (session.abortController) {
           session.abortController.abort();
           session.abortController = null;
@@ -1022,6 +1152,7 @@ export function useStreamChat(deps: StreamChatDeps) {
         session.fullContent = "";
         session.finalizing = false;
         session.nextMessageId = null;
+        session.hydratingProgress = null;
       }
       sessionsRef.current.clear();
       abortControllerRef.current = null;

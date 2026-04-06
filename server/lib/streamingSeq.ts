@@ -15,6 +15,8 @@ interface StreamingProgress {
     lastSeq: number;
     content: string;
     status: "streaming" | "completed" | "failed";
+    assistantMessageId?: string | null;
+    requestId?: string | null;
     updatedAt: number;
 }
 
@@ -42,7 +44,11 @@ export async function saveStreamingProgress(
     chatId: string,
     lastSeq: number,
     content: string,
-    status: "streaming" | "completed" | "failed"
+    status: "streaming" | "completed" | "failed",
+    metadata?: {
+        assistantMessageId?: string | null;
+        requestId?: string | null;
+    }
 ): Promise<void> {
     try {
         const key = SEQ_PREFIX + chatId;
@@ -51,6 +57,8 @@ export async function saveStreamingProgress(
             lastSeq,
             content,
             status,
+            assistantMessageId: metadata?.assistantMessageId ?? null,
+            requestId: metadata?.requestId ?? null,
             updatedAt: Date.now(),
         };
 
