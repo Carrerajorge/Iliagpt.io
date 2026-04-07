@@ -8006,13 +8006,13 @@ IMPORTANTE:
                   <div className="relative w-full max-w-3xl flex flex-col items-center justify-center py-4 sm:py-6">
                     <div className="pointer-events-none absolute left-1/2 top-[52%] h-72 w-[34rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/[0.05] blur-[110px]" />
                     
-                    <motion.div
-                      initial={{ scale: 0.9, opacity: 0, y: 10 }}
-                      animate={{ scale: 1, opacity: 1, y: 0 }}
-                      transition={{ type: "spring", stiffness: 200, damping: 20 }}
-                      className="relative z-10 mb-5"
-                    >
-                      {activeGpt?.avatar ? (
+                    {activeGpt?.avatar && (
+                      <motion.div
+                        initial={{ scale: 0.9, opacity: 0, y: 10 }}
+                        animate={{ scale: 1, opacity: 1, y: 0 }}
+                        transition={{ type: "spring", stiffness: 200, damping: 20 }}
+                        className="relative z-10 mb-5"
+                      >
                         <div className="relative">
                           <AvatarWithFallback
                             src={activeGpt.avatar}
@@ -8020,12 +8020,8 @@ IMPORTANTE:
                             fallback={<Bot className="h-10 w-10 text-white" />}
                           />
                         </div>
-                      ) : (
-                        <div className="flex items-center justify-center rounded-[26px] border border-border/50 bg-background/80 p-3.5 shadow-[0_18px_50px_-40px_rgba(15,23,42,0.45)]">
-                          <IliaGPTLogo size={64} />
-                        </div>
-                      )}
-                    </motion.div>
+                      </motion.div>
+                    )}
 
                     <motion.h1
                       initial={{ y: 20, opacity: 0 }}
