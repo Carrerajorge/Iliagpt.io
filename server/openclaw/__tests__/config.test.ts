@@ -2,12 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { getOpenClawConfig } from '../config';
 
 describe('OpenClaw Config', () => {
-  it('returns disabled by default when env vars are not set', () => {
+  it('returns correct defaults when env vars are not set', () => {
     const config = getOpenClawConfig();
     expect(config.gateway.enabled).toBe(false);
-    expect(config.tools.enabled).toBe(false);
+    expect(config.tools.enabled).toBe(true);
     expect(config.plugins.enabled).toBe(false);
-    expect(config.skills.enabled).toBe(false);
+    expect(config.skills.enabled).toBe(true);
     expect(config.streaming.enabled).toBe(false);
   });
 

@@ -1,120 +1,82 @@
 # Changelog
 
-## [2.1.0] - 2026-04-07 — Enterprise Differentiation Features
+All notable changes to IliaGPT are documented here.
 
-### Artifacts System (Claude-style)
-- Side panel with tabs: Code, Preview, Versions
-- Code: syntax highlighted display with line numbers, copy, edit toggle
-- Preview: sandboxed iframe for HTML, execution placeholder for JS/Python
-- Versions: navigable version history with timestamps and content preview
-- Auto-detection: code blocks > 15 lines auto-open artifact panel
-- Mermaid diagram rendering (SVG) with DOMPurify sanitization
-- Interactive tables: sortable columns, text filter
-- Responsive: fullscreen mobile, 50vw desktop panel
-- Run button, Apply to chat, Edit toggle
-
-### Long-Term Memory (ChatGPT-style)
-- LLM-powered fact extraction from conversations (preferences, personal info, work context)
-- pgvector embeddings with semantic recall (cosine similarity + salience + recency decay)
-- Memory decay: -5% salience after 30 days inactivity, deactivate below 0.1
-- System prompt injection via `<user_context>` block
-- Memories management page (/memories) with category filters, search, delete
-- Color-coded badges: preference (blue), personal (purple), work (green), knowledge (amber), instruction (rose)
-- API: GET/DELETE /api/memories, POST /api/memories/extract
+## [2026-04-07] - Enterprise Features Release
 
 ### Smart Model Router
-- Cost-aware routing: simple queries → cheapest provider, complex → most capable
-- Query complexity classification (simple/moderate/complex) by tokens, code presence, patterns
-- Health management: 3 failures → 5min degraded cooldown, auto-recovery
-- Circuit breaker integration, routing decision logging (last 1000)
+- **Cost-aware routing**: Classifies queries as simple/medium/complex, routes to appropriate model tier
+- **Circuit breaker**: 3 consecutive failures mark provider as degraded for 5 minutes
+- **Fallback chains**: Automatic cascade to next provider/tier when primary is down
+- **Budget enforcement**: Per-user daily limits (free: $0.50, pro: $5, enterprise: $50)
+- **Health monitoring**: 60-second health checks recover degraded providers
+- **Latency optimization**: Tracks P50/P95/P99, prefers lowest-latency provider
 
-### OpenAI-Compatible Public API
-- POST /v1/chat/completions (streaming SSE + non-streaming) — identical OpenAI format
-- POST /v1/embeddings, GET /v1/models
-- API key management: sk-iliagpt-* keys, SHA-256 validation, rate limiting (60 req/min)
-- api_keys Drizzle schema table with indexes
+### Artifacts Panel
+- **Code artifacts**: Shiki syntax highlighting with VS Code themes, copy button
+- **HTML artifacts**: Sandboxed iframe preview with source view toggle
+- **Table artifacts**: Interactive sorting and filtering from JSON/CSV/markdown
+- **Diagram artifacts**: Mermaid diagram rendering with error fallback
+- **Auto-detection**: Automatically identifies artifact type from content patterns
+- **Versioning**: Each edit creates a new version, navigate with arrows
+- **Integration**: "Open as Artifact" button appears on code blocks >20 lines
+
+### Long-Term Memory
+- **Fact extraction**: LLM-powered extraction of preferences, personal info, work context
+- **Semantic recall**: pgvector cosine similarity search across stored facts
+- **Importance scoring**: Frequently mentioned facts get higher weight
+- **Context injection**: Relevant memories injected into system prompt automatically
+- **User control**: View, edit, delete memories via Settings UI and API
 
 ### Agent Plan Mode
-- LLM-powered query decomposition into structured steps
-- Approval workflow: approve, modify, reject
-- Async step-by-step execution with progress events
-- Interactive checklist UI component
+- **Plan generation**: Agent creates step-by-step plan before executing complex tasks
+- **User approval**: Approve, modify, or reject plans before execution
+- **Real-time progress**: Live status updates per step (pending/in_progress/completed/failed)
+- **SSE streaming**: Plan execution progress streamed to client
+- **Interactive UI**: Checklist component with timeline visualization
+
+### OpenAI-Compatible API
+- **Chat completions**: `POST /v1/chat/completions` with streaming and non-streaming modes
+- **Embeddings**: `POST /v1/embeddings` returning 1536-dim vectors
+- **Model list**: `GET /v1/models` with all available models
+- **API key auth**: SHA-256 hashed keys with rate limiting and expiration
+- **Drop-in replacement**: Any OpenAI SDK client works by changing `base_url`
 
 ### Real-Time Presence
-- WebSocket heartbeat user tracking per workspace
-- Events: online, offline, typing, viewing_chat
-- Redis SET storage, typing debounce (3s), auto-clear (5s)
+- **Online status**: Green dot indicator for active users
+- **Typing indicators**: 5-second auto-clear with bounce animation
+- **Chat focus**: See who's viewing which conversation
+- **WebSocket broadcast**: Real-time updates via dedicated `/ws/presence` channel
+- **Heartbeat**: 30-second intervals with 2-minute offline threshold
 
-### Unified Search
-- PostgreSQL tsvector + pgvector hybrid search with RRF ranking
-- Search highlighting, autocompletado (last 10 searches)
-- Ctrl+Shift+F keyboard shortcut
+### Hybrid Search
+- **Full-text search**: PostgreSQL tsvector with ts_headline highlighting
+- **Semantic search**: pgvector embeddings with cosine similarity
+- **Reciprocal Rank Fusion**: Combines both ranking signals (k=60)
+- **Search modal**: `Ctrl+Shift+F` with dual mode (quick local + deep server)
+- **Filters**: Type (message/chat/document), date range, model
 
-### Bug Fix
-- ModelAvailabilityContext: graceful degradation instead of crash (HMR fix)
+### Library Integrations
+- **shiki**: VS Code-quality syntax highlighting (replaced prismjs in markdown renderer)
+- **sanitize-html**: Server-side HTML sanitization without JSDOM dependency
+- **better-sse**: Spec-compliant SSE sessions alongside existing streaming
+- **gpt-tokenizer**: Fallback tokenizer with native o200k_base for O-series models
+- **cheerio**: Fast HTML extraction (~8x faster than JSDOM) for scraping
+- **jose**: Modern JWT library for API authentication
+- **mem0ai**: Intelligent memory layer for cross-session context
 
-### Tests: 700 passing (106 new module tests + 44 CI + 550 client)
+### Infrastructure Improvements
+- **Pino logging**: Migrated console.log to structured pino logging in routes.ts, auth files, config
+- **Sonner consolidation**: Unified dual toast system to Sonner-only via API bridge
+- **Error boundaries**: React error boundaries with retry for all major sections
+- **Skeleton loaders**: Shimmer loading states for chat, dashboard, settings
+- **Mobile responsive**: Artifact panel full-screen on mobile, responsive layouts
+- **Accessibility**: aria-labels on icon buttons, skip-to-content link, semantic roles
+- **SEO metadata**: Dynamic titles, Open Graph tags, meta descriptions
 
----
-
-## [2.0.0] - 2026-04-07
-
-### Enterprise Architecture
-- Smart Model Router: complexity detection, cost/latency tracking, provider health scoring
-- Redis PubSub: multi-instance SSE coordination, distributed locks, presence tracking
-- Plugin System: 5 built-in plugins with sandboxed hook execution
-- GDPR Compliance: data export, right to be forgotten, retention policies, audit trail
-- OpenAI-Compatible API: /v1/chat/completions, /v1/embeddings, /v1/models with API key auth
-
-### RAG System (Knowledge Base)
-- Multi-provider embeddings (OpenAI, Gemini, local fallback)
-- Document processor for PDF/DOCX/XLSX/PPTX/TXT/CSV with intelligent chunking
-- pgvector similarity search + hybrid BM25/vector via Reciprocal Rank Fusion
-- Knowledge base collections with auto-ingestion pipeline
-- Context builder with token limits and citation engine
-- REST API: /api/knowledge/*
-
-### MCP Apps Integration
-- Fixed Google Drive/Calendar/Gmail with real OAuth URLs and scopes
-- Multi-provider OAuth with scope merging across Google connectors
-- Connector tools injected into agent for chat integration
-- 58 connector manifests properly wired
-
-### Chat Improvements
-- PDF export, theme toggle in sidebar, Ctrl+/ shortcuts modal
-- Schema: shareId, folderId, tags, ragEnabled, parentMessageId for branching
-- Stop button fix, composer spacing fix
-
-### Infrastructure
-- ESLint/TypeScript OOM fixed (8GB heap, cache, target ES2022)
-- 11 Zod/Drizzle type fixes in schema files
-- scripts/with-env.cjs for type-check
-- Performance DB indexes migration
-- 673+ tests all passing, CI green
-
----
-
-## [1.0.0] - 2024-12-27
-
-### Added
-- Agentic Engine con 70 herramientas en 13 categorías
-- ComplexityAnalyzer con scoring multidimensional 1-10
-- IntentMapper con soporte para 5 idiomas
-- OrchestrationEngine con ejecución paralela
-- CompressedMemory con atoms y decay automático
-- ErrorRecovery con circuit breakers
-- GapDetector con deduplicación por signature
-- Dashboard visual en Admin (/admin/agentic) con 7 tabs
-- Integración segura con Chat (feature flags)
-- Health endpoints (/health/live, /health/ready, /health)
-- Botón "Nuevo Chat" profesional con shortcuts
-- Componentes UI mejorados (Card, Badge, Skeleton, EmptyState)
-- Rate limiting por endpoint
-- Métricas del sistema
-- Documentación completa
-
-### Security
-- Feature flags para control de funcionalidades
-- Circuit breakers para resiliencia
-- Rate limiting distribuido
-- Input sanitization
+### Testing
+- 86+ new feature tests across 5 test suites
+- Integration tests for document generation, skill dispatch, artifact detection
+- Full chat flow integration tests with mocked storage
+- 550/550 client tests passing
+- 44/44 CI chat-core tests passing

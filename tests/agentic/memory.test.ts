@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest';
 
-const BASE_URL = 'http://localhost:5000';
+const BASE_URL = process.env.AGENTIC_TEST_URL || 'http://localhost:5000';
 
-describe('CompressedMemory API', () => {
+/**
+ * These are integration tests that require a running server with a database
+ * and authenticated agentic routes.
+ * Set AGENTIC_INTEGRATION_TESTS=1 to enable.
+ */
+const serverAvailable = !!process.env.AGENTIC_INTEGRATION_TESTS;
+
+describe.skipIf(!serverAvailable)('CompressedMemory API', () => {
   describe('POST /api/agentic/memory/atoms', () => {
     it('should create a new memory atom', async () => {
       const response = await fetch(`${BASE_URL}/api/agentic/memory/atoms`, {
@@ -13,7 +20,7 @@ describe('CompressedMemory API', () => {
           data: { action: 'test', target: 'memory' }
         })
       });
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toHaveProperty('id');
@@ -26,28 +33,28 @@ describe('CompressedMemory API', () => {
 
     it('should increment weight for duplicate atoms', async () => {
       const atomData = { type: 'pattern', data: { pattern: 'duplicate-test-' + Date.now() } };
-      
+
       const first = await fetch(`${BASE_URL}/api/agentic/memory/atoms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(atomData)
       });
       const firstAtom = await first.json();
-      
+
       const second = await fetch(`${BASE_URL}/api/agentic/memory/atoms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(atomData)
       });
       const secondAtom = await second.json();
-      
+
       expect(secondAtom.id).toBe(firstAtom.id);
       expect(secondAtom.weight).toBeGreaterThanOrEqual(firstAtom.weight);
     });
 
     it('should create atoms with different types', async () => {
       const types = ['intent', 'pattern', 'correction', 'preference', 'outcome'];
-      
+
       for (const type of types) {
         const response = await fetch(`${BASE_URL}/api/agentic/memory/atoms`, {
           method: 'POST',
@@ -57,7 +64,7 @@ describe('CompressedMemory API', () => {
             data: { test: `type-${type}-${Date.now()}` }
           })
         });
-        
+
         expect(response.ok).toBe(true);
         const data = await response.json();
         expect(data.type).toBe(type);
@@ -76,9 +83,9 @@ describe('CompressedMemory API', () => {
         })
       });
       const created = await createResponse.json();
-      
+
       const response = await fetch(`${BASE_URL}/api/agentic/memory/atoms/${created.id}`);
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data.id).toBe(created.id);
@@ -86,7 +93,7 @@ describe('CompressedMemory API', () => {
 
     it('should return 404 for non-existent atom', async () => {
       const response = await fetch(`${BASE_URL}/api/agentic/memory/atoms/nonexistent123`);
-      
+
       expect(response.status).toBe(404);
     });
   });
@@ -101,9 +108,9 @@ describe('CompressedMemory API', () => {
           data: { correction: 'filter-test-' + Date.now() }
         })
       });
-      
+
       const response = await fetch(`${BASE_URL}/api/agentic/memory/atoms/type/correction`);
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(Array.isArray(data)).toBe(true);
@@ -116,7 +123,7 @@ describe('CompressedMemory API', () => {
   describe('GET /api/agentic/memory/stats', () => {
     it('should return memory statistics', async () => {
       const response = await fetch(`${BASE_URL}/api/agentic/memory/stats`);
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toHaveProperty('totalAtoms');
@@ -133,7 +140,7 @@ describe('CompressedMemory API', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toHaveProperty('decayedCount');
@@ -148,7 +155,7 @@ describe('CompressedMemory API', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ minWeight: 0.1 })
       });
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toHaveProperty('removedCount');

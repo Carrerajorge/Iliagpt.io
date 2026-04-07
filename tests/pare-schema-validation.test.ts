@@ -131,7 +131,7 @@ describe("PARE Schema Validation", () => {
         type: "document" as const,
         url: `https://example.com/file${i}.pdf`,
       }));
-      
+
       const request = {
         messages: validRequest.messages,
         attachments,
@@ -146,7 +146,7 @@ describe("PARE Schema Validation", () => {
         role: "user" as const,
         content: `Message ${i}`,
       }));
-      
+
       const request = {
         messages,
         attachments: validRequest.attachments,
@@ -202,7 +202,7 @@ describe("PARE Schema Validation", () => {
         "image/jpeg",
         "application/json",
       ];
-      
+
       for (const mimeType of validMimeTypes) {
         const request = {
           messages: validRequest.messages,
@@ -455,19 +455,19 @@ describe("PARE Type Limits", () => {
     it("should fail for PDF exceeding page limit", () => {
       const result = checkTypeLimits(
         { name: "test.pdf", mimeType: "application/pdf" },
-        { pageCount: 600 }
+        { pageCount: 6000 }
       );
       expect(result.passed).toBe(false);
       expect(result.violation).toBeDefined();
       expect(result.violation?.type).toBe("pdf");
       expect(result.violation?.metric).toBe("pages");
-      expect(result.violation?.limit).toBe(500);
-      expect(result.violation?.actual).toBe(600);
+      expect(result.violation?.limit).toBe(5000);
+      expect(result.violation?.actual).toBe(6000);
     });
 
     it("should fail for PDF exceeding size limit", () => {
       const result = checkTypeLimits(
-        { name: "test.pdf", mimeType: "application/pdf", size: 100 * 1024 * 1024 },
+        { name: "test.pdf", mimeType: "application/pdf", size: 600 * 1024 * 1024 },
         {}
       );
       expect(result.passed).toBe(false);
@@ -485,7 +485,7 @@ describe("PARE Type Limits", () => {
     it("should fail for XLSX exceeding row limit", () => {
       const result = checkTypeLimits(
         { name: "test.xlsx" },
-        { rowCount: 150000 }
+        { rowCount: 1500000 }
       );
       expect(result.passed).toBe(false);
       expect(result.violation?.type).toBe("xlsx");
@@ -495,7 +495,7 @@ describe("PARE Type Limits", () => {
     it("should fail for XLSX exceeding cell limit", () => {
       const result = checkTypeLimits(
         { name: "test.xlsx" },
-        { cellCount: 2000000 }
+        { cellCount: 20000000 }
       );
       expect(result.passed).toBe(false);
       expect(result.violation?.metric).toBe("cells");
@@ -504,7 +504,7 @@ describe("PARE Type Limits", () => {
     it("should fail for XLSX exceeding sheet limit", () => {
       const result = checkTypeLimits(
         { name: "test.xlsx" },
-        { sheetCount: 100 }
+        { sheetCount: 300 }
       );
       expect(result.passed).toBe(false);
       expect(result.violation?.metric).toBe("sheets");
@@ -521,7 +521,7 @@ describe("PARE Type Limits", () => {
     it("should fail for CSV exceeding row limit", () => {
       const result = checkTypeLimits(
         { name: "data.csv" },
-        { rowCount: 150000 }
+        { rowCount: 1500000 }
       );
       expect(result.passed).toBe(false);
       expect(result.violation?.type).toBe("csv");
@@ -530,7 +530,7 @@ describe("PARE Type Limits", () => {
     it("should fail for CSV exceeding column limit", () => {
       const result = checkTypeLimits(
         { name: "data.csv" },
-        { columnCount: 1500 }
+        { columnCount: 15000 }
       );
       expect(result.passed).toBe(false);
       expect(result.violation?.metric).toBe("columns");
@@ -547,7 +547,7 @@ describe("PARE Type Limits", () => {
     it("should fail for PPTX exceeding slide limit", () => {
       const result = checkTypeLimits(
         { name: "presentation.pptx" },
-        { slideCount: 300 }
+        { slideCount: 3000 }
       );
       expect(result.passed).toBe(false);
       expect(result.violation?.type).toBe("pptx");
@@ -565,7 +565,7 @@ describe("PARE Type Limits", () => {
     it("should fail for DOCX exceeding page limit", () => {
       const result = checkTypeLimits(
         { name: "document.docx" },
-        { pageCount: 600 }
+        { pageCount: 6000 }
       );
       expect(result.passed).toBe(false);
       expect(result.violation?.type).toBe("docx");
@@ -582,7 +582,7 @@ describe("PARE Type Limits", () => {
     it("should detect file type from mimeType when extension missing", () => {
       const result = checkTypeLimits(
         { name: "document", mimeType: "application/pdf" },
-        { pageCount: 600 }
+        { pageCount: 6000 }
       );
       expect(result.passed).toBe(false);
       expect(result.violation?.type).toBe("pdf");
@@ -591,7 +591,7 @@ describe("PARE Type Limits", () => {
     it("should warn when approaching limits", () => {
       const result = checkTypeLimits(
         { name: "test.pdf" },
-        { pageCount: 450 }
+        { pageCount: 4500 }
       );
       expect(result.passed).toBe(true);
       expect(result.warnings).toBeDefined();
@@ -625,7 +625,7 @@ describe("PARE Type Limits", () => {
     it("should flag very large PDFs", () => {
       const result = estimateLimitsFromSize({
         name: "large.pdf",
-        size: 100 * 1024 * 1024,
+        size: 500 * 1024 * 1024,
       });
       expect(result.wouldExceed).toBe(true);
       expect(result.reason).toContain("pages");
@@ -634,7 +634,7 @@ describe("PARE Type Limits", () => {
     it("should flag very large Excel files", () => {
       const result = estimateLimitsFromSize({
         name: "large.xlsx",
-        size: 50 * 1024 * 1024,
+        size: 200 * 1024 * 1024,
       });
       expect(result.wouldExceed).toBe(true);
       expect(result.reason).toContain("cells");

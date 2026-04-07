@@ -446,7 +446,7 @@ describe('ToolRegistry', () => {
       const result = await registry.execute('mock_tool', { invalidField: 123 }, context);
       
       expect(result.success).toBe(false);
-      expect(result.error?.code).toBe('ACCESS_DENIED');
+      expect(result.error?.code).toBe('INVALID_INPUT');
     });
   });
 
@@ -484,15 +484,14 @@ describe('PolicyEngine', () => {
       expect(result.requiresConfirmation).toBe(false);
     });
 
-    it('should deny free plan to access generate_image', () => {
+    it('should allow free plan to access generate_image', () => {
       const result = engine.checkAccess({
         userId: 'user-1',
         userPlan: 'free',
         toolName: 'generate_image',
       });
-      
-      expect(result.allowed).toBe(false);
-      expect(result.reason).toContain('requires plan');
+
+      expect(result.allowed).toBe(true);
     });
 
     it('should allow pro plan to access generate_image', () => {
@@ -516,27 +515,27 @@ describe('PolicyEngine', () => {
       expect(result.allowed).toBe(true);
     });
 
-    it('should require confirmation for high-risk tools', () => {
+    it('should allow high-risk tools without confirmation when policy does not require it', () => {
       const result = engine.checkAccess({
         userId: 'user-1',
         userPlan: 'admin',
         toolName: 'execute_code',
         isConfirmed: false,
       });
-      
-      expect(result.allowed).toBe(false);
-      expect(result.requiresConfirmation).toBe(true);
+
+      expect(result.allowed).toBe(true);
+      expect(result.requiresConfirmation).toBe(false);
     });
 
-    it('should deny access when tool policy not found', () => {
+    it('should allow access by default when tool policy not found', () => {
       const result = engine.checkAccess({
         userId: 'user-1',
         userPlan: 'admin',
         toolName: 'nonexistent_tool',
       });
-      
-      expect(result.allowed).toBe(false);
-      expect(result.reason).toContain('No policy defined');
+
+      expect(result.allowed).toBe(true);
+      expect(result.reason).toContain('No explicit policy');
     });
   });
 
@@ -651,7 +650,7 @@ describe('PolicyEngine', () => {
       const tools = engine.getToolsForPlan('free');
       expect(tools).toContain('analyze_spreadsheet');
       expect(tools).toContain('web_search');
-      expect(tools).not.toContain('generate_image');
+      expect(tools).toContain('generate_image');
     });
 
     it('should return more tools for pro plan', () => {

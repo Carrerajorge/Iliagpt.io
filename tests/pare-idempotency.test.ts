@@ -1,21 +1,24 @@
 import { describe, it, expect, beforeEach, afterEach, vi, beforeAll, afterAll } from "vitest";
-import {
-  checkIdempotencyKey,
-  completeIdempotencyKey,
-  failIdempotencyKey,
-  cleanupExpiredKeys,
-  computePayloadHash,
-  startCleanupScheduler,
-  stopCleanupScheduler,
-  getIdempotencyKeyStats
-} from "../server/lib/idempotencyStore";
-import { db } from "../server/db";
-import { pareIdempotencyKeys } from "../shared/schema";
-import { eq, sql } from "drizzle-orm";
+
+const hasDb = !!process.env.DATABASE_URL;
+
+// Dynamic imports to avoid eagerly connecting to PostgreSQL when DATABASE_URL is unset
+const idempotencyStore = hasDb ? await import("../server/lib/idempotencyStore") : null;
+const checkIdempotencyKey = idempotencyStore?.checkIdempotencyKey;
+const completeIdempotencyKey = idempotencyStore?.completeIdempotencyKey;
+const failIdempotencyKey = idempotencyStore?.failIdempotencyKey;
+const cleanupExpiredKeys = idempotencyStore?.cleanupExpiredKeys;
+const computePayloadHash = idempotencyStore?.computePayloadHash;
+const startCleanupScheduler = idempotencyStore?.startCleanupScheduler;
+const stopCleanupScheduler = idempotencyStore?.stopCleanupScheduler;
+const getIdempotencyKeyStats = idempotencyStore?.getIdempotencyKeyStats;
 
 const TEST_TTL_MS = 100;
 
 async function clearTestKeys(): Promise<void> {
+  const { db } = await import("../server/db");
+  const { pareIdempotencyKeys } = await import("../shared/schema");
+  const { sql } = await import("drizzle-orm");
   await db.delete(pareIdempotencyKeys).where(
     sql`idempotency_key LIKE 'test-%'`
   );
@@ -25,17 +28,20 @@ function generateTestKey(): string {
   return `test-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
 }
 
-describe("PARE Phase 2 Idempotency System", () => {
+describe.skipIf(!hasDb)("PARE Phase 2 Idempotency System", () => {
   beforeAll(async () => {
+    if (!hasDb) return;
     await clearTestKeys();
   });
 
   afterAll(async () => {
+    if (!hasDb) return;
     await clearTestKeys();
     stopCleanupScheduler();
   });
 
   afterEach(async () => {
+    if (!hasDb) return;
     await clearTestKeys();
   });
 
@@ -123,17 +129,20 @@ describe("PARE Phase 2 Idempotency System", () => {
 
   describe("completeIdempotencyKey", () => {
     it("should store response and update status to completed", async () => {
+      const { db } = await import("../server/db");
+      const { pareIdempotencyKeys } = await import("../shared/schema");
+      const { eq } = await import("drizzle-orm");
       const key = generateTestKey();
       const payloadHash = computePayloadHash({ test: true });
       const response = { requestId: "test-123", success: true, answer: "Test answer" };
-      
+
       await checkIdempotencyKey(key, payloadHash);
       await completeIdempotencyKey(key, response);
-      
+
       const record = await db.query.pareIdempotencyKeys.findFirst({
         where: eq(pareIdempotencyKeys.idempotencyKey, key)
       });
-      
+
       expect(record).toBeDefined();
       expect(record?.status).toBe("completed");
       expect(record?.responseJson).toEqual(response);
@@ -142,17 +151,20 @@ describe("PARE Phase 2 Idempotency System", () => {
 
   describe("failIdempotencyKey", () => {
     it("should update status to failed and store error", async () => {
+      const { db } = await import("../server/db");
+      const { pareIdempotencyKeys } = await import("../shared/schema");
+      const { eq } = await import("drizzle-orm");
       const key = generateTestKey();
       const payloadHash = computePayloadHash({ test: true });
       const errorMessage = "Processing failed due to timeout";
-      
+
       await checkIdempotencyKey(key, payloadHash);
       await failIdempotencyKey(key, errorMessage);
-      
+
       const record = await db.query.pareIdempotencyKeys.findFirst({
         where: eq(pareIdempotencyKeys.idempotencyKey, key)
       });
-      
+
       expect(record).toBeDefined();
       expect(record?.status).toBe("failed");
       expect((record?.responseJson as any)?.error).toBe(errorMessage);
@@ -161,24 +173,27 @@ describe("PARE Phase 2 Idempotency System", () => {
 
   describe("cleanupExpiredKeys", () => {
     it("should delete keys past their expiration time", async () => {
+      const { db } = await import("../server/db");
+      const { pareIdempotencyKeys } = await import("../shared/schema");
+      const { eq } = await import("drizzle-orm");
       const key = generateTestKey();
       const payloadHash = computePayloadHash({ test: true });
-      
+
       await checkIdempotencyKey(key, payloadHash);
-      
+
       await db
         .update(pareIdempotencyKeys)
         .set({ expiresAt: new Date(Date.now() - 1000) })
         .where(eq(pareIdempotencyKeys.idempotencyKey, key));
-      
+
       const deletedCount = await cleanupExpiredKeys();
-      
+
       expect(deletedCount).toBeGreaterThanOrEqual(1);
-      
+
       const record = await db.query.pareIdempotencyKeys.findFirst({
         where: eq(pareIdempotencyKeys.idempotencyKey, key)
       });
-      
+
       expect(record).toBeUndefined();
     });
   });

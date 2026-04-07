@@ -72,7 +72,7 @@ export const UserMessage = memo(function UserMessage({
     return (
         <div className="flex flex-col items-end gap-1">
             {isEditing ? (
-                <div className="w-full min-w-[300px] max-w-[500px]">
+                <div className="w-full min-w-0 sm:min-w-[300px] max-w-[500px]">
                     <Textarea
                         value={editContent}
                         onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onEditContentChange(e.target.value)}

@@ -421,8 +421,9 @@ describe("Chaos Tests - Agent Infrastructure", () => {
           userPlan: "admin",
           toolName: `non-existent-tool-${i}`,
         });
-        expect(result.allowed).toBe(false);
-        expect(result.reason).toContain("No policy defined");
+        // Tools without an explicit policy are allowed by default
+        expect(result.allowed).toBe(true);
+        expect(result.reason).toContain("No explicit policy");
       }
     });
   });

@@ -1,26 +1,34 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
-import express, { Express, Request, Response, NextFunction } from "express";
-import request from "supertest";
-import { 
-  pareRequestContract, 
-  pareRateLimiter, 
-  pareQuotaGuard, 
-  requirePareContext,
-  pareIdempotencyGuard 
-} from "../server/middleware";
-import { clearPareRateLimitStores } from "../server/middleware/pareRateLimiter";
-import {
-  checkIdempotencyKey,
-  completeIdempotencyKey,
-  failIdempotencyKey,
-  cleanupExpiredKeys,
-  computePayloadHash,
-} from "../server/lib/idempotencyStore";
-import { db } from "../server/db";
-import { pareIdempotencyKeys } from "../shared/schema";
-import { sql } from "drizzle-orm";
+
+const hasDb = !!process.env.DATABASE_URL;
+
+// Dynamic imports to avoid eagerly connecting to PostgreSQL when DATABASE_URL is unset
+const { default: express } = await import("express");
+type Express = import("express").Express;
+type Request = import("express").Request;
+type Response = import("express").Response;
+type NextFunction = import("express").NextFunction;
+const { default: request } = await import("supertest");
+const middleware = hasDb ? await import("../server/middleware") : null;
+const pareRateLimiterMod = hasDb ? await import("../server/middleware/pareRateLimiter") : null;
+const idempotencyStore = hasDb ? await import("../server/lib/idempotencyStore") : null;
+
+const pareRequestContract = middleware?.pareRequestContract;
+const pareRateLimiter = middleware?.pareRateLimiter;
+const pareQuotaGuard = middleware?.pareQuotaGuard;
+const requirePareContext = middleware?.requirePareContext;
+const pareIdempotencyGuard = middleware?.pareIdempotencyGuard;
+const clearPareRateLimitStores = pareRateLimiterMod?.clearPareRateLimitStores;
+const checkIdempotencyKey = idempotencyStore?.checkIdempotencyKey;
+const completeIdempotencyKey = idempotencyStore?.completeIdempotencyKey;
+const failIdempotencyKey = idempotencyStore?.failIdempotencyKey;
+const cleanupExpiredKeys = idempotencyStore?.cleanupExpiredKeys;
+const computePayloadHash = idempotencyStore?.computePayloadHash;
 
 async function clearTestIdempotencyKeys(): Promise<void> {
+  const { db } = await import("../server/db");
+  const { pareIdempotencyKeys } = await import("../shared/schema");
+  const { sql } = await import("drizzle-orm");
   await db.delete(pareIdempotencyKeys).where(
     sql`idempotency_key LIKE 'concurrency-test-%'`
   );
@@ -99,14 +107,16 @@ function createConcurrencyTestApp(): Express {
   return app;
 }
 
-describe("PARE Concurrency Tests", () => {
+describe.skipIf(!hasDb)("PARE Concurrency Tests", () => {
   let app: Express;
   
   beforeAll(async () => {
+    if (!hasDb) return;
     await clearTestIdempotencyKeys();
   });
-  
+
   afterAll(async () => {
+    if (!hasDb) return;
     await clearTestIdempotencyKeys();
   });
   

@@ -17,8 +17,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const API_BASE = 'http://localhost:5000/api';
+const hasDb = !!process.env.DATABASE_URL;
 
-describe('PARE Torture Fixtures', () => {
+describe.skipIf(!hasDb)('PARE Torture Fixtures', () => {
   describe('CSVParser with Row/Column Citations', () => {
     it('should parse CSV and generate row/col citations', async () => {
       const csvParser = new CsvParser();
@@ -71,7 +72,7 @@ Test,"He said ""Hello""!"`;
     });
   });
 
-  describe('Empty/Scanned Document Handling', () => {
+  describe.skipIf(!hasDb)('Empty/Scanned Document Handling', () => {
     it('should return 400 VALIDATION_ERROR for empty document (content required)', async () => {
       const response = await fetch(`${API_BASE}/analyze`, {
         method: 'POST',
@@ -115,7 +116,7 @@ Test,"He said ""Hello""!"`;
     });
   });
 
-  describe('CSV Document Processing via API', () => {
+  describe.skipIf(!hasDb)('CSV Document Processing via API', () => {
     it('should use CsvParser for CSV files and include row/col citations', async () => {
       const csvContent = `product_id,name,price
 P001,Widget,29.99
@@ -144,7 +145,7 @@ P002,Gadget,49.99`;
     });
   });
 
-  describe('Multi-File Batch with Coverage Check', () => {
+  describe.skipIf(!hasDb)('Multi-File Batch with Coverage Check', () => {
     it('should process multiple document types and verify coverage', async () => {
       const response = await fetch(`${API_BASE}/analyze`, {
         method: 'POST',
@@ -185,7 +186,7 @@ P002,Gadget,49.99`;
     });
   });
 
-  describe('Bilingual Content Handling', () => {
+  describe.skipIf(!hasDb)('Bilingual Content Handling', () => {
     it('should process Spanish and English content correctly', async () => {
       const bilingualContent = `
 ESPAÑOL: Este documento contiene información importante.
@@ -218,7 +219,7 @@ DATA: value1=100, value2=200`;
   });
 });
 
-describe('DATA_MODE Kill-Switch Validation', () => {
+describe.skipIf(!hasDb)('DATA_MODE Kill-Switch Validation', () => {
   it('should detect forbidden image key in response', () => {
     const payload = {
       success: true,
@@ -325,7 +326,7 @@ describe('DATA_MODE Kill-Switch Validation', () => {
   });
 });
 
-describe('Coverage Enforcement', () => {
+describe.skipIf(!hasDb)('Coverage Enforcement', () => {
   it('should include citation for each document in batch', async () => {
     const response = await fetch(`${API_BASE}/analyze`, {
       method: 'POST',

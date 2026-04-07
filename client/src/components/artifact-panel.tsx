@@ -466,7 +466,7 @@ export const ArtifactPanel = memo(function ArtifactPanel() {
         className={cn(
           "fixed top-0 right-0 h-full z-50 flex flex-col",
           "bg-background border-l border-border shadow-2xl",
-          "w-full sm:w-[80vw] lg:w-[50vw] xl:w-[45vw]",
+          "w-full md:w-[50vw] xl:w-[45vw]",
           "animate-in slide-in-from-right duration-300"
         )}
       >
@@ -504,7 +504,7 @@ export const ArtifactPanel = memo(function ArtifactPanel() {
             )}
             <button
               onClick={closePanel}
-              className="p-1.5 rounded-md hover:bg-muted transition-colors"
+              className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md hover:bg-muted transition-colors"
               aria-label="Close panel"
             >
               <X className="h-4 w-4" />

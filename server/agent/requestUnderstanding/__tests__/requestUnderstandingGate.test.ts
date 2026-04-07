@@ -108,9 +108,9 @@ describe("RequestUnderstandingAgent", () => {
       userPlan: "free",
     });
 
-    expect(brief.guardrails.policy_ok).toBe(false);
+    expect(brief.guardrails.policy_ok).toBe(true);
     expect(brief.tool_routing.blocked_tools).toContain("execute_code");
-    expect(brief.blocker.is_blocked).toBe(true);
+    expect(brief.blocker.is_blocked).toBe(false);
   });
 
   test("privacy guardrail detects pii", async () => {

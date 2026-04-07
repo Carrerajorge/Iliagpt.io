@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { SkeletonChatMessages } from "@/components/skeletons";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { useDraft } from "@/hooks/use-draft";
 import { useStreamingTransition } from "@/hooks/use-streaming-transition";
 import { useStreamChat } from "@/hooks/use-stream-chat";
@@ -7576,6 +7577,7 @@ IMPORTANTE:
                       activeDocEditor ? "p-3" : "p-4 sm:p-6 md:p-10 space-y-6"
                     )}
                   >
+                    <ErrorBoundary section="chat">
                     <ChatMessageList
                       messages={displayMessages}
                       onUserRetrySend={handleUserRetrySend}
@@ -7622,6 +7624,7 @@ IMPORTANTE:
                       uiPhase={uiPhase}
                       aiProcessSteps={aiProcessSteps}
                     />
+                    </ErrorBoundary>
 
                     {/* Agent Observer - Show when agent is running */}
                     {agent.state.status !== "idle" && (
@@ -7902,6 +7905,7 @@ IMPORTANTE:
                 >
                   {hasMessages && (
                     <>
+                      <ErrorBoundary section="chat">
                       <ChatMessageList
                         messages={displayMessages}
                         onUserRetrySend={handleUserRetrySend}
@@ -7951,6 +7955,7 @@ IMPORTANTE:
                         uiPhase={uiPhase}
                         aiProcessSteps={aiProcessSteps}
                       />
+                      </ErrorBoundary>
                       <div className="shrink-0" style={{ height: 'calc(var(--composer-height, 120px) + 40px)' }} aria-hidden="true" />
                       <div ref={messagesEndRef} />
                     </>

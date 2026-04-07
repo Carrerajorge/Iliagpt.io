@@ -1,19 +1,26 @@
 import { describe, it, expect } from 'vitest';
 
-const BASE_URL = 'http://localhost:5000';
+const BASE_URL = process.env.AGENTIC_TEST_URL || 'http://localhost:5000';
 
-describe('OrchestrationEngine API', () => {
+/**
+ * These are integration tests that require a running server with a database
+ * and authenticated agentic routes.
+ * Set AGENTIC_INTEGRATION_TESTS=1 to enable.
+ */
+const serverAvailable = !!process.env.AGENTIC_INTEGRATION_TESTS;
+
+describe.skipIf(!serverAvailable)('OrchestrationEngine API', () => {
   describe('POST /api/agentic/orchestrate', () => {
     it('should decompose a user-related task', async () => {
       const response = await fetch(`${BASE_URL}/api/agentic/orchestrate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           prompt: 'list all users',
           complexity: 3
         })
       });
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toHaveProperty('subtasks');
@@ -24,12 +31,12 @@ describe('OrchestrationEngine API', () => {
       const response = await fetch(`${BASE_URL}/api/agentic/orchestrate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           prompt: 'generate a report for analytics',
           complexity: 5
         })
       });
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toHaveProperty('subtasks');
@@ -40,12 +47,12 @@ describe('OrchestrationEngine API', () => {
       const response = await fetch(`${BASE_URL}/api/agentic/orchestrate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           prompt: 'check security status',
           complexity: 4
         })
       });
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toHaveProperty('subtasks');
@@ -55,12 +62,12 @@ describe('OrchestrationEngine API', () => {
       const response = await fetch(`${BASE_URL}/api/agentic/orchestrate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           prompt: 'create user and generate report',
           complexity: 6
         })
       });
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toHaveProperty('plan');
@@ -75,12 +82,12 @@ describe('OrchestrationEngine API', () => {
       const response = await fetch(`${BASE_URL}/api/agentic/orchestrate/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           prompt: 'get dashboard metrics',
           complexity: 3
         })
       });
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toHaveProperty('result');
@@ -93,12 +100,12 @@ describe('OrchestrationEngine API', () => {
       const response = await fetch(`${BASE_URL}/api/agentic/orchestrate/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           prompt: 'list users and check security and get analytics dashboard',
           complexity: 7
         })
       });
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data.result.completedTasks).toBeGreaterThan(0);
@@ -108,12 +115,12 @@ describe('OrchestrationEngine API', () => {
       const response = await fetch(`${BASE_URL}/api/agentic/orchestrate/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           prompt: 'analyze user data',
           complexity: 4
         })
       });
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toHaveProperty('combined');
@@ -125,7 +132,7 @@ describe('OrchestrationEngine API', () => {
   describe('GET /api/agentic/orchestrate/status', () => {
     it('should return orchestration engine status', async () => {
       const response = await fetch(`${BASE_URL}/api/agentic/orchestrate/status`);
-      
+
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data).toHaveProperty('status');

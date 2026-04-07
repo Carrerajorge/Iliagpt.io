@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
 const API_BASE = 'http://localhost:5000';
+const hasDb = !!process.env.DATABASE_URL;
 
-describe('PARE Observability Phase 3', () => {
+describe.skipIf(!hasDb)('PARE Observability Phase 3', () => {
   describe('Prometheus Metrics Endpoint', () => {
     it('should expose /metrics endpoint with Prometheus format', async () => {
       const response = await fetch(`${API_BASE}/metrics`);

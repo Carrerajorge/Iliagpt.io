@@ -1,13 +1,17 @@
-import { agentMemory } from '../memory';
-import { db } from '../../db';
+import { describe, test, expect, beforeEach, vi } from 'vitest';
 
-// Mocks para evitar I/O real contra PostgreSQL durante TDD
-jest.mock('../../db', () => ({
+// Mock db before importing agentMemory
+vi.mock('../../db', () => ({
     db: {
-        insert: jest.fn().mockReturnThis(),
-        values: jest.fn().mockResolvedValue(true)
+        insert: vi.fn().mockReturnValue({
+            values: vi.fn().mockResolvedValue(true),
+        }),
     }
 }));
+
+// Import after mock setup
+const { agentMemory } = await import('../memory');
+const { db } = await import('../../db');
 
 describe('CognitiveMemorySystem (T09-003)', () => {
 
@@ -15,20 +19,20 @@ describe('CognitiveMemorySystem (T09-003)', () => {
         // Reset state internals using ts-ignore for private access during tests
         // @ts-ignore
         agentMemory.shortTermBuffer = [];
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     test('Short Term Memory respects capacity and evicts properly', () => {
-        // Llenar más de la capacidad max (10)
+        // Fill beyond max capacity (10)
         for (let i = 0; i < 15; i++) {
             agentMemory.pushShortTerm(`Action Sequence ${i}`);
         }
 
-        // Debe de quedarse sólo con 10
+        // Should keep only 10
         // @ts-ignore
         expect(agentMemory.shortTermBuffer.length).toBe(10);
 
-        // Las 5 superadas deben haber accionado 5 inserts a db (Episodic consign)
+        // The 5 evicted should have triggered 5 inserts to db (Episodic consign)
         expect((db as any).insert).toHaveBeenCalledTimes(5);
     });
 

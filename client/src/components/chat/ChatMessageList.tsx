@@ -394,7 +394,7 @@ export function ChatMessageList({
     ]);
 
     return (
-        <div className="h-full w-full flex flex-col">
+        <div className="h-full w-full flex flex-col" role="log" aria-live="polite" aria-label="Chat messages">
             <Virtuoso
                 ref={virtuosoRef}
                 data={mergedMessages}

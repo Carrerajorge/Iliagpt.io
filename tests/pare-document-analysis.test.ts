@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
 const API_BASE = process.env.TEST_API_BASE || 'http://localhost:5000';
+const hasDb = !!process.env.DATABASE_URL;
 
 interface AnalyzeResponse {
   answer_text?: string;
@@ -24,7 +25,7 @@ interface AnalyzeResponse {
   message?: string;
 }
 
-describe('PARE Document Analysis System', () => {
+describe.skipIf(!hasDb)('PARE Document Analysis System', () => {
   describe('DATA_MODE Enforcement', () => {
     it('should reject document attachments on /chat endpoint with USE_ANALYZE_ENDPOINT', async () => {
       const response = await fetch(`${API_BASE}/api/chat`, {
@@ -245,7 +246,7 @@ describe('PARE Document Analysis System', () => {
   });
 });
 
-describe('Acceptance Criteria Verification', () => {
+describe.skipIf(!hasDb)('Acceptance Criteria Verification', () => {
   it('CRITERIA 1: attachments present → always textual response with citations', async () => {
     const response = await fetch(`${API_BASE}/api/analyze`, {
       method: 'POST',

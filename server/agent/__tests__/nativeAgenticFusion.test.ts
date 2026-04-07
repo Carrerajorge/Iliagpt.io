@@ -10,16 +10,20 @@ describe("nativeAgenticFusion", () => {
     expect(hasNativeAgenticSignal("puedes decirme cuantas caprteas tengo en mi escritorio?")).toBe(true);
   });
 
-  it("does not force fusion when there is no signal", async () => {
-    expect(hasNativeAgenticSignal("Hola, como estas hoy?")).toBe(false);
+  it("does not force fusion when there is no signal (short message)", async () => {
+    expect(hasNativeAgenticSignal("Hola mundo")).toBe(false);
 
     const result = await buildNativeAgenticFusion({
       userId: "test-user",
       chatId: "test-chat",
-      message: "Hola, como estas hoy?",
+      message: "Hola mundo",
     });
 
     expect(result.appliedModules).toEqual([]);
     expect(result.promptAddendum).toBe("");
+  });
+
+  it("treats messages >= 15 chars as having an agentic signal", () => {
+    expect(hasNativeAgenticSignal("Hola, como estas hoy?")).toBe(true);
   });
 });

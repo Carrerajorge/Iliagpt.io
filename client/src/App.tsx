@@ -326,6 +326,7 @@ function GlobalKeyboardShortcuts() {
 }
 
 import { GlobalErrorBoundary } from "@/components/global-error-boundary";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 function Router() {
   const HOME_ROUTE_REGEX = /^\/(?:chat(?:\/[^/]+)?)?\/?$/;
@@ -407,7 +408,9 @@ function AppContent() {
   }
 
   return (
-    <>
+    <ErrorBoundary section="chat" onError={(error, errorInfo) => {
+      console.error("[AppContent] Error boundary caught:", error, errorInfo);
+    }}>
       <SkipLink />
       <OfflineIndicator />
       {/* AuthCallbackHandler removed, moved to AuthProvider */}
@@ -421,7 +424,7 @@ function AppContent() {
       <Router />
       <ArtifactPanel />
       <BackgroundNotificationContainer onNavigateToChat={() => { }} />
-    </>
+    </ErrorBoundary>
   );
 }
 

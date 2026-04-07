@@ -144,7 +144,7 @@ export function ChatHeader({
                     <TooltipProvider>
                         <Tooltip>
                             <TooltipTrigger asChild>
-                                <Button variant="ghost" size="icon" onClick={onToggleSidebar} className="-ml-2 h-9 w-9">
+                                <Button variant="ghost" size="icon" onClick={onToggleSidebar} className="-ml-2 h-9 w-9" aria-label="Toggle sidebar">
                                     <PanelLeftOpen className="h-5 w-5 text-muted-foreground" />
                                 </Button>
                             </TooltipTrigger>
@@ -204,7 +204,7 @@ export function ChatHeader({
 
                 {chatId && !chatId.startsWith("pending-") ? (
                     <ShareChatDialog chatId={chatId} chatTitle={messages[0]?.content?.slice(0, 30) || "Chat"}>
-                        <Button variant="ghost" size="icon" data-testid="button-share-chat">
+                        <Button variant="ghost" size="icon" data-testid="button-share-chat" aria-label="Share chat">
                             <ShareIcon size={20} />
                         </Button>
                     </ShareChatDialog>
@@ -215,6 +215,7 @@ export function ChatHeader({
                         data-testid="button-share-chat-disabled"
                         disabled
                         title="Envía un mensaje para poder compartir este chat"
+                        aria-label="Share chat (disabled)"
                     >
                         <ShareIcon size={20} />
                     </Button>
@@ -222,7 +223,7 @@ export function ChatHeader({
 
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" data-testid="button-chat-options">
+                        <Button variant="ghost" size="icon" data-testid="button-chat-options" aria-label="Chat options">
                             <MoreHorizontal className="h-5 w-5 text-muted-foreground" />
                         </Button>
                     </DropdownMenuTrigger>
