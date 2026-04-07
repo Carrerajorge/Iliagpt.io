@@ -502,7 +502,6 @@ export function useStreamChat(deps: StreamChatDeps) {
       };
 
       if (!targetConversationId) {
-        setOptimisticMessages((prev) => upsertMessageByIdentity(prev, message));
         onSendMessage(message).catch((err) => {
           console.error("[useStreamChat] onSendMessage failed:", err);
         });
@@ -546,7 +545,9 @@ export function useStreamChat(deps: StreamChatDeps) {
 
       flushNow(targetConversationId);
 
-      setOptimisticMessages((prev) => upsertMessageByIdentity(prev, finalizedMessage));
+      // Only use onSendMessage which handles both local state insertion (via setChats)
+      // and server persistence. Do NOT also insert into optimisticMessages — that causes
+      // the message to appear in both sources, leading to duplicates in displayMessages.
       if (!shouldReuseServerAssistantMessage) {
         onSendMessage(finalizedMessage).catch((err) => {
           console.error("[useStreamChat] onSendMessage failed:", err);
@@ -1319,8 +1320,14 @@ export function useStreamChat(deps: StreamChatDeps) {
                       return { ok: false, content: fullContent, message: errorMsg, response, error: terminalError };
                     }
 
-                    const msg = buildFinalMessage?.(fullContent, data, messageId) ?? buildAssistantMessage({
-                      id: messageId,
+                    // Prefer the server-persisted ID to avoid duplicate POSTs
+                    const finalMessageId = (typeof data.assistantMessageId === "string" && data.assistantMessageId.trim())
+                      ? data.assistantMessageId.trim()
+                      : messageId;
+                    const isServerPersisted = finalMessageId !== messageId;
+
+                    const msg = buildFinalMessage?.(fullContent, data, finalMessageId) ?? buildAssistantMessage({
+                      id: finalMessageId,
                       timestamp: new Date(),
                       requestId: data.requestId || streamRequestId,
                       content: fullContent,
@@ -1334,6 +1341,10 @@ export function useStreamChat(deps: StreamChatDeps) {
                       retrievalSteps: data.retrievalSteps,
                       steps: data.steps,
                     });
+
+                    if (isServerPersisted) {
+                      (msg as any).serverPersisted = true;
+                    }
 
                     finalize(msg, conversationId, "done");
                     return { ok: true, content: fullContent, message: msg, response };

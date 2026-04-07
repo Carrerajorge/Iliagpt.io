@@ -132,7 +132,7 @@ export async function validateAttachmentSecurity(
   let zipCheck: ZipBombCheckResult | undefined;
 
   try {
-    const maxSizeBytes = (options.maxFileSizeMB || 100) * 1024 * 1024;
+    const maxSizeBytes = (options.maxFileSizeMB || 500) * 1024 * 1024;
     if (attachment.buffer.length > maxSizeBytes) {
       violations.push({
         type: SecurityViolationType.EXCESSIVE_SIZE,

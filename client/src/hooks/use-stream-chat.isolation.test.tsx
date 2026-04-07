@@ -786,7 +786,8 @@ describe("useStreamChat conversation isolation", () => {
     expect(seenEvents).toEqual(["error", "done"]);
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0].content).toBe("ERR:provider stream failed");
-    expect(result.current.optimisticMessages).toHaveLength(1);
+    // The error message is sent via onSendMessage (which inserts into chat state),
+    // not into optimisticMessages — this prevents duplicate rendering.
   });
 
   it("resets session finalization state between consecutive queries in the same conversation", async () => {

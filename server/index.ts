@@ -112,15 +112,15 @@ function parseBodyLimitBytes(value: string): number | null {
 const isProdEnv = process.env.NODE_ENV === 'production';
 const apiJsonBodyLimit = normalizeBodyLimit(
   env.API_JSON_BODY_LIMIT,
-  isProdEnv ? "5mb" : "10mb",
+  isProdEnv ? "100mb" : "200mb",
 );
 const configuredChatStreamJsonBodyLimit = normalizeBodyLimit(
   env.CHAT_STREAM_JSON_BODY_LIMIT,
-  isProdEnv ? "32mb" : "64mb",
+  isProdEnv ? "200mb" : "500mb",
 );
 const urlencodedBodyLimit = normalizeBodyLimit(
   env.URLENCODED_BODY_LIMIT,
-  isProdEnv ? "2mb" : "5mb",
+  isProdEnv ? "50mb" : "100mb",
 );
 const chatStreamJsonBodyLimit =
   (parseBodyLimitBytes(configuredChatStreamJsonBodyLimit) || 0) >= (parseBodyLimitBytes(apiJsonBodyLimit) || 0)

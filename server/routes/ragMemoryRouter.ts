@@ -20,7 +20,7 @@ import {
 } from "../services/rag";
 
 const router = Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
 
 // Helper: extract tenant + user
 function getTenantUser(req: Request): { tenantId: string; userId: string } {

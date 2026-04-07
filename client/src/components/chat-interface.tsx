@@ -917,35 +917,26 @@ export function ChatInterface({
     Object.entries(allAgentRuns).forEach(([messageId, runState]: [string, any]) => {
       // Only include runs for the current chat
       if (runState.chatId === chatId || (!chatId && runState.chatId)) {
-        const existingMsg = combinedMessages.find((msg: any) => msg.id === messageId || msg.clientTempId === messageId);
-        if (existingMsg) {
-          combinedMessages.push({
-            ...existingMsg,
-            agentRun: {
-              runId: runState.runId,
-              status: runState.status,
-              userMessage: runState.userMessage,
-              steps: runState.steps,
-              eventStream: runState.eventStream,
-              summary: runState.summary,
-              error: runState.error,
-            }
-          });
+        const existingIdx = combinedMessages.findIndex((msg: any) => msg.id === messageId || msg.clientTempId === messageId);
+        const agentRun = {
+          runId: runState.runId,
+          status: runState.status,
+          userMessage: runState.userMessage,
+          steps: runState.steps,
+          eventStream: runState.eventStream,
+          summary: runState.summary,
+          error: runState.error,
+        };
+        if (existingIdx >= 0) {
+          // Mutate in-place instead of pushing a duplicate
+          combinedMessages[existingIdx] = { ...combinedMessages[existingIdx], agentRun };
         } else {
           combinedMessages.push({
             id: messageId,
             role: "assistant" as const,
             content: "",
             timestamp: new Date(runState.createdAt),
-            agentRun: {
-              runId: runState.runId,
-              status: runState.status,
-              userMessage: runState.userMessage,
-              steps: runState.steps,
-              eventStream: runState.eventStream,
-              summary: runState.summary,
-              error: runState.error,
-            }
+            agentRun,
           });
         }
       }
@@ -2055,7 +2046,9 @@ export function ChatInterface({
     streamChat,
   ]);
 
-  // Measure composer height and set CSS variable for proper layout
+  // Measure composer height and set CSS variable for proper layout.
+  // Uses ResizeObserver so the variable updates when the Composer grows
+  // (e.g. file previews added) — not only on window resize.
   useEffect(() => {
     const updateComposerHeight = () => {
       if (composerRef.current) {
@@ -2065,10 +2058,18 @@ export function ChatInterface({
     };
 
     updateComposerHeight();
+
+    let ro: ResizeObserver | null = null;
+    if (composerRef.current) {
+      ro = new ResizeObserver(updateComposerHeight);
+      ro.observe(composerRef.current);
+    }
+
     window.addEventListener('resize', updateComposerHeight);
     window.addEventListener('orientationchange', updateComposerHeight);
 
     return () => {
+      ro?.disconnect();
       window.removeEventListener('resize', updateComposerHeight);
       window.removeEventListener('orientationchange', updateComposerHeight);
     };
@@ -2300,18 +2301,21 @@ export function ChatInterface({
         model: selectedModel,
         latencyMode,
       },
-      buildFinalMessage: (fullContent, data, messageId) => buildAssistantMessage({
-        id: messageId || `assistant-${Date.now()}`,
-        timestamp: new Date(),
-        requestId: data?.requestId || generateRequestId(),
-        userMessageId: msgKey,
-        content: fullContent,
-        fallbackContent: "No se recibió respuesta del servidor.",
-        artifact: data?.artifact,
-        webSources: data?.webSources,
-        searchQueries: data?.searchQueries,
-        totalSearches: data?.totalSearches,
-        followUpSuggestions: data?.followUpSuggestions,
+      buildFinalMessage: (fullContent, data, messageId) => ({
+        ...buildAssistantMessage({
+          id: messageId || `assistant-${Date.now()}`,
+          timestamp: new Date(),
+          requestId: data?.requestId || generateRequestId(),
+          userMessageId: msgKey,
+          content: fullContent,
+          fallbackContent: "No se recibió respuesta del servidor.",
+          artifact: data?.artifact,
+          webSources: data?.webSources,
+          searchQueries: data?.searchQueries,
+          totalSearches: data?.totalSearches,
+          followUpSuggestions: data?.followUpSuggestions,
+        }),
+        serverPersisted: !!(data?.assistantMessageId),
       }),
       buildErrorMessage: (error, messageId) => ({
         id: messageId || `error-${Date.now()}`,
@@ -2323,6 +2327,13 @@ export function ChatInterface({
       }),
     });
 
+    // Always force aiState to idle when the stream resolves — the scoped
+    // setAiStateForChat inside finalize can silently no-op if the conversation
+    // ID changed during the stream (e.g. pending → real), leaving the stop
+    // button visible indefinitely.
+    setAiState("idle");
+    setAiProcessSteps([]);
+
     if (result.ok) {
       clearMessageDeliveryError(msgKey);
       requestTitleRefresh(stableChatId);
@@ -2331,6 +2342,8 @@ export function ChatInterface({
 
     markMessageStreamRetryable(msgKey, result.error);
   }, [
+    setAiState,
+    setAiProcessSteps,
     clearMessageDeliveryError,
     displayMessages,
     formatStreamFailureMessage,
@@ -8061,7 +8074,7 @@ IMPORTANTE:
                       </motion.div>
                     )}
 
-                    {/* Show PromptSuggestions when no conversation starters available */}
+                    {/* Show PromptSuggestions when no conversation starters available — always show default workflows regardless of file attachments */}
                     {(!activeGpt?.conversationStarters || activeGpt.conversationStarters.length === 0) && (
                       <motion.div
                         initial={{ y: 20, opacity: 0 }}
@@ -8071,7 +8084,7 @@ IMPORTANTE:
                       >
                         <PromptSuggestions
                           onSelect={handleApplyPromptSuggestion}
-                          hasAttachment={uploadedFiles.length > 0}
+                          hasAttachment={false}
                           className="mx-auto justify-center"
                         />
                       </motion.div>

@@ -20,10 +20,10 @@ export interface QuotaViolation {
 const MB = 1024 * 1024;
 
 const DEFAULT_QUOTA_CONFIG: QuotaConfig = {
-  maxFileSizeBytes: parseInt(process.env.PARE_MAX_FILE_SIZE_MB || "50", 10) * MB,
-  maxTotalSizeBytes: parseInt(process.env.PARE_MAX_TOTAL_SIZE_MB || "100", 10) * MB,
-  maxFilesPerRequest: parseInt(process.env.PARE_MAX_FILES || "20", 10),
-  maxPagesEstimate: parseInt(process.env.PARE_MAX_PAGES || "500", 10),
+  maxFileSizeBytes: parseInt(process.env.PARE_MAX_FILE_SIZE_MB || "500", 10) * MB,
+  maxTotalSizeBytes: parseInt(process.env.PARE_MAX_TOTAL_SIZE_MB || "2000", 10) * MB,
+  maxFilesPerRequest: parseInt(process.env.PARE_MAX_FILES || "50", 10),
+  maxPagesEstimate: parseInt(process.env.PARE_MAX_PAGES || "5000", 10),
   bytesPerPageEstimate: parseInt(process.env.PARE_BYTES_PER_PAGE || "3000", 10),
 };
 

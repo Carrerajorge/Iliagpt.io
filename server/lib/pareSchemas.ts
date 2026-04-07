@@ -59,35 +59,35 @@ export const ChatRequestSchema = z.object({
 
 export const TypeLimitsSchema = z.object({
   pdf: z.object({
-    maxPages: z.number().int().positive().default(500),
-    maxSizeBytes: z.number().int().positive().default(50 * 1024 * 1024),
+    maxPages: z.number().int().positive().default(5000),
+    maxSizeBytes: z.number().int().positive().default(500 * 1024 * 1024),
   }).default({}),
   xlsx: z.object({
-    maxRows: z.number().int().positive().default(100000),
-    maxCells: z.number().int().positive().default(1000000),
-    maxSheets: z.number().int().positive().default(50),
-    maxSizeBytes: z.number().int().positive().default(50 * 1024 * 1024),
+    maxRows: z.number().int().positive().default(1000000),
+    maxCells: z.number().int().positive().default(10000000),
+    maxSheets: z.number().int().positive().default(200),
+    maxSizeBytes: z.number().int().positive().default(500 * 1024 * 1024),
   }).default({}),
   csv: z.object({
-    maxRows: z.number().int().positive().default(100000),
-    maxColumns: z.number().int().positive().default(1000),
-    maxSizeBytes: z.number().int().positive().default(50 * 1024 * 1024),
+    maxRows: z.number().int().positive().default(1000000),
+    maxColumns: z.number().int().positive().default(10000),
+    maxSizeBytes: z.number().int().positive().default(500 * 1024 * 1024),
   }).default({}),
   pptx: z.object({
-    maxSlides: z.number().int().positive().default(200),
-    maxSizeBytes: z.number().int().positive().default(100 * 1024 * 1024),
+    maxSlides: z.number().int().positive().default(2000),
+    maxSizeBytes: z.number().int().positive().default(500 * 1024 * 1024),
   }).default({}),
   docx: z.object({
-    maxPages: z.number().int().positive().default(500),
-    maxSizeBytes: z.number().int().positive().default(50 * 1024 * 1024),
+    maxPages: z.number().int().positive().default(5000),
+    maxSizeBytes: z.number().int().positive().default(500 * 1024 * 1024),
   }).default({}),
   txt: z.object({
-    maxLines: z.number().int().positive().default(100000),
-    maxSizeBytes: z.number().int().positive().default(10 * 1024 * 1024),
+    maxLines: z.number().int().positive().default(1000000),
+    maxSizeBytes: z.number().int().positive().default(500 * 1024 * 1024),
   }).default({}),
   json: z.object({
-    maxSizeBytes: z.number().int().positive().default(10 * 1024 * 1024),
-    maxDepth: z.number().int().positive().default(50),
+    maxSizeBytes: z.number().int().positive().default(500 * 1024 * 1024),
+    maxDepth: z.number().int().positive().default(100),
   }).default({}),
 });
 
