@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import pptxgen from 'pptxgenjs';
 import {
   sanitizeFilename,
   safeContentDisposition,
@@ -9,7 +8,7 @@ import {
   sanitizeErrorMessage,
   docConcurrencyLimiter,
 } from "../services/documentSecurity";
-import { CORPORATE_PPT_DESIGN_SYSTEM, CORPORATE_PPT_MASTER_NAME, defineCorporateMaster } from "../services/documentGeneration";
+import { CORPORATE_PPT_DESIGN_SYSTEM, CORPORATE_PPT_MASTER_NAME, createPptxDocument, defineCorporateMaster } from "../services/documentGeneration";
 
 export const pptExportRouter = Router();
 
@@ -139,7 +138,7 @@ pptExportRouter.post('/export', async (req, res) => {
     logDocumentEvent({ timestamp: new Date().toISOString(), event: "generate_start", docType: "pptx-export" });
 
     try {
-      const pptx = new pptxgen();
+      const pptx = createPptxDocument();
       pptx.layout = 'LAYOUT_WIDE';
       defineCorporateMaster(pptx);
       // Security: sanitize title for metadata and strip control characters

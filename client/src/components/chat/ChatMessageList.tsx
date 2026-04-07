@@ -12,6 +12,10 @@ import { MarkdownRenderer, MarkdownErrorBoundary } from "@/components/markdown-r
 import { CleanDataTableComponents, DocumentBlock, parseDocumentBlocks } from "./MessageParts";
 import { detectClientIntent } from "@/lib/clientIntentDetector";
 import { messageLogger } from "@/lib/logger";
+import {
+    dedupeRenderableMessages,
+    normalizeMessageContentForDedup,
+} from "@/lib/chatMessageIdentity";
 import { AgentArtifact } from "@/components/agent-steps-display";
 
 // Fallback ID for the synthetic streaming message. When a pre-generated
@@ -19,6 +23,18 @@ import { AgentArtifact } from "@/components/agent-steps-display";
 // so the streaming message and the finalized message share the SAME key,
 // preventing Virtuoso from unmounting/remounting the DOM node.
 const STREAMING_MSG_ID_FALLBACK = "__streaming__";
+
+function getProcessStepText(
+    step: { step?: string; title?: string; description?: string; message?: string } | undefined,
+): string {
+    if (!step) return "";
+
+    const rawText = [step.step, step.title, step.description, step.message].find(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
+
+    return rawText?.toLowerCase() ?? "";
+}
 
 export interface ChatMessageListProps {
     messages: Message[];
@@ -143,17 +159,26 @@ export function ChatMessageList({
         return messages.filter(m => m.role === "assistant").pop();
     }, [messages]);
 
-    const detectedIntent = useMemo(() => {
-        const lastUserMsg = messages.filter(m => m.role === "user").pop();
-        return lastUserMsg ? detectClientIntent(lastUserMsg.content) : undefined;
+    const lastUserMessage = useMemo(() => {
+        return messages.filter(m => m.role === "user").pop();
     }, [messages]);
+
+    const detectedIntent = useMemo(() => {
+        return lastUserMessage ? detectClientIntent(lastUserMessage.content) : undefined;
+    }, [lastUserMessage]);
 
     const realTimePhase = useMemo(() => {
         if (!aiProcessSteps.length) return undefined;
         const activeStep = aiProcessSteps.find(s => s.status === 'active') || aiProcessSteps[aiProcessSteps.length - 1];
         if (!activeStep) return undefined;
 
-        const stepText = activeStep.step.toLowerCase();
+        const stepText = getProcessStepText(activeStep as typeof activeStep & {
+            title?: string;
+            description?: string;
+            message?: string;
+        });
+        if (!stepText) return 'processing';
+
         if (stepText.includes('connect') || stepText.includes('start')) return 'connecting';
         if (stepText.includes('search') || stepText.includes('query')) return 'searching';
         if (stepText.includes('analyz') || stepText.includes('read') || stepText.includes('review')) return 'analyzing';
@@ -172,16 +197,23 @@ export function ChatMessageList({
     // streaming text occupies the EXACT SAME position as the final message,
     // resulting in zero visual jump on finalize.
     const mergedMessages = useMemo(() => {
-        if (streamingContent && variant === "default") {
+        const dedupedMessages = dedupeRenderableMessages(messages);
+        const lastAssistant = [...dedupedMessages].reverse().find((msg) => msg.role === "assistant");
+        const shouldSuppressStreaming =
+            !!streamingContent &&
+            !!lastAssistant &&
+            normalizeMessageContentForDedup(lastAssistant.content) === normalizeMessageContentForDedup(streamingContent);
+
+        if (streamingContent && variant === "default" && !shouldSuppressStreaming) {
             const streamingMsg: Message = {
                 id: effectiveStreamingId,
                 role: "assistant",
                 content: streamingContent,
                 timestamp: new Date(),
             };
-            return [...messages, streamingMsg];
+            return dedupeRenderableMessages([...dedupedMessages, streamingMsg]);
         }
-        return messages;
+        return dedupedMessages;
     }, [messages, streamingContent, variant, effectiveStreamingId]);
 
     const assistantIndexMap = useMemo(() => {
@@ -201,8 +233,22 @@ export function ChatMessageList({
     const showSuggestedReplies = variant === "default" && isIdleLike && isLastMessageAssistant && lastAssistantMessage && !streamingContent;
 
     const suggestions = useMemo(() => {
-        return showSuggestedReplies && lastAssistantMessage ? generateSuggestions(lastAssistantMessage.content) : [];
-    }, [showSuggestedReplies, lastAssistantMessage?.content]);
+        if (!showSuggestedReplies || !lastAssistantMessage) return [];
+
+        return generateSuggestions(lastAssistantMessage.content, {
+            preferred: lastAssistantMessage.followUpSuggestions || lastAssistantMessage.metadata?.followUpSuggestions,
+            userMessage: lastUserMessage?.content,
+            hasWebSources: Boolean(lastAssistantMessage.webSources?.length),
+        });
+    }, [
+        showSuggestedReplies,
+        lastAssistantMessage,
+        lastAssistantMessage?.content,
+        lastAssistantMessage?.followUpSuggestions,
+        lastAssistantMessage?.metadata,
+        lastAssistantMessage?.webSources,
+        lastUserMessage?.content,
+    ]);
 
     // Footer — only for non-streaming overlays (thinking indicator, suggested replies, execution console)
     const ListFooter = useMemo(() => {
@@ -237,8 +283,15 @@ export function ChatMessageList({
                             </div>
                             {aiProcessSteps.length > 0 && (() => {
                                 const active = aiProcessSteps.find(s => s.status === 'active');
+                                const activeStepText = getProcessStepText(active as typeof active & {
+                                    title?: string;
+                                    description?: string;
+                                    message?: string;
+                                });
                                 if (active) return (
-                                    <span className="text-xs text-muted-foreground ml-1 animate-in fade-in">{active.step}</span>
+                                    <span className="text-xs text-muted-foreground ml-1 animate-in fade-in">
+                                        {activeStepText || 'Procesando...'}
+                                    </span>
                                 );
                                 return null;
                             })()}

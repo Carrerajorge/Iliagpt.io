@@ -1,5 +1,4 @@
-import { db } from "../db";
-import { users } from "@shared/schema";
+import { pool } from "../db";
 import type { Request } from "express";
 
 /**
@@ -23,21 +22,33 @@ export async function ensureUserRowExists(userId: string, req?: Request): Promis
   const ua = rawUa ? sanitize(rawUa, 512) : undefined;
 
   try {
-    await db
-      .insert(users)
-      .values({
-        id,
-        username: `User-${id.slice(0, 8)}`,
-        authProvider,
-        role: "user",
-        plan: "free",
-        status: "active",
-        ...(ip ? { lastIp: ip } : {}),
-        ...(ua ? { userAgent: ua } : {}),
-      })
-      .onConflictDoNothing();
+    // Use explicit SQL here instead of the Drizzle `users` table object because the
+    // runtime database may lag the latest TS schema during local/dev migrations.
+    const columns = ["id", "username", "auth_provider", "role", "plan", "status"];
+    const values: string[] = [
+      id,
+      `User-${id.slice(0, 8)}`,
+      authProvider,
+      "user",
+      "free",
+      "active",
+    ];
+
+    if (ip) {
+      columns.push("last_ip");
+      values.push(ip);
+    }
+    if (ua) {
+      columns.push("user_agent");
+      values.push(ua);
+    }
+
+    const placeholders = values.map((_, index) => `$${index + 1}`).join(", ");
+    await pool.query(
+      `INSERT INTO users (${columns.join(", ")}) VALUES (${placeholders}) ON CONFLICT (id) DO NOTHING`,
+      values,
+    );
   } catch (e: any) {
     console.warn("[ensureUserRowExists] Failed to ensure user row:", e?.message || e);
   }
 }
-

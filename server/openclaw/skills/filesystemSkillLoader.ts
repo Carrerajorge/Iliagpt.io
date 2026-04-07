@@ -3,6 +3,11 @@ import path from 'path';
 import os from 'os';
 import type { OpenClawConfig } from '../config';
 import type { Skill } from '../types';
+import {
+  ANTHROPIC_SKILLS_REPO_URL,
+  isAnthropicSkillFilePath,
+  resolveAnthropicSkillsRepoDirs,
+} from '../../lib/anthropicSkillsRepo';
 
 const DEFAULT_MAX_SKILL_FILE_BYTES = 256_000;
 
@@ -159,6 +164,7 @@ async function listSkillFilesInRoot(rootPath: string): Promise<string[]> {
 }
 
 function resolveSkillRoots(config: OpenClawConfig): string[] {
+  const fromAnthropicRepo = resolveAnthropicSkillsRepoDirs(config.skills.workspaceDirectory);
   const fromConfig = [config.skills.directory, ...config.skills.extraDirectories];
   const fromWorkspace = [
     path.join(config.skills.workspaceDirectory, 'skills'),
@@ -167,13 +173,15 @@ function resolveSkillRoots(config: OpenClawConfig): string[] {
   const autoClawi = config.skills.autoImportClawi
     ? [path.join(os.homedir(), 'Desktop', 'clawi', 'openclaw', 'skills')]
     : [];
-  return toUnique([...fromConfig, ...fromWorkspace, ...autoClawi]);
+  return toUnique([...fromAnthropicRepo, ...fromConfig, ...fromWorkspace, ...autoClawi]);
 }
 
 function buildSkillFromFile(params: {
   filePath: string;
   content: string;
   updatedAtMs: number;
+  vendor?: string;
+  homepage?: string;
 }): Skill {
   const { frontmatter, body } = parseFrontmatter(params.content);
   const dirName = path.basename(path.dirname(params.filePath));
@@ -194,6 +202,8 @@ function buildSkillFromFile(params: {
     updatedAt: params.updatedAtMs,
     metadata: {
       frontmatter,
+      ...(params.vendor ? { vendor: params.vendor } : {}),
+      ...(params.homepage ? { homepage: params.homepage } : {}),
     },
   };
 }
@@ -235,11 +245,17 @@ export async function loadSkillsFromFilesystem(
           continue;
         }
         const content = await fs.readFile(filePath, 'utf-8');
+        const isAnthropicSkill = isAnthropicSkillFilePath(
+          filePath,
+          config.skills.workspaceDirectory,
+        );
         discoveredSkills.push(
           buildSkillFromFile({
             filePath,
             content,
             updatedAtMs: stat.mtimeMs,
+            vendor: isAnthropicSkill ? 'anthropic' : undefined,
+            homepage: isAnthropicSkill ? ANTHROPIC_SKILLS_REPO_URL : undefined,
           }),
         );
         loadedFiles.push(filePath);

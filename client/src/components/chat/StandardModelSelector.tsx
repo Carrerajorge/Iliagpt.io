@@ -22,6 +22,16 @@ function isModelFree(model: AvailableModel): boolean {
     return model.modelId === FREE_MODEL_ID || model.id === FREE_MODEL_ID;
 }
 
+function isLocalGemmaDevMode(): boolean {
+    if (typeof window === "undefined") return false;
+    const host = window.location.hostname.trim().toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+function isGemmaModelId(modelId: string | null | undefined): boolean {
+    return (modelId || "").trim().toLowerCase().startsWith("google/gemma-");
+}
+
 export function StandardModelSelector({
     availableModels,
     selectedModelId,
@@ -51,12 +61,17 @@ export function StandardModelSelector({
         return provider;
     };
 
+    const canUseLocalGemmaModel = React.useCallback((model: AvailableModel | null | undefined) => {
+        if (!model) return false;
+        return isLocalGemmaDevMode() && isGemmaModelId(model.modelId || model.id);
+    }, []);
+
     const handleChange = React.useCallback((newId: string) => {
         if (isDisabled) return;
 
         if (isFreeUser) {
             const target = availableModels.find(m => m.id === newId || m.modelId === newId);
-            if (target && !isModelFree(target)) {
+            if (target && !isModelFree(target) && !canUseLocalGemmaModel(target)) {
                 if (onUpgradeClick) {
                     onUpgradeClick();
                 }
@@ -66,7 +81,7 @@ export function StandardModelSelector({
 
         const handler = onModelChange ?? setSelectedModelId;
         handler(newId);
-    }, [isDisabled, isFreeUser, availableModels, onModelChange, setSelectedModelId, onUpgradeClick]);
+    }, [isDisabled, isFreeUser, availableModels, canUseLocalGemmaModel, onModelChange, setSelectedModelId, onUpgradeClick]);
 
     if (!isAnyModelAvailable) {
         return (
@@ -111,7 +126,10 @@ export function StandardModelSelector({
                     {Object.entries(modelsByProvider).map(([provider, models]) => (
                         <optgroup key={provider} label={providerLabel(provider)}>
                             {models.map((model) => {
-                                const locked = isFreeUser && !isModelFree(model);
+                                const locked =
+                                    isFreeUser &&
+                                    !isModelFree(model) &&
+                                    !canUseLocalGemmaModel(model);
                                 return (
                                     <option
                                         key={model.id}

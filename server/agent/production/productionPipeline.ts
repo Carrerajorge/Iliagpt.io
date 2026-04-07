@@ -92,6 +92,7 @@ export class ProductionPipeline extends EventEmitter {
     private qaReport: QAReport | null = null;
     private traceMap: TraceMap | null = null;
     private aborted: boolean = false;
+    private failureReason: string | null = null;
     private startTime: Date;
     private stageTimings: Map<PipelineStage, number> = new Map();
 
@@ -217,6 +218,7 @@ export class ProductionPipeline extends EventEmitter {
 
         } catch (error) {
             console.error('[ProductionPipeline] Pipeline failed:', error);
+            this.failureReason = error instanceof Error ? error.message : 'Unknown error';
 
             // Mark current stage as failed
             const currentStage = Array.from(this.stageProgress.entries())
@@ -536,8 +538,13 @@ export class ProductionPipeline extends EventEmitter {
             maxRetries: 3,
         });
 
-        // Store PPT data for rendering
-        this.workOrder.pptData = result.output?.slides || [];
+        // Store PPT data for rendering. Some agents return `output.slides`,
+        // others nest the deck in `output.presentation.slides`.
+        this.workOrder.pptData = Array.isArray(result.output?.slides)
+            ? result.output.slides
+            : Array.isArray(result.output?.presentation?.slides)
+                ? result.output.presentation.slides
+                : [];
 
         this.updateStage('slides', 'complete', 100, 'Presentation structure ready');
     }
@@ -1082,17 +1089,90 @@ export class ProductionPipeline extends EventEmitter {
             .substring(0, 50);
     }
 
+    private getMissingDeliverables(): Deliverable[] {
+        const produced = new Set(this.artifacts.map((artifact) => artifact.type));
+        return this.workOrder.deliverables.filter((deliverable) => !produced.has(deliverable));
+    }
+
+    private describeMissingDeliverables(missingDeliverables: Deliverable[]): string | null {
+        if (missingDeliverables.length === 0) return null;
+        const requested = this.workOrder.deliverables.join(', ');
+        const generated = this.artifacts.map((artifact) => artifact.type).join(', ') || 'Ninguno';
+        if (this.artifacts.length === 0) {
+            return `No se generó ningún entregable solicitado. Solicitados: ${requested}. Generados: ${generated}.`;
+        }
+        return `Faltan entregables solicitados: ${missingDeliverables.join(', ')}. Generados: ${generated}.`;
+    }
+
+    private buildQaReport(
+        status: 'success' | 'partial' | 'failed',
+        missingDeliverables: Deliverable[]
+    ): QAReport {
+        const base: QAReport = this.qaReport || {
+            overallScore: 0,
+            passed: false,
+            checks: [],
+            suggestions: [],
+            blockers: [],
+        };
+        const missingDetail = this.describeMissingDeliverables(missingDeliverables);
+        if (!missingDetail) {
+            return base;
+        }
+        return {
+            ...base,
+            passed: false,
+            blockers: Array.from(new Set([...(base.blockers || []), missingDetail])),
+            suggestions:
+                status === 'partial'
+                    ? Array.from(new Set([...(base.suggestions || []), 'Reintenta la generación para completar los archivos faltantes.']))
+                    : base.suggestions || [],
+        };
+    }
+
+    private buildEvidencePack(missingDeliverables: Deliverable[]): EvidencePack {
+        const base: EvidencePack = this.evidencePack || {
+            sources: [],
+            notes: [],
+            dataPoints: [],
+            gaps: [],
+            limitations: [],
+        };
+        const missingDetail = this.describeMissingDeliverables(missingDeliverables);
+        if (!missingDetail) {
+            return base;
+        }
+        return {
+            ...base,
+            limitations: Array.from(new Set([...(base.limitations || []), missingDetail])),
+        };
+    }
+
     private buildResult(status: 'success' | 'partial' | 'failed'): ProductionResult {
         const endTime = new Date();
+        const missingDeliverables = this.getMissingDeliverables();
+        const normalizedStatus =
+            status === 'success' && missingDeliverables.length > 0
+                ? this.artifacts.length > 0
+                    ? 'partial'
+                    : 'failed'
+                : status;
+        const failureDetail = this.describeMissingDeliverables(missingDeliverables);
+        const evidencePack = this.buildEvidencePack(missingDeliverables);
+        const qaReport = this.buildQaReport(normalizedStatus, missingDeliverables);
+        const failureReason =
+            normalizedStatus === 'failed'
+                ? this.failureReason || failureDetail || 'La producción documental no pudo completarse.'
+                : null;
 
         return {
             workOrderId: this.workOrder.id,
-            status,
+            status: normalizedStatus,
             artifacts: this.artifacts,
-            summary: this.generateSummary(),
-            evidencePack: this.evidencePack || { sources: [], notes: [], dataPoints: [], gaps: [], limitations: [] },
+            summary: this.generateSummary(normalizedStatus, missingDeliverables, failureReason),
+            evidencePack,
             traceMap: this.traceMap || { links: [], inconsistencies: [], coverageScore: 0 },
-            qaReport: this.qaReport || { overallScore: 0, passed: false, checks: [], suggestions: [], blockers: [] },
+            qaReport,
             timing: {
                 startedAt: this.startTime,
                 completedAt: endTime,
@@ -1101,16 +1181,54 @@ export class ProductionPipeline extends EventEmitter {
             },
             costs: {
                 llmCalls: 0, // Would be tracked during execution
-                searchQueries: this.evidencePack?.sources.length || 0,
+                searchQueries: evidencePack.sources.length || 0,
                 tokensUsed: 0,
             },
         };
     }
 
-    private generateSummary(): string {
+    private generateSummary(
+        status: 'success' | 'partial' | 'failed',
+        missingDeliverables: Deliverable[] = [],
+        failureReason?: string | null
+    ): string {
+        const requested = this.workOrder.deliverables.join(', ');
         const deliverables = this.artifacts.map(a => a.type).join(', ');
         const sources = this.evidencePack?.sources.length || 0;
         const qaScore = this.qaReport?.overallScore || 0;
+        const limitations = this.evidencePack?.limitations.length ? `**Limitaciones:** ${this.evidencePack.limitations.join(', ')}` : '';
+        const missing = missingDeliverables.length ? `**Entregables faltantes:** ${missingDeliverables.join(', ')}` : '';
+
+        if (status === 'failed') {
+            return `
+## Producción Fallida
+
+**Tema:** ${this.workOrder.topic}
+**Entregables solicitados:** ${requested}
+**Entregables generados:** ${deliverables || 'Ninguno'}
+**Fuentes consultadas:** ${sources}
+**Calidad (QA):** ${qaScore}/100
+
+**Error:** ${failureReason || 'La producción documental no pudo completarse.'}
+${missing}
+${limitations}
+    `.trim();
+        }
+
+        if (status === 'partial') {
+            return `
+## Producción Parcial
+
+**Tema:** ${this.workOrder.topic}
+**Entregables solicitados:** ${requested}
+**Entregables generados:** ${deliverables || 'Ninguno'}
+**Fuentes consultadas:** ${sources}
+**Calidad (QA):** ${qaScore}/100
+
+${missing}
+${limitations}
+    `.trim();
+        }
 
         return `
 ## Producción Completada
@@ -1120,7 +1238,7 @@ export class ProductionPipeline extends EventEmitter {
 **Fuentes consultadas:** ${sources}
 **Calidad (QA):** ${qaScore}/100
 
-${this.evidencePack?.limitations.length ? `**Limitaciones:** ${this.evidencePack.limitations.join(', ')}` : ''}
+${limitations}
     `.trim();
     }
 

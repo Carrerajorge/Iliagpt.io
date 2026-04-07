@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { X, Download, FileText, Loader2, ExternalLink, FileSpreadsheet } from "lucide-react";
+import { X, Download, FileText, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { getFileTheme } from "@/lib/fileTypeTheme";
 import { PdfPreview } from "@/components/PdfPreview";
+import { FilePreviewSurface } from "@/components/FilePreviewSurface";
+import type { FilePreviewData } from "@/lib/filePreviewTypes";
 
 interface FilePreviewModalProps {
   file: {
@@ -17,6 +19,7 @@ interface FilePreviewModalProps {
     dataUrl?: string;
     fileId?: string;
     content?: string;
+    previewData?: FilePreviewData;
   };
   onClose: () => void;
 }
@@ -51,6 +54,12 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
         return;
       }
 
+      if (file.previewData) {
+        setPreviewData(file.previewData);
+        setLoading(false);
+        return;
+      }
+
       if (!fileId) {
         if (file.content) {
           setPreviewData({ type: "text", content: file.content });
@@ -61,7 +70,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
         return;
       }
 
-      if (isOfficeDoc || isText) {
+      if (isOfficeDoc || isText || /\.(ppt|pptx)$/i.test(file.name || "")) {
         const res = await fetch(`/api/files/${fileId}/preview-html`);
         if (!res.ok) throw new Error(`Error ${res.status}`);
         const data = await res.json();
@@ -81,7 +90,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
     } finally {
       setLoading(false);
     }
-  }, [fileId, isPdf, isImage, isText, isOfficeDoc, file.dataUrl, file.content]);
+  }, [fileId, isPdf, isImage, isText, isOfficeDoc, file.dataUrl, file.content, file.name, file.previewData]);
 
   useEffect(() => {
     fetchContent();
@@ -180,52 +189,15 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
             </div>
           )}
 
-          {!loading && !error && previewData?.type === "docx" && previewData.html && (
-            <div className="p-6 overflow-auto max-h-[75vh]" data-testid="preview-docx">
-              <div
-                className="prose prose-sm dark:prose-invert max-w-none"
-                dangerouslySetInnerHTML={{ __html: previewData.html }}
-              />
+          {!loading && !error && previewData && (
+            <div className="max-h-[75vh] overflow-auto p-4" data-testid="preview-rich-file">
+              <FilePreviewSurface preview={previewData} variant="modal" />
+              {previewData.truncated && (
+                <p className="px-2 pt-3 text-xs text-muted-foreground">
+                  Vista previa parcial para mantener el render rapido.
+                </p>
+              )}
             </div>
-          )}
-
-          {!loading && !error && previewData?.type === "xlsx" && previewData.sheets && (
-            <div className="p-4 overflow-auto max-h-[75vh]" data-testid="preview-xlsx">
-              {previewData.sheetNames?.map((sheetName: string) => (
-                <div key={sheetName} className="mb-6">
-                  {previewData.sheetNames.length > 1 && (
-                    <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                      <FileSpreadsheet className="h-4 w-4 text-green-600" />
-                      {sheetName}
-                    </h4>
-                  )}
-                  <div className="overflow-x-auto border border-border rounded-lg">
-                    <table className="w-full text-xs">
-                      <tbody>
-                        {(previewData.sheets[sheetName] || []).slice(0, 200).map((row: any[], rowIdx: number) => (
-                          <tr key={rowIdx} className={rowIdx === 0 ? "bg-muted/50 font-semibold" : rowIdx % 2 === 0 ? "bg-background" : "bg-muted/20"}>
-                            {(row || []).map((cell: any, cellIdx: number) => (
-                              <td key={cellIdx} className="px-2 py-1 border-r border-b border-border whitespace-nowrap max-w-[200px] truncate">
-                                {cell != null ? String(cell) : ""}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {(previewData.sheets[sheetName] || []).length > 200 && (
-                    <p className="text-xs text-muted-foreground mt-1">Mostrando primeras 200 filas de {previewData.sheets[sheetName].length}</p>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {!loading && !error && previewData?.type === "text" && previewData.content != null && (
-            <pre className="text-sm font-mono whitespace-pre-wrap break-words bg-muted/50 rounded-lg p-4 m-4 max-h-[70vh] overflow-auto" data-testid="preview-text">
-              {previewData.content}
-            </pre>
           )}
 
           {!loading && !error && !isImage && !isPdf && !previewData && (

@@ -7,6 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { apiFetchJson } from "@/lib/adminApi";
 import { toast } from "sonner";
 import {
   Shield,
@@ -126,70 +127,40 @@ export default function GovernanceConsole() {
 
   const { data: modeStatus, isLoading: modeLoading } = useQuery<ModeStatus>({
     queryKey: ["/api/governance/mode"],
-    queryFn: async () => {
-      try {
-        const res = await fetch("/api/governance/mode", { credentials: "include" });
-        if (res.ok) return res.json();
-      } catch {}
-      return {
-        currentMode: "SUPERVISED",
-        permissions: { allowedToolCategories: [], maxRiskLevel: "moderate", requiresHumanApproval: true, humanApprovalThreshold: "moderate", allowExternalAPIs: true, allowFileSystem: true, allowNetworkAccess: true, allowCodeExecution: false, riskTolerance: 0.3, maxConcurrentAgents: 3, autoApproveTimeout: 300000 },
-        transitionHistory: [],
-        validTransitions: ["SAFE", "AUTOPILOT", "RESEARCH", "EMERGENCY_STOP"],
-      };
-    },
+    queryFn: () => apiFetchJson("/api/governance/mode"),
     refetchInterval: 5000,
+    throwOnError: true,
   });
 
   const { data: approvalsData, isLoading: approvalsLoading } = useQuery({
     queryKey: ["/api/governance/approvals"],
-    queryFn: async () => {
-      try {
-        const res = await fetch("/api/governance/approvals", { credentials: "include" });
-        if (res.ok) return res.json();
-      } catch {}
-      return { pending: [], stats: { pendingCount: 0, escalatedCount: 0, recentApproved: 0, recentDenied: 0, recentExpired: 0, totalProcessed: 0, averageResponseTimeMs: 0 } };
-    },
+    queryFn: () => apiFetchJson("/api/governance/approvals"),
     refetchInterval: 3000,
+    throwOnError: true,
   });
 
   const { data: auditData, isLoading: auditLoading } = useQuery({
     queryKey: ["/api/governance/audit"],
-    queryFn: async () => {
-      try {
-        const res = await fetch("/api/governance/audit?limit=50", { credentials: "include" });
-        if (res.ok) return res.json();
-      } catch {}
-      return { entries: [], total: 0, stats: {} };
-    },
+    queryFn: () => apiFetchJson("/api/governance/audit?limit=50"),
     refetchInterval: 10000,
+    throwOnError: true,
   });
 
   const { data: integrityData } = useQuery<IntegrityReport>({
     queryKey: ["/api/governance/audit/integrity"],
-    queryFn: async () => {
-      try {
-        const res = await fetch("/api/governance/audit/integrity", { credentials: "include" });
-        if (res.ok) return res.json();
-      } catch {}
-      return { valid: true, totalEntries: 0, checkedEntries: 0, brokenAt: null, brokenEntry: null, computedHashes: 0 };
-    },
+    queryFn: () => apiFetchJson("/api/governance/audit/integrity"),
     refetchInterval: 30000,
+    throwOnError: true,
   });
 
   const switchModeMutation = useMutation({
     mutationFn: async ({ mode, reason }: { mode: GovernanceMode; reason: string }) => {
-      const res = await fetch("/api/governance/mode", {
+      return apiFetchJson("/api/governance/mode", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ mode, reason }),
       });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Failed to switch mode");
-      }
-      return res.json();
     },
     onSuccess: (data) => {
       toast.success(`Mode switched to ${data.status.currentMode}`);
@@ -205,17 +176,12 @@ export default function GovernanceConsole() {
 
   const decideMutation = useMutation({
     mutationFn: async ({ id, decision, notes }: { id: string; decision: "approved" | "denied"; notes: string }) => {
-      const res = await fetch(`/api/governance/approvals/${id}/decide`, {
+      return apiFetchJson(`/api/governance/approvals/${id}/decide`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ decision, notes }),
       });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Failed to process decision");
-      }
-      return res.json();
     },
     onSuccess: (_, vars) => {
       toast.success(`Request ${vars.decision}`);

@@ -17,12 +17,12 @@
  * - Data visualization slides
  */
 
-import PptxGenJS from "pptxgenjs";
+import type PptxGenJS from "pptxgenjs";
 import { randomUUID } from "crypto";
 import OpenAI from "openai";
 import path from "path";
 import fs from "fs/promises";
-import { generatePptDocument } from "../services/documentGeneration";
+import { createPptxDocument, generatePptDocument } from "../services/documentGeneration";
 
 function sanitizePptText(value: unknown, maxLength: number): string {
   return String(value ?? "")
@@ -248,7 +248,7 @@ export class PerfectPptGenerator {
       }
 
       // Step 3: Build PPTX
-      const pptx = new PptxGenJS();
+      const pptx = createPptxDocument();
       pptx.layout = "LAYOUT_WIDE";
       pptx.author = "ILIAGPT";
       pptx.company = "ILIAGPT Presentation Generator";

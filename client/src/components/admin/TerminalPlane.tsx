@@ -24,7 +24,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { apiFetch } from "@/lib/apiClient";
+import { apiFetchJson, apiFetchJsonNullable } from "@/lib/adminApi";
 import { toast } from "sonner";
 
 interface AuditEntry {
@@ -84,40 +84,33 @@ export default function TerminalPlane() {
 
   const { data: stats, isLoading: statsLoading } = useQuery<TerminalStats>({
     queryKey: ["/api/terminal-plane/stats"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/terminal-plane/stats", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/terminal-plane/stats"),
     refetchInterval: 15000,
+    throwOnError: true,
   });
 
   const { data: audit, isLoading: auditLoading } = useQuery<AuditEntry[]>({
     queryKey: ["/api/terminal-plane/audit"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/terminal-plane/audit", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/terminal-plane/audit"),
     refetchInterval: 10000,
+    throwOnError: true,
   });
 
   const { data: controlStatus, isLoading: controlLoading } = useQuery<ComputerControlStatus>({
     queryKey: ["/api/computer-control/status"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/computer-control/status", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/computer-control/status"),
     refetchInterval: 5000,
+    throwOnError: true,
   });
 
   const killSwitchMutation = useMutation({
     mutationFn: async ({ arm, reason }: { arm: boolean; reason: string }) => {
-      const res = await apiFetch("/api/computer-control/kill-switch", {
+      return apiFetchJson<{ event?: { type?: string } }>("/api/computer-control/kill-switch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ arm, reason }),
         credentials: "include",
       });
-      return res.json();
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/computer-control/status"] });
@@ -130,13 +123,12 @@ export default function TerminalPlane() {
 
   const execMutation = useMutation({
     mutationFn: async ({ command, confirmed }: { command: string; confirmed?: boolean }) => {
-      const res = await apiFetch("/api/terminal-plane/exec", {
+      return apiFetchJsonNullable<any>("/api/terminal-plane/exec", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command, confirmed: confirmed || false }),
         credentials: "include",
       });
-      return res.json();
     },
     onSuccess: (data) => {
       if (data?.requiresConfirmation) {

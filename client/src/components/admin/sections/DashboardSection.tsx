@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { apiFetchJson } from "@/lib/adminApi";
 import { format } from "date-fns";
 import {
   RefreshCw,
@@ -22,10 +23,7 @@ import {
 export function DashboardSection() {
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["/api/admin/dashboard"],
-    queryFn: async () => {
-      const res = await fetch("/api/admin/dashboard", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/admin/dashboard"),
     refetchInterval: 30000
   });
 

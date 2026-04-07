@@ -12,6 +12,7 @@ import { preprocessMathInMarkdown } from "@/lib/mathParser";
 import { CodeBlockShell } from "./code-block-shell";
 import { isLanguageRunnable } from "@/lib/sandboxApi";
 import { useSandboxExecution } from "@/hooks/useSandboxExecution";
+import { downloadArtifact } from "@/lib/localArtifactAccess";
 
 const InlineSourceBadge = memo(function InlineSourceBadge({ name, url }: { name: string; url: string }) {
   const [showTooltip, setShowTooltip] = useState(false);
@@ -969,21 +970,36 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       try { if (href) domain = new URL(href).hostname.replace(/^www\./, ""); } catch {}
 
       const isDOI = href?.includes("doi.org/");
+      const isLocalArtifactLink = typeof href === "string" && /^\/api\/artifacts\//.test(href);
 
       return (
         <a
           href={href}
-          target="_blank"
-          rel="noopener noreferrer"
+          target={isLocalArtifactLink ? undefined : "_blank"}
+          rel={isLocalArtifactLink ? undefined : "noopener noreferrer"}
+          download={isLocalArtifactLink ? true : undefined}
+          onClick={(event) => {
+            if (!isLocalArtifactLink || !href) {
+              return;
+            }
+            event.preventDefault();
+            void downloadArtifact(href, childText || undefined).catch((error) => {
+              console.error("[MarkdownRenderer] Failed to download local artifact:", error);
+              window.open(href, "_blank", "noopener,noreferrer");
+            });
+          }}
           className={cn(
             "inline-flex items-center gap-1 transition-colors no-underline",
-            isDOI
+            isLocalArtifactLink
+              ? "text-slate-700 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white font-medium"
+              : isDOI
               ? "text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 font-mono text-[13px]"
               : "text-sky-500 hover:text-sky-400 hover:underline"
           )}
           data-testid="link-markdown"
         >
-          {isDOI && <ExternalLink className="w-3 h-3 flex-shrink-0" />}
+          {isLocalArtifactLink ? <Download className="w-3 h-3 flex-shrink-0" /> : null}
+          {!isLocalArtifactLink && isDOI && <ExternalLink className="w-3 h-3 flex-shrink-0" />}
           {children}
         </a>
       );

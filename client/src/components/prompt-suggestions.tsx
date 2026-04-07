@@ -1,137 +1,218 @@
 import React from "react";
 import { cn } from "@/lib/utils";
 import {
-    FileText,
-    BarChart3,
-    Search,
-    Presentation,
-    ListChecks,
-    Languages,
-    Sparkles,
-    MessageSquare
+  Bug,
+  FileText,
+  GitBranch,
+  ListChecks,
+  Presentation,
+  Search,
+  ShieldCheck,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
-interface PromptSuggestion {
-    label: string;
-    action: string;
-    icon: React.ReactNode;
-    category: "analyze" | "create" | "search" | "general";
+export interface PromptSuggestionSelection {
+  prompt: string;
+  selectedTool?: "web" | "agent" | "image" | null;
+  selectedDocTool?: "word" | "excel" | "ppt" | "figma" | null;
+  latencyMode?: "fast" | "deep" | "auto";
 }
 
-const DEFAULT_SUGGESTIONS: PromptSuggestion[] = [
-    {
-        label: "Resumir documento",
-        action: "Dame un resumen ejecutivo del documento",
-        icon: <FileText className="w-4 h-4" />,
-        category: "analyze"
-    },
-    {
-        label: "Analizar datos",
-        action: "Analiza los datos y dame los hallazgos clave",
-        icon: <BarChart3 className="w-4 h-4" />,
-        category: "analyze"
-    },
-    {
-        label: "Extraer puntos clave",
-        action: "Extrae los puntos más importantes del documento",
-        icon: <ListChecks className="w-4 h-4" />,
-        category: "analyze"
-    },
-    {
-        label: "Buscar información",
-        action: "Busca información sobre ",
-        icon: <Search className="w-4 h-4" />,
-        category: "search"
-    },
-    {
-        label: "Crear presentación",
-        action: "Crea una presentación profesional sobre ",
-        icon: <Presentation className="w-4 h-4" />,
-        category: "create"
-    },
-    {
-        label: "Traducir",
-        action: "Traduce el contenido al inglés",
-        icon: <Languages className="w-4 h-4" />,
-        category: "general"
-    }
+interface WorkflowSuggestion extends PromptSuggestionSelection {
+  id: string;
+  title: string;
+  description: string;
+  icon: LucideIcon;
+}
+
+const RECENT_WORKFLOWS_STORAGE_KEY = "promptWorkflowRecents";
+
+const DEFAULT_WORKFLOWS: WorkflowSuggestion[] = [
+  {
+    id: "research-first",
+    title: "Investigar antes de actuar",
+    description: "Contexto, riesgos y recomendación final verificable.",
+    prompt:
+      "Investiga primero este tema o problema. Resume el contexto actual, opciones viables, riesgos, referencias confiables y una recomendación final accionable.",
+    icon: Search,
+    selectedTool: "web",
+    latencyMode: "deep",
+  },
+  {
+    id: "implementation-plan",
+    title: "Plan de implementación",
+    description: "Fases, dependencias y validaciones antes de ejecutar.",
+    prompt:
+      "Actúa como líder técnico. Descompón esta solicitud en un plan de implementación por fases, dependencias, riesgos, entregables y criterios de verificación antes de ejecutar cambios.",
+    icon: GitBranch,
+    selectedTool: "agent",
+    latencyMode: "deep",
+  },
+  {
+    id: "systematic-debug",
+    title: "Depuración sistemática",
+    description: "Causa raíz, arreglo mínimo y verificación clara.",
+    prompt:
+      "Quiero depurar esto de forma profesional. Reproduce el fallo, formula hipótesis, identifica la causa raíz, propone el arreglo mínimo y define cómo validarlo sin introducir regresiones.",
+    icon: Bug,
+    selectedTool: "agent",
+    latencyMode: "deep",
+  },
 ];
 
-const DOCUMENT_SUGGESTIONS: PromptSuggestion[] = [
-    {
-        label: "Resumen ejecutivo",
-        action: "Dame un resumen ejecutivo conciso",
-        icon: <Sparkles className="w-4 h-4" />,
-        category: "analyze"
-    },
-    {
-        label: "Hallazgos clave",
-        action: "¿Cuáles son los hallazgos más importantes?",
-        icon: <ListChecks className="w-4 h-4" />,
-        category: "analyze"
-    },
-    {
-        label: "Analizar datos",
-        action: "Analiza los datos numéricos del documento",
-        icon: <BarChart3 className="w-4 h-4" />,
-        category: "analyze"
-    },
-    {
-        label: "Preguntas sugeridas",
-        action: "¿Qué preguntas debería hacer sobre este documento?",
-        icon: <MessageSquare className="w-4 h-4" />,
-        category: "general"
-    }
+const ATTACHMENT_WORKFLOWS: WorkflowSuggestion[] = [
+  {
+    id: "attachment-summary",
+    title: "Resumen ejecutivo",
+    description: "Lo esencial del material, ordenado para decidir rápido.",
+    prompt:
+      "Dame un resumen ejecutivo breve del material adjunto, con puntos clave, hallazgos, riesgos y recomendaciones accionables.",
+    icon: FileText,
+    latencyMode: "auto",
+  },
+  {
+    id: "attachment-actions",
+    title: "Acciones y pendientes",
+    description: "Tareas, responsables, bloqueos y próximos pasos.",
+    prompt:
+      "Extrae del material adjunto las acciones concretas, responsables sugeridos, bloqueos, dependencias y próximos pasos.",
+    icon: ListChecks,
+    latencyMode: "auto",
+  },
+  {
+    id: "attachment-review",
+    title: "Hallazgos y riesgos",
+    description: "Inconsistencias, riesgos y observaciones críticas.",
+    prompt:
+      "Revisa el material adjunto y señala hallazgos importantes, inconsistencias, riesgos, dudas abiertas y qué faltaría reforzar.",
+    icon: ShieldCheck,
+    latencyMode: "deep",
+  },
+  {
+    id: "attachment-presentation",
+    title: "Convertir en presentación",
+    description: "Narrativa ejecutiva lista para una PPT clara.",
+    prompt:
+      "Convierte el material adjunto en una presentación ejecutiva con estructura clara, narrativa breve por diapositiva y conclusiones finales.",
+    icon: Presentation,
+    selectedDocTool: "ppt",
+    latencyMode: "auto",
+  },
 ];
+
+function getSurfaceLabel(workflow: WorkflowSuggestion): string {
+  if (workflow.selectedDocTool === "word") return "Word";
+  if (workflow.selectedDocTool === "ppt") return "PPT";
+  if (workflow.selectedDocTool === "excel") return "Excel";
+  if (workflow.selectedTool === "web") return "Web";
+  if (workflow.selectedTool === "agent") return "Agente";
+  if (workflow.selectedTool === "image") return "Imagen";
+  return "Chat";
+}
+
+function getLatencyLabel(mode: PromptSuggestionSelection["latencyMode"]): string {
+  if (mode === "deep") return "Profundo";
+  if (mode === "fast") return "Rápido";
+  return "Auto";
+}
 
 interface PromptSuggestionsProps {
-    onSelect: (action: string) => void;
-    hasAttachment?: boolean;
-    className?: string;
+  onSelect: (selection: PromptSuggestionSelection) => void;
+  hasAttachment?: boolean;
+  className?: string;
 }
 
 export function PromptSuggestions({
-    onSelect,
-    hasAttachment = false,
-    className
+  onSelect,
+  hasAttachment = false,
+  className,
 }: PromptSuggestionsProps) {
-    const suggestions = hasAttachment ? DOCUMENT_SUGGESTIONS : DEFAULT_SUGGESTIONS;
+  const workflows = hasAttachment ? ATTACHMENT_WORKFLOWS : DEFAULT_WORKFLOWS;
 
-    return (
-        <div className={cn(
-            "flex flex-wrap gap-3 justify-center p-3 animate-in fade-in-50 duration-300",
-            className
-        )}>
-            {suggestions.map((suggestion, index) => (
-                <button
-                    key={index}
-                    onClick={() => onSelect(suggestion.action)}
-                    className={cn(
-                        "group flex items-center gap-3 px-5 py-3 rounded-2xl",
-                        "text-sm font-medium transition-all duration-300",
-                        "bg-background/60 backdrop-blur-md border border-border/40 shadow-sm",
-                        "hover:border-primary/30 hover:shadow-lg hover:-translate-y-1 text-foreground/80 hover:text-foreground",
-                        "active:scale-95",
-                        suggestion.category === "analyze" && "hover:bg-blue-500/5 dark:hover:bg-blue-400/10 hover:border-blue-500/30",
-                        suggestion.category === "create" && "hover:bg-green-500/5 dark:hover:bg-green-400/10 hover:border-green-500/30",
-                        suggestion.category === "search" && "hover:bg-purple-500/5 dark:hover:bg-purple-400/10 hover:border-purple-500/30",
-                        suggestion.category === "general" && "hover:bg-muted/80"
-                    )}
-                >
-                    <span className={cn(
-                        "p-1.5 rounded-lg transition-colors duration-300 bg-muted/60 text-muted-foreground",
-                        suggestion.category === "analyze" && "group-hover:bg-blue-500/10 group-hover:text-blue-500 dark:group-hover:text-blue-400",
-                        suggestion.category === "create" && "group-hover:bg-green-500/10 group-hover:text-green-500 dark:group-hover:text-green-400",
-                        suggestion.category === "search" && "group-hover:bg-purple-500/10 group-hover:text-purple-500 dark:group-hover:text-purple-400",
-                        suggestion.category === "general" && "group-hover:bg-foreground/10 group-hover:text-foreground"
-                    )}>
-                        {suggestion.icon}
-                    </span>
-                    <span>{suggestion.label}</span>
-                </button>
-            ))}
-        </div>
-    );
+  const rememberWorkflow = (workflowId: string) => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(RECENT_WORKFLOWS_STORAGE_KEY);
+    let current: unknown[] = [];
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        current = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        current = [];
+      }
+    }
+    const next = [workflowId, ...((Array.isArray(current) ? current : []).filter((id) => id !== workflowId))].slice(0, 4);
+    window.localStorage.setItem(RECENT_WORKFLOWS_STORAGE_KEY, JSON.stringify(next));
+  };
+
+  const handleSelect = (workflow: WorkflowSuggestion) => {
+    rememberWorkflow(workflow.id);
+    onSelect({
+      prompt: workflow.prompt,
+      selectedTool: workflow.selectedTool,
+      selectedDocTool: workflow.selectedDocTool,
+      latencyMode: workflow.latencyMode,
+    });
+  };
+
+  const heading = hasAttachment ? "Trabaja el material cargado" : "Empieza con un workflow claro";
+  const copy = hasAttachment
+    ? "Resume, revisa, extrae acciones o conviértelo en una presentación sin rehacer el material."
+    : "Investiga, planifica, depura, revisa o documenta desde el primer mensaje.";
+
+  return (
+    <div className={cn("w-full max-w-[38rem] px-4", className)}>
+      <div className="mb-2.5 text-center">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-muted-foreground/55">
+          Workflows
+        </p>
+        <h3 className="mt-1.5 text-[1.42rem] font-semibold tracking-tight text-foreground sm:text-[1.65rem]">
+          {heading}
+        </h3>
+        <p className="mx-auto mt-1.5 max-w-lg text-[13px] leading-5 text-muted-foreground sm:text-sm">
+          {copy}
+        </p>
+      </div>
+
+      <div className="grid gap-0">
+        {workflows.map((workflow, index) => {
+          const Icon = workflow.icon;
+          const isLast = index === workflows.length - 1;
+
+          return (
+            <button
+              key={workflow.id}
+              onClick={() => handleSelect(workflow)}
+              className={cn(
+                "group px-0 py-3 text-left transition-opacity duration-200 hover:opacity-100",
+                !isLast && "border-b border-border/35",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25 focus-visible:ring-offset-2",
+              )}
+            >
+              <div className="flex items-start gap-3">
+                <Icon className="mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground/55 transition-colors group-hover:text-foreground/75" />
+
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+                    <h4 className="text-[15px] font-semibold tracking-tight text-foreground">
+                      {workflow.title}
+                    </h4>
+                    <p className="text-[11px] font-medium text-muted-foreground/65 sm:whitespace-nowrap">
+                      {getSurfaceLabel(workflow)} / {getLatencyLabel(workflow.latencyMode)}
+                    </p>
+                  </div>
+
+                  <p className="mt-1 text-[13px] leading-5 text-muted-foreground">
+                    {workflow.description}
+                  </p>
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export default PromptSuggestions;

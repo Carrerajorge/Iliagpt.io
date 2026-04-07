@@ -194,11 +194,25 @@ export function parseMathContent(text: string): ParsedMathContent {
 export function preprocessMathInMarkdown(markdown: string): string {
   if (!markdown) return markdown;
   try {
-    let processed = markdown
-      .replace(/\\\[/g, "$$")
-      .replace(/\\\]/g, "$$")
-      .replace(/\\\(/g, "$")
-      .replace(/\\\)/g, "$");
+    const fencedBlocks: string[] = [];
+    const inlineCode: string[] = [];
+
+    let processed = markdown.replace(/```[\s\S]*?```/g, (block) => {
+      const token = `@@MATH_FENCE_${fencedBlocks.length}@@`;
+      fencedBlocks.push(block);
+      return token;
+    });
+
+    processed = processed.replace(/`[^`\n]+`/g, (block) => {
+      const token = `@@MATH_INLINE_${inlineCode.length}@@`;
+      inlineCode.push(block);
+      return token;
+    });
+
+    processed = processed
+      .replace(/\\\[([\s\S]*?)\\\]/g, (_, expression) => `$$${sanitizeMathInput(String(expression || ""))}$$`)
+      .replace(/\\\(([\s\S]*?)\\\)/g, (_, expression) => `$${sanitizeMathInput(String(expression || ""))}$`);
+
     processed = processed.replace(/am`([^`]+)`/g, (_, asciiMath) => {
       try {
         const latex = asciiMathToLatex(asciiMath);
@@ -207,6 +221,9 @@ export function preprocessMathInMarkdown(markdown: string): string {
         return asciiMath;
       }
     });
+
+    processed = processed.replace(/@@MATH_INLINE_(\d+)@@/g, (_, index) => inlineCode[Number(index)] || "");
+    processed = processed.replace(/@@MATH_FENCE_(\d+)@@/g, (_, index) => fencedBlocks[Number(index)] || "");
 
     return processed;
   } catch (error) {

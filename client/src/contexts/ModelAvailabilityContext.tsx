@@ -37,6 +37,16 @@ interface ModelAvailabilityContextType {
 
 const ModelAvailabilityContext = createContext<ModelAvailabilityContextType | null>(null);
 
+function isLocalGemmaDevMode(): boolean {
+  if (typeof window === "undefined") return false;
+  const host = window.location.hostname.trim().toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+function isGemmaModelId(modelId: string | null | undefined): boolean {
+  return (modelId || "").trim().toLowerCase().startsWith("google/gemma-");
+}
+
 export function ModelAvailabilityProvider({ children }: { children: ReactNode }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -127,12 +137,19 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
     const legacyDefaultModelIds = new Set(["gemini-2.5-flash"]);
 
     let resolvedId = selectedModelId;
+    const localGemmaDevMode = isLocalGemmaDevMode();
+    const localGemmaDefault =
+      localGemmaDevMode && isGemmaModelId(platformSettings.default_model)
+        ? findEnabled(platformSettings.default_model)
+        : undefined;
 
     if (!resolvedId) {
       const userDefault = settings.defaultModel;
       const platformDefault = platformSettings.default_model;
       const preferPlatformDefault =
-        !userDefault || legacyDefaultModelIds.has(userDefault);
+        !userDefault ||
+        legacyDefaultModelIds.has(userDefault) ||
+        (localGemmaDevMode && isGemmaModelId(platformDefault));
       const primary = preferPlatformDefault ? platformDefault : userDefault;
       const secondary = preferPlatformDefault ? userDefault : platformDefault;
       const target =
@@ -141,9 +158,22 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
       resolvedId = target?.id ?? enabledModels[0]?.id ?? null;
     }
 
+    if (localGemmaDefault) {
+      const current = resolvedId ? findEnabled(resolvedId) : undefined;
+      const shouldPromoteLocalGemma =
+        !current ||
+        current.modelId === FREE_MODEL_ID ||
+        current.id === FREE_MODEL_ID;
+      if (shouldPromoteLocalGemma) {
+        resolvedId = localGemmaDefault.id;
+      }
+    }
+
     if (isFreeUser && resolvedId && enabledModels.length > 0) {
       const current = findEnabled(resolvedId);
-      if (current && current.modelId !== FREE_MODEL_ID && current.id !== FREE_MODEL_ID) {
+      const allowCurrentModel =
+        localGemmaDevMode && isGemmaModelId(current?.modelId || current?.id || null);
+      if (current && current.modelId !== FREE_MODEL_ID && current.id !== FREE_MODEL_ID && !allowCurrentModel) {
         const freeModel = enabledModels.find(
           (m) => m.modelId === FREE_MODEL_ID || m.id === FREE_MODEL_ID,
         );

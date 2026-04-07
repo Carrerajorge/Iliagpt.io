@@ -591,19 +591,66 @@ export async function handleProductionRequest(
             });
         }
 
+        const hasArtifacts = artifactsWithUrls.length > 0;
+        const isFailure = result.status === 'failed' || !hasArtifacts;
+
+        if (isFailure) {
+            const failureMessage = getProductionFailureMessage(result, deliverables);
+
+            emit('production_complete', {
+                runId,
+                success: false,
+                artifactsCount: result.artifacts.length,
+                qaScore: result.qaReport?.overallScore,
+                summary: result.summary,
+                error: failureMessage,
+                timestamp: Date.now(),
+            });
+
+            emit('production_error', {
+                runId,
+                error: failureMessage,
+                status: result.status,
+                artifactsCount: result.artifacts.length,
+                timestamp: Date.now(),
+            });
+
+            emit('chunk', {
+                content: `❌ **Error en la producción documental**\n\n${failureMessage}\n\n${result.summary || 'No se pudo completar la solicitud.'}`,
+                sequenceId: 1,
+                runId,
+            });
+
+            emit('done', {
+                sequenceId: 2,
+                runId,
+                timestamp: Date.now(),
+            });
+
+            res.end();
+
+            return {
+                handled: true,
+                result,
+                error: failureMessage,
+            };
+        }
+
         // Emit completion
+        const deliverySummary = formatProductionSummary(result, intentResult, artifactsWithUrls);
+
         emit('production_complete', {
             runId,
-            success: true,
+            success: result.status === 'success',
             artifactsCount: result.artifacts.length,
             qaScore: result.qaReport?.overallScore,
-            summary: result.summary,
+            summary: deliverySummary,
             timestamp: Date.now(),
         });
 
-        // Send summary as regular chat content for display
+        // Keep the streamed content concise; the downloadable artifact is rendered separately in the client.
         emit('chunk', {
-            content: formatProductionSummary(result, intentResult, artifactsWithUrls),
+            content: deliverySummary,
             sequenceId: 1,
             runId,
         });
@@ -667,25 +714,53 @@ function formatProductionSummary(
     intentResult: IntentResult,
     artifacts: Array<{ type: string; filename: string; downloadUrl: string; size: number }>
 ): string {
-    const artifactLinks = artifacts.map(a => {
-        const icon = getArtifactIcon(a.type);
-        return `- ${icon} [${a.filename}](${a.downloadUrl}) (${formatSize(a.size)})`;
-    }).join('\n');
+    const generatedCount = artifacts.length;
+    if (generatedCount === 0) {
+        return result.status === 'partial'
+            ? 'Se generó una salida parcial. Revisa el resultado y vuelve a intentar si necesitas completar los archivos faltantes.'
+            : 'La producción documental terminó sin archivos descargables.';
+    }
 
-    const qaInfo = result.qaReport
-        ? `\n\n**Calidad:** ${result.qaReport.overallScore}/100 ✅`
-        : '';
+    const primaryArtifact = artifacts[0];
+    const primaryType = primaryArtifact?.type || intentResult.output_format || 'documento';
+    const singleArtifactLabel = getArtifactReadyLabel(primaryType);
 
-    return `## 📄 Documentos Generados
+    if (generatedCount === 1) {
+        return result.status === 'partial'
+            ? `${singleArtifactLabel} Se generó una versión parcial; revisa el archivo y vuelve a intentar si necesitas completar el resto.`
+            : `${singleArtifactLabel} Haz clic en descargar para obtenerlo.`;
+    }
 
-${artifactLinks}
-${qaInfo}
+    return result.status === 'partial'
+        ? `Se generaron ${generatedCount} archivos, pero la entrega quedó parcial. Revisa los descargables disponibles y vuelve a intentar si necesitas completar el resto.`
+        : `Se generaron ${generatedCount} archivos listos para descargar.`;
+}
 
----
+function getProductionFailureMessage(
+    result: ProductionResult,
+    requestedDeliverables: Array<'word' | 'excel' | 'ppt' | 'pdf'>
+): string {
+    const summaryErrorMatch = result.summary.match(/\*\*Error:\*\*\s*(.+)/i);
+    if (summaryErrorMatch?.[1]) {
+        return summaryErrorMatch[1].trim();
+    }
 
-${result.summary || 'Documentos generados exitosamente.'}
+    const blockers = result.qaReport?.blockers?.filter(Boolean) || [];
+    if (blockers.length > 0) {
+        return blockers[0];
+    }
 
-> 💡 *Los archivos están listos para descargar. Haz clic en cada enlace para obtenerlos.*`;
+    const limitations = result.evidencePack?.limitations?.filter(Boolean) || [];
+    if (limitations.length > 0) {
+        return limitations[0];
+    }
+
+    const requested = requestedDeliverables.join(', ') || 'archivo solicitado';
+    if (!result.artifacts.length) {
+        return `No se pudo generar ninguno de los entregables solicitados (${requested}).`;
+    }
+
+    return `La producción documental finalizó con estado "${result.status}".`;
 }
 
 function getArtifactIcon(type: string): string {
@@ -695,6 +770,24 @@ function getArtifactIcon(type: string): string {
         case 'ppt': return '📽️';
         case 'pdf': return '📕';
         default: return '📄';
+    }
+}
+
+function getArtifactReadyLabel(type: string): string {
+    switch (type) {
+        case 'word':
+        case 'docx':
+            return 'Documento listo para descargar.';
+        case 'excel':
+        case 'xlsx':
+            return 'Hoja de cálculo lista para descargar.';
+        case 'ppt':
+        case 'pptx':
+            return 'Presentación lista para descargar.';
+        case 'pdf':
+            return 'PDF listo para descargar.';
+        default:
+            return 'Archivo listo para descargar.';
     }
 }
 

@@ -1,4 +1,4 @@
-export const FREE_MODEL_ID = "google/gemma-4-31b-it";
+export const FREE_MODEL_ID = "google/gemma-3-27b-it:free";
 
 export type UserPlan = {
   plan?: string | null;

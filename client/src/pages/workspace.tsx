@@ -6,7 +6,7 @@ import { MiniSidebar } from "@/components/mini-sidebar";
 import { ChatInterface } from "@/components/chat-interface";
 import { AiStepsRail } from "@/components/ai-steps-rail";
 import { WorkspaceProvider, useWorkspace } from "@/contexts/workspace-context";
-import { useChats, Message, resolveRealChatId } from "@/hooks/use-chats";
+import { useChats, Message, generateStableChatKey, resolveRealChatId } from "@/hooks/use-chats";
 import { useChatFolders } from "@/hooks/use-chat-folders";
 import { useAuth } from "@/hooks/use-auth";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -17,6 +17,8 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Menu, FileText, X, GripVertical } from "lucide-react";
 import { toast } from "sonner";
 import { useStreamingStore, useProcessingChatIds, usePendingBadges } from "@/stores/streamingStore";
+import { resolveConversationUiStateKey } from "@/lib/conversationUiState";
+import type { AIState, AiProcessStep } from "@/components/chat-interface/types";
 
 const PANEL_SIZES_KEY = "workspace-panel-sizes";
 
@@ -68,11 +70,9 @@ function WorkspaceContent() {
   const [isNewChatMode, setIsNewChatMode] = useState(false);
   const [newChatStableKey, setNewChatStableKey] = useState<string | null>(null);
 
-  type WorkspaceAiState = "idle" | "thinking" | "responding" | "streaming" | "agent_working" | "sending" | "error" | "done";
-  type WorkspaceAiStep = { step: string; status: "pending" | "active" | "done" };
   type WorkspaceConversationUiState = {
-    aiState: WorkspaceAiState;
-    aiProcessSteps: WorkspaceAiStep[];
+    aiState: AIState;
+    aiProcessSteps: AiProcessStep[];
     pendingRequestId: string | null;
     streamBuffer: string;
   };
@@ -109,6 +109,12 @@ function WorkspaceContent() {
 
   const pendingChatIdRef = useRef<string | null>(null);
 
+  useEffect(() => {
+    if (activeChat?.id) return;
+    if (newChatStableKey) return;
+    setNewChatStableKey(generateStableChatKey());
+  }, [activeChat?.id, newChatStableKey]);
+
   const ensureConversationUiState = useCallback((conversationId: string | null | undefined) => {
     if (!conversationId) return;
     setConversationUiStateMap((prev) => {
@@ -143,16 +149,23 @@ function WorkspaceContent() {
     ? conversationUiStateMap[activeConversationId]
     : undefined;
 
-  const aiState: WorkspaceAiState = activeConversationState?.aiState || "idle";
-  const aiProcessSteps: WorkspaceAiStep[] = activeConversationState?.aiProcessSteps || [];
+  const aiState: AIState = activeConversationState?.aiState || "idle";
+  const aiProcessSteps: AiProcessStep[] = activeConversationState?.aiProcessSteps || [];
 
-  const setAiState = useCallback((nextState: WorkspaceAiState | ((prev: WorkspaceAiState) => WorkspaceAiState)) => {
-    const targetConversationId = activeConversationId || pendingChatIdRef.current || newChatStableKey;
-    if (!targetConversationId) return;
+  const setAiState = useCallback((nextState: React.SetStateAction<AIState>, conversationId?: string | null) => {
     setConversationUiStateMap((prev) => {
+      const targetConversationId = resolveConversationUiStateKey({
+        requestedConversationId: conversationId,
+        activeConversationId,
+        pendingConversationId: pendingChatIdRef.current,
+        draftConversationId: newChatStableKey,
+        existingConversationIds: Object.keys(prev),
+        resolveConversationId: resolveRealChatId,
+      });
+      if (!targetConversationId) return prev;
       const current = prev[targetConversationId] || createWorkspaceConversationUiState();
       const resolvedState = typeof nextState === "function"
-        ? (nextState as (prev: WorkspaceAiState) => WorkspaceAiState)(current.aiState)
+        ? (nextState as (prev: AIState) => AIState)(current.aiState)
         : nextState;
       return {
         ...prev,
@@ -165,13 +178,20 @@ function WorkspaceContent() {
     });
   }, [activeConversationId, newChatStableKey]);
 
-  const setAiProcessSteps = useCallback((nextSteps: WorkspaceAiStep[] | ((prev: WorkspaceAiStep[]) => WorkspaceAiStep[])) => {
-    const targetConversationId = activeConversationId || pendingChatIdRef.current || newChatStableKey;
-    if (!targetConversationId) return;
+  const setAiProcessSteps = useCallback((nextSteps: React.SetStateAction<AiProcessStep[]>, conversationId?: string | null) => {
     setConversationUiStateMap((prev) => {
+      const targetConversationId = resolveConversationUiStateKey({
+        requestedConversationId: conversationId,
+        activeConversationId,
+        pendingConversationId: pendingChatIdRef.current,
+        draftConversationId: newChatStableKey,
+        existingConversationIds: Object.keys(prev),
+        resolveConversationId: resolveRealChatId,
+      });
+      if (!targetConversationId) return prev;
       const current = prev[targetConversationId] || createWorkspaceConversationUiState();
       const resolvedSteps = typeof nextSteps === "function"
-        ? (nextSteps as (prev: WorkspaceAiStep[]) => WorkspaceAiStep[])(current.aiProcessSteps)
+        ? (nextSteps as (prev: AiProcessStep[]) => AiProcessStep[])(current.aiProcessSteps)
         : nextSteps;
       return {
         ...prev,
@@ -240,7 +260,7 @@ function WorkspaceContent() {
   const handleNewChat = () => {
     // Keep processing state for background chats - don't clear processingChatIds
     // The previous chat will continue streaming in the background
-    const newKey = `new-chat-${Date.now()}`;
+    const newKey = generateStableChatKey();
     setActiveChatId(null);
     setIsNewChatMode(true);
     setNewChatStableKey(newKey);
@@ -249,7 +269,7 @@ function WorkspaceContent() {
   };
 
   const handleSendNewChatMessage = useCallback(async (message: Message) => {
-    const { pendingId, stableKey } = createChat();
+    const { pendingId, stableKey } = createChat(newChatStableKey);
     moveConversationUiState(newChatStableKey, pendingId);
     ensureConversationUiState(pendingId);
     pendingChatIdRef.current = pendingId;
@@ -382,6 +402,7 @@ function WorkspaceContent() {
               setMessages={setDisplayMessages}
               onSendMessage={handleSendMessage}
               chatId={activeChat?.id || pendingChatIdRef.current}
+              conversationLockScope={activeChat?.stableKey || newChatStableKey || null}
               aiState={aiState}
               setAiState={setAiState}
               aiStateChatId={aiState === "idle" ? null : activeConversationId}
@@ -455,6 +476,7 @@ function WorkspaceContent() {
                     setMessages={setDisplayMessages}
                     onSendMessage={handleSendMessage}
                     chatId={activeChat?.id || pendingChatIdRef.current}
+                    conversationLockScope={activeChat?.stableKey || newChatStableKey || null}
                     aiState={aiState}
                     setAiState={setAiState}
                     aiStateChatId={aiState === "idle" ? null : activeConversationId}

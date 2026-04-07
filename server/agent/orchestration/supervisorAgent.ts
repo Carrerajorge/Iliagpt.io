@@ -13,6 +13,7 @@ import {
 import { toolRegistry, ToolExecutionResult } from "../registry/toolRegistry";
 import { activityStreamPublisher } from "./activityStream";
 import { agentEventBus } from "../eventBus";
+import { FREE_MODEL_ID } from "../../lib/modelRegistry";
 
 function createLlmClient(): OpenAI {
   const apiKey = process.env.OPENROUTER_API_KEY || process.env.XAI_API_KEY;
@@ -37,7 +38,7 @@ function getXaiClient(): OpenAI {
 }
 
 const DEFAULT_MODEL = process.env.OPENROUTER_API_KEY
-  ? "google/gemma-4-31b-it"
+  ? FREE_MODEL_ID
   : "grok-4-1-fast-non-reasoning";
 
 export const PlanStepSchema = z.object({

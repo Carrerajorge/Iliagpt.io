@@ -118,6 +118,23 @@ const MAX_STREAM_ATTACHMENT_NAME_LEN = 220;
 const MAX_STREAM_ATTACHMENT_MIME_LEN = 120;
 const MAX_STREAM_ATTACHMENT_SIZE = MAX_CHAT_ATTACHMENT_SIZE_BYTES;
 const MAX_STREAM_SKILL_SCOPES = 12;
+
+function isLoopbackHost(rawHost: string | undefined): boolean {
+  const host = (rawHost || "").split(":")[0].trim().toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+}
+
+function isLoopbackIp(rawIp: string | undefined): boolean {
+  const ip = (rawIp || "").trim().toLowerCase();
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+}
+
+function canUseAnonymousLocalGemma(req: AuthenticatedRequest | Request, model: string | undefined): boolean {
+  const normalizedModel = (model || "").trim().toLowerCase();
+  if (process.env.NODE_ENV === "production") return false;
+  if (!normalizedModel.startsWith("google/gemma-")) return false;
+  return isLoopbackHost(req.headers.host) || isLoopbackIp(req.ip) || isLoopbackIp(req.socket.remoteAddress);
+}
 const MAX_STREAM_SKILL_ATTACHMENTS = 12;
 const DEFAULT_STREAM_SKILL_SCOPES: SkillScope[] = ["storage.read", "files", "code_interpreter"];
 const VALID_STREAM_SCOPE_SET = new Set<SkillScope>([
@@ -356,6 +373,8 @@ const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "gemini-1.5-pro": 1048576,
   "grok-beta": 131072,
   "grok-3": 131072,
+  [FREE_MODEL_ID]: 131072,
+  "google/gemma-4-31b-it": 262144,
   "moonshotai/kimi-k2.5": 131072,
 };
 const DEFAULT_CONTEXT_LIMIT = 128000;
@@ -4261,7 +4280,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
       const effectiveUserId = authenticatedUserId || getOrCreateSecureUserId(req);
       const userId = effectiveUserId;
 
-      if (!authenticatedUserId && userId.startsWith("anon_")) {
+      if (!authenticatedUserId && userId.startsWith("anon_") && !canUseAnonymousLocalGemma(req, model)) {
         console.warn(`[Chat] Blocked anonymous chat attempt from IP=${req.ip}, UA=${(req.headers["user-agent"] || "").slice(0, 80)}`);
         return res.status(401).json({
           error: "Authentication required. Please sign in with Google to use the chat.",
@@ -5059,13 +5078,17 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       const authenticatedStreamUser = getUserId(req);
       const effectiveUserId = authenticatedStreamUser || getOrCreateSecureUserId(req);
       const requestedModel = typeof model === "string" ? model.trim() : "";
-      const isUsingFreeModel = !requestedModel || requestedModel === FREE_MODEL_ID || requestedModel === "google/gemma-4-31b-it";
-      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && !isUsingFreeModel) {
+      const isUsingFreeModel = !requestedModel || requestedModel === FREE_MODEL_ID;
+      const allowAnonymousLocalGemma = canUseAnonymousLocalGemma(req, requestedModel);
+      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && !isUsingFreeModel && !allowAnonymousLocalGemma) {
         console.warn(`[Stream] Blocked anonymous stream attempt from IP=${req.ip}, model=${requestedModel}`);
         res.setHeader("Content-Type", "text/event-stream");
         applySseSecurityHeaders(res);
         res.write(`data: ${JSON.stringify({ type: "error", error: "Authentication required. Please sign in with Google to use this model.", code: "AUTH_REQUIRED" })}\n\n`);
         return res.end();
+      }
+      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && allowAnonymousLocalGemma) {
+        console.log(`[Stream] Anonymous localhost Gemma allowed in development from IP=${req.ip}, model=${requestedModel}`);
       }
       if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && isUsingFreeModel) {
         console.log(`[Stream] Anonymous user allowed with free model (${FREE_MODEL_ID}) from IP=${req.ip}`);
@@ -5821,7 +5844,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             }))
           ];
 
-          const quick = await llmGateway.chat(llmMessages as any, {
+          const quickStream = await resolveModelStream(llmMessages as any, {
             userId: effectiveUserId || streamConversationId || "anonymous",
             requestId,
             model: model || DEFAULT_MODEL,
@@ -5832,47 +5855,108 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             enableFallback: true,
           });
 
-          markFirstToken();
-          writeSse(res, 'chunk', {
-            content: quick.content || "",
-            sequence: 1,
-            runId: runId || requestId,
-            timestamp: Date.now(),
-            provider: quick.provider,
-          });
-          const fastPathTimings = reportTimings("simple_fast_path");
-          emitDoneEvent(res, {
-            sequenceId: 1,
-            requestId,
-            runId: runId || requestId,
-            latencyMode,
-            latencyLane: resolveLatencyLane(latencyMode),
-            totalSequences: 1,
-            contentLength: (quick.content || "").length,
-            completionReason: "simple_fast_path",
-            traceId: requestId,
-            timings: fastPathTimings,
-            provider: quick.provider,
-            model: quick.model,
-          });
-          emitCompleteEvent(res, {
-            requestId,
-            runId: runId || requestId,
-            latencyMode,
-            latencyLane: resolveLatencyLane(latencyMode),
-            totalSequences: 1,
-            contentLength: (quick.content || "").length,
-            durationMs: 0,
-            status: "completed",
-            completionReason: "simple_fast_path",
-            traceId: requestId,
-            timings: fastPathTimings,
-            provider: quick.provider,
-            model: quick.model,
-          });
+          let fastPathSequence = 0;
+          let fastPathDone = false;
+          for await (const chunk of quickStream) {
+            if (isConnectionClosed) break;
+
+            const chunkSequenceId = Number.isFinite(chunk.sequenceId)
+              ? Number(chunk.sequenceId)
+              : fastPathSequence + 1;
+            fastPathSequence = Math.max(fastPathSequence, chunkSequenceId);
+
+            if (chunk.providerSwitch) {
+              writeSse(res, "notice", {
+                type: "provider_fallback",
+                fromProvider: chunk.providerSwitch.fromProvider,
+                toProvider: chunk.providerSwitch.toProvider,
+                requestId,
+                timestamp: Date.now(),
+              });
+            }
+
+            if (chunk.provider) {
+              activeStreamProvider = chunk.provider;
+            }
+
+            if (chunk.content) {
+              markFirstToken();
+              fullContent += chunk.content;
+              writeSse(res, "chunk", {
+                content: chunk.content,
+                sequence: chunkSequenceId,
+                sequenceId: chunkSequenceId,
+                requestId,
+                runId: runId || requestId,
+                timestamp: Date.now(),
+                provider: chunk.provider,
+              });
+            }
+
+            if (chunk.done) {
+              const fastPathTimings = reportTimings("simple_fast_path");
+              const totalSequences = Math.max(
+                fastPathSequence,
+                fullContent.trim() ? 1 : 0,
+              );
+              if (!fastPathDone) {
+                emitDoneEvent(res, {
+                  sequenceId: chunkSequenceId,
+                  requestId,
+                  runId: runId || requestId,
+                  latencyMode,
+                  latencyLane: resolveLatencyLane(latencyMode),
+                  totalSequences,
+                  contentLength: fullContent.length,
+                  completionReason: "simple_fast_path",
+                  traceId: requestId,
+                  timings: fastPathTimings,
+                  provider: activeStreamProvider || undefined,
+                });
+                fastPathDone = true;
+              }
+            }
+          }
+
+          if (!isConnectionClosed) {
+            const fastPathTimings = reportTimings("simple_fast_path");
+            const totalSequences = Math.max(
+              fastPathSequence,
+              fullContent.trim() ? 1 : 0,
+            );
+            if (!fastPathDone) {
+              emitDoneEvent(res, {
+                requestId,
+                runId: runId || requestId,
+                latencyMode,
+                latencyLane: resolveLatencyLane(latencyMode),
+                totalSequences,
+                contentLength: fullContent.length,
+                completionReason: "simple_fast_path",
+                traceId: requestId,
+                timings: fastPathTimings,
+                provider: activeStreamProvider || undefined,
+              });
+            }
+            emitCompleteEvent(res, {
+              requestId,
+              runId: runId || requestId,
+              latencyMode,
+              latencyLane: resolveLatencyLane(latencyMode),
+              totalSequences,
+              contentLength: fullContent.length,
+              durationMs: fastPathTimings.totalMs ?? 0,
+              status: "completed",
+              completionReason: "simple_fast_path",
+              traceId: requestId,
+              timings: fastPathTimings,
+              provider: activeStreamProvider || undefined,
+            });
+          }
           return res.end();
         } catch (e: any) {
-          console.warn("[Stream] Simple fast-path failed, falling back to full pipeline:", e?.message || e);
+          console.warn("[Stream] Simple fast-path failed:", e?.message || e);
+          throw e;
         }
       }
 

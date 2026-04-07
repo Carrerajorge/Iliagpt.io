@@ -183,47 +183,258 @@ Include proper structure with:
 
   private async createPresentation(task: AgentTask): Promise<any> {
     const topic = task.input.topic || task.description;
-    const slideCount = task.input.slideCount || 10;
+    const audience = task.input.audience || "general";
+    const slideCount = Math.min(Math.max(Number(task.input.maxSlides || task.input.slideCount || 6), 4), 10);
+    const localFallback = this.buildPresentationFallback(topic, slideCount, audience, task.input.content);
 
-    const response = await xaiClient.chat.completions.create({
-      model: this.config.model,
-      messages: [
-        { role: "system", content: this.config.systemPrompt },
-        {
-          role: "user",
-          content: `Create a presentation outline for: ${topic}
+    if (!process.env.XAI_API_KEY || process.env.XAI_API_KEY === "missing") {
+      return localFallback;
+    }
+
+    try {
+      const response = await xaiClient.chat.completions.create({
+        model: this.config.model,
+        messages: [
+          { role: "system", content: this.config.systemPrompt },
+          {
+            role: "user",
+            content: `Create a minimalist and executive presentation outline about: ${topic}
 
 Requirements:
+- Audience: ${audience}
 - Number of slides: ${slideCount}
-- Include speaker notes
-- Suggest visuals for each slide
+- Tone: professional, concise, and presentation-ready
+- Prioritize operational clarity over filler text
+- Each slide must have 3 to 5 short bullets
+- Include speaker notes and one visual suggestion per slide
+- Avoid generic placeholders and avoid repeating the title
 
-Return JSON:
+Return valid JSON only:
 {
   "title": "presentation title",
+  "subtitle": "short subtitle",
   "slides": [
     {
       "slideNumber": 1,
       "title": "slide title",
-      "content": ["bullet points"],
+      "bullets": ["short bullet", "short bullet"],
       "speakerNotes": "notes for presenter",
-      "visualSuggestion": "what visual to include"
+      "visualSuggestion": "recommended visual"
     }
   ],
-  "designRecommendations": ["style suggestions"]
+  "designRecommendations": ["minimalist design direction"]
 }`,
-        },
-      ],
-      temperature: 0.6,
-    });
+          },
+        ],
+        temperature: 0.4,
+      });
 
-    const content = response.choices[0].message.content || "{}";
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
+      const content = response.choices[0].message.content || "{}";
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+      const slides = Array.isArray(parsed?.slides) ? parsed.slides : [];
+
+      if (slides.length === 0) {
+        return localFallback;
+      }
+
+      const normalizedSlides = slides.slice(0, slideCount).map((slide: any, index: number) => ({
+        slideNumber: index + 1,
+        title: String(slide?.title || `Diapositiva ${index + 1}`).trim(),
+        bullets: this.normalizeSlideBullets(slide?.bullets || slide?.content),
+        speakerNotes: String(slide?.speakerNotes || "").trim(),
+        visualSuggestion: String(slide?.visualSuggestion || "").trim(),
+      }));
+
+      return {
+        type: "presentation",
+        title: parsed?.title || localFallback.title,
+        subtitle: parsed?.subtitle || localFallback.subtitle,
+        slides: normalizedSlides,
+        presentation: {
+          title: parsed?.title || localFallback.title,
+          subtitle: parsed?.subtitle || localFallback.subtitle,
+          slides: normalizedSlides,
+          designRecommendations: Array.isArray(parsed?.designRecommendations)
+            ? parsed.designRecommendations
+            : localFallback.presentation.designRecommendations,
+        },
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      console.warn("[ContentAgent] Falling back to local presentation outline:", error);
+      return localFallback;
+    }
+  }
+
+  private buildPresentationFallback(topic: string, slideCount: number, audience: string, contentSpec: any): any {
+    const title = String(topic || "Presentación").trim();
+    const extractedBullets = this.extractBulletsFromContentSpec(contentSpec);
+    const deck = [
+      {
+        slideNumber: 1,
+        title,
+        bullets: [
+          `Enfoque ejecutivo sobre ${title.toLowerCase()}`,
+          `Audiencia objetivo: ${audience}`,
+          "Mensaje claro, sobrio y accionable",
+        ],
+        speakerNotes: "Abrir con el alcance y el objetivo del deck.",
+        visualSuggestion: "Portada tipográfica con una línea de acento y mucho espacio en blanco",
+      },
+      {
+        slideNumber: 2,
+        title: "Panorama actual",
+        bullets: extractedBullets.context,
+        speakerNotes: "Explicar el contexto actual y el punto de partida.",
+        visualSuggestion: "Bloque de tres ideas clave con iconografía mínima",
+      },
+      {
+        slideNumber: 3,
+        title: "Pilares de gestión",
+        bullets: extractedBullets.pillars,
+        speakerNotes: "Mostrar los frentes que ordenan la operación.",
+        visualSuggestion: "Tres o cuatro pilares en rejilla limpia",
+      },
+      {
+        slideNumber: 4,
+        title: "Indicadores y control",
+        bullets: extractedBullets.metrics,
+        speakerNotes: "Aterrizar cómo se medirá avance, calidad y cumplimiento.",
+        visualSuggestion: "KPIs en tarjetas sobrias con cifras o etiquetas",
+      },
+      {
+        slideNumber: 5,
+        title: "Próximos pasos",
+        bullets: extractedBullets.nextSteps,
+        speakerNotes: "Cerrar con acciones de implementación y seguimiento.",
+        visualSuggestion: "Cronograma simple o lista priorizada",
+      },
+    ].slice(0, slideCount);
 
     return {
       type: "presentation",
-      presentation: jsonMatch ? JSON.parse(jsonMatch[0]) : { outline: content },
+      title,
+      subtitle: `Resumen ejecutivo de ${title}`,
+      slides: deck,
+      presentation: {
+        title,
+        subtitle: `Resumen ejecutivo de ${title}`,
+        slides: deck,
+        designRecommendations: [
+          "Use a minimalist layout with generous margins and restrained accent color.",
+          "Prefer one key message per slide and avoid dense paragraphs.",
+        ],
+      },
       timestamp: new Date().toISOString(),
+    };
+  }
+
+  private normalizeSlideBullets(value: unknown): string[] {
+    const list = Array.isArray(value) ? value : typeof value === "string" ? value.split(/\r?\n+/) : [];
+    const normalized = list
+      .map((entry) => String(entry || "").replace(/^[\s\-*•\d.]+/, "").trim())
+      .filter(Boolean)
+      .slice(0, 5);
+
+    return normalized.length > 0
+      ? normalized
+      : ["Definir el objetivo central", "Ordenar prioridades operativas", "Cerrar con una decisión clara"];
+  }
+
+  private extractBulletsFromContentSpec(contentSpec: any): {
+    context: string[];
+    pillars: string[];
+    metrics: string[];
+    nextSteps: string[];
+  } {
+    const sections = Array.isArray(contentSpec?.sections) ? contentSpec.sections : [];
+    const rawText = [
+      typeof contentSpec?.abstract === "string" ? contentSpec.abstract : "",
+      ...sections.map((section: any) => `${section?.title || ""}. ${section?.content || ""}`),
+    ]
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const sentences = rawText
+      ? rawText
+          .split(/(?<=[.!?])\s+/)
+          .map((sentence) => sentence.replace(/^[\s\-*•\d.]+/, "").trim())
+          .filter((sentence) => sentence.length > 20)
+      : [];
+
+    const generic = this.topicDrivenBullets(String(contentSpec?.title || contentSpec?.topic || ""));
+    const pick = (start: number, fallback: string[]) => {
+      const selected = sentences.slice(start, start + 3).map((sentence) => sentence.substring(0, 120));
+      return selected.length > 0 ? selected : fallback;
+    };
+
+    const context = sentences.length > 0 ? pick(0, generic.context) : generic.context;
+    const pillars = sentences.length > 3 ? pick(3, generic.pillars) : generic.pillars;
+    const metrics = sentences.length > 6 ? pick(6, generic.metrics) : generic.metrics;
+
+    return {
+      context: context.length > 0 ? context : generic.context,
+      pillars: pillars.length > 0 ? pillars : generic.pillars,
+      metrics: metrics.length > 0 ? metrics : generic.metrics,
+      nextSteps: generic.nextSteps,
+    };
+  }
+
+  private topicDrivenBullets(topic: string): {
+    context: string[];
+    pillars: string[];
+    metrics: string[];
+    nextSteps: string[];
+  } {
+    const normalizedTopic = String(topic || "").toLowerCase();
+    if (normalizedTopic.includes("gestion administrativa") || (normalizedTopic.includes("gestion") && normalizedTopic.includes("administr"))) {
+      return {
+        context: [
+          "La gestión administrativa sostiene la continuidad operativa y la trazabilidad documental.",
+          "Los cuellos de botella suelen concentrarse en aprobaciones, seguimiento y coordinación interna.",
+          "La estandarización reduce tiempos de respuesta y errores manuales.",
+        ],
+        pillars: [
+          "Definir responsables, flujos y niveles de servicio por proceso.",
+          "Centralizar documentos y criterios de aprobación en un solo circuito.",
+          "Automatizar tareas repetitivas y alertas de seguimiento.",
+        ],
+        metrics: [
+          "Tiempo promedio de respuesta por trámite o solicitud.",
+          "Nivel de cumplimiento de plazos y aprobaciones.",
+          "Porcentaje de retrabajo, incidencias y documentos observados.",
+        ],
+        nextSteps: [
+          "Mapear el proceso actual y detectar cuellos de botella críticos.",
+          "Priorizar mejoras de alto impacto con responsables y fechas.",
+          "Implementar un tablero simple de control para seguimiento semanal.",
+        ],
+      };
+    }
+
+    return {
+      context: [
+        `Definir el alcance y el contexto de ${topic || "la iniciativa"}.`,
+        "Identificar el punto de partida, restricciones y prioridades.",
+        "Alinear la conversación en torno a resultados esperados.",
+      ],
+      pillars: [
+        "Ordenar la operación alrededor de pocos frentes clave.",
+        "Asignar responsables y criterios de seguimiento claros.",
+        "Reducir dispersión con un modelo simple y repetible.",
+      ],
+      metrics: [
+        "Establecer indicadores de avance, calidad y cumplimiento.",
+        "Medir tiempos de ciclo y niveles de servicio relevantes.",
+        "Detectar desviaciones para corregir con rapidez.",
+      ],
+      nextSteps: [
+        "Aprobar el enfoque y priorizar el primer bloque de acciones.",
+        "Asignar responsables y un horizonte corto de implementación.",
+        "Revisar avances con una cadencia ejecutiva simple.",
+      ],
     };
   }
 

@@ -115,6 +115,22 @@ const OPENROUTER_MODELS: IModelInfo[] = [
     tags: ['xai', 'long-context'],
   },
   {
+    id: 'google/gemma-4-31b-it', provider: 'openrouter', displayName: 'Gemma 4 31B IT (via OpenRouter)',
+    capabilities: ModelCapability.CHAT | ModelCapability.STREAMING | ModelCapability.FUNCTION_CALLING | ModelCapability.VISION | ModelCapability.CODE | ModelCapability.REASONING,
+    contextWindow: 262_144,
+    pricing: { inputPer1M: 0.14, outputPer1M: 0.40 },
+    latencyScore: 14, reliabilityScore: 0.95, available: true,
+    tags: ['google', 'gemma', 'multimodal', 'reasoning'],
+  },
+  {
+    id: 'google/gemma-3-27b-it:free', provider: 'openrouter', displayName: 'Gemma 3 27B IT Free (via OpenRouter)',
+    capabilities: ModelCapability.CHAT | ModelCapability.STREAMING | ModelCapability.FUNCTION_CALLING | ModelCapability.VISION | ModelCapability.CODE,
+    contextWindow: 131_072,
+    pricing: { inputPer1M: 0, outputPer1M: 0 },
+    latencyScore: 18, reliabilityScore: 0.92, available: true,
+    tags: ['google', 'gemma', 'free', 'multimodal'],
+  },
+  {
     id: 'moonshotai/kimi-k2.5', provider: 'openrouter', displayName: 'Kimi K2.5 (via OpenRouter)',
     capabilities: ModelCapability.CHAT | ModelCapability.STREAMING | ModelCapability.FUNCTION_CALLING | ModelCapability.VISION | ModelCapability.CODE | ModelCapability.REASONING,
     contextWindow: 131_072,

@@ -52,6 +52,15 @@ export function selectAgentExecutionMode(options: {
   const looksMultiStep = MULTI_STEP_SIGNAL.test(rawMessage || "");
 
   if (
+    intent === "chat" &&
+    requestSpec.primaryAgent !== "orchestrator" &&
+    !hasAttachments &&
+    !looksMultiStep
+  ) {
+    return "conversation";
+  }
+
+  if (
     STRUCTURED_INTENTS.has(intent) ||
     requestSpec.primaryAgent === "orchestrator" ||
     (hasAgenticSignal && (resolvedLane === "deep" || looksMultiStep || hasAttachments))

@@ -113,7 +113,7 @@ export class SemanticChunker implements ChunkStage {
     }
 
     // Build final chunks
-    const chunks = this._buildChunks(text, splitPoints, doc.id, protectedRegions);
+    const chunks = this._buildChunks(text, splitPoints, doc.id, protectedRegions, lang);
 
     Logger.debug('SemanticChunker.chunk complete', {
       docId: doc.id,
@@ -265,6 +265,7 @@ export class SemanticChunker implements ChunkStage {
     splitPoints: SplitPoint[],
     docId: string,
     protectedRegions: ProtectedRegion[],
+    language: string,
   ): Chunk[] {
     const boundaries = [
       0,
@@ -332,6 +333,15 @@ export class SemanticChunker implements ChunkStage {
         continue;
       }
 
+      if (segTokens > this._cfg.maxTokens) {
+        flushBuffer();
+        const pieces = this._splitOversizedPlainText(seg.text, language);
+        for (const piece of pieces) {
+          chunks.push(this._makeChunk(piece, docId, chunkIdx++));
+        }
+        continue;
+      }
+
       if (bufferTokens + segTokens > this._cfg.maxTokens && buffer.trim()) {
         flushBuffer();
       }
@@ -350,8 +360,14 @@ export class SemanticChunker implements ChunkStage {
     if (this._cfg.overlapTokens > 0 && chunks.length > 1) {
       return chunks.map((chunk, i) => {
         if (i === chunks.length - 1) return chunk;
+        const nextChunk = chunks[i + 1];
+        const trimmedNext = nextChunk.content.trimStart();
+        if (trimmedNext.startsWith('```') || trimmedNext.startsWith('|')) {
+          return chunk;
+        }
+
         const overlapWordCount = Math.ceil(this._cfg.overlapTokens / 1.3);
-        const nextWords = chunks[i + 1].content.split(/\s+/).slice(0, overlapWordCount);
+        const nextWords = nextChunk.content.split(/\s+/).slice(0, overlapWordCount);
         const overlapSuffix = '\n\n[overlap] ' + nextWords.join(' ');
         const newContent = chunk.content + overlapSuffix;
         return {
@@ -364,6 +380,71 @@ export class SemanticChunker implements ChunkStage {
     }
 
     return chunks;
+  }
+
+  private _splitOversizedPlainText(text: string, language: string): string[] {
+    const sentenceUnits = this._splitSentences(text, language);
+    const units = sentenceUnits.length > 1 ? sentenceUnits : text.split(/\s+/).filter(Boolean);
+    const pieces: string[] = [];
+    let current = '';
+
+    const flush = () => {
+      if (current.trim()) {
+        pieces.push(current.trim());
+        current = '';
+      }
+    };
+
+    const appendUnit = (unit: string) => {
+      const normalizedUnit = unit.trim();
+      if (!normalizedUnit) return;
+
+      if (!current) {
+        current = normalizedUnit;
+      } else {
+        current += ` ${normalizedUnit}`;
+      }
+
+      if (this._estimateTokens(current) >= this._cfg.targetTokens) {
+        flush();
+      }
+    };
+
+    for (const unit of units) {
+      const normalizedUnit = unit.trim();
+      if (!normalizedUnit) continue;
+
+      if (this._estimateTokens(normalizedUnit) > this._cfg.maxTokens) {
+        flush();
+        const maxWords = Math.max(1, Math.floor(this._cfg.maxTokens / 1.3));
+        const words = normalizedUnit.split(/\s+/).filter(Boolean);
+        for (let i = 0; i < words.length; i += maxWords) {
+          pieces.push(words.slice(i, i + maxWords).join(' '));
+        }
+        continue;
+      }
+
+      const nextValue = current ? `${current} ${normalizedUnit}` : normalizedUnit;
+      if (current && this._estimateTokens(nextValue) > this._cfg.maxTokens) {
+        flush();
+      }
+      appendUnit(normalizedUnit);
+    }
+
+    flush();
+
+    if (pieces.length > 1) {
+      const last = pieces[pieces.length - 1];
+      if (this._estimateTokens(last) < this._cfg.minTokens) {
+        const previous = pieces[pieces.length - 2];
+        const merged = `${previous} ${last}`.trim();
+        if (this._estimateTokens(merged) <= this._cfg.maxTokens * 2) {
+          pieces.splice(pieces.length - 2, 2, merged);
+        }
+      }
+    }
+
+    return pieces;
   }
 
   private _makeChunk(content: string, docId: string, index: number): Chunk {

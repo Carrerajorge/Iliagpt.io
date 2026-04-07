@@ -26,6 +26,7 @@ Plataforma full-stack (React + Vite, Express, PostgreSQL) para chat asistido por
 ## Variables destacadas
 
 - **`WEB_RETRIEVAL_PIPELINE`**: `fast_first` | `legacy`. Por defecto: `fast_first` en producción y `legacy` en desarrollo/test. El modo rápido solo se usa si el usuario tiene permitido el acceso al navegador remoto en privacidad y no solicita Scholar ni `preferBrowser`; en caso contrario se usa el pipeline clásico (comportamiento correcto y seguro).
+- **`ANTHROPIC_SKILLS_REPO_DIRS`**: lista separada por comas con rutas a clones locales de [`anthropics/skills`](https://github.com/anthropics/skills). Si no se define, iliagpt intenta autodetectar rutas comunes como `vendor/anthropics-skills` o `external/anthropics/skills`.
 
 ## Madurez por áreas
 

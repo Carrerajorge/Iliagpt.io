@@ -1,5 +1,9 @@
 import { memo } from "react";
 import { cn } from "@/lib/utils";
+import {
+  buildFollowUpSuggestions,
+  normalizeFollowUpSuggestions,
+} from "@shared/followUpSuggestions";
 
 interface SuggestedRepliesProps {
   suggestions: string[];
@@ -38,37 +42,23 @@ export const SuggestedReplies = memo(function SuggestedReplies({
   );
 });
 
-export function generateSuggestions(content: string): string[] {
+interface SuggestionOptions {
+  preferred?: string[];
+  userMessage?: string;
+  hasWebSources?: boolean;
+}
+
+export function generateSuggestions(content: string, options: SuggestionOptions = {}): string[] {
+  const preferred = normalizeFollowUpSuggestions(options.preferred);
+  if (preferred.length > 0) {
+    return preferred;
+  }
+
   if (!content) return [];
 
-  const lowerContent = content.toLowerCase();
-  const hasCodeBlock = content.includes("```");
-  const hasNumberedList = /^\s*\d+\.\s+/m.test(content);
-  const hasBulletList = /^\s*[-*•]\s+/m.test(content);
-  const hasList = hasNumberedList || hasBulletList;
-
-  if (hasCodeBlock) {
-    return [
-      "Explica este código",
-      "¿Cómo puedo mejorarlo?",
-      "Muéstrame un ejemplo de uso",
-      "¿Hay alternativas?"
-    ];
-  }
-
-  if (hasList) {
-    return [
-      "Cuéntame más del primer punto",
-      "Compara estas opciones",
-      "¿Cuál recomiendas?",
-      "Dame más detalles"
-    ];
-  }
-
-  return [
-    "¿Puedes elaborar más?",
-    "Dame un ejemplo",
-    "¿Cuáles son las alternativas?",
-    "¿Qué más debo saber?"
-  ];
+  return buildFollowUpSuggestions({
+    assistantContent: content,
+    userMessage: options.userMessage,
+    hasWebSources: options.hasWebSources,
+  });
 }

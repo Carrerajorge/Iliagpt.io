@@ -50,6 +50,16 @@ export const GEMINI_MODELS_REGISTRY = {
 } as const;
 
 // ============================================================================
+// OpenRouter Models
+// ============================================================================
+
+export const OPENROUTER_MODELS = {
+  KIMI_K2_5: "moonshotai/kimi-k2.5",
+  GEMMA_4_31B_IT: "google/gemma-4-31b-it",
+  GEMMA_3_27B_IT_FREE: "google/gemma-3-27b-it:free",
+} as const;
+
+// ============================================================================
 // Defaults
 // ============================================================================
 
@@ -75,7 +85,7 @@ export const DEFAULT_GEMINI_VISION_MODEL = GEMINI_MODELS_REGISTRY.FLASH_31;
 export const DEFAULT_PROVIDER = "openai" as const;
 
 /** The model ID available to all users (free tier). */
-export const FREE_MODEL_ID = "google/gemma-4-31b-it";
+export const FREE_MODEL_ID = OPENROUTER_MODELS.GEMMA_3_27B_IT_FREE;
 
 /** Default model for general text completion (app-level). */
 export const DEFAULT_TEXT_MODEL = FREE_MODEL_ID;

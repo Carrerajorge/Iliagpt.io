@@ -137,9 +137,14 @@ class MessagePreprocessor {
     const unique: string[] = []
 
     for (const msg of messages) {
+      const normalizedMsg = this.normalize(msg)
       const isDuplicate = unique.some((existing) => {
-        if (existing === msg) return true
-        return this._jaccardSimilarity(existing, msg) >= 0.8
+        const normalizedExisting = this.normalize(existing)
+        if (normalizedExisting === normalizedMsg) return true
+
+        const jaccard = this._jaccardSimilarity(normalizedExisting, normalizedMsg)
+        const overlap = this._overlapCoefficient(normalizedExisting, normalizedMsg)
+        return jaccard >= 0.8 || overlap >= 0.8
       })
       if (!isDuplicate) unique.push(msg)
     }
@@ -172,6 +177,21 @@ class MessagePreprocessor {
 
     const union = wordsA.size + wordsB.size - intersection
     return intersection / union
+  }
+
+  private _overlapCoefficient(a: string, b: string): number {
+    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter((w) => w.length > 0))
+    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter((w) => w.length > 0))
+
+    if (wordsA.size === 0 && wordsB.size === 0) return 1
+    if (wordsA.size === 0 || wordsB.size === 0) return 0
+
+    let intersection = 0
+    for (const w of wordsA) {
+      if (wordsB.has(w)) intersection++
+    }
+
+    return intersection / Math.min(wordsA.size, wordsB.size)
   }
 }
 

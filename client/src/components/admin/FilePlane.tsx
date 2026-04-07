@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { apiFetchJson } from "@/lib/adminApi";
 import {
   Loader2, FolderOpen, File, FileText, Shield, Search, RefreshCw,
   Eye, ShieldAlert, HardDrive, ArrowRight, Clock
@@ -59,49 +60,49 @@ export default function FilePlane() {
 
   const { data: filesData, isLoading: filesLoading, refetch: refetchFiles } = useQuery({
     queryKey: ["/api/files/list", currentDir],
-    queryFn: async () => {
-      const res = await fetch(`/api/files/list?dir=${encodeURIComponent(currentDir)}`);
-      return res.json();
-    },
+    queryFn: () => apiFetchJson(`/api/files/list?dir=${encodeURIComponent(currentDir)}`),
     refetchInterval: 30000,
+    throwOnError: true,
   });
 
   const { data: statsData, isLoading: statsLoading } = useQuery({
     queryKey: ["/api/files/stats"],
     refetchInterval: 15000,
+    throwOnError: true,
   });
 
   const { data: auditData } = useQuery({
     queryKey: ["/api/files/audit"],
     refetchInterval: 15000,
+    throwOnError: true,
   });
 
   const { data: previewData, isLoading: previewLoading } = useQuery({
     queryKey: ["/api/files/read", previewPath],
     queryFn: async () => {
       if (!previewPath) return null;
-      const res = await fetch("/api/files/read", {
+      return apiFetchJson("/api/files/read", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filePath: previewPath, parse: true }),
       });
-      return res.json();
     },
     enabled: !!previewPath,
+    throwOnError: true,
   });
 
   const { data: searchData, isLoading: searchLoading } = useQuery({
     queryKey: ["/api/files/search", searchQuery],
     queryFn: async () => {
       if (!searchQuery.trim()) return null;
-      const res = await fetch("/api/files/search", {
+      return apiFetchJson("/api/files/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: searchQuery, workspace: "project" }),
       });
-      return res.json();
     },
     enabled: searchQuery.trim().length > 2,
+    throwOnError: true,
   });
 
   const files: FileEntry[] = (filesData as any)?.files || [];

@@ -27,6 +27,7 @@ import { spawn }               from 'child_process';
 import { randomUUID }          from 'crypto';
 import { z }                   from 'zod';
 import { Logger }              from '../../lib/logger';
+import { EnterpriseDocumentService, type DocumentSection } from '../../services/enterpriseDocumentService';
 import type {
   ToolDefinition,
   ToolExecutionContext,
@@ -44,6 +45,15 @@ function ok(output: unknown, durationMs = 0): ToolResult {
 function fail(code: string, message: string, durationMs = 0, retryable = false): ToolResult {
   return { success: false, output: null, error: { code, message, retryable }, durationMs };
 }
+
+type BuiltInDocumentType = 'word' | 'excel' | 'ppt' | 'pdf';
+
+const ENTERPRISE_DOCUMENT_TYPE_MAP: Record<BuiltInDocumentType, 'docx' | 'xlsx' | 'pptx' | 'pdf'> = {
+  word : 'docx',
+  excel: 'xlsx',
+  ppt  : 'pptx',
+  pdf  : 'pdf',
+};
 
 /** Resolve path within workspace, disallowing escapes. */
 function resolveWorkspacePath(root: string, p: string): string | null {
@@ -123,6 +133,186 @@ async function execCodeFile(
   } finally {
     fs.unlink(tmp).catch(() => {});
   }
+}
+
+function sanitizeDocumentStem(value: string): string {
+  const cleaned = String(value || 'document')
+    .trim()
+    .replace(/[^a-zA-Z0-9._ -]/g, '')
+    .replace(/\s+/g, '-');
+  return cleaned.slice(0, 80) || 'document';
+}
+
+function splitTableLine(line: string, delimiter: string): string[] {
+  if (delimiter === '|') {
+    return line
+      .replace(/^\|/, '')
+      .replace(/\|$/, '')
+      .split('|')
+      .map(cell => cell.trim());
+  }
+  return line.split(delimiter).map(cell => cell.trim());
+}
+
+function parseTabularContent(content: string): string[][] {
+  const trimmed = String(content || '').trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed) && parsed.every(row => Array.isArray(row))) {
+        return parsed.map(row => row.map(cell => String(cell ?? '')));
+      }
+      if (Array.isArray(parsed) && parsed.every(row => row && typeof row === 'object' && !Array.isArray(row))) {
+        const headers = Array.from(
+          new Set(parsed.flatMap(row => Object.keys(row as Record<string, unknown>))),
+        );
+        return [
+          headers,
+          ...parsed.map((row: Record<string, unknown>) => headers.map(header => String(row[header] ?? ''))),
+        ];
+      }
+    } catch {
+      // Fall back to delimiter parsing below.
+    }
+  }
+
+  const lines = trimmed
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) return [];
+
+  const delimiter = lines.some(line => line.includes('\t'))
+    ? '\t'
+    : lines.some(line => line.includes('|'))
+      ? '|'
+      : ',';
+
+  return lines
+    .map(line => splitTableLine(line, delimiter))
+    .filter(row => row.some(cell => cell.length > 0));
+}
+
+function buildStructuredSections(title: string, content: string): DocumentSection[] {
+  const normalized = String(content || '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) {
+    return [{
+      id     : 'section-1',
+      title  : 'Contenido',
+      content: title,
+      level  : 1,
+    }];
+  }
+
+  const headingRe = /^(#{1,3})\s+(.+?)\s*$/;
+  const sections: DocumentSection[] = [];
+  let currentSection: DocumentSection | null = null;
+
+  const flushCurrentSection = () => {
+    if (!currentSection) return;
+    currentSection.content = currentSection.content.trim();
+    sections.push(currentSection);
+    currentSection = null;
+  };
+
+  for (const rawLine of normalized.split('\n')) {
+    const line = rawLine.trimEnd();
+    const headingMatch = line.match(headingRe);
+
+    if (headingMatch) {
+      flushCurrentSection();
+      currentSection = {
+        id     : `section-${sections.length + 1}`,
+        title  : headingMatch[2].trim(),
+        content: '',
+        level  : Math.min(3, headingMatch[1].length) as 1 | 2 | 3,
+      };
+      continue;
+    }
+
+    if (!currentSection) {
+      currentSection = {
+        id     : `section-${sections.length + 1}`,
+        title  : 'Contenido',
+        content: '',
+        level  : 1,
+      };
+    }
+
+    currentSection.content += `${line}\n`;
+  }
+
+  flushCurrentSection();
+
+  return sections.length > 0
+    ? sections
+    : [{
+        id     : 'section-1',
+        title  : 'Contenido',
+        content: normalized,
+        level  : 1,
+      }];
+}
+
+function buildSpreadsheetSections(title: string, content: string): DocumentSection[] {
+  const rows = parseTabularContent(content);
+  if (rows.length === 0) {
+    return [{
+      id     : 'sheet-1',
+      title  : title || 'Datos',
+      content: String(content || '').trim() || 'Sin datos tabulares.',
+      level  : 1,
+    }];
+  }
+
+  const [firstRow, ...bodyRows] = rows;
+  const hasHeader = firstRow.some(cell => /[a-zA-Z]/.test(cell));
+  const headers = hasHeader ? firstRow : firstRow.map((_, index) => `Columna ${index + 1}`);
+  const dataRows = hasHeader ? bodyRows : [firstRow, ...bodyRows];
+
+  return [{
+    id     : 'sheet-1',
+    title  : title || 'Datos',
+    content: `Tabla generada automáticamente con ${dataRows.length} filas.`,
+    level  : 1,
+    tables : [{
+      headers,
+      rows  : dataRows.map(row => headers.map((_, index) => String(row[index] ?? ''))),
+      style : 'striped',
+    }],
+  }];
+}
+
+async function persistEnterpriseDocument(params: {
+  title: string;
+  result: {
+    success: boolean;
+    buffer?: Buffer;
+    filename: string;
+    mimeType: string;
+    sizeBytes: number;
+    error?: string;
+  };
+}) {
+  if (!params.result.success || !params.result.buffer) {
+    throw new Error(params.result.error || 'Document generation failed');
+  }
+
+  const artifactsDir = path.join(process.cwd(), 'artifacts');
+  await fs.mkdir(artifactsDir, { recursive: true });
+
+  const filename = params.result.filename || `${sanitizeDocumentStem(params.title)}.bin`;
+  const artifactPath = path.join(artifactsDir, filename);
+  await fs.writeFile(artifactPath, params.result.buffer);
+
+  return {
+    filename,
+    artifactPath,
+    downloadUrl: `/api/artifacts/${encodeURIComponent(filename)}`,
+  };
 }
 
 // ─── JS sandbox sessions ──────────────────────────────────────────────────────
@@ -443,29 +633,62 @@ const webFetchTool: ToolDefinition = {
 
 const createDocumentTool: ToolDefinition = {
   name       : 'create_document',
-  description: 'Create a Word, Excel, or PDF document from structured content.',
+  description: 'Create Word, Excel, PowerPoint, or PDF documents from markdown or structured content.',
   category   : 'document',
   permissions: ['write'],
   parameters : [
-    { name: 'type',    type: 'string', description: 'Document type: "word", "excel", or "pdf"', required: true, enum: ['word', 'excel', 'pdf'] },
+    { name: 'type',    type: 'string', description: 'Document type: "word", "excel", "ppt", or "pdf"', required: true, enum: ['word', 'excel', 'ppt', 'pdf'] },
     { name: 'title',   type: 'string', description: 'Document title', required: true },
-    { name: 'content', type: 'string', description: 'Document content (markdown for word/pdf, JSON for excel)', required: true },
+    { name: 'content', type: 'string', description: 'Document content (markdown/text for word/pdf/ppt, JSON/CSV/TSV/pipe table for excel)', required: true },
+    { name: 'theme',   type: 'string', description: 'Document theme (professional, academic, modern, corporate, elegant, minimal)', required: false },
   ],
   inputSchema: z.object({
-    type   : z.enum(['word', 'excel', 'pdf']),
+    type   : z.enum(['word', 'excel', 'ppt', 'pdf']),
     title  : z.string().min(1),
     content: z.string().min(1),
+    theme  : z.string().optional().default('professional'),
   }),
   execute: async (input: unknown, ctx: ToolExecutionContext): Promise<ToolResult> => {
-    const { type, title, content } = input as { type: string; title: string; content: string };
+    const { type, title, content, theme } = input as {
+      type: BuiltInDocumentType;
+      title: string;
+      content: string;
+      theme?: string;
+    };
     const start = Date.now();
     try {
-      const { generateWordDocument } = await import('../../services/documentGeneration');
-      if (type === 'word') {
-        const result = await generateWordDocument(content, title, ctx.userId);
-        return ok(result, Date.now() - start);
-      }
-      return fail('UNSUPPORTED', `Document type '${type}' not yet supported`, Date.now() - start);
+      const service = EnterpriseDocumentService.create(theme || 'professional');
+      const request = {
+        type   : ENTERPRISE_DOCUMENT_TYPE_MAP[type],
+        title,
+        author : 'IliaGPT AI',
+        theme  : theme || 'professional',
+        sections: type === 'excel'
+          ? buildSpreadsheetSections(title, content)
+          : buildStructuredSections(title, content),
+        options: {
+          includeTableOfContents: type !== 'excel',
+          includePageNumbers    : type === 'word' || type === 'pdf',
+          includeHeader         : true,
+          includeFooter         : true,
+        },
+      } as const;
+
+      const result = await service.generateDocument(request);
+      const persisted = await persistEnterpriseDocument({ title, result });
+
+      return ok({
+        type,
+        title,
+        theme: theme || 'professional',
+        filename: persisted.filename,
+        path: persisted.artifactPath,
+        downloadUrl: persisted.downloadUrl,
+        mimeType: result.mimeType,
+        sizeBytes: result.sizeBytes,
+        base64: result.buffer.toString('base64'),
+        userId: ctx.userId,
+      }, Date.now() - start);
     } catch (err: unknown) {
       return fail('DOC_ERROR', (err as Error).message, Date.now() - start);
     }

@@ -56,10 +56,12 @@ interface ConversationSession {
   abortController: AbortController | null;
   pendingRequestId: string | null;
   nextMessageId: string | null;
+  serverAssistantMessageId: string | null;
   fullContent: string;
   pendingContent: string | null;
   rafId: number | null;
   finalizing: boolean;
+  lastFinalizedRequestId: string | null;
   timeoutId: ReturnType<typeof setTimeout> | null;
   firstTokenTimeoutId: ReturnType<typeof setTimeout> | null;
   doneTimeoutId: ReturnType<typeof setTimeout> | null;
@@ -83,10 +85,12 @@ function createSession(): ConversationSession {
     abortController: null,
     pendingRequestId: null,
     nextMessageId: null,
+    serverAssistantMessageId: null,
     fullContent: "",
     pendingContent: null,
     rafId: null,
     finalizing: false,
+    lastFinalizedRequestId: null,
     timeoutId: null,
     firstTokenTimeoutId: null,
     doneTimeoutId: null,
@@ -107,6 +111,16 @@ const DEFAULT_IDLE_RECOVERY_MS = 800;
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_RETRY_BACKOFF_MS = 400;
 const DEFAULT_RETRY_JITTER_MS = 250;
+
+function getServerAssistantMessageId(
+  session?: ConversationSession | null,
+): string | null {
+  const assistantMessageId =
+    typeof session?.serverAssistantMessageId === "string"
+      ? session.serverAssistantMessageId.trim()
+      : "";
+  return assistantMessageId || null;
+}
 
 const isBusyAiState = (state: AIState): boolean =>
   state === "sending" ||
@@ -260,6 +274,7 @@ export function useStreamChat(deps: StreamChatDeps) {
     }
 
     session.pendingRequestId = null;
+    session.serverAssistantMessageId = null;
     session.hydratingProgress = null;
   }, [getSession]);
 
@@ -334,6 +349,7 @@ export function useStreamChat(deps: StreamChatDeps) {
           latestSession.fullContent = restoredContent;
           latestSession.pendingContent = null;
           latestSession.nextMessageId = restoredMessageId;
+          latestSession.serverAssistantMessageId = restoredMessageId;
           latestSession.pendingRequestId = restoredRequestId;
 
           if (isConversationActive(conversationId)) {
@@ -473,13 +489,41 @@ export function useStreamChat(deps: StreamChatDeps) {
       const session = getSession(targetConversationId);
       if (session.finalizing) return;
       session.finalizing = true;
+      const serverAssistantMessageId = getServerAssistantMessageId(session);
+      const shouldReuseServerAssistantMessage =
+        message.role === "assistant" && !!serverAssistantMessageId;
+      const finalizedMessage =
+        shouldReuseServerAssistantMessage && serverAssistantMessageId
+          ? {
+              ...message,
+              id: serverAssistantMessageId,
+              clientTempId:
+                (typeof message.clientTempId === "string" && message.clientTempId.trim()) ||
+                (typeof message.id === "string" && message.id !== serverAssistantMessageId
+                  ? message.id
+                  : undefined),
+            }
+          : message;
+      const finalizedRequestId =
+        typeof finalizedMessage.requestId === "string" && finalizedMessage.requestId.trim()
+          ? finalizedMessage.requestId.trim()
+          : session.pendingRequestId;
+      if (finalizedRequestId && session.lastFinalizedRequestId === finalizedRequestId) {
+        session.finalizing = false;
+        return;
+      }
+      if (finalizedRequestId) {
+        session.lastFinalizedRequestId = finalizedRequestId;
+      }
 
       flushNow(targetConversationId);
 
-      setOptimisticMessages((prev) => upsertMessageByIdentity(prev, message));
-      onSendMessage(message).catch((err) => {
-        console.error("[useStreamChat] onSendMessage failed:", err);
-      });
+      setOptimisticMessages((prev) => upsertMessageByIdentity(prev, finalizedMessage));
+      if (!shouldReuseServerAssistantMessage) {
+        onSendMessage(finalizedMessage).catch((err) => {
+          console.error("[useStreamChat] onSendMessage failed:", err);
+        });
+      }
 
       session.fullContent = "";
       session.pendingContent = null;
@@ -493,11 +537,6 @@ export function useStreamChat(deps: StreamChatDeps) {
       applyFinalState(finalState, targetConversationId);
       setAiProcessSteps?.([], targetConversationId);
       void clearStreamingProgressRemote(targetConversationId);
-
-      queueMicrotask(() => {
-        const latestSession = getSession(targetConversationId);
-        latestSession.finalizing = false;
-      });
     },
     [
       flushNow,
@@ -554,8 +593,17 @@ export function useStreamChat(deps: StreamChatDeps) {
         abortConversation(conversationId);
       }
 
+      clearSessionRuntime(conversationId);
+      session.fullContent = "";
+      session.pendingContent = null;
+      session.finalizing = false;
+      session.lastFinalizedRequestId = null;
+      session.pendingRequestId = null;
+      session.hydratingProgress = null;
+
       const messageId = `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       session.nextMessageId = messageId;
+      session.serverAssistantMessageId = null;
       const baseRequestId =
         typeof body?.requestId === "string" && body.requestId.trim()
           ? body.requestId.trim()
@@ -768,8 +816,9 @@ export function useStreamChat(deps: StreamChatDeps) {
             throw new Error("No response body");
           }
 
-          setAiState("responding", conversationId);
-          onAiStateChange?.("responding");
+          if (session.pendingRequestId === streamRequestId) {
+            setAiState("thinking", conversationId);
+          }
 
           const decoder = new TextDecoder();
           let sseBuffer = "";
@@ -856,7 +905,12 @@ export function useStreamChat(deps: StreamChatDeps) {
                 continue;
               }
 
+              if (eventAssistantMessageId) {
+                session.serverAssistantMessageId = eventAssistantMessageId;
+              }
+
               lastEventData = data;
+              const isStaleConversation = session.pendingRequestId !== streamRequestId;
 
               if (!hasReceivedEvent) {
                 hasReceivedEvent = true;
@@ -898,6 +952,10 @@ export function useStreamChat(deps: StreamChatDeps) {
                       clearTimeout(session.contentTokenTimeoutId);
                       session.contentTokenTimeoutId = null;
                     }
+                    if (!isStaleConversation) {
+                      setAiState("responding", conversationId);
+                      onAiStateChange?.("responding");
+                    }
                     armDoneTimeout();
                   } else {
                     // Re-arm on every chunk so it acts as an inactivity timer
@@ -920,7 +978,6 @@ export function useStreamChat(deps: StreamChatDeps) {
                 }
               }
 
-              const isStaleConversation = session.pendingRequestId !== streamRequestId;
               if (!isStaleConversation && currentEventType === "thinking") {
                 setAiState("thinking", conversationId);
                 onAiStateChange?.("thinking");
@@ -1001,6 +1058,13 @@ export function useStreamChat(deps: StreamChatDeps) {
                 clearTokenTimeouts();
                 streamDone = true;
                 flushNow(conversationId);
+                const normalizedFinalEventData = {
+                  ...(data && typeof data === "object" ? data : {}),
+                  requestId:
+                    typeof data?.requestId === "string" && data.requestId.trim()
+                      ? data.requestId
+                      : streamRequestId,
+                };
 
                 if (pendingTerminalError || data.error === true) {
                   const terminalError =
@@ -1019,7 +1083,7 @@ export function useStreamChat(deps: StreamChatDeps) {
                     role: "assistant" as const,
                     content: terminalError.message || "Error de conexión. Por favor, intenta de nuevo.",
                     timestamp: new Date(),
-                    requestId: data.requestId || streamRequestId,
+                    requestId: normalizedFinalEventData.requestId,
                   };
 
                   if (!session.finalizing) {
@@ -1029,20 +1093,20 @@ export function useStreamChat(deps: StreamChatDeps) {
                   return { ok: false, content: fullContent, message: errorMsg, response, error: terminalError };
                 }
 
-                const msg = buildFinalMessage?.(fullContent, data, messageId) ?? buildAssistantMessage({
+                const msg = buildFinalMessage?.(fullContent, normalizedFinalEventData, messageId) ?? buildAssistantMessage({
                   id: messageId,
                   timestamp: new Date(),
-                  requestId: data.requestId || streamRequestId,
+                  requestId: normalizedFinalEventData.requestId,
                   content: fullContent,
-                  artifact: data.artifact,
-                  webSources: data.webSources,
-                  searchQueries: data.searchQueries,
-                  totalSearches: data.totalSearches,
-                  followUpSuggestions: data.followUpSuggestions,
-                  confidence: data.confidence,
-                  uncertaintyReason: data.uncertaintyReason,
-                  retrievalSteps: data.retrievalSteps,
-                  steps: data.steps,
+                  artifact: normalizedFinalEventData.artifact,
+                  webSources: normalizedFinalEventData.webSources,
+                  searchQueries: normalizedFinalEventData.searchQueries,
+                  totalSearches: normalizedFinalEventData.totalSearches,
+                  followUpSuggestions: normalizedFinalEventData.followUpSuggestions,
+                  confidence: normalizedFinalEventData.confidence,
+                  uncertaintyReason: normalizedFinalEventData.uncertaintyReason,
+                  retrievalSteps: normalizedFinalEventData.retrievalSteps,
+                  steps: normalizedFinalEventData.steps,
                 });
 
                 finalize(msg, conversationId, "done");
@@ -1065,23 +1129,30 @@ export function useStreamChat(deps: StreamChatDeps) {
             throw pendingTerminalError;
           }
 
-          if (!session.finalizing && fullContent) {
+          if (!streamDone && !session.finalizing && fullContent) {
             clearTokenTimeouts();
             flushNow(conversationId);
-            const msg = buildFinalMessage?.(fullContent, lastEventData, messageId) ?? buildAssistantMessage({
+            const normalizedLastEventData = {
+              ...(lastEventData && typeof lastEventData === "object" ? lastEventData : {}),
+              requestId:
+                typeof lastEventData?.requestId === "string" && lastEventData.requestId.trim()
+                  ? lastEventData.requestId
+                  : streamRequestId,
+            };
+            const msg = buildFinalMessage?.(fullContent, normalizedLastEventData, messageId) ?? buildAssistantMessage({
               id: messageId,
               timestamp: new Date(),
-              requestId: streamRequestId,
+              requestId: normalizedLastEventData.requestId,
               content: fullContent,
-              artifact: lastEventData?.artifact,
-              webSources: lastEventData?.webSources,
-              searchQueries: lastEventData?.searchQueries,
-              totalSearches: lastEventData?.totalSearches,
-              followUpSuggestions: lastEventData?.followUpSuggestions,
-              confidence: lastEventData?.confidence,
-              uncertaintyReason: lastEventData?.uncertaintyReason,
-              retrievalSteps: lastEventData?.retrievalSteps,
-              steps: lastEventData?.steps,
+              artifact: normalizedLastEventData.artifact,
+              webSources: normalizedLastEventData.webSources,
+              searchQueries: normalizedLastEventData.searchQueries,
+              totalSearches: normalizedLastEventData.totalSearches,
+              followUpSuggestions: normalizedLastEventData.followUpSuggestions,
+              confidence: normalizedLastEventData.confidence,
+              uncertaintyReason: normalizedLastEventData.uncertaintyReason,
+              retrievalSteps: normalizedLastEventData.retrievalSteps,
+              steps: normalizedLastEventData.steps,
             });
 
             finalize(msg, conversationId, "done");
@@ -1216,6 +1287,7 @@ export function useStreamChat(deps: StreamChatDeps) {
     },
     [
       abortConversation,
+      clearSessionRuntime,
       finalize,
       flushNow,
       getSession,

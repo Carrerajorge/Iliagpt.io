@@ -1,3 +1,5 @@
+import { FREE_MODEL_ID } from "../lib/modelRegistry";
+
 export type TaskComplexity = 'simple' | 'moderate' | 'complex';
 export type TaskType = 'chat' | 'reasoning' | 'code' | 'research' | 'creative' | 'data_analysis' | 'web_automation' | 'document_generation';
 
@@ -39,12 +41,21 @@ export interface RouteResult {
 }
 
 const MODEL_TIERS: Record<string, ModelTier> = {
-  'google/gemma-4-31b-it': {
-    id: 'google/gemma-4-31b-it',
+  [FREE_MODEL_ID]: {
+    id: FREE_MODEL_ID,
     provider: 'openrouter',
     costPer1kInput: 0,
     costPer1kOutput: 0,
     maxContextTokens: 131072,
+    strengths: ['chat', 'code', 'reasoning', 'creative', 'research', 'data_analysis', 'web_automation', 'document_generation'],
+    speed: 'fast',
+  },
+  'google/gemma-4-31b-it': {
+    id: 'google/gemma-4-31b-it',
+    provider: 'openrouter',
+    costPer1kInput: 0.00014,
+    costPer1kOutput: 0.0004,
+    maxContextTokens: 262144,
     strengths: ['chat', 'code', 'reasoning', 'creative', 'research', 'data_analysis', 'web_automation', 'document_generation'],
     speed: 'fast',
   },
@@ -119,6 +130,7 @@ function getFallbackChain(): string[] {
     return envChain.split(',').map(m => m.trim()).filter(Boolean);
   }
   return [
+    FREE_MODEL_ID,
     'google/gemini-2.5-flash',
     'openai/gpt-4o-mini',
     'deepseek/deepseek-chat',

@@ -137,11 +137,29 @@ export class ConversationStateRepository {
   }
 
   async getMessages(stateId: string): Promise<ConversationMessage[]> {
-    return db
-      .select()
+    const messages = await db
+      .select({
+        id: conversationMessages.id,
+        stateId: conversationMessages.stateId,
+        chatMessageId: conversationMessages.chatMessageId,
+        role: conversationMessages.role,
+        content: conversationMessages.content,
+        tokenCount: conversationMessages.tokenCount,
+        sequence: conversationMessages.sequence,
+        parentMessageId: conversationMessages.parentMessageId,
+        attachmentIds: conversationMessages.attachmentIds,
+        imageIds: conversationMessages.imageIds,
+        metadata: conversationMessages.metadata,
+        createdAt: conversationMessages.createdAt,
+      })
       .from(conversationMessages)
       .where(eq(conversationMessages.stateId, stateId))
       .orderBy(asc(conversationMessages.sequence));
+
+    return messages.map((message) => ({
+      ...message,
+      keywords: [],
+    })) as ConversationMessage[];
   }
 
   async addArtifact(data: InsertConversationArtifact): Promise<ConversationArtifact> {

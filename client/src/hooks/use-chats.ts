@@ -2,6 +2,12 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { format, isToday, isYesterday, isThisWeek, isThisYear } from "date-fns";
 import { apiFetch, getAnonUserIdHeader } from "@/lib/apiClient";
 import { trackWorkspaceEvent } from "@/lib/analytics";
+import { buildAssistantMessage } from "@shared/assistantMessage";
+import { normalizeFollowUpSuggestions } from "@shared/followUpSuggestions";
+import {
+  dedupeMessagesByIdentity,
+  messagesShareIdentity,
+} from "@/lib/chatMessageIdentity";
 
 import { type AgentRunStatus } from "@/stores/agent-store";
 
@@ -79,6 +85,9 @@ export interface MessageArtifact {
   sizeBytes?: number;
   downloadUrl: string;
   previewUrl?: string;
+  name?: string;
+  filename?: string;
+  contentUrl?: string;
 }
 
 export interface Message {
@@ -110,6 +119,7 @@ export interface Message {
   webSources?: WebSource[]; // Web search sources for citations
   searchQueries?: Array<{ query: string; resultCount: number; status: string }>;
   totalSearches?: number;
+  followUpSuggestions?: string[];
   
   ui_components?: string[]; // Components to render: 'executive_summary', 'suggested_questions', 'insights_panel'
   confidence?: 'high' | 'medium' | 'low';
@@ -218,10 +228,42 @@ function sanitizeSendMessage(message: Message): Message {
     throw new Error("Message content too long (max 500K characters)");
   }
 
+  const normalizedAssistantMessage = role === "assistant"
+    ? buildAssistantMessage({
+        content: sanitizedContent,
+        artifact: message.artifact,
+        figmaDiagram: message.figmaDiagram,
+        generatedImage: message.generatedImage,
+        googleFormPreview: message.googleFormPreview,
+        gmailPreview: message.gmailPreview,
+        webSources: message.webSources,
+        searchQueries: message.searchQueries,
+        totalSearches: message.totalSearches,
+        followUpSuggestions: message.followUpSuggestions,
+        confidence: message.confidence,
+        uncertaintyReason: message.uncertaintyReason,
+        retrievalSteps: message.retrievalSteps,
+        steps: message.steps,
+      })
+    : null;
+
   return {
     ...message,
-    content: sanitizedContent,
+    content: normalizedAssistantMessage?.content ?? sanitizedContent,
     requestId: sanitizeRequestId(message.requestId),
+    artifact: normalizedAssistantMessage?.artifact ?? message.artifact,
+    figmaDiagram: normalizedAssistantMessage?.figmaDiagram ?? message.figmaDiagram,
+    generatedImage: normalizedAssistantMessage?.generatedImage ?? message.generatedImage,
+    googleFormPreview: normalizedAssistantMessage?.googleFormPreview ?? message.googleFormPreview,
+    gmailPreview: normalizedAssistantMessage?.gmailPreview ?? message.gmailPreview,
+    webSources: normalizedAssistantMessage?.webSources ?? message.webSources,
+    searchQueries: normalizedAssistantMessage?.searchQueries ?? message.searchQueries,
+    totalSearches: normalizedAssistantMessage?.totalSearches ?? message.totalSearches,
+    followUpSuggestions: normalizedAssistantMessage?.followUpSuggestions ?? normalizeFollowUpSuggestions(message.followUpSuggestions),
+    confidence: normalizedAssistantMessage?.confidence ?? message.confidence,
+    uncertaintyReason: normalizedAssistantMessage?.uncertaintyReason ?? message.uncertaintyReason,
+    retrievalSteps: normalizedAssistantMessage?.retrievalSteps ?? message.retrievalSteps,
+    steps: normalizedAssistantMessage?.steps ?? message.steps,
   };
 }
 
@@ -901,6 +943,18 @@ export function isPendingChat(chatId: string): boolean {
   return resolved.startsWith(PENDING_CHAT_PREFIX);
 }
 
+export function generateStableChatKey(): string {
+  try {
+    const c: any = (globalThis as any).crypto;
+    if (c && typeof c.randomUUID === "function") {
+      return `stable-${c.randomUUID()}`;
+    }
+  } catch {
+    // ignore
+  }
+  return `stable-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function generateStableServerChatId(): string {
   try {
     const c: any = (globalThis as any).crypto;
@@ -1105,7 +1159,7 @@ export function useChats() {
         }
       }
 
-      let messages: Message[] = (fullChat.messages || []).map((msg: any) => {
+      const messages: Message[] = (fullChat.messages || []).map((msg: any) => {
         if (msg.requestId) markRequestPersisted(msg.requestId);
 
         let hydratedAttachments = msg.attachments;
@@ -1138,26 +1192,47 @@ export function useChats() {
           });
         }
 
+        const assistantMessage = msg.role === "assistant"
+          ? buildAssistantMessage({
+              content: msg.content,
+              artifact: msg.artifact || msg.metadata?.artifact,
+              figmaDiagram: msg.figmaDiagram,
+              generatedImage: msg.generatedImage,
+              googleFormPreview: msg.googleFormPreview,
+              gmailPreview: msg.gmailPreview,
+              webSources: msg.webSources || msg.metadata?.webSources,
+              searchQueries: msg.searchQueries || msg.metadata?.searchQueries,
+              totalSearches: msg.totalSearches || msg.metadata?.totalSearches,
+              followUpSuggestions: msg.followUpSuggestions || msg.metadata?.followUpSuggestions,
+              confidence: msg.confidence || msg.metadata?.confidence,
+              uncertaintyReason: msg.uncertaintyReason || msg.metadata?.uncertaintyReason,
+              retrievalSteps: msg.retrievalSteps || msg.metadata?.retrievalSteps,
+              steps: msg.steps || msg.metadata?.steps,
+            })
+          : null;
+
         return {
           id: msg.id,
           role: msg.role,
-          content: msg.content,
+          content: assistantMessage?.content ?? msg.content,
           timestamp: new Date(msg.createdAt),
           requestId: msg.requestId,
           userMessageId: msg.userMessageId,
           attachments: hydratedAttachments,
           sources: msg.sources,
-          figmaDiagram: msg.figmaDiagram,
-          googleFormPreview: msg.googleFormPreview,
-          gmailPreview: msg.gmailPreview,
-          generatedImage: msg.generatedImage,
-          webSources: msg.webSources || msg.metadata?.webSources,
-          searchQueries: msg.searchQueries || msg.metadata?.searchQueries,
-          totalSearches: msg.totalSearches || msg.metadata?.totalSearches,
-          confidence: msg.confidence || msg.metadata?.confidence,
-          uncertaintyReason: msg.uncertaintyReason || msg.metadata?.uncertaintyReason,
-          retrievalSteps: msg.retrievalSteps || msg.metadata?.retrievalSteps,
-          steps: msg.steps || msg.metadata?.steps,
+          artifact: assistantMessage?.artifact ?? msg.artifact ?? msg.metadata?.artifact,
+          figmaDiagram: assistantMessage?.figmaDiagram ?? msg.figmaDiagram,
+          googleFormPreview: assistantMessage?.googleFormPreview ?? msg.googleFormPreview,
+          gmailPreview: assistantMessage?.gmailPreview ?? msg.gmailPreview,
+          generatedImage: assistantMessage?.generatedImage ?? msg.generatedImage,
+          webSources: assistantMessage?.webSources,
+          searchQueries: assistantMessage?.searchQueries,
+          totalSearches: assistantMessage?.totalSearches,
+          followUpSuggestions: assistantMessage?.followUpSuggestions,
+          confidence: assistantMessage?.confidence,
+          uncertaintyReason: assistantMessage?.uncertaintyReason,
+          retrievalSteps: assistantMessage?.retrievalSteps,
+          steps: assistantMessage?.steps,
         };
       });
 
@@ -1391,17 +1466,7 @@ export function useChats() {
             });
           }
 
-          const byId = new Map<string, Message>();
-          for (const msg of updated) {
-            const existing = byId.get(msg.id);
-            if (!existing) {
-              byId.set(msg.id, msg);
-              continue;
-            }
-            byId.set(msg.id, { ...existing, ...msg });
-          }
-
-          return { ...chat, messages: Array.from(byId.values()) };
+          return { ...chat, messages: dedupeMessagesByIdentity(updated) };
         }));
       };
 
@@ -1675,12 +1740,15 @@ export function useChats() {
     };
   }, []);
 
-  const createChat = useCallback((): { pendingId: string; stableKey: string } => {
+  const createChat = useCallback((stableKeyOverride?: string | null): { pendingId: string; stableKey: string } => {
     const pendingId = `${PENDING_CHAT_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const provisionalRealId = generateStableServerChatId();
     // Pre-assign a stable server chatId so first-message stream can start immediately.
     pendingToRealIdMap.set(pendingId, provisionalRealId);
-    const stableKey = `stable-${Date.now()}`; // Stable key that won't change
+    const stableKey =
+      typeof stableKeyOverride === "string" && stableKeyOverride.trim().length > 0
+        ? stableKeyOverride.trim()
+        : generateStableChatKey();
     const pendingChat: Chat = {
       id: pendingId,
       stableKey,
@@ -1722,7 +1790,7 @@ export function useChats() {
         return {
           ...chat,
           messages: chat.messages.map(m => {
-            if (m.id !== tempId && m.clientTempId !== tempId) return m;
+            if (!messagesShareIdentity(m, normalizedMessage) && m.id !== tempId && m.clientTempId !== tempId) return m;
             const nextStatus =
               patch.deliveryStatus === "sent" && m.deliveryStatus === "delivered"
                 ? "delivered"
@@ -1740,7 +1808,7 @@ export function useChats() {
 
         let changed = false;
         let updated = chat.messages.map(m => {
-          if (m.id === tempId || m.clientTempId === tempId) {
+          if (m.id === tempId || m.clientTempId === tempId || messagesShareIdentity(m, normalizedMessage)) {
             changed = true;
             return {
               ...m,
@@ -1772,17 +1840,7 @@ export function useChats() {
           });
         }
 
-        const byId = new Map<string, Message>();
-        for (const msg of updated) {
-          const existing = byId.get(msg.id);
-          if (!existing) {
-            byId.set(msg.id, msg);
-            continue;
-          }
-          byId.set(msg.id, { ...existing, ...msg });
-        }
-
-        return { ...chat, messages: Array.from(byId.values()) };
+        return { ...chat, messages: dedupeMessagesByIdentity(updated) };
       }));
     };
 
@@ -1831,8 +1889,8 @@ export function useChats() {
     }
 
     // Insert into local state (optimistic) if not present.
-    setChats(prev => {
-      const chatExists = prev.some(chat => chat.id === safeChatId || chat.id === resolvedChatId);
+      setChats(prev => {
+        const chatExists = prev.some(chat => chat.id === safeChatId || chat.id === resolvedChatId);
 
       if (!chatExists && isPending) {
         return [...prev, {
@@ -1844,9 +1902,9 @@ export function useChats() {
         }];
       }
 
-      return prev.map(chat => {
-        const matchId = chat.id === safeChatId || chat.id === resolvedChatId;
-        if (!matchId) return chat;
+        return prev.map(chat => {
+          const matchId = chat.id === safeChatId || chat.id === resolvedChatId;
+          if (!matchId) return chat;
 
         const maybeMarkDelivered = (msgs: Message[]): Message[] => {
           if (normalizedMessage.role !== "assistant" || !normalizedMessage.userMessageId) return msgs;
@@ -1863,19 +1921,20 @@ export function useChats() {
           return changed ? patched : msgs;
         };
 
-        const messageExists = chat.messages.some(m => m.id === tempId || m.clientTempId === tempId);
+        const messageExists = chat.messages.some((m) => messagesShareIdentity(m, normalizedMessage));
         if (messageExists) {
           // Retry path: do not mark as complete here. The server ACK is the source of truth.
-          const nextMessages = maybeMarkDelivered(
-            chat.messages.map(m => (m.id === tempId || m.clientTempId === tempId)
+          const nextMessages = maybeMarkDelivered(dedupeMessagesByIdentity(
+            chat.messages.map((m) => messagesShareIdentity(m, normalizedMessage)
               ? {
                 ...m,
+                ...normalizedMessage,
                 deliveryStatus: normalizedMessage.deliveryStatus,
                 deliveryError: normalizedMessage.deliveryError,
               }
               : m
             )
-          );
+          ));
           return {
             ...chat,
             messages: nextMessages,
@@ -1883,7 +1942,7 @@ export function useChats() {
         }
 
         const isFirstMessage = chat.messages.length === 0;
-        const nextMessages = maybeMarkDelivered([...chat.messages, normalizedMessage]);
+        const nextMessages = maybeMarkDelivered(dedupeMessagesByIdentity([...chat.messages, normalizedMessage]));
         return {
           ...chat,
           messages: nextMessages,
@@ -1917,6 +1976,7 @@ export function useChats() {
             userMessageId: normalizedMessage.userMessageId,
             attachments: sanitizeAttachmentsForServer(normalizedMessage.attachments),
             sources: normalizedMessage.sources,
+            artifact: normalizedMessage.artifact,
             figmaDiagram: normalizedMessage.figmaDiagram,
             googleFormPreview: normalizedMessage.googleFormPreview,
             gmailPreview: normalizedMessage.gmailPreview,
@@ -1924,6 +1984,7 @@ export function useChats() {
             webSources: normalizedMessage.webSources,
             searchQueries: normalizedMessage.searchQueries,
             totalSearches: normalizedMessage.totalSearches,
+            followUpSuggestions: normalizedMessage.followUpSuggestions,
             confidence: normalizedMessage.confidence,
             uncertaintyReason: normalizedMessage.uncertaintyReason,
             retrievalSteps: normalizedMessage.retrievalSteps,

@@ -1,5 +1,10 @@
-import { drizzle } from "drizzle-orm/node-postgres"; import { migrate } from "drizzle-orm/node-postgres/migrator"; import * as pkg from "pg"; import type { PoolClient } from "pg"; import * as schema
-  from "../shared/schema"; import { Registry, Histogram, Counter, Gauge } from 'prom-client'; import { env } from "./config/env"; import { Logger } from "./lib/logger";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import * as pkg from "pg";
+import * as schema from "../shared/schema";
+import { Registry, Histogram, Counter, Gauge } from "prom-client";
+import { env } from "./config/env";
+import { Logger } from "./lib/logger";
 
 const { Pool } = pkg;
 
@@ -29,19 +34,26 @@ const poolRead = env.DATABASE_READ_URL ? new Pool({
   options: '-c search_path=public -c statement_timeout=30000',
 }) : pool;
 
-pool.on('error', (err: any) => {
-  if (err.code === '57P01') {
+pool.on("error", (err: unknown) => {
+  const errorCode =
+    typeof err === "object" && err !== null && "code" in err
+      ? String((err as { code?: unknown }).code ?? "")
+      : "";
+  const errorMessage = err instanceof Error ? err.message : String(err);
+
+  if (errorCode === "57P01") {
     Logger.warn('[DB Write] Connection terminated by administrator, pool will reconnect automatically');
   } else {
-    Logger.error('[DB Write] Unexpected error on idle client:', err.message || err);
+    Logger.error("[DB Write] Unexpected error on idle client:", errorMessage);
   }
   healthState.consecutiveFailures++;
   updateHealthStatus();
 });
 
 if (env.DATABASE_READ_URL) {
-  poolRead.on('error', (err: any) => {
-    Logger.error('[DB Read] Unexpected error on idle client:', err.message || err);
+  poolRead.on("error", (err: unknown) => {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    Logger.error("[DB Read] Unexpected error on idle client:", errorMessage);
   });
   poolRead.on('connect', () => {
     Logger.info('[DB Read] New client connected to read pool');
@@ -63,7 +75,14 @@ export async function runMigrations(): Promise<void> {
   await migrate(db, { migrationsFolder: "./migrations" });
 }
 
-export type HealthStatus = 'HEALTHY' | 'DEGRADED' | 'UNHEALTHY';
+export type HealthStatus = "HEALTHY" | "DEGRADED" | "UNHEALTHY";
+
+interface PoolSnapshot {
+  totalCount: number;
+  idleCount: number;
+  waitingCount: number;
+  maxConnections: number;
+}
 
 interface HealthState {
   status: HealthStatus;
@@ -73,6 +92,7 @@ interface HealthState {
   consecutiveSuccesses: number;
   isReconnecting: boolean;
   reconnectAttempts: number;
+  lastError: string | null;
 }
 
 interface HealthCheckResult {
@@ -80,26 +100,31 @@ interface HealthCheckResult {
   lastCheck: Date | null;
   latencyMs: number;
   consecutiveFailures: number;
+  isReconnecting: boolean;
+  reconnectAttempts: number;
+  lastError: string | null;
+  pool: PoolSnapshot;
 }
 
 const HEALTH_CHECK_INTERVAL_MS = process.env.NODE_ENV === 'production' ? 30000 : 120000;
-const HEALTH_CHECK_TIMEOUT_MS = 5000;
 const HEALTHY_THRESHOLD = 3;
 const MAX_RECONNECT_DELAY_MS = 30000;
 const INITIAL_RECONNECT_DELAY_MS = 1000;
 
 let healthCheckIntervalId: NodeJS.Timeout | null = null;
 let reconnectTimeoutId: NodeJS.Timeout | null = null;
+let activeHealthCheck: Promise<boolean> | null = null;
 let isShuttingDown = false;
 
 const healthState: HealthState = {
-  status: 'HEALTHY',
+  status: "HEALTHY",
   lastCheck: null,
   latencyMs: 0,
   consecutiveFailures: 0,
   consecutiveSuccesses: 0,
   isReconnecting: false,
   reconnectAttempts: 0,
+  lastError: null,
 };
 
 const dbMetricsRegistry = new Registry();
@@ -145,68 +170,128 @@ function updateHealthStatus(): void {
   dbHealthStatusGauge.set(statusValue);
 }
 
-async function performHealthCheck(): Promise<boolean> {
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function getPoolSnapshot(targetPool: {
+  totalCount?: number;
+  idleCount?: number;
+  waitingCount?: number;
+  options?: { max?: number };
+} | null | undefined): PoolSnapshot {
+  return {
+    totalCount: targetPool?.totalCount ?? 0,
+    idleCount: targetPool?.idleCount ?? 0,
+    waitingCount: targetPool?.waitingCount ?? 0,
+    maxConnections: targetPool?.options?.max ?? env.DB_POOL_MAX ?? 0,
+  };
+}
+
+export function isTransientDatabaseError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code ?? "").toLowerCase()
+      : "";
+
+  if (
+    [
+      "57p01",
+      "57p02",
+      "57p03",
+      "08000",
+      "08003",
+      "08006",
+      "53300",
+      "econnreset",
+      "econnrefused",
+      "etimedout",
+    ].includes(code)
+  ) {
+    return true;
+  }
+
+  return [
+    "connection terminated unexpectedly",
+    "connection terminated due to connection timeout",
+    "timeout exceeded when trying to connect",
+    "health check timeout",
+    "could not connect",
+    "terminating connection",
+    "connection timeout",
+    "database system is starting up",
+  ].some((fragment) => message.includes(fragment));
+}
+
+function clearReconnectTimer(): void {
+  if (!reconnectTimeoutId) {
+    return;
+  }
+
+  clearTimeout(reconnectTimeoutId);
+  reconnectTimeoutId = null;
+}
+
+export async function performHealthCheck(): Promise<boolean> {
   if (isShuttingDown) {
     return false;
   }
 
-  const startTime = Date.now();
-  let client: PoolClient | null = null;
-
-  try {
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Health check timeout')), HEALTH_CHECK_TIMEOUT_MS);
-    });
-
-    const queryPromise = (async () => {
-      client = await pool.connect();
-      await client.query('SELECT 1');
-      return true;
-    })();
-
-    await Promise.race([queryPromise, timeoutPromise]);
-
-    const latencyMs = Date.now() - startTime;
-    healthState.latencyMs = latencyMs;
-    healthState.lastCheck = new Date();
-    healthState.consecutiveFailures = 0;
-    healthState.consecutiveSuccesses++;
-    healthState.isReconnecting = false;
-    healthState.reconnectAttempts = 0;
-
-    dbQueryLatencyHistogram.observe(latencyMs);
-    updateHealthStatus();
-
-    console.log(`[DB Health] Check OK - ${latencyMs}ms (status: ${healthState.status})`);
-    return true;
-
-  } catch (error: any) {
-    const latencyMs = Date.now() - startTime;
-    healthState.latencyMs = latencyMs;
-    healthState.lastCheck = new Date();
-    healthState.consecutiveFailures++;
-    healthState.consecutiveSuccesses = 0;
-
-    dbConnectionFailuresCounter.inc();
-    dbQueryLatencyHistogram.observe(latencyMs);
-    updateHealthStatus();
-
-    console.error(`[DB Health] Check FAILED - ${error.message} (failures: ${healthState.consecutiveFailures}, status: ${healthState.status})`);
-
-    if (healthState.status === 'UNHEALTHY' && !healthState.isReconnecting) {
-      scheduleReconnect();
-    }
-
-    return false;
-
-  } finally {
-    if (client) {
-      try {
-        (client as any).release();
-      } catch (e) {
-      }
-    }
+  if (activeHealthCheck) {
+    return activeHealthCheck;
   }
+
+  activeHealthCheck = (async () => {
+    const startTime = Date.now();
+
+    try {
+      await pool.query("SELECT 1");
+
+      const latencyMs = Date.now() - startTime;
+      healthState.latencyMs = latencyMs;
+      healthState.lastCheck = new Date();
+      healthState.consecutiveFailures = 0;
+      healthState.consecutiveSuccesses++;
+      healthState.isReconnecting = false;
+      healthState.reconnectAttempts = 0;
+      healthState.lastError = null;
+
+      clearReconnectTimer();
+      dbQueryLatencyHistogram.observe(latencyMs);
+      updateHealthStatus();
+
+      console.log(`[DB Health] Check OK - ${latencyMs}ms (status: ${healthState.status})`);
+      return true;
+    } catch (error: unknown) {
+      const latencyMs = Date.now() - startTime;
+      const errorMessage = getErrorMessage(error);
+
+      healthState.latencyMs = latencyMs;
+      healthState.lastCheck = new Date();
+      healthState.consecutiveFailures++;
+      healthState.consecutiveSuccesses = 0;
+      healthState.lastError = errorMessage;
+
+      dbConnectionFailuresCounter.inc();
+      dbQueryLatencyHistogram.observe(latencyMs);
+      updateHealthStatus();
+
+      console.error(
+        `[DB Health] Check FAILED - ${errorMessage} (failures: ${healthState.consecutiveFailures}, status: ${healthState.status})`,
+      );
+
+      if (healthState.status === "UNHEALTHY" && !healthState.isReconnecting) {
+        scheduleReconnect();
+      }
+
+      return false;
+    } finally {
+      activeHealthCheck = null;
+    }
+  })();
+
+  return activeHealthCheck;
 }
 
 function calculateBackoffDelay(): number {
@@ -227,22 +312,24 @@ async function attemptReconnect(): Promise<void> {
   console.log(`[DB Health] Attempting reconnection (attempt ${healthState.reconnectAttempts}, delay: ${delay}ms)`);
 
   try {
-    const client = await pool.connect();
-    await client.query('SELECT 1');
-    client.release();
+    await pool.query("SELECT 1");
 
     console.log(`[DB Health] Reconnection successful after ${healthState.reconnectAttempts} attempts`);
     healthState.isReconnecting = false;
     healthState.consecutiveFailures = 0;
     healthState.consecutiveSuccesses = 1;
     healthState.reconnectAttempts = 0;
+    healthState.lastError = null;
     updateHealthStatus();
 
-  } catch (error: any) {
-    console.error(`[DB Health] Reconnection failed: ${error.message}`);
+  } catch (error: unknown) {
+    const errorMessage = getErrorMessage(error);
+
+    healthState.lastError = errorMessage;
+    console.error(`[DB Health] Reconnection failed: ${errorMessage}`);
     dbConnectionFailuresCounter.inc();
 
-    if (!isShuttingDown && healthState.status === 'UNHEALTHY') {
+    if (!isShuttingDown && healthState.status === "UNHEALTHY") {
       scheduleReconnect();
     }
   }
@@ -270,6 +357,10 @@ export function getHealthStatus(): HealthCheckResult {
     lastCheck: healthState.lastCheck,
     latencyMs: healthState.latencyMs,
     consecutiveFailures: healthState.consecutiveFailures,
+    isReconnecting: healthState.isReconnecting,
+    reconnectAttempts: healthState.reconnectAttempts,
+    lastError: healthState.lastError,
+    pool: getPoolSnapshot(pool),
   };
 }
 
@@ -310,12 +401,13 @@ export function startHealthChecks(): void {
     return;
   }
 
+  isShuttingDown = false;
   console.log(`[DB Health] Starting periodic health checks (interval: ${HEALTH_CHECK_INTERVAL_MS}ms)`);
 
-  performHealthCheck();
+  void performHealthCheck();
 
   healthCheckIntervalId = setInterval(() => {
-    performHealthCheck();
+    void performHealthCheck();
   }, HEALTH_CHECK_INTERVAL_MS);
 
   healthCheckIntervalId.unref();
@@ -340,10 +432,11 @@ export async function drainConnections(): Promise<void> {
   console.log('[DB Health] Draining database connections');
 
   try {
-    await pool.end();
+    const pools = poolRead === pool ? [pool] : [pool, poolRead];
+    await Promise.all(pools.map((targetPool) => targetPool.end()));
     console.log('[DB Health] All database connections drained');
-  } catch (error: any) {
-    console.error('[DB Health] Error draining connections:', error.message);
+  } catch (error: unknown) {
+    console.error("[DB Health] Error draining connections:", getErrorMessage(error));
   }
 }
 
@@ -364,9 +457,9 @@ async function retryWithBackoff<T>(
   while (true) {
     try {
       return await fn();
-    } catch (err: any) {
+    } catch (err: unknown) {
       attempt += 1;
-      const msg = err?.message || String(err);
+      const msg = getErrorMessage(err);
       console.warn(`[Startup] ${opts.label} failed (${attempt}/${opts.retries}): ${msg}`);
       if (attempt >= opts.retries) throw err;
       await new Promise((r) => setTimeout(r, delay));
@@ -376,29 +469,37 @@ async function retryWithBackoff<T>(
 }
 
 export async function verifyDatabaseConnection(): Promise<boolean> {
+  const startTime = Date.now();
+
   try {
     const result = await retryWithBackoff(
-      async () => {
-        const client = await pool.connect();
-        try {
-          return await client.query('SELECT current_database(), NOW() as server_time');
-        } finally {
-          client.release();
-        }
-      },
+      async () => pool.query("SELECT current_database(), NOW() as server_time"),
       { label: "DB connect", retries: 10, delayMs: 300, maxDelayMs: 3000 }
     );
 
     console.log(`[DB] Connected to database: ${result.rows[0].current_database}`);
 
+    healthState.lastCheck = new Date();
+    healthState.latencyMs = Date.now() - startTime;
+    healthState.consecutiveFailures = 0;
     healthState.consecutiveSuccesses = HEALTHY_THRESHOLD;
-    healthState.status = 'HEALTHY';
+    healthState.status = "HEALTHY";
+    healthState.isReconnecting = false;
+    healthState.reconnectAttempts = 0;
+    healthState.lastError = null;
+    clearReconnectTimer();
     updateHealthStatus();
 
     return true;
-  } catch (error: any) {
-    console.error('[DB] Failed to connect to database:', error.message);
+  } catch (error: unknown) {
+    const errorMessage = getErrorMessage(error);
+
+    console.error("[DB] Failed to connect to database:", errorMessage);
+    healthState.lastCheck = new Date();
+    healthState.latencyMs = Date.now() - startTime;
     healthState.consecutiveFailures++;
+    healthState.consecutiveSuccesses = 0;
+    healthState.lastError = errorMessage;
     updateHealthStatus();
 
     if (env.NODE_ENV === "production") {

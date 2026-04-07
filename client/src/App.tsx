@@ -334,17 +334,8 @@ function Router() {
             <Route path="/privacy" component={ProtectedPrivacyPage} />
             <Route path="/privacy-policy" component={PrivacyPolicyPage} />
             <Route path="/terms" component={TermsPage} />
-            <Route path="/admin" component={ProtectedAdminPage} />
-            <Route path="/admin/budget" component={ProtectedAdminPage} />
-            <Route path="/admin/governance" component={ProtectedAdminPage} />
-            <Route path="/admin/security" component={ProtectedAdminPage} />
             <Route path="/admin/health" component={ProtectedSystemHealthPage} />
-            <Route path="/admin/sre" component={ProtectedAdminPage} />
-            <Route path="/admin/experiments" component={ProtectedAdminPage} />
-            <Route path="/admin/voice" component={ProtectedAdminPage} />
-            <Route path="/admin/terminal" component={ProtectedAdminPage} />
-            <Route path="/admin/data-plane" component={ProtectedAdminPage} />
-            <Route path="/admin/files" component={ProtectedAdminPage} />
+            <Route path="/admin/:section?" component={ProtectedAdminPage} />
             <Route path="/workspace-settings" component={ProtectedWorkspaceSettingsPage} />
             <Route path="/workspace" component={ProtectedWorkspacePage} />
             <Route path="/skills" component={ProtectedSkillsPage} />

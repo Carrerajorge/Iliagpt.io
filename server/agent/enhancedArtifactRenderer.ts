@@ -8,7 +8,7 @@
  * - Advanced Excel with formulas and charts
  */
 
-import PptxGenJS from "pptxgenjs";
+import type PptxGenJS from "pptxgenjs";
 import {
     PROFESSIONAL_THEMES,
     SMART_LAYOUTS,
@@ -18,7 +18,7 @@ import {
     formatBulletsWithIcons,
     type ProfessionalTheme
 } from "../services/pptTemplateEngine";
-import { generatePptDocument } from "../services/documentGeneration";
+import { createPptxDocument, generatePptDocument } from "../services/documentGeneration";
 import {
     formatAPA7Reference,
     formatInTextCitation,
@@ -78,7 +78,7 @@ async function renderEnhancedPresentationCore(
   spec: PresentationSpec,
   options: EnhancedPresentationOptions = {}
 ): Promise<{ buffer: Buffer; filename: string }> {
-  const pptx = new PptxGenJS();
+  const pptx = createPptxDocument();
 
     // Get theme
     const themeName = options.themeName || "corporate";

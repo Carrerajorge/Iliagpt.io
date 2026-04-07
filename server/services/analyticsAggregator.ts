@@ -1,4 +1,4 @@
-import { db } from "../db";
+import { dbRead, getHealthStatus, isTransientDatabaseError } from "../db";
 import { apiLogs } from "@shared/schema";
 import { sql, gte, and, count, isNotNull } from "drizzle-orm";
 import { storage } from "../storage";
@@ -30,6 +30,29 @@ interface ProviderStats {
   tokensOut: number;
 }
 
+function getDatabaseReadiness():
+  | { ready: true }
+  | { ready: false; reason: string } {
+  const dbHealth = getHealthStatus();
+
+  if (dbHealth.status === "HEALTHY") {
+    return { ready: true };
+  }
+
+  const reasonParts = [`status=${dbHealth.status}`];
+  if (dbHealth.isReconnecting) {
+    reasonParts.push(`reconnecting=${dbHealth.reconnectAttempts}`);
+  }
+  if (dbHealth.lastError) {
+    reasonParts.push(`lastError=${dbHealth.lastError}`);
+  }
+
+  return {
+    ready: false,
+    reason: reasonParts.join(", "),
+  };
+}
+
 function calculatePercentile(sortedValues: number[], percentile: number): number {
   if (sortedValues.length === 0) return 0;
   const index = Math.ceil((percentile / 100) * sortedValues.length) - 1;
@@ -46,7 +69,7 @@ async function tableExists(tableName: string): Promise<boolean> {
   if (cached && Date.now() - cached.checkedAt < TABLE_EXISTS_CACHE_TTL_MS) {
     return cached.exists;
   }
-  const result = await db.execute(sql`select to_regclass(${tableName}) as table_name`);
+  const result = await dbRead.execute(sql`select to_regclass(${tableName}) as table_name`);
   const row = result.rows?.[0] as { table_name?: string | null } | undefined;
   const exists = Boolean(row?.table_name);
   tableExistsCache.set(tableName, { exists, checkedAt: Date.now() });
@@ -87,6 +110,12 @@ export async function runAggregation(): Promise<void> {
     return;
   }
 
+  const dbReadiness = getDatabaseReadiness();
+  if (!dbReadiness.ready) {
+    console.warn(`[Analytics] Skipping aggregation while database is unavailable (${dbReadiness.reason})`);
+    return;
+  }
+
   isRunning = true;
   const windowEnd = new Date();
   const windowStart = new Date(windowEnd.getTime() - AGGREGATION_INTERVAL_MS);
@@ -106,7 +135,7 @@ export async function runAggregation(): Promise<void> {
       return;
     }
 
-    const logs = await db
+    const logs = await dbRead
       .select({
         provider: apiLogs.provider,
         statusCode: apiLogs.statusCode,
@@ -218,13 +247,24 @@ export async function runAggregation(): Promise<void> {
 
     console.log(`[Analytics] Aggregation completed. Processed ${logs.length} logs from ${providerMap.size} providers.`);
   } catch (error) {
-    console.error("[Analytics] Error during aggregation:", error);
+    if (isTransientDatabaseError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[Analytics] Aggregation skipped because database became unavailable: ${message}`);
+    } else {
+      console.error("[Analytics] Error during aggregation:", error);
+    }
   } finally {
     isRunning = false;
   }
 }
 
 export async function calculateKpis(): Promise<void> {
+  const dbReadiness = getDatabaseReadiness();
+  if (!dbReadiness.ready) {
+    console.warn(`[Analytics] Skipping KPI calculation while database is unavailable (${dbReadiness.reason})`);
+    return;
+  }
+
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const oneMinuteAgo = new Date(now.getTime() - 60 * 1000);
@@ -244,7 +284,7 @@ export async function calculateKpis(): Promise<void> {
 
     // "Active users now" should reflect distinct accounts, not message volume.
     // We use api_logs (LLM calls) as the most reliable cross-feature activity signal.
-    const [activeUsersResult] = await db
+    const [activeUsersResult] = await dbRead
       .select({ count: sql<number>`COUNT(DISTINCT ${apiLogs.userId})` })
       .from(apiLogs)
       .where(and(
@@ -253,13 +293,13 @@ export async function calculateKpis(): Promise<void> {
       ));
     const activeUsersNow = Number(activeUsersResult?.count || 0);
 
-    const [queriesResult] = await db
+    const [queriesResult] = await dbRead
       .select({ count: count() })
       .from(apiLogs)
       .where(gte(apiLogs.createdAt, oneMinuteAgo));
     const queriesPerMinute = queriesResult?.count || 0;
 
-    const [tokensResult] = await db
+    const [tokensResult] = await dbRead
       .select({
         totalIn: sql<number>`COALESCE(SUM(${apiLogs.tokensIn}), 0)`,
         totalOut: sql<number>`COALESCE(SUM(${apiLogs.tokensOut}), 0)`,
@@ -268,7 +308,7 @@ export async function calculateKpis(): Promise<void> {
       .where(gte(apiLogs.createdAt, todayStart));
     const tokensConsumedToday = (tokensResult?.totalIn || 0) + (tokensResult?.totalOut || 0);
 
-    const [latencyResult] = await db
+    const [latencyResult] = await dbRead
       .select({
         avg: sql<number>`COALESCE(AVG(${apiLogs.latencyMs}), 0)`,
       })
@@ -276,7 +316,7 @@ export async function calculateKpis(): Promise<void> {
       .where(gte(apiLogs.createdAt, todayStart));
     const avgLatencyMs = Math.round(latencyResult?.avg || 0);
 
-    const [errorResult] = await db
+    const [errorResult] = await dbRead
       .select({
         total: count(),
         errors: sql<number>`SUM(CASE WHEN ${apiLogs.statusCode} >= 400 THEN 1 ELSE 0 END)`,
@@ -307,7 +347,12 @@ export async function calculateKpis(): Promise<void> {
 
     console.log(`[Analytics] KPI snapshot created - Active: ${activeUsersNow}, QPM: ${queriesPerMinute}, Tokens: ${tokensConsumedToday}`);
   } catch (error) {
-    console.error("[Analytics] Error calculating KPIs:", error);
+    if (isTransientDatabaseError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[Analytics] KPI calculation skipped because database became unavailable: ${message}`);
+    } else {
+      console.error("[Analytics] Error calculating KPIs:", error);
+    }
   }
 }
 

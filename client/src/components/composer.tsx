@@ -48,16 +48,19 @@ import {
 } from "@/lib/silver-ui";
 import { SourceListItem } from "@/components/ui/source-list-item";
 import { RecordingPanel } from "@/components/recording-panel";
+import { FilePreviewSurface } from "@/components/FilePreviewSurface";
 import { useConnectedSources } from "@/hooks/use-connected-sources";
 import { useCommandHistory } from "@/hooks/use-command-history";
 import { VirtualComputer } from "@/components/virtual-computer";
 import { getFileTheme } from "@/lib/fileTypeTheme";
+import type { FilePreviewData } from "@/lib/filePreviewTypes";
 import { useSettingsContext } from "@/contexts/SettingsContext";
 import "@/components/ui/glass-effects.css";
 import { type AIState, isAiBusyState } from "@/components/chat-interface/types";
 
 interface UploadedFile {
   id?: string;
+  localKey?: string;
   name: string;
   type: string;
   mimeType?: string;
@@ -66,6 +69,8 @@ interface UploadedFile {
   storagePath?: string;
   status?: string;
   content?: string;
+  previewStatus?: "idle" | "loading" | "ready" | "error";
+  previewData?: FilePreviewData;
   spreadsheetData?: {
     uploadId: string;
     sheets: Array<{ name: string; rowCount: number; columnCount: number }>;
@@ -87,10 +92,11 @@ export interface ComposerProps {
   composerRef: React.RefObject<HTMLDivElement | null>;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   uploadedFiles: UploadedFile[];
+  dragPreviewFiles?: UploadedFile[];
   removeFile: (index: number) => void;
   handleSubmit: () => void;
   handleFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  handlePaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
+  handlePaste: (e: React.ClipboardEvent<HTMLElement>) => void;
   handleDragOver: (e: React.DragEvent) => void;
   handleDragEnter: (e: React.DragEvent) => void;
   handleDragLeave: (e: React.DragEvent) => void;
@@ -127,7 +133,7 @@ export interface ComposerProps {
   handleDocTextDeselect?: () => void;
   onCloseSidebar?: () => void;
   setPreviewUploadedImage?: (value: { name: string; dataUrl: string } | null) => void;
-  onPreviewFile?: (file: { name: string; mimeType?: string; fileId?: string; dataUrl?: string; content?: string }) => void;
+  onPreviewFile?: (file: { name: string; mimeType?: string; fileId?: string; dataUrl?: string; content?: string; previewData?: FilePreviewData }) => void;
   isFigmaConnected?: boolean;
   isFigmaConnecting?: boolean;
   handleFigmaConnect?: () => void;
@@ -157,6 +163,7 @@ export function Composer({
   composerRef,
   fileInputRef,
   uploadedFiles,
+  dragPreviewFiles = [],
   removeFile,
   handleSubmit,
   handleFileUpload,
@@ -354,6 +361,13 @@ export function Composer({
     handleSubmit();
   };
 
+  const handleContainerPasteCapture = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
+    if (e.target === textareaRef.current) {
+      return;
+    }
+    handlePaste(e);
+  }, [handlePaste, textareaRef]);
+
   const handleHistoryNavigation = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const textarea = e.currentTarget;
     const cursorPosition = textarea.selectionStart;
@@ -427,6 +441,49 @@ export function Composer({
     }
   };
 
+  const renderPreviewTile = (file: UploadedFile, size: "compact" | "document" | "drag") => {
+    const outerClass = size === "document"
+      ? "h-[84px] w-[132px]"
+      : size === "drag"
+        ? "h-20 w-full"
+        : "h-12 w-20";
+
+    if ((file.type?.startsWith("image/") || file.mimeType?.startsWith("image/")) && file.dataUrl) {
+      return (
+        <div className={cn("overflow-hidden rounded-lg border border-slate-200/80 bg-white shadow-sm", outerClass)}>
+          <img
+            src={file.dataUrl}
+            alt={file.name}
+            className="h-full w-full object-cover"
+          />
+        </div>
+      );
+    }
+
+    if (file.previewData && (file.previewData.html || file.previewData.content)) {
+      return (
+        <div className={cn("overflow-hidden rounded-lg border border-slate-200/80 bg-white shadow-sm", outerClass)}>
+          <FilePreviewSurface preview={file.previewData} variant="thumbnail" />
+        </div>
+      );
+    }
+
+    const theme = getFileTheme(file.name, file.mimeType || file.type);
+    return (
+      <div className={cn(
+        "flex items-center justify-center rounded-lg text-white shadow-sm",
+        outerClass,
+        theme.bgColor
+      )}>
+        {(file.status === "uploading" || file.status === "processing" || file.previewStatus === "loading") ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <span className="text-lg font-bold">{theme.icon}</span>
+        )}
+      </div>
+    );
+  };
+
   const renderAttachmentPreview = () => {
     if (uploadedFiles.length === 0) return null;
 
@@ -477,30 +534,25 @@ export function Composer({
                   const docTheme = getFileTheme(file.name, file.mimeType || file.type);
                   return (
                     <div
-                      className="flex items-center gap-2 px-2 py-1.5 pr-6 max-w-[200px] cursor-pointer"
+                      className="flex items-center gap-2 px-2 py-1.5 pr-6 max-w-[240px] cursor-pointer"
                       onClick={() => file.status === "ready" && onPreviewFile?.({
                         name: file.name,
                         mimeType: file.mimeType || file.type,
                         fileId: file.id,
                         dataUrl: file.dataUrl,
                         content: file.content,
+                        previewData: file.previewData,
                       })}
                     >
-                      <div className={cn(
-                        "flex items-center justify-center w-8 h-8 rounded flex-shrink-0",
-                        docTheme.bgColor
-                      )}>
-                        {(file.status === "uploading" || file.status === "processing") ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-white" />
-                        ) : (
-                          <span className="text-white text-[10px] font-bold">{docTheme.icon}</span>
-                        )}
+                      <div className="shrink-0">
+                        {renderPreviewTile(file, "document")}
                       </div>
                       <div className="flex-1 min-w-0">
                         <span className="text-xs font-medium truncate block">{file.name}</span>
                         <span className="text-[10px] text-muted-foreground">
                           {file.status === "uploading" ? "Subiendo..." :
                             file.status === "processing" ? "Procesando..." :
+                              file.previewStatus === "loading" ? "Renderizando..." :
                               file.status === "error" ? "Error" :
                                 `${docTheme.label} - ${formatFileSize(file.size)}`}
                         </span>
@@ -586,19 +638,11 @@ export function Composer({
                       fileId: file.id,
                       dataUrl: file.dataUrl,
                       content: file.content,
+                      previewData: file.previewData,
                     })}
                   >
-                    <div className={cn(
-                      "flex items-center justify-center w-6 h-6 rounded shrink-0",
-                      theme.bgColor
-                    )}>
-                      {file.status === "uploading" || file.status === "processing" ? (
-                        <Loader2 className="h-3.5 w-3.5 text-white animate-spin" />
-                      ) : (
-                        <span className="text-white text-[11px] font-bold leading-none">
-                          {theme.icon}
-                        </span>
-                      )}
+                    <div className="shrink-0">
+                      {renderPreviewTile(file, "compact")}
                     </div>
                     <span className="max-w-[100px] truncate font-medium">{file.name}</span>
                     <Button
@@ -981,6 +1025,7 @@ export function Composer({
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      onPasteCapture={handleContainerPasteCapture}
     >
       {isDraggingOver && (
         <div
@@ -990,9 +1035,34 @@ export function Composer({
             "border-[#c7c7c7]/70 dark:border-white/20"
           )}
         >
-          <div className="flex flex-col items-center gap-2 text-zinc-700 dark:text-zinc-200">
-            <Upload className="h-8 w-8" />
-            <span className="text-sm font-medium">Suelta los archivos aquí</span>
+          <div className="flex max-w-[760px] flex-col items-center gap-3 px-4 text-zinc-700 dark:text-zinc-200">
+            {dragPreviewFiles.length > 0 ? (
+              <div className="flex flex-wrap items-start justify-center gap-3">
+                {dragPreviewFiles.map((file, index) => (
+                  <div
+                    key={file.localKey || file.id || `${file.name}-${index}`}
+                    className="w-[152px] rounded-2xl border border-white/70 bg-white/85 p-2 shadow-lg shadow-black/5 dark:border-white/10 dark:bg-zinc-900/75"
+                  >
+                    <div className="mb-2">
+                      {renderPreviewTile(file, "drag")}
+                    </div>
+                    <div className="truncate text-xs font-semibold text-zinc-800 dark:text-zinc-100">
+                      {file.name}
+                    </div>
+                    <div className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+                      {file.previewStatus === "loading"
+                        ? "Detectando preview..."
+                        : formatFileSize(file.size)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Upload className="h-8 w-8" />
+            )}
+            <span className="text-sm font-medium">
+              {dragPreviewFiles.length > 0 ? "Suelta para adjuntar estos archivos" : "Suelta los archivos aquí"}
+            </span>
           </div>
         </div>
       )}
