@@ -46,10 +46,11 @@ import { contentAgent } from '../langgraph/agents/ContentAgent';
 
 // Import renderers
 import { createExcelFromData } from '../../services/advancedExcelBuilder';
-import { generateWordFromMarkdown } from '../../services/markdownToDocx';
+import { generateWordDocument } from '../../services/documentGeneration';
 import { generateProfessionalDocument } from '../../services/docxCodeGenerator';
 import { EnterpriseDocumentService, type DocumentSection as EnterpriseDocumentSection } from '../../services/enterpriseDocumentService';
 import { academicSearchFallback } from '../../integrations/academicSearch';
+import { resolveOfficeBrandTheme } from '../../services/officeBranding';
 
 // ============================================================================
 // Pipeline Stages Definition
@@ -634,7 +635,13 @@ export class ProductionPipeline extends EventEmitter {
         const deliverables = this.workOrder.deliverables;
         let completed = 0;
         const documentSections = this.contentSpecToDocumentSections();
-        const documentService = EnterpriseDocumentService.create('professional');
+        const resolvedBranding = resolveOfficeBrandTheme({
+            template: this.workOrder.constraints?.template,
+            theme: String(this.workOrder.metadata?.theme || ''),
+            brand: String(this.workOrder.metadata?.brand || ''),
+        });
+        const resolvedBrandTheme = resolvedBranding.theme;
+        const documentService = EnterpriseDocumentService.create(resolvedBrandTheme.wordTheme);
 
         // Render Word
         if (deliverables.includes('word')) {
@@ -689,7 +696,13 @@ export class ProductionPipeline extends EventEmitter {
 
             if (!docxBuffer) {
                 const markdown = this.contentSpecToMarkdown();
-                docxBuffer = await generateWordFromMarkdown(this.workOrder.topic, markdown);
+                docxBuffer = await generateWordDocument(this.workOrder.topic, markdown, {
+                    theme: resolvedBrandTheme.wordTheme,
+                    brand: resolvedBranding.brandName,
+                    logoUrl: resolvedBranding.logoUrl,
+                    logoText: resolvedBranding.logoText,
+                    customColors: resolvedBranding.customColors,
+                });
                 wordCount = markdown.split(/\s+/).filter(Boolean).length;
             }
 
@@ -699,7 +712,7 @@ export class ProductionPipeline extends EventEmitter {
                 buffer: docxBuffer,
                 mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                 size: docxBuffer.length,
-                metadata: { wordCount },
+                metadata: { wordCount, theme: resolvedBrandTheme.id, brandName: resolvedBranding.brandName, logoText: resolvedBranding.logoText },
             });
 
             completed++;
@@ -721,7 +734,7 @@ export class ProductionPipeline extends EventEmitter {
 
             const excelResult = await createExcelFromData(excelData, {
                 title: this.workOrder.topic,
-                theme: 'professional',
+                theme: resolvedBrandTheme.excelTheme,
             });
 
             this.artifacts.push({
@@ -733,6 +746,8 @@ export class ProductionPipeline extends EventEmitter {
                 metadata: {
                     rows: Math.max(0, excelData.length - 1),
                     columns: excelData[0]?.length || 0,
+                    theme: resolvedBrandTheme.id,
+                    brandName: resolvedBranding.brandName,
                 },
             });
 
@@ -768,6 +783,8 @@ export class ProductionPipeline extends EventEmitter {
                 size: pdfResult.buffer.length,
                 metadata: {
                     sections: documentSections.length,
+                    theme: resolvedBrandTheme.id,
+                    brandName: resolvedBranding.brandName,
                 },
             });
 
@@ -797,7 +814,7 @@ export class ProductionPipeline extends EventEmitter {
                     content: sec?.content || '',
                 }));
 
-            const pptService = EnterpriseDocumentService.create('professional');
+            const pptService = EnterpriseDocumentService.create(resolvedBrandTheme.wordTheme);
             const pptResult = await pptService.generateDocument({
                 type: 'pptx',
                 title: this.workOrder.topic,
@@ -815,7 +832,7 @@ export class ProductionPipeline extends EventEmitter {
                 buffer: pptResult.buffer,
                 mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
                 size: pptResult.buffer.length,
-                metadata: { slides: sections.length },
+                metadata: { slides: sections.length, theme: resolvedBrandTheme.id, brandName: resolvedBranding.brandName, logoText: resolvedBranding.logoText },
             });
 
             completed++;
@@ -1193,6 +1210,15 @@ export async function startProductionPipeline(
         message,
         userId,
         chatId,
+        overrides: {
+            constraints: {
+                template: routerOptions.template,
+            },
+            metadata: {
+                theme: routerOptions.theme,
+                brand: routerOptions.brand,
+            },
+        },
     });
 
     // Create and run pipeline

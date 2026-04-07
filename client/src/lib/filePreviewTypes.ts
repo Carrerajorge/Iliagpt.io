@@ -8,3 +8,7 @@ export interface FilePreviewData {
   meta?: Record<string, unknown>;
   message?: string;
 }
+
+export function isRenderablePreview(value: unknown): value is FilePreviewData {
+  return Boolean(value && typeof value === "object" && ("html" in (value as Record<string, unknown>) || "content" in (value as Record<string, unknown>)));
+}

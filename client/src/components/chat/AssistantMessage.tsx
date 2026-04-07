@@ -35,6 +35,8 @@ import { ArtifactViewer } from "@/components/artifact-viewer";
 import { FigmaBlock } from "@/components/figma-block";
 import { InlineGoogleFormPreview } from "@/components/inline-google-form-preview";
 import { InlineGmailPreview } from "@/components/inline-gmail-preview";
+import { FilePreviewSurface } from "@/components/FilePreviewSurface";
+import { isRenderablePreview } from "@/lib/filePreviewTypes";
 import { SourcesPanel } from "@/components/sources-panel";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { useSettingsContext } from "@/contexts/SettingsContext";
@@ -344,6 +346,37 @@ export const AssistantMessage = memo(function AssistantMessage({
                         </div>
                     ) : (
                         <div className="p-4 rounded-lg border bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-blue-200 dark:border-blue-800">
+                            {(() => {
+                                const artifactTypeMap: Record<string, "docx" | "xlsx" | "pptx"> = {
+                                    document: "docx",
+                                    spreadsheet: "xlsx",
+                                    presentation: "pptx",
+                                };
+                                const previewHtml = (message.artifact as any)?.previewHtml;
+                                const previewType = artifactTypeMap[(message.artifact as any)?.type] || "docx";
+                                const themeLabel = (message.artifact as any)?.metadata?.theme || (message.artifact as any)?.metadata?.brandTheme;
+                                if (!isRenderablePreview(previewHtml ? { type: previewType, html: previewHtml } : null)) return null;
+                                return (
+                                <div className="mb-4 overflow-hidden rounded-xl border bg-white shadow-sm">
+                                    {themeLabel && (
+                                        <div className="flex items-center justify-between border-b bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">
+                                            <span className="inline-flex rounded-full bg-slate-900 px-2.5 py-1 text-[11px] uppercase tracking-wide text-white">
+                                                {String(themeLabel)}
+                                            </span>
+                                            {(message.artifact as any)?.metadata?.brandName && (
+                                                <span className="truncate text-slate-500">{String((message.artifact as any).metadata.brandName)}</span>
+                                            )}
+                                        </div>
+                                    )}
+                                    <div className="h-52 w-full bg-slate-50">
+                                        <FilePreviewSurface
+                                            preview={{ type: previewType, html: previewHtml }}
+                                            variant="thumbnail"
+                                        />
+                                    </div>
+                                </div>
+                                );
+                            })()}
                             <div className="flex items-center gap-3">
                                 <div className={cn(
                                     "w-12 h-12 rounded-lg flex items-center justify-center flex-shrink-0",
@@ -404,6 +437,17 @@ export const AssistantMessage = memo(function AssistantMessage({
                                             <Eye className="h-4 w-4" />
                                             Ver
                                         </button>
+                                    )}
+                                    {(message.artifact as any)?.previewUrl && (
+                                        <a
+                                            href={(message.artifact as any).previewUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="px-4 py-2 bg-white hover:bg-gray-50 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 text-sm font-medium rounded-lg flex items-center gap-2 transition-colors border"
+                                        >
+                                            <Eye className="h-4 w-4" />
+                                            Preview
+                                        </a>
                                     )}
                                     <a
                                         href={message.artifact.downloadUrl}

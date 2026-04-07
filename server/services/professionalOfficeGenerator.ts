@@ -1,6 +1,7 @@
 import { generateExcelFromPrompt, generateWordFromPrompt } from "./documentOrchestrator";
 import { perfectPptGenerator } from "../agent/perfectPptGenerator";
 import { generateExcelDocument, generatePptDocument, generateWordDocument } from "./documentGeneration";
+import { buildOfficeBrandingVisualSpec, resolveOfficeBrandTheme } from "./officeBranding";
 
 export type ProfessionalOfficeType = "word" | "excel" | "ppt";
 
@@ -10,6 +11,9 @@ export interface ProfessionalOfficeGenerationInput {
   title?: string;
   audience?: string;
   language?: string;
+  template?: string;
+  theme?: string;
+  brand?: string;
 }
 
 export interface ProfessionalOfficeGenerationResult {
@@ -97,6 +101,33 @@ function buildFallbackSlides(title: string, prompt: string): Array<{ title: stri
   ];
 }
 
+function buildBrandedFallbackSlides(
+  title: string,
+  prompt: string,
+  brandTheme: { label: string; colors: { accent: string }; },
+  branding?: { brand?: string },
+): Array<{ title: string; content: string[] }> {
+  const bullets = promptToBulletLines(prompt);
+  return [
+    {
+      title,
+      content: [
+        `${brandTheme.label} deck`,
+        branding?.brand ? `Brand: ${branding.brand}` : "Brand-ready layout",
+        `Accent color: #${brandTheme.colors.accent}`,
+      ],
+    },
+    {
+      title: "Puntos clave",
+      content: bullets,
+    },
+    {
+      title: "Siguiente paso",
+      content: ["Revisar mensaje", "Ajustar identidad visual", "Exportar versión final"],
+    },
+  ];
+}
+
 export function toProfessionalOfficePrompt(input: {
   title?: string;
   content?: string;
@@ -116,6 +147,11 @@ export async function generateProfessionalOfficeDocument(
   }
 
   const resolvedTitle = sanitizeBaseName(input.title || inferTitle(prompt, "generated-document"), "generated-document");
+  const brandTheme = buildOfficeBrandingVisualSpec(resolveOfficeBrandTheme({
+    template: input.template,
+    theme: input.theme,
+    brand: input.brand,
+  }));
 
   switch (input.type) {
     case "word": {
@@ -130,13 +166,20 @@ export async function generateProfessionalOfficeDocument(
           buffer: result.buffer,
           attemptsUsed: result.attemptsUsed,
           metadata: {
+            brandTheme: brandTheme.id,
             warnings: result.qualityReport.warnings,
             postRenderWarnings: result.postRenderValidation.warnings,
             validationMetadata: result.postRenderValidation.metadata,
           },
         };
       } catch {
-        const fallbackBuffer = await generateWordDocument(resolvedTitle, prompt);
+        const fallbackBuffer = await generateWordDocument(resolvedTitle, prompt, {
+          theme: brandTheme.wordTheme,
+          brand: input.brand,
+          logoUrl: brandTheme.logoUrl,
+          logoText: brandTheme.logoText,
+          customColors: brandTheme.colors,
+        });
         return {
           type: "word",
           title: resolvedTitle,
@@ -144,7 +187,7 @@ export async function generateProfessionalOfficeDocument(
           mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
           fileName: buildFileName(resolvedTitle, ".docx"),
           buffer: fallbackBuffer,
-          metadata: { fallback: true, reason: "llm_unavailable" },
+          metadata: { fallback: true, reason: "llm_unavailable", brandTheme: brandTheme.id },
         };
       }
     }
@@ -161,13 +204,14 @@ export async function generateProfessionalOfficeDocument(
           buffer: result.buffer,
           attemptsUsed: result.attemptsUsed,
           metadata: {
+            brandTheme: brandTheme.id,
             warnings: result.qualityReport.warnings,
             postRenderWarnings: result.postRenderValidation.warnings,
             validationMetadata: result.postRenderValidation.metadata,
           },
         };
       } catch {
-        const fallbackBuffer = await generateExcelDocument(resolvedTitle, buildFallbackExcelRows(prompt));
+        const fallbackBuffer = await generateExcelDocument(resolvedTitle, buildFallbackExcelRows(prompt), { useProfessionalStyles: true });
         return {
           type: "excel",
           title: resolvedTitle,
@@ -175,7 +219,7 @@ export async function generateProfessionalOfficeDocument(
           mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
           fileName: buildFileName(resolvedTitle, ".xlsx"),
           buffer: fallbackBuffer,
-          metadata: { fallback: true, reason: "llm_unavailable" },
+          metadata: { fallback: true, reason: "llm_unavailable", brandTheme: brandTheme.id },
         };
       }
     }
@@ -186,7 +230,7 @@ export async function generateProfessionalOfficeDocument(
           topic: resolvedTitle,
           audience: input.audience,
           language: input.language,
-          template: "executive",
+          template: brandTheme.pptTheme,
           style: "professional",
           purpose: "inform",
           includeCharts: true,
@@ -206,12 +250,34 @@ export async function generateProfessionalOfficeDocument(
             outline: generated.outline,
             template: generated.metadata.template,
             generatedAt: generated.metadata.generatedAt,
+            brandTheme: brandTheme.id,
           },
         };
       } catch {
         const fallbackBuffer = await generatePptDocument(resolvedTitle, buildFallbackSlides(resolvedTitle, prompt), {
           trace: { source: "professionalOfficeGenerator:fallback" },
+          branding: {
+            theme: brandTheme.wordTheme,
+            brand: input.brand,
+            logoUrl: brandTheme.logoUrl,
+            logoText: brandTheme.logoText,
+            customColors: brandTheme.colors,
+          },
         });
+        const brandedFallbackBuffer = await generatePptDocument(
+          resolvedTitle,
+          buildBrandedFallbackSlides(resolvedTitle, prompt, brandTheme, { brand: input.brand }),
+          {
+            trace: { source: "professionalOfficeGenerator:fallback:branded" },
+            branding: {
+              theme: brandTheme.wordTheme,
+              brand: input.brand,
+              logoUrl: brandTheme.logoUrl,
+              logoText: brandTheme.logoText,
+              customColors: brandTheme.colors,
+            },
+          },
+        );
 
         return {
           type: "ppt",
@@ -219,8 +285,8 @@ export async function generateProfessionalOfficeDocument(
           extension: ".pptx",
           mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
           fileName: buildFileName(resolvedTitle, ".pptx"),
-          buffer: fallbackBuffer,
-          metadata: { fallback: true, slideCount: 3, reason: "llm_or_renderer_unavailable" },
+          buffer: brandedFallbackBuffer || fallbackBuffer,
+          metadata: { fallback: true, slideCount: 3, reason: "llm_or_renderer_unavailable", brandTheme: brandTheme.id },
         };
       }
     }

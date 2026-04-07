@@ -24,9 +24,9 @@ const rootDir = resolveRepoRoot(process.cwd());
 const envFiles: string[] = [];
 
 if (process.env.NODE_ENV === "production") {
-  envFiles.push(".env.production", ".env");
+  envFiles.push(".env.production.local", ".env.production", ".env.local", ".env");
 } else {
-  envFiles.push(".env");
+  envFiles.push(".env.local", ".env");
 }
 
 envFiles.forEach((envFile) => {
@@ -42,6 +42,14 @@ for (const [key, value] of Object.entries(process.env)) {
   if (!trimmed || PLACEHOLDER_ENV_VALUES.has(trimmed.toLowerCase())) {
     delete process.env[key];
   }
+}
+
+if (!process.env.OPENAI_API_KEY && process.env.OPENROUTER_API_KEY) {
+  process.env.OPENAI_API_KEY = process.env.OPENROUTER_API_KEY;
+}
+
+if (process.env.OPENROUTER_API_KEY && !process.env.OPENAI_BASE_URL) {
+  process.env.OPENAI_BASE_URL = "https://openrouter.ai/api/v1";
 }
 
 process.env.ENV_LOADED_BY_BOOTSTRAP = "true";

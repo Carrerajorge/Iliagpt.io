@@ -1035,15 +1035,21 @@ export function ChatInterface({
       const found = availableModels.find((m: any) => m.id === selectedModelId || m.modelId === selectedModelId);
       if (found) return found;
     }
-    // Default: prefer Gemini models over others (Perplexity has no API key)
-    const preferredModel = availableModels.find((m: any) =>
-      m.provider === 'google' && m.modelId?.includes('gemini')
-    );
-    return preferredModel || availableModels[0] || null;
+    const preferredCandidates = [
+      (m: any) => m.provider === 'openrouter' && (m.id === 'fallback-gemma-4-31b-it' || m.modelId === 'google/gemma-3-27b-it:free'),
+      (m: any) => m.provider === 'google' && m.modelId?.includes('gemini'),
+    ];
+
+    for (const matcher of preferredCandidates) {
+      const found = availableModels.find((m: any) => matcher(m));
+      if (found) return found;
+    }
+
+    return availableModels[0] || null;
   }, [selectedModelId, availableModels]);
 
-  const selectedProvider = selectedModelData?.provider || "gemini";
-  const selectedModel = selectedModelData?.modelId || "gemini-3-flash-preview";
+  const selectedProvider = selectedModelData?.provider || "openrouter";
+  const selectedModel = selectedModelData?.modelId || "google/gemma-3-27b-it:free";
 
   const modelsByProvider = useMemo(() => {
     const grouped: Record<string, AvailableModel[]> = {};
@@ -6523,8 +6529,11 @@ IMPORTANTE:
                 type: string;
                 filename: string;
                 downloadUrl: string;
+                previewUrl?: string;
+                previewHtml?: string;
                 size?: number;
                 library?: string;
+                metadata?: Record<string, unknown>;
               }> = [];
               const streamArtifactMimeTypes = new Map<string, string>();
               let streamWebSources: any[] | undefined;
@@ -6669,8 +6678,11 @@ IMPORTANTE:
                       type: data?.type || "document",
                       filename: data?.filename || "Documento",
                       downloadUrl: data?.downloadUrl || "",
+                      previewUrl: data?.previewUrl || undefined,
+                      previewHtml: data?.previewHtml || undefined,
                       size: data?.size,
                       library: data?.library,
+                      metadata: data?.metadata,
                     });
                     if (data?.type) {
                       streamArtifactMimeTypes.set(String(data.type), artifactMimeTypeMap[data.type] || data?.mimeType || "application/octet-stream");
@@ -6973,8 +6985,11 @@ IMPORTANTE:
                         mimeType: artifactMimeType,
                         sizeBytes: primaryArtifact.size,
                         downloadUrl: primaryArtifact.downloadUrl,
+                        previewUrl: primaryArtifact.previewUrl,
                         name: artifactName,
                         filename: artifactName,
+                        previewHtml: primaryArtifact.previewHtml,
+                        metadata: primaryArtifact.metadata,
                       } as Message["artifact"],
                     };
                   }

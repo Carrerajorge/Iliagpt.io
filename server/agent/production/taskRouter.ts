@@ -192,6 +192,9 @@ export interface TaskRouterOptions {
     skipLLM?: boolean;       // Force pattern-only detection
     forceProduction?: boolean; // Force production mode
     threshold?: number;      // Pattern match threshold (default 0.5)
+    template?: string;
+    theme?: string;
+    brand?: string;
 }
 
 export async function routeTask(

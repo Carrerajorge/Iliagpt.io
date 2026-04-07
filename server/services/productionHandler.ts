@@ -19,6 +19,7 @@ import {
     type DocumentIntent,
 } from '../agent/production';
 import { exportAcademicArticlesFromPrompt } from './academicArticlesExport';
+import { generateFilePreview } from './filePreviewService';
 
 // ============================================================================
 // Types
@@ -33,6 +34,51 @@ export interface ProductionRequest {
     assistantMessageId?: string | null;
     intentResult: IntentResult;
     locale?: string;
+}
+
+interface ProductionPresentationHints {
+    template?: string;
+    theme?: string;
+    brand?: string;
+}
+
+function extractPresentationHints(message: string): ProductionPresentationHints {
+    const lower = String(message || '').toLowerCase();
+
+    const templates = [
+        'corporate',
+        'modern',
+        'gradient',
+        'academic',
+        'minimal',
+        'tech',
+        'creative',
+        'executive',
+    ];
+
+    const matchedTemplate = templates.find((template) => lower.includes(template));
+
+    const brandMatch = message.match(/(?:branding|marca|brand)(?:\s*[:=-]|\s+de\s+|\s+)([A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ&().,'\- ]{2,80})/i);
+    const themeMatch = message.match(/(?:tema|theme|paleta)(?:\s*[:=-]|\s+)([A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ&().,'\- ]{2,60})/i);
+
+    return {
+        template: matchedTemplate,
+        theme: themeMatch?.[1]?.trim(),
+        brand: brandMatch?.[1]?.trim(),
+    };
+}
+
+async function buildArtifactPreview(artifact: Artifact): Promise<{ previewUrl?: string; previewHtml?: string } | null> {
+    try {
+        const preview = await generateFilePreview(artifact.filename, artifact.mimeType || '', artifact.buffer);
+        if (preview.html) {
+            return { previewHtml: preview.html };
+        }
+    } catch (error) {
+        console.warn('[ProductionHandler] Preview generation failed:', error instanceof Error ? error.message : error);
+    }
+
+    return null;
 }
 
 export interface ProductionHandlerResult {
@@ -351,6 +397,7 @@ export async function handleProductionRequest(
     const streamConversationId = conversationId || chatId;
     const streamRequestId = requestId || runId;
     const deliverables = getDeliverables(intentResult, message);
+    const presentationHints = extractPresentationHints(message);
 
     const emit = (event: string, data: Record<string, unknown>): void => {
         writeSse(res, event, {
@@ -564,6 +611,9 @@ export async function handleProductionRequest(
                 deliverables,
                 intent: pipelineIntent,
                 topic: intentResult.slots.topic || message,
+                template: presentationHints.template,
+                theme: presentationHints.theme,
+                brand: presentationHints.brand,
             }
         );
 
@@ -582,12 +632,18 @@ export async function handleProductionRequest(
             });
 
             // Emit artifact event
+            const preview = await buildArtifactPreview(artifact);
+
             emit('artifact', {
                 type: artifact.type,
                 filename: artifact.filename,
                 downloadUrl: stored.downloadUrl,
                 size: artifact.size,
                 library: stored.library,
+                previewUrl: preview?.previewUrl,
+                previewHtml: preview?.previewHtml,
+                mimeType: artifact.mimeType,
+                metadata: artifact.metadata,
             });
         }
 

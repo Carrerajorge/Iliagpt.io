@@ -58,6 +58,7 @@ interface ConversationSession {
   nextMessageId: string | null;
   fullContent: string;
   pendingContent: string | null;
+  queueDepth: number;
   rafId: number | null;
   finalizing: boolean;
   timeoutId: ReturnType<typeof setTimeout> | null;
@@ -95,6 +96,7 @@ function createSession(): ConversationSession {
     nextMessageId: null,
     fullContent: "",
     pendingContent: null,
+    queueDepth: 0,
     rafId: null,
     finalizing: false,
     timeoutId: null,
@@ -193,6 +195,16 @@ export function useStreamChat(deps: StreamChatDeps) {
     return created;
   }, []);
 
+  const resetProcessSteps = useCallback((conversationId: string, session?: ConversationSession) => {
+    const activeSession = session || getSession(conversationId);
+    setAiProcessSteps?.(
+      activeSession.queueDepth > 0
+        ? [{ id: "conversation-queue", label: "En cola", status: "in_progress" as const }]
+        : [],
+      conversationId,
+    );
+  }, [getSession, setAiProcessSteps]);
+
   const acquireConversationQueueTicket = useCallback(
     async (
       conversationId: string,
@@ -214,7 +226,14 @@ export function useStreamChat(deps: StreamChatDeps) {
 
       if (queueMode === "replace") {
         clearQueueUi();
-        abortConversation(conversationId);
+        const activeAbortController = session.abortController;
+        if (activeAbortController) {
+          activeAbortController.abort();
+        }
+        session.abortController = null;
+        session.pendingRequestId = null;
+        setAiState("idle", conversationId);
+        resetProcessSteps(conversationId, session);
         queueRef.current.delete(conversationId);
         queueGenerationRef.current.set(
           conversationId,
@@ -240,6 +259,9 @@ export function useStreamChat(deps: StreamChatDeps) {
       const generation = queueGenerationRef.current.get(conversationId) || 0;
       const previousTail = existingEntry?.tail || Promise.resolve();
       const entryId = generateRequestId();
+      if (hasPendingWork) {
+        session.queueDepth += 1;
+      }
       let releaseTurn!: () => void;
       const ownTurn = new Promise<void>((resolve) => {
         releaseTurn = resolve;
@@ -290,15 +312,21 @@ export function useStreamChat(deps: StreamChatDeps) {
           throw createAbortError("Conversation queue replaced by a newer request");
         }
 
+        if (hasPendingWork) {
+          session.queueDepth = Math.max(0, session.queueDepth - 1);
+        }
         clearQueueUi();
         return { queued: hasPendingWork, release };
       } catch (error) {
+        if (hasPendingWork) {
+          session.queueDepth = Math.max(0, session.queueDepth - 1);
+        }
         clearQueueUi();
         release();
         throw error;
       }
     },
-    [abortConversation, getSession, setAiProcessSteps, setAiState]
+    [getSession, setAiProcessSteps, setAiState]
   );
 
   const clearResilienceUi = useCallback((conversationId?: string | null) => {
@@ -412,169 +440,18 @@ export function useStreamChat(deps: StreamChatDeps) {
     [clearSessionRuntime, clearStreamingProgressRemote, getSession]
   );
 
-  const hydrateStreamingProgress = useCallback(
-    async (conversationId: string): Promise<void> => {
-      const session = getSession(conversationId);
-      if (session.hydratingProgress) {
-        return session.hydratingProgress;
-      }
+  const abort = useCallback(() => {
+    const activeConversationId = getActiveConversationId?.() || lastStartedConversationRef.current;
+    if (activeConversationId) {
+      abortConversation(activeConversationId);
+      return;
+    }
 
-      if (session.abortController || session.pendingRequestId || session.fullContent) {
-        return;
-      }
-
-      let hydrationPromise: Promise<void> | null = null;
-      hydrationPromise = (async () => {
-        try {
-          const response = await apiFetch(`/api/streaming/progress/${encodeURIComponent(conversationId)}`, {
-            method: "GET",
-            timeoutMs: 6000,
-          });
-
-          if (response.status === 404) {
-            return;
-          }
-
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-          }
-
-          const progress = (await response.json().catch(() => null)) as RemoteStreamingProgress | null;
-          if (!progress || typeof progress !== "object") {
-            return;
-          }
-
-          const latestSession = getSession(conversationId);
-          if (latestSession.hydratingProgress !== hydrationPromise) {
-            return;
-          }
-          if (latestSession.abortController || latestSession.pendingRequestId || latestSession.fullContent) {
-            return;
-          }
-
-          if (progress.status !== "streaming") {
-            await clearStreamingProgressRemote(conversationId);
-            return;
-          }
-
-          const restoredContent = typeof progress.content === "string" ? progress.content : "";
-          const restoredMessageId =
-            typeof progress.assistantMessageId === "string" && progress.assistantMessageId.trim()
-              ? progress.assistantMessageId.trim()
-              : latestSession.nextMessageId || `assistant-resume-${conversationId}`;
-          const restoredRequestId =
-            typeof progress.requestId === "string" && progress.requestId.trim()
-              ? progress.requestId.trim()
-              : null;
-
-          latestSession.fullContent = restoredContent;
-          latestSession.pendingContent = null;
-          latestSession.nextMessageId = restoredMessageId;
-          latestSession.pendingRequestId = restoredRequestId;
-
-          if (isConversationActive(conversationId)) {
-            setAiState("recovering", conversationId);
-            setAiProcessSteps?.(
-              [
-                {
-                  id: "stream-recover",
-                  title: "Recuperando respuesta",
-                  description: restoredContent
-                    ? "Reconectando con la respuesta que estaba en progreso"
-                    : "Retomando la respuesta interrumpida",
-                  status: "active",
-                  startedAt: Date.now(),
-                },
-              ],
-              conversationId,
-            );
-            nextMessageIdRef.current = restoredMessageId;
-            streamingContentRef.current = restoredContent;
-            setStreamingContent(restoredContent);
-            setAiState(restoredContent ? "responding" : "thinking", conversationId);
-            clearResilienceUi(conversationId);
-          }
-        } catch (error) {
-          console.warn("[useStreamChat] Failed to hydrate remote streaming progress:", error);
-        } finally {
-          const latestSession = getSession(conversationId);
-          if (latestSession.hydratingProgress === hydrationPromise) {
-            latestSession.hydratingProgress = null;
-          }
-        }
-      })();
-
-      session.hydratingProgress = hydrationPromise;
-      return hydrationPromise;
-    },
-    [
-      clearResilienceUi,
-      clearStreamingProgressRemote,
-      getSession,
-      isConversationActive,
-      setAiProcessSteps,
-      setAiState,
-      setStreamingContent,
-      streamingContentRef,
-    ]
-  );
-
-  const abort = useCallback(
-    (conversationId?: string | null) => {
-      const resolvedConversationId =
-        (conversationId && conversationId.trim()) ||
-        getActiveConversationId?.() ||
-        lastStartedConversationRef.current;
-
-      if (!resolvedConversationId) {
-        abortControllerRef.current?.abort();
-        abortControllerRef.current = null;
-        return;
-      }
-
-      abortConversation(resolvedConversationId);
-
-      if (
-        abortControllerRef.current &&
-        getSession(resolvedConversationId).abortController !== abortControllerRef.current
-      ) {
-        abortControllerRef.current.abort();
-      }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
       abortControllerRef.current = null;
-    },
-    [abortConversation, getActiveConversationId, getSession]
-  );
-
-  const synchronizeConversation = useCallback(
-    (conversationId?: string | null) => {
-      const targetConversationId =
-        (conversationId && conversationId.trim()) || getActiveConversationId?.() || null;
-
-      if (!targetConversationId) {
-        nextMessageIdRef.current = null;
-        streamingContentRef.current = "";
-        setStreamingContent("");
-        return;
-      }
-
-      const session = sessionsRef.current.get(targetConversationId);
-      const content = session?.fullContent || "";
-
-      nextMessageIdRef.current = session?.nextMessageId || null;
-      streamingContentRef.current = content;
-      setStreamingContent(content);
-
-      if (
-        !session?.abortController &&
-        !session?.pendingRequestId &&
-        !session?.fullContent &&
-        !session?.hydratingProgress
-      ) {
-        void hydrateStreamingProgress(targetConversationId);
-      }
-    },
-    [getActiveConversationId, hydrateStreamingProgress, setStreamingContent, streamingContentRef]
-  );
+    }
+  }, [abortConversation, getActiveConversationId]);
 
   const finalize = useCallback(
     (message: Message, conversationId?: string | null, finalState: AIState = "idle") => {
@@ -663,6 +540,150 @@ export function useStreamChat(deps: StreamChatDeps) {
       setAiProcessSteps,
       setAiState,
       setOptimisticMessages,
+      setStreamingContent,
+      streamingContentRef,
+    ]
+  );
+
+  const hydrateStreamingProgress = useCallback(
+    async (conversationId: string): Promise<void> => {
+      const session = getSession(conversationId);
+      if (session.hydratingProgress) {
+        return session.hydratingProgress;
+      }
+
+      if (session.abortController || session.pendingRequestId || session.fullContent) {
+        return;
+      }
+
+      let hydrationPromise: Promise<void> | null = null;
+      hydrationPromise = (async () => {
+        try {
+          while (true) {
+            const response = await apiFetch(`/api/streaming/progress/${encodeURIComponent(conversationId)}`, {
+              method: "GET",
+              timeoutMs: 6000,
+            });
+
+            if (response.status === 404) {
+              return;
+            }
+
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}`);
+            }
+
+            const progress = (await response.json().catch(() => null)) as RemoteStreamingProgress | null;
+            if (!progress || typeof progress !== "object") {
+              return;
+            }
+
+            const latestSession = getSession(conversationId);
+            if (latestSession.hydratingProgress !== hydrationPromise) {
+              return;
+            }
+            if (latestSession.abortController || latestSession.pendingRequestId || latestSession.fullContent) {
+              return;
+            }
+
+            const restoredContent = typeof progress.content === "string" ? progress.content : "";
+            const restoredMessageId =
+              typeof progress.assistantMessageId === "string" && progress.assistantMessageId.trim()
+                ? progress.assistantMessageId.trim()
+                : latestSession.nextMessageId || `assistant-resume-${conversationId}`;
+            const restoredRequestId =
+              typeof progress.requestId === "string" && progress.requestId.trim()
+                ? progress.requestId.trim()
+                : null;
+
+            latestSession.fullContent = restoredContent;
+            latestSession.pendingContent = null;
+            latestSession.nextMessageId = restoredMessageId;
+            latestSession.pendingRequestId = restoredRequestId;
+
+            if (isConversationActive(conversationId)) {
+              setAiState("recovering", conversationId);
+              setAiProcessSteps?.(
+                [
+                  {
+                    id: "stream-recover",
+                    title: "Recuperando respuesta",
+                    description: restoredContent
+                      ? "Reconectando con la respuesta que estaba en progreso"
+                      : "Retomando la respuesta interrumpida",
+                    status: "active",
+                    startedAt: Date.now(),
+                  },
+                ],
+                conversationId,
+              );
+              nextMessageIdRef.current = restoredMessageId;
+              streamingContentRef.current = restoredContent;
+              setStreamingContent(restoredContent);
+
+              // Simulate a brief delay so the user perceives the reconnect jump
+              setTimeout(() => {
+                const current = getSession(conversationId);
+                if (current.hydratingProgress !== hydrationPromise && !current.abortController) return;
+                if (isConversationActive(conversationId)) {
+                  clearResilienceUi(conversationId);
+                  setAiState(restoredContent ? "responding" : "thinking", conversationId);
+                }
+              }, 800);
+            }
+
+            if (progress.status !== "streaming") {
+              // Polling finished! The backend has marked the execution run as done or failed.
+              if (progress.status === "completed") {
+                clearResilienceUi(conversationId);
+                const finalMsgId = restoredMessageId;
+                const msg = buildAssistantMessage({
+                  id: finalMsgId,
+                  timestamp: new Date(),
+                  requestId: restoredRequestId || `req_hydrated_${Date.now()}`,
+                  content: restoredContent,
+                  fallbackContent: "Respuesta recuperada.",
+                });
+                finalize(msg, conversationId, "done");
+              } else if (progress.status === "failed") {
+                clearResilienceUi(conversationId);
+                const errorMsgId = restoredMessageId;
+                const errorMsg = {
+                  id: errorMsgId,
+                  role: "assistant" as const,
+                  content: "Se interrumpió la generación en el servidor. Puedes intentar enviar tu mensaje nuevamente.",
+                  timestamp: new Date(),
+                  requestId: restoredRequestId || `req_hydrated_${Date.now()}`,
+                };
+                finalize(errorMsg, conversationId, "error");
+              }
+              await clearStreamingProgressRemote(conversationId);
+              return;
+            }
+
+            await sleep(1500); // Poll every 1.5 seconds if still streaming
+          }
+        } catch (error) {
+          console.warn("[useStreamChat] Failed to hydrate remote streaming progress:", error);
+        } finally {
+          const latestSession = getSession(conversationId);
+          if (latestSession.hydratingProgress === hydrationPromise) {
+            latestSession.hydratingProgress = null;
+          }
+        }
+      })();
+
+      session.hydratingProgress = hydrationPromise;
+      return hydrationPromise;
+    },
+    [
+      clearResilienceUi,
+      clearStreamingProgressRemote,
+      finalize,
+      getSession,
+      isConversationActive,
+      setAiProcessSteps,
+      setAiState,
       setStreamingContent,
       streamingContentRef,
     ]
@@ -809,9 +830,10 @@ export function useStreamChat(deps: StreamChatDeps) {
               setStreamingContent("");
             }
 
-            setAiState("thinking", conversationId);
-            onAiStateChange?.("thinking");
-            setAiProcessSteps?.([], conversationId);
+            const initialAiState = session.queueDepth > 0 ? "queued" : "thinking";
+            setAiState(initialAiState, conversationId);
+            onAiStateChange?.(initialAiState);
+            resetProcessSteps(conversationId, session);
 
             let response: Response | undefined;
             let fullContent = "";
@@ -926,7 +948,7 @@ export function useStreamChat(deps: StreamChatDeps) {
                     setStreamingContent("");
                   }
                   setAiState("idle", conversationId);
-                  setAiProcessSteps?.([], conversationId);
+                  resetProcessSteps(conversationId, session);
                   return { ok: true, content: "", response };
                 }
 
@@ -942,8 +964,9 @@ export function useStreamChat(deps: StreamChatDeps) {
                 throw new Error("No response body");
               }
 
-              setAiState("responding", conversationId);
-              onAiStateChange?.("responding");
+              const responseAiState = session.queueDepth > 0 ? "queued" : "responding";
+              setAiState(responseAiState, conversationId);
+              onAiStateChange?.(responseAiState);
 
               const decoder = new TextDecoder();
               let sseBuffer = "";
@@ -1096,8 +1119,9 @@ export function useStreamChat(deps: StreamChatDeps) {
 
                   const isStaleConversation = session.pendingRequestId !== streamRequestId;
                   if (!isStaleConversation && currentEventType === "thinking") {
-                    setAiState("thinking", conversationId);
-                    onAiStateChange?.("thinking");
+                    const thinkingAiState = session.queueDepth > 0 ? "queued" : "thinking";
+                    setAiState(thinkingAiState, conversationId);
+                    onAiStateChange?.(thinkingAiState);
 
                     if (data.step && data.message) {
                       setAiProcessSteps?.(
@@ -1120,8 +1144,9 @@ export function useStreamChat(deps: StreamChatDeps) {
                   }
 
                   if (!isStaleConversation && currentEventType === "context") {
-                    setAiState("responding", conversationId);
-                    onAiStateChange?.("responding");
+                    const contextAiState = session.queueDepth > 0 ? "queued" : "responding";
+                    setAiState(contextAiState, conversationId);
+                    onAiStateChange?.(contextAiState);
                     setAiProcessSteps?.(
                       (prev: any[]) => prev.map((s: any) => ({ ...s, status: "done" })),
                       conversationId
@@ -1315,7 +1340,7 @@ export function useStreamChat(deps: StreamChatDeps) {
                     setStreamingContent("");
                   }
                   setAiState("idle", conversationId);
-                  setAiProcessSteps?.([], conversationId);
+                  resetProcessSteps(conversationId, session);
                   return { ok: false, content: fullContent, response, error: err };
                 }
 
@@ -1492,6 +1517,13 @@ export function useStreamChat(deps: StreamChatDeps) {
   const getPendingRequestId = useCallback((conversationId: string): string | null => {
     return sessionsRef.current.get(conversationId)?.pendingRequestId || null;
   }, []);
+
+  const synchronizeConversation = useCallback((conversationId: string | null | undefined) => {
+    if (!conversationId) return;
+    const session = getSession(conversationId);
+    lastStartedConversationRef.current = conversationId;
+    abortControllerRef.current = session.abortController;
+  }, [getSession]);
 
   return {
     stream,

@@ -1,9 +1,11 @@
 import ExcelJS from "exceljs";
 import PptxGenJS from "pptxgenjs";
 import { JSDOM } from "jsdom";
+import { Document, Packer, Paragraph, TextRun, AlignmentType, Header, Footer, ImageRun, BorderStyle, convertInchesToTwip } from "docx";
 
 const PptxGenJSConstructor: any = (PptxGenJS as any)?.default ?? PptxGenJS;
 import { generateWordFromMarkdown } from "./markdownToDocx";
+import { buildOfficeBrandingVisualSpec, resolveOfficeBrandTheme, type OfficeBrandingVisualSpec } from "./officeBranding";
 import {
   ExcelStyleConfig,
   ExcelDashboardBuilder,
@@ -194,7 +196,72 @@ function htmlToMarkdown(html: string): string {
   return processNode(document.body).trim();
 }
 
-export async function generateWordDocument(title: string, content: string): Promise<Buffer> {
+interface WordGenerationOptions {
+  theme?: string;
+  brand?: string;
+  logoUrl?: string;
+  logoText?: string;
+  customColors?: Partial<OfficeBrandingVisualSpec["colors"]>;
+}
+
+function buildWordBrandingSpec(options: WordGenerationOptions = {}): OfficeBrandingVisualSpec {
+  const brandingHints = [
+    options.brand,
+    options.logoText ? `logo: ${options.logoText}` : "",
+    options.logoUrl ? `logoUrl: ${options.logoUrl}` : "",
+    options.customColors?.primary ? `primary: #${options.customColors.primary}` : "",
+    options.customColors?.secondary ? `secondary: #${options.customColors.secondary}` : "",
+    options.customColors?.accent ? `accent: #${options.customColors.accent}` : "",
+  ].filter(Boolean).join(", ");
+
+  const resolved = resolveOfficeBrandTheme({
+    theme: options.theme,
+    brand: brandingHints,
+  });
+  return buildOfficeBrandingVisualSpec({
+    ...resolved,
+    logoUrl: options.logoUrl || resolved.logoUrl,
+    logoText: options.logoText || resolved.logoText,
+    customColors: {
+      ...(resolved.customColors || {}),
+      ...(options.customColors || {}),
+    },
+  });
+}
+
+async function loadBrandLogoBuffer(logoUrl?: string): Promise<Buffer | null> {
+  if (!logoUrl) return null;
+  try {
+    if (logoUrl.startsWith("data:")) {
+      const base64 = logoUrl.split(",")[1] || "";
+      return base64 ? Buffer.from(base64, "base64") : null;
+    }
+    if (!/^https?:\/\//i.test(logoUrl)) return null;
+    const response = await fetch(logoUrl);
+    if (!response.ok) return null;
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  } catch {
+    return null;
+  }
+}
+
+async function loadBrandLogoDataUri(logoUrl?: string): Promise<string | null> {
+  if (!logoUrl) return null;
+  try {
+    if (logoUrl.startsWith("data:")) return logoUrl;
+    if (!/^https?:\/\//i.test(logoUrl)) return null;
+    const response = await fetch(logoUrl);
+    if (!response.ok) return null;
+    const mimeType = response.headers.get("content-type") || "image/png";
+    const arrayBuffer = await response.arrayBuffer();
+    return `data:${mimeType};base64,${Buffer.from(arrayBuffer).toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function generateWordDocument(title: string, content: string, options: WordGenerationOptions = {}): Promise<Buffer> {
   // Security: enforce content size limit
   if (content.length > WORD_MAX_CONTENT_SIZE) {
     throw new Error(`Word document content exceeds maximum size of ${WORD_MAX_CONTENT_SIZE / (1024 * 1024)}MB`);
@@ -207,7 +274,142 @@ export async function generateWordDocument(title: string, content: string): Prom
     console.log('[generateWordDocument] Converted HTML to Markdown for export');
   }
 
-  return generateWordFromMarkdown(title, markdownContent);
+  const branding = buildWordBrandingSpec(options);
+  const logoBuffer = await loadBrandLogoBuffer(options.logoUrl || branding.logoUrl);
+
+  try {
+    const blocks = markdownContent
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter(Boolean);
+
+    const children: Paragraph[] = [];
+
+    if (logoBuffer) {
+      children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 220 },
+        children: [new ImageRun({ data: logoBuffer, transformation: { width: 140, height: 56 } })],
+      }));
+    } else if (branding.logoText) {
+      children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 220 },
+        children: [new TextRun({
+          text: branding.logoText,
+          font: branding.fonts.heading,
+          size: 28,
+          bold: true,
+          color: branding.colors.accent,
+        })],
+      }));
+    }
+
+    children.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 120 },
+      border: { bottom: { style: BorderStyle.SINGLE, color: branding.colors.accent, size: 8 } },
+      children: [new TextRun({
+        text: title,
+        font: branding.fonts.heading,
+        size: 34,
+        bold: true,
+        color: branding.colors.primary,
+      })],
+    }));
+
+    children.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 360 },
+      children: [new TextRun({
+        text: branding.brandName || branding.label,
+        font: branding.fonts.body,
+        size: 22,
+        color: branding.colors.muted,
+      })],
+    }));
+
+    for (const block of blocks) {
+      const headingMatch = block.match(/^(#{1,3})\s+(.+)$/m);
+      if (headingMatch) {
+        children.push(new Paragraph({
+          spacing: { before: 280, after: 120 },
+          children: [new TextRun({
+            text: headingMatch[2].trim(),
+            font: branding.fonts.heading,
+            size: headingMatch[1].length === 1 ? 28 : headingMatch[1].length === 2 ? 24 : 20,
+            bold: true,
+            color: branding.colors.secondary,
+          })],
+        }));
+        continue;
+      }
+
+      const normalizedBlock = block
+        .split("\n")
+        .map((line) => line.replace(/^[-*•]\s+/, "• ").trim())
+        .join("\n");
+
+      children.push(new Paragraph({
+        spacing: { after: 180, line: 320 },
+        children: [new TextRun({
+          text: normalizedBlock,
+          font: branding.fonts.body,
+          size: 22,
+          color: branding.colors.text,
+        })],
+      }));
+    }
+
+    const doc = new Document({
+      sections: [{
+        properties: {
+          page: {
+            margin: {
+              top: convertInchesToTwip(0.9),
+              bottom: convertInchesToTwip(0.7),
+              left: convertInchesToTwip(0.9),
+              right: convertInchesToTwip(0.9),
+            },
+          },
+        },
+        headers: {
+          default: new Header({
+            children: [new Paragraph({
+              alignment: AlignmentType.RIGHT,
+              border: { bottom: { style: BorderStyle.SINGLE, color: branding.colors.accent, size: 4 } },
+              children: [new TextRun({
+                text: branding.brandName || branding.label,
+                font: branding.fonts.body,
+                size: 18,
+                bold: true,
+                color: branding.colors.accent,
+              })],
+            })],
+          }),
+        },
+        footers: {
+          default: new Footer({
+            children: [new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [new TextRun({
+                text: `${branding.label} • ${new Date().toLocaleDateString("es-ES")}`,
+                font: branding.fonts.body,
+                size: 16,
+                color: branding.colors.muted,
+              })],
+            })],
+          }),
+        },
+        children,
+      }],
+    });
+
+    return Buffer.from(await Packer.toBuffer(doc));
+  } catch (error) {
+    console.warn('[generateWordDocument] Branded renderer failed, falling back to markdown renderer:', error);
+    return generateWordFromMarkdown(title, markdownContent);
+  }
 }
 
 export async function generateExcelDocument(
@@ -320,6 +522,13 @@ type PptTraceContext = {
 
 interface PptGenerationOptions {
   trace?: PptTraceContext;
+  branding?: {
+    theme?: string;
+    brand?: string;
+    logoUrl?: string;
+    logoText?: string;
+    customColors?: Partial<OfficeBrandingVisualSpec["colors"]>;
+  };
 }
 
 interface PptFallbackContext extends PptTraceContext {
@@ -1183,6 +1392,8 @@ export async function generatePptDocument(
   try {
     normalized = normalizePptSlides(safeTitle, slides);
     const slideCount = Math.max(1, normalized.slides.length);
+    const branding = options.branding ? buildWordBrandingSpec(options.branding) : null;
+    const brandingLogo = branding ? await loadBrandLogoDataUri(branding.logoUrl) : null;
     const preparedSlides = normalized.slides.map((slideData, index) => {
       slideData.variant = getSlideVariant(
         index,
@@ -1204,16 +1415,81 @@ export async function generatePptDocument(
     presentation.author = "IliaGPT";
     presentation.company = "";
     presentation.subject = "";
-    defineCorporateMaster(presentation);
+    if (!branding) {
+      defineCorporateMaster(presentation);
+    }
 
     let fallbackSlides = 0;
     for (let index = 0; index < preparedSlides.length; index++) {
-      const slide = presentation.addSlide({ masterName: CORPORATE_PPT_MASTER_NAME });
+      const slide = branding ? presentation.addSlide() : presentation.addSlide({ masterName: CORPORATE_PPT_MASTER_NAME });
       const slideData = preparedSlides[index];
 
       try {
-        slide.background = { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.bg };
-        renderSlideContent(slide, slideData, normalized.title, index, slideCount);
+        if (branding) {
+          slide.background = { color: branding.colors.surface };
+          slide.addShape("rect", {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 0.42,
+            fill: { color: branding.colors.primary },
+            line: { color: branding.colors.primary },
+          });
+
+          if (brandingLogo) {
+            slide.addImage({ data: brandingLogo, x: 0.45, y: 0.55, w: 1.1, h: 0.5 });
+          } else if (branding.logoText || branding.brandName) {
+            slide.addText(branding.logoText || branding.brandName || branding.label, {
+              x: 0.45,
+              y: 0.58,
+              w: 2.6,
+              h: 0.35,
+              fontFace: branding.fonts.heading,
+              fontSize: 18,
+              bold: true,
+              color: branding.colors.accent,
+            });
+          }
+
+          slide.addText(sanitizePptText(slideData.title), {
+            x: 0.6,
+            y: 1.35,
+            w: 8.8,
+            h: 0.8,
+            fontFace: branding.fonts.heading,
+            fontSize: 24,
+            bold: true,
+            color: branding.colors.primary,
+          });
+
+          const body = (slideData.content || []).slice(0, 8).map(item => `• ${sanitizePptText(item)}`).join("\n");
+          slide.addText(body || "• Contenido principal", {
+            x: 0.75,
+            y: 2.2,
+            w: 8.4,
+            h: 3.1,
+            fontFace: branding.fonts.body,
+            fontSize: 17,
+            color: branding.colors.text,
+            breakLine: false,
+            valign: "top",
+            margin: 0.05,
+          });
+
+          slide.addText(`${branding.label} • ${index + 1}/${slideCount}`, {
+            x: 0.6,
+            y: 6.85,
+            w: 8.8,
+            h: 0.25,
+            fontFace: branding.fonts.body,
+            fontSize: 10,
+            color: branding.colors.muted,
+            align: "right",
+          });
+        } else {
+          slide.background = { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.bg };
+          renderSlideContent(slide, slideData, normalized.title, index, slideCount);
+        }
       } catch (slideError) {
         fallbackSlides += 1;
         const safeSlideError = tracePptError(slideError);
@@ -1225,7 +1501,12 @@ export async function generatePptDocument(
           reason: safeSlideError,
         });
 
-        slide.background = { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.surface };
+        const fallbackPrimary = branding?.colors.primary || CORPORATE_PPT_DESIGN_SYSTEM.palette.primary;
+        const fallbackAccent = branding?.colors.accent || CORPORATE_PPT_DESIGN_SYSTEM.palette.secondary;
+        const fallbackSurface = branding?.colors.surface || CORPORATE_PPT_DESIGN_SYSTEM.palette.surface;
+        const fallbackText = branding?.colors.text || CORPORATE_PPT_DESIGN_SYSTEM.palette.text;
+        const fallbackMuted = branding?.colors.muted || CORPORATE_PPT_DESIGN_SYSTEM.palette.muted;
+        slide.background = { color: fallbackSurface };
         slide.addText(safeSlideTitle, {
           x: 0.6,
           y: 2.35,
@@ -1234,7 +1515,7 @@ export async function generatePptDocument(
           fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.sectionTitle,
           bold: true,
           align: "center",
-          color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary,
+          color: fallbackPrimary,
         });
         slide.addText("No se pudo renderizar esta diapositiva con el formato extendido. Se muestra el contenido mínimo.", {
           x: 0.6,
@@ -1242,7 +1523,7 @@ export async function generatePptDocument(
           w: 8.8,
           h: 1,
           fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.body,
-          color: CORPORATE_PPT_DESIGN_SYSTEM.palette.text,
+          color: fallbackText,
           align: "center",
         });
         slide.addText((slideData.content || [""]).slice(0, MAX_PPT_TITLES_PER_SLIDE).join("\n"), {
@@ -1251,10 +1532,21 @@ export async function generatePptDocument(
           w: 8.8,
           h: 1,
           fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.bodySmall,
-          color: CORPORATE_PPT_DESIGN_SYSTEM.palette.muted,
+          color: fallbackMuted,
         });
-        addFooter(slide, safeTitle, index + 1, slideCount);
-        addCorporateBadge(slide, "Recovery");
+        if (!branding) {
+          addFooter(slide, safeTitle, index + 1, slideCount);
+          addCorporateBadge(slide, "Recovery");
+        } else {
+          slide.addShape("rect", {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 0.28,
+            fill: { color: fallbackAccent },
+            line: { color: fallbackAccent },
+          });
+        }
       }
     }
 
