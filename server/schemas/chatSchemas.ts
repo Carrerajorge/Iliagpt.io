@@ -96,7 +96,7 @@ export const streamChatRequestSchema = applyChatAttachmentRefinements(baseChatRe
 
     // Streaming/runtime controls (used by /api/chat/stream)
     latencyMode: z.enum(['fast', 'deep', 'auto']).optional(),
-    queueMode: z.enum(['replace', 'reject']).optional(),
+    queueMode: z.enum(['queue', 'replace', 'reject']).optional(),
     forceWebSearch: z.boolean().optional(),
     webSearchAuto: z.boolean().optional(),
 

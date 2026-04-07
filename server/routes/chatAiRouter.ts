@@ -641,10 +641,52 @@ type ConversationStreamLock = {
   startedAt: number;
   lastActivityAt: number;
   cancel: (reason?: string) => void;
+  reserved?: boolean;
 };
 
+type ConversationQueueAcquireResult = {
+  queued: boolean;
+  waitMs: number;
+  initialPosition: number;
+};
+
+type ConversationStreamWaiter = {
+  requestId: string;
+  queuedAt: number;
+  initialPosition: number;
+  resolve: (result: ConversationQueueAcquireResult) => void;
+  reject: (error: ConversationQueueError) => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+  removeAbortListener: () => void;
+};
+
+class ConversationQueueError extends Error {
+  code: "QUEUE_FULL" | "QUEUE_TIMEOUT" | "QUEUE_ABORTED";
+  retryAfterSeconds?: number;
+
+  constructor(
+    code: "QUEUE_FULL" | "QUEUE_TIMEOUT" | "QUEUE_ABORTED",
+    message: string,
+    retryAfterSeconds?: number,
+  ) {
+    super(message);
+    this.name = "ConversationQueueError";
+    this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
 const CONVERSATION_STREAM_LOCK_TTL_MS = 60_000;
+const CONVERSATION_STREAM_QUEUE_TIMEOUT_MS = Math.max(
+  5_000,
+  Number(process.env.CHAT_STREAM_QUEUE_TIMEOUT_MS) || 45_000,
+);
+const MAX_CONVERSATION_STREAM_QUEUE_LENGTH = Math.max(
+  1,
+  Number(process.env.CHAT_STREAM_QUEUE_MAX) || 100,
+);
 const CONVERSATION_STREAM_LOCKS = new Map<string, ConversationStreamLock>();
+const CONVERSATION_STREAM_WAITERS = new Map<string, ConversationStreamWaiter[]>();
 const INTERACTIVE_STALE_RUN_THRESHOLD_MS = 60_000;
 
 function refreshConversationStreamLock(conversationId: string | null | undefined, requestId: string): void {
@@ -660,8 +702,176 @@ function cleanConversationStreamLocks(): void {
     const lastSeenAt = value.lastActivityAt || value.startedAt;
     if (now - lastSeenAt > CONVERSATION_STREAM_LOCK_TTL_MS) {
       CONVERSATION_STREAM_LOCKS.delete(key);
+      promoteConversationStreamWaiter(key);
     }
   }
+}
+
+function cleanConversationStreamWaiters(): void {
+  for (const [key, waiters] of CONVERSATION_STREAM_WAITERS.entries()) {
+    if (waiters.length === 0) {
+      CONVERSATION_STREAM_WAITERS.delete(key);
+    }
+  }
+}
+
+function removeConversationStreamWaiter(
+  conversationId: string,
+  requestId: string,
+): ConversationStreamWaiter | null {
+  const waiters = CONVERSATION_STREAM_WAITERS.get(conversationId);
+  if (!waiters?.length) {
+    return null;
+  }
+
+  const index = waiters.findIndex((waiter) => waiter.requestId === requestId);
+  if (index < 0) {
+    return null;
+  }
+
+  const [waiter] = waiters.splice(index, 1);
+  if (waiters.length === 0) {
+    CONVERSATION_STREAM_WAITERS.delete(conversationId);
+  }
+  return waiter || null;
+}
+
+function settleConversationStreamWaiter(
+  waiter: ConversationStreamWaiter,
+  outcome: { error?: ConversationQueueError; result?: ConversationQueueAcquireResult },
+): void {
+  clearTimeout(waiter.timeoutId);
+  waiter.removeAbortListener();
+  if (outcome.error) {
+    waiter.reject(outcome.error);
+    return;
+  }
+  waiter.resolve(outcome.result || {
+    queued: true,
+    waitMs: Date.now() - waiter.queuedAt,
+    initialPosition: waiter.initialPosition,
+  });
+}
+
+function promoteConversationStreamWaiter(conversationId: string): void {
+  const waiters = CONVERSATION_STREAM_WAITERS.get(conversationId);
+  if (!waiters?.length) {
+    return;
+  }
+
+  const waiter = waiters.shift();
+  if (!waiter) {
+    if (waiters.length === 0) {
+      CONVERSATION_STREAM_WAITERS.delete(conversationId);
+    }
+    return;
+  }
+
+  if (waiters.length === 0) {
+    CONVERSATION_STREAM_WAITERS.delete(conversationId);
+  }
+
+  CONVERSATION_STREAM_LOCKS.set(conversationId, {
+    requestId: waiter.requestId,
+    startedAt: Date.now(),
+    lastActivityAt: Date.now(),
+    cancel: () => {},
+    reserved: true,
+  });
+
+  settleConversationStreamWaiter(waiter, {
+    result: {
+      queued: true,
+      waitMs: Date.now() - waiter.queuedAt,
+      initialPosition: waiter.initialPosition,
+    },
+  });
+}
+
+async function waitForConversationStreamTurn(
+  conversationId: string,
+  requestId: string,
+  req: any,
+): Promise<ConversationQueueAcquireResult> {
+  const existingWaiters = CONVERSATION_STREAM_WAITERS.get(conversationId) || [];
+  if (existingWaiters.length >= MAX_CONVERSATION_STREAM_QUEUE_LENGTH) {
+    throw new ConversationQueueError(
+      "QUEUE_FULL",
+      `Conversation queue is full (max ${MAX_CONVERSATION_STREAM_QUEUE_LENGTH})`,
+      1,
+    );
+  }
+
+  const queuedAt = Date.now();
+  const initialPosition = existingWaiters.length + 1;
+
+  return await new Promise<ConversationQueueAcquireResult>((resolve, reject) => {
+    let settled = false;
+    const rejectOnce = (error: ConversationQueueError) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const resolveOnce = (result: ConversationQueueAcquireResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    const abortHandler = () => {
+      const waiter = removeConversationStreamWaiter(conversationId, requestId);
+      if (waiter) {
+        settleConversationStreamWaiter(waiter, {
+          error: new ConversationQueueError("QUEUE_ABORTED", "Request aborted while waiting in queue"),
+        });
+      } else {
+        rejectOnce(new ConversationQueueError("QUEUE_ABORTED", "Request aborted while waiting in queue"));
+      }
+    };
+
+    const removeAbortListener = () => {
+      req.off?.("aborted", abortHandler);
+      req.off?.("close", abortHandler);
+    };
+
+    req.on?.("aborted", abortHandler);
+    req.on?.("close", abortHandler);
+
+    const timeoutId = setTimeout(() => {
+      const waiter = removeConversationStreamWaiter(conversationId, requestId);
+      const retryAfterSeconds = Math.max(1, Math.ceil(CONVERSATION_STREAM_QUEUE_TIMEOUT_MS / 1000));
+      if (waiter) {
+        settleConversationStreamWaiter(waiter, {
+          error: new ConversationQueueError(
+            "QUEUE_TIMEOUT",
+            `Conversation queue wait exceeded ${CONVERSATION_STREAM_QUEUE_TIMEOUT_MS}ms`,
+            retryAfterSeconds,
+          ),
+        });
+      } else {
+        rejectOnce(
+          new ConversationQueueError(
+            "QUEUE_TIMEOUT",
+            `Conversation queue wait exceeded ${CONVERSATION_STREAM_QUEUE_TIMEOUT_MS}ms`,
+            retryAfterSeconds,
+          ),
+        );
+      }
+    }, CONVERSATION_STREAM_QUEUE_TIMEOUT_MS);
+
+    const waiter: ConversationStreamWaiter = {
+      requestId,
+      queuedAt,
+      initialPosition,
+      resolve: resolveOnce,
+      reject: rejectOnce,
+      timeoutId,
+      removeAbortListener,
+    };
+
+    existingWaiters.push(waiter);
+    CONVERSATION_STREAM_WAITERS.set(conversationId, existingWaiters);
+  });
 }
 
 function acquireSseSlot(userId: string, requestId: string): boolean {
@@ -5081,7 +5291,13 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       );
 
       cleanConversationStreamLocks();
-      const queueMode = (req.body as any)?.queueMode === "reject" ? "reject" : "replace";
+      cleanConversationStreamWaiters();
+      const queueMode =
+        (req.body as any)?.queueMode === "reject"
+          ? "reject"
+          : (req.body as any)?.queueMode === "replace"
+            ? "replace"
+            : "queue";
       const existingConversationLock = CONVERSATION_STREAM_LOCKS.get(streamConversationId);
       if (existingConversationLock && existingConversationLock.requestId !== requestId) {
         if (queueMode === "reject") {
@@ -5091,8 +5307,35 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             requestId: existingConversationLock.requestId,
           });
         }
-        existingConversationLock.cancel("stream_replaced");
-        CONVERSATION_STREAM_LOCKS.delete(streamConversationId);
+        if (queueMode === "replace") {
+          existingConversationLock.cancel("stream_replaced");
+          CONVERSATION_STREAM_LOCKS.delete(streamConversationId);
+        } else {
+          const queueWaitStart = performance.now();
+          try {
+            const queueResult = await waitForConversationStreamTurn(streamConversationId, requestId, req);
+            recordStage("conversation_queue_wait_ms", queueWaitStart);
+            res.setHeader("X-Chat-Queue-Position", String(queueResult.initialPosition));
+            res.setHeader("X-Chat-Queue-Wait-Ms", String(Math.round(queueResult.waitMs)));
+          } catch (error: any) {
+            if (error instanceof ConversationQueueError) {
+              if (error.code === "QUEUE_ABORTED") {
+                return;
+              }
+
+              const retryAfter = error.retryAfterSeconds || 1;
+              res.setHeader("Retry-After", String(retryAfter));
+              return res.status(429).json({
+                status: error.code === "QUEUE_FULL" ? "conversation_queue_full" : "conversation_queue_timeout",
+                conversationId: streamConversationId,
+                retryable: true,
+                retryAfter,
+                error: error.message,
+              });
+            }
+            throw error;
+          }
+        }
       }
 
       (res as any).locals = (res as any).locals || {};
@@ -5119,6 +5362,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         const current = CONVERSATION_STREAM_LOCKS.get(streamConversationId);
         if (current?.requestId === requestId) {
           CONVERSATION_STREAM_LOCKS.delete(streamConversationId);
+          promoteConversationStreamWaiter(streamConversationId);
         }
         detachAsyncTask(
           () => cleanupClaimedRunIfOrphaned("connection_closed"),
@@ -5409,7 +5653,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             const runAge = Date.now() - runStartedAt;
 
             // Allow run replacement in two cases:
-            // 1. queueMode "replace" (default) — client explicitly wants to supersede
+            // 1. queueMode "replace" — client explicitly wants to supersede
             // 2. Stale run (processing > 60s) — abandoned connection safety net
             if (queueMode === "replace" || runAge > INTERACTIVE_STALE_RUN_THRESHOLD_MS) {
               const reason = runAge > INTERACTIVE_STALE_RUN_THRESHOLD_MS ? "stale_run_recovered" : "run_replaced";

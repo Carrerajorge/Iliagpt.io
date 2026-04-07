@@ -323,6 +323,76 @@ describe("chat stream isolation", () => {
     }
   }, 60000);
 
+  it("queues a second stream for the same conversation by default and lets both complete", async () => {
+    const app = await makeApp();
+    const { client, close } = await createHttpTestClient(app);
+
+    try {
+      let markFirstLockHeld!: () => void;
+      const firstLockHeld = new Promise<void>((resolve) => {
+        markFirstLockHeld = resolve;
+      });
+
+      let releaseFirstLock!: () => void;
+      const releaseFirstLockGate = new Promise<void>((resolve) => {
+        releaseFirstLock = resolve;
+      });
+
+      resolveSkillContextMock.mockImplementationOnce(async () => {
+        markFirstLockHeld();
+        await releaseFirstLockGate;
+        return null;
+      });
+
+      const payload = {
+        messages: [{ role: "user", content: "A" }],
+        conversationId: "chat_queue_a",
+        chatId: "chat_queue_a",
+        latencyMode: "fast",
+      };
+
+      const firstPromise = client
+        .post("/api/chat/stream")
+        .set("x-request-id", "req_queue_a")
+        .send(payload)
+        .then((res) => res);
+
+      await Promise.race([
+        firstLockHeld,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("first queued stream did not start in time")), 2000)
+        ),
+      ]);
+
+      let secondResolved = false;
+      const secondPromise = client
+        .post("/api/chat/stream")
+        .set("x-request-id", "req_queue_b")
+        .send(payload)
+        .then((res) => {
+          secondResolved = true;
+          return res;
+        });
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(secondResolved).toBe(false);
+
+      releaseFirstLock();
+
+      const [first, second] = await Promise.all([firstPromise, secondPromise]);
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(second.headers["x-chat-queue-position"]).toBe("1");
+
+      const firstEvents = parseSsePayloads(first.text);
+      const secondEvents = parseSsePayloads(second.text);
+      expect(firstEvents.some((event) => event.event === "done")).toBe(true);
+      expect(secondEvents.some((event) => event.event === "done")).toBe(true);
+    } finally {
+      await close();
+    }
+  }, 60000);
+
   it("waits for the run created by /messages and never recreates the user message in /chat/stream", async () => {
     const app = await makeApp();
     const { client, close } = await createHttpTestClient(app);
