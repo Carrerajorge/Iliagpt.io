@@ -830,11 +830,9 @@ async function waitForConversationStreamTurn(
 
     const removeAbortListener = () => {
       req.off?.("aborted", abortHandler);
-      req.off?.("close", abortHandler);
     };
 
     req.on?.("aborted", abortHandler);
-    req.on?.("close", abortHandler);
 
     const timeoutId = setTimeout(() => {
       const waiter = removeConversationStreamWaiter(conversationId, requestId);
