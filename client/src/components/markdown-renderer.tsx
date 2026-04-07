@@ -605,7 +605,7 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, onOpenD
   }
 
   const lineCount = codeContent.split("\n").length;
-  const showArtifactButton = lineCount > 20;
+  const showArtifactButton = lineCount > 15;
 
   const handleOpenAsArtifact = useCallback(() => {
     const store = useArtifactStore.getState();

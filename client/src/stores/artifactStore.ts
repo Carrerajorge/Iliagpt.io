@@ -194,14 +194,14 @@ export const useArtifactStore = create<ArtifactStore>()(
           return;
         }
 
-        // Detect large code blocks (> 20 lines)
+        // Detect large code blocks (> 15 lines)
         const codeBlockPattern = /```(\w*)\s*\n([\s\S]*?)```/g;
         let match: RegExpExecArray | null;
         while ((match = codeBlockPattern.exec(content)) !== null) {
           const lang = match[1];
           const code = match[2];
           const lineCount = code.split("\n").length;
-          if (lineCount > 20) {
+          if (lineCount > 15) {
             const language = detectLanguage(lang);
             get().openArtifact({
               id: generateId(),
