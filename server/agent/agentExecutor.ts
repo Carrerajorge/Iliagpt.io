@@ -1034,7 +1034,29 @@ export async function executeAgentLoop(
       operationalEvidencePack = ragResult.evidencePack || null;
       workspaceOperationalContext = workspaceContext || "";
 
-      const operationalBlocks = [operationalRagContext, workspaceOperationalContext].filter(Boolean);
+      // Knowledge base RAG: search user's document collections for relevant context
+      let knowledgeBaseContext = "";
+      let knowledgeBaseSources: Array<{ id: string; filename: string; pageNumber?: number; sectionHeading?: string; relevanceScore: number; snippet: string }> = [];
+      try {
+        const { buildRAGContext, hasKnowledgeBase } = await import("../rag/contextBuilder");
+        const hasKB = await hasKnowledgeBase(userId);
+        if (hasKB) {
+          const ragCtx = await buildRAGContext({
+            userId,
+            query: recentUserText || requestSpec.rawMessage || "",
+            maxTokens: 3000,
+            hybrid: true,
+          });
+          if (ragCtx.active) {
+            knowledgeBaseContext = ragCtx.contextText;
+            knowledgeBaseSources = ragCtx.sources;
+          }
+        }
+      } catch (kbErr: any) {
+        console.warn("[AgentExecutor] Knowledge base RAG failed (non-fatal):", kbErr?.message);
+      }
+
+      const operationalBlocks = [knowledgeBaseContext, operationalRagContext, workspaceOperationalContext].filter(Boolean);
       if (operationalBlocks.length > 0) {
         conversationHistory = [
           {
@@ -2551,6 +2573,24 @@ Please rewrite your response addressing these issues.`
     fullResponse = sanitized.sanitizedText;
   } catch {
     // Output sanitization is best-effort
+  }
+
+  // Send knowledge base RAG sources to the client if any were used
+  if (knowledgeBaseSources.length > 0) {
+    try {
+      const { extractCitations, formatSourcesForDisplay } = await import("../rag/citationEngine");
+      const citationResult = extractCitations(fullResponse, knowledgeBaseSources as any);
+      if (citationResult.hasCitations) {
+        fullResponse = citationResult.annotatedText + citationResult.footnotes;
+      }
+      sse.write("rag_sources", {
+        runId,
+        sources: formatSourcesForDisplay(citationResult.citations),
+        chunksSearched: knowledgeBaseSources.length,
+      });
+    } catch (citErr: any) {
+      console.warn("[AgentExecutor] Citation engine failed (non-fatal):", citErr?.message);
+    }
   }
 
   return fullResponse;

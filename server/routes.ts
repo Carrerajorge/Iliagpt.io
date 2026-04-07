@@ -1505,6 +1505,14 @@ try{
   app.use("/api", createChatAiRouter(broadcastAgentUpdate));
   app.use("/api/apps", createAppsIntegrationRouter());
 
+  // Knowledge Base (RAG collections) routes.
+  try {
+    const { createKnowledgeBaseRouter } = await import("./routes/knowledgeBaseRouter");
+    app.use("/api/knowledge", createKnowledgeBaseRouter());
+  } catch (err: any) {
+    console.warn("[Routes] Failed to mount knowledge base router:", err?.message);
+  }
+
   // Integration Kernel OAuth routes (generic connector flow).
   // Mount one router per connectorId loaded into the ConnectorRegistry.
   try {

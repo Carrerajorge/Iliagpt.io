@@ -532,6 +532,11 @@ export const chats = pgTable("chats", {
   aiModelUsed: text("ai_model_used"),
   conversationStatus: text("conversation_status").default("active"), // active, completed, flagged
   flagStatus: text("flag_status"), // reviewed, needs_attention, spam, vip_support
+  shareId: varchar("share_id").unique(),          // Public share link token (null = not shared)
+  folderId: varchar("folder_id"),                 // Folder organization
+  tags: text("tags").array(),                     // User-assigned tags
+  ragEnabled: boolean("rag_enabled").default(false), // Whether RAG is active for this chat
+  ragCollectionIds: text("rag_collection_ids").array(), // Knowledge base collections attached
   endedAt: timestamp("ended_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -542,6 +547,8 @@ export const chats = pgTable("chats", {
   index("chats_user_updated_idx").on(table.userId, table.updatedAt),
   index("chats_user_archived_deleted_idx").on(table.userId, table.archived, table.deletedAt),
   index("chats_updated_at_idx").on(table.updatedAt),
+  index("chats_share_id_idx").on(table.shareId),
+  index("chats_folder_id_idx").on(table.folderId),
 ]);
 
 export const insertChatSchema = createInsertSchema(chats).omit({
@@ -569,12 +576,16 @@ export const chatMessages = pgTable("chat_messages", {
   googleFormPreview: jsonb("google_form_preview"), // Google Forms preview data
   gmailPreview: jsonb("gmail_preview"), // Gmail preview data
   generatedImage: text("generated_image"), // Base64 or URL of generated image
+  parentMessageId: varchar("parent_message_id"), // For branching: the message this branches from
+  branchLabel: text("branch_label"),              // Optional label for this branch
+  ragSources: jsonb("rag_sources"),               // RAG citation sources attached to this message
   metadata: jsonb("metadata"), // Additional metadata for extensibility
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("chat_messages_chat_idx").on(table.chatId),
   index("chat_messages_request_idx").on(table.requestId),
   index("chat_messages_status_idx").on(table.status),
+  index("chat_messages_parent_idx").on(table.parentMessageId),
   uniqueIndex("chat_messages_request_unique").on(table.requestId),
   index("chat_messages_chat_created_idx").on(table.chatId, table.createdAt),
   index("chat_messages_created_at_idx").on(table.createdAt),
