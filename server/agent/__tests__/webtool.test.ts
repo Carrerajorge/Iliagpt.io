@@ -754,18 +754,16 @@ describe('DuckDuckGoSearchAdapter', () => {
 
   describe('searchScholar', () => {
     it('should return scholar results with citations', async () => {
-      mockSearchScholar.mockResolvedValueOnce({
-        results: [
-          {
-            url: 'https://arxiv.org/paper',
-            title: 'Academic Paper',
-            snippet: 'Research abstract',
-            authors: 'John Doe',
-            year: '2024',
-            citation: '100',
-          },
-        ],
-      });
+      mockSearchScholar.mockResolvedValueOnce([
+        {
+          url: 'https://arxiv.org/paper',
+          title: 'Academic Paper',
+          snippet: 'Research abstract',
+          authors: 'John Doe',
+          year: '2024',
+          citation: '100',
+        },
+      ]);
 
       const results = await adapter.searchScholar('research topic', 5);
 

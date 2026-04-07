@@ -11,7 +11,7 @@
  * - Multi-language support
  */
 
-import { generatePptDocument } from "./documentGeneration";
+import { createPptxDocument, generatePptDocument } from "./documentGeneration";
 
 // ============================================
 // TYPES & INTERFACES
@@ -381,11 +381,7 @@ export class ProfessionalPresentationGenerator {
 
   async generate(request: PresentationRequest): Promise<PresentationResult> {
     try {
-      // Dynamic import to avoid bundling issues
-      const pptxgen = await import("pptxgenjs");
-      const PptxGenJS = (pptxgen as any).default || pptxgen;
-
-      const pres = new PptxGenJS();
+      const pres = createPptxDocument();
       
       // Set presentation metadata
       pres.author = request.author || "IliaGPT";

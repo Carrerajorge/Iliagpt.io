@@ -1,3 +1,5 @@
+import { FREE_MODEL_ID } from "./modelRegistry";
+
 const DEFAULT_CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1";
 
 export function trimEnvValue(value?: string | null): string | undefined {
@@ -27,7 +29,7 @@ export function getOpenAICompatibleDefaultModel(env: NodeJS.ProcessEnv = process
   return (
     trimEnvValue(env.OPENAI_MODEL) ||
     trimEnvValue(env.CEREBRAS_MODEL) ||
-    (isCerebrasBaseUrl(getOpenAICompatibleBaseUrl(env)) ? "gpt-oss-120b" : "google/gemma-4-31b-it")
+    (isCerebrasBaseUrl(getOpenAICompatibleBaseUrl(env)) ? "gpt-oss-120b" : FREE_MODEL_ID)
   );
 }
 

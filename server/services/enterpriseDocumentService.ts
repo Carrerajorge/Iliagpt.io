@@ -905,6 +905,73 @@ export class EnterpriseDocumentService {
         .trim()
         .substring(0, maxLength);
 
+    const normalizeBullet = (value: unknown, maxLength = 140): string =>
+      sanitizePptText(value, maxLength)
+        .replace(/^[\s\-*•\d.]+/, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const splitContentIntoBullets = (value: string): string[] => {
+      const byLine = value
+        .split(/\r?\n+/)
+        .map((line) => normalizeBullet(line))
+        .filter(Boolean);
+
+      const bySentence = value
+        .split(/(?<=[.!?])\s+/)
+        .map((line) => normalizeBullet(line))
+        .filter((line) => line.length > 18);
+
+      const candidates = byLine.length >= 2 ? byLine : bySentence;
+      return candidates.slice(0, 5);
+    };
+
+    const buildTopicFallbackSlides = (title: string): Array<{ title: string; content: string[] }> => {
+      const normalizedTitle = title.toLowerCase();
+      if (normalizedTitle.includes("gestion administrativa") || (normalizedTitle.includes("gestion") && normalizedTitle.includes("administr"))) {
+        return [
+          {
+            title: "Pilares de gestión",
+            content: [
+              "Definir responsables, flujos y niveles de servicio por proceso.",
+              "Centralizar documentos y aprobaciones en un circuito único.",
+              "Automatizar tareas repetitivas y puntos de control.",
+            ],
+          },
+          {
+            title: "Siguientes pasos",
+            content: [
+              "Mapear el proceso actual y detectar cuellos de botella.",
+              "Priorizar mejoras con responsables y fechas comprometidas.",
+              "Activar un tablero de seguimiento semanal.",
+            ],
+          },
+        ];
+      }
+
+      return [
+        {
+          title: "Pilares clave",
+          content: [
+            "Ordenar prioridades alrededor de pocos frentes de alto impacto.",
+            "Asignar responsables y criterios de seguimiento claros.",
+            "Mantener una narrativa simple, accionable y medible.",
+          ],
+        },
+        {
+          title: "Siguientes pasos",
+          content: [
+            "Aprobar el enfoque y definir el primer bloque de acciones.",
+            "Asignar responsables con un horizonte corto de implementación.",
+            "Revisar avances con una cadencia ejecutiva simple.",
+          ],
+        },
+      ];
+    };
+
+    const isCoverLikeTitle = (title: string): boolean => /^(portada|cover|titulo|title)$/i.test(title.trim());
+    const isClosingLikeTitle = (title: string): boolean => /(cierre|conclus|siguientes pasos|next step|next steps|roadmap)/i.test(title);
+
     const requestTitle = sanitizePptText(request.title, 500) || "Presentación";
     const requestSubtitle = sanitizePptText(request.subtitle, 240);
 
@@ -917,17 +984,17 @@ export class EnterpriseDocumentService {
           level: 1,
         } as DocumentSection];
 
-    const slides = sections.map((section, index) => {
+    const sectionSlides = sections.map((section, index) => {
       const sectionTitle = sanitizePptText(section.title, 220) || `Sección ${index + 1}`;
       const lines: string[] = [];
 
-      if (requestSubtitle && index === 0) {
-        lines.push(`Resumen: ${requestSubtitle}`);
+      if (requestSubtitle && index === 0 && !isCoverLikeTitle(sectionTitle)) {
+        lines.push(requestSubtitle);
       }
 
       const contentRaw = sanitizePptText(section.content, 1200);
       if (contentRaw) {
-        lines.push(contentRaw);
+        lines.push(...splitContentIntoBullets(contentRaw));
       }
 
       if (section.tables && section.tables.length > 0 && section.tables[0]?.headers) {
@@ -955,17 +1022,56 @@ export class EnterpriseDocumentService {
         title: sectionTitle,
         content: lines.length > 0 ? lines : ["Sin contenido"],
       };
-    });
+    }).filter((slide) => slide.content.length > 0);
+
+    const fallbackSlides = buildTopicFallbackSlides(requestTitle);
+    const slides: Array<{ title: string; content: string[] }> = [];
+    const firstSlide = sectionSlides[0];
+    const alreadyHasCover = firstSlide
+      ? isCoverLikeTitle(firstSlide.title) || firstSlide.title.toLowerCase() === requestTitle.toLowerCase()
+      : false;
+
+    if (alreadyHasCover && firstSlide) {
+      slides.push({
+        title: requestTitle,
+        content: [
+          firstSlide.content[0] || requestSubtitle || `Resumen ejecutivo de ${requestTitle}`,
+        ],
+      });
+      slides.push(...sectionSlides.slice(1));
+    } else {
+      slides.push({
+        title: requestTitle,
+        content: [requestSubtitle || `Resumen ejecutivo de ${requestTitle}`],
+      });
+      slides.push(...sectionSlides);
+    }
+
+    if (slides.length < 3) {
+      for (const fallbackSlide of fallbackSlides) {
+        if (slides.some((slide) => slide.title.toLowerCase() === fallbackSlide.title.toLowerCase())) continue;
+        slides.push(fallbackSlide);
+      }
+    }
+
+    if (!slides.some((slide) => isClosingLikeTitle(slide.title.toLowerCase()))) {
+      const closingSlide = fallbackSlides[fallbackSlides.length - 1];
+      if (closingSlide && !slides.some((slide) => slide.title.toLowerCase() === closingSlide.title.toLowerCase())) {
+        slides.push(closingSlide);
+      }
+    }
 
     if (slides.length === 0) {
       slides.push({
-        title: "Resumen",
-        content: ["Sin contenido disponible."],
+        title: requestTitle,
+        content: [requestSubtitle || "Sin contenido disponible."],
       });
     }
 
+    const finalSlides = slides.slice(0, 8);
+
     try {
-      const buffer = await generatePptDocument(requestTitle, slides, {
+      const buffer = await generatePptDocument(requestTitle, finalSlides, {
         trace: {
           source: "enterpriseDocumentService",
         },

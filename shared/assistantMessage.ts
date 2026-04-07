@@ -7,11 +7,13 @@ const ALLOWED_CONFIDENCE = new Set(["high", "medium", "low"]);
 export type AssistantConfidence = "high" | "medium" | "low";
 
 export interface AssistantMessageMetadataInput<
+  TArtifact = unknown,
   TWebSource = unknown,
   TSearchQuery = unknown,
   TRetrievalStep = unknown,
   TStep = unknown,
 > {
+  artifact?: TArtifact | null;
   webSources?: TWebSource[] | null;
   searchQueries?: TSearchQuery[] | null;
   totalSearches?: unknown;
@@ -31,7 +33,7 @@ export interface AssistantMessageInput<
   TSearchQuery = unknown,
   TRetrievalStep = unknown,
   TStep = unknown,
-> extends AssistantMessageMetadataInput<TWebSource, TSearchQuery, TRetrievalStep, TStep> {
+> extends AssistantMessageMetadataInput<TArtifact, TWebSource, TSearchQuery, TRetrievalStep, TStep> {
   id?: unknown;
   timestamp?: unknown;
   requestId?: unknown;
@@ -55,7 +57,7 @@ export interface AssistantMessageRecord<
   TSearchQuery = unknown,
   TRetrievalStep = unknown,
   TStep = unknown,
-> extends AssistantMessageMetadataInput<TWebSource, TSearchQuery, TRetrievalStep, TStep> {
+> extends AssistantMessageMetadataInput<TArtifact, TWebSource, TSearchQuery, TRetrievalStep, TStep> {
   id?: string;
   role: "assistant";
   content: string;
@@ -188,14 +190,17 @@ export function buildAssistantMessage<
 }
 
 export function buildAssistantMessageMetadata<
+  TArtifact = unknown,
   TWebSource = unknown,
   TSearchQuery = unknown,
   TRetrievalStep = unknown,
   TStep = unknown,
 >(
-  input: AssistantMessageMetadataInput<TWebSource, TSearchQuery, TRetrievalStep, TStep>,
+  input: AssistantMessageMetadataInput<TArtifact, TWebSource, TSearchQuery, TRetrievalStep, TStep>,
 ): Record<string, unknown> | undefined {
   const metadata: Record<string, unknown> = {};
+
+  if (input.artifact) metadata.artifact = input.artifact;
 
   const webSources = normalizeArray(input.webSources);
   const searchQueries = normalizeArray(input.searchQueries);

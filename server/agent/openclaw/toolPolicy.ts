@@ -62,6 +62,9 @@ const GO_TOOLS = new Set([
   "memory_search",
   "memory_get",
   "generate_document",
+  "create_presentation",
+  "create_spreadsheet",
+  "create_document",
 ]);
 
 const PLUS_TOOLS = new Set([
@@ -75,9 +78,6 @@ const PLUS_TOOLS = new Set([
   "generate_image",
   "analyze_spreadsheet",
   "generate_chart",
-  "create_presentation",
-  "create_spreadsheet",
-  "create_document",
 ]);
 
 const PRO_TOOLS = new Set([

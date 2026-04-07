@@ -32,6 +32,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { apiFetchJson, apiFetchJsonNullable, apiFetchOk } from "@/lib/adminApi";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { formatZonedDate, formatZonedTime, normalizeTimeZone, type PlatformDateFormat } from "@/lib/platformDateTime";
 
@@ -259,69 +260,53 @@ export default function AgenticEngineDashboard() {
 
   const { data: agentUsersData, isLoading: agentUsersLoading } = useQuery({
     queryKey: ["/api/admin/agent/users"],
-    queryFn: async () => {
-      const res = await fetch("/api/admin/agent/users?limit=100", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/admin/agent/users?limit=100"),
+    throwOnError: true,
   });
 
   const { data: toolsData, isLoading: toolsLoading, refetch: refetchTools } = useQuery({
     queryKey: ["/api/admin/agent/tools", { rangeId, userId, providerId }],
-    queryFn: async () => {
-      const res = await fetch(makeAgentUrl("/api/admin/agent/tools"), { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson(makeAgentUrl("/api/admin/agent/tools")),
+    throwOnError: true,
   });
 
   const { data: metricsData, refetch: refetchMetrics } = useQuery({
     queryKey: ["/api/admin/agent/metrics", { rangeId, userId, providerId }],
-    queryFn: async () => {
-      const res = await fetch(makeAgentUrl("/api/admin/agent/metrics"), { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson(makeAgentUrl("/api/admin/agent/metrics")),
+    throwOnError: true,
   });
 
   const { data: pendingGapsData, refetch: refetchPendingGaps } = useQuery({
     queryKey: ["/api/admin/agent/gaps", { userId, status: "pending" }],
-    queryFn: async () => {
-      const res = await fetch(makeUserUrl("/api/admin/agent/gaps", { status: "pending" }), { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson(makeUserUrl("/api/admin/agent/gaps", { status: "pending" })),
+    throwOnError: true,
   });
 
   const { data: gapsData, refetch: refetchGaps } = useQuery({
     queryKey: ["/api/admin/agent/gaps", { userId, status: gapsStatus }],
-    queryFn: async () => {
-      const res = await fetch(makeUserUrl("/api/admin/agent/gaps", { status: gapsStatus }), { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson(makeUserUrl("/api/admin/agent/gaps", { status: gapsStatus })),
     enabled: activeTab === "gaps",
+    throwOnError: true,
   });
 
   const { data: memoryData, refetch: refetchMemory } = useQuery({
     queryKey: ["/api/admin/agent/memory/stats", { userId }],
-    queryFn: async () => {
-      const res = await fetch(makeUserUrl("/api/admin/agent/memory/stats"), { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson(makeUserUrl("/api/admin/agent/memory/stats")),
+    throwOnError: true,
   });
 
   const { data: circuitsData, refetch: refetchCircuits } = useQuery({
     queryKey: ["/api/admin/agent/circuits"],
-    queryFn: async () => {
-      const res = await fetch("/api/admin/agent/circuits", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/admin/agent/circuits"),
+    throwOnError: true,
   });
 
   const { data: orchestrationsData, isLoading: orchestrationsLoading, refetch: refetchOrchestrations } = useQuery({
     queryKey: ["/api/admin/agent/orchestrations", { userId }],
-    queryFn: async () => {
-      const res = await fetch(makeUserUrl("/api/admin/agent/orchestrations", { limit: 50 }), { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson(makeUserUrl("/api/admin/agent/orchestrations", { limit: 50 })),
     enabled: activeTab === "orchestration",
     refetchInterval: activeTab === "orchestration" ? 10000 : false,
+    throwOnError: true,
   });
 
   const toolCallsQuery = useInfiniteQuery({
@@ -329,18 +314,18 @@ export default function AgenticEngineDashboard() {
     initialPageParam: null as string | null,
     queryFn: async ({ pageParam }) => {
       const before = typeof pageParam === "string" && pageParam.trim() ? pageParam.trim() : undefined;
-      const res = await fetch(makeAgentUrl("/api/admin/agent/tool-calls", {
+      return apiFetchJson(makeAgentUrl("/api/admin/agent/tool-calls", {
         limit: 25,
         before,
         status: toolCallsStatusFilter !== "all" ? toolCallsStatusFilter : undefined,
         toolId: toolCallsToolFilter || undefined,
         runId: toolCallsRunFilter || undefined,
-      }), { credentials: "include" });
-      return res.json();
+      }));
     },
     getNextPageParam: (lastPage: any) => lastPage?.nextBefore || undefined,
     enabled: activeTab === "overview",
     refetchInterval: false,
+    throwOnError: true,
   });
 
   const toolCallsLoading = toolCallsQuery.isLoading;
@@ -355,17 +340,16 @@ export default function AgenticEngineDashboard() {
     if (!analyzerPrompt.trim()) return;
     setAnalyzing(true);
     try {
-      const res = await fetch("/api/admin/agent/complexity/analyze", {
+      const result = await apiFetchJson("/api/admin/agent/complexity/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: analyzerPrompt }),
         credentials: "include",
       });
-      const result = await res.json();
       setAnalysisResult(result);
       setAnalysisHistory(prev => [{ prompt: analyzerPrompt, ...result, timestamp: Date.now() }, ...prev].slice(0, 10));
-    } catch {
-      toast.error("Error analyzing prompt");
+    } catch (error: any) {
+      toast.error(error?.message || "Error analyzing prompt");
     } finally {
       setAnalyzing(false);
     }
@@ -436,18 +420,12 @@ export default function AgenticEngineDashboard() {
 
   const updateGapStatusMutation = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: "pending" | "resolved" | "ignored" }) => {
-      const res = await fetch(`/api/admin/agent/gaps/${id}`, {
+      return apiFetchJsonNullable(`/api/admin/agent/gaps/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
         credentials: "include",
       });
-
-      const payload = await res.json().catch(() => null);
-      if (!res.ok) {
-        throw new Error(payload?.error || payload?.message || "Failed to update gap");
-      }
-      return payload;
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/admin/agent/gaps"] });
@@ -469,12 +447,6 @@ export default function AgenticEngineDashboard() {
         runId: toolCallsRunFilter || undefined,
       });
 
-      const res = await fetch(url, { credentials: "include" });
-      if (!res.ok) {
-        const payload = await res.json().catch(() => null);
-        throw new Error(payload?.error || payload?.message || "Export failed");
-      }
-
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
       const parts = [
         "tool-calls",
@@ -487,9 +459,10 @@ export default function AgenticEngineDashboard() {
       ];
       const base = parts.filter(Boolean).join("_");
 
-      const contentDisposition = res.headers.get("content-disposition");
+      const response = await apiFetchOk(url, { credentials: "include" });
+      const contentDisposition = response.headers.get("content-disposition");
       const headerFilename = parseContentDispositionFilename(contentDisposition);
-      const blob = await res.blob();
+      const blob = await response.blob();
       downloadBlobFile(headerFilename || `${base}.${format}`, blob);
       toast.success("Export downloaded");
     } catch (error: any) {

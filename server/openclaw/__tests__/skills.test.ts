@@ -161,4 +161,37 @@ Use this skill to review slide decks and presentation content.`,
       skillRegistry.clear();
     }
   });
+  it('registers builtin runtime skills for research, documents, memory, subagents, and math', async () => {
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'openclaw-builtins-'));
+
+    try {
+      const baseConfig = getOpenClawConfig();
+      await initSkills({
+        ...baseConfig,
+        skills: {
+          ...baseConfig.skills,
+          enabled: true,
+          includeBuiltins: true,
+          autoImportClawi: false,
+          directory: tmpRoot,
+          extraDirectories: [],
+          workspaceDirectory: tmpRoot,
+        },
+      });
+
+      expect(skillRegistry.get('web_search')?.tools).toEqual(['web_search', 'browse_url']);
+      expect(skillRegistry.get('generate_document')?.tools).toEqual(['generate_document']);
+      expect(skillRegistry.get('analyze_spreadsheet')?.tools).toEqual(['analyze_spreadsheet']);
+      expect(skillRegistry.get('memory_search')?.tools).toEqual(['openclaw_rag_search', 'openclaw_rag_context']);
+      expect(skillRegistry.get('spawn_subagent')?.tools).toEqual([
+        'openclaw_spawn_subagent',
+        'openclaw_subagent_status',
+        'openclaw_subagent_list',
+      ]);
+      expect(skillRegistry.get('math_render')?.prompt).toContain('LaTeX/KaTeX');
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      skillRegistry.clear();
+    }
+  });
 });

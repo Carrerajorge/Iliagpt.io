@@ -158,7 +158,7 @@ class AdminNotificationsService extends EventEmitter {
     this.info(
       "Nuevo usuario registrado",
       `${email} se ha registrado en la plataforma`,
-      { label: "Ver usuarios", url: "/admin?section=users" }
+      { label: "Ver usuarios", url: "/admin/users" }
     );
   }
 
@@ -166,7 +166,7 @@ class AdminNotificationsService extends EventEmitter {
     this.success(
       "Pago recibido",
       `Se ha recibido un pago de ${amount} ${currency}`,
-      { label: "Ver pagos", url: "/admin?section=payments" }
+      { label: "Ver pagos", url: "/admin/payments" }
     );
   }
 
@@ -174,7 +174,7 @@ class AdminNotificationsService extends EventEmitter {
     this.error(
       "Alerta de seguridad",
       message,
-      { label: "Ver seguridad", url: "/admin?section=security" }
+      { label: "Ver seguridad", url: "/admin/security" }
     );
   }
 
@@ -182,7 +182,7 @@ class AdminNotificationsService extends EventEmitter {
     this.error(
       "Error del sistema",
       error,
-      { label: "Ver logs", url: "/admin?section=security" }
+      { label: "Ver logs", url: "/admin/security" }
     );
   }
 }

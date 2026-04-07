@@ -79,6 +79,10 @@ export class EventLogger {
       console.log(`[EventLogger] ${params.eventType} logged for run ${params.runId}`);
       return eventId;
     } catch (error) {
+      if ((error as any)?.code === '23503' && (error as any)?.constraint?.includes('agent_mode_runs')) {
+        console.warn(`[EventLogger] Discarding immediate event - run ${params.runId} is not persisted to database`);
+        return eventId;
+      }
       console.error("[EventLogger] Failed to log event:", error);
       throw error;
     }

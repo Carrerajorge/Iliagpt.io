@@ -30,6 +30,8 @@ import { useSuperAgentStore } from "@/stores/super-agent-store";
 import { pollingManager } from "@/lib/polling-manager";
 import { queryClient } from "@/lib/queryClient";
 import { apiFetch } from "@/lib/apiClient";
+import { resolveConversationUiStateKey } from "@/lib/conversationUiState";
+import type { AIState, AiProcessStep } from "@/components/chat-interface/types";
 
 const AppsViewLazy = lazy(() => import("@/components/apps-view").then((m) => ({ default: m.AppsView })));
 const ChannelsHubDialogLazy = lazy(() =>
@@ -165,11 +167,9 @@ export default function Home() {
     }
   }, [moveChatToFolder, removeChatFromFolder]);
 
-  type HomeAiState = "idle" | "thinking" | "responding" | "agent_working";
-  type HomeAiStep = { step: string; status: "pending" | "active" | "done" };
   type HomeConversationUiState = {
-    aiState: HomeAiState;
-    aiProcessSteps: HomeAiStep[];
+    aiState: AIState;
+    aiProcessSteps: AiProcessStep[];
     pendingRequestId: string | null;
     streamBuffer: string;
   };
@@ -293,17 +293,24 @@ export default function Home() {
     ? conversationUiStateMap[activeConversationId]
     : undefined;
 
-  const aiState: HomeAiState = activeConversationState?.aiState || "idle";
-  const aiProcessSteps: HomeAiStep[] = activeConversationState?.aiProcessSteps || [];
+  const aiState: AIState = activeConversationState?.aiState || "idle";
+  const aiProcessSteps: AiProcessStep[] = activeConversationState?.aiProcessSteps || [];
   const aiStateChatId = aiState === "idle" ? null : activeConversationId;
 
-  const setAiState = useCallback((newState: HomeAiState | ((prev: HomeAiState) => HomeAiState)) => {
-    const targetConversationId = activeConversationId || pendingChatIdRef.current || newChatStableKey;
-    if (!targetConversationId) return;
+  const setAiState = useCallback((newState: React.SetStateAction<AIState>, conversationId?: string | null) => {
     setConversationUiStateMap((prev) => {
+      const targetConversationId = resolveConversationUiStateKey({
+        requestedConversationId: conversationId,
+        activeConversationId,
+        pendingConversationId: pendingChatIdRef.current,
+        draftConversationId: newChatStableKey,
+        existingConversationIds: Object.keys(prev),
+        resolveConversationId: resolveRealChatId,
+      });
+      if (!targetConversationId) return prev;
       const current = prev[targetConversationId] || createHomeConversationUiState();
       const resolvedState = typeof newState === "function"
-        ? (newState as (prev: HomeAiState) => HomeAiState)(current.aiState)
+        ? (newState as (prev: AIState) => AIState)(current.aiState)
         : newState;
       return {
         ...prev,
@@ -316,13 +323,20 @@ export default function Home() {
     });
   }, [activeConversationId, newChatStableKey]);
 
-  const setAiProcessSteps = useCallback((nextSteps: HomeAiStep[] | ((prev: HomeAiStep[]) => HomeAiStep[])) => {
-    const targetConversationId = activeConversationId || pendingChatIdRef.current || newChatStableKey;
-    if (!targetConversationId) return;
+  const setAiProcessSteps = useCallback((nextSteps: React.SetStateAction<AiProcessStep[]>, conversationId?: string | null) => {
     setConversationUiStateMap((prev) => {
+      const targetConversationId = resolveConversationUiStateKey({
+        requestedConversationId: conversationId,
+        activeConversationId,
+        pendingConversationId: pendingChatIdRef.current,
+        draftConversationId: newChatStableKey,
+        existingConversationIds: Object.keys(prev),
+        resolveConversationId: resolveRealChatId,
+      });
+      if (!targetConversationId) return prev;
       const current = prev[targetConversationId] || createHomeConversationUiState();
       const resolvedSteps = typeof nextSteps === "function"
-        ? (nextSteps as (prev: HomeAiStep[]) => HomeAiStep[])(current.aiProcessSteps)
+        ? (nextSteps as (prev: AiProcessStep[]) => AiProcessStep[])(current.aiProcessSteps)
         : nextSteps;
       return {
         ...prev,

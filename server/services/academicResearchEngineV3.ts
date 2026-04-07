@@ -421,7 +421,7 @@ async function searchOpenAlex(
       searchUrl += `&filter=${filters.join(",")}`;
     }
 
-    searchUrl += "&select=id,title,authorships,publication_year,publication_date,primary_location,abstract_inverted_index,keywords,doi,language,type,cited_by_count,referenced_works_count,open_access,grants";
+    searchUrl += "&select=id,title,authorships,publication_year,publication_date,primary_location,abstract_inverted_index,keywords,doi,language,type,cited_by_count,referenced_works_count,open_access,funders";
 
     const response = await fetchWithRetry(searchUrl);
 
@@ -483,7 +483,7 @@ async function searchOpenAlex(
           referenceCount: work.referenced_works_count || 0,
           isOpenAccess: work.open_access?.is_oa || false,
           license: work.open_access?.oa_status || "",
-          fundingInfo: (work.grants || []).map((g: any) => g.funder_display_name),
+          fundingInfo: (work.funders || []).map((funder: any) => funder.display_name || funder.id || "").filter(Boolean),
           countryOfStudy: authors[0]?.affiliationCountry || "",
           issn: primaryLocation?.source?.issn?.[0] || "",
           publisher: primaryLocation?.source?.host_organization_name || "",

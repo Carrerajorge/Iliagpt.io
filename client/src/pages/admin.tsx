@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react"; import { useLocation } from "wouter"; import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"; import { Button } from
+import { Suspense, useState, useRef, useEffect } from "react"; import { useLocation, useSearch } from "wouter"; import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"; import { Button } from
   "@/components/ui/button"; import { Input } from "@/components/ui/input"; import { Badge } from "@/components/ui/badge"; import { Switch } from "@/components/ui/switch"; import { ScrollArea } from
   "@/components/ui/scroll-area"; import { Separator } from "@/components/ui/separator"; import { Progress } from "@/components/ui/progress"; import {
     Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -31,6 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
   AlertTriangle,
   Download,
   RefreshCw,
+  Copy,
   Trash2,
   Edit,
   Loader2,
@@ -75,6 +76,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/lib/apiClient";
+import { type AdminSection, getAdminHref, getAdminSectionFromRoute } from "@/lib/adminNavigation";
 import { formatZonedDateTime, normalizeTimeZone } from "@/lib/platformDateTime";
 import { format } from "date-fns";
 import { toast } from "sonner";
@@ -86,6 +88,7 @@ import { ActivityFeed } from "@/components/admin/ActivityFeed";
 import { RealtimeMetricsPanel } from "@/components/admin/RealtimeMetrics";
 import { SecurityAlertsPanel } from "@/components/admin/SecurityAlerts";
 import { AdminNotificationsPopover } from "@/components/admin/NotificationsPopover";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 import ReleasesManager from "./admin/ReleasesManager";
 import BudgetDashboard from "@/components/admin/BudgetDashboard";
@@ -102,8 +105,7 @@ import BrowserPlaneDashboard from "@/components/admin/BrowserPlane";
 import DeepResearchDashboard from "@/components/admin/DeepResearch";
 import ObservabilityDashboard from "@/components/admin/ObservabilityDashboard";
 import ChaosTestingDashboard from "@/components/admin/ChaosTestingDashboard";
-
-type AdminSection = "dashboard" | "users" | "conversations" | "ai-models" | "payments" | "invoices" | "analytics" | "database" | "security" | "reports" | "settings" | "agentic" | "excel" | "terminal" | "monitoring" | "releases" | "budget" | "sre" | "governance" | "security-dashboard" | "experiments" | "voice" | "data-plane" | "files" | "orchestrator" | "browser" | "research" | "observability" | "chaos";
+import GatewayLogViewer from "@/components/admin/GatewayLogViewer";
 
 const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -135,16 +137,23 @@ const navItems: { id: AdminSection; label: string; icon: React.ElementType }[] =
   { id: "research", label: "Deep Research", icon: Brain },
   { id: "observability", label: "Observability", icon: Eye },
   { id: "chaos", label: "Chaos Testing", icon: Zap },
+  { id: "gateway-logs", label: "Gateway Logs", icon: Activity },
 ];
 
-function DashboardSection() {
+async function adminFetch<T = any>(url: string): Promise<T> {
+  const res = await apiFetch(url, { credentials: "include" });
+  if (!res.ok) {
+    throw new Error(`Admin API error: ${res.status}`);
+  }
+  return res.json();
+}
+
+function DashboardSection({ onNavigate }: { onNavigate: (section: AdminSection) => void }) {
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["/api/admin/dashboard"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/dashboard", { credentials: "include" });
-      return res.json();
-    },
-    refetchInterval: 30000
+    queryFn: () => adminFetch("/api/admin/dashboard"),
+    refetchInterval: 30000,
+    throwOnError: true,
   });
 
   if (isLoading) {
@@ -152,6 +161,7 @@ function DashboardSection() {
   }
 
   const d = data || {};
+  const sectionCardClassName = "w-full rounded-lg border p-4 hover:border-primary/50 transition-colors cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40";
 
   return (
     <div className="space-y-6">
@@ -163,7 +173,7 @@ function DashboardSection() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        <div className="rounded-lg border p-4 hover:border-primary/50 transition-colors cursor-pointer" data-testid="card-users">
+        <button type="button" className={sectionCardClassName} onClick={() => onNavigate("users")} data-testid="card-users">
           <div className="flex items-center gap-3 mb-3">
             <div className="p-2 rounded-md bg-blue-500/10">
               <Users className="h-4 w-4 text-blue-500" />
@@ -175,9 +185,9 @@ function DashboardSection() {
             <span>{d.users?.active || 0} activos</span>
             <span className="text-green-600">+{d.users?.newThisMonth || 0} este mes</span>
           </div>
-        </div>
+        </button>
 
-        <div className="rounded-lg border p-4 hover:border-primary/50 transition-colors cursor-pointer" data-testid="card-ai-models">
+        <button type="button" className={sectionCardClassName} onClick={() => onNavigate("ai-models")} data-testid="card-ai-models">
           <div className="flex items-center gap-3 mb-3">
             <div className="p-2 rounded-md bg-purple-500/10">
               <Bot className="h-4 w-4 text-purple-500" />
@@ -195,9 +205,9 @@ function DashboardSection() {
               Gemini
             </span>
           </div>
-        </div>
+        </button>
 
-        <div className="rounded-lg border p-4 hover:border-primary/50 transition-colors cursor-pointer" data-testid="card-payments">
+        <button type="button" className={sectionCardClassName} onClick={() => onNavigate("payments")} data-testid="card-payments">
           <div className="flex items-center gap-3 mb-3">
             <div className="p-2 rounded-md bg-green-500/10">
               <CreditCard className="h-4 w-4 text-green-500" />
@@ -209,9 +219,9 @@ function DashboardSection() {
             <span>€{parseFloat(d.payments?.thisMonth || "0").toLocaleString()} este mes</span>
             <span>{d.payments?.count || 0} transacciones</span>
           </div>
-        </div>
+        </button>
 
-        <div className="rounded-lg border p-4 hover:border-primary/50 transition-colors cursor-pointer" data-testid="card-invoices">
+        <button type="button" className={sectionCardClassName} onClick={() => onNavigate("invoices")} data-testid="card-invoices">
           <div className="flex items-center gap-3 mb-3">
             <div className="p-2 rounded-md bg-orange-500/10">
               <FileText className="h-4 w-4 text-orange-500" />
@@ -223,9 +233,9 @@ function DashboardSection() {
             <span className="text-yellow-600">{d.invoices?.pending || 0} pendientes</span>
             <span className="text-green-600">{d.invoices?.paid || 0} pagadas</span>
           </div>
-        </div>
+        </button>
 
-        <div className="rounded-lg border p-4 hover:border-primary/50 transition-colors cursor-pointer" data-testid="card-analytics">
+        <button type="button" className={sectionCardClassName} onClick={() => onNavigate("analytics")} data-testid="card-analytics">
           <div className="flex items-center gap-3 mb-3">
             <div className="p-2 rounded-md bg-cyan-500/10">
               <BarChart3 className="h-4 w-4 text-cyan-500" />
@@ -236,9 +246,9 @@ function DashboardSection() {
           <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
             <span>~{d.analytics?.avgQueriesPerUser || 0} consultas/usuario</span>
           </div>
-        </div>
+        </button>
 
-        <div className="rounded-lg border p-4 hover:border-primary/50 transition-colors cursor-pointer" data-testid="card-database">
+        <button type="button" className={sectionCardClassName} onClick={() => onNavigate("database")} data-testid="card-database">
           <div className="flex items-center gap-3 mb-3">
             <div className="p-2 rounded-md bg-slate-500/10">
               <Database className="h-4 w-4 text-slate-500" />
@@ -252,9 +262,9 @@ function DashboardSection() {
               {d.database?.status === "healthy" ? "Operativo" : "Error"}
             </span>
           </div>
-        </div>
+        </button>
 
-        <div className="rounded-lg border p-4 hover:border-primary/50 transition-colors cursor-pointer" data-testid="card-security">
+        <button type="button" className={sectionCardClassName} onClick={() => onNavigate("security")} data-testid="card-security">
           <div className="flex items-center gap-3 mb-3">
             <div className={cn("p-2 rounded-md", d.security?.status === "healthy" ? "bg-green-500/10" : "bg-yellow-500/10")}>
               <Shield className={cn("h-4 w-4", d.security?.status === "healthy" ? "text-green-500" : "text-yellow-500")} />
@@ -268,9 +278,9 @@ function DashboardSection() {
               {d.security?.status === "healthy" ? "Sin incidentes" : "Revisar"}
             </span>
           </div>
-        </div>
+        </button>
 
-        <div className="rounded-lg border p-4 hover:border-primary/50 transition-colors cursor-pointer" data-testid="card-reports">
+        <button type="button" className={sectionCardClassName} onClick={() => onNavigate("reports")} data-testid="card-reports">
           <div className="flex items-center gap-3 mb-3">
             <div className="p-2 rounded-md bg-indigo-500/10">
               <FileBarChart className="h-4 w-4 text-indigo-500" />
@@ -281,9 +291,9 @@ function DashboardSection() {
           <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
             <span>{d.reports?.scheduled || 0} programados</span>
           </div>
-        </div>
+        </button>
 
-        <div className="rounded-lg border p-4 hover:border-primary/50 transition-colors cursor-pointer" data-testid="card-settings">
+        <button type="button" className={sectionCardClassName} onClick={() => onNavigate("settings")} data-testid="card-settings">
           <div className="flex items-center gap-3 mb-3">
             <div className="p-2 rounded-md bg-gray-500/10">
               <Settings className="h-4 w-4 text-gray-500" />
@@ -294,7 +304,7 @@ function DashboardSection() {
           <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
             <span>{d.settings?.categories || 0} categorías</span>
           </div>
-        </div>
+        </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1209,7 +1219,7 @@ function ConversationsSection() {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [newNote, setNewNote] = useState("");
-  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const updateFilters = (newFilters: Partial<typeof filters>) => {
     setFilters(prev => ({ ...prev, ...newFilters }));
@@ -1227,10 +1237,7 @@ function ConversationsSection() {
 
   const { data: statsData } = useQuery({
     queryKey: ["/api/admin/conversations/stats/summary"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/conversations/stats/summary", { credentials: "include" });
-      return res.json();
-    }
+    queryFn: () => adminFetch("/api/admin/conversations/stats/summary")
   });
 
   const { data: conversationsData, isLoading, refetch } = useQuery({
@@ -1245,8 +1252,7 @@ function ConversationsSection() {
       if (filters.dateTo) params.set("dateTo", filters.dateTo);
       if (filters.minTokens) params.set("minTokens", filters.minTokens);
       if (filters.maxTokens) params.set("maxTokens", filters.maxTokens);
-      const res = await apiFetch(`/api/admin/conversations?${params}`, { credentials: "include" });
-      return res.json();
+      return adminFetch(`/api/admin/conversations?${params}`);
     }
   });
 
@@ -1254,8 +1260,7 @@ function ConversationsSection() {
     queryKey: ["/api/admin/conversations", viewingConversation?.id],
     queryFn: async () => {
       if (!viewingConversation?.id) return null;
-      const res = await apiFetch(`/api/admin/conversations/${viewingConversation.id}`, { credentials: "include" });
-      return res.json();
+      return adminFetch(`/api/admin/conversations/${viewingConversation.id}`);
     },
     enabled: !!viewingConversation?.id
   });
@@ -1268,7 +1273,8 @@ function ConversationsSection() {
         body: JSON.stringify({ flagStatus }),
         credentials: "include"
       });
-      return res.json();
+      if (!res.ok) throw new Error("No se pudo actualizar el estado de la conversación");
+      return res.json().catch(() => ({}));
     },
     onSuccess: () => {
       refetch();
@@ -1284,7 +1290,8 @@ function ConversationsSection() {
         body: JSON.stringify({ note }),
         credentials: "include"
       });
-      return res.json();
+      if (!res.ok) throw new Error("No se pudo guardar la nota");
+      return res.json().catch(() => ({}));
     },
     onSuccess: () => {
       setNewNote("");
@@ -1943,7 +1950,7 @@ function AIModelsSection() {
   const [isCheckingHealth, setIsCheckingHealth] = useState(false);
   const [health, setHealth] = useState<any>(null);
   const [testingModelId, setTestingModelId] = useState<string | null>(null);
-  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [modelsScope, setModelsScope] = useState<"supported" | "integrated" | "all">("integrated");
 
@@ -2827,8 +2834,7 @@ function PaymentsSection() {
     queryFn: async () => {
       const params = buildPaymentsFilterParams();
       const qs = params.toString();
-      const res = await apiFetch(`/api/admin/finance/payments/stats${qs ? `?${qs}` : ""}`, { credentials: "include" });
-      return await res.json();
+      return adminFetch(`/api/admin/finance/payments/stats${qs ? `?${qs}` : ""}`);
     }
   });
 
@@ -3574,10 +3580,7 @@ function InvoicesSection() {
 
   const { data: invoicesData, isLoading } = useQuery({
     queryKey: ["/api/admin/finance/invoices"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/finance/invoices", { credentials: "include" });
-      return res.json();
-    }
+    queryFn: () => adminFetch("/api/admin/finance/invoices")
   });
 
   const invoices = invoicesData?.invoices || invoicesData || [];
@@ -3590,7 +3593,8 @@ function InvoicesSection() {
         body: JSON.stringify(invoice),
         credentials: "include"
       });
-      return res.json();
+      if (!res.ok) throw new Error("No se pudo crear la factura");
+      return res.json().catch(() => ({}));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/finance/invoices"] });
@@ -3693,37 +3697,27 @@ function DatabaseSection() {
 
   const { data: healthData, isLoading: healthLoading, refetch: refetchHealth } = useQuery({
     queryKey: ["/api/admin/database/health"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/database/health", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => adminFetch("/api/admin/database/health"),
     refetchInterval: 30000
   });
 
   const { data: tablesData, isLoading: tablesLoading } = useQuery({
     queryKey: ["/api/admin/database/tables"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/database/tables", { credentials: "include" });
-      return res.json();
-    }
+    queryFn: () => adminFetch("/api/admin/database/tables")
   });
 
   const { data: tableDataResult, isLoading: tableDataLoading } = useQuery({
     queryKey: ["/api/admin/database/tables", selectedTable],
     queryFn: async () => {
       if (!selectedTable) return null;
-      const res = await apiFetch(`/api/admin/database/tables/${selectedTable}`, { credentials: "include" });
-      return res.json();
+      return adminFetch(`/api/admin/database/tables/${selectedTable}`);
     },
     enabled: !!selectedTable
   });
 
   const { data: indexesData } = useQuery({
     queryKey: ["/api/admin/database/indexes"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/database/indexes", { credentials: "include" });
-      return res.json();
-    }
+    queryFn: () => adminFetch("/api/admin/database/indexes")
   });
 
   const executeQuery = async () => {
@@ -4108,18 +4102,12 @@ function SecuritySection() {
 
   const { data: policies = [], isLoading } = useQuery({
     queryKey: ["/api/admin/security/policies"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/security/policies", { credentials: "include" });
-      return res.json();
-    }
+    queryFn: () => adminFetch("/api/admin/security/policies")
   });
 
   const { data: stats } = useQuery({
     queryKey: ["/api/admin/security/stats"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/security/stats", { credentials: "include" });
-      return res.json();
-    }
+    queryFn: () => adminFetch("/api/admin/security/stats")
   });
 
   const { data: auditLogsData } = useQuery({
@@ -4133,17 +4121,13 @@ function SecuritySection() {
         ...(auditFilters.dateFrom && { date_from: auditFilters.dateFrom }),
         ...(auditFilters.dateTo && { date_to: auditFilters.dateTo }),
       });
-      const res = await apiFetch(`/api/admin/security/audit-logs?${params}`, { credentials: "include" });
-      return res.json();
+      return adminFetch(`/api/admin/security/audit-logs?${params}`);
     }
   });
 
   const { data: recentLogs = [] } = useQuery({
     queryKey: ["/api/admin/security/logs"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/security/logs?limit=10", { credentials: "include" });
-      return res.json();
-    }
+    queryFn: () => adminFetch("/api/admin/security/logs?limit=10")
   });
 
   const createPolicyMutation = useMutation({
@@ -4918,18 +4902,12 @@ function ReportsSection() {
 
   const { data: templates = [], isLoading: templatesLoading } = useQuery({
     queryKey: ["/api/admin/reports/templates"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/reports/templates", { credentials: "include" });
-      return res.json();
-    }
+    queryFn: () => adminFetch("/api/admin/reports/templates")
   });
 
   const { data: generatedReportsData, isLoading: reportsLoading, refetch: refetchReports } = useQuery({
     queryKey: ["/api/admin/reports/generated", historyPage],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/admin/reports/generated?page=${historyPage}&limit=20`, { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => adminFetch(`/api/admin/reports/generated?page=${historyPage}&limit=20`),
     refetchInterval: 5000
   });
 
@@ -4941,7 +4919,8 @@ function ReportsSection() {
         body: JSON.stringify(data),
         credentials: "include"
       });
-      return res.json();
+      if (!res.ok) throw new Error("No se pudo generar el reporte");
+      return res.json().catch(() => ({}));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/reports/generated"] });
@@ -4952,7 +4931,8 @@ function ReportsSection() {
   const deleteReportMutation = useMutation({
     mutationFn: async (id: string) => {
       const res = await apiFetch(`/api/admin/reports/generated/${id}`, { method: "DELETE", credentials: "include" });
-      return res.json();
+      if (!res.ok) throw new Error("No se pudo eliminar el reporte");
+      return res.json().catch(() => ({}));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/reports/generated"] });
@@ -5286,18 +5266,12 @@ function SettingsSection() {
 
   const { data: settingsData, isLoading } = useQuery({
     queryKey: ["/api/admin/settings"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/settings", { credentials: "include" });
-      return res.json();
-    }
+    queryFn: () => adminFetch("/api/admin/settings")
   });
 
   const { data: aiModels = [] } = useQuery({
     queryKey: ["/api/ai-models"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/ai-models", { credentials: "include" });
-      return res.json();
-    }
+    queryFn: () => adminFetch("/api/ai-models")
   });
 
   useEffect(() => {
@@ -5319,7 +5293,8 @@ function SettingsSection() {
         body: JSON.stringify({ value }),
         credentials: "include"
       });
-      return res.json();
+      if (!res.ok) throw new Error("No se pudo actualizar la configuración");
+      return res.json().catch(() => ({}));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/settings"] });
@@ -5338,7 +5313,8 @@ function SettingsSection() {
         body: JSON.stringify({ settings }),
         credentials: "include"
       });
-      return res.json();
+      if (!res.ok) throw new Error("No se pudieron guardar los cambios");
+      return res.json().catch(() => ({}));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/settings"] });
@@ -5357,7 +5333,8 @@ function SettingsSection() {
         headers: { "Content-Type": "application/json" },
         credentials: "include"
       });
-      return res.json();
+      if (!res.ok) throw new Error("No se pudo restablecer la configuración");
+      return res.json().catch(() => ({}));
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/settings"] });
@@ -5771,512 +5748,6 @@ function SettingsSection() {
   );
 }
 
-function AgenticEngineSection() {
-  const [activeTab, setActiveTab] = useState("overview");
-
-  const { data: toolsData, isLoading: toolsLoading, refetch: refetchTools } = useQuery({
-    queryKey: ["/api/admin/agent/tools"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/agent/tools", { credentials: "include" });
-      return res.json();
-    }
-  });
-
-  const { data: gapsData, refetch: refetchGaps } = useQuery({
-    queryKey: ["/api/admin/agent/gaps"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/agent/gaps", { credentials: "include" });
-      return res.json();
-    }
-  });
-
-  const { data: memoryData, refetch: refetchMemory } = useQuery({
-    queryKey: ["/api/admin/agent/memory/stats"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/agent/memory/stats", { credentials: "include" });
-      return res.json();
-    }
-  });
-
-  const { data: circuitsData, refetch: refetchCircuits } = useQuery({
-    queryKey: ["/api/admin/agent/circuits"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/admin/agent/circuits", { credentials: "include" });
-      return res.json();
-    }
-  });
-
-  const [analyzerPrompt, setAnalyzerPrompt] = useState("");
-  const [analysisResult, setAnalysisResult] = useState<any>(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analysisHistory, setAnalysisHistory] = useState<any[]>([]);
-
-  const analyzePrompt = async () => {
-    if (!analyzerPrompt.trim()) return;
-    setAnalyzing(true);
-    try {
-      const res = await apiFetch("/api/admin/agent/complexity/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: analyzerPrompt }),
-        credentials: "include"
-      });
-      const result = await res.json();
-      setAnalysisResult(result);
-      setAnalysisHistory(prev => [{ prompt: analyzerPrompt, ...result, timestamp: Date.now() }, ...prev].slice(0, 10));
-    } catch (error) {
-      toast.error("Error analyzing prompt");
-    } finally {
-      setAnalyzing(false);
-    }
-  };
-
-  const tools = toolsData?.tools || [];
-  const gaps = gapsData?.gaps || [];
-  const memory = memoryData || { totalAtoms: 0, storageBytes: 0, avgWeight: 0, byType: {} };
-  const circuits = circuitsData || [];
-  const openCircuits = circuits.filter((c: any) => c.status === 'open').length;
-
-  const getCategoryColor = (cat: string) => {
-    if (cat === 'trivial') return 'bg-green-500';
-    if (cat === 'simple') return 'bg-blue-500';
-    if (cat === 'moderate') return 'bg-yellow-500';
-    if (cat === 'complex') return 'bg-orange-500';
-    return 'bg-red-500';
-  };
-
-  const getPathIcon = (path: string) => {
-    if (path === 'fast') return '⚡';
-    if (path === 'standard') return '🔄';
-    if (path === 'orchestrated') return '🎯';
-    return '🏛️';
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-primary/10">
-            <Bot className="h-6 w-6 text-primary" />
-          </div>
-          <div>
-            <h2 className="text-xl font-semibold">Agentic Engine</h2>
-            <p className="text-sm text-muted-foreground">Enterprise AI Orchestration System</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant={openCircuits > 0 ? "destructive" : "default"} className="gap-1">
-            <div className={`w-2 h-2 rounded-full ${openCircuits > 0 ? 'bg-red-400' : 'bg-green-400'}`} />
-            {openCircuits > 0 ? 'Degraded' : 'Healthy'}
-          </Badge>
-        </div>
-      </div>
-
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid grid-cols-7 w-full max-w-4xl">
-          <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
-          <TabsTrigger value="tools" data-testid="tab-tools">Tools</TabsTrigger>
-          <TabsTrigger value="analyzer" data-testid="tab-analyzer">Analyzer</TabsTrigger>
-          <TabsTrigger value="orchestration" data-testid="tab-orchestration">Orchestration</TabsTrigger>
-          <TabsTrigger value="gaps" data-testid="tab-gaps">
-            Gaps {gaps.length > 0 && <Badge variant="secondary" className="ml-1 text-xs">{gaps.length}</Badge>}
-          </TabsTrigger>
-          <TabsTrigger value="memory" data-testid="tab-memory">Memory</TabsTrigger>
-          <TabsTrigger value="circuits" data-testid="tab-circuits">Circuits</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="overview" className="mt-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-blue-500/10">
-                    <Wrench className="h-5 w-5 text-blue-500" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold">{tools.length}</p>
-                    <p className="text-sm text-muted-foreground">Tools Active</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-green-500/10">
-                    <CheckCircle className="h-5 w-5 text-green-500" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold">94.2%</p>
-                    <p className="text-sm text-muted-foreground">Success Rate</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-purple-500/10">
-                    <Brain className="h-5 w-5 text-purple-500" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold">{memory.totalAtoms}</p>
-                    <p className="text-sm text-muted-foreground">Memory Atoms</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-yellow-500/10">
-                    <AlertTriangle className="h-5 w-5 text-yellow-500" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold">{gaps.length}</p>
-                    <p className="text-sm text-muted-foreground">Pending Gaps</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-red-500/10">
-                    <Zap className="h-5 w-5 text-red-500" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold">{openCircuits}</p>
-                    <p className="text-sm text-muted-foreground">Open Circuits</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-indigo-500/10">
-                    <Database className="h-5 w-5 text-indigo-500" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold">{(memory.storageBytes / 1024).toFixed(1)} KB</p>
-                    <p className="text-sm text-muted-foreground">Memory Used</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="tools" className="mt-6">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle>Registered Tools</CardTitle>
-                <Button variant="outline" size="sm" onClick={() => refetchTools()}>
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  Refresh
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {toolsLoading ? (
-                <div className="flex justify-center py-8"><Loader2 className="h-6 w-6 animate-spin" /></div>
-              ) : (
-                <div className="space-y-2">
-                  {tools.map((tool: any) => (
-                    <div key={tool.id} className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors">
-                      <div className="flex items-center gap-3">
-                        <Badge variant="outline">{tool.category}</Badge>
-                        <span className="font-medium">{tool.name}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Badge variant={tool.isEnabled ? "default" : "secondary"}>
-                          {tool.isEnabled ? 'Active' : 'Disabled'}
-                        </Badge>
-                        <span className="text-sm text-muted-foreground">{tool.usageCount} uses</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="analyzer" className="mt-6">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 space-y-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Complexity Analyzer</CardTitle>
-                  <CardDescription>Test prompt complexity scoring</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <Textarea
-                    placeholder="Enter a prompt to analyze its complexity..."
-                    value={analyzerPrompt}
-                    onChange={(e) => setAnalyzerPrompt(e.target.value)}
-                    className="min-h-[120px]"
-                    data-testid="input-analyzer-prompt"
-                  />
-                  <Button onClick={analyzePrompt} disabled={analyzing || !analyzerPrompt.trim()} data-testid="button-analyze">
-                    {analyzing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                    Analyze
-                  </Button>
-                </CardContent>
-              </Card>
-
-              {analysisResult && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Analysis Result</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="text-center p-4 rounded-lg bg-muted">
-                        <p className="text-5xl font-bold">{analysisResult.score}</p>
-                        <p className="text-sm text-muted-foreground mt-1">Complexity Score</p>
-                      </div>
-                      <div className="text-center p-4 rounded-lg bg-muted">
-                        <Badge className={`text-lg px-4 py-2 ${getCategoryColor(analysisResult.category)}`}>
-                          {analysisResult.category?.toUpperCase()}
-                        </Badge>
-                        <p className="text-sm text-muted-foreground mt-2">
-                          {getPathIcon(analysisResult.recommended_path)} {analysisResult.recommended_path}
-                        </p>
-                      </div>
-                    </div>
-                    {analysisResult.signals?.length > 0 && (
-                      <div className="mt-4">
-                        <p className="text-sm font-medium mb-2">Signals Detected:</p>
-                        <div className="flex flex-wrap gap-2">
-                          {analysisResult.signals.map((s: string) => (
-                            <Badge key={s} variant="outline">{s}</Badge>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {analysisResult.dimensions && (
-                      <div className="mt-4 space-y-2">
-                        <p className="text-sm font-medium">Dimensions:</p>
-                        {Object.entries(analysisResult.dimensions).map(([key, value]: [string, any]) => (
-                          <div key={key} className="flex items-center gap-2">
-                            <span className="text-sm w-32 text-muted-foreground">{key.replace('_', ' ')}</span>
-                            <Progress value={value * 10} className="flex-1" />
-                            <span className="text-sm w-8 text-right">{value}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-
-            <div>
-              <Card>
-                <CardHeader>
-                  <CardTitle>History</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <ScrollArea className="h-[400px]">
-                    {analysisHistory.length === 0 ? (
-                      <p className="text-sm text-muted-foreground text-center py-4">No analysis yet</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {analysisHistory.map((h, i) => (
-                          <div key={i} className="p-2 rounded border text-sm cursor-pointer hover:bg-muted/50" onClick={() => {
-                            setAnalyzerPrompt(h.prompt);
-                            setAnalysisResult(h);
-                          }}>
-                            <p className="truncate font-medium">{h.prompt}</p>
-                            <div className="flex items-center gap-2 mt-1">
-                              <Badge variant="outline" className="text-xs">{h.score}</Badge>
-                              <span className="text-xs text-muted-foreground">{h.category}</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </ScrollArea>
-                </CardContent>
-              </Card>
-            </div>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="orchestration" className="mt-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Orchestration Monitor</CardTitle>
-              <CardDescription>Track task execution and parallel processing</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-8 text-muted-foreground">
-                <Activity className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <p>No active orchestrations</p>
-                <p className="text-sm">Orchestrations will appear here when tasks are being processed</p>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="gaps" className="mt-6">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>Capability Gaps</CardTitle>
-                  <CardDescription>Requests for missing functionality</CardDescription>
-                </div>
-                <Button variant="outline" size="sm" onClick={() => refetchGaps()}>
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  Refresh
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {gaps.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <CheckCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No pending gaps</p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {gaps.map((gap: any) => (
-                    <div key={gap.id} className="p-4 rounded-lg border">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <p className="font-medium">{gap.userPrompt}</p>
-                          <p className="text-sm text-muted-foreground mt-1">{gap.gapReason}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge variant={gap.status === 'pending' ? 'secondary' : 'default'}>
-                            {gap.status}
-                          </Badge>
-                          {gap.frequencyCount > 1 && (
-                            <Badge variant="outline">{gap.frequencyCount}x</Badge>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="memory" className="mt-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle>Memory Statistics</CardTitle>
-                  <Button variant="outline" size="sm" onClick={() => refetchMemory()}>
-                    <RefreshCw className="h-4 w-4" />
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 rounded-lg bg-muted text-center">
-                    <p className="text-3xl font-bold">{memory.totalAtoms}</p>
-                    <p className="text-sm text-muted-foreground">Total Atoms</p>
-                  </div>
-                  <div className="p-4 rounded-lg bg-muted text-center">
-                    <p className="text-3xl font-bold">{(memory.storageBytes / 1024).toFixed(2)}</p>
-                    <p className="text-sm text-muted-foreground">KB Used</p>
-                  </div>
-                  <div className="p-4 rounded-lg bg-muted text-center">
-                    <p className="text-3xl font-bold">{memory.avgWeight?.toFixed(2) || 0}</p>
-                    <p className="text-sm text-muted-foreground">Avg Weight</p>
-                  </div>
-                  <div className="p-4 rounded-lg bg-muted text-center">
-                    <p className="text-3xl font-bold">{Object.keys(memory.byType || {}).length}</p>
-                    <p className="text-sm text-muted-foreground">Types</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Atoms by Type</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {Object.keys(memory.byType || {}).length === 0 ? (
-                  <div className="text-center py-8 text-muted-foreground">
-                    <Database className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>No atoms stored</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {Object.entries(memory.byType || {}).map(([type, count]: [string, any]) => (
-                      <div key={type} className="flex items-center justify-between p-2 rounded border">
-                        <Badge variant="outline">{type}</Badge>
-                        <span className="font-medium">{count}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="circuits" className="mt-6">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>Circuit Breakers</CardTitle>
-                  <CardDescription>Automatic failure protection for tools</CardDescription>
-                </div>
-                <Button variant="outline" size="sm" onClick={() => refetchCircuits()}>
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  Refresh
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {circuits.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <CheckCircle className="h-12 w-12 mx-auto mb-4 text-green-500 opacity-70" />
-                  <p className="font-medium">All circuits operating normally</p>
-                  <p className="text-sm">No circuit breakers have been triggered</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {circuits.map((circuit: any) => (
-                    <Card key={circuit.name} className={circuit.status === 'open' ? 'border-red-500' : ''}>
-                      <CardContent className="pt-4">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="font-medium">{circuit.name}</span>
-                          <Badge variant={circuit.status === 'closed' ? 'default' : circuit.status === 'open' ? 'destructive' : 'secondary'}>
-                            {circuit.status.toUpperCase()}
-                          </Badge>
-                        </div>
-                        <div className="text-sm text-muted-foreground space-y-1">
-                          <p>Failures: {circuit.failures}</p>
-                          {circuit.lastFailure && (
-                            <p>Last failure: {format(new Date(circuit.lastFailure), 'HH:mm:ss')}</p>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
-    </div>
-  );
-}
-
 interface ExcelDocument {
   id: string;
   name: string;
@@ -6315,7 +5786,8 @@ function ExcelManagerSection() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, name, data })
       });
-      return res.json();
+      if (!res.ok) throw new Error("No se pudo guardar el documento");
+      return res.json().catch(() => ({}));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/excel/list"] });
@@ -6575,11 +6047,18 @@ function ExcelManagerSection() {
 }
 
 export default function AdminPage() {
-  const [, setLocation] = useLocation();
-  const [activeSection, setActiveSection] = useState<AdminSection>("dashboard");
+  const [location, setLocation] = useLocation();
+  const search = useSearch();
+  const activeSection = getAdminSectionFromRoute(location, search);
 
   // Security: Verify admin role
-  const { data: currentUser, isLoading: isLoadingUser } = useQuery({
+  const {
+    data: currentUser,
+    isLoading: isLoadingUser,
+    isError: isAuthError,
+    error: authError,
+    refetch: refetchCurrentUser,
+  } = useQuery({
     queryKey: ["/api/auth/user"],
     queryFn: async () => {
       const res = await apiFetch("/api/auth/user", { credentials: "include" });
@@ -6605,6 +6084,25 @@ export default function AdminPage() {
     );
   }
 
+  if (isAuthError) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center bg-background gap-4 px-6 text-center">
+        <AlertTriangle className="h-16 w-16 text-yellow-500" />
+        <h1 className="text-2xl font-bold">Connection Error</h1>
+        <p className="max-w-md text-muted-foreground">
+          No se pudo verificar la sesión administrativa. Reintenta la conexión antes de volver a entrar al panel.
+        </p>
+        {authError instanceof Error ? (
+          <p className="max-w-md text-sm text-muted-foreground">{authError.message}</p>
+        ) : null}
+        <Button onClick={() => void refetchCurrentUser()} data-testid="button-retry-admin-auth">
+          <RefreshCw className="h-4 w-4 mr-2" />
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
   // Block access if not admin
   if (!currentUser || currentUser.role !== "admin") {
     return (
@@ -6617,10 +6115,18 @@ export default function AdminPage() {
     );
   }
 
+  const navigateToSection = (section: AdminSection) => {
+    if (section === activeSection) return;
+    const nextLocation = getAdminHref(section);
+    const currentLocation = `${location}${search}`;
+    if (nextLocation === currentLocation) return;
+    setLocation(nextLocation);
+  };
+
   const renderSection = () => {
     switch (activeSection) {
       case "dashboard":
-        return <DashboardSection />;
+        return <DashboardSection onNavigate={navigateToSection} />;
       case "users":
         return <UsersSection />;
       case "conversations":
@@ -6677,8 +6183,10 @@ export default function AdminPage() {
         return <ObservabilityDashboard />;
       case "chaos":
         return <ChaosTestingDashboard />;
+      case "gateway-logs":
+        return <GatewayLogViewer />;
       default:
-        return <DashboardSection />;
+        return <DashboardSection onNavigate={navigateToSection} />;
     }
   };
 
@@ -6712,7 +6220,7 @@ export default function AdminPage() {
                   variant={activeSection === item.id ? "secondary" : "ghost"}
                   size="sm"
                   className="w-full justify-start gap-2 shrink-0"
-                  onClick={() => setActiveSection(item.id)}
+                  onClick={() => navigateToSection(item.id)}
                   data-testid={`nav-${item.id}`}
                 >
                   <item.icon className="h-4 w-4 shrink-0" />
@@ -6725,7 +6233,17 @@ export default function AdminPage() {
       </aside>
       <main className="flex-1 overflow-auto">
         <div className="p-6">
-          {renderSection()}
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-6 w-6 animate-spin" />
+              </div>
+            }
+          >
+            <ErrorBoundary level="section" name={activeSection} resetKeys={[activeSection]}>
+              {renderSection()}
+            </ErrorBoundary>
+          </Suspense>
         </div>
       </main>
     </div>

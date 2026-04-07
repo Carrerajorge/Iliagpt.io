@@ -99,6 +99,22 @@ function uniqueStrings(values: Array<string | undefined>): string[] {
   return result;
 }
 
+function areConsecutiveAssistantDuplicates(a: MessageLike, b: MessageLike): boolean {
+  if (a.role !== "assistant" || b.role !== "assistant") return false;
+
+  const aContent = normalizeMessageContentForDedup(a.content);
+  const bContent = normalizeMessageContentForDedup(b.content);
+  if (!aContent || aContent !== bContent) return false;
+
+  const aUserMessageId = typeof a.userMessageId === "string" ? a.userMessageId.trim() : "";
+  const bUserMessageId = typeof b.userMessageId === "string" ? b.userMessageId.trim() : "";
+  if (aUserMessageId && bUserMessageId && aUserMessageId !== bUserMessageId) {
+    return false;
+  }
+
+  return true;
+}
+
 export function listMessageIdentityKeys(message: MessageLike): string[] {
   return uniqueStrings([
     typeof message.id === "string" ? message.id : undefined,
@@ -138,6 +154,23 @@ export function mergeMessagesByIdentity<T extends MessageLike>(existing: T, inco
 }
 
 export function messagesShareIdentity(a: MessageLike, b: MessageLike): boolean {
+  const aRequestId = typeof a.requestId === "string" ? a.requestId.trim() : "";
+  const bRequestId = typeof b.requestId === "string" ? b.requestId.trim() : "";
+  if (aRequestId && aRequestId === bRequestId) return true;
+
+  const aUserMessageId = typeof a.userMessageId === "string" ? a.userMessageId.trim() : "";
+  const bUserMessageId = typeof b.userMessageId === "string" ? b.userMessageId.trim() : "";
+  if (
+    a.role === "assistant" &&
+    b.role === "assistant" &&
+    aUserMessageId &&
+    aUserMessageId === bUserMessageId
+  ) {
+    const aContent = normalizeMessageContentForDedup(a.content);
+    const bContent = normalizeMessageContentForDedup(b.content);
+    if (aContent && aContent === bContent) return true;
+  }
+
   const aKeys = listMessageIdentityKeys(a);
   if (aKeys.length === 0) return false;
   const bKeys = new Set(listMessageIdentityKeys(b));
@@ -158,13 +191,20 @@ export function dedupeMessagesByIdentity<T extends MessageLike>(messages: T[]): 
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     const keys = listMessageIdentityKeys(message);
-    const matchingIndexes = Array.from(
+    let matchingIndexes = Array.from(
       new Set(
         keys
           .map((key) => keyToGroup.get(key))
           .filter((value): value is number => typeof value === "number")
       )
     ).filter((groupIndex) => !groups[groupIndex]?.deleted);
+
+    if (matchingIndexes.length === 0) {
+      matchingIndexes = groups
+        .map((group, groupIndex) => ({ group, groupIndex }))
+        .filter(({ group }) => !group.deleted && messagesShareIdentity(group.message, message))
+        .map(({ groupIndex }) => groupIndex);
+    }
 
     if (matchingIndexes.length === 0) {
       const nextGroupIndex = groups.length;
@@ -262,15 +302,24 @@ export function areRenderableDuplicates(a: MessageLike, b: MessageLike): boolean
   const bContent = normalizeMessageContentForDedup(b.content);
   if (!aContent || aContent !== bContent) return false;
 
-  const aBucket = Math.floor(toTimestampMs(a.timestamp) / 1000);
-  const bBucket = Math.floor(toTimestampMs(b.timestamp) / 1000);
-  if (!Number.isFinite(aBucket) || !Number.isFinite(bBucket)) return false;
-  return aBucket === bBucket;
+  const aMs = toTimestampMs(a.timestamp);
+  const bMs = toTimestampMs(b.timestamp);
+  if (!Number.isFinite(aMs) || !Number.isFinite(bMs)) return false;
+
+  const diffMs = Math.abs(aMs - bMs);
+  const windowMs = a.role === "assistant" ? 5000 : 1000;
+  return diffMs <= windowMs;
 }
 
 export function dedupeRenderableMessages<T extends MessageLike>(messages: T[]): T[] {
   const deduped: T[] = [];
   for (const message of messages) {
+    const previousMessage = deduped[deduped.length - 1];
+    if (previousMessage && areConsecutiveAssistantDuplicates(previousMessage, message)) {
+      deduped[deduped.length - 1] = mergeMessagesByIdentity(previousMessage, message);
+      continue;
+    }
+
     const existingIndex = deduped.findIndex((candidate) => areRenderableDuplicates(candidate, message));
     if (existingIndex === -1) {
       deduped.push(message);

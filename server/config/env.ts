@@ -226,22 +226,25 @@ function validateEnv() {
   // Warn about missing LLM keys
   const data = result.data;
   const cerebrasKey = process.env.CEREBRAS_API_KEY;
+  const openRouterKey = process.env.OPENROUTER_API_KEY;
   const hasAnyLlm =
     Boolean(data.XAI_API_KEY) ||
     Boolean(data.GEMINI_API_KEY || data.GOOGLE_API_KEY) ||
     Boolean(data.OPENAI_API_KEY) ||
+    Boolean(openRouterKey) ||
     Boolean(data.ANTHROPIC_API_KEY) ||
     Boolean(data.DEEPSEEK_API_KEY) ||
     Boolean(cerebrasKey);
 
   if (!hasAnyLlm) {
-    console.warn("⚠️  WARNING: No LLM API keys configured (XAI_API_KEY, GEMINI_API_KEY/GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, CEREBRAS_API_KEY)");
+    console.warn("⚠️  WARNING: No LLM API keys configured (XAI_API_KEY, GEMINI_API_KEY/GOOGLE_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, CEREBRAS_API_KEY)");
     console.warn("   Chat functionality will not work without at least one LLM provider.");
   } else {
     const providers = [];
     if (data.XAI_API_KEY) providers.push("xAI");
     if (data.GEMINI_API_KEY || data.GOOGLE_API_KEY) providers.push("Gemini");
     if (data.OPENAI_API_KEY) providers.push("OpenAI");
+    if (openRouterKey) providers.push("OpenRouter");
     if (data.ANTHROPIC_API_KEY) providers.push("Anthropic");
     if (data.DEEPSEEK_API_KEY) providers.push("DeepSeek");
     if (cerebrasKey) providers.push("Cerebras");

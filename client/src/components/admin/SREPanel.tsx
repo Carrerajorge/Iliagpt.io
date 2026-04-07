@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
+import { apiFetchJson } from "@/lib/adminApi";
 import {
   Activity,
   Server,
@@ -334,14 +335,9 @@ export default function SREPanel() {
 
   const { data, isLoading, refetch } = useQuery<SREData>({
     queryKey: ["/api/admin/sre"],
-    queryFn: async () => {
-      try {
-        const res = await fetch("/api/admin/sre", { credentials: "include" });
-        if (res.ok) return res.json();
-      } catch {}
-      return generateMockSREData();
-    },
+    queryFn: () => apiFetchJson("/api/admin/sre"),
     refetchInterval: 10000,
+    throwOnError: true,
   });
 
   useEffect(() => {

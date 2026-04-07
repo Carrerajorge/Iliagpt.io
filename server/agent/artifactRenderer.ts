@@ -1,7 +1,8 @@
-import PptxGenJS from "pptxgenjs";
+import type PptxGenJS from "pptxgenjs";
 import {
   CORPORATE_PPT_DESIGN_SYSTEM,
   CORPORATE_PPT_MASTER_NAME,
+  createPptxDocument,
   defineCorporateMaster,
   generatePptDocument,
 } from "../services/documentGeneration";
@@ -153,7 +154,7 @@ export async function renderPresentation(
   spec: PresentationSpec
 ): Promise<{ buffer: Buffer; filename: string }> {
   try {
-    const pptx = new PptxGenJS();
+    const pptx = createPptxDocument();
     const safeTitle = sanitizePptText(spec.title).substring(0, 500) || "Presentación";
     const safeAuthor = sanitizePptText(spec.author).substring(0, 200);
     const safeLanguage = sanitizePptText(spec.metadata?.language).substring(0, 16);

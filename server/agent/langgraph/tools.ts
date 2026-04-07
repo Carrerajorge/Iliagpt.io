@@ -512,6 +512,11 @@ export function getToolsByCategory(options: {
   return tools;
 }
 
+const TOOL_NAME_ALIASES: Readonly<Record<string, string>> = {
+  search_web: "web_search",
+};
+
 export function getToolByName(name: string) {
-  return ALL_TOOLS.find((t) => t.name === name);
+  const normalizedName = TOOL_NAME_ALIASES[name] || name;
+  return ALL_TOOLS.find((t) => t.name === normalizedName);
 }

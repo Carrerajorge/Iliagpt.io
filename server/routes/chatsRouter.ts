@@ -53,8 +53,11 @@ const MAX_SHARE_PARTICIPANTS = 50;
 const MAX_REQUEST_ID_LENGTH = 128;
 const MAX_SHARE_ROLE_LENGTH = 20;
 const MAX_VALIDATED_MESSAGE_IDS = 300;
+const MAX_ARTIFACT_URL_LENGTH = 2048;
+const MAX_ARTIFACT_NAME_LENGTH = 255;
 const ALLOWED_MESSAGE_ROLES = new Set(["user", "assistant", "system"]);
 const ALLOWED_SHARE_ROLES = new Set(["viewer", "editor"]);
+const ALLOWED_ARTIFACT_TYPES = new Set(["image", "document", "spreadsheet", "presentation", "pdf"]);
 const CHAT_ID_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]{7,120}$/;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -78,6 +81,26 @@ function sanitizeChatTitle(title: unknown): string | undefined {
 
 function validateMessageRole(role: unknown): role is "user" | "assistant" | "system" {
   return typeof role === 'string' && ALLOWED_MESSAGE_ROLES.has(role.toLowerCase());
+}
+
+function normalizeRenderableMessageContent(content: string): string {
+  return content.replace(/\s+/g, " ").trim();
+}
+
+function isRecentAssistantDuplicate(
+  message: { role?: string | null; content?: string | null; createdAt?: Date | string | null } | null | undefined,
+  normalizedContent: string,
+): boolean {
+  if (!message || message.role !== "assistant") return false;
+  if (!normalizedContent) return false;
+
+  const candidateContent = normalizeRenderableMessageContent(String(message.content || ""));
+  if (!candidateContent || candidateContent !== normalizedContent) return false;
+
+  const createdAtMs = message.createdAt ? new Date(message.createdAt).getTime() : Number.NaN;
+  if (!Number.isFinite(createdAtMs)) return true;
+
+  return Math.abs(Date.now() - createdAtMs) <= 10 * 60 * 1000;
 }
 
 function normalizeRole(value: unknown): string | undefined {
@@ -138,6 +161,54 @@ function sanitizeAndValidateAttachment(att: any) {
   }
 
   return clean;
+}
+
+function sanitizeArtifactUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > MAX_ARTIFACT_URL_LENGTH) return undefined;
+  if (normalized.startsWith("/")) return normalized;
+
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function sanitizeAssistantArtifact(rawArtifact: any) {
+  if (!rawArtifact || typeof rawArtifact !== "object") return null;
+
+  const artifactId = typeof rawArtifact.artifactId === "string" ? rawArtifact.artifactId.trim().slice(0, MAX_REQUEST_ID_LENGTH) : "";
+  const artifactType = typeof rawArtifact.type === "string" ? rawArtifact.type.trim().toLowerCase() : "";
+  const mimeType = typeof rawArtifact.mimeType === "string" ? rawArtifact.mimeType.trim().slice(0, 160) : "";
+  const downloadUrl = sanitizeArtifactUrl(rawArtifact.downloadUrl);
+  const previewUrl = sanitizeArtifactUrl(rawArtifact.previewUrl);
+  const contentUrl = sanitizeArtifactUrl(rawArtifact.contentUrl);
+  const filename = typeof rawArtifact.filename === "string" ? rawArtifact.filename.trim().slice(0, MAX_ARTIFACT_NAME_LENGTH) : "";
+  const name = typeof rawArtifact.name === "string" ? rawArtifact.name.trim().slice(0, MAX_ARTIFACT_NAME_LENGTH) : "";
+  const sizeBytes = Number.isFinite(Number(rawArtifact.sizeBytes)) ? Number(rawArtifact.sizeBytes) : undefined;
+
+  if (!artifactId || !ALLOWED_ARTIFACT_TYPES.has(artifactType) || !mimeType || !downloadUrl) {
+    return null;
+  }
+
+  return {
+    artifactId,
+    type: artifactType,
+    mimeType,
+    sizeBytes: sizeBytes !== undefined && sizeBytes >= 0 ? sizeBytes : undefined,
+    downloadUrl,
+    previewUrl,
+    contentUrl,
+    filename: filename || undefined,
+    name: name || undefined,
+  };
 }
 
 export function createChatsRouter() {
@@ -948,6 +1019,28 @@ export function createChatsRouter() {
         return res.json({ message, run, deduplicated: false });
       }
 
+      const sanitizedArtifact = normalizedRole === "assistant"
+        ? sanitizeAssistantArtifact(req.body?.artifact)
+        : null;
+      const assistantPayload = normalizedRole === "assistant"
+        ? buildAssistantMessage({
+            content: safeContent,
+            artifact: sanitizedArtifact,
+            webSources,
+            searchQueries,
+            totalSearches,
+            followUpSuggestions,
+            confidence,
+            uncertaintyReason,
+            retrievalSteps,
+          })
+        : null;
+      const assistantMetadata = assistantPayload
+        ? buildAssistantMessageMetadata(assistantPayload)
+        : undefined;
+      const normalizedAssistantContent =
+        assistantPayload?.content ? normalizeRenderableMessageContent(assistantPayload.content) : "";
+
       // Legacy flow for assistant messages or messages without clientRequestId
       if (normalizedRole === "assistant" && userMessageId) {
         const tDedupAssistant = performance.now();
@@ -969,9 +1062,51 @@ export function createChatsRouter() {
         const existingMessage = await storage.findMessageByRequestId(requestId);
         addTiming("dedup_request", tDedupReq);
         if (existingMessage) {
+          if (normalizedRole === "assistant" && assistantPayload) {
+            const updatedMessage = await storage.updateChatMessageContent(
+              existingMessage.id,
+              assistantPayload.content,
+              existingMessage.status || "done",
+              assistantMetadata,
+            );
+            console.log(`[Dedup] Message with requestId ${requestId} already exists, refreshed assistant metadata`);
+            setServerTiming();
+            return res.json(updatedMessage || existingMessage);
+          }
           console.log(`[Dedup] Message with requestId ${requestId} already exists, returning existing`);
           setServerTiming();
           return res.json(existingMessage);
+        }
+      }
+
+      if (normalizedRole === "assistant" && normalizedAssistantContent) {
+        if (userMessageId) {
+          const existingAssistantForUser = await storage.findAssistantResponseForUserMessage(userMessageId);
+          if (existingAssistantForUser) {
+            const refreshedAssistant = await storage.updateChatMessageContent(
+              existingAssistantForUser.id,
+              assistantPayload?.content || safeContent,
+              existingAssistantForUser.status || "done",
+              assistantMetadata,
+            );
+            console.log(`[Dedup] Reused assistant message ${existingAssistantForUser.id} for userMessageId ${userMessageId}`);
+            setServerTiming();
+            return res.json(refreshedAssistant || existingAssistantForUser);
+          }
+        }
+
+        const recentMessages = await storage.getChatMessages(req.params.id, { limit: 4, orderBy: "desc" });
+        const latestRenderableMessage = recentMessages.find((message) => message.role !== "system");
+        if (latestRenderableMessage && isRecentAssistantDuplicate(latestRenderableMessage, normalizedAssistantContent)) {
+          const refreshedAssistant = await storage.updateChatMessageContent(
+            latestRenderableMessage.id,
+            assistantPayload?.content || safeContent,
+            latestRenderableMessage.status || "done",
+            assistantMetadata,
+          );
+          console.log(`[Dedup] Reused latest assistant message ${latestRenderableMessage.id} for identical content`);
+          setServerTiming();
+          return res.json(refreshedAssistant || latestRenderableMessage);
         }
       }
 

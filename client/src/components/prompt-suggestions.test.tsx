@@ -22,7 +22,7 @@ describe("PromptSuggestions", () => {
     });
   });
 
-  it("returns the research action and stores it as recent", () => {
+  it("emits structured metadata for the research workflow", () => {
     const onSelect = vi.fn();
 
     render(<PromptSuggestions onSelect={onSelect} />);
@@ -30,22 +30,32 @@ describe("PromptSuggestions", () => {
     fireEvent.click(screen.getByText("Investigar antes de actuar"));
 
     expect(onSelect).toHaveBeenCalledWith(
-      expect.stringContaining("Investiga primero este tema o problema."),
+      expect.objectContaining({
+        selectedTool: "web",
+        latencyMode: "deep",
+      }),
     );
+
     expect(window.localStorage.getItem("promptWorkflowRecents")).toBe(
       JSON.stringify(["research-first"]),
     );
   });
 
-  it("does not render removed workflows in the default list", () => {
+  it("does not render a recent workflows row", () => {
+    window.localStorage.setItem(
+      "promptWorkflowRecents",
+      JSON.stringify(["implementation-plan", "research-first"]),
+    );
+
     render(<PromptSuggestions onSelect={vi.fn()} />);
 
+    expect(screen.queryByText("Recientes")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /plan de implementación/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /revisión técnica estricta/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /documento técnico/i })).not.toBeInTheDocument();
   });
 
-  it("keeps attachment presentation output available", () => {
+  it("supports attachment workflows with document output metadata", () => {
     const onSelect = vi.fn();
 
     render(<PromptSuggestions onSelect={onSelect} hasAttachment />);
@@ -53,7 +63,10 @@ describe("PromptSuggestions", () => {
     fireEvent.click(screen.getByText("Convertir en presentación"));
 
     expect(onSelect).toHaveBeenCalledWith(
-      expect.stringContaining("presentación ejecutiva"),
+      expect.objectContaining({
+        selectedDocTool: "ppt",
+        latencyMode: "auto",
+      }),
     );
   });
 });

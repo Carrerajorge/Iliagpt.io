@@ -52,6 +52,7 @@ import {
   Eye,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiFetchJson } from "@/lib/adminApi";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { formatZonedDateTime, normalizeTimeZone } from "@/lib/platformDateTime";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -511,12 +512,8 @@ function TokenConsumptionChart({ data, granularity }: { data: any[]; granularity
 function ChartsSection({ granularity, onGranularityChange }: { granularity: TimeGranularity; onGranularityChange: (g: TimeGranularity) => void }) {
   const { data: chartsData, isLoading } = useQuery({
     queryKey: ["/api/admin/analytics/charts", granularity],
-    queryFn: async () => {
-      const res = await fetch(`/api/admin/analytics/charts?granularity=${granularity}`, {
-        credentials: "include",
-      });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson(`/api/admin/analytics/charts?granularity=${granularity}`),
+    throwOnError: true,
   });
 
   if (isLoading) {
@@ -716,11 +713,9 @@ function APILogsExplorer() {
         limit: itemsPerPage.toString(),
         ...Object.fromEntries(Object.entries(filters).filter(([_, v]) => v && v !== "all")),
       });
-      const res = await fetch(`/api/admin/analytics/logs?${params}`, {
-        credentials: "include",
-      });
-      return res.json();
+      return apiFetchJson(`/api/admin/analytics/logs?${params}`);
     },
+    throwOnError: true,
   });
 
   const logs = data?.logs || [];
@@ -1004,36 +999,28 @@ export default function AnalyticsDashboard() {
 
   const { data: kpiData, isLoading: kpiLoading, refetch: refetchKpi } = useQuery({
     queryKey: ["/api/admin/analytics/kpi"],
-    queryFn: async () => {
-      const res = await fetch("/api/admin/analytics/kpi", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/admin/analytics/kpi"),
     refetchInterval: 30000,
+    throwOnError: true,
   });
 
   const { data: performanceData, isLoading: perfLoading } = useQuery({
     queryKey: ["/api/admin/analytics/performance"],
-    queryFn: async () => {
-      const res = await fetch("/api/admin/analytics/performance", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/admin/analytics/performance"),
     refetchInterval: 60000,
+    throwOnError: true,
   });
 
   const { data: costData, isLoading: costLoading } = useQuery({
     queryKey: ["/api/admin/analytics/costs"],
-    queryFn: async () => {
-      const res = await fetch("/api/admin/analytics/costs", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/admin/analytics/costs"),
+    throwOnError: true,
   });
 
   const { data: heatmapData, isLoading: heatmapLoading } = useQuery({
     queryKey: ["/api/admin/analytics/heatmap"],
-    queryFn: async () => {
-      const res = await fetch("/api/admin/analytics/heatmap", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/admin/analytics/heatmap"),
+    throwOnError: true,
   });
 
   return (

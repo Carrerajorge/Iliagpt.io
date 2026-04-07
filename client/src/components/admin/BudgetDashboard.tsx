@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { apiFetchJson } from "@/lib/adminApi";
 import {
   DollarSign,
   TrendingUp,
@@ -192,14 +193,9 @@ export default function BudgetDashboard() {
 
   const { data, isLoading, refetch } = useQuery<BudgetData>({
     queryKey: ["/api/admin/budget"],
-    queryFn: async () => {
-      try {
-        const res = await fetch("/api/admin/budget", { credentials: "include" });
-        if (res.ok) return res.json();
-      } catch {}
-      return generateMockData();
-    },
+    queryFn: () => apiFetchJson("/api/admin/budget"),
     refetchInterval: 15000,
+    throwOnError: true,
   });
 
   const budgetData = data || generateMockData();

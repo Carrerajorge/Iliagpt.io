@@ -52,6 +52,45 @@ function makeSseResponse(events: Array<{ event: string; data: Record<string, unk
   });
 }
 
+function makeDelayedSseResponse(
+  events: Array<{ event: string; data: Record<string, unknown> }>,
+  initialDelayMs: number,
+  delayMs = 0
+): Response {
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let index = 0;
+      const pushNext = () => {
+        if (index >= events.length) {
+          controller.close();
+          return;
+        }
+
+        const current = events[index++];
+        const chunk = `event: ${current.event}\ndata: ${JSON.stringify(current.data)}\n\n`;
+        controller.enqueue(encoder.encode(chunk));
+
+        if (delayMs > 0) {
+          setTimeout(pushNext, delayMs);
+        } else {
+          pushNext();
+        }
+      };
+
+      setTimeout(pushNext, initialDelayMs);
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+    },
+  });
+}
+
 describe("useStreamChat conversation isolation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -748,5 +787,317 @@ describe("useStreamChat conversation isolation", () => {
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0].content).toBe("ERR:provider stream failed");
     expect(result.current.optimisticMessages).toHaveLength(1);
+  });
+
+  it("resets session finalization state between consecutive queries in the same conversation", async () => {
+    const sentMessages: any[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const payload = JSON.parse(String(init?.body || "{}"));
+        const content = payload.requestId === "req_second" ? "segunda respuesta" : "primera respuesta";
+
+        return makeSseResponse([
+          {
+            event: "chunk",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              content,
+            },
+          },
+          {
+            event: "done",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+            },
+          },
+        ]);
+      })
+    );
+
+    const { result } = renderHook(() => {
+      const [optimisticMessages, setOptimisticMessages] = useState<any[]>([]);
+      const [streamingContent, setStreamingContent] = useState("");
+      const [aiState, setAiState] = useState<any>("idle");
+      const [steps, setAiProcessSteps] = useState<any[]>([]);
+      const streamingContentRef = useRef("");
+
+      const hook = useStreamChat({
+        setOptimisticMessages,
+        onSendMessage: async (message) => {
+          sentMessages.push(message);
+          return undefined;
+        },
+        setStreamingContent,
+        streamingContentRef,
+        setAiState,
+        setAiProcessSteps,
+        getActiveConversationId: () => "chat_repeat",
+      });
+
+      return { hook, optimisticMessages, streamingContent, aiState, steps };
+    });
+
+    await act(async () => {
+      await result.current.hook.stream("/api/chat/stream", {
+        conversationId: "chat_repeat",
+        chatId: "chat_repeat",
+        body: {
+          messages: [{ role: "user", content: "uno" }],
+          conversationId: "chat_repeat",
+          requestId: "req_first",
+        },
+      });
+    });
+
+    await act(async () => {
+      await result.current.hook.stream("/api/chat/stream", {
+        conversationId: "chat_repeat",
+        chatId: "chat_repeat",
+        body: {
+          messages: [{ role: "user", content: "dos" }],
+          conversationId: "chat_repeat",
+          requestId: "req_second",
+        },
+      });
+    });
+
+    expect(sentMessages).toHaveLength(2);
+    expect(sentMessages.map((message) => message.content)).toEqual([
+      "primera respuesta",
+      "segunda respuesta",
+    ]);
+    expect(result.current.optimisticMessages).toHaveLength(2);
+  });
+
+  it("keeps the AI state in thinking until the first token arrives", async () => {
+    vi.useFakeTimers();
+
+    const sentMessages: any[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const payload = JSON.parse(String(init?.body || "{}"));
+
+        return makeDelayedSseResponse(
+          [
+            {
+              event: "chunk",
+              data: {
+                conversationId: payload.conversationId,
+                requestId: payload.requestId,
+                content: "token tardio",
+              },
+            },
+            {
+              event: "done",
+              data: {
+                conversationId: payload.conversationId,
+                requestId: payload.requestId,
+              },
+            },
+          ],
+          25
+        );
+      })
+    );
+
+    const { result } = renderHook(() => {
+      const [optimisticMessages, setOptimisticMessages] = useState<any[]>([]);
+      const [streamingContent, setStreamingContent] = useState("");
+      const [aiState, setAiState] = useState<any>("idle");
+      const [steps, setAiProcessSteps] = useState<any[]>([]);
+      const streamingContentRef = useRef("");
+
+      const hook = useStreamChat({
+        setOptimisticMessages,
+        onSendMessage: async (message) => {
+          sentMessages.push(message);
+          return undefined;
+        },
+        setStreamingContent,
+        streamingContentRef,
+        setAiState,
+        setAiProcessSteps,
+        getActiveConversationId: () => "chat_thinking",
+      });
+
+      return { hook, optimisticMessages, streamingContent, aiState, steps };
+    });
+
+    let streamPromise!: Promise<any>;
+    await act(async () => {
+      streamPromise = result.current.hook.stream("/api/chat/stream", {
+        conversationId: "chat_thinking",
+        chatId: "chat_thinking",
+        body: {
+          messages: [{ role: "user", content: "hola" }],
+          conversationId: "chat_thinking",
+          requestId: "req_thinking",
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(result.current.aiState).toBe("thinking");
+
+    await act(async () => {
+      vi.advanceTimersByTime(25);
+      await streamPromise;
+    });
+
+    expect(sentMessages).toHaveLength(1);
+
+    vi.useRealTimers();
+  });
+
+  it("injects the stream requestId into the final message when the done event omits it", async () => {
+    const sentMessages: any[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const payload = JSON.parse(String(init?.body || "{}"));
+
+        return makeSseResponse([
+          {
+            event: "chunk",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              content: "respuesta estable",
+            },
+          },
+          {
+            event: "done",
+            data: {
+              conversationId: payload.conversationId,
+            },
+          },
+        ]);
+      })
+    );
+
+    const { result } = renderHook(() => {
+      const [optimisticMessages, setOptimisticMessages] = useState<any[]>([]);
+      const [streamingContent, setStreamingContent] = useState("");
+      const [aiState, setAiState] = useState<any>("idle");
+      const [steps, setAiProcessSteps] = useState<any[]>([]);
+      const streamingContentRef = useRef("");
+
+      const hook = useStreamChat({
+        setOptimisticMessages,
+        onSendMessage: async (message) => {
+          sentMessages.push(message);
+          return undefined;
+        },
+        setStreamingContent,
+        streamingContentRef,
+        setAiState,
+        setAiProcessSteps,
+        getActiveConversationId: () => "chat_reqid",
+      });
+
+      return { hook, optimisticMessages, streamingContent, aiState, steps };
+    });
+
+    await act(async () => {
+      await result.current.hook.stream("/api/chat/stream", {
+        conversationId: "chat_reqid",
+        chatId: "chat_reqid",
+        body: {
+          messages: [{ role: "user", content: "hola" }],
+          conversationId: "chat_reqid",
+          requestId: "req_missing_done_id",
+        },
+      });
+    });
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].requestId).toBe("req_missing_done_id");
+  });
+
+  it("reuses the server assistant message id and skips client re-persist when SSE already owns persistence", async () => {
+    const sentMessages: any[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const payload = JSON.parse(String(init?.body || "{}"));
+
+        return makeSseResponse([
+          {
+            event: "context",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              assistantMessageId: "srv-assistant-123",
+            },
+          },
+          {
+            event: "chunk",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              assistantMessageId: "srv-assistant-123",
+              content: "respuesta sin duplicado",
+            },
+          },
+          {
+            event: "done",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              assistantMessageId: "srv-assistant-123",
+            },
+          },
+        ]);
+      })
+    );
+
+    const { result } = renderHook(() => {
+      const [optimisticMessages, setOptimisticMessages] = useState<any[]>([]);
+      const [streamingContent, setStreamingContent] = useState("");
+      const [aiState, setAiState] = useState<any>("idle");
+      const [steps, setAiProcessSteps] = useState<any[]>([]);
+      const streamingContentRef = useRef("");
+
+      const hook = useStreamChat({
+        setOptimisticMessages,
+        onSendMessage: async (message) => {
+          sentMessages.push(message);
+          return undefined;
+        },
+        setStreamingContent,
+        streamingContentRef,
+        setAiState,
+        setAiProcessSteps,
+        getActiveConversationId: () => "chat_server_owned",
+      });
+
+      return { hook, optimisticMessages, streamingContent, aiState, steps };
+    });
+
+    await act(async () => {
+      await result.current.hook.stream("/api/chat/stream", {
+        conversationId: "chat_server_owned",
+        chatId: "chat_server_owned",
+        body: {
+          messages: [{ role: "user", content: "hola" }],
+          conversationId: "chat_server_owned",
+          requestId: "req_server_owned",
+        },
+      });
+    });
+
+    expect(sentMessages).toHaveLength(0);
+    expect(result.current.optimisticMessages).toHaveLength(1);
+    expect(result.current.optimisticMessages[0].id).toBe("srv-assistant-123");
+    expect(result.current.optimisticMessages[0].clientTempId).toMatch(/^assistant-/);
+    expect(result.current.optimisticMessages[0].content).toBe("respuesta sin duplicado");
   });
 });

@@ -13,6 +13,7 @@
  */
 
 import { z } from "zod";
+import { createPptxDocument } from "../../services/documentGeneration";
 
 /* ================================================================== */
 /*  SECURITY HELPERS                                                   */
@@ -555,12 +556,10 @@ export class DocumentEngine {
       // Use spec as-is with minimal safety
       parsed = spec;
     }
-    const PptxGenJS = (await import("pptxgenjs")).default;
-
     const MAX_NOTES_LENGTH = 100_000;
     const MAX_TABLE_TOTAL_CHARS = 50_000;
 
-    const pptx = new PptxGenJS();
+    const pptx = createPptxDocument();
     pptx.title = sanitizeText(String(parsed.title || "").substring(0, 500));
     if (parsed.author) pptx.author = sanitizeText(String(parsed.author).substring(0, 200));
     if (parsed.subject) pptx.subject = sanitizeText(String(parsed.subject).substring(0, 200));

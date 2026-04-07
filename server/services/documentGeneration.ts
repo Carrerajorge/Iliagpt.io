@@ -1,9 +1,9 @@
 import ExcelJS from "exceljs";
-import PptxGenJS from "pptxgenjs";
+import * as PptxGenJSImport from "pptxgenjs";
+import type PptxGenJS from "pptxgenjs";
 import { JSDOM } from "jsdom";
 import { Document, Packer, Paragraph, TextRun, AlignmentType, Header, Footer, ImageRun, BorderStyle, convertInchesToTwip } from "docx";
 
-const PptxGenJSConstructor: any = (PptxGenJS as any)?.default ?? PptxGenJS;
 import { generateWordFromMarkdown } from "./markdownToDocx";
 import { buildOfficeBrandingVisualSpec, resolveOfficeBrandTheme, type OfficeBrandingVisualSpec } from "./officeBranding";
 import {
@@ -25,6 +25,38 @@ export interface ProfessionalExcelOptions {
   alternateRows?: boolean;
   freezeHeader?: boolean;
   autoFilter?: boolean;
+}
+
+type PptxGenConstructor = new () => PptxGenJS;
+
+let cachedPptxGenConstructor: PptxGenConstructor | null = null;
+
+function resolvePptxGenConstructor(): PptxGenConstructor {
+  if (cachedPptxGenConstructor) {
+    return cachedPptxGenConstructor;
+  }
+
+  const candidates = [
+    (PptxGenJSImport as any)?.default?.default,
+    (PptxGenJSImport as any)?.["module.exports"]?.default,
+    (PptxGenJSImport as any)?.default,
+    (PptxGenJSImport as any)?.["module.exports"],
+    PptxGenJSImport,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "function") {
+      cachedPptxGenConstructor = candidate as PptxGenConstructor;
+      return cachedPptxGenConstructor;
+    }
+  }
+
+  throw new Error("Unable to resolve PptxGenJS constructor");
+}
+
+export function createPptxDocument(): PptxGenJS {
+  const PptxGenCtor = resolvePptxGenConstructor();
+  return new PptxGenCtor();
 }
 
 // ============================================
@@ -574,41 +606,41 @@ function tracePptError(error: unknown): string {
 
 export const CORPORATE_PPT_DESIGN_SYSTEM = {
   palette: {
-    bg: "F7FAFC",
+    bg: "F8FAFC",
     surface: "FFFFFF",
-    surfaceElevated: "EDF2F7",
-    primary: "1F4E79",
-    secondary: "2B6CB0",
-    accent: "38A3A5",
-    text: "1A202C",
+    surfaceElevated: "F1F5F9",
+    primary: "0F172A",
+    secondary: "334155",
+    accent: "2563EB",
+    text: "111827",
     muted: "64748B",
     border: "E2E8F0",
     shadow: "0F172A",
-    tableHeader: "334155",
-    footer: "E5E7EB",
+    tableHeader: "E2E8F0",
+    footer: "CBD5E1",
   },
   typography: {
-    heading: "Inter",
-    body: "Inter",
+    heading: "Arial",
+    body: "Arial",
     mono: "Consolas",
   },
   spacing: {
-    marginX: 0.55,
-    marginY: 0.45,
-    sectionGap: 0.35,
-    cardGap: 0.28,
-    maxBodyHeight: 4.0,
+    marginX: 0.72,
+    marginY: 0.55,
+    sectionGap: 0.3,
+    cardGap: 0.24,
+    maxBodyHeight: 3.85,
   },
   sizes: {
-    coverTitle: 38,
-    coverSubtitle: 20,
-    title: 34,
-    sectionTitle: 32,
-    body: 18,
-    bodySmall: 14,
-    badge: 10,
+    coverTitle: 28,
+    coverSubtitle: 15,
+    title: 24,
+    sectionTitle: 28,
+    body: 16,
+    bodySmall: 11,
+    badge: 9,
     footer: 9,
-    icon: 14,
+    icon: 12,
   },
   components: {
     gridColumns: 12,
@@ -720,19 +752,9 @@ export function defineCorporateMaster(pptx: PptxGenJS): void {
     },
     objects: [
       {
-        rect: {
-          x: 0,
-          y: 0,
-          w: "100%",
-          h: 0.08,
-          fill: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary },
-          line: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary },
-        },
-      },
-      {
         line: {
           x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
-          y: 5.25,
+          y: 5.15,
           w: 8.9,
           h: 0,
           line: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.border, width: 1, dashType: "solid" },
@@ -740,40 +762,13 @@ export function defineCorporateMaster(pptx: PptxGenJS): void {
       },
       {
         text: {
-          text: "Iliagpt",
+          text: "Presentación ejecutiva",
           options: {
             x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
-            y: 0.14,
-            w: 1.4,
-            h: 0.28,
-            fontSize: 10,
-            bold: true,
-            color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary,
-            fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
-            align: "left",
-            valign: "middle",
-          },
-        },
-      },
-      {
-        rect: {
-          x: 0,
-          y: 5.35,
-          w: "100%",
-          h: 0.28,
-          fill: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.surface },
-          line: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.footer },
-        },
-      },
-      {
-        text: {
-          text: "Iliagpt Corporate Theme",
-          options: {
-            x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
-            y: 5.42,
-            w: 3,
+            y: 0.18,
+            w: 2.4,
             h: 0.2,
-            fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.footer,
+            fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.bodySmall,
             color: CORPORATE_PPT_DESIGN_SYSTEM.palette.muted,
             fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
             align: "left",
@@ -952,15 +947,36 @@ function tryParseChartFromLines(lines: string[]): { title: string; labels: strin
 }
 
 function renderSlideContent(slide: PptxGenJS.Slide, slideData: { title: string; content: string[]; variant: SlideVariant }, deckTitle: string, index: number, totalSlides: number): void {
-  const bodyY = 1.3;
+  const bodyY = 1.6;
   const bodyH = CORPORATE_PPT_DESIGN_SYSTEM.spacing.maxBodyHeight;
+  const normalizedLines = slideData.content
+    .map((line) => sanitizePptText(line).replace(/^[\s\-*•\d.]+/, "").trim())
+    .filter(Boolean);
 
   if (slideData.variant === "cover") {
+    slide.addShape("rect", {
+      x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+      y: 1.08,
+      w: 1.15,
+      h: 0.06,
+      fill: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.accent },
+      line: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.accent, width: 0 },
+    });
+    slide.addText("PRESENTACIÓN", {
+      x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+      y: 1.18,
+      w: 2.2,
+      h: 0.2,
+      fontSize: 10,
+      bold: true,
+      color: CORPORATE_PPT_DESIGN_SYSTEM.palette.muted,
+      fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
+    });
     slide.addText(slideData.title, {
       x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
-      y: 1.6,
+      y: 1.55,
       w: 9.0,
-      h: 1.4,
+      h: 1.05,
       fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.coverTitle,
       bold: true,
       color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary,
@@ -969,93 +985,124 @@ function renderSlideContent(slide: PptxGenJS.Slide, slideData: { title: string; 
       valign: "middle",
     });
 
-    const subtitle = slideData.content[0] || deckTitle;
+    const subtitle = normalizedLines[0] || `Resumen ejecutivo de ${deckTitle}`;
     slide.addText(subtitle, {
       x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
-      y: 3.15,
-      w: 9.0,
-      h: 1.0,
+      y: 2.8,
+      w: 8.1,
+      h: 0.7,
       fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.coverSubtitle,
       color: CORPORATE_PPT_DESIGN_SYSTEM.palette.text,
       fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
-      italic: true,
       align: "left",
       valign: "top",
     });
-
-    addCorporateCard(slide, "Objetivo", `Esta presentación está construida con el tema corporativo IliaGPT: consistencia, tipografía y espaciado unificados en toda la deck.`, 4.2);
+    slide.addText(`${index + 1}/${totalSlides}`, {
+      x: 8.9,
+      y: 5.22,
+      w: 0.7,
+      h: 0.2,
+      fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.footer,
+      color: CORPORATE_PPT_DESIGN_SYSTEM.palette.muted,
+      fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
+      align: "right",
+    });
     return;
   }
 
   if (slideData.variant === "section") {
-    slide.addShape("rect", {
-      x: 0.55,
-      y: 1.95,
-      w: 8.9,
-      h: 1.2,
-      fill: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary },
-      line: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary },
+    slide.addText("SECCIÓN", {
+      x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+      y: 1.52,
+      w: 2.4,
+      h: 0.2,
+      fontSize: 10,
+      bold: true,
+      color: CORPORATE_PPT_DESIGN_SYSTEM.palette.muted,
+      fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
     });
     slide.addText(slideData.title, {
-      x: 0.55,
-      y: 1.95,
-      w: 8.9,
-      h: 1.2,
+      x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+      y: 2.0,
+      w: 8.7,
+      h: 0.95,
       fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.sectionTitle,
       bold: true,
-      color: "FFFFFF",
-      align: "center",
+      color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary,
+      align: "left",
       valign: "middle",
       fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.heading,
     });
+    if (normalizedLines[0]) {
+      slide.addText(normalizedLines[0], {
+        x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+        y: 3.18,
+        w: 7.6,
+        h: 0.6,
+        fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.body,
+        color: CORPORATE_PPT_DESIGN_SYSTEM.palette.text,
+        fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
+      });
+    }
     return;
   }
 
   if (slideData.variant === "closing") {
-    slide.addShape("rect", {
-      x: 0.55,
-      y: 1.2,
-      w: 8.9,
-      h: 3.8,
-      fill: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary },
-      line: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary },
-    });
-    slide.addText("Gracias", {
-      x: 0.7,
-      y: 2.1,
-      w: 8.5,
-      h: 1.0,
-      fontSize: 56,
+    slide.addText(slideData.title, {
+      x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+      y: 1.55,
+      w: 8.6,
+      h: 0.85,
+      fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.sectionTitle,
       bold: true,
-      color: "FFFFFF",
-      align: "center",
-      valign: "middle",
+      color: CORPORATE_PPT_DESIGN_SYSTEM.palette.primary,
       fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.heading,
     });
-    slide.addText("¿Preguntas?", {
-      x: 0.7,
-      y: 3.35,
-      w: 8.5,
-      h: 0.85,
-      fontSize: 30,
-      bold: true,
-      color: CORPORATE_PPT_DESIGN_SYSTEM.palette.surface,
-      align: "center",
-      valign: "middle",
+    const closingBullets = (normalizedLines.length > 0 ? normalizedLines : ["Cerrar con decisiones, responsables y siguiente revisión."]).map((text) => ({
+      text,
+      options: {
+        bullet: true,
+        breakLine: true,
+      },
+    }));
+    slide.addText(closingBullets, {
+      x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+      y: 2.6,
+      w: 8.6,
+      h: 2.1,
+      fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.body,
+      color: CORPORATE_PPT_DESIGN_SYSTEM.palette.text,
       fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
+      breakLine: true,
     });
     return;
   }
 
-  addCorporateBadge(slide, "PPTX");
-  addFooter(slide, deckTitle, index + 1, totalSlides);
+  slide.addShape("rect", {
+    x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+    y: 0.88,
+    w: 0.8,
+    h: 0.05,
+    fill: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.accent },
+    line: { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.accent, width: 0 },
+  });
+  slide.addText(`${index + 1}/${totalSlides}`, {
+    x: 8.9,
+    y: 5.22,
+    w: 0.7,
+    h: 0.2,
+    fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.footer,
+    color: CORPORATE_PPT_DESIGN_SYSTEM.palette.muted,
+    fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
+    align: "right",
+  });
 
-  const chartData = tryParseChartFromLines(slideData.content);
+  const chartData = tryParseChartFromLines(normalizedLines);
   if (chartData && chartData.labels.length && chartData.values.length) {
     slide.addText(slideData.title, {
       x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
-      y: 0.75,
-      w: 9.0,
+      y: 1.02,
+      w: 8.7,
       h: 0.6,
       fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.title,
       bold: true,
@@ -1076,7 +1123,6 @@ function renderSlideContent(slide: PptxGenJS.Slide, slideData: { title: string; 
       w: 8.9,
       h: bodyH,
       showTitle: true,
-      showLegend: true,
       chartColors: [
         CORPORATE_PPT_DESIGN_SYSTEM.palette.primary,
         CORPORATE_PPT_DESIGN_SYSTEM.palette.accent,
@@ -1094,18 +1140,18 @@ function renderSlideContent(slide: PptxGenJS.Slide, slideData: { title: string; 
       dataLabelColor: CORPORATE_PPT_DESIGN_SYSTEM.palette.text,
       showLabel: true,
       showDataTable: false,
+      showLegend: false,
       barGrouping: "clustered",
     } as any);
-    addCorporateButton(slide, "Ver detalles", 8.18, 5.05, 1.27);
     return;
   }
 
-  const tableRows = parseSlideTable(slideData.content);
+  const tableRows = parseSlideTable(normalizedLines);
   if (tableRows && tableRows.length > 0) {
     slide.addText(slideData.title, {
-      x: 0.55,
-      y: 0.9,
-      w: 9.0,
+      x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+      y: 1.02,
+      w: 8.7,
       h: 0.6,
       fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.title,
       bold: true,
@@ -1120,7 +1166,7 @@ function renderSlideContent(slide: PptxGenJS.Slide, slideData: { title: string; 
           align: rowIndex === 0 ? ("center" as const) : ("left" as const),
           fontFace: rowIndex === 0 ? CORPORATE_PPT_DESIGN_SYSTEM.typography.heading : CORPORATE_PPT_DESIGN_SYSTEM.typography.body,
           bold: rowIndex === 0,
-          color: rowIndex === 0 ? "FFFFFF" : CORPORATE_PPT_DESIGN_SYSTEM.palette.text,
+          color: CORPORATE_PPT_DESIGN_SYSTEM.palette.text,
           fill: rowIndex === 0 ? { color: CORPORATE_PPT_DESIGN_SYSTEM.palette.tableHeader } : undefined,
           fontSize: rowIndex === 0 ? CORPORATE_PPT_DESIGN_SYSTEM.sizes.bodySmall + 2 : CORPORATE_PPT_DESIGN_SYSTEM.sizes.bodySmall,
         },
@@ -1128,22 +1174,21 @@ function renderSlideContent(slide: PptxGenJS.Slide, slideData: { title: string; 
     );
 
     slide.addTable(tableWithStyles, {
-      x: 0.55,
-      y: 1.65,
+      x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+      y: 1.62,
       w: 8.9,
       h: bodyH,
       border: { pt: 0.75, color: CORPORATE_PPT_DESIGN_SYSTEM.palette.border },
       colW: Math.round((CORPORATE_PPT_DESIGN_SYSTEM.components.gridWidth * 100) / Math.max(...tableRows.map(row => row.length))) / 100,
     } as any);
-    addCorporateButton(slide, "Ver análisis", 8.18, 5.05, 1.27);
     return;
   }
 
   if (slideData.variant === "two-column") {
     slide.addText(slideData.title, {
-      x: 0.55,
-      y: 0.9,
-      w: 9.0,
+      x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+      y: 1.02,
+      w: 8.7,
       h: 0.5,
       fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.title,
       bold: true,
@@ -1151,10 +1196,10 @@ function renderSlideContent(slide: PptxGenJS.Slide, slideData: { title: string; 
       fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.heading,
     });
 
-    const bullets = slideData.content.slice(0, MAX_PPT_TEXT_ELEMENTS_PER_SLIDE).map((text, idx) => ({
-      text: `${idx + 1}. ${text}`,
+    const bullets = normalizedLines.slice(0, MAX_PPT_TEXT_ELEMENTS_PER_SLIDE).map((text) => ({
+      text,
       options: {
-        bullet: { type: "number", color: CORPORATE_PPT_DESIGN_SYSTEM.palette.accent },
+        bullet: true,
         breakLine: true,
       },
     }));
@@ -1190,9 +1235,9 @@ function renderSlideContent(slide: PptxGenJS.Slide, slideData: { title: string; 
   }
 
   slide.addText(slideData.title, {
-    x: 0.55,
-    y: 0.9,
-    w: 9.0,
+    x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
+    y: 1.02,
+    w: 8.7,
     h: 0.55,
     fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.title,
     bold: true,
@@ -1200,7 +1245,7 @@ function renderSlideContent(slide: PptxGenJS.Slide, slideData: { title: string; 
     fontFace: CORPORATE_PPT_DESIGN_SYSTEM.typography.heading,
   });
 
-  const bullets = slideData.content
+  const bullets = normalizedLines
     .slice(0, MAX_PPT_TEXT_ELEMENTS_PER_SLIDE)
     .map((text) => ({
       text,
@@ -1211,9 +1256,9 @@ function renderSlideContent(slide: PptxGenJS.Slide, slideData: { title: string; 
     }));
 
   slide.addText(bullets, {
-    x: 0.55,
+    x: CORPORATE_PPT_DESIGN_SYSTEM.spacing.marginX,
     y: bodyY,
-    w: 9.0,
+    w: 8.7,
     h: bodyH,
     fontSize: CORPORATE_PPT_DESIGN_SYSTEM.sizes.body,
     color: CORPORATE_PPT_DESIGN_SYSTEM.palette.text,
@@ -1228,7 +1273,7 @@ async function createUltraMinimalFallbackPpt(
   slideCount: number,
   context?: PptFallbackContext
 ): Promise<Buffer> {
-  const fallback = new PptxGenJSConstructor();
+  const fallback = createPptxDocument();
   const safeTitle = sanitizePptText(title).substring(0, MAX_PPT_TITLE_LENGTH) || "Presentación";
   const source = sanitizePptTraceText(context?.source || "generatePptDocument");
   const traceId = context?.traceId || buildPptTraceId();
@@ -1316,7 +1361,7 @@ async function createSafeFallbackPpt(
   const traceId = context?.traceId || buildPptTraceId();
 
   try {
-    const fallback = new PptxGenJSConstructor();
+    const fallback = createPptxDocument();
     fallback.layout = "LAYOUT_16x9";
     fallback.title = safeTitle;
     defineCorporateMaster(fallback);
@@ -1409,7 +1454,7 @@ export async function generatePptDocument(
       droppedSlides: Math.max(0, requestedSlides - preparedSlides.length),
     });
 
-    const presentation = new PptxGenJSConstructor();
+    const presentation = createPptxDocument();
     presentation.layout = "LAYOUT_16x9";
     presentation.title = sanitizePptText(normalized.title).substring(0, MAX_PPT_TITLE_LENGTH);
     presentation.author = "IliaGPT";

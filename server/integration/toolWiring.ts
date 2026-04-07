@@ -421,16 +421,23 @@ async function wireDocumentTool(): Promise<void> {
   const tool = globalToolRegistry.getTool('create_document');
   if (!tool) return;
 
+  const delegate = tool.execute.bind(tool);
   tool.execute = async (input: unknown, ctx: ToolExecutionContext): Promise<ToolResult> => {
-    const { title, content, format } = input as {
-      title: string; content: string; format?: string;
+    const raw = (input ?? {}) as Record<string, unknown>;
+    const format = typeof raw.format === 'string' ? raw.format.toLowerCase() : undefined;
+    const normalizedType =
+      typeof raw.type === 'string' ? raw.type.toLowerCase() :
+      format === 'pdf' ? 'pdf' :
+      format === 'xlsx' || format === 'excel' ? 'excel' :
+      format === 'ppt' || format === 'pptx' ? 'ppt' :
+      'word';
+    const normalizedInput = {
+      type: normalizedType,
+      title: typeof raw.title === 'string' ? raw.title : 'Document',
+      content: typeof raw.content === 'string' ? raw.content : String(raw.content ?? ''),
+      theme: typeof raw.theme === 'string' ? raw.theme : undefined,
     };
-    try {
-      const filePath = await createDocument(title, content, format ?? 'md', ctx);
-      return { success: true, output: `Document created: ${filePath}`, metadata: { filePath } };
-    } catch (e) {
-      return { success: false, output: `create_document error: ${(e as Error).message}` };
-    }
+    return delegate(normalizedInput, ctx);
   };
 }
 
@@ -468,7 +475,6 @@ async function wireSpawnTaskTool(): Promise<void> {
         durationMs: Date.now() - start,
       };
     }
-
     try {
       const mgr  = await getBackgroundTaskManager();
       const task = await mgr.spawn({

@@ -1,13 +1,12 @@
 import { randomUUID } from "crypto";
 import ExcelJS from "exceljs";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType } from "docx";
-import pptxgenImport from "pptxgenjs";
-const PptxGenJS = (pptxgenImport as any).default || pptxgenImport;
 import { promises as fs } from "fs";
 import path from "path";
 import { DocumentCompiler, type CompilerFormat } from "../documents/compiler";
 import { resolveTheme } from "../documents/themes";
 import type { PresentationSpec, DocumentSpec, WorkbookSpec } from "../documents/documentEngine";
+import { createPptxDocument } from "../../services/documentGeneration";
 
 export interface ArtifactMeta {
   id: string;
@@ -341,7 +340,7 @@ export async function createPptx(spec: PptxSpec): Promise<ArtifactMeta> {
   const filename = `${safeTitle}_${id.substring(0, 8)}.pptx`;
   const filepath = path.join(ARTIFACTS_DIR, filename);
 
-  const pptx = new PptxGenJS();
+  const pptx = createPptxDocument();
   pptx.author = safeStr(spec.metadata?.author, 200) || "IliaGPT Super Agent";
   pptx.subject = safeStr(spec.metadata?.subject, 500) || safeStr(spec.title, 500);
   pptx.title = safeStr(spec.title, 500);

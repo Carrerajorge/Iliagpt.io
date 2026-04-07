@@ -41,16 +41,16 @@ const TOOL_CATALOG: CatalogEntry[] = [
   { name: "subagent_status", section: "sessions", description: "Check sub-agent status and results", profiles: ["full"] },
 
   { name: "generate_image", section: "media", description: "Generate an image via AI", profiles: ["coding", "messaging", "full"] },
-  { name: "generate_document", section: "media", description: "Generate Word/PDF documents", profiles: ["minimal", "coding", "messaging", "full"] },
+  { name: "generate_document", section: "media", description: "Generate Word, Excel, PowerPoint, CSV, and PDF documents", profiles: ["minimal", "coding", "messaging", "full"] },
   { name: "analyze_spreadsheet", section: "media", description: "Analyze spreadsheet data", profiles: ["coding", "full"] },
 
   { name: "generate_chart", section: "ui", description: "Generate chart visualizations", profiles: ["coding", "full"] },
 
   { name: "send_email", section: "messaging", description: "Send an email", profiles: ["messaging", "full"] },
 
-  { name: "create_presentation", section: "automation", description: "Create a PowerPoint presentation", profiles: ["coding", "messaging", "full"] },
-  { name: "create_spreadsheet", section: "automation", description: "Create an Excel spreadsheet", profiles: ["coding", "messaging", "full"] },
-  { name: "create_document", section: "automation", description: "Create a Word document", profiles: ["coding", "messaging", "full"] },
+  { name: "create_presentation", section: "automation", description: "Create a PowerPoint presentation from slides or markdown content", profiles: ["minimal", "coding", "messaging", "full"] },
+  { name: "create_spreadsheet", section: "automation", description: "Create an Excel spreadsheet from sheets or tabular text", profiles: ["minimal", "coding", "messaging", "full"] },
+  { name: "create_document", section: "automation", description: "Create a Word or PDF document from markdown content", profiles: ["minimal", "coding", "messaging", "full"] },
 
   { name: "subagent_spawn", section: "agents", description: "Spawn specialized sub-agents", profiles: ["full"] },
 ];

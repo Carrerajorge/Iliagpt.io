@@ -162,6 +162,18 @@ export const BUNDLED_SKILLS: BundledSkill[] = [
         ]
     },
     {
+        id: "math_render",
+        name: "Math Renderer (KaTeX)",
+        description: "Render and structure mathematical solutions using LaTeX/KaTeX, with optional document export.",
+        category: "documents",
+        features: [
+            "KaTeX/LaTeX rendering",
+            "Step-by-step math formatting",
+            "Inline and display equations",
+            "Optional Word/PDF export"
+        ]
+    },
+    {
         id: "spawn_subagent",
         name: "Nested Subagents (Clawi Integration)",
         description: "Enables the AI to spawn nested, autonomous subagents to handle complex multi-step routines in the background.",

@@ -37,6 +37,7 @@ import {
   csvToWorkbookSpec,
   jsonToPresentationSpec,
 } from "./textToSpec";
+import { createPptxDocument } from "../../services/documentGeneration";
 
 /* ================================================================== */
 /*  TYPES                                                              */
@@ -466,8 +467,7 @@ export class DocumentCompiler {
     try {
       switch (format) {
         case "pptx": {
-          const PptxGenJS = (await import("pptxgenjs")).default;
-          const pptx = new PptxGenJS();
+          const pptx = createPptxDocument();
           pptx.title = title;
           pptx.author = "IliaGPT";
 

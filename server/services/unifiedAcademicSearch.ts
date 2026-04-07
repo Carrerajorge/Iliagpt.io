@@ -20,10 +20,28 @@ import { JSDOM } from "jsdom";
 import { createClient, RedisClientType } from "redis";
 import crypto from "crypto";
 import { sanitizeSearchQuery } from "../lib/textSanitizers";
+import { academicEngineV3, type AcademicPaper } from "./academicResearchEngineV3";
+import { searchBASEPublic } from "./baseSearch";
+import { enrichResultsWithUnpaywall } from "./unpayWallSearch";
 
 // ============================================
 // TYPES
 // ============================================
+
+export type AcademicSource =
+  | "scopus"
+  | "scielo"
+  | "pubmed"
+  | "scholar"
+  | "duckduckgo"
+  | "wos"
+  | "crossref"
+  | "semantic"
+  | "openalex"
+  | "core"
+  | "arxiv"
+  | "doaj"
+  | "base";
 
 export interface AcademicResult {
   title: string;
@@ -32,9 +50,10 @@ export interface AcademicResult {
   journal?: string;
   doi?: string;
   url: string;
+  pdfUrl?: string;
   abstract?: string;
   citations?: number;
-  source: "scopus" | "scielo" | "pubmed" | "scholar" | "duckduckgo" | "wos" | "crossref" | "semantic";
+  source: AcademicSource;
   citation?: string;
   score?: number;
   // New enriched fields
@@ -207,8 +226,19 @@ function calculateRelevanceScore(result: AcademicResult, query: string, options:
   
   // 16. Source reliability (0-8)
   const sourceScores: Record<string, number> = {
-    scopus: 8, wos: 8, pubmed: 8, crossref: 7,
-    semantic: 6, scholar: 5, scielo: 6, duckduckgo: 2
+    scopus: 8,
+    wos: 8,
+    pubmed: 8,
+    openalex: 8,
+    crossref: 7,
+    doaj: 7,
+    base: 6,
+    scielo: 6,
+    semantic: 6,
+    core: 6,
+    arxiv: 6,
+    scholar: 5,
+    duckduckgo: 2,
   };
   score += sourceScores[result.source] || 2;
   
@@ -322,6 +352,14 @@ function recordSuccess(source: string): void {
   }
 }
 
+function forceOpenCircuit(source: string): void {
+  circuitBreaker[source] = {
+    failures: 3,
+    lastFailure: Date.now(),
+    open: true,
+  };
+}
+
 // Fetch with timeout and retry
 async function fetchWithRetry(
   url: string, 
@@ -348,6 +386,100 @@ async function fetchWithRetry(
     }
   }
   throw lastError;
+}
+
+function mapPaperSource(source: AcademicPaper["source"]): AcademicSource {
+  switch (source) {
+    case "semantic_scholar":
+      return "semantic";
+    default:
+      return source;
+  }
+}
+
+function mapSortToEngine(sortBy?: SearchOptions["sortBy"]): "relevance" | "date" | "citations" {
+  switch (sortBy) {
+    case "date":
+      return "date";
+    case "citations":
+      return "citations";
+    default:
+      return "relevance";
+  }
+}
+
+function mapAcademicPaperToResult(paper: AcademicPaper, query: string, options: SearchOptions = {}): AcademicResult {
+  const result: AcademicResult = {
+    title: paper.title || "",
+    authors: paper.authors?.map(author => author.name).filter(Boolean).join(", ") || "",
+    year: paper.year ? String(paper.year) : "",
+    journal: paper.journal || paper.publisher || "",
+    doi: paper.doi || "",
+    url: paper.url || paper.pdfUrl || "",
+    pdfUrl: paper.pdfUrl || undefined,
+    abstract: paper.abstract || "",
+    citations: paper.citationCount,
+    source: mapPaperSource(paper.source),
+    openAccess: paper.isOpenAccess,
+    documentType: paper.documentType,
+    keywords: paper.keywords,
+    language: paper.language,
+  };
+  result.score = calculateRelevanceScore(result, query, options);
+  result.citation = formatCitation(result, "apa");
+  return result;
+}
+
+async function searchViaAcademicEngine(
+  source: "openalex" | "arxiv" | "doaj",
+  query: string,
+  options: SearchOptions = {},
+): Promise<AcademicResult[]> {
+  const { maxResults = 10 } = options;
+  const sanitized = hardenQuery(query);
+  if (!sanitized) return [];
+
+  if (isCircuitOpen(source)) return [];
+
+  const cacheKey = getCacheKey(source, sanitized, options);
+  const cached = await getCached<AcademicResult[]>(cacheKey);
+  if (cached) return cached.data;
+
+  try {
+    const result = await academicEngineV3.search({
+      query: sanitized,
+      maxResults: Math.max(1, Math.min(100, maxResults)),
+      yearFrom: options.yearFrom,
+      yearTo: options.yearTo,
+      languages: options.language ? [options.language] : undefined,
+      openAccessOnly: options.openAccessOnly,
+      sortBy: mapSortToEngine(options.sortBy),
+      sources: [source],
+    });
+
+    const results = result.papers.map(paper => mapAcademicPaperToResult(paper, query, options));
+    recordSuccess(source);
+    await setCache(cacheKey, results);
+    return results;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/anti-bot challenge/i.test(message) || /blocked by an anti-bot/i.test(message)) {
+      forceOpenCircuit(source);
+    } else {
+      recordFailure(source);
+    }
+    console.error(`[${source}] Error:`, error);
+    return [];
+  }
+}
+
+function absolutizeUrl(candidate: string | null | undefined, base = "https://core.ac.uk"): string {
+  if (!candidate) return "";
+  try {
+    return new URL(candidate, base).toString();
+  } catch {
+    return "";
+  }
 }
 
 // ============================================
@@ -904,12 +1036,148 @@ export async function searchCrossRef(query: string, options: SearchOptions = {})
   }
 }
 
+export async function searchOpenAlex(query: string, options: SearchOptions = {}): Promise<AcademicResult[]> {
+  return searchViaAcademicEngine("openalex", query, options);
+}
+
+export async function searchArXiv(query: string, options: SearchOptions = {}): Promise<AcademicResult[]> {
+  return searchViaAcademicEngine("arxiv", query, options);
+}
+
+export async function searchDOAJ(query: string, options: SearchOptions = {}): Promise<AcademicResult[]> {
+  return searchViaAcademicEngine("doaj", query, options);
+}
+
+export async function searchCORE(query: string, options: SearchOptions = {}): Promise<AcademicResult[]> {
+  const { maxResults = 10, timeout = 8000 } = options;
+  const source = "core";
+  const sanitized = hardenQuery(query);
+  if (!sanitized) return [];
+  const clampedMax = Math.max(1, Math.min(50, maxResults));
+
+  if (isCircuitOpen(source)) return [];
+
+  const cacheKey = getCacheKey(source, sanitized, options);
+  const cached = await getCached<AcademicResult[]>(cacheKey);
+  if (cached) return cached.data;
+
+  try {
+    const searchUrl = `https://core.ac.uk/search/?q=${encodeURIComponent(sanitized)}`;
+    const response = await fetchWithRetry(searchUrl, { headers: HEADERS }, timeout);
+
+    if (!response.ok) {
+      recordFailure(source);
+      return [];
+    }
+
+    const html = await response.text();
+    const dom = new JSDOM(html);
+    const doc = dom.window.document;
+    const cards = Array.from(doc.querySelectorAll('[itemtype="https://schema.org/ScholarlyArticle"]')).slice(0, clampedMax);
+
+    const results: AcademicResult[] = [];
+
+    for (const card of cards) {
+      const titleLink = card.querySelector("h3 a, [itemprop='name'] a");
+      const title = titleLink?.textContent?.replace(/\s+/g, " ").trim() || "";
+      if (!title) continue;
+
+      const authorNames = Array.from(card.querySelectorAll("[itemprop='author'] [itemprop='name']"))
+        .map(node => node.textContent?.replace(/\s+/g, " ").trim() || "")
+        .filter(Boolean);
+
+      const publisherNames = Array.from(card.querySelectorAll("[itemprop='publisher'] [itemprop='name']"))
+        .map(node => node.textContent?.replace(/\s+/g, " ").trim() || "")
+        .filter(Boolean);
+
+      const publishedText = card.querySelector("[itemprop='datePublished']")?.textContent?.trim() || "";
+      const year = publishedText.match(/\b(19|20)\d{2}\b/)?.[0] || "";
+      const abstract = card.querySelector("[itemprop='abstract']")?.textContent?.replace(/\s+/g, " ").trim() || "";
+      const articleUrl = absolutizeUrl(titleLink?.getAttribute("href"));
+      const pdfUrl = absolutizeUrl(card.querySelector("figure a[href*='/download/'], figure a[href$='.pdf']")?.getAttribute("href"));
+
+      const result: AcademicResult = {
+        title,
+        authors: authorNames.join(", "),
+        year,
+        journal: publisherNames[0] || "CORE",
+        url: articleUrl || pdfUrl,
+        pdfUrl: pdfUrl || undefined,
+        abstract,
+        source,
+        openAccess: Boolean(pdfUrl),
+      };
+      result.score = calculateRelevanceScore(result, query, options);
+      result.citation = formatCitation(result, "apa");
+      results.push(result);
+    }
+
+    recordSuccess(source);
+    await setCache(cacheKey, results);
+    return results;
+  } catch (error) {
+    recordFailure(source);
+    console.error(`[${source}] Error:`, error);
+    return [];
+  }
+}
+
+export async function searchBASE(query: string, options: SearchOptions = {}): Promise<AcademicResult[]> {
+  const { maxResults = 10, timeout = 8000 } = options;
+  const source = "base";
+  const sanitized = hardenQuery(query);
+  if (!sanitized) return [];
+
+  if (isCircuitOpen(source)) return [];
+
+  const cacheKey = getCacheKey(source, sanitized, options);
+  const cached = await getCached<AcademicResult[]>(cacheKey);
+  if (cached) return cached.data;
+
+  try {
+    const baseResults = await searchBASEPublic(sanitized, {
+      maxResults,
+      timeoutMs: timeout,
+      language: options.language,
+      openAccessOnly: options.openAccessOnly,
+    });
+
+    const results = baseResults.map((entry) => {
+      const result: AcademicResult = {
+        title: entry.title,
+        authors: entry.authors,
+        year: entry.year,
+        journal: entry.journal,
+        doi: entry.doi,
+        url: entry.url,
+        pdfUrl: entry.pdfUrl,
+        abstract: entry.abstract,
+        source,
+        openAccess: entry.openAccess,
+        documentType: entry.documentType,
+        language: entry.language,
+      };
+      result.score = calculateRelevanceScore(result, query, options);
+      result.citation = formatCitation(result, "apa");
+      return result;
+    });
+
+    recordSuccess(source);
+    await setCache(cacheKey, results);
+    return results;
+  } catch (error) {
+    recordFailure(source);
+    console.error(`[${source}] Error:`, error);
+    return [];
+  }
+}
+
 // ============================================
 // UNIFIED SEARCH
 // ============================================
 
 export interface UnifiedSearchOptions extends SearchOptions {
-  sources?: Array<"scopus" | "scielo" | "pubmed" | "scholar" | "duckduckgo" | "semantic" | "crossref">;
+  sources?: AcademicSource[];
 }
 
 /**
@@ -932,7 +1200,7 @@ export async function searchAllSources(query: string, options: UnifiedSearchOpti
   const startTime = Date.now();
   const {
     maxResults = 15,
-    sources = ["scopus", "pubmed", "scholar", "scielo", "semantic", "crossref"],
+    sources = ["openalex", "semantic", "crossref", "pubmed", "arxiv", "core", "doaj", "base", "scielo"],
     timeout = 10000,
     sortBy = "relevance"
   } = options;
@@ -986,10 +1254,35 @@ export async function searchAllSources(query: string, options: UnifiedSearchOpti
     enabledSources.semantic = true;
     searchFunctions.push({ source: "semantic", fn: () => searchSemanticScholar(normalizedQuery, { ...options, maxResults: perSource }) });
   }
+
+  if (sources.includes("openalex")) {
+    enabledSources.openalex = true;
+    searchFunctions.push({ source: "openalex", fn: () => searchOpenAlex(normalizedQuery, { ...options, maxResults: perSource }) });
+  }
   
   if (sources.includes("crossref")) {
     enabledSources.crossref = true;
     searchFunctions.push({ source: "crossref", fn: () => searchCrossRef(normalizedQuery, { ...options, maxResults: perSource }) });
+  }
+
+  if (sources.includes("arxiv")) {
+    enabledSources.arxiv = true;
+    searchFunctions.push({ source: "arxiv", fn: () => searchArXiv(normalizedQuery, { ...options, maxResults: perSource }) });
+  }
+
+  if (sources.includes("core")) {
+    enabledSources.core = true;
+    searchFunctions.push({ source: "core", fn: () => searchCORE(normalizedQuery, { ...options, maxResults: perSource }) });
+  }
+
+  if (sources.includes("doaj")) {
+    enabledSources.doaj = true;
+    searchFunctions.push({ source: "doaj", fn: () => searchDOAJ(normalizedQuery, { ...options, maxResults: perSource }) });
+  }
+
+  if (sources.includes("base")) {
+    enabledSources.base = true;
+    searchFunctions.push({ source: "base", fn: () => searchBASE(normalizedQuery, { ...options, maxResults: perSource }) });
   }
 
   // Execute all searches in parallel with timing
@@ -1019,9 +1312,21 @@ export async function searchAllSources(query: string, options: UnifiedSearchOpti
   // Deduplicate
   const beforeDedup = allResults.length;
   const uniqueResults = deduplicateResults(allResults);
+  const enrichedResults = await enrichResultsWithUnpaywall(uniqueResults, {
+    maxLookups: Math.min(25, Math.max(maxResults * 2, 10)),
+    timeoutMs: Math.min(timeout, 7000),
+  });
+  const filteredResults = options.openAccessOnly
+    ? enrichedResults.filter((result) => Boolean(result.openAccess || result.pdfUrl))
+    : enrichedResults;
 
   // Sort by selected criteria
-  uniqueResults.sort((a, b) => {
+  filteredResults.forEach((result) => {
+    result.score = calculateRelevanceScore(result, query, options);
+    result.citation = formatCitation(result, "apa");
+  });
+
+  filteredResults.sort((a, b) => {
     switch (sortBy) {
       case "citations":
         return (b.citations || 0) - (a.citations || 0);
@@ -1035,9 +1340,9 @@ export async function searchAllSources(query: string, options: UnifiedSearchOpti
   });
 
   const timing = Date.now() - startTime;
-  const finalResults = uniqueResults.slice(0, maxResults);
+  const finalResults = filteredResults.slice(0, maxResults);
 
-  console.log(`[AcademicSearch] "${query}" → ${finalResults.length} results (${beforeDedup} raw, ${uniqueResults.length} deduped) in ${timing}ms`);
+  console.log(`[AcademicSearch] "${query}" → ${finalResults.length} results (${beforeDedup} raw, ${filteredResults.length} deduped/enriched) in ${timing}ms`);
 
   return {
     query: normalizedQuery,
@@ -1053,7 +1358,7 @@ export async function searchAllSources(query: string, options: UnifiedSearchOpti
       cacheHit: false,
       sourceTimes,
       resultCount: finalResults.length,
-      deduplicatedCount: beforeDedup - uniqueResults.length
+      deduplicatedCount: beforeDedup - filteredResults.length
     }
   };
 }
@@ -1094,10 +1399,40 @@ export function getSourcesStatus(): Record<string, { available: boolean; name: s
       description: "IA para búsqueda académica - Allen AI Institute",
       requiresKey: false
     },
+    openalex: {
+      available: !isCircuitOpen("openalex"),
+      name: "OpenAlex",
+      description: "Índice abierto con 250M+ trabajos académicos",
+      requiresKey: false
+    },
     crossref: {
       available: !isCircuitOpen("crossref"),
       name: "CrossRef",
       description: "Registro oficial de DOIs - Metadatos completos",
+      requiresKey: false
+    },
+    arxiv: {
+      available: !isCircuitOpen("arxiv"),
+      name: "arXiv",
+      description: "Preprints STEM con acceso abierto",
+      requiresKey: false
+    },
+    core: {
+      available: !isCircuitOpen("core"),
+      name: "CORE",
+      description: "Agregador OA con scraping del buscador público",
+      requiresKey: false
+    },
+    doaj: {
+      available: !isCircuitOpen("doaj"),
+      name: "DOAJ",
+      description: "Directorio de revistas y artículos open access",
+      requiresKey: false
+    },
+    base: {
+      available: !isCircuitOpen("base"),
+      name: "BASE",
+      description: "Bielefeld Academic Search Engine con repositorios abiertos (best-effort; puede activar challenge anti-bot)",
       requiresKey: false
     },
     duckduckgo: {
