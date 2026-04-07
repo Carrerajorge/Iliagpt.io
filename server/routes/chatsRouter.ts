@@ -1111,21 +1111,6 @@ export function createChatsRouter() {
       }
 
       const tCreateLegacy = performance.now();
-      const assistantPayload = normalizedRole === "assistant"
-        ? buildAssistantMessage({
-            content: safeContent,
-            webSources,
-            searchQueries,
-            totalSearches,
-            followUpSuggestions,
-            confidence,
-            uncertaintyReason,
-            retrievalSteps,
-          })
-        : null;
-      const assistantMetadata = assistantPayload
-        ? buildAssistantMessageMetadata(assistantPayload)
-        : undefined;
 
       const message = await storage.createChatMessage({
         chatId: req.params.id,
