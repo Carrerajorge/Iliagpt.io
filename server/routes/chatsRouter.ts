@@ -18,6 +18,30 @@ import { buildAssistantMessage, buildAssistantMessageMetadata } from "@shared/as
 // covers JSON metadata (storagePath, fileId, etc.) — typically well under 5MB.
 const messageBodyLimit = express.json({ limit: '100mb' });
 
+function deduplicateAssistantMessages<T extends { role: string; userMessageId?: string | null; content?: string | null; createdAt?: Date | string | null }>(messages: T[]): T[] {
+  const seenAssistantForUser = new Map<string, number>();
+  const result: T[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'assistant' && msg.userMessageId) {
+      const key = msg.userMessageId;
+      if (seenAssistantForUser.has(key)) {
+        const existingIdx = seenAssistantForUser.get(key)!;
+        const existing = result[existingIdx];
+        const existingLen = (existing?.content || '').length;
+        const currentLen = (msg.content || '').length;
+        if (currentLen > existingLen) {
+          result[existingIdx] = msg;
+        }
+        continue;
+      }
+      seenAssistantForUser.set(key, result.length);
+    }
+    result.push(msg);
+  }
+  return result;
+}
+
 // SECURITY FIX #44: Message content length limits
 const MAX_MESSAGE_LENGTH = 5000000; // 5MB max message for 1M context window
 const MAX_TITLE_LENGTH = 200;
@@ -388,8 +412,8 @@ export function createChatsRouter() {
         return res.status(400).json({ error: "Invalid before timestamp" });
       }
 
-      const messages = await storage.getChatMessages(req.params.id, { limit, before });
-      // Also include conversationDocuments so the frontend can hydrate attachment display data
+      const rawMessages = await storage.getChatMessages(req.params.id, { limit, before });
+      const messages = deduplicateAssistantMessages(rawMessages);
       const conversationDocs = await storage.getConversationDocuments(req.params.id);
       res.json({ ...chat, messages, conversationDocuments: conversationDocs, shareRole, isOwner });
     } catch (error: any) {
@@ -925,6 +949,21 @@ export function createChatsRouter() {
       }
 
       // Legacy flow for assistant messages or messages without clientRequestId
+      if (normalizedRole === "assistant" && userMessageId) {
+        const tDedupAssistant = performance.now();
+        try {
+          const existingAssistant = await storage.findAssistantResponseForUserMessage(userMessageId);
+          addTiming("dedup_assistant", tDedupAssistant);
+          if (existingAssistant) {
+            console.log(`[Dedup] Assistant message already exists for userMessageId ${userMessageId}, returning existing (id: ${existingAssistant.id})`);
+            setServerTiming();
+            return res.json(existingAssistant);
+          }
+        } catch (e) {
+          addTiming("dedup_assistant", tDedupAssistant);
+          console.warn(`[Dedup] findAssistantResponseForUserMessage failed:`, (e as any)?.message);
+        }
+      }
       if (requestId) {
         const tDedupReq = performance.now();
         const existingMessage = await storage.findMessageByRequestId(requestId);
