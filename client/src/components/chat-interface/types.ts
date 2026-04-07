@@ -88,10 +88,11 @@ export interface ChatMetadata {
 // UI STATE TYPES
 // ============================================
 
-// Canonical streaming states: idle -> sending -> streaming -> done/error
+// Canonical streaming states: idle -> queued -> sending -> streaming -> done/error
 // Legacy aliases (thinking/responding) are still accepted for compatibility.
 export type AIState =
     | 'idle'
+    | 'queued'
     | 'sending'
     | 'streaming'
     | 'done'
@@ -116,6 +117,9 @@ export interface AiProcessStep {
     status: 'pending' | 'active' | 'done';
     step?: string; // Legacy
     message?: string;
+    startedAt?: number;
+    retryAfterSeconds?: number;
+    queuePosition?: number;
 }
 export type UIPhase = 'idle' | 'thinking' | 'console' | 'done';
 
@@ -201,6 +205,7 @@ export interface StreamingIndicatorProps {
     streamingContent: string;
     onCancel: () => void;
     uiPhase?: UIPhase;
+    aiProcessSteps?: AiProcessStep[];
 }
 
 export interface MessageListProps {

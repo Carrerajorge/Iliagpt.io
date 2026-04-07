@@ -5,23 +5,65 @@
 
 import React from 'react';
 import { motion } from 'framer-motion';
-import { X, Brain, Sparkles } from 'lucide-react';
+import { X, Brain, Sparkles, TimerReset } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { StreamingIndicatorProps, isAiBusyState, isAiSendingState, isAiStreamingState } from './types';
+
+function formatElapsed(ms: number): string {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}m ${seconds}s`;
+}
 
 export function StreamingIndicator({
     aiState,
     streamingContent,
     onCancel,
-    uiPhase
+    uiPhase,
+    aiProcessSteps = []
 }: StreamingIndicatorProps) {
     const isBusy = isAiBusyState(aiState) || uiPhase === 'thinking';
+    const [now, setNow] = React.useState(() => Date.now());
+
+    React.useEffect(() => {
+        if (aiState !== 'queued') return;
+        const timer = window.setInterval(() => setNow(Date.now()), 1000);
+        return () => window.clearInterval(timer);
+    }, [aiState]);
+
     if (!isBusy) return null;
 
-    const isSending = isAiSendingState(aiState) || uiPhase === 'thinking';
+    const queueStep = aiProcessSteps.find((step) => step.id === 'conversation-queue' || step.title === 'En cola');
+    const isQueued = aiState === 'queued';
+    const isSending = (isAiSendingState(aiState) || uiPhase === 'thinking') && !isQueued;
     const isResponding = isAiStreamingState(aiState);
     const isAgentWorking = aiState === 'agent_working';
+
+    const elapsedLabel =
+        isQueued && queueStep?.startedAt
+            ? formatElapsed(now - queueStep.startedAt)
+            : null;
+
+    const statusTitle = isAgentWorking
+        ? 'Trabajando...'
+        : isQueued
+            ? 'En cola...'
+            : isSending
+                ? 'Enviando...'
+                : 'Respondiendo...';
+
+    const statusDescription = isQueued
+        ? [
+            typeof queueStep?.queuePosition === 'number' ? `Turno ${queueStep.queuePosition}` : null,
+            elapsedLabel ? `esperando ${elapsedLabel}` : null,
+            typeof queueStep?.retryAfterSeconds === 'number' ? `reintento sugerido en ${queueStep.retryAfterSeconds}s` : null,
+          ].filter(Boolean).join(' · ') || 'Esperando turno para responder'
+        : isResponding && streamingContent
+            ? `${streamingContent.length} caracteres generados`
+            : queueStep?.description || null;
 
     return (
         <motion.div
@@ -30,35 +72,30 @@ export function StreamingIndicator({
             exit={{ opacity: 0, y: -10 }}
             className="flex items-center gap-3 px-4 py-3 bg-muted/50 rounded-lg border"
         >
-            {/* Status Icon */}
             <div className={cn(
                 "flex items-center justify-center w-8 h-8 rounded-full",
-                isSending || isAgentWorking ? "bg-blue-500/20" : "bg-green-500/20"
+                isQueued
+                    ? "bg-amber-500/20"
+                    : isSending || isAgentWorking
+                        ? "bg-blue-500/20"
+                        : "bg-green-500/20"
             )}>
-                {isSending || isAgentWorking ? (
+                {isQueued ? (
+                    <TimerReset className="w-4 h-4 text-amber-500 animate-pulse" />
+                ) : isSending || isAgentWorking ? (
                     <Brain className="w-4 h-4 text-blue-500 animate-pulse" />
                 ) : (
                     <Sparkles className="w-4 h-4 text-green-500" />
                 )}
             </div>
 
-            {/* Status Text */}
             <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium">
-                    {isAgentWorking
-                        ? 'Trabajando...'
-                        : isSending
-                            ? 'Enviando...'
-                            : 'Respondiendo...'}
-                </p>
-                {isResponding && streamingContent && (
-                    <p className="text-xs text-muted-foreground truncate">
-                        {streamingContent.length} caracteres generados
-                    </p>
+                <p className="text-sm font-medium">{statusTitle}</p>
+                {statusDescription && (
+                    <p className="text-xs text-muted-foreground truncate">{statusDescription}</p>
                 )}
             </div>
 
-            {/* Loading Animation */}
             <div className="flex items-center gap-1">
                 <motion.div
                     animate={{ scale: [1, 1.2, 1] }}
@@ -77,7 +114,6 @@ export function StreamingIndicator({
                 />
             </div>
 
-            {/* Cancel Button */}
             <Button
                 variant="ghost"
                 size="icon"

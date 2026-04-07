@@ -272,6 +272,8 @@ describe("useStreamChat conversation isolation", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.current.aiState).toBe("queued");
+    expect(result.current.steps.some((step: any) => step?.id === "conversation-queue")).toBe(true);
 
     const [first, second] = await Promise.all([firstPromise, secondPromise]);
     expect(first.ok).toBe(true);
@@ -279,6 +281,58 @@ describe("useStreamChat conversation isolation", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(requestPayloads.map((payload) => payload.queueMode)).toEqual(["queue", "queue"]);
     expect(sentMessages.map((message) => message.content)).toEqual(["FIRST", "SECOND"]);
+  });
+
+  it("surfaces Retry-After nicely when the chat is temporarily busy", async () => {
+    const activeConversation = { current: "chat_retry" };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: "busy" }), {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "Retry-After": "7",
+          },
+        })
+      )
+    );
+
+    const { result } = renderHook(() => {
+      const [optimisticMessages, setOptimisticMessages] = useState<any[]>([]);
+      const [streamingContent, setStreamingContent] = useState("");
+      const [aiState, setAiState] = useState<any>("idle");
+      const [steps, setAiProcessSteps] = useState<any[]>([]);
+      const streamingContentRef = useRef("");
+
+      const hook = useStreamChat({
+        setOptimisticMessages,
+        onSendMessage: async () => undefined,
+        setStreamingContent,
+        streamingContentRef,
+        setAiState,
+        setAiProcessSteps,
+        getActiveConversationId: () => activeConversation.current,
+      });
+
+      return { hook, aiState, steps, optimisticMessages, streamingContent };
+    });
+
+    let streamResult: any;
+    await act(async () => {
+      streamResult = await result.current.hook.stream("/api/chat/stream", {
+        conversationId: "chat_retry",
+        chatId: "chat_retry",
+        body: {
+          messages: [{ role: "user", content: "retry" }],
+          conversationId: "chat_retry",
+        },
+      });
+    });
+
+    expect(streamResult.ok).toBe(false);
+    expect(streamResult.error?.message).toContain("Reintenta en 7s");
   });
 
   it("keeps new chat idle while another conversation is streaming", async () => {

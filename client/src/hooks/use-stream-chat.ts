@@ -202,12 +202,18 @@ export function useStreamChat(deps: StreamChatDeps) {
       const session = getSession(conversationId);
       const existingEntry = queueRef.current.get(conversationId);
       const hasPendingWork = Boolean(existingEntry || session.abortController);
+      const queueStartedAt = Date.now();
+
+      const clearQueueUi = () => {
+        setAiProcessSteps?.((prev) => prev.filter((step) => step?.id !== "conversation-queue"), conversationId);
+      };
 
       if (queueMode === "reject" && hasPendingWork) {
         throw new Error("Conversation already has a pending response");
       }
 
       if (queueMode === "replace") {
+        clearQueueUi();
         abortConversation(conversationId);
         queueRef.current.delete(conversationId);
         queueGenerationRef.current.set(
@@ -215,6 +221,20 @@ export function useStreamChat(deps: StreamChatDeps) {
           (queueGenerationRef.current.get(conversationId) || 0) + 1,
         );
         return { queued: false, release: () => {} };
+      }
+
+      if (hasPendingWork) {
+        setAiState("queued", conversationId);
+        setAiProcessSteps?.([
+          {
+            id: "conversation-queue",
+            title: "En cola",
+            description: "Esperando turno para enviar este mensaje",
+            status: "active",
+            startedAt: queueStartedAt,
+            queuePosition: 1,
+          },
+        ], conversationId);
       }
 
       const generation = queueGenerationRef.current.get(conversationId) || 0;
@@ -231,6 +251,7 @@ export function useStreamChat(deps: StreamChatDeps) {
       });
 
       const release = () => {
+        clearQueueUi();
         releaseTurn();
         const currentEntry = queueRef.current.get(conversationId);
         if (currentEntry?.id === entryId) {
@@ -269,13 +290,15 @@ export function useStreamChat(deps: StreamChatDeps) {
           throw createAbortError("Conversation queue replaced by a newer request");
         }
 
+        clearQueueUi();
         return { queued: hasPendingWork, release };
       } catch (error) {
+        clearQueueUi();
         release();
         throw error;
       }
     },
-    [abortConversation, getSession]
+    [abortConversation, getSession, setAiProcessSteps, setAiState]
   );
 
   const clearStreamingProgressRemote = useCallback(async (conversationId?: string | null) => {
@@ -838,8 +861,22 @@ export function useStreamChat(deps: StreamChatDeps) {
 
               if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
-                const error = new Error(errorData.error || `HTTP ${response.status}`);
+                const retryAfterHeader = response.headers.get("Retry-After");
+                const retryAfter = retryAfterHeader ? Number(retryAfterHeader) : undefined;
+                const queuePositionHeader = response.headers.get("X-Chat-Queue-Position");
+                const queuePosition = queuePositionHeader ? Number(queuePositionHeader) : undefined;
+                const error = new Error(
+                  response.status === 429 && Number.isFinite(retryAfter)
+                    ? `El chat está ocupado. Reintenta en ${retryAfter}s.`
+                    : errorData.error || errorData.message || `HTTP ${response.status}`
+                );
                 (error as any).status = response.status;
+                if (Number.isFinite(retryAfter)) {
+                  (error as any).retryAfter = retryAfter;
+                }
+                if (Number.isFinite(queuePosition)) {
+                  (error as any).queuePosition = queuePosition;
+                }
                 throw error;
               }
 

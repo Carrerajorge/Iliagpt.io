@@ -7538,6 +7538,7 @@ IMPORTANTE:
                           streamingContent={streamingContent}
                           onCancel={handleStopChat}
                           uiPhase={uiPhase}
+                          aiProcessSteps={aiProcessSteps}
                         />
 
                         {/* Context truncation notice */}
