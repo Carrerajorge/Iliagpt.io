@@ -397,6 +397,7 @@ const getExtraSkillIcon = (id: string) => {
     case "nmap-scan": return <Wifi {...props} className="h-6 w-6 text-black" />;
     case "wireshark-cap": return <Eye {...props} className="h-6 w-6 text-blue-600" />;
     case "burpsuite-proxy": return <Bug {...props} className="h-6 w-6 text-orange-600" />;
+    case "math_render": return <Calculator {...props} className="h-6 w-6 text-emerald-600" />;
 
     default: return <Sparkles {...props} />;
   }
