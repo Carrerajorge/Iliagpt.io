@@ -113,7 +113,8 @@ const KNOWN_MODELS: Readonly<Record<string, readonly KnownModel[]>> = deepFreeze
   // ========================================
   xai: [
     // Grok 4 Series (Latest)
-    { modelId: "grok-4.1-fast", name: "Grok 4.1 Fast", contextWindow: 2000000, maxOutput: 16384, type: "TEXT", inputCost: "0.0005", outputCost: "0.002", description: "Fast inference with 2M context" },
+    { modelId: "grok-4-1-fast-non-reasoning", name: "Grok 4.1 Fast", contextWindow: 2000000, maxOutput: 16384, type: "TEXT", inputCost: "0.0005", outputCost: "0.002", description: "Fastest xAI model — non-reasoning, 2M context" },
+    { modelId: "grok-4.1-fast", name: "Grok 4.1 Fast (alias)", contextWindow: 2000000, maxOutput: 16384, type: "TEXT", inputCost: "0.0005", outputCost: "0.002", description: "Fast inference with 2M context" },
     { modelId: "grok-4.1-fast-reasoning", name: "Grok 4.1 Fast Reasoning", contextWindow: 2000000, maxOutput: 16384, type: "TEXT", inputCost: "0.001", outputCost: "0.004", description: "Fast with reasoning capabilities" },
     { modelId: "grok-4", name: "Grok 4", contextWindow: 256000, maxOutput: 16384, type: "MULTIMODAL", inputCost: "0.003", outputCost: "0.015", description: "Most intelligent xAI model" },
     { modelId: "grok-4-fast", name: "Grok 4 Fast", contextWindow: 2000000, maxOutput: 16384, type: "TEXT", inputCost: "0.0005", outputCost: "0.002", description: "Cost-efficient intelligence" },
