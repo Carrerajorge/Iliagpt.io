@@ -1347,7 +1347,26 @@ async function createUltraMinimalFallbackPpt(
       error: tracePptError(ultraError),
       requestedSlides: context?.requestedSlides || slideCount,
     });
-    return Buffer.from("PPTX fallback error");
+    // Last resort: create a truly minimal valid PPTX instead of an invalid text string
+    try {
+      const emergencyPptx = createPptxDocument();
+      emergencyPptx.title = safeTitle;
+      const emergencySlide = emergencyPptx.addSlide();
+      emergencySlide.addText(safeTitle, {
+        x: 1, y: 2.5, w: 8, h: 1,
+        fontSize: 24, bold: true, align: "center", color: "1F2937",
+      });
+      const emergencyBuffer = await emergencyPptx.write({ outputType: "nodebuffer" });
+      return Buffer.from(emergencyBuffer as ArrayBuffer);
+    } catch {
+      // Absolute last resort: return a minimal valid PPTX from a fresh PptxGenJS instance
+      const PptxGenJS = (await import("pptxgenjs")).default;
+      const p = new PptxGenJS();
+      p.title = "Error";
+      p.addSlide().addText("Fallback", { x: 1, y: 2, w: 8, h: 1, fontSize: 18 });
+      const buf = (await p.write({ outputType: "arraybuffer" })) as ArrayBuffer;
+      return Buffer.from(buf);
+    }
   }
 }
 

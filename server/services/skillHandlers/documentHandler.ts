@@ -47,6 +47,16 @@ function timestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 }
 
+/**
+ * Detect if the user's message is primarily in Spanish.
+ * Returns "es" for Spanish, "en" for English (default).
+ */
+function detectLanguage(message: string): 'es' | 'en' {
+  const spanishIndicators = /\b(crea|genera|haz|hazme|sobre|para|del|los|las|una?|escrib[ea]|elabor[ae]|prepar[ae]|presentaci[oó]n|documento|informe|reporte|artículos?|investigaci[oó]n|contenido|introducci[oó]n|conclusi[oó]n|resumen|análisis|también|además|porque|según|ejemplo|datos|información|profesional|empresarial|administrativ[ao]|gesti[oó]n)\b/i;
+  const matches = (message.match(spanishIndicators) || []).length;
+  return matches >= 2 ? 'es' : 'en';
+}
+
 function errorResult(outputFormat: string, errorMsg: string): SkillHandlerResult {
   return {
     handled: false,
@@ -121,8 +131,35 @@ async function generateContentWithLLM(
 }
 
 async function handleWord(request: SkillHandlerRequest): Promise<SkillHandlerResult> {
+  const lang = detectLanguage(request.message);
+  const langInstruction = lang === 'es'
+    ? 'Write ALL content in Spanish. Use formal, professional Spanish throughout.'
+    : 'Write ALL content in English. Use formal, professional English throughout.';
+
   const content = await generateContentWithLLM(
-    `You are a professional document writer. Based on the user's request, generate structured document content in Markdown format. Include headings, paragraphs, bullet points, and any relevant tables. Provide thorough, professional content. Respond ONLY with the Markdown content, no preamble.`,
+    `You are an expert professional document writer with experience in corporate reports, academic papers, and business documents.
+
+Based on the user's request, generate a comprehensive, well-structured document in Markdown format.
+
+STRUCTURE REQUIREMENTS:
+- Start with a clear main title (# Title)
+- Include an executive summary or introduction section
+- Organize content into 4-8 logical sections with ## headings
+- Use ### for subsections where appropriate
+- Include bullet points for key takeaways
+- Add relevant tables with data where applicable
+- End with a conclusion or recommendations section
+
+QUALITY REQUIREMENTS:
+- Provide thorough, substantive content (not placeholder text)
+- Each section should have 2-4 detailed paragraphs
+- Use professional, formal tone appropriate for business/academic contexts
+- Include specific details, examples, and actionable insights
+- Ensure logical flow between sections
+
+LANGUAGE: ${langInstruction}
+
+Respond ONLY with the Markdown content, no preamble or explanation.`,
     request.message,
     request.userId,
   );
@@ -159,15 +196,31 @@ async function handleWord(request: SkillHandlerRequest): Promise<SkillHandlerRes
 }
 
 async function handleExcel(request: SkillHandlerRequest): Promise<SkillHandlerResult> {
+  const lang = detectLanguage(request.message);
+  const langInstruction = lang === 'es'
+    ? 'All column headers, sheet name, and title MUST be in Spanish.'
+    : 'All column headers, sheet name, and title MUST be in English.';
+
   const rawData = await generateContentWithLLM(
-    `You are a data specialist. Based on the user's request, generate spreadsheet data as a valid JSON object with this structure:
+    `You are an expert data analyst and spreadsheet specialist. Based on the user's request, generate comprehensive spreadsheet data as a valid JSON object with this exact structure:
 {
-  "sheetName": "Sheet1",
-  "headers": ["Column1", "Column2", ...],
-  "rows": [["val1", "val2", ...], ...],
+  "sheetName": "Descriptive Sheet Name",
+  "headers": ["Column1", "Column2", "Column3", ...],
+  "rows": [["val1", "val2", "val3", ...], ...],
   "title": "Spreadsheet Title"
 }
-Include realistic, professional data. Respond ONLY with JSON, no markdown fences.`,
+
+DATA REQUIREMENTS:
+- Include at LEAST 10 rows of realistic, varied data (more if the topic warrants it)
+- Use 4-8 columns with descriptive headers relevant to the topic
+- Include numeric values where appropriate (prices, quantities, percentages, scores)
+- Make data realistic and internally consistent (totals should add up, percentages should be reasonable)
+- If appropriate, include a SUMMARY row at the end with totals, averages, or key aggregations (prefix the first cell with "TOTAL" or "RESUMEN")
+- Vary the data - avoid repetitive or placeholder values
+
+${langInstruction}
+
+Respond ONLY with valid JSON, no markdown fences, no explanation.`,
     request.message,
     request.userId,
   );
@@ -212,12 +265,39 @@ Include realistic, professional data. Respond ONLY with JSON, no markdown fences
 }
 
 async function handlePowerPoint(request: SkillHandlerRequest): Promise<SkillHandlerResult> {
+  const lang = detectLanguage(request.message);
+  const langInstruction = lang === 'es'
+    ? 'ALL slide titles, bullet points, and speaker notes MUST be in Spanish.'
+    : 'ALL slide titles, bullet points, and speaker notes MUST be in English.';
+  const conclusionTitle = lang === 'es' ? 'Conclusiones y Próximos Pasos' : 'Conclusions and Next Steps';
+
   const rawSlides = await generateContentWithLLM(
-    `You are a presentation designer. Based on the user's request, generate slide content as a valid JSON array with this structure:
+    `You are an expert presentation designer who creates compelling, visually-structured slide decks for professionals.
+
+Based on the user's request, generate slide content as a valid JSON array with this structure:
 [
-  { "title": "Slide Title", "bullets": ["Point 1", "Point 2"], "notes": "Speaker notes" }
+  { "title": "Slide Title", "bullets": ["Point 1", "Point 2", "Point 3"], "notes": "Speaker notes for this slide" }
 ]
-Generate 6-12 professional slides. Respond ONLY with JSON, no markdown fences.`,
+
+STRUCTURE REQUIREMENTS:
+- Generate 8-12 professional slides covering the topic comprehensively
+- Slide 1: Title slide with a compelling subtitle as the first bullet
+- Slides 2-3: Introduction/Context - set the stage for the topic
+- Slides 4-8: Core content - detailed analysis, key points, data insights
+- Slides 9-10: Practical implications, recommendations, or case examples
+- Slide 11-12: "${conclusionTitle}" - summarize key takeaways and actionable next steps
+
+CONTENT QUALITY:
+- Each slide should have 3-5 bullet points (not too few, not too many)
+- Bullets should be concise but informative (15-40 words each)
+- Vary content types: some slides with data/statistics, some with concepts, some with recommendations
+- Include specific details, numbers, and examples where relevant
+- Speaker notes should provide additional context for each slide (2-3 sentences)
+- Avoid generic filler content - every bullet should add value
+
+${langInstruction}
+
+Respond ONLY with valid JSON array, no markdown fences, no explanation.`,
     request.message,
     request.userId,
   );
@@ -226,7 +306,35 @@ Generate 6-12 professional slides. Respond ONLY with JSON, no markdown fences.`,
   try {
     slides = JSON.parse(rawSlides.replace(/```json?\n?/g, '').replace(/```/g, '').trim());
   } catch {
-    slides = [{ title: 'Presentation', bullets: ['Content generation error. Please try again.'] }];
+    const errorMsg = lang === 'es' ? 'Error al generar contenido. Por favor intente de nuevo.' : 'Content generation error. Please try again.';
+    const presTitle = lang === 'es' ? 'Presentación' : 'Presentation';
+    slides = [{ title: presTitle, bullets: [errorMsg] }];
+  }
+
+  // Ensure a conclusion slide exists
+  const hasConclusion = slides.some(s =>
+    /(conclusi[oó]n|conclusion|pr[oó]ximos pasos|next step|cierre|closing|resumen final|summary)/i.test(s.title)
+  );
+  if (!hasConclusion && slides.length > 0) {
+    slides.push({
+      title: conclusionTitle,
+      bullets: lang === 'es'
+        ? [
+            'Resumen de los puntos clave presentados',
+            'Recomendaciones principales basadas en el análisis',
+            'Próximos pasos concretos y responsables',
+            'Cronograma sugerido de implementación',
+          ]
+        : [
+            'Summary of key points presented',
+            'Main recommendations based on the analysis',
+            'Concrete next steps and responsible parties',
+            'Suggested implementation timeline',
+          ],
+      notes: lang === 'es'
+        ? 'Cerrar con un resumen ejecutivo y pasos accionables claros.'
+        : 'Close with an executive summary and clear actionable steps.',
+    });
   }
 
   const buffer = await professionalFileGenerator.generatePowerPoint(slides, {
@@ -362,10 +470,19 @@ ${content}
 function extractTitle(message: string): string {
   // Take the first meaningful segment (up to 60 chars) as a title
   const cleaned = message
-    .replace(/^(crea|genera|haz|hazme|make|create|generate|write|produce)\s*/i, '')
-    .replace(/^(un|una?|a|an|the)\s*/i, '')
-    .replace(/^(documento?|word|excel|spreadsheet|presentaci[oó]n|powerpoint|csv|pdf)\s*(de|about|on|sobre|para)?\s*/i, '')
+    // Spanish verbs
+    .replace(/^(crea|creame|créame|genera|genérame|generame|haz|hazme|escribe|escribeme|escríbeme|prepara|prepárame|preparame|elabora|elaborame|elabórame|redacta|redáctame|produce|produceme)\s*/i, '')
+    // English verbs
+    .replace(/^(make|create|generate|write|produce|build|draft|compose)\s*(me)?\s*/i, '')
+    // Articles (Spanish and English)
+    .replace(/^(un|una?|el|la|los|las|a|an|the)\s*/i, '')
+    // Document type keywords (Spanish and English)
+    .replace(/^(documento?|archivo|word|docx|excel|xlsx|spreadsheet|hoja\s*de\s*c[aá]lculo|presentaci[oó]n|powerpoint|pptx?|csv|pdf|informe|reporte|report)\s*/i, '')
+    // Prepositions connecting format to topic
+    .replace(/^(de|del|sobre|acerca\s*de|para|con|en|about|on|for|with|regarding)\s*/i, '')
     .trim();
   if (cleaned.length === 0) return 'Document';
-  return cleaned.length > 60 ? cleaned.slice(0, 57) + '...' : cleaned;
+  // Capitalize first letter
+  const capitalized = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  return capitalized.length > 60 ? capitalized.slice(0, 57) + '...' : capitalized;
 }

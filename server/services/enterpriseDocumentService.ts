@@ -1108,13 +1108,41 @@ export class EnterpriseDocumentService {
           error: "La presentación fue generada con plantilla de emergencia.",
         };
       } catch (fallbackError: any) {
-        return {
-          success: false,
-          filename: "",
-          mimeType: "",
-          sizeBytes: 0,
-          error: fallbackError.message || String(fallbackError),
-        };
+        // Last resort: create a minimal valid PPTX using PptxGenJS directly
+        // instead of returning success: false with no buffer
+        try {
+          const PptxGenJS = (await import("pptxgenjs")).default;
+          const minPptx = new PptxGenJS();
+          minPptx.title = requestTitle;
+          minPptx.author = "IliaGPT";
+          const slide = minPptx.addSlide();
+          slide.background = { color: "FFFFFF" };
+          slide.addText(requestTitle, {
+            x: 1, y: 2, w: 8, h: 1.5,
+            fontSize: 28, bold: true, align: "center", color: "1F4E79",
+          });
+          slide.addText("La presentación se generó con una plantilla mínima de emergencia.", {
+            x: 1, y: 3.8, w: 8, h: 0.8,
+            fontSize: 14, align: "center", color: "718096",
+          });
+          const minBuf = (await minPptx.write({ outputType: "arraybuffer" })) as ArrayBuffer;
+          return {
+            success: true,
+            buffer: Buffer.from(minBuf),
+            filename: `${this.sanitizeFilename(requestTitle)}.pptx`,
+            mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            sizeBytes: Buffer.from(minBuf).length,
+            error: "La presentación fue generada con plantilla mínima de emergencia.",
+          };
+        } catch (lastResortError: any) {
+          return {
+            success: false,
+            filename: "",
+            mimeType: "",
+            sizeBytes: 0,
+            error: fallbackError.message || String(fallbackError),
+          };
+        }
       }
     }
   }

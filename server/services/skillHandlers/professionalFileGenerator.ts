@@ -589,6 +589,11 @@ export class ProfessionalFileGenerator {
       const arrayBuffer = (await pptx.write({ outputType: "arraybuffer" })) as ArrayBuffer;
       const buffer = Buffer.from(arrayBuffer);
 
+      // Safety: validate the buffer is a real PPTX (ZIP-based, always > 1KB)
+      if (buffer.length < 1024) {
+        throw new Error(`Generated PPTX buffer is suspiciously small (${buffer.length} bytes), likely corrupted`);
+      }
+
       return { buffer, filename, mimeType };
     } catch (err) {
       console.warn(
@@ -627,6 +632,7 @@ export class ProfessionalFileGenerator {
       // Absolute fallback: minimal pptx with just a title slide
       const minPptx = new PptxGenJS();
       minPptx.title = content.title;
+      minPptx.author = "ILIAGPT PRO";
       const slide = minPptx.addSlide();
       slide.addText(content.title, {
         x: 1,
@@ -637,8 +643,24 @@ export class ProfessionalFileGenerator {
         bold: true,
         align: "center",
       });
+      slide.addText("Presentación generada con plantilla mínima de emergencia.", {
+        x: 1,
+        y: 4.2,
+        w: 8,
+        h: 0.8,
+        fontSize: 14,
+        align: "center",
+        color: "718096",
+      });
       const minBuf = (await minPptx.write({ outputType: "arraybuffer" })) as ArrayBuffer;
-      return { buffer: Buffer.from(minBuf), filename, mimeType };
+      const emergencyBuffer = Buffer.from(minBuf);
+
+      // Safety: validate the buffer is a real PPTX (ZIP-based, always > 1KB)
+      if (emergencyBuffer.length < 1024) {
+        throw new Error(`Generated PPTX buffer is suspiciously small (${emergencyBuffer.length} bytes)`);
+      }
+
+      return { buffer: emergencyBuffer, filename, mimeType };
     }
   }
 
