@@ -74,7 +74,12 @@ beforeAll(() => {
 // Cleanup after each test
 afterEach(() => {
   vi.clearAllMocks();
-  document.body.innerHTML = '';
+  // Reset DOM — remove all child nodes from test renders
+  while (document.body.firstChild) {
+    document.body.removeChild(document.body.firstChild);
+  }
+  // Clear localStorage to prevent cross-test pollution (e.g. privacy module singleton)
+  try { localStorage.clear(); } catch { /* ignore */ }
 });
 
 // Global cleanup
