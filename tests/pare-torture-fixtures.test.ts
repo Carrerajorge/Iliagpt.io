@@ -1,8 +1,8 @@
 /**
  * PARE Torture Fixtures & Regression Tests
- * 
+ *
  * Tests for edge cases:
- * - Empty/scanned documents (no text → 422)
+ * - Empty/scanned documents (no text -> 422)
  * - CSV with row/col citations
  * - Corrupt files
  * - Multi-language content
@@ -17,9 +17,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const API_BASE = 'http://localhost:5000/api';
-const hasDb = !!process.env.DATABASE_URL;
+const hasServer = !!process.env.DATABASE_URL;
 
-describe.skipIf(!hasDb)('PARE Torture Fixtures', () => {
+describe('PARE Torture Fixtures', () => {
   describe('CSVParser with Row/Column Citations', () => {
     it('should parse CSV and generate row/col citations', async () => {
       const csvParser = new CsvParser();
@@ -27,10 +27,10 @@ describe.skipIf(!hasDb)('PARE Torture Fixtures', () => {
 Item1,100,A
 Item2,200,B
 Item3,300,C`;
-      
+
       const buffer = Buffer.from(csvContent, 'utf-8');
       const result = await csvParser.parse(buffer, 'test.csv');
-      
+
       expect(result.headers).toEqual(['name', 'value', 'category']);
       expect(result.totalRows).toBe(3);
       expect(result.totalColumns).toBe(3);
@@ -43,10 +43,10 @@ Item3,300,C`;
       const csvParser = new CsvParser();
       const csvContent = `product,description,price
 "Widget, Pro","A great, wonderful item",99.99`;
-      
+
       const buffer = Buffer.from(csvContent, 'utf-8');
       const result = await csvParser.parse(buffer, 'quoted.csv');
-      
+
       expect(result.rows[0].values['product']).toBe('Widget, Pro');
       expect(result.rows[0].values['description']).toBe('A great, wonderful item');
     });
@@ -55,10 +55,10 @@ Item3,300,C`;
       const csvParser = new CsvParser();
       const csvContent = `name,quote
 Test,"He said ""Hello""!"`;
-      
+
       const buffer = Buffer.from(csvContent, 'utf-8');
       const result = await csvParser.parse(buffer, 'escaped.csv');
-      
+
       expect(result.rows[0].values['quote']).toBe('He said "Hello"!');
     });
 
@@ -66,13 +66,13 @@ Test,"He said ""Hello""!"`;
       const csvParser = new CsvParser();
       const buffer = Buffer.from('', 'utf-8');
       const result = await csvParser.parse(buffer, 'empty.csv');
-      
+
       expect(result.totalRows).toBe(0);
       expect(result.headers).toEqual([]);
     });
   });
 
-  describe.skipIf(!hasDb)('Empty/Scanned Document Handling', () => {
+  describe.skipIf(!hasServer)('Empty/Scanned Document Handling', () => {
     it('should return 400 VALIDATION_ERROR for empty document (content required)', async () => {
       const response = await fetch(`${API_BASE}/analyze`, {
         method: 'POST',
@@ -116,7 +116,7 @@ Test,"He said ""Hello""!"`;
     });
   });
 
-  describe.skipIf(!hasDb)('CSV Document Processing via API', () => {
+  describe.skipIf(!hasServer)('CSV Document Processing via API', () => {
     it('should use CsvParser for CSV files and include row/col citations', async () => {
       const csvContent = `product_id,name,price
 P001,Widget,29.99
@@ -139,13 +139,13 @@ P002,Gadget,49.99`;
 
       expect(response.status).toBe(200);
       const data = await response.json();
-      
+
       expect(data.progressReport.perFileStats[0].parser_used).toBe('CsvParser');
       expect(data.progressReport.perFileStats[0].mime_detect).toBe('text/csv');
     });
   });
 
-  describe.skipIf(!hasDb)('Multi-File Batch with Coverage Check', () => {
+  describe.skipIf(!hasServer)('Multi-File Batch with Coverage Check', () => {
     it('should process multiple document types and verify coverage', async () => {
       const response = await fetch(`${API_BASE}/analyze`, {
         method: 'POST',
@@ -178,7 +178,7 @@ P002,Gadget,49.99`;
 
       expect(response.status).toBe(200);
       const data = await response.json();
-      
+
       expect(data.progressReport.attachments_count).toBe(3);
       expect(data.progressReport.processedFiles).toBe(3);
       expect(data.progressReport.coverageCheck.passed).toBe(true);
@@ -186,10 +186,10 @@ P002,Gadget,49.99`;
     });
   });
 
-  describe.skipIf(!hasDb)('Bilingual Content Handling', () => {
+  describe.skipIf(!hasServer)('Bilingual Content Handling', () => {
     it('should process Spanish and English content correctly', async () => {
       const bilingualContent = `
-ESPAÑOL: Este documento contiene información importante.
+ESPA\u00D1OL: Este documento contiene informaci\u00F3n importante.
 ENGLISH: This document contains important information.
 DATOS: valor1=100, valor2=200
 DATA: value1=100, value2=200`;
@@ -198,7 +198,7 @@ DATA: value1=100, value2=200`;
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: [{ role: 'user', content: 'Resume el contenido en español y en inglés' }],
+          messages: [{ role: 'user', content: 'Resume el contenido en espa\u00F1ol y en ingl\u00E9s' }],
           conversationId: 'test-bilingual',
           attachments: [{
             name: 'bilingual.txt',
@@ -211,7 +211,7 @@ DATA: value1=100, value2=200`;
 
       expect(response.status).toBe(200);
       const data = await response.json();
-      
+
       expect(data.success).toBe(true);
       expect(data.answer_text.length).toBeGreaterThan(50);
       expect(data.citations).toContain('[doc:bilingual.txt]');
@@ -219,16 +219,16 @@ DATA: value1=100, value2=200`;
   });
 });
 
-describe.skipIf(!hasDb)('DATA_MODE Kill-Switch Validation', () => {
+describe('DATA_MODE Kill-Switch Validation', () => {
   it('should detect forbidden image key in response', () => {
     const payload = {
       success: true,
       answer_text: 'Here is your analysis',
-      image: 'data:image/png;base64,abc123'  // FORBIDDEN
+      image: 'data:image/png;base64,abc123'
     };
 
     const result = validateDataModeResponse(payload, 'test-123');
-    
+
     expect(result.valid).toBe(false);
     expect(result.violations.length).toBeGreaterThan(0);
     expect(result.violations.some(v => v.includes('image'))).toBe(true);
@@ -238,11 +238,11 @@ describe.skipIf(!hasDb)('DATA_MODE Kill-Switch Validation', () => {
     const payload = {
       success: true,
       answer_text: 'Document processed',
-      artifacts: [{ type: 'image', data: 'abc' }]  // FORBIDDEN
+      artifacts: [{ type: 'image', data: 'abc' }]
     };
 
     const result = validateDataModeResponse(payload, 'test-456');
-    
+
     expect(result.valid).toBe(false);
     expect(result.violations.some(v => v.includes('artifact'))).toBe(true);
   });
@@ -254,7 +254,7 @@ describe.skipIf(!hasDb)('DATA_MODE Kill-Switch Validation', () => {
     };
 
     const result = validateDataModeResponse(payload, 'test-789');
-    
+
     expect(result.valid).toBe(false);
     expect(result.violations.some(v => v.includes('generado una imagen'))).toBe(true);
   });
@@ -262,11 +262,11 @@ describe.skipIf(!hasDb)('DATA_MODE Kill-Switch Validation', () => {
   it('should detect base64 image data pattern', () => {
     const payload = {
       success: true,
-      answer_text: 'Aquí está el análisis con la imagen embebida: data:image/png;base64,iVBORw0KGgo...'
+      answer_text: 'Aqu\u00ED est\u00E1 el an\u00E1lisis con la imagen embebida: data:image/png;base64,iVBORw0KGgo...'
     };
 
     const result = validateDataModeResponse(payload, 'test-b64');
-    
+
     expect(result.valid).toBe(false);
     expect(result.violations.some(v => v.includes('data:image'))).toBe(true);
   });
@@ -276,7 +276,7 @@ describe.skipIf(!hasDb)('DATA_MODE Kill-Switch Validation', () => {
       success: true,
       requestId: 'clean-123',
       mode: 'DATA_MODE',
-      answer_text: 'El documento contiene información sobre ventas Q4. [doc:report.pdf p#2]',
+      answer_text: 'El documento contiene informaci\u00F3n sobre ventas Q4. [doc:report.pdf p#2]',
       citations: ['[doc:report.pdf p#2]'],
       progressReport: {
         isDocumentMode: true,
@@ -287,7 +287,7 @@ describe.skipIf(!hasDb)('DATA_MODE Kill-Switch Validation', () => {
     };
 
     const result = validateDataModeResponse(payload, 'clean-123');
-    
+
     expect(result.valid).toBe(true);
     expect(result.violations).toEqual([]);
   });
@@ -297,13 +297,13 @@ describe.skipIf(!hasDb)('DATA_MODE Kill-Switch Validation', () => {
       success: true,
       answer_text: 'Analysis complete',
       response: {
-        contentType: 'image/png',  // FORBIDDEN
+        contentType: 'image/png',
         data: 'abc'
       }
     };
 
     const result = validateDataModeResponse(payload, 'test-ct');
-    
+
     expect(result.valid).toBe(false);
     expect(result.violations.some(v => v.includes('image/png'))).toBe(true);
   });
@@ -314,19 +314,19 @@ describe.skipIf(!hasDb)('DATA_MODE Kill-Switch Validation', () => {
       answer_text: 'Done',
       metadata: {
         result: {
-          generated_image: 'http://example.com/image.png'  // FORBIDDEN
+          generated_image: 'http://example.com/image.png'
         }
       }
     };
 
     const result = validateDataModeResponse(payload, 'test-nested');
-    
+
     expect(result.valid).toBe(false);
     expect(result.violations.some(v => v.includes('generated_image'))).toBe(true);
   });
 });
 
-describe.skipIf(!hasDb)('Coverage Enforcement', () => {
+describe.skipIf(!hasServer)('Coverage Enforcement', () => {
   it('should include citation for each document in batch', async () => {
     const response = await fetch(`${API_BASE}/analyze`, {
       method: 'POST',
@@ -353,12 +353,10 @@ describe.skipIf(!hasDb)('Coverage Enforcement', () => {
 
     expect(response.status).toBe(200);
     const data = await response.json();
-    
-    // Verify coverage check passed (required when "todos" in message)
+
     expect(data.progressReport.coverageCheck.required).toBe(true);
     expect(data.progressReport.coverageCheck.passed).toBe(true);
-    
-    // All files should be processed
+
     expect(data.progressReport.processedFiles).toBe(2);
     expect(data.progressReport.failedFiles).toBe(0);
   });
