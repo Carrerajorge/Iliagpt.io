@@ -102,3 +102,15 @@ export function getUsage(userId: string): UsageStats {
 
   return stats;
 }
+
+// ── Legacy exports (backward-compatible shims) ─────────────────────────────
+// These wrap the new rateLimiter factory so existing imports keep working.
+
+export const globalLimiter = rateLimiter("api");
+export const authLimiter = rateLimiter("api");
+export const aiLimiter = rateLimiter("chat");
+export const billingLimiter = rateLimiter("api");
+
+export function getRateLimiterStatus() {
+  return { initialized: true, backend: "memory" as const };
+}
