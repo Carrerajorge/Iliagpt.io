@@ -87,6 +87,23 @@ afterAll(() => {
 // vi.spyOn(console, 'error').mockImplementation(() => {});
 // vi.spyOn(console, 'warn').mockImplementation(() => {});
 
+// Ensure localStorage is available (jsdom may not provide .clear() in all versions)
+if (typeof globalThis.localStorage === 'undefined' || typeof globalThis.localStorage.clear !== 'function') {
+  const store = new Map<string, string>();
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, val: string) => store.set(key, String(val)),
+      removeItem: (key: string) => store.delete(key),
+      clear: () => store.clear(),
+      get length() { return store.size; },
+      key: (index: number) => [...store.keys()][index] ?? null,
+    },
+    writable: true,
+    configurable: true,
+  });
+}
+
 // Mock fetch globally
 global.fetch = vi.fn();
 

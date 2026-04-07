@@ -21,6 +21,12 @@ const mockDashboardData = {
   ],
 };
 
+// Mock the admin API — factory is hoisted so we use vi.fn() and configure in beforeEach
+vi.mock("@/lib/adminApi", () => ({
+  apiFetchJson: vi.fn(),
+  apiFetchOk: vi.fn(),
+}));
+
 function createTestQueryClient() {
   return new QueryClient({
     defaultOptions: {
@@ -45,8 +51,10 @@ function renderWithProviders(ui: React.ReactElement) {
 }
 
 describe('DashboardSection', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    const { apiFetchJson } = await import("@/lib/adminApi");
+    (apiFetchJson as ReturnType<typeof vi.fn>).mockResolvedValue(mockDashboardData);
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(mockDashboardData),
@@ -129,18 +137,23 @@ describe('DashboardSection', () => {
   });
 
   it('calls refetch when refresh button is clicked', async () => {
+    const { apiFetchJson } = await import("@/lib/adminApi");
+    const mockFn = apiFetchJson as ReturnType<typeof vi.fn>;
+
     renderWithProviders(<DashboardSection />);
 
     await waitFor(() => {
       expect(screen.getByText('Dashboard')).toBeInTheDocument();
     });
 
+    const initialCallCount = mockFn.mock.calls.length;
+
     const refreshButton = screen.getByRole('button', { name: /actualizar dashboard/i });
     fireEvent.click(refreshButton);
 
     await waitFor(() => {
-      // fetch should be called at least twice (initial + refresh)
-      expect(global.fetch).toHaveBeenCalledTimes(2);
+      // apiFetchJson should be called again after clicking refresh
+      expect(mockFn.mock.calls.length).toBeGreaterThan(initialCallCount);
     });
   });
 
