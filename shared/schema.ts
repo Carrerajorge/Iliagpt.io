@@ -3287,3 +3287,5 @@ export { iliaAds, adImpressions, insertIliaAdSchema, insertAdImpressionSchema } 
 export type { IliaAd, InsertIliaAd, AdImpression, InsertAdImpression } from "./schema/ads";
 export { openclawInstances, openclawTokenLedger, openclawAdminConfig, insertOpenclawInstanceSchema, insertOpenclawTokenLedgerSchema, insertOpenclawAdminConfigSchema } from "./schema/openclaw";
 export type { OpenclawInstance, InsertOpenclawInstance, OpenclawTokenLedger, InsertOpenclawTokenLedger, OpenclawAdminConfig, InsertOpenclawAdminConfig } from "./schema/openclaw";
+export { apiKeys, insertApiKeySchema } from "./schema/apiKeys";
+export type { InsertApiKey, ApiKey } from "./schema/apiKeys";

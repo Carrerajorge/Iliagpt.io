@@ -362,6 +362,84 @@ export class LongTermMemoryService {
     return memories.map((m) => this.toMemoryFact(m));
   }
 
+  /**
+   * Apply memory decay to stale memories.
+   *
+   * - Finds all active memories not accessed in the last 30 days.
+   * - Reduces their salienceScore by 5% (multiplied by 0.95).
+   * - If salienceScore drops below 0.1, marks the memory as inactive (soft delete).
+   *
+   * NOTE: This should be called periodically via a cron job (e.g. daily at 3 AM).
+   * Example cron entry: `0 3 * * * node -e "require('./dist/memory/longTermMemory').applyMemoryDecay()"`
+   */
+  async applyMemoryDecay(): Promise<{ decayed: number; deactivated: number }> {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    try {
+      // Find all active memories not accessed in 30+ days.
+      // If lastAccessedAt is null, fall back to updatedAt.
+      const staleMemories = await db
+        .select({
+          id: userMemories.id,
+          salienceScore: userMemories.salienceScore,
+        })
+        .from(userMemories)
+        .where(
+          and(
+            eq(userMemories.isActive, true),
+            sql`COALESCE(${userMemories.lastAccessedAt}, ${userMemories.updatedAt}) < ${thirtyDaysAgo}`,
+          ),
+        );
+
+      if (staleMemories.length === 0) {
+        log.info("Memory decay: no stale memories found");
+        return { decayed: 0, deactivated: 0 };
+      }
+
+      let decayed = 0;
+      let deactivated = 0;
+
+      for (const memory of staleMemories) {
+        const currentScore = memory.salienceScore ?? 0.5;
+        const newScore = currentScore * 0.95;
+
+        if (newScore < 0.1) {
+          // Score too low — soft-delete the memory
+          await db
+            .update(userMemories)
+            .set({
+              isActive: false,
+              salienceScore: newScore,
+              updatedAt: sql`now()`,
+            })
+            .where(eq(userMemories.id, memory.id));
+          deactivated++;
+        } else {
+          // Decay the score
+          await db
+            .update(userMemories)
+            .set({
+              salienceScore: newScore,
+              updatedAt: sql`now()`,
+            })
+            .where(eq(userMemories.id, memory.id));
+          decayed++;
+        }
+      }
+
+      log.info("Memory decay complete", {
+        totalStale: staleMemories.length,
+        decayed,
+        deactivated,
+      });
+
+      return { decayed, deactivated };
+    } catch (err) {
+      log.error("Memory decay failed", { error: err });
+      throw err;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
@@ -454,3 +532,4 @@ export const recallMemories = longTermMemory.recallMemories.bind(longTermMemory)
 export const buildMemoryContext = longTermMemory.buildMemoryContext.bind(longTermMemory);
 export const deleteMemory = longTermMemory.deleteMemory.bind(longTermMemory);
 export const getUserMemories = longTermMemory.getUserMemories.bind(longTermMemory);
+export const applyMemoryDecay = longTermMemory.applyMemoryDecay.bind(longTermMemory);

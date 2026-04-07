@@ -283,6 +283,18 @@ export function SearchModal({
       .slice(0, 8);
   }, [chats]);
 
+  // Global keyboard shortcut: Ctrl+Shift+F to open the search modal
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        onOpenChange(true);
+      }
+    };
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [onOpenChange]);
+
   useEffect(() => {
     if (open) {
       setQuery("");
@@ -634,6 +646,10 @@ export function SearchModal({
             <div className="flex items-center gap-1">
               <kbd className="px-1 py-0.5 bg-background border rounded font-mono">esc</kbd>
               <span>cerrar</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <kbd className="px-1 py-0.5 bg-background border rounded font-mono">Ctrl+Shift+F</kbd>
+              <span>abrir</span>
             </div>
           </div>
         </div>
