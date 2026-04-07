@@ -277,13 +277,18 @@ function GlobalKeyboardShortcuts() {
     window.dispatchEvent(new CustomEvent("tool-selected", { detail: { tool } }));
   }, []);
 
+  const handleToggleShortcuts = useCallback(() => {
+    setShortcutsModalOpen(prev => !prev);
+  }, []);
+
   const shortcutsConfig = useMemo(() => [
     { key: "n", ctrl: true, action: handleNewChat, description: "Nuevo chat" },
     { key: "k", ctrl: true, action: handleOpenSearch, description: "Command Palette" },
     { key: "k", ctrl: true, shift: true, action: handleOpenToolCatalog, description: "Tool Catalog" },
     { key: "Escape", action: handleCloseDialogs, description: "Cerrar diálogo" },
     { key: ",", ctrl: true, action: handleOpenSettings, description: "Configuración" },
-  ], [handleNewChat, handleOpenSearch, handleOpenToolCatalog, handleCloseDialogs, handleOpenSettings]);
+    { key: "/", ctrl: true, action: handleToggleShortcuts, description: "Atajos de teclado" },
+  ], [handleNewChat, handleOpenSearch, handleOpenToolCatalog, handleCloseDialogs, handleOpenSettings, handleToggleShortcuts]);
 
   useKeyboardShortcuts(shortcutsConfig, { enabled: settings.keyboardShortcuts });
 

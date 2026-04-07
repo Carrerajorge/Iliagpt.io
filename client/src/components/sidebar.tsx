@@ -65,6 +65,7 @@ import { diffZonedDays, formatZonedDate, getZonedDateParts, normalizeTimeZone } 
 import { DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuPortal } from "@/components/ui/dropdown-menu";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { NewChatButton } from "@/components/chat/NewChatButton";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { useProcessingChatIds, useChatStreamContent } from "@/stores/streamingStore";
 import { CreateProjectModal, type CreateProjectData } from "@/components/create-project-modal";
 import { EditProjectModal } from "@/components/edit-project-modal";
@@ -888,7 +889,11 @@ export function Sidebar({
 
                 <Separator className="my-1.5" />
 
-                {/* Settings section */}
+                {/* Theme & Settings section */}
+                <div className="flex items-center gap-2 px-2 py-1">
+                  <ThemeToggle />
+                  <span className="text-xs text-muted-foreground">Tema</span>
+                </div>
                 <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/workspace-settings"); }} data-testid="button-workspace-settings">
                   <Monitor className="h-4 w-4" />
                   Configuración del espacio de trabajo

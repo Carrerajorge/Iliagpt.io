@@ -21,7 +21,7 @@ interface ExportChatDialogProps {
   messages: Message[];
 }
 
-type ExportFormat = "txt" | "json" | "md";
+type ExportFormat = "txt" | "json" | "md" | "pdf";
 
 export function ExportChatDialog({
   open,
@@ -59,13 +59,29 @@ export function ExportChatDialog({
         filename = `${safeTitle}_${timestamp}.md`;
         mimeType = "text/markdown";
         break;
+      case "pdf": {
+        // Generate HTML content for PDF and open in print dialog
+        const htmlContent = formatAsHtmlForPdf(chatTitle, messages, { timeZone: platformTimeZone, dateFormat: platformDateFormat });
+        const blob = new Blob([htmlContent], { type: "text/html" });
+        const url = URL.createObjectURL(blob);
+        const printWindow = window.open(url, "_blank");
+        if (printWindow) {
+          printWindow.onload = () => {
+            printWindow.print();
+            setTimeout(() => { printWindow.close(); URL.revokeObjectURL(url); }, 2000);
+          };
+        }
+        setExported(true);
+        setTimeout(() => { setExported(false); onOpenChange(false); }, 1500);
+        return;
+      }
     }
 
-    const blob = new Blob([content], { type: mimeType });
+    const blob = new Blob([content!], { type: mimeType! });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = filename;
+    a.download = filename!;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -136,6 +152,20 @@ export function ExportChatDialog({
                     <div className="font-medium">JSON (.json)</div>
                     <div className="text-xs text-muted-foreground">
                       Datos estructurados, ideal para importar
+                    </div>
+                  </div>
+                </div>
+              </Label>
+            </div>
+            <div className="flex items-center space-x-3 p-3 rounded-lg border hover:bg-muted/50 transition-colors cursor-pointer">
+              <RadioGroupItem value="pdf" id="pdf" />
+              <Label htmlFor="pdf" className="flex-1 cursor-pointer">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-muted-foreground" />
+                  <div>
+                    <div className="font-medium">PDF (.pdf)</div>
+                    <div className="text-xs text-muted-foreground">
+                      Documento profesional para compartir
                     </div>
                   </div>
                 </div>
@@ -219,4 +249,35 @@ function formatAsMarkdown(title: string, messages: Message[], opts: { timeZone: 
   }
 
   return lines.join("\n");
+}
+
+function formatAsHtmlForPdf(title: string, messages: Message[], opts: { timeZone: string; dateFormat: PlatformDateFormat }): string {
+  const escapeHtml = (text: string) =>
+    text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+
+  const messageHtml = messages.map((msg) => {
+    const isUser = msg.role === "user";
+    const role = isUser ? "T&uacute;" : "IliaGPT";
+    const bgColor = isUser ? "#f0f4ff" : "#ffffff";
+    const borderColor = isUser ? "#c7d2fe" : "#e5e7eb";
+    const time = msg.timestamp ? formatZonedTime(msg.timestamp, { timeZone: opts.timeZone, includeSeconds: false }) : "";
+    return `<div style="margin-bottom:16px;padding:12px 16px;border-radius:8px;background:${bgColor};border:1px solid ${borderColor}">
+      <div style="font-weight:600;color:#374151;margin-bottom:4px;font-size:13px">${role} <span style="color:#9ca3af;font-weight:400">${time}</span></div>
+      <div style="color:#1f2937;line-height:1.6;white-space:pre-wrap">${escapeHtml(msg.content)}</div>
+    </div>`;
+  }).join("\n");
+
+  return [
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\">",
+    `<title>${escapeHtml(title)}</title>`,
+    "<style>@media print{body{margin:0}@page{margin:1.5cm}}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:800px;margin:0 auto;padding:24px;color:#1f2937}</style>",
+    "</head><body>",
+    `<h1 style="font-size:24px;margin-bottom:4px">${escapeHtml(title)}</h1>`,
+    `<p style="color:#6b7280;font-size:13px;margin-bottom:24px">Exportado: ${formatZonedDateTime(new Date(), { timeZone: opts.timeZone, dateFormat: opts.dateFormat })}</p>`,
+    '<hr style="border:none;border-top:1px solid #e5e7eb;margin-bottom:24px">',
+    messageHtml,
+    '<hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0">',
+    '<p style="color:#9ca3af;font-size:11px;text-align:center">Generado por IliaGPT</p>',
+    "</body></html>",
+  ].join("\n");
 }

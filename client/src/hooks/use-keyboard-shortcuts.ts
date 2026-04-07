@@ -69,7 +69,9 @@ export const KEYBOARD_SHORTCUTS = [
   { keys: "Ctrl+N", description: "Nuevo chat" },
   { keys: "Ctrl+K", description: "Búsqueda rápida" },
   { keys: "Ctrl+Shift+K", description: "Tool Catalog" },
-  { keys: "Escape", description: "Cerrar diálogo" },
+  { keys: "Ctrl+/", description: "Atajos de teclado" },
   { keys: "Ctrl+,", description: "Configuración" },
   { keys: "Ctrl+E", description: "Exportar chat" },
+  { keys: "Ctrl+Enter", description: "Enviar mensaje" },
+  { keys: "Escape", description: "Cerrar diálogo" },
 ] as const;
