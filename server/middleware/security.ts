@@ -1,4 +1,13 @@
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response, NextFunction, Express } from "express";
+
+/**
+ * Setup all security middleware on the Express app.
+ * Called from server/index.ts at startup.
+ */
+export function setupSecurity(app: Express): void {
+  app.use(securityHeaders);
+  app.use(sanitizeInput);
+}
 
 // --- 1. Security Headers ---
 export const securityHeaders = (_req: Request, res: Response, next: NextFunction) => {

@@ -44,18 +44,7 @@ export default defineConfig({
     target: "es2022",
     cssCodeSplit: true,
     sourcemap: false,
-    minify: "terser",
-    terserOptions: {
-      compress: {
-        drop_console: true,
-        drop_debugger: true,
-        passes: 2,
-        pure_funcs: ["console.log", "console.debug", "console.info"],
-      },
-      mangle: {
-        safari10: true,
-      },
-    },
+    minify: "esbuild",
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -64,22 +53,33 @@ export default defineConfig({
           if (id.includes("@radix-ui")) return "ui-radix";
           if (id.includes("lucide-react")) return "ui-icons";
           if (id.includes("framer-motion")) return "ui-motion";
-          if (id.includes("recharts") || id.includes("d3-")) return "charts";
+          if (id.includes("recharts") || id.includes("d3-")) return "vendor";
           if (id.includes("codemirror") || id.includes("@lezer")) return "editor";
           if (id.includes("@tanstack/react-query")) return "query";
           if (id.includes("wouter")) return "router";
-          if (id.includes("marked") || id.includes("highlight.js") || id.includes("prismjs") || id.includes("katex")) return "rendering";
+          if (id.includes("katex") || id.includes("marked") || id.includes("highlight.js") || id.includes("prismjs")) return "vendor";
           if (id.includes("zod") || id.includes("drizzle")) return "schema";
           if (id.includes("date-fns") || id.includes("lodash") || id.includes("clsx") || id.includes("class-variance-authority") || id.includes("tailwind-merge")) return "utils";
           if (id.includes("@hookform") || id.includes("react-hook-form")) return "forms";
-          if (id.includes("axios") || id.includes("ky") || id.includes("socket.io")) return "network";
+          // network libs stay in vendor to avoid circular deps
+          if (id.includes("axios") || id.includes("ky") || id.includes("socket.io")) return "vendor";
           if (id.includes("i18next") || id.includes("react-i18next")) return "i18n";
-          if (id.includes("dompurify") || id.includes("sanitize")) return "security";
+          if (id.includes("dompurify") || id.includes("sanitize")) return "vendor";
+          // Split the remaining vendor chunk to avoid 15MB+ blob
+          if (id.includes("@langchain") || id.includes("langchain")) return "vendor-langchain";
+          if (id.includes("openai") || id.includes("@anthropic") || id.includes("@google/genai") || id.includes("@ai-sdk")) return "vendor-ai";
+          if (id.includes("exceljs") || id.includes("pptxgenjs") || id.includes("docx") || id.includes("pdfkit") || id.includes("mammoth")) return "vendor-docs";
+          if (id.includes("zustand") || id.includes("immer") || id.includes("sonner") || id.includes("cmdk") || id.includes("vaul")) return "vendor";
+          if (id.includes("react-virtuoso") || id.includes("react-resizable") || id.includes("react-dropzone")) return "vendor-ui-ext";
+          if (id.includes("mermaid") || id.includes("elkjs") || id.includes("dagre") || id.includes("cytoscape")) return "vendor-diagrams";
+          // shiki is dynamically imported — don't force it into a manual chunk.
+          // Let Vite's natural code-splitting handle it via the dynamic import().
+          if (id.includes("shiki") || id.includes("oniguruma") || id.includes("@shikijs")) return undefined;
           if (id.includes("node_modules/")) return "vendor";
         },
       },
     },
-    chunkSizeWarningLimit: 500,
+    chunkSizeWarningLimit: 600,
   },
   optimizeDeps: {
     include: ["react", "react-dom", "wouter", "@tanstack/react-query"],
