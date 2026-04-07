@@ -1,3 +1,4 @@
+import React from "react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -62,8 +63,17 @@ export function RecordingPanel({
 
   // Show stop button if either AI is processing OR agent is running
   const showStopButton = isAiBusyState(aiState) || isAgentRunning;
+  const [isStopping, setIsStopping] = React.useState(false);
+
+  // Reset stopping state when AI goes idle
+  React.useEffect(() => {
+    if (!isAiBusyState(aiState) && !isAgentRunning) {
+      setIsStopping(false);
+    }
+  }, [aiState, isAgentRunning]);
 
   const handleStop = () => {
+    setIsStopping(true);
     if (isAgentRunning && onAgentStop) {
       onAgentStop();
     } else {
@@ -206,16 +216,17 @@ export function RecordingPanel({
       {showStopButton ? (
         <Button
           onClick={handleStop}
+          disabled={isStopping}
           variant="ghost"
           size="icon"
           className={cn(
             "h-9 w-9 sm:h-8 sm:w-8",
             SILVER_ICON_BUTTON_BASE,
-            "border-red-300/60 hover:border-red-400 dark:border-red-300/30 dark:hover:border-red-300/50",
-            "bg-white/35 hover:bg-red-50 dark:bg-white/5 dark:hover:bg-red-950/30",
-            "text-red-600 hover:text-red-700 dark:text-red-300 dark:hover:text-red-200"
+            isStopping
+              ? "border-gray-300/40 text-gray-400 cursor-not-allowed opacity-60"
+              : "border-red-300/60 hover:border-red-400 dark:border-red-300/30 dark:hover:border-red-300/50 bg-white/35 hover:bg-red-50 dark:bg-white/5 dark:hover:bg-red-950/30 text-red-600 hover:text-red-700 dark:text-red-300 dark:hover:text-red-200"
           )}
-          aria-label={isAgentRunning ? "Stop agent" : "Stop AI response"}
+          aria-label={isStopping ? "Stopping..." : isAgentRunning ? "Stop agent" : "Stop AI response"}
           data-testid="button-stop-chat"
         >
           <Square className="h-4 w-4" aria-hidden="true" />
