@@ -1,5 +1,6 @@
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
+import sanitizeHtmlLib from "sanitize-html";
 
 // Initialize JSDOM window for DOMPurify to work in Node.js
 const window = new JSDOM("").window;
@@ -82,4 +83,53 @@ export function sanitizeMarkdown(content: string): string {
  */
 export function sanitizeMessageContent(content: string): string {
   return sanitizeMarkdown(content);
+}
+
+/**
+ * Lightweight server-side HTML sanitizer using sanitize-html.
+ * Use this when JSDOM/DOMPurify is too heavy (e.g., processing scraped web pages,
+ * cleaning API responses, or sanitizing bulk content in background jobs).
+ *
+ * Unlike DOMPurify, this does NOT require a DOM environment — pure string processing.
+ */
+export function sanitizeHtml(html: string, opts?: { allowImages?: boolean }): string {
+  if (!html || typeof html !== "string") return "";
+  const trimmed = html.trim();
+  if (!trimmed) return "";
+  if (trimmed.length > MAX_MARKDOWN_LENGTH) return "";
+
+  return sanitizeHtmlLib(trimmed, {
+    allowedTags: ALLOWED_TAGS,
+    allowedAttributes: {
+      a: ["href", "title", "target", "rel"],
+      img: opts?.allowImages ? ["src", "alt", "title", "width", "height"] : [],
+      code: ["class"],
+      pre: ["class"],
+      span: ["class"],
+      div: ["class", "id"],
+      td: ["align"],
+      th: ["align"],
+      ol: ["start"],
+    },
+    allowedSchemes: ["http", "https", "mailto", "tel"],
+    allowedSchemesByTag: {
+      img: ["http", "https", "data"],
+    },
+    disallowedTagsMode: "discard",
+    transformTags: {
+      a: sanitizeHtmlLib.simpleTransform("a", { rel: "noopener noreferrer", target: "_blank" }),
+    },
+  });
+}
+
+/**
+ * Strips ALL HTML tags, returning plain text only.
+ * Uses sanitize-html with no allowed tags for safe, fast stripping.
+ */
+export function stripHtmlToText(html: string): string {
+  if (!html || typeof html !== "string") return "";
+  return sanitizeHtmlLib(html, {
+    allowedTags: [],
+    allowedAttributes: {},
+  }).trim();
 }

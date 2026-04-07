@@ -11,6 +11,7 @@
 import { Request, Response } from "express";
 import { EventEmitter } from "events";
 import { randomUUID } from "crypto";
+import { createSession, type Session } from "better-sse";
 
 // Streaming configuration
 export interface StreamConfig {
@@ -359,6 +360,91 @@ export function createLLMStream(req: Request, res: Response) {
     };
 }
 
+/**
+ * Creates a better-sse Session for spec-compliant SSE with automatic keepalive,
+ * serialization, and lifecycle management. Use for new SSE endpoints where the
+ * full StreamController is not needed.
+ *
+ * Returns a Session object with .push(event, data) for sending typed events.
+ */
+export async function createBetterSSESession(
+    req: Request,
+    res: Response,
+    options?: {
+        keepAliveInterval?: number;
+        retry?: number;
+    }
+): Promise<Session> {
+    const session = await createSession(req, res, {
+        keepAlive: options?.keepAliveInterval ?? 15000,
+        retry: options?.retry ?? 3000,
+        headers: {
+            "X-Accel-Buffering": "no",
+        },
+    });
+
+    return session;
+}
+
+/**
+ * Wraps a better-sse Session into a StreamController-compatible interface,
+ * allowing gradual migration of existing endpoints.
+ */
+export function sessionToController(session: Session): StreamController {
+    const streamId = `bsse_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    let bytesSent = 0;
+    let chunksSent = 0;
+
+    const controller: StreamController = {
+        id: streamId,
+        startedAt: new Date(),
+        get bytesSent() { return bytesSent; },
+        get chunksSent() { return chunksSent; },
+        get aborted() { return !session.isConnected; },
+
+        write(data: string): boolean {
+            if (!session.isConnected) return false;
+            try {
+                session.push(data);
+                bytesSent += data.length;
+                chunksSent++;
+                return true;
+            } catch {
+                return false;
+            }
+        },
+
+        writeEvent(event: string, data: any): boolean {
+            if (!session.isConnected) return false;
+            try {
+                const payload = typeof data === "string" ? data : JSON.stringify(data);
+                session.push(payload, event);
+                bytesSent += payload.length;
+                chunksSent++;
+                return true;
+            } catch {
+                return false;
+            }
+        },
+
+        close() {
+            // Session closes when the underlying response ends
+            try {
+                session.push("{}", "done");
+            } catch {
+                // Connection may already be closed
+            }
+        },
+    };
+
+    activeStreams.set(streamId, controller);
+    session.on("disconnected", () => {
+        activeStreams.delete(streamId);
+    });
+
+    return controller;
+}
+
 export default {
     initSSEStream,
     streamTokens,
@@ -369,4 +455,6 @@ export default {
     getActiveStreams,
     abortStream,
     createLLMStream,
+    createBetterSSESession,
+    sessionToController,
 };

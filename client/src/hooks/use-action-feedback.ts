@@ -1,18 +1,18 @@
 /**
  * Unified Action Feedback Hook
- * 
+ *
  * Provides consistent toast notifications for common actions:
  * - Success: green checkmark with message
- * - Error: red X with message  
+ * - Error: red X with message
  * - Loading: spinner with message (auto-dismisses on complete)
  * - Info: neutral info message
- * 
+ *
  * Usage:
  * const feedback = useActionFeedback();
- * 
+ *
  * // Simple success
  * feedback.success("Archivo guardado");
- * 
+ *
  * // With async action
  * await feedback.withLoading(
  *   async () => await saveFile(),
@@ -20,8 +20,7 @@
  * );
  */
 
-import { useToast } from "@/hooks/use-toast";
-import { CheckCircle, XCircle, Info, Loader2, AlertTriangle } from "lucide-react";
+import { toast } from "sonner";
 import { useCallback } from "react";
 
 interface FeedbackMessages {
@@ -31,51 +30,26 @@ interface FeedbackMessages {
 }
 
 export function useActionFeedback() {
-    const { toast, dismiss } = useToast();
-
     const success = useCallback((message: string, description?: string) => {
-        toast({
-            title: message,
-            description,
-            duration: 3000,
-            className: "bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800",
-        });
-    }, [toast]);
+        toast.success(message, { description, duration: 3000 });
+    }, []);
 
     const error = useCallback((message: string, description?: string) => {
-        toast({
-            title: message,
-            description,
-            variant: "destructive",
-            duration: 5000,
-        });
-    }, [toast]);
+        toast.error(message, { description, duration: 5000 });
+    }, []);
 
     const info = useCallback((message: string, description?: string) => {
-        toast({
-            title: message,
-            description,
-            duration: 4000,
-        });
-    }, [toast]);
+        toast.info(message, { description, duration: 4000 });
+    }, []);
 
     const warning = useCallback((message: string, description?: string) => {
-        toast({
-            title: message,
-            description,
-            duration: 5000,
-            className: "bg-yellow-50 dark:bg-yellow-950 border-yellow-200 dark:border-yellow-800",
-        });
-    }, [toast]);
+        toast.warning(message, { description, duration: 5000 });
+    }, []);
 
     const loading = useCallback((message: string) => {
-        const { id } = toast({
-            title: message,
-            duration: Infinity,
-            className: "bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800",
-        });
-        return id;
-    }, [toast]);
+        const id = toast.loading(message);
+        return String(id);
+    }, []);
 
     /**
      * Wrap an async action with loading/success/error feedback
@@ -90,40 +64,43 @@ export function useActionFeedback() {
             error: errorMsg = "Error al procesar"
         } = messages;
 
-        const loadingId = loading(loadingMsg);
+        const loadingId = toast.loading(loadingMsg);
 
         try {
             const result = await action();
-            dismiss(loadingId);
-            success(successMsg);
+            toast.dismiss(loadingId);
+            toast.success(successMsg);
             return result;
         } catch (err) {
-            dismiss(loadingId);
-            error(errorMsg, err instanceof Error ? err.message : undefined);
+            toast.dismiss(loadingId);
+            toast.error(errorMsg, {
+                description: err instanceof Error ? err.message : undefined,
+                duration: 5000,
+            });
             return null;
         }
-    }, [loading, success, error, dismiss]);
+    }, []);
 
     /**
      * Quick feedback for copy actions
      */
     const copied = useCallback((what = "Texto") => {
-        success(`${what} copiado al portapapeles`);
-    }, [success]);
+        toast.success(`${what} copiado al portapapeles`);
+    }, []);
 
     /**
      * Quick feedback for save actions
      */
     const saved = useCallback((what = "Cambios") => {
-        success(`${what} guardados ✓`);
-    }, [success]);
+        toast.success(`${what} guardados ✓`);
+    }, []);
 
     /**
      * Quick feedback for delete actions
      */
     const deleted = useCallback((what = "Elemento") => {
-        success(`${what} eliminado`);
-    }, [success]);
+        toast.success(`${what} eliminado`);
+    }, []);
 
     return {
         success,

@@ -6,6 +6,9 @@ import { Router, Request, Response } from "express";
 import { authStorage } from "../replit_integrations/auth/storage";
 import { storage } from "../storage";
 import { env } from "../config/env";
+import { createLogger } from "../utils/logger";
+
+const log = createLogger("microsoft-auth");
 
 const router = Router();
 
@@ -64,7 +67,7 @@ router.get("/microsoft", (req: Request, res: Response) => {
     const config = getMicrosoftConfig();
 
     if (!config) {
-        console.error("[Microsoft Auth] Microsoft OAuth not configured");
+        log.error("Microsoft OAuth not configured");
         return res.redirect("/login?error=microsoft_not_configured");
     }
 
@@ -85,7 +88,7 @@ router.get("/microsoft", (req: Request, res: Response) => {
     });
 
     const authUrl = `${config.authorizationUrl}?${params.toString()}`;
-    console.log("[Microsoft Auth] Redirecting to Microsoft login");
+    log.info("Redirecting to Microsoft login");
     res.redirect(authUrl);
 });
 
@@ -97,19 +100,19 @@ router.get("/microsoft/callback", async (req: Request, res: Response) => {
     const { code, state, error, error_description } = req.query;
 
     if (error) {
-        console.error("[Microsoft Auth] OAuth error:", error, error_description);
+        log.error("OAuth error", { error, error_description });
         return res.redirect(`/login?error=microsoft_auth_failed&message=${encodeURIComponent(error_description as string || "")}`);
     }
 
     if (!code || !state) {
-        console.error("[Microsoft Auth] Missing code or state");
+        log.error("Missing code or state");
         return res.redirect("/login?error=microsoft_invalid_response");
     }
 
     // Verify state
     const stateData = stateStore.get(state as string);
     if (!stateData) {
-        console.error("[Microsoft Auth] Invalid or expired state");
+        log.error("Invalid or expired state");
         return res.redirect("/login?error=microsoft_invalid_state");
     }
     stateStore.delete(state as string);
@@ -140,7 +143,7 @@ router.get("/microsoft/callback", async (req: Request, res: Response) => {
 
         if (!tokenResponse.ok) {
             const errorData = await tokenResponse.text();
-            console.error("[Microsoft Auth] Token exchange failed:", errorData);
+            log.error("Token exchange failed", { errorData });
             return res.redirect("/login?error=microsoft_token_failed");
         }
 
@@ -154,12 +157,12 @@ router.get("/microsoft/callback", async (req: Request, res: Response) => {
         });
 
         if (!userResponse.ok) {
-            console.error("[Microsoft Auth] Failed to get user info");
+            log.error("Failed to get user info");
             return res.redirect("/login?error=microsoft_userinfo_failed");
         }
 
         const msUser = await userResponse.json();
-        console.log("[Microsoft Auth] User info received:", {
+        log.info("User info received", {
             id: msUser.id,
             email: msUser.mail || msUser.userPrincipalName,
             displayName: msUser.displayName,
@@ -195,11 +198,11 @@ router.get("/microsoft/callback", async (req: Request, res: Response) => {
 
         req.login(sessionUser, async (loginErr) => {
             if (loginErr) {
-                console.error("[Microsoft Auth] Session creation failed:", loginErr);
+                log.error("Session creation failed", { error: loginErr });
                 return res.redirect("/login?error=session_error");
             }
 
-            console.log("[Microsoft Auth] req.login() successful, sessionID:", req.sessionID);
+            log.info("req.login() successful", { sessionID: req.sessionID });
 
             // Update last login
             try {
@@ -220,24 +223,24 @@ router.get("/microsoft/callback", async (req: Request, res: Response) => {
                     userAgent: req.headers["user-agent"] || null,
                 });
             } catch (auditError) {
-                console.warn("[Microsoft Auth] Failed to create audit log:", auditError);
+                log.warn("Failed to create audit log", { error: auditError });
             }
 
             // Force session save before redirect (critical for OAuth flow)
-            console.log("[Microsoft Auth] Saving session before redirect...");
+            log.info("Saving session before redirect...");
             req.session.save((saveErr: any) => {
                 if (saveErr) {
-                    console.error("[Microsoft Auth] Session save failed:", saveErr);
+                    log.error("Session save failed", { error: saveErr });
                     return res.redirect("/login?error=session_save_error");
                 }
-                console.log("[Microsoft Auth] Session saved successfully for:", email);
-                console.log("[Microsoft Auth] Redirecting to:", stateData.returnUrl || "/?auth=success");
+                log.info("Session saved successfully", { email });
+                log.info("Redirecting to", { returnUrl: stateData.returnUrl || "/?auth=success" });
                 res.redirect(stateData.returnUrl || "/?auth=success");
             });
         });
 
     } catch (error: any) {
-        console.error("[Microsoft Auth] Callback error:", error);
+        log.error("Callback error", { error });
         return res.redirect("/login?error=microsoft_error");
     }
 });

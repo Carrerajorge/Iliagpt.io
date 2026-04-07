@@ -142,6 +142,8 @@ import {
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { createLogger } from "./utils/logger";
+const log = createLogger("routes");
 
 import { createRunRouter } from "./routes/runRouter";
 import { createBrowserControlRouter } from "./routes/browserControlRouter";
@@ -301,7 +303,7 @@ export async function registerRoutes(
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
     app.get("/api/auth/google", (req, res, next) => {
       const state = generateOAuthState();
-      console.log("[Auth] Google auth initiated with custom state");
+      log.info("Google auth initiated with custom state");
 
       res.cookie("__oauth_state", state, {
         httpOnly: true,
@@ -328,7 +330,7 @@ export async function registerRoutes(
         const cookieState = req.cookies?.["__oauth_state"];
         if (queryState && cookieState) {
           if (queryState !== cookieState || !verifyOAuthState(queryState)) {
-            console.error("[Auth] Custom OAuth state verification failed");
+            log.error("Custom OAuth state verification failed");
             res.clearCookie("__oauth_state", { path: "/api/auth/google/callback" });
             return res.redirect("/login?error=google_state_mismatch");
           }
@@ -338,7 +340,7 @@ export async function registerRoutes(
         passport.authenticate("google", { failureRedirect: "/login?error=google_failed" }, (err: any, user: any, info: any) => {
           (async () => {
             if (err || !user) {
-              console.error("[Auth] Google callback failed:", {
+              log.error("Google callback failed", {
                 error: err?.message || err,
                 errorStack: err?.stack?.split("\n").slice(0, 3),
                 hasUser: !!user,
@@ -371,14 +373,14 @@ export async function registerRoutes(
                 });
                 return res.redirect("/login?mfa=1");
               } catch (e: any) {
-                console.warn("[Auth] Google callback MFA failed:", e?.message || e);
+                log.warn("Google callback MFA failed", { error: e?.message || e });
                 return res.redirect("/login?error=login_failed");
               }
             }
 
             return (req as any).logIn(user, (loginErr: any) => {
               if (loginErr) {
-                console.error("[Auth] Google login error:", loginErr);
+                log.error("Google login error", { error: loginErr });
                 return res.redirect("/login?error=login_failed");
               }
 
@@ -397,7 +399,7 @@ export async function registerRoutes(
               if (sess?.save) {
                 sess.save((saveErr: any) => {
                   if (saveErr) {
-                    console.error("[Auth] Google session save error:", saveErr);
+                    log.error("Google session save error", { error: saveErr });
                     return res.redirect("/login?error=session_error");
                   }
                   res.redirect("/?auth=success");
@@ -449,14 +451,14 @@ export async function registerRoutes(
                 });
                 return res.redirect("/login?mfa=1");
               } catch (e: any) {
-                console.warn("[Auth] Microsoft callback MFA failed:", e?.message || e);
+                log.warn("Microsoft callback MFA failed", { error: e?.message || e });
                 return res.redirect("/login?error=login_failed");
               }
             }
 
             return (req as any).logIn(user, (loginErr: any) => {
               if (loginErr) {
-                console.error("[Auth] Microsoft login error:", loginErr);
+                log.error("Microsoft login error", { error: loginErr });
                 return res.redirect("/login?error=login_failed");
               }
 
@@ -475,7 +477,7 @@ export async function registerRoutes(
               if (sess?.save) {
                 sess.save((saveErr: any) => {
                   if (saveErr) {
-                    console.error("[Auth] Microsoft session save error:", saveErr);
+                    log.error("Microsoft session save error", { error: saveErr });
                     return res.redirect("/login?error=session_error");
                   }
                   res.redirect("/?auth=success");
@@ -526,14 +528,14 @@ export async function registerRoutes(
                 });
                 return res.redirect("/login?mfa=1");
               } catch (e: any) {
-                console.warn("[Auth] Auth0 callback MFA failed:", e?.message || e);
+                log.warn("Auth0 callback MFA failed", { error: e?.message || e });
                 return res.redirect("/login?error=login_failed");
               }
             }
 
             return (req as any).logIn(user, (loginErr: any) => {
               if (loginErr) {
-                console.error("[Auth] Auth0 login error:", loginErr);
+                log.error("Auth0 login error", { error: loginErr });
                 return res.redirect("/login?error=login_failed");
               }
 
@@ -552,7 +554,7 @@ export async function registerRoutes(
               if (sess?.save) {
                 sess.save((saveErr: any) => {
                   if (saveErr) {
-                    console.error("[Auth] Auth0 session save error:", saveErr);
+                    log.error("Auth0 session save error", { error: saveErr });
                     return res.redirect("/login?error=session_error");
                   }
                   res.redirect("/?auth=success");
@@ -819,9 +821,9 @@ try{
       }
       serveControlUiWithAutoConnect(req, res);
     });
-    console.log("[OpenClaw] Control UI mounted at /openclaw-ui");
+    log.info("Control UI mounted at /openclaw-ui");
   } else {
-    console.warn("[OpenClaw] Control UI assets not found at", openclawControlUiRoot);
+    log.warn("Control UI assets not found", { path: openclawControlUiRoot });
   }
 
     app.use("/api/ppt", pptExportRouter);
@@ -1510,7 +1512,7 @@ try{
     const { createKnowledgeBaseRouter } = await import("./routes/knowledgeBaseRouter");
     app.use("/api/knowledge", createKnowledgeBaseRouter());
   } catch (err: any) {
-    console.warn("[Routes] Failed to mount knowledge base router:", err?.message);
+    log.warn("Failed to mount knowledge base router", { error: err?.message });
   }
 
   // Integration Kernel OAuth routes (generic connector flow).
@@ -1521,7 +1523,7 @@ try{
       app.use(`/api/connectors/oauth/${connectorId}`, createConnectorOAuthRouter(connectorId));
     }
   } catch (err: any) {
-    console.warn("[Routes] Failed to mount connector OAuth routers:", err?.message || err);
+    log.warn("Failed to mount connector OAuth routers", { error: err?.message || err });
   }
 
   app.use("/api/integrations/google/forms", createGoogleFormsRouter());
@@ -1751,7 +1753,7 @@ try{
       }
       return res.json(traces);
     } catch (error: any) {
-      console.error("[Traces API] Error:", error);
+      log.error("Traces API error", { error });
       return res.status(500).json({ error: "Failed to retrieve traces" });
     }
   });
@@ -2515,7 +2517,7 @@ try{
         data: result,
       });
     } catch (err: any) {
-      console.error("[EventSourcing] Replay error:", err);
+      log.error("EventSourcing replay error", { error: err });
       res.status(500).json({ ok: false, error: err.message || "Replay failed" });
     }
   });
@@ -2582,7 +2584,7 @@ try{
         },
       });
     } catch (err: any) {
-      console.error("[BudgetAPI] Error:", err);
+      log.error("BudgetAPI error", { error: err });
       res.status(500).json({ error: err.message || "Budget data unavailable" });
     }
   });
@@ -2607,7 +2609,7 @@ try{
       const result = await eventStore.replay(runId);
       res.json({ ok: true, data: result.finalState });
     } catch (err: any) {
-      console.error("[EventSourcing] State query error:", err);
+      log.error("EventSourcing state query error", { error: err });
       res.status(500).json({ ok: false, error: err.message || "State query failed" });
     }
   });
@@ -2637,55 +2639,55 @@ try{
       const exported = exportName ? m[exportName] : (m.default || m);
       const router = isFactory && typeof exported === "function" ? exported() : exported;
       app.use(routePath, router);
-      console.log(`[Routes] ✅ ${routePath} loaded`);
+      log.info(`${routePath} loaded`);
     })
   );
   for (let i = 0; i < lazyResults.length; i++) {
     const r = lazyResults[i];
     if (r.status === "rejected") {
-      console.warn(`[Routes] ⚠️ ${lazyRoutes[i].path} skipped: ${String(r.reason?.message || r.reason).split('\n')[0]}`);
+      log.warn(`${lazyRoutes[i].path} skipped`, { error: String(r.reason?.message || r.reason).split('\n')[0] });
     }
   }
 
-  initializeEventStore().catch(console.error);
+  initializeEventStore().catch(err => log.error("EventStore initialization failed", { error: err?.message || err }));
 
   // ===== Start Persistent Trigger Engine =====
   import("./services/persistentTriggerEngine").then(({ triggerEngine }) => {
     triggerEngine.start().then(() => {
-      console.log("[TriggerEngine] Started");
+      log.info("TriggerEngine started");
     }).catch(err => {
-      console.warn("[TriggerEngine] Start failed:", err.message);
+      log.warn("TriggerEngine start failed", { error: err.message });
     });
   }).catch(() => { });
 
   // ===== Start Analytics Service =====
   import("./services/advancedAnalytics").then(({ analyticsService }) => {
     analyticsService.start();
-    console.log("[Analytics] Cost tracking started");
+    log.info("Analytics cost tracking started");
   }).catch(() => { });
 
   initializeRedisSSE().then(() => {
-    console.log("[RedisSSE] Initialized");
+    log.info("RedisSSE initialized");
   }).catch(err => {
-    console.warn("[RedisSSE] Not available (Redis may not be configured):", err.message);
+    log.warn("RedisSSE not available (Redis may not be configured)", { error: err.message });
   });
 
   initializeAgentSystem({ runSmokeTest: false }).then(result => {
-    console.log(`[AgentSystem] Initialized: ${result.toolCount} tools, ${result.agentCount} agents`);
+    log.info(`AgentSystem initialized: ${result.toolCount} tools, ${result.agentCount} agents`);
   }).catch(err => {
-    console.error("[AgentSystem] Initialization failed:", err.message);
+    log.error("AgentSystem initialization failed", { error: err.message });
   });
 
   // Initialize SuperIntelligence System (includes all phases)
   initializeSuperIntelligence().then((status) => {
-    console.log(`[SuperIntelligence] System initialized - Health: ${status.stats.healthScore.toFixed(1)}%`);
+    log.info(`SuperIntelligence system initialized - Health: ${status.stats.healthScore.toFixed(1)}%`);
   }).catch(err => {
-    console.error("[SuperIntelligence] System initialization failed:", err.message);
+    log.error("SuperIntelligence system initialization failed", { error: err.message });
     // Fall back to just audit system
     initializeAuditSystem().then(() => {
-      console.log("[SuperIntelligence] Audit System initialized (fallback)");
+      log.info("SuperIntelligence Audit System initialized (fallback)");
     }).catch(e => {
-      console.error("[SuperIntelligence] Audit System fallback failed:", e.message);
+      log.error("SuperIntelligence Audit System fallback failed", { error: e.message });
     });
   });
 
@@ -2709,7 +2711,7 @@ try{
         },
       });
     } catch (error: any) {
-      console.error("[Tools] Error:", error);
+      log.error("Tools error", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to load tools",
@@ -2733,7 +2735,7 @@ try{
         agents,
       });
     } catch (error: any) {
-      console.error("[Agents] Error:", error);
+      log.error("Agents error", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to load agents",
@@ -2783,7 +2785,7 @@ try{
         capabilities,
       });
     } catch (error: any) {
-      console.error("[SuperAgentCapabilities] Error:", error);
+      log.error("SuperAgentCapabilities error", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to compute super agent coverage",
@@ -2843,7 +2845,7 @@ try{
         capabilities: capabilities.slice(0, limit),
       });
     } catch (error: any) {
-      console.error("[SuperAgentCapabilities1000] Error:", error);
+      log.error("SuperAgentCapabilities1000 error", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to load OpenClaw1000 capabilities",
@@ -2964,7 +2966,7 @@ try{
       const result = await runAgent(input, { verbose, timeout });
       res.json(result);
     } catch (error: any) {
-      console.error("[PythonAgent] Run error:", error);
+      log.error("PythonAgent run error", { error });
 
       if (error instanceof PythonAgentClientError) {
         const statusCode = error.statusCode || 500;
@@ -2991,7 +2993,7 @@ try{
         data: tools,
       });
     } catch (error: any) {
-      console.error("[PythonAgent] Tools error:", error);
+      log.error("PythonAgent tools error", { error });
 
       if (error instanceof PythonAgentClientError) {
         const statusCode = error.statusCode || 500;
@@ -3017,7 +3019,7 @@ try{
         data: health,
       });
     } catch (error: any) {
-      console.error("[PythonAgent] Health check error:", error);
+      log.error("PythonAgent health check error", { error });
 
       res.status(503).json({
         success: false,
@@ -3142,7 +3144,7 @@ try{
       modelsCache = { data: result, ts: now };
       res.json(result);
     } catch (error: any) {
-      console.error("[Models] Error fetching available models:", error);
+      log.error("Error fetching available models", { error });
       res.json({ models: PUBLIC_MODEL_FALLBACKS });
     }
   });
@@ -3166,7 +3168,7 @@ try{
         },
       });
     } catch (error: any) {
-      console.error("[QualityStats] Error getting stats:", error);
+      log.error("QualityStats error getting stats", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to get quality stats"
@@ -3185,7 +3187,7 @@ try{
         data: config,
       });
     } catch (error: any) {
-      console.error("[ContentFilter] Error getting config:", error);
+      log.error("ContentFilter error getting config", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to get filter config"
@@ -3229,7 +3231,7 @@ try{
         data: newConfig,
       });
     } catch (error: any) {
-      console.error("[ContentFilter] Error updating config:", error);
+      log.error("ContentFilter error updating config", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to update filter config"
@@ -3295,7 +3297,7 @@ try{
         },
       });
     } catch (error: any) {
-      console.error("[Observability] Error getting logs:", error);
+      log.error("Observability error getting logs", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to get logs",
@@ -3317,7 +3319,7 @@ try{
         },
       });
     } catch (error: any) {
-      console.error("[Observability] Error getting health:", error);
+      log.error("Observability error getting health", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to get health status",
@@ -3349,7 +3351,7 @@ try{
 
       res.json(response);
     } catch (error: any) {
-      console.error("[Observability] Error getting alerts:", error);
+      log.error("Observability error getting alerts", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to get alerts",
@@ -3375,7 +3377,7 @@ try{
         data: alert,
       });
     } catch (error: any) {
-      console.error("[Observability] Error resolving alert:", error);
+      log.error("Observability error resolving alert", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to resolve alert",
@@ -3401,7 +3403,7 @@ try{
         },
       });
     } catch (error: any) {
-      console.error("[Observability] Error getting stats:", error);
+      log.error("Observability error getting stats", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to get stats",
@@ -3425,7 +3427,7 @@ try{
         },
       });
     } catch (error: any) {
-      console.error("[Connectors] Error getting stats:", error);
+      log.error("Connectors error getting stats", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to get connector stats",
@@ -3456,7 +3458,7 @@ try{
         },
       });
     } catch (error: any) {
-      console.error("[Connectors] Error getting connector stats:", error);
+      log.error("Connectors error getting connector stats", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to get connector stats",
@@ -3492,7 +3494,7 @@ try{
         message: `Stats reset for connector: ${name}`,
       });
     } catch (error: any) {
-      console.error("[Connectors] Error resetting stats:", error);
+      log.error("Connectors error resetting stats", { error });
       res.status(500).json({
         success: false,
         error: error.message || "Failed to reset connector stats",
@@ -3522,7 +3524,7 @@ try{
           agentClients.get(data.runId)!.add(ws);
         }
       } catch (e) {
-        console.error("WS message parse error:", e);
+        log.error("WS message parse error", { error: e });
       }
     });
 
@@ -3579,7 +3581,7 @@ try{
           }
         }
       } catch (e) {
-        console.error("File status WS message parse error:", e);
+        log.error("File status WS message parse error", { error: e });
       }
     });
 
@@ -3641,9 +3643,9 @@ try{
       await storage.updateFileCompleted(job.fileId);
       await storage.updateFileJobStatus(job.fileId, "completed");
 
-      console.log(`[FileQueue] File ${job.fileId} processed: ${chunks.length} chunks created`);
+      log.info(`File ${job.fileId} processed: ${chunks.length} chunks created`);
     } catch (error: any) {
-      console.error(`[FileQueue] Error processing file ${job.fileId}:`, error);
+      log.error(`Error processing file ${job.fileId}`, { error });
       await storage.updateFileError(job.fileId, error.message || "Unknown error");
       await storage.updateFileJobStatus(job.fileId, "failed", error.message);
       throw error;
@@ -3680,7 +3682,7 @@ try{
           }
         }
       } catch (e) {
-        console.error("Browser WS message parse error:", e);
+        log.error("Browser WS message parse error", { error: e });
       }
     });
 
@@ -3723,7 +3725,7 @@ try{
           }));
         }
       } catch (e) {
-        console.error("Terminal WS message parse error:", e);
+        log.error("Terminal WS message parse error", { error: e });
       }
     });
 

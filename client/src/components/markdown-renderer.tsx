@@ -13,6 +13,7 @@ import { CodeBlockShell } from "./code-block-shell";
 import { isLanguageRunnable } from "@/lib/sandboxApi";
 import { useSandboxExecution } from "@/hooks/useSandboxExecution";
 import { downloadArtifact } from "@/lib/localArtifactAccess";
+import { useShikiHighlight } from "@/hooks/useShikiHighlight";
 
 const InlineSourceBadge = memo(function InlineSourceBadge({ name, url }: { name: string; url: string }) {
   const [showTooltip, setShowTooltip] = useState(false);
@@ -522,6 +523,25 @@ interface CodeBlockProps {
   onOpenDocument?: (doc: { type: 'word' | 'excel' | 'ppt'; title: string; content: string }) => void;
 }
 
+const ShikiCodeContent = memo(function ShikiCodeContent({ code, language }: { code: string; language: string }) {
+  const { html, isLoading } = useShikiHighlight(code, language || 'text');
+
+  if (isLoading) {
+    return (
+      <pre className="rounded-lg overflow-x-auto p-4 pt-8 bg-muted/30">
+        <code className="text-sm font-mono">{code}</code>
+      </pre>
+    );
+  }
+
+  return (
+    <div
+      className="shiki-wrapper rounded-lg overflow-x-auto [&>pre]:p-4 [&>pre]:pt-8 [&>pre]:m-0 [&>pre]:rounded-lg [&>pre]:overflow-x-auto [&_code]:text-sm [&_code]:font-mono"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+});
+
 const CodeBlock = memo(function CodeBlock({ inline, className, children, onOpenDocument }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || "");
@@ -586,13 +606,13 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, onOpenD
   return (
     <div className="relative group my-4">
       {language && (
-        <div className="absolute top-0 left-0 px-3 py-1 text-xs font-mono text-muted-foreground bg-muted/50 rounded-tl-lg rounded-br-lg">
+        <div className="absolute top-0 left-0 px-3 py-1 text-xs font-mono text-muted-foreground bg-muted/50 rounded-tl-lg rounded-br-lg z-10">
           {language}
         </div>
       )}
       <button
         onClick={handleCopy}
-        className="absolute top-2 right-2 p-1.5 rounded-md bg-muted/80 hover:bg-muted opacity-0 group-hover:opacity-100 transition-opacity"
+        className="absolute top-2 right-2 p-1.5 rounded-md bg-muted/80 hover:bg-muted opacity-0 group-hover:opacity-100 transition-opacity z-10"
         aria-label={copied ? "Copied" : "Copy code"}
         data-testid="button-copy-code"
       >
@@ -602,9 +622,7 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, onOpenD
           <Copy className="h-4 w-4 text-muted-foreground" />
         )}
       </button>
-      <pre className={cn("rounded-lg overflow-x-auto p-4 pt-8 bg-muted/30", className)}>
-        <code className={cn("text-sm font-mono", className)}>{children}</code>
-      </pre>
+      <ShikiCodeContent code={codeContent} language={language} />
     </div>
   );
 });
@@ -937,9 +955,10 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
         output: 'htmlAndMathml'
       }]);
     }
-    if (enableCodeHighlight) plugins.push(rehypeHighlight);
+    // Shiki-based highlighting is now handled at the component level (ShikiCodeContent)
+    // rehypeHighlight is kept as an import for potential fallback but no longer added to plugins
     return plugins;
-  }, [enableMath, enableCodeHighlight, sanitize, isSimple]);
+  }, [enableMath, sanitize, isSimple]);
 
   const CodeComponent = useMemo(() => {
     if (enableInteractiveCode) {

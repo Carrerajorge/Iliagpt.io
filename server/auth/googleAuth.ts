@@ -6,6 +6,9 @@ import { Router, Request, Response } from "express";
 import { authStorage } from "../replit_integrations/auth/storage";
 import { storage } from "../storage";
 import { env } from "../config/env";
+import { createLogger } from "../utils/logger";
+
+const log = createLogger("google-auth");
 
 const router = Router();
 
@@ -29,7 +32,7 @@ const getGoogleConfig = () => {
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
     if (!clientId || !clientSecret) {
-        console.warn("[Google Auth] Missing credentials:", {
+        log.warn("Missing credentials", {
             hasClientId: !!clientId,
             hasClientSecret: !!clientSecret,
         });
@@ -79,7 +82,7 @@ router.get("/google", (req: Request, res: Response) => {
     const config = getGoogleConfig();
 
     if (!config) {
-        console.error("[Google Auth] Google OAuth not configured");
+        log.error("Google OAuth not configured");
         return res.redirect("/login?error=google_not_configured");
     }
 
@@ -90,10 +93,10 @@ router.get("/google", (req: Request, res: Response) => {
     // Use canonical redirect URI to match Google Cloud Console configuration
     const redirectUri = getCanonicalRedirectUri(req, "/api/auth/google/callback");
 
-    console.log("[Google Auth] Using redirect_uri:", redirectUri);
-    console.log("[Google Auth] Request host:", req.get("host"));
-    console.log("[Google Auth] Canonical domain:", CANONICAL_DOMAIN);
-    console.log("[Google Auth] Client ID prefix:", config.clientId?.substring(0, 20) + "...");
+    log.info("Using redirect_uri", { redirectUri });
+    log.info("Request host", { host: req.get("host") });
+    log.info("Canonical domain", { canonicalDomain: CANONICAL_DOMAIN });
+    log.info("Client ID prefix", { clientIdPrefix: config.clientId?.substring(0, 20) + "..." });
 
     const params = new URLSearchParams({
         client_id: config.clientId,
@@ -106,7 +109,7 @@ router.get("/google", (req: Request, res: Response) => {
     });
 
     const authUrl = `${config.authorizationUrl}?${params.toString()}`;
-    console.log("[Google Auth] Redirecting to Google login");
+    log.info("Redirecting to Google login");
     res.redirect(authUrl);
 });
 
@@ -118,19 +121,19 @@ router.get("/google/callback", async (req: Request, res: Response) => {
     const { code, state, error, error_description } = req.query;
 
     if (error) {
-        console.error("[Google Auth] OAuth error:", error, error_description);
+        log.error("OAuth error", { error, error_description });
         return res.redirect(`/login?error=google_auth_failed&message=${encodeURIComponent(error_description as string || "")}`);
     }
 
     if (!code || !state) {
-        console.error("[Google Auth] Missing code or state");
+        log.error("Missing code or state");
         return res.redirect("/login?error=google_invalid_response");
     }
 
     // Verify state
     const stateData = stateStore.get(state as string);
     if (!stateData) {
-        console.error("[Google Auth] Invalid or expired state");
+        log.error("Invalid or expired state");
         return res.redirect("/login?error=google_invalid_state");
     }
     stateStore.delete(state as string);
@@ -143,7 +146,7 @@ router.get("/google/callback", async (req: Request, res: Response) => {
     try {
         // Use same canonical redirect URI as in /google route
         const redirectUri = getCanonicalRedirectUri(req, "/api/auth/google/callback");
-        console.log("[Google Auth] Callback - Using redirect_uri:", redirectUri);
+        log.info("Callback - Using redirect_uri", { redirectUri });
 
         // Exchange code for tokens
         const tokenResponse = await fetch(config.tokenUrl, {
@@ -162,7 +165,7 @@ router.get("/google/callback", async (req: Request, res: Response) => {
 
         if (!tokenResponse.ok) {
             const errorData = await tokenResponse.text();
-            console.error("[Google Auth] Token exchange failed:", errorData);
+            log.error("Token exchange failed", { errorData });
             return res.redirect("/login?error=google_token_failed");
         }
 
@@ -176,12 +179,12 @@ router.get("/google/callback", async (req: Request, res: Response) => {
         });
 
         if (!userResponse.ok) {
-            console.error("[Google Auth] Failed to get user info");
+            log.error("Failed to get user info");
             return res.redirect("/login?error=google_userinfo_failed");
         }
 
         const googleUser = await userResponse.json();
-        console.log("[Google Auth] User info received:", {
+        log.info("User info received", {
             id: googleUser.id,
             email: googleUser.email,
             name: googleUser.name,
@@ -217,11 +220,11 @@ router.get("/google/callback", async (req: Request, res: Response) => {
 
         req.login(sessionUser, async (loginErr) => {
             if (loginErr) {
-                console.error("[Google Auth] Session creation failed:", loginErr);
+                log.error("Session creation failed", { error: loginErr });
                 return res.redirect("/login?error=session_error");
             }
 
-            console.log("[Google Auth] req.login() successful, sessionID:", req.sessionID);
+            log.info("req.login() successful", { sessionID: req.sessionID });
 
             // Update last login
             try {
@@ -242,12 +245,12 @@ router.get("/google/callback", async (req: Request, res: Response) => {
                     userAgent: req.headers["user-agent"] || null,
                 });
             } catch (auditError) {
-                console.warn("[Google Auth] Failed to create audit log:", auditError);
+                log.warn("Failed to create audit log", { error: auditError });
             }
 
             // Force session save before redirect (critical for OAuth flow)
-            console.log("[Google Auth] Saving session before redirect...");
-            console.log("[Google Auth] DEBUG - Session cookie settings:", {
+            log.info("Saving session before redirect...");
+            log.info("DEBUG - Session cookie settings", {
                 sessionID: req.sessionID,
                 sessionExists: !!req.session,
                 isSecure: req.secure,
@@ -258,24 +261,24 @@ router.get("/google/callback", async (req: Request, res: Response) => {
 
             req.session.save((saveErr: any) => {
                 if (saveErr) {
-                    console.error("[Google Auth] Session save failed:", saveErr);
+                    log.error("Session save failed", { error: saveErr });
                     return res.redirect("/login?error=session_save_error");
                 }
 
                 // DEBUG: Log response headers to verify Set-Cookie is being sent
-                console.log("[Google Auth] Session saved successfully for:", email);
-                console.log("[Google Auth] DEBUG - Response headers after save:", {
+                log.info("Session saved successfully", { email });
+                log.info("DEBUG - Response headers after save", {
                     setCookie: res.getHeader('Set-Cookie'),
                     sessionID: req.sessionID,
                 });
-                console.log("[Google Auth] Redirecting to:", stateData.returnUrl || "/?auth=success");
+                log.info("Redirecting to", { returnUrl: stateData.returnUrl || "/?auth=success" });
 
                 res.redirect(stateData.returnUrl || "/?auth=success");
             });
         });
 
     } catch (error: any) {
-        console.error("[Google Auth] Callback error:", error);
+        log.error("Callback error", { error });
         return res.redirect("/login?error=google_error");
     }
 });
@@ -302,7 +305,7 @@ router.get("/google/debug", (req: Request, res: Response) => {
     const hasSession = !!req.session;
     const hasUser = !!(req as any).user;
 
-    console.log("[Google Auth] DEBUG endpoint called:", {
+    log.info("DEBUG endpoint called", {
         cookies: Object.keys(req.cookies || {}),
         hasSessionCookie: !!sessionCookie,
         hasSession,

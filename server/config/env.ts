@@ -1,5 +1,8 @@
 import dotenv from "dotenv";
 import { z } from "zod";
+import { createLogger } from "../utils/logger";
+
+const log = createLogger("env-config");
 
 const nodeEnv = process.env.NODE_ENV || "development";
 const loadEnvLocal = process.env.LOAD_ENV_LOCAL === "true";
@@ -215,10 +218,10 @@ function validateEnv() {
   const result = envSchema.safeParse(process.env);
 
   if (!result.success) {
-    console.error("❌ Invalid environment variables:");
+    log.error("❌ Invalid environment variables:");
     const errors = result.error.flatten().fieldErrors;
     Object.entries(errors).forEach(([key, msgs]) => {
-      console.error(`   ${key}: ${msgs?.join(", ")}`);
+      log.error(`   ${key}: ${msgs?.join(", ")}`);
     });
     process.exit(1);
   }
@@ -237,8 +240,8 @@ function validateEnv() {
     Boolean(cerebrasKey);
 
   if (!hasAnyLlm) {
-    console.warn("⚠️  WARNING: No LLM API keys configured (XAI_API_KEY, GEMINI_API_KEY/GOOGLE_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, CEREBRAS_API_KEY)");
-    console.warn("   Chat functionality will not work without at least one LLM provider.");
+    log.warn("⚠️  WARNING: No LLM API keys configured (XAI_API_KEY, GEMINI_API_KEY/GOOGLE_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, CEREBRAS_API_KEY)");
+    log.warn("   Chat functionality will not work without at least one LLM provider.");
   } else {
     const providers = [];
     if (data.XAI_API_KEY) providers.push("xAI");
@@ -248,16 +251,16 @@ function validateEnv() {
     if (data.ANTHROPIC_API_KEY) providers.push("Anthropic");
     if (data.DEEPSEEK_API_KEY) providers.push("DeepSeek");
     if (cerebrasKey) providers.push("Cerebras");
-    console.log(`✅ LLM Providers configured: ${providers.join(", ")}`);
+    log.info(`✅ LLM Providers configured: ${providers.join(", ")}`);
   }
 
   // Session hardening: require a strong secret in production, warn in other envs.
   if (data.NODE_ENV === "production" && data.SESSION_SECRET.length < 32) {
-    console.error("❌ SESSION_SECRET must be at least 32 characters in production.");
+    log.error("❌ SESSION_SECRET must be at least 32 characters in production.");
     process.exit(1);
   }
   if (data.NODE_ENV !== "production" && data.NODE_ENV !== "test" && data.SESSION_SECRET.length < 32) {
-    console.warn("⚠️  WARNING: SESSION_SECRET should be at least 32 characters.");
+    log.warn("⚠️  WARNING: SESSION_SECRET should be at least 32 characters.");
   }
 
   // Security hardening: require a dedicated encryption key if OAuth token storage is enabled in production.
@@ -268,44 +271,44 @@ function validateEnv() {
       (data.AUTH0_DOMAIN && data.AUTH0_CLIENT_ID && data.AUTH0_CLIENT_SECRET)
   );
   if (data.NODE_ENV === "production" && oauthEnabled && !data.TOKEN_ENCRYPTION_KEY) {
-    console.error("❌ TOKEN_ENCRYPTION_KEY is required in production when OAuth is enabled.");
+    log.error("❌ TOKEN_ENCRYPTION_KEY is required in production when OAuth is enabled.");
     process.exit(1);
   }
 
   // Production bootstrap hardening: seed-production.ts runs on startup.
   if (data.NODE_ENV === "production") {
     if (!data.ADMIN_EMAIL) {
-      console.error("❌ ADMIN_EMAIL is required in production.");
+      log.error("❌ ADMIN_EMAIL is required in production.");
       process.exit(1);
     }
     if (!data.ADMIN_PASSWORD) {
-      console.error("❌ ADMIN_PASSWORD is required in production.");
+      log.error("❌ ADMIN_PASSWORD is required in production.");
       process.exit(1);
     }
     if (data.ADMIN_PASSWORD && data.ADMIN_PASSWORD.length < 12) {
-      console.warn("⚠️  WARNING: ADMIN_PASSWORD should be at least 12 characters in production.");
+      log.warn("⚠️  WARNING: ADMIN_PASSWORD should be at least 12 characters in production.");
     }
   }
 
   // Channel hardening (best-effort warnings; keep optional to avoid breaking deployments
   // that don't use these connectors).
   if (data.TELEGRAM_BOT_TOKEN && !data.TELEGRAM_WEBHOOK_SECRET_TOKEN) {
-    console.warn("⚠️  WARNING: TELEGRAM_WEBHOOK_SECRET_TOKEN is not set. Telegram webhook requests won't be authenticated.");
+    log.warn("⚠️  WARNING: TELEGRAM_WEBHOOK_SECRET_TOKEN is not set. Telegram webhook requests won't be authenticated.");
   }
   if (data.TELEGRAM_AUTO_SET_WEBHOOK && !data.TELEGRAM_WEBHOOK_URL) {
-    console.warn("⚠️  WARNING: TELEGRAM_AUTO_SET_WEBHOOK=true but TELEGRAM_WEBHOOK_URL is not set. Webhook auto-registration will be skipped.");
+    log.warn("⚠️  WARNING: TELEGRAM_AUTO_SET_WEBHOOK=true but TELEGRAM_WEBHOOK_URL is not set. Webhook auto-registration will be skipped.");
   }
   if (data.WHATSAPP_VERIFY_TOKEN && !data.WHATSAPP_APP_SECRET) {
-    console.warn("⚠️  WARNING: WHATSAPP_APP_SECRET is not set. WhatsApp Cloud webhook signatures will not be verified.");
+    log.warn("⚠️  WARNING: WHATSAPP_APP_SECRET is not set. WhatsApp Cloud webhook signatures will not be verified.");
   }
   if (data.MESSENGER_PAGE_ACCESS_TOKEN && !data.MESSENGER_VERIFY_TOKEN) {
-    console.warn("⚠️  WARNING: MESSENGER_VERIFY_TOKEN is not set. Messenger webhook verification will reject all requests.");
+    log.warn("⚠️  WARNING: MESSENGER_VERIFY_TOKEN is not set. Messenger webhook verification will reject all requests.");
   }
   if (data.MESSENGER_PAGE_ACCESS_TOKEN && !data.MESSENGER_APP_SECRET) {
-    console.warn("⚠️  WARNING: MESSENGER_APP_SECRET is not set. Messenger webhook signatures will not be verified.");
+    log.warn("⚠️  WARNING: MESSENGER_APP_SECRET is not set. Messenger webhook signatures will not be verified.");
   }
   if (data.WECHAT_APP_ID && !data.WECHAT_TOKEN) {
-    console.warn("⚠️  WARNING: WECHAT_TOKEN is not set. WeChat webhook requests won't be authenticated.");
+    log.warn("⚠️  WARNING: WECHAT_TOKEN is not set. WeChat webhook requests won't be authenticated.");
   }
 
   return data;

@@ -14,6 +14,10 @@ import * as crypto from "crypto";
 let _encodingForModel: ((model: any) => any) | null = null;
 let _getEncoding: ((enc: any) => any) | null = null;
 
+// gpt-tokenizer: secondary tokenizer with native o200k_base support
+let _gptTokenizerEncode: ((text: string) => number[]) | null = null;
+let _gptTokenizerO200k: { encode: (text: string) => number[] } | null = null;
+
 async function loadTiktoken() {
   if (_encodingForModel) return;
   try {
@@ -21,12 +25,27 @@ async function loadTiktoken() {
     _encodingForModel = mod.encodingForModel as (model: any) => any;
     _getEncoding = mod.getEncoding as (enc: any) => any;
   } catch {
-    // If js-tiktoken fails to load, fall back to fast estimate
+    // If js-tiktoken fails to load, try gpt-tokenizer as fallback
   }
 }
 
-// Start loading immediately (non-blocking)
+async function loadGptTokenizer() {
+  if (_gptTokenizerEncode) return;
+  try {
+    const mod = await import("gpt-tokenizer");
+    _gptTokenizerEncode = mod.encode;
+    // Load o200k_base encoding for O-series models (o1, o2, o3, etc.)
+    // Use CJS path for compatibility with current moduleResolution
+    const o200k = await import("gpt-tokenizer/cjs/encoding/o200k_base");
+    _gptTokenizerO200k = { encode: o200k.encode };
+  } catch {
+    // gpt-tokenizer not available — js-tiktoken or heuristic will be used
+  }
+}
+
+// Start loading both tokenizers immediately (non-blocking)
 loadTiktoken();
+loadGptTokenizer();
 
 /** Map model name patterns to tiktoken encoding names. */
 const MODEL_ENCODING_MAP: Array<[RegExp, string]> = [
@@ -65,18 +84,39 @@ class TokenCounter {
     return Math.ceil(text.length / 4);
   }
 
-  /** L1 — Accurate count via js-tiktoken. Falls back to L0 if tiktoken unavailable. */
+  /** L1 — Accurate count via js-tiktoken, with gpt-tokenizer fallback. Falls back to L0 if neither is available. */
   countAccurate(text: string, model?: string): number {
-    if (!_getEncoding) return this.countFast(text);
-    try {
-      const encName = getEncodingName(model);
-      const enc = _getEncoding(encName);
-      const tokens = enc.encode(text).length;
-      enc.free();
-      return tokens;
-    } catch {
-      return this.countFast(text);
+    const encName = getEncodingName(model);
+
+    // Primary: js-tiktoken
+    if (_getEncoding) {
+      try {
+        const enc = _getEncoding(encName);
+        const tokens = enc.encode(text).length;
+        enc.free();
+        return tokens;
+      } catch {
+        // Fall through to gpt-tokenizer
+      }
     }
+
+    // Fallback: gpt-tokenizer (especially good for o200k_base)
+    if (encName === "o200k_base" && _gptTokenizerO200k) {
+      try {
+        return _gptTokenizerO200k.encode(text).length;
+      } catch {
+        // Fall through to default gpt-tokenizer
+      }
+    }
+    if (_gptTokenizerEncode) {
+      try {
+        return _gptTokenizerEncode(text).length;
+      } catch {
+        // Fall through to heuristic
+      }
+    }
+
+    return this.countFast(text);
   }
 
   /** L1 + LRU cache. Best for repeated/similar prompts in a conversation. */
@@ -126,9 +166,9 @@ class TokenCounter {
     return total;
   }
 
-  /** Whether tiktoken is loaded and available. */
+  /** Whether an accurate tokenizer (js-tiktoken or gpt-tokenizer) is loaded and available. */
   get isAccurateAvailable(): boolean {
-    return _getEncoding !== null;
+    return _getEncoding !== null || _gptTokenizerEncode !== null;
   }
 
   /** Clear the in-memory cache. */

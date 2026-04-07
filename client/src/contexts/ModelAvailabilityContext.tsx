@@ -243,10 +243,26 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
   );
 }
 
+const defaultContextValue: ModelAvailabilityContextType = {
+  availableModels: [],
+  allModels: [],
+  isLoading: true,
+  isAnyModelAvailable: false,
+  enableModel: async () => {},
+  disableModel: async () => {},
+  toggleModel: async () => {},
+  refetch: () => {},
+  selectedModelId: null,
+  setSelectedModelId: () => {},
+};
+
 export function useModelAvailability() {
   const context = useContext(ModelAvailabilityContext);
   if (!context) {
-    throw new Error("useModelAvailability must be used within ModelAvailabilityProvider");
+    if (import.meta.env.DEV) {
+      console.warn("useModelAvailability called outside ModelAvailabilityProvider — using defaults");
+    }
+    return defaultContextValue;
   }
   return context;
 }
