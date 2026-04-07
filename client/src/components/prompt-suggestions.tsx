@@ -160,59 +160,7 @@ export function PromptSuggestions({
     ? "Resume, revisa, extrae acciones o conviértelo en una presentación sin rehacer el material."
     : "Investiga, planifica, depura, revisa o documenta desde el primer mensaje.";
 
-  return (
-    <div className={cn("w-full max-w-[38rem] px-4", className)}>
-      <div className="mb-2.5 text-center">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-muted-foreground/55">
-          Workflows
-        </p>
-        <h3 className="mt-1.5 text-[1.42rem] font-semibold tracking-tight text-foreground sm:text-[1.65rem]">
-          {heading}
-        </h3>
-        <p className="mx-auto mt-1.5 max-w-lg text-[13px] leading-5 text-muted-foreground sm:text-sm">
-          {copy}
-        </p>
-      </div>
-
-      <div className="grid gap-0">
-        {workflows.map((workflow, index) => {
-          const Icon = workflow.icon;
-          const isLast = index === workflows.length - 1;
-
-          return (
-            <button
-              key={workflow.id}
-              onClick={() => handleSelect(workflow)}
-              className={cn(
-                "group px-0 py-3 text-left transition-opacity duration-200 hover:opacity-100",
-                !isLast && "border-b border-border/35",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25 focus-visible:ring-offset-2",
-              )}
-            >
-              <div className="flex items-start gap-3">
-                <Icon className="mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground/55 transition-colors group-hover:text-foreground/75" />
-
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
-                    <h4 className="text-[15px] font-semibold tracking-tight text-foreground">
-                      {workflow.title}
-                    </h4>
-                    <p className="text-[11px] font-medium text-muted-foreground/65 sm:whitespace-nowrap">
-                      {getSurfaceLabel(workflow)} / {getLatencyLabel(workflow.latencyMode)}
-                    </p>
-                  </div>
-
-                  <p className="mt-1 text-[13px] leading-5 text-muted-foreground">
-                    {workflow.description}
-                  </p>
-                </div>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
+  return null;
 }
 
 export default PromptSuggestions;
