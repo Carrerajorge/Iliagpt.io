@@ -32,6 +32,10 @@ const getRunWorkspaceDir = (runId: string) => path.resolve(AGENT_WORKSPACE_ROOT,
 const AGENT_LOCAL_FS_ROOT = process.env.AGENT_LOCAL_FS_ROOT
   ? path.resolve(process.env.AGENT_LOCAL_FS_ROOT)
   : path.resolve(os.homedir());
+const TOOL_NAME_ALIASES: Readonly<Record<string, string>> = {
+  search: "web_search",
+  search_web: "web_search",
+};
 
 function isPathInside(rootPath: string, candidatePath: string): boolean {
   const rel = path.relative(rootPath, candidatePath);
@@ -278,6 +282,7 @@ export class ToolRegistry {
   }
 
   async execute(name: string, input: any, context: ToolContext): Promise<ToolResult> {
+    name = TOOL_NAME_ALIASES[name] || name;
     let tool = this.tools.get(name);
     const startTime = Date.now();
     const logs: ToolLog[] = [];
@@ -335,10 +340,15 @@ export class ToolRegistry {
     }) => {
       void (async () => {
         try {
+          const rawUserId = String(context.userId ?? "");
           const safeUserId =
-            context.userId === "anonymous" || context.userId.startsWith("anon_")
+            !rawUserId ||
+            rawUserId === "anonymous" ||
+            rawUserId === "openclaw-user" ||
+            rawUserId.startsWith("anon_") ||
+            rawUserId.startsWith("token:")
               ? undefined
-              : context.userId;
+              : rawUserId;
           const { storage } = await import("../storage");
           await storage.createToolCallLog({
             userId: safeUserId,
@@ -1618,6 +1628,8 @@ const generateDocumentTool: ToolDefinition = {
       let buffer: Buffer;
       let mimeType: string;
       let extension: string;
+      const normalizedContent = String(input.content ?? "");
+      const isBlankContent = normalizedContent.trim().length === 0;
 
       switch (input.type) {
         case "word": {
@@ -1635,7 +1647,8 @@ const generateDocumentTool: ToolDefinition = {
             break;
           }
 
-          buffer = await generateWordDocument(input.title, input.content);
+          buffer = await generateWordDocument(input.title, normalizedContent);
+
           mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
           extension = "docx";
           break;
@@ -1656,7 +1669,7 @@ const generateDocumentTool: ToolDefinition = {
             break;
           }
 
-          const excelData = parseExcelFromText(input.content);
+          const excelData = isBlankContent ? [[""]] : parseExcelFromText(normalizedContent);
           buffer = await generateExcelDocument(input.title, excelData);
           mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
           extension = "xlsx";
@@ -1678,7 +1691,7 @@ const generateDocumentTool: ToolDefinition = {
             break;
           }
 
-          const slides = parseSlidesFromText(input.content);
+          const slides = parseSlidesFromText(normalizedContent);
           buffer = await generatePptDocument(input.title, slides, {
             trace: {
               source: "toolRegistry",
@@ -1690,8 +1703,15 @@ const generateDocumentTool: ToolDefinition = {
         }
 
         case "csv": {
+          if (isBlankContent) {
+            buffer = Buffer.from("", "utf-8");
+            mimeType = "text/csv";
+            extension = "csv";
+            break;
+          }
+
           // Parse content as tabular data and convert to CSV format
-          const csvData = parseExcelFromText(input.content);
+          const csvData = parseExcelFromText(normalizedContent);
           const csvContent = csvData
             .map((row) =>
               row
@@ -1718,7 +1738,7 @@ const generateDocumentTool: ToolDefinition = {
             type: "pdf",
             title: input.title,
             author: "ILIAGPT AI",
-            sections: buildDocumentSectionsFromText(input.title, input.content),
+            sections: buildDocumentSectionsFromText(input.title, normalizedContent),
             options: {
               includePageNumbers: true,
               includeHeader: true,
