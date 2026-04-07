@@ -184,6 +184,103 @@ describe("useStreamChat conversation isolation", () => {
     expect(sentMessages.some((m) => m.content.includes("B_HIDDEN_WHEN_INACTIVE"))).toBe(true);
   });
 
+  it("queues same-conversation streams locally by default and forwards queueMode=queue", async () => {
+    const activeConversation = { current: "chat_queue" };
+    const sentMessages: any[] = [];
+    const requestPayloads: any[] = [];
+
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body || "{}"));
+      requestPayloads.push(payload);
+
+      return makeSseResponse(
+        [
+          {
+            event: "chunk",
+            data: {
+              conversationId: "chat_queue",
+              requestId: payload.requestId,
+              content: requestPayloads.length === 1 ? "FIRST" : "SECOND",
+            },
+          },
+          {
+            event: "done",
+            data: {
+              conversationId: "chat_queue",
+              requestId: payload.requestId,
+            },
+          },
+        ],
+        requestPayloads.length === 1 ? 25 : 0,
+      );
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => {
+      const [optimisticMessages, setOptimisticMessages] = useState<any[]>([]);
+      const [streamingContent, setStreamingContent] = useState("");
+      const [aiState, setAiState] = useState<any>("idle");
+      const [steps, setAiProcessSteps] = useState<any[]>([]);
+      const streamingContentRef = useRef("");
+
+      const hook = useStreamChat({
+        setOptimisticMessages,
+        onSendMessage: async (message) => {
+          sentMessages.push(message);
+          return undefined;
+        },
+        setStreamingContent,
+        streamingContentRef,
+        setAiState,
+        setAiProcessSteps,
+        getActiveConversationId: () => activeConversation.current,
+      });
+
+      return {
+        hook,
+        optimisticMessages,
+        streamingContent,
+        aiState,
+        steps,
+      };
+    });
+
+    let firstPromise!: Promise<any>;
+    let secondPromise!: Promise<any>;
+
+    await act(async () => {
+      firstPromise = result.current.hook.stream("/api/chat/stream", {
+        conversationId: "chat_queue",
+        chatId: "chat_queue",
+        body: {
+          messages: [{ role: "user", content: "first" }],
+          conversationId: "chat_queue",
+        },
+      });
+
+      secondPromise = result.current.hook.stream("/api/chat/stream", {
+        conversationId: "chat_queue",
+        chatId: "chat_queue",
+        body: {
+          messages: [{ role: "user", content: "second" }],
+          conversationId: "chat_queue",
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestPayloads.map((payload) => payload.queueMode)).toEqual(["queue", "queue"]);
+    expect(sentMessages.map((message) => message.content)).toEqual(["FIRST", "SECOND"]);
+  });
+
   it("keeps new chat idle while another conversation is streaming", async () => {
     const activeConversation = { current: "chat_a" };
     const streamingSnapshots: string[] = [];
