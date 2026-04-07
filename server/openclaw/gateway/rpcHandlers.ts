@@ -18,7 +18,7 @@ handlers.set('health', async () => ({
     gateway: true,
     tools: process.env.ENABLE_OPENCLAW_TOOLS === 'true',
     plugins: process.env.ENABLE_OPENCLAW_PLUGINS === 'true',
-    skills: process.env.ENABLE_OPENCLAW_SKILLS === 'true',
+    skills: process.env.ENABLE_OPENCLAW_SKILLS !== 'false',
     streaming: process.env.ENABLE_OPENCLAW_STREAMING === 'true',
   },
 }));

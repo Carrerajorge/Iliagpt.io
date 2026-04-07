@@ -62,7 +62,7 @@ export function getOpenClawConfig(): OpenClawConfig {
       directory: process.env.OPENCLAW_PLUGINS_DIR || '~/.iliagpt/plugins',
     },
     skills: {
-      enabled: process.env.ENABLE_OPENCLAW_SKILLS === 'true',
+      enabled: process.env.ENABLE_OPENCLAW_SKILLS !== 'false',
       directory: process.env.OPENCLAW_SKILLS_DIR
         ? path.resolve(process.env.OPENCLAW_SKILLS_DIR)
         : defaultSkillsDir,

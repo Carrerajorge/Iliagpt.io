@@ -117,10 +117,37 @@ export class ProfessionalFileGenerator {
   // ------------------------------------------
 
   /**
-   * Generate an Excel workbook with professional styling, formulas,
-   * conditional formatting, and summary sheets.
+   * Generate an Excel workbook.
+   * Accepts either a full StructuredData object or a simple (headers, rows, options) signature
+   * used by skill handlers.
    */
-  async generateExcel(data: StructuredData): Promise<FileResult> {
+  async generateExcel(
+    dataOrHeaders: StructuredData | string[],
+    rows?: any[][],
+    options?: { sheetName?: string; title?: string },
+  ): Promise<FileResult | Buffer> {
+    // Simple overload: (headers, rows, options) → returns Buffer for backward compat
+    if (Array.isArray(dataOrHeaders) && typeof dataOrHeaders[0] === "string") {
+      const headers = dataOrHeaders as string[];
+      const structuredData: StructuredData = {
+        title: options?.title || "Spreadsheet",
+        sheets: [
+          {
+            name: options?.sheetName || "Sheet1",
+            headers,
+            rows: rows || [],
+          },
+        ],
+        theme: "professional",
+      };
+      const result = await this._generateExcelCore(structuredData);
+      return result.buffer;
+    }
+    // Full signature: (StructuredData) → returns FileResult
+    return this._generateExcelCore(dataOrHeaders as StructuredData);
+  }
+
+  private async _generateExcelCore(data: StructuredData): Promise<FileResult> {
     try {
       const theme = data.theme || "professional";
 
@@ -225,12 +252,67 @@ export class ProfessionalFileGenerator {
   /**
    * Generate a Word document with professional formatting.
    *
+   * Accepts either a full DocumentContent object or a simple (markdown, options) signature
+   * used by skill handlers.
+   *
    * Strategy:
    * 1. Try LLM-powered code generation via generateProfessionalDocument
    * 2. Fall back to EnterpriseDocumentService (WordDocumentGenerator)
    * 3. Last resort: markdown-to-docx conversion
    */
-  async generateWord(content: DocumentContent): Promise<FileResult> {
+  async generateWord(
+    contentOrMarkdown: DocumentContent | string,
+    options?: { title?: string; locale?: string },
+  ): Promise<FileResult | Buffer> {
+    // Simple overload: (markdown, options) → returns Buffer for backward compat
+    if (typeof contentOrMarkdown === "string") {
+      const markdown = contentOrMarkdown;
+      const title = options?.title || "Document";
+      // Parse markdown into sections
+      const sections: DocumentContent["sections"] = [];
+      const lines = markdown.split("\n");
+      let currentHeading = title;
+      let currentContent: string[] = [];
+      let currentLevel = 1;
+
+      for (const line of lines) {
+        const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
+        if (headingMatch) {
+          if (currentContent.length > 0 || sections.length > 0) {
+            sections.push({
+              heading: currentHeading,
+              content: currentContent.join("\n").trim(),
+              level: currentLevel,
+            });
+          }
+          currentLevel = headingMatch[1].length;
+          currentHeading = headingMatch[2];
+          currentContent = [];
+        } else {
+          currentContent.push(line);
+        }
+      }
+      // Push last section
+      if (currentContent.length > 0 || sections.length === 0) {
+        sections.push({
+          heading: currentHeading,
+          content: currentContent.join("\n").trim(),
+          level: currentLevel,
+        });
+      }
+
+      const docContent: DocumentContent = {
+        title,
+        sections,
+        style: "formal",
+      };
+      const result = await this._generateWordCore(docContent);
+      return result.buffer;
+    }
+    return this._generateWordCore(contentOrMarkdown);
+  }
+
+  private async _generateWordCore(content: DocumentContent): Promise<FileResult> {
     const filename = `${sanitizeFilename(content.title)}_${timestamp()}.docx`;
     const mimeType =
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -332,8 +414,25 @@ export class ProfessionalFileGenerator {
 
   /**
    * Generate a PowerPoint presentation with professional corporate styling.
+   * Accepts either PresentationContent or a simple (slides[], options) signature.
    */
-  async generatePowerPoint(content: PresentationContent): Promise<FileResult> {
+  async generatePowerPoint(
+    contentOrSlides: PresentationContent | SlideData[],
+    options?: { title?: string },
+  ): Promise<FileResult | Buffer> {
+    // Simple overload: (slides[], options) → returns Buffer
+    if (Array.isArray(contentOrSlides)) {
+      const presentation: PresentationContent = {
+        title: options?.title || "Presentation",
+        slides: contentOrSlides,
+      };
+      const result = await this._generatePowerPointCore(presentation);
+      return result.buffer;
+    }
+    return this._generatePowerPointCore(contentOrSlides);
+  }
+
+  private async _generatePowerPointCore(content: PresentationContent): Promise<FileResult> {
     const filename = `${sanitizeFilename(content.title)}_${timestamp()}.pptx`;
     const mimeType =
       "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -549,8 +648,24 @@ export class ProfessionalFileGenerator {
 
   /**
    * Generate a CSV file with proper escaping and BOM for Excel compatibility.
+   * Accepts either a structured object or a raw CSV string (for backward compat).
    */
-  async generateCSV(data: {
+  async generateCSV(
+    dataOrString:
+      | { headers: string[]; rows: any[][]; title?: string }
+      | string,
+  ): Promise<FileResult | Buffer> {
+    // Simple overload: raw CSV string → returns Buffer
+    if (typeof dataOrString === "string") {
+      const csvContent = dataOrString;
+      const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+      const body = Buffer.from(csvContent, "utf-8");
+      return Buffer.concat([bom, body]);
+    }
+    return this._generateCSVCore(dataOrString);
+  }
+
+  private async _generateCSVCore(data: {
     headers: string[];
     rows: any[][];
     title?: string;

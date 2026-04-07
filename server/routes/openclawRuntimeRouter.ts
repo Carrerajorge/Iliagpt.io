@@ -113,7 +113,7 @@ export function createOpenClawRuntimeRouter(): Router {
       ok: true,
       timestamp: new Date().toISOString(),
       modules: {
-        skills: process.env.ENABLE_OPENCLAW_SKILLS === "true",
+        skills: process.env.ENABLE_OPENCLAW_SKILLS !== "false",
         tools: process.env.ENABLE_OPENCLAW_TOOLS === "true",
         gateway: process.env.ENABLE_OPENCLAW_GATEWAY === "true",
       },

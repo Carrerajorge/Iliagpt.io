@@ -55,6 +55,7 @@ import {
   type RAGRelevanceDecision,
 } from "../lib/streamReliability";
 import { saveStreamingProgress } from "../lib/streamingSeq";
+import { skillAutoDispatcher, type SkillDispatchResult } from "../services/skillAutoDispatcher";
 
 type AttachmentSpec = z.infer<typeof AttachmentSpecSchema>;
 type StreamProviderSwitch = {
@@ -6444,6 +6445,85 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             console.error("[Stream] ❌ Production error stack:", productionError?.stack);
           }
         }
+
+        // ── SKILL AUTO-DISPATCHER: handle non-production intents (code, search, media, integrations) ──
+        if (intentResult && intentResult.intent !== "CHAT_GENERAL" && intentResult.intent !== "NEED_CLARIFICATION") {
+          try {
+            const effectiveChatId = chatId || conversationId || streamConversationId;
+            const skillResult: SkillDispatchResult = await skillAutoDispatcher.dispatch({
+              message: userMessageText,
+              intentResult,
+              userId,
+              chatId: effectiveChatId,
+              conversationId: streamConversationId,
+              requestId,
+              assistantMessageId,
+              locale: intentResult.language_detected || "es",
+              attachments: resolvedAttachments?.map((a: any) => ({
+                name: a.name,
+                mimeType: a.type || a.mimeType,
+                storagePath: a.storagePath,
+                fileId: a.fileId,
+              })),
+            });
+
+            if (skillResult.handled && (skillResult.artifacts.length > 0 || skillResult.textResponse)) {
+              console.log(`[Stream] 🎯 SKILL DISPATCHED: ${skillResult.skillId} (${skillResult.skillName}) - ${skillResult.artifacts.length} artifacts`);
+
+              // Ensure SSE headers are set
+              if (!res.headersSent) {
+                res.setHeader("Content-Type", "text/event-stream");
+                applySseSecurityHeaders(res);
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+                res.setHeader("X-Accel-Buffering", "no");
+              }
+
+              // Stream skill text response as tokens
+              if (skillResult.textResponse) {
+                res.write(`data: ${JSON.stringify({ type: "token", content: skillResult.textResponse })}\n\n`);
+              }
+
+              // Emit artifacts for download
+              for (const artifact of skillResult.artifacts) {
+                res.write(`data: ${JSON.stringify({
+                  type: "artifact",
+                  artifact: {
+                    filename: artifact.filename,
+                    mimeType: artifact.mimeType,
+                    size: artifact.size,
+                    downloadUrl: artifact.downloadUrl,
+                    metadata: artifact.metadata,
+                    library: artifact.library,
+                  },
+                  skillId: skillResult.skillId,
+                  skillName: skillResult.skillName,
+                })}\n\n`);
+              }
+
+              // Emit suggestions if available
+              if (skillResult.suggestions?.length) {
+                res.write(`data: ${JSON.stringify({ type: "suggestions", suggestions: skillResult.suggestions })}\n\n`);
+              }
+
+              // Emit skill metadata
+              res.write(`data: ${JSON.stringify({
+                type: "skill_execution",
+                skillId: skillResult.skillId,
+                skillName: skillResult.skillName,
+                category: skillResult.category,
+                artifactCount: skillResult.artifacts.length,
+                metrics: skillResult.metrics,
+              })}\n\n`);
+
+              res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+              res.end();
+              return;
+            }
+          } catch (skillError: any) {
+            console.warn("[Stream] Skill auto-dispatch failed (non-blocking), falling back to chat:", skillError?.message);
+          }
+        }
       }
 
       const [, memoryResult, searchResult] = await Promise.allSettled([
@@ -6772,6 +6852,67 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             console.error('[Stream] ❌ Production handler error (second intercept), falling back to chat:', productionError?.message || productionError);
             console.error('[Stream] ❌ Production error stack:', productionError?.stack);
             // Continue to normal chat flow if production fails
+          }
+        }
+
+        // ── SKILL AUTO-DISPATCHER (second intercept): non-production skills ──
+        if (intentResult && intentResult.intent !== "CHAT_GENERAL" && intentResult.intent !== "NEED_CLARIFICATION") {
+          try {
+            const effectiveChatId = chatId || conversationId || streamConversationId;
+            const skillResult: SkillDispatchResult = await skillAutoDispatcher.dispatch({
+              message: userMessageText,
+              intentResult,
+              userId,
+              chatId: effectiveChatId,
+              conversationId: streamConversationId,
+              requestId,
+              assistantMessageId,
+              locale: intentResult.language_detected || "es",
+            });
+
+            if (skillResult.handled && (skillResult.artifacts.length > 0 || skillResult.textResponse)) {
+              console.log(`[Stream] 🎯 SKILL DISPATCHED (2nd): ${skillResult.skillId} (${skillResult.skillName})`);
+
+              if (skillResult.textResponse) {
+                writeSse(res, "token", { type: "token", content: skillResult.textResponse });
+              }
+
+              for (const artifact of skillResult.artifacts) {
+                writeSse(res, "artifact", {
+                  type: "artifact",
+                  artifact: {
+                    filename: artifact.filename,
+                    mimeType: artifact.mimeType,
+                    size: artifact.size,
+                    downloadUrl: artifact.downloadUrl,
+                    metadata: artifact.metadata,
+                    library: artifact.library,
+                  },
+                  skillId: skillResult.skillId,
+                  skillName: skillResult.skillName,
+                });
+              }
+
+              if (skillResult.suggestions?.length) {
+                writeSse(res, "suggestions", { type: "suggestions", suggestions: skillResult.suggestions });
+              }
+
+              writeSse(res, "skill_execution", {
+                type: "skill_execution",
+                skillId: skillResult.skillId,
+                skillName: skillResult.skillName,
+                category: skillResult.category,
+                artifactCount: skillResult.artifacts.length,
+                metrics: skillResult.metrics,
+              });
+
+              writeSse(res, "done", { type: "done" });
+              if (heartbeatInterval) clearInterval(heartbeatInterval);
+              res.end();
+              return;
+            }
+          } catch (skillError: any) {
+            console.warn("[Stream] Skill auto-dispatch (2nd) failed, falling back:", skillError?.message);
           }
         }
       }

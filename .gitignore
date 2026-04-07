@@ -44,4 +44,4 @@ sandbox_workspace/.state/
 # Compiled Python
 **/__pycache__/
 **/*.pyc
-**/*.pyo
+**/*.pyoartifacts/

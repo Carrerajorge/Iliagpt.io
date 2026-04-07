@@ -8,6 +8,7 @@
 import { handleProductionRequest, isProductionIntent } from '../productionHandler';
 import { professionalFileGenerator } from './professionalFileGenerator';
 import { llmGateway } from '../../lib/llmGateway';
+import { generatePdfFromHtml } from '../pdfGeneration';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -295,20 +296,40 @@ async function handleCSV(request: SkillHandlerRequest): Promise<SkillHandlerResu
 }
 
 async function handlePDF(request: SkillHandlerRequest): Promise<SkillHandlerResult> {
-  // PDF conversion from Word requires LibreOffice or similar tooling.
-  // We generate a professional Word document and inform the user.
   const content = await generateContentWithLLM(
-    `You are a professional document writer. Based on the user's request, generate structured document content in Markdown format. Include headings, paragraphs, bullet points, and tables where appropriate. Respond ONLY with the Markdown content.`,
+    `You are a professional document writer. Based on the user's request, generate the document content as valid HTML with proper structure: use <h1>, <h2>, <h3> for headings, <p> for paragraphs, <ul>/<ol> for lists, <table> for tables. Use professional styling. Respond ONLY with the HTML content (no <html>/<body> wrapper needed).`,
     request.message,
     request.userId,
   );
 
-  const buffer = await professionalFileGenerator.generateWord(content, {
-    title: extractTitle(request.message),
-    locale: request.locale,
-  });
+  const title = extractTitle(request.message);
 
-  const filename = `document_${timestamp()}.docx`;
+  // Wrap content in a styled HTML page for PDF rendering
+  const htmlDocument = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #1a202c; max-width: 800px; margin: 0 auto; padding: 20px; }
+  h1 { color: #1f4e79; border-bottom: 2px solid #4472c4; padding-bottom: 8px; }
+  h2 { color: #2b7a78; margin-top: 1.5em; }
+  h3 { color: #4472c4; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d2d6dc; padding: 8px 12px; text-align: left; }
+  th { background-color: #1f4e79; color: white; }
+  tr:nth-child(even) { background-color: #f7fafc; }
+  ul, ol { padding-left: 2em; }
+  blockquote { border-left: 4px solid #4472c4; margin: 1em 0; padding: 0.5em 1em; background: #f7fafc; }
+</style>
+</head>
+<body>
+<h1>${title}</h1>
+${content}
+</body>
+</html>`;
+
+  const buffer = await generatePdfFromHtml(htmlDocument);
+  const filename = `document_${timestamp()}.pdf`;
 
   return {
     handled: true,
@@ -320,15 +341,16 @@ async function handlePDF(request: SkillHandlerRequest): Promise<SkillHandlerResu
         type: 'document',
         filename,
         buffer,
-        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        mimeType: 'application/pdf',
         size: buffer.length,
-        metadata: { format: 'docx', note: 'PDF conversion requires additional server tooling; Word document provided as equivalent.', generatedAt: new Date().toISOString() },
+        metadata: { format: 'pdf', generatedAt: new Date().toISOString() },
       },
     ],
-    textResponse: `Your document has been created as a Word file. Direct PDF generation requires additional server-side tooling (e.g., LibreOffice). The Word document is fully formatted and can be converted to PDF in any office application.`,
+    textResponse: `Your PDF document has been created successfully with professional formatting.`,
     suggestions: [
-      'Open in Google Docs and export as PDF',
+      'Convert this to a Word document',
       'Create a presentation from this content',
+      'Modify the document structure',
     ],
   };
 }
