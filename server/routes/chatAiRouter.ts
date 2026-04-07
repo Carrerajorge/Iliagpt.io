@@ -38,7 +38,7 @@ import { buildAssistantMessage, buildAssistantMessageMetadata } from "@shared/as
 import { buildFollowUpSuggestions } from "@shared/followUpSuggestions";
 import { handleEmailChatRequest } from "../services/gmailChatIntegration";
 import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
-import { FREE_MODEL_ID } from "../lib/modelRegistry";
+import { FREE_MODEL_ID, isModelFreeForAll } from "../lib/modelRegistry";
 import { ensureUserRowExists } from "../lib/ensureUserRowExists";
 import { buildSkillSystemPromptSection, drizzleSkillStore, resolveSkillContextFromRequest } from "../services/skillContextResolver";
 import { getSkillPlatformService, type SkillExecutionResult } from "../services/skillPlatform";
@@ -5060,7 +5060,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       const authenticatedStreamUser = getUserId(req);
       const effectiveUserId = authenticatedStreamUser || getOrCreateSecureUserId(req);
       const requestedModel = typeof model === "string" ? model.trim() : "";
-      const isUsingFreeModel = !requestedModel || requestedModel === FREE_MODEL_ID || requestedModel === "google/gemma-4-31b-it";
+      const isUsingFreeModel = !requestedModel || isModelFreeForAll(requestedModel);
       if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && !isUsingFreeModel) {
         console.warn(`[Stream] Blocked anonymous stream attempt from IP=${req.ip}, model=${requestedModel}`);
         res.setHeader("Content-Type", "text/event-stream");
@@ -6105,6 +6105,14 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         } catch (sessionError) {
           console.error(`[Stream] Error creating GPT session for gptId=${gptId}:`, sessionError);
         }
+      }
+
+      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && effectiveModel && !isModelFreeForAll(effectiveModel)) {
+        console.warn(`[Stream] Blocked anonymous post-enforcement model: effectiveModel=${effectiveModel}, IP=${req.ip}`);
+        res.setHeader("Content-Type", "text/event-stream");
+        applySseSecurityHeaders(res);
+        res.write(`data: ${JSON.stringify({ type: "error", error: "Authentication required. Please sign in with Google to use this model.", code: "AUTH_REQUIRED" })}\n\n`);
+        return res.end();
       }
 
       // Track GPT Usage (Fire-and-forget)

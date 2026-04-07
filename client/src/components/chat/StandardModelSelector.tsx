@@ -3,7 +3,7 @@ import { ChevronDown, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AvailableModel } from "@/contexts/ModelAvailabilityContext";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
-import { FREE_MODEL_ID, isFreeTierUser } from "@/lib/planUtils";
+import { FREE_MODEL_ID, isFreeTierUser, isModelFreeForAll } from "@/lib/planUtils";
 
 interface StandardModelSelectorProps {
     availableModels: AvailableModel[];
@@ -19,7 +19,7 @@ interface StandardModelSelectorProps {
 }
 
 function isModelFree(model: AvailableModel): boolean {
-    return model.modelId === FREE_MODEL_ID || model.id === FREE_MODEL_ID;
+    return isModelFreeForAll(model.modelId) || isModelFreeForAll(model.id);
 }
 
 export function StandardModelSelector({

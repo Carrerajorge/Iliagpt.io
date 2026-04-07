@@ -5,7 +5,7 @@ import { useSettingsContext } from "@/contexts/SettingsContext";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { apiFetch } from "@/lib/apiClient";
 import { useAuth } from "@/hooks/use-auth";
-import { FREE_MODEL_ID, isFreeTierUser } from "@/lib/planUtils";
+import { FREE_MODEL_ID, isFreeTierUser, isModelFreeForAll } from "@/lib/planUtils";
 
 export interface AvailableModel {
   id: string;
@@ -143,9 +143,9 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
 
     if (isFreeUser && resolvedId && enabledModels.length > 0) {
       const current = findEnabled(resolvedId);
-      if (current && current.modelId !== FREE_MODEL_ID && current.id !== FREE_MODEL_ID) {
+      if (current && !isModelFreeForAll(current.modelId) && !isModelFreeForAll(current.id)) {
         const freeModel = enabledModels.find(
-          (m) => m.modelId === FREE_MODEL_ID || m.id === FREE_MODEL_ID,
+          (m) => isModelFreeForAll(m.modelId) || isModelFreeForAll(m.id),
         );
         if (freeModel) {
           resolvedId = freeModel.id;

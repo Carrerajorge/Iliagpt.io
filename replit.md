@@ -85,6 +85,11 @@ Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment varia
 - **Server-side safety net**: `POST /api/chats/:id/messages` deduplicates assistant messages by `userMessageId` using `findAssistantResponseForUserMessage()` with primary DB fallback to avoid replica lag.
 - **Key files**: `client/src/hooks/use-stream-chat.ts` (finalize, SSE event handling), `client/src/hooks/use-chats.ts` (addMessage), `server/routes/chatsRouter.ts` (dedup guard), `server/storage.ts` (primary DB fallback).
 
+### Free-Tier Model Expansion (v2026.4.7)
+- **Free models**: Both `google/gemma-4-31b-it` and `grok-4-1-fast-non-reasoning` are now available to unauthenticated/free-tier users.
+- **Frontend**: `FREE_MODEL_IDS` set in `client/src/lib/planUtils.ts` + `isModelFreeForAll()` used by `StandardModelSelector.tsx` and `ModelAvailabilityContext.tsx`.
+- **Backend**: `FREE_MODEL_IDS` set in `server/lib/modelRegistry.ts` + `isModelFreeForAll()` used by `chatAiRouter.ts` for both pre- and post-enforcement anonymous access checks.
+
 ### Memory Optimization (v2026.4.6)
 - **PerformanceAuditor**: Collection interval 60s (was 10s), history buffer 100 (was 1000), memory warning throttling (log first 3 + every 30th).
 - **TokenTracker**: Redis persist circuit breaker — disables after 5 consecutive failures. In-memory records capped at 1000 (was 10000).
