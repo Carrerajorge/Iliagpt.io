@@ -11,6 +11,7 @@ import {
   parseExcelFromText,
   parseSlidesFromText
 } from "../services/documentGeneration";
+import { EnterpriseDocumentService } from "../services/enterpriseDocumentService";
 import {
   DocumentRenderRequestSchema,
   renderDocument,
@@ -874,7 +875,7 @@ function storeIdempotentResponse(cacheKey: string, requestFingerprint: string, e
 }
 
 const GenerateDocumentRequestSchema = z.object({
-  type: z.enum(["word", "excel", "ppt"]),
+  type: z.enum(["word", "excel", "ppt", "pdf"]),
   title: z.string().trim().min(1).max(MAX_DOC_TITLE_LENGTH),
   content: z.string().min(1).max(MAX_DOC_BODY_SIZE),
   locale: z.string().trim().max(20).optional(),
@@ -883,6 +884,67 @@ const GenerateDocumentRequestSchema = z.object({
   assets: z.array(z.record(z.unknown())).max(32).optional(),
   options: z.record(z.unknown()).optional(),
 }).passthrough();
+
+function buildStructuredDocumentSections(content: string) {
+  const normalized = String(content || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [{
+      id: "section-1",
+      title: "Contenido",
+      content: "",
+      level: 1 as const,
+    }];
+  }
+
+  const headingRe = /^(#{1,3})\s+(.+?)\s*$/;
+  const sections: Array<{ id: string; title: string; content: string; level: 1 | 2 | 3 }> = [];
+  let currentSection: { id: string; title: string; content: string; level: 1 | 2 | 3 } | null = null;
+
+  const flushCurrentSection = () => {
+    if (!currentSection) return;
+    currentSection.content = currentSection.content.trim();
+    sections.push(currentSection);
+    currentSection = null;
+  };
+
+  for (const rawLine of normalized.split("\n")) {
+    const line = rawLine.trimEnd();
+    const headingMatch = line.match(headingRe);
+
+    if (headingMatch) {
+      flushCurrentSection();
+      currentSection = {
+        id: `section-${sections.length + 1}`,
+        title: headingMatch[2].trim(),
+        content: "",
+        level: Math.min(3, headingMatch[1].length) as 1 | 2 | 3,
+      };
+      continue;
+    }
+
+    if (!currentSection) {
+      currentSection = {
+        id: `section-${sections.length + 1}`,
+        title: "Contenido",
+        content: "",
+        level: 1,
+      };
+    }
+
+    currentSection.content += `${line}\n`;
+  }
+
+  flushCurrentSection();
+
+  return sections.length > 0
+    ? sections
+    : [{
+        id: "section-1",
+        title: "Contenido",
+        content: normalized,
+        level: 1 as const,
+      }];
+}
 
 const PromptGenerationSchema = z.object({
   prompt: z.string().trim().min(3).max(MAX_PROMPT_LENGTH),
@@ -1165,6 +1227,22 @@ export function createDocumentsRouter() {
     next();
   });
 
+  const sendGeneratedDocument = (req: Request, res: Response, documentId: string) => {
+    if (!isSafeDocumentId(documentId)) {
+      return res.status(400).json({ error: "Invalid document id" });
+    }
+
+    const document = getGeneratedDocument(documentId);
+    if (!document) {
+      return res.status(404).json({ error: "Document not found or expired" });
+    }
+
+    res.setHeader("Content-Type", document.mimeType);
+    res.setHeader("Content-Disposition", safeContentDisposition(document.fileName));
+    res.setHeader("Content-Length", document.buffer.length);
+    res.send(document.buffer);
+  };
+
   router.get("/tool-runner/capabilities", async (req, res) => {
     const command = typeof req.query.command === "string" ? req.query.command.toLowerCase() : undefined;
 
@@ -1239,7 +1317,8 @@ export function createDocumentsRouter() {
       const theme = normalizeTheme(parsedBody.theme);
       const assets = normalizeAssets(parsedBody.assets);
       const runnerOptions = normalizeObject(parsedBody.options);
-      const runnerDocumentType = type === "word" ? "docx" : type === "excel" ? "xlsx" : "pptx";
+      const runnerDocumentType: "docx" | "xlsx" | "pptx" | null =
+        type === "word" ? "docx" : type === "excel" ? "xlsx" : type === "ppt" ? "pptx" : null;
       let toolRunnerReport: ToolRunnerReport | undefined;
 
       if (!safeTitle.trim()) {
@@ -1450,8 +1529,33 @@ export function createDocumentsRouter() {
             mimeType = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
             break;
           }
+          case "pdf": {
+            const serviceTheme = theme?.name || theme?.id || "professional";
+            const pdfResult = await EnterpriseDocumentService.create(serviceTheme).generateDocument({
+              type: "pdf",
+              title: safeTitle,
+              author: "IliaGPT AI",
+              theme: serviceTheme,
+              sections: buildStructuredDocumentSections(safeContent),
+              options: {
+                includeTableOfContents: true,
+                includePageNumbers: true,
+                includeHeader: true,
+                includeFooter: true,
+              },
+            });
+
+            if (!pdfResult.success || !pdfResult.buffer) {
+              throw new Error(pdfResult.error || "PDF generation failed");
+            }
+
+            buffer = pdfResult.buffer;
+            filename = sanitizeFilename(safeTitle, ".pdf");
+            mimeType = "application/pdf";
+            break;
+          }
           default:
-            return res.status(400).json({ error: "Invalid document type. Use 'word', 'excel', or 'ppt'" });
+            return res.status(400).json({ error: "Invalid document type. Use 'word', 'excel', 'ppt', or 'pdf'" });
         }
       } finally {
         docConcurrencyLimiter.release();
@@ -1480,13 +1584,15 @@ export function createDocumentsRouter() {
       res.setHeader("Content-Type", mimeType);
       res.setHeader("Content-Disposition", safeContentDisposition(filename));
       res.setHeader("Content-Length", buffer.length);
-      sendToolRunnerHeaders(
-        res,
-        toolRunnerReport,
-        runnerDocumentType,
-        toolRunnerRequested,
-        runnerLocale
-      );
+      if (runnerDocumentType) {
+        sendToolRunnerHeaders(
+          res,
+          toolRunnerReport,
+          runnerDocumentType,
+          toolRunnerRequested,
+          runnerLocale
+        );
+      }
       if (idempotencyKey) {
         storeIdempotentResponse(
           getIdempotencyCacheKey("/generate", idempotencyKey),
@@ -1660,22 +1766,20 @@ export function createDocumentsRouter() {
     }
   });
 
+  router.get("/download/:id", async (req, res) => {
+    try {
+      return sendGeneratedDocument(req, res, req.params.id);
+    } catch (error: any) {
+      logger.error("Document download alias error", {
+        error: sanitizeErrorMessage(error),
+      });
+      return res.status(500).json({ error: "Failed to download document" });
+    }
+  });
+
   router.get("/:id", async (req, res) => {
     try {
-      if (!isSafeDocumentId(req.params.id)) {
-        return res.status(400).json({ error: "Invalid document id" });
-      }
-
-      const document = getGeneratedDocument(req.params.id);
-
-      if (!document) {
-        return res.status(404).json({ error: "Document not found or expired" });
-      }
-
-      res.setHeader("Content-Type", document.mimeType);
-      res.setHeader("Content-Disposition", safeContentDisposition(document.fileName));
-      res.setHeader("Content-Length", document.buffer.length);
-      res.send(document.buffer);
+      return sendGeneratedDocument(req, res, req.params.id);
     } catch (error: any) {
       logger.error("Document download error", {
         error: sanitizeErrorMessage(error),

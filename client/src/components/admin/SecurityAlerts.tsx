@@ -16,6 +16,7 @@ import {
   BellOff
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiFetchJson, apiFetchJsonNullable } from "@/lib/adminApi";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import { toast } from "sonner";
@@ -74,21 +75,18 @@ export function SecurityAlertsPanel() {
     queryFn: async () => {
       const params = new URLSearchParams({ limit: "50" });
       if (!showResolved) params.append("unresolved", "true");
-      const res = await fetch(`/api/admin/security/alerts?${params}`, {
-        credentials: "include"
-      });
-      return res.json();
+      return apiFetchJson(`/api/admin/security/alerts?${params}`);
     },
-    refetchInterval: 30000 // Refresh every 30 seconds
+    refetchInterval: 30000, // Refresh every 30 seconds
+    throwOnError: true,
   });
 
   const resolveMutation = useMutation({
     mutationFn: async (alertId: string) => {
-      const res = await fetch(`/api/admin/security/alerts/${alertId}/resolve`, {
+      return apiFetchJsonNullable(`/api/admin/security/alerts/${alertId}/resolve`, {
         method: "POST",
         credentials: "include"
       });
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/security/alerts"] });

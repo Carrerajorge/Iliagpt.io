@@ -34,7 +34,7 @@ type StoredResult = MemoryRecord & { score: number }
 // ---------------------------------------------------------------------------
 
 class PgVectorMemoryStore {
-  private store = new Map<string, MemoryRecord>()
+  private records = new Map<string, MemoryRecord>()
   private idCounter = 0
 
   private _generateId(): string {
@@ -68,7 +68,7 @@ class PgVectorMemoryStore {
       lastAccessedAt: now,
       accessCount: 0,
     }
-    this.store.set(full.id, full)
+    this.records.set(full.id, full)
     return { ...full }
   }
 
@@ -80,7 +80,7 @@ class PgVectorMemoryStore {
 
     const results: StoredResult[] = []
 
-    for (const record of this.store.values()) {
+    for (const record of this.records.values()) {
       if (userId !== undefined && record.userId !== userId) continue
       if (tags && tags.length > 0) {
         const hasTag = tags.every((t) => record.tags.includes(t))
@@ -100,9 +100,11 @@ class PgVectorMemoryStore {
 
     // Update access count and lastAccessedAt for hits
     for (const r of topResults) {
-      const existing = this.store.get(r.id)!
+      const existing = this.records.get(r.id)!
       existing.accessCount++
       existing.lastAccessedAt = new Date()
+      r.accessCount = existing.accessCount
+      r.lastAccessedAt = existing.lastAccessedAt
     }
 
     return topResults
@@ -130,7 +132,7 @@ class PgVectorMemoryStore {
   async consolidate(
     agentId: string,
   ): Promise<{ merged: number; pruned: number }> {
-    const records = Array.from(this.store.values()).filter(
+    const records = Array.from(this.records.values()).filter(
       (r) => r.agentId === agentId,
     )
 
@@ -162,7 +164,7 @@ class PgVectorMemoryStore {
     }
 
     for (const id of toDelete) {
-      this.store.delete(id)
+      this.records.delete(id)
       pruned++
     }
 
@@ -182,7 +184,7 @@ class PgVectorMemoryStore {
     const now = new Date()
     let removed = 0
 
-    for (const [id, record] of this.store) {
+    for (const [id, record] of this.records) {
       if (record.agentId !== agentId) continue
 
       const isExpired = record.expiresAt !== undefined && record.expiresAt <= now
@@ -190,7 +192,7 @@ class PgVectorMemoryStore {
       const isNegligible = recomputedImportance < 0.01
 
       if (isExpired || isNegligible) {
-        this.store.delete(id)
+        this.records.delete(id)
         removed++
       }
     }
@@ -203,7 +205,7 @@ class PgVectorMemoryStore {
     avgImportance: number
     totalAccesses: number
   } {
-    const records = Array.from(this.store.values()).filter(
+    const records = Array.from(this.records.values()).filter(
       (r) => r.agentId === agentId,
     )
 

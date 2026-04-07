@@ -59,6 +59,7 @@ describe("assistantMessage", () => {
     });
 
     expect(buildAssistantMessageMetadata(message)).toEqual({
+      artifact: { artifactId: "artifact-1" },
       webSources: [{ url: "https://example.com" }],
       searchQueries: [{ query: "langchain" }],
       totalSearches: 2,

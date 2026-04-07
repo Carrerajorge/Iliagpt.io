@@ -69,6 +69,7 @@ export const MathRenderer = memo(function MathRenderer({
   const [state, setState] = useState<RenderState>({ status: "idle", html: "", version: 0 });
   const containerRef = useRef<HTMLSpanElement>(null);
   const versionRef = useRef(0);
+  const normalizedPreview = useRef("");
 
   useEffect(() => {
     versionRef.current += 1;
@@ -82,6 +83,7 @@ export const MathRenderer = memo(function MathRenderer({
     setState({ status: "loading", html: "", version: currentVersion });
 
     const { latex, isBlock } = convertToLatex(content);
+    normalizedPreview.current = latex;
     const displayMode = block || isBlock;
     const katexResult = renderWithKatex(latex, displayMode);
     
@@ -187,9 +189,22 @@ export const MathRenderer = memo(function MathRenderer({
 
   if (state.status === "error" && showError) {
     return (
-      <span className={cn("inline-flex items-center gap-1 text-destructive text-sm", className)}>
-        <AlertCircle className="h-3 w-3" />
-        <code className="bg-destructive/10 px-1 rounded text-xs">{content}</code>
+      <span
+        className={cn(
+          block
+            ? "flex flex-col gap-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive"
+            : "inline-flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/5 px-2 py-1 text-sm text-destructive",
+          className
+        )}
+        title={state.error}
+      >
+        <span className="inline-flex items-center gap-1 font-medium">
+          <AlertCircle className="h-3.5 w-3.5" />
+          LaTeX no válido
+        </span>
+        <code className="max-w-full overflow-x-auto rounded bg-destructive/10 px-2 py-1 text-xs text-destructive/90">
+          {normalizedPreview.current || content}
+        </code>
       </span>
     );
   }

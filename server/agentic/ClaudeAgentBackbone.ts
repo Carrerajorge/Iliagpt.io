@@ -48,6 +48,30 @@ export interface BackboneCallOptions {
   sessionId?: string;
 }
 
+export interface LegacyBackboneRequest {
+  messages: AgentMessage[];
+  model?: string;
+  maxTokens?: number;
+  systemPrompt?: string;
+  tools?: ToolDefinition[];
+  thinking?: ThinkingConfig;
+  temperature?: number;
+  sessionId?: string;
+}
+
+export interface LegacyBackboneResponse {
+  responseId: string;
+  sessionId: string;
+  model: ClaudeModel;
+  content: string;
+  text: string;
+  thinking: string;
+  toolCalls: BackboneResponse["toolCalls"];
+  stopReason: BackboneResponse["stopReason"];
+  usage: BackboneResponse["usage"];
+  durationMs: number;
+}
+
 export interface ToolCallResult {
   toolCallId: string;
   toolName: string;
@@ -168,6 +192,31 @@ export class ClaudeAgentBackbone extends EventEmitter {
     if (!session) throw new Error(`Session '${sessionId}' not found`);
     session.messages.push({ role: "user", content });
     session.lastActiveAt = Date.now();
+  }
+
+  async generateResponse(request: LegacyBackboneRequest): Promise<LegacyBackboneResponse> {
+    const response = await this.call(request.messages, {
+      model: request.model as ClaudeModel | undefined,
+      maxTokens: request.maxTokens,
+      system: request.systemPrompt,
+      tools: request.tools,
+      thinking: request.thinking,
+      temperature: request.temperature,
+      sessionId: request.sessionId,
+    });
+
+    return {
+      responseId: response.responseId,
+      sessionId: response.sessionId,
+      model: response.model,
+      content: response.text,
+      text: response.text,
+      thinking: response.thinkingContent,
+      toolCalls: response.toolCalls,
+      stopReason: response.stopReason,
+      usage: response.usage,
+      durationMs: response.durationMs,
+    };
   }
 
   // ── Core call ─────────────────────────────────────────────────────────────────

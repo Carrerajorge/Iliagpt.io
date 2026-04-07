@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-const BASE_URL = 'http://localhost:5000';
+const BASE_URL = process.env.TEST_BASE_URL ?? 'http://localhost:5050';
 
 describe('Health Endpoints', () => {
   describe('GET /api/health', () => {

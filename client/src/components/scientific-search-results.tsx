@@ -154,12 +154,23 @@ const ArticleCard = memo(function ArticleCard({
   const [isExpanded, setIsExpanded] = useState(false);
 
   const getSourceBadge = (source: string) => {
-    const colors: Record<string, string> = {
-      pubmed: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-      scielo: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-      semantic_scholar: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
+    const normalized = source.toLowerCase();
+    const badges: Record<string, { label: string; className: string }> = {
+      pubmed: { label: "PubMed", className: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" },
+      scielo: { label: "SciELO", className: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200" },
+      semantic: { label: "Semantic Scholar", className: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" },
+      semantic_scholar: { label: "Semantic Scholar", className: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" },
+      openalex: { label: "OpenAlex", className: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200" },
+      crossref: { label: "Crossref", className: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200" },
+      core: { label: "CORE", className: "bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-200" },
+      arxiv: { label: "arXiv", className: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200" },
+      doaj: { label: "DOAJ", className: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200" },
+      base: { label: "BASE", className: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-200" },
     };
-    return colors[source] || "bg-gray-100 text-gray-800";
+    return badges[normalized] || {
+      label: source,
+      className: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200",
+    };
   };
 
   const getTypeBadge = (type?: string) => {
@@ -174,6 +185,7 @@ const ArticleCard = memo(function ArticleCard({
   };
 
   const typeBadge = getTypeBadge(article.publicationType);
+  const sourceBadge = getSourceBadge(article.source);
 
   return (
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
@@ -183,8 +195,8 @@ const ArticleCard = memo(function ArticleCard({
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-2 flex-wrap">
                 <span className="text-xs text-gray-500 font-medium">#{index + 1}</span>
-                <Badge variant="outline" className={getSourceBadge(article.source)}>
-                  {article.source.toUpperCase()}
+                <Badge variant="outline" className={sourceBadge.className}>
+                  {sourceBadge.label}
                 </Badge>
                 {typeBadge && (
                   <Badge variant="outline" className={typeBadge.color}>
@@ -192,9 +204,10 @@ const ArticleCard = memo(function ArticleCard({
                   </Badge>
                 )}
                 {article.isOpenAccess ? (
-                  <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+                  <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 font-medium">
                     <Unlock className="w-3 h-3 mr-1" />
                     Open Access
+                    {article.pdfUrl ? " • PDF" : ""}
                   </Badge>
                 ) : (
                   <Badge variant="outline" className="bg-gray-50 text-gray-600 border-gray-200">
@@ -275,6 +288,17 @@ const ArticleCard = memo(function ArticleCard({
             )}
             
             <div className="flex items-center gap-2 pt-2">
+              {article.pdfUrl && (
+                <a
+                  href={article.pdfUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-sm font-medium text-red-700 hover:bg-red-100"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  PDF directo
+                </a>
+              )}
               {article.doi && (
                 <a
                   href={`https://doi.org/${article.doi}`}
@@ -295,17 +319,6 @@ const ArticleCard = memo(function ArticleCard({
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                   Ver artículo
-                </a>
-              )}
-              {article.pdfUrl && (
-                <a
-                  href={article.pdfUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-red-500 hover:text-red-600 flex items-center gap-1"
-                >
-                  <FileText className="w-3.5 h-3.5" />
-                  PDF
                 </a>
               )}
             </div>

@@ -392,7 +392,6 @@ describe("chat stream isolation", () => {
       await close();
     }
   }, 60000);
-
   it("waits for the run created by /messages and never recreates the user message in /chat/stream", async () => {
     const app = await makeApp();
     const { client, close } = await createHttpTestClient(app);

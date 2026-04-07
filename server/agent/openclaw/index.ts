@@ -23,6 +23,7 @@ import { openclawWebSearch, clearSearchCache, getSearchCacheStats, WebSearchInpu
 import { webFetch, clearWebFetchCache, WebFetchInputSchema } from "./tools/webFetch";
 import { memorySearchTool, memoryGetTool } from "./tools/memoryTool";
 import { getSubagentTools, getSubagentsForRun, countActiveForRun } from "./tools/subagentTool";
+import { parseExcelFromText, parseSlidesFromText } from "../../services/documentGeneration";
 import {
   compactConversation,
   guardContextWindow,
@@ -227,8 +228,16 @@ const CreatePresentationSchema = z.object({
     title: z.string(),
     content: z.string(),
     layout: z.enum(["title", "content", "two-column", "image"]).optional(),
-  })).describe("Slide definitions"),
-});
+  })).optional().describe("Slide definitions"),
+  content: z.string().optional().describe("Markdown or plain-text slide content"),
+  theme: z.string().optional().describe("Presentation theme"),
+}).refine(
+  (input) => (Array.isArray(input.slides) && input.slides.length > 0) || Boolean(input.content?.trim()),
+  {
+    message: "Provide slide definitions or content",
+    path: ["content"],
+  }
+);
 
 const CreateSpreadsheetSchema = z.object({
   title: z.string().describe("Spreadsheet title"),
@@ -236,13 +245,29 @@ const CreateSpreadsheetSchema = z.object({
     name: z.string(),
     headers: z.array(z.string()),
     rows: z.array(z.array(z.any())),
-  })).describe("Sheet definitions"),
-});
+  })).optional().describe("Sheet definitions"),
+  content: z.string().optional().describe("Tabular content using pipes, commas, semicolons, or tabs"),
+  theme: z.string().optional().describe("Spreadsheet theme"),
+}).refine(
+  (input) => (Array.isArray(input.sheets) && input.sheets.length > 0) || Boolean(input.content?.trim()),
+  {
+    message: "Provide sheet definitions or tabular content",
+    path: ["content"],
+  }
+);
 
 const CreateDocumentSchema = z.object({
   title: z.string().describe("Document title"),
   content: z.string().describe("Document content (markdown)"),
-  format: z.enum(["docx", "pdf", "txt"]).optional().default("docx"),
+  format: z.enum(["docx", "pdf"]).optional().default("docx"),
+  theme: z.string().optional().describe("Document theme"),
+});
+
+const GenerateDocumentSchema = z.object({
+  type: z.enum(["word", "excel", "ppt", "pdf", "csv"]).describe("Document type to generate"),
+  title: z.string().describe("Document title"),
+  content: z.string().describe("Document content"),
+  theme: z.string().optional().describe("Document theme"),
 });
 
 const readFileTool: ToolDefinition = {
@@ -862,6 +887,173 @@ ${titleEl}${axes}${chartBody}${legend}
 </svg>`;
 }
 
+function sanitizeGeneratedFilename(name: string): string {
+  const cleaned = String(name || "document")
+    .trim()
+    .replace(/[^a-zA-Z0-9._ -]/g, "")
+    .replace(/\s+/g, "-");
+  return cleaned.slice(0, 80) || "document";
+}
+
+function buildSectionsFromMarkdown(title: string, content: string) {
+  const normalized = String(content || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [{
+      id: "section-1",
+      title: "Contenido",
+      content: title || "Documento",
+      level: 1 as const,
+    }];
+  }
+
+  const sections: Array<{ id: string; title: string; content: string; level: 1 | 2 | 3 }> = [];
+  const headingRe = /^(#{1,3})\s+(.+?)\s*$/;
+  let currentSection: { id: string; title: string; content: string; level: 1 | 2 | 3 } | null = null;
+
+  const flushCurrentSection = () => {
+    if (!currentSection) return;
+    currentSection.content = currentSection.content.trim();
+    sections.push(currentSection);
+    currentSection = null;
+  };
+
+  for (const rawLine of normalized.split("\n")) {
+    const line = rawLine.trimEnd();
+    const headingMatch = line.match(headingRe);
+
+    if (headingMatch) {
+      flushCurrentSection();
+      currentSection = {
+        id: `section-${sections.length + 1}`,
+        title: headingMatch[2].trim(),
+        content: "",
+        level: Math.min(3, headingMatch[1].length) as 1 | 2 | 3,
+      };
+      continue;
+    }
+
+    if (!currentSection) {
+      currentSection = {
+        id: `section-${sections.length + 1}`,
+        title: "Contenido",
+        content: "",
+        level: 1,
+      };
+    }
+
+    currentSection.content += `${line}\n`;
+  }
+
+  flushCurrentSection();
+  return sections.length > 0
+    ? sections
+    : [{
+        id: "section-1",
+        title: "Contenido",
+        content: normalized,
+        level: 1 as const,
+      }];
+}
+
+function buildPresentationSections(title: string, content?: string, slides?: Array<{ title?: string; content?: string }>) {
+  if (Array.isArray(slides) && slides.length > 0) {
+    return slides.map((slide, index) => ({
+      id: `slide-${index + 1}`,
+      title: slide.title || `Slide ${index + 1}`,
+      content: slide.content || "",
+      level: 1 as const,
+    }));
+  }
+
+  if (content?.trim()) {
+    return parseSlidesFromText(content).map((slide, index) => ({
+      id: `slide-${index + 1}`,
+      title: slide.title || `Slide ${index + 1}`,
+      content: slide.content.join("\n"),
+      level: 1 as const,
+    }));
+  }
+
+  return [{
+    id: "slide-1",
+    title,
+    content: "Presentación generada automáticamente.",
+    level: 1 as const,
+  }];
+}
+
+function buildSpreadsheetSections(title: string, content?: string, sheets?: Array<{ name?: string; headers?: unknown[]; rows?: unknown[][] }>) {
+  if (Array.isArray(sheets) && sheets.length > 0) {
+    return sheets.map((sheet, index) => ({
+      id: `sheet-${index + 1}`,
+      title: sheet.name || `Hoja ${index + 1}`,
+      content: `Datos exportados de ${sheet.name || `Hoja ${index + 1}`}.`,
+      level: 1 as const,
+      tables: [{
+        headers: Array.isArray(sheet.headers) ? sheet.headers.map((header) => String(header ?? "")) : [],
+        rows: Array.isArray(sheet.rows)
+          ? sheet.rows.map((row) => Array.isArray(row) ? row.map((cell) => String(cell ?? "")) : [String(row ?? "")])
+          : [],
+        style: "striped" as const,
+      }],
+    }));
+  }
+
+  if (content?.trim()) {
+    const parsedRows = parseExcelFromText(content).map((row) => row.map((cell) => String(cell ?? "")));
+    const [headers, ...rows] = parsedRows;
+    return [{
+      id: "sheet-1",
+      title,
+      content: `Datos tabulares para ${title}.`,
+      level: 1 as const,
+      tables: [{
+        headers: headers && headers.length > 0 ? headers : ["Contenido"],
+        rows: rows.length > 0 ? rows : [["No hay datos disponibles"]],
+        style: "striped" as const,
+      }],
+    }];
+  }
+
+  return [{
+    id: "sheet-1",
+    title,
+    content: "Hoja de cálculo generada automáticamente.",
+    level: 1 as const,
+  }];
+}
+
+function buildCsvBuffer(content: string): Buffer {
+  const rows = parseExcelFromText(content).map((row) => row.map((cell) => String(cell ?? "")));
+  const csvContent = rows
+    .map((row) =>
+      row
+        .map((cell) => {
+          if (/[",\n]/.test(cell)) {
+            return `"${cell.replace(/"/g, '""')}"`;
+          }
+          return cell;
+        })
+        .join(","),
+    )
+    .join("\n");
+
+  return Buffer.from(csvContent, "utf-8");
+}
+
+async function writeEnterpriseArtifact(filename: string, buffer: Buffer) {
+  const fs = await import("fs/promises");
+  const path = await import("path");
+  const artifactsDir = path.resolve(process.cwd(), "artifacts");
+  await fs.mkdir(artifactsDir, { recursive: true });
+  const artifactPath = path.join(artifactsDir, filename);
+  await fs.writeFile(artifactPath, buffer);
+  return {
+    artifactPath,
+    downloadUrl: `/api/artifacts/${encodeURIComponent(filename)}`,
+  };
+}
+
 const generateChartTool: ToolDefinition = {
   name: "generate_chart",
   description: "Generate chart visualizations from data",
@@ -947,31 +1139,56 @@ const sendEmailTool: ToolDefinition = {
 
 const createPresentationTool: ToolDefinition = {
   name: "create_presentation",
-  description: "Create a PowerPoint presentation",
+  description: "Create a PowerPoint presentation from slide definitions or markdown/plain-text content",
   inputSchema: CreatePresentationSchema,
   async execute(input: any, context: ToolContext): Promise<ToolResult> {
     try {
-      const PptxGenJS = (await import("pptxgenjs")).default;
-      const pres = new PptxGenJS();
-      pres.title = input.title;
-      for (const slide of input.slides) {
-        const s = pres.addSlide();
-        s.addText(slide.title, { x: 0.5, y: 0.5, fontSize: 24, bold: true });
-        s.addText(slide.content, { x: 0.5, y: 1.5, fontSize: 14, w: 9, h: 4, valign: "top" });
+      const { EnterpriseDocumentService } = await import("../../services/enterpriseDocumentService");
+      const service = EnterpriseDocumentService.create(input.theme || "professional");
+      const sections = buildPresentationSections(input.title, input.content, input.slides);
+
+      const result = await service.generateDocument({
+        type: "pptx",
+        title: input.title,
+        author: "IliaGPT AI",
+        theme: input.theme || "professional",
+        sections,
+      });
+
+      if (!result.success || !result.buffer) {
+        throw new Error(result.error || "PPTX generation failed");
       }
-      const fileName = `${input.title.replace(/[^a-zA-Z0-9]/g, "_")}.pptx`;
-      const fs = await import("fs/promises");
-      const path = await import("path");
-      const outPath = path.resolve(process.cwd(), "uploads", fileName);
-      await fs.mkdir(path.dirname(outPath), { recursive: true });
-      await pres.writeFile({ fileName: outPath });
+
+      const persisted = await writeEnterpriseArtifact(result.filename || `${sanitizeGeneratedFilename(input.title)}.pptx`, result.buffer);
       return {
         success: true,
-        output: { title: input.title, slides: input.slides.length, path: `uploads/${fileName}` },
-        artifacts: [{ type: "file", path: `uploads/${fileName}`, mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation" }],
-        previews: [],
+        output: {
+          title: input.title,
+          slides: sections.length,
+          filename: result.filename,
+          downloadUrl: persisted.downloadUrl,
+          sizeBytes: result.sizeBytes,
+        },
+        artifacts: [{
+          id: `artifact-${Date.now()}`,
+          type: "document",
+          name: result.filename,
+          path: persisted.artifactPath,
+          mimeType: result.mimeType,
+          url: persisted.downloadUrl,
+          data: {
+            downloadUrl: persisted.downloadUrl,
+            base64: result.buffer.toString("base64"),
+          },
+          createdAt: new Date(),
+        }],
+        previews: [{
+          type: "markdown",
+          title: input.title,
+          content: `Presentación generada: [${result.filename}](${persisted.downloadUrl})`,
+        }],
         logs: [],
-        metrics: { durationMs: 0 },
+        metrics: { durationMs: 0, bytesProcessed: result.sizeBytes },
       };
     } catch (err: any) {
       return { success: false, output: null, error: { code: "PPTX_ERROR", message: err.message, retryable: false } };
@@ -979,34 +1196,185 @@ const createPresentationTool: ToolDefinition = {
   },
 };
 
+const generateDocumentTool: ToolDefinition = {
+  name: "generate_document",
+  description: "Generate Word, Excel, PowerPoint, PDF, or CSV documents from text or markdown content",
+  inputSchema: GenerateDocumentSchema,
+  async execute(input: any, context: ToolContext): Promise<ToolResult> {
+    try {
+      const { EnterpriseDocumentService } = await import("../../services/enterpriseDocumentService");
+      const service = EnterpriseDocumentService.create(input.theme || "professional");
+      let result:
+        | { success: boolean; buffer?: Buffer; filename: string; mimeType: string; sizeBytes: number; error?: string }
+        | null = null;
+
+      switch (input.type) {
+        case "word":
+          result = await service.generateDocument({
+            type: "docx",
+            title: input.title,
+            author: "IliaGPT AI",
+            theme: input.theme || "professional",
+            sections: buildSectionsFromMarkdown(input.title, input.content),
+            options: {
+              includeTableOfContents: true,
+              includePageNumbers: false,
+              includeHeader: true,
+              includeFooter: true,
+            },
+          });
+          break;
+        case "pdf":
+          result = await service.generateDocument({
+            type: "pdf",
+            title: input.title,
+            author: "IliaGPT AI",
+            theme: input.theme || "professional",
+            sections: buildSectionsFromMarkdown(input.title, input.content),
+            options: {
+              includeTableOfContents: true,
+              includePageNumbers: true,
+              includeHeader: true,
+              includeFooter: true,
+            },
+          });
+          break;
+        case "excel":
+          result = await service.generateDocument({
+            type: "xlsx",
+            title: input.title,
+            author: "IliaGPT AI",
+            theme: input.theme || "professional",
+            sections: buildSpreadsheetSections(input.title, input.content),
+          });
+          break;
+        case "ppt":
+          result = await service.generateDocument({
+            type: "pptx",
+            title: input.title,
+            author: "IliaGPT AI",
+            theme: input.theme || "professional",
+            sections: buildPresentationSections(input.title, input.content),
+          });
+          break;
+        case "csv": {
+          const buffer = buildCsvBuffer(input.content);
+          result = {
+            success: true,
+            buffer,
+            filename: `${sanitizeGeneratedFilename(input.title)}.csv`,
+            mimeType: "text/csv",
+            sizeBytes: buffer.length,
+          };
+          break;
+        }
+        default:
+          throw new Error(`Unsupported document type: ${input.type}`);
+      }
+
+      if (!result.success || !result.buffer) {
+        throw new Error(result.error || "Document generation failed");
+      }
+
+      const extension =
+        input.type === "word" ? "docx" :
+        input.type === "excel" ? "xlsx" :
+        input.type === "ppt" ? "pptx" :
+        input.type === "pdf" ? "pdf" :
+        "csv";
+      const persisted = await writeEnterpriseArtifact(
+        result.filename || `${sanitizeGeneratedFilename(input.title)}.${extension}`,
+        result.buffer,
+      );
+
+      return {
+        success: true,
+        output: {
+          type: input.type,
+          title: input.title,
+          filename: result.filename,
+          downloadUrl: persisted.downloadUrl,
+          sizeBytes: result.sizeBytes,
+        },
+        artifacts: [{
+          id: `artifact-${Date.now()}`,
+          type: "document",
+          name: result.filename,
+          path: persisted.artifactPath,
+          mimeType: result.mimeType,
+          url: persisted.downloadUrl,
+          data: {
+            downloadUrl: persisted.downloadUrl,
+            base64: result.buffer.toString("base64"),
+          },
+          createdAt: new Date(),
+        }],
+        previews: [{
+          type: "markdown",
+          title: input.title,
+          content: `Documento generado: [${result.filename}](${persisted.downloadUrl})`,
+        }],
+        logs: [],
+        metrics: { durationMs: 0, bytesProcessed: result.sizeBytes },
+      };
+    } catch (err: any) {
+      return { success: false, output: null, error: { code: "GENERATE_DOCUMENT_ERROR", message: err.message, retryable: false } };
+    }
+  },
+};
+
 const createSpreadsheetTool: ToolDefinition = {
   name: "create_spreadsheet",
-  description: "Create an Excel spreadsheet",
+  description: "Create an Excel spreadsheet from structured sheets or tabular text content",
   inputSchema: CreateSpreadsheetSchema,
   async execute(input: any, context: ToolContext): Promise<ToolResult> {
     try {
-      const ExcelJS = await import("exceljs");
-      const workbook = new ExcelJS.Workbook();
-      for (const sheet of input.sheets) {
-        const ws = workbook.addWorksheet(sheet.name);
-        ws.addRow(sheet.headers);
-        for (const row of sheet.rows) {
-          ws.addRow(row);
-        }
+      const { EnterpriseDocumentService } = await import("../../services/enterpriseDocumentService");
+      const service = EnterpriseDocumentService.create(input.theme || "professional");
+      const sections = buildSpreadsheetSections(input.title, input.content, input.sheets);
+
+      const result = await service.generateDocument({
+        type: "xlsx",
+        title: input.title,
+        author: "IliaGPT AI",
+        theme: input.theme || "professional",
+        sections,
+      });
+
+      if (!result.success || !result.buffer) {
+        throw new Error(result.error || "XLSX generation failed");
       }
-      const fileName = `${input.title.replace(/[^a-zA-Z0-9]/g, "_")}.xlsx`;
-      const fs = await import("fs/promises");
-      const path = await import("path");
-      const outPath = path.resolve(process.cwd(), "uploads", fileName);
-      await fs.mkdir(path.dirname(outPath), { recursive: true });
-      await workbook.xlsx.writeFile(outPath);
+
+      const persisted = await writeEnterpriseArtifact(result.filename || `${sanitizeGeneratedFilename(input.title)}.xlsx`, result.buffer);
       return {
         success: true,
-        output: { title: input.title, sheets: input.sheets.length, path: `uploads/${fileName}` },
-        artifacts: [{ type: "file", path: `uploads/${fileName}`, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }],
-        previews: [],
+        output: {
+          title: input.title,
+          sheets: sections.length,
+          filename: result.filename,
+          downloadUrl: persisted.downloadUrl,
+          sizeBytes: result.sizeBytes,
+        },
+        artifacts: [{
+          id: `artifact-${Date.now()}`,
+          type: "document",
+          name: result.filename,
+          path: persisted.artifactPath,
+          mimeType: result.mimeType,
+          url: persisted.downloadUrl,
+          data: {
+            downloadUrl: persisted.downloadUrl,
+            base64: result.buffer.toString("base64"),
+          },
+          createdAt: new Date(),
+        }],
+        previews: [{
+          type: "markdown",
+          title: input.title,
+          content: `Hoja de cálculo generada: [${result.filename}](${persisted.downloadUrl})`,
+        }],
         logs: [],
-        metrics: { durationMs: 0 },
+        metrics: { durationMs: 0, bytesProcessed: result.sizeBytes },
       };
     } catch (err: any) {
       return { success: false, output: null, error: { code: "XLSX_ERROR", message: err.message, retryable: false } };
@@ -1016,36 +1384,64 @@ const createSpreadsheetTool: ToolDefinition = {
 
 const createDocumentTool: ToolDefinition = {
   name: "create_document",
-  description: "Create a Word document from markdown content",
+  description: "Create a Word or PDF document from markdown/plain-text content",
   inputSchema: CreateDocumentSchema,
   async execute(input: any, context: ToolContext): Promise<ToolResult> {
     try {
-      const docx = await import("docx");
-      const doc = new docx.Document({
-        sections: [{
-          properties: {},
-          children: [
-            new docx.Paragraph({ text: input.title, heading: docx.HeadingLevel.TITLE }),
-            ...input.content.split("\n").map((line: string) =>
-              new docx.Paragraph({ text: line })
-            ),
-          ],
-        }],
+      const { EnterpriseDocumentService } = await import("../../services/enterpriseDocumentService");
+      const service = EnterpriseDocumentService.create(input.theme || "professional");
+      const result = await service.generateDocument({
+        type: input.format === "pdf" ? "pdf" : "docx",
+        title: input.title,
+        author: "IliaGPT AI",
+        theme: input.theme || "professional",
+        sections: buildSectionsFromMarkdown(input.title, input.content),
+        options: {
+          includeTableOfContents: true,
+          includePageNumbers: input.format === "pdf",
+          includeHeader: true,
+          includeFooter: true,
+        },
       });
-      const fileName = `${input.title.replace(/[^a-zA-Z0-9]/g, "_")}.docx`;
-      const fs = await import("fs/promises");
-      const path = await import("path");
-      const outPath = path.resolve(process.cwd(), "uploads", fileName);
-      await fs.mkdir(path.dirname(outPath), { recursive: true });
-      const buffer = await docx.Packer.toBuffer(doc);
-      await fs.writeFile(outPath, buffer);
+
+      if (!result.success || !result.buffer) {
+        throw new Error(result.error || "Document generation failed");
+      }
+
+      const persisted = await writeEnterpriseArtifact(
+        result.filename || `${sanitizeGeneratedFilename(input.title)}.${input.format === "pdf" ? "pdf" : "docx"}`,
+        result.buffer,
+      );
+
       return {
         success: true,
-        output: { title: input.title, format: input.format, path: `uploads/${fileName}` },
-        artifacts: [{ type: "file", path: `uploads/${fileName}`, mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }],
-        previews: [],
+        output: {
+          title: input.title,
+          format: input.format,
+          filename: result.filename,
+          downloadUrl: persisted.downloadUrl,
+          sizeBytes: result.sizeBytes,
+        },
+        artifacts: [{
+          id: `artifact-${Date.now()}`,
+          type: "document",
+          name: result.filename,
+          path: persisted.artifactPath,
+          mimeType: result.mimeType,
+          url: persisted.downloadUrl,
+          data: {
+            downloadUrl: persisted.downloadUrl,
+            base64: result.buffer.toString("base64"),
+          },
+          createdAt: new Date(),
+        }],
+        previews: [{
+          type: "markdown",
+          title: input.title,
+          content: `Documento generado: [${result.filename}](${persisted.downloadUrl})`,
+        }],
         logs: [],
-        metrics: { durationMs: 0 },
+        metrics: { durationMs: 0, bytesProcessed: result.sizeBytes },
       };
     } catch (err: any) {
       return { success: false, output: null, error: { code: "DOCX_ERROR", message: err.message, retryable: false } };
@@ -1125,6 +1521,7 @@ export function initializeOpenClawTools(): void {
     analyzeSpreadsheetTool,
     generateChartTool,
     sendEmailTool,
+    generateDocumentTool,
     createPresentationTool,
     createSpreadsheetTool,
     createDocumentTool,
@@ -1249,13 +1646,13 @@ export function buildOpenClawSystemPromptSection(options: {
     memory_get: "Retrieve specific memory entry",
     subagent_status: "Check sub-agent status and results",
     generate_image: "Generate images via AI",
-    generate_document: "Generate Word/PDF documents",
+    generate_document: "Generate Word, Excel, PowerPoint, PDF, or CSV documents",
     analyze_spreadsheet: "Analyze spreadsheet data",
     generate_chart: "Generate chart visualizations",
     send_email: "Send email via SMTP",
     create_presentation: "Create PowerPoint presentations",
     create_spreadsheet: "Create Excel spreadsheets",
-    create_document: "Create Word documents",
+    create_document: "Create Word or PDF documents",
     subagent_spawn: "Spawn specialized sub-agents for parallel tasks",
   };
 

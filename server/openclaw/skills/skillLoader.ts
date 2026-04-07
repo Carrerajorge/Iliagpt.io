@@ -907,6 +907,118 @@ Diagnostics:
       source: 'builtin',
       status: 'ready',
     },
+    {
+      id: 'web_search',
+      name: 'Web & Academic Search',
+      description: 'Search the web, scientific papers, and academic sources with source-aware routing',
+      prompt: `Use web_search for research and retrieval.
+
+Guidelines:
+- For scientific papers or literature reviews, prefer academic searches
+- Capture title, authors, year, abstract/summary, DOI, and source URL when available
+- Use browse_url to inspect promising result pages, PDFs, or landing pages
+- Distinguish preprints from peer-reviewed sources when possible
+- Return citations and links in the final answer`,
+      tools: ['web_search', 'browse_url'],
+      source: 'builtin',
+      status: 'ready',
+    },
+    {
+      id: 'browse_url',
+      name: 'Headless Browser',
+      description: 'Open URLs, inspect rendered pages, and capture screenshots when needed',
+      prompt: `Use browse_url to inspect a specific webpage.
+
+Guidelines:
+- Prefer direct URLs from search results or user input
+- Extract the page title, main content, and key evidence
+- Capture screenshots when a visual check is helpful
+- Reuse sessions only when the workflow requires multiple steps on the same site`,
+      tools: ['browse_url'],
+      source: 'builtin',
+      status: 'ready',
+    },
+    {
+      id: 'generate_document',
+      name: 'Office Document Generator',
+      description: 'Generate Word, Excel, PowerPoint, CSV, and PDF artifacts from structured instructions',
+      prompt: `Use generate_document to create downloadable artifacts.
+
+Mapping:
+- Word or DOCX requests -> type=word
+- Excel or XLSX requests -> type=excel
+- PowerPoint or slide deck requests -> type=ppt
+- PDF requests -> type=pdf
+- CSV requests -> type=csv
+
+Guidelines:
+- Preserve headings, tables, and equations when possible
+- Keep filenames clean and descriptive
+- Confirm what artifact was produced and its intended use`,
+      tools: ['generate_document'],
+      source: 'builtin',
+      status: 'ready',
+    },
+    {
+      id: 'analyze_spreadsheet',
+      name: 'Spreadsheet Analyzer',
+      description: 'Analyze uploaded Excel or CSV files and produce summaries or data insights',
+      prompt: `Use analyze_spreadsheet for uploaded tabular files.
+
+Guidelines:
+- Expect an uploadId when the file comes from chat attachments
+- Choose an analysis mode that matches the user request (summary, full, text_only, extract_tasks, custom)
+- Focus on trends, anomalies, totals, and actionable findings
+- Mention when the user needs to upload the file first`,
+      tools: ['analyze_spreadsheet'],
+      source: 'builtin',
+      status: 'ready',
+    },
+    {
+      id: 'memory_search',
+      name: 'Semantic Memory',
+      description: 'Search prior context, facts, and long-term memory using RAG',
+      prompt: `Use OpenClaw memory tools to recover relevant prior context.
+
+Guidelines:
+- Use openclaw_rag_search when the user asks to remember, recall, continue, or reuse previous context
+- Use openclaw_rag_context to build a compact memory block for the current message
+- Surface uncertainty if memory evidence is weak`,
+      tools: ['openclaw_rag_search', 'openclaw_rag_context'],
+      source: 'builtin',
+      status: 'ready',
+    },
+    {
+      id: 'spawn_subagent',
+      name: 'Nested Subagents',
+      description: 'Delegate multi-step work to OpenClaw subagents and monitor their progress',
+      prompt: `Use OpenClaw subagents when the task is large, parallelizable, or needs background execution.
+
+Guidelines:
+- Spawn focused subagents with clear objectives
+- Poll status only when the result is needed
+- Keep parent and child objectives explicit to avoid duplicated work`,
+      tools: ['openclaw_spawn_subagent', 'openclaw_subagent_status', 'openclaw_subagent_list'],
+      source: 'builtin',
+      status: 'ready',
+    },
+    {
+      id: 'math_render',
+      name: 'Math Renderer (KaTeX)',
+      description: 'Render and structure mathematical solutions using LaTeX/KaTeX, with optional export',
+      prompt: `Use LaTeX/KaTeX formatting for mathematics.
+
+Guidelines:
+- Inline math uses $...$
+- Display math uses $$...$$
+- Prefer valid KaTeX syntax such as \\frac, \\sqrt, \\sum, aligned systems, and matrices
+- Show step-by-step derivations when solving exercises
+- If the user wants a downloadable file, use generate_document and preserve LaTeX in the output
+- For math or science references, combine with web_search when needed`,
+      tools: ['generate_document', 'web_search'],
+      source: 'builtin',
+      status: 'ready',
+    },
   ];
 }
 

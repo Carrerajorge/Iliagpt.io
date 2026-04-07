@@ -1,11 +1,11 @@
 import { EventEmitter } from "events";
 import { ScientificArticle, SearchProgressEvent, ScientificSearchResult, generateAPA7Citation } from "@shared/scientificArticleSchema";
-import { pubmedService } from "./pubmedService";
-import { scieloService } from "./scieloService";
+import { createHash } from "crypto";
+import { type AcademicResult, searchAllSources } from "./unifiedAcademicSearch";
 
 interface SearchOptions {
   maxResults?: number;
-  sources?: ("pubmed" | "scielo" | "all")[];
+  sources?: string[];
   yearFrom?: number;
   yearTo?: number;
   languages?: string[];
@@ -19,6 +19,118 @@ interface SearchContext {
   emitter: EventEmitter;
 }
 
+const DEFAULT_SCIENTIFIC_SOURCES = [
+  "openalex",
+  "semantic",
+  "crossref",
+  "pubmed",
+  "arxiv",
+  "core",
+  "doaj",
+  "base",
+  "scielo",
+] as const;
+
+type ScientificSearchSource = (typeof DEFAULT_SCIENTIFIC_SOURCES)[number];
+
+function normalizeSources(rawSources?: string[]): ScientificSearchSource[] {
+  if (!Array.isArray(rawSources) || rawSources.length === 0 || rawSources.includes("all")) {
+    return [...DEFAULT_SCIENTIFIC_SOURCES];
+  }
+
+  const allowed = new Set<string>(DEFAULT_SCIENTIFIC_SOURCES);
+  const normalized = rawSources
+    .map((source) => String(source || "").trim().toLowerCase())
+    .filter((source): source is ScientificSearchSource => allowed.has(source));
+
+  return normalized.length > 0 ? normalized : [...DEFAULT_SCIENTIFIC_SOURCES];
+}
+
+function normalizePublicationType(rawType?: string): ScientificArticle["publicationType"] {
+  const value = String(rawType || "").toLowerCase();
+  if (!value) return "journal_article";
+  if (value.includes("systematic")) return "systematic_review";
+  if (value.includes("meta")) return "meta_analysis";
+  if (value.includes("random")) return "randomized_controlled_trial";
+  if (value.includes("clinical")) return "clinical_trial";
+  if (value.includes("review")) return "review";
+  if (value.includes("conference")) return "conference_paper";
+  if (value.includes("thesis")) return "thesis";
+  if (value.includes("preprint")) return "preprint";
+  if (value.includes("case report")) return "case_report";
+  if (value.includes("case series")) return "case_series";
+  if (value.includes("editorial")) return "editorial";
+  if (value.includes("letter")) return "letter";
+  if (value.includes("comment")) return "comment";
+  return "journal_article";
+}
+
+function mapAuthors(rawAuthors: string): ScientificArticle["authors"] {
+  const parts = String(rawAuthors || "")
+    .split(/(?:,|;|\band\b)/i)
+    .map((author) => author.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    return [];
+  }
+
+  return parts.map((fullName) => {
+    const nameParts = fullName.split(/\s+/).filter(Boolean);
+    const lastName = nameParts.length > 0 ? nameParts[nameParts.length - 1]! : fullName;
+    const firstName = nameParts.length > 1 ? nameParts.slice(0, -1).join(" ") : undefined;
+    return {
+      firstName,
+      lastName,
+      fullName,
+    };
+  });
+}
+
+function mapAcademicResult(result: AcademicResult, index: number): ScientificArticle {
+  const year = Number.parseInt(result.year || "", 10);
+  const safeSource = String(result.source || "manual").toLowerCase();
+  const source = ([
+    "pubmed",
+    "scielo",
+    "semantic_scholar",
+    "semantic",
+    "crossref",
+    "openalex",
+    "core",
+    "arxiv",
+    "doaj",
+    "base",
+    "scopus",
+    "scholar",
+    "duckduckgo",
+    "wos",
+    "manual",
+  ] as const).includes(safeSource as ScientificArticle["source"])
+    ? (safeSource as ScientificArticle["source"])
+    : "manual";
+  const stableIdSource = result.doi || result.url || `${result.title}:${safeSource}:${index}`;
+  const id = createHash("sha1").update(stableIdSource).digest("hex");
+
+  return {
+    id,
+    source,
+    title: result.title,
+    authors: mapAuthors(result.authors),
+    abstract: result.abstract,
+    journal: result.journal ? { title: result.journal } : undefined,
+    publicationType: normalizePublicationType(result.documentType),
+    year: Number.isFinite(year) ? year : undefined,
+    doi: result.doi,
+    url: result.url,
+    pdfUrl: result.pdfUrl,
+    keywords: result.keywords,
+    language: result.language,
+    citationCount: typeof result.citations === "number" ? result.citations : undefined,
+    isOpenAccess: Boolean(result.openAccess || result.pdfUrl),
+  };
+}
+
 export function createScientificSearchOrchestrator() {
   async function search(
     query: string,
@@ -27,7 +139,7 @@ export function createScientificSearchOrchestrator() {
   ): Promise<ScientificSearchResult> {
     const startTime = Date.now();
     const maxResults = options.maxResults || 50;
-    const sources = options.sources || ["all"];
+    const sources = normalizeSources(options.sources);
     
     const ctx: SearchContext = {
       articles: [],
@@ -48,42 +160,16 @@ export function createScientificSearchOrchestrator() {
       timestamp: Date.now(),
     });
 
-    const searchPromises: Promise<ScientificArticle[]>[] = [];
-    const useSources = sources.includes("all") 
-      ? ["pubmed", "scielo"] 
-      : sources;
+    const unifiedResult = await searchAllSources(query, {
+      maxResults,
+      sources,
+      yearFrom: options.yearFrom,
+      yearTo: options.yearTo,
+      language: options.languages?.[0],
+      openAccessOnly: options.openAccessOnly,
+    });
 
-    for (const source of useSources) {
-      if (source === "pubmed") {
-        searchPromises.push(
-          pubmedService.search(query, maxResults, (event) => handleSourceProgress(ctx, event))
-        );
-      } else if (source === "scielo") {
-        searchPromises.push(
-          scieloService.search(query, maxResults, (event) => handleSourceProgress(ctx, event))
-        );
-      }
-    }
-
-    const results = await Promise.allSettled(searchPromises);
-
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      const source = useSources[i];
-      
-      if (result.status === "fulfilled") {
-        ctx.articles.push(...result.value);
-        ctx.sourceStats.set(source, { 
-          count: result.value.length, 
-          status: "success" 
-        });
-      } else {
-        ctx.sourceStats.set(source, { 
-          count: 0, 
-          status: "error" 
-        });
-      }
-    }
+    ctx.articles = unifiedResult.results.map(mapAcademicResult);
 
     const uniqueArticles = deduplicateArticles(ctx.articles);
     
@@ -92,6 +178,29 @@ export function createScientificSearchOrchestrator() {
     filteredArticles = sortByRelevance(filteredArticles);
     
     filteredArticles = filteredArticles.slice(0, maxResults);
+
+    const countsBySource = new Map<string, number>();
+    for (const article of filteredArticles) {
+      countsBySource.set(article.source, (countsBySource.get(article.source) || 0) + 1);
+    }
+
+    for (const source of sources) {
+      const count = countsBySource.get(source) || 0;
+      ctx.sourceStats.set(source, {
+        count,
+        status: "success",
+      });
+      emitProgress(ctx, {
+        type: count > 0 ? "found" : "filtering",
+        source,
+        articlesFound: count,
+        totalArticles: filteredArticles.length,
+        message: count > 0
+          ? `📄 ${source}: ${count} artículos`
+          : `📄 ${source}: sin resultados visibles`,
+        timestamp: Date.now(),
+      });
+    }
 
     const searchDuration = Date.now() - startTime;
 
@@ -124,24 +233,6 @@ export function createScientificSearchOrchestrator() {
         publicationTypes: options.publicationTypes,
       },
     };
-  }
-
-  function handleSourceProgress(ctx: SearchContext, event: SearchProgressEvent): void {
-    emitProgress(ctx, event);
-    
-    if (event.type === "filtering" || event.type === "found") {
-      const totalSoFar = Array.from(ctx.sourceStats.values())
-        .reduce((sum, s) => sum + s.count, 0) + event.articlesFound;
-      
-      emitProgress(ctx, {
-        type: "filtering",
-        source: "Total",
-        articlesFound: totalSoFar,
-        totalArticles: totalSoFar,
-        message: `📚 Total acumulado: ${totalSoFar} artículos encontrados`,
-        timestamp: Date.now(),
-      });
-    }
   }
 
   function deduplicateArticles(articles: ScientificArticle[]): ScientificArticle[] {

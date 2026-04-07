@@ -7,6 +7,7 @@ import { storage } from "./storage";
 import { ObjectStorageService } from "./objectStorage";
 import { processDocument } from "./services/documentProcessing";
 import { env } from "./config/env";
+import { FREE_MODEL_ID } from "./lib/modelRegistry";
 import { chunkText, generateEmbeddingsBatch } from "./embeddingService";
 import { StepUpdate } from "./agent";
 import { browserSessionManager, SessionEvent } from "./agent/browser";
@@ -21,6 +22,7 @@ import { createFilesRouter } from "./routes/filesRouter";
 import { createLocalStorageRouter } from "./routes/localStorageRouter";
 import { createGptRouter } from "./routes/gptRouter";
 import { createDocumentsRouter } from "./routes/documentsRouter";
+import { createGatewayLogsRouter } from "./routes/gatewayLogsRouter";
 import { createAdminRouter } from "./routes/admin";
 import { createRetrievalAdminRouter } from "./routes/retrievalAdminRouter";
 import { createAgentRouter } from "./routes/agentRouter";
@@ -106,7 +108,7 @@ import { llmGateway } from "./lib/llmGateway";
 import { generateAnonToken, verifyAnonToken } from "./lib/anonToken";
 import { getUserConfig, setUserConfig, getDefaultConfig, validatePatterns, getFilterStats } from "./services/contentFilter";
 import { isModelEligibleForPublic } from "./services/modelIntegration";
-import { GEMINI_MODELS_REGISTRY, XAI_MODELS } from "./lib/modelRegistry";
+import { GEMINI_MODELS_REGISTRY, OPENROUTER_MODELS, XAI_MODELS } from "./lib/modelRegistry";
 import { getLogs, getLogStats, type LogFilters } from "./lib/structuredLogger";
 import { getActiveRequests, getRequestStats } from "./lib/requestTracer";
 import { getAllServicesHealth, getOverallStatus, initializeHealthMonitoring } from "./lib/healthMonitor";
@@ -131,6 +133,7 @@ import { checkConnectorHealth, checkAllConnectorsHealth, getHealthSummary, start
 import { getExecutionIntentGuardStatus, preExecutionIntentGuard } from "./middleware/preExecutionIntentGuard";
 import { requireAuth, require2FA } from "./middleware/auth";
 import { getSecureUserId } from "./lib/anonUserHelper";
+import { verifyAnonToken } from "./lib/anonToken";
 import {
   runAgent, getTools, healthCheck as pythonAgentHealthCheck, isServiceAvailable, PythonAgentClientError,
   browse as pythonAgentBrowse, search as pythonAgentSearch, createDocument as pythonAgentCreateDocument,
@@ -182,7 +185,20 @@ const PUBLIC_MODEL_FALLBACKS: ReadonlyArray<PublicModelSummary> = Object.freeze(
     id: "fallback-gemma-4-31b-it",
     name: "Gemma 4 31B IT",
     provider: "openrouter",
-    modelId: "google/gemma-4-31b-it",
+    modelId: OPENROUTER_MODELS.GEMMA_4_31B_IT,
+    description: "Modelo Gemma 4 Instruct via OpenRouter",
+    isEnabled: "true",
+    enabledAt: null,
+    displayOrder: -2,
+    icon: null,
+    modelType: "TEXT",
+    contextWindow: 262144,
+  },
+  {
+    id: "fallback-gemma-3-27b-it-free",
+    name: "Gemma 3 27B IT (Free)",
+    provider: "openrouter",
+    modelId: FREE_MODEL_ID,
     description: "Modelo gratuito predeterminado via OpenRouter",
     isEnabled: "true",
     enabledAt: null,
@@ -671,8 +687,33 @@ export async function registerRoutes(
   app.use(
     "/api/artifacts",
     (req: Request, res: Response, next) => {
-      const userId = getUserId(req);
-      if (!userId || String(userId).startsWith("anon_")) {
+      const authenticatedUserId = getUserId(req);
+      if (authenticatedUserId) {
+        return next();
+      }
+
+      const session = (req as any).session as { anonUserId?: string } | undefined;
+      const sessionAnonUserId =
+        typeof session?.anonUserId === "string" && session.anonUserId.trim().length > 0
+          ? session.anonUserId.trim()
+          : null;
+
+      const headerAnonUserId =
+        typeof req.headers["x-anonymous-user-id"] === "string" && req.headers["x-anonymous-user-id"].trim().length > 0
+          ? req.headers["x-anonymous-user-id"].trim()
+          : null;
+      const headerAnonToken =
+        typeof req.headers["x-anonymous-token"] === "string" && req.headers["x-anonymous-token"].trim().length > 0
+          ? req.headers["x-anonymous-token"].trim()
+          : null;
+
+      const hasVerifiedAnonHeaders =
+        !!headerAnonUserId &&
+        !!headerAnonToken &&
+        verifyAnonToken(headerAnonUserId, headerAnonToken) &&
+        (!sessionAnonUserId || sessionAnonUserId === headerAnonUserId);
+
+      if (!sessionAnonUserId && !hasVerifiedAnonHeaders) {
         return res.status(401).json({ error: "Authentication required" });
       }
       return next();
@@ -842,6 +883,7 @@ try{
   app.use("/api", createGptRouter());
   app.use("/api/documents", createDocumentsRouter());
   app.use("/api/admin", createAdminRouter());
+  app.use("/api/admin/gateway-logs", createGatewayLogsRouter());
   app.use("/api/finops", finopsRouter);
 
   app.get("/api/budget/events", (req: Request, res: Response) => {

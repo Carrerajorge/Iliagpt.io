@@ -159,4 +159,25 @@ describe("preprocessMathInMarkdown", () => {
     expect(preprocessMathInMarkdown("")).toBe("");
     expect(preprocessMathInMarkdown(null as any)).toBe(null);
   });
+
+  it("preserves fenced and inline code while converting LaTeX delimiters", () => {
+    const input = [
+      "inline \\(x+y\\)",
+      "",
+      "`literal \\(keep\\)`",
+      "",
+      "```ts",
+      "const formula = \"\\\\(keep me\\\\)\";",
+      "```",
+      "",
+      "\\[z^2\\]",
+    ].join("\n");
+
+    const result = preprocessMathInMarkdown(input);
+
+    expect(result).toContain("inline $x+y$");
+    expect(result).toContain("`literal \\(keep\\)`");
+    expect(result).toContain("const formula = \"\\\\(keep me\\\\)\";");
+    expect(result).toContain("$$z^2$$");
+  });
 });

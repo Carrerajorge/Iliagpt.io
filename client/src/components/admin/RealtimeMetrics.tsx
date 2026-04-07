@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
+import { apiFetchJson } from "@/lib/adminApi";
 
 interface RealtimeMetrics {
   timestamp: number;
@@ -62,13 +63,7 @@ function HealthIndicator({ name, healthy }: { name: string; healthy: boolean }) 
 export function RealtimeMetricsPanel() {
   const { data, isLoading, error } = useQuery<RealtimeMetrics>({
     queryKey: ["/api/admin/dashboard/realtime"],
-    queryFn: async () => {
-      const res = await fetch("/api/admin/dashboard/realtime", {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to fetch realtime metrics");
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/admin/dashboard/realtime"),
     refetchInterval: 5000, // Update every 5 seconds
   });
 

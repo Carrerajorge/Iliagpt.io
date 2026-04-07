@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { apiFetchJson } from "@/lib/adminApi";
 import {
   FlaskConical,
   Play,
@@ -78,17 +79,16 @@ export default function ModelExperiments() {
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["/api/models/experiments"],
     refetchInterval: 10000,
+    throwOnError: true,
   });
 
   const createMutation = useMutation({
     mutationFn: async (exp: typeof newExperiment) => {
-      const res = await fetch("/api/models/experiments", {
+      return apiFetchJson("/api/models/experiments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(exp),
       });
-      if (!res.ok) throw new Error("Failed to create experiment");
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/models/experiments"] });

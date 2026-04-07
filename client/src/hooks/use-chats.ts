@@ -85,6 +85,9 @@ export interface MessageArtifact {
   sizeBytes?: number;
   downloadUrl: string;
   previewUrl?: string;
+  name?: string;
+  filename?: string;
+  contentUrl?: string;
 }
 
 export interface Message {
@@ -228,6 +231,7 @@ function sanitizeSendMessage(message: Message): Message {
   const normalizedAssistantMessage = role === "assistant"
     ? buildAssistantMessage({
         content: sanitizedContent,
+        artifact: message.artifact,
         figmaDiagram: message.figmaDiagram,
         generatedImage: message.generatedImage,
         googleFormPreview: message.googleFormPreview,
@@ -247,6 +251,7 @@ function sanitizeSendMessage(message: Message): Message {
     ...message,
     content: normalizedAssistantMessage?.content ?? sanitizedContent,
     requestId: sanitizeRequestId(message.requestId),
+    artifact: normalizedAssistantMessage?.artifact ?? message.artifact,
     figmaDiagram: normalizedAssistantMessage?.figmaDiagram ?? message.figmaDiagram,
     generatedImage: normalizedAssistantMessage?.generatedImage ?? message.generatedImage,
     googleFormPreview: normalizedAssistantMessage?.googleFormPreview ?? message.googleFormPreview,
@@ -1190,6 +1195,7 @@ export function useChats() {
         const assistantMessage = msg.role === "assistant"
           ? buildAssistantMessage({
               content: msg.content,
+              artifact: msg.artifact || msg.metadata?.artifact,
               figmaDiagram: msg.figmaDiagram,
               generatedImage: msg.generatedImage,
               googleFormPreview: msg.googleFormPreview,
@@ -1214,6 +1220,7 @@ export function useChats() {
           userMessageId: msg.userMessageId,
           attachments: hydratedAttachments,
           sources: msg.sources,
+          artifact: assistantMessage?.artifact ?? msg.artifact ?? msg.metadata?.artifact,
           figmaDiagram: assistantMessage?.figmaDiagram ?? msg.figmaDiagram,
           googleFormPreview: assistantMessage?.googleFormPreview ?? msg.googleFormPreview,
           gmailPreview: assistantMessage?.gmailPreview ?? msg.gmailPreview,
@@ -1976,6 +1983,7 @@ export function useChats() {
             userMessageId: normalizedMessage.userMessageId,
             attachments: sanitizeAttachmentsForServer(normalizedMessage.attachments),
             sources: normalizedMessage.sources,
+            artifact: normalizedMessage.artifact,
             figmaDiagram: normalizedMessage.figmaDiagram,
             googleFormPreview: normalizedMessage.googleFormPreview,
             gmailPreview: normalizedMessage.gmailPreview,

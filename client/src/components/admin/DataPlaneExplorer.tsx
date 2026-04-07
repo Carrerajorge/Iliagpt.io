@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { apiFetchJson } from "@/lib/adminApi";
 import { Loader2, Database, Activity, Clock, Search, RefreshCw, Layers, GitCommit } from "lucide-react";
 
 interface DataPlaneStats {
@@ -39,21 +40,23 @@ export default function DataPlaneExplorer() {
   const { data: statsData, isLoading: statsLoading, refetch: refetchStats } = useQuery({
     queryKey: ["/api/data-plane/stats"],
     refetchInterval: 15000,
+    throwOnError: true,
   });
 
   const { data: runsData, isLoading: runsLoading } = useQuery({
     queryKey: ["/api/data-plane/runs"],
     refetchInterval: 15000,
+    throwOnError: true,
   });
 
   const { data: eventsData, isLoading: eventsLoading } = useQuery({
     queryKey: ["/api/data-plane/runs", activeRunId, "events"],
     queryFn: async () => {
       if (!activeRunId) return { events: [] };
-      const res = await fetch(`/api/data-plane/runs/${activeRunId}/events`);
-      return res.json();
+      return apiFetchJson(`/api/data-plane/runs/${activeRunId}/events`);
     },
     enabled: !!activeRunId,
+    throwOnError: true,
   });
 
   const stats: DataPlaneStats = (statsData as any) || {

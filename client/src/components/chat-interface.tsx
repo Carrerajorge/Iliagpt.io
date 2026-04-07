@@ -7,6 +7,7 @@ import { apiFetch, getAnonUserIdHeader } from "@/lib/apiClient";
 import {
   collectMessageIdentitySet,
   dedupeMessagesByIdentity,
+  dedupeRenderableMessages,
   upsertMessageByIdentity,
 } from "@/lib/chatMessageIdentity";
 import {
@@ -180,7 +181,7 @@ import { PricingModal } from "./pricing-modal";
 
 import { SyncStatusIndicator } from "./sync-status-indicator";
 import { ProductionProgress } from "@/components/production-progress";
-import { AiProcessStep, AIState } from "./chat-interface/types";
+import { AiProcessStep, AIState, isAiBusyState } from "./chat-interface/types";
 import { GranularErrorBoundary } from "@/components/ui/granular-error-boundary";
 import { EditorErrorBoundary } from "@/components/error-boundaries";
 import { DataTableWrapper, CleanDataTableComponents, downloadTableAsExcel, copyTableToClipboard } from "./chat-interface/DataTableWrapper";
@@ -282,10 +283,10 @@ interface ChatInterfaceProps {
   onCloseSidebar?: () => void;
   activeGpt?: ActiveGpt | null;
   aiState: AiState;
-  setAiState: React.Dispatch<React.SetStateAction<AiState>>;
+  setAiState: (value: React.SetStateAction<AiState>, conversationId?: string | null) => void;
   aiStateChatId?: string | null;
   aiProcessSteps: AiProcessStep[];
-  setAiProcessSteps: React.Dispatch<React.SetStateAction<AiProcessStep[]>>;
+  setAiProcessSteps: (value: React.SetStateAction<AiProcessStep[]>, conversationId?: string | null) => void;
   chatId?: string | null;
   conversationLockScope?: string | null;
   chatTitle?: string | null;
@@ -814,11 +815,21 @@ export function ChatInterface({
 
   // Optimistic messages - shown immediately before they appear in props
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
+  const sortMessagesChronologically = useCallback(
+    (input: Message[]): Message[] =>
+      [...input].sort(
+        (a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      ),
+    []
+  );
 
   // Clean up optimistic messages once they appear in props.messages
   useEffect(() => {
     if (optimisticMessages.length > 0 && messages.length > 0) {
       const persistedIdentitySet = collectMessageIdentitySet(messages);
+      const persistedRenderableMessages = dedupeRenderableMessages(
+        sortMessagesChronologically(messages)
+      );
       setOptimisticMessages((prev: Message[]) =>
         prev.filter((m: any) => {
           const identities = collectMessageIdentitySet([m]);
@@ -827,11 +838,17 @@ export function ChatInterface({
               return false;
             }
           }
+          const mergedRenderableMessages = dedupeRenderableMessages(
+            sortMessagesChronologically([...persistedRenderableMessages, m])
+          );
+          if (mergedRenderableMessages.length === persistedRenderableMessages.length) {
+            return false;
+          }
           return true;
         })
       );
     }
-  }, [messages, optimisticMessages.length]);
+  }, [messages, optimisticMessages.length, sortMessagesChronologically]);
 
   // Track previous chatId for optimistic message cleanup - separate from the stream reset tracking
   const prevChatIdForOptimisticRef = useRef<string | null | undefined>(undefined);
@@ -925,10 +942,10 @@ export function ChatInterface({
       }
     });
 
-    return dedupeMessagesByIdentity(combinedMessages).sort((a: any, b: any) =>
-      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-  }, [messages, optimisticMessages, allAgentRuns, chatId]);
+    const identityDedupedMessages = dedupeMessagesByIdentity(combinedMessages);
+    const chronologicallySortedMessages = sortMessagesChronologically(identityDedupedMessages);
+    return dedupeRenderableMessages(chronologicallySortedMessages);
+  }, [messages, optimisticMessages, allAgentRuns, chatId, sortMessagesChronologically]);
 
   // Reset current agent message ID when chatId changes - polling auto-starts via useAgentPolling
   useEffect(() => {
@@ -1669,7 +1686,7 @@ export function ChatInterface({
     conversationId?: string | null
   ) => {
     if (!isScopedConversation(conversationId)) return;
-    setAiState(value);
+    setAiState(value, conversationId);
   }, [isScopedConversation, setAiState]);
 
   const setAiProcessStepsForChat = useCallback((
@@ -1677,8 +1694,38 @@ export function ChatInterface({
     conversationId?: string | null
   ) => {
     if (!isScopedConversation(conversationId)) return;
-    setAiProcessSteps(value);
+    setAiProcessSteps(value, conversationId);
   }, [isScopedConversation, setAiProcessSteps]);
+
+  const clearBusyStateForConversation = useCallback((conversationId?: string | null) => {
+    const candidateConversationIds = Array.from(new Set(
+      [conversationId, latestChatIdRef.current, chatId, aiStateChatId].filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0
+      )
+    ));
+
+    if (candidateConversationIds.length === 0) {
+      setAiState("idle");
+      setAiProcessSteps([]);
+      setUiPhase('idle');
+      return;
+    }
+
+    for (const candidateConversationId of candidateConversationIds) {
+      setAiStateForChat("idle", candidateConversationId);
+      setAiProcessStepsForChat([], candidateConversationId);
+    }
+
+    setUiPhase('idle');
+  }, [
+    aiStateChatId,
+    chatId,
+    setAiProcessSteps,
+    setAiProcessStepsForChat,
+    setAiState,
+    setAiStateForChat,
+    setUiPhase,
+  ]);
 
   // Centralized streaming→message transition manager.
   // Guarantees the message is visible in the DOM before streaming is cleared.
@@ -1889,10 +1936,10 @@ export function ChatInterface({
     attachments: any[];
     sourceLabel?: string;
   }): Promise<void> => {
-    const normalizedConversationId = (opts.conversationId && !opts.conversationId.startsWith("pending-"))
-      ? opts.conversationId
-      : `temp_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
     const analysisConversationId = opts.conversationId || chatId || latestChatIdRef.current;
+    const normalizedConversationId = analysisConversationId && !analysisConversationId.startsWith("pending-")
+      ? analysisConversationId
+      : analysisConversationId || `temp_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
     const analysisAttachmentPayload = opts.attachments
       .map(toAnalyzePayloadAttachment)
@@ -1905,8 +1952,11 @@ export function ChatInterface({
 
     const userFriendlySource = opts.sourceLabel || "envío";
     const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const analysisAbortController = new AbortController();
 
     let analyzeMetadata: any = {};
+
+    analysisAbortControllerRef.current = analysisAbortController;
 
     try {
       const result = await streamChat.stream("/api/analyze", {
@@ -1917,6 +1967,7 @@ export function ChatInterface({
         },
         chatId: analysisConversationId,
         conversationId: normalizedConversationId,
+        signal: analysisAbortController.signal,
         timeoutMs: 180_000,
         firstTokenTimeoutMs: 60_000,
         doneTimeoutMs: 60_000,
@@ -1965,6 +2016,8 @@ export function ChatInterface({
 
       if (!result.ok && result.error) {
         markMessageDeliveryError(opts.userMessageId, result.error.message);
+      } else if (!result.ok) {
+        markMessageDeliveryError(opts.userMessageId, "No se pudo analizar el documento.");
       } else {
         clearMessageDeliveryError(opts.userMessageId);
       }
@@ -1974,16 +2027,21 @@ export function ChatInterface({
       }
       const errorMessage = analysisError?.message || "No se pudo analizar el documento.";
       markMessageDeliveryError(opts.userMessageId, errorMessage);
-      setAiStateForChat("idle", analysisConversationId);
-      setAiProcessStepsForChat([], analysisConversationId);
       console.error(`[Document Analysis] (${userFriendlySource}) failed for userMessage ${opts.userMessageId}:`, analysisError);
       throw analysisError;
+    } finally {
+      if (analysisAbortControllerRef.current === analysisAbortController) {
+        analysisAbortControllerRef.current = null;
+      }
+      // The analysis stream can run under a pending or remapped chat id while the
+      // visible UI already moved to the real conversation id. Clear all relevant
+      // busy flags aggressively so the stop button and thinking indicator never stick.
+      clearBusyStateForConversation(analysisConversationId || normalizedConversationId);
     }
   }, [
+    clearBusyStateForConversation,
     clearMessageDeliveryError,
     markMessageDeliveryError,
-    setAiProcessStepsForChat,
-    setAiStateForChat,
     chatId,
     streamChat,
   ]);
@@ -2021,6 +2079,39 @@ export function ChatInterface({
   useEffect(() => {
     aiStateRef.current = aiState;
   }, [aiState]);
+
+  useEffect(() => {
+    if (!isAiBusyState(aiState)) return;
+    const visibleConversationId = chatId || latestChatIdRef.current || aiStateChatId || null;
+    if (
+      aiStateChatId &&
+      visibleConversationId &&
+      resolveRealChatId(aiStateChatId) !== resolveRealChatId(visibleConversationId)
+    ) {
+      return;
+    }
+    if (streamingContentRef.current) return;
+    if (abortControllerRef.current || analysisAbortControllerRef.current || streamIntervalRef.current) return;
+    if (isAgentRunning || uiPhase === 'console') return;
+
+    const latestAssistantMessage = [...displayMessages].reverse().find((message) => message.role === "assistant");
+    if (!latestAssistantMessage) return;
+    const latestUserMessage = [...displayMessages].reverse().find((message) => message.role === "user");
+    const isDocumentAnalysisFailure =
+      typeof latestAssistantMessage?.content === "string" &&
+      latestAssistantMessage.content.startsWith("No se pudo analizar el documento.");
+    const latestAssistantTimestamp = new Date(latestAssistantMessage.timestamp).getTime();
+    const latestUserTimestamp = latestUserMessage
+      ? new Date(latestUserMessage.timestamp).getTime()
+      : Number.NEGATIVE_INFINITY;
+    const hasCompletedReplyForLatestTurn =
+      Number.isFinite(latestAssistantTimestamp) &&
+      latestAssistantTimestamp >= latestUserTimestamp;
+
+    if (!isDocumentAnalysisFailure && !hasCompletedReplyForLatestTurn) return;
+
+    clearBusyStateForConversation(visibleConversationId);
+  }, [aiState, aiStateChatId, chatId, clearBusyStateForConversation, displayMessages, isAgentRunning, uiPhase]);
 
   // Announce AI state changes for screen readers
   useEffect(() => {
@@ -6977,11 +7068,22 @@ IMPORTANTE:
                     : null;
 
                   if (isProductionStream && productionArtifacts.length > 0) {
-                    const primaryArtifact = productionArtifacts[0];
+                    const docTypeMap: Record<string, string> = { word: 'word', excel: 'excel', ppt: 'ppt', xlsx: 'excel', docx: 'word', pptx: 'ppt' };
+                    const selectedDocTypeNorm = selectedDocTool ? (docTypeMap[selectedDocTool] || selectedDocTool) : null;
+                    const primaryArtifact = selectedDocTypeNorm
+                      ? productionArtifacts.find((artifact) => (docTypeMap[artifact.type] || artifact.type) === selectedDocTypeNorm) || productionArtifacts[0]
+                      : productionArtifacts[0];
                     const type = artifactTypeMap[primaryArtifact.type] || primaryArtifact.type || "document";
-                    const typeConfirm: Record<string, string> = { word: 'Documento generado correctamente', excel: 'Hoja de cálculo generada correctamente', presentation: 'Presentación generada correctamente', ppt: 'Presentación generada correctamente', doc: 'Documento generado correctamente', spreadsheet: 'Hoja de cálculo generada correctamente' };
-                    const friendlyType = selectedDocTool || 'word';
-                    const messageContent = `✓ ${typeConfirm[friendlyType] || 'Documento generado correctamente'}`;
+                    const typeConfirm: Record<string, string> = {
+                      word: 'Documento listo para descargar.',
+                      excel: 'Hoja de cálculo lista para descargar.',
+                      presentation: 'Presentación lista para descargar.',
+                      ppt: 'Presentación lista para descargar.',
+                      doc: 'Documento listo para descargar.',
+                      spreadsheet: 'Hoja de cálculo lista para descargar.'
+                    };
+                    const friendlyType = selectedDocTypeNorm || docTypeMap[primaryArtifact.type] || 'word';
+                    const messageContent = typeConfirm[friendlyType] || 'Archivo listo para descargar.';
                     const artifactMimeType = primaryArtifact.type ? (artifactMimeTypeMap[primaryArtifact.type] || streamArtifactMimeTypes.get(primaryArtifact.type) || "application/octet-stream") : "application/octet-stream";
                     const artifactName = primaryArtifact.filename || `${friendlyType}.${friendlyType === "word" ? "docx" : friendlyType === "excel" ? "xlsx" : friendlyType === "ppt" ? "pptx" : "bin"}`;
 

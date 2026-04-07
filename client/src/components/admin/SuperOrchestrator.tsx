@@ -10,7 +10,7 @@ import {
   Shield, Zap, Users, Activity, ChevronDown, ChevronRight,
   BarChart3, Target, ShieldAlert, Bot, Loader2
 } from "lucide-react";
-import { apiFetch } from "@/lib/apiClient";
+import { apiFetchJson, apiFetchJsonNullable } from "@/lib/adminApi";
 
 const statusColors: Record<string, string> = {
   queued: "bg-gray-500",
@@ -45,49 +45,40 @@ export default function SuperOrchestratorDashboard() {
 
   const { data: stats } = useQuery({
     queryKey: ["/api/orchestrator/stats"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/orchestrator/stats", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/orchestrator/stats"),
     refetchInterval: 5000,
+    throwOnError: true,
   });
 
   const { data: runsData } = useQuery({
     queryKey: ["/api/orchestrator/runs"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/orchestrator/runs", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/orchestrator/runs"),
     refetchInterval: 5000,
+    throwOnError: true,
   });
 
   const { data: roles } = useQuery({
     queryKey: ["/api/orchestrator/roles"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/orchestrator/roles", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/orchestrator/roles"),
     enabled: activeTab === "roles",
+    throwOnError: true,
   });
 
   const { data: killSwitchStatus } = useQuery({
     queryKey: ["/api/orchestrator/kill-switch"],
-    queryFn: async () => {
-      const res = await apiFetch("/api/orchestrator/kill-switch", { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson("/api/orchestrator/kill-switch"),
     refetchInterval: 3000,
+    throwOnError: true,
   });
 
   const killSwitchMutation = useMutation({
     mutationFn: async (arm: boolean) => {
-      const res = await apiFetch("/api/orchestrator/kill-switch", {
+      return apiFetchJsonNullable("/api/orchestrator/kill-switch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ arm }),
         credentials: "include",
       });
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orchestrator/kill-switch"] });
@@ -98,11 +89,10 @@ export default function SuperOrchestratorDashboard() {
 
   const cancelRunMutation = useMutation({
     mutationFn: async (runId: string) => {
-      const res = await apiFetch(`/api/orchestrator/runs/${runId}/cancel`, {
+      return apiFetchJsonNullable(`/api/orchestrator/runs/${runId}/cancel`, {
         method: "POST",
         credentials: "include",
       });
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orchestrator/runs"] });
@@ -112,11 +102,10 @@ export default function SuperOrchestratorDashboard() {
 
   const pauseRunMutation = useMutation({
     mutationFn: async (runId: string) => {
-      const res = await apiFetch(`/api/orchestrator/runs/${runId}/pause`, {
+      return apiFetchJsonNullable(`/api/orchestrator/runs/${runId}/pause`, {
         method: "POST",
         credentials: "include",
       });
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orchestrator/runs"] });
@@ -125,11 +114,10 @@ export default function SuperOrchestratorDashboard() {
 
   const resumeRunMutation = useMutation({
     mutationFn: async (runId: string) => {
-      const res = await apiFetch(`/api/orchestrator/runs/${runId}/resume`, {
+      return apiFetchJsonNullable(`/api/orchestrator/runs/${runId}/resume`, {
         method: "POST",
         credentials: "include",
       });
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orchestrator/runs"] });
@@ -428,11 +416,9 @@ export default function SuperOrchestratorDashboard() {
 function RunDetail({ runId }: { runId: string }) {
   const { data } = useQuery({
     queryKey: ["/api/orchestrator/runs", runId],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/orchestrator/runs/${runId}`, { credentials: "include" });
-      return res.json();
-    },
+    queryFn: () => apiFetchJson(`/api/orchestrator/runs/${runId}`),
     refetchInterval: 3000,
+    throwOnError: true,
   });
 
   if (!data) return <div className="mt-3 text-sm text-muted-foreground">Loading...</div>;
@@ -485,13 +471,12 @@ function NewRunForm({ onClose }: { onClose: () => void }) {
   const submitMutation = useMutation({
     mutationFn: async () => {
       const tasks = JSON.parse(tasksJson);
-      const res = await apiFetch("/api/orchestrator/runs", {
+      return apiFetchJson("/api/orchestrator/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ objective, tasks }),
         credentials: "include",
       });
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orchestrator/runs"] });

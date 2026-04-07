@@ -40,7 +40,6 @@ export interface AgenticModelReadiness {
 
 export const NO_LLM_PROVIDER_MESSAGE =
   'No LLM providers configured. Set at least one of: XAI_API_KEY, GEMINI_API_KEY/GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, or LOCAL_LLM_URL.';
-
 function readConfiguredValue(name: string): string | undefined {
   const value = process.env[name];
   if (typeof value !== 'string') return undefined;
@@ -67,11 +66,17 @@ function detectProviders(): Map<ProviderName, ProviderConfig> {
   });
 
   const openaiKey = readConfiguredValue('OPENAI_API_KEY');
+  const openRouterKey = readConfiguredValue('OPENROUTER_API_KEY');
+  const openAiCompatibleKey = openaiKey ?? openRouterKey;
+  const openAiCompatibleBaseUrl =
+    readConfiguredValue('OPENAI_BASE_URL') ??
+    (openRouterKey ? 'https://openrouter.ai/api/v1' : undefined);
   configs.set('openai', {
     name        : 'openai',
-    available   : !!openaiKey,
-    defaultModel: process.env['OPENAI_DEFAULT_MODEL'] ?? 'gpt-4o',
-    apiKey      : openaiKey,
+    available   : !!openAiCompatibleKey || !!openAiCompatibleBaseUrl,
+    defaultModel: process.env['OPENAI_DEFAULT_MODEL'] ?? (openRouterKey ? 'moonshotai/kimi-k2.5' : 'gpt-4o'),
+    apiKey      : openAiCompatibleKey,
+    baseUrl     : openAiCompatibleBaseUrl,
   });
 
   const geminiKey = readConfiguredValue('GEMINI_API_KEY') ?? readConfiguredValue('GOOGLE_API_KEY');
@@ -185,6 +190,7 @@ export function getAvailableProviders(): ProviderName[] {
  * Detect which provider owns a model string.
  */
 export function detectProvider(model: string): ProviderName {
+  if (model.includes('/'))                               return 'openai';
   if (/^claude/i.test(model))                         return 'anthropic';
   if (/^gpt|^o[1-9]|^chatgpt/i.test(model))          return 'openai';
   if (/^gemini/i.test(model))                         return 'gemini';

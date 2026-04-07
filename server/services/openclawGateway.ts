@@ -7,6 +7,12 @@ import { usageQuotaService } from "./usageQuotaService";
 import { internetToolDefinitions, executeInternetTool } from "../openclaw/lib/internetAccess";
 import { gatherInternetContext, buildInternetSystemPrompt } from "../openclaw/lib/chatInternetBridge";
 import { skillRegistry } from "../openclaw/skills/skillRegistry";
+import {
+  classifyOutputFormat,
+  hasExplicitDocumentArtifactRequest,
+  hasExplicitPresentationArtifactRequest,
+  hasExplicitSpreadsheetArtifactRequest,
+} from "@shared/explicitArtifactRequests";
 
 const VERSION = "2026.4.5";
 const TOKEN_SECRET = process.env.ENCRYPTION_KEY || randomUUID();
@@ -42,6 +48,313 @@ const PROVIDER_MAP: Record<string, "openai" | "gemini" | "xai" | "anthropic" | "
 };
 
 const tokenToUserMap = new Map<string, string>();
+
+type GatewayDocumentType = "word" | "excel" | "ppt" | "csv" | "pdf";
+
+interface OpenClawDirectCapabilityResponse {
+  kind: "document" | "academic" | "math";
+  content: string;
+}
+
+const BLANK_ARTIFACT_RE = /\b(blank|vac[ií]o|vac[ií]a|empty|en blanco)\b/i;
+const SEARCH_VERB_RE = /\b(busca(?:r)?|search|find|encuentra(?:r)?|lookup|investiga(?:r)?|research)\b/i;
+const ACADEMIC_HINT_RE =
+  /\b(art[ií]culo(?:s)?\s+cient[ií]fico(?:s)?|paper(?:s)?|academic|academi[ac]|scholar|pubmed|crossref|arxiv|doi|literature|literatura|revisi[oó]n bibliogr[aá]fica|estado del arte|state of the art)\b/i;
+const MATH_RENDER_HINT_RE = /\b(katex|latex|ecuaci[oó]n|equation|f[oó]rmula|formula|render(?:iza|izar)?|typeset)\b/i;
+
+function normalizeGatewayMessage(message: string): string {
+  return String(message || "")
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function inferGatewayDocumentType(message: string): GatewayDocumentType | null {
+  const normalized = normalizeGatewayMessage(message);
+  const hasExplicitArtifactIntent =
+    hasExplicitSpreadsheetArtifactRequest(normalized) ||
+    hasExplicitDocumentArtifactRequest(normalized) ||
+    hasExplicitPresentationArtifactRequest(normalized);
+
+  if (!hasExplicitArtifactIntent) {
+    return null;
+  }
+
+  const classification = classifyOutputFormat(normalized);
+
+  if (/\b(pdf|\.pdf)\b/i.test(normalized)) return "pdf";
+  if (/\b(csv|\.csv)\b/i.test(normalized)) return "csv";
+  if (classification.action === "excel") return "excel";
+  if (classification.action === "pptx") return "ppt";
+  if (classification.action === "word") return "word";
+  return null;
+}
+
+function inferGatewayDocumentTitle(message: string, type: GatewayDocumentType): string {
+  const fallbackTitles: Record<GatewayDocumentType, string> = {
+    word: "documento",
+    excel: "excel",
+    ppt: "presentacion",
+    csv: "datos",
+    pdf: "documento_pdf",
+  };
+
+  const normalized = normalizeGatewayMessage(message)
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/^(?:puedes|podr[ií]as|podrias|can you|please)\s+/i, "")
+    .replace(/\b(crea(?:r)?|genera(?:r)?|generate|haz(?:me)?|make|prepara(?:r)?|prepare|exporta(?:r)?|export|build)\b/gi, " ")
+    .replace(/\b(word|docx|documento|document|pdf|excel|xlsx|csv|spreadsheet|hoja(?:s)? de c[aá]lculo|hoja(?:s)? de calculo|powerpoint|pptx|ppt|slides|diapositivas)\b/gi, " ")
+    .replace(BLANK_ARTIFACT_RE, " ")
+    .replace(/\b(archivo|file|formato|un|una|el|la|los|las|a|an|the)\b/gi, " ")
+    .replace(/\b(con|with|sobre|about)\b[\s\S]*$/i, " ")
+    .replace(/[^\p{L}\p{N}\s_-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (normalized) {
+    return normalized.slice(0, 80);
+  }
+
+  if (BLANK_ARTIFACT_RE.test(message)) {
+    return `${fallbackTitles[type]}_vacio`;
+  }
+
+  return fallbackTitles[type];
+}
+
+function resolveMathExpressionFromMessage(message: string): string | undefined {
+  const latexDelimited = message.match(/\$\$?([\s\S]+?)\$\$?/);
+  if (latexDelimited?.[1]) return latexDelimited[1].trim();
+
+  const codeDelimited = message.match(/`([^`]+)`/);
+  if (codeDelimited?.[1]) return codeDelimited[1].trim();
+
+  const afterKeyword = message.match(
+    /(?:katex|latex|ecuaci[oó]n|equation|f[oó]rmula|formula|render(?:iza|izar)?|typeset)\s*[:\-]?\s*(.+)$/i,
+  );
+  if (afterKeyword?.[1]) {
+    return afterKeyword[1]
+      .trim()
+      .replace(/^["'“”]|["'“”]$/g, "")
+      .replace(/^(?:en\s+)?(?:katex|latex)\s*[:\-]\s*/i, "")
+      .trim();
+  }
+
+  return undefined;
+}
+
+function extractDocumentContent(message: string, type: GatewayDocumentType): string {
+  if (BLANK_ARTIFACT_RE.test(message)) {
+    return "";
+  }
+
+  const codeBlock = message.match(/```(?:[\w-]+)?\n([\s\S]+?)```/);
+  if (codeBlock?.[1]?.trim()) {
+    return codeBlock[1].trim();
+  }
+
+  const labeledTail = message.match(
+    /(?:contenido|content|texto|text|datos|data|tabla|table|diapositivas|slides|resumen|summary)\s*:\s*([\s\S]+)$/i,
+  );
+  if (labeledTail?.[1]?.trim()) {
+    return labeledTail[1].trim();
+  }
+
+  const mathExpression = resolveMathExpressionFromMessage(message);
+  if (mathExpression && MATH_RENDER_HINT_RE.test(message)) {
+    return `$$${mathExpression}$$`;
+  }
+
+  if (type === "excel" || type === "csv" || type === "ppt") {
+    return "";
+  }
+
+  const stripped = normalizeGatewayMessage(message)
+    .replace(/^(?:puedes|podr[ií]as|podrias|can you|please)\s*/i, "")
+    .replace(/^(?:crear|crea|genera|generate|make|haz(?:me)?|prepara|prepare|exporta|export)\b[:\s-]*/i, "")
+    .trim();
+
+  return stripped === normalizeGatewayMessage(message) ? "" : stripped;
+}
+
+function isAcademicSearchRequest(message: string): boolean {
+  const normalized = normalizeGatewayMessage(message);
+  return ACADEMIC_HINT_RE.test(normalized) && (SEARCH_VERB_RE.test(normalized) || /\b(sobre|about)\b/i.test(normalized));
+}
+
+function isMathRenderRequest(message: string): boolean {
+  const normalized = normalizeGatewayMessage(message);
+  return MATH_RENDER_HINT_RE.test(normalized) || /\$\$?[\s\S]+?\$\$?/.test(normalized);
+}
+
+function formatDocumentResponse(
+  type: GatewayDocumentType,
+  title: string,
+  output: unknown,
+): OpenClawDirectCapabilityResponse {
+  const payload = isRecord(output) ? output : {};
+  const filename = asString(payload.filename) || `${title}.${type === "ppt" ? "pptx" : type}`;
+  const downloadUrl = asString(payload.downloadUrl);
+  const labels: Record<GatewayDocumentType, string> = {
+    word: "Word",
+    excel: "Excel",
+    ppt: "PowerPoint",
+    csv: "CSV",
+    pdf: "PDF",
+  };
+
+  const parts = [`Listo. Creé el archivo ${labels[type]}.`];
+  if (downloadUrl) {
+    parts.push(`[Descargar ${filename}](${downloadUrl})`);
+  } else {
+    parts.push(`Archivo generado: \`${filename}\`.`);
+  }
+
+  return {
+    kind: "document",
+    content: parts.join("\n\n"),
+  };
+}
+
+function formatAcademicSearchResponse(result: {
+  query: string;
+  originalQuery?: string;
+  totalResults: number;
+  results: Array<{
+    title?: string;
+    authors?: string;
+    year?: string | number;
+    journal?: string;
+    doi?: string;
+    url?: string;
+    pdfUrl?: string;
+    source?: string;
+  }>;
+}): OpenClawDirectCapabilityResponse {
+  const query = result.originalQuery || result.query;
+  const topResults = Array.isArray(result.results) ? result.results.slice(0, 5) : [];
+
+  if (topResults.length === 0) {
+    return {
+      kind: "academic",
+      content: `No encontré artículos científicos para: "${query}".`,
+    };
+  }
+
+  const lines = topResults.map((paper, index) => {
+    const title = paper.title?.trim() || `Resultado ${index + 1}`;
+    const url = paper.url || paper.pdfUrl || "";
+    const authors = paper.authors?.trim();
+    const year = String(paper.year || "").trim();
+    const journal = paper.journal?.trim();
+    const source = paper.source ? String(paper.source).toUpperCase() : "";
+    const meta = [authors, year, journal, source].filter(Boolean).join(" | ");
+    const doi = paper.doi ? ` DOI: ${paper.doi}` : "";
+    const titleLine = url ? `${index + 1}. [${title}](${url})` : `${index + 1}. ${title}`;
+    return [titleLine, meta, doi].filter(Boolean).join("\n");
+  });
+
+  return {
+    kind: "academic",
+    content: `Encontré ${result.totalResults} artículos científicos para "${query}".\n\n${lines.join("\n\n")}`,
+  };
+}
+
+export async function resolveOpenClawDirectCapabilityResponse(params: {
+  message: string;
+  userId: string;
+  chatId: string;
+  runId: string;
+}): Promise<OpenClawDirectCapabilityResponse | null> {
+  const message = normalizeGatewayMessage(params.message);
+  if (!message) return null;
+  const toolUserId =
+    !params.userId ||
+    params.userId === "openclaw-user" ||
+    params.userId.startsWith("token:")
+      ? "anonymous"
+      : params.userId;
+
+  const documentType = inferGatewayDocumentType(message);
+  if (documentType) {
+    const { toolRegistry } = await import("../agent/toolRegistry");
+    const title = inferGatewayDocumentTitle(message, documentType);
+    const content = extractDocumentContent(message, documentType);
+    const result = await toolRegistry.execute(
+      "generate_document",
+      {
+        type: documentType,
+        title,
+        content,
+      },
+      {
+        userId: toolUserId,
+        chatId: params.chatId,
+        runId: params.runId,
+      },
+    );
+
+    if (!result.success) {
+      const errorMessage =
+        (isRecord(result.error) && asString(result.error.message)) ||
+        "No pude generar el archivo solicitado.";
+      return {
+        kind: "document",
+        content: errorMessage,
+      };
+    }
+
+    return formatDocumentResponse(documentType, title, result.output);
+  }
+
+  if (isAcademicSearchRequest(message)) {
+    const { searchAllSources } = await import("./unifiedAcademicSearch");
+    const result = await searchAllSources(message, {
+      maxResults: 8,
+      sources: ["openalex", "semantic", "crossref", "pubmed", "arxiv", "scholar"],
+    });
+    return formatAcademicSearchResponse(result);
+  }
+
+  if (isMathRenderRequest(message)) {
+    const expression = resolveMathExpressionFromMessage(message);
+    if (!expression) {
+      return {
+        kind: "math",
+        content: "Pásame la expresión matemática en LaTeX/KaTeX y la renderizo.",
+      };
+    }
+
+    const katexModule = await import("katex");
+    const renderToString =
+      (katexModule as { renderToString?: typeof import("katex").renderToString }).renderToString ||
+      (katexModule as { default?: { renderToString?: typeof import("katex").renderToString } }).default?.renderToString;
+
+    if (typeof renderToString === "function") {
+      renderToString(expression, {
+        displayMode: true,
+        throwOnError: false,
+        output: "htmlAndMathml",
+        strict: "ignore",
+      });
+    }
+
+    return {
+      kind: "math",
+      content: `Listo. Aquí está en KaTeX/LaTeX:\n\n$$${expression}$$`,
+    };
+  }
+
+  return null;
+}
 
 export function generateGatewayToken(userId: string): string {
   const hmac = createHmac("sha256", TOKEN_SECRET);
@@ -196,6 +509,8 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       reply(ws, id, {
         models: [
           { id: "moonshotai/kimi-k2.5", provider: "openrouter", name: "Kimi K2.5", available: true },
+          { id: "google/gemma-4-31b-it", provider: "openrouter", name: "Gemma 4 31B IT", available: true },
+          { id: "google/gemma-3-27b-it:free", provider: "openrouter", name: "Gemma 3 27B IT (Free)", available: true },
           { id: "gemini-2.5-flash-preview-05-20", provider: "gemini", name: "Gemini 2.5 Flash", available: true },
           { id: "gemini-2.5-pro-preview-05-06", provider: "gemini", name: "Gemini 2.5 Pro", available: true },
           { id: "gpt-4o", provider: "openai", name: "GPT-4o", available: true },
@@ -293,6 +608,8 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
         const modelId = params.model.trim();
         const modelsList = [
           { id: "moonshotai/kimi-k2.5", provider: "openrouter" },
+          { id: "google/gemma-4-31b-it", provider: "openrouter" },
+          { id: "google/gemma-3-27b-it:free", provider: "openrouter" },
           { id: "gemini-2.5-flash-preview-05-20", provider: "gemini" },
           { id: "gemini-2.5-pro-preview-05-06", provider: "gemini" },
           { id: "gpt-4o", provider: "openai" },
@@ -495,6 +812,47 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
             },
           },
         });
+
+        try {
+          const directResponse = await resolveOpenClawDirectCapabilityResponse({
+            message: userMessage,
+            userId: client.userId || "openclaw-user",
+            chatId: chatSessionKey,
+            runId,
+          });
+
+          if (directResponse) {
+            fullResponse = directResponse.content;
+            client.chatHistory.push({ role: "assistant", content: fullResponse });
+
+            if (client.chatHistory.length > 60) {
+              client.chatHistory.splice(1, client.chatHistory.length - 40);
+            }
+
+            const estimatedTokens = Math.ceil(fullResponse.length / 4) + Math.ceil(userMessage.length / 4);
+            usageQuotaService.recordOpenClawTokenUsage(client.userId || "", estimatedTokens).catch(() => {});
+
+            if (client.activeRuns.has(runId)) {
+              send(ws, {
+                type: "event",
+                event: "chat",
+                payload: {
+                  sessionKey: chatSessionKey,
+                  runId,
+                  state: "final",
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: fullResponse }],
+                    timestamp: Date.now(),
+                  },
+                },
+              });
+            }
+            return;
+          }
+        } catch (err: any) {
+          console.error(`[OpenClaw Gateway] direct capability error:`, err?.message || err);
+        }
 
         let internetContext = null;
         try {

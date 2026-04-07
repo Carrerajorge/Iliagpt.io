@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { MODELS } from "./openai";
 import { geminiChat, geminiStreamChat, GEMINI_MODELS, type GeminiChatMessage } from "./gemini";
 import {
+  FREE_MODEL_ID,
   KNOWN_XAI_MODEL_IDS,
   KNOWN_GEMINI_MODEL_IDS,
   KNOWN_LOCAL_MODEL_IDS,
@@ -191,6 +192,17 @@ export interface TruncationResult {
 }
 const IN_FLIGHT_TIMEOUT_MS = env.LLM_IN_FLIGHT_TIMEOUT_MS;
 const TOKEN_HISTORY_MAX = 1000;
+const OPENROUTER_NO_CREDITS_FALLBACK_MODEL =
+  process.env.OPENROUTER_NO_CREDITS_FALLBACK_MODEL?.trim() || FREE_MODEL_ID;
+const OPENROUTER_FREE_FALLBACK_MODELS = (
+  process.env.OPENROUTER_FREE_FALLBACK_MODELS?.split(",").map((model) => model.trim()).filter(Boolean) || [
+    FREE_MODEL_ID,
+    "google/gemma-3-12b-it:free",
+    "google/gemma-3-4b-it:free",
+    "openai/gpt-oss-120b:free",
+    "minimax/minimax-m2.5:free",
+  ]
+);
 
 // Model sets sourced from the central model registry
 const KNOWN_GEMINI_MODELS = KNOWN_GEMINI_MODEL_IDS;
@@ -254,6 +266,135 @@ function detectProviderFromModel(model: string | undefined): LLMProvider | null 
   }
 
   return "openai";
+}
+
+function isOpenRouterInsufficientCreditsError(error: any): boolean {
+  const status = Number(error?.status ?? error?.code);
+  const message = String(error?.error?.message || error?.message || "").toLowerCase();
+  return status === 402 || message.includes("insufficient credits");
+}
+
+function isOpenRouterRateLimitError(error: any): boolean {
+  const status = Number(error?.status ?? error?.code ?? error?.error?.code);
+  const message = String(error?.error?.message || error?.message || "").toLowerCase();
+  return status === 429 || message.includes("rate-limited upstream") || message.includes("rate limit");
+}
+
+function isOpenRouterDataPolicyError(error: any): boolean {
+  const status = Number(error?.status ?? error?.code);
+  const message = String(error?.error?.message || error?.message || "").toLowerCase();
+  return status === 404 && message.includes("data policy");
+}
+
+function parseAffordableMaxTokens(error: any): number | undefined {
+  const message = String(error?.error?.message || error?.message || "");
+  const match = message.match(/can only afford (\d+)/i);
+  if (!match) return undefined;
+  const parsed = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.max(parsed - 10, 50);
+}
+
+function resolveOpenRouterNoCreditsFallbackModel(model: string): string | undefined {
+  const trimmed = String(model || "").trim();
+  if (!trimmed || trimmed.endsWith(":free")) {
+    return undefined;
+  }
+  return OPENROUTER_NO_CREDITS_FALLBACK_MODEL !== trimmed
+    ? OPENROUTER_NO_CREDITS_FALLBACK_MODEL
+    : undefined;
+}
+
+function resolveOpenRouterAlternativeModels(model: string): string[] {
+  const current = String(model || "").trim();
+  const fallbackModel = resolveOpenRouterNoCreditsFallbackModel(current);
+  const seen = new Set<string>();
+  const candidates = [fallbackModel, ...OPENROUTER_FREE_FALLBACK_MODELS]
+    .map((candidate) => String(candidate || "").trim())
+    .filter(Boolean)
+    .filter((candidate) => candidate !== current)
+    .filter((candidate) => {
+      if (seen.has(candidate)) return false;
+      seen.add(candidate);
+      return true;
+    });
+  return candidates;
+}
+
+function messageContentToText(content: ChatCompletionMessageParam["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part: any) => {
+        if (part?.type === "text") return String(part.text || "");
+        if (part?.type === "image_url") return "[image]";
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
+}
+
+function normalizeMessagesForOpenRouterModel(
+  model: string,
+  messages: ChatCompletionMessageParam[],
+): ChatCompletionMessageParam[] {
+  const normalizedModel = String(model || "").trim().toLowerCase();
+  const requiresUserOnlyInstructions =
+    normalizedModel.startsWith("google/gemma-") && normalizedModel.endsWith(":free");
+
+  if (!requiresUserOnlyInstructions) {
+    return messages;
+  }
+
+  const systemLike = messages.filter((message) => {
+    const role = String((message as any)?.role || "").toLowerCase();
+    return role === "system" || role === "developer";
+  });
+
+  if (systemLike.length === 0) {
+    return messages;
+  }
+
+  const instructionBlock = systemLike
+    .map((message) => messageContentToText(message.content))
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .join("\n\n");
+
+  const remaining = messages.filter((message) => {
+    const role = String((message as any)?.role || "").toLowerCase();
+    return role !== "system" && role !== "developer";
+  });
+
+  if (!instructionBlock) {
+    return remaining;
+  }
+
+  const firstUserIndex = remaining.findIndex((message) => message.role === "user");
+  if (firstUserIndex >= 0) {
+    const firstUser = remaining[firstUserIndex];
+    const firstUserText = messageContentToText(firstUser.content).trim();
+    const mergedUserText = `Instructions:\n${instructionBlock}\n\nUser request:\n${firstUserText}`;
+    const nextMessages = [...remaining];
+    nextMessages[firstUserIndex] = {
+      ...firstUser,
+      role: "user",
+      content: mergedUserText,
+    };
+    return nextMessages;
+  }
+
+  return [
+    {
+      role: "user",
+      content: `Instructions:\n${instructionBlock}`,
+    },
+    ...remaining,
+  ];
 }
 
 class LLMGateway {
@@ -1388,27 +1529,131 @@ class LLMGateway {
     try {
       const client = this.getOpenAICompatibleClient(provider);
       const isOpenRouter = Boolean(process.env.OPENROUTER_API_KEY?.trim() || process.env.OPENAI_BASE_URL?.includes("openrouter.ai"));
+      const preferredOpenRouterDataCollection =
+        String(process.env.OPENROUTER_DATA_COLLECTION || "deny").trim().toLowerCase() === "allow"
+          ? "allow"
+          : "deny";
       let effectiveModel = model;
       if (provider === "cerebras") {
         effectiveModel = model.replace(/^openai\//, "").replace(/:free$/, "");
       }
-      const createParams: any = {
-        model: effectiveModel,
-        messages,
-        temperature: options.temperature ?? 0.7,
-        top_p: options.topP ?? 1,
-        max_tokens: options.maxTokens,
+      const attemptCompletion = async (
+        modelOverride: string,
+        maxTokensOverride: number | undefined,
+        dataCollectionOverride?: "allow" | "deny",
+      ) => {
+        const normalizedMessages =
+          isOpenRouter && provider === "openai"
+            ? normalizeMessagesForOpenRouterModel(modelOverride, messages)
+            : messages;
+        const createParams: any = {
+          model: modelOverride,
+          messages: normalizedMessages,
+          temperature: options.temperature ?? 0.7,
+          top_p: options.topP ?? 1,
+          max_tokens: maxTokensOverride,
+        };
+        if (isOpenRouter && provider === "openai") {
+          createParams.provider = {
+            data_collection: dataCollectionOverride || preferredOpenRouterDataCollection,
+            require_parameters: false,
+          };
+        }
+        return client.chat.completions.create(
+          createParams,
+          { signal: controller.signal }
+        );
       };
-      if (isOpenRouter && provider === "openai") {
-        createParams.provider = { data_collection: "deny", require_parameters: false };
+      const attemptCompletionWithPolicyRetry = async (
+        modelOverride: string,
+        maxTokensOverride: number | undefined,
+      ) => {
+        try {
+          return await attemptCompletion(modelOverride, maxTokensOverride);
+        } catch (error: any) {
+          if (
+            isOpenRouter &&
+            provider === "openai" &&
+            preferredOpenRouterDataCollection !== "allow" &&
+            isOpenRouterDataPolicyError(error)
+          ) {
+            console.log(
+              `[LLMGateway] ${options.requestId} OpenRouter data policy rejected ${modelOverride}, retrying with data_collection=allow`,
+            );
+            return attemptCompletion(modelOverride, maxTokensOverride, "allow");
+          }
+          throw error;
+        }
+      };
+
+      let settledModel = effectiveModel;
+      let response: any;
+
+      try {
+        response = await attemptCompletionWithPolicyRetry(settledModel, options.maxTokens);
+      } catch (error: any) {
+        const canTryOpenRouterAlternatives =
+          isOpenRouter &&
+          provider === "openai" &&
+          (isOpenRouterInsufficientCreditsError(error) || isOpenRouterRateLimitError(error));
+
+        if (!canTryOpenRouterAlternatives) {
+          throw error;
+        }
+
+        let retryError = error;
+        const affordable = parseAffordableMaxTokens(error);
+        if (!settledModel.endsWith(":free") && options.maxTokens && affordable && affordable < options.maxTokens) {
+          try {
+            console.log(
+              `[LLMGateway] ${options.requestId} OpenRouter 402 on ${settledModel}, retrying same model with maxTokens=${affordable}`,
+            );
+            response = await attemptCompletionWithPolicyRetry(settledModel, affordable);
+          } catch (sameModelRetryError: any) {
+            retryError = sameModelRetryError;
+          }
+        }
+
+        if (!response) {
+          const fallbackModels = resolveOpenRouterAlternativeModels(settledModel);
+          let fallbackError = retryError;
+
+          for (const fallbackModel of fallbackModels) {
+            try {
+              const reason = isOpenRouterInsufficientCreditsError(fallbackError) ? "credits unavailable" : "rate-limited";
+              console.log(
+                `[LLMGateway] ${options.requestId} OpenRouter ${reason} for ${settledModel}, falling back to ${fallbackModel}`,
+              );
+              settledModel = fallbackModel;
+              response = await attemptCompletionWithPolicyRetry(settledModel, undefined);
+              break;
+            } catch (candidateError: any) {
+              fallbackError = candidateError;
+              if (
+                !isOpenRouterInsufficientCreditsError(candidateError) &&
+                !isOpenRouterRateLimitError(candidateError)
+              ) {
+                throw candidateError;
+              }
+            }
+          }
+
+          if (!response && settledModel.endsWith(":free") && isOpenRouterInsufficientCreditsError(fallbackError)) {
+            console.log(
+              `[LLMGateway] ${options.requestId} OpenRouter reported 402 on free model ${settledModel}, retrying without maxTokens`,
+            );
+            response = await attemptCompletionWithPolicyRetry(settledModel, undefined);
+          }
+
+          if (!response) {
+            throw fallbackError;
+          }
+        }
       }
-      const response = await client.chat.completions.create(
-        createParams,
-        { signal: controller.signal }
-      );
 
       clearTimeout(timeoutId);
 
+      effectiveModel = settledModel;
       const latencyMs = Date.now() - startTime;
       const content = response.choices[0]?.message?.content || "";
       const usage = response.usage;
@@ -1422,7 +1667,7 @@ class LLMGateway {
         requestId: options.requestId,
         userId: options.userId || "anonymous",
         provider,
-        model,
+        model: effectiveModel,
         promptTokens: usage?.prompt_tokens || 0,
         completionTokens: usage?.completion_tokens || 0,
         totalTokens: usage?.total_tokens || 0,
@@ -1433,7 +1678,7 @@ class LLMGateway {
       };
       this.recordTokenUsage(usageRecord);
 
-      console.log(`[LLMGateway] ${options.requestId} ${provider} completed in ${latencyMs}ms, tokens: ${usage?.total_tokens || 0}`);
+      console.log(`[LLMGateway] ${options.requestId} ${provider} completed in ${latencyMs}ms, model=${effectiveModel}, tokens: ${usage?.total_tokens || 0}`);
       recordLlmGatewayRequest({
         provider,
         operation: "chat",
@@ -1445,7 +1690,7 @@ class LLMGateway {
 
       this.persistApiLog({
         provider,
-        model,
+        model: effectiveModel,
         endpoint: "/chat/completions",
         latencyMs,
         statusCode: 200,
@@ -1479,7 +1724,7 @@ class LLMGateway {
         } : undefined,
         requestId: options.requestId,
         latencyMs,
-        model,
+        model: effectiveModel,
         provider,
       };
     } catch (error: any) {
@@ -1500,7 +1745,7 @@ class LLMGateway {
 
       this.persistApiLog({
         provider,
-        model,
+        model: effectiveModel,
         endpoint: "/chat/completions",
         latencyMs,
         statusCode: error.status || 500,
@@ -2191,12 +2436,21 @@ class LLMGateway {
 
     const client = this.getOpenAICompatibleClient(provider);
 
-    const isFreeModel = model.endsWith(":free");
-    const effectiveMaxTokens = isFreeModel ? undefined : options.maxTokens;
+    let activeModel = model;
+    const initialIsFreeModel = activeModel.endsWith(":free");
+    const effectiveMaxTokens = initialIsFreeModel ? undefined : options.maxTokens;
+    const preferredOpenRouterDataCollection =
+      String(process.env.OPENROUTER_DATA_COLLECTION || "deny").trim().toLowerCase() === "allow"
+        ? "allow"
+        : "deny";
 
-    console.log(`[LLMGateway] ${requestId} streaming model=${model}, provider=${provider}, isFree=${isFreeModel}, maxTokens=${effectiveMaxTokens ?? 'auto'}`);
+    console.log(`[LLMGateway] ${requestId} streaming model=${activeModel}, provider=${provider}, isFree=${initialIsFreeModel}, maxTokens=${effectiveMaxTokens ?? 'auto'}`);
 
-    const attemptStream = async (maxTokensOverride?: number | undefined) => {
+    const attemptStream = async (
+      modelOverride: string,
+      maxTokensOverride?: number | undefined,
+      dataCollectionOverride?: "allow" | "deny",
+    ) => {
       const controller = new AbortController();
       const totalTimeoutMs = options.timeout ?? DEFAULT_STREAM_TIMEOUT_MS;
       let abortedReason: "timeout" | "idle" | null = null;
@@ -2219,9 +2473,13 @@ class LLMGateway {
       };
 
       const isOpenRouter = Boolean(process.env.OPENROUTER_API_KEY?.trim() || process.env.OPENAI_BASE_URL?.includes("openrouter.ai"));
+      const normalizedMessages =
+        isOpenRouter
+          ? normalizeMessagesForOpenRouterModel(modelOverride, messages)
+          : messages;
       const createParams: any = {
-        model,
-        messages,
+        model: modelOverride,
+        messages: normalizedMessages,
         temperature: options.temperature ?? 0.7,
         top_p: options.topP ?? 1,
         stream: true,
@@ -2230,7 +2488,10 @@ class LLMGateway {
         createParams.max_tokens = maxTokensOverride;
       }
       if (isOpenRouter) {
-        createParams.provider = { data_collection: "deny", require_parameters: false };
+        createParams.provider = {
+          data_collection: dataCollectionOverride || preferredOpenRouterDataCollection,
+          require_parameters: false,
+        };
       }
 
       const stream = await client.chat.completions.create(
@@ -2240,19 +2501,76 @@ class LLMGateway {
 
       return { stream, controller, totalTimeoutId, idleTimeoutId, resetIdle, abortedReason: () => abortedReason, totalTimeoutMs };
     };
+    const attemptStreamWithPolicyRetry = async (
+      modelOverride: string,
+      maxTokensOverride?: number | undefined,
+    ) => {
+      try {
+        return await attemptStream(modelOverride, maxTokensOverride);
+      } catch (error: any) {
+        if (
+          provider === "openai" &&
+          preferredOpenRouterDataCollection !== "allow" &&
+          isOpenRouterDataPolicyError(error)
+        ) {
+          console.log(`[LLMGateway] ${requestId} OpenRouter data policy rejected ${modelOverride}, retrying stream with data_collection=allow`);
+          return attemptStream(modelOverride, maxTokensOverride, "allow");
+        }
+        throw error;
+      }
+    };
 
     let streamCtx: Awaited<ReturnType<typeof attemptStream>>;
     try {
-      streamCtx = await attemptStream(effectiveMaxTokens);
+      streamCtx = await attemptStreamWithPolicyRetry(activeModel, effectiveMaxTokens);
     } catch (error: any) {
-      if (error?.status === 402 && effectiveMaxTokens) {
-        const match = error?.error?.message?.match(/can only afford (\d+)/);
-        const affordable = match ? Math.max(parseInt(match[1], 10) - 10, 50) : 150;
-        console.log(`[LLMGateway] ${requestId} 402 credit limit hit, retrying with maxTokens=${affordable}`);
-        streamCtx = await attemptStream(affordable);
-      } else if (error?.status === 402) {
-        console.log(`[LLMGateway] ${requestId} 402 credit limit on free model, retrying without maxTokens`);
-        streamCtx = await attemptStream(undefined);
+      const canTryOpenRouterAlternatives =
+        provider === "openai" &&
+        (isOpenRouterInsufficientCreditsError(error) || isOpenRouterRateLimitError(error));
+
+      if (canTryOpenRouterAlternatives) {
+        let retryError = error;
+        const affordable = parseAffordableMaxTokens(error);
+        if (!activeModel.endsWith(":free") && effectiveMaxTokens && affordable && affordable < effectiveMaxTokens) {
+          try {
+            console.log(`[LLMGateway] ${requestId} OpenRouter 402 on ${activeModel}, retrying same model with maxTokens=${affordable}`);
+            streamCtx = await attemptStreamWithPolicyRetry(activeModel, affordable);
+          } catch (sameModelRetryError: any) {
+            retryError = sameModelRetryError;
+          }
+        }
+
+        if (!streamCtx) {
+          const fallbackModels = resolveOpenRouterAlternativeModels(activeModel);
+          let fallbackError = retryError;
+
+          for (const fallbackModel of fallbackModels) {
+            try {
+              const reason = isOpenRouterInsufficientCreditsError(fallbackError) ? "credits unavailable" : "rate-limited";
+              console.log(`[LLMGateway] ${requestId} OpenRouter ${reason} for ${activeModel}, falling back to ${fallbackModel}`);
+              activeModel = fallbackModel;
+              streamCtx = await attemptStreamWithPolicyRetry(activeModel, undefined);
+              break;
+            } catch (candidateError: any) {
+              fallbackError = candidateError;
+              if (
+                !isOpenRouterInsufficientCreditsError(candidateError) &&
+                !isOpenRouterRateLimitError(candidateError)
+              ) {
+                throw candidateError;
+              }
+            }
+          }
+
+          if (!streamCtx && activeModel.endsWith(":free") && isOpenRouterInsufficientCreditsError(fallbackError)) {
+            console.log(`[LLMGateway] ${requestId} OpenRouter reported 402 on free model ${activeModel}, retrying without maxTokens`);
+            streamCtx = await attemptStreamWithPolicyRetry(activeModel, undefined);
+          }
+
+          if (!streamCtx) {
+            throw fallbackError;
+          }
+        }
       } else {
         throw error;
       }

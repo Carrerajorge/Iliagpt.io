@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
+import { apiFetchJson } from "@/lib/adminApi";
 import {
   Shield,
   ShieldAlert,
@@ -123,44 +124,23 @@ export default function SecurityDashboard() {
 
   const { data: summary, isLoading: summaryLoading } = useQuery<SecuritySummary>({
     queryKey: ["/api/admin/security/summary"],
-    queryFn: async () => {
-      try {
-        const res = await fetch("/api/admin/security/summary", { credentials: "include" });
-        if (res.ok) return res.json();
-      } catch {}
-      return {
-        threatScore: { overall: 0, injectionRisk: 0, outputLeakRisk: 0, anomalyRisk: 0, trend: "stable", lastUpdated: Date.now() },
-        recentEvents: 0,
-        unresolvedAlerts: 0,
-        injectionStats: { totalDetections: 0, totalBlocked: 0, byType: {}, bySeverity: {}, bySource: {} },
-        sanitizationStats: { totalSanitizations: 0, byCategory: {}, averageConfidence: 0 },
-      };
-    },
+    queryFn: () => apiFetchJson("/api/admin/security/summary"),
     refetchInterval: 5000,
+    throwOnError: true,
   });
 
   const { data: eventsData, isLoading: eventsLoading } = useQuery<SecurityEvent[]>({
     queryKey: ["/api/admin/security/events"],
-    queryFn: async () => {
-      try {
-        const res = await fetch("/api/admin/security/events?limit=100", { credentials: "include" });
-        if (res.ok) return res.json();
-      } catch {}
-      return [];
-    },
+    queryFn: () => apiFetchJson("/api/admin/security/events?limit=100"),
     refetchInterval: 5000,
+    throwOnError: true,
   });
 
   const { data: alertsData } = useQuery<SecurityAlert[]>({
     queryKey: ["/api/admin/security/alerts"],
-    queryFn: async () => {
-      try {
-        const res = await fetch("/api/admin/security/alerts", { credentials: "include" });
-        if (res.ok) return res.json();
-      } catch {}
-      return [];
-    },
+    queryFn: () => apiFetchJson("/api/admin/security/alerts"),
     refetchInterval: 5000,
+    throwOnError: true,
   });
 
   const threatScore = summary?.threatScore || { overall: 0, injectionRisk: 0, outputLeakRisk: 0, anomalyRisk: 0, trend: "stable", lastUpdated: Date.now() };

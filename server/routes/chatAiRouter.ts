@@ -118,6 +118,23 @@ const MAX_STREAM_ATTACHMENT_NAME_LEN = 220;
 const MAX_STREAM_ATTACHMENT_MIME_LEN = 120;
 const MAX_STREAM_ATTACHMENT_SIZE = MAX_CHAT_ATTACHMENT_SIZE_BYTES;
 const MAX_STREAM_SKILL_SCOPES = 12;
+
+function isLoopbackHost(rawHost: string | undefined): boolean {
+  const host = (rawHost || "").split(":")[0].trim().toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+}
+
+function isLoopbackIp(rawIp: string | undefined): boolean {
+  const ip = (rawIp || "").trim().toLowerCase();
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+}
+
+function canUseAnonymousLocalGemma(req: AuthenticatedRequest | Request, model: string | undefined): boolean {
+  const normalizedModel = (model || "").trim().toLowerCase();
+  if (process.env.NODE_ENV === "production") return false;
+  if (!normalizedModel.startsWith("google/gemma-")) return false;
+  return isLoopbackHost(req.headers.host) || isLoopbackIp(req.ip) || isLoopbackIp(req.socket.remoteAddress);
+}
 const MAX_STREAM_SKILL_ATTACHMENTS = 12;
 const DEFAULT_STREAM_SKILL_SCOPES: SkillScope[] = ["storage.read", "files", "code_interpreter"];
 const VALID_STREAM_SCOPE_SET = new Set<SkillScope>([
@@ -356,6 +373,8 @@ const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "gemini-1.5-pro": 1048576,
   "grok-beta": 131072,
   "grok-3": 131072,
+  [FREE_MODEL_ID]: 131072,
+  "google/gemma-4-31b-it": 262144,
   "moonshotai/kimi-k2.5": 131072,
 };
 const DEFAULT_CONTEXT_LIMIT = 128000;
@@ -4469,7 +4488,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
       const effectiveUserId = authenticatedUserId || getOrCreateSecureUserId(req);
       const userId = effectiveUserId;
 
-      if (!authenticatedUserId && userId.startsWith("anon_")) {
+      if (!authenticatedUserId && userId.startsWith("anon_") && !canUseAnonymousLocalGemma(req, model)) {
         console.warn(`[Chat] Blocked anonymous chat attempt from IP=${req.ip}, UA=${(req.headers["user-agent"] || "").slice(0, 80)}`);
         return res.status(401).json({
           error: "Authentication required. Please sign in with Google to use the chat.",
@@ -5267,13 +5286,17 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       const authenticatedStreamUser = getUserId(req);
       const effectiveUserId = authenticatedStreamUser || getOrCreateSecureUserId(req);
       const requestedModel = typeof model === "string" ? model.trim() : "";
-      const isUsingFreeModel = !requestedModel || requestedModel === FREE_MODEL_ID || requestedModel === "google/gemma-4-31b-it";
-      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && !isUsingFreeModel) {
+      const isUsingFreeModel = !requestedModel || requestedModel === FREE_MODEL_ID;
+      const allowAnonymousLocalGemma = canUseAnonymousLocalGemma(req, requestedModel);
+      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && !isUsingFreeModel && !allowAnonymousLocalGemma) {
         console.warn(`[Stream] Blocked anonymous stream attempt from IP=${req.ip}, model=${requestedModel}`);
         res.setHeader("Content-Type", "text/event-stream");
         applySseSecurityHeaders(res);
         res.write(`data: ${JSON.stringify({ type: "error", error: "Authentication required. Please sign in with Google to use this model.", code: "AUTH_REQUIRED" })}\n\n`);
         return res.end();
+      }
+      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && allowAnonymousLocalGemma) {
+        console.log(`[Stream] Anonymous localhost Gemma allowed in development from IP=${req.ip}, model=${requestedModel}`);
       }
       if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && isUsingFreeModel) {
         console.log(`[Stream] Anonymous user allowed with free model (${FREE_MODEL_ID}) from IP=${req.ip}`);

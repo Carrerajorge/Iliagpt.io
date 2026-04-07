@@ -26,6 +26,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { getFileTheme, getFileCategory, type FileCategory } from "@/lib/fileTypeTheme";
 import { useAsyncHighlight } from "@/hooks/useAsyncHighlight";
+import { downloadArtifact } from "@/lib/localArtifactAccess";
 
 export type ArtifactType =
   | "image"
@@ -62,9 +63,17 @@ interface ArtifactViewerProps {
 }
 
 function detectArtifactType(artifact: Artifact): ArtifactType {
-  if (artifact.type && artifact.type !== "unknown") return artifact.type;
-
   const category = getFileCategory(artifact.name, artifact.mimeType);
+
+  if (artifact.type && artifact.type !== "unknown") {
+    if (artifact.type === "document") {
+      if (category === "excel") return "spreadsheet";
+      if (category === "ppt") return "presentation";
+      if (category === "pdf") return "pdf";
+    }
+    return artifact.type;
+  }
+
   const categoryMap: Record<FileCategory, ArtifactType> = {
     image: "image",
     word: "document",
@@ -282,31 +291,23 @@ const DocumentArtifact = memo(function DocumentArtifact({
     }
 
     // Construct download URL from artifact path or use provided URL
-    let downloadUrl = artifact.url || artifact.previewUrl;
+    let downloadUrl =
+      artifact.data?.downloadUrl ||
+      artifact.url ||
+      artifact.previewUrl ||
+      artifact.data?.url;
 
     // If we have a path, construct the proper download endpoint
     const artifactPath = artifact.path || artifact.data?.filePath || artifact.data?.path;
-    if (artifactPath) {
+    if (!downloadUrl && artifactPath) {
       const filename = artifactPath.split('/').pop();
-      downloadUrl = `/api/artifacts/${filename}/download`;
+      downloadUrl = `/api/artifacts/${filename}`;
     }
 
     if (!downloadUrl) return;
 
     try {
-      // Use blob download pattern for binary files (Office documents)
-      const response = await fetch(downloadUrl);
-      if (!response.ok) throw new Error(`Download failed: ${response.status}`);
-
-      const blob = await response.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = artifact.name || "document";
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(blobUrl);
+      await downloadArtifact(downloadUrl, artifact.name || "document");
     } catch (error) {
       console.error("[ArtifactDownload] Blob download failed, trying direct link:", error);
       // Fallback to direct link

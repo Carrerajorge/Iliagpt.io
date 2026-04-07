@@ -15,10 +15,16 @@ import {
   searchScholar,
   searchDuckDuckGo,
   searchWOS,
+  searchOpenAlex,
+  searchCORE,
+  searchArXiv,
+  searchDOAJ,
+  searchBASE,
   getSourcesStatus,
   AcademicResult
 } from "../services/unifiedAcademicSearch";
 import { sanitizePlainText, sanitizeSearchQuery } from "../lib/textSanitizers";
+import { lookupUnpaywallByDoi } from "../services/unpayWallSearch";
 
 export const academicSearchRouter = Router();
 
@@ -28,7 +34,21 @@ export const academicSearchRouter = Router();
 
 const MAX_QUERY_LENGTH = 500;
 const MAX_RESULTS_LIMIT = 100;
-const VALID_SOURCES = ["scopus", "pubmed", "scholar", "scielo", "semantic", "crossref", "duckduckgo", "wos"];
+const VALID_SOURCES = [
+  "scopus",
+  "pubmed",
+  "scholar",
+  "scielo",
+  "semantic",
+  "crossref",
+  "duckduckgo",
+  "wos",
+  "openalex",
+  "core",
+  "arxiv",
+  "doaj",
+  "base"
+];
 
 /**
  * Validate and sanitize search query at the API boundary.
@@ -79,6 +99,55 @@ function validateSources(raw: any): string[] | undefined {
   return raw.filter((s: any) => typeof s === "string" && VALID_SOURCES.includes(s.toLowerCase()));
 }
 
+function getLanguage(body: any): string | undefined {
+  return typeof body?.language === "string" ? body.language.substring(0, 10) : undefined;
+}
+
+function validateDoi(raw: any): { valid: true; doi: string } | { valid: false; error: string } {
+  if (!raw || typeof raw !== "string") {
+    return { valid: false, error: "doi is required and must be a string" };
+  }
+
+  const doi = sanitizePlainText(raw, { maxLen: 300, collapseWs: true })
+    .trim()
+    .replace(/^https?:\/\/doi\.org\//i, "")
+    .replace(/^doi:/i, "")
+    .trim();
+
+  if (!doi) {
+    return { valid: false, error: "doi cannot be empty" };
+  }
+
+  if (!/^10\.\S+\/\S+$/i.test(doi)) {
+    return { valid: false, error: "doi must be a valid DOI" };
+  }
+
+  return { valid: true, doi };
+}
+
+function createSourceHandler(
+  source: string,
+  searchFn: (query: string, options?: any) => Promise<AcademicResult[]>,
+  buildOptions?: (body: any) => Record<string, unknown>,
+) {
+  return async (req: any, res: any) => {
+    try {
+      const queryResult = validateQuery(req.body?.query);
+      if (!queryResult.valid) return res.status(400).json({ error: queryResult.error });
+
+      const maxResults = validateMaxResults(req.body?.maxResults);
+      const results = await searchFn(queryResult.query, {
+        maxResults,
+        ...(buildOptions ? buildOptions(req.body) : {}),
+      });
+
+      res.json({ query: queryResult.query, source, totalResults: results.length, results });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  };
+}
+
 // GET /api/academic/status - Check which sources are available
 academicSearchRouter.get("/status", async (req, res) => {
   try {
@@ -110,6 +179,10 @@ academicSearchRouter.post("/search", async (req, res) => {
     const yearFrom = validateYear(req.body?.yearFrom);
     const yearTo = validateYear(req.body?.yearTo);
     const language = typeof req.body?.language === "string" ? req.body.language.substring(0, 10) : undefined;
+    const openAccessOnly = Boolean(req.body?.openAccessOnly);
+    const sortBy = req.body?.sortBy === "citations" || req.body?.sortBy === "date" || req.body?.sortBy === "trending"
+      ? req.body.sortBy
+      : "relevance";
 
     console.log(`[Academic] Unified search: "${queryResult.query}" | sources: ${sources?.join(",") || "all"}`);
 
@@ -118,7 +191,9 @@ academicSearchRouter.post("/search", async (req, res) => {
       sources,
       yearFrom,
       yearTo,
-      language
+      language,
+      openAccessOnly,
+      sortBy,
     });
 
     res.json(result);
@@ -129,93 +204,71 @@ academicSearchRouter.post("/search", async (req, res) => {
 });
 
 // POST /api/academic/scopus - Search Scopus only
-academicSearchRouter.post("/scopus", async (req, res) => {
-  try {
-    const queryResult = validateQuery(req.body?.query);
-    if (!queryResult.valid) return res.status(400).json({ error: queryResult.error });
-    const maxResults = validateMaxResults(req.body?.maxResults);
-
-    const results = await searchScopus(queryResult.query, { maxResults });
-
-    res.json({ query: queryResult.query, source: "scopus", totalResults: results.length, results });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
+academicSearchRouter.post("/scopus", createSourceHandler("scopus", searchScopus));
 
 // POST /api/academic/scielo - Search SciELO only
-academicSearchRouter.post("/scielo", async (req, res) => {
-  try {
-    const queryResult = validateQuery(req.body?.query);
-    if (!queryResult.valid) return res.status(400).json({ error: queryResult.error });
-    const maxResults = validateMaxResults(req.body?.maxResults);
-    const language = typeof req.body?.language === "string" ? req.body.language.substring(0, 10) : "es";
-
-    const results = await searchScielo(queryResult.query, { maxResults, language });
-
-    res.json({ query: queryResult.query, source: "scielo", totalResults: results.length, results });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
+academicSearchRouter.post("/scielo", createSourceHandler("scielo", searchScielo, (body) => ({
+  language: getLanguage(body) || "es"
+})));
 
 // POST /api/academic/pubmed - Search PubMed only
-academicSearchRouter.post("/pubmed", async (req, res) => {
-  try {
-    const queryResult = validateQuery(req.body?.query);
-    if (!queryResult.valid) return res.status(400).json({ error: queryResult.error });
-    const maxResults = validateMaxResults(req.body?.maxResults);
-
-    const results = await searchPubMed(queryResult.query, { maxResults });
-
-    res.json({ query: queryResult.query, source: "pubmed", totalResults: results.length, results });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
+academicSearchRouter.post("/pubmed", createSourceHandler("pubmed", searchPubMed));
 
 // POST /api/academic/scholar - Search Google Scholar only
-academicSearchRouter.post("/scholar", async (req, res) => {
-  try {
-    const queryResult = validateQuery(req.body?.query);
-    if (!queryResult.valid) return res.status(400).json({ error: queryResult.error });
-    const maxResults = validateMaxResults(req.body?.maxResults);
-
-    const results = await searchScholar(queryResult.query, { maxResults });
-
-    res.json({ query: queryResult.query, source: "scholar", totalResults: results.length, results });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
+academicSearchRouter.post("/scholar", createSourceHandler("scholar", searchScholar));
 
 // POST /api/academic/duckduckgo - Search DuckDuckGo only
-academicSearchRouter.post("/duckduckgo", async (req, res) => {
-  try {
-    const queryResult = validateQuery(req.body?.query);
-    if (!queryResult.valid) return res.status(400).json({ error: queryResult.error });
-    const maxResults = validateMaxResults(req.body?.maxResults);
-
-    const results = await searchDuckDuckGo(queryResult.query, { maxResults });
-
-    res.json({ query: queryResult.query, source: "duckduckgo", totalResults: results.length, results });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
+academicSearchRouter.post("/duckduckgo", createSourceHandler("duckduckgo", searchDuckDuckGo));
 
 // POST /api/academic/wos - Search Web of Science only
-academicSearchRouter.post("/wos", async (req, res) => {
+academicSearchRouter.post("/wos", createSourceHandler("wos", searchWOS));
+academicSearchRouter.post("/openalex", createSourceHandler("openalex", searchOpenAlex, (body) => ({
+  language: getLanguage(body),
+  yearFrom: validateYear(body?.yearFrom),
+  yearTo: validateYear(body?.yearTo),
+  openAccessOnly: Boolean(body?.openAccessOnly),
+})));
+academicSearchRouter.post("/core", createSourceHandler("core", searchCORE, (body) => ({
+  language: getLanguage(body),
+  yearFrom: validateYear(body?.yearFrom),
+  yearTo: validateYear(body?.yearTo),
+  openAccessOnly: Boolean(body?.openAccessOnly),
+})));
+academicSearchRouter.post("/arxiv", createSourceHandler("arxiv", searchArXiv, (body) => ({
+  language: getLanguage(body),
+  yearFrom: validateYear(body?.yearFrom),
+  yearTo: validateYear(body?.yearTo),
+  openAccessOnly: Boolean(body?.openAccessOnly),
+})));
+academicSearchRouter.post("/doaj", createSourceHandler("doaj", searchDOAJ, (body) => ({
+  language: getLanguage(body),
+  yearFrom: validateYear(body?.yearFrom),
+  yearTo: validateYear(body?.yearTo),
+  openAccessOnly: Boolean(body?.openAccessOnly),
+})));
+academicSearchRouter.post("/base", createSourceHandler("base", searchBASE, (body) => ({
+  language: getLanguage(body),
+  openAccessOnly: Boolean(body?.openAccessOnly),
+})));
+
+academicSearchRouter.post("/unpaywall", async (req, res) => {
   try {
-    const queryResult = validateQuery(req.body?.query);
-    if (!queryResult.valid) return res.status(400).json({ error: queryResult.error });
-    const maxResults = validateMaxResults(req.body?.maxResults);
+    const doiResult = validateDoi(req.body?.doi);
+    if (!doiResult.valid) {
+      return res.status(400).json({ error: doiResult.error });
+    }
 
-    const results = await searchWOS(queryResult.query, { maxResults });
+    const lookup = await lookupUnpaywallByDoi(doiResult.doi);
+    if (!lookup) {
+      return res.status(404).json({ error: "No open access record found for DOI", doi: doiResult.doi });
+    }
 
-    res.json({ query: queryResult.query, source: "wos", totalResults: results.length, results });
+    return res.json({
+      doi: doiResult.doi,
+      ...lookup,
+    });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 

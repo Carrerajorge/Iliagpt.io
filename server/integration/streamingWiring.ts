@@ -129,15 +129,14 @@ export function bridgeAgenticEvents(
           callId  : event.callId,
           input   : event.input,
         });
-        // Surface artifact events when create_document is called
-        if (event.toolName === 'create_document') {
-          const inp = event.input as { title?: string; format?: string } | undefined;
+        if (isDocumentArtifactTool(event.toolName)) {
+          const inp = event.input as { title?: string; format?: string; type?: string } | undefined;
           sendSse(session.res, {
             type     : 'artifact',
             runId    : session.runId,
             kind     : 'document',
             title    : inp?.title ?? 'document',
-            format   : inp?.format ?? 'md',
+            format   : inp?.type ?? inp?.format ?? 'document',
             callId   : event.callId,
           });
         }
@@ -160,16 +159,16 @@ export function bridgeAgenticEvents(
           output    : summariseOutput(event.output),
           durationMs: event.durationMs,
         });
-        // Surface file path from create_document result
-        if (event.toolName === 'create_document' && event.success) {
+        if (isDocumentArtifactTool(event.toolName) && event.success) {
           const out = event.output as unknown;
-          const fp  = extractFilePath(out);
-          if (fp) {
+          const artifact = extractArtifactDetails(out);
+          if (artifact.filePath || artifact.downloadUrl) {
             sendSse(session.res, {
               type    : 'artifact',
               runId   : session.runId,
               kind    : 'document',
-              filePath: fp,
+              filePath: artifact.filePath,
+              downloadUrl: artifact.downloadUrl,
               callId  : event.callId,
             });
           }
@@ -210,17 +209,35 @@ function summariseOutput(output: unknown): unknown {
   return output;
 }
 
-function extractFilePath(output: unknown): string | null {
+function isDocumentArtifactTool(toolName: string): boolean {
+  return toolName === 'create_document'
+    || toolName === 'create_presentation'
+    || toolName === 'create_spreadsheet'
+    || toolName === 'generate_document';
+}
+
+function extractArtifactDetails(output: unknown): { filePath: string | null; downloadUrl: string | null } {
   if (typeof output === 'string') {
     const m = output.match(/Document created:\s*(\S+)/);
-    return m?.[1] ?? null;
+    return { filePath: m?.[1] ?? null, downloadUrl: null };
   }
   if (typeof output === 'object' && output !== null) {
     const o = output as Record<string, unknown>;
-    if (typeof o['filePath'] === 'string') return o['filePath'];
-    if (typeof o['output'] === 'string') return extractFilePath(o['output']);
+    const filePath =
+      typeof o['filePath'] === 'string' ? o['filePath'] :
+      typeof o['path'] === 'string' ? o['path'] :
+      typeof o['artifactPath'] === 'string' ? o['artifactPath'] :
+      null;
+    const downloadUrl =
+      typeof o['downloadUrl'] === 'string' ? o['downloadUrl'] :
+      typeof o['url'] === 'string' ? o['url'] :
+      null;
+    if (filePath || downloadUrl) {
+      return { filePath, downloadUrl };
+    }
+    if (typeof o['output'] === 'string') return extractArtifactDetails(o['output']);
   }
-  return null;
+  return { filePath: null, downloadUrl: null };
 }
 
 // ─── Backpressure guard ───────────────────────────────────────────────────────

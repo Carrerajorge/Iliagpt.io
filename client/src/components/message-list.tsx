@@ -78,6 +78,7 @@ import { CodeExecutionBlock } from "@/components/code-execution-block";
 import { InlineGoogleFormPreview } from "@/components/inline-google-form-preview";
 import { InlineGmailPreview } from "@/components/inline-gmail-preview";
 import { SuggestedReplies, generateSuggestions } from "@/components/suggested-replies";
+import { downloadArtifact, fetchArtifactResponse, fetchArtifactText } from "@/lib/localArtifactAccess";
 import { getFileTheme, getFileCategory } from "@/lib/fileTypeTheme";
 import { ChatSpreadsheetViewer } from "@/components/chat/ChatSpreadsheetViewer";
 
@@ -1976,6 +1977,7 @@ const AssistantMessage = memo(function AssistantMessage({
                 <a
                   href={message.artifact.downloadUrl}
                   download
+                  onClick={(event) => void handleArtifactDownload(event, message.artifact?.downloadUrl, message.artifact?.name)}
                   className="p-2 bg-black/50 hover:bg-black/70 text-white rounded-lg transition-colors backdrop-blur-sm"
                   title="Descargar"
                 >
@@ -2036,12 +2038,8 @@ const AssistantMessage = memo(function AssistantMessage({
                             const contentUrl = (message.artifact as any)?.contentUrl;
                             if (contentUrl && docType === "ppt") {
                               try {
-                                const response = await fetch(contentUrl);
-                                if (response.ok) {
-                                  // Get raw text - PPTEditorShell will parse it
-                                  content = await response.text();
-                                  console.log("[View] Fetched PPT deck content, length:", content.length);
-                                }
+                                content = await fetchArtifactText(contentUrl);
+                                console.log("[View] Fetched PPT deck content, length:", content.length);
                               } catch (error) {
                                 console.error("[View] Failed to fetch content:", error);
                               }
@@ -2050,7 +2048,7 @@ const AssistantMessage = memo(function AssistantMessage({
                             // For Word documents from production pipeline, fetch the docx and convert to HTML
                             if (!content && docType === "word" && message.artifact.downloadUrl) {
                               try {
-                                const response = await fetch(message.artifact.downloadUrl);
+                                const response = await fetchArtifactResponse(message.artifact.downloadUrl);
                                 if (response.ok) {
                                   const blob = await response.blob();
                                   const arrayBuffer = await blob.arrayBuffer();
@@ -2080,6 +2078,7 @@ const AssistantMessage = memo(function AssistantMessage({
                       <a
                         href={message.artifact.downloadUrl}
                         download={artFileName || true}
+                        onClick={(event) => void handleArtifactDownload(event, message.artifact?.downloadUrl, artFileName)}
                         className={cn("px-4 py-2 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors",
                           artType === "document" && "bg-blue-600 hover:bg-blue-700",
                           artType === "spreadsheet" && "bg-green-600 hover:bg-green-700",
@@ -2490,6 +2489,16 @@ export function MessageList({
     return lastUserMsg ? detectClientIntent(lastUserMsg.content) : undefined;
   }, [messages]);
 
+  const handleArtifactDownload = useCallback(async (event: React.MouseEvent, url?: string | null, fallbackName?: string) => {
+    if (!url) return;
+    event.preventDefault();
+    try {
+      await downloadArtifact(url, fallbackName);
+    } catch (error) {
+      console.error("[ArtifactDownload] Failed to download artifact:", error);
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  }, []);
   const getProcessStepText = useCallback((step: {
     step?: string;
     title?: string;

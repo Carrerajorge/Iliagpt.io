@@ -51,5 +51,4 @@ if (!process.env.OPENAI_API_KEY && process.env.OPENROUTER_API_KEY) {
 if (process.env.OPENROUTER_API_KEY && !process.env.OPENAI_BASE_URL) {
   process.env.OPENAI_BASE_URL = "https://openrouter.ai/api/v1";
 }
-
 process.env.ENV_LOADED_BY_BOOTSTRAP = "true";

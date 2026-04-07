@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { EventEmitter } from "events";
+import { FREE_MODEL_ID } from "../../lib/modelRegistry";
 import { randomUUID } from "crypto";
 import type { Response } from "express";
 
@@ -162,7 +163,7 @@ export class AgentLoopFacade extends EventEmitter {
     this.options = {
       enableQA: options.enableQA ?? true,
       maxExecutionTimeMs: options.maxExecutionTimeMs ?? 300000,
-      defaultModel: options.defaultModel ?? "google/gemma-4-31b-it",
+      defaultModel: options.defaultModel ?? FREE_MODEL_ID,
       enableSSE: options.enableSSE ?? true,
       qaConfig: {
         minScore: options.qaConfig?.minScore ?? 0.7,

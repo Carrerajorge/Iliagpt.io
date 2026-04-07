@@ -1,5 +1,5 @@
 
-import React, { memo, useState, useMemo } from "react";
+import React, { memo, useState, useMemo, useCallback } from "react";
 import {
     CheckCircle2,
     Loader2,
@@ -55,6 +55,7 @@ import { AgentRunTimeline } from "./AgentRunTimeline";
 import { AgentStateIndicator } from "./AgentStateIndicator";
 import { type AIState } from "@/components/chat-interface/types";
 import { IliaAdBanner } from "@/components/ilia-ad-banner";
+import { downloadArtifact, fetchArtifactResponse, fetchArtifactText } from "@/lib/localArtifactAccess";
 
 export interface AssistantMessageProps {
     message: Message;
@@ -125,6 +126,17 @@ export const AssistantMessage = memo(function AssistantMessage({
     onToolConfirm,
     onToolDeny
 }: AssistantMessageProps) {
+    const handleArtifactDownload = useCallback(async (event: React.MouseEvent, url?: string | null, fallbackName?: string) => {
+        if (!url) return;
+        event.preventDefault();
+        try {
+            await downloadArtifact(url, fallbackName);
+        } catch (error) {
+            console.error("[ArtifactDownload] Failed to download artifact:", error);
+            window.open(url, "_blank", "noopener,noreferrer");
+        }
+    }, []);
+
     const [sourcesPanelOpen, setSourcesPanelOpen] = useState(false);
     const superAgentState = useSuperAgentRun(message.id);
     const { settings: platformSettings } = usePlatformSettings();
@@ -337,6 +349,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                                 <a
                                     href={message.artifact.downloadUrl}
                                     download
+                                    onClick={(event) => void handleArtifactDownload(event, message.artifact?.downloadUrl, message.artifact?.name)}
                                     className="p-2 bg-black/50 hover:bg-black/70 text-white rounded-lg transition-colors backdrop-blur-sm"
                                     title="Descargar"
                                 >
@@ -416,12 +429,24 @@ export const AssistantMessage = memo(function AssistantMessage({
                                                 const contentUrl = (message.artifact as any)?.contentUrl;
                                                 if (contentUrl && docType === "ppt") {
                                                     try {
-                                                        const response = await fetch(contentUrl);
-                                                        if (response.ok) {
-                                                            content = await response.text();
-                                                        }
+                                                        content = await fetchArtifactText(contentUrl);
                                                     } catch (error) {
                                                         console.error("[View] Failed to fetch content:", error);
+                                                    }
+                                                }
+
+                                                if (!content && docType === "word" && message.artifact?.downloadUrl) {
+                                                    try {
+                                                        const response = await fetchArtifactResponse(message.artifact.downloadUrl);
+                                                        if (response.ok) {
+                                                            const blob = await response.blob();
+                                                            const arrayBuffer = await blob.arrayBuffer();
+                                                            const mammoth = await import("mammoth");
+                                                            const result = await mammoth.convertToHtml({ arrayBuffer });
+                                                            content = result.value;
+                                                        }
+                                                    } catch (error) {
+                                                        console.error("[View] Failed to convert Word doc:", error);
                                                     }
                                                 }
 
@@ -452,6 +477,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                                     <a
                                         href={message.artifact.downloadUrl}
                                         download
+                                        onClick={(event) => void handleArtifactDownload(event, message.artifact?.downloadUrl, message.artifact?.name)}
                                         className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
                                         data-testid={`button-download-artifact-${message.id}`}
                                     >

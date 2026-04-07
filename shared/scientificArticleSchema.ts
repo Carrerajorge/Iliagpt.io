@@ -32,7 +32,23 @@ export const FundingSchema = z.object({
 
 export const ScientificArticleSchema = z.object({
   id: z.string(),
-  source: z.enum(["pubmed", "scielo", "semantic_scholar", "crossref", "openalex", "core", "arxiv", "manual"]),
+  source: z.enum([
+    "pubmed",
+    "scielo",
+    "semantic_scholar",
+    "semantic",
+    "crossref",
+    "openalex",
+    "core",
+    "arxiv",
+    "doaj",
+    "base",
+    "scopus",
+    "scholar",
+    "duckduckgo",
+    "wos",
+    "manual",
+  ]),
   
   title: z.string(),
   titleTranslated: z.string().optional(),
