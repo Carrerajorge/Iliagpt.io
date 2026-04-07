@@ -10,6 +10,7 @@ import {
   parseExcelFromText,
   parseSlidesFromText,
 } from "../services/documentGeneration";
+import { generateProfessionalOfficeDocument, toProfessionalOfficePrompt } from "../services/professionalOfficeGenerator";
 import { EnterpriseDocumentService, type DocumentSection as EnterpriseDocumentSection } from "../services/enterpriseDocumentService";
 import fs from "fs/promises";
 import path from "path";
@@ -1600,6 +1601,10 @@ const generateDocumentSchema = z.object({
   type: z.enum(["word", "excel", "ppt", "csv", "pdf"]).describe("Type of document to generate"),
   title: z.string().describe("Document title"),
   content: z.string().describe("Document content (text for Word, data for Excel/CSV, slide structure for PPT)"),
+  prompt: z.string().optional().describe("Optional prompt for professional Office generation"),
+  audience: z.string().optional().describe("Target audience for professional presentation/document generation"),
+  language: z.string().optional().describe("Preferred language for professional Office generation"),
+  professional: z.boolean().optional().default(true).describe("Use the professional Office generation pipeline when available"),
 });
 
 const generateDocumentTool: ToolDefinition = {
@@ -1615,13 +1620,42 @@ const generateDocumentTool: ToolDefinition = {
       let extension: string;
 
       switch (input.type) {
-        case "word":
+        case "word": {
+          if (input.professional !== false) {
+            const generated = await generateProfessionalOfficeDocument({
+              type: "word",
+              title: input.title,
+              prompt: toProfessionalOfficePrompt(input),
+              audience: input.audience,
+              language: input.language,
+            });
+            buffer = generated.buffer;
+            mimeType = generated.mimeType;
+            extension = generated.extension.replace(".", "");
+            break;
+          }
+
           buffer = await generateWordDocument(input.title, input.content);
           mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
           extension = "docx";
           break;
+        }
 
         case "excel": {
+          if (input.professional !== false) {
+            const generated = await generateProfessionalOfficeDocument({
+              type: "excel",
+              title: input.title,
+              prompt: toProfessionalOfficePrompt(input),
+              audience: input.audience,
+              language: input.language,
+            });
+            buffer = generated.buffer;
+            mimeType = generated.mimeType;
+            extension = generated.extension.replace(".", "");
+            break;
+          }
+
           const excelData = parseExcelFromText(input.content);
           buffer = await generateExcelDocument(input.title, excelData);
           mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -1630,6 +1664,20 @@ const generateDocumentTool: ToolDefinition = {
         }
 
         case "ppt": {
+          if (input.professional !== false) {
+            const generated = await generateProfessionalOfficeDocument({
+              type: "ppt",
+              title: input.title,
+              prompt: toProfessionalOfficePrompt(input),
+              audience: input.audience,
+              language: input.language,
+            });
+            buffer = generated.buffer;
+            mimeType = generated.mimeType;
+            extension = generated.extension.replace(".", "");
+            break;
+          }
+
           const slides = parseSlidesFromText(input.content);
           buffer = await generatePptDocument(input.title, slides, {
             trace: {

@@ -49,7 +49,7 @@ export interface ChatModalsProps {
   // Document Generator Dialog
   isDocGeneratorOpen: boolean;
   onCloseDocGenerator: () => void;
-  docGeneratorType: "word" | "excel";
+  docGeneratorType: "word" | "excel" | "ppt";
   onDocGeneratorComplete: (message: string) => void;
 
   // Google Forms Dialog

@@ -2,14 +2,14 @@ import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, FileText, FileSpreadsheet, Download, Sparkles } from "lucide-react";
+import { Loader2, FileText, FileSpreadsheet, Presentation, Download, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { autoSaveToMediaLibrary } from "@/lib/mediaAutoSave";
 
 interface DocumentGeneratorDialogProps {
   open: boolean;
   onClose: () => void;
-  documentType: "word" | "excel";
+  documentType: "word" | "excel" | "ppt";
   onComplete?: (message: string) => void;
 }
 
@@ -44,8 +44,10 @@ export function DocumentGeneratorDialog({
 
     try {
       const endpoint = documentType === "excel" 
-        ? "/api/documents/generate/excel" 
-        : "/api/documents/generate/word";
+        ? "/api/documents/generate/excel"
+        : documentType === "ppt"
+          ? "/api/documents/generate/ppt"
+          : "/api/documents/generate/word";
 
       const res = await fetch(endpoint, {
         method: "POST",
@@ -62,7 +64,12 @@ export function DocumentGeneratorDialog({
       const blob = await res.blob();
       const contentDisposition = res.headers.get("Content-Disposition");
       const filenameMatch = contentDisposition?.match(/filename="?([^"]+)"?/);
-      const filename = filenameMatch?.[1] || (documentType === "excel" ? "documento.xlsx" : "documento.docx");
+      const filename = filenameMatch?.[1]
+        || (documentType === "excel"
+          ? "documento.xlsx"
+          : documentType === "ppt"
+            ? "presentacion.pptx"
+            : "documento.docx");
       
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -77,7 +84,7 @@ export function DocumentGeneratorDialog({
       setStatus("success");
       
       if (onComplete) {
-        const docTypeLabel = documentType === "excel" ? "Excel" : "Word";
+        const docTypeLabel = documentType === "excel" ? "Excel" : documentType === "ppt" ? "PowerPoint" : "Word";
         onComplete(`Se generó y descargó un documento ${docTypeLabel}: "${filename}"`);
       }
 
@@ -106,6 +113,14 @@ export function DocumentGeneratorDialog({
       placeholder: "Ej: Crea una hoja de cálculo con datos de ventas mensuales del 2024, incluyendo productos, cantidades, precios y totales...",
       color: "bg-green-600",
       buttonText: "Generar Excel"
+    },
+    ppt: {
+      icon: Presentation,
+      title: "Crear Presentación PowerPoint",
+      description: "Describe la presentación que necesitas y la IA generará un deck profesional con estructura, contenido y slides descargables",
+      placeholder: "Ej: Crea una presentación ejecutiva de 10 diapositivas sobre el crecimiento comercial 2025, con resumen, métricas clave, riesgos y próximos pasos...",
+      color: "bg-orange-600",
+      buttonText: "Generar PowerPoint"
     }
   };
 

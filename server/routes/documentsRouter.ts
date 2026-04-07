@@ -22,6 +22,7 @@ import {
 import { renderExcelFromSpec } from "../services/excelSpecRenderer";
 import { renderWordFromSpec } from "../services/wordSpecRenderer";
 import { generateExcelFromPrompt, generateWordFromPrompt, generateCvFromPrompt, generateReportFromPrompt, generateLetterFromPrompt } from "../services/documentOrchestrator";
+import { generateProfessionalOfficeDocument } from "../services/professionalOfficeGenerator";
 import { renderCvFromSpec } from "../services/cvRenderer";
 import { selectCvTemplate } from "../services/documentMappingService";
 import { excelSpecSchema, docSpecSchema, cvSpecSchema } from "../../shared/documentSpecs";
@@ -1830,12 +1831,16 @@ export function createDocumentsRouter() {
 
       let result;
       try {
-        result = await withRetryAndTimeout(() => generateExcelFromPrompt(sanitizedPrompt), { maxRetries: 1 }, MAX_GENERATION_TIMEOUT_MS);
+        result = await withRetryAndTimeout(
+          () => generateProfessionalOfficeDocument({ type: "excel", prompt: sanitizedPrompt }),
+          { maxRetries: 1 },
+          MAX_GENERATION_TIMEOUT_MS,
+        );
       } finally {
         docConcurrencyLimiter.release();
       }
 
-      const { buffer, spec, qualityReport, postRenderValidation, attemptsUsed } = result;
+      const { buffer, fileName, metadata, attemptsUsed } = result;
 
       // Validate buffer
       const bufferCheck = validateBufferSize(buffer, "excel");
@@ -1843,35 +1848,29 @@ export function createDocumentsRouter() {
         return res.status(500).json({ error: bufferCheck.error });
       }
 
-      if (qualityReport.warnings.length > 0) {
-        res.setHeader("X-Quality-Warnings", JSON.stringify(qualityReport.warnings.map(w => w.message)));
+      if (attemptsUsed !== undefined) {
+        res.setHeader("X-Generation-Attempts", attemptsUsed.toString());
       }
-      if (postRenderValidation.warnings.length > 0) {
-        res.setHeader("X-PostRender-Warnings", JSON.stringify(postRenderValidation.warnings));
-      }
-      res.setHeader("X-Generation-Attempts", attemptsUsed.toString());
 
       logDocumentEvent({
         timestamp: new Date().toISOString(),
         event: "generate_success",
         docType: "excel",
         durationMs: Date.now() - startTime,
-        details: { attemptsUsed, bufferSize: buffer.length },
+        details: { attemptsUsed, bufferSize: buffer.length, metadata: metadata ?? {} },
       });
 
       if (returnMetadata === true) {
         return res.json({
           success: true,
-          filename: sanitizeFilename(spec.workbook_title || "generated", ".xlsx"),
+          filename: fileName,
           buffer: buffer.toString("base64"),
-          qualityWarnings: qualityReport.warnings,
-          postRenderWarnings: postRenderValidation.warnings,
-          metadata: postRenderValidation.metadata,
+          metadata: metadata ?? {},
           attemptsUsed,
         });
       }
 
-      const filename = sanitizeFilename(spec.workbook_title || "generated", ".xlsx");
+      const filename = fileName;
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", safeContentDisposition(filename));
       res.setHeader("Content-Length", buffer.length);
@@ -1888,6 +1887,92 @@ export function createDocumentsRouter() {
           details: { error: sanitizeErrorMessage(error) },
         });
       res.status(500).json(safeErrorResponse("Failed to generate Excel document", error));
+    }
+  });
+
+  // ============================================
+  // LLM-DRIVEN GENERATION (POWERPOINT)
+  // ============================================
+
+  router.post("/generate/ppt", aiLimiter, async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+      const promptBody = parseValidated(PromptGenerationSchema, req.body, "/generate/ppt");
+      if (!promptBody) {
+        return res.status(400).json({ error: "Invalid request body for /generate/ppt" });
+      }
+
+      const { prompt, returnMetadata } = promptBody;
+      const sanitizedPrompt = sanitizePlainText(prompt, { maxLen: MAX_PROMPT_LENGTH, collapseWs: true });
+      if (!sanitizedPrompt.trim()) {
+        return res.status(400).json({ error: "prompt cannot be empty" });
+      }
+
+      const acquired = await docConcurrencyLimiter.acquire();
+      if (!acquired) {
+        logDocumentEvent({ timestamp: new Date().toISOString(), event: "rate_limit_exceeded", docType: "ppt" });
+        return res.status(429).json({ error: "Too many concurrent document generations. Please try again." });
+      }
+
+      logDocumentEvent({
+        timestamp: new Date().toISOString(),
+        event: "generate_start",
+        docType: "ppt",
+        details: { promptLength: sanitizedPrompt.length },
+      });
+
+      let result;
+      try {
+        result = await withRetryAndTimeout(
+          () => generateProfessionalOfficeDocument({ type: "ppt", prompt: sanitizedPrompt }),
+          { maxRetries: 1 },
+          MAX_GENERATION_TIMEOUT_MS,
+        );
+      } finally {
+        docConcurrencyLimiter.release();
+      }
+
+      const bufferCheck = validateBufferSize(result.buffer, "ppt");
+      if (!bufferCheck.valid) {
+        return res.status(500).json({ error: bufferCheck.error });
+      }
+
+      logDocumentEvent({
+        timestamp: new Date().toISOString(),
+        event: "generate_success",
+        docType: "ppt",
+        durationMs: Date.now() - startTime,
+        details: { bufferSize: result.buffer.length, metadata: result.metadata ?? {} },
+      });
+
+      if (returnMetadata === true) {
+        return res.json({
+          success: true,
+          filename: result.fileName,
+          title: result.title,
+          buffer: result.buffer.toString("base64"),
+          metadata: result.metadata ?? {},
+        });
+      }
+
+      res.setHeader("Content-Type", result.mimeType);
+      res.setHeader("Content-Disposition", safeContentDisposition(result.fileName));
+      res.setHeader("X-Generation-Backend", "professional-office-generator");
+      res.setHeader("Content-Length", result.buffer.length);
+      res.send(result.buffer);
+    } catch (error: any) {
+      logger.error("PowerPoint generation error", {
+        error: sanitizeErrorMessage(error),
+      });
+      logDocumentEvent({
+        timestamp: new Date().toISOString(),
+        event: "generate_failure",
+        docType: "ppt",
+        durationMs: Date.now() - startTime,
+        details: { error: sanitizeErrorMessage(error) },
+      });
+      res.status(500).json(safeErrorResponse("Failed to generate PowerPoint document", error));
     }
   });
 
@@ -1926,12 +2011,16 @@ export function createDocumentsRouter() {
 
       let result;
       try {
-        result = await withRetryAndTimeout(() => generateWordFromPrompt(sanitizedPrompt), { maxRetries: 1 }, MAX_GENERATION_TIMEOUT_MS);
+        result = await withRetryAndTimeout(
+          () => generateProfessionalOfficeDocument({ type: "word", prompt: sanitizedPrompt }),
+          { maxRetries: 1 },
+          MAX_GENERATION_TIMEOUT_MS,
+        );
       } finally {
         docConcurrencyLimiter.release();
       }
 
-      const { buffer, spec, qualityReport, postRenderValidation, attemptsUsed } = result;
+      const { buffer, fileName, metadata, attemptsUsed } = result;
 
       // Validate buffer
       const bufferCheck = validateBufferSize(buffer, "word");
@@ -1939,35 +2028,29 @@ export function createDocumentsRouter() {
         return res.status(500).json({ error: bufferCheck.error });
       }
 
-      if (qualityReport.warnings.length > 0) {
-        res.setHeader("X-Quality-Warnings", JSON.stringify(qualityReport.warnings.map(w => w.message)));
+      if (attemptsUsed !== undefined) {
+        res.setHeader("X-Generation-Attempts", attemptsUsed.toString());
       }
-      if (postRenderValidation.warnings.length > 0) {
-        res.setHeader("X-PostRender-Warnings", JSON.stringify(postRenderValidation.warnings));
-      }
-      res.setHeader("X-Generation-Attempts", attemptsUsed.toString());
 
       logDocumentEvent({
         timestamp: new Date().toISOString(),
         event: "generate_success",
         docType: "word",
         durationMs: Date.now() - startTime,
-        details: { attemptsUsed, bufferSize: buffer.length },
+        details: { attemptsUsed, bufferSize: buffer.length, metadata: metadata ?? {} },
       });
 
       if (returnMetadata === true) {
         return res.json({
           success: true,
-          filename: sanitizeFilename(spec.title || "generated", ".docx"),
+          filename: fileName,
           buffer: buffer.toString("base64"),
-          qualityWarnings: qualityReport.warnings,
-          postRenderWarnings: postRenderValidation.warnings,
-          metadata: postRenderValidation.metadata,
+          metadata: metadata ?? {},
           attemptsUsed,
         });
       }
 
-      const filename = sanitizeFilename(spec.title || "generated", ".docx");
+      const filename = fileName;
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
       res.setHeader("Content-Disposition", safeContentDisposition(filename));
       res.setHeader("Content-Length", buffer.length);

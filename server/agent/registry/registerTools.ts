@@ -481,17 +481,29 @@ function registerDataTools(): void {
 function registerDocumentTools(): void {
   toolRegistry.register(createSimpleTool(
     "document_create",
-    "Create documents (Word, PDF)",
+    "Create professional documents (Word, Excel, PowerPoint, PDF)",
     "Document",
     z.object({
-      type: z.enum(["docx", "pdf", "txt", "md"]),
+      type: z.enum(["docx", "xlsx", "pptx", "pdf", "txt", "md"]),
       title: z.string(),
       content: z.string(),
+      prompt: z.string().optional(),
+      audience: z.string().optional(),
+      language: z.string().optional(),
+      professional: z.boolean().optional().default(true),
       template: z.string().optional(),
     }),
     ToolOutputSchema,
     async (input) => {
-      const result = await realDocumentCreate({ title: input.title, content: input.content, type: input.type });
+      const result = await realDocumentCreate({
+        title: input.title,
+        content: input.content,
+        type: input.type,
+        prompt: input.prompt,
+        audience: input.audience,
+        language: input.language,
+        professional: input.professional,
+      });
       return { success: result.success, data: result.data, message: result.message };
     },
     DEFAULT_CONFIG

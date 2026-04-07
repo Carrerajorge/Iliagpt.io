@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import crypto from "crypto";
 import { EnterpriseDocumentService, type DocumentSection as EnterpriseDocumentSection } from "../../services/enterpriseDocumentService";
+import { generateProfessionalOfficeDocument, toProfessionalOfficePrompt } from "../../services/professionalOfficeGenerator";
 
 const ARTIFACTS_DIR = path.join(process.cwd(), "artifacts");
 
@@ -208,7 +209,7 @@ export async function realBrowseUrl(input: { url: string }): Promise<RealToolRes
   }
 }
 
-export async function realDocumentCreate(input: { title: string; content: string; type: string }): Promise<RealToolResult> {
+export async function realDocumentCreate(input: { title: string; content: string; type: string; prompt?: string; audience?: string; language?: string; professional?: boolean }): Promise<RealToolResult> {
   const { title, content, type } = input;
 
   try {
@@ -219,7 +220,25 @@ export async function realDocumentCreate(input: { title: string; content: string
 
     let mimeType = "text/plain";
 
-    if (type === "docx" || type === "pdf") {
+    const officeTypeMap: Record<string, "word" | "excel" | "ppt"> = {
+      docx: "word",
+      xlsx: "excel",
+      pptx: "ppt",
+    };
+
+    const officeType = officeTypeMap[type];
+    if (officeType && input.professional !== false) {
+      const generated = await generateProfessionalOfficeDocument({
+        type: officeType,
+        title,
+        prompt: toProfessionalOfficePrompt(input),
+        audience: input.audience,
+        language: input.language,
+      });
+
+      mimeType = generated.mimeType;
+      fs.writeFileSync(filePath, generated.buffer);
+    } else if (type === "docx" || type === "pdf") {
       const documentService = EnterpriseDocumentService.create("professional");
       const sections = buildDocumentSectionsFromContent(title, content);
       const documentResult = await documentService.generateDocument({

@@ -1056,7 +1056,7 @@ export function ChatInterface({
     return grouped;
   }, [availableModels]);
   const [isDocGeneratorOpen, setIsDocGeneratorOpen] = useState(false);
-  const [docGeneratorType, setDocGeneratorType] = useState<"word" | "excel">("word");
+  const [docGeneratorType, setDocGeneratorType] = useState<"word" | "excel" | "ppt">("word");
   const [isGoogleFormsOpen, setIsGoogleFormsOpen] = useState(false);
   const [googleFormsPrompt, setGoogleFormsPrompt] = useState("");
   const [isGoogleFormsActive, setIsGoogleFormsActive] = useState(true);

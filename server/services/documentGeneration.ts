@@ -1,6 +1,8 @@
 import ExcelJS from "exceljs";
 import PptxGenJS from "pptxgenjs";
 import { JSDOM } from "jsdom";
+
+const PptxGenJSConstructor: any = (PptxGenJS as any)?.default ?? PptxGenJS;
 import { generateWordFromMarkdown } from "./markdownToDocx";
 import {
   ExcelStyleConfig,
@@ -1017,7 +1019,7 @@ async function createUltraMinimalFallbackPpt(
   slideCount: number,
   context?: PptFallbackContext
 ): Promise<Buffer> {
-  const fallback = new PptxGenJS();
+  const fallback = new PptxGenJSConstructor();
   const safeTitle = sanitizePptText(title).substring(0, MAX_PPT_TITLE_LENGTH) || "Presentación";
   const source = sanitizePptTraceText(context?.source || "generatePptDocument");
   const traceId = context?.traceId || buildPptTraceId();
@@ -1105,7 +1107,7 @@ async function createSafeFallbackPpt(
   const traceId = context?.traceId || buildPptTraceId();
 
   try {
-    const fallback = new PptxGenJS();
+    const fallback = new PptxGenJSConstructor();
     fallback.layout = "LAYOUT_16x9";
     fallback.title = safeTitle;
     defineCorporateMaster(fallback);
@@ -1196,7 +1198,7 @@ export async function generatePptDocument(
       droppedSlides: Math.max(0, requestedSlides - preparedSlides.length),
     });
 
-    const presentation = new PptxGenJS();
+    const presentation = new PptxGenJSConstructor();
     presentation.layout = "LAYOUT_16x9";
     presentation.title = sanitizePptText(normalized.title).substring(0, MAX_PPT_TITLE_LENGTH);
     presentation.author = "IliaGPT";
