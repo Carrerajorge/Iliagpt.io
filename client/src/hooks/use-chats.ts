@@ -1946,6 +1946,13 @@ export function useChats() {
     });
 
     try {
+      if ((normalizedMessage as any).serverPersisted && normalizedMessage.role === "assistant") {
+        console.log(`[Dedup] Skipping POST for server-persisted assistant message ${normalizedMessage.id}`);
+        setDeliveryPatch({ deliveryStatus: "delivered", deliveryError: undefined });
+        if (safeRequestId) markRequestComplete(safeRequestId);
+        return { chatId: resolvedChatId };
+      }
+
       if (normalizedMessage.role === "user") {
         setDeliveryPatch({ deliveryStatus: "sending", deliveryError: undefined });
       }

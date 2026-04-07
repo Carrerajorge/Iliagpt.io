@@ -660,6 +660,7 @@ export function useStreamChat(deps: StreamChatDeps) {
         let timeoutCause: "overall" | "first-token" | "done" | null = null;
         let hasReceivedEvent = false;
         let hasReceivedToken = false;
+        let serverAssistantMessageId: string | null = null;
 
         if (session.timeoutId) {
           clearTimeout(session.timeoutId);
@@ -952,6 +953,9 @@ export function useStreamChat(deps: StreamChatDeps) {
                   (prev: any[]) => prev.map((s: any) => ({ ...s, status: "done" })),
                   conversationId
                 );
+                if (typeof data.assistantMessageId === "string" && data.assistantMessageId.trim()) {
+                  serverAssistantMessageId = data.assistantMessageId.trim();
+                }
               }
 
               if (!isStaleConversation && currentEventType === "production_start") {
@@ -1038,6 +1042,9 @@ export function useStreamChat(deps: StreamChatDeps) {
                 clearTokenTimeouts();
                 streamDone = true;
                 flushNow(conversationId);
+                if (!serverAssistantMessageId && typeof data.assistantMessageId === "string" && data.assistantMessageId.trim()) {
+                  serverAssistantMessageId = data.assistantMessageId.trim();
+                }
 
                 if (pendingTerminalError || data.error === true) {
                   const terminalError =
@@ -1066,8 +1073,9 @@ export function useStreamChat(deps: StreamChatDeps) {
                   return { ok: false, content: fullContent, message: errorMsg, response, error: terminalError };
                 }
 
-                const msg = buildFinalMessage?.(fullContent, data, messageId) ?? buildAssistantMessage({
-                  id: messageId,
+                const finalMsgId = serverAssistantMessageId || messageId;
+                const msg = buildFinalMessage?.(fullContent, data, finalMsgId) ?? buildAssistantMessage({
+                  id: finalMsgId,
                   timestamp: new Date(),
                   requestId: data.requestId || streamRequestId,
                   content: fullContent,
@@ -1081,6 +1089,9 @@ export function useStreamChat(deps: StreamChatDeps) {
                   retrievalSteps: data.retrievalSteps,
                   steps: data.steps,
                 });
+                if (serverAssistantMessageId) {
+                  (msg as any).serverPersisted = true;
+                }
 
                 finalize(msg, conversationId, "done");
                 return { ok: true, content: fullContent, message: msg, response };
@@ -1105,8 +1116,9 @@ export function useStreamChat(deps: StreamChatDeps) {
           if (!session.finalizing && fullContent) {
             clearTokenTimeouts();
             flushNow(conversationId);
-            const msg = buildFinalMessage?.(fullContent, lastEventData, messageId) ?? buildAssistantMessage({
-              id: messageId,
+            const fallbackMsgId = serverAssistantMessageId || messageId;
+            const msg = buildFinalMessage?.(fullContent, lastEventData, fallbackMsgId) ?? buildAssistantMessage({
+              id: fallbackMsgId,
               timestamp: new Date(),
               requestId: streamRequestId,
               content: fullContent,
@@ -1120,6 +1132,9 @@ export function useStreamChat(deps: StreamChatDeps) {
               retrievalSteps: lastEventData?.retrievalSteps,
               steps: lastEventData?.steps,
             });
+            if (serverAssistantMessageId) {
+              (msg as any).serverPersisted = true;
+            }
 
             finalize(msg, conversationId, "done");
             return { ok: true, content: fullContent, message: msg, response };
