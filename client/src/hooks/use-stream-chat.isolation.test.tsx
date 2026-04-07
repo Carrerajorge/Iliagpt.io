@@ -871,7 +871,10 @@ describe("useStreamChat conversation isolation", () => {
       "primera respuesta",
       "segunda respuesta",
     ]);
-    expect(result.current.optimisticMessages).toHaveLength(2);
+    // Without a server assistantMessageId, messages go through onSendMessage
+    // (verified above) and NOT through optimisticMessages — this prevents
+    // the duplicate that arises when both sources contain the same message.
+    expect(result.current.optimisticMessages).toHaveLength(0);
   });
 
   it("keeps the AI state in thinking until the first token arrives", async () => {

@@ -2138,6 +2138,9 @@ export function ChatInterface({
   }, [agent.state.browserSessionId, agent.state.objective, browserSession.state.sessionId]);
 
   const handleStopChat = () => {
+    // Capture partial content BEFORE aborting (abort clears streamingContentRef)
+    const currentContent = streamingContentRef.current;
+
     // Abort active SSE stream from useStreamChat to avoid stray network work.
     if (typeof streamChat.abort === "function") {
       streamChat.abort();
@@ -2166,8 +2169,7 @@ export function ChatInterface({
       pptStreaming.stopStreaming();
     }
 
-    // Save the partial content as a message if there's any (use ref for latest value)
-    const currentContent = streamingContentRef.current;
+    // Save the partial content as a message
     if (currentContent && currentContent.trim()) {
       streamTransition.finalize({
         id: (Date.now() + 1).toString(),

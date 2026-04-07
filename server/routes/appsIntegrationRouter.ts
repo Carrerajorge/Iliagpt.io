@@ -83,6 +83,32 @@ export function createAppsIntegrationRouter(): Router {
         };
       }
 
+      // Check credential vault for connector OAuth tokens (stored by connectorOAuthRouter)
+      try {
+        const { credentialVault } = await import("../integrations/kernel/credentialVault");
+        const { connectorRegistry } = await import("../integrations/kernel/connectorRegistry");
+
+        const connectorChecks = connectorRegistry.listIds().map(async (connectorId) => {
+          const manifest = connectorRegistry.get(connectorId);
+          const providerId = manifest?.providerId || connectorId;
+          try {
+            const cred = await credentialVault.resolve(userId, providerId);
+            if (cred) {
+              const appId = resolveAppIdFromProvider(connectorId);
+              if (!statuses[appId]) {
+                statuses[appId] = { connected: true };
+              }
+            }
+          } catch {
+            // ignore per-connector errors
+          }
+        });
+
+        await Promise.all(connectorChecks);
+      } catch {
+        // credential vault not available — skip
+      }
+
       // Figma integration is currently global (not per-user). Expose best-effort status.
       try {
         const { figmaService } = await import("../services/figmaService");

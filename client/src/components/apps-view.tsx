@@ -839,9 +839,9 @@ const APP_ENDPOINT_OVERRIDES: Record<string, Partial<AppEndpoints>> = {
     disconnectEndpoint: "/api/oauth/google/gmail/disconnect",
   },
   "google-calendar": {
-    statusEndpoint: "/api/oauth/google/calendar/status",
-    connectionEndpoint: "/api/oauth/google/calendar/start",
-    disconnectEndpoint: "/api/oauth/google/calendar/disconnect",
+    statusEndpoint: "/api/connectors/oauth/google-calendar/status",
+    connectionEndpoint: "/api/connectors/oauth/google-calendar/start",
+    disconnectEndpoint: "/api/connectors/oauth/google-calendar/disconnect",
   },
   "outlook-mail": {
     statusEndpoint: "/api/oauth/microsoft/outlook/status",

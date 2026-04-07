@@ -571,7 +571,7 @@ export function Composer({
     }
 
     return (
-      <div className="flex items-center gap-1.5 pl-1 max-h-28 overflow-x-auto overflow-y-hidden flex-nowrap">
+      <div className="flex items-center gap-1.5 pl-1 pb-0.5 max-h-28 overflow-x-auto overflow-y-hidden flex-nowrap">
         {uploadedFiles.map((file, index) => {
           const theme = getFileTheme(file.name, file.mimeType);
           const isImage = file.type?.startsWith("image/") || file.mimeType?.startsWith("image/");

@@ -301,8 +301,9 @@ function getToolsForIntent(
   intent: string,
   accessLevel: 'owner' | 'trusted' | 'unknown' = 'owner',
   rawPrompt = "",
+  connectorTools: FunctionDeclaration[] = [],
 ): FunctionDeclaration[] {
-  const toolPool = [...AGENT_TOOLS, ...getRelevantDynamicSkillTools(rawPrompt)];
+  const toolPool = [...AGENT_TOOLS, ...getRelevantDynamicSkillTools(rawPrompt), ...connectorTools];
   let matchedTools = toolPool;
 
   if (accessLevel !== 'owner') {
@@ -960,7 +961,17 @@ export async function executeAgentLoop(
     },
   };
 
-  const tools = getToolsForIntent(requestSpec.intent, accessLevel, requestSpec.rawMessage || "");
+  // Fetch connector tools (Gmail, Drive, Calendar, Slack, etc.) for this user
+  let connectorTools: FunctionDeclaration[] = [];
+  try {
+    const { getConnectorDeclarationsForUser } = await import("../integrations/kernel/connectorToolBridge");
+    const decls = await getConnectorDeclarationsForUser(userId);
+    connectorTools = decls as FunctionDeclaration[];
+  } catch (err: any) {
+    console.warn(`[AgentExecutor] Failed to load connector tools:`, err?.message);
+  }
+
+  const tools = getToolsForIntent(requestSpec.intent, accessLevel, requestSpec.rawMessage || "", connectorTools);
   const toolContext: ToolContext = { userId, chatId, runId };
 
   const artifacts: Array<{ type: string; url: string; name: string }> = [];

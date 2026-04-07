@@ -448,23 +448,26 @@ export function useStreamChat(deps: StreamChatDeps) {
       }
       session.abortController = null;
       clearSessionRuntime(conversationId);
+      // Always force aiState to idle when aborting so the stop button clears
+      // even if the caller doesn't explicitly reset it.
+      setAiState("idle", conversationId);
       void clearStreamingProgressRemote(conversationId);
     },
-    [clearSessionRuntime, clearStreamingProgressRemote, getSession]
+    [clearSessionRuntime, clearStreamingProgressRemote, getSession, setAiState]
   );
 
   const abort = useCallback(() => {
     const activeConversationId = getActiveConversationId?.() || lastStartedConversationRef.current;
     if (activeConversationId) {
       abortConversation(activeConversationId);
-      return;
-    }
-
-    if (abortControllerRef.current) {
+    } else if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-  }, [abortConversation, getActiveConversationId]);
+    // Always clear streaming content so stale text never re-appears
+    streamingContentRef.current = "";
+    setStreamingContent("");
+  }, [abortConversation, getActiveConversationId, setStreamingContent, streamingContentRef]);
 
   const finalize = useCallback(
     (message: Message, conversationId?: string | null, finalState: AIState = "idle") => {
@@ -545,10 +548,13 @@ export function useStreamChat(deps: StreamChatDeps) {
 
       flushNow(targetConversationId);
 
-      // Only use onSendMessage which handles both local state insertion (via setChats)
-      // and server persistence. Do NOT also insert into optimisticMessages — that causes
-      // the message to appear in both sources, leading to duplicates in displayMessages.
-      if (!shouldReuseServerAssistantMessage) {
+      // When the server already persisted the assistant message (shouldReuseServerAssistantMessage),
+      // we only update the local optimistic display so the dedup pipeline can merge it.
+      // Otherwise, call onSendMessage which handles both local state and server persistence.
+      // Do NOT do both — that causes the message to appear in both sources → duplicates.
+      if (shouldReuseServerAssistantMessage) {
+        setOptimisticMessages((prev) => upsertMessageByIdentity(prev, finalizedMessage));
+      } else {
         onSendMessage(finalizedMessage).catch((err) => {
           console.error("[useStreamChat] onSendMessage failed:", err);
         });
@@ -1344,6 +1350,11 @@ export function useStreamChat(deps: StreamChatDeps) {
 
                     if (isServerPersisted) {
                       (msg as any).serverPersisted = true;
+                      // Preserve the original client-generated messageId so finalize
+                      // can set it as clientTempId for identity-dedup matching.
+                      if (!msg.clientTempId) {
+                        (msg as any).clientTempId = messageId;
+                      }
                     }
 
                     finalize(msg, conversationId, "done");

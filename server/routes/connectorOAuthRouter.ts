@@ -100,12 +100,23 @@ export function createConnectorOAuthRouter(connectorId: string): Router {
         // oauth_states table might not exist yet — session fallback above is enough.
       }
 
+      // Merge scopes from all connectors sharing the same providerId (e.g. Google).
+      // This ensures a single OAuth token covers Gmail + Drive + Calendar.
+      let mergedScopes = new Set(oauthConfig.scopes);
+      if (providerId !== connectorId) {
+        for (const m of connectorRegistry.listEnabled()) {
+          if (m.providerId === providerId && m.connectorId !== connectorId && m.authConfig && "scopes" in m.authConfig) {
+            for (const s of (m.authConfig as OAuthConfig).scopes) mergedScopes.add(s);
+          }
+        }
+      }
+
       // Build authorization URL
       const params = new URLSearchParams({
         response_type: "code",
         client_id: clientId,
         redirect_uri: redirectUri,
-        scope: oauthConfig.scopes.join(" "),
+        scope: Array.from(mergedScopes).join(" "),
         state,
         ...(oauthConfig.offlineAccess ? { access_type: "offline", prompt: "consent" } : {}),
         ...(oauthConfig.extraAuthParams || {}),

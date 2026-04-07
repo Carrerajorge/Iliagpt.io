@@ -113,7 +113,7 @@ export const UserMessage = memo(function UserMessage({
                             {message.content}
                         </div>
                     )}
-                    <div className="flex items-center justify-end gap-1.5 mt-2">
+                    <div className="flex items-center justify-end gap-1.5 mt-1">
                         {message.timestamp && (
                             <span className="text-[10px] text-muted-foreground/60 mr-1">
                                 {formatMessageTime(message.timestamp, platformSettings.timezone_default)}
