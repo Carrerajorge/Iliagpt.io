@@ -302,10 +302,12 @@ describe("chat skill integration", () => {
 
   it("emits done and complete after a terminal model failure", async () => {
     classifyQuestionMock.mockReturnValueOnce({ type: "summary", maxTokens: 250 });
-    llmStreamChatMock.mockImplementationOnce(async function* () {
+    // Must fail ALL retry attempts in resolveModelStream (3 retries + guaranteeResponse + chat fallback)
+    llmStreamChatMock.mockImplementation(async function* () {
       throw new Error("provider unavailable");
     });
-    llmGuaranteeResponseMock.mockRejectedValueOnce(new Error("provider unavailable"));
+    llmGuaranteeResponseMock.mockRejectedValue(new Error("provider unavailable"));
+    llmChatMock.mockRejectedValue(new Error("provider unavailable"));
 
     const app = await makeApp();
     const { client, close } = await createHttpTestClient(app);
