@@ -22,6 +22,13 @@
       "when": 1775450000000,
       "tag": "0002_daily_user_token_limits",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1775500000000,
+      "tag": "0003_gpt_definition_versioning",
+      "breakpoints": true
     }
   ]
 }
