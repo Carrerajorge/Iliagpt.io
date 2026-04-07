@@ -89,7 +89,6 @@ export const FREE_MODEL_ID = OPENROUTER_MODELS.GEMMA_3_27B_IT_FREE;
 
 export const FREE_MODEL_IDS: ReadonlySet<string> = new Set([
   "google/gemma-4-31b-it",
-  XAI_MODELS.GROK_4_1_FAST,
 ]);
 
 export function isModelFreeForAll(modelId: string): boolean {

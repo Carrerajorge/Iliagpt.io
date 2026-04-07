@@ -69,26 +69,9 @@ export function ModelAvailabilityProvider({ children }: { children: ReactNode })
     refetchOnWindowFocus: false,
   });
 
-  const localMockModels: AvailableModel[] = useMemo(() => [
-    {
-      id: "llama3-8b",
-      name: "Llama 3 (M\u00e1quina Local / Ollama)",
-      provider: "Local (Off-Grid)",
-      modelId: "llama3-8b",
-      description: "Modelo Llama 3 ejecutado directamente en su hardware local via ollama o LM Studio",
-      isEnabled: "true",
-      enabledAt: new Date().toISOString(),
-      enabledByAdminId: "system",
-      displayOrder: 10,
-      icon: null,
-      modelType: "chat",
-      contextWindow: 128000
-    }
-  ], []);
-
   const allModels = useMemo(
-    () => [...localMockModels, ...(modelsData?.models || [])],
-    [localMockModels, modelsData?.models],
+    () => modelsData?.models || [],
+    [modelsData?.models],
   );
 
   const enabledModels = useMemo(

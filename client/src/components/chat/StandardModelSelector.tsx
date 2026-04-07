@@ -1,5 +1,5 @@
 import React from "react";
-import { ChevronDown, Plus } from "lucide-react";
+import { ChevronDown, Lock, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AvailableModel } from "@/contexts/ModelAvailabilityContext";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
@@ -123,29 +123,53 @@ export function StandardModelSelector({
                     disabled={isDisabled}
                     aria-label="Selector de modelo"
                 >
-                    {Object.entries(modelsByProvider).map(([provider, models]) => (
-                        <optgroup key={provider} label={providerLabel(provider)}>
-                            {models.map((model) => {
-                                const locked =
-                                    isFreeUser &&
-                                    !isModelFree(model) &&
-                                    !canUseLocalGemmaModel(model);
-                                return (
+                    {Object.entries(modelsByProvider).map(([provider, models]) => {
+                        const visibleModels = isFreeUser
+                            ? models.filter((model) => isModelFree(model) || canUseLocalGemmaModel(model))
+                            : models;
+                        if (visibleModels.length === 0) return null;
+                        return (
+                            <optgroup key={provider} label={providerLabel(provider)}>
+                                {visibleModels.map((model) => (
                                     <option
                                         key={model.id}
                                         value={model.id}
-                                        disabled={locked}
                                         data-testid={`option-model-${model.modelId}`}
                                     >
-                                        {locked ? `\u{1F512} ${model.name}` : model.name}
+                                        {model.name}
                                     </option>
-                                );
-                            })}
-                        </optgroup>
-                    ))}
+                                ))}
+                            </optgroup>
+                        );
+                    })}
                 </select>
                 <ChevronDown className="pointer-events-none absolute right-2 h-3 w-3 text-muted-foreground flex-shrink-0" />
             </div>
+            {isFreeUser && onUpgradeClick && (
+                <TooltipProvider>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <button
+                                type="button"
+                                onClick={onUpgradeClick}
+                                className={cn(
+                                    "flex items-center justify-center h-7 w-7 rounded-md",
+                                    "text-amber-500 hover:text-amber-400",
+                                    "hover:bg-amber-500/10 transition-colors",
+                                    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                )}
+                                data-testid="button-upgrade-models"
+                                aria-label="Desbloquear más modelos"
+                            >
+                                <Lock className="h-3.5 w-3.5" />
+                            </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">
+                            <p>Desbloquear más modelos</p>
+                        </TooltipContent>
+                    </Tooltip>
+                </TooltipProvider>
+            )}
             {onAddModel && (
                 <TooltipProvider>
                     <Tooltip>

@@ -575,16 +575,7 @@ router.get("/instance/status", (req: Request, res: Response) => {
     const uptimeMs = process.uptime() * 1000;
 
     const models = [
-      { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", provider: "Google", enabled: true, tier: "free" as const, contextWindow: 1000000, description: "Ultra-fast reasoning model" },
-      { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", provider: "Google", enabled: true, tier: "pro" as const, contextWindow: 1000000, description: "Advanced reasoning and coding" },
-      { id: "gpt-4o", name: "GPT-4o", provider: "OpenAI", enabled: true, tier: "pro" as const, contextWindow: 128000, description: "Multimodal flagship model" },
-      { id: "gpt-4o-mini", name: "GPT-4o Mini", provider: "OpenAI", enabled: true, tier: "free" as const, contextWindow: 128000, description: "Fast and affordable" },
-      { id: "claude-sonnet-4", name: "Claude Sonnet 4", provider: "Anthropic", enabled: true, tier: "pro" as const, contextWindow: 200000, description: "Balanced intelligence" },
-      { id: "claude-3.5-haiku", name: "Claude 3.5 Haiku", provider: "Anthropic", enabled: true, tier: "free" as const, contextWindow: 200000, description: "Speed-optimized" },
-      { id: "deepseek-r1", name: "DeepSeek R1", provider: "DeepSeek", enabled: false, tier: "free" as const, contextWindow: 128000, description: "Open-source reasoning" },
-      { id: "llama-4-maverick", name: "Llama 4 Maverick", provider: "Meta", enabled: false, tier: "free" as const, contextWindow: 1000000, description: "Open MoE model" },
-      { id: "qwen-3-235b", name: "Qwen 3 235B", provider: "Alibaba", enabled: false, tier: "free" as const, contextWindow: 131072, description: "Large hybrid-thinking" },
-      { id: "mistral-large", name: "Mistral Large 2", provider: "Mistral", enabled: false, tier: "pro" as const, contextWindow: 128000, description: "Flagship European model" },
+      { id: "google/gemma-4-31b-it", name: "Gemma 4 31B", provider: "Google", enabled: true, tier: "free" as const, contextWindow: 131072, description: "Open model by Google, free for all users" },
     ];
 
     const fusionModules = [
