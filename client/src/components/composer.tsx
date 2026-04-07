@@ -489,7 +489,7 @@ export function Composer({
 
     if (isDocumentMode) {
       return (
-        <div className="flex flex-wrap gap-2 mb-2 px-1 max-h-32 overflow-y-auto" data-testid="inline-attachments-container">
+        <div className="flex flex-wrap gap-2 px-1 max-h-32 overflow-y-auto" data-testid="inline-attachments-container">
           {uploadedFiles.map((file, index) => (
             <div
               key={file.id || index}

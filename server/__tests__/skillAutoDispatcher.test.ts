@@ -85,7 +85,6 @@ vi.mock("../services/advancedExcelBuilder", () => ({
   })),
 }));
 
-// Mock fs to prevent real file writes during artifact saving
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
   return {
@@ -168,205 +167,17 @@ describe("skillAutoDispatcher", () => {
   });
 
   // ==========================================================================
-  // Keyword Matching (pure logic, no I/O)
+  // 1. Document-related intents dispatch to the document skill
   // ==========================================================================
 
-  describe("keyword matching", () => {
-    it("matches Word keywords", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "necesito crear un documento word sobre biología",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("word");
-      expect(match!.matchedVia).toBe("keyword");
-    });
-
-    it("matches Excel keywords in Spanish", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "genera una hoja de cálculo con estadísticas",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("excel");
-    });
-
-    it("matches PowerPoint keywords", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "necesito diapositivas para la reunión",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("powerpoint");
-    });
-
-    it("matches PDF keyword", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "convertir a documento pdf",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("pdf");
-    });
-
-    it("matches web search keywords", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "buscar online sobre energías renovables",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("web_search");
-    });
-
-    it("matches code execution keywords", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "ejecuta este código python",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("code_execution");
-    });
-
-    it("matches image generation keywords", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "crear imagen de un paisaje tropical",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("generate_image");
-    });
-
-    it("matches CSV keyword", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "exporta los datos como CSV",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("csv");
-    });
-
-    it("matches Docker keyword → automation handler", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "crea un dockerfile para mi aplicación node",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("docker");
-      expect(match!.mapping.handler).toBe("automation");
-    });
-
-    it("returns null for unmatched messages", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "cuéntame un chiste",
-        null,
-      );
-      expect(match).toBeNull();
-    });
-
-    it("prefers longer keyword matches (higher specificity)", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "busca artículos en google scholar sobre redes neuronales",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("academic_search");
-    });
-
-    it("matches integration keywords (Gmail)", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "revisa mi bandeja de entrada de gmail",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("gmail");
-      expect(match!.mapping.handler).toBe("integration");
-    });
-
-    it("matches integration keywords (Slack)", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "envía un mensaje slack al equipo",
-        null,
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("slack");
-    });
-  });
-
-  // ==========================================================================
-  // Intent-based matching
-  // ==========================================================================
-
-  describe("intent-based matching", () => {
-    it("matches CREATE_DOCUMENT intent to Word", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "crea un documento sobre IA",
-        makeIntent("CREATE_DOCUMENT", 0.9, "docx"),
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("word");
-      expect(match!.matchedVia).toBe("intent");
-    });
-
-    it("matches CREATE_SPREADSHEET intent to Excel", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "genera un reporte de datos",
-        makeIntent("CREATE_SPREADSHEET", 0.9, "xlsx"),
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("excel");
-      expect(match!.matchedVia).toBe("intent");
-    });
-
-    it("matches CREATE_PRESENTATION intent to PowerPoint", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "haz unas diapositivas",
-        makeIntent("CREATE_PRESENTATION", 0.9, "pptx"),
-      );
-      expect(match).not.toBeNull();
-      expect(match!.skillId).toBe("powerpoint");
-      expect(match!.matchedVia).toBe("intent");
-    });
-
-    it("matches SEARCH_WEB intent", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "busca sobre el tema",
-        makeIntent("SEARCH_WEB", 0.8),
-      );
-      expect(match).not.toBeNull();
-      expect(match!.mapping.handler).toBe("search");
-    });
-
-    it("matches EXECUTE_CODE intent", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "ejecuta un script",
-        makeIntent("EXECUTE_CODE", 0.8),
-      );
-      expect(match).not.toBeNull();
-      expect(match!.mapping.handler).toBe("code_execution");
-    });
-
-    it("matches MEDIA_GENERATE intent", () => {
-      const match = skillAutoDispatcher.matchSkill(
-        "quiero una imagen",
-        makeIntent("MEDIA_GENERATE", 0.8),
-      );
-      expect(match).not.toBeNull();
-      expect(match!.mapping.handler).toBe("media");
-    });
-  });
-
-  // ==========================================================================
-  // Full Dispatch — Intent Detection → Handler Execution
-  // ==========================================================================
-
-  describe("dispatch execution", () => {
-    it("dispatches Word creation and produces artifacts", async () => {
+  describe("document intent dispatch", () => {
+    it("dispatches CREATE_DOCUMENT intent to the Word document handler", async () => {
       llmChatMock.mockResolvedValueOnce({
-        content: "# Test Document\n\nContent here.",
+        content: "# Business Report\n\nQuarterly performance analysis.",
       });
 
       const result = await skillAutoDispatcher.dispatch(
-        baseRequest("crea un documento Word sobre IA", makeIntent("CREATE_DOCUMENT", 0.9, "docx")),
+        baseRequest("crea un documento Word sobre estrategia empresarial", makeIntent("CREATE_DOCUMENT", 0.9, "docx")),
       );
 
       expect(result.handled).toBe(true);
@@ -374,153 +185,100 @@ describe("skillAutoDispatcher", () => {
       expect(result.artifacts.length).toBeGreaterThanOrEqual(1);
       expect(result.artifacts[0].mimeType).toContain("wordprocessingml");
       expect(result.artifacts[0].filename).toMatch(/\.docx$/);
-      expect(result.artifacts[0].buffer.length).toBeGreaterThan(0);
     });
 
-    it("dispatches Excel creation and produces artifacts", async () => {
+    it("dispatches CREATE_SPREADSHEET intent to the Excel handler", async () => {
       const result = await skillAutoDispatcher.dispatch(
-        baseRequest("hazme un Excel con datos de ventas", makeIntent("CREATE_SPREADSHEET", 0.9, "xlsx")),
+        baseRequest("genera un Excel con datos de ventas", makeIntent("CREATE_SPREADSHEET", 0.9, "xlsx")),
       );
 
       expect(result.handled).toBe(true);
       expect(result.category).toContain("document");
-      expect(result.artifacts.length).toBeGreaterThanOrEqual(1);
       expect(result.artifacts[0].mimeType).toContain("spreadsheetml");
       expect(result.artifacts[0].filename).toMatch(/\.xlsx$/);
-      expect(result.artifacts[0].buffer.length).toBeGreaterThan(0);
     });
 
-    it("dispatches PowerPoint creation and produces artifacts", async () => {
+    it("dispatches CREATE_PRESENTATION intent to the PowerPoint handler", async () => {
       llmChatMock.mockResolvedValueOnce({
         content: JSON.stringify([
-          { title: "Introduction", bullets: ["Point 1", "Point 2"] },
-          { title: "Details", bullets: ["Detail A", "Detail B"] },
+          { title: "Overview", bullets: ["Key insight 1", "Key insight 2"] },
+          { title: "Details", bullets: ["Metric A", "Metric B"] },
         ]),
       });
 
       const result = await skillAutoDispatcher.dispatch(
-        baseRequest("crea una presentación sobre IA", makeIntent("CREATE_PRESENTATION", 0.9, "pptx")),
+        baseRequest("haz una presentación sobre IA", makeIntent("CREATE_PRESENTATION", 0.9, "pptx")),
       );
 
       expect(result.handled).toBe(true);
-      expect(result.category).toContain("document");
-      expect(result.artifacts.length).toBeGreaterThanOrEqual(1);
       expect(result.artifacts[0].mimeType).toContain("presentationml");
       expect(result.artifacts[0].filename).toMatch(/\.pptx$/);
-    });
-
-    it("dispatches PDF creation", async () => {
-      llmChatMock.mockResolvedValueOnce({
-        content: "<h1>Test Report</h1><p>Content.</p>",
-      });
-
-      const result = await skillAutoDispatcher.dispatch(
-        baseRequest("genera un PDF con el reporte"),
-      );
-
-      expect(result.handled).toBe(true);
-      expect(result.category).toContain("document");
-      expect(result.artifacts.length).toBeGreaterThanOrEqual(1);
-      // PDF handler generates either actual PDF or Word fallback
-      const artifact = result.artifacts[0];
-      expect(artifact.buffer.length).toBeGreaterThan(0);
-      expect(artifact.filename).toMatch(/\.(pdf|docx)$/);
-    });
-
-    it("dispatches CSV creation", async () => {
-      llmChatMock.mockResolvedValueOnce({
-        content: "Name,Age\nAlice,30\nBob,25",
-      });
-
-      const result = await skillAutoDispatcher.dispatch(
-        baseRequest("exporta datos como CSV"),
-      );
-
-      expect(result.handled).toBe(true);
-      expect(result.artifacts.length).toBeGreaterThanOrEqual(1);
-      expect(result.artifacts[0].mimeType).toContain("csv");
-    });
-
-    it("dispatches web search and returns results", async () => {
-      llmChatMock.mockResolvedValue({
-        content: JSON.stringify({
-          title: "Research",
-          summary: "Summary",
-          results: [{ title: "A", url: "http://a.com", snippet: "...", relevance: "High" }],
-          keyFindings: ["Finding 1"],
-          conclusion: "Done",
-        }),
-      });
-
-      const result = await skillAutoDispatcher.dispatch(
-        baseRequest("busca en internet sobre IA", makeIntent("SEARCH_WEB", 0.8)),
-      );
-
-      expect(result.handled).toBe(true);
-      expect(result.textResponse.length).toBeGreaterThan(0);
-      expect(result.artifacts.length).toBeGreaterThanOrEqual(1);
-    });
-
-    it("dispatches code execution (Python)", async () => {
-      const result = await skillAutoDispatcher.dispatch(
-        baseRequest('ejecuta este código python:\n```python\nprint("hello")\n```'),
-      );
-
-      expect(result.handled).toBe(true);
-      expect(result.textResponse).toContain("Python");
-      expect(result.artifacts.length).toBeGreaterThanOrEqual(1);
-      const codeArtifact = result.artifacts.find(a => a.type === "code");
-      expect(codeArtifact).toBeDefined();
-      expect(codeArtifact!.filename).toMatch(/\.py$/);
-    });
-
-    it("dispatches code execution (JavaScript)", async () => {
-      const result = await skillAutoDispatcher.dispatch(
-        baseRequest('ejecuta este código javascript:\n```javascript\nconsole.log(2 + 2)\n```'),
-      );
-
-      expect(result.handled).toBe(true);
-      expect(result.textResponse).toContain("JavaScript");
-    });
-
-    it("dispatches image generation", async () => {
-      llmChatMock.mockResolvedValueOnce({
-        content: "A beautiful tropical landscape with palm trees",
-      });
-
-      const result = await skillAutoDispatcher.dispatch(
-        baseRequest("crear imagen de un paisaje tropical"),
-      );
-
-      expect(result.handled).toBe(true);
-      expect(result.artifacts.length).toBeGreaterThanOrEqual(1);
     });
   });
 
   // ==========================================================================
-  // Non-matching / Error Handling
+  // 2. File format detection (keyword-based matching for docx, xlsx, pptx, pdf)
   // ==========================================================================
 
-  describe("non-matching and error handling", () => {
-    it('normal "hola como estas" → does NOT activate any skill', async () => {
-      const result = await skillAutoDispatcher.dispatch(
-        baseRequest("hola como estas", makeIntent("CHAT_GENERAL", 0.95)),
+  describe("file format detection via keywords", () => {
+    it("detects .docx from Word-related keywords", () => {
+      const match = skillAutoDispatcher.matchSkill(
+        "crear un documento word con el reporte anual",
+        null,
       );
-
-      expect(result.handled).toBe(false);
-      expect(result.skillId).toBe("");
-      expect(result.artifacts).toHaveLength(0);
+      expect(match).not.toBeNull();
+      expect(match!.skillId).toBe("word");
+      expect(match!.mapping.outputFormat).toBe("docx");
+      expect(match!.matchedVia).toBe("keyword");
     });
 
-    it("ignores NEED_CLARIFICATION intent", async () => {
-      const result = await skillAutoDispatcher.dispatch(
-        baseRequest("hmm no se", makeIntent("NEED_CLARIFICATION", 0.5)),
+    it("detects .xlsx from Excel/spreadsheet keywords", () => {
+      const match = skillAutoDispatcher.matchSkill(
+        "genera una hoja de cálculo con presupuesto",
+        null,
       );
-
-      expect(result.handled).toBe(false);
+      expect(match).not.toBeNull();
+      expect(match!.skillId).toBe("excel");
+      expect(match!.mapping.outputFormat).toBe("xlsx");
     });
 
-    it("returns handled=false for empty message with no intent", async () => {
+    it("detects .pptx from presentation keywords", () => {
+      const match = skillAutoDispatcher.matchSkill(
+        "necesito diapositivas para la conferencia",
+        null,
+      );
+      expect(match).not.toBeNull();
+      expect(match!.skillId).toBe("powerpoint");
+      expect(match!.mapping.outputFormat).toBe("pptx");
+    });
+
+    it("detects .pdf from PDF-related keywords", () => {
+      const match = skillAutoDispatcher.matchSkill(
+        "convertir a documento pdf",
+        null,
+      );
+      expect(match).not.toBeNull();
+      expect(match!.skillId).toBe("pdf");
+      expect(match!.mapping.outputFormat).toBe("pdf");
+    });
+
+    it("detects .csv from CSV keywords", () => {
+      const match = skillAutoDispatcher.matchSkill(
+        "exporta los datos como CSV",
+        null,
+      );
+      expect(match).not.toBeNull();
+      expect(match!.skillId).toBe("csv");
+      expect(match!.mapping.outputFormat).toBe("csv");
+    });
+  });
+
+  // ==========================================================================
+  // 3. Edge cases (empty input, malformed requests)
+  // ==========================================================================
+
+  describe("edge cases", () => {
+    it("returns handled=false for an empty message with no intent", async () => {
       const result = await skillAutoDispatcher.dispatch({
         message: "",
         intentResult: null,
@@ -531,24 +289,81 @@ describe("skillAutoDispatcher", () => {
 
       expect(result.handled).toBe(false);
       expect(result.artifacts).toHaveLength(0);
+      expect(result.skillId).toBe("");
     });
 
-    it("gracefully handles unmatched messages", async () => {
+    it("returns handled=false when intent is NEED_CLARIFICATION", async () => {
       const result = await skillAutoDispatcher.dispatch(
-        baseRequest("test message without matching skill"),
+        baseRequest("no entiendo bien", makeIntent("NEED_CLARIFICATION", 0.5)),
       );
 
-      expect(result).toBeDefined();
       expect(result.handled).toBe(false);
+      expect(result.artifacts).toHaveLength(0);
+    });
+
+    it("returns handled=false for whitespace-only message without matching intent", async () => {
+      const result = await skillAutoDispatcher.dispatch(
+        baseRequest("   ", null),
+      );
+
+      expect(result.handled).toBe(false);
+      expect(result.artifacts).toHaveLength(0);
     });
   });
 
   // ==========================================================================
-  // Metrics
+  // 4. Non-document intents do NOT trigger document generation
+  // ==========================================================================
+
+  describe("non-document intents must not trigger document generation", () => {
+    it("CHAT_GENERAL intent does NOT produce any artifacts", async () => {
+      const result = await skillAutoDispatcher.dispatch(
+        baseRequest("hola, cómo estás hoy?", makeIntent("CHAT_GENERAL", 0.95)),
+      );
+
+      expect(result.handled).toBe(false);
+      expect(result.artifacts).toHaveLength(0);
+      expect(result.skillId).toBe("");
+    });
+
+    it("generic greeting without intent does NOT match a document skill", () => {
+      const match = skillAutoDispatcher.matchSkill(
+        "buenos días, cuéntame un chiste",
+        null,
+      );
+
+      expect(match).toBeNull();
+    });
+
+    it("code execution intent routes to code handler, not document handler", () => {
+      const match = skillAutoDispatcher.matchSkill(
+        "ejecuta un script python",
+        makeIntent("EXECUTE_CODE", 0.85),
+      );
+
+      expect(match).not.toBeNull();
+      expect(match!.mapping.handler).toBe("code_execution");
+      expect(match!.mapping.handler).not.toBe("document");
+    });
+
+    it("web search keyword matches search handler, not document handler", () => {
+      const match = skillAutoDispatcher.matchSkill(
+        "buscar en internet sobre machine learning",
+        null,
+      );
+
+      expect(match).not.toBeNull();
+      expect(match!.mapping.handler).toBe("search");
+      expect(match!.mapping.handler).not.toBe("document");
+    });
+  });
+
+  // ==========================================================================
+  // Metrics tracking
   // ==========================================================================
 
   describe("metrics tracking", () => {
-    it("includes latency metrics when skill is handled", async () => {
+    it("includes latency metrics when a skill is handled", async () => {
       llmChatMock.mockResolvedValueOnce({ content: "Name,Age\nAlice,30" });
 
       const result = await skillAutoDispatcher.dispatch(

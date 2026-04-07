@@ -476,13 +476,10 @@ export function useStreamChat(deps: StreamChatDeps) {
         getActiveConversationId?.() ||
         lastStartedConversationRef.current;
 
-      const applyFinalState = (state: AIState, targetId: string | null) => {
-        setAiState(state, targetId);
-        if (state !== "idle") {
-          queueMicrotask(() => {
-            setAiState((prev) => (prev === state ? "idle" : prev), targetId);
-          });
-        }
+      const applyFinalState = (_state: AIState, targetId: string | null) => {
+        // Always transition directly to idle to prevent the stop button from sticking.
+        // The intermediate "done" state caused a visible flash where the button remained active.
+        setAiState("idle", targetId);
 
         if (!targetId) return;
 
