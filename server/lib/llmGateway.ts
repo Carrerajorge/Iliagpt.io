@@ -211,6 +211,11 @@ function detectProviderFromModel(model: string | undefined): LLMProvider | null 
     return "cerebras";
   }
 
+  // Route google/gemma-* models to Gemini natively instead of OpenRouter.
+  if (normalizedModel.startsWith("google/gemma")) {
+    return "gemini";
+  }
+
   if (normalizedModel.includes("/")) {
     return "openai";
   }
@@ -1757,8 +1762,10 @@ class LLMGateway {
 
     let response;
     try {
+      // Strip "google/" prefix for Gemini API (e.g. "google/gemma-4-31b-it" → "gemma-4-31b-it")
+      const geminiModelId = model.startsWith("google/") ? model.slice(7) : model;
       response = await geminiChat(geminiMessages, {
-        model: model as any,
+        model: geminiModelId as any,
         systemInstruction,
         temperature: options.temperature ?? 0.7,
         topP: options.topP ?? 1,
@@ -2381,7 +2388,9 @@ class LLMGateway {
     requestId: string
   ): AsyncGenerator<{ content: string; done: boolean }, void, unknown> {
     const modelProvider = detectProviderFromModel(options.model);
-    const model = modelProvider === "gemini" ? options.model! : GEMINI_MODELS.FLASH;
+    const rawModel = modelProvider === "gemini" ? options.model! : GEMINI_MODELS.FLASH;
+    // Strip "google/" prefix for Gemini API (e.g. "google/gemma-4-31b-it" → "gemma-4-31b-it")
+    const model = rawModel.startsWith("google/") ? rawModel.slice(7) : rawModel;
     const { messages: geminiMessages, systemInstruction } = this.convertToGeminiMessages(messages);
 
     const maxOutputTokens = typeof options.maxTokens === "number"

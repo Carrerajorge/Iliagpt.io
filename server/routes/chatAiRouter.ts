@@ -7575,11 +7575,13 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
       // Apply dynamic token limit based on question type (Answer-First)
       const hasWebSearchContext = webSearchContextForLLM.length > 0;
       const effectiveMaxTokens = hasWebSearchContext
-        ? 2500 // Web search responses need room to summarize results with citations
+        ? 4000 // Web search responses need room to summarize results with citations
         : questionClassification.type === 'summary' ||
-          questionClassification.type === 'analysis'
-          ? 2000 // Allow longer responses for summaries/analysis
-          : questionClassification.maxTokens * 4; // Apply stricter limit for factual questions
+          questionClassification.type === 'analysis' ||
+          questionClassification.type === 'open_ended' ||
+          questionClassification.type === 'explanation'
+          ? 4000 // Allow full responses for complex/open-ended questions
+          : Math.max(questionClassification.maxTokens * 4, 2000); // Minimum 2000 for any question type
 
       console.log(`[Stream] Answer-First: type=${questionClassification.type}, maxTokens=${effectiveMaxTokens}, hasWebSearch=${hasWebSearchContext}`);
 
@@ -7593,7 +7595,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
       const laneMaxTokens = hasWebSearchContext
         ? safeMaxTokens // Web search results need full token budget regardless of lane
         : resolvedLane === 'fast'
-          ? Math.min(safeMaxTokens, 800) // Balanced between quality and cost
+          ? Math.min(safeMaxTokens, 4000) // Allow complete responses even in fast lane
           : safeMaxTokens;
 
       // Emit thinking event so user sees we're about to generate

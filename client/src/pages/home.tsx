@@ -760,47 +760,48 @@ export default function Home() {
       <div className="liquid-blob liquid-blob-2 opacity-20"></div>
       <div className="liquid-blob liquid-blob-3 opacity-25"></div>
 
-      {/* Desktop Sidebar - Full */}
-      <div className={isSidebarOpen ? "hidden md:block" : "hidden"}>
-        <Sidebar
-          chats={chats}
-          hiddenChats={hiddenChats}
-          pinnedChats={pinnedChats}
-          activeChatId={activeChat?.id || null}
-          onSelectChat={handleSelectChatWithClear}
-          onNewChat={handleNewChat}
-          onToggle={() => setIsSidebarOpen(false)}
-          onDeleteChat={deleteChat}
-          onEditChat={editChatTitle}
-          onArchiveChat={archiveChat}
-          onHideChat={hideChat}
-          onPinChat={pinChat}
-          onDownloadChat={downloadChat}
-          onOpenGpts={handleOpenGpts}
-          onOpenApps={handleOpenApps}
-          onOpenSkills={handleOpenSkills}
-          onOpenWhatsAppConnect={() => setIsWhatsAppConnectOpen(true)}
-          onOpenCodex={handleOpenCodex}
-          onOpenLibrary={handleOpenLibrary}
-          onOpenOpenClaw={handleOpenOpenClaw}
-          processingChatIds={processingChatIds}
-          pendingResponseCounts={pendingResponseCounts}
-          onClearPendingCount={handleClearPendingCount}
-          folders={folders}
-          onCreateFolder={createFolder}
-          onMoveToFolder={handleMoveToFolder}
-          selectedProjectId={selectedProjectId}
-          onSelectProject={handleSelectProject}
-        />
-      </div>
-
-      {/* Desktop Sidebar - Mini (collapsed) */}
-      <div className={!isSidebarOpen ? "hidden md:block" : "hidden"}>
-        <MiniSidebar
-          onNewChat={handleNewChat}
-          onExpand={() => setIsSidebarOpen(true)}
-        />
-      </div>
+      {/* Desktop Sidebar — only one variant renders at a time */}
+      {isSidebarOpen ? (
+        <div className="hidden md:block">
+          <Sidebar
+            chats={chats}
+            hiddenChats={hiddenChats}
+            pinnedChats={pinnedChats}
+            activeChatId={activeChat?.id || null}
+            onSelectChat={handleSelectChatWithClear}
+            onNewChat={handleNewChat}
+            onToggle={() => setIsSidebarOpen(false)}
+            onDeleteChat={deleteChat}
+            onEditChat={editChatTitle}
+            onArchiveChat={archiveChat}
+            onHideChat={hideChat}
+            onPinChat={pinChat}
+            onDownloadChat={downloadChat}
+            onOpenGpts={handleOpenGpts}
+            onOpenApps={handleOpenApps}
+            onOpenSkills={handleOpenSkills}
+            onOpenWhatsAppConnect={() => setIsWhatsAppConnectOpen(true)}
+            onOpenCodex={handleOpenCodex}
+            onOpenLibrary={handleOpenLibrary}
+            onOpenOpenClaw={handleOpenOpenClaw}
+            processingChatIds={processingChatIds}
+            pendingResponseCounts={pendingResponseCounts}
+            onClearPendingCount={handleClearPendingCount}
+            folders={folders}
+            onCreateFolder={createFolder}
+            onMoveToFolder={handleMoveToFolder}
+            selectedProjectId={selectedProjectId}
+            onSelectProject={handleSelectProject}
+          />
+        </div>
+      ) : (
+        <div className="hidden md:block">
+          <MiniSidebar
+            onNewChat={handleNewChat}
+            onExpand={() => setIsSidebarOpen(true)}
+          />
+        </div>
+      )}
 
       {/* Mobile Sidebar */}
       <div className="md:hidden absolute top-4 left-3 z-50">

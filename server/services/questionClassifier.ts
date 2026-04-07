@@ -295,22 +295,22 @@ const FORMAT_CONFIG: Record<QuestionType, {
     },
     explanation: {
         format: 'paragraph',
-        maxTokens: 500,  // Was 250 — explanations need room to be useful
-        maxCharacters: 2000,
+        maxTokens: 2000,  // Explanations need room to be thorough and useful
+        maxCharacters: 8000,
         requiresCitation: true,
         allowsExpansion: true
     },
     action: {
         format: 'free_form',
-        maxTokens: 1000,
-        maxCharacters: 4000,
+        maxTokens: 2000,
+        maxCharacters: 8000,
         requiresCitation: false,
         allowsExpansion: true
     },
     open_ended: {
         format: 'paragraph',
-        maxTokens: 600,  // Was 300 — open-ended questions are the most common type and need full answers
-        maxCharacters: 2400,
+        maxTokens: 2000,  // Open-ended questions need full, complete answers
+        maxCharacters: 8000,
         requiresCitation: false,
         allowsExpansion: true
     },

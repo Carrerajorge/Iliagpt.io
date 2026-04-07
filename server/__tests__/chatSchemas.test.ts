@@ -18,7 +18,7 @@ function buildValidPayload() {
 describe("chatSchemas", () => {
   it("rejects too many attachments", () => {
     const payload = buildValidPayload();
-    payload.attachments = Array.from({ length: 9 }, (_, index) => ({
+    payload.attachments = Array.from({ length: 51 }, (_, index) => ({
       name: `archivo-${index}.pdf`,
       type: "document",
       mimeType: "application/pdf",
@@ -32,11 +32,11 @@ describe("chatSchemas", () => {
 
   it("rejects oversized total attachment payload", () => {
     const payload = buildValidPayload();
-    payload.attachments = Array.from({ length: 6 }, (_, index) => ({
+    payload.attachments = Array.from({ length: 5 }, (_, index) => ({
       name: `archivo-${index}.pdf`,
       type: "document",
       mimeType: "application/pdf",
-      size: 18 * 1024 * 1024,
+      size: 500 * 1024 * 1024,
       storagePath: `/objects/archivo-${index}.pdf`,
     }));
 
