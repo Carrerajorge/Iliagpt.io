@@ -103,6 +103,8 @@ class PgVectorMemoryStore {
       const existing = this.records.get(r.id)!
       existing.accessCount++
       existing.lastAccessedAt = new Date()
+      r.accessCount = existing.accessCount
+      r.lastAccessedAt = existing.lastAccessedAt
     }
 
     return topResults
@@ -130,7 +132,7 @@ class PgVectorMemoryStore {
   async consolidate(
     agentId: string,
   ): Promise<{ merged: number; pruned: number }> {
-    const records = Array.from(this.store.values()).filter(
+    const records = Array.from(this.records.values()).filter(
       (r) => r.agentId === agentId,
     )
 
