@@ -27,10 +27,9 @@ export class WsGateway {
     this.wss = new WebSocketServer({ noServer: true });
 
     server.on("upgrade", (req, socket, head) => {
-      // Only handle our path; let other WS servers handle theirs.
+      // Only handle /ws path; let other WS servers handle theirs.
       const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
       if (pathname !== "/ws") return;
-
       this.handleUpgrade(req, socket as any, head);
     });
 
@@ -38,16 +37,13 @@ export class WsGateway {
     instance = this;
   }
 
-  /* ------------------------------------------------------------------ */
-  /*  Upgrade & auth                                                     */
-  /* ------------------------------------------------------------------ */
+  // -- Upgrade & auth ---------------------------------------------------------
 
   private async handleUpgrade(
     req: http.IncomingMessage,
     socket: import("net").Socket,
     head: Buffer,
   ) {
-    // Authenticate via session cookie or ?token query param.
     const auth = await authenticateWebSocket(req);
     if (!auth.isAuthenticated || !auth.userId) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -61,15 +57,12 @@ export class WsGateway {
       client.isAuthenticated = true;
       client.userId = auth.userId;
       client.userEmail = auth.userEmail;
-
       this.registerClient(client);
       this.wss.emit("connection", client, req);
     });
   }
 
-  /* ------------------------------------------------------------------ */
-  /*  Client lifecycle                                                   */
-  /* ------------------------------------------------------------------ */
+  // -- Client lifecycle -------------------------------------------------------
 
   private registerClient(ws: WsClient) {
     const userId = ws.userId!;
@@ -88,7 +81,6 @@ export class WsGateway {
       sockets.delete(ws);
       if (sockets.size === 0) this.userSockets.delete(userId);
     }
-
     // Remove user from all rooms when last socket is gone.
     if (!this.userSockets.has(userId)) {
       for (const [chatId, members] of this.chatMembers) {
@@ -100,9 +92,7 @@ export class WsGateway {
     }
   }
 
-  /* ------------------------------------------------------------------ */
-  /*  Inbound message router                                             */
-  /* ------------------------------------------------------------------ */
+  // -- Inbound message router -------------------------------------------------
 
   private handleMessage(ws: WsClient, raw: RawData) {
     let msg: any;
@@ -130,9 +120,7 @@ export class WsGateway {
     }
   }
 
-  /* ------------------------------------------------------------------ */
-  /*  Room management                                                    */
-  /* ------------------------------------------------------------------ */
+  // -- Room management --------------------------------------------------------
 
   join(userId: string, chatId: string): void {
     if (!this.chatMembers.has(chatId)) this.chatMembers.set(chatId, new Set());
@@ -151,9 +139,7 @@ export class WsGateway {
     }
   }
 
-  /* ------------------------------------------------------------------ */
-  /*  Broadcasting                                                       */
-  /* ------------------------------------------------------------------ */
+  // -- Broadcasting -----------------------------------------------------------
 
   broadcastToChat(chatId: string, event: string, data: any): void {
     const members = this.chatMembers.get(chatId);
@@ -173,9 +159,7 @@ export class WsGateway {
     });
   }
 
-  /* ------------------------------------------------------------------ */
-  /*  Presence                                                           */
-  /* ------------------------------------------------------------------ */
+  // -- Presence ---------------------------------------------------------------
 
   getOnlineUsers(chatId: string): string[] {
     return Array.from(this.chatMembers.get(chatId) ?? []);
@@ -185,9 +169,7 @@ export class WsGateway {
     this.broadcastToChat(chatId, "typing_indicator", { chatId, userId, isTyping });
   }
 
-  /* ------------------------------------------------------------------ */
-  /*  Heartbeat                                                          */
-  /* ------------------------------------------------------------------ */
+  // -- Heartbeat --------------------------------------------------------------
 
   private heartbeat() {
     for (const sockets of this.userSockets.values()) {
@@ -195,7 +177,6 @@ export class WsGateway {
         if (!ws.isAlive) { ws.terminate(); continue; }
         ws.isAlive = false;
         ws.ping();
-        // If no pong within timeout, mark as dead so next tick terminates.
         setTimeout(() => {
           if (!ws.isAlive && ws.readyState === WebSocket.OPEN) ws.terminate();
         }, PONG_TIMEOUT);
@@ -203,9 +184,7 @@ export class WsGateway {
     }
   }
 
-  /* ------------------------------------------------------------------ */
-  /*  Metrics & cleanup                                                  */
-  /* ------------------------------------------------------------------ */
+  // -- Metrics & cleanup ------------------------------------------------------
 
   getStats(): { connections: number; rooms: number } {
     let connections = 0;

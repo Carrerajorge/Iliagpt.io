@@ -1515,6 +1515,22 @@ try{
     log.warn("Failed to mount knowledge base router", { error: err?.message });
   }
 
+  // Plugin management routes.
+  try {
+    const { createPluginRouter } = await import("./routes/pluginRouter");
+    app.use("/api/plugins", createPluginRouter());
+  } catch (err: any) {
+    console.warn("[Routes] Failed to mount plugin router:", err?.message);
+  }
+
+  // Compliance & GDPR routes.
+  try {
+    const { createComplianceRouter } = await import("./routes/complianceRouter");
+    app.use("/api/compliance", createComplianceRouter());
+  } catch (err: any) {
+    console.warn("[Routes] Failed to mount compliance router:", err?.message);
+  }
+
   // Integration Kernel OAuth routes (generic connector flow).
   // Mount one router per connectorId loaded into the ConnectorRegistry.
   try {
