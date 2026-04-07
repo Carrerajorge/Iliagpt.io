@@ -88,12 +88,14 @@ export interface ChatMetadata {
 // UI STATE TYPES
 // ============================================
 
-// Canonical streaming states: idle -> queued -> sending -> streaming -> done/error
+// Canonical streaming states: idle -> queued -> sending -> reconnecting/recovering -> streaming -> done/error
 // Legacy aliases (thinking/responding) are still accepted for compatibility.
 export type AIState =
     | 'idle'
     | 'queued'
     | 'sending'
+    | 'reconnecting'
+    | 'recovering'
     | 'streaming'
     | 'done'
     | 'error'
@@ -102,7 +104,7 @@ export type AIState =
     | 'responding';
 
 export const isAiSendingState = (state: AIState): boolean =>
-    state === 'sending' || state === 'thinking';
+    state === 'sending' || state === 'thinking' || state === 'reconnecting' || state === 'recovering';
 
 export const isAiStreamingState = (state: AIState): boolean =>
     state === 'streaming' || state === 'responding';

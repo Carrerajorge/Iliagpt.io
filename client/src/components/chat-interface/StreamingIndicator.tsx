@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { motion } from 'framer-motion';
-import { X, Brain, Sparkles, TimerReset } from 'lucide-react';
+import { X, Brain, Sparkles, TimerReset, RefreshCcw, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { StreamingIndicatorProps, isAiBusyState, isAiSendingState, isAiStreamingState } from './types';
@@ -29,7 +29,7 @@ export function StreamingIndicator({
     const [now, setNow] = React.useState(() => Date.now());
 
     React.useEffect(() => {
-        if (aiState !== 'queued') return;
+        if (!['queued', 'reconnecting', 'recovering'].includes(aiState)) return;
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
     }, [aiState]);
@@ -37,23 +37,32 @@ export function StreamingIndicator({
     if (!isBusy) return null;
 
     const queueStep = aiProcessSteps.find((step) => step.id === 'conversation-queue' || step.title === 'En cola');
+    const reconnectStep = aiProcessSteps.find((step) => step.id === 'stream-reconnect');
+    const recoverStep = aiProcessSteps.find((step) => step.id === 'stream-recover');
     const isQueued = aiState === 'queued';
-    const isSending = (isAiSendingState(aiState) || uiPhase === 'thinking') && !isQueued;
+    const isReconnecting = aiState === 'reconnecting' || Boolean(reconnectStep);
+    const isRecovering = aiState === 'recovering' || Boolean(recoverStep);
+    const isSending = (isAiSendingState(aiState) || uiPhase === 'thinking') && !isQueued && !isReconnecting && !isRecovering;
     const isResponding = isAiStreamingState(aiState);
     const isAgentWorking = aiState === 'agent_working';
 
+    const activeResilienceStep = isRecovering ? recoverStep : reconnectStep;
     const elapsedLabel =
-        isQueued && queueStep?.startedAt
-            ? formatElapsed(now - queueStep.startedAt)
+        (isQueued ? queueStep?.startedAt : activeResilienceStep?.startedAt)
+            ? formatElapsed(now - Number(isQueued ? queueStep?.startedAt : activeResilienceStep?.startedAt))
             : null;
 
     const statusTitle = isAgentWorking
         ? 'Trabajando...'
         : isQueued
             ? 'En cola...'
-            : isSending
-                ? 'Enviando...'
-                : 'Respondiendo...';
+            : isRecovering
+                ? 'Recuperando respuesta...'
+                : isReconnecting
+                    ? 'Reconectando...'
+                    : isSending
+                        ? 'Enviando...'
+                        : 'Respondiendo...';
 
     const statusDescription = isQueued
         ? [
@@ -61,9 +70,17 @@ export function StreamingIndicator({
             elapsedLabel ? `esperando ${elapsedLabel}` : null,
             typeof queueStep?.retryAfterSeconds === 'number' ? `reintento sugerido en ${queueStep.retryAfterSeconds}s` : null,
           ].filter(Boolean).join(' · ') || 'Esperando turno para responder'
-        : isResponding && streamingContent
-            ? `${streamingContent.length} caracteres generados`
-            : queueStep?.description || null;
+        : isRecovering || isReconnecting
+            ? [
+                activeResilienceStep?.description || null,
+                elapsedLabel ? `desde hace ${elapsedLabel}` : null,
+                typeof activeResilienceStep?.retryAfterSeconds === 'number' && activeResilienceStep.retryAfterSeconds > 0
+                    ? `siguiente intento en ${activeResilienceStep.retryAfterSeconds}s`
+                    : null,
+              ].filter(Boolean).join(' · ') || 'Manteniendo viva la respuesta'
+            : isResponding && streamingContent
+                ? `${streamingContent.length} caracteres generados`
+                : queueStep?.description || null;
 
     return (
         <motion.div
@@ -76,12 +93,20 @@ export function StreamingIndicator({
                 "flex items-center justify-center w-8 h-8 rounded-full",
                 isQueued
                     ? "bg-amber-500/20"
-                    : isSending || isAgentWorking
-                        ? "bg-blue-500/20"
-                        : "bg-green-500/20"
+                    : isRecovering
+                        ? "bg-emerald-500/20"
+                        : isReconnecting
+                            ? "bg-sky-500/20"
+                            : isSending || isAgentWorking
+                                ? "bg-blue-500/20"
+                                : "bg-green-500/20"
             )}>
                 {isQueued ? (
                     <TimerReset className="w-4 h-4 text-amber-500 animate-pulse" />
+                ) : isRecovering ? (
+                    <ShieldCheck className="w-4 h-4 text-emerald-500 animate-pulse" />
+                ) : isReconnecting ? (
+                    <RefreshCcw className="w-4 h-4 text-sky-500 animate-spin" />
                 ) : isSending || isAgentWorking ? (
                     <Brain className="w-4 h-4 text-blue-500 animate-pulse" />
                 ) : (

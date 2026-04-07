@@ -301,6 +301,16 @@ export function useStreamChat(deps: StreamChatDeps) {
     [abortConversation, getSession, setAiProcessSteps, setAiState]
   );
 
+  const clearResilienceUi = useCallback((conversationId?: string | null) => {
+    const targetConversationId = typeof conversationId === "string" ? conversationId.trim() : "";
+    if (!targetConversationId) return;
+
+    setAiProcessSteps?.(
+      (prev) => prev.filter((step) => step?.id !== "stream-reconnect" && step?.id !== "stream-recover"),
+      targetConversationId,
+    );
+  }, [setAiProcessSteps]);
+
   const clearStreamingProgressRemote = useCallback(async (conversationId?: string | null) => {
     const targetConversationId = typeof conversationId === "string" ? conversationId.trim() : "";
     if (!targetConversationId) return;
@@ -463,10 +473,26 @@ export function useStreamChat(deps: StreamChatDeps) {
           latestSession.pendingRequestId = restoredRequestId;
 
           if (isConversationActive(conversationId)) {
+            setAiState("recovering", conversationId);
+            setAiProcessSteps?.(
+              [
+                {
+                  id: "stream-recover",
+                  title: "Recuperando respuesta",
+                  description: restoredContent
+                    ? "Reconectando con la respuesta que estaba en progreso"
+                    : "Retomando la respuesta interrumpida",
+                  status: "active",
+                  startedAt: Date.now(),
+                },
+              ],
+              conversationId,
+            );
             nextMessageIdRef.current = restoredMessageId;
             streamingContentRef.current = restoredContent;
             setStreamingContent(restoredContent);
             setAiState(restoredContent ? "responding" : "thinking", conversationId);
+            clearResilienceUi(conversationId);
           }
         } catch (error) {
           console.warn("[useStreamChat] Failed to hydrate remote streaming progress:", error);
@@ -482,9 +508,11 @@ export function useStreamChat(deps: StreamChatDeps) {
       return hydrationPromise;
     },
     [
+      clearResilienceUi,
       clearStreamingProgressRemote,
       getSession,
       isConversationActive,
+      setAiProcessSteps,
       setAiState,
       setStreamingContent,
       streamingContentRef,
@@ -716,6 +744,8 @@ export function useStreamChat(deps: StreamChatDeps) {
       let lastContent = "";
 
       const setRetryIndicator = (attemptNumber: number, retryDelayMs: number) => {
+        const retryAfterSeconds = retryDelayMs > 0 ? Math.ceil(retryDelayMs / 1000) : 0;
+        setAiState("reconnecting", conversationId);
         setAiProcessSteps?.((prev: any[]) => {
           const reconnectStep = {
             id: "stream-reconnect",
@@ -724,9 +754,11 @@ export function useStreamChat(deps: StreamChatDeps) {
               ? `Reconectando... intento ${attemptNumber}`
               : "Reconectando...",
             description: retryDelayMs > 0
-              ? `Reintentando en ${Math.ceil(retryDelayMs / 1000)}s`
+              ? `Reintentando en ${retryAfterSeconds}s`
               : "Reintentando ahora",
             status: "active",
+            startedAt: Date.now(),
+            retryAfterSeconds,
           };
           const withoutReconnect = prev.filter((step: any) => step?.id !== reconnectStep.id);
           return [...withoutReconnect, reconnectStep];
@@ -840,6 +872,7 @@ export function useStreamChat(deps: StreamChatDeps) {
             };
 
             try {
+              clearResilienceUi(conversationId);
               // Normalize optional array fields — never send null (breaks PARE schema validation)
               const cleanedBody = {
                 ...requestBody,
@@ -1332,6 +1365,7 @@ export function useStreamChat(deps: StreamChatDeps) {
                 continue;
               }
 
+              clearResilienceUi(conversationId);
               const errorMsg = buildErrorMessage?.(normalizedError, messageId) ?? {
                 id: messageId,
                 role: "assistant" as const,
@@ -1346,6 +1380,7 @@ export function useStreamChat(deps: StreamChatDeps) {
 
               return { ok: false, content: fullContent, message: errorMsg, response, error: normalizedError };
             } finally {
+              clearResilienceUi(conversationId);
               if (session.abortController === controller) {
                 session.abortController = null;
               }
@@ -1398,6 +1433,7 @@ export function useStreamChat(deps: StreamChatDeps) {
     [
       acquireConversationQueueTicket,
       abortConversation,
+      clearResilienceUi,
       finalize,
       flushNow,
       getSession,

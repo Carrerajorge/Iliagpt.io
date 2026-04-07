@@ -335,6 +335,83 @@ describe("useStreamChat conversation isolation", () => {
     expect(streamResult.error?.message).toContain("Reintenta en 7s");
   });
 
+  it("shows reconnecting state while retrying a broken stream", async () => {
+    const activeConversation = { current: "chat_reconnect" };
+    let callCount = 0;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        callCount += 1;
+        const payload = JSON.parse(String(init?.body || "{}"));
+
+        if (callCount === 1) {
+          throw new Error("network error");
+        }
+
+        return makeSseResponse([
+          {
+            event: "chunk",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              content: "RECOVERED",
+            },
+          },
+          {
+            event: "done",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+            },
+          },
+        ]);
+      })
+    );
+
+    const { result } = renderHook(() => {
+      const [optimisticMessages, setOptimisticMessages] = useState<any[]>([]);
+      const [streamingContent, setStreamingContent] = useState("");
+      const [aiState, setAiState] = useState<any>("idle");
+      const [steps, setAiProcessSteps] = useState<any[]>([]);
+      const streamingContentRef = useRef("");
+
+      const hook = useStreamChat({
+        setOptimisticMessages,
+        onSendMessage: async () => undefined,
+        setStreamingContent,
+        streamingContentRef,
+        setAiState,
+        setAiProcessSteps,
+        getActiveConversationId: () => activeConversation.current,
+      });
+
+      return { hook, aiState, steps, optimisticMessages, streamingContent };
+    });
+
+    let promise!: Promise<any>;
+    await act(async () => {
+      promise = result.current.hook.stream("/api/chat/stream", {
+        conversationId: "chat_reconnect",
+        chatId: "chat_reconnect",
+        body: {
+          messages: [{ role: "user", content: "retry me" }],
+          conversationId: "chat_reconnect",
+        },
+        retryBackoffMs: 20,
+        retryJitterMs: 0,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+
+    expect(result.current.aiState).toBe("reconnecting");
+    expect(result.current.steps.some((step: any) => step?.id === "stream-reconnect")).toBe(true);
+
+    const finalResult = await promise;
+    expect(finalResult.ok).toBe(true);
+  });
+
   it("keeps new chat idle while another conversation is streaming", async () => {
     const activeConversation = { current: "chat_a" };
     const streamingSnapshots: string[] = [];
