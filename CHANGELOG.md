@@ -1,5 +1,62 @@
 # Changelog
 
+## [2.1.0] - 2026-04-07 — Enterprise Differentiation Features
+
+### Artifacts System (Claude-style)
+- Side panel with tabs: Code, Preview, Versions
+- Code: syntax highlighted display with line numbers, copy, edit toggle
+- Preview: sandboxed iframe for HTML, execution placeholder for JS/Python
+- Versions: navigable version history with timestamps and content preview
+- Auto-detection: code blocks > 15 lines auto-open artifact panel
+- Mermaid diagram rendering (SVG) with DOMPurify sanitization
+- Interactive tables: sortable columns, text filter
+- Responsive: fullscreen mobile, 50vw desktop panel
+- Run button, Apply to chat, Edit toggle
+
+### Long-Term Memory (ChatGPT-style)
+- LLM-powered fact extraction from conversations (preferences, personal info, work context)
+- pgvector embeddings with semantic recall (cosine similarity + salience + recency decay)
+- Memory decay: -5% salience after 30 days inactivity, deactivate below 0.1
+- System prompt injection via `<user_context>` block
+- Memories management page (/memories) with category filters, search, delete
+- Color-coded badges: preference (blue), personal (purple), work (green), knowledge (amber), instruction (rose)
+- API: GET/DELETE /api/memories, POST /api/memories/extract
+
+### Smart Model Router
+- Cost-aware routing: simple queries → cheapest provider, complex → most capable
+- Query complexity classification (simple/moderate/complex) by tokens, code presence, patterns
+- Health management: 3 failures → 5min degraded cooldown, auto-recovery
+- Circuit breaker integration, routing decision logging (last 1000)
+
+### OpenAI-Compatible Public API
+- POST /v1/chat/completions (streaming SSE + non-streaming) — identical OpenAI format
+- POST /v1/embeddings, GET /v1/models
+- API key management: sk-iliagpt-* keys, SHA-256 validation, rate limiting (60 req/min)
+- api_keys Drizzle schema table with indexes
+
+### Agent Plan Mode
+- LLM-powered query decomposition into structured steps
+- Approval workflow: approve, modify, reject
+- Async step-by-step execution with progress events
+- Interactive checklist UI component
+
+### Real-Time Presence
+- WebSocket heartbeat user tracking per workspace
+- Events: online, offline, typing, viewing_chat
+- Redis SET storage, typing debounce (3s), auto-clear (5s)
+
+### Unified Search
+- PostgreSQL tsvector + pgvector hybrid search with RRF ranking
+- Search highlighting, autocompletado (last 10 searches)
+- Ctrl+Shift+F keyboard shortcut
+
+### Bug Fix
+- ModelAvailabilityContext: graceful degradation instead of crash (HMR fix)
+
+### Tests: 700 passing (106 new module tests + 44 CI + 550 client)
+
+---
+
 ## [2.0.0] - 2026-04-07
 
 ### Enterprise Architecture
