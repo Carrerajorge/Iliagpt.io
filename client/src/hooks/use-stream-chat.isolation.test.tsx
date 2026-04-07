@@ -25,7 +25,10 @@ function makeSseResponse(events: Array<{ event: string; data: Record<string, unk
       let index = 0;
       const pushNext = () => {
         if (index >= events.length) {
-          controller.close();
+          // Close asynchronously so reader.read() can pick up enqueued chunks
+          // before the stream signals done. Without this, some Node.js versions
+          // (e.g. Node 22) may return { done: true } immediately on read().
+          Promise.resolve().then(() => controller.close());
           return;
         }
 
@@ -64,7 +67,7 @@ function makeDelayedSseResponse(
       let index = 0;
       const pushNext = () => {
         if (index >= events.length) {
-          controller.close();
+          Promise.resolve().then(() => controller.close());
           return;
         }
 
