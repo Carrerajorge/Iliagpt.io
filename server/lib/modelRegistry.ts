@@ -77,6 +77,15 @@ export const DEFAULT_PROVIDER = "openai" as const;
 /** The model ID available to all users (free tier). */
 export const FREE_MODEL_ID = "google/gemma-4-31b-it";
 
+export const FREE_MODEL_IDS: ReadonlySet<string> = new Set([
+  "google/gemma-4-31b-it",
+  XAI_MODELS.GROK_4_1_FAST,
+]);
+
+export function isModelFreeForAll(modelId: string): boolean {
+  return FREE_MODEL_IDS.has(modelId);
+}
+
 /** Default model for general text completion (app-level). */
 export const DEFAULT_TEXT_MODEL = FREE_MODEL_ID;
 
