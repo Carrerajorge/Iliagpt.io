@@ -63,9 +63,9 @@ export const ragChunks = pgTable("rag_chunks", {
     index("rag_chunks_active_idx").on(table.isActive),
 ]);
 
-export const insertRagChunkSchema = createInsertSchema(ragChunks).omit({
+export const insertRagChunkSchema = (createInsertSchema(ragChunks).omit({
     id: true, createdAt: true, updatedAt: true, searchVector: true, accessCount: true, lastAccessedAt: true,
-}).extend({
+}) as any).extend({
     embedding: z.array(z.number()).nullish(),
     tags: z.array(z.string()).optional(),
     aclTags: z.array(z.string()).optional(),
@@ -160,9 +160,9 @@ export const userMemories = pgTable("user_memories", {
     index("user_memories_conversation_idx").on(table.conversationId),
 ]);
 
-export const insertUserMemorySchema = createInsertSchema(userMemories).omit({
+export const insertUserMemorySchema = (createInsertSchema(userMemories).omit({
     id: true, createdAt: true, updatedAt: true, accessCount: true, lastAccessedAt: true,
-}).extend({
+}) as any).extend({
     embedding: z.array(z.number()).nullish(),
     tags: z.array(z.string()).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
@@ -199,9 +199,9 @@ export const episodicSummaries = pgTable("episodic_summaries", {
     index("episodic_summaries_created_idx").on(table.createdAt),
 ]);
 
-export const insertEpisodicSummarySchema = createInsertSchema(episodicSummaries).omit({
+export const insertEpisodicSummarySchema = (createInsertSchema(episodicSummaries).omit({
     id: true, createdAt: true, updatedAt: true,
-}).extend({
+}) as any).extend({
     embedding: z.array(z.number()).nullish(),
     metadata: z.record(z.string(), z.unknown()).optional(),
 });

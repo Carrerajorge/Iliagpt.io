@@ -6459,12 +6459,6 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
               requestId,
               assistantMessageId,
               locale: intentResult.language_detected || "es",
-              attachments: resolvedAttachments?.map((a: any) => ({
-                name: a.name,
-                mimeType: a.type || a.mimeType,
-                storagePath: a.storagePath,
-                fileId: a.fileId,
-              })),
             });
 
             if (skillResult.handled && (skillResult.artifacts.length > 0 || skillResult.textResponse)) {

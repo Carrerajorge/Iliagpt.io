@@ -201,11 +201,11 @@ export const userSettings = pgTable("user_settings", {
     index("user_settings_user_id_idx").on(table.userId),
 ]);
 
-export const insertUserSettingsSchema = createInsertSchema(userSettings).omit({
+export const insertUserSettingsSchema = (createInsertSchema(userSettings).omit({
     id: true,
     createdAt: true,
     updatedAt: true,
-}).extend({
+}) as any).extend({
     responsePreferences: responsePreferencesSchema.optional(),
     userProfile: userProfileSchema.optional(),
     featureFlags: featureFlagsSchema.optional(),

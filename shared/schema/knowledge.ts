@@ -64,14 +64,14 @@ export const knowledgeNodes = pgTable("knowledge_nodes", {
     uniqueIndex("knowledge_nodes_user_source_idx").on(table.userId, table.sourceType, table.sourceId),
 ]);
 
-export const insertKnowledgeNodeSchema = createInsertSchema(knowledgeNodes).omit({
+export const insertKnowledgeNodeSchema = (createInsertSchema(knowledgeNodes).omit({
     id: true,
     createdAt: true,
     updatedAt: true,
     lastAccessedAt: true,
     accessCount: true,
     searchVector: true,
-}).extend({
+}) as any).extend({
     tags: z.array(z.string()).optional(),
     embedding: z.array(z.number()).nullish(),
     metadata: z.record(z.string(), z.unknown()).optional(),
@@ -97,10 +97,10 @@ export const knowledgeEdges = pgTable("knowledge_edges", {
     uniqueIndex("knowledge_edges_unique").on(table.userId, table.sourceNodeId, table.targetNodeId, table.relationType),
 ]);
 
-export const insertKnowledgeEdgeSchema = createInsertSchema(knowledgeEdges).omit({
+export const insertKnowledgeEdgeSchema = (createInsertSchema(knowledgeEdges).omit({
     id: true,
     createdAt: true,
-}).extend({
+}) as any).extend({
     metadata: z.record(z.string(), z.unknown()).optional(),
 });
 

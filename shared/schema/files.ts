@@ -25,10 +25,10 @@ export const files = pgTable("files", {
     index("files_status_idx").on(table.status),
 ]);
 
-export const insertFileSchema = createInsertSchema(files).omit({
+export const insertFileSchema = (createInsertSchema(files).omit({
     id: true,
     createdAt: true,
-}).extend({
+}) as any).extend({
     processingProgress: z.number().min(0).max(100).optional(),
     processingError: z.string().nullable().optional(),
     completedAt: z.date().nullable().optional(),
@@ -74,9 +74,9 @@ export const fileChunks = pgTable("file_chunks", {
     index("file_chunks_embedding_idx").using("hnsw", sql`${table.embedding} vector_cosine_ops`),
 ]);
 
-export const insertFileChunkSchema = createInsertSchema(fileChunks).omit({
+export const insertFileChunkSchema = (createInsertSchema(fileChunks).omit({
     id: true,
-}).extend({
+}) as any).extend({
     embedding: z.array(z.number()).nullish(),
 });
 

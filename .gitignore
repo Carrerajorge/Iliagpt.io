@@ -45,3 +45,4 @@ sandbox_workspace/.state/
 **/__pycache__/
 **/*.pyc
 **/*.pyoartifacts/
+.eslintcache

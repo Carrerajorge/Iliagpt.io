@@ -131,7 +131,7 @@ export const gpts = pgTable("gpts", {
     index("gpts_visibility_idx").on(table.visibility),
 ]);
 
-export const insertGptSchema = createInsertSchema(gpts).extend({
+export const insertGptSchema = (createInsertSchema(gpts) as any).extend({
     recommendedModel: z.string().optional(),
     runtimePolicy: gptRuntimePolicySchema.optional(),
     toolPermissions: gptToolPermissionsSchema.optional(),
@@ -234,13 +234,13 @@ export const gptActions = pgTable("gpt_actions", {
     index("gpt_actions_type_idx").on(table.actionType),
 ]);
 
-export const insertGptActionSchema = createInsertSchema(gptActions).omit({
+export const insertGptActionSchema = (createInsertSchema(gptActions).omit({
     id: true,
     createdAt: true,
     updatedAt: true,
     usageCount: true,
     lastUsedAt: true,
-}).extend({
+}) as any).extend({
     name: z.string().trim().min(1).max(120),
     description: z.string().max(4096).optional(),
     actionType: gptActionTypeSchema.default("api"),
@@ -325,7 +325,7 @@ export const gptSessions = pgTable("gpt_sessions", {
     index("gpt_sessions_gpt_idx").on(table.gptId),
 ]);
 
-export const insertGptSessionSchema = createInsertSchema(gptSessions).extend({
+export const insertGptSessionSchema = (createInsertSchema(gptSessions) as any).extend({
     frozenCapabilities: gptCapabilitiesSchema.optional(),
     frozenToolPermissions: gptToolPermissionsSchema.optional(),
     frozenRuntimePolicy: gptRuntimePolicySchema.optional(),

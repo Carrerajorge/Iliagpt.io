@@ -78,7 +78,7 @@ const ADMIN_SECTION_ALIASES: Record<AdminSection, string[]> = {
   database: ["database", "db"],
   security: ["security"],
   reports: ["reports"],
-  settings: ["settings", "configuration", "configuracion"],
+  settings: ["settings", "config", "configuration", "configuracion"],
   agentic: ["agentic", "agentic-engine"],
   excel: ["excel", "excel-manager"],
   terminal: ["terminal", "terminal-plane"],

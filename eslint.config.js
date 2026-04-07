@@ -3,6 +3,16 @@ import globals from "globals";
 import ts from "typescript-eslint";
 
 export default ts.config(
+  { ignores: [
+    "dist/**",
+    "node_modules/**",
+    "coverage/**",
+    "playwright-report/**",
+    "test-results/**",
+    "hola-infra/**",
+    "artifacts/**",
+    "**/*.d.ts",
+  ] },
   js.configs.recommended,
   ...ts.configs.recommended,
   {
@@ -16,13 +26,5 @@ export default ts.config(
       "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
       "@typescript-eslint/no-explicit-any": "warn",
     },
-    ignores: [
-      "dist/**",
-      "node_modules/**",
-      "coverage/**",
-      "playwright-report/**",
-      "test-results/**",
-      "hola-infra/**"
-    ],
   }
 );
