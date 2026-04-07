@@ -416,12 +416,14 @@ function AppContent() {
         closeButton
       />
       <Router />
+      <ArtifactPanel />
       <BackgroundNotificationContainer onNavigateToChat={() => { }} />
     </>
   );
 }
 
 import { OverlayHUD } from "./components/overlay/OverlayHUD";
+import { ArtifactPanel } from "./components/artifact-panel";
 
 function App() {
   const isOverlayMode = typeof window !== 'undefined' && window.location.search.includes('mode=overlay');

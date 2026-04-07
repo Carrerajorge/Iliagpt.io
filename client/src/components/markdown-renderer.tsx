@@ -14,6 +14,7 @@ import { isLanguageRunnable } from "@/lib/sandboxApi";
 import { useSandboxExecution } from "@/hooks/useSandboxExecution";
 import { downloadArtifact } from "@/lib/localArtifactAccess";
 import { useShikiHighlight } from "@/hooks/useShikiHighlight";
+import { useArtifactStore } from "@/stores/artifactStore";
 
 const InlineSourceBadge = memo(function InlineSourceBadge({ name, url }: { name: string; url: string }) {
   const [showTooltip, setShowTooltip] = useState(false);
@@ -603,6 +604,22 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, onOpenD
     );
   }
 
+  const lineCount = codeContent.split("\n").length;
+  const showArtifactButton = lineCount > 20;
+
+  const handleOpenAsArtifact = useCallback(() => {
+    const store = useArtifactStore.getState();
+    const id = `code-${Date.now()}`;
+    store.openArtifact({
+      id,
+      type: "code",
+      title: language ? `${language} snippet` : "Code",
+      content: codeContent,
+      language: language || undefined,
+      messageId: "",
+    });
+  }, [codeContent, language]);
+
   return (
     <div className="relative group my-4">
       {language && (
@@ -610,18 +627,31 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, onOpenD
           {language}
         </div>
       )}
-      <button
-        onClick={handleCopy}
-        className="absolute top-2 right-2 p-1.5 rounded-md bg-muted/80 hover:bg-muted opacity-0 group-hover:opacity-100 transition-opacity z-10"
-        aria-label={copied ? "Copied" : "Copy code"}
-        data-testid="button-copy-code"
-      >
-        {copied ? (
-          <Check className="h-4 w-4 text-green-500" />
-        ) : (
-          <Copy className="h-4 w-4 text-muted-foreground" />
+      <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+        {showArtifactButton && (
+          <button
+            onClick={handleOpenAsArtifact}
+            className="p-1.5 rounded-md bg-muted/80 hover:bg-muted transition-colors"
+            aria-label="Open as Artifact"
+            title="Open as Artifact"
+            data-testid="button-open-artifact"
+          >
+            <Maximize2 className="h-4 w-4 text-muted-foreground" />
+          </button>
         )}
-      </button>
+        <button
+          onClick={handleCopy}
+          className="p-1.5 rounded-md bg-muted/80 hover:bg-muted transition-colors"
+          aria-label={copied ? "Copied" : "Copy code"}
+          data-testid="button-copy-code"
+        >
+          {copied ? (
+            <Check className="h-4 w-4 text-green-500" />
+          ) : (
+            <Copy className="h-4 w-4 text-muted-foreground" />
+          )}
+        </button>
+      </div>
       <ShikiCodeContent code={codeContent} language={language} />
     </div>
   );

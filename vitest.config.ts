@@ -23,7 +23,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './'),
-      '@shared': path.resolve(__dirname, './shared')
+      '@shared': path.resolve(__dirname, './shared'),
+      // Workaround: gpt-tokenizer CJS sub-path not resolvable under Vite ESM
+      'gpt-tokenizer/cjs/encoding/o200k_base': path.resolve(__dirname, './server/__tests__/mocks/gptTokenizerStub.ts'),
     }
   }
 });

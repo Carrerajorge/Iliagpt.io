@@ -71,11 +71,13 @@ import { createVoiceRouter } from "./routes/voiceRouter";
 import { createAnalyticsRouter } from "./routes/analyticsRouter";
 import { createToolExecutionRouter } from "./routes/toolExecutionRouter";
 import agentPlanRouter from "./routes/agentPlanRouter";
+import planRouter from "./routes/planRouter";
 import scientificSearchRouter from "./routes/scientificSearchRouter";
 // documentAnalysisRouter removed
 import ragRouter from "./routes/ragRouter";
 import ragMemoryRouter from "./routes/ragMemoryRouter";
 import feedbackRouter from "./routes/feedbackRouter";
+import searchRouter from "./routes/searchRouter";
 import { createChannelWebhooksRouter } from "./routes/channelWebhooksRouter";
 import { createTelegramIntegrationRouter } from "./routes/telegramIntegrationRouter";
 import { createWhatsAppCloudIntegrationRouter } from "./routes/whatsappCloudIntegrationRouter";
@@ -153,6 +155,7 @@ import { createDeviceControlRouter } from "./routes/deviceControlRouter";
 import openClawRouter from "./routes/openClawRouter";
 import { createOpenClawRouter } from "./routes/openClawRouter";
 import adsRouter from "./routes/adsRouter";
+import memoryApiRouter from "./routes/memoryApiRouter";
 
 import { createSkillPlatformRouter } from "./routes/skillPlatformRouter";
 import { createSkillsRouter } from "./routes/skillsRouter";
@@ -163,6 +166,9 @@ import { budgetEventStream } from "./agent/budget/budgetEventStream";
 import { costRouter } from "./agent/budget/costRouter";
 import { createKnowledgeGraphRouter } from "./routes/knowledgeGraphRouter";
 import { createMcpClientRouter } from "./routes/mcpClientRouter";
+import { createOpenAICompatRouter } from "./api/v1/completions";
+import presenceRouter from "./routes/presenceRouter";
+import { presenceManager, type PresenceUpdate } from "./realtime/presence";
 
 const agentClients: Map<string, Set<WebSocket>> = new Map();
 const browserClients: Map<string, Set<WebSocket>> = new Map();
@@ -1735,6 +1741,7 @@ try{
   app.use("/api/streaming", streamingResumeRouter);
   app.use("/api/memory", conversationMemoryRoutes);
   app.use("/api/memory/semantic", semanticRoutes); // Semantic memory search API
+  app.use("/api/memories", memoryApiRouter); // Long-term memory CRUD API
   app.use("/api/context", contextRoutes); // Enterprise context validation API
   app.use("/api", superAgentRouter);
   app.use("/api", createPythonToolsRouter());
@@ -1743,7 +1750,9 @@ try{
   app.use("/api/execution", createToolExecutionRouter());
   app.use("/api/scientific", scientificSearchRouter);
   app.use("/api/planning", agentPlanRouter);
+  app.use("/api/plans", planRouter);
   // document-analysis route removed
+  app.use("/api/search", searchRouter);
   app.use("/api/rag", ragRouter);
   app.use("/api/rag/memory", ragMemoryRouter);
   app.use("/api/feedback", feedbackRouter);
@@ -1751,6 +1760,9 @@ try{
   app.use(createSettingsRouter());
   app.use("/api", createRunController());
   app.use("/api/superintelligence", superintelligenceRouter);
+
+  // OpenAI-compatible API layer (/v1/chat/completions, /v1/models, /v1/embeddings)
+  app.use("/v1", createOpenAICompatRouter());
 
   app.get("/api/agent/runs/:runId/traces", async (req: Request, res: Response) => {
     try {
@@ -2509,6 +2521,9 @@ try{
 
   // ===== Voice & Audio (TTS, STT, Recording) =====
   app.use("/api/voice", requireAdminMiddleware, createVoiceRouter());
+
+  // ===== Real-Time Presence =====
+  app.use("/api/presence", presenceRouter);
 
   // ===== Analytics & Cost Tracking =====
   app.use("/api/analytics", requireAdminMiddleware, createAnalyticsRouter());
@@ -3711,6 +3726,55 @@ try{
             browserClients.delete(subscribedSessionId);
           }
         }
+      }
+    });
+  });
+
+  // ===== Presence WebSocket =====
+  const presenceWss = new WebSocketServer({ server: httpServer, path: "/ws/presence" });
+  const presenceClients: Set<WebSocket> = new Set();
+
+  createAuthenticatedWebSocketHandler(presenceWss, true, (ws: AuthenticatedWebSocket) => {
+    const userId = ws.userId || "anonymous";
+    presenceClients.add(ws);
+    presenceManager.join(userId);
+
+    ws.on("message", (message) => {
+      try {
+        const data = JSON.parse(message.toString());
+        switch (data.type) {
+          case "typing":
+            if (data.isTyping && data.chatId) {
+              presenceManager.startTyping(userId, data.chatId);
+            } else {
+              presenceManager.stopTyping(userId);
+            }
+            break;
+          case "focus":
+            if (data.chatId) {
+              presenceManager.focusChat(userId, data.chatId);
+            }
+            break;
+          case "heartbeat":
+            presenceManager.heartbeat(userId);
+            break;
+        }
+      } catch (e) {
+        log.error("Presence WS message parse error", { error: e });
+      }
+    });
+
+    ws.on("close", () => {
+      presenceClients.delete(ws);
+      presenceManager.leave(userId);
+    });
+  });
+
+  presenceManager.on("update", (update: PresenceUpdate) => {
+    const message = JSON.stringify({ type: "presence", data: update });
+    presenceClients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
       }
     });
   });
