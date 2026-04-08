@@ -181,6 +181,47 @@ const InlineSvgBlock = memo(function InlineSvgBlock({ code }: { code: string }) 
   );
 });
 
+// ── Inline HTML Renderer (sandboxed iframe for documents, presentations, tables) ──
+const InlineHtmlBlock = memo(function InlineHtmlBlock({ code }: { code: string }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [height, setHeight] = useState(400);
+  const lastCodeRef = useRef("");
+
+  useEffect(() => {
+    if (!iframeRef.current || !code.trim()) return;
+    // Debounce during streaming
+    const timer = setTimeout(() => {
+      if (code === lastCodeRef.current) return;
+      lastCodeRef.current = code;
+      const iframe = iframeRef.current;
+      if (!iframe) return;
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (!doc) return;
+      // Write HTML to iframe safely (sandboxed, no scripts)
+      const safeHtml = code.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "<!-- scripts removed -->");
+      doc.open();
+      doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1f2937;background:#fff;}</style></head><body>${safeHtml}</body></html>`);
+      doc.close();
+      // Auto-resize iframe to content height
+      requestAnimationFrame(() => {
+        const h = doc.documentElement?.scrollHeight || doc.body?.scrollHeight || 400;
+        setHeight(Math.min(Math.max(h + 20, 200), 800));
+      });
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [code]);
+
+  return (
+    <iframe
+      ref={iframeRef}
+      sandbox="allow-same-origin"
+      className="w-full border-0 bg-white rounded"
+      style={{ height: `${height}px`, minHeight: "200px" }}
+      title="Documento renderizado"
+    />
+  );
+});
+
 const InlineSourceBadge = memo(function InlineSourceBadge({ name, url }: { name: string; url: string }) {
   const [showTooltip, setShowTooltip] = useState(false);
   const [imageError, setImageError] = useState(false);
@@ -1039,6 +1080,15 @@ const InteractiveCodeBlock = memo(function InteractiveCodeBlock({
     return (
       <RenderBlockWrapper type="svg" code={codeContent}>
         <InlineSvgBlock code={codeContent} />
+      </RenderBlockWrapper>
+    );
+  }
+
+  // HTML renders inline with action buttons (documents, presentations, tables)
+  if (language === "html" && codeContent.length > 100 && (codeContent.includes("<style") || codeContent.includes("<table") || codeContent.includes("<section") || codeContent.includes("<div"))) {
+    return (
+      <RenderBlockWrapper type="html" code={codeContent}>
+        <InlineHtmlBlock code={codeContent} />
       </RenderBlockWrapper>
     );
   }

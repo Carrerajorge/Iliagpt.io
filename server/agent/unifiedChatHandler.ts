@@ -367,7 +367,11 @@ export async function createUnifiedRun(
   });
 
   // Override: visual content (diagrams, flowcharts, etc.) must NOT route to document/presentation agents
-  const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","diagrama de secuencia","diagrama de clases","timeline","linea de tiempo","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt","svg","ilustracion","ilustración","icono","logo","dibujo","dibuja","grafico","gráfico","chart","pie chart","bar chart","line chart","tabla comparativa","cuadro comparativo","dashboard visual","calendario visual"];
+  const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","diagrama de secuencia","diagrama de clases","timeline","linea de tiempo","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt","svg","ilustracion","ilustración","icono","logo","dibujo","dibuja","grafico","gráfico","chart","pie chart","bar chart","line chart","tabla comparativa","cuadro comparativo","dashboard visual","calendario visual",
+    "presentacion","presentación","powerpoint","ppt","diapositivas","slides",
+    "documento","word","docx","informe","reporte",
+    "excel","hoja de calculo","hoja de cálculo","spreadsheet","xlsx",
+    "pdf","crear pdf","presentation","create document","create spreadsheet"];
   const msgLower = lastUserMessage.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   const isVisualOverride = visualKw.some(kw => msgLower.includes(kw));
   if (isVisualOverride) {

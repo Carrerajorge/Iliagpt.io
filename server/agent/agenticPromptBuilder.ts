@@ -107,6 +107,28 @@ const INTENT_INSTRUCTIONS: Record<string, { es: string; en: string }> = {
     es: "IMPORTANTE: Cuando el usuario pida un diagrama, flowchart, diagrama de flujo, arquitectura, o cualquier representacion visual de procesos/sistemas, SIEMPRE genera codigo Mermaid dentro de un bloque ```mermaid. El sistema lo renderizara automaticamente como SVG visual. Usa el tipo de diagrama mas apropiado: graph TD (flujo), sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, pie. Incluye labels claros y conexiones logicas.",
     en: "IMPORTANT: When user asks for a diagram, flowchart, architecture diagram, or any visual process/system representation, ALWAYS generate Mermaid code inside a ```mermaid block. The system will automatically render it as a visual SVG. Use the most appropriate diagram type: graph TD (flowchart), sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, pie. Include clear labels and logical connections.",
   },
+  document_render: {
+    es: `REGLA CRITICA DE GENERACION DE DOCUMENTOS:
+Cuando el usuario pida crear una presentacion, documento Word, hoja Excel, informe, o PDF, NO generes un archivo binario. En su lugar genera el documento como codigo HTML completo y profesional dentro de un bloque \`\`\`html que el sistema renderizara automaticamente.
+
+PRESENTACIONES (PPT/slides): Genera HTML con slides profesionales. Cada slide es un <section> con aspect-ratio 16/9, fondo con gradiente, titulos grandes, bullets, iconos unicode, bordes redondeados. Usa colores corporativos profesionales.
+
+DOCUMENTOS (Word/informe): Genera HTML con formato de documento profesional. Incluye titulo, subtitulos <h2>, parrafos, listas, tablas estilizadas, margenes, tipografia serif para body y sans-serif para titulos.
+
+HOJAS DE CALCULO (Excel): Genera HTML con <table> estilizada profesionalmente. Headers con fondo de color, bordes, celdas con padding, datos de ejemplo realistas, totales calculados, colores alternados en filas.
+
+El codigo debe ser COMPLETO y autocontenido con <style> incluido. Usa colores profesionales (#1e3a5f, #2563eb, #059669, #dc2626). El resultado se renderiza inline para que el usuario vea el documento visualmente y pueda copiar/modificar el codigo.`,
+    en: `CRITICAL DOCUMENT GENERATION RULE:
+When user asks to create a presentation, Word document, Excel spreadsheet, report, or PDF, do NOT generate a binary file. Instead generate the document as complete professional HTML code inside a \`\`\`html block that the system will automatically render.
+
+PRESENTATIONS: Generate HTML with professional slides. Each slide is a <section> with 16/9 aspect-ratio, gradient backgrounds, large titles, bullets, unicode icons, rounded borders. Use professional corporate colors.
+
+DOCUMENTS: Generate HTML with professional document formatting. Include title, <h2> subtitles, paragraphs, lists, styled tables, margins, serif body font and sans-serif titles.
+
+SPREADSHEETS: Generate HTML with professionally styled <table>. Colored headers, borders, padded cells, realistic sample data, calculated totals, alternating row colors.
+
+Code must be COMPLETE and self-contained with <style> included. Use professional colors (#1e3a5f, #2563eb, #059669, #dc2626). Result renders inline so user sees the document visually and can copy/modify the code.`,
+  },
 };
 
 const DEFAULT_INSTRUCTION = {
@@ -183,11 +205,14 @@ export function buildAgenticSystemPrompt(ctx: AgenticPromptContext): string {
     sections.push(`${label} ${getIntentInstructions(ctx.intent, ctx.locale)}`);
   }
 
-  // 5b. Always include diagram instructions (users frequently ask for diagrams)
+  // 5b. Always include diagram + document render instructions
   const diagramInst = INTENT_INSTRUCTIONS["diagram"];
   if (diagramInst && ctx.intent !== "diagram") {
-    // Add as supplementary instruction even for non-diagram intents
     sections.push(lang === "es" ? diagramInst.es : diagramInst.en);
+  }
+  const docRenderInst = INTENT_INSTRUCTIONS["document_render"];
+  if (docRenderInst) {
+    sections.push(lang === "es" ? docRenderInst.es : docRenderInst.en);
   }
 
   // 6. Attachment context
