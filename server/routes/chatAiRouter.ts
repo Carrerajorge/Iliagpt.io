@@ -59,6 +59,9 @@ import { skillAutoDispatcher, type SkillDispatchResult } from "../services/skill
 import { trackLLMUsage, trackToolExecution, extractFactsInBackground, getMemoryContext, checkToolPermission } from "../lib/pipelineIntegrations";
 import { buildAgenticSystemPrompt, type AgenticPromptContext } from "../agent/agenticPromptBuilder";
 import { classifyIntent as enhancedClassifyIntent } from "../agent/enhancedIntentClassifier";
+import { generateSmartSuggestions } from "../agent/smartSuggestions";
+import { detectProactiveActions } from "../agent/proactiveBehaviors";
+import { enrichContext } from "../agent/contextEnricher";
 
 type AttachmentSpec = z.infer<typeof AttachmentSpecSchema>;
 type StreamProviderSwitch = {
@@ -7332,6 +7335,19 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         };
         const agenticPrompt = buildAgenticSystemPrompt(agenticCtx);
         systemContent += `\n\n${agenticPrompt}`;
+
+        // Add enriched context (time, conversation summary, topics)
+        const enriched = enrichContext({
+          messages: messages.slice(-10).map((m: any) => ({ role: m.role || "user", content: typeof m.content === "string" ? m.content : "" })),
+          userFacts: memoryContext ? memoryContext.split("\n").filter(Boolean) : undefined,
+          locale: enhancedIntent.language || "es",
+        });
+        if (enriched.timeContext) {
+          systemContent += `\n\n## CONTEXTO ACTUAL\n${enriched.timeContext}`;
+        }
+        if (enriched.conversationSummary) {
+          systemContent += `\n${enriched.conversationSummary}`;
+        }
       } catch (agenticErr) {
         console.warn("[Stream] Agentic prompt enhancement failed (non-blocking):", (agenticErr as Error)?.message);
       }
@@ -8102,14 +8118,25 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         }
       }
 
-      const followUpSuggestions = buildFollowUpSuggestions({
-        assistantContent: fullContent,
-        userMessage: userMessageText || messages[messages.length - 1]?.content || "",
-        hasWebSources:
-          detectedWebSources.length > 0 ||
-          capturedSearchQueries.length > 0 ||
-          capturedTotalSearches > 0,
-      });
+      // Smart context-aware suggestions (enhanced) with fallback to generic
+      let followUpSuggestions: string[] = [];
+      try {
+        followUpSuggestions = generateSmartSuggestions({
+          aiResponse: fullContent,
+          userMessage: userMessageText || messages[messages.length - 1]?.content || "",
+          intent: intentResult?.intent || "chat_general",
+          hasArtifact: productionArtifacts.length > 0,
+          artifactType: productionArtifacts[0]?.type,
+          conversationLength: messages.length,
+          locale: intentResult?.language_detected || "es",
+        });
+      } catch {
+        followUpSuggestions = buildFollowUpSuggestions({
+          assistantContent: fullContent,
+          userMessage: userMessageText || messages[messages.length - 1]?.content || "",
+          hasWebSources: detectedWebSources.length > 0 || capturedSearchQueries.length > 0,
+        });
+      }
 
       // Update assistant message with full content + webSources
       const finalizePersistenceStageStart = performance.now();
