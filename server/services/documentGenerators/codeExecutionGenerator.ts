@@ -10,6 +10,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vm from "vm";
 import { randomUUID } from "crypto";
+import { loadSkill, buildSkillPrompt } from "../../skills/skillLoader";
 
 export interface CodeExecutionResult {
   code: string;           // The generated code (shown to user)
@@ -209,4 +210,50 @@ AVAILABLE LIBRARIES:
 
 Generate complete code in a \`\`\`javascript block. Call saveFile(filename, buffer) at the end.
 Use professional colors (#1F4E79, #58595B, #E8532E), include cover pages, headers, footers.`;
+}
+
+/**
+ * Skill-enhanced prompt: loads SKILL.md content if available,
+ * otherwise falls back to the generic document code prompt.
+ */
+export function getSkillEnhancedPrompt(skillName: string, locale: string): string {
+  const skill = loadSkill(skillName);
+  if (skill && skill.instructions) {
+    return buildSkillPrompt(skill);
+  }
+  return getDocumentCodePrompt(locale);
+}
+
+/**
+ * Generate an HTML preview for a document file.
+ * Returns a simplified HTML string for inline display in the chat.
+ */
+export function generateHtmlPreview(file: GeneratedFile): string {
+  const ext = path.extname(file.filename).toLowerCase();
+  const sizeKb = Math.round(file.buffer.length / 1024);
+  const typeLabels: Record<string, string> = {
+    ".pptx": "PowerPoint Presentation",
+    ".docx": "Word Document",
+    ".xlsx": "Excel Spreadsheet",
+    ".pdf": "PDF Document",
+  };
+  const typeLabel = typeLabels[ext] || "Document";
+  const iconColors: Record<string, string> = {
+    ".pptx": "#D24726",
+    ".docx": "#2B579A",
+    ".xlsx": "#217346",
+    ".pdf": "#F40F02",
+  };
+  const color = iconColors[ext] || "#1F4E79";
+
+  return `<div style="border:1px solid #e2e8f0;border-radius:8px;padding:16px;max-width:400px;font-family:system-ui,sans-serif">
+  <div style="display:flex;align-items:center;gap:12px">
+    <div style="width:48px;height:48px;border-radius:8px;background:${color};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px">${ext.replace(".", "").toUpperCase()}</div>
+    <div>
+      <div style="font-weight:600;font-size:14px;color:#1a202c">${file.filename}</div>
+      <div style="font-size:12px;color:#718096">${typeLabel} &middot; ${sizeKb} KB</div>
+    </div>
+  </div>
+  <a href="${file.downloadUrl}" style="display:block;margin-top:12px;text-align:center;padding:8px;background:${color};color:#fff;border-radius:6px;text-decoration:none;font-size:13px;font-weight:500">Download</a>
+</div>`;
 }

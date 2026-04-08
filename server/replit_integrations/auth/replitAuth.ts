@@ -190,8 +190,8 @@ export function getSession() {
     proxy: true,
     cookie: {
       httpOnly: true,
-      secure: true,
-      sameSite: "none" as const,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" as const : "lax" as const,
       maxAge: sessionTtl,
       path: "/",
     },

@@ -25,6 +25,8 @@ import {
   type GptSessionContract,
 } from "./gptSessionService";
 import { intentEnginePipeline, type PipelineOptions } from "../intent-engine";
+import { buildInstructionContext } from "../memory/instructionRetriever";
+import { looksLikeInstruction } from "../memory/instructionDetector";
 import { getCacheService } from "./cache"; // NEW
 import { getStorageService } from "./storage"; // NEW
 import { detectIntent, validateResponse, buildDocumentPrompt, createAuditLog } from "./intentGuard";
@@ -1984,10 +1986,25 @@ ${documentModeInstructions}${documentMode.type === 'excel' ? excelChartInstructi
     ? `Eres un asistente de escritura de documentos. ${documentEditingInstructions}`
     : `Eres IliaGPT, un asistente de IA conciso y directo. Responde de forma breve y al punto. Evita introducciones largas y despedidas innecesarias. Ve directo a la respuesta sin rodeos.`;
 
+  // Fetch persistent user instructions from RAG memory (zero-cost when none exist).
+  // Passes the user's current message for semantic relevance ranking so that only
+  // contextually-relevant instructions are injected (saves tokens).
+  let persistentInstructionContext = "";
+  if (userId) {
+    try {
+      const userQuery = lastUserMessage?.content || "";
+      const instructionCtx = await buildInstructionContext(userId, userQuery);
+      persistentInstructionContext = instructionCtx.text;
+    } catch (err: any) {
+      console.warn("[ChatService] Failed to load user instructions:", err?.message);
+    }
+  }
+
   const lowerPrioritySections = [
     { title: "Platform Operating Rules", content: `${gptPlatformBaseline}${codeInterpreterPrompt}${documentCapabilitiesPrompt}` },
     { title: "Current Date and Time", content: currentDateTimeContext },
     { title: "Active Document Editing Mode", content: documentEditingInstructions },
+    { title: "Persistent User Instructions", content: persistentInstructionContext },
     { title: "User Profile", content: userProfileContext },
     { title: "Additional User Instructions", content: customInstructionsSection },
     { title: "Preferred Response Style", content: responseStyleModifier },

@@ -87,6 +87,7 @@ import { Upload, Search, Image, Video, Bot, Plug } from "lucide-react";
 import { motion } from "framer-motion";
 
 import { ActiveGpt } from "@/types/chat";
+import { useManagedAgentStore } from "@/stores/managed-agent-store";
 import {
   Message,
   SendMessageAck,
@@ -4649,6 +4650,160 @@ export function ChatInterface({
             ? "Analiza los documentos adjuntos y resume lo importante."
             : "Analiza los archivos adjuntos y dime lo más importante.";
         console.log("[handleSubmit] No text provided with files, using auto-prompt:", autoPromptForFiles);
+      }
+
+      // ── Managed Agent route ─────────────────────────────────────────────
+      // When a Managed Agent preset is selected, route through the Managed Agents API
+      // instead of the direct LLM stream. This creates a full agent session on
+      // Anthropic's infrastructure with tool execution capabilities.
+      const managedAgentPresetKey = useManagedAgentStore.getState().selectedPresetKey;
+      if (managedAgentPresetKey && hasInput) {
+        const userInput = input.trim();
+        setInput("");
+        incrementQuery();
+
+        const userMsgId = `user-${Date.now()}`;
+        const userMessage: any = {
+          id: userMsgId,
+          role: "user",
+          content: userInput,
+          timestamp: new Date(),
+          clientTempId: userMsgId,
+        };
+        appendOptimisticMessage(userMessage);
+        onSendMessage(userMessage);
+
+        const effectiveChatIdForStream = chatId && !chatId.startsWith("pending-") ? chatId : `chat_${Date.now()}`;
+
+        // Check if we have an existing session for this chat
+        const existingSession = useManagedAgentStore.getState().getSession(effectiveChatIdForStream);
+        const streamEndpoint = existingSession
+          ? `/api/managed-agents/sessions/${existingSession.sessionId}/chat`
+          : `/api/managed-agents/presets/${managedAgentPresetKey}/run`;
+
+        setAiStateForChat("thinking", effectiveChatIdForStream);
+
+        try {
+          const res = await fetch(streamEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ message: userInput, title: userInput.slice(0, 60) }),
+          });
+
+          if (!res.ok) {
+            const errBody = await res.text().catch(() => "Error desconocido");
+            throw new Error(errBody);
+          }
+
+          // Parse SSE stream from managed agent
+          const reader = res.body?.getReader();
+          if (!reader) throw new Error("No stream body");
+
+          // Save session metadata from headers (first run only)
+          const sessionId = res.headers.get("X-Session-Id");
+          const agentId = res.headers.get("X-Agent-Id");
+          if (sessionId && agentId && !existingSession) {
+            useManagedAgentStore.getState().setSession(effectiveChatIdForStream, {
+              sessionId,
+              agentId,
+              environmentId: res.headers.get("X-Environment-Id") || undefined,
+              presetKey: managedAgentPresetKey,
+              chatId: effectiveChatIdForStream,
+              status: "running",
+              createdAt: Date.now(),
+            });
+          }
+
+          const decoder = new TextDecoder();
+          let fullContent = "";
+          let buffer = "";
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              const jsonStr = line.slice(6).trim();
+              if (!jsonStr) continue;
+
+              try {
+                const event = JSON.parse(jsonStr);
+
+                // Save session info from the meta event (one-shot run)
+                if (event.type === "meta" && event.sessionId && !existingSession) {
+                  useManagedAgentStore.getState().setSession(effectiveChatIdForStream, {
+                    sessionId: event.sessionId,
+                    agentId: event.agentId,
+                    environmentId: event.environmentId,
+                    presetKey: managedAgentPresetKey,
+                    chatId: effectiveChatIdForStream,
+                    status: "running",
+                    createdAt: Date.now(),
+                  });
+                }
+
+                // Agent text message
+                if (event.type === "agent.message" && event.content) {
+                  for (const block of event.content) {
+                    if (block.type === "text") {
+                      fullContent += block.text;
+                      streamChat.deps.setStreamingContent(fullContent);
+                      setAiStateForChat("streaming", effectiveChatIdForStream);
+                    }
+                  }
+                }
+
+                // Tool use — show as "thinking" state
+                if (event.type === "agent.tool_use") {
+                  setAiStateForChat("agent_working", effectiveChatIdForStream);
+                }
+
+                // Session idle — agent is done
+                if (event.type === "session.status_idle" || event.type === "session.status_terminated") {
+                  useManagedAgentStore.getState().updateSessionStatus(
+                    effectiveChatIdForStream,
+                    event.type === "session.status_idle" ? "idle" : "terminated",
+                  );
+                }
+              } catch {
+                // Skip unparseable events
+              }
+            }
+          }
+
+          // Finalize: add the assistant message
+          const assistantMsg = buildAssistantMessage({
+            id: `assistant-${Date.now()}`,
+            timestamp: new Date(),
+            userMessageId: userMsgId,
+            content: fullContent || "El agente completó la tarea sin respuesta de texto.",
+            fallbackContent: "Sin respuesta del agente.",
+          });
+          appendOptimisticMessage(assistantMsg);
+          streamChat.deps.setStreamingContent("");
+          clearMessageDeliveryError(userMsgId);
+          requestTitleRefresh(effectiveChatIdForStream);
+        } catch (err: any) {
+          const errorMsg: any = {
+            id: `error-${Date.now()}`,
+            role: "assistant",
+            content: formatStreamFailureMessage(err),
+            timestamp: new Date(),
+          };
+          appendOptimisticMessage(errorMsg);
+          markMessageStreamRetryable(userMsgId, err);
+        } finally {
+          setAiState("idle");
+          setAiProcessSteps([]);
+          streamChat.deps.setStreamingContent("");
+        }
+        return;
       }
 
       // EMERGENCY BYPASS (DEV-ONLY, DISABLED IN PROD): For simple text messages without files, go directly to streaming API

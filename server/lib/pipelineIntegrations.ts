@@ -121,6 +121,32 @@ export function extractFactsInBackground(
     // Run in background — don't await
     memory.extractFacts(messages, userId).catch(() => { /* ignore */ });
   } catch { /* non-critical */ }
+
+  // Fast-path: detect explicit instructions via pattern matching and store
+  // them immediately (without waiting for the slower LLM extraction).
+  detectAndStoreInstructions(messages, userId).catch(() => { /* non-critical */ });
+}
+
+/**
+ * Detect explicit user instructions via the full detection pipeline
+ * (pattern scan + optional LLM classification) and persist them through
+ * the InstructionManager (handles dedup, supersession, revocation).
+ */
+async function detectAndStoreInstructions(
+  messages: Array<{ role: string; content: string }>,
+  userId: string,
+): Promise<void> {
+  const { detectAndPersist } = await import("../memory/instructionManager");
+
+  const userMessages = messages.filter((m) => m.role === "user");
+  const lastUserMsg = userMessages[userMessages.length - 1];
+  if (!lastUserMsg || lastUserMsg.content.length < 8) return;
+
+  // Quick pattern pre-check to avoid async import overhead for most messages
+  const { looksLikeInstruction } = await import("../memory/instructionDetector");
+  if (!looksLikeInstruction(lastUserMsg.content)) return;
+
+  await detectAndPersist(userId, lastUserMsg.content);
 }
 
 /** Get relevant memory context to inject into system prompt. */

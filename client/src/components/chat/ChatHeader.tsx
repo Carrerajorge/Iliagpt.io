@@ -36,6 +36,8 @@ import { useMemo, useState } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { StandardModelSelector } from './StandardModelSelector';
 import { GptActionMenu } from './GptActionMenu';
+import { ManagedAgentSelector } from '@/components/managed-agent-selector';
+import { InstructionsIndicator } from '@/components/instructions-indicator';
 import { useChatIsProcessing } from "@/stores/streamingStore";
 
 interface ChatHeaderProps {
@@ -185,6 +187,10 @@ export function ChatHeader({
                     />
                 )}
             </div>
+
+            {/* Managed Agent selector + Instructions indicator */}
+            <ManagedAgentSelector />
+            <InstructionsIndicator />
 
             <div className="flex items-center gap-0.5 sm:gap-1">
                 {/* Upgrade button - Show for free users and guests, hide for paid/admin */}

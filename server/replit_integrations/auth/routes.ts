@@ -166,6 +166,7 @@ export function registerAuthRoutes(app: Express): void {
 
         return req.login(adminUser, async (err: any) => {
           if (err) {
+            console.error("[Auth] req.login failed for admin:", err?.message || err, err?.stack);
             return res.status(500).json({ message: "Error al iniciar sesión" });
           }
 

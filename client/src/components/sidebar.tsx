@@ -43,6 +43,7 @@ import {
   Home,
   Share2,
   Plug,
+  Lightbulb,
 } from "lucide-react";
 import { IliaGPTLogo } from "@/components/iliagpt-logo";
 import { cn } from "@/lib/utils";
@@ -916,6 +917,10 @@ export function Sidebar({
                 <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/memory"); }} data-testid="button-memory">
                   <Brain className="h-4 w-4" />
                   Mis Memorias
+                </Button>
+                <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/instructions"); }} data-testid="button-instructions">
+                  <Lightbulb className="h-4 w-4" />
+                  Mis Instrucciones
                 </Button>
                 <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/knowledge-graph"); }} data-testid="button-knowledge-graph">
                   <Share2 className="h-4 w-4" />

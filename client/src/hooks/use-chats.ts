@@ -396,10 +396,24 @@ function mergeServerChatsWithLocal(serverChats: Chat[], localChats: Chat[]): Cha
 
   const mergedServerChats = serverChats.map((serverChat) => {
     const local = localById.get(serverChat.id);
+    // Never replace local messages with an empty server array.
+    // The server list endpoint returns chats without messages (N+1 avoidance),
+    // so serverChat.messages is almost always []. Overwriting local messages
+    // with [] causes the "disappearing messages" bug.
+    const localHasMessages = Array.isArray(local?.messages) && local.messages.length > 0;
+    const serverHasMessages = Array.isArray(serverChat.messages) && serverChat.messages.length > 0;
+    let messages: Message[];
+    if (localHasMessages) {
+      messages = local.messages;
+    } else if (serverHasMessages) {
+      messages = serverChat.messages;
+    } else {
+      messages = local?.messages ?? serverChat.messages ?? [];
+    }
     return {
       ...serverChat,
       stableKey: local?.stableKey || serverChat.stableKey || `stable-${serverChat.id}`,
-      messages: local?.messages?.length ? local.messages : serverChat.messages,
+      messages,
     };
   });
 
@@ -1132,6 +1146,13 @@ export function useChats() {
     // Skip if it's a pending chat or we're already loading
     if (isPendingChat(chatId)) return;
 
+    // Skip if the chat has an active run (streaming) — replacing messages
+    // mid-stream causes the "disappearing messages" bug.
+    if (activeRuns.has(chatId)) {
+      console.info("[fetchChatDetails] Skipping — active run in progress for", chatId);
+      return;
+    }
+
     try {
       const res = await apiFetch(`/api/chats/${chatId}`, {
         headers: { ...getAnonUserIdHeader() },
@@ -1276,9 +1297,31 @@ export function useChats() {
         messages.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
       }
 
-      setChats(prev => prev.map(c =>
-        c.id === chatId ? { ...c, messages } : c
-      ));
+      setChats(prev => prev.map(c => {
+        if (c.id !== chatId) return c;
+
+        // Merge: keep any local messages not present in the server response
+        // (e.g. optimistic messages still being sent) so they don't vanish.
+        const serverIds = new Set(messages.map(m => m.id));
+        const localExtras = (c.messages ?? []).filter(m => {
+          // Keep messages that the server doesn't know about yet
+          if (m.id && !serverIds.has(m.id) && (
+            m.id.startsWith("local_") ||
+            m.id.startsWith("temp_") ||
+            m.deliveryStatus === "sending" ||
+            m.deliveryStatus === "queued"
+          )) {
+            return true;
+          }
+          return false;
+        });
+
+        const merged = localExtras.length > 0
+          ? [...messages, ...localExtras].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+          : messages;
+
+        return { ...c, messages: merged };
+      }));
 
     } catch (error) {
       console.warn(`Failed to fetch details for chat ${chatId}:`, error);
@@ -1320,6 +1363,10 @@ export function useChats() {
   ): Promise<void> => {
     const resolvedChatId = resolveRealChatId(chatId);
     if (!resolvedChatId || isPendingChat(resolvedChatId)) return;
+
+    // Don't validate while actively streaming — a FULL_REFRESH would
+    // replace the message array and cause messages to disappear.
+    if (activeRuns.has(resolvedChatId)) return;
 
     const chat = chatsRef.current.find(
       (candidate) =>
@@ -1660,6 +1707,12 @@ export function useChats() {
   // Allows other parts of the app (settings/privacy) to request a full server refresh.
   useEffect(() => {
     const handleRefresh = () => {
+      // Don't refresh while any chat has an active run — the merge
+      // could wipe out messages being built by streaming.
+      if (activeRuns.size > 0) {
+        console.info("[refresh-chats] Deferred — active runs in progress");
+        return;
+      }
       void (async () => {
         setIsLoading(true);
         try {
