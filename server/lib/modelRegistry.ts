@@ -57,7 +57,7 @@ export const OPENROUTER_MODELS = {
   KIMI_K2_5: "moonshotai/kimi-k2.5",
   GEMMA_4_31B_IT: "google/gemma-4-31b-it",
   GEMMA_3_27B_IT_FREE: "google/gemma-3-27b-it:free",
-  GLM_5: "zhipu/glm-5",
+  GLM_5: "z-ai/glm-5",
 } as const;
 
 // ============================================================================
@@ -92,7 +92,7 @@ export const FREE_MODEL_IDS: ReadonlySet<string> = new Set([
   "google/gemma-4-31b-it",
   "google/gemma-4-31b-it:free",
   "google/gemma-3-27b-it:free",
-  OPENROUTER_MODELS.GLM_5,
+  "zhipu/glm-5",
   FREE_MODEL_ID,
 ]);
 
