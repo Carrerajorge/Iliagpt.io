@@ -785,80 +785,22 @@ export function Composer({
                 </div>
                 Generar imagen
               </Button>
-              {canvasEnabled ? (
-                <HoverCard openDelay={100} closeDelay={100}>
-                  <HoverCardTrigger asChild>
-                    <Button variant="ghost" className="justify-between gap-2 text-sm h-9 w-full glass-menu-item">
-                      <span className="flex items-center gap-2">
-                        <FileText className="h-4 w-4" />
-                        Crear documento
-                      </span>
-                      <ChevronRight className="h-4 w-4" />
-                    </Button>
-                  </HoverCardTrigger>
-                  <HoverCardContent side="right" align="start" className="w-48 p-2">
-                    <div className="grid gap-1">
-                      <Button
-                        variant="ghost"
-                        className="justify-start gap-2 text-sm h-9 glass-menu-item"
-                        onClick={() => { try { setToolsPopoverOpen(false); openBlankDocEditor("word"); } catch (err) { console.error("[Composer] Error opening Word editor:", err); } }}
-                        data-testid="button-create-word"
-                      >
-                        <div className="flex items-center justify-center w-5 h-5 rounded bg-blue-600">
-                          <span className="text-white text-xs font-bold">W</span>
-                        </div>
-                        Documento Word
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        className="justify-start gap-2 text-sm h-9 glass-menu-item"
-                        onClick={() => { try { setToolsPopoverOpen(false); openBlankDocEditor("excel"); } catch (err) { console.error("[Composer] Error opening Excel editor:", err); } }}
-                        data-testid="button-create-excel"
-                      >
-                        <div className="flex items-center justify-center w-5 h-5 rounded bg-green-600">
-                          <span className="text-white text-xs font-bold">X</span>
-                        </div>
-                        Hoja Excel
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        className="justify-start gap-2 text-sm h-9 glass-menu-item"
-                        onClick={() => { try { setToolsPopoverOpen(false); openBlankDocEditor("ppt"); } catch (err) { console.error("[Composer] Error opening PPT editor:", err); } }}
-                        data-testid="button-create-ppt"
-                      >
-                        <div className="flex items-center justify-center w-5 h-5 rounded bg-orange-500">
-                          <span className="text-white text-xs font-bold">P</span>
-                        </div>
-                        Presentación PPT
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        className="justify-start gap-2 text-sm h-9 glass-menu-item"
-                        onClick={() => { try { setToolsPopoverOpen(false); setSelectedDocTool("figma"); onCloseSidebar?.(); } catch (err) { console.error("[Composer] Error selecting Figma tool:", err); } }}
-                      >
-                        <div className="flex items-center justify-center w-5 h-5 rounded bg-card border border-border">
-                          <svg width="10" height="14" viewBox="0 0 38 57" fill="none">
-                            <path d="M19 28.5C19 23.2533 23.2533 19 28.5 19C33.7467 19 38 23.2533 38 28.5C38 33.7467 33.7467 38 28.5 38C23.2533 38 19 33.7467 19 28.5Z" fill="#1ABCFE" />
-                            <path d="M0 47.5C0 42.2533 4.25329 38 9.5 38H19V47.5C19 52.7467 14.7467 57 9.5 57C4.25329 57 0 52.7467 0 47.5Z" fill="#0ACF83" />
-                            <path d="M19 0V19H28.5C33.7467 19 38 14.7467 38 9.5C38 4.25329 33.7467 0 28.5 0H19Z" fill="#FF7262" />
-                            <path d="M0 9.5C0 14.7467 4.25329 19 9.5 19H19V0H9.5C4.25329 0 0 4.25329 0 9.5Z" fill="#F24E1E" />
-                            <path d="M0 28.5C0 33.7467 4.25329 38 9.5 38H19V19H9.5C4.25329 19 0 23.2533 0 28.5Z" fill="#A259FF" />
-                          </svg>
-                        </div>
-                        Diagrama Figma
-                      </Button>
-                    </div>
-                  </HoverCardContent>
-                </HoverCard>
-              ) : (
-                <Button variant="ghost" className="justify-between gap-2 text-sm h-9 w-full glass-menu-item" disabled>
-                  <span className="flex items-center gap-2">
-                    <FileText className="h-4 w-4" />
-                    Crear documento
-                  </span>
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              )}
+              <Button
+                variant="ghost"
+                className="justify-start gap-3 text-sm h-10 glass-menu-item"
+                onClick={() => { try { setToolsPopoverOpen(false); setSelectedDocTool("figma"); onCloseSidebar?.(); } catch (err) { console.error("[Composer] Error selecting Figma tool:", err); } }}
+              >
+                <div className="flex items-center justify-center w-6 h-6 rounded-lg bg-purple-100 dark:bg-purple-900/30">
+                  <svg width="10" height="14" viewBox="0 0 38 57" fill="none">
+                    <path d="M19 28.5C19 23.2533 23.2533 19 28.5 19C33.7467 19 38 23.2533 38 28.5C38 33.7467 33.7467 38 28.5 38C23.2533 38 19 33.7467 19 28.5Z" fill="#1ABCFE" />
+                    <path d="M0 47.5C0 42.2533 4.25329 38 9.5 38H19V47.5C19 52.7467 14.7467 57 9.5 57C4.25329 57 0 52.7467 0 47.5Z" fill="#0ACF83" />
+                    <path d="M19 0V19H28.5C33.7467 19 38 14.7467 38 9.5C38 4.25329 33.7467 0 28.5 0H19Z" fill="#FF7262" />
+                    <path d="M0 9.5C0 14.7467 4.25329 19 9.5 19H19V0H9.5C4.25329 0 0 4.25329 0 9.5Z" fill="#F24E1E" />
+                    <path d="M0 28.5C0 33.7467 4.25329 38 9.5 38H19V19H9.5C4.25329 19 0 23.2533 0 28.5Z" fill="#A259FF" />
+                  </svg>
+                </div>
+                Diagrama Figma
+              </Button>
 
               <Button
                 variant="ghost"
@@ -933,34 +875,23 @@ export function Composer({
             "relative flex items-center justify-center w-10 h-10 rounded-xl cursor-pointer overflow-hidden",
             "transition-all duration-500 ease-out",
             "hover:shadow-lg hover:shadow-current/30",
-            isDocumentMode ? "" : "before:absolute before:inset-0 before:rounded-xl before:opacity-0 before:transition-opacity before:duration-300 hover:before:opacity-100 before:bg-gradient-to-br before:from-white/20 before:to-transparent after:absolute after:inset-0 after:rounded-xl after:opacity-0 after:transition-all after:duration-700 hover:after:opacity-100 after:animate-pulse",
-            selectedDocTool === "word" && "bg-gradient-to-br from-blue-500 to-blue-700",
-            selectedDocTool === "excel" && "bg-gradient-to-br from-green-500 to-green-700",
-            selectedDocTool === "ppt" && "bg-gradient-to-br from-orange-400 to-orange-600",
+            "before:absolute before:inset-0 before:rounded-xl before:opacity-0 before:transition-opacity before:duration-300 hover:before:opacity-100 before:bg-gradient-to-br before:from-white/20 before:to-transparent after:absolute after:inset-0 after:rounded-xl after:opacity-0 after:transition-all after:duration-700 hover:after:opacity-100 after:animate-pulse",
             selectedDocTool === "figma" && "bg-gradient-to-br from-purple-500 to-pink-500",
-            !isDocumentMode && selectedDocTool === "word" && "after:bg-blue-400/20",
-            !isDocumentMode && selectedDocTool === "excel" && "after:bg-green-400/20",
-            !isDocumentMode && selectedDocTool === "figma" && "after:bg-purple-400/20",
+            selectedDocTool === "figma" && "after:bg-purple-400/20",
             "animate-[liquid-float_3s_ease-in-out_infinite]"
           )}
           data-testid="button-selected-doc-tool"
         >
-          {selectedDocTool === "figma" ? (
-            <svg width="16" height="24" viewBox="0 0 38 57" fill="none" className="z-10 drop-shadow-md">
-              <path d="M19 28.5C19 23.2533 23.2533 19 28.5 19C33.7467 19 38 23.2533 38 28.5C38 33.7467 33.7467 38 28.5 38C23.2533 38 19 33.7467 19 28.5Z" fill="#1ABCFE" />
-              <path d="M0 47.5C0 42.2533 4.25329 38 9.5 38H19V47.5C19 52.7467 14.7467 57 9.5 57C4.25329 57 0 52.7467 0 47.5Z" fill="#0ACF83" />
-              <path d="M19 0V19H28.5C33.7467 19 38 14.7467 38 9.5C38 4.25329 33.7467 0 28.5 0H19Z" fill="#FF7262" />
-              <path d="M0 9.5C0 14.7467 4.25329 19 9.5 19H19V0H9.5C4.25329 0 0 4.25329 0 9.5Z" fill="#F24E1E" />
-              <path d="M0 28.5C0 33.7467 4.25329 38 9.5 38H19V19H9.5C4.25329 19 0 23.2533 0 28.5Z" fill="#A259FF" />
-            </svg>
-          ) : (
-            <span className="text-white text-base font-bold z-10 drop-shadow-md">
-              {selectedDocTool === "word" ? "W" : selectedDocTool === "excel" ? "E" : "P"}
-            </span>
-          )}
+          <svg width="16" height="24" viewBox="0 0 38 57" fill="none" className="z-10 drop-shadow-md">
+            <path d="M19 28.5C19 23.2533 23.2533 19 28.5 19C33.7467 19 38 23.2533 38 28.5C38 33.7467 33.7467 38 28.5 38C23.2533 38 19 33.7467 19 28.5Z" fill="#1ABCFE" />
+            <path d="M0 47.5C0 42.2533 4.25329 38 9.5 38H19V47.5C19 52.7467 14.7467 57 9.5 57C4.25329 57 0 52.7467 0 47.5Z" fill="#0ACF83" />
+            <path d="M19 0V19H28.5C33.7467 19 38 14.7467 38 9.5C38 4.25329 33.7467 0 28.5 0H19Z" fill="#FF7262" />
+            <path d="M0 9.5C0 14.7467 4.25329 19 9.5 19H19V0H9.5C4.25329 0 0 4.25329 0 9.5Z" fill="#F24E1E" />
+            <path d="M0 28.5C0 33.7467 4.25329 38 9.5 38H19V19H9.5C4.25329 19 0 23.2533 0 28.5Z" fill="#A259FF" />
+          </svg>
         </div>
         <button
-          onClick={isDocumentMode ? closeDocEditor : () => setSelectedDocTool(null)}
+          onClick={() => setSelectedDocTool(null)}
           aria-label="Close document tool"
           className={cn(
             "absolute -top-1 -right-1 w-4 h-4 rounded-full",
