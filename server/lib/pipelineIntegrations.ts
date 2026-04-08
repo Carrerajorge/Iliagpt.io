@@ -171,7 +171,7 @@ let _cacheManager: any = null;
 function getCacheManager() {
   if (!_cacheManager) {
     try {
-      const mod = require("../cache/cacheManager");
+      const mod = require("../cache/CacheManager");
       _cacheManager = mod.cacheManager || new mod.CacheManager("pipeline:");
     } catch { _cacheManager = null; }
   }
