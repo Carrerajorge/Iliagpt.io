@@ -92,6 +92,8 @@ export const FREE_MODEL_IDS: ReadonlySet<string> = new Set([
   "google/gemma-4-31b-it",
   "google/gemma-4-31b-it:free",
   "google/gemma-3-27b-it:free",
+  "z-ai/glm-5", // GLM-5 via OpenRouter
+  "moonshotai/kimi-k2.5", // Kimi K2.5 via OpenRouter
   FREE_MODEL_ID,
 ]);
 
