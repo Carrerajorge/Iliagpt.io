@@ -35,7 +35,7 @@ export class TokenManager {
     private encryptionKey: Buffer;
 
     constructor() {
-        const keyString = process.env.TOKEN_ENCRYPTION_KEY || 'dev-fallback-encryption-key-32bytes!!';
+        const keyString = process.env.TOKEN_ENCRYPTION_KEY || process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex');
         this.encryptionKey = crypto.scryptSync(keyString, 'salt', 32);
     }
 

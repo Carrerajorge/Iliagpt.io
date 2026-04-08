@@ -289,7 +289,7 @@ export async function registerRoutes(
   // Passport Auth Routes
   // Google (only register if credentials are configured)
   const crypto = await import("crypto");
-  const OAUTH_STATE_SECRET = process.env.SESSION_SECRET || "oauth-state-fallback-key";
+  const OAUTH_STATE_SECRET = process.env.SESSION_SECRET || process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString("hex");
 
   function generateOAuthState(): string {
     const nonce = crypto.randomBytes(16).toString("hex");
