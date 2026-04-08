@@ -2,6 +2,7 @@ export const FREE_MODEL_ID = "google/gemma-3-27b-it:free";
 
 export const FREE_MODEL_IDS = new Set([
   "google/gemma-4-31b-it",
+  "moonshotai/kimi-k2.5",
 ]);
 
 export function isModelFreeForAll(modelId: string): boolean {
