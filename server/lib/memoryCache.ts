@@ -50,6 +50,7 @@ class MemoryCache {
   private redisClient: RedisClientType | null = null;
   private redisConnected = false;
   private redisConnecting = false;
+  private _rateLimitSuppressed = false;
   private stats = {
     hits: 0,
     misses: 0,
@@ -160,7 +161,7 @@ class MemoryCache {
           return parsed.v;
         }
       } catch (error: any) {
-        console.warn("[MemoryCache] Redis get error:", error.message);
+        this.handleRedisError("get", error);
       }
     }
 
@@ -189,7 +190,7 @@ class MemoryCache {
           JSON.stringify(cacheValue)
         );
       } catch (error: any) {
-        console.warn("[MemoryCache] Redis set error:", error.message);
+        this.handleRedisError("set", error);
       }
     }
   }
@@ -219,7 +220,7 @@ class MemoryCache {
       try {
         await this.redisClient.del(fullKey);
       } catch (error: any) {
-        console.warn("[MemoryCache] Redis delete error:", error.message);
+        this.handleRedisError("delete", error);
       }
     }
 
@@ -283,6 +284,18 @@ class MemoryCache {
       }
     } else {
       this.localCache.clear();
+    }
+  }
+
+  private handleRedisError(op: string, error: any): void {
+    if (error?.message?.includes("max requests limit")) {
+      if (!this._rateLimitSuppressed) {
+        console.warn(`[MemoryCache] Upstash rate limit reached — disabling Redis (${op})`);
+        this._rateLimitSuppressed = true;
+        this.redisConnected = false;
+      }
+    } else {
+      console.warn(`[MemoryCache] Redis ${op} error:`, error?.message);
     }
   }
 

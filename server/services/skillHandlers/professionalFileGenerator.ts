@@ -151,6 +151,15 @@ export class ProfessionalFileGenerator {
     try {
       const theme = data.theme || "professional";
 
+      // Guard: ensure sheets array exists and is valid
+      if (!data.sheets || !Array.isArray(data.sheets) || data.sheets.length === 0) {
+        data.sheets = [{
+          name: "Sheet1",
+          headers: ["Column A", "Column B"],
+          rows: [["No data", ""]],
+        }];
+      }
+
       // Build sheets array for the multi-sheet helper, prepending headers to rows
       const sheetDefs = data.sheets.map((s) => {
         const combined: any[][] = [s.headers, ...s.rows];

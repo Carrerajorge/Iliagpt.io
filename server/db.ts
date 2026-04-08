@@ -15,7 +15,7 @@ const pool = new Pool({
   max: env.DB_POOL_MAX || (isProd ? 100 : 5),
   min: env.DB_POOL_MIN || (isProd ? 10 : 0),
   idleTimeoutMillis: isProd ? 10000 : 3000,
-  connectionTimeoutMillis: isProd ? 5000 : 3000,
+  connectionTimeoutMillis: isProd ? 15000 : 5000,
   allowExitOnIdle: false,
   keepAlive: true,
   application_name: 'iliagpt_server_write',

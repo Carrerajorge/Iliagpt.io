@@ -7,6 +7,7 @@ const CACHE_PREFIX = "conv:state:";
 class RedisConversationCache {
   private client: Redis | null = null;
   private isConnected = false;
+  private _rateLimitWarned = false;
   private localCache = new Map<string, { data: HydratedConversationState; expiresAt: number }>();
 
   constructor() {
@@ -109,7 +110,15 @@ class RedisConversationCache {
         await this.client.setex(key, ttlSeconds, serialized);
         console.log(`[RedisConversationCache] Cached state for ${chatId} (TTL: ${ttlSeconds}s)`);
       } catch (error: any) {
-        console.error("[RedisConversationCache] Set error:", error.message);
+        if (error.message?.includes("max requests limit")) {
+          if (!this._rateLimitWarned) {
+            console.warn("[RedisConversationCache] Upstash rate limit reached — falling back to memory-only");
+            this._rateLimitWarned = true;
+            this.isConnected = false;
+          }
+        } else {
+          console.error("[RedisConversationCache] Set error:", error.message);
+        }
       }
     }
   }

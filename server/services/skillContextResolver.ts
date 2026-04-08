@@ -124,13 +124,16 @@ export async function resolveSkillContextFromRequest(
   const explicit = await maybeResolveById(requestedSkillId);
   if (explicit) return explicit;
 
-  if (store.getActiveSkillIdForUser) {
+  if (store.getActiveSkillIdForUser && params.userId) {
     try {
-      const activeSkillId = clampText(await store.getActiveSkillIdForUser(params.userId), 64);
-      const active = await maybeResolveById(activeSkillId);
-      if (active) return active;
-    } catch (e: any) {
-      console.warn("[SkillContext] Failed to resolve active skill:", e?.message || e);
+      const rawActiveId = await store.getActiveSkillIdForUser(params.userId);
+      if (rawActiveId != null) {
+        const activeSkillId = clampText(String(rawActiveId), 64);
+        const active = await maybeResolveById(activeSkillId);
+        if (active) return active;
+      }
+    } catch {
+      // Non-fatal: active skill resolution is best-effort
     }
   }
 
