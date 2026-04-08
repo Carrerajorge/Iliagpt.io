@@ -103,13 +103,14 @@ export function registerAuthRoutes(app: Express): void {
         email.toLowerCase() === ADMIN_EMAIL!.toLowerCase() &&
         (await verifyEnvAdminPassword(password));
       if (isEnvAdminLogin) {
-        const adminId = "admin-user-id";
+        const existingAdmin = await authStorage.getUserByEmail(ADMIN_EMAIL!);
+        const adminId = existingAdmin?.id ?? "admin-user-id";
         await authStorage.upsertUser({
           id: adminId,
           email: ADMIN_EMAIL,
-          firstName: "Admin",
-          lastName: "User",
-          profileImageUrl: null,
+          firstName: existingAdmin?.firstName ?? "Admin",
+          lastName: existingAdmin?.lastName ?? "User",
+          profileImageUrl: existingAdmin?.profileImageUrl ?? null,
           role: "admin",
         });
 
@@ -487,43 +488,44 @@ export function registerAuthRoutes(app: Express): void {
       }
 
       // Verify admin is configured and credentials match
-	      if (!isAdminConfigured() || email.toLowerCase() !== ADMIN_EMAIL!.toLowerCase() || !(await verifyEnvAdminPassword(password))) {
-	        try {
-	          await auditLog(req, {
-	            action: AuditActions.AUTH_LOGIN_FAILED,
-	            resource: "auth",
-	            details: { email, reason: "invalid_admin_credentials" },
-	            category: "auth",
-	            severity: "warning",
-	          });
-	        } catch (auditError) {
-	          console.error("Failed to create audit log:", auditError);
-	        }
-	        return res.status(401).json({ message: "Invalid credentials" });
-	      }
+              if (!isAdminConfigured() || email.toLowerCase() !== ADMIN_EMAIL!.toLowerCase() || !(await verifyEnvAdminPassword(password))) {
+                try {
+                  await auditLog(req, {
+                    action: AuditActions.AUTH_LOGIN_FAILED,
+                    resource: "auth",
+                    details: { email, reason: "invalid_admin_credentials" },
+                    category: "auth",
+                    severity: "warning",
+                  });
+                } catch (auditError) {
+                  console.error("Failed to create audit log:", auditError);
+                }
+                return res.status(401).json({ message: "Invalid credentials" });
+              }
 
       // Create or get admin user
-      const adminId = "admin-user-id";
+      const existingAdminUser = await authStorage.getUserByEmail(ADMIN_EMAIL!);
+      const adminId = existingAdminUser?.id ?? "admin-user-id";
       await authStorage.upsertUser({
         id: adminId,
         email: ADMIN_EMAIL,
-        firstName: "Admin",
-        lastName: "User",
-        profileImageUrl: null,
+        firstName: existingAdminUser?.firstName ?? "Admin",
+        lastName: existingAdminUser?.lastName ?? "User",
+        profileImageUrl: existingAdminUser?.profileImageUrl ?? null,
         role: "admin",
       });
 
-	      // Set up session for admin
-	      const adminUser = {
-	        id: adminId,
-	        claims: {
-	          sub: adminId,
-	          email: ADMIN_EMAIL,
-	          first_name: "Admin",
-	          last_name: "User",
-	        },
-	        expires_at: Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60), // 1 week
-	      };
+              // Set up session for admin
+              const adminUser = {
+                id: adminId,
+                claims: {
+                  sub: adminId,
+                  email: ADMIN_EMAIL,
+                  first_name: "Admin",
+                  last_name: "User",
+                },
+                expires_at: Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60), // 1 week
+              };
 
       // MFA gate: require TOTP and/or push approval if enabled (admin too).
       const mfa = await computeMfaForUser({ userId: adminId, excludeSid: req.sessionID || null });
@@ -579,22 +581,22 @@ export function registerAuthRoutes(app: Express): void {
         }
 
         // Track admin login and update last login
-	        try {
-	          await authStorage.updateUserLogin(adminId, {
-	            ipAddress: req.ip || req.socket.remoteAddress || null,
-	            userAgent: req.headers["user-agent"] || null
-	          });
+                try {
+                  await authStorage.updateUserLogin(adminId, {
+                    ipAddress: req.ip || req.socket.remoteAddress || null,
+                    userAgent: req.headers["user-agent"] || null
+                  });
 
-	          await auditLog(req, {
-	            action: AuditActions.AUTH_LOGIN,
-	            resource: "auth",
-	            details: { email: ADMIN_EMAIL, role: "admin", via: "admin-login" },
-	            category: "auth",
-	            severity: "info",
-	          });
-	        } catch (auditError) {
-	          console.error("Failed to create audit log:", auditError);
-	        }
+                  await auditLog(req, {
+                    action: AuditActions.AUTH_LOGIN,
+                    resource: "auth",
+                    details: { email: ADMIN_EMAIL, role: "admin", via: "admin-login" },
+                    category: "auth",
+                    severity: "info",
+                  });
+                } catch (auditError) {
+                  console.error("Failed to create audit log:", auditError);
+                }
 
         // Force session save before responding
         req.session.save((saveErr: any) => {
@@ -613,17 +615,17 @@ export function registerAuthRoutes(app: Express): void {
 
   // Logout via POST (for SPA - clears session without redirect)
   app.post("/api/auth/logout", async (req: any, res) => {
-	    try {
-	      const userId = getSecureUserId(req);
-	      if (userId && !userId.startsWith("anon_")) {
-	        await auditLog(req, {
-	          action: AuditActions.AUTH_LOGOUT,
-	          resource: "auth",
-	          details: { email: req.user?.claims?.email || req.user?.email || null },
-	          category: "auth",
-	          severity: "info",
-	        });
-	      }
+            try {
+              const userId = getSecureUserId(req);
+              if (userId && !userId.startsWith("anon_")) {
+                await auditLog(req, {
+                  action: AuditActions.AUTH_LOGOUT,
+                  resource: "auth",
+                  details: { email: req.user?.claims?.email || req.user?.email || null },
+                  category: "auth",
+                  severity: "info",
+                });
+              }
       req.logout((err: any) => {
         if (err) {
           console.error("Logout error:", err);
@@ -787,22 +789,22 @@ export function registerAuthRoutes(app: Express): void {
           }
         }
 
-	        try {
-	          await authStorage.updateUserLogin(result.user.id, {
-	            ipAddress: req.ip || req.socket.remoteAddress || null,
-	            userAgent: req.headers["user-agent"] || null
-	          });
+                try {
+                  await authStorage.updateUserLogin(result.user.id, {
+                    ipAddress: req.ip || req.socket.remoteAddress || null,
+                    userAgent: req.headers["user-agent"] || null
+                  });
 
-	          await auditLog(req, {
-	            action: AuditActions.AUTH_LOGIN,
-	            resource: "auth",
-	            details: { email: result.user.email, role: result.user.role || "user", provider: "magic_link" },
-	            category: "auth",
-	            severity: "info",
-	          });
-	        } catch (auditError) {
-	          console.warn("[MagicLink] Failed to create audit log:", auditError);
-	        }
+                  await auditLog(req, {
+                    action: AuditActions.AUTH_LOGIN,
+                    resource: "auth",
+                    details: { email: result.user.email, role: result.user.role || "user", provider: "magic_link" },
+                    category: "auth",
+                    severity: "info",
+                  });
+                } catch (auditError) {
+                  console.warn("[MagicLink] Failed to create audit log:", auditError);
+                }
 
         req.session.save((saveErr: any) => {
           if (saveErr) {
