@@ -44,5 +44,6 @@ sandbox_workspace/.state/
 # Compiled Python
 **/__pycache__/
 **/*.pyc
-**/*.pyoartifacts/
+**/*.pyo
+artifacts/
 .eslintcache
