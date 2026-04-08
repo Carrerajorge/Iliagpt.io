@@ -869,7 +869,7 @@ export default function Home() {
       </Suspense>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col h-full w-full min-h-0">
+      <main className="flex-1 flex flex-col h-full w-full min-h-0 overflow-hidden">
         {isAppsDialogOpen ? (
           <Suspense fallback={<SkeletonPage />}>
             <AppsViewLazy

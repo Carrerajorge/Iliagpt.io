@@ -5983,14 +5983,8 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           }
 
           if (!seed && skillExecutionResult.fallbackText) {
-            fullContent = skillExecutionResult.fallbackText;
-            emitSkillChunk({
-              stage: 'fallback',
-              status: skillExecutionResult.status,
-              source: 'fallback',
-              content: skillExecutionResult.fallbackText,
-              isFallback: true,
-            });
+            // Don't emit fallback text as visible content — keep it internal for model seed only
+            console.log(`[Stream] Skill fallback (internal): ${skillExecutionResult.fallbackText.slice(0, 80)}`);
             if (skillExecutionResult.continueWithModel) {
               skillSeedForModel = skillExecutionResult.fallbackText;
             }
