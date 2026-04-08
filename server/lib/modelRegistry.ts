@@ -92,7 +92,7 @@ export const FREE_MODEL_IDS: ReadonlySet<string> = new Set([
   "google/gemma-4-31b-it",
   "google/gemma-4-31b-it:free",
   "google/gemma-3-27b-it:free",
-  "zhipu/glm-5",
+  OPENROUTER_MODELS.GLM_5,
   FREE_MODEL_ID,
 ]);
 
