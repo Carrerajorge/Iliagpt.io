@@ -488,48 +488,82 @@ export class ProfessionalFileGenerator {
       const titleSlide = pptx.addSlide({ masterName: "CORPORATE" });
       titleSlide.background = { color: THEME.bgDark };
 
+      // Gradient-like accent bar at top of title slide
+      titleSlide.addShape("rect" as any, {
+        x: 0,
+        y: 0,
+        w: "100%",
+        h: 0.08,
+        fill: { color: THEME.accent },
+      });
+
+      // Decorative side accent
+      titleSlide.addShape("rect" as any, {
+        x: 0,
+        y: 0,
+        w: 0.12,
+        h: "100%",
+        fill: { color: THEME.secondary },
+      });
+
       titleSlide.addText(content.title, {
         x: 0.8,
-        y: 1.5,
+        y: 1.2,
         w: 8.4,
-        h: 1.5,
-        fontSize: 36,
+        h: 1.8,
+        fontSize: 38,
         fontFace: "Calibri",
         color: THEME.textLight,
         bold: true,
         align: "left",
+        lineSpacingMultiple: 1.1,
+      });
+
+      // Decorative line under title
+      titleSlide.addShape("rect" as any, {
+        x: 0.8,
+        y: 3.1,
+        w: 2.5,
+        h: 0.04,
+        fill: { color: THEME.accent },
       });
 
       if (content.subtitle) {
         titleSlide.addText(content.subtitle, {
           x: 0.8,
-          y: 3.2,
+          y: 3.3,
           w: 8.4,
           h: 0.8,
-          fontSize: 18,
+          fontSize: 20,
           fontFace: "Calibri",
           color: THEME.accent,
           align: "left",
         });
       }
 
-      if (content.author) {
-        titleSlide.addText(content.author, {
-          x: 0.8,
-          y: 4.2,
-          w: 8.4,
-          h: 0.5,
-          fontSize: 14,
-          fontFace: "Calibri",
-          color: THEME.muted,
-          align: "left",
-        });
-      }
+      const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+      titleSlide.addText(content.author ? `${content.author}  |  ${dateStr}` : dateStr, {
+        x: 0.8,
+        y: 4.3,
+        w: 8.4,
+        h: 0.5,
+        fontSize: 14,
+        fontFace: "Calibri",
+        color: THEME.muted,
+        align: "left",
+      });
 
       // ------ Content Slides ------
       const totalSlides = content.slides.length;
       content.slides.forEach((slideData, idx) => {
         const slide = pptx.addSlide({ masterName: "CORPORATE" });
+
+        // Add slide transition (fade)
+        try {
+          (slide as any).transition = { type: "fade", speed: "med" };
+        } catch {
+          // pptxgenjs version may not support transitions; skip silently
+        }
 
         // Slide number in footer
         slide.addText(`${idx + 1} / ${totalSlides}`, {
@@ -552,12 +586,21 @@ export class ProfessionalFileGenerator {
           fill: { color: THEME.accent },
         });
 
+        // Left accent strip for visual interest
+        slide.addShape("rect" as any, {
+          x: 0,
+          y: 0,
+          w: 0.08,
+          h: "93%",
+          fill: { color: THEME.secondary },
+        });
+
         // Slide title
         slide.addText(slideData.title, {
           x: 0.6,
-          y: 0.3,
+          y: 0.25,
           w: 8.8,
-          h: 0.8,
+          h: 0.85,
           fontSize: 26,
           fontFace: "Calibri",
           color: THEME.primary,
@@ -565,33 +608,40 @@ export class ProfessionalFileGenerator {
           align: "left",
         });
 
+        // Thin separator line under title
+        slide.addShape("rect" as any, {
+          x: 0.6,
+          y: 1.1,
+          w: 8.8,
+          h: 0.02,
+          fill: { color: "D6DCE4" },
+        });
+
         // Bullet content
         if (slideData.bullets && slideData.bullets.length > 0) {
           const bulletRows = slideData.bullets.map((bullet) => ({
-            text: bullet,
+            text: `\u2022  ${bullet}`,
             options: {
               fontSize: 16,
               fontFace: "Calibri" as const,
               color: THEME.textDark,
-              bullet: { code: "2022" } as any,
-              paraSpaceAfter: 8,
+              paraSpaceAfter: 10,
+              paraSpaceBefore: 2,
             },
           }));
 
           slide.addText(bulletRows, {
             x: 0.8,
-            y: 1.4,
+            y: 1.3,
             w: 8.4,
-            h: 3.8,
+            h: 3.9,
             valign: "top",
-            lineSpacingMultiple: 1.3,
+            lineSpacingMultiple: 1.35,
           });
         }
 
-        // Speaker notes
-        if (slideData.notes) {
-          slide.addNotes(slideData.notes);
-        }
+        // Speaker notes (always include, use title as fallback)
+        slide.addNotes(slideData.notes || `Slide: ${slideData.title}`);
       });
 
       // Generate buffer

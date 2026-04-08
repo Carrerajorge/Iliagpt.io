@@ -137,27 +137,27 @@ async function handleWord(request: SkillHandlerRequest): Promise<SkillHandlerRes
     : 'Write ALL content in English. Use formal, professional English throughout.';
 
   const content = await generateContentWithLLM(
-    `You are an expert professional document writer with experience in corporate reports, academic papers, and business documents.
+    `You are an expert document writer. Create a comprehensive, professional document based on the user's request.
 
-Based on the user's request, generate a comprehensive, well-structured document in Markdown format.
-
-STRUCTURE REQUIREMENTS:
-- Start with a clear main title (# Title)
-- Include an executive summary or introduction section
-- Organize content into 4-8 logical sections with ## headings
+Structure your response in Markdown with:
+- A clear title (# heading)
+- Executive summary (2-3 paragraphs)
+- 4-6 well-organized sections with ## headings
 - Use ### for subsections where appropriate
-- Include bullet points for key takeaways
-- Add relevant tables with data where applicable
-- End with a conclusion or recommendations section
+- Bullet points for key items
+- At least one data table (| Header | ... |) if relevant to the topic
+- Conclusion section
 
 QUALITY REQUIREMENTS:
 - Provide thorough, substantive content (not placeholder text)
 - Each section should have 2-4 detailed paragraphs
 - Use professional, formal tone appropriate for business/academic contexts
-- Include specific details, examples, and actionable insights
+- Include specific details, examples, data points, and actionable insights
 - Ensure logical flow between sections
+- Be thorough - aim for 800-1500 words of substantive content.
 
 LANGUAGE: ${langInstruction}
+Write in the same language as the user's request.
 
 Respond ONLY with the Markdown content, no preamble or explanation.`,
     request.message,
@@ -202,21 +202,24 @@ async function handleExcel(request: SkillHandlerRequest): Promise<SkillHandlerRe
     : 'All column headers, sheet name, and title MUST be in English.';
 
   const rawData = await generateContentWithLLM(
-    `You are an expert data analyst and spreadsheet specialist. Based on the user's request, generate comprehensive spreadsheet data as a valid JSON object with this exact structure:
+    `You are a data specialist. Generate realistic, professional spreadsheet data.
+Return ONLY valid JSON with this structure:
 {
-  "sheetName": "Descriptive Sheet Name",
-  "headers": ["Column1", "Column2", "Column3", ...],
-  "rows": [["val1", "val2", "val3", ...], ...],
+  "sheetName": "descriptive name",
+  "headers": ["Column1", "Column2", ...],
+  "rows": [["val1", 42, ...], ...],
   "title": "Spreadsheet Title"
 }
 
-DATA REQUIREMENTS:
-- Include at LEAST 10 rows of realistic, varied data (more if the topic warrants it)
-- Use 4-8 columns with descriptive headers relevant to the topic
+Requirements:
+- At least 15 rows of realistic data
+- Use appropriate data types (numbers for quantities/prices, dates for dates)
+- Include a summary/total row at the end (prefix the first cell with "TOTAL" or "RESUMEN")
+- Headers should be clear and descriptive (4-8 columns)
 - Include numeric values where appropriate (prices, quantities, percentages, scores)
 - Make data realistic and internally consistent (totals should add up, percentages should be reasonable)
-- If appropriate, include a SUMMARY row at the end with totals, averages, or key aggregations (prefix the first cell with "TOTAL" or "RESUMEN")
 - Vary the data - avoid repetitive or placeholder values
+- All text in the same language as the user's request
 
 ${langInstruction}
 
@@ -272,27 +275,24 @@ async function handlePowerPoint(request: SkillHandlerRequest): Promise<SkillHand
   const conclusionTitle = lang === 'es' ? 'Conclusiones y Próximos Pasos' : 'Conclusions and Next Steps';
 
   const rawSlides = await generateContentWithLLM(
-    `You are an expert presentation designer who creates compelling, visually-structured slide decks for professionals.
-
-Based on the user's request, generate slide content as a valid JSON array with this structure:
+    `You are a professional presentation designer. Create slide content.
+Return ONLY valid JSON array:
 [
-  { "title": "Slide Title", "bullets": ["Point 1", "Point 2", "Point 3"], "notes": "Speaker notes for this slide" }
+  { "title": "Slide Title", "bullets": ["Key point 1", "Key point 2"], "notes": "Speaker notes" }
 ]
 
-STRUCTURE REQUIREMENTS:
-- Generate 8-12 professional slides covering the topic comprehensively
-- Slide 1: Title slide with a compelling subtitle as the first bullet
-- Slides 2-3: Introduction/Context - set the stage for the topic
-- Slides 4-8: Core content - detailed analysis, key points, data insights
-- Slides 9-10: Practical implications, recommendations, or case examples
-- Slide 11-12: "${conclusionTitle}" - summarize key takeaways and actionable next steps
+Requirements:
+- First slide: title + subtitle (subtitle as first bullet)
+- 8-10 content slides with varied content
+- Each slide: 3-5 bullet points
+- Last slide: key takeaways / conclusion ("${conclusionTitle}")
+- Include speaker notes for each slide (2-3 sentences of additional context)
+- All text in the same language as the user's request
 
 CONTENT QUALITY:
-- Each slide should have 3-5 bullet points (not too few, not too many)
 - Bullets should be concise but informative (15-40 words each)
 - Vary content types: some slides with data/statistics, some with concepts, some with recommendations
 - Include specific details, numbers, and examples where relevant
-- Speaker notes should provide additional context for each slide (2-3 sentences)
 - Avoid generic filler content - every bullet should add value
 
 ${langInstruction}
@@ -468,21 +468,45 @@ ${content}
 // ---------------------------------------------------------------------------
 
 function extractTitle(message: string): string {
-  // Take the first meaningful segment (up to 60 chars) as a title
-  const cleaned = message
-    // Spanish verbs
-    .replace(/^(crea|creame|créame|genera|genérame|generame|haz|hazme|escribe|escribeme|escríbeme|prepara|prepárame|preparame|elabora|elaborame|elabórame|redacta|redáctame|produce|produceme)\s*/i, '')
-    // English verbs
-    .replace(/^(make|create|generate|write|produce|build|draft|compose)\s*(me)?\s*/i, '')
+  // Iteratively strip verb prefixes, articles, document types, and connecting words
+  // until the topic is exposed. We loop because patterns can appear in any order.
+  let cleaned = message.trim();
+  let previous = "";
+
+  while (cleaned !== previous) {
+    previous = cleaned;
+
+    // Spanish command verbs (including reflexive / "me" forms)
+    cleaned = cleaned.replace(/^(crea|creame|cr[eé]ame|genera|gen[eé]rame|generame|haz|hazme|escribe|escr[ií]beme|escribeme|prepara|prep[aá]rame|preparame|elabora|elaborame|elab[oó]rame|redacta|red[aá]ctame|dise[nñ]a|dise[nñ]ame|produce|produceme)\s*/i, '');
+
+    // English command verbs (with optional "me" / "a" after)
+    cleaned = cleaned.replace(/^(make|create|generate|write|produce|build|draft|compose|prepare)\s*(me)?\s*/i, '');
+
     // Articles (Spanish and English)
-    .replace(/^(un|una?|el|la|los|las|a|an|the)\s*/i, '')
+    cleaned = cleaned.replace(/^(un|uno|una|el|la|los|las|a|an|the)\s*/i, '');
+
     // Document type keywords (Spanish and English)
-    .replace(/^(documento?|archivo|word|docx|excel|xlsx|spreadsheet|hoja\s*de\s*c[aá]lculo|presentaci[oó]n|powerpoint|pptx?|csv|pdf|informe|reporte|report)\s*/i, '')
-    // Prepositions connecting format to topic
-    .replace(/^(de|del|sobre|acerca\s*de|para|con|en|about|on|for|with|regarding)\s*/i, '')
-    .trim();
+    cleaned = cleaned.replace(/^(documento?|archivo|word|docx|excel|xlsx|spreadsheet|hoja\s*de\s*c[aá]lculo|presentaci[oó]n|powerpoint|pptx?|csv|pdf|informe|reporte|report)\s*/i, '');
+
+    // Connecting prepositions (Spanish and English)
+    cleaned = cleaned.replace(/^(de|del|sobre|acerca\s*de|para|con|en|about|on|for|with|regarding)\s*/i, '');
+
+    cleaned = cleaned.trim();
+  }
+
   if (cleaned.length === 0) return 'Document';
-  // Capitalize first letter
-  const capitalized = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-  return capitalized.length > 60 ? capitalized.slice(0, 57) + '...' : capitalized;
+
+  // Capitalize first letter of each significant word (title case)
+  const titleCased = cleaned
+    .split(/\s+/)
+    .map((word, i) => {
+      // Keep short connecting words lowercase unless first word
+      const lowerWord = word.toLowerCase();
+      const minorWords = new Set(["de", "del", "la", "el", "los", "las", "y", "e", "o", "u", "en", "a", "the", "of", "and", "or", "in", "for", "on", "to", "with"]);
+      if (i > 0 && minorWords.has(lowerWord)) return lowerWord;
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(" ");
+
+  return titleCased.length > 60 ? titleCased.slice(0, 57) + '...' : titleCased;
 }

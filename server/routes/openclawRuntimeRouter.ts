@@ -9,6 +9,7 @@ import { RAGService } from "../services/ragService";
 import { orchestrationEngine } from "../services/orchestrationEngine";
 import { openclawMetrics } from "../openclaw/lib/metrics";
 import { auditLog } from "../openclaw/lib/auditLog";
+import { searchSkills as marketplaceSearch, getPopularSkills, installSkill } from "../openclaw/skills/marketplace";
 
 const objectiveSchema = z.object({
   objective: z.string().trim().min(1, "objective is required"),
@@ -368,6 +369,44 @@ export function createOpenClawRuntimeRouter(): Router {
 
   router.get("/audit/stats", (_req, res) => {
     return res.json(auditLog.getStats());
+  });
+
+  // ── Marketplace endpoints ──
+
+  router.get("/marketplace/search", async (req, res) => {
+    try {
+      const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+      if (!q) return res.status(400).json({ error: "Missing query parameter 'q'" });
+      const limit = parseLimit(req.query.limit, 20);
+      const results = await marketplaceSearch(q, limit);
+      return res.json({ count: results.length, results });
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+
+  router.get("/marketplace/popular", async (_req, res) => {
+    try {
+      const results = await getPopularSkills(10);
+      return res.json({ count: results.length, results });
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+
+  router.post("/marketplace/install", async (req, res) => {
+    try {
+      const body = z.object({ skillId: z.string().trim().min(1) }).parse(req.body || {});
+      const config = getOpenClawConfig();
+      const targetDir = config.skills.directory || "server/openclaw/skills";
+      const result = await installSkill(body.skillId, targetDir);
+      if (!result.success) {
+        return res.status(502).json({ error: result.error || "Install failed" });
+      }
+      return res.json({ installed: true, skillId: body.skillId, path: result.path });
+    } catch (error) {
+      return respondError(res, error);
+    }
   });
 
   return router;

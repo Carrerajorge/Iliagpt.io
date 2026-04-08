@@ -98,7 +98,7 @@ const EXCEL_THEMES: Record<string, ExcelTheme> = {
     professional: {
         headerFill: "1F4E79",
         headerFont: "FFFFFF",
-        alternateFill: "D6DCE4",
+        alternateFill: "F7FAFC",
         accentColor: "4472C4",
         fontFamily: "Calibri"
     },
@@ -248,12 +248,24 @@ export class AdvancedExcelBuilder {
         const sheet = this.workbook.addWorksheet(name);
         const numCols = data[0]?.length || 0;
 
+        // Detect if last row is a total/summary row
+        const lastRow = data.length > 1 ? data[data.length - 1] : null;
+        const isTotalRow = (row: any[]) => {
+            if (!row || row.length === 0) return false;
+            const firstCell = String(row[0] || "").toUpperCase().trim();
+            return /^(TOTAL|TOTALES?|RESUMEN|SUMMARY|GRAND TOTAL|SUBTOTAL|PROMEDIO|AVERAGE)/.test(firstCell);
+        };
+        const lastRowIsTotal = lastRow ? isTotalRow(lastRow) : false;
+
         // Add data
         data.forEach((row, rowIndex) => {
             const excelRow = sheet.addRow(row);
+            const isLastRow = rowIndex === data.length - 1;
+            const isThisTotalRow = isLastRow && lastRowIsTotal;
 
             // Style header row
             if (rowIndex === 0 && options.freezeHeader !== false) {
+                excelRow.height = 22;
                 excelRow.eachCell((cell) => {
                     cell.fill = {
                         type: "pattern",
@@ -263,22 +275,67 @@ export class AdvancedExcelBuilder {
                     cell.font = {
                         bold: true,
                         color: { argb: this.theme.headerFont },
-                        name: this.theme.fontFamily
+                        name: this.theme.fontFamily,
+                        size: 11,
                     };
-                    cell.alignment = { horizontal: "center", vertical: "middle" };
+                    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
                     cell.border = {
-                        bottom: { style: "medium", color: { argb: this.theme.accentColor } }
+                        top: { style: "thin", color: { argb: this.theme.headerFill } },
+                        bottom: { style: "medium", color: { argb: this.theme.accentColor } },
+                        left: { style: "thin", color: { argb: this.theme.headerFill } },
+                        right: { style: "thin", color: { argb: this.theme.headerFill } },
                     };
                 });
             }
-            // Alternate row coloring
-            else if (rowIndex % 2 === 0) {
+            // Bold total/summary row
+            else if (isThisTotalRow) {
                 excelRow.eachCell((cell) => {
+                    cell.font = {
+                        bold: true,
+                        name: this.theme.fontFamily,
+                        size: 11,
+                    };
                     cell.fill = {
                         type: "pattern",
                         pattern: "solid",
-                        fgColor: { argb: this.theme.alternateFill }
+                        fgColor: { argb: "E2E8F0" }
                     };
+                    cell.border = {
+                        top: { style: "medium", color: { argb: this.theme.accentColor } },
+                        bottom: { style: "double", color: { argb: this.theme.headerFill } },
+                    };
+                });
+            }
+            // Alternate row coloring (white / light blue-gray)
+            else if (rowIndex > 0) {
+                excelRow.eachCell((cell) => {
+                    if (rowIndex % 2 === 0) {
+                        cell.fill = {
+                            type: "pattern",
+                            pattern: "solid",
+                            fgColor: { argb: this.theme.alternateFill }
+                        };
+                    }
+                    cell.font = { name: this.theme.fontFamily, size: 11 };
+                    cell.border = {
+                        bottom: { style: "thin", color: { argb: "E2E8F0" } },
+                    };
+                });
+            }
+
+            // Apply number formatting to numeric cells in data rows (not header)
+            if (rowIndex > 0) {
+                excelRow.eachCell((cell) => {
+                    const val = cell.value;
+                    if (typeof val === "number") {
+                        // Detect likely currency/price columns (values with 2 decimals or > 100)
+                        if (Number.isFinite(val) && !Number.isInteger(val)) {
+                            cell.numFmt = '#,##0.00';
+                        } else if (Number.isFinite(val) && Number.isInteger(val)) {
+                            cell.numFmt = '#,##0';
+                        }
+                        cell.alignment = { horizontal: "right" };
+                    }
                 });
             }
         });

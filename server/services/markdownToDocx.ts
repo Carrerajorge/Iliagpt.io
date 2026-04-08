@@ -1,4 +1,4 @@
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, convertInchesToTwip, IRunOptions, Math as DocxMath, MathRun } from "docx";
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, convertInchesToTwip, IRunOptions, Math as DocxMath, MathRun, Header, Footer, PageNumber, ShadingType } from "docx";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -196,17 +196,34 @@ async function processTableNode(tableNode: MdTable): Promise<Table> {
         }
       }
 
+      // Header row: dark blue background with white bold text
+      // Alternating data rows: white / light gray
+      const isHeaderRow = rowIndex === 0;
+      const isAlternateRow = rowIndex > 0 && rowIndex % 2 === 0;
+
+      const cellChildren = paraChildren.length > 0
+        ? await createParagraphChildren(
+            isHeaderRow
+              ? paraChildren.map(c => isMathRunMarker(c) ? c : { ...c, bold: true, color: "FFFFFF" })
+              : paraChildren
+          )
+        : [new TextRun({ text: "", ...(isHeaderRow ? { bold: true, color: "FFFFFF" } : {}) })];
+
       cells.push(new TableCell({
         children: [new Paragraph({
-          children: paraChildren.length > 0 ? await createParagraphChildren(paraChildren) : [new TextRun({ text: "" })],
+          children: cellChildren,
           alignment: AlignmentType.LEFT,
         })],
-        shading: rowIndex === 0 ? { fill: "E7E6E6", type: "clear", color: "auto" } : undefined,
+        shading: isHeaderRow
+          ? { fill: "1F4E79", type: "clear" as any, color: "auto" }
+          : isAlternateRow
+            ? { fill: "F7FAFC", type: "clear" as any, color: "auto" }
+            : undefined,
         borders: {
-          top: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
-          bottom: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
-          left: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
-          right: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+          top: { style: BorderStyle.SINGLE, size: 1, color: "B0BEC5" },
+          bottom: { style: BorderStyle.SINGLE, size: 1, color: "B0BEC5" },
+          left: { style: BorderStyle.SINGLE, size: 1, color: "B0BEC5" },
+          right: { style: BorderStyle.SINGLE, size: 1, color: "B0BEC5" },
         },
       }));
     }
@@ -244,7 +261,8 @@ async function processListNode(listNode: List, level: number = 0): Promise<Parag
             ? { numbering: { reference: "numbered-list", level } }
             : { bullet: { level } }
           ),
-          spacing: { after: 80 },
+          spacing: { after: 80, line: 276 },
+          indent: { left: convertInchesToTwip(0.25 + level * 0.25) },
         });
         paragraphs.push(para);
       } else if (child.type === "list") {
@@ -299,8 +317,18 @@ async function astToDocxElements(ast: Root): Promise<(Paragraph | Table)[]> {
       case "heading": {
         const headingNode = node as Heading;
         const paraChildren: ParagraphChild[] = [];
+        // Apply heading color to all inline children
+        const headingColorMap: Record<number, string> = {
+          1: "1F4E79", // Dark blue for H1
+          2: "2B7A78", // Teal for H2
+          3: "4472C4", // Accent blue for H3
+          4: "4472C4",
+          5: "4472C4",
+          6: "4472C4",
+        };
+        const headingColor = headingColorMap[headingNode.depth] || "1F4E79";
         for (const child of headingNode.children) {
-          paraChildren.push(...extractParagraphChildren(child as Content));
+          paraChildren.push(...extractParagraphChildren(child as Content, { color: headingColor }));
         }
 
         const headingLevelMap: Record<number, typeof HeadingLevel[keyof typeof HeadingLevel]> = {
@@ -312,10 +340,17 @@ async function astToDocxElements(ast: Root): Promise<(Paragraph | Table)[]> {
           6: HeadingLevel.HEADING_6,
         };
 
+        const headingSizeMap: Record<number, number> = {
+          1: 36, 2: 30, 3: 26, 4: 24, 5: 22, 6: 20,
+        };
+
         elements.push(new Paragraph({
           children: await createParagraphChildren(paraChildren),
           heading: headingLevelMap[headingNode.depth] || HeadingLevel.HEADING_1,
           spacing: { before: headingNode.depth === 1 ? 400 : 300, after: 200 },
+          ...(headingNode.depth === 1 ? {
+            border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: "1F4E79" } },
+          } : {}),
         }));
         break;
       }
@@ -435,10 +470,16 @@ export async function generateWordFromMarkdown(title: string, content: string): 
   console.log('[markdownToDocx] Generated bodyElements:', bodyElements.length);
 
   const titleParagraph = new Paragraph({
-    children: [new TextRun({ text: title, bold: true, size: 48 })],
+    children: [new TextRun({ text: title, bold: true, size: 48, color: "1F4E79", font: "Calibri" })],
     heading: HeadingLevel.TITLE,
-    spacing: { after: 400 },
+    spacing: { after: 200 },
     alignment: AlignmentType.CENTER,
+  });
+
+  // Decorative line under title
+  const titleUnderline = new Paragraph({
+    border: { bottom: { style: BorderStyle.SINGLE, size: 12, color: "2B7A78" } },
+    spacing: { after: 400 },
   });
 
   const doc = new Document({
@@ -460,6 +501,13 @@ export async function generateWordFromMarkdown(title: string, content: string): 
             alignment: AlignmentType.START,
             style: { paragraph: { indent: { left: convertInchesToTwip(1), hanging: convertInchesToTwip(0.25) } } },
           },
+          {
+            level: 2,
+            format: "lowerRoman",
+            text: "%3.",
+            alignment: AlignmentType.START,
+            style: { paragraph: { indent: { left: convertInchesToTwip(1.5), hanging: convertInchesToTwip(0.25) } } },
+          },
         ],
       }],
     },
@@ -472,6 +520,30 @@ export async function generateWordFromMarkdown(title: string, content: string): 
           next: "Normal",
           run: { font: "Calibri", size: 24 },
           paragraph: { spacing: { line: 276 } },
+        },
+        {
+          id: "Heading1",
+          name: "Heading 1",
+          basedOn: "Normal",
+          next: "Normal",
+          run: { font: "Calibri", size: 36, bold: true, color: "1F4E79" },
+          paragraph: { spacing: { before: 400, after: 200 } },
+        },
+        {
+          id: "Heading2",
+          name: "Heading 2",
+          basedOn: "Normal",
+          next: "Normal",
+          run: { font: "Calibri", size: 30, bold: true, color: "2B7A78" },
+          paragraph: { spacing: { before: 300, after: 200 } },
+        },
+        {
+          id: "Heading3",
+          name: "Heading 3",
+          basedOn: "Normal",
+          next: "Normal",
+          run: { font: "Calibri", size: 26, bold: true, color: "4472C4" },
+          paragraph: { spacing: { before: 300, after: 200 } },
         },
       ],
     },
@@ -486,7 +558,38 @@ export async function generateWordFromMarkdown(title: string, content: string): 
           },
         },
       },
-      children: [titleParagraph, ...bodyElements],
+      headers: {
+        default: new Header({
+          children: [
+            new Paragraph({
+              children: [
+                new TextRun({ text: title, font: "Calibri", size: 18, color: "718096", italics: true }),
+              ],
+              alignment: AlignmentType.RIGHT,
+              border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: "D6DCE4" } },
+              spacing: { after: 100 },
+            }),
+          ],
+        }),
+      },
+      footers: {
+        default: new Footer({
+          children: [
+            new Paragraph({
+              children: [
+                new TextRun({ text: "Page ", font: "Calibri", size: 18, color: "718096" }),
+                new TextRun({ children: [PageNumber.CURRENT], font: "Calibri", size: 18, color: "718096" }),
+                new TextRun({ text: " of ", font: "Calibri", size: 18, color: "718096" }),
+                new TextRun({ children: [PageNumber.TOTAL_PAGES], font: "Calibri", size: 18, color: "718096" }),
+              ],
+              alignment: AlignmentType.CENTER,
+              border: { top: { style: BorderStyle.SINGLE, size: 4, color: "D6DCE4" } },
+              spacing: { before: 100 },
+            }),
+          ],
+        }),
+      },
+      children: [titleParagraph, titleUnderline, ...bodyElements],
     }],
   });
 
