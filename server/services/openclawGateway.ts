@@ -17,6 +17,78 @@ import {
 const VERSION = "2026.4.5";
 const TOKEN_SECRET = process.env.ENCRYPTION_KEY || randomUUID();
 
+const LOCAL_MODEL_BASE_URL = process.env.LOCAL_MODEL_URL || "http://localhost:5000";
+
+async function* streamFromLocalModel(
+  messages: ChatCompletionMessageParam[],
+  opts: { maxTokens?: number; temperature?: number }
+): AsyncGenerator<{ content?: string; done?: boolean }> {
+  const url = `${LOCAL_MODEL_BASE_URL}/v1/chat/completions`;
+  console.log(`[OpenClaw Gateway] Routing to local model at ${url}`);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "local",
+        messages: messages.map(m => ({ role: m.role, content: m.content })),
+        max_tokens: opts.maxTokens || 4096,
+        temperature: opts.temperature ?? 0.7,
+        stream: true,
+      }),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "unknown error");
+      yield { content: `Error del modelo local (${resp.status}): ${errText}`, done: true };
+      return;
+    }
+
+    const reader = resp.body?.getReader();
+    if (!reader) {
+      yield { content: "Error: no se pudo leer la respuesta del modelo local", done: true };
+      return;
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        const data = trimmed.slice(6);
+        if (data === "[DONE]") {
+          yield { done: true };
+          return;
+        }
+        try {
+          const parsed = JSON.parse(data);
+          const delta = parsed.choices?.[0]?.delta?.content;
+          if (delta) {
+            yield { content: delta };
+          }
+          if (parsed.choices?.[0]?.finish_reason) {
+            yield { done: true };
+            return;
+          }
+        } catch {}
+      }
+    }
+    yield { done: true };
+  } catch (err: any) {
+    console.error(`[OpenClaw Gateway] Local model error:`, err?.message);
+    yield { content: `Error conectando al modelo local: ${err?.message || "conexión rechazada"}`, done: true };
+  }
+}
+
 interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
@@ -40,6 +112,7 @@ const sessionModelOverrides = new Map<string, { model: string; provider: string 
 const PROVIDER_MAP: Record<string, "openai" | "gemini" | "xai" | "anthropic" | "deepseek" | "cerebras"> = {
   openrouter: "openai",
   openai: "openai",
+  local: "openai",
   gemini: "gemini",
   xai: "xai",
   anthropic: "anthropic",
@@ -454,6 +527,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
           default: { provider: "openrouter", model: "google/gemma-4-31b-it" },
           providers: {
             openrouter: { enabled: true },
+            local: { enabled: true },
             gemini: { enabled: false },
             openai: { enabled: false },
             xai: { enabled: false },
@@ -509,6 +583,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       reply(ws, id, {
         models: [
           { id: "google/gemma-4-31b-it", provider: "openrouter", name: "Gemma 4 31B IT", available: true },
+          { id: "local-5000", provider: "local", name: "Local Model (localhost:5000)", available: true },
         ],
         default: { provider: "openrouter", model: "google/gemma-4-31b-it" },
       });
@@ -600,6 +675,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
         const modelId = params.model.trim();
         const modelsList = [
           { id: "google/gemma-4-31b-it", provider: "openrouter" },
+          { id: "local-5000", provider: "local" },
         ];
         const found = modelsList.find(m => m.id === modelId);
         const patchProvider = params.provider || found?.provider || (modelId.includes("/") ? "openrouter" : "openai");
@@ -859,16 +935,20 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
         ];
 
         try {
-          console.log(`[OpenClaw Gateway] chat.send: model=${selectedModel}, provider=${mappedProvider}, historyLen=${client.chatHistory.length}`);
+          console.log(`[OpenClaw Gateway] chat.send: model=${selectedModel}, provider=${selectedProvider}, mapped=${mappedProvider}, historyLen=${client.chatHistory.length}`);
 
-          const stream = llmGateway.streamChat(llmMessages, {
-            model: selectedModel,
-            provider: mappedProvider,
-            userId: client.userId || "openclaw-user",
-            requestId: runId,
-            maxTokens: 4096,
-            temperature: 0.7,
-          });
+          const isLocalModel = selectedProvider === "local" || selectedModel === "local-5000";
+
+          const stream = isLocalModel
+            ? streamFromLocalModel(llmMessages, { maxTokens: 4096, temperature: 0.7 })
+            : llmGateway.streamChat(llmMessages, {
+                model: selectedModel,
+                provider: mappedProvider,
+                userId: client.userId || "openclaw-user",
+                requestId: runId,
+                maxTokens: 4096,
+                temperature: 0.7,
+              });
 
           for await (const chunk of stream) {
             if (!client.activeRuns.has(runId)) {

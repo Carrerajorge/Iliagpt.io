@@ -591,6 +591,7 @@ router.get("/instance/status", (req: Request, res: Response) => {
 
     const models = [
       { id: "google/gemma-4-31b-it", name: "Gemma 4 31B", provider: "Google", enabled: true, tier: "free" as const, contextWindow: 131072, description: "Open model by Google, free for all users" },
+      { id: "local-5000", name: "Local Model (localhost:5000)", provider: "Local", enabled: true, tier: "free" as const, contextWindow: 131072, description: "Modelo local en localhost:5000" },
     ];
 
     const fusionModules = [
