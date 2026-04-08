@@ -216,9 +216,13 @@ async function fetchUser(): Promise<User | null> {
   const loggedOut = params.get("logged_out") === "1";
 
   if (response.status === 401 || response.status === 403) {
+    const storedUser = getStoredUser();
+    if (storedUser && (storedUser as any).role === "admin") {
+      return storedUser;
+    }
+
     clearOldUserData();
 
-    // ✅ Si el usuario se acaba de desloguear o está en /login, NO crear Guest
     if (loggedOut || isLoginRoute || isForcedSignedOut()) {
       if (loggedOut) setForcedSignedOut(true);
       return null;
