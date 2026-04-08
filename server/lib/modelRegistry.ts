@@ -57,6 +57,7 @@ export const OPENROUTER_MODELS = {
   KIMI_K2_5: "moonshotai/kimi-k2.5",
   GEMMA_4_31B_IT: "google/gemma-4-31b-it",
   GEMMA_3_27B_IT_FREE: "google/gemma-3-27b-it:free",
+  GLM_5: "zhipu/glm-5",
 } as const;
 
 // ============================================================================
@@ -208,4 +209,7 @@ export const MODEL_PRICING_REGISTRY: Readonly<Record<string, ModelPricingEntry>>
   [GEMINI_MODELS_REGISTRY.FLASH_20]: { inputPerMillion: 0.10, outputPerMillion: 0.40 },
   [GEMINI_MODELS_REGISTRY.FLASH_PREVIEW]: { inputPerMillion: 0.10, outputPerMillion: 0.40 },
   "gemini-3.1-pro-preview": { inputPerMillion: 1.25, outputPerMillion: 5.00 },
+
+  // OpenRouter — Zhipu GLM
+  [OPENROUTER_MODELS.GLM_5]: { inputPerMillion: 0.50, outputPerMillion: 2.00 },
 };

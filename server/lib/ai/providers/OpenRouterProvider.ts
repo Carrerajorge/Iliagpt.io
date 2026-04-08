@@ -138,6 +138,14 @@ const OPENROUTER_MODELS: IModelInfo[] = [
     latencyScore: 20, reliabilityScore: 0.93, available: true,
     tags: ['moonshot', 'reasoning', 'vision', 'code'],
   },
+  {
+    id: 'zhipu/glm-5', provider: 'openrouter', displayName: 'GLM-5 (via OpenRouter)',
+    capabilities: ModelCapability.CHAT | ModelCapability.STREAMING | ModelCapability.FUNCTION_CALLING | ModelCapability.VISION | ModelCapability.CODE | ModelCapability.REASONING,
+    contextWindow: 128_000,
+    pricing: { inputPer1M: 0.50, outputPer1M: 2.00 },
+    latencyScore: 22, reliabilityScore: 0.93, available: true,
+    tags: ['zhipu', 'reasoning', 'vision', 'code'],
+  },
 ];
 
 export class OpenRouterProvider extends OpenAICompatBase {
