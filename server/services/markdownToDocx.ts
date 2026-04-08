@@ -1,4 +1,4 @@
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, convertInchesToTwip, IRunOptions, Math as DocxMath, MathRun, Header, Footer, PageNumber, ShadingType } from "docx";
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, convertInchesToTwip, IRunOptions, Math as DocxMath, MathRun, Header, Footer, PageNumber } from "docx";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -338,10 +338,6 @@ async function astToDocxElements(ast: Root): Promise<(Paragraph | Table)[]> {
           4: HeadingLevel.HEADING_4,
           5: HeadingLevel.HEADING_5,
           6: HeadingLevel.HEADING_6,
-        };
-
-        const headingSizeMap: Record<number, number> = {
-          1: 36, 2: 30, 3: 26, 4: 24, 5: 22, 6: 20,
         };
 
         elements.push(new Paragraph({
