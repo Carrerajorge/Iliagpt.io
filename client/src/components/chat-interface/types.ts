@@ -127,7 +127,7 @@ export type UIPhase = 'idle' | 'thinking' | 'console' | 'done';
 
 export interface DocumentEditorState {
     isActive: boolean;
-    type: 'word' | 'excel' | 'powerpoint' | 'code' | null;
+    type: 'code' | null;
     title: string;
     content: string;
     isMinimized: boolean;
@@ -174,7 +174,7 @@ export interface StreamingState {
 // TOOL TYPES
 // ============================================
 
-export type DocToolType = 'word' | 'excel' | 'powerpoint' | 'diagram' | 'code' | null;
+export type DocToolType = 'diagram' | 'code' | null;
 
 export interface ToolExecution {
     id: string;

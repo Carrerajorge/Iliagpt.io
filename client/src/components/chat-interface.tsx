@@ -110,9 +110,7 @@ import { useAgent } from "@/hooks/use-agent";
 import { useBrowserSession, globalStartSseSession, globalUpdateFromSseStep } from "@/hooks/use-browser-session";
 import { AgentObserver } from "@/components/agent-observer";
 import { VirtualComputer } from "@/components/virtual-computer";
-import { EnhancedDocumentEditorLazy, SpreadsheetEditorLazy, PPTEditorShellLazy } from "@/lib/lazyComponents";
-import { usePptStreaming } from "@/hooks/usePptStreaming";
-import { PPT_STREAMING_SYSTEM_PROMPT } from "@/lib/pptPrompts";
+import { EnhancedDocumentEditorLazy, SpreadsheetEditorLazy } from "@/lib/lazyComponents";
 import { ETLDialog } from "@/components/etl-dialog";
 import { FigmaBlock } from "@/components/figma-block";
 import { CodeExecutionBlock } from "@/components/code-execution-block";
@@ -321,8 +319,8 @@ interface ChatInterfaceProps {
   setActiveRunId?: React.Dispatch<React.SetStateAction<string | null>>;
   selectedProjectId?: string | null;
   // Document generation state - kept in parent to survive ChatInterface key changes during new chat creation
-  selectedDocTool?: "word" | "excel" | "ppt" | "figma" | null;
-  setSelectedDocTool?: React.Dispatch<React.SetStateAction<"word" | "excel" | "ppt" | "figma" | null>>;
+  selectedDocTool?: "figma" | null;
+  setSelectedDocTool?: React.Dispatch<React.SetStateAction<"figma" | null>>;
   docGenerationState?: {
     status: 'idle' | 'generating' | 'ready' | 'error';
     progress: number;
@@ -647,13 +645,13 @@ export function ChatInterface({
     });
   }, [uploadedFiles, setUploadedFiles]);
   // selectedDocTool: prefer parent prop (survives remount), fallback to local state
-  const [selectedDocToolLocal, setSelectedDocToolLocal] = useState<"word" | "excel" | "ppt" | "figma" | null>(null);
+  const [selectedDocToolLocal, setSelectedDocToolLocal] = useState<"figma" | null>(null);
   const selectedDocTool = selectedDocToolProp !== undefined ? selectedDocToolProp : selectedDocToolLocal;
   const setSelectedDocTool = setSelectedDocToolProp || setSelectedDocToolLocal;
   const [selectedTool, setSelectedTool] = useState<"web" | "agent" | "image" | null>(null);
   const [latencyMode, setLatencyMode] = useState<"fast" | "deep" | "auto">("auto");
-  const [activeDocEditor, setActiveDocEditor] = useState<{ type: "word" | "excel" | "ppt"; title: string; content: string; showInstructions?: boolean } | null>(null);
-  const [minimizedDocument, setMinimizedDocument] = useState<{ type: "word" | "excel" | "ppt"; title: string; content: string; messageId?: string } | null>(null);
+  const activeDocEditor = null;
+  const [minimizedDocument, setMinimizedDocument] = useState<{ type: string; title: string; content: string; messageId?: string } | null>(null);
   // DOCX Generation State - prefer parent prop (survives remount), fallback to local state
   const [docGenerationStateLocal, setDocGenerationStateLocal] = useState<{
     status: 'idle' | 'generating' | 'ready' | 'error';
@@ -691,23 +689,6 @@ export function ChatInterface({
     }
   }, [settings.webSearch, selectedTool]);
 
-  // Auto-open editor when a document tool is selected (Word/Excel/PPT)
-  // This ensures the editor is visible and docInsertContentRef is registered
-  // BEFORE the user sends their first message, so streaming works immediately.
-  useEffect(() => {
-    if (selectedDocTool && ['word', 'excel', 'ppt'].includes(selectedDocTool) && !activeDocEditor) {
-      const titleMap: Record<string, string> = {
-        word: 'Nuevo Documento',
-        excel: 'Nueva Hoja de Cálculo',
-        ppt: 'Nueva Presentación',
-      };
-      setActiveDocEditor({
-        type: selectedDocTool as 'word' | 'excel' | 'ppt',
-        title: titleMap[selectedDocTool] || 'Nuevo Documento',
-        content: '',
-      });
-    }
-  }, [selectedDocTool, activeDocEditor]);
 
   useEffect(() => {
     if (!settings.voiceMode) {
@@ -719,9 +700,7 @@ export function ChatInterface({
 
   useEffect(() => {
     if (!settings.canvas) {
-      if (activeDocEditor) {
-        void closeDocEditor();
-      } else if (selectedDocTool) {
+      if (selectedDocTool) {
         setSelectedDocTool(null);
       }
       if (minimizedDocument) setMinimizedDocument(null);
@@ -1108,7 +1087,7 @@ export function ChatInterface({
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const latestGeneratedImageRef = useRef<{ messageId: string; imageData: string } | null>(null);
   const dragCounterRef = useRef(0);
-  const activeDocEditorRef = useRef<{ type: "word" | "excel" | "ppt"; title: string; content: string; showInstructions?: boolean } | null>(null);
+  const activeDocEditorRef = useRef<null>(null);
   const previewDocumentRef = useRef<DocumentBlock | null>(null);
   const orchestratorRef = useRef<{ runOrchestrator: (prompt: string) => Promise<void> } | null>(null);
   const editedDocumentContentRef = useRef<string>("");
@@ -1237,7 +1216,7 @@ export function ChatInterface({
   }, []);
 
   // PPT streaming integration
-  const pptStreaming = usePptStreaming();
+  const pptStreaming = { isStreaming: false, startStreaming: () => {}, stopStreaming: () => {}, processChunk: (_c: string) => {} };
   const applyRewriteRef = useRef<((newText: string) => void) | null>(null);
   const docInsertContentRef = useRef<((content: string, replaceMode?: boolean | 'html') => Promise<void> | void) | null>(null);
   const speechRecognitionRef = useRef<any>(null);
@@ -1462,123 +1441,14 @@ export function ChatInterface({
   };
 
   // Function to open blank document editor - preserves existing messages
-  const openBlankDocEditor = (type: "word" | "excel" | "ppt", options?: { showInstructions?: boolean }) => {
-    const titles = {
-      word: "Nuevo Documento Word",
-      excel: "Nueva Hoja de Cálculo",
-      ppt: "Nueva Presentación"
-    };
-    const templates = {
-      word: "", // Blank canvas - content will stream in real-time
-      excel: "",
-      ppt: "<h1>Título de la Presentación</h1><p>Haz clic para agregar subtítulo</p>"
-    };
-
-    // Only update document editor state - DO NOT clear messages
-    setSelectedDocTool(type);
-    setActiveDocEditor({
-      type,
-      title: titles[type],
-      content: templates[type],
-      showInstructions: options?.showInstructions
-    });
-    setEditedDocumentContent(templates[type]);
-
-    // Close sidebar when opening a document tool
-    onCloseSidebar?.();
-  };
-
   const closeDocEditor = async () => {
-    const currentDoc = activeDocEditor;
-    const currentContent = editedDocumentContent;
-
-    console.log("[closeDocEditor] Starting save process", {
-      hasChatId: !!chatId,
-      chatId,
-      hasDoc: !!currentDoc,
-      contentLength: currentContent?.length || 0
-    });
-
-    const stripHtml = (html: string) => html.replace(/<[^>]*>/g, '').trim();
-    const plainText = stripHtml(currentContent);
-    const placeholderPhrases = [
-      "comienza a escribir tu documento aquí",
-      "generación inteligente de documentos",
-      "escribe tu solicitud en el chat",
-      "título de la presentación",
-      "haz clic para agregar"
-    ];
-    const isPlaceholder = placeholderPhrases.some(p => plainText.toLowerCase().includes(p)) || plainText.length < 20;
-
-    console.log("[closeDocEditor] Validation", {
-      plainTextLength: plainText.length,
-      isPlaceholder,
-      willSave: !!(chatId && currentDoc && currentContent && !isPlaceholder && plainText.length > 20)
-    });
-
-    if (chatId && currentDoc && currentContent && !isPlaceholder && plainText.length > 20) {
-      let realChatId = resolveRealChatId(chatId);
-
-      if (isPendingChat(chatId)) {
-        let attempts = 0;
-        const maxAttempts = 10;
-        while (isPendingChat(chatId) && attempts < maxAttempts) {
-          await new Promise(resolve => setTimeout(resolve, 500));
-          realChatId = resolveRealChatId(chatId);
-          attempts++;
-        }
-      }
-
-      if (!isPendingChat(chatId) && !realChatId.startsWith("pending-")) {
-        try {
-          const response = await apiFetch(`/api/chats/${realChatId}/documents`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              type: currentDoc.type,
-              title: currentDoc.title,
-              content: currentContent
-            })
-          });
-          if (response.ok) {
-            const updatedMessage = await response.json();
-            if (updatedMessage && updatedMessage.id && updatedMessage.attachments && onUpdateMessageAttachments) {
-              const newMessage: Message = {
-                id: updatedMessage.id,
-                role: updatedMessage.role || "system",
-                content: updatedMessage.content || "",
-                timestamp: new Date(updatedMessage.createdAt || Date.now()),
-                attachments: updatedMessage.attachments
-              };
-              onUpdateMessageAttachments(realChatId, updatedMessage.id, updatedMessage.attachments, newMessage);
-            }
-          } else {
-            console.error("Error saving document: server returned", response.status);
-          }
-        } catch (err) {
-          console.error("Error saving document:", err);
-        }
-      } else {
-        console.log("Chat creation timed out, document not saved");
-      }
-    }
-
-    setActiveDocEditor(null);
     setSelectedDocTool(null);
     setEditedDocumentContent("");
     docInsertContentRef.current = null;
   };
 
-  const handleReopenDocument = (doc: { type: "word" | "excel" | "ppt"; title: string; content: string }) => {
-    setSelectedDocTool(doc.type);
-    setActiveDocEditor({
-      type: doc.type,
-      title: doc.title,
-      content: doc.content
-    });
-    setEditedDocumentContent(doc.content);
-    setMinimizedDocument(null);
-    onCloseSidebar?.();
+  const handleReopenDocument = (_doc: { type: string; title: string; content: string }) => {
+    // Word/Excel/PPT editors removed
   };
 
   const handleApplyPromptSuggestion = useCallback((selection: PromptSuggestionSelection) => {
@@ -1604,39 +1474,17 @@ export function ChatInterface({
   }, [setInput, setLatencyMode, setSelectedDocTool, setSelectedTool]);
 
   const minimizeDocEditor = () => {
-    if (!activeDocEditor) return;
-
-    const lastAssistantMessage = [...messages].reverse().find(m => m.role === "assistant");
-
-    setMinimizedDocument({
-      type: activeDocEditor.type,
-      title: activeDocEditor.title,
-      content: editedDocumentContent || activeDocEditor.content,
-      messageId: lastAssistantMessage?.id
-    });
-    setActiveDocEditor(null);
-    setSelectedDocTool(null);
+    // Word/Excel/PPT editors removed
   };
 
   const restoreDocEditor = () => {
-    if (!minimizedDocument) return;
-
-    setActiveDocEditor({
-      type: minimizedDocument.type,
-      title: minimizedDocument.title,
-      content: minimizedDocument.content
-    });
-    setSelectedDocTool(minimizedDocument.type);
-    setEditedDocumentContent(minimizedDocument.content);
-    setMinimizedDocument(null);
-    onCloseSidebar?.();
+    // Word/Excel/PPT editors removed
   };
 
   // Handle new chat - reset all document state before calling parent handler
   const handleNewChat = useCallback(() => {
     // Reset document tool selection
     setSelectedDocTool(null);
-    setActiveDocEditor(null);
     setMinimizedDocument(null);
     setEditedDocumentContent('');
     // Reset document generation state
@@ -2603,11 +2451,7 @@ export function ChatInterface({
 
   // Save document to Biblioteca (library) via server endpoint
   const handleSaveToLibrary = useCallback(async (doc?: { type: string; title: string; content: string }) => {
-    const docToSave = doc || (activeDocEditor ? {
-      type: activeDocEditor.type,
-      title: activeDocEditor.title,
-      content: editedDocumentContent || activeDocEditor.content,
-    } : null);
+    const docToSave = doc || null;
 
     if (!docToSave) return;
 
@@ -2640,7 +2484,7 @@ export function ChatInterface({
         variant: "destructive",
       });
     }
-  }, [activeDocEditor, editedDocumentContent, toast]);
+  }, [toast]);
 
   const handleDownloadImage = useCallback((imageData: string) => {
     const link = document.createElement("a");
@@ -6552,9 +6396,7 @@ IMPORTANTE:
 
             // Build chat history with appropriate system prompt
             let finalChatHistory: Array<{ role: string; content: string }> = chatHistory;
-            if (isPptMode) {
-              finalChatHistory = [{ role: "system", content: PPT_STREAMING_SYSTEM_PROMPT }, ...chatHistory];
-            } else if (isExcelMode) {
+            if (isExcelMode) {
               finalChatHistory = [{ role: "system", content: excelSystemPrompt }, ...chatHistory];
             } else if (isWordMode) {
               finalChatHistory = [{ role: "system", content: wordSystemPrompt }, ...chatHistory];
@@ -7561,56 +7403,24 @@ IMPORTANTE:
           onCreateFolder={onCreateFolder}
           userPlanInfo={userPlanInfo}
         />
-        {/* Main Content Area with Side Panel */}
-        {(previewDocument || activeDocEditor || (selectedDocTool && ['word', 'excel', 'ppt'].includes(selectedDocTool))) ? (
+        {/* Main Content Area with Side Panel - Document Preview */}
+        {previewDocument ? (
           <PanelGroup direction="horizontal" className="flex-1">
-            {/* Left Panel: Minimized Chat for Document Mode */}
-            <Panel defaultSize={(activeDocEditor || selectedDocTool) ? 25 : 50} minSize={20} maxSize={(activeDocEditor || selectedDocTool) ? 35 : 70}>
+            {/* Left Panel: Chat */}
+            <Panel defaultSize={50} minSize={20} maxSize={70}>
               <div className="flex flex-col min-w-0 h-full bg-background/50">
-                {/* Compact Header for Document Mode */}
-                {activeDocEditor && (
-                  <div className="p-3 border-b border-border/50 bg-muted/30">
-                    <div className="flex items-center gap-2">
-                      <div className={cn(
-                        "w-8 h-8 rounded-lg flex items-center justify-center",
-                        activeDocEditor.type === "word" && "bg-blue-600",
-                        activeDocEditor.type === "excel" && "bg-green-600",
-                        activeDocEditor.type === "ppt" && "bg-orange-500"
-                      )}>
-                        <span className="text-white text-sm font-bold">
-                          {activeDocEditor.type === "word" ? "W" : activeDocEditor.type === "excel" ? "E" : "P"}
-                        </span>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">Instrucciones</p>
-                        <p className="text-xs text-muted-foreground">El AI escribe directo al documento</p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Messages Area - Compact for document mode */}
+                {/* Messages Area */}
                 {showConversationSkeleton ? (
-                  <div
-                    className={cn(
-                      "flex-1 overflow-y-auto space-y-3 overscroll-contain pb-[var(--composer-height,120px)]",
-                      activeDocEditor ? "p-3" : "p-4 sm:p-6 md:p-10 space-y-6"
-                    )}
-                  >
+                  <div className="flex-1 overflow-y-auto space-y-3 overscroll-contain pb-[var(--composer-height,120px)] p-4 sm:p-6 md:p-10 space-y-6">
                     <SkeletonChatMessages count={3} />
                   </div>
                 ) : hasMessages && (
-                  <div
-                    className={cn(
-                      "flex-1 overflow-y-auto space-y-3 overscroll-contain pb-[var(--composer-height,120px)]",
-                      activeDocEditor ? "p-3" : "p-4 sm:p-6 md:p-10 space-y-6"
-                    )}
-                  >
+                  <div className="flex-1 overflow-y-auto space-y-3 overscroll-contain pb-[var(--composer-height,120px)] p-4 sm:p-6 md:p-10 space-y-6">
                     <ErrorBoundary section="chat">
                     <ChatMessageList
                       messages={displayMessages}
                       onUserRetrySend={handleUserRetrySend}
-                      variant={activeDocEditor ? "compact" : "default"}
+                      variant="default"
                       editingMessageId={editingMessageId}
                       editContent={editContent}
                       setEditContent={setEditContent}
@@ -7812,8 +7622,6 @@ IMPORTANTE:
                   setSelectedTool={setSelectedTool}
                   selectedDocTool={selectedDocTool}
                   setSelectedDocTool={setSelectedDocTool}
-                  closeDocEditor={closeDocEditor}
-                  openBlankDocEditor={openBlankDocEditor}
                   aiState={aiState}
                   isRecording={isRecording}
                   isPaused={isPaused}
@@ -7851,32 +7659,19 @@ IMPORTANTE:
               <GripVertical className="h-6 w-6 text-muted-foreground/50 group-hover:text-primary transition-colors" />
             </PanelResizeHandle>
 
-            {/* Right: Document Editor Panel */}
-            <Panel defaultSize={(activeDocEditor || selectedDocTool) ? 75 : 50} minSize={25}>
+            {/* Right: Document Preview Panel */}
+            <Panel defaultSize={50} minSize={25}>
               <EditorErrorBoundary>
                 <div className="h-full animate-in slide-in-from-right duration-300">
-                  {(activeDocEditor?.type === "ppt") ? (
-                    <PPTEditorShellLazy
-                      onClose={closeDocEditor}
-                      onInsertContent={(insertFn) => { docInsertContentRef.current = insertFn; }}
-                      initialShowInstructions={activeDocEditor?.showInstructions}
-                      initialContent={activeDocEditor?.content}
-                    />
-                  ) : (activeDocEditor?.type === "excel" || previewDocument?.type === "excel") ? (
+                  {previewDocument?.type === "excel" ? (
                     <SpreadsheetEditorLazy
-                      key="excel-editor-stable"
-                      title={activeDocEditor ? activeDocEditor.title : (previewDocument?.title || "")}
+                      key="excel-preview"
+                      title={previewDocument?.title || ""}
                       content={editedDocumentContent}
                       onChange={setEditedDocumentContent}
-                      onClose={activeDocEditor ? closeDocEditor : handleCloseDocumentPreview}
+                      onClose={handleCloseDocumentPreview}
                       onDownload={() => {
-                        if (activeDocEditor) {
-                          handleDownloadDocument({
-                            type: activeDocEditor.type,
-                            title: activeDocEditor.title,
-                            content: editedDocumentContent
-                          });
-                        } else if (previewDocument) {
+                        if (previewDocument) {
                           handleDownloadDocument(previewDocument);
                         }
                       }}
@@ -7885,21 +7680,14 @@ IMPORTANTE:
                     />
                   ) : (
                     <div className="relative h-full">
-                      {/* Word/generic document editor — always visible when activeDocEditor or previewDocument exists */}
                       <EnhancedDocumentEditorLazy
-                        key={activeDocEditor ? `new-${activeDocEditor.type}` : previewDocument?.title}
-                        title={activeDocEditor ? activeDocEditor.title : (previewDocument?.title || "")}
+                        key={previewDocument?.title}
+                        title={previewDocument?.title || ""}
                         content={editedDocumentContent}
                         onChange={setEditedDocumentContent}
-                        onClose={activeDocEditor ? minimizeDocEditor : handleCloseDocumentPreview}
+                        onClose={handleCloseDocumentPreview}
                         onDownload={() => {
-                          if (activeDocEditor) {
-                            handleDownloadDocument({
-                              type: activeDocEditor.type,
-                              title: activeDocEditor.title,
-                              content: editedDocumentContent
-                            });
-                          } else if (previewDocument) {
+                          if (previewDocument) {
                             handleDownloadDocument(previewDocument);
                           }
                         }}
@@ -8155,8 +7943,6 @@ IMPORTANTE:
               setSelectedTool={setSelectedTool}
               selectedDocTool={selectedDocTool}
               setSelectedDocTool={setSelectedDocTool}
-              closeDocEditor={closeDocEditor}
-              openBlankDocEditor={openBlankDocEditor}
               aiState={aiState}
               isRecording={isRecording}
               isPaused={isPaused}

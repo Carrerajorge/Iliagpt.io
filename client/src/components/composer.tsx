@@ -9,7 +9,6 @@ import {
   Plug,
   Globe,
   FileText,
-  ChevronRight,
   ChevronDown,
   X,
   Loader2,
@@ -22,7 +21,6 @@ import {
   Settings2,
   Wand2,
   Sparkles,
-  Presentation,
   Clock,
   Link2,
 } from "lucide-react";
@@ -30,7 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+
 import { cn } from "@/lib/utils";
 import {
   SILVER_BORDER_DIVIDER,
@@ -104,10 +102,8 @@ export interface ComposerProps {
   isDraggingOver: boolean;
   selectedTool: "web" | "agent" | "image" | null;
   setSelectedTool: (tool: "web" | "agent" | "image" | null) => void;
-  selectedDocTool: "word" | "excel" | "ppt" | "figma" | null;
-  setSelectedDocTool: (tool: "word" | "excel" | "ppt" | "figma" | null) => void;
-  closeDocEditor: () => void;
-  openBlankDocEditor: (type: "word" | "excel" | "ppt", options?: { showInstructions?: boolean }) => void;
+  selectedDocTool: "figma" | null;
+  setSelectedDocTool: (tool: "figma" | null) => void;
   aiState: AIState;
   isRecording: boolean;
   isPaused: boolean;
@@ -177,8 +173,6 @@ export function Composer({
   setSelectedTool,
   selectedDocTool,
   setSelectedDocTool,
-  closeDocEditor,
-  openBlankDocEditor,
   aiState,
   isRecording,
   isPaused,
@@ -242,26 +236,6 @@ export function Composer({
       bgColor: "bg-pink-50 dark:bg-pink-950/30",
       textColor: "text-pink-600 dark:text-pink-400",
       borderColor: "border-pink-200 dark:border-pink-800",
-    },
-    {
-      id: "document",
-      label: "Crear documento",
-      icon: FileText,
-      template: "Crea un documento Word sobre ",
-      color: "from-blue-500 to-blue-600",
-      bgColor: "bg-blue-50 dark:bg-blue-950/30",
-      textColor: "text-blue-600 dark:text-blue-400",
-      borderColor: "border-blue-200 dark:border-blue-800",
-    },
-    {
-      id: "presentation",
-      label: "Crear presentación",
-      icon: Presentation,
-      template: "Crea una presentación PowerPoint sobre ",
-      color: "from-orange-500 to-amber-500",
-      bgColor: "bg-orange-50 dark:bg-orange-950/30",
-      textColor: "text-orange-600 dark:text-orange-400",
-      borderColor: "border-orange-200 dark:border-orange-800",
     },
     {
       id: "web",

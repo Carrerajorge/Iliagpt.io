@@ -5,7 +5,6 @@ import {
   FileText,
   GitBranch,
   ListChecks,
-  Presentation,
   Search,
   ShieldCheck,
 } from "lucide-react";
@@ -14,7 +13,7 @@ import type { LucideIcon } from "lucide-react";
 export interface PromptSuggestionSelection {
   prompt: string;
   selectedTool?: "web" | "agent" | "image" | null;
-  selectedDocTool?: "word" | "excel" | "ppt" | "figma" | null;
+  selectedDocTool?: "figma" | null;
   latencyMode?: "fast" | "deep" | "auto";
 }
 
@@ -88,22 +87,10 @@ const ATTACHMENT_WORKFLOWS: WorkflowSuggestion[] = [
     icon: ShieldCheck,
     latencyMode: "deep",
   },
-  {
-    id: "attachment-presentation",
-    title: "Convertir en presentación",
-    description: "Narrativa ejecutiva lista para una PPT clara.",
-    prompt:
-      "Convierte el material adjunto en una presentación ejecutiva con estructura clara, narrativa breve por diapositiva y conclusiones finales.",
-    icon: Presentation,
-    selectedDocTool: "ppt",
-    latencyMode: "auto",
-  },
 ];
 
 function getSurfaceLabel(workflow: WorkflowSuggestion): string {
-  if (workflow.selectedDocTool === "word") return "Word";
-  if (workflow.selectedDocTool === "ppt") return "PPT";
-  if (workflow.selectedDocTool === "excel") return "Excel";
+  if (workflow.selectedDocTool === "figma") return "Figma";
   if (workflow.selectedTool === "web") return "Web";
   if (workflow.selectedTool === "agent") return "Agente";
   if (workflow.selectedTool === "image") return "Imagen";
@@ -157,7 +144,7 @@ export function PromptSuggestions({
 
   const heading = hasAttachment ? "Trabaja el material cargado" : "Empieza con un workflow claro";
   const copy = hasAttachment
-    ? "Resume, revisa, extrae acciones o conviértelo en una presentación sin rehacer el material."
+    ? "Resume, revisa, extrae acciones clave o analiza el material sin rehacerlo."
     : "Investiga, planifica, depura, revisa o documenta desde el primer mensaje.";
 
   return null;

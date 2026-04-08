@@ -84,18 +84,6 @@ export function withLazyLoading<P extends object>(
   return Wrapper;
 }
 
-export const LazyPPTEditorShell = React.lazy(() => import('@/components/ppt/PPTEditorShell'));
-
-export function PPTEditorShellLazy(props: { onClose: () => void; onInsertContent?: (insertFn: (content: string) => void) => void; initialShowInstructions?: boolean; initialContent?: string }) {
-  return (
-    <LazyLoadErrorBoundary>
-      <Suspense fallback={<EditorLoadingFallback />}>
-        <LazyPPTEditorShell {...props} />
-      </Suspense>
-    </LazyLoadErrorBoundary>
-  );
-}
-
 export const EnhancedDocumentEditorLazy = withLazyLoading(
   () => import('@/components/ribbon').then<{ default: ComponentType<any> }>(module => ({ default: module.EnhancedDocumentEditor as any })),
   EditorLoadingFallback
@@ -174,7 +162,7 @@ export function HandsontableLazy(props: any) {
 // PREFETCHING UTILITIES
 // ============================================
 
-type PrefetchableComponent = 'monaco' | 'handsontable' | 'ppt' | 'document' | 'spreadsheet';
+type PrefetchableComponent = 'monaco' | 'handsontable' | 'document' | 'spreadsheet';
 
 const prefetchedComponents = new Set<PrefetchableComponent>();
 
@@ -194,11 +182,6 @@ export function prefetchComponent(component: PrefetchableComponent): void {
       break;
     case 'handsontable':
       import(/* webpackChunkName: "handsontable" */ '@handsontable/react').catch(() => {
-        prefetchedComponents.delete(component);
-      });
-      break;
-    case 'ppt':
-      import('@/components/ppt/PPTEditorShell').catch(() => {
         prefetchedComponents.delete(component);
       });
       break;

@@ -188,7 +188,7 @@ export default function Home() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
   // Document generation state - kept in parent to survive ChatInterface key changes during new chat creation
-  const [selectedDocTool, setSelectedDocTool] = useState<"word" | "excel" | "ppt" | "figma" | null>(null);
+  const [selectedDocTool, setSelectedDocTool] = useState<"figma" | null>(null);
   const [docGenerationState, setDocGenerationState] = useState<{
     status: 'idle' | 'generating' | 'ready' | 'error';
     progress: number;
