@@ -146,6 +146,7 @@ import path from "path";
 import fs from "fs";
 import { createLogger } from "./utils/logger";
 const log = createLogger("routes");
+import { observabilityMiddleware, mountInfrastructureRoutes } from "./lib/pipelineIntegrations";
 
 import { createRunRouter } from "./routes/runRouter";
 import { createBrowserControlRouter } from "./routes/browserControlRouter";
@@ -264,6 +265,10 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   // Session + Passport are initialized in server/index.ts (before csrf/rateLimiter).
+
+  // ── Pipeline integrations: observability + infrastructure routes ──
+  app.use(observabilityMiddleware);
+  mountInfrastructureRoutes(app);
 
   app.get("/api/auth/google/check", (req, res) => {
     const user = (req as any).user;
