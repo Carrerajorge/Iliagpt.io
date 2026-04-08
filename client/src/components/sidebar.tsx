@@ -510,14 +510,21 @@ export function Sidebar({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <div className="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
-            {chat.archived && <Archive className="h-2.5 w-2.5 text-muted-foreground shrink-0" />}
-            {chat.id.startsWith('wa_') && <MessageCircle className="h-3 w-3 text-green-500 shrink-0" />}
-            <span className="truncate text-[12px] cursor-default">{chat.title}</span>
-            {processingChatIds.includes(chat.id) && <StreamingProgressIndicator chatId={chat.id} />}
-            {!processingChatIds.includes(chat.id) && pendingResponseCounts[chat.id] > 0 && (
-              <span className="flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-blue-600 text-white text-[9px] font-medium shrink-0" data-testid={`badge-pending-${chat.id}`}>
-                {pendingResponseCounts[chat.id]}
+          <div className="flex flex-col min-w-0 flex-1 overflow-hidden gap-0">
+            <div className="flex items-center gap-1">
+              {chat.archived && <Archive className="h-2.5 w-2.5 text-muted-foreground shrink-0" />}
+              {chat.id.startsWith('wa_') && <MessageCircle className="h-3 w-3 text-green-500 shrink-0" />}
+              <span className="truncate text-[12px] cursor-default font-medium">{chat.title}</span>
+              {processingChatIds.includes(chat.id) && <StreamingProgressIndicator chatId={chat.id} />}
+              {!processingChatIds.includes(chat.id) && pendingResponseCounts[chat.id] > 0 && (
+                <span className="flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-blue-600 text-white text-[9px] font-medium shrink-0" data-testid={`badge-pending-${chat.id}`}>
+                  {pendingResponseCounts[chat.id]}
+                </span>
+              )}
+            </div>
+            {(chat as any).lastMessage && (
+              <span className="truncate text-[10px] text-muted-foreground/60 pl-0">
+                {String((chat as any).lastMessage).slice(0, 40)}
               </span>
             )}
           </div>

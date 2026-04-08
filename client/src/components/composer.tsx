@@ -1091,6 +1091,21 @@ export function Composer({
       />
 
       <div className={inputContainerClass}>
+        {/* Active tools badges */}
+        {(webSearchEnabled || settings.agentMode) && (
+          <div className="flex items-center gap-1.5 px-3 pb-1">
+            {webSearchEnabled && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 text-[10px] font-medium">
+                <Globe className="h-2.5 w-2.5" />Web
+              </span>
+            )}
+            {settings.agentMode && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 text-[10px] font-medium">
+                <Bot className="h-2.5 w-2.5" />Agente
+              </span>
+            )}
+          </div>
+        )}
         {renderAttachmentPreview()}
 
         {isDocumentMode && selectedDocText && handleDocTextDeselect && (

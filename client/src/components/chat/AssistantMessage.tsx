@@ -404,14 +404,19 @@ export const AssistantMessage = memo(function AssistantMessage({
                                     {message.artifact.type === "pdf" && <FileText className="h-6 w-6 text-white" />}
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                                        {message.artifact.type === "document" && "Documento Word"}
-                                        {message.artifact.type === "spreadsheet" && "Hoja de cálculo Excel"}
-                                        {message.artifact.type === "presentation" && "Presentación PowerPoint"}
-                                        {message.artifact.type === "pdf" && "Documento PDF"}
-                                    </p>
+                                    <div className="flex items-center gap-2">
+                                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                                            {message.artifact.type === "document" && "Documento Word"}
+                                            {message.artifact.type === "spreadsheet" && "Hoja de cálculo Excel"}
+                                            {message.artifact.type === "presentation" && "Presentación PowerPoint"}
+                                            {message.artifact.type === "pdf" && "Documento PDF"}
+                                        </p>
+                                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-semibold animate-in fade-in duration-500">
+                                            ✓ Listo
+                                        </span>
+                                    </div>
                                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                                        {message.artifact.sizeBytes ? `${Math.round(message.artifact.sizeBytes / 1024)}KB` : "Listo para descargar"}
+                                        {message.artifact.name || (message.artifact.sizeBytes ? `${Math.round(message.artifact.sizeBytes / 1024)}KB` : "Listo para descargar")}
                                     </p>
                                 </div>
                                 <div className="flex items-center gap-2">
@@ -525,9 +530,8 @@ export const AssistantMessage = memo(function AssistantMessage({
                             className="inline-flex items-center gap-1 mt-1 mb-0.5 text-sm text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 transition-colors cursor-pointer group"
                             data-testid={`button-sources-link-${message.id}`}
                         >
-                            <span className="text-base">🔗</span>
-                            <span className="text-xs font-medium opacity-0 group-hover:opacity-100 transition-opacity">
-                                Ver {message.webSources.length} fuentes
+                            <span className="text-xs font-medium px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-900/20">
+                                📌 {message.webSources.length} fuente{message.webSources.length !== 1 ? "s" : ""}
                             </span>
                         </button>
                     )}
