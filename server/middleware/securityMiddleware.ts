@@ -224,8 +224,10 @@ export function validateSessionFingerprint(req: Request, res: Response, next: Ne
  * CORS security headers
  */
 export function securityHeaders(req: Request, res: Response, next: NextFunction) {
-  // Strict Transport Security
-  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  // Strict Transport Security (production only — breaks localhost in dev)
+  if (process.env.NODE_ENV === "production") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
   
   // Content Security Policy
   res.setHeader("Content-Security-Policy", 

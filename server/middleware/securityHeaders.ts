@@ -95,7 +95,7 @@ function buildPermissionsPolicyHeader(directives: Record<string, string[]>): str
 }
 
 const DEFAULT_CONFIG: Required<SecurityHeadersConfig> = {
-  enableHSTS: true,
+  enableHSTS: isProductionEnv,
   hstsMaxAge: 31536000,
   hstsIncludeSubDomains: true,
   hstsPreload: false,

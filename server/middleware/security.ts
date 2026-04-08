@@ -11,7 +11,9 @@ export function setupSecurity(app: Express): void {
 
 // --- 1. Security Headers ---
 export const securityHeaders = (_req: Request, res: Response, next: NextFunction) => {
-  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  if (process.env.NODE_ENV === "production") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("X-XSS-Protection", "0");
