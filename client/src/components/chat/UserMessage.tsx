@@ -120,26 +120,25 @@ export const UserMessage = memo(function UserMessage({
                             </span>
                         )}
                         {message.deliveryStatus === "sending" && (
-                            <span className="text-[10px] text-muted-foreground/70">
-                                Enviando...
+                            <span className="text-[10px] text-muted-foreground/70 flex items-center gap-0.5">
+                                <svg className="h-3 w-3 animate-spin" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="20 10" /></svg>
                             </span>
                         )}
                         {message.deliveryStatus === "sent" && (
-                            <span className="text-[10px] text-muted-foreground/60">
-                                Enviado
+                            <span className="text-[10px] text-muted-foreground/60 flex items-center">
+                                <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none"><path d="M3 8.5l3 3 7-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                             </span>
                         )}
                         {message.deliveryStatus === "delivered" && (
-                            <span className="text-[10px] text-muted-foreground/60">
-                                Entregado
+                            <span className="text-[10px] text-blue-500 flex items-center -space-x-1">
+                                <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none"><path d="M3 8.5l3 3 7-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none"><path d="M3 8.5l3 3 7-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                             </span>
                         )}
                         {message.deliveryStatus === "error" && (
                             <div className="flex items-center gap-2">
-                                <span
-                                    className="text-[10px] text-destructive"
-                                    title={message.deliveryError || undefined}
-                                >
+                                <span className="text-[10px] text-destructive flex items-center gap-1" title={message.deliveryError || undefined}>
+                                    <svg className="h-3 w-3" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 10.5a.75.75 0 110-1.5.75.75 0 010 1.5zM8.75 4.5v4a.75.75 0 01-1.5 0v-4a.75.75 0 011.5 0z"/></svg>
                                     Error
                                 </span>
                                 {onRetrySend && (

@@ -314,6 +314,11 @@ export function Composer({
     setInput(value);
     resetNavigation();
 
+    // Auto-resize textarea to fit content
+    const ta = e.target;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 180)}px`;
+
     const cursorPos = e.target.selectionStart || 0;
     const textBeforeCursor = value.slice(0, cursorPos);
     const atMatch = textBeforeCursor.match(/@(\w*)$/);
@@ -1245,7 +1250,22 @@ export function Composer({
             </div>
 
             <div className="flex items-center gap-1.5">
-              {/* Latency mode toggle removed — always uses "auto" */}
+              {/* Latency mode selector */}
+              {setLatencyMode && (
+                <button
+                  onClick={() => {
+                    const modes = ["auto", "fast", "deep"] as const;
+                    const idx = modes.indexOf(latencyMode as any);
+                    setLatencyMode(modes[(idx + 1) % modes.length]);
+                  }}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                  title={`Modo: ${latencyMode === "fast" ? "Rápido" : latencyMode === "deep" ? "Profundo" : "Auto"}`}
+                  data-testid="latency-mode-toggle"
+                >
+                  {latencyMode === "fast" ? "⚡" : latencyMode === "deep" ? "🧠" : "🎯"}
+                  <span className="hidden sm:inline">{latencyMode === "fast" ? "Rápido" : latencyMode === "deep" ? "Profundo" : "Auto"}</span>
+                </button>
+              )}
 
               {/* Character counter */}
               {input.length > 0 && (
