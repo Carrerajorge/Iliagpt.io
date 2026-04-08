@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import type { DocumentSkillDefinition, DocumentExecutionContext, DocumentResult, DocumentQaReport } from "./types";
 
-const SKILLS_BASE = path.join(__dirname, "..");
+const SKILLS_BASE = path.join(process.cwd(), "server", "skills");
 const ARTIFACTS_DIR = path.join(process.cwd(), "artifacts");
 
 function readSkillFile(rel: string): Promise<string> {

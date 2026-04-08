@@ -71,7 +71,7 @@ const SKILL_REGISTRY: Map<string, SkillMetadata> = new Map([
 
 const skillCache: Map<string, LoadedSkill> = new Map();
 
-const SKILLS_DIR = path.join(__dirname);
+const SKILLS_DIR = path.join(process.cwd(), "server", "skills");
 
 // ============================================================================
 // YAML Frontmatter Parser (minimal, no external deps)
