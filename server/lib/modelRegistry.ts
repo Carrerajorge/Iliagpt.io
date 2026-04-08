@@ -89,6 +89,9 @@ export const FREE_MODEL_ID = OPENROUTER_MODELS.GEMMA_3_27B_IT_FREE;
 
 export const FREE_MODEL_IDS: ReadonlySet<string> = new Set([
   "google/gemma-4-31b-it",
+  "google/gemma-4-31b-it:free",
+  "google/gemma-3-27b-it:free",
+  FREE_MODEL_ID,
 ]);
 
 export function isModelFreeForAll(modelId: string): boolean {
