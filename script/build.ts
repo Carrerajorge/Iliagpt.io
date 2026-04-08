@@ -1,9 +1,7 @@
 import { build as esbuild } from "esbuild";
-import { build as viteBuild } from "vite";
 import { rm, readFile, writeFile } from "fs/promises";
+import { execSync } from "child_process";
 
-// server deps to bundle to reduce openat(2) syscalls
-// which helps cold start times
 const allowlist = [
   "@google/generative-ai",
   "axios",
@@ -32,13 +30,17 @@ const allowlist = [
   "zod-validation-error",
 ];
 
-async function buildAll() {
-  await rm("dist", { recursive: true, force: true });
+async function buildClient() {
+  console.log("building client (Vite) in separate process...");
+  execSync(
+    "node --max-old-space-size=3072 node_modules/.bin/vite build",
+    { stdio: "inherit", env: { ...process.env, NODE_ENV: "production" } },
+  );
+  console.log("client build complete.");
+}
 
-  console.log("building client...");
-  await viteBuild();
-
-  console.log("building server...");
+async function buildServer() {
+  console.log("building server (esbuild)...");
   const pkg = JSON.parse(await readFile("package.json", "utf-8"));
   const allDeps = [
     ...Object.keys(pkg.dependencies || {}),
@@ -81,7 +83,6 @@ const __dirname = dirname(__filename);
     logLevel: "info",
   });
 
-  // Create a minimal CJS entry point that loads the ESM bundle
   console.log("creating start wrapper...");
   const startWrapper = `#!/usr/bin/env node
 "use strict";
@@ -93,11 +94,17 @@ import(pathToFileURL(join(__dirname, "index.mjs")).href).catch(err => {
 });
 `;
   await writeFile("dist/index.cjs", startWrapper, "utf-8");
+  console.log("server build complete.");
+}
+
+async function buildAll() {
+  await rm("dist", { recursive: true, force: true });
+  await buildClient();
+  await buildServer();
 }
 
 async function pruneDevDeps() {
   console.log("pruning dev dependencies for production...");
-  const { execSync } = await import("child_process");
   execSync("npm prune --omit=dev", { stdio: "inherit" });
 }
 
