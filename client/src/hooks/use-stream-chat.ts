@@ -395,9 +395,26 @@ export function useStreamChat(deps: StreamChatDeps) {
       const session = getSession(conversationId);
       if (session.pendingContent === null || session.rafId !== null) return;
 
+      // Throttle rendering to ~100ms intervals to reduce re-renders during fast streaming
       session.rafId = requestAnimationFrame(() => {
         session.rafId = null;
         if (session.pendingContent === null || !isConversationActive(conversationId)) return;
+        const now = Date.now();
+        const lastFlush = (session as any)._lastFlushMs || 0;
+        if (now - lastFlush < 80) {
+          // Too soon — schedule another RAF
+          session.rafId = requestAnimationFrame(() => {
+            session.rafId = null;
+            if (session.pendingContent !== null && isConversationActive(conversationId)) {
+              (session as any)._lastFlushMs = Date.now();
+              streamingContentRef.current = session.pendingContent;
+              setStreamingContent(session.pendingContent);
+              session.pendingContent = null;
+            }
+          });
+          return;
+        }
+        (session as any)._lastFlushMs = now;
         streamingContentRef.current = session.pendingContent;
         setStreamingContent(session.pendingContent);
         session.pendingContent = null;

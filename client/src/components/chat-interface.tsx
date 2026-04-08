@@ -106,6 +106,7 @@ import {
   isPendingChat,
 } from "@/hooks/use-chats";
 import { MarkdownRenderer, MarkdownErrorBoundary } from "@/components/markdown-renderer";
+import { ThrottledStreamingContent } from "@/components/chat/ThrottledStreamingContent";
 import { useAgent } from "@/hooks/use-agent";
 import { useBrowserSession, globalStartSseSession, globalUpdateFromSseStep } from "@/hooks/use-browser-session";
 import { AgentObserver } from "@/components/agent-observer";
@@ -7546,16 +7547,14 @@ IMPORTANTE:
                           </div>
                         )}
 
-                        {/* Streaming content with fade-in animation */}
+                        {/* Streaming content with throttled rendering */}
                         {aiState === "responding" && streamingContent && (
                           <div className="animate-content-fade-in px-4 py-3 text-foreground min-w-0 font-sans text-base leading-relaxed font-normal">
-                            <MarkdownErrorBoundary fallbackContent={streamingContent}>
-                              <MarkdownRenderer
-                                content={streamingContent}
-                                customComponents={{ ...CleanDataTableComponents }}
-                              />
-                            </MarkdownErrorBoundary>
-                            <span className="typing-cursor">|</span>
+                            <ThrottledStreamingContent
+                              content={streamingContent}
+                              isStreaming={true}
+                              customComponents={CleanDataTableComponents}
+                            />
                           </div>
                         )}
                       </div>
@@ -7810,17 +7809,11 @@ IMPORTANTE:
                       uiPhase={uiPhase}
                     />
                     {streamingContent && (
-                      <div className="animate-content-fade-in flex flex-col gap-2 max-w-[85%] items-start min-w-0">
-                        <div className="text-sm prose prose-sm dark:prose-invert max-w-none leading-relaxed min-w-0">
-                          <MarkdownErrorBoundary fallbackContent={streamingContent}>
-                            <MarkdownRenderer
-                              content={streamingContent}
-                              customComponents={{ ...CleanDataTableComponents }}
-                            />
-                          </MarkdownErrorBoundary>
-                          <span className="typing-cursor">|</span>
-                        </div>
-                      </div>
+                      <ThrottledStreamingContent
+                        content={streamingContent}
+                        isStreaming={aiState !== "idle"}
+                        customComponents={CleanDataTableComponents}
+                      />
                     )}
                   </div>
                 ) : (
