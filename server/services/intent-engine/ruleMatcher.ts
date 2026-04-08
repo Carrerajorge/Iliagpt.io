@@ -5,10 +5,21 @@ import { resolveSafePath } from '../../utils/pathSecurity';
 
 const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
   es: {
+    RENDER_VISUAL: [
+      "diagrama", "diagrama de flujo", "flowchart", "organigrama", "estructura organizacional",
+      "mapa mental", "mindmap", "mapa conceptual", "timeline", "linea de tiempo", "línea de tiempo",
+      "grafico de barras", "gráfico de barras", "grafico de pastel", "gráfico de pastel",
+      "grafico de lineas", "gráfico de líneas", "pie chart", "bar chart", "line chart",
+      "infografia", "infografía", "wireframe", "mockup", "dashboard visual",
+      "calendario visual", "kanban", "cuadro comparativo", "tabla comparativa",
+      "diagrama de secuencia", "diagrama de clases", "diagrama er", "diagrama de estados",
+      "svg", "ilustracion", "ilustración", "esquema", "flujograma", "mermaid",
+      "diagrama de arquitectura", "mapa de procesos", "diagrama gantt",
+    ],
     CREATE_PRESENTATION: [
       "ppt", "pptx", "powerpoint", "power point", "presentacion", "presentación",
       "diapositivas", "slides", "slide", "crear presentacion", "generar presentacion",
-      "hacer diapositivas", "armar presentacion", "construir presentacion", "presenta"
+      "hacer diapositivas", "armar presentacion", "construir presentacion"
     ],
     CREATE_DOCUMENT: [
       "doc", "docx", "word", "documento", "informe", "reporte",
@@ -113,6 +124,14 @@ const INTENT_ALIASES: Record<SupportedLocale, Record<IntentType, string[]>> = {
     NEED_CLARIFICATION: []
   },
   en: {
+    RENDER_VISUAL: [
+      "diagram", "flowchart", "flow chart", "org chart", "organizational chart",
+      "mind map", "mindmap", "concept map", "timeline", "bar chart", "pie chart",
+      "line chart", "infographic", "wireframe", "mockup", "visual dashboard",
+      "kanban", "comparison table", "sequence diagram", "class diagram", "er diagram",
+      "state diagram", "svg", "illustration", "schema", "mermaid", "gantt chart",
+      "architecture diagram", "process map",
+    ],
     CREATE_PRESENTATION: [
       "ppt", "pptx", "powerpoint", "power point", "presentation", "slides",
       "slide", "create presentation", "make presentation", "generate slides",

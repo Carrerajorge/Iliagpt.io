@@ -366,6 +366,17 @@ export async function createUnifiedRun(
     messageId: normalizedMessageId,
   });
 
+  // Override: visual content (diagrams, flowcharts, etc.) must NOT route to document/presentation agents
+  const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","timeline","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt"];
+  const msgLower = lastUserMessage.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (visualKw.some(kw => msgLower.includes(kw))) {
+    // Force to chat intent so LLM renders inline Mermaid/SVG/HTML
+    (requestSpec as any).intent = "chat";
+    (requestSpec as any).deliverableType = "text_response";
+    (requestSpec as any).primaryAgent = "content";
+    (requestSpec as any).targetAgents = ["content"];
+  }
+
   const runId = request.runId || randomUUID();
 
   const latencyMode: LatencyMode = request.latencyMode || 'auto';

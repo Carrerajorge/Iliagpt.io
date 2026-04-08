@@ -324,6 +324,23 @@ async function saveSkillArtifact(
 // Matching Logic
 // ============================================================================
 
+// Keywords that indicate visual/diagram content — must NOT generate files
+const VISUAL_KEYWORDS = [
+  "diagrama", "flowchart", "organigrama", "mapa mental", "mindmap",
+  "diagrama de flujo", "diagrama de secuencia", "diagrama de clases",
+  "diagrama er", "linea de tiempo", "timeline", "mermaid",
+  "infografia", "wireframe", "mockup", "kanban",
+  "cuadro comparativo", "tabla comparativa", "esquema", "flujograma",
+  "diagram", "flow chart", "org chart", "mind map", "sequence diagram",
+  "class diagram", "er diagram", "state diagram", "architecture diagram",
+  "process map", "gantt chart",
+];
+
+function isVisualRequest(message: string): boolean {
+  const lower = message.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return VISUAL_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 function matchSkillFromMessage(message: string, intentResult: IntentResult | null): {
   skillId: string;
   mapping: SkillMapping;
@@ -331,6 +348,13 @@ function matchSkillFromMessage(message: string, intentResult: IntentResult | nul
   confidence: number;
 } | null {
   const lowerMessage = message.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+  // Priority 0: Visual content requests bypass skill dispatch entirely
+  // Diagrams, charts, org charts, etc. must render inline via LLM
+  if (isVisualRequest(lowerMessage)) {
+    console.log("[SkillMatcher] Visual content detected in message — bypassing skill dispatch for inline rendering");
+    return null;
+  }
 
   // Priority 1: Intent-based matching (high confidence)
   if (intentResult && intentResult.confidence >= 0.4) {
@@ -431,6 +455,13 @@ export async function dispatchSkill(request: SkillDispatchRequest): Promise<Skil
   try {
     // Skip for CHAT_GENERAL intents
     if (request.intentResult?.intent === "CHAT_GENERAL" || request.intentResult?.intent === "NEED_CLARIFICATION") {
+      return emptyResult;
+    }
+
+    // RENDER_VISUAL: diagrams, charts, org charts, etc. must render inline via LLM (Mermaid/SVG/HTML)
+    // Do NOT generate .pptx or .docx — let the LLM respond with renderable code blocks
+    if (request.intentResult?.intent === "RENDER_VISUAL") {
+      console.log("[SkillDispatcher] RENDER_VISUAL intent detected — bypassing file generation, LLM will render inline");
       return emptyResult;
     }
 

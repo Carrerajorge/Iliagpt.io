@@ -25,6 +25,7 @@ export const IntentTypeSchema = z.enum([
   "SECURITY_AUDIT",
   "MEDIA_GENERATE",
   "INTEGRATION_ACTION",
+  "RENDER_VISUAL",
 ]);
 
 export const OutputFormatSchema = z.enum([

@@ -6405,6 +6405,17 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       } : null;
 
       intentResult = await intentPromise;
+
+      // Override: visual content (diagrams, flowcharts, org charts) must render inline, not as files
+      if (intentResult) {
+        const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","diagrama de secuencia","diagrama de clases","timeline","linea de tiempo","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt"];
+        const msgLower = (userMessageText || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        if (visualKw.some(kw => msgLower.includes(kw))) {
+          console.log(`[Stream] 🎨 RENDER_VISUAL override: "${userMessageText.slice(0, 60)}..." — forcing inline rendering (was: ${intentResult.intent})`);
+          intentResult = { ...intentResult, intent: "CHAT_GENERAL" as any, confidence: 0.95 };
+        }
+      }
+
       if (intentResult) {
         console.log(`[Stream] IntentRouter: intent=${intentResult.intent}, confidence=${intentResult.confidence.toFixed(2)}, format=${intentResult.output_format || 'none'}`);
 
