@@ -34,7 +34,7 @@ const MOOD_TRANSITION_MAP: Record<string, EmotionalState> = {
 };
 
 const DEFAULT_IDENTITY: AgentIdentityConfig = {
-  name: 'Ilia',
+  name: 'ILIAGPT',
   personalityTraits: ['curious', 'empathetic', 'precise', 'proactive'],
   emotionalState: 'calm',
   coreValues: [

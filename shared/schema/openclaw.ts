@@ -52,7 +52,7 @@ export const openclawAdminConfig = pgTable("openclaw_admin_config", {
   globalEnabled: boolean("global_enabled").notNull().default(true),
   autoProvisionOnLogin: boolean("auto_provision_on_login").notNull().default(true),
   githubRepo: varchar("github_repo").default("openclaw/openclaw"),
-  currentVersion: varchar("current_version").default("v2026.4.1"),
+  currentVersion: varchar("current_version").default("v2026.4.8"),
   lastSyncAt: timestamp("last_sync_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
