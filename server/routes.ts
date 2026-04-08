@@ -1534,6 +1534,14 @@ try{
     console.warn("[Routes] Failed to mount plugin router:", err?.message);
   }
 
+  // Codex VC coding agent routes.
+  try {
+    const { createCodexRouter } = await import("./routes/codexRouter");
+    app.use("/api/codex", createCodexRouter());
+  } catch (err: any) {
+    console.warn("[Routes] Failed to mount codex router:", err?.message);
+  }
+
   // Compliance & GDPR routes.
   try {
     const { createComplianceRouter } = await import("./routes/complianceRouter");
