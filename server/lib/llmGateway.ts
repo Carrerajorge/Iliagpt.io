@@ -937,11 +937,14 @@ class LLMGateway {
   // T100-7.1: Algoritmo Inteligente de Enrutamiento (Smart Routing)
   // Evalúa dinámicamente Costo, Latencia (Observabilidad) y Tasa de Errores (Breakers)
   private getSmartRoutedProviders(): LLMProvider[] {
-    if (process.env.OPENAI_BASE_URL?.includes("openrouter.ai")) {
-      return ["openai"];
-    }
     const configured: LLMProvider[] = ["cerebras", "gemini", "deepseek", "xai", "openai", "anthropic"];
     const active = configured.filter((p) => this.isProviderConfigured(p));
+
+    // When OpenRouter is the only configured provider (via OPENAI_BASE_URL),
+    // keep "openai" first but still allow directly-configured providers (Gemini, etc.)
+    if (process.env.OPENAI_BASE_URL?.includes("openrouter.ai") && active.length === 1 && active[0] === "openai") {
+      return ["openai"];
+    }
 
     return active.sort((a, b) => {
       const latA = this.metrics.byProvider[a]?.latency || Infinity;
