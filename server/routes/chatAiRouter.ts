@@ -8237,6 +8237,20 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
       const errorTimings = reportTimings("error");
       const errorSequenceCount = fullContent.trim() && lastAckSequence < 0 ? 1 : Math.max(0, lastAckSequence + 1);
       if (!isConnectionClosed) {
+        // If SSE headers were never established, send a proper JSON error so the
+        // client receives a clear error message instead of "failed to fetch".
+        if (!res.headersSent) {
+          try {
+            res.status(500).json({
+              error: error.message || "Internal server error",
+              code: "STREAM_INIT_ERROR",
+              requestId,
+              traceId: requestId,
+              timings: errorTimings,
+            });
+          } catch { /* response may already be in an unusable state */ }
+          return;
+        }
         writeSse(res, 'error', {
           error: error.message,
           requestId,

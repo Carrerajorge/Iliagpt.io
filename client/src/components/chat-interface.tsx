@@ -1923,6 +1923,12 @@ export function ChatInterface({
     if (normalizedMessage.startsWith("http 5")) {
       return "El servidor no respondió correctamente. Puedes reintentar.";
     }
+    if (normalizedMessage.includes("no llm providers configured")) {
+      return "No hay proveedores de IA configurados. Verifica tus API keys en la configuración.";
+    }
+    if (normalizedMessage.includes("stream_init_error")) {
+      return "Error al iniciar la respuesta. Puedes reintentar.";
+    }
     return rawMessage;
   }, []);
 
