@@ -71,6 +71,7 @@
   },
   "dependencies": {
     "@aarkue/tiptap-math-extension": "^1.4.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.96",
     "@anthropic-ai/sdk": "^0.37.0",
     "@asteasolutions/zod-to-openapi": "^7.3.4",
     "@aws-sdk/client-s3": "^3.997.0",
