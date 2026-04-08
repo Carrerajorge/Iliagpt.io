@@ -16,6 +16,69 @@ import { downloadArtifact } from "@/lib/localArtifactAccess";
 import { useShikiHighlight } from "@/hooks/useShikiHighlight";
 import { useArtifactStore } from "@/stores/artifactStore";
 
+// ── Mermaid Diagram Renderer ──
+const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: string }) {
+  const svgRef = useRef<HTMLDivElement>(null);
+  const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [copied, setCopied] = useState(false);
+  const svgTextRef = useRef("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const mermaid = (await import("mermaid")).default;
+        mermaid.initialize({ startOnLoad: false, theme: "default", securityLevel: "loose" });
+        const id = `mmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const { svg } = await mermaid.render(id, code);
+        if (cancelled) return;
+        // Sanitize then set via ref (safe DOM manipulation, not dangerouslySetInnerHTML)
+        const clean = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ["use"] });
+        svgTextRef.current = clean;
+        if (svgRef.current) svgRef.current.innerHTML = clean;
+        setStatus("ok");
+      } catch (err) {
+        if (!cancelled) { setErrorMsg(err instanceof Error ? err.message : "Render failed"); setStatus("error"); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [code]);
+
+  const handleCopy = useCallback(async () => {
+    await navigator.clipboard.writeText(svgTextRef.current || code).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [code]);
+
+  return (
+    <div className="my-4 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-hidden bg-white dark:bg-zinc-900">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50">
+        <span className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
+          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3v18M3 12h18M7.5 7.5l9 9M16.5 7.5l-9 9"/></svg>
+          Diagrama
+        </span>
+        <button onClick={handleCopy} className="text-[10px] text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 flex items-center gap-1 transition-colors">
+          {copied ? <><Check className="h-3 w-3 text-green-500" /> Copiado</> : <><Copy className="h-3 w-3" /> Copiar</>}
+        </button>
+      </div>
+      {status === "error" ? (
+        <div className="p-4 text-center space-y-2">
+          <p className="text-sm text-amber-500">No se pudo renderizar: {errorMsg}</p>
+          <pre className="text-xs font-mono bg-zinc-100 dark:bg-zinc-800 p-3 rounded-lg overflow-auto max-h-48 text-left">{code}</pre>
+        </div>
+      ) : status === "ok" ? (
+        <div ref={svgRef} className="p-4 flex items-center justify-center [&>svg]:max-w-full [&>svg]:h-auto" />
+      ) : (
+        <div className="p-4 flex items-center justify-center min-h-[200px]">
+          <Loader2 className="h-4 w-4 animate-spin text-zinc-400 mr-2" />
+          <span className="text-sm text-zinc-400">Renderizando diagrama...</span>
+        </div>
+      )}
+    </div>
+  );
+});
+
 const InlineSourceBadge = memo(function InlineSourceBadge({ name, url }: { name: string; url: string }) {
   const [showTooltip, setShowTooltip] = useState(false);
   const [imageError, setImageError] = useState(false);
@@ -602,6 +665,11 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, onOpenD
         />
       </div>
     );
+  }
+
+  // Mermaid diagram rendering — detect ```mermaid blocks and render inline
+  if (language === "mermaid") {
+    return <MermaidDiagram code={codeContent} />;
   }
 
   const lineCount = codeContent.split("\n").length;

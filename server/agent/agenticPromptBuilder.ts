@@ -52,6 +52,7 @@ export const DEFAULT_TOOLS: readonly ToolDescription[] = [
   { name: "generate_chart", description: "Create data visualizations (bar, line, pie, scatter charts)", when_to_use: "When user asks for charts, graphs, or data visualizations" },
   { name: "memory_store", description: "Store and retrieve user preferences and important facts", when_to_use: "When user shares personal preferences, or asks to remember/recall something" },
   { name: "send_email", description: "Draft and send emails via connected accounts", when_to_use: "When user asks to send, draft, or compose an email" },
+  { name: "render_diagram", description: "Generate diagrams using Mermaid syntax (flowcharts, sequence, class, state, ER, Gantt, pie)", when_to_use: "When user asks for a diagram, flowchart, architecture diagram, process flow, or visual representation of a system" },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -101,6 +102,10 @@ const INTENT_INSTRUCTIONS: Record<string, { es: string; en: string }> = {
   image_generation: {
     es: "Crea imagenes detalladas y de alta calidad que coincidan con la descripcion proporcionada. Pregunta por detalles si la descripcion es ambigua.",
     en: "Create detailed, high-quality images matching the provided description. Ask for details if the description is ambiguous.",
+  },
+  diagram: {
+    es: "IMPORTANTE: Cuando el usuario pida un diagrama, flowchart, diagrama de flujo, arquitectura, o cualquier representacion visual de procesos/sistemas, SIEMPRE genera codigo Mermaid dentro de un bloque ```mermaid. El sistema lo renderizara automaticamente como SVG visual. Usa el tipo de diagrama mas apropiado: graph TD (flujo), sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, pie. Incluye labels claros y conexiones logicas.",
+    en: "IMPORTANT: When user asks for a diagram, flowchart, architecture diagram, or any visual process/system representation, ALWAYS generate Mermaid code inside a ```mermaid block. The system will automatically render it as a visual SVG. Use the most appropriate diagram type: graph TD (flowchart), sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, pie. Include clear labels and logical connections.",
   },
 };
 
@@ -176,6 +181,13 @@ export function buildAgenticSystemPrompt(ctx: AgenticPromptContext): string {
   if (ctx.intent) {
     const label = lang === "es" ? "Instrucciones para esta tarea:" : "Task-specific instructions:";
     sections.push(`${label} ${getIntentInstructions(ctx.intent, ctx.locale)}`);
+  }
+
+  // 5b. Always include diagram instructions (users frequently ask for diagrams)
+  const diagramInst = INTENT_INSTRUCTIONS["diagram"];
+  if (diagramInst && ctx.intent !== "diagram") {
+    // Add as supplementary instruction even for non-diagram intents
+    sections.push(lang === "es" ? diagramInst.es : diagramInst.en);
   }
 
   // 6. Attachment context

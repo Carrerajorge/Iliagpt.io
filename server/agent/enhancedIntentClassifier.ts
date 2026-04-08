@@ -49,6 +49,8 @@ const INTENT_KEYWORDS: Record<string, KW> = {
                              "navigate to|open page|go to|open website|open url|browse to|visit"),
   research:               kw("investigar|investigacion|investigar sobre|explorar tema|estudio sobre",
                              "research|investigate|explore topic|study about|deep dive"),
+  diagram:                kw("diagrama|diagrama de flujo|flowchart|diagrama de secuencia|diagrama de clases|diagrama er|arquitectura del sistema|mapa de procesos|diagrama mermaid",
+                             "diagram|flowchart|flow chart|sequence diagram|class diagram|er diagram|system architecture|process map|mermaid diagram"),
   file_operation:         kw("leer archivo|abrir archivo|crear archivo|guardar archivo",
                              "read file|open file|create file|save file"),
   calculation:            kw("calcular|cuanto es|sumar|multiplicar|formula",
