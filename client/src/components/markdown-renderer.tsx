@@ -46,18 +46,23 @@ const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: string }) 
   const [errorMsg, setErrorMsg] = useState("");
   const [copied, setCopied] = useState(false);
   const svgTextRef = useRef("");
+  const lastRenderedRef = useRef("");
 
   useEffect(() => {
     let cancelled = false;
     const normalized = normalizeMermaidCode(code);
 
     if (!normalized) {
-      setErrorMsg("Empty diagram code");
-      setStatus("error");
+      if (status !== "loading") setStatus("loading");
       return;
     }
 
-    (async () => {
+    // Skip re-render if code hasn't meaningfully changed
+    if (normalized === lastRenderedRef.current && status === "ok") return;
+
+    // Debounce: wait 400ms after last change to avoid palpitating during streaming
+    const timer = setTimeout(async () => {
+      if (cancelled) return;
       try {
         const mermaid = (await import("mermaid")).default;
         const isDark = document.documentElement.classList.contains("dark");
@@ -70,14 +75,13 @@ const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: string }) 
         const id = `mmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const { svg } = await mermaid.render(id, normalized);
         if (cancelled) return;
-        // Sanitize SVG with DOMPurify — allow all SVG tags, filters, and references
+        lastRenderedRef.current = normalized;
         const clean = DOMPurify.sanitize(svg, {
           USE_PROFILES: { svg: true, svgFilters: true },
           ADD_TAGS: ["use", "foreignObject", "switch"],
           ADD_ATTR: ["dominant-baseline", "text-anchor", "marker-end", "marker-start"],
         });
         svgTextRef.current = clean;
-        // Safe: content is sanitized by DOMPurify before DOM insertion
         if (svgRef.current) svgRef.current.replaceChildren();
         if (svgRef.current) {
           const template = document.createElement("template");
@@ -87,15 +91,19 @@ const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: string }) 
         setStatus("ok");
       } catch (err) {
         if (!cancelled) {
+          // Don't show error during streaming — code might be incomplete
           const msg = err instanceof Error ? err.message : "Render failed";
-          console.error("[MermaidDiagram] Render error:", msg, "\nCode:", normalized.slice(0, 200));
-          setErrorMsg(msg);
-          setStatus("error");
+          console.debug("[MermaidDiagram] Render attempt failed (may be incomplete):", msg);
+          // Only show error if this looks like complete code (has closing markers)
+          if (normalized.includes("end") || normalized.split("\n").length > 3) {
+            setErrorMsg(msg);
+            setStatus("error");
+          }
         }
       }
-    })();
-    return () => { cancelled = true; };
-  }, [code]);
+    }, 400);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [code, status]);
 
   const handleCopy = useCallback(async () => {
     await navigator.clipboard.writeText(svgTextRef.current || code).catch(() => {});
@@ -135,20 +143,28 @@ const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: string }) 
 const InlineSvgBlock = memo(function InlineSvgBlock({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
+  const lastCodeRef = useRef("");
 
   useEffect(() => {
-    if (!ref.current) return;
-    // Sanitize SVG with DOMPurify to prevent XSS, then set via ref
-    const sanitized = DOMPurify.sanitize(code, {
-      USE_PROFILES: { svg: true, svgFilters: true },
-      ADD_TAGS: ["use"],
-    });
-    ref.current.textContent = ""; // clear first
-    const wrapper = document.createElement("div");
-    wrapper.innerHTML = sanitized; // safe: sanitized by DOMPurify
-    while (wrapper.firstChild) {
-      ref.current.appendChild(wrapper.firstChild);
-    }
+    if (!ref.current || !code.trim()) return;
+    // Debounce: wait 300ms for streaming to settle before updating DOM
+    const timer = setTimeout(() => {
+      if (code === lastCodeRef.current) return;
+      lastCodeRef.current = code;
+      const sanitized = DOMPurify.sanitize(code, {
+        USE_PROFILES: { svg: true, svgFilters: true },
+        ADD_TAGS: ["use"],
+      });
+      if (ref.current) {
+        ref.current.replaceChildren();
+        const wrapper = document.createElement("div");
+        wrapper.innerHTML = sanitized;
+        while (wrapper.firstChild) {
+          ref.current.appendChild(wrapper.firstChild);
+        }
+      }
+    }, 300);
+    return () => clearTimeout(timer);
   }, [code]);
 
   return (
