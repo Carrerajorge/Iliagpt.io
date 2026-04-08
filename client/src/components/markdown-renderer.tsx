@@ -1025,14 +1025,22 @@ const InteractiveCodeBlock = memo(function InteractiveCodeBlock({
     );
   }
 
-  // Mermaid diagrams render inline as SVG — never as code blocks
+  // Mermaid diagrams render inline as SVG with action buttons
   if (language === "mermaid") {
-    return <MermaidDiagram code={codeContent} />;
+    return (
+      <RenderBlockWrapper type="mermaid" code={codeContent}>
+        <MermaidDiagram code={codeContent} />
+      </RenderBlockWrapper>
+    );
   }
 
-  // SVG renders inline directly
+  // SVG renders inline with action buttons
   if (language === "svg") {
-    return <InlineSvgBlock code={codeContent} />;
+    return (
+      <RenderBlockWrapper type="svg" code={codeContent}>
+        <InlineSvgBlock code={codeContent} />
+      </RenderBlockWrapper>
+    );
   }
 
   return (

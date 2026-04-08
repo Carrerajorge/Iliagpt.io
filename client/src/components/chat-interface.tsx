@@ -2896,8 +2896,24 @@ export function ChatInterface({
     };
 
     window.addEventListener("tool-selected", handleToolSelected);
+
+    // Listen for regenerate requests from rendered blocks (SVG, Mermaid, etc.)
+    const handleRegenerate = (e: Event) => {
+      const msg = (e as CustomEvent).detail?.message;
+      if (msg && typeof msg === "string") {
+        setInput(msg);
+        // Auto-submit after a tick so the input is set
+        setTimeout(() => {
+          const form = document.querySelector("[data-testid='composer-form']") as HTMLFormElement;
+          if (form) form.requestSubmit();
+        }, 100);
+      }
+    };
+    window.addEventListener("codex-regenerate", handleRegenerate);
+
     return () => {
       window.removeEventListener("tool-selected", handleToolSelected);
+      window.removeEventListener("codex-regenerate", handleRegenerate);
     };
   }, [setInput]);
 
