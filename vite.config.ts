@@ -79,6 +79,8 @@ export default defineConfig({
         target: devBackendTarget,
         changeOrigin: true,
         ws: true,
+        cookieDomainRewrite: "",
+        cookiePathRewrite: "/",
       },
       "/ws": {
         target: devBackendTarget,

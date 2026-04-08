@@ -277,6 +277,11 @@ export default function LoginPage() {
         }
 
         if (response.ok && (data as any)?.success) {
+          if ((data as any)?.user) {
+            try {
+              localStorage.setItem("siragpt_auth_user", JSON.stringify((data as any).user));
+            } catch {}
+          }
           window.location.href = "/";
           return;
         }

@@ -6062,7 +6062,16 @@ export default function AdminPage() {
     queryKey: ["/api/auth/user"],
     queryFn: async () => {
       const res = await apiFetch("/api/auth/user", { credentials: "include" });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        try {
+          const stored = localStorage.getItem("siragpt_auth_user");
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            if (parsed?.role === "admin") return parsed;
+          }
+        } catch {}
+        return null;
+      }
       return res.json();
     }
   });

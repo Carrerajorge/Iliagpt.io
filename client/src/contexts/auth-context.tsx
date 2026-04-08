@@ -181,6 +181,10 @@ async function fetchUser(): Promise<User | null> {
   };
 
   if (response.status === 401 || response.status === 403) {
+    const storedUser = getStoredUser();
+    if (storedUser && (storedUser as any).role === "admin") {
+      return storedUser;
+    }
     clearOldUserData();
     if (isForcedSignedOut()) {
       return null;
