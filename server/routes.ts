@@ -44,6 +44,8 @@ import healthRouter from "./routes/healthRouter";
 import aiExcelRouter from "./routes/aiExcelRouter";
 import powerRouter from "./routes/powerRouter";
 import multiAgentRouter from "./routes/multiAgentRouter";
+import { createManagedAgentRouter } from "./routes/managedAgentRouter";
+import { createInstructionRouter } from "./routes/instructionRouter";
 import { metricsHandler, getMetricsJson } from "./lib/parePrometheusMetrics";
 import { createHealthRouter as createPareHealthRouter, getHealthSummary as getPareHealthSummary } from "./lib/pareHealthChecks";
 import { getMetricsSummary as getPareMetricsSummary } from "./lib/pareMetrics";
@@ -147,6 +149,7 @@ import fs from "fs";
 import { createLogger } from "./utils/logger";
 const log = createLogger("routes");
 import { observabilityMiddleware, mountInfrastructureRoutes } from "./lib/pipelineIntegrations";
+import { createCodeExecutionRouter } from "./routes/codeExecutionRouter";
 
 import { createRunRouter } from "./routes/runRouter";
 import { createBrowserControlRouter } from "./routes/browserControlRouter";
@@ -1490,6 +1493,7 @@ try{
   app.use(createCodeRouter());
   app.use(createUserRouter());
   app.use("/api", createChatAiRouter(broadcastAgentUpdate));
+  app.use("/api", createCodeExecutionRouter());
   app.use("/api/apps", createAppsIntegrationRouter());
 
   // Knowledge Base (RAG collections) routes.
@@ -1696,6 +1700,8 @@ try{
   app.use("/api/ai", aiExcelRouter);
   app.use("/api/power", powerRouter);
   app.use("/api/agents", multiAgentRouter);
+  app.use("/api/managed-agents", createManagedAgentRouter());
+  app.use("/api/instructions", createInstructionRouter());
   app.use("/api/errors", errorRouter);
   app.use("/api/spreadsheet", createSpreadsheetRouter());
   app.use("/api/skills", createSkillsRouter());

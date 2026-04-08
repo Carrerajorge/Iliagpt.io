@@ -1066,6 +1066,17 @@ const InteractiveCodeBlock = memo(function InteractiveCodeBlock({
     );
   }
 
+  // Document generation code (has saveFile + library imports) — auto-execute and show result
+  if ((language === "javascript" || language === "js") && codeContent.includes("saveFile") && (
+    codeContent.includes("pptxgenjs") || codeContent.includes("PptxGenJS") ||
+    codeContent.includes("exceljs") || codeContent.includes("ExcelJS") ||
+    codeContent.includes("require(\"docx\")") || codeContent.includes("require('docx')") ||
+    codeContent.includes("pdfkit") || codeContent.includes("PDFDocument")
+  )) {
+    const { ExecutableCodeBlock } = require("./chat/ExecutableCodeBlock");
+    return <ExecutableCodeBlock code={codeContent} language={language} autoRun={true} />;
+  }
+
   // Mermaid diagrams render inline as SVG with action buttons
   if (language === "mermaid") {
     return (
