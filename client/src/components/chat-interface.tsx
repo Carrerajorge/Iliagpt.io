@@ -5296,6 +5296,29 @@ export function ChatInterface({
                     status: "pending",
                     description: `Generando ${data.deliverables?.join(", ") || "archivos"}`,
                   }], effectiveChatIdForStream);
+                } else if (eventType === "step") {
+                  // Agentic step visualization from skill dispatcher
+                  setAiStateForChat("agent_working", effectiveChatIdForStream);
+                  setAiProcessStepsForChat((prev: any[]) => {
+                    const existing = prev.find((s: any) => s.id === data.id);
+                    if (existing) {
+                      // Update existing step (e.g. running → completed)
+                      return prev.map((s: any) => s.id === data.id ? {
+                        ...s,
+                        title: data.title || s.title,
+                        status: data.status === "completed" ? "done" : data.status,
+                        description: data.description || s.description,
+                      } : s);
+                    }
+                    return [...prev, {
+                      id: data.id || `step-${Date.now()}`,
+                      step: data.type || "step",
+                      title: data.title || "Procesando...",
+                      status: data.status === "completed" ? "done" : data.status || "pending",
+                      description: data.description,
+                      icon: data.type === "thinking" ? "✦" : data.type === "reading" ? "📄" : data.type === "executing" ? "▶️" : data.type === "searching" ? "🔍" : data.type === "generating" ? "⏳" : data.type === "analyzing" ? "🔥" : data.type === "completed" ? "✅" : "📝",
+                    }];
+                  }, effectiveChatIdForStream);
                 } else if (eventType === "production_start") {
                   setAiStateForChat("agent_working", effectiveChatIdForStream);
                   setAiProcessStepsForChat([{

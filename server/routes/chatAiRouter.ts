@@ -6463,6 +6463,20 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         if (intentResult && intentResult.intent !== "CHAT_GENERAL" && intentResult.intent !== "NEED_CLARIFICATION") {
           try {
             const effectiveChatId = chatId || conversationId || streamConversationId;
+            // Prepare SSE step emitter for agentic visualization
+            const emitAgentStep = (step: Record<string, any>) => {
+              if (!res.headersSent) {
+                res.setHeader("Content-Type", "text/event-stream");
+                applySseSecurityHeaders(res);
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+                res.setHeader("X-Accel-Buffering", "no");
+              }
+              try {
+                res.write(`data: ${JSON.stringify({ type: "step", step })}\n\n`);
+              } catch { /* connection closed */ }
+            };
+
             const skillResult: SkillDispatchResult = await skillAutoDispatcher.dispatch({
               message: userMessageText,
               intentResult,
@@ -6472,6 +6486,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
               requestId,
               assistantMessageId,
               locale: intentResult.language_detected || "es",
+              onStep: emitAgentStep,
             });
 
             if (skillResult.handled && (skillResult.artifacts.length > 0 || skillResult.textResponse)) {
@@ -6866,6 +6881,15 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         if (intentResult && intentResult.intent !== "CHAT_GENERAL" && intentResult.intent !== "NEED_CLARIFICATION") {
           try {
             const effectiveChatId = chatId || conversationId || streamConversationId;
+            const emitAgentStep2 = (step: Record<string, any>) => {
+              if (!res.headersSent) {
+                res.setHeader("Content-Type", "text/event-stream");
+                applySseSecurityHeaders(res);
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+              }
+              try { res.write(`data: ${JSON.stringify({ type: "step", step })}\n\n`); } catch { /* closed */ }
+            };
             const skillResult: SkillDispatchResult = await skillAutoDispatcher.dispatch({
               message: userMessageText,
               intentResult,
@@ -6875,6 +6899,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
               requestId,
               assistantMessageId,
               locale: intentResult.language_detected || "es",
+              onStep: emitAgentStep2,
             });
 
             if (skillResult.handled && (skillResult.artifacts.length > 0 || skillResult.textResponse)) {

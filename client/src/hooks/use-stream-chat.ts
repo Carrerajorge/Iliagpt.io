@@ -1253,6 +1253,11 @@ export function useStreamChat(deps: StreamChatDeps) {
                     onEvent?.(currentEventType, data);
                   }
 
+                  // Handle agentic step events (real-time tool execution visualization)
+                  if (!isStaleConversation && currentEventType === "step" && data?.step) {
+                    onEvent?.("step", data.step);
+                  }
+
                   if (!isStaleConversation && currentEventType === "task_spawned") {
                     setAiState("agent_working", conversationId);
                     onAiStateChange?.("agent_working");

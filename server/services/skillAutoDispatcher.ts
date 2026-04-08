@@ -44,6 +44,8 @@ export interface SkillDispatchRequest {
     storagePath?: string;
     fileId?: string;
   }>;
+  /** Callback to emit agentic step events to the SSE stream. */
+  onStep?: (step: { type: string; title: string; status: string; [key: string]: any }) => void;
 }
 
 export interface SkillArtifact {
@@ -440,6 +442,26 @@ export async function dispatchSkill(request: SkillDispatchRequest): Promise<Skil
 
     console.log(`[SkillDispatcher] Matched skill: ${match.skillId} (${match.mapping.name}) via ${match.matchedVia} (confidence: ${match.confidence.toFixed(2)})`);
 
+    // Emit step: analyzing user request
+    const emitStep = request.onStep || (() => {});
+    const stepId = () => `step-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    emitStep({ id: stepId(), type: "analyzing", title: "Analizando solicitud del usuario", status: "completed", expandable: false, timestamp: new Date().toISOString() });
+
+    // Determine step type based on skill category
+    const categoryStepMap: Record<string, { type: string; titleRunning: string; titleDone: string }> = {
+      documents: { type: "generating", titleRunning: `Generando documento ${match.mapping.name}...`, titleDone: "Documento creado exitosamente" },
+      data: { type: "generating", titleRunning: "Generando hoja de cálculo...", titleDone: "Hoja de cálculo creada" },
+      presentations: { type: "generating", titleRunning: "Generando presentación...", titleDone: "Presentación creada" },
+      code: { type: "executing", titleRunning: "Ejecutando código...", titleDone: "Ejecución completada" },
+      search: { type: "searching", titleRunning: "Buscando información...", titleDone: "Búsqueda completada" },
+      integrations: { type: "searching", titleRunning: "Conectando con servicio...", titleDone: "Integración completada" },
+    };
+    const stepInfo = categoryStepMap[match.mapping.category] || { type: "generating", titleRunning: `Ejecutando ${match.mapping.name}...`, titleDone: `${match.mapping.name} completado` };
+
+    // Emit step: running
+    const runningStepId = stepId();
+    emitStep({ id: runningStepId, type: stepInfo.type, title: stepInfo.titleRunning, status: "running", expandable: false, timestamp: new Date().toISOString() });
+
     const handlerRequest = {
       message: request.message,
       userId: request.userId,
@@ -499,6 +521,10 @@ export async function dispatchSkill(request: SkillDispatchRequest): Promise<Skil
 
     const latencyMs = Date.now() - startMs;
     console.log(`[SkillDispatcher] Completed ${match.skillId} in ${latencyMs}ms with ${savedArtifacts.length} artifacts`);
+
+    // Emit step: completed
+    emitStep({ id: runningStepId, type: stepInfo.type, title: stepInfo.titleDone, status: "completed", duration: latencyMs, expandable: false, timestamp: new Date().toISOString() });
+    emitStep({ id: stepId(), type: "completed", title: savedArtifacts.length > 0 ? `${savedArtifacts.length} archivo${savedArtifacts.length > 1 ? "s" : ""} generado${savedArtifacts.length > 1 ? "s" : ""}` : stepInfo.titleDone, status: "completed", expandable: false, timestamp: new Date().toISOString() });
 
     return {
       handled: true,
