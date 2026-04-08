@@ -90,6 +90,12 @@ Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment varia
 - **Frontend**: `FREE_MODEL_IDS` set in `client/src/lib/planUtils.ts` + `isModelFreeForAll()` used by `StandardModelSelector.tsx` and `ModelAvailabilityContext.tsx`.
 - **Backend**: `FREE_MODEL_IDS` set in `server/lib/modelRegistry.ts` + `isModelFreeForAll()` used by `chatAiRouter.ts` for both pre- and post-enforcement anonymous access checks.
 
+### DB Schema Drift Fixes (v2026.4.8)
+- **chats table**: Added missing columns `folder_id`, `tags`, `rag_enabled`, `rag_collection_ids`.
+- **chat_messages table**: Added missing columns `parent_message_id`, `branch_label`, `rag_sources`.
+- **New tables created**: `prompt_transformation_log`, `prompt_integrity_checks`, `prompt_analysis_results` — required by the message-save pipeline for audit logging.
+- **Root cause**: Drizzle schema definitions in `shared/schema/chat.ts` had drifted ahead of the actual DB. Manual `ALTER TABLE` / `CREATE TABLE IF NOT EXISTS` used since `drizzle-kit push` requires interactive confirmation.
+
 ### Memory Optimization (v2026.4.6)
 - **PerformanceAuditor**: Collection interval 60s (was 10s), history buffer 100 (was 1000), memory warning throttling (log first 3 + every 30th).
 - **TokenTracker**: Redis persist circuit breaker — disables after 5 consecutive failures. In-memory records capped at 1000 (was 10000).
