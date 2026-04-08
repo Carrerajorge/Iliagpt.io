@@ -108,26 +108,14 @@ const INTENT_INSTRUCTIONS: Record<string, { es: string; en: string }> = {
     en: "IMPORTANT: When user asks for a diagram, flowchart, architecture diagram, or any visual process/system representation, ALWAYS generate Mermaid code inside a ```mermaid block. The system will automatically render it as a visual SVG. Use the most appropriate diagram type: graph TD (flowchart), sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, pie. Include clear labels and logical connections.",
   },
   document_render: {
-    es: `REGLA CRITICA DE GENERACION DE DOCUMENTOS:
-Cuando el usuario pida crear una presentacion, documento Word, hoja Excel, informe, o PDF, NO generes un archivo binario. En su lugar genera el documento como codigo HTML completo y profesional dentro de un bloque \`\`\`html que el sistema renderizara automaticamente.
+    es: `REGLA DE GENERACION DE DOCUMENTOS:
+Cuando el usuario pida crear una presentacion, documento Word, hoja Excel, informe, o PDF, el sistema generara automaticamente el archivo profesional (.docx, .xlsx, .pptx, .pdf) y lo pondra disponible para descarga. Tu trabajo es generar el CONTENIDO del documento de forma completa y profesional. Ademas, incluye un preview visual del documento en formato HTML dentro de un bloque \`\`\`html para que el usuario vea como lucira.
 
-PRESENTACIONES (PPT/slides): Genera HTML con slides profesionales. Cada slide es un <section> con aspect-ratio 16/9, fondo con gradiente, titulos grandes, bullets, iconos unicode, bordes redondeados. Usa colores corporativos profesionales.
+El preview HTML debe ser profesional: colores corporativos (#1F4E79, #2E5090, #E8532E), tipografia limpia, tablas con bordes y headers coloreados, slides con aspect-ratio 16/9 si es presentacion.`,
+    en: `DOCUMENT GENERATION RULE:
+When user asks to create a presentation, Word document, Excel spreadsheet, report, or PDF, the system will automatically generate the professional file (.docx, .xlsx, .pptx, .pdf) and make it available for download. Your job is to generate the document CONTENT completely and professionally. Additionally, include a visual preview in HTML format inside a \`\`\`html block so the user can see how it will look.
 
-DOCUMENTOS (Word/informe): Genera HTML con formato de documento profesional. Incluye titulo, subtitulos <h2>, parrafos, listas, tablas estilizadas, margenes, tipografia serif para body y sans-serif para titulos.
-
-HOJAS DE CALCULO (Excel): Genera HTML con <table> estilizada profesionalmente. Headers con fondo de color, bordes, celdas con padding, datos de ejemplo realistas, totales calculados, colores alternados en filas.
-
-El codigo debe ser COMPLETO y autocontenido con <style> incluido. Usa colores profesionales (#1e3a5f, #2563eb, #059669, #dc2626). El resultado se renderiza inline para que el usuario vea el documento visualmente y pueda copiar/modificar el codigo.`,
-    en: `CRITICAL DOCUMENT GENERATION RULE:
-When user asks to create a presentation, Word document, Excel spreadsheet, report, or PDF, do NOT generate a binary file. Instead generate the document as complete professional HTML code inside a \`\`\`html block that the system will automatically render.
-
-PRESENTATIONS: Generate HTML with professional slides. Each slide is a <section> with 16/9 aspect-ratio, gradient backgrounds, large titles, bullets, unicode icons, rounded borders. Use professional corporate colors.
-
-DOCUMENTS: Generate HTML with professional document formatting. Include title, <h2> subtitles, paragraphs, lists, styled tables, margins, serif body font and sans-serif titles.
-
-SPREADSHEETS: Generate HTML with professionally styled <table>. Colored headers, borders, padded cells, realistic sample data, calculated totals, alternating row colors.
-
-Code must be COMPLETE and self-contained with <style> included. Use professional colors (#1e3a5f, #2563eb, #059669, #dc2626). Result renders inline so user sees the document visually and can copy/modify the code.`,
+The HTML preview should be professional: corporate colors (#1F4E79, #2E5090, #E8532E), clean typography, tables with borders and colored headers, slides with 16/9 aspect-ratio if presentation.`,
   },
 };
 

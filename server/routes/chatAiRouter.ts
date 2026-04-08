@@ -6402,14 +6402,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       // Override: visual content (diagrams, flowcharts, org charts) must render inline, not as files
       if (intentResult) {
-        const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","diagrama de secuencia","diagrama de clases","timeline","linea de tiempo","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt","svg","ilustracion","ilustración","icono","logo","dibujo","dibuja","grafico","gráfico","chart","pie chart","bar chart","line chart","tabla comparativa","cuadro comparativo","dashboard visual","calendario visual",
-          // Documents — render as styled HTML code instead of binary files
-          "presentacion","presentación","powerpoint","ppt","diapositivas","slides",
-          "documento","word","docx","informe","reporte",
-          "excel","hoja de calculo","hoja de cálculo","spreadsheet","xlsx",
-          "pdf","crear pdf",
-          "presentation","create document","create spreadsheet",
-        ];
+        const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","diagrama de secuencia","diagrama de clases","timeline","linea de tiempo","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt","svg","ilustracion","ilustración","icono","logo","dibujo","dibuja","grafico","gráfico","chart","pie chart","bar chart","line chart","tabla comparativa","cuadro comparativo","dashboard visual","calendario visual"];
         const msgLower = (userMessageText || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
         if (visualKw.some(kw => msgLower.includes(kw))) {
           console.log(`[Stream] 🎨 RENDER_VISUAL override: "${userMessageText.slice(0, 60)}..." — forcing inline rendering (was: ${intentResult.intent})`);
