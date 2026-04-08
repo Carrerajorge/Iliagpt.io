@@ -52,15 +52,18 @@ export async function initializeV2026_4_2(_config: OpenClawConfig): Promise<stri
   }
 
   if (features.backgroundControlPlane) {
-    initialized.push('background-control-plane');
+    // stub: needs implementation
+    initialized.push('background-control-plane (stub)');
   }
 
   if (features.crossModelToolFallback) {
-    initialized.push('cross-model-tool-fallback');
+    // stub: needs implementation
+    initialized.push('cross-model-tool-fallback (stub)');
   }
 
   if (features.chatConcurrentRuntime) {
-    initialized.push('chat-concurrent-runtime');
+    // stub: needs implementation
+    initialized.push('chat-concurrent-runtime (stub)');
   }
 
   if (features.searxngSearch) {
@@ -88,21 +91,27 @@ export async function initializeV2026_4_2(_config: OpenClawConfig): Promise<stri
   }
 
   if (features.cronToolsAllowlist) {
-    initialized.push('cron-tools-allowlist');
+    // stub: needs implementation
+    initialized.push('cron-tools-allowlist (stub)');
   }
 
   if (features.minimaxAutoEnable) {
-    initialized.push('minimax-auto-enable');
+    // stub: needs implementation
+    initialized.push('minimax-auto-enable (stub)');
   }
 
   if (features.agentCompaction) {
-    initialized.push('agent-compaction');
+    // stub: needs implementation
+    initialized.push('agent-compaction (stub)');
   }
 
   if (features.internetAccess) {
-    initialized.push('internet-access');
+    // stub: needs implementation — actual internet access is handled by internetAccess.ts
+    initialized.push('internet-access (stub)');
   }
 
-  Logger.info(`[OpenClaw v${OPENCLAW_VERSION}] Fusion initialized: [${initialized.join(', ')}]`);
+  const real = initialized.filter(f => !f.endsWith('(stub)'));
+  const stubs = initialized.filter(f => f.endsWith('(stub)'));
+  Logger.info(`[OpenClaw v${OPENCLAW_VERSION}] Fusion initialized: ${real.length} active [${real.join(', ')}], ${stubs.length} stubs [${stubs.join(', ')}]`);
   return initialized;
 }

@@ -13,6 +13,7 @@ const handlers = new Map<string, RpcHandler>();
 handlers.set('health', async () => ({
   status: 'ok',
   uptime: process.uptime(),
+  version: '2026.4.8',
   timestamp: Date.now(),
   modules: {
     gateway: true,

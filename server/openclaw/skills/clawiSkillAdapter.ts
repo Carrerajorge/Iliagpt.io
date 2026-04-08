@@ -5,6 +5,9 @@ import { z } from "zod";
 import path from "path";
 import os from "os";
 import { getOpenClawConfig } from "../config";
+import { createLogger } from "../../utils/logger";
+
+const log = createLogger("openclaw-clawi-skill-adapter");
 
 // We adapt the Clawi Skill structure to Hola's ToolRegistry ToolDefinition
 export async function initializeClawiSkills() {
@@ -84,8 +87,8 @@ export async function initializeClawiSkills() {
             }
             loadedCount++;
         }
-        console.log(`[ClawiSkillAdapter] Successfully registered ${loadedCount} Clawi skills into ToolRegistry.`);
+        log.info(`Successfully registered ${loadedCount} Clawi skills into ToolRegistry`);
     } catch (error) {
-        console.error("[ClawiSkillAdapter] Failed to load Clawi skills:", error);
+        log.error(`Failed to load Clawi skills: ${error instanceof Error ? error.message : String(error)}`);
     }
 }

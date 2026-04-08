@@ -563,6 +563,21 @@ export function createOpenClawRouter(): Router {
   return runtimeRouter;
 }
 
+/**
+ * GET /api/openclaw/health
+ * Runtime health check for all OpenClaw modules.
+ */
+router.get("/health", (_req: Request, res: Response) => {
+  try {
+    const { getOpenClawHealth } = require("../openclaw/lib/healthCheck");
+    const health = getOpenClawHealth();
+    const httpStatus = health.status === "unhealthy" ? 503 : 200;
+    res.status(httpStatus).json({ success: true, ...health });
+  } catch (error: any) {
+    res.status(503).json({ success: false, status: "unhealthy", error: error.message });
+  }
+});
+
 router.get("/instance/status", (req: Request, res: Response) => {
   try {
     const userId = (req as any).session?.passport?.user?.id ||

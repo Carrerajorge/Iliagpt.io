@@ -5,6 +5,9 @@ import fs from 'fs/promises';
 import type { ToolDefinition, ToolContext, ToolResult } from '../../agent/toolRegistry';
 import { ToolPolicyEngine } from './toolPolicies';
 
+/** Default timeout for the exec tool (can be overridden per-invocation) */
+const EXEC_TOOL_TIMEOUT = 120_000;
+
 const ExecInputSchema = z.object({
   command: z.string().min(1).describe('Shell command to execute'),
   cwd: z.string().optional().describe('Working directory (within workspace)'),
@@ -61,7 +64,7 @@ export function createExecTool(
 
       await fs.mkdir(effectiveCwd, { recursive: true });
 
-      const effectiveTimeout = overrideTimeout || policy.timeout;
+      const effectiveTimeout = overrideTimeout || EXEC_TOOL_TIMEOUT || policy.timeout;
       const startedAt = Date.now();
 
       return new Promise<ToolResult>((resolve) => {

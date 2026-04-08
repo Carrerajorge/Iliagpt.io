@@ -1,6 +1,9 @@
 import { webSearch, webFetch, webSearchAndFetch } from "./internetAccess";
 import type { WebSearchResult, WebFetchResult } from "./internetAccess";
 import { skillRegistry } from "../skills/skillRegistry";
+import { createLogger } from "../../utils/logger";
+
+const log = createLogger("openclaw-chat-internet-bridge");
 
 export interface InternetContext {
   searchResults?: WebSearchResult;
@@ -114,7 +117,7 @@ export async function gatherInternetContext(userMessage: string): Promise<Intern
     return null;
   }
 
-  console.log(`[ChatInternetBridge] Analysis: search=${analysis.shouldSearch}, fetch=${analysis.shouldFetch}, reason=${analysis.reason}, query="${analysis.searchQuery}"`);
+  log.info(`Analysis: search=${analysis.shouldSearch}, fetch=${analysis.shouldFetch}, reason=${analysis.reason}, query="${analysis.searchQuery}"`);
 
   const context: InternetContext = { triggeredBy: analysis.reason };
 
@@ -131,11 +134,11 @@ export async function gatherInternetContext(userMessage: string): Promise<Intern
               context.fetchResults = (context.fetchResults || []).concat(pages);
             }
           } catch (e: any) {
-            console.warn("[ChatInternetBridge] Search+fetch failed:", e?.message);
+            log.warn(`Search+fetch failed: ${e?.message}`);
             try {
               context.searchResults = await webSearch(analysis.searchQuery);
             } catch (e2: any) {
-              console.warn("[ChatInternetBridge] Fallback search also failed:", e2?.message);
+              log.warn(`Fallback search also failed: ${e2?.message}`);
             }
           }
         })()
@@ -184,7 +187,7 @@ ${joined}
 You CAN use any of these ready skills. For needs-setup skills (${setupSkills.length} total), tell the user which API key or configuration is required before you can use them.`;
     }
   } catch (e: any) {
-    console.warn('[chatInternetBridge] Skills injection skipped:', e?.message);
+    log.warn(`Skills injection skipped: ${e?.message}`);
   }
 
   const basePrompt = `You are IliaGPT, a powerful AI assistant with FULL real-time internet access. You are running inside the OpenClaw control interface.

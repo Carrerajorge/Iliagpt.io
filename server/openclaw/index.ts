@@ -5,6 +5,9 @@ import { OPENCLAW_VERSION, initializeV2026_4_2 } from './fusion/v2026_4_2';
 
 export { OPENCLAW_VERSION };
 
+let gatewayInitialized = false;
+let streamingInitialized = false;
+
 export async function initializeOpenClaw(httpServer: HttpServer): Promise<void> {
   const config = getOpenClawConfig();
 
@@ -13,6 +16,7 @@ export async function initializeOpenClaw(httpServer: HttpServer): Promise<void> 
   if (config.gateway.enabled) {
     const { initGateway } = await import('./gateway/wsServer');
     await initGateway(httpServer, config);
+    gatewayInitialized = true;
     enabledModules.push('gateway');
   }
 
@@ -37,6 +41,7 @@ export async function initializeOpenClaw(httpServer: HttpServer): Promise<void> 
   if (config.streaming.enabled) {
     const { initStreaming } = await import('./streaming/adapter');
     initStreaming(config);
+    streamingInitialized = true;
     enabledModules.push('streaming');
   }
 
@@ -50,4 +55,20 @@ export async function initializeOpenClaw(httpServer: HttpServer): Promise<void> 
   } else {
     Logger.info('[OpenClaw] All modules disabled (set ENABLE_OPENCLAW_* env vars to enable)');
   }
+}
+
+export async function shutdownOpenClaw(): Promise<void> {
+  Logger.info('[OpenClaw] Shutting down...');
+
+  if (gatewayInitialized) {
+    try {
+      const { shutdownGateway } = await import('./gateway/wsServer');
+      shutdownGateway();
+      Logger.info('[OpenClaw] Gateway shut down');
+    } catch (err: any) {
+      Logger.error(`[OpenClaw] Gateway shutdown error: ${err?.message}`);
+    }
+  }
+
+  Logger.info('[OpenClaw] Shutdown complete');
 }

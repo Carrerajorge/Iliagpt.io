@@ -2,6 +2,9 @@ import { JSDOM } from "jsdom";
 import https from "https";
 import http from "http";
 import { lookup } from "dns/promises";
+import { createLogger } from "../../utils/logger";
+
+const log = createLogger("openclaw-internet-access");
 
 const BLOCKED_CIDRS = [
   /^127\./,
@@ -64,7 +67,7 @@ function getCachedSearch(query: string): WebSearchResult | null {
   const key = query.toLowerCase().trim();
   const entry = searchCache.get(key);
   if (entry && entry.expiry > Date.now()) {
-    console.log(`[InternetAccess] Cache hit for "${query}"`);
+    log.debug(`Cache hit for "${query}"`);
     return entry.result;
   }
   if (entry) searchCache.delete(key);
@@ -284,13 +287,13 @@ async function searchDuckDuckGo(query: string): Promise<{ title: string; url: st
   let results = await searchDuckDuckGoGet(query);
   if (results.length > 0) return results.slice(0, 10);
 
-  console.log(`[InternetAccess] DDG GET returned 0, trying POST after 1s delay...`);
+  log.info("DDG GET returned 0, trying POST after 1s delay");
   await delay(1000);
 
   results = await searchDuckDuckGoPost(query);
   if (results.length > 0) return results.slice(0, 10);
 
-  console.log(`[InternetAccess] DDG POST also returned 0, trying alternate query after 1.5s delay...`);
+  log.info("DDG POST also returned 0, trying alternate query after 1.5s delay");
   await delay(1500);
 
   const altQuery = query.length > 20 ? query.split(" ").slice(0, 4).join(" ") : query + " official site";
@@ -414,15 +417,15 @@ export async function webSearch(query: string): Promise<WebSearchResult> {
   try {
     results = await searchDuckDuckGo(query);
     engine = "duckduckgo";
-    console.log(`[InternetAccess] DuckDuckGo returned ${results.length} results for "${query}"`);
+    log.info(`DuckDuckGo returned ${results.length} results for "${query}"`);
   } catch (e: any) {
-    console.warn(`[InternetAccess] DuckDuckGo failed: ${e?.message}`);
+    log.warn(`DuckDuckGo failed: ${e?.message}`);
   }
 
   if (results.length < 3) {
     try {
       const wikiResults = await searchWikipedia(query);
-      console.log(`[InternetAccess] Wikipedia EN returned ${wikiResults.length} results`);
+      log.info(`Wikipedia EN returned ${wikiResults.length} results`);
       const existingUrls = new Set(results.map((r) => r.url));
       for (const wr of wikiResults) {
         if (!existingUrls.has(wr.url)) results.push(wr);
@@ -430,19 +433,19 @@ export async function webSearch(query: string): Promise<WebSearchResult> {
       if (results.length > 0 && engine === "duckduckgo" && wikiResults.length > 0) engine = "duckduckgo+wikipedia";
       else if (wikiResults.length > 0) engine = "wikipedia";
     } catch (e: any) {
-      console.warn(`[InternetAccess] Wikipedia EN failed: ${e?.message}`);
+      log.warn(`Wikipedia EN failed: ${e?.message}`);
     }
 
     try {
       const wikiEsResults = await searchWikipediaES(query);
-      console.log(`[InternetAccess] Wikipedia ES returned ${wikiEsResults.length} results`);
+      log.info(`Wikipedia ES returned ${wikiEsResults.length} results`);
       const existingUrls = new Set(results.map((r) => r.url));
       for (const wr of wikiEsResults) {
         if (!existingUrls.has(wr.url)) results.push(wr);
       }
       if (wikiEsResults.length > 0 && !engine.includes("wikipedia")) engine += "+wikipedia";
     } catch (e: any) {
-      console.warn(`[InternetAccess] Wikipedia ES failed: ${e?.message}`);
+      log.warn(`Wikipedia ES failed: ${e?.message}`);
     }
   }
 

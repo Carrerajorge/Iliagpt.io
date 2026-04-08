@@ -7,6 +7,8 @@ import { skillRegistry } from "../openclaw/skills/skillRegistry";
 import { initSkills } from "../openclaw/skills/skillLoader";
 import { RAGService } from "../services/ragService";
 import { orchestrationEngine } from "../services/orchestrationEngine";
+import { openclawMetrics } from "../openclaw/lib/metrics";
+import { auditLog } from "../openclaw/lib/auditLog";
 
 const objectiveSchema = z.object({
   objective: z.string().trim().min(1, "objective is required"),
@@ -344,6 +346,28 @@ export function createOpenClawRuntimeRouter(): Router {
       runId: run.id,
       cancelled,
     });
+  });
+
+  // ── Observability endpoints ──
+
+  router.get("/metrics", (_req, res) => {
+    return res.json(openclawMetrics.getSummary());
+  });
+
+  router.get("/metrics/prometheus", (_req, res) => {
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    return res.send(openclawMetrics.toPrometheus());
+  });
+
+  router.get("/audit", (req, res) => {
+    const userId = typeof req.query.userId === "string" ? req.query.userId : undefined;
+    const toolId = typeof req.query.toolId === "string" ? req.query.toolId : undefined;
+    const limit = parseLimit(req.query.limit, 50);
+    return res.json(auditLog.query({ userId, toolId, limit }));
+  });
+
+  router.get("/audit/stats", (_req, res) => {
+    return res.json(auditLog.getStats());
   });
 
   return router;

@@ -81,6 +81,14 @@ export function createFsTools(workspaceRoot: string, workspaceOnly: boolean): To
           error: { code: 'BLOCKED', message: 'Path outside workspace', retryable: false },
         };
       }
+      // Enforce file size limit before writing
+      if (Buffer.byteLength(input.content) > MAX_FILE_SIZE) {
+        return {
+          success: false,
+          output: null,
+          error: { code: 'TOO_LARGE', message: `File too large (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`, retryable: false },
+        };
+      }
       try {
         await fs.mkdir(path.dirname(resolved), { recursive: true });
         await fs.writeFile(resolved, input.content, 'utf-8');

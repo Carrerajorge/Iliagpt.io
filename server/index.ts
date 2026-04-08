@@ -370,8 +370,13 @@ export function log(message: string, source = "express") {
   await registerRoutes(httpServer, app);
 
   // Initialize OpenClaw agentic integration layer (feature-flagged)
-  const { initializeOpenClaw } = await import("./openclaw/index");
+  const { initializeOpenClaw, shutdownOpenClaw } = await import("./openclaw/index");
   await initializeOpenClaw(httpServer);
+  registerCleanup(async () => {
+    log("Shutting down OpenClaw...");
+    await shutdownOpenClaw();
+    log("OpenClaw shutdown complete");
+  });
 
   // Initialize the agentic capability layer (AgenticLoop, tools, terminal, tasks)
   try {

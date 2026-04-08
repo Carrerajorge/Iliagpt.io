@@ -1,3 +1,7 @@
+import { createLogger } from '../../utils/logger';
+
+const log = createLogger('openclaw-subagent');
+
 export type SubagentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type SubagentPermissionProfile = 'read_only' | 'safe_coding' | 'full_agent';
 
@@ -73,6 +77,7 @@ type BackgroundTaskManagerLike = {
     timeoutMs?: number;
     metadata?: Record<string, unknown>;
   }) => Promise<TaskRecordLike>;
+  get: (id: string) => TaskRecordLike | undefined;
   getOrFetch: (id: string) => Promise<TaskRecordLike | undefined>;
   list: (params: {
     userId?: string;
@@ -83,6 +88,7 @@ type BackgroundTaskManagerLike = {
     offset?: number;
   }) => TaskRecordLike[];
   cancel: (id: string) => boolean;
+  appendOutput: (id: string, chunk: string) => void;
 };
 
 const OPENCLAW_SUBAGENT_SOURCE = 'openclaw_subagent';
@@ -191,6 +197,48 @@ function toRunRecord(task: TaskRecordLike): SubagentRunRecord {
   };
 }
 
+async function executeSubagent(taskId: string, params: SpawnSubagentParams): Promise<void> {
+  const { objective, planHint } = params;
+  const planHintStr = Array.isArray(planHint) && planHint.length > 0
+    ? `\nPlan hint:\n${planHint.map((s, i) => `${i + 1}. ${s}`).join('\n')}`
+    : '';
+
+  const systemPrompt = `You are a focused subagent. Your objective: ${objective}${planHintStr}
+Execute the objective step by step. Be concise and effective.`;
+
+  const manager = await getBackgroundTaskManager();
+
+  try {
+    const task = manager.get(taskId);
+    if (!task || task.status === 'cancelled') return;
+
+    const { llmGateway } = await import('../../lib/llmGateway');
+    const response = await llmGateway.chat(
+      [
+        { role: 'system' as const, content: systemPrompt },
+        { role: 'user' as const, content: objective },
+      ],
+      { userId: params.requesterUserId || 'system', timeout: 60000 },
+    );
+
+    manager.appendOutput(taskId, response.content);
+
+    // Persist completion to DB (fire-and-forget)
+    void import('./taskPersistence').then(({ updateTaskStatus }) =>
+      updateTaskStatus(taskId, 'completed', response.content),
+    ).catch(() => {});
+
+    log.info('Subagent completed', { taskId, objective: objective.slice(0, 100) });
+  } catch (error: any) {
+    // Persist failure to DB (fire-and-forget)
+    void import('./taskPersistence').then(({ updateTaskStatus }) =>
+      updateTaskStatus(taskId, 'failed', undefined, error.message),
+    ).catch(() => {});
+
+    log.error('Subagent failed', { taskId, error: error.message });
+  }
+}
+
 class OpenClawSubagentService {
   async spawn(params: SpawnSubagentParams): Promise<SubagentRunRecord> {
     const manager = await getBackgroundTaskManager();
@@ -209,6 +257,20 @@ class OpenClawSubagentService {
         planHint,
       },
     });
+
+    // Persist task to PostgreSQL (fire-and-forget)
+    void import('./taskPersistence').then(({ persistTask }) =>
+      persistTask({
+        id: task.id,
+        status: task.status,
+        objective: params.objective,
+        userId: params.requesterUserId,
+        parentRunId: params.parentRunId,
+      }),
+    ).catch(() => {});
+
+    // Execute the subagent in a detached promise
+    void executeSubagent(task.id, params);
 
     return toRunRecord(task);
   }
