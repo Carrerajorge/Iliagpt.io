@@ -451,13 +451,13 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
     case "config.get":
       reply(ws, id, {
         models: {
-          default: { provider: "openrouter", model: "moonshotai/kimi-k2.5" },
+          default: { provider: "openrouter", model: "google/gemma-4-31b-it" },
           providers: {
             openrouter: { enabled: true },
-            gemini: { enabled: true },
-            openai: { enabled: true },
-            xai: { enabled: true },
-            anthropic: { enabled: true },
+            gemini: { enabled: false },
+            openai: { enabled: false },
+            xai: { enabled: false },
+            anthropic: { enabled: false },
           },
         },
         agents: { default: { id: "main" } },
@@ -508,17 +508,9 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
     case "models.list":
       reply(ws, id, {
         models: [
-          { id: "moonshotai/kimi-k2.5", provider: "openrouter", name: "Kimi K2.5", available: true },
           { id: "google/gemma-4-31b-it", provider: "openrouter", name: "Gemma 4 31B IT", available: true },
-          { id: "google/gemma-3-27b-it:free", provider: "openrouter", name: "Gemma 3 27B IT (Free)", available: true },
-          { id: "gemini-2.5-flash-preview-05-20", provider: "gemini", name: "Gemini 2.5 Flash", available: true },
-          { id: "gemini-2.5-pro-preview-05-06", provider: "gemini", name: "Gemini 2.5 Pro", available: true },
-          { id: "gpt-4o", provider: "openai", name: "GPT-4o", available: true },
-          { id: "gpt-4.1", provider: "openai", name: "GPT-4.1", available: true },
-          { id: "claude-sonnet-4-20250514", provider: "anthropic", name: "Claude Sonnet 4", available: true },
-          { id: "grok-3-mini-fast", provider: "xai", name: "Grok 3 Mini Fast", available: true },
         ],
-        default: { provider: "openrouter", model: "moonshotai/kimi-k2.5" },
+        default: { provider: "openrouter", model: "google/gemma-4-31b-it" },
       });
       break;
 
@@ -560,14 +552,14 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
             agentId: "main",
             label: "main",
             status: "idle",
-            model: mainOverride?.model || "moonshotai/kimi-k2.5",
+            model: mainOverride?.model || "google/gemma-4-31b-it",
             provider: mainOverride?.provider || "openrouter",
             createdAt: Date.now() - 60000,
             updatedAt: Date.now(),
           },
         ],
         defaults: {
-          model: "moonshotai/kimi-k2.5",
+          model: "google/gemma-4-31b-it",
           provider: "openrouter",
           agentId: "main",
         },
@@ -607,15 +599,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       if (params?.model) {
         const modelId = params.model.trim();
         const modelsList = [
-          { id: "moonshotai/kimi-k2.5", provider: "openrouter" },
           { id: "google/gemma-4-31b-it", provider: "openrouter" },
-          { id: "google/gemma-3-27b-it:free", provider: "openrouter" },
-          { id: "gemini-2.5-flash-preview-05-20", provider: "gemini" },
-          { id: "gemini-2.5-pro-preview-05-06", provider: "gemini" },
-          { id: "gpt-4o", provider: "openai" },
-          { id: "gpt-4.1", provider: "openai" },
-          { id: "claude-sonnet-4-20250514", provider: "anthropic" },
-          { id: "grok-3-mini-fast", provider: "xai" },
         ];
         const found = modelsList.find(m => m.id === modelId);
         const patchProvider = params.provider || found?.provider || (modelId.includes("/") ? "openrouter" : "openai");
@@ -625,7 +609,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       reply(ws, id, {
         ok: true,
         resolved: {
-          model: params?.model || sessionModelOverrides.get(patchKey)?.model || "moonshotai/kimi-k2.5",
+          model: params?.model || sessionModelOverrides.get(patchKey)?.model || "google/gemma-4-31b-it",
           modelProvider: params?.provider || sessionModelOverrides.get(patchKey)?.provider || "openrouter",
         },
       });
@@ -780,7 +764,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       console.log(`[OpenClaw Gateway] chat.send params:`, JSON.stringify(params, null, 0)?.slice(0, 500));
 
       const sessionOverride = sessionModelOverrides.get(chatSessionKey);
-      const selectedModel = params?.model || sessionOverride?.model || "moonshotai/kimi-k2.5";
+      const selectedModel = params?.model || sessionOverride?.model || "google/gemma-4-31b-it";
       const selectedProvider = params?.provider || sessionOverride?.provider || "openrouter";
 
       if (!userMessage.trim()) {
