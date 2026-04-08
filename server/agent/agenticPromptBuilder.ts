@@ -108,14 +108,8 @@ const INTENT_INSTRUCTIONS: Record<string, { es: string; en: string }> = {
     en: "IMPORTANT: When user asks for a diagram, flowchart, architecture diagram, or any visual process/system representation, ALWAYS generate Mermaid code inside a ```mermaid block. The system will automatically render it as a visual SVG. Use the most appropriate diagram type: graph TD (flowchart), sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, pie. Include clear labels and logical connections.",
   },
   document_render: {
-    es: `REGLA DE GENERACION DE DOCUMENTOS:
-Cuando el usuario pida crear una presentacion, documento Word, hoja Excel, informe, o PDF, el sistema generara automaticamente el archivo profesional (.docx, .xlsx, .pptx, .pdf) y lo pondra disponible para descarga. Tu trabajo es generar el CONTENIDO del documento de forma completa y profesional. Ademas, incluye un preview visual del documento en formato HTML dentro de un bloque \`\`\`html para que el usuario vea como lucira.
-
-El preview HTML debe ser profesional: colores corporativos (#1F4E79, #2E5090, #E8532E), tipografia limpia, tablas con bordes y headers coloreados, slides con aspect-ratio 16/9 si es presentacion.`,
-    en: `DOCUMENT GENERATION RULE:
-When user asks to create a presentation, Word document, Excel spreadsheet, report, or PDF, the system will automatically generate the professional file (.docx, .xlsx, .pptx, .pdf) and make it available for download. Your job is to generate the document CONTENT completely and professionally. Additionally, include a visual preview in HTML format inside a \`\`\`html block so the user can see how it will look.
-
-The HTML preview should be professional: corporate colors (#1F4E79, #2E5090, #E8532E), clean typography, tables with borders and colored headers, slides with 16/9 aspect-ratio if presentation.`,
+    es: "", // Replaced by getDocumentCodePrompt() from codeExecutionGenerator
+    en: "",
   },
 };
 
@@ -198,9 +192,12 @@ export function buildAgenticSystemPrompt(ctx: AgenticPromptContext): string {
   if (diagramInst && ctx.intent !== "diagram") {
     sections.push(lang === "es" ? diagramInst.es : diagramInst.en);
   }
-  const docRenderInst = INTENT_INSTRUCTIONS["document_render"];
-  if (docRenderInst) {
-    sections.push(lang === "es" ? docRenderInst.es : docRenderInst.en);
+  // Document code generation instructions (Claude-style: LLM writes code, system executes)
+  try {
+    const { getDocumentCodePrompt } = require("../../services/documentGenerators/codeExecutionGenerator");
+    sections.push(getDocumentCodePrompt(ctx.locale));
+  } catch {
+    // Fallback if module not available
   }
 
   // 6. Attachment context
