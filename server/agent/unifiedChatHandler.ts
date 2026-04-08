@@ -367,9 +367,10 @@ export async function createUnifiedRun(
   });
 
   // Override: visual content (diagrams, flowcharts, etc.) must NOT route to document/presentation agents
-  const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","timeline","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt"];
+  const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","diagrama de secuencia","diagrama de clases","timeline","linea de tiempo","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt","svg","ilustracion","ilustración","icono","logo","dibujo","dibuja","grafico","gráfico","chart","pie chart","bar chart","line chart","tabla comparativa","cuadro comparativo","dashboard visual","calendario visual"];
   const msgLower = lastUserMessage.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  if (visualKw.some(kw => msgLower.includes(kw))) {
+  const isVisualOverride = visualKw.some(kw => msgLower.includes(kw));
+  if (isVisualOverride) {
     // Force to chat intent so LLM renders inline Mermaid/SVG/HTML
     (requestSpec as any).intent = "chat";
     (requestSpec as any).deliverableType = "text_response";
@@ -382,7 +383,7 @@ export async function createUnifiedRun(
   const latencyMode: LatencyMode = request.latencyMode || 'auto';
 
   const hasAttachments = !!(request.attachments && request.attachments.length > 0);
-  const hasAgenticSignal = hasNativeAgenticSignal(lastUserMessage);
+  const hasAgenticSignal = isVisualOverride ? false : hasNativeAgenticSignal(lastUserMessage);
 
   let resolvedLane = resolveLatencyLane(
     latencyMode,
@@ -393,13 +394,15 @@ export async function createUnifiedRun(
     resolvedLane = "deep";
   }
 
-  const executionMode = selectAgentExecutionMode({
-    requestSpec,
-    rawMessage: lastUserMessage,
-    resolvedLane,
-    hasAttachments,
-    hasAgenticSignal,
-  });
+  const executionMode = isVisualOverride
+    ? "conversation" as any
+    : selectAgentExecutionMode({
+        requestSpec,
+        rawMessage: lastUserMessage,
+        resolvedLane,
+        hasAttachments,
+        hasAgenticSignal,
+      });
   const isAgenticMode = executionMode !== "conversation";
   const runtimeProfile = isAgenticMode ? "operational" : "conversational";
 

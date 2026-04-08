@@ -334,6 +334,12 @@ const VISUAL_KEYWORDS = [
   "diagram", "flow chart", "org chart", "mind map", "sequence diagram",
   "class diagram", "er diagram", "state diagram", "architecture diagram",
   "process map", "gantt chart",
+  // SVG, icons, illustrations, drawings — render inline, not as files
+  "svg", "ilustracion", "ilustración", "icono", "logo", "dibujo", "dibuja",
+  "grafico", "gráfico", "chart", "pie chart", "bar chart", "line chart",
+  "dashboard visual", "calendario visual",
+  // Broad: any request to "create a visual" or "draw"
+  "crea un svg", "genera un svg", "haz un svg", "create svg", "draw",
 ];
 
 function isVisualRequest(message: string): boolean {
