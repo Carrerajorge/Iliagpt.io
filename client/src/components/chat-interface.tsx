@@ -7415,7 +7415,7 @@ IMPORTANTE:
                     <SkeletonChatMessages count={3} />
                   </div>
                 ) : hasMessages && (
-                  <div className="flex-1 overflow-y-auto space-y-3 overscroll-contain pb-[var(--composer-height,120px)] p-4 sm:p-6 md:p-10 space-y-6">
+                  <div className="flex-1 overflow-hidden space-y-3 overscroll-contain pb-[var(--composer-height,120px)] p-4 sm:p-6 md:p-10 space-y-6">
                     <ErrorBoundary section="chat">
                     <ChatMessageList
                       messages={displayMessages}
@@ -7716,7 +7716,7 @@ IMPORTANTE:
                   ref={messagesContainerRef}
                   onScroll={handleScroll}
                   className={cn(
-                    "absolute inset-0 overflow-y-auto p-4 sm:p-6 md:p-8 pb-[calc(var(--composer-height,120px)+120px)] space-y-3 bg-background",
+                    "absolute inset-0 overflow-hidden p-4 sm:p-6 md:p-8 pb-[calc(var(--composer-height,120px)+120px)] space-y-3 bg-background",
                     !hasMessages && "invisible"
                   )}
                 >
