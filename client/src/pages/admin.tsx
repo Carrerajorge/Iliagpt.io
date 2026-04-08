@@ -6059,21 +6059,25 @@ export default function AdminPage() {
     error: authError,
     refetch: refetchCurrentUser,
   } = useQuery({
-    queryKey: ["/api/auth/user"],
+    queryKey: ["/api/auth/user", "admin-check"],
     queryFn: async () => {
-      const res = await apiFetch("/api/auth/user", { credentials: "include" });
-      if (!res.ok) {
-        try {
-          const stored = localStorage.getItem("siragpt_auth_user");
-          if (stored) {
-            const parsed = JSON.parse(stored);
-            if (parsed?.role === "admin") return parsed;
-          }
-        } catch {}
-        return null;
-      }
-      return res.json();
-    }
+      try {
+        const res = await apiFetch("/api/auth/user", { credentials: "include" });
+        if (res.ok) {
+          const user = await res.json();
+          if (user?.role === "admin") return user;
+        }
+      } catch {}
+      try {
+        const stored = localStorage.getItem("siragpt_auth_user");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed?.role === "admin") return parsed;
+        }
+      } catch {}
+      return null;
+    },
+    staleTime: 10_000,
   });
 
   // Redirect non-admin users
