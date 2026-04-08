@@ -444,6 +444,9 @@ export function log(message: string, source = "express") {
     if (dbConnected) {
       startChatScheduleRunner();
       startMemoryPurgeJob();
+      // Daily quota reset, usage summary, anonymous cleanup
+      const { startUserCronJobs } = await import("./cron/userJobs");
+      startUserCronJobs();
     } else {
       log("[Schedules] Skipping schedule runner start because DB is not connected");
     }

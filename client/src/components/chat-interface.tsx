@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { SkeletonChatMessages } from "@/components/skeletons";
 import { ErrorBoundary } from "@/components/error-boundary";
+import UsageWarningBanner from "@/components/UsageWarningBanner";
 import { useDraft } from "@/hooks/use-draft";
 import { useStreamingTransition } from "@/hooks/use-streaming-transition";
 import { useStreamChat } from "@/hooks/use-stream-chat";
@@ -7575,6 +7576,8 @@ IMPORTANTE:
           onCreateFolder={onCreateFolder}
           userPlanInfo={userPlanInfo}
         />
+        {/* Usage Warning Banner */}
+        <UsageWarningBanner />
         {/* Main Content Area with Side Panel - Document Preview */}
         {previewDocument ? (
           <PanelGroup direction="horizontal" className="flex-1">
