@@ -64,8 +64,8 @@ export const ThrottledStreamingContent = memo(function ThrottledStreamingContent
   if (!visibleContent) return null;
 
   return (
-    <div className="animate-content-fade-in flex flex-col gap-2 max-w-[85%] items-start min-w-0">
-      <div className="text-sm prose prose-sm dark:prose-invert max-w-none leading-relaxed min-w-0">
+    <div className="animate-content-fade-in flex flex-col gap-2 w-full items-start min-w-0">
+      <div className="prose dark:prose-invert max-w-none min-w-0">
         <MarkdownErrorBoundary fallbackContent={visibleContent}>
           <MarkdownRenderer
             content={visibleContent}

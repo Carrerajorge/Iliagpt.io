@@ -211,22 +211,24 @@ html, body, #root {
   border-color: hsl(var(--ring));
 }
 
-/* Simple Message Bubbles - Uses design tokens */
+/* Simple Message Bubbles - Professional styling */
 .liquid-message-user {
   background-color: hsl(var(--primary));
-  border-radius: 16px 16px 4px 16px;
+  border-radius: 18px 18px 4px 18px;
   color: hsl(var(--primary-foreground));
   overflow-wrap: break-word;
   word-wrap: break-word;
   word-break: break-word;
   max-width: 100%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 
 .liquid-message-ai {
   background-color: hsl(var(--card));
-  border: 1px solid hsl(var(--border));
-  border-radius: 16px 16px 16px 4px;
+  border: 1px solid hsl(var(--border) / 0.5);
+  border-radius: 18px 18px 18px 4px;
   color: hsl(var(--card-foreground));
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
 }
 
 .liquid-message-ai-light {

@@ -232,7 +232,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                         ) : block.content?.trim() ? (
                             <div
                                 key={blockIdx}
-                                className="text-sm prose prose-sm dark:prose-invert max-w-none leading-relaxed min-w-0"
+                                className="prose dark:prose-invert max-w-none min-w-0"
                             >
                                 <MarkdownErrorBoundary key={`${message.id}-${blockIdx}-${block.content.length}`} fallbackContent={block.content}>
                                     <MarkdownRenderer
