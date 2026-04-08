@@ -1,116 +1,100 @@
-import type { DocumentIntent, IntentRouteResult, DocumentFormat } from "./types";
+/** Document Intent Router — rules-based routing with confidence scoring (v1). */
+import type { DocumentIntentRoute, DocumentFormat, DocumentOperation, DocumentBackend } from "./types";
 
-// Keyword sets for intent detection (supports English + Spanish)
+// ── Bilingual Keyword Sets (ES + EN) ─────────────────────────────
+const CREATE_VERBS = [
+  "create","crear","generate","generar","make","hacer","new","nuevo",
+  "build","construir","diseñar","design","elaborar","prepare","preparar","redactar","write","draft",
+];
+const EDIT_VERBS = [
+  "edit","editar","modify","modificar","update","actualizar","change","cambiar",
+  "adjust","ajustar","fix","corregir","revise","mejorar","improve","rewrite","reescribir",
+];
+const CONVERT_VERBS = [
+  "convert","convertir","transform","transformar","export","exportar",
+  "to pdf","a pdf","to docx","a docx","to pptx","a pptx","to xlsx","a xlsx","pasar a","cambiar formato",
+];
+const ANALYZE_VERBS = [
+  "analyze","analizar","analyse","review","summarize","resumir","inspect","inspeccionar","extract","extraer","describe","describir",
+];
+const REDLINE_VERBS = [
+  "redline","track changes","compare","comparar","diff","control de cambios","markup","marcar cambios","revision","revisión",
+];
+const REVIEW_VERBS = ["revisar","review","check","verificar","evaluar","evaluate"];
 
-const CREATE_KEYWORDS = ["create", "crear", "generate", "generar", "make", "hacer", "new", "nuevo", "build", "construir"];
-const EDIT_KEYWORDS = ["edit", "editar", "modify", "modificar", "update", "actualizar", "change", "cambiar"];
-const CONVERT_KEYWORDS = ["convert", "convertir", "transform", "transformar", "export", "exportar", "to pdf", "a pdf", "to docx", "a docx"];
-const ANALYZE_KEYWORDS = ["analyze", "analizar", "analyse", "review", "revisar", "inspect", "inspeccionar", "summarize", "resumir"];
-const REDLINE_KEYWORDS = ["redline", "track changes", "compare", "comparar", "diff", "revision", "revisión"];
+// ── Helpers ──────────────────────────────────────────────────────
+function score(text: string, kws: string[]): number {
+  let s = 0;
+  for (const kw of kws) if (text.includes(kw)) s += kw.split(/\s+/).length;
+  return s;
+}
+function hasAny(text: string, kws: string[]): boolean {
+  return kws.some((k) => text.includes(k));
+}
+function confidence(s: number, exact: boolean): number {
+  if (exact && s >= 2) return 0.95;
+  if (exact) return 0.9;
+  if (s >= 2) return 0.8;
+  if (s >= 1) return 0.7;
+  return 0.3;
+}
 
-// Workflow mapping per (format, intent)
-
-const WORKFLOW_MAP: Record<string, Record<string, { skill: string; workflow: string }>> = {
-  pptx: {
-    create: { skill: "pptx-create", workflow: "pptxgenjs" },
-    edit: { skill: "pptx-edit", workflow: "ooxml-unpack" },
-    convert: { skill: "pptx-convert", workflow: "ooxml-unpack" },
-    analyze: { skill: "pptx-analyze", workflow: "ooxml-unpack" },
-    redline: { skill: "pptx-edit", workflow: "ooxml-unpack" },
-  },
-  docx: {
-    create: { skill: "docx-create", workflow: "docx-lib" },
-    edit: { skill: "docx-edit", workflow: "ooxml-basic" },
-    convert: { skill: "docx-convert", workflow: "ooxml-basic" },
-    analyze: { skill: "docx-analyze", workflow: "ooxml-basic" },
-    redline: { skill: "docx-redline", workflow: "pandoc-redline" },
-  },
-  xlsx: {
-    create: { skill: "xlsx-create", workflow: "exceljs" },
-    edit: { skill: "xlsx-edit", workflow: "exceljs-load" },
-    convert: { skill: "xlsx-convert", workflow: "exceljs" },
-    analyze: { skill: "xlsx-analyze", workflow: "exceljs-load" },
-    redline: { skill: "xlsx-edit", workflow: "exceljs-load" },
-  },
-  pdf: {
-    create: { skill: "pdf-create", workflow: "pdfkit" },
-    edit: { skill: "pdf-edit", workflow: "pdfkit" },
-    convert: { skill: "pdf-convert", workflow: "pdfkit" },
-    analyze: { skill: "pdf-analyze", workflow: "pdfplumber" },
-    redline: { skill: "pdf-analyze", workflow: "pdfplumber" },
-  },
+// ── Intent Detection ─────────────────────────────────────────────
+type Input = {
+  userMessage: string;
+  hasAttachment: boolean;
+  attachmentFormat?: string;
+  requestedFormat?: DocumentFormat;
+  context?: "legal" | "academic" | "business" | "general";
 };
 
-// Intent detection
-
-function matchesAny(text: string, keywords: string[]): boolean {
-  return keywords.some((kw) => text.includes(kw));
-}
-
-function detectIntent(input: {
-  userMessage: string;
-  hasAttachment: boolean;
-  attachmentFormat?: string;
-  requestedFormat?: DocumentFormat;
-  context?: "legal" | "academic" | "business" | "general";
-}): DocumentIntent {
+function detectOperation(input: Input): { operation: DocumentOperation; confidence: number } {
   const msg = input.userMessage.toLowerCase();
-
-  // Explicit analyze request takes priority
-  if (matchesAny(msg, ANALYZE_KEYWORDS)) return "analyze";
-
-  // Redline: legal/academic context + edit keywords, or explicit redline keywords
-  if (matchesAny(msg, REDLINE_KEYWORDS)) return "redline";
-  if (
-    (input.context === "legal" || input.context === "academic") &&
-    input.hasAttachment &&
-    matchesAny(msg, EDIT_KEYWORDS)
-  ) {
-    return "redline";
-  }
-
-  // Convert: has attachment and requests a different format
-  if (matchesAny(msg, CONVERT_KEYWORDS)) return "convert";
-  if (
-    input.hasAttachment &&
-    input.requestedFormat &&
-    input.attachmentFormat &&
-    input.requestedFormat !== input.attachmentFormat
-  ) {
-    return "convert";
-  }
-
-  // Edit: has attachment + same format (or no explicit different format)
-  if (input.hasAttachment && matchesAny(msg, EDIT_KEYWORDS)) return "edit";
-  if (input.hasAttachment && !matchesAny(msg, CREATE_KEYWORDS)) return "edit";
-
-  // Default: create
-  return "create";
+  const sc = {
+    analyze: score(msg, ANALYZE_VERBS), redline: score(msg, REDLINE_VERBS),
+    convert: score(msg, CONVERT_VERBS), edit: score(msg, EDIT_VERBS), create: score(msg, CREATE_VERBS),
+  };
+  // PDF attachment: NEVER edit/redline in v1 — respond "recrear o convertir"
+  if (input.attachmentFormat === "pdf" && (sc.edit > 0 || sc.redline > 0))
+    return { operation: "create", confidence: 0.6 };
+  // Explicit analyze takes priority
+  if (sc.analyze > 0) return { operation: "analyze", confidence: confidence(sc.analyze, true) };
+  // Redline: explicit keywords or legal/academic context + DOCX attachment + review verbs
+  if (sc.redline > 0) return { operation: "redline", confidence: confidence(sc.redline, true) };
+  if ((input.context === "legal" || input.context === "academic") &&
+      input.hasAttachment && input.attachmentFormat === "docx" && hasAny(msg, REVIEW_VERBS))
+    return { operation: "redline", confidence: 0.75 };
+  // Convert: explicit verbs or attachment + different requested format
+  if (sc.convert > 0) return { operation: "convert", confidence: confidence(sc.convert, true) };
+  if (input.hasAttachment && input.requestedFormat && input.attachmentFormat &&
+      input.requestedFormat !== input.attachmentFormat)
+    return { operation: "convert", confidence: 0.85 };
+  // Edit: attachment + edit verbs or attachment without create intent
+  if (input.hasAttachment && sc.edit > 0) return { operation: "edit", confidence: confidence(sc.edit, true) };
+  if (input.hasAttachment && sc.create === 0) return { operation: "edit", confidence: 0.6 };
+  // Create: default
+  if (sc.create > 0) return { operation: "create", confidence: confidence(sc.create, true) };
+  // No match — low confidence fallback (LLM routing in future)
+  return { operation: "create", confidence: 0.3 };
 }
 
-// Public router
+// ── Backend Selection ────────────────────────────────────────────
+function selectBackend(format: DocumentFormat, op: DocumentOperation): DocumentBackend {
+  if (op === "redline" && format === "docx") return "native"; // ALWAYS native
+  if (op === "create" || op === "edit") return "native";
+  return process.env.DOC_SKILLS_CLAUDE_ENABLED === "true" ? "claude-skills" : "native";
+}
 
-export function routeDocumentIntent(input: {
-  userMessage: string;
-  hasAttachment: boolean;
-  attachmentFormat?: string;
-  requestedFormat?: DocumentFormat;
-  context?: "legal" | "academic" | "business" | "general";
-}): IntentRouteResult {
-  const intent = detectIntent(input);
-
+// ── Public Router ────────────────────────────────────────────────
+export function routeDocumentIntent(input: Input): DocumentIntentRoute {
+  const { operation, confidence: conf } = detectOperation(input);
   const format: DocumentFormat = input.requestedFormat
-    ?? (input.attachmentFormat as DocumentFormat | undefined)
-    ?? "docx";
-
-  const mapping = WORKFLOW_MAP[format]?.[intent]
-    ?? WORKFLOW_MAP.docx[intent]
-    ?? { skill: "docx-create", workflow: "docx-lib" };
-
+    ?? (input.attachmentFormat as DocumentFormat | undefined) ?? "docx";
   return {
-    intent,
-    skill: mapping.skill,
-    workflow: mapping.workflow,
-    backend: "local",
+    format, operation,
+    backend: selectBackend(format, operation),
+    requiresQa: operation === "create" || operation === "edit",
+    requiresLevel3: operation === "edit" || operation === "redline",
+    confidence: conf,
   };
 }

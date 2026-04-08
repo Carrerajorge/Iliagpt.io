@@ -1,18 +1,68 @@
 export type DocumentFormat = "pptx" | "docx" | "xlsx" | "pdf";
-export type DocumentIntent = "create" | "edit" | "convert" | "redline" | "analyze";
-export type DocumentBackend = "local" | "claude-skills";
+export type DocumentOperation = "create" | "edit" | "convert" | "redline" | "analyze";
+export type DocumentBackend = "native" | "claude-skills";
+export type QaStatus = "skipped" | "warning" | "passed" | "failed";
 
-export interface SkillDefinition {
-  name: string;
-  description: string;
+export interface DocumentSkillDefinition {
+  id: string;
   format: DocumentFormat;
-  triggers: string[]; // keywords that activate this skill
-  level1Summary: string; // ~100 tokens for system prompt
-  level2Path: string; // path to SKILL.md
-  level3Refs: string[]; // paths to additional reference files
+  operations: DocumentOperation[];
+  triggers: string[];  // bilingual keywords
+  level1Summary: string; // ~100 tokens for planner
+  loadLevel2: () => Promise<string>; // full SKILL.md
+  loadLevel3: (reason: string) => Promise<string | null>; // reference docs
+  execute: (ctx: DocumentExecutionContext) => Promise<DocumentResult>;
+  qaPolicy: "advisor" | "blocking"; // advisor = warn, blocking = fail
+  backendSupport: DocumentBackend[];
+}
+
+export interface DocumentExecutionContext {
+  operation: DocumentOperation;
+  userMessage: string;
+  format: DocumentFormat;
+  backend: DocumentBackend;
+  palette?: string;
+  attachmentBuffer?: Buffer;
+  attachmentFormat?: string;
+  locale: string;
+  userId: string;
+  chatId: string;
+}
+
+export interface DocumentResult {
+  buffer: Buffer;
+  filename: string;
+  mimeType: string;
+  downloadUrl: string;
+  previewHtml?: string;
+  metadata: {
+    skillId: string;
+    operation: DocumentOperation;
+    backendUsed: DocumentBackend;
+    paletteId?: string;
+    durationMs: number;
+    qa: DocumentQaReport;
+  };
+}
+
+export interface DocumentQaReport {
+  status: QaStatus;
+  severity: "none" | "low" | "medium" | "high";
+  findings: string[];
+  metrics: { validationMs: number; repairLoops: number };
+}
+
+export interface DocumentIntentRoute {
+  format: DocumentFormat;
+  operation: DocumentOperation;
+  backend: DocumentBackend;
+  requiresQa: boolean;
+  requiresLevel3: boolean;
+  confidence: number;
 }
 
 export interface DesignPalette {
+  id: string;
   name: string;
   primary: string;
   secondary: string;
@@ -24,24 +74,16 @@ export interface DesignPalette {
   surface: string;
 }
 
-export interface TypographyRules {
-  titleSize: [number, number]; // [min, max] in pt
-  subtitleSize: [number, number];
-  bodySize: [number, number];
-  captionSize: [number, number];
-  titleFont: string;
-  bodyFont: string;
-}
-
-export interface QAResult {
-  passed: boolean;
-  issues: string[];
-  thumbnails?: { page: number; base64: string }[];
-}
-
-export interface IntentRouteResult {
-  intent: DocumentIntent;
-  skill: string;
-  workflow: string;
-  backend: DocumentBackend;
+export interface DesignTokens {
+  palettes: Record<string, DesignPalette>;
+  typography: {
+    titleSize: [number, number]; // pt range
+    subtitleSize: [number, number];
+    bodySize: [number, number];
+    captionSize: [number, number];
+    titleFont: string;
+    bodyFont: string;
+  };
+  excelColorCoding: { inputs: string; formulas: string; links: string };
+  antiPatterns: string[];
 }

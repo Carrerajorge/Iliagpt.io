@@ -55,15 +55,15 @@ describe("design system", () => {
 
 // ── Intent Router ─────────────────────────────────────────────────────────
 describe("intent router", () => {
-  it("routes create request to correct skill", async () => {
+  it("routes create request to correct format", async () => {
     const { routeDocumentIntent } = await import("../skills/documents/intentRouter");
     const result = routeDocumentIntent({
       userMessage: "crea una presentacion sobre IA",
       hasAttachment: false,
       requestedFormat: "pptx",
     });
-    expect(result.intent).toBe("create");
-    expect(result.skill).toContain("pptx");
+    expect(result.operation).toBe("create");
+    expect(result.format).toBe("pptx");
   });
 
   it("routes edit when attachment present", async () => {
@@ -74,7 +74,7 @@ describe("intent router", () => {
       attachmentFormat: "docx",
       requestedFormat: "docx",
     });
-    expect(result.intent).toBe("edit");
+    expect(result.operation).toBe("edit");
   });
 
   it("routes convert for different formats", async () => {
@@ -85,7 +85,7 @@ describe("intent router", () => {
       attachmentFormat: "docx",
       requestedFormat: "pdf",
     });
-    expect(result.intent).toBe("convert");
+    expect(result.operation).toBe("convert");
   });
 
   it("routes redline for legal context", async () => {
@@ -97,7 +97,7 @@ describe("intent router", () => {
       requestedFormat: "docx",
       context: "legal",
     });
-    expect(["redline", "edit"]).toContain(result.intent);
+    expect(["redline", "edit"]).toContain(result.operation);
   });
 });
 
