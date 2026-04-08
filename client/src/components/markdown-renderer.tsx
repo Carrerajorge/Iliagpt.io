@@ -27,6 +27,19 @@ const SanitizedSvgBlock = memo(function SanitizedSvgBlock({ html }: { html: stri
 });
 
 // ── Mermaid Diagram Renderer ──
+/** Normalize mermaid source: fix common stream artifacts that break parsing */
+function normalizeMermaidCode(raw: string): string {
+  return raw
+    .replace(/<br\s*\/?>/gi, "\n")          // <br/> → newline
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">") // HTML entities
+    .replace(/&amp;/g, "&")
+    .replace(/\u201C|\u201D/g, '"')          // smart quotes → straight
+    .replace(/\u2018|\u2019/g, "'")
+    .replace(/\r\n/g, "\n")                  // normalize line endings
+    .replace(/\t/g, "  ")                    // tabs → spaces
+    .trim();
+}
+
 const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: string }) {
   const svgRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
@@ -36,20 +49,49 @@ const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: string }) 
 
   useEffect(() => {
     let cancelled = false;
+    const normalized = normalizeMermaidCode(code);
+
+    if (!normalized) {
+      setErrorMsg("Empty diagram code");
+      setStatus("error");
+      return;
+    }
+
     (async () => {
       try {
         const mermaid = (await import("mermaid")).default;
-        mermaid.initialize({ startOnLoad: false, theme: "default", securityLevel: "loose" });
+        const isDark = document.documentElement.classList.contains("dark");
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: isDark ? "dark" : "default",
+          securityLevel: "loose",
+          fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        });
         const id = `mmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const { svg } = await mermaid.render(id, code);
+        const { svg } = await mermaid.render(id, normalized);
         if (cancelled) return;
-        // Sanitize then set via ref (safe DOM manipulation, not dangerouslySetInnerHTML)
-        const clean = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ["use"] });
+        // Sanitize SVG with DOMPurify — allow all SVG tags, filters, and references
+        const clean = DOMPurify.sanitize(svg, {
+          USE_PROFILES: { svg: true, svgFilters: true },
+          ADD_TAGS: ["use", "foreignObject", "switch"],
+          ADD_ATTR: ["dominant-baseline", "text-anchor", "marker-end", "marker-start"],
+        });
         svgTextRef.current = clean;
-        if (svgRef.current) svgRef.current.innerHTML = clean;
+        // Safe: content is sanitized by DOMPurify before DOM insertion
+        if (svgRef.current) svgRef.current.replaceChildren();
+        if (svgRef.current) {
+          const template = document.createElement("template");
+          template.innerHTML = clean;
+          svgRef.current.appendChild(template.content);
+        }
         setStatus("ok");
       } catch (err) {
-        if (!cancelled) { setErrorMsg(err instanceof Error ? err.message : "Render failed"); setStatus("error"); }
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : "Render failed";
+          console.error("[MermaidDiagram] Render error:", msg, "\nCode:", normalized.slice(0, 200));
+          setErrorMsg(msg);
+          setStatus("error");
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -653,7 +695,7 @@ const ShikiCodeContent = memo(function ShikiCodeContent({ code, language }: { co
 const CodeBlock = memo(function CodeBlock({ inline, className, children, onOpenDocument }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || "");
-  const language = match?.[1] || "";
+  const language = (match?.[1] || "").toLowerCase().trim();
   const codeContent = String(children).replace(/\n$/, "");
 
   const handleCopy = useCallback(async () => {
@@ -944,7 +986,7 @@ const InteractiveCodeBlock = memo(function InteractiveCodeBlock({
   onEdit,
 }: InteractiveCodeBlockProps) {
   const match = /language-(\w+)/.exec(className || "");
-  const language = match?.[1] || "text";
+  const language = (match?.[1] || "text").toLowerCase().trim();
   const codeContent = String(children).replace(/\n$/, "");
 
   const { execute, isRunning, result, errorLines, reset } = useSandboxExecution();
