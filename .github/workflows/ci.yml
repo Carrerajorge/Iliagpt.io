@@ -33,3 +33,6 @@ jobs:
 
       - name: Run client stream contract test
         run: npm run test:ci:chat-client-contracts
+
+      - name: Run document renderer tests
+        run: npx vitest run server/__tests__/documentRenderers.test.ts server/__tests__/documentGenerators.test.ts server/__tests__/documentSkills.test.ts
