@@ -62,6 +62,7 @@ AGENTIC_PIPELINE_ENABLED = "true"
 OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
 AGENTIC_CHAT_ENABLED = "true"
 ALLOWED_HOSTS = "iliagpt.io,www.iliagpt.io"
+ALLOW_LEGACY_ENV_ADMIN_LOGIN = "true"
 
 [userenv.development]
 START_PYTHON_SERVICE = "true"
