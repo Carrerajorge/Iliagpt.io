@@ -92,7 +92,6 @@ export const FREE_MODEL_IDS: ReadonlySet<string> = new Set([
   "google/gemma-4-31b-it",
   "google/gemma-4-31b-it:free",
   "google/gemma-3-27b-it:free",
-  OPENROUTER_MODELS.GLM_5,
   FREE_MODEL_ID,
 ]);
 
@@ -212,5 +211,5 @@ export const MODEL_PRICING_REGISTRY: Readonly<Record<string, ModelPricingEntry>>
   "gemini-3.1-pro-preview": { inputPerMillion: 1.25, outputPerMillion: 5.00 },
 
   // OpenRouter — Zhipu GLM
-  [OPENROUTER_MODELS.GLM_5]: { inputPerMillion: 0.50, outputPerMillion: 2.00 },
+  [OPENROUTER_MODELS.GLM_5]: { inputPerMillion: 0.72, outputPerMillion: 2.30 },
 };

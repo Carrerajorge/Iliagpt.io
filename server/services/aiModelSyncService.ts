@@ -226,7 +226,7 @@ const KNOWN_MODELS: Readonly<Record<string, readonly KnownModel[]>> = deepFreeze
     { modelId: "cohere/command-r-plus", name: "Command R+", contextWindow: 128000, maxOutput: 4096, type: "TEXT", inputCost: "0.0025", outputCost: "0.01", description: "Cohere's flagship model" },
 
     // Zhipu GLM
-    { modelId: "zhipu/glm-5", name: "GLM-5", contextWindow: 128000, maxOutput: 8192, type: "MULTIMODAL", inputCost: "0.0005", outputCost: "0.002", description: "Zhipu's GLM-5 flagship model with vision and reasoning" },
+    { modelId: "z-ai/glm-5", name: "GLM-5", contextWindow: 80000, maxOutput: 8192, type: "MULTIMODAL", inputCost: "0.00072", outputCost: "0.0023", description: "Zhipu's GLM-5 flagship model with vision and reasoning" },
   ],
 
   // ========================================
