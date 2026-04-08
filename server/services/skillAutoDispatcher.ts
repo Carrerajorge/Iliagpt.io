@@ -284,7 +284,7 @@ async function saveSkillArtifact(
   const filePath = path.join(ARTIFACTS_DIR, storedFilename);
 
   await fs.promises.writeFile(filePath, artifact.buffer);
-  const downloadUrl = `/api/artifacts/${storedFilename}`;
+  const downloadUrl = `/api/artifacts/${storedFilename}/download`;
 
   console.log(`[SkillDispatcher] Saved artifact: ${artifact.filename} -> ${downloadUrl}`);
 

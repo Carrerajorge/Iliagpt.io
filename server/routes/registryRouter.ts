@@ -778,10 +778,8 @@ export function createRegistryRouter(): Router {
       // Other files must use /download or /preview which have their own access controls
       const ext = path.extname(filename).toLowerCase();
       if (ext !== ".json") {
-        return res.status(403).json({
-          success: false,
-          error: "Only JSON content files are accessible via this endpoint",
-        });
+        // Redirect non-JSON files to the proper download endpoint
+        return res.redirect(301, `/api/artifacts/${encodeURIComponent(filename)}/download`);
       }
       
       const artifactsDir = path.join(process.cwd(), "artifacts");
