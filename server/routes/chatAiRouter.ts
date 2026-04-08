@@ -56,6 +56,7 @@ import {
 } from "../lib/streamReliability";
 import { saveStreamingProgress } from "../lib/streamingSeq";
 import { skillAutoDispatcher, type SkillDispatchResult } from "../services/skillAutoDispatcher";
+import { trackLLMUsage, trackToolExecution, extractFactsInBackground, getMemoryContext, checkToolPermission } from "../lib/pipelineIntegrations";
 
 type AttachmentSpec = z.infer<typeof AttachmentSpecSchema>;
 type StreamProviderSwitch = {
@@ -4771,6 +4772,8 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
         ).catch(err => {
           console.error(`[Chat API] Failed to record token usage for user ${userId}:`, err);
         });
+        // Pipeline: track usage in analytics module
+        trackLLMUsage(userId, "default", effectiveModel || "unknown", response.usage.promptTokens || 0, response.usage.completionTokens || 0);
       }
 
       if (userId) {
@@ -4795,6 +4798,15 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
         } catch (auditError) {
           console.error("Failed to create audit log:", auditError);
         }
+      }
+
+      // Pipeline: extract facts from conversation in background (non-blocking)
+      if (userId && messages.length > 0) {
+        const recentMessages = messages.slice(-6).map((m: any) => ({
+          role: m.role || "user",
+          content: typeof m.content === "string" ? m.content : "",
+        }));
+        extractFactsInBackground(recentMessages, userId);
       }
 
       // Add GPT session metadata to response if contract-based session is active
