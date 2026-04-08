@@ -15,6 +15,16 @@ import { useSandboxExecution } from "@/hooks/useSandboxExecution";
 import { downloadArtifact } from "@/lib/localArtifactAccess";
 import { useShikiHighlight } from "@/hooks/useShikiHighlight";
 import { useArtifactStore } from "@/stores/artifactStore";
+import { RenderBlockWrapper } from "@/components/chat/RenderBlockWrapper";
+
+// ── Sanitized SVG Renderer (uses DOMPurify-cleaned HTML set via ref, not dangerouslySetInnerHTML) ──
+const SanitizedSvgBlock = memo(function SanitizedSvgBlock({ html }: { html: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.innerHTML = html;
+  }, [html]);
+  return <div ref={ref} />;
+});
 
 // ── Mermaid Diagram Renderer ──
 const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: string }) {
@@ -669,7 +679,39 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, onOpenD
 
   // Mermaid diagram rendering — detect ```mermaid blocks and render inline
   if (language === "mermaid") {
-    return <MermaidDiagram code={codeContent} />;
+    return (
+      <RenderBlockWrapper type="mermaid" code={codeContent}>
+        <MermaidDiagram code={codeContent} />
+      </RenderBlockWrapper>
+    );
+  }
+
+  // SVG rendering — detect ```svg blocks and render sanitized SVG inline
+  if (language === "svg" || (language === "xml" && codeContent.trimStart().startsWith("<svg"))) {
+    // DOMPurify sanitizes the SVG to prevent XSS while keeping valid SVG elements
+    const sanitizedSvg = DOMPurify.sanitize(codeContent, { USE_PROFILES: { svg: true, svgFilters: true } });
+    return (
+      <RenderBlockWrapper type="svg" code={codeContent}>
+        <div className="flex justify-center [&>svg]:max-w-full [&>svg]:h-auto">
+          <SanitizedSvgBlock html={sanitizedSvg} />
+        </div>
+      </RenderBlockWrapper>
+    );
+  }
+
+  // HTML visual rendering — detect ```html blocks that contain visual elements
+  if (language === "html" && /(<(svg|canvas|table\s|div\s[^>]*style|section\s[^>]*style|header\s[^>]*style|main\s[^>]*style))/i.test(codeContent)) {
+    return (
+      <RenderBlockWrapper type="html" code={codeContent}>
+        <iframe
+          srcDoc={codeContent}
+          className="w-full border-0 rounded-lg bg-white"
+          style={{ minHeight: "200px", maxHeight: "600px", height: "400px" }}
+          sandbox="allow-scripts allow-same-origin"
+          title="HTML Preview"
+        />
+      </RenderBlockWrapper>
+    );
   }
 
   const lineCount = codeContent.split("\n").length;

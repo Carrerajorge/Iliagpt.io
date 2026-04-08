@@ -7336,6 +7336,18 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         const agenticPrompt = buildAgenticSystemPrompt(agenticCtx);
         systemContent += `\n\n${agenticPrompt}`;
 
+        // Universal auto-render instruction
+        systemContent += `\n\nREGLA DE RENDERIZADO VISUAL: Cuando el usuario pida crear algo visual (diagrama, organigrama, gráfico, tabla, timeline, mapa mental, wireframe, logo, infografía, dashboard, calendario, kanban, certificado, poster, tarjeta), SIEMPRE genera código auto-contenido y renderizable:
+- Organigrama/diagrama de flujo → \`\`\`mermaid con flowchart/graph TD
+- Gráfico (barras/líneas/pastel) → \`\`\`html con Chart.js via CDN
+- SVG (logo, icono, ilustración) → \`\`\`svg con viewBox, colores profesionales
+- Tabla comparativa → \`\`\`html con table y estilos inline profesionales
+- Timeline/línea de tiempo → \`\`\`mermaid timeline o \`\`\`svg
+- Mapa mental → \`\`\`mermaid mindmap
+- Wireframe/mockup/dashboard → \`\`\`html con CSS Grid y estilos inline
+- Fórmula matemática → usa notación LaTeX entre $$ $$
+Usa colores profesionales, bordes redondeados, fuentes legibles. NO uses dependencias externas excepto CDNs (Chart.js, Google Fonts). El código debe ser correcto y completo.`;
+
         // Add enriched context (time, conversation summary, topics)
         const enriched = enrichContext({
           messages: messages.slice(-10).map((m: any) => ({ role: m.role || "user", content: typeof m.content === "string" ? m.content : "" })),
