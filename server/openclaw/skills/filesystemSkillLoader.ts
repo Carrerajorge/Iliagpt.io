@@ -198,6 +198,7 @@ function buildSkillFromFile(params: {
     prompt,
     tools: explicitTools,
     source: 'filesystem',
+    status: 'ready',
     filePath: params.filePath,
     updatedAt: params.updatedAtMs,
     metadata: {

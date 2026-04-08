@@ -427,7 +427,7 @@ Capabilities:
 - Channel management operations`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'slack',
@@ -444,7 +444,7 @@ Capabilities:
 - Create formatted blocks and attachments`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'notion',
@@ -461,7 +461,7 @@ Operations:
 - Link between pages and databases`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'trello',
@@ -478,7 +478,7 @@ Operations:
 - Generate board reports and statistics`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'gog',
@@ -495,7 +495,7 @@ Services:
 - Contacts: search and manage contacts`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'goplaces',
@@ -512,7 +512,7 @@ Capabilities:
 - Resolve place IDs to full details`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'himalaya',
@@ -530,7 +530,7 @@ Commands:
 - himalaya delete {id} (remove)`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'spotify-player',
@@ -548,7 +548,7 @@ Features:
 - View currently playing track info`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'obsidian',
@@ -582,7 +582,7 @@ Usage:
 - Handles audio up to 25MB`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'voice-call',
@@ -599,7 +599,7 @@ Capabilities:
 - Status monitoring`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'wacli',
@@ -616,7 +616,7 @@ Operations:
 - Media file handling`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: '1password',
@@ -633,7 +633,7 @@ Operations:
 - Generate secure passwords`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'apple-notes',
@@ -650,7 +650,7 @@ Operations:
 - Export notes to various formats`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'apple-reminders',
@@ -667,7 +667,7 @@ Commands:
 - Organize by lists and priorities`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'bear-notes',
@@ -684,7 +684,7 @@ Operations:
 - Archive and trash management`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'blucli',
@@ -701,7 +701,7 @@ Operations:
 - Browse music services`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'bluebubbles',
@@ -718,7 +718,7 @@ Capabilities:
 - Scheduled messages`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'camsnap',
@@ -735,7 +735,7 @@ Operations:
 - Multi-camera monitoring`,
       tools: ['openclaw_exec', 'openclaw_write'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'eightctl',
@@ -752,7 +752,7 @@ Controls:
 - Manage user profiles`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'imsg',
@@ -769,7 +769,7 @@ Operations:
 - Handle multimedia messages`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'openhue',
@@ -786,7 +786,7 @@ Commands:
 - Schedule lighting changes`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'ordercli',
@@ -803,7 +803,7 @@ Features:
 - Rate past orders`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'peekaboo',
@@ -820,7 +820,7 @@ Capabilities:
 - Record and replay interactions`,
       tools: ['openclaw_exec', 'openclaw_write'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'sag',
@@ -837,7 +837,7 @@ Features:
 - Streaming audio generation`,
       tools: ['openclaw_exec', 'openclaw_write'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'sonoscli',
@@ -854,7 +854,7 @@ Controls:
 - Manage play queues and favorites`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'things-mac',
@@ -871,7 +871,7 @@ Operations:
 - Organize with tags and areas`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'xurl',
@@ -888,7 +888,7 @@ Operations:
 - Manage bookmarks and lists`,
       tools: ['openclaw_exec'],
       source: 'builtin',
-      status: 'needs_setup',
+      status: 'ready',
     },
     {
       id: 'node-connect',
