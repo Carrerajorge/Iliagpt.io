@@ -57,6 +57,8 @@ import {
 import { saveStreamingProgress } from "../lib/streamingSeq";
 import { skillAutoDispatcher, type SkillDispatchResult } from "../services/skillAutoDispatcher";
 import { trackLLMUsage, trackToolExecution, extractFactsInBackground, getMemoryContext, checkToolPermission } from "../lib/pipelineIntegrations";
+import { buildAgenticSystemPrompt, type AgenticPromptContext } from "../agent/agenticPromptBuilder";
+import { classifyIntent as enhancedClassifyIntent } from "../agent/enhancedIntentClassifier";
 
 type AttachmentSpec = z.infer<typeof AttachmentSpecSchema>;
 type StreamProviderSwitch = {
@@ -7309,6 +7311,30 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       );
 
       let systemContent = answerFirstPrompt.fullPrompt;
+
+      // Agentic system prompt enhancement — adds tool awareness, thinking instructions, and memory
+      try {
+        const memoryContext = await getMemoryContext(userId, userMessageText || "");
+        const enhancedIntent = enhancedClassifyIntent(
+          userMessageText || "",
+          messages.slice(-4).map((m: any) => ({ role: m.role, content: typeof m.content === "string" ? m.content : "" })),
+        );
+        const agenticCtx: AgenticPromptContext = {
+          userId,
+          locale: enhancedIntent.language || "es",
+          intent: enhancedIntent.primary.intent,
+          intentConfidence: enhancedIntent.confidence,
+          hasAttachments,
+          conversationLength: messages.length,
+          userFacts: memoryContext ? memoryContext.split("\n").filter(Boolean) : undefined,
+          model: effectiveModel,
+          latencyMode: latencyMode || "auto",
+        };
+        const agenticPrompt = buildAgenticSystemPrompt(agenticCtx);
+        systemContent += `\n\n${agenticPrompt}`;
+      } catch (agenticErr) {
+        console.warn("[Stream] Agentic prompt enhancement failed (non-blocking):", (agenticErr as Error)?.message);
+      }
 
       try {
         const { AgentIdentity } = await import("../agent/soul/agentIdentity");
