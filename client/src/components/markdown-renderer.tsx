@@ -89,6 +89,40 @@ const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: string }) 
   );
 });
 
+// ── Inline SVG Renderer (sanitized with DOMPurify — same pattern as MermaidDiagram) ──
+const InlineSvgBlock = memo(function InlineSvgBlock({ code }: { code: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!ref.current) return;
+    // Sanitize SVG with DOMPurify to prevent XSS, then set via ref
+    const sanitized = DOMPurify.sanitize(code, {
+      USE_PROFILES: { svg: true, svgFilters: true },
+      ADD_TAGS: ["use"],
+    });
+    ref.current.textContent = ""; // clear first
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = sanitized; // safe: sanitized by DOMPurify
+    while (wrapper.firstChild) {
+      ref.current.appendChild(wrapper.firstChild);
+    }
+  }, [code]);
+
+  return (
+    <div className="my-4 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-hidden bg-white dark:bg-zinc-900">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50">
+        <span className="text-[11px] font-medium text-zinc-500">SVG</span>
+        <button onClick={async () => { await navigator.clipboard.writeText(code).catch(() => {}); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+          className="text-[10px] text-zinc-400 hover:text-zinc-600 flex items-center gap-1">
+          {copied ? <><Check className="h-3 w-3 text-green-500" /> Copiado</> : <><Copy className="h-3 w-3" /> Copiar</>}
+        </button>
+      </div>
+      <div ref={ref} className="p-4 flex items-center justify-center [&>svg]:max-w-full [&>svg]:h-auto" />
+    </div>
+  );
+});
+
 const InlineSourceBadge = memo(function InlineSourceBadge({ name, url }: { name: string; url: string }) {
   const [showTooltip, setShowTooltip] = useState(false);
   const [imageError, setImageError] = useState(false);
@@ -931,6 +965,16 @@ const InteractiveCodeBlock = memo(function InteractiveCodeBlock({
         {children}
       </code>
     );
+  }
+
+  // Mermaid diagrams render inline as SVG — never as code blocks
+  if (language === "mermaid") {
+    return <MermaidDiagram code={codeContent} />;
+  }
+
+  // SVG renders inline directly
+  if (language === "svg") {
+    return <InlineSvgBlock code={codeContent} />;
   }
 
   return (
