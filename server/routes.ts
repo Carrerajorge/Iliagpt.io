@@ -159,6 +159,7 @@ import { createDeviceControlRouter } from "./routes/deviceControlRouter";
 import openClawRouter from "./routes/openClawRouter";
 import { createOpenClawRouter } from "./routes/openClawRouter";
 import { createOpenClawAdminRouter, createOpenClawUserRouter } from "./routes/openclawAdminRouter";
+import { createOpenClawDocumentRouter } from "./routes/openclawDocumentRouter";
 import adsRouter from "./routes/adsRouter";
 import memoryApiRouter from "./routes/memoryApiRouter";
 
@@ -2531,6 +2532,7 @@ try{
   app.use("/api/openclaw", openClawRouter);
   app.use("/api/openclaw/runtime", createOpenClawRouter());
   app.use("/api/openclaw", createOpenClawUserRouter()); // Per-user conversations + token usage
+  app.use("/api/openclaw/documents", createOpenClawDocumentRouter()); // Document upload + analysis + rendering
   app.use("/api/admin/openclaw", createOpenClawAdminRouter()); // Admin: token tracking + conversation management
   app.use("/api/ads", adsRouter);
 
