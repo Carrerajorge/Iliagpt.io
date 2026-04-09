@@ -1852,8 +1852,10 @@ REGLAS IMPORTANTES:
 
   // Check if user explicitly requests document creation
   const lastUserMsgText = messages.filter(m => m.role === "user").pop()?.content?.toLowerCase() || "";
-  const wantsDocument = /\b(crea|crear|genera|generar|haz|hacer|escribe|escribir|redacta|redactar|elabora|elaborar)\b.*(documento|word|excel|powerpoint|ppt|archivo|docx|xlsx|pptx)/i.test(lastUserMsgText) ||
-    /\b(documento|word|excel|powerpoint|ppt)\b.*(crea|crear|genera|generar|haz|hacer)/i.test(lastUserMsgText);
+  const wantsDocument = /\b(crea|crear|genera|generar|haz|hacer|escribe|escribir|redacta|redactar|elabora|elaborar|dame|dime|pasa|pasar|pon|poner|convierte|convertir|exporta|exportar)\b.*(documento|word|excel|powerpoint|ppt|archivo|docx|xlsx|pptx)/i.test(lastUserMsgText) ||
+    /\b(documento|word|excel|powerpoint|ppt)\b.*(crea|crear|genera|generar|haz|hacer|dame|dime)/i.test(lastUserMsgText) ||
+    /\b(?:en|a)\s+(?:un\s+)?(?:formato\s+)?(?:excel|xlsx|spreadsheet|hoja\s*de\s*c[aá]lculo)\b/i.test(lastUserMsgText) ||
+    /\b(?:ponlo|pasalo|conv[ié]rtelo|exportalo)\s+(?:a|en)\s+(?:excel|xlsx|hoja)/i.test(lastUserMsgText);
 
   // Check if user wants a chart/graph/visualization
   // Code interpreter is gated by the codeInterpreterEnabled feature flag

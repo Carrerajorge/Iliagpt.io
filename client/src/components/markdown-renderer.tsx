@@ -1036,7 +1036,7 @@ const TableWrapper = memo(function TableWrapper({ children }: TableWrapperProps)
           )}
         </button>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-auto max-h-[60vh] rounded-b-lg">
         <table className="min-w-full border-collapse border border-border rounded-lg" data-testid="table-markdown">
           {children}
         </table>

@@ -69,6 +69,7 @@ export const users = pgTable("users", {
   dailyOutputTokensLimit: integer("daily_output_tokens_limit"),
   dailyTokenUsageResetAt: timestamp("daily_token_usage_reset_at"),
   orgId: varchar("org_id"),
+  networkAccessEnabled: boolean("network_access_enabled").default(true),
   loginCount: integer("login_count").default(0),
   stripeCustomerId: text("stripe_customer_id"),
   stripeSubscriptionId: text("stripe_subscription_id"),
