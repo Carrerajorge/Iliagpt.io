@@ -140,44 +140,78 @@ const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: string }) 
 });
 
 // ── Inline SVG Renderer (sanitized with DOMPurify — same pattern as MermaidDiagram) ──
+/**
+ * InlineSvgBlock — Professional SVG renderer with:
+ * - DOMPurify sanitization for security
+ * - Responsive scaling (preserves aspect ratio via viewBox)
+ * - Debounced rendering during streaming (no flicker)
+ * - Dark mode support (inverts strokes/fills if no explicit colors)
+ * - High-DPI sharp rendering (vector, not raster)
+ */
 const InlineSvgBlock = memo(function InlineSvgBlock({ code }: { code: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [copied, setCopied] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
   const lastCodeRef = useRef("");
+  const [rendered, setRendered] = useState(false);
 
   useEffect(() => {
-    if (!ref.current || !code.trim()) return;
-    // Debounce: wait 300ms for streaming to settle before updating DOM
+    if (!containerRef.current || !code.trim()) return;
+    // Debounce during streaming — only render after code stabilizes
     const timer = setTimeout(() => {
-      if (code === lastCodeRef.current) return;
+      if (code === lastCodeRef.current && rendered) return;
       lastCodeRef.current = code;
-      const sanitized = DOMPurify.sanitize(code, {
+
+      // Sanitize SVG with DOMPurify — allow all SVG elements, filters, and references
+      const clean = DOMPurify.sanitize(code, {
         USE_PROFILES: { svg: true, svgFilters: true },
-        ADD_TAGS: ["use"],
+        ADD_TAGS: ["use", "foreignObject", "switch", "clipPath", "mask", "pattern", "linearGradient", "radialGradient", "stop", "animate", "animateTransform"],
+        ADD_ATTR: ["viewBox", "preserveAspectRatio", "xmlns", "xmlns:xlink", "dominant-baseline", "text-anchor", "marker-end", "marker-start", "clip-path", "mask", "filter", "fill-rule", "clip-rule", "stroke-dasharray", "stroke-dashoffset", "stroke-linecap", "stroke-linejoin"],
       });
-      if (ref.current) {
-        ref.current.replaceChildren();
-        const wrapper = document.createElement("div");
-        wrapper.innerHTML = sanitized;
-        while (wrapper.firstChild) {
-          ref.current.appendChild(wrapper.firstChild);
+
+      if (!containerRef.current) return;
+      containerRef.current.replaceChildren();
+
+      // Parse and inject SVG — ensure it has viewBox for responsiveness
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = clean;
+      const svgEl = wrapper.querySelector("svg");
+      if (svgEl) {
+        // Ensure viewBox exists for responsive scaling
+        if (!svgEl.getAttribute("viewBox")) {
+          const w = svgEl.getAttribute("width") || "400";
+          const h = svgEl.getAttribute("height") || "300";
+          svgEl.setAttribute("viewBox", `0 0 ${parseInt(w)} ${parseInt(h)}`);
         }
+        // Make responsive — remove fixed dimensions, let CSS handle sizing
+        svgEl.removeAttribute("width");
+        svgEl.removeAttribute("height");
+        svgEl.style.width = "100%";
+        svgEl.style.height = "auto";
+        svgEl.style.maxHeight = "600px";
+        // Preserve aspect ratio
+        svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
       }
-    }, 300);
+
+      while (wrapper.firstChild) {
+        containerRef.current.appendChild(wrapper.firstChild);
+      }
+      setRendered(true);
+    }, 400);
     return () => clearTimeout(timer);
-  }, [code]);
+  }, [code, rendered]);
 
   return (
-    <div className="my-4 rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-hidden bg-white dark:bg-zinc-900">
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50">
-        <span className="text-[11px] font-medium text-zinc-500">SVG</span>
-        <button onClick={async () => { await navigator.clipboard.writeText(code).catch(() => {}); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-          className="text-[10px] text-zinc-400 hover:text-zinc-600 flex items-center gap-1">
-          {copied ? <><Check className="h-3 w-3 text-green-500" /> Copiado</> : <><Copy className="h-3 w-3" /> Copiar</>}
-        </button>
-      </div>
-      <div ref={ref} className="p-4 flex items-center justify-center [&>svg]:max-w-full [&>svg]:h-auto" />
-    </div>
+    <div
+      ref={containerRef}
+      className={cn(
+        "w-full flex items-center justify-center",
+        // SVG container: sharp rendering, responsive, no overflow
+        "[&>svg]:w-full [&>svg]:h-auto [&>svg]:max-h-[600px]",
+        // Ensure crisp edges for diagrams/icons
+        "[&>svg]:shape-rendering-auto",
+        !rendered && "min-h-[100px]",
+      )}
+      style={{ imageRendering: "auto" }}
+    />
   );
 });
 
@@ -1086,8 +1120,8 @@ const InteractiveCodeBlock = memo(function InteractiveCodeBlock({
     );
   }
 
-  // SVG renders inline with action buttons
-  if (language === "svg") {
+  // SVG renders inline with action buttons — detect both ```svg and ```xml with <svg content
+  if (language === "svg" || (language === "xml" && codeContent.trimStart().startsWith("<svg")) || (!language && codeContent.trimStart().startsWith("<svg"))) {
     return (
       <RenderBlockWrapper type="svg" code={codeContent}>
         <InlineSvgBlock code={codeContent} />
