@@ -460,13 +460,15 @@ export function useStreamChat(deps: StreamChatDeps) {
   const abortConversation = useCallback(
     (conversationId: string) => {
       const session = getSession(conversationId);
+      // Reset finalizing FIRST to prevent race with finalize() callback
+      session.finalizing = false;
       if (session.abortController) {
         session.abortController.abort();
       }
       session.abortController = null;
+      session.pendingContent = null;
+      session.fullContent = "";
       clearSessionRuntime(conversationId);
-      // Always force aiState to idle when aborting so the stop button clears
-      // even if the caller doesn't explicitly reset it.
       setAiState("idle", conversationId);
       void clearStreamingProgressRemote(conversationId);
     },
@@ -1094,7 +1096,8 @@ export function useStreamChat(deps: StreamChatDeps) {
                   let data: any;
                   try {
                     data = JSON.parse(dataStr);
-                  } catch {
+                  } catch (parseErr) {
+                    console.warn("[Stream] Malformed SSE chunk:", dataStr.slice(0, 80));
                     continue;
                   }
 
