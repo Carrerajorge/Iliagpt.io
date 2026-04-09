@@ -58,6 +58,8 @@ export const OPENROUTER_MODELS = {
   GEMMA_4_31B_IT: "google/gemma-4-31b-it",
   GEMMA_3_27B_IT_FREE: "google/gemma-3-27b-it:free",
   GLM_5: "z-ai/glm-5",
+  GLM_5_1: "z-ai/glm-5.1",
+  GROK_4_2: "x-ai/grok-4.2",
 } as const;
 
 // ============================================================================
@@ -92,8 +94,8 @@ export const FREE_MODEL_IDS: ReadonlySet<string> = new Set([
   "google/gemma-4-31b-it",
   "google/gemma-4-31b-it:free",
   "google/gemma-3-27b-it:free",
-  "z-ai/glm-5", // GLM-5 via OpenRouter
-  "moonshotai/kimi-k2.5", // Kimi K2.5 via OpenRouter
+  "grok-4-1-fast-non-reasoning",
+  "x-ai/grok-4.1-fast",
   FREE_MODEL_ID,
 ]);
 
