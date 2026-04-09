@@ -862,14 +862,10 @@ const CodeBlock = memo(function CodeBlock({ inline, className, children, onOpenD
   }
 
   // SVG rendering — detect ```svg blocks and render sanitized SVG inline
-  if (language === "svg" || (language === "xml" && codeContent.trimStart().startsWith("<svg"))) {
-    // DOMPurify sanitizes the SVG to prevent XSS while keeping valid SVG elements
-    const sanitizedSvg = DOMPurify.sanitize(codeContent, { USE_PROFILES: { svg: true, svgFilters: true } });
+  if (language === "svg" || (language === "xml" && codeContent.trimStart().startsWith("<svg")) || (!language && codeContent.trimStart().startsWith("<svg"))) {
     return (
       <RenderBlockWrapper type="svg" code={codeContent}>
-        <div className="flex justify-center [&>svg]:max-w-full [&>svg]:h-auto">
-          <SanitizedSvgBlock html={sanitizedSvg} />
-        </div>
+        <InlineSvgBlock code={codeContent} />
       </RenderBlockWrapper>
     );
   }
