@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { ChevronDown, Lock, Plus, Sparkles } from "lucide-react";
+import { ChevronDown, Lock, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AvailableModel } from "@/contexts/ModelAvailabilityContext";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
@@ -22,61 +22,66 @@ function isModelFree(model: AvailableModel): boolean {
     return isModelFreeForAll(model.modelId) || isModelFreeForAll(model.id);
 }
 
-const MODEL_LOGOS: Record<string, string> = {
-    "openai": "https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/openai.svg",
-    "anthropic": "https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/anthropic.svg",
-    "google": "https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/googlegemini.svg",
-    "gemini": "https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/googlegemini.svg",
-    "x-ai": "https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/x.svg",
-    "xai": "https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/x.svg",
-    "meta": "https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/meta.svg",
-    "deepseek": "https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/deepseek.svg",
-};
-
-function getProviderFromModel(model: AvailableModel): string {
-    const p = (model.provider || "").toLowerCase();
-    const mid = (model.modelId || model.id || "").toLowerCase();
-    if (mid.includes("grok") || mid.includes("x-ai") || p === "xai" || p === "x-ai") return "xai";
-    if (mid.includes("gemini") || mid.includes("gemma") || p === "google" || p === "gemini") return "google";
-    if (mid.includes("claude") || p === "anthropic") return "anthropic";
-    if (mid.includes("gpt") || mid.includes("o1") || mid.includes("o3") || p === "openai") return "openai";
-    if (mid.includes("deepseek") || p === "deepseek") return "deepseek";
-    if (mid.includes("llama") || mid.includes("meta") || p === "meta") return "meta";
-    if (mid.includes("kimi") || mid.includes("moonshot")) return "moonshot";
-    if (mid.includes("glm") || mid.includes("z-ai") || mid.includes("zhipu")) return "zhipu";
-    if (mid.includes("mistral") || mid.includes("codestral")) return "mistral";
-    if (mid.includes("cohere") || mid.includes("command")) return "cohere";
-    return p || "other";
+interface CuratedModel {
+    displayName: string;
+    matchIds: string[];
+    logo: string;
+    free: boolean;
 }
 
-function ProviderIcon({ provider, className }: { provider: string; className?: string }) {
-    const getEmoji = () => {
-        switch (provider) {
-            case "xai": return "𝕏";
-            case "google": return "✦";
-            case "anthropic": return "◈";
-            case "openai": return "◉";
-            case "deepseek": return "◆";
-            case "meta": return "◎";
-            case "moonshot": return "☽";
-            case "zhipu": return "智";
-            case "mistral": return "▲";
-            case "cohere": return "⬡";
-            default: return "●";
-        }
-    };
+const CURATED_MODELS: CuratedModel[] = [
+    {
+        displayName: "Gemma 4 31B",
+        matchIds: ["google/gemma-4-31b-it", "google/gemma-4-31b-it:free"],
+        logo: "/logos/gemma.png",
+        free: true,
+    },
+    {
+        displayName: "Grok 4.1 Fast",
+        matchIds: ["grok-4-1-fast-non-reasoning", "x-ai/grok-4.1-fast"],
+        logo: "/logos/grok.png",
+        free: true,
+    },
+    {
+        displayName: "GPT-5.4",
+        matchIds: ["openai/gpt-5.4", "gpt-5.4", "openai/chatgpt-5.4", "openai/gpt-4.1", "gpt-4.1"],
+        logo: "/logos/chatgpt.png",
+        free: false,
+    },
+    {
+        displayName: "Gemini 3.1 Pro",
+        matchIds: ["gemini-3.1-pro", "google/gemini-3.1-pro", "gemini-3.1-pro-preview", "google/gemini-3.1-pro-preview"],
+        logo: "/logos/gemini.png",
+        free: false,
+    },
+    {
+        displayName: "Grok 4.2",
+        matchIds: ["x-ai/grok-4.2", "grok-4.2"],
+        logo: "/logos/grok.png",
+        free: false,
+    },
+    {
+        displayName: "GLM 5.1",
+        matchIds: ["z-ai/glm-5.1", "glm-5.1"],
+        logo: "/logos/glm.png",
+        free: false,
+    },
+    {
+        displayName: "Kimi K2.5",
+        matchIds: ["moonshotai/kimi-k2.5"],
+        logo: "/logos/kimi.png",
+        free: false,
+    },
+];
 
-    return (
-        <span className={cn("flex items-center justify-center w-4 h-4 text-[10px] font-bold opacity-60", className)}>
-            {getEmoji()}
-        </span>
-    );
-}
-
-function getShortName(model: AvailableModel): string {
-    let name = model.name || model.modelId || "";
-    name = name.replace(/^(xAI|Google|Anthropic|OpenAI|Meta|MoonshotAI|Z\.ai|Cohere|Deep Cogito|DeepSeek):\s*/i, "");
-    return name;
+function findAvailableModel(curated: CuratedModel, availableModels: AvailableModel[]): AvailableModel | null {
+    for (const mid of curated.matchIds) {
+        const found = availableModels.find(
+            (m) => m.modelId === mid || m.id === mid
+        );
+        if (found) return found;
+    }
+    return null;
 }
 
 export function StandardModelSelector({
@@ -97,10 +102,20 @@ export function StandardModelSelector({
 
     const isFreeUser = isFreeTierUser(userPlanInfo ? { plan: userPlanInfo.plan, role: userPlanInfo.isAdmin ? "admin" : undefined } : null);
 
-    const selectedModelData = React.useMemo(() => {
-        if (!selectedModelId) return availableModels[0] || null;
-        return availableModels.find(m => m.id === selectedModelId || m.modelId === selectedModelId) || availableModels[0] || null;
-    }, [selectedModelId, availableModels]);
+    const resolvedModels = React.useMemo(() => {
+        return CURATED_MODELS.map((curated) => {
+            const available = findAvailableModel(curated, availableModels);
+            return { curated, available };
+        });
+    }, [availableModels]);
+
+    const selectedEntry = React.useMemo(() => {
+        if (!selectedModelId) return resolvedModels[0] || null;
+        const found = resolvedModels.find(
+            (r) => r.available && (r.available.id === selectedModelId || r.available.modelId === selectedModelId)
+        );
+        return found || resolvedModels[0] || null;
+    }, [selectedModelId, resolvedModels]);
 
     useEffect(() => {
         function handleClickOutside(e: MouseEvent) {
@@ -114,20 +129,21 @@ export function StandardModelSelector({
         }
     }, [isOpen]);
 
-    const handleSelect = (model: AvailableModel) => {
+    const handleSelect = (entry: typeof resolvedModels[0]) => {
         if (isDisabled) return;
+        if (!entry.available) return;
 
-        if (isFreeUser && !isModelFree(model)) {
+        if (isFreeUser && !entry.curated.free) {
             if (onUpgradeClick) onUpgradeClick();
             return;
         }
 
         const handler = onModelChange ?? setSelectedModelId;
-        handler(model.id);
+        handler(entry.available.id);
         setIsOpen(false);
     };
 
-    if (availableModels.length === 0) {
+    if (resolvedModels.length === 0) {
         return (
             <div
                 className="flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-not-allowed opacity-50"
@@ -138,17 +154,6 @@ export function StandardModelSelector({
         );
     }
 
-    const selectedProvider = selectedModelData ? getProviderFromModel(selectedModelData) : "other";
-    const selectedShortName = selectedModelData ? getShortName(selectedModelData) : "Modelo";
-    const selectedIsFree = selectedModelData ? isModelFree(selectedModelData) : false;
-
-    const sortedModels = [...availableModels].sort((a, b) => {
-        const aFree = isModelFree(a) ? 0 : 1;
-        const bFree = isModelFree(b) ? 0 : 1;
-        if (aFree !== bFree) return aFree - bFree;
-        return getShortName(a).localeCompare(getShortName(b));
-    });
-
     return (
         <div className="flex items-center gap-0.5">
             <div ref={dropdownRef} className="relative">
@@ -156,7 +161,7 @@ export function StandardModelSelector({
                     type="button"
                     onClick={() => !isDisabled && setIsOpen(!isOpen)}
                     className={cn(
-                        "flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all duration-150",
+                        "flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-all duration-150",
                         isDisabled ? "cursor-not-allowed opacity-50" : "hover:bg-muted/60 cursor-pointer",
                         isOpen && "bg-muted/60"
                     )}
@@ -164,53 +169,60 @@ export function StandardModelSelector({
                     data-testid="button-model-selector"
                     title={activeGptName ? `Modelo fijado por GPT: ${activeGptName}` : modelChangeDisabled ? "Respuesta en curso" : "Seleccionar modelo"}
                 >
-                    <ProviderIcon provider={selectedProvider} />
-                    <span className="font-medium text-sm truncate max-w-[180px]">
-                        {selectedShortName}
+                    {selectedEntry && (
+                        <img
+                            src={selectedEntry.curated.logo}
+                            alt=""
+                            className="w-4 h-4 rounded-sm object-cover flex-shrink-0"
+                        />
+                    )}
+                    <span className="font-medium text-sm truncate max-w-[160px]">
+                        {selectedEntry?.curated.displayName || "Modelo"}
                     </span>
-                    {!selectedIsFree && (
-                        <Lock className="h-3 w-3 text-muted-foreground/50 flex-shrink-0" />
+                    {selectedEntry && !selectedEntry.curated.free && (
+                        <Lock className="h-3 w-3 text-muted-foreground/40 flex-shrink-0" />
                     )}
                     <ChevronDown className={cn(
-                        "h-3 w-3 text-muted-foreground/60 flex-shrink-0 transition-transform duration-150",
+                        "h-3 w-3 text-muted-foreground/50 flex-shrink-0 transition-transform duration-150",
                         isOpen && "rotate-180"
                     )} />
                 </button>
 
                 {isOpen && (
-                    <div className="absolute top-full left-0 mt-1 w-72 bg-popover border border-border/50 rounded-xl shadow-lg z-50 overflow-hidden animate-in fade-in-0 zoom-in-95 duration-100">
-                        <div className="max-h-[380px] overflow-y-auto py-1.5">
-                            {sortedModels.map((model) => {
-                                const provider = getProviderFromModel(model);
-                                const shortName = getShortName(model);
-                                const free = isModelFree(model);
-                                const isSelected = model.id === selectedModelData?.id;
+                    <div className="absolute top-full left-0 mt-1.5 w-64 bg-popover border border-border/40 rounded-xl shadow-xl z-50 overflow-hidden animate-in fade-in-0 zoom-in-95 duration-100">
+                        <div className="py-1.5">
+                            {resolvedModels.map((entry, idx) => {
+                                const isSelected = selectedEntry === entry;
+                                const disabled = !entry.available;
 
                                 return (
                                     <button
-                                        key={model.id}
+                                        key={entry.curated.displayName}
                                         type="button"
-                                        onClick={() => handleSelect(model)}
+                                        onClick={() => handleSelect(entry)}
+                                        disabled={disabled}
                                         className={cn(
-                                            "w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors duration-75",
-                                            "hover:bg-muted/50",
+                                            "w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors duration-75",
+                                            disabled
+                                                ? "opacity-40 cursor-not-allowed"
+                                                : "hover:bg-muted/50 cursor-pointer",
                                             isSelected && "bg-muted/40"
                                         )}
-                                        data-testid={`option-model-${model.modelId}`}
+                                        data-testid={`option-model-${entry.curated.displayName.toLowerCase().replace(/\s+/g, "-")}`}
                                     >
-                                        <ProviderIcon provider={provider} className={cn(isSelected && "opacity-100")} />
+                                        <img
+                                            src={entry.curated.logo}
+                                            alt=""
+                                            className="w-5 h-5 rounded-sm object-cover flex-shrink-0"
+                                        />
                                         <span className={cn(
-                                            "flex-1 text-sm truncate",
+                                            "flex-1 text-[13px] truncate",
                                             isSelected ? "font-semibold" : "font-normal"
                                         )}>
-                                            {shortName}
+                                            {entry.curated.displayName}
                                         </span>
-                                        {free ? (
-                                            <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded-full">
-                                                Free
-                                            </span>
-                                        ) : (
-                                            <Lock className="h-3.5 w-3.5 text-muted-foreground/40 flex-shrink-0" />
+                                        {entry.curated.free ? null : (
+                                            <Lock className="h-3.5 w-3.5 text-muted-foreground/30 flex-shrink-0" />
                                         )}
                                     </button>
                                 );
