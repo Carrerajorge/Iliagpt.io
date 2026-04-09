@@ -731,7 +731,11 @@ export async function registerRoutes(
   );
 
 
-  const openclawControlUiRoot = path.join(process.cwd(), "node_modules", "openclaw", "dist", "control-ui");
+  const distOpenclawUi = path.join(process.cwd(), "dist", "openclaw-control-ui");
+  const nmOpenclawUi = path.join(process.cwd(), "node_modules", "openclaw", "dist", "control-ui");
+  const openclawControlUiRoot = fs.existsSync(path.join(distOpenclawUi, "index.html"))
+    ? distOpenclawUi
+    : nmOpenclawUi;
   if (fs.existsSync(path.join(openclawControlUiRoot, "index.html"))) {
     const controlUiHtml = fs.readFileSync(path.join(openclawControlUiRoot, "index.html"), "utf-8");
     function buildGatewayHash(req: Request): string {

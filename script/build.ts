@@ -1,6 +1,8 @@
 import { build as esbuild } from "esbuild";
-import { rm, readFile, writeFile } from "fs/promises";
+import { rm, readFile, writeFile, cp } from "fs/promises";
 import { execSync } from "child_process";
+import { existsSync } from "fs";
+import path from "path";
 
 const allowlist = [
   "@google/generative-ai",
@@ -97,10 +99,23 @@ import(pathToFileURL(join(__dirname, "index.mjs")).href).catch(err => {
   console.log("server build complete.");
 }
 
+async function copyOpenClawControlUI() {
+  const src = path.join("node_modules", "openclaw", "dist", "control-ui");
+  const dest = path.join("dist", "openclaw-control-ui");
+  if (existsSync(src)) {
+    console.log("copying OpenClaw control-ui assets...");
+    await cp(src, dest, { recursive: true });
+    console.log("OpenClaw control-ui assets copied.");
+  } else {
+    console.warn("OpenClaw control-ui not found, skipping copy.");
+  }
+}
+
 async function buildAll() {
   await rm("dist", { recursive: true, force: true });
   await buildClient();
   await buildServer();
+  await copyOpenClawControlUI();
 }
 
 async function pruneDevDeps() {
