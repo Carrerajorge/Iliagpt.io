@@ -120,7 +120,11 @@ async function buildAll() {
 
 async function pruneDevDeps() {
   console.log("pruning dev dependencies for production...");
-  execSync("npm prune --omit=dev", { stdio: "inherit" });
+  try {
+    execSync("npm prune --omit=dev", { stdio: "inherit" });
+  } catch (err) {
+    console.warn("npm prune failed (non-fatal):", (err as Error).message?.split("\n")[0]);
+  }
 }
 
 buildAll()
