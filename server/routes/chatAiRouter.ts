@@ -7928,12 +7928,10 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           if (fullContent.trim()) {
             agentLoopHandled = true;
           } else {
-            // Provide a direct fallback message instead of falling through to
-            // normal streaming which would ignore agentic execution context.
-            const failedIntent = unifiedContext?.requestSpec?.intent || "agentic_task";
-            fullContent = `Intenté ejecutar la solicitud (${failedIntent}) pero encontré un problema. ` +
-              "Inténtalo de nuevo o reformula la petición.";
-            agentLoopHandled = true;
+            // Agent loop produced no content — fall through to normal LLM streaming
+            // instead of showing internal error to user
+            console.warn(`[Stream] Agent loop produced no content for intent=${unifiedContext?.requestSpec?.intent}, falling through to LLM`);
+            agentLoopHandled = false; // Let normal streaming handle it
             if (!isConnectionClosed) {
               writeSse(res, 'chunk', {
                 content: fullContent,

@@ -7889,7 +7889,7 @@ IMPORTANTE:
                   ref={messagesContainerRef}
                   onScroll={handleScroll}
                   className={cn(
-                    "absolute inset-0 overflow-hidden p-4 sm:p-6 md:p-8 pb-[calc(var(--composer-height,120px)+120px)] space-y-3 bg-background",
+                    "absolute inset-0 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-zinc-300 dark:scrollbar-thumb-zinc-700 scrollbar-track-transparent p-4 sm:p-6 md:p-8 pb-[calc(var(--composer-height,120px)+120px)] space-y-3 bg-background",
                     !hasMessages && "invisible"
                   )}
                 >
