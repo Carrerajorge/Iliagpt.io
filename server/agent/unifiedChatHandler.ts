@@ -20,10 +20,49 @@ import { routeAgentRequest } from "./agentRouter";
 import { buildNativeAgenticFusion, hasNativeAgenticSignal } from "./nativeAgenticFusion";
 import { selectAgentExecutionMode, streamAgentRuntime, type AgentExecutionMode } from "./runtime/agentRuntimeFacade";
 
+const VISUAL_KW_REGEX = /\b(?:diagrama|flowchart|organigrama|mapa mental|mindmap|diagrama de flujo|diagrama de secuencia|diagrama de clases|timeline|linea de tiempo|wireframe|mockup|infografia|kanban|esquema|flujograma|mermaid|diagram|flow chart|org chart|mind map|sequence diagram|class diagram|er diagram|architecture diagram|process map|gantt|svg|ilustracion|ilustracion|icono|logo|dibujo|dibuja|grafico|grafico|chart|pie chart|bar chart|line chart|tabla comparativa|cuadro comparativo|dashboard visual|calendario visual|grafica 3d|grafico 3d|superficie 3d|parabola|funcion 3d|ecuacion parametrica|campo vectorial|fractal|curva 3d|plotear|graficar|3d graph|3d plot|surface plot|parametric|vector field)\b/;
+
 // ============================================================================
 // Latency Mode types
 // ============================================================================
 export type LatencyMode = 'fast' | 'deep' | 'auto';
+
+/** Mapping from the shared intent-router schema (e.g. CREATE_PRESENTATION)
+ *  to the requestSpec intent schema (e.g. presentation_creation).
+ *  Used to translate a first-pass intentResult so createUnifiedRun
+ *  can skip the duplicate routeAgentRequest LLM call when confidence is high.
+ */
+const SHARED_TO_SPEC_INTENT: Record<string, string> = {
+  CREATE_PRESENTATION: "presentation_creation",
+  CREATE_DOCUMENT: "document_generation",
+  CREATE_SPREADSHEET: "spreadsheet_creation",
+  SUMMARIZE: "document_analysis",
+  TRANSLATE: "chat",
+  SEARCH_WEB: "research",
+  ANALYZE_DOCUMENT: "document_analysis",
+  CHAT_GENERAL: "chat",
+  NEED_CLARIFICATION: "chat",
+  ANALYZE_DATA: "data_analysis",
+  EXECUTE_CODE: "code_generation",
+  MANAGE_EMAIL: "chat",
+  MANAGE_CALENDAR: "chat",
+  MANAGE_TASKS: "chat",
+  SEND_MESSAGE: "chat",
+  MANAGE_DATABASE: "data_analysis",
+  AUTOMATE_WORKFLOW: "multi_step_task",
+  MANAGE_INFRASTRUCTURE: "multi_step_task",
+  SECURITY_AUDIT: "research",
+  MEDIA_GENERATE: "image_generation",
+  INTEGRATION_ACTION: "multi_step_task",
+  RENDER_VISUAL: "chat",
+};
+
+export interface IntentHint {
+  intent: string;
+  confidence: number;
+  output_format?: string | null;
+  language_detected?: string | null;
+}
 
 export interface UnifiedChatRequest {
   messages: Array<{ role: string; content: string }>;
@@ -36,6 +75,10 @@ export interface UnifiedChatRequest {
   latencyMode?: LatencyMode;
   accessLevel?: 'owner' | 'trusted' | 'unknown';
   agentTask?: AgentTask; // Opcional: inyección estricta del contrato de tarea
+  /** Pre-computed intent from the upstream intentRouter.
+   *  When provided with confidence >= 0.7, skips the second LLM-based
+   *  routeAgentRequest classification call (avoids duplicate classification). */
+  intentHint?: IntentHint;
 }
 
 export interface UnifiedChatContext {
@@ -215,18 +258,18 @@ function writeSse(res: Response, event: string, data: object): boolean {
 export async function hydrateSessionState(chatId: string, userId: string): Promise<SessionState | undefined> {
   try {
     const [allMessages, memoryRecords, previousSpecs] = await Promise.all([
-      storage.getChatMessages(chatId).then(msgs => msgs.slice(-50)), // Increased from 10 to 50
+      storage.getChatMessages(chatId).then(msgs => msgs.slice(-20)),
       db.select().from(agentMemoryStore)
         .where(and(
           eq(agentMemoryStore.chatId, chatId),
           eq(agentMemoryStore.userId, userId)
         ))
         .orderBy(desc(agentMemoryStore.updatedAt))
-        .limit(20),
+        .limit(10),
       db.select().from(requestSpecHistory)
         .where(eq(requestSpecHistory.chatId, chatId))
         .orderBy(desc(requestSpecHistory.createdAt))
-        .limit(5)
+        .limit(3)
     ]);
 
     if (allMessages.length === 0 && memoryRecords.length === 0) {
@@ -356,20 +399,44 @@ export async function createUnifiedRun(
   const isUuid = (value?: string) => !!value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
   const normalizedMessageId = isUuid(request.messageId) ? request.messageId : undefined;
 
-  const requestSpec = await routeAgentRequest({
-    rawMessage: lastUserMessage,
-    attachments: request.attachments,
-    sessionState,
-    conversationHistory: request.messages,
-    userId: request.userId,
-    chatId: request.chatId,
-    messageId: normalizedMessageId,
-  });
+  // ── Duplicate-classification guard ──────────────────────────────────────────
+  // If the caller (chatAiRouter) already ran routeIntent() and provides a hint
+  // with sufficient confidence, map it to the requestSpec schema and skip the
+  // second LLM call inside routeAgentRequest.  This avoids paying the latency
+  // penalty of two separate intent-classification LLM round-trips per request.
+  const hint = request.intentHint;
+  const hintSpecIntent = hint ? SHARED_TO_SPEC_INTENT[hint.intent] : undefined;
+  const useHint = !!(hint && hintSpecIntent && hint.confidence >= 0.7);
+
+  let requestSpec;
+  if (useHint) {
+    console.log(`[UnifiedChat] Reusing upstream intentHint: ${hint!.intent} → ${hintSpecIntent} (conf=${hint!.confidence.toFixed(2)}) — skipping duplicate routeAgentRequest LLM call`);
+    // Build spec via createRequestSpec, injecting the pre-computed intent directly.
+    requestSpec = createRequestSpec({
+      chatId: request.chatId,
+      messageId: normalizedMessageId,
+      userId: request.userId,
+      rawMessage: lastUserMessage,
+      attachments: request.attachments,
+      sessionState,
+      intentOverride: hintSpecIntent as any,
+      confidenceOverride: hint!.confidence,
+    });
+  } else {
+    requestSpec = await routeAgentRequest({
+      rawMessage: lastUserMessage,
+      attachments: request.attachments,
+      sessionState,
+      conversationHistory: request.messages,
+      userId: request.userId,
+      chatId: request.chatId,
+      messageId: normalizedMessageId,
+    });
+  }
 
   // Override: visual content (diagrams, flowcharts, etc.) must NOT route to document/presentation agents
-  const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","diagrama de secuencia","diagrama de clases","timeline","linea de tiempo","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt","svg","ilustracion","ilustración","icono","logo","dibujo","dibuja","grafico","gráfico","chart","pie chart","bar chart","line chart","tabla comparativa","cuadro comparativo","dashboard visual","calendario visual"];
   const msgLower = lastUserMessage.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  const isVisualOverride = visualKw.some(kw => msgLower.includes(kw));
+  const isVisualOverride = VISUAL_KW_REGEX.test(msgLower);
   if (isVisualOverride) {
     // Force to chat intent so LLM renders inline Mermaid/SVG/HTML
     (requestSpec as any).intent = "chat";
@@ -406,27 +473,24 @@ export async function createUnifiedRun(
   const isAgenticMode = executionMode !== "conversation";
   const runtimeProfile = isAgenticMode ? "operational" : "conversational";
 
-  try {
-    // Ensure the chat exists before persisting agent runs (FK: agent_mode_runs.chat_id -> chats.id).
-    // The UI sometimes generates provisional chat ids (e.g. "chat_<timestamp>") before it has
-    // created the chat via POST /api/chats. We upsert a minimal chat row to avoid FK violations.
-    await db.insert(chats).values({
+  // Fire-and-forget DB inserts
+  Promise.all([
+    db.insert(chats).values({
       id: request.chatId,
       userId: request.userId,
       title: 'New Chat',
-    }).onConflictDoNothing();
-
-    await db.insert(agentModeRuns).values({
+    }).onConflictDoNothing(),
+    db.insert(agentModeRuns).values({
       id: runId,
       chatId: request.chatId,
       messageId: normalizedMessageId,
       userId: request.userId,
       status: 'planning',
       idempotencyKey: requestSpec.id,
-    }).onConflictDoNothing();
-  } catch (error) {
-    console.error('[UnifiedChat] Failed to persist run:', error);
-  }
+    }).onConflictDoNothing(),
+  ]).catch(error => {
+    console.error('[UnifiedChat] Failed to persist run (non-blocking):', error);
+  });
 
   console.log(
     `[UnifiedChat] Created run ${runId} - intent: ${requestSpec.intent}, agentic: ${isAgenticMode}, mode: ${executionMode}, lane: ${resolvedLane}, nativeSignal: ${hasAgenticSignal}`,

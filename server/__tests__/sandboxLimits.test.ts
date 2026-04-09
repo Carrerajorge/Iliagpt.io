@@ -85,8 +85,18 @@ for r in results:
   });
 
   afterAll(() => {
-    if (fs.existsSync(TEST_SCRIPTS_DIR)) {
-      fs.rmSync(TEST_SCRIPTS_DIR, { recursive: true, force: true });
+    // Best-effort cleanup — some environments (e.g. read-only mounts) may
+    // not allow file deletion. Swallow EPERM / EACCES so the test suite
+    // can report pass/fail cleanly without teardown noise.
+    try {
+      if (fs.existsSync(TEST_SCRIPTS_DIR)) {
+        fs.rmSync(TEST_SCRIPTS_DIR, { recursive: true, force: true });
+      }
+    } catch (err: any) {
+      if (err?.code !== 'EPERM' && err?.code !== 'EACCES') {
+        throw err;
+      }
+      console.warn('[sandboxLimits] cleanup skipped — filesystem is read-only:', err.message);
     }
   });
 

@@ -4297,10 +4297,11 @@ function writeSse(res: Response, event: string, data: object): boolean {
     const chunk = `event: ${sanitizeStreamText(event, 120)}\ndata: ${serialized.length > MAX_STREAM_EVENT_PAYLOAD_BYTES
       ? JSON.stringify(clampSsePayload(payload, MAX_STREAM_EVENT_PAYLOAD_BYTES))
       : serialized}\n\n`;
+    if ((res as any).writableEnded || (res as any).destroyed) return false;
     res.write(chunk);
     if (typeof (res as unknown as { flush: Function }).flush === 'function') {
       (res as unknown as { flush: Function }).flush();
-    } else if (res.socket && typeof res.socket.write === 'function') {
+    } else if (res.socket && typeof res.socket.write === 'function' && !res.socket.destroyed) {
       res.socket.write('');
     }
     if (typeof streamMeta?.onWrite === "function") {
@@ -6402,7 +6403,8 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       // Override: visual content (diagrams, flowcharts, org charts) must render inline, not as files
       if (intentResult) {
-        const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","diagrama de secuencia","diagrama de clases","timeline","linea de tiempo","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt","svg","ilustracion","ilustración","icono","logo","dibujo","dibuja","grafico","gráfico","chart","pie chart","bar chart","line chart","tabla comparativa","cuadro comparativo","dashboard visual","calendario visual"];
+        const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","diagrama de secuencia","diagrama de clases","timeline","linea de tiempo","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt","svg","ilustracion","ilustración","icono","logo","dibujo","dibuja","grafico","gráfico","chart","pie chart","bar chart","line chart","tabla comparativa","cuadro comparativo","dashboard visual","calendario visual",
+          "grafica 3d","grafico 3d","superficie 3d","parabola","funcion 3d","ecuacion parametrica","campo vectorial","fractal","curva 3d","plotear","graficar","3d graph","3d plot","surface plot","parametric","vector field"];
         const msgLower = (userMessageText || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
         if (visualKw.some(kw => msgLower.includes(kw))) {
           console.log(`[Stream] 🎨 RENDER_VISUAL override: "${userMessageText.slice(0, 60)}..." — forcing inline rendering (was: ${intentResult.intent})`);
@@ -6692,6 +6694,16 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           messageId: `msg_${Date.now()}`,
           attachments: attachmentSpecs,
           latencyMode,
+          // Pass the first-pass intentResult so createUnifiedRun can skip
+          // the duplicate LLM-based routeAgentRequest classification call.
+          intentHint: intentResult
+            ? {
+                intent: intentResult.intent,
+                confidence: intentResult.confidence,
+                output_format: intentResult.output_format,
+                language_detected: intentResult.language_detected,
+              }
+            : undefined,
         });
         console.log(`[Stream] UnifiedContext created - intent: ${unifiedContext.requestSpec.intent}, confidence: ${unifiedContext.requestSpec.intentConfidence.toFixed(2)}, lane: ${unifiedContext.resolvedLane}, primaryAgent: ${unifiedContext.requestSpec.primaryAgent}`);
       } catch (contextError) {
