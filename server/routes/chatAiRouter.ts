@@ -6425,18 +6425,47 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
               const imageDataUrl = `data:${imageResult.mimeType || 'image/png'};base64,${imageResult.imageBase64}`;
               const markdownResponse = `![${imagePrompt}](${imageDataUrl})\n\n*Imagen generada: "${imagePrompt}"*`;
 
-              res.setHeader("Content-Type", "text/event-stream");
-              applySseSecurityHeaders(res);
-              res.setHeader("Cache-Control", "no-cache");
-              res.setHeader("Connection", "keep-alive");
-              res.setHeader("X-Accel-Buffering", "no");
-
-              res.write(`data: ${JSON.stringify({ type: "token", content: markdownResponse })}\n\n`);
-              if (sessionMetadata) {
-                res.write(`data: ${JSON.stringify({ type: "session_metadata", ...sessionMetadata })}\n\n`);
+              if (!res.headersSent) {
+                res.setHeader("Content-Type", "text/event-stream");
+                applySseSecurityHeaders(res);
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+                res.setHeader("X-Accel-Buffering", "no");
+                res.flushHeaders();
               }
-              res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-              res.end();
+
+              // Update fullContent so the finally-block safety net doesn't re-send done
+              fullContent = markdownResponse;
+              markFirstToken();
+              lastAckSequence = 0;
+
+              // Use writeSse so events carry conversationId + requestId → client filter passes
+              writeSse(res, "chunk", {
+                content: markdownResponse,
+                sequenceId: 0,
+                requestId,
+                runId: claimedRun?.id || requestId,
+                timestamp: Date.now(),
+              });
+              if (sessionMetadata) {
+                writeSse(res, "session_metadata", {
+                  ...sessionMetadata,
+                  requestId,
+                  timestamp: Date.now(),
+                });
+              }
+              emitDoneEvent(res, {
+                requestId,
+                runId: claimedRun?.id || requestId,
+                assistantMessageId,
+                latencyMode,
+                totalSequences: 1,
+                contentLength: markdownResponse.length,
+                completionReason: "image_generated",
+                traceId: requestId,
+                timings: reportTimings("image_generated"),
+              });
+              if (!(res as any).writableEnded) res.end();
               return;
             }
           } catch (imgError: any) {
@@ -6483,10 +6512,10 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
                 res.setHeader("Cache-Control", "no-cache");
                 res.setHeader("Connection", "keep-alive");
                 res.setHeader("X-Accel-Buffering", "no");
+                res.flushHeaders();
               }
-              try {
-                res.write(`data: ${JSON.stringify({ type: "step", step })}\n\n`);
-              } catch { /* connection closed */ }
+              // Use writeSse so the step event carries conversationId + requestId
+              writeSse(res, "step", { type: "step", step, requestId, timestamp: Date.now() });
             };
 
             const skillResult: SkillDispatchResult = await skillAutoDispatcher.dispatch({
@@ -6504,23 +6533,33 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             if (skillResult.handled && (skillResult.artifacts.length > 0 || skillResult.textResponse)) {
               console.log(`[Stream] 🎯 SKILL DISPATCHED: ${skillResult.skillId} (${skillResult.skillName}) - ${skillResult.artifacts.length} artifacts`);
 
-              // Ensure SSE headers are set
+              // Ensure SSE headers are set and flushed before writing
               if (!res.headersSent) {
                 res.setHeader("Content-Type", "text/event-stream");
                 applySseSecurityHeaders(res);
                 res.setHeader("Cache-Control", "no-cache");
                 res.setHeader("Connection", "keep-alive");
                 res.setHeader("X-Accel-Buffering", "no");
+                res.flushHeaders();
               }
 
-              // Stream skill text response as tokens
+              // Stream skill text response as tokens — use writeSse so events carry IDs
               if (skillResult.textResponse) {
-                res.write(`data: ${JSON.stringify({ type: "token", content: skillResult.textResponse })}\n\n`);
+                fullContent = skillResult.textResponse;
+                markFirstToken();
+                lastAckSequence = 0;
+                writeSse(res, "chunk", {
+                  content: skillResult.textResponse,
+                  sequenceId: 0,
+                  requestId,
+                  runId: claimedRun?.id || requestId,
+                  timestamp: Date.now(),
+                });
               }
 
               // Emit artifacts for download
               for (const artifact of skillResult.artifacts) {
-                res.write(`data: ${JSON.stringify({
+                writeSse(res, "artifact", {
                   type: "artifact",
                   artifact: {
                     filename: artifact.filename,
@@ -6532,26 +6571,45 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
                   },
                   skillId: skillResult.skillId,
                   skillName: skillResult.skillName,
-                })}\n\n`);
+                  requestId,
+                  timestamp: Date.now(),
+                });
               }
 
               // Emit suggestions if available
               if (skillResult.suggestions?.length) {
-                res.write(`data: ${JSON.stringify({ type: "suggestions", suggestions: skillResult.suggestions })}\n\n`);
+                writeSse(res, "suggestions", {
+                  type: "suggestions",
+                  suggestions: skillResult.suggestions,
+                  requestId,
+                  timestamp: Date.now(),
+                });
               }
 
               // Emit skill metadata
-              res.write(`data: ${JSON.stringify({
+              writeSse(res, "skill_execution", {
                 type: "skill_execution",
                 skillId: skillResult.skillId,
                 skillName: skillResult.skillName,
                 category: skillResult.category,
                 artifactCount: skillResult.artifacts.length,
                 metrics: skillResult.metrics,
-              })}\n\n`);
+                requestId,
+                timestamp: Date.now(),
+              });
 
-              res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-              res.end();
+              emitDoneEvent(res, {
+                requestId,
+                runId: claimedRun?.id || requestId,
+                assistantMessageId,
+                latencyMode,
+                totalSequences: 1,
+                contentLength: fullContent.length,
+                completionReason: "skill_dispatched",
+                traceId: requestId,
+                timings: reportTimings("skill_dispatched"),
+              });
+              if (!(res as any).writableEnded) res.end();
               return;
             }
           } catch (skillError: any) {
@@ -8329,6 +8387,29 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
     } catch (error: any) {
       console.error(`[SSE] Stream error ${requestId}:`, error);
 
+      // ── Structured CHAT_FAILURE log for monitoring and debugging ─────────────
+      const userMsg = (() => {
+        try {
+          const msgs = (req.body as any)?.messages;
+          const last = Array.isArray(msgs) ? msgs[msgs.length - 1] : null;
+          const txt = typeof last?.content === 'string' ? last.content : '';
+          return txt.slice(0, 100);
+        } catch { return ''; }
+      })();
+      console.error('[CHAT_FAILURE]', JSON.stringify({
+        requestId,
+        chatId: (req.body as any)?.chatId || (req.body as any)?.conversationId || streamConversationId || null,
+        userId: (req as any).user?.id || null,
+        messagePreview: userMsg,
+        failurePoint: error?.code || error?.name || 'unknown',
+        provider: activeStreamProvider || null,
+        model: (req.body as any)?.model || null,
+        errorMessage: error?.message || String(error),
+        latencyMs: stageTimings?.total || null,
+        hadContent: fullContent.length > 0,
+        timestamp: new Date().toISOString(),
+      }));
+
       // Mark run as failed if we claimed one
       if (claimedRun) {
         try {
@@ -8357,8 +8438,13 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           } catch { /* response may already be in an unusable state */ }
           return;
         }
+        // Include a Spanish user-friendly message alongside the technical error
+        const userFriendlyError = fullContent.trim()
+          ? 'La respuesta fue interrumpida. Por favor intenta de nuevo.'
+          : 'Lo siento, ocurrió un error procesando tu mensaje. Por favor intenta de nuevo.';
         writeSse(res, 'error', {
           error: error.message,
+          message: userFriendlyError,
           requestId,
           runId: errorRunId,
           provider: activeStreamProvider || undefined,

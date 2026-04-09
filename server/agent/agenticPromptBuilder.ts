@@ -84,6 +84,7 @@ const INTENT_PROFILES: Record<string, IntentProfile> = {
   code_execution:        { size: "medium",  categories: ["code"] },
   image_generation:      { size: "medium",  categories: ["visual"] },
   diagram:               { size: "medium",  categories: ["visual"] },
+  math_visualization:    { size: "medium",  categories: ["data", "visual", "code"] },
   file_operation:        { size: "medium",  categories: ["code"] },
   web_search:            { size: "full",    categories: ["research"] },
   web_automation:        { size: "full",    categories: ["research", "code"] },
@@ -122,6 +123,36 @@ const INTENT_INSTRUCTIONS: Record<string, { es: string; en: string }> = {
   web_search:            { es: "Busca informacion actualizada y cita las fuentes con URLs.", en: "Search for current information and cite sources with URLs." },
   diagram:               { es: "Para diagramas de flujo, secuencia, clases o procesos usa ```mermaid con graph TD, sequenceDiagram, classDiagram, etc. Para ilustraciones, iconos, logos, organigramas complejos o graficos personalizados usa ```svg con SVG completo. Reglas SVG: siempre incluir viewBox para responsividad, colores profesionales (#1e3a5f, #2563eb, #059669), bordes redondeados (rx), tipografia sans-serif, sin dependencias externas. El SVG se renderiza automaticamente inline con alta nitidez.", en: "For flowcharts, sequences, class or process diagrams use ```mermaid with graph TD, sequenceDiagram, classDiagram, etc. For illustrations, icons, logos, complex org charts or custom graphics use ```svg with complete SVG. SVG rules: always include viewBox for responsiveness, professional colors (#1e3a5f, #2563eb, #059669), rounded corners (rx), sans-serif typography, no external dependencies. SVG renders automatically inline with high quality." },
   image_generation:      { es: "Crea imagenes detalladas que coincidan con la descripcion. Pide detalles si es ambigua.", en: "Create detailed images matching the description. Ask for details if ambiguous." },
+  math_visualization:    {
+    es: `VISUALIZACION MATEMATICA AVANZADA:
+Cuando el usuario pida graficos matematicos (parabolas, funciones 3D, superficies, campos vectoriales, ecuaciones parametricas, fractales, etc.), genera un bloque \`\`\`html completo y autocontenido con Plotly.js via CDN.
+
+REGLAS:
+1. Usa <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script> (Plotly soporta 3D nativo con rotacion interactiva)
+2. Para graficos 3D: usa Plotly.newPlot con type:"surface" o type:"scatter3d" o type:"mesh3d"
+3. Para graficos 2D: usa type:"scatter" con mode:"lines"
+4. Para campos vectoriales: usa type:"cone" o flechas con annotations
+5. Genera los datos matematicamente con JavaScript puro (Math.sin, Math.cos, etc.)
+6. El grafico debe ser INTERACTIVO (Plotly permite rotar, zoom, pan en 3D)
+7. Incluye: titulo, ejes etiquetados (x,y,z), colorscale profesional (Viridis, Plasma, etc.)
+8. Container con width:100%, height:500px, fondo blanco
+9. Para dimensiones >3D: usa proyecciones (slices, colormaps, animaciones) o multiples vistas
+
+EJEMPLOS DE FUNCIONES:
+- Parabola 3D: z = x² + y²
+- Silla de montar: z = x² - y²
+- Esfera: parametrica con theta y phi
+- Toro: parametrica con 2 angulos
+- Superficie de Mobius: parametrica compleja
+- Campo vectorial: flechas 3D con componentes
+- Curvas parametricas 3D: helice, torus knot
+
+Para dimensiones 4D-8D usa: color como 4ta dimension, tamaño como 5ta, opacidad como 6ta, animacion temporal como 7ta, multiples subplots como 8va.`,
+    en: `ADVANCED MATH VISUALIZATION:
+When user asks for mathematical graphs (parabolas, 3D functions, surfaces, vector fields, parametric equations, fractals, etc.), generate a complete self-contained \`\`\`html block with Plotly.js via CDN.
+
+Use <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>. For 3D use type:"surface" or "scatter3d" or "mesh3d". Generate data with pure JavaScript math. Interactive (rotate, zoom, pan). Include title, labeled axes, professional colorscale. For 4D+ use: color as 4th dim, size as 5th, opacity as 6th, animation as 7th, multiple subplots as 8th.`
+  },
 };
 
 export function getIntentInstructions(intent: string, locale: string): string {

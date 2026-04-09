@@ -211,9 +211,20 @@ const InlineHtmlBlock = memo(function InlineHtmlBlock({ code }: { code: string }
   const [height, setHeight] = useState(400);
   const lastCodeRef = useRef("");
 
+  // Detect if HTML needs scripts (Plotly, Chart.js, D3, etc.)
+  const needsScripts = code.includes("<script") && (
+    code.includes("plotly") || code.includes("Plotly") ||
+    code.includes("chart.js") || code.includes("Chart(") ||
+    code.includes("d3.") || code.includes("three.js") ||
+    code.includes("cdn.") || code.includes("cdnjs.") ||
+    code.includes("Math.") || code.includes("requestAnimationFrame")
+  );
+
   useEffect(() => {
     if (!iframeRef.current || !code.trim()) return;
-    // Debounce during streaming
+    const isComplete = code.includes("</html>") || code.includes("</body>") || code.includes("</script>");
+    const delay = isComplete ? 100 : 500;
+
     const timer = setTimeout(() => {
       if (code === lastCodeRef.current) return;
       lastCodeRef.current = code;
@@ -221,27 +232,34 @@ const InlineHtmlBlock = memo(function InlineHtmlBlock({ code }: { code: string }
       if (!iframe) return;
       const doc = iframe.contentDocument || iframe.contentWindow?.document;
       if (!doc) return;
-      // Write HTML to iframe safely (sandboxed, no scripts)
-      const safeHtml = code.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "<!-- scripts removed -->");
+
+      // If scripts needed (math/charts), keep them. Otherwise strip for safety.
+      const html = needsScripts ? code : code.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "<!-- scripts removed for safety -->");
+
       doc.open();
-      doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1f2937;background:#fff;}</style></head><body>${safeHtml}</body></html>`);
+      doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{margin:0;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1f2937;background:#fff;}*{box-sizing:border-box;}</style></head><body>${html}</body></html>`);
       doc.close();
-      // Auto-resize iframe to content height
-      requestAnimationFrame(() => {
-        const h = doc.documentElement?.scrollHeight || doc.body?.scrollHeight || 400;
-        setHeight(Math.min(Math.max(h + 20, 200), 800));
-      });
-    }, 400);
+
+      // Auto-resize: check multiple times for async content (Plotly renders after load)
+      const resizeCheck = () => {
+        if (!iframe.contentDocument) return;
+        const h = iframe.contentDocument.documentElement?.scrollHeight || iframe.contentDocument.body?.scrollHeight || 400;
+        setHeight(Math.min(Math.max(h + 20, 300), 700));
+      };
+      requestAnimationFrame(resizeCheck);
+      setTimeout(resizeCheck, 500);  // Plotly needs time to render
+      setTimeout(resizeCheck, 1500); // Final check
+    }, delay);
     return () => clearTimeout(timer);
-  }, [code]);
+  }, [code, needsScripts]);
 
   return (
     <iframe
       ref={iframeRef}
-      sandbox="allow-same-origin"
-      className="w-full border-0 bg-white rounded"
-      style={{ height: `${height}px`, minHeight: "200px" }}
-      title="Documento renderizado"
+      sandbox={needsScripts ? "allow-scripts allow-same-origin" : "allow-same-origin"}
+      className="w-full border-0 bg-white dark:bg-white rounded"
+      style={{ height: `${height}px`, minHeight: "300px" }}
+      title="Contenido renderizado"
     />
   );
 });

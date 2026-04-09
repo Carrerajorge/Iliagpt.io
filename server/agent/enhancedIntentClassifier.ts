@@ -53,6 +53,8 @@ const INTENT_KEYWORDS: Record<string, KW> = {
                              "diagram|flowchart|flow chart|sequence diagram|class diagram|er diagram|system architecture|process map|mermaid diagram"),
   file_operation:         kw("leer archivo|abrir archivo|crear archivo|guardar archivo",
                              "read file|open file|create file|save file"),
+  math_visualization:     kw("grafica|grafico 3d|grafico 4d|superficie|parabola|funcion 3d|ecuacion parametrica|campo vectorial|fractal|curva 3d|plotear|graficar funcion|grafica de|superficie 3d|esfera|toro|helicoide|hiperboloide|paraboloide|elipsoide|silla de montar|mobius|klein|derivada|integral|vector|gradiente|laplaciano|fourier|taylor",
+                             "3d graph|3d plot|surface plot|parabola|parametric equation|vector field|fractal|3d curve|plot function|graph of|3d surface|sphere|torus|helicoid|hyperboloid|paraboloid|ellipsoid|saddle point|mobius|klein|derivative|integral|vector|gradient|laplacian|fourier|taylor"),
   calculation:            kw("calcular|cuanto es|sumar|multiplicar|formula",
                              "calculate|how much is|add up|multiply|formula|compute"),
   translation:            kw("traducir|traduccion|traducir al|pasar a idioma",
