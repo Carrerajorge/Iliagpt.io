@@ -1,6 +1,36 @@
 import { analyzeIntent } from "./intentAnalysis";
 import { createRequestSpec, type RequestSpec, type AttachmentSpec, type SessionState, type IntentType } from "./requestSpec";
 
+// Map from the shared NLU intent values (e.g. "CHAT_GENERAL") to the agent intent
+// values (e.g. "chat"). When the chatAiRouter already ran routeIntent() we can
+// skip the second LLM analyzeIntent() call and reuse the pre-computed result.
+const SHARED_TO_AGENT_INTENT: Record<string, IntentType> = {
+    "CHAT_GENERAL":           "chat",
+    "NEED_CLARIFICATION":     "chat",
+    "SUMMARIZE":              "document_analysis",
+    "TRANSLATE":              "chat",
+    "ANALYZE_DOCUMENT":       "document_analysis",
+    "ANALYZE_DATA":           "data_analysis",
+    "SEARCH_WEB":             "research",
+    "SECURITY_AUDIT":         "research",
+    "CREATE_PRESENTATION":    "presentation_creation",
+    "CREATE_DOCUMENT":        "document_generation",
+    "CREATE_SPREADSHEET":     "spreadsheet_creation",
+    "EXECUTE_CODE":           "code_generation",
+    "MEDIA_GENERATE":         "image_generation",
+    "RENDER_VISUAL":          "chat",
+    "MANAGE_EMAIL":           "multi_step_task",
+    "MANAGE_CALENDAR":        "multi_step_task",
+    "MANAGE_TASKS":           "multi_step_task",
+    "SEND_MESSAGE":           "multi_step_task",
+    "MANAGE_DATABASE":        "multi_step_task",
+    "AUTOMATE_WORKFLOW":      "multi_step_task",
+    "MANAGE_INFRASTRUCTURE":  "multi_step_task",
+    "INTEGRATION_ACTION":     "multi_step_task",
+};
+
+const INTENT_HINT_BYPASS_THRESHOLD = 0.75;
+
 export interface RouteRequestParams {
     rawMessage: string;
     attachments?: AttachmentSpec[];
@@ -9,6 +39,8 @@ export interface RouteRequestParams {
     userId: string;
     chatId: string;
     messageId?: string;
+    /** Pre-computed intent from routeIntent() — skips the second LLM classification when confidence is high enough. */
+    intentHint?: { intent: string; confidence: number };
 }
 
 /**
@@ -17,26 +49,41 @@ export interface RouteRequestParams {
  * and decides the fundamental routing (which specialized agent should handle this).
  */
 export async function routeAgentRequest(params: RouteRequestParams): Promise<RequestSpec> {
-    const { rawMessage, attachments, sessionState, conversationHistory, userId, chatId, messageId } = params;
+    const { rawMessage, attachments, sessionState, conversationHistory, userId, chatId, messageId, intentHint } = params;
 
     // ── Intent Analysis: LLM escalation for ambiguous cases ──
     // Fast path via Regex, escalated to Flash LLM if confidence is low.
+    // If an intentHint is provided (pre-computed by chatAiRouter) with sufficient
+    // confidence, we skip the LLM call entirely to avoid duplicate classification.
     let analysisResult;
-    try {
-        analysisResult = await analyzeIntent({
-            rawMessage,
-            attachments,
-            sessionState,
-            conversationHistory,
-            userId,
-            chatId,
-            generateBrief: false,
-        });
+    const mappedHintIntent = intentHint ? SHARED_TO_AGENT_INTENT[intentHint.intent] : undefined;
+    if (mappedHintIntent && intentHint && intentHint.confidence >= INTENT_HINT_BYPASS_THRESHOLD) {
+        analysisResult = {
+            intent: mappedHintIntent,
+            confidence: intentHint.confidence,
+            source: "hint" as const,
+            latencyMs: 0,
+        };
         console.log(
-            `[AgentRouter] Escalonamiento Completado: ${analysisResult.source} -> ${analysisResult.intent} (${analysisResult.confidence.toFixed(2)}) [${analysisResult.latencyMs.toFixed(0)}ms]`
+            `[AgentRouter] Intent hint bypass: ${intentHint.intent} -> ${mappedHintIntent} (${intentHint.confidence.toFixed(2)}) — skipping LLM analyzeIntent`
         );
-    } catch (err) {
-        console.error(`[AgentRouter] Falló el clasificador de intención LLM: ${(err as Error).message}`);
+    } else {
+        try {
+            analysisResult = await analyzeIntent({
+                rawMessage,
+                attachments,
+                sessionState,
+                conversationHistory,
+                userId,
+                chatId,
+                generateBrief: false,
+            });
+            console.log(
+                `[AgentRouter] Escalonamiento Completado: ${analysisResult.source} -> ${analysisResult.intent} (${analysisResult.confidence.toFixed(2)}) [${analysisResult.latencyMs.toFixed(0)}ms]`
+            );
+        } catch (err) {
+            console.error(`[AgentRouter] Falló el clasificador de intención LLM: ${(err as Error).message}`);
+        }
     }
 
     const requestSpec = createRequestSpec({

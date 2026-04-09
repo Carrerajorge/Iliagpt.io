@@ -85,18 +85,20 @@ for r in results:
   });
 
   afterAll(() => {
-    // Best-effort cleanup — some environments (e.g. read-only mounts) may
-    // not allow file deletion. Swallow EPERM / EACCES so the test suite
-    // can report pass/fail cleanly without teardown noise.
+    // Best-effort cleanup — some environments (e.g. read-only mounts, Cowork
+    // sandboxes) may not allow file deletion.  Swallow ALL errors here so the
+    // test suite can report pass/fail cleanly without teardown noise.
+    // We use individual unlink calls instead of rmSync to avoid cascading errors.
     try {
       if (fs.existsSync(TEST_SCRIPTS_DIR)) {
-        fs.rmSync(TEST_SCRIPTS_DIR, { recursive: true, force: true });
+        for (const file of ['network_test.py', 'timeout_test.py', 'memory_test.py', 'import_blocked.py']) {
+          try { fs.unlinkSync(path.join(TEST_SCRIPTS_DIR, file)); } catch { /* ignore */ }
+        }
+        try { fs.rmdirSync(TEST_SCRIPTS_DIR); } catch { /* ignore */ }
       }
-    } catch (err: any) {
-      if (err?.code !== 'EPERM' && err?.code !== 'EACCES') {
-        throw err;
-      }
-      console.warn('[sandboxLimits] cleanup skipped — filesystem is read-only:', err.message);
+    } catch {
+      // Best-effort only — swallow all errors including EPERM from read-only mounts
+      console.warn('[sandboxLimits] afterAll cleanup skipped — read-only filesystem');
     }
   });
 

@@ -82,26 +82,43 @@ export async function executeCommand(opts: TerminalOptions): Promise<TerminalRes
   const start = Date.now();
 
   return new Promise((resolve, reject) => {
+    // Use `detached: true` so Node creates a new process group.
+    // This lets us kill the entire group (shell + children) with a negative PID,
+    // avoiding orphan child processes (e.g. `sleep 30` spawned by the shell).
     const proc = spawn(command, [], {
       shell: true,
       cwd: cwd || process.cwd(),
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, LANG: "en_US.UTF-8" },
+      detached: true,
     });
+
+    // Unref so the parent process is not kept alive by this child.
+    proc.unref();
 
     let stdout = "";
     let stderr = "";
     let killed = false;
 
-    proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    proc.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    proc.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
 
-    const timer = setTimeout(() => {
+    const doKill = () => {
       killed = true;
-      proc.kill("SIGKILL");
-    }, timeout);
+      try {
+        // Kill the entire process group (negative PID) if possible
+        if (proc.pid != null) {
+          process.kill(-proc.pid, "SIGKILL");
+        }
+      } catch {
+        // Fallback: kill just the shell process
+        try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+      }
+    };
 
-    const onAbort = () => { killed = true; proc.kill("SIGKILL"); };
+    const timer = setTimeout(doKill, timeout);
+
+    const onAbort = () => doKill();
     signal?.addEventListener("abort", onAbort, { once: true });
 
     proc.on("close", (exitCode) => {

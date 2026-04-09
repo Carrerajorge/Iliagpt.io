@@ -7,7 +7,8 @@ const createdFiles: string[] = [];
 afterEach(() => {
   for (const file of createdFiles.splice(0)) {
     if (fs.existsSync(file)) {
-      fs.unlinkSync(file);
+      // Best-effort cleanup — mounted volumes may deny deletion (EPERM)
+      try { fs.unlinkSync(file); } catch { /* ignore permission errors */ }
     }
   }
 });

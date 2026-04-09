@@ -25,7 +25,8 @@ describe("artifact download system", () => {
     const testFile = path.join(ARTIFACTS_DIR, `write_test_${Date.now()}.tmp`);
     fs.writeFileSync(testFile, "test");
     expect(fs.existsSync(testFile)).toBe(true);
-    fs.unlinkSync(testFile);
+    // Best-effort cleanup — mounted volumes may deny deletion (EPERM)
+    try { fs.unlinkSync(testFile); } catch { /* ignore permission errors */ }
   });
 
   it("test artifact file exists", () => {
