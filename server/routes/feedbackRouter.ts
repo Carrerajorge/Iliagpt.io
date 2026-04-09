@@ -21,8 +21,18 @@ interface FeedbackPayload {
 const feedbackStore: FeedbackPayload[] = [];
 
 // POST /api/feedback - Submit feedback for a message
+// Note: userId is derived from authenticated session, not from request body
 router.post("/", async (req, res) => {
     try {
+        // Validate user identity from session (prevent spoofing)
+        const authenticatedUserId = (req as any).user?.claims?.sub || (req as any).user?.id?.toString();
+        if (!authenticatedUserId) {
+            return res.status(401).json({
+                error: "AUTH_REQUIRED",
+                message: "Authentication required to submit feedback"
+            });
+        }
+
         const { messageId, conversationId, feedbackType, timestamp, comment } = req.body as FeedbackPayload;
 
         if (!messageId || !feedbackType) {
@@ -45,7 +55,7 @@ router.post("/", async (req, res) => {
             feedbackType,
             timestamp: timestamp || new Date().toISOString(),
             comment,
-            userId: (req as any).user?.claims?.sub
+            userId: authenticatedUserId
         };
 
         feedbackStore.push(feedback);

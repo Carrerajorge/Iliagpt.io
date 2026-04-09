@@ -2835,9 +2835,45 @@ export function createAdminRouter() {
       suggestionsEnabled: FEATURES.AGENTIC_SUGGESTIONS_ENABLED,
       autonomousModeEnabled: FEATURES.AGENTIC_AUTONOMOUS_MODE,
       circuit: circuitStatus,
-      status: !FEATURES.AGENTIC_CHAT_ENABLED ? 'disabled' : 
+      status: !FEATURES.AGENTIC_CHAT_ENABLED ? 'disabled' :
               circuitStatus.isOpen ? 'circuit_open' : 'healthy'
     });
+  });
+
+  // ── Provider Health Dashboard ────────────────────────────────────────────────
+  // GET /api/admin/health/providers — returns circuit breaker + latency per LLM provider
+  router.get("/health/providers", async (_req, res) => {
+    try {
+      const metrics = llmGateway.getMetrics();
+      const circuitStatus = metrics.circuitBreakerStatus as Record<string, string>;
+      const byProvider = metrics.byProvider as Record<string, { requests?: number; failures?: number; latency?: number }>;
+
+      const providers: Record<string, object> = {};
+      for (const [name, state] of Object.entries(circuitStatus)) {
+        const providerStats = byProvider[name] || {};
+        providers[name] = {
+          status: state === 'CLOSED' ? 'healthy' : state === 'HALF_OPEN' ? 'recovering' : 'circuit_open',
+          circuitState: state,
+          requests: providerStats.requests ?? 0,
+          failures: providerStats.failures ?? 0,
+          latencyMs: providerStats.latency ?? null,
+        };
+      }
+
+      res.json({
+        timestamp: new Date().toISOString(),
+        providers,
+        overall: {
+          totalRequests: metrics.totalRequests,
+          successRate: metrics.successRate,
+          averageLatencyMs: metrics.averageLatencyMs,
+          fallbackSuccesses: metrics.fallbackSuccesses,
+          cacheHits: metrics.cacheHits,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to get provider health' });
+    }
   });
 
   router.get("/agent/tools", (req, res) => {

@@ -19,6 +19,26 @@ const clientErrorLogRequestSchema = z.object({
   userAgent: z.string(),
 });
 
+const errorLogWindows = new Map<string, { count: number; expiresAt: number }>();
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of errorLogWindows) {
+    if (entry.expiresAt <= now) errorLogWindows.delete(key);
+  }
+}, 30_000).unref();
+
+function checkErrorLogRateLimit(req: Request): boolean {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  let entry = errorLogWindows.get(ip);
+  if (!entry || entry.expiresAt <= now) {
+    entry = { count: 0, expiresAt: now + 60_000 };
+    errorLogWindows.set(ip, entry);
+  }
+  entry.count++;
+  return entry.count <= 30;
+}
+
 function requireAdmin(req: Request, res: Response): boolean {
   const user = (req as any).user;
   if (!user?.id) {
@@ -33,6 +53,10 @@ function requireAdmin(req: Request, res: Response): boolean {
 }
 
 router.post("/log", async (req: Request, res: Response) => {
+  if (!checkErrorLogRateLimit(req)) {
+    return res.status(429).json({ error: "Too many error reports" });
+  }
+
   try {
     const parsed = clientErrorLogRequestSchema.safeParse(req.body);
     if (!parsed.success) {

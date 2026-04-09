@@ -16,8 +16,17 @@ import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
 
 // SECURITY FIX #28: Path traversal prevention helper
 function sanitizeFilePath(filePath: string): string | null {
+  // Decode URL encoding before normalizing
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(filePath);
+  } catch {
+    console.warn(`[Security] Malformed URL encoding in path: ${filePath}`);
+    return null;
+  }
+
   // Normalize path to resolve .. and .
-  const normalized = path.normalize(filePath).replace(/\\/g, '/');
+  const normalized = path.normalize(decoded).replace(/\\/g, '/');
 
   // Block path traversal attempts
   if (normalized.includes('..') || normalized.startsWith('/') || normalized.includes('\0')) {

@@ -160,9 +160,9 @@ const CIRCUIT_BREAKER_CONFIG = {
 };
 
 const RATE_LIMIT_CONFIG = {
-  tokensPerMinute: 100,
-  refillRateMs: 600,
-  maxBurst: 150,
+  tokensPerMinute: 200,
+  refillRateMs: 300,
+  maxBurst: 300,
 };
 
 const RETRY_CONFIG = {
@@ -599,7 +599,7 @@ class LLMGateway {
 
     const lastUserMessage = messages.filter(m => m.role === "user").pop();
     const lastMsgContent = typeof lastUserMessage?.content === "string" ? lastUserMessage.content : "";
-    if (lastMsgContent.length < 50) {
+    if (lastMsgContent.length < 10) {
       return null;
     }
 
@@ -1297,7 +1297,7 @@ class LLMGateway {
 
     const requestId = options.requestId || this.generateRequestId();
     return {
-      content: "I'm currently experiencing issues processing your request. Please try again in a moment.",
+      content: "Lo siento, todos los proveedores de IA están temporalmente no disponibles. Por favor intenta de nuevo en unos segundos.",
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       requestId,
       latencyMs: 0,

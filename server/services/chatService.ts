@@ -35,6 +35,7 @@ import { extractSystemMessages } from "./chatPromptUtils";
 import OpenAI from "openai";
 import { DEFAULT_PROVIDER as APP_DEFAULT_PROVIDER, DEFAULT_TEXT_MODEL as APP_DEFAULT_MODEL } from "../lib/modelRegistry";
 import { isAgenticEnabled } from "../config/features";
+import { isMathRequest, parseMathRequest, generateMath2DArtifact, generateMath3DArtifact, generateMath4DArtifact, generateMathNDArtifact } from "./mathEngine";
 
 // Cache Helpers utilizing Redis
 const CACHE_TTL_SEC = 5 * 60; // 5 minutes
@@ -2000,6 +2001,45 @@ ${documentModeInstructions}${documentMode.type === 'excel' ? excelChartInstructi
     }
   }
 
+  // Math visualization detection and prompt injection
+  // CRITICAL: When math is detected, we ALWAYS generate an HTML artifact — never Python code.
+  // Python code execution is not available for visualization in this environment.
+  const MATH_HTML_STRICT_RULE = `
+⚠️ REGLA CRÍTICA PARA VISUALIZACIONES MATEMÁTICAS:
+- NUNCA generes código Python, matplotlib, plotly (Python), numpy, pandas ni ningún script ejecutable.
+- El servidor de ejecución de código NO está disponible para gráficas.
+- SIEMPRE genera un artefacto HTML autocontenido usando JavaScript puro en un bloque \`\`\`html.
+- El HTML debe funcionar directamente en el navegador sin servidor, sin imports externos salvo CDN permitidos.
+- CDN permitidos: https://cdnjs.cloudflare.com (Plotly.js, Three.js, D3.js)
+- El fondo debe ser #0f172a (oscuro), texto #e2e8f0, interactivo (zoom, pan, rotate).
+`;
+
+  let mathVisualizationContext = "";
+  if (lastUserMessage && isMathRequest(lastUserMessage.content)) {
+    const parsed = parseMathRequest(lastUserMessage.content);
+    if (parsed) {
+      const dimNum = parseInt(parsed.dimension, 10);
+      if (parsed.dimension === "2d") {
+        const artifact = generateMath2DArtifact(parsed.expression, parsed.title, parsed.domain.x?.[0] ?? -10, parsed.domain.x?.[1] ?? 10);
+        mathVisualizationContext = `${MATH_HTML_STRICT_RULE}\n[MATH VISUALIZATION - LISTO]\nEl usuario pidió una gráfica 2D. Aquí está el artefacto HTML interactivo completo y listo:\n\n\`\`\`html\n${artifact}\n\`\`\`\n\nIncluye este artefacto HTML en tu respuesta exactamente como se muestra arriba (sin modificaciones). Explica brevemente lo que muestra la gráfica en 2-3 líneas.`;
+      } else if (parsed.dimension === "3d") {
+        const artifact = generateMath3DArtifact(parsed.expression, parsed.title, parsed.domain.x?.[0] ?? -5, parsed.domain.x?.[1] ?? 5, parsed.domain.y?.[0] ?? -5, parsed.domain.y?.[1] ?? 5);
+        mathVisualizationContext = `${MATH_HTML_STRICT_RULE}\n[MATH VISUALIZATION - LISTO]\nEl usuario pidió una superficie 3D. Aquí está el artefacto HTML interactivo completo:\n\n\`\`\`html\n${artifact}\n\`\`\`\n\nIncluye este artefacto HTML en tu respuesta exactamente como se muestra arriba. Explica brevemente la superficie en 2-3 líneas.`;
+      } else if (parsed.dimension === "4d") {
+        const artifact = generateMath4DArtifact(parsed.expression, parsed.title);
+        mathVisualizationContext = `${MATH_HTML_STRICT_RULE}\n[MATH VISUALIZATION - LISTO]\nEl usuario pidió una visualización 4D. Aquí está el artefacto HTML con cortes 3D animados:\n\n\`\`\`html\n${artifact}\n\`\`\`\n\nIncluye este artefacto HTML en tu respuesta exactamente como se muestra arriba. Explica la técnica de visualización.`;
+      } else if (dimNum >= 5 && dimNum <= 8) {
+        const artifact = generateMathNDArtifact(parsed.title || `${parsed.dimension.toUpperCase()} Visualization`, dimNum);
+        mathVisualizationContext = `${MATH_HTML_STRICT_RULE}\n[MATH VISUALIZATION - LISTO]\nEl usuario pidió una visualización ${parsed.dimension.toUpperCase()}. Aquí está el artefacto HTML con coordenadas paralelas:\n\n\`\`\`html\n${artifact}\n\`\`\`\n\nIncluye este artefacto HTML en tu respuesta exactamente como se muestra arriba. Explica el enfoque de visualización de alta dimensión.`;
+      } else {
+        mathVisualizationContext = `${MATH_HTML_STRICT_RULE}\n[INSTRUCCIONES VISUALIZACIÓN MATEMÁTICA]\nEl usuario quiere una visualización matemática. DEBES generar un artefacto HTML autocontenido (bloque \`\`\`html) usando JavaScript + Canvas o Plotly.js desde CDN. Para 2D: usa Canvas con JavaScript puro o Plotly. Para 3D: usa Canvas 3D con perspectiva o Plotly surface. Incluye controles de zoom/pan/rotate. Fondo #0f172a, texto #e2e8f0. NO uses Python.`;
+      }
+    } else {
+      // Math keywords detected but expression not parseable — strict HTML instruction
+      mathVisualizationContext = `${MATH_HTML_STRICT_RULE}\n[INSTRUCCIONES VISUALIZACIÓN MATEMÁTICA]\nEl usuario quiere una gráfica o visualización matemática. Genera un artefacto HTML autocontenido en un bloque \`\`\`html usando JavaScript + Canvas o Plotly.js desde CDN (https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.27.0/plotly.min.js). El artefacto debe ser interactivo (zoom/pan), con fondo oscuro (#0f172a), y mostrar la función o datos solicitados. NUNCA generes código Python para esto.`;
+    }
+  }
+
   const lowerPrioritySections = [
     { title: "Platform Operating Rules", content: `${gptPlatformBaseline}${codeInterpreterPrompt}${documentCapabilitiesPrompt}` },
     { title: "Current Date and Time", content: currentDateTimeContext },
@@ -2009,6 +2049,7 @@ ${documentModeInstructions}${documentMode.type === 'excel' ? excelChartInstructi
     { title: "Additional User Instructions", content: customInstructionsSection },
     { title: "Preferred Response Style", content: responseStyleModifier },
     { title: "Company Knowledge", content: companyKnowledgeSection },
+    { title: "Math Visualization", content: mathVisualizationContext },
     { title: "Web Search Context", content: webSearchInfo },
     { title: "Retrieved Memory Context", content: contextInfo },
     { title: "Active Document Context", content: fullDocumentContext },

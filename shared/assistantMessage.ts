@@ -1,7 +1,7 @@
 import { hasMeaningfulAssistantContent } from "./assistantContent";
 import { normalizeFollowUpSuggestions } from "./followUpSuggestions";
 
-const DEFAULT_ASSISTANT_FALLBACK_CONTENT = "No se recibió respuesta del servidor.";
+const DEFAULT_ASSISTANT_FALLBACK_CONTENT = "Lo siento, no pude generar una respuesta en este momento. Por favor, intenta de nuevo.";
 const ALLOWED_CONFIDENCE = new Set(["high", "medium", "low"]);
 
 export type AssistantConfidence = "high" | "medium" | "low";

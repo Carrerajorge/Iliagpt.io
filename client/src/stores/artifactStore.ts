@@ -145,19 +145,29 @@ export const useArtifactStore = create<ArtifactStore>()(
       },
 
       detectAndCreateArtifact: (messageId, content) => {
-        // Detect HTML documents
+        // Detect HTML documents (including math visualizations)
         if (
           content.includes("<!DOCTYPE") ||
           content.includes("<html") ||
           /```html\s*\n[\s\S]*<html/i.test(content)
         ) {
-          const htmlMatch = content.match(/```html?\s*\n([\s\S]*?)```/);
+          const htmlMatch = content.match(/```html?\s*\n([\s\S]*?)```/s);
           if (htmlMatch) {
+            const htmlContent = htmlMatch[1].trim();
+            // Detect math-specific artifacts for a richer title
+            let title = "HTML Preview";
+            if (/📈|📊|🌐|🔮|Math\.sin|Math\.cos|evalExpr|evalXY|eval4D|Plotly|THREE\./.test(htmlContent)) {
+              if (/<h1[^>]*>.*?(?:📈|2D)/i.test(htmlContent)) title = "2D Math Graph";
+              else if (/<h1[^>]*>.*?(?:🌐|3D)/i.test(htmlContent)) title = "3D Math Surface";
+              else if (/<h1[^>]*>.*?(?:🔮|4D)/i.test(htmlContent)) title = "4D Math Visualization";
+              else if (/<h1[^>]*>.*?(?:📊|\dD)/i.test(htmlContent)) title = "High-Dimensional Visualization";
+              else title = "Math Visualization";
+            }
             get().openArtifact({
               id: generateId(),
               type: "html",
-              title: "HTML Preview",
-              content: htmlMatch[1].trim(),
+              title,
+              content: htmlContent,
               messageId,
             });
             return;

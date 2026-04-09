@@ -817,6 +817,9 @@ export function useStreamChat(deps: StreamChatDeps) {
         timeoutCause?: "overall" | "first-token" | "done" | null
       ) => {
         if (timeoutCause) return true;
+        // Explicitly retryable errors (e.g. EMPTY_STREAM when server sent no content)
+        if (error?.retryable === true) return true;
+        if (error?.code === "EMPTY_STREAM") return true;
         const status = (error as any)?.status ?? response?.status;
         if (typeof status === "number") {
           if (status >= 500 || status === 429 || status === 408 || status === 504) return true;
@@ -1348,6 +1351,17 @@ export function useStreamChat(deps: StreamChatDeps) {
                       return { ok: false, content: fullContent, message: errorMsg, response, error: terminalError };
                     }
 
+                    // If done arrived but no content was received, throw a retryable error.
+                    // The catch block below will auto-retry (up to normalizedMaxRetries times).
+                    // This handles cases where SSE events lacked IDs and were silently filtered.
+                    if (!fullContent) {
+                      console.warn("[useStreamChat] Done received with no content — treating as retryable empty stream");
+                      const emptyStreamError = new Error("No se recibió respuesta del servidor.");
+                      (emptyStreamError as any).retryable = true;
+                      (emptyStreamError as any).code = "EMPTY_STREAM";
+                      throw emptyStreamError;
+                    }
+
                     // Prefer the server-persisted ID to avoid duplicate POSTs
                     const finalMessageId = (typeof data.assistantMessageId === "string" && data.assistantMessageId.trim())
                       ? data.assistantMessageId.trim()
@@ -1424,7 +1438,13 @@ export function useStreamChat(deps: StreamChatDeps) {
 
               if (!session.finalizing) {
                 clearTokenTimeouts();
-                throw new Error("No se recibió respuesta del servidor.");
+                // Stream ended without a done event and without content.
+                // Create a retryable error so the retry logic (below) can
+                // attempt the request again before showing any message.
+                const emptyStreamError = new Error("No se recibió respuesta del servidor.");
+                (emptyStreamError as any).retryable = true;
+                (emptyStreamError as any).code = "EMPTY_STREAM";
+                throw emptyStreamError;
               }
 
               return { ok: true, content: fullContent, response };
