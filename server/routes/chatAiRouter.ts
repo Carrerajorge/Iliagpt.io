@@ -5404,10 +5404,9 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           CONVERSATION_STREAM_LOCKS.delete(streamConversationId);
           promoteConversationStreamWaiter(streamConversationId);
         }
-        detachAsyncTask(
-          () => cleanupClaimedRunIfOrphaned("connection_closed"),
-          "cleanup orphaned run on connection close",
-        );
+        // Don't mark run as orphaned on client disconnect — the server continues
+        // consuming the LLM stream and persisting the full response to DB.
+        // cleanupClaimedRunIfOrphaned will be called at the end of the request if needed.
       };
       req.on("aborted", releaseConversationLock);
       res.on("close", releaseConversationLock);
@@ -5837,15 +5836,13 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             clearInterval(heartbeatInterval);
           }
           clearStreamTimeouts();
-          detachAsyncTask(
-            () => cleanupClaimedRunIfOrphaned("client_disconnect"),
-            "cleanup orphaned run on early close",
-          );
+          // Don't mark run as orphaned — server continues processing the LLM stream
+          // in background and persists the complete response to the database.
           detachAsyncTask(
             () => flushStreamResumeProgress(getStreamMeta(res)),
             "stream resume flush on early close",
           );
-          console.log("[SSE] Connection closed (early handler)", { requestId });
+          console.log("[SSE] Client disconnected — continuing LLM processing in background", { requestId });
         });
       }
 
@@ -7038,15 +7035,12 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             clearInterval(heartbeatInterval);
           }
           clearStreamTimeouts();
-          detachAsyncTask(
-            () => cleanupClaimedRunIfOrphaned("client_disconnect"),
-            "cleanup orphaned run on late close",
-          );
+          // Don't mark run as orphaned — server continues LLM processing in background
           detachAsyncTask(
             () => flushStreamResumeProgress(getStreamMeta(res)),
             "stream resume flush on late close",
           );
-          console.log(`[SSE] Connection closed (late handler): ${requestId}`);
+          console.log(`[SSE] Client disconnected — continuing LLM processing in background: ${requestId}`);
         });
       }
 
@@ -8090,13 +8084,16 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         req.once("close", onClose);
 
         for await (const chunk of streamGenerator) {
-          if (isConnectionClosed) break;
+          // When client disconnects, keep consuming the LLM stream so fullContent
+          // is complete for DB persistence. Skip SSE writes (client is gone).
+          const clientGone = isConnectionClosed;
+
           const chunkSequenceId = Number.isFinite(chunk.sequenceId)
             ? Number(chunk.sequenceId)
             : lastAckSequence + 1;
           const chunkRequestId = chunk.requestId || requestId;
 
-          if (chunk.providerSwitch && !isConnectionClosed) {
+          if (chunk.providerSwitch && !clientGone) {
             writeSse(res, "notice", {
               type: "provider_fallback",
               fromProvider: chunk.providerSwitch.fromProvider,
@@ -8122,29 +8119,31 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           }
 
           if (chunk.done) {
-            // Flush remaining buffered content before done event
-            writer.finalize();
+            if (!clientGone) {
+              // Flush remaining buffered content before done event
+              writer.finalize();
 
-            console.log(`[Stream] Sending 'done' event with ${detectedWebSources.length} webSources`);
-            emitDoneEvent(res, {
-              sequenceId: chunkSequenceId,
-              requestId: chunkRequestId,
-              runId: effectiveRunId,
-              intent: unifiedContext?.requestSpec.intent,
-              latencyLane: resolvedLane,
-              latencyMode,
-              totalSequences: Math.max(0, lastAckSequence + 1),
-              contentLength: fullContent.length,
-              completionReason: "model_stream_done",
-              webSources: detectedWebSources.length > 0 ? detectedWebSources : undefined,
-              searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
-              totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
-              provider: activeStreamProvider || undefined,
-              traceId: requestId,
-              timings: buildTimingPayload(),
-              ...sessionMetadata
-            });
-          } else {
+              console.log(`[Stream] Sending 'done' event with ${detectedWebSources.length} webSources`);
+              emitDoneEvent(res, {
+                sequenceId: chunkSequenceId,
+                requestId: chunkRequestId,
+                runId: effectiveRunId,
+                intent: unifiedContext?.requestSpec.intent,
+                latencyLane: resolvedLane,
+                latencyMode,
+                totalSequences: Math.max(0, lastAckSequence + 1),
+                contentLength: fullContent.length,
+                completionReason: "model_stream_done",
+                webSources: detectedWebSources.length > 0 ? detectedWebSources : undefined,
+                searchQueries: capturedSearchQueries.length > 0 ? capturedSearchQueries : undefined,
+                totalSearches: capturedTotalSearches > 0 ? capturedTotalSearches : undefined,
+                provider: activeStreamProvider || undefined,
+                traceId: requestId,
+                timings: buildTimingPayload(),
+                ...sessionMetadata
+              });
+            }
+          } else if (!clientGone) {
             // Push delta into buffer — will be flushed on interval/size threshold
             writer.pushDelta(chunk.content);
           }
