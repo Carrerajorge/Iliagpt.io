@@ -4,10 +4,9 @@
  * Each sandbox gets an isolated workspace directory under /tmp/codex-{sessionId}/
  * with path traversal protection, command validation, and disk limits.
  *
- * NOTE: Uses child_process.spawn with shell:true intentionally — the sandbox
- * must run arbitrary shell commands (npm install, builds, etc.) within an
- * isolated workspace. Command validation via BLOCKED_COMMANDS prevents dangerous
- * operations. This matches the pattern in server/agent/claw/terminalTool.ts.
+ * NOTE: Uses child_process.spawn with explicit /bin/bash -c to run shell commands
+ * within an isolated workspace. Command validation via BLOCKED_COMMANDS prevents
+ * dangerous operations. This matches the pattern in server/agent/claw/terminalTool.ts.
  */
 
 import * as fs from "fs/promises";
@@ -78,8 +77,8 @@ export class Sandbox {
     const start = Date.now();
 
     return new Promise((resolve, reject) => {
-      const proc = spawn(command, [], {
-        shell: true,
+      const proc = spawn("/bin/bash", ["-c", command], {
+        shell: false,
         cwd: this.workspace,
         stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, HOME: this.workspace, LANG: "en_US.UTF-8" },

@@ -122,7 +122,7 @@ export function decrypt(ciphertext: string): string {
     const iv = Buffer.from(ivHex, "hex");
     const tag = Buffer.from(tagHex, "hex");
 
-    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: 16 });
     decipher.setAuthTag(tag);
 
     let decrypted = decipher.update(encrypted, "hex", "utf8");

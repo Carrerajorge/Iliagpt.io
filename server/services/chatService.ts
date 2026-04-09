@@ -1916,25 +1916,44 @@ plt.show()
 RESPONDE AHORA CON UN BLOQUE \`\`\`python QUE CREE LA GRÁFICA SOLICITADA.
 ` : '';
 
+  // Detect the specific document type requested
+  const requestedDocType = /\b(excel|xlsx|hoja\s*de\s*c[aá]lculo|spreadsheet)\b/i.test(lastUserMsgText) ? "excel"
+    : /\b(powerpoint|pptx?|presentaci[oó]n|slides?|diapositivas?)\b/i.test(lastUserMsgText) ? "ppt"
+    : "word";
+
   const documentCapabilitiesPrompt = wantsDocument
     ? featureFlags.canvasEnabled
       ? `
-CAPACIDADES DE GENERACIÓN DE DOCUMENTOS:
-Puedes crear documentos Word, Excel y PowerPoint. Incluye en tu respuesta un bloque especial con el formato:
+⚠️ OBLIGATORIO — GENERACIÓN DE DOCUMENTO ${requestedDocType.toUpperCase()} ⚠️
+El usuario ha solicitado explícitamente un documento ${requestedDocType === "excel" ? "Excel (.xlsx)" : requestedDocType === "ppt" ? "PowerPoint (.pptx)" : "Word (.docx)"}.
+NO respondas con texto plano ni tablas markdown. DEBES generar un bloque de documento descargable.
+
+INSTRUCCIÓN ESTRICTA: Tu respuesta DEBE incluir un bloque con este formato exacto:
 
 \`\`\`document
 {
-  "type": "word" | "excel" | "ppt",
-  "title": "Título del documento",
-  "content": "Contenido formateado del documento"
+  "type": "${requestedDocType}",
+  "title": "Título descriptivo del documento",
+  "content": "Contenido completo aquí"
 }
 \`\`\`
 
-Para Word: usa markdown simple (## para títulos, - para listas).
-Para Excel: usa formato de tabla con | columna1 | columna2 | o CSV.
-Para PPT: usa ## para títulos de diapositivas y - para puntos.
+REGLAS para el campo "content":
+${requestedDocType === "excel" ? `- Usa formato CSV con separador |
+- Primera línea = encabezados de columna
+- Si hay múltiples hojas, sepáralas con ---SHEET:NombreHoja---
+- Ejemplo: "Col1 | Col2 | Col3\\nDato1 | Dato2 | Dato3\\n---SHEET:Hoja2---\\nColA | ColB\\nX | Y"`
+: requestedDocType === "ppt" ? `- Usa ## para título de cada diapositiva
+- Usa - para puntos de cada diapositiva
+- Separa diapositivas con ---`
+: `- Usa markdown: ## para títulos, ### para subtítulos, - para listas
+- Incluye todo el contenido que el usuario necesita`}
 
-El usuario podrá descargar el documento generado directamente.` : `
+IMPORTANTE:
+- NO uses tablas markdown en el chat como sustituto del documento
+- NO expliques cómo crear el documento — CRÉALO directamente con el bloque \`\`\`document
+- Puedes agregar un breve texto explicativo ANTES del bloque, pero el bloque es OBLIGATORIO
+- El sistema generará automáticamente el archivo descargable a partir de tu bloque` : `
 IMPORTANTE: El usuario pidió crear un documento, pero la función de Lienzo/Canvas está deshabilitada en su configuración.
 Explícale brevemente cómo activarla en Configuraciones > Personalización > Lienzo para poder generar Word/Excel/PPT.
 Mientras tanto, ofrece una alternativa: entregar el contenido directamente en el chat (texto/tabla) para que el usuario lo copie.

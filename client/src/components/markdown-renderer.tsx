@@ -21,7 +21,10 @@ import { RenderBlockWrapper } from "@/components/chat/RenderBlockWrapper";
 const SanitizedSvgBlock = memo(function SanitizedSvgBlock({ html }: { html: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (ref.current) ref.current.innerHTML = html;
+    if (ref.current) ref.current.innerHTML = DOMPurify.sanitize(html, {
+      USE_PROFILES: { svg: true, svgFilters: true },
+      ADD_TAGS: ["use", "foreignObject"],
+    });
   }, [html]);
   return <div ref={ref} />;
 });
@@ -786,7 +789,7 @@ const ShikiCodeContent = memo(function ShikiCodeContent({ code, language }: { co
   return (
     <div
       className="shiki-wrapper rounded-lg overflow-x-auto [&>pre]:p-4 [&>pre]:pt-8 [&>pre]:m-0 [&>pre]:rounded-lg [&>pre]:overflow-x-auto [&_code]:text-sm [&_code]:font-mono"
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }}
     />
   );
 });

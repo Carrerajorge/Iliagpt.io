@@ -72,12 +72,12 @@ export function decrypt(encryptedData: string): string {
   const tag = Buffer.from(encryptedData.slice(IV_LENGTH * 2, IV_LENGTH * 2 + TAG_LENGTH * 2), "hex");
   const encrypted = encryptedData.slice(IV_LENGTH * 2 + TAG_LENGTH * 2);
   
-  const decipher = crypto.createDecipheriv(ALGORITHM, MASTER_KEY, iv);
+  const decipher = crypto.createDecipheriv(ALGORITHM, MASTER_KEY, iv, { authTagLength: 16 });
   decipher.setAuthTag(tag);
-  
+
   let decrypted = decipher.update(encrypted, "hex", "utf8");
   decrypted += decipher.final("utf8");
-  
+
   return decrypted;
 }
 
@@ -173,9 +173,9 @@ export function decryptBuffer(encryptedBuffer: Buffer): Buffer {
   const tag = encryptedBuffer.slice(IV_LENGTH, IV_LENGTH + TAG_LENGTH);
   const encrypted = encryptedBuffer.slice(IV_LENGTH + TAG_LENGTH);
   
-  const decipher = crypto.createDecipheriv(ALGORITHM, MASTER_KEY, iv);
+  const decipher = crypto.createDecipheriv(ALGORITHM, MASTER_KEY, iv, { authTagLength: 16 });
   decipher.setAuthTag(tag);
-  
+
   return Buffer.concat([decipher.update(encrypted), decipher.final()]);
 }
 
@@ -192,9 +192,9 @@ export async function rotateEncryptionKey(
   const tag = Buffer.from(data.slice(IV_LENGTH * 2, IV_LENGTH * 2 + TAG_LENGTH * 2), "hex");
   const encrypted = data.slice(IV_LENGTH * 2 + TAG_LENGTH * 2);
   
-  const decipher = crypto.createDecipheriv(ALGORITHM, oldKey, iv);
+  const decipher = crypto.createDecipheriv(ALGORITHM, oldKey, iv, { authTagLength: 16 });
   decipher.setAuthTag(tag);
-  
+
   let decrypted = decipher.update(encrypted, "hex", "utf8");
   decrypted += decipher.final("utf8");
   

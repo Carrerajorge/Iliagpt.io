@@ -14,7 +14,7 @@
  */
 
 import { chromium, Browser, Page, BrowserContext } from "playwright";
-import { exec, execSync, spawn, ChildProcess } from "child_process";
+import { execFile, spawn, ChildProcess } from "child_process";
 import { promisify } from "util";
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
@@ -22,7 +22,12 @@ import path from "path";
 import fs from "fs/promises";
 import OpenAI from "openai";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+/** Helper: run a shell command string safely through /bin/bash -c */
+function shellAsync(cmd: string, opts?: { timeout?: number }) {
+  return execFileAsync("/bin/bash", ["-c", cmd], opts);
+}
 
 // ============================================
 // Types and Interfaces
@@ -274,15 +279,18 @@ export class ComputerUseEngine extends EventEmitter {
 
       try {
         if (options?.region) {
-          const { x, y, width, height } = options.region;
-          await execAsync(
-            `import -window root -crop ${width}x${height}+${x}+${y} "${screenshotPath}" 2>/dev/null || ` +
-            `scrot -a ${x},${y},${width},${height} "${screenshotPath}" 2>/dev/null || ` +
+          const rx = Math.round(Number(options.region.x) || 0);
+          const ry = Math.round(Number(options.region.y) || 0);
+          const rw = Math.round(Number(options.region.width) || 0);
+          const rh = Math.round(Number(options.region.height) || 0);
+          await shellAsync(
+            `import -window root -crop ${rw}x${rh}+${rx}+${ry} "${screenshotPath}" 2>/dev/null || ` +
+            `scrot -a ${rx},${ry},${rw},${rh} "${screenshotPath}" 2>/dev/null || ` +
             `gnome-screenshot -a -f "${screenshotPath}" 2>/dev/null || ` +
             `xdotool getactivewindow screenshot "${screenshotPath}" 2>/dev/null`
           );
         } else {
-          await execAsync(
+          await shellAsync(
             `import -window root "${screenshotPath}" 2>/dev/null || ` +
             `scrot "${screenshotPath}" 2>/dev/null || ` +
             `gnome-screenshot -f "${screenshotPath}" 2>/dev/null`
@@ -433,8 +441,10 @@ RESPOND IN VALID JSON ONLY with this structure:
       } else {
         const btn = options?.button === "right" ? 3 : options?.button === "middle" ? 2 : 1;
         const count = options?.clickCount || 1;
+        const cx = Math.round(Number(coordinates.x) || 0);
+        const cy = Math.round(Number(coordinates.y) || 0);
         for (let i = 0; i < count; i++) {
-          await execAsync(`xdotool mousemove ${coordinates.x} ${coordinates.y} click ${btn}`);
+          await execFileAsync("xdotool", ["mousemove", String(cx), String(cy), "click", String(btn)]);
         }
       }
 
@@ -472,10 +482,14 @@ RESPOND IN VALID JSON ONLY with this structure:
         await session.page.mouse.move(to.x, to.y, { steps: 10 });
         await session.page.mouse.up();
       } else {
-        await execAsync(
-          `xdotool mousemove ${from.x} ${from.y} mousedown 1 ` +
-          `mousemove --delay 50 ${to.x} ${to.y} mouseup 1`
-        );
+        const fx = Math.round(Number(from.x) || 0);
+        const fy = Math.round(Number(from.y) || 0);
+        const tx = Math.round(Number(to.x) || 0);
+        const ty = Math.round(Number(to.y) || 0);
+        await execFileAsync("xdotool", [
+          "mousemove", String(fx), String(fy), "mousedown", "1",
+          "mousemove", "--delay", "50", String(tx), String(ty), "mouseup", "1",
+        ]);
       }
 
       session.lastActivity = Date.now();
@@ -498,7 +512,12 @@ RESPOND IN VALID JSON ONLY with this structure:
       } else {
         const direction = delta.y > 0 ? 5 : 4;
         const clicks = Math.abs(Math.round(delta.y / 120));
-        await execAsync(`xdotool mousemove ${coordinates.x} ${coordinates.y} click --repeat ${clicks || 1} ${direction}`);
+        const sx = Math.round(Number(coordinates.x) || 0);
+        const sy = Math.round(Number(coordinates.y) || 0);
+        await execFileAsync("xdotool", [
+          "mousemove", String(sx), String(sy),
+          "click", "--repeat", String(clicks || 1), String(direction),
+        ]);
       }
 
       session.lastActivity = Date.now();
@@ -522,9 +541,9 @@ RESPOND IN VALID JSON ONLY with this structure:
       if (session.mode === "browser" && session.page) {
         await session.page.keyboard.type(text, { delay: options?.delay || 30 });
       } else {
-        // Use xdotool for desktop typing - escape special chars
-        const escaped = text.replace(/'/g, "'\\''");
-        await execAsync(`xdotool type --delay ${options?.delay || 30} '${escaped}'`);
+        // Use execFile with array args to avoid shell injection from user text
+        const delay = String(Math.round(Number(options?.delay) || 30));
+        await execFileAsync("xdotool", ["type", "--delay", delay, "--", text]);
       }
 
       session.lastActivity = Date.now();
@@ -550,7 +569,11 @@ RESPOND IN VALID JSON ONLY with this structure:
         const xdoKey = this.mapKeyToXdotool(key);
         const mods = (modifiers || []).map(m => this.mapModifierToXdotool(m));
         const combo = [...mods, xdoKey].join("+");
-        await execAsync(`xdotool key ${combo}`);
+        // Validate combo contains only safe xdotool key names (alphanumeric, +, _)
+        if (!/^[a-zA-Z0-9_+]+$/.test(combo)) {
+          throw new Error(`Invalid key combo: ${combo}`);
+        }
+        await execFileAsync("xdotool", ["key", combo]);
       }
 
       session.lastActivity = Date.now();

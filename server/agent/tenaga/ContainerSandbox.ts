@@ -1,8 +1,8 @@
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import { randomUUID } from "crypto";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 /**
  * Capa 2: Ejecución Segura y Sandboxing
@@ -26,25 +26,25 @@ export class ContainerSandbox {
    */
   async startSandbox() {
     console.log(`[Tenaga:Sandbox] Initializing ${this.engine} container: ${this.containerId}`);
-    
-    // Perfil de seguridad paranoico
-    const securityOpts = [
-      '--security-opt no-new-privileges=true',
-      '--cap-drop=ALL',
-      '--cap-add=SETUID',
-      '--cap-add=SETGID'
-    ].join(' ');
 
-    const limits = '--memory=512m --cpus=0.5 --pids-limit=50';
-    const network = '--network none'; // Aislamiento total de red
-    
-    // Montamos un volumen tmpfs efímero con copy-on-write
-    const volumes = '--tmpfs /app:rw,noexec,nosuid,size=100m';
-
-    const cmd = `${this.engine} run -d --name ${this.containerId} ${securityOpts} ${limits} ${network} ${volumes} node:20-alpine tail -f /dev/null`;
+    const args = [
+      "run", "-d",
+      "--name", this.containerId,
+      "--security-opt", "no-new-privileges=true",
+      "--cap-drop=ALL",
+      "--cap-add=SETUID",
+      "--cap-add=SETGID",
+      "--memory=512m",
+      "--cpus=0.5",
+      "--pids-limit=50",
+      "--network", "none",
+      "--tmpfs", "/app:rw,noexec,nosuid,size=100m",
+      "node:20-alpine",
+      "tail", "-f", "/dev/null",
+    ];
 
     try {
-      await execAsync(cmd);
+      await execFileAsync(this.engine, args);
       console.log(`[Tenaga:Sandbox] Secure container ${this.containerId} is running.`);
       return true;
     } catch (error: any) {
@@ -54,36 +54,39 @@ export class ContainerSandbox {
   }
 
   /**
-   * Ejecuta código arbitrario dentro del entorno aislado
+   * Ejecuta código arbitrario dentro del entorno aislado.
+   * Code is base64-encoded and decoded inside the container to avoid shell injection.
    */
   async executeCode(code: string, language: 'javascript' | 'python' | 'bash'): Promise<{ stdout: string, stderr: string, exitCode: number }> {
-    // Escapar código seguro
     const base64Code = Buffer.from(code).toString('base64');
-    let runnerCmd = '';
 
+    // Build the inner command that decodes base64 and pipes to the interpreter.
+    // This runs inside `sh -c` within the container -- the base64 payload is safe
+    // because base64 output contains only [A-Za-z0-9+/=].
+    let innerCmd: string;
     switch(language) {
       case 'javascript':
-        runnerCmd = `node -e "$(echo '${base64Code}' | base64 -d)"`;
+        innerCmd = `echo '${base64Code}' | base64 -d | node`;
         break;
       case 'python':
-        runnerCmd = `python3 -c "$(echo '${base64Code}' | base64 -d)"`;
+        innerCmd = `echo '${base64Code}' | base64 -d | python3`;
         break;
       case 'bash':
-        runnerCmd = `sh -c "$(echo '${base64Code}' | base64 -d)"`;
+        innerCmd = `echo '${base64Code}' | base64 -d | sh`;
         break;
     }
 
-    const execCmd = `${this.engine} exec ${this.containerId} sh -c "${runnerCmd}"`;
+    const execArgs = ["exec", this.containerId, "sh", "-c", innerCmd];
 
     try {
       // Timeout estricto de 10 segundos por script
-      const { stdout, stderr } = await execAsync(execCmd, { timeout: 10000 });
+      const { stdout, stderr } = await execFileAsync(this.engine, execArgs, { timeout: 10000 });
       return { stdout, stderr, exitCode: 0 };
     } catch (error: any) {
-      return { 
-        stdout: error.stdout || '', 
-        stderr: error.stderr || error.message || 'Execution failed or timed out.', 
-        exitCode: error.code || 1 
+      return {
+        stdout: error.stdout || '',
+        stderr: error.stderr || error.message || 'Execution failed or timed out.',
+        exitCode: error.code || 1
       };
     }
   }
@@ -93,7 +96,7 @@ export class ContainerSandbox {
    */
   async destroy() {
     try {
-      await execAsync(`${this.engine} rm -f ${this.containerId}`);
+      await execFileAsync(this.engine, ["rm", "-f", this.containerId]);
       console.log(`[Tenaga:Sandbox] Container ${this.containerId} destroyed.`);
     } catch(e) {}
   }

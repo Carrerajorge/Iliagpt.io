@@ -1,4 +1,5 @@
 import React, { memo, useState, useEffect, useRef } from "react";
+import DOMPurify from "dompurify";
 import { cn } from "@/lib/utils";
 import { convertToLatex, sanitizeMathInput } from "@/lib/mathParser";
 import { loadMathJax } from "@/lib/mathjaxLoader";
@@ -234,7 +235,7 @@ export const MathRenderer = memo(function MathRenderer({
           block ? "block my-4 overflow-x-auto" : "inline",
           className
         )}
-        dangerouslySetInnerHTML={{ __html: state.html }}
+        dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(state.html) }}
         data-testid="math-mathjax"
       />
     );
@@ -247,7 +248,7 @@ export const MathRenderer = memo(function MathRenderer({
         block ? "katex-display block my-4 overflow-x-auto" : "inline",
         className
       )}
-      dangerouslySetInnerHTML={{ __html: state.html }}
+      dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(state.html) }}
       data-testid="math-katex"
     />
   );

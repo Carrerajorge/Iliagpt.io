@@ -5,6 +5,7 @@
  */
 
 import React, { useMemo } from 'react';
+import DOMPurify from 'dompurify';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import type { MathBlock as MathBlockType } from '../../types/blocks';
@@ -61,7 +62,7 @@ export default function MathBlock({ block, context }: Props) {
             >
                 <div
                     className="py-6 px-8 rounded-xl overflow-x-auto text-center"
-                    dangerouslySetInnerHTML={{ __html: renderedMath }}
+                    dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(renderedMath) }}
                 />
 
                 {/* Copy LaTeX button */}
@@ -84,7 +85,7 @@ export default function MathBlock({ block, context }: Props) {
     return (
         <span
             className="mx-1 inline-block"
-            dangerouslySetInnerHTML={{ __html: renderedMath }}
+            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(renderedMath) }}
         />
     );
 }

@@ -7,7 +7,7 @@
  * real-time step events for UI consumption.
  *
  * NOTE: Terminal execution is delegated to the Sandbox class which uses
- * child_process.spawn with shell:true — this is intentional for running
+ * child_process.spawn with explicit /bin/bash -c (shell:false) to run
  * arbitrary build commands. The Sandbox validates all commands against
  * BLOCKED_COMMANDS before execution. See sandbox.ts and
  * server/agent/claw/terminalTool.ts for the established pattern.

@@ -1,5 +1,5 @@
 import os from 'os';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 export interface HardwareProfile {
@@ -57,8 +57,8 @@ export function discoverHardware(): HardwareProfile {
     if (os.platform() === 'darwin' && os.arch() === 'arm64') {
         try {
             // Get detailed CPU cores (perf vs efficiency)
-            const perfCoresStr = execSync('sysctl -n hw.perflevel0.physicalcpu').toString().trim();
-            const effCoresStr = execSync('sysctl -n hw.perflevel1.physicalcpu').toString().trim();
+            const perfCoresStr = execFileSync('sysctl', ['-n', 'hw.perflevel0.physicalcpu']).toString().trim();
+            const effCoresStr = execFileSync('sysctl', ['-n', 'hw.perflevel1.physicalcpu']).toString().trim();
             profile.cpu.performanceCores = parseInt(perfCoresStr, 10);
             profile.cpu.efficiencyCores = parseInt(effCoresStr, 10);
 
@@ -67,7 +67,7 @@ export function discoverHardware(): HardwareProfile {
             profile.neuralEngine.cores = 16; // Standard baseline for M-series, could be verified deeper
 
             // Metal GPU checks
-            const systemProfiler = execSync('system_profiler SPDisplaysDataType').toString();
+            const systemProfiler = execFileSync('system_profiler', ['SPDisplaysDataType']).toString();
             if (systemProfiler.includes('Metal') || systemProfiler.includes('Apple')) {
                 profile.gpu.metalEnabled = true;
                 const coresMatch = systemProfiler.match(/Total Number of Cores: (\d+)/);

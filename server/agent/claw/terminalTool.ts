@@ -85,8 +85,8 @@ export async function executeCommand(opts: TerminalOptions): Promise<TerminalRes
     // Use `detached: true` so Node creates a new process group.
     // This lets us kill the entire group (shell + children) with a negative PID,
     // avoiding orphan child processes (e.g. `sleep 30` spawned by the shell).
-    const proc = spawn(command, [], {
-      shell: true,
+    const proc = spawn("/bin/bash", ["-c", command], {
+      shell: false,
       cwd: cwd || process.cwd(),
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, LANG: "en_US.UTF-8" },

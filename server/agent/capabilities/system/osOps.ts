@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import type { AgentCapability } from '../registry';
 import * as fs from 'fs/promises';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // --- T18: OS FILE SEARCH ---
 export const localFileSearchCapability: AgentCapability = {
@@ -40,13 +40,15 @@ export const dockerOperatorCapability: AgentCapability = {
     async execute(args) {
         try {
             if (args.command === 'ps') {
-                const { stdout } = await execAsync('docker ps --format "{{.ID}}\t{{.Names}}\t{{.Status}}"');
+                const { stdout } = await execFileAsync('docker', ['ps', '--format', '{{.ID}}\t{{.Names}}\t{{.Status}}']);
                 return { success: true, stdout };
             }
 
             if (!args.containerId) return { success: false, error: "Falta containerId" };
 
-            const { stdout } = await execAsync(`docker ${args.command} ${args.containerId}`);
+            // containerId is validated by zod as a string; args.command is from z.enum so it's safe
+            const containerId = String(args.containerId).replace(/[^a-zA-Z0-9_.\-]/g, '');
+            const { stdout } = await execFileAsync('docker', [args.command, containerId]);
             return { success: true, stdout: stdout.trim() };
         } catch (e: any) {
             // Mock fallback if docker is not installed

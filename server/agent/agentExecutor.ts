@@ -596,7 +596,7 @@ async function executeToolCall(
 
       case "run_code": {
         try {
-          const { execSync } = await import("child_process");
+          const { execFileSync } = await import("child_process");
           const { randomUUID: genId } = await import("crypto");
           const lang = args.language || "javascript";
           const timeout = Math.min((args.timeout || 30) * 1000, 120000);
@@ -609,14 +609,14 @@ async function executeToolCall(
             const tmpFile = `/tmp/agent_code_${uniqueId}.py`;
             fs.writeFileSync(tmpFile, code);
             try {
-              stdout = execSync(`python3 ${tmpFile}`, { timeout, encoding: "utf8", maxBuffer: 1024 * 1024 });
+              stdout = execFileSync("python3", [tmpFile], { timeout, encoding: "utf8", maxBuffer: 1024 * 1024 });
             } finally { try { fs.unlinkSync(tmpFile); } catch {} }
           } else {
             const fs = await import("fs");
             const tmpFile = `/tmp/agent_code_${uniqueId}.js`;
             fs.writeFileSync(tmpFile, code);
             try {
-              stdout = execSync(`node ${tmpFile}`, { timeout, encoding: "utf8", maxBuffer: 1024 * 1024 });
+              stdout = execFileSync("node", [tmpFile], { timeout, encoding: "utf8", maxBuffer: 1024 * 1024 });
             } finally { try { fs.unlinkSync(tmpFile); } catch {} }
           }
           result = { success: true, stdout: stdout.slice(0, 10000), exitCode: 0 };
@@ -629,12 +629,12 @@ async function executeToolCall(
       case "bash": {
         const BASH_BLOCKLIST = /\b(rm\s+-rf\s+\/|dd\s+if=|mkfs|shutdown|reboot|chmod\s+777|curl\s*\|.*bash|wget\s*\|.*sh|>\s*\/etc\/|>\s*\/dev\/|kill\s+-9\s+1\b|init\s+0)/i;
         try {
-          const { execSync } = await import("child_process");
+          const { execFileSync } = await import("child_process");
           const timeout = Math.min((args.timeout || 30) * 1000, 120000);
           const cmd = String(typeof args === "string" ? args : (args.command || args.cmd || ""));
           if (!cmd.trim()) { result = { error: "Empty command" }; break; }
           if (BASH_BLOCKLIST.test(cmd)) { result = { error: "Command blocked by security policy" }; break; }
-          const stdout = execSync(cmd, { timeout, encoding: "utf8", maxBuffer: 1024 * 1024, cwd: process.cwd() });
+          const stdout = execFileSync("/bin/bash", ["-c", cmd], { timeout, encoding: "utf8", maxBuffer: 1024 * 1024, cwd: process.cwd() });
           result = { success: true, stdout: stdout.slice(0, 10000), exitCode: 0 };
         } catch (err: any) {
           result = { success: false, stdout: (err.stdout || "").slice(0, 5000), stderr: (err.stderr || err.message || "").slice(0, 5000), exitCode: err.status || 1 };
@@ -705,10 +705,11 @@ async function executeToolCall(
 
       case "process_list": {
         try {
-          const { execSync } = await import("child_process");
-          const sortCol = args.sortBy === "mem" ? "-k4" : args.sortBy === "pid" ? "-k1" : "-k3";
+          const { execFileSync } = await import("child_process");
+          const ALLOWED_SORT_COLS: Record<string, string> = { mem: "-k4", pid: "-k1", cpu: "-k3" };
+          const sortCol = ALLOWED_SORT_COLS[args.sortBy as string] || "-k3";
           const limit = Math.min(Math.max(parseInt(String(args.limit || "30"), 10) || 30, 1), 100);
-          const raw = execSync(`ps aux --sort=${sortCol}r | head -n ${limit + 1}`, { encoding: "utf8", timeout: 10000 });
+          const raw = execFileSync("/bin/bash", ["-c", `ps aux --sort=${sortCol}r | head -n ${limit + 1}`], { encoding: "utf8", timeout: 10000 });
           const lines = raw.trim().split("\n");
           const processes = lines.slice(1).map(line => {
             const parts = line.trim().split(/\s+/);
@@ -725,16 +726,18 @@ async function executeToolCall(
 
       case "port_check": {
         try {
-          const { execSync } = await import("child_process");
+          const { execFileSync } = await import("child_process");
           const portNum = parseInt(String(args.port || "0"), 10);
           if (args.port && (isNaN(portNum) || portNum < 1 || portNum > 65535)) {
             result = { error: "Invalid port number (must be 1-65535)" }; break;
           }
           if (portNum > 0) {
-            const raw = execSync(`ss -tlnp | grep ':${portNum} '`, { encoding: "utf8", timeout: 5000 }).trim();
-            result = { port: portNum, listening: raw.length > 0, details: raw || "Port not in use" };
+            const raw = execFileSync("ss", ["-tlnp"], { encoding: "utf8", timeout: 5000 }).trim();
+            const portPattern = `:${portNum} `;
+            const matching = raw.split("\n").filter(line => line.includes(portPattern)).join("\n").trim();
+            result = { port: portNum, listening: matching.length > 0, details: matching || "Port not in use" };
           } else {
-            const raw = execSync(`ss -tlnp`, { encoding: "utf8", timeout: 5000 }).trim();
+            const raw = execFileSync("ss", ["-tlnp"], { encoding: "utf8", timeout: 5000 }).trim();
             result = { ports: raw.split("\n").slice(1).map(l => l.trim()).filter(Boolean) };
           }
         } catch (err: any) {

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import DOMPurify from "dompurify";
 import {
   Plus,
   Upload,
@@ -1126,7 +1127,7 @@ export function Composer({
             <div
               aria-hidden="true"
               className="absolute inset-0 pointer-events-none min-h-[22px] max-h-[180px] w-full whitespace-pre-wrap break-words text-[15px] leading-[1.4] px-3 py-1 text-transparent overflow-hidden"
-              dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(highlightedHtml) }}
             />
           )}
           <Textarea

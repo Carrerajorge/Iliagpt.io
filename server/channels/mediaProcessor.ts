@@ -114,19 +114,21 @@ export async function processInboundMedia(
 // --- Helpers ---
 
 async function extractKeyFrames(videoPath: string, count: number): Promise<Buffer[]> {
-    const { execSync } = await import('child_process');
+    const { execFileSync } = await import('child_process');
     const tmpDir = await import('os').then(os => os.tmpdir());
     const frames: Buffer[] = [];
 
     for (let i = 0; i < count; i++) {
         const outputPath = `${tmpDir}/frame_${Date.now()}_${i}.jpg`;
         try {
-            const duration = execSync(
-                `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`
+            const duration = execFileSync(
+                "ffprobe",
+                ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", videoPath]
             ).toString().trim();
             const ts = (parseFloat(duration) / (count + 1)) * (i + 1);
 
-            execSync(`ffmpeg -y -ss ${ts} -i "${videoPath}" -vframes 1 -q:v 2 "${outputPath}" 2>/dev/null`);
+            execFileSync("ffmpeg", ["-y", "-ss", String(ts), "-i", videoPath, "-vframes", "1", "-q:v", "2", outputPath],
+                { stdio: ["pipe", "pipe", "ignore"] });
             const buffer = await import('fs/promises').then(f => f.readFile(outputPath));
             frames.push(buffer);
             await import('fs/promises').then(f => f.unlink(outputPath).catch(() => { }));

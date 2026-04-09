@@ -35,7 +35,8 @@ export function decryptSecret(payload: string): string {
   const decipher = crypto.createDecipheriv(
     "aes-256-gcm",
     key,
-    Buffer.from(ivHex, "hex")
+    Buffer.from(ivHex, "hex"),
+    { authTagLength: 16 }
   );
   decipher.setAuthTag(Buffer.from(tagHex, "hex"));
   let decrypted = decipher.update(dataHex, "hex", "utf8");

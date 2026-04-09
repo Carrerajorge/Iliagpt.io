@@ -388,8 +388,8 @@ const shellCommandTool: ToolDefinition = {
           return { success: false, output: null, error: { code: "PATH_VALIDATION_ERROR", message: cwdCheck.error!, retryable: false } };
         }
       }
-      const { execSync } = await import("child_process");
-      const result = execSync(input.command, {
+      const { execFileSync } = await import("child_process");
+      const result = execFileSync("/bin/bash", ["-c", input.command], {
         timeout: input.timeoutMs,
         cwd: input.cwd || process.cwd(),
         maxBuffer: 10 * 1024 * 1024,
@@ -454,20 +454,23 @@ const executeCodeTool: ToolDefinition = {
           };
         }
       }
-      const { execSync } = await import("child_process");
-      let cmd: string;
+      const { execFileSync } = await import("child_process");
       const tmpFile = `/tmp/openclaw_exec_${Date.now()}`;
       const fs = await import("fs/promises");
 
+      let interpreter: string;
+      let scriptFile: string;
       if (input.language === "python") {
-        await fs.writeFile(`${tmpFile}.py`, input.code);
-        cmd = `python3 ${tmpFile}.py`;
+        scriptFile = `${tmpFile}.py`;
+        await fs.writeFile(scriptFile, input.code);
+        interpreter = "python3";
       } else {
-        await fs.writeFile(`${tmpFile}.js`, input.code);
-        cmd = `node ${tmpFile}.js`;
+        scriptFile = `${tmpFile}.js`;
+        await fs.writeFile(scriptFile, input.code);
+        interpreter = "node";
       }
 
-      const result = execSync(cmd, {
+      const result = execFileSync(interpreter, [scriptFile], {
         timeout: input.timeoutMs,
         maxBuffer: 5 * 1024 * 1024,
         encoding: "utf-8",

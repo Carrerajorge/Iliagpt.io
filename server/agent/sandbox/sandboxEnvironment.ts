@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as fsp from "fs/promises";
-import { exec, execFile } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import {
   EnvironmentConfig,
@@ -17,7 +17,6 @@ import { CommandExecutor } from "./commandExecutor";
 import { FileManager } from "./fileManager";
 import { StateManager } from "./stateManager";
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 export class SandboxEnvironment implements ISandboxService {
@@ -142,8 +141,13 @@ export class SandboxEnvironment implements ISandboxService {
       wget: ["wget", "--version"],
     };
 
+    // Only allow known tool names to prevent injection
+    if (!/^[a-zA-Z0-9_-]+$/.test(tool)) {
+      return { name: tool, version: "N/A", path: "", available: false };
+    }
+
     try {
-      const { stdout: whichOutput } = await execAsync(`which ${tool}`);
+      const { stdout: whichOutput } = await execFileAsync("which", [tool]);
       const toolPath = whichOutput.trim();
 
       if (!toolPath) {
@@ -154,7 +158,7 @@ export class SandboxEnvironment implements ISandboxService {
       const cmd = versionCommands[tool] || [tool, "--version"];
 
       try {
-        const { stdout } = await execAsync(cmd.join(" "));
+        const { stdout } = await execFileAsync(cmd[0], cmd.slice(1));
         version = stdout.trim().split("\n")[0];
       } catch {
       }

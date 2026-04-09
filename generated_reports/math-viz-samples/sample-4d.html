@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>w = x² + y² + z²</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f172a; color: #e2e8f0; font-family: monospace; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-height: 100vh; }
+  canvas { width: 100%; border-radius: 8px; cursor: grab; }
+  .controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 12px; color: #94a3b8; }
+  button { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: monospace; }
+  button.active { background: #4f46e5; border-color: #4f46e5; }
+  input[type=range] { accent-color: #4f46e5; }
+  h1 { font-size: 14px; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>🔮 w = x² + y² + z²</h1>
+<canvas id="c"></canvas>
+<div class="controls">
+  <span>4D: color = w value · animated z-slices · drag to rotate</span>
+  <div style="display:flex;gap:6px;align-items:center">
+    <button id="playBtn" onclick="togglePlay()">⏸ Pause</button>
+    <label style="display:flex;align-items:center;gap:4px">z: <input type="range" id="zSlider" min="-3" max="3" step="0.05" value="0" oninput="onZChange(this.value)"></label>
+    <button onclick="rotX=0.5;rotY=0.3;draw()">Reset</button>
+  </div>
+</div>
+<script>
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+const EXPR="x^2+y^2+z^2";
+const TITLE="w = x² + y² + z²";
+const N=25;
+let rotX=0.5,rotY=0.3,isPlaying=true,zVal=0,animT=0;
+let isDragging=false,lastMx=0,lastMy=0,animId=null;
+
+function eval4D(expr,x,y,z){
+  try{
+    const c=expr.replace(/\^/g,'**')
+      .replace(/\bx\b/g,'('+x+')').replace(/\by\b/g,'('+y+')').replace(/\bz\b/g,'('+z+')')
+      .replace(/\bpi\b/gi,Math.PI)
+      .replace(/\bsin\(/g,'Math.sin(').replace(/\bcos\(/g,'Math.cos(')
+      .replace(/\bsqrt\(/g,'Math.sqrt(').replace(/\babs\(/g,'Math.abs(')
+      .replace(/\bexp\(/g,'Math.exp(');
+    const f=new Function('Math','return '+c);
+    const r=f(Math);
+    return(typeof r==='number'&&isFinite(r))?r:NaN;
+  }catch(e){return NaN;}
+}
+
+function colorFromW(t){const h=(1-Math.max(0,Math.min(1,t)))*240;return'hsl('+h+',80%,55%)';}
+
+function drawSlice(z){
+  const W=canvas.width,H=canvas.height,cx=W/2,cy=H/2;
+  const cosX=Math.cos(rotX),sinX=Math.sin(rotX),cosY=Math.cos(rotY),sinY=Math.sin(rotY);
+  const scale=Math.min(W,H)*0.35/3;
+  const XR=6;
+  const grid=[],wVals=[];
+  let wMin=Infinity,wMax=-Infinity;
+  for(let i=0;i<=N;i++){
+    grid[i]=[];
+    for(let j=0;j<=N;j++){
+      const x=-3+i/N*6,y=-3+j/N*6;
+      const w=eval4D(EXPR,x,y,z);
+      const ws=isNaN(w)?0:w;
+      grid[i][j]=ws;
+      if(!isNaN(w)){wMin=Math.min(wMin,w);wMax=Math.max(wMax,w);}
+    }
+  }
+  if(!isFinite(wMin))wMin=-1;if(!isFinite(wMax))wMax=1;
+  const wRange=wMax-wMin||1;
+
+  function proj(ix,jy){
+    const nx=(ix/N-0.5)*XR,ny=(jy/N-0.5)*XR,nz=0;
+    const rx=nx*cosY-nz*sinY,rz=nx*sinY+nz*cosY;
+    const ry=ny*cosX-rz*sinX,rz2=ny*sinX+rz*cosX;
+    const p=4/(4+rz2);
+    return[cx+rx*scale*p,cy-ry*scale*p];
+  }
+
+  ctx.fillStyle='#0f172a';ctx.fillRect(0,0,W,H);
+  for(let i=0;i<N;i++) for(let j=0;j<N;j++){
+    const [x0,y0]=proj(i,j),[x1,y1]=proj(i+1,j),[x2,y2]=proj(i+1,j+1),[x3,y3]=proj(i,j+1);
+    const t=(grid[i][j]-wMin)/wRange;
+    ctx.fillStyle=colorFromW(t);
+    ctx.beginPath();ctx.moveTo(x0,y0);ctx.lineTo(x1,y1);ctx.lineTo(x2,y2);ctx.lineTo(x3,y3);ctx.closePath();ctx.fill();
+    ctx.strokeStyle='rgba(0,0,0,0.1)';ctx.lineWidth=0.5;ctx.stroke();
+  }
+
+  ctx.fillStyle='#e2e8f0';ctx.font='bold 13px sans-serif';ctx.textAlign='center';ctx.fillText(TITLE,W/2,18);
+  ctx.fillStyle='#64748b';ctx.font='11px monospace';ctx.textAlign='left';
+  ctx.fillText('w = '+EXPR,10,H-28);ctx.fillText('z = '+z.toFixed(2),10,H-12);
+
+  const lw=80,lx=W-lw-10,ly=H-25;
+  const g=ctx.createLinearGradient(lx,0,lx+lw,0);
+  g.addColorStop(0,'hsl(240,80%,55%)');g.addColorStop(0.5,'hsl(120,80%,55%)');g.addColorStop(1,'hsl(0,80%,55%)');
+  ctx.fillStyle=g;ctx.fillRect(lx,ly,lw,10);
+  ctx.fillStyle='#94a3b8';ctx.font='9px monospace';
+  ctx.textAlign='left';ctx.fillText(wMin.toFixed(1),lx,ly+22);
+  ctx.textAlign='right';ctx.fillText(wMax.toFixed(1),lx+lw,ly+22);
+  ctx.textAlign='center';ctx.fillText('w',lx+lw/2,ly-3);
+}
+
+function animate(){
+  if(!isPlaying){drawSlice(zVal);return;}
+  animT+=0.008;
+  zVal=-3+((Math.sin(animT)+1)/2)*6;
+  document.getElementById('zSlider').value=zVal;
+  drawSlice(zVal);
+  animId=requestAnimationFrame(animate);
+}
+function togglePlay(){
+  isPlaying=!isPlaying;
+  document.getElementById('playBtn').textContent=isPlaying?'⏸ Pause':'▶ Play';
+  if(isPlaying)animate(); else cancelAnimationFrame(animId);
+}
+function onZChange(v){zVal=parseFloat(v);if(!isPlaying)drawSlice(zVal);}
+
+canvas.addEventListener('mousedown',e=>{isDragging=true;lastMx=e.clientX;lastMy=e.clientY;});
+canvas.addEventListener('mousemove',e=>{if(!isDragging)return;rotY+=(e.clientX-lastMx)*0.01;rotX+=(e.clientY-lastMy)*0.01;lastMx=e.clientX;lastMy=e.clientY;});
+canvas.addEventListener('mouseup',()=>isDragging=false);canvas.addEventListener('mouseleave',()=>isDragging=false);
+
+function resize(){
+  canvas.width=canvas.offsetWidth*devicePixelRatio;
+  const h=Math.min(450,Math.round(canvas.offsetWidth*0.7));
+  canvas.height=h*devicePixelRatio;canvas.style.height=h+'px';
+}
+new ResizeObserver(resize).observe(canvas);
+resize();
+animate();
+</script>
+</body>
+</html>

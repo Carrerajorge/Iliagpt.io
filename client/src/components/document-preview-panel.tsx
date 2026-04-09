@@ -1,4 +1,5 @@
 import React, { memo, useMemo } from "react";
+import DOMPurify from "dompurify";
 import {
   Sheet,
   SheetContent,
@@ -93,7 +94,7 @@ const WordPreview = memo(function WordPreview({ data }: { data: any }) {
       <div className="prose prose-sm dark:prose-invert max-w-none p-6" data-testid="word-preview-content">
         <div
           className="font-serif leading-relaxed text-foreground"
-          dangerouslySetInnerHTML={{ __html: content.value }}
+          dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(content.value) }}
         />
       </div>
     );

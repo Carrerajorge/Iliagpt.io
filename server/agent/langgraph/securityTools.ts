@@ -72,8 +72,9 @@ export const decryptDataTool = tool(
     try {
       const keyBuffer = Buffer.from(key, "hex");
       const ivBuffer = Buffer.from(iv, "hex");
-      const decipher = crypto.createDecipheriv(algorithm, keyBuffer, ivBuffer);
-      
+      const gcmOptions = algorithm.includes("gcm") ? { authTagLength: 16 } : undefined;
+      const decipher = crypto.createDecipheriv(algorithm, keyBuffer, ivBuffer, gcmOptions);
+
       if (authTag && algorithm.includes("gcm")) {
         (decipher as any).setAuthTag(Buffer.from(authTag, "hex"));
       }

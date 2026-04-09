@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { AgentCapability } from '../registry';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export const pm2OrchestrationCapability: AgentCapability = {
     name: "manage_pm2_processes",
@@ -17,23 +17,26 @@ export const pm2OrchestrationCapability: AgentCapability = {
         try {
             console.log(`[System Submodule] PM2 Command: ${command} on ${target}`);
 
-            let shellCmd = '';
+            // Sanitize target to prevent injection (only allow alphanumeric, dash, underscore, dot)
+            const safeTarget = String(target || 'all').replace(/[^a-zA-Z0-9_.\-]/g, '');
+
+            let pm2Args: string[] = [];
             switch (command) {
                 case 'list':
-                    shellCmd = 'npx pm2 jlist'; // Retorna JSON estructurado directamente
+                    pm2Args = ['pm2', 'jlist']; // Retorna JSON estructurado directamente
                     break;
                 case 'restart':
                     // Cuidado: el agente se podría auto-reiniciar y corromper el MCTS actual.
-                    shellCmd = `npx pm2 restart ${target}`;
+                    pm2Args = ['pm2', 'restart', safeTarget];
                     break;
                 case 'logs':
-                    shellCmd = `npx pm2 logs ${target} --raw --lines 50 --nostream`;
+                    pm2Args = ['pm2', 'logs', safeTarget, '--raw', '--lines', '50', '--nostream'];
                     break;
                 case 'monit':
                     return { error: 'Monit es interactivo. Usa list para métricas via jlist.' };
             }
 
-            const { stdout, stderr } = await execAsync(shellCmd, { timeout: 5000 });
+            const { stdout, stderr } = await execFileAsync('npx', pm2Args, { timeout: 5000 });
 
             if (command === 'list') {
                 const parsed = JSON.parse(stdout);

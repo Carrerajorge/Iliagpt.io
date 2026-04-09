@@ -267,7 +267,7 @@ export class TokenManager {
             const authTag = Buffer.from(parts[1], 'hex');
             const encryptedText = parts[2];
 
-            const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
+            const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv, { authTagLength: 16 });
             decipher.setAuthTag(authTag);
             let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
             decrypted += decipher.final('utf8');

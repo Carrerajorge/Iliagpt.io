@@ -334,8 +334,8 @@ export class TerminalController {
 
     // Execute command
     try {
-      const { execSync } = require("child_process");
-      const result = execSync(parsed.command, {
+      const { execFileSync } = require("child_process");
+      const result = execFileSync("/bin/bash", ["-c", parsed.command], {
         cwd: parsed.cwd || process.cwd(),
         env: { ...process.env, ...parsed.env },
         timeout: Math.min(parsed.timeout, this.policy.maxTimeoutMs),
@@ -572,9 +572,9 @@ export class DesktopController {
     // For screenshot on Linux, we can use xdotool/scrot as fallback
     if (action.action === "screenshot") {
       try {
-        const { execSync } = require("child_process");
+        const { execFileSync } = require("child_process");
         const tmpFile = `/tmp/desktop-screenshot-${randomUUID()}.png`;
-        execSync(`import -window root ${tmpFile}`, { timeout: 10_000, stdio: "pipe" });
+        execFileSync("import", ["-window", "root", tmpFile], { timeout: 10_000, stdio: "pipe" });
 
         const fs = require("fs");
         const buffer = fs.readFileSync(tmpFile);
