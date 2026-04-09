@@ -140,77 +140,67 @@ const MermaidDiagram = memo(function MermaidDiagram({ code }: { code: string }) 
 });
 
 // ── Inline SVG Renderer (sanitized with DOMPurify — same pattern as MermaidDiagram) ──
-/**
- * InlineSvgBlock — Professional SVG renderer with:
- * - DOMPurify sanitization for security
- * - Responsive scaling (preserves aspect ratio via viewBox)
- * - Debounced rendering during streaming (no flicker)
- * - Dark mode support (inverts strokes/fills if no explicit colors)
- * - High-DPI sharp rendering (vector, not raster)
- */
+/** InlineSvgBlock — Renders SVG code inline with responsive scaling and security. */
 const InlineSvgBlock = memo(function InlineSvgBlock({ code }: { code: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const lastCodeRef = useRef("");
-  const [rendered, setRendered] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current || !code.trim()) return;
-    // Debounce during streaming — only render after code stabilizes
+    // Only re-render if code actually changed
+    if (code === lastCodeRef.current) return;
+
+    // Wait for complete SVG (has closing tag) or debounce during streaming
+    const isComplete = code.includes("</svg>");
+    const delay = isComplete ? 0 : 500;
+
     const timer = setTimeout(() => {
-      if (code === lastCodeRef.current && rendered) return;
+      if (!containerRef.current) return;
       lastCodeRef.current = code;
 
-      // Sanitize SVG with DOMPurify — allow all SVG elements, filters, and references
+      // Sanitize with DOMPurify
       const clean = DOMPurify.sanitize(code, {
         USE_PROFILES: { svg: true, svgFilters: true },
-        ADD_TAGS: ["use", "foreignObject", "switch", "clipPath", "mask", "pattern", "linearGradient", "radialGradient", "stop", "animate", "animateTransform"],
-        ADD_ATTR: ["viewBox", "preserveAspectRatio", "xmlns", "xmlns:xlink", "dominant-baseline", "text-anchor", "marker-end", "marker-start", "clip-path", "mask", "filter", "fill-rule", "clip-rule", "stroke-dasharray", "stroke-dashoffset", "stroke-linecap", "stroke-linejoin"],
+        ADD_TAGS: ["use", "foreignObject", "clipPath", "mask", "pattern", "linearGradient", "radialGradient", "stop", "animate", "animateTransform", "defs", "g", "symbol"],
+        ADD_ATTR: ["viewBox", "preserveAspectRatio", "xmlns", "xmlns:xlink", "dominant-baseline", "text-anchor", "marker-end", "marker-start", "clip-path", "mask", "filter", "fill-rule", "clip-rule", "stroke-dasharray", "stroke-dashoffset", "stroke-linecap", "stroke-linejoin", "rx", "ry", "cx", "cy", "r", "d", "points", "x1", "y1", "x2", "y2", "offset", "stop-color", "stop-opacity", "font-family", "font-size", "font-weight", "text-decoration", "letter-spacing", "transform", "opacity"],
       });
 
-      if (!containerRef.current) return;
-      containerRef.current.replaceChildren();
+      if (!clean || !clean.includes("<svg")) {
+        // DOMPurify stripped everything — render as fallback text
+        containerRef.current.textContent = "SVG could not be rendered safely.";
+        return;
+      }
 
-      // Parse and inject SVG — ensure it has viewBox for responsiveness
-      const wrapper = document.createElement("div");
-      wrapper.innerHTML = clean;
-      const svgEl = wrapper.querySelector("svg");
+      // Insert into DOM via temporary element
+      const temp = document.createElement("div");
+      temp.innerHTML = clean;
+      const svgEl = temp.querySelector("svg");
+
       if (svgEl) {
-        // Ensure viewBox exists for responsive scaling
+        // Ensure viewBox for responsiveness
         if (!svgEl.getAttribute("viewBox")) {
-          const w = svgEl.getAttribute("width") || "400";
-          const h = svgEl.getAttribute("height") || "300";
-          svgEl.setAttribute("viewBox", `0 0 ${parseInt(w)} ${parseInt(h)}`);
+          const w = parseInt(svgEl.getAttribute("width") || "400");
+          const h = parseInt(svgEl.getAttribute("height") || "300");
+          svgEl.setAttribute("viewBox", `0 0 ${w} ${h}`);
         }
-        // Make responsive — remove fixed dimensions, let CSS handle sizing
-        svgEl.removeAttribute("width");
-        svgEl.removeAttribute("height");
+        // Responsive: CSS controls size
         svgEl.style.width = "100%";
         svgEl.style.height = "auto";
-        svgEl.style.maxHeight = "600px";
-        // Preserve aspect ratio
+        svgEl.style.maxHeight = "500px";
+        svgEl.style.display = "block";
         svgEl.setAttribute("preserveAspectRatio", "xMidYMid meet");
       }
 
-      while (wrapper.firstChild) {
-        containerRef.current.appendChild(wrapper.firstChild);
-      }
-      setRendered(true);
-    }, 400);
+      containerRef.current.replaceChildren();
+      while (temp.firstChild) containerRef.current.appendChild(temp.firstChild);
+    }, delay);
     return () => clearTimeout(timer);
-  }, [code, rendered]);
+  }, [code]);
 
   return (
     <div
       ref={containerRef}
-      className={cn(
-        "w-full flex items-center justify-center",
-        // SVG container: sharp rendering, responsive, no overflow
-        "[&>svg]:w-full [&>svg]:h-auto [&>svg]:max-h-[600px]",
-        // Ensure crisp edges for diagrams/icons
-        "[&>svg]:shape-rendering-auto",
-        !rendered && "min-h-[100px]",
-      )}
-      style={{ imageRendering: "auto" }}
+      className="w-full flex items-center justify-center min-h-[60px] [&>svg]:w-full [&>svg]:h-auto [&>svg]:max-h-[500px] [&>svg]:block"
     />
   );
 });

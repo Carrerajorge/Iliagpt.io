@@ -73,7 +73,7 @@ export function RenderBlockWrapper({ type, code, children, onRegenerate }: Rende
   return (
     <div className="my-4 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/[0.03] shadow-sm overflow-hidden">
       {/* Rendered content */}
-      <div className="p-4 overflow-hidden [&>svg]:max-w-full [&>svg]:h-auto [&>div]:max-w-full">
+      <div className="p-4 overflow-hidden bg-white dark:bg-zinc-900 [&>svg]:max-w-full [&>svg]:h-auto [&>div]:max-w-full">
         {children}
       </div>
 
