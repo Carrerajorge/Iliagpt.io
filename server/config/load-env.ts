@@ -24,7 +24,9 @@ const rootDir = resolveRepoRoot(process.cwd());
 const envFiles: string[] = [];
 
 if (process.env.NODE_ENV === "production") {
-  envFiles.push(".env.production.local", ".env.production", ".env.local", ".env");
+  envFiles.push(".env.production.local", ".env.local", ".env.production", ".env");
+} else if (process.env.NODE_ENV === "test") {
+  envFiles.push(".env.test.local", ".env.test", ".env");
 } else {
   envFiles.push(".env.local", ".env");
 }
