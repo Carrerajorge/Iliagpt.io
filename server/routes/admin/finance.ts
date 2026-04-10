@@ -198,6 +198,12 @@ financeRouter.get("/payments", async (req, res) => {
             },
         });
     } catch (error: any) {
+        console.error("[admin/finance/payments] LIST error:", {
+            message: error?.message,
+            code: error?.code,
+            cause: error?.cause?.message || error?.cause,
+            stack: error?.stack?.split("\n").slice(0, 5).join("\n"),
+        });
         res.status(500).json({ error: error.message });
     }
 });

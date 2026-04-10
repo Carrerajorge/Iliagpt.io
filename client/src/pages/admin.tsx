@@ -4530,8 +4530,9 @@ function SettingsSection() {
   });
 
   const { data: aiModels = [] } = useQuery({
-    queryKey: ["/api/ai-models"],
-    queryFn: () => adminFetch("/api/ai-models")
+    // Audit fix 2026-04-10: was calling /api/ai-models (404). Correct route is /api/admin/models.
+    queryKey: ["/api/admin/models"],
+    queryFn: () => adminFetch("/api/admin/models")
   });
 
   useEffect(() => {

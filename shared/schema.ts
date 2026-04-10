@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, jsonb, index, uniqueIndex, customType, serial, boolean, bigint, real } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, jsonb, index, uniqueIndex, customType, serial, boolean, bigint, real, numeric } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -993,11 +993,20 @@ export const payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id),
   amount: text("amount").notNull(),
+  // Audit fix 2026-04-10: derived numeric amounts for robust filtering/sorting.
+  // These columns were defined in shared/schema/admin.ts (the modular version)
+  // but missing from this umbrella schema.ts, causing /api/admin/finance/payments
+  // handlers to emit broken SQL like `coalesce(::numeric, ...)`.
+  amountValue: numeric("amount_value", { precision: 18, scale: 6 }),
+  amountMinor: bigint("amount_minor", { mode: "number" }),
   currency: text("currency").default("EUR"),
   status: text("status").default("pending"),
   method: text("method"),
   description: text("description"),
   stripePaymentId: text("stripe_payment_id"),
+  stripeCustomerId: text("stripe_customer_id"),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  stripeChargeId: text("stripe_charge_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("payments_user_idx").on(table.userId),
@@ -1018,6 +1027,9 @@ export const invoices = pgTable("invoices", {
   paymentId: varchar("payment_id").references(() => payments.id),
   invoiceNumber: text("invoice_number").notNull(),
   amount: text("amount").notNull(),
+  // Audit fix 2026-04-10: same derived amount columns as payments.
+  amountValue: numeric("amount_value", { precision: 18, scale: 6 }),
+  amountMinor: bigint("amount_minor", { mode: "number" }),
   currency: text("currency").default("EUR"),
   status: text("status").default("pending"),
   dueDate: timestamp("due_date"),

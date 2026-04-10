@@ -972,56 +972,82 @@ try{
   });
 
   app.get("/api/admin/sre", async (_req: Request, res: Response) => {
+    // Defensive: BudgetManager is per-run (not a singleton), so probe each
+    // subsystem independently and fall back to safe defaults when a module
+    // does not export a usable singleton. Admin dashboards should never 500
+    // just because one of the subsystems is missing an expected export.
+    const safe = <T,>(fn: () => T, fallback: T): T => {
+      try {
+        return fn();
+      } catch {
+        return fallback;
+      }
+    };
+
+    const providers = ["minimax", "openrouter", "xai", "gemini", "anthropic"];
+    const providerMetrics = providers.map(p => ({
+      name: p,
+      latencyP50: Math.round(80 + Math.random() * 120),
+      latencyP95: Math.round(200 + Math.random() * 300),
+      latencyP99: Math.round(400 + Math.random() * 600),
+      errorRate: parseFloat((Math.random() * 5).toFixed(2)),
+      requestsPerMin: Math.round(Math.random() * 50),
+      circuitBreakerState: "closed" as const,
+      rateLimitUsage: parseFloat((Math.random() * 60).toFixed(1)),
+      uptime: parseFloat((99 + Math.random()).toFixed(2)),
+    }));
+
+    // Security summary — safe import
+    let securitySummary: any = { threatScore: { overall: 0 }, alerts: { unresolved: [] } };
     try {
-      const { budgetManager } = await import("./agent/budgetManager");
-      const { securityMonitor } = await import("./agent/security/securityMonitor");
-      const { governanceModeManager } = await import("./agent/governance/modeManager");
-
-      const providers = ["minimax", "openrouter", "xai", "gemini", "anthropic"];
-      const providerMetrics = providers.map(p => ({
-        name: p,
-        latencyP50: Math.round(80 + Math.random() * 120),
-        latencyP95: Math.round(200 + Math.random() * 300),
-        latencyP99: Math.round(400 + Math.random() * 600),
-        errorRate: parseFloat((Math.random() * 5).toFixed(2)),
-        requestsPerMin: Math.round(Math.random() * 50),
-        circuitBreakerState: "closed" as const,
-        rateLimitUsage: parseFloat((Math.random() * 60).toFixed(1)),
-        uptime: parseFloat((99 + Math.random()).toFixed(2)),
-      }));
-
-      const budgetStatus = budgetManager.getStatus('_global');
-      const securitySummary = securityMonitor.getSecuritySummary();
-      const governanceStatus = governanceModeManager.getStatus();
-
-      res.json({
-        systemHealth: "healthy",
-        governanceMode: governanceStatus.mode,
-        providers: providerMetrics,
-        activeAgents: 0,
-        queuedTasks: 0,
-        cache: {
-          hitRatio: parseFloat((0.6 + Math.random() * 0.3).toFixed(2)),
-          hits: Math.round(Math.random() * 1000),
-          misses: Math.round(Math.random() * 400),
-          evictions: Math.round(Math.random() * 50),
-          sizeBytes: Math.round(Math.random() * 50000000),
-        },
-        memory: {
-          usedMb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-          totalMb: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
-          rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
-        },
-        budget: budgetStatus || { totalCost: 0, maxBudget: 10 },
-        security: {
-          threatScore: securitySummary.threatScore || { overall: 0 },
-          recentAlerts: securitySummary.alerts?.unresolved?.length || 0,
-        },
-        uptime: process.uptime(),
-      });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message || "SRE data unavailable" });
+      const mod = await import("./agent/security/securityMonitor");
+      if (mod?.securityMonitor?.getSecuritySummary) {
+        securitySummary = mod.securityMonitor.getSecuritySummary() || securitySummary;
+      }
+    } catch (err) {
+      console.warn("[admin/sre] securityMonitor unavailable:", (err as Error)?.message);
     }
+
+    // Governance mode — safe import
+    let governanceMode: string = "SUPERVISED";
+    try {
+      const mod = await import("./agent/governance/modeManager");
+      if (mod?.governanceModeManager?.getStatus) {
+        governanceMode = mod.governanceModeManager.getStatus()?.mode || governanceMode;
+      }
+    } catch (err) {
+      console.warn("[admin/sre] governanceModeManager unavailable:", (err as Error)?.message);
+    }
+
+    // Budget — per-run, not singleton. Report aggregate zero unless a
+    // global aggregator is provided by a future refactor.
+    const budgetStatus = { totalCost: 0, maxBudget: 10, utilization: 0 };
+
+    res.json({
+      systemHealth: "healthy",
+      governanceMode,
+      providers: providerMetrics,
+      activeAgents: 0,
+      queuedTasks: 0,
+      cache: {
+        hitRatio: parseFloat((0.6 + Math.random() * 0.3).toFixed(2)),
+        hits: Math.round(Math.random() * 1000),
+        misses: Math.round(Math.random() * 400),
+        evictions: Math.round(Math.random() * 50),
+        sizeBytes: Math.round(Math.random() * 50000000),
+      },
+      memory: {
+        usedMb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        totalMb: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+        rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      },
+      budget: budgetStatus,
+      security: {
+        threatScore: securitySummary.threatScore || { overall: 0 },
+        recentAlerts: securitySummary.alerts?.unresolved?.length || 0,
+      },
+      uptime: process.uptime(),
+    });
   });
 
   app.get("/api/knowledge/graph/stats", async (_req: Request, res: Response) => {
@@ -2624,7 +2650,9 @@ try{
 
   app.get("/api/admin/budget", async (req: Request, res: Response) => {
     try {
-      const { budgetManager } = await import("./agent/budgetManager");
+      // BudgetManager is per-run (not a singleton). The old code imported
+      // { budgetManager } from the module which is undefined, causing 500.
+      // We now compute aggregate budget data directly from agent_mode_runs.
       const { db } = await import("./db");
       const { agentModeRuns } = await import("@shared/schema");
       const { desc } = await import("drizzle-orm");
@@ -2661,7 +2689,9 @@ try{
 
       topRuns.sort((a, b) => b.cost - a.cost);
 
-      const currentBudget = budgetManager.getStatus('_global');
+      // No global budget singleton exists; report null for currentRunBudget.
+      // A future refactor could introduce an aggregate budget tracker if needed.
+      const currentBudget = null;
       const maxBudget = parseFloat(process.env.AGENT_COST_CEILING_USD || '10.00');
 
       res.json({

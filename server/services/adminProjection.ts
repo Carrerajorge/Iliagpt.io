@@ -650,6 +650,9 @@ export async function getAdminUserAggregateSnapshot(): Promise<AdminUserAggregat
       throw error;
     }
     Logger.info("[AdminProjection] Aggregate fallback — materialized view not available");
+    // Audit fix 2026-04-10: removed `WHERE u.deleted_at IS NULL` — the users
+    // table does not have a deleted_at column, causing this fallback query to
+    // fail whenever the admin_user_projection materialized view was missing.
     const result = await db.execute(sql`
       SELECT
         COUNT(*)::int AS "totalUsers",
@@ -663,7 +666,6 @@ export async function getAdminUserAggregateSnapshot(): Promise<AdminUserAggregat
         COUNT(*) FILTER (WHERE LOWER(COALESCE(u.plan, '')) = 'enterprise')::int AS "enterpriseUsers",
         COALESCE(SUM(COALESCE(u.query_count, 0)), 0)::bigint AS "totalQueries"
       FROM users u
-      WHERE u.deleted_at IS NULL
     `);
     const row = (result as any)?.rows?.[0] || {};
     return {
