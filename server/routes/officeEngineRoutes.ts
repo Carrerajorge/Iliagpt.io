@@ -93,10 +93,10 @@ export function createOfficeEngineRouter(): Router {
       // ── Validation ──
       const objective = String(req.body?.objective ?? "").trim();
       const docKindRaw = String(req.body?.docKind ?? "docx");
-      if (docKindRaw !== "docx") {
+      if (docKindRaw !== "docx" && docKindRaw !== "xlsx") {
         routeRejectsCounter.labels("unsupported_doc_kind").inc();
         return res.status(501).json({
-          error: "Only docKind=docx is supported in this slice",
+          error: `docKind "${docKindRaw}" not supported. This engine ships docx and xlsx.`,
           code: "OFFICE_ENGINE_UNSUPPORTED_DOC_KIND",
         });
       }
@@ -130,7 +130,7 @@ export function createOfficeEngineRouter(): Router {
         userId,
         conversationId,
         objective,
-        docKind: "docx",
+        docKind: docKindRaw as "docx" | "xlsx",
         inputName,
         inputBuffer,
       };

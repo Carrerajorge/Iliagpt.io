@@ -1,9 +1,10 @@
 /**
- * Stubs for the XLSX / PPTX / PDF engines.
+ * Stubs for the PPTX / PDF engines.
  *
- * The vertical slice ships only DOCX. The other formats are wired into the
- * dispatcher with the same `run()` signature so the route layer can detect
- * them and return a clean 501. They throw `NOT_IMPLEMENTED`.
+ * DOCX ships in `OfficeEngine.ts`. XLSX ships in `XlsxEngine.ts` (wired
+ * via dynamic import from `OfficeEngine.run()`). PPTX and PDF remain
+ * stubs with the same `run()` signature so the route layer can detect
+ * them cleanly and return a 501.
  */
 
 import type { OfficeRunRequest, OfficeRunResult } from "../types";
@@ -14,10 +15,6 @@ async function notImplemented(req: OfficeRunRequest, kind: string): Promise<Offi
     details: { docKind: req.docKind },
   });
 }
-
-export const xlsxEngine = {
-  run: (req: OfficeRunRequest) => notImplemented(req, "xlsx"),
-};
 
 export const pptxEngine = {
   run: (req: OfficeRunRequest) => notImplemented(req, "pptx"),

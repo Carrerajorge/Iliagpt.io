@@ -102,8 +102,14 @@ export class OfficeEngine {
    * in memory.
    */
   async run(req: OfficeRunRequest, streamer: StepStreamer, externalSignal?: AbortSignal): Promise<OfficeRunResult> {
+    if (req.docKind === "xlsx") {
+      // Delegate to the XLSX engine. Imported lazily to avoid a circular
+      // import loop through the shared persistence/metrics modules.
+      const { xlsxEngine } = await import("./XlsxEngine.ts");
+      return xlsxEngine.run(req, streamer, externalSignal);
+    }
     if (req.docKind !== "docx") {
-      throw new OfficeEngineError("UNSUPPORTED_DOC_KIND", `OfficeEngine slice only handles docx, got ${req.docKind}`);
+      throw new OfficeEngineError("UNSUPPORTED_DOC_KIND", `OfficeEngine slice only handles docx/xlsx, got ${req.docKind}`);
     }
 
     // Idempotency check.
