@@ -379,8 +379,8 @@ test.describe("Office Engine hardening — 20 high-level E2E", () => {
     expect(page.url()).toContain("/office-engine-demo");
   });
 
-  // 17 — PDF preview kind does not crash (and PDF is correctly flagged as NOT_IMPLEMENTED by the backend).
-  test("17 pdf kind surfaces a clean NOT_IMPLEMENTED error (no silent success)", async ({ request }) => {
+  // 17 — PDF kind now runs through the real PDFKit-backed engine and returns a valid PDF.
+  test("17 pdf kind produces a valid PDF via PDFKit (no silent success)", async ({ request }) => {
     const res = await request.post(`${BASE}/api/office-engine/runs`, {
       multipart: {
         file: { name: "probe.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n%EOF\n") },
@@ -388,32 +388,26 @@ test.describe("Office Engine hardening — 20 high-level E2E", () => {
         docKind: "pdf",
       },
     });
-    // Valid outcomes: 501 (explicit unsupported), 429 (global rate limiter),
-    // or 202 followed by a failed run with NOT_IMPLEMENTED error code.
-    if (res.status() === 501) {
-      const body = await res.json();
-      expect(body.code).toBe("OFFICE_ENGINE_UNSUPPORTED_DOC_KIND");
-      return;
-    }
-    if (res.status() === 429) {
-      // Rate-limited = still not silent success. Contract honored.
-      return;
-    }
+    // Still accept 429 if a global rate limiter rejects us — contract honored.
+    if (res.status() === 429) return;
     expect(res.status()).toBe(202);
     const { runId } = await res.json();
-    for (let i = 0; i < 30; i++) {
-      const r = await request.get(`${BASE}/api/office-engine/runs/${runId}`);
-      if (r.ok()) {
-        const body = await r.json();
-        if (body.run.status !== "running") {
-          expect(body.run.status).toBe("failed");
-          expect(String(body.run.errorCode || body.run.errorMessage || "")).toMatch(/IMPLEMENT/i);
-          return;
-        }
-      }
+    // Poll until terminal state.
+    let status = "running";
+    for (let i = 0; i < 30 && status === "running"; i++) {
       await new Promise((r) => setTimeout(r, 200));
+      const r2 = await request.get(`${BASE}/api/office-engine/runs/${runId}`);
+      if (r2.ok()) status = (await r2.json()).run.status;
     }
-    throw new Error("PDF probe never reached a terminal state");
+    expect(status).toBe("succeeded");
+    // Download the exported PDF and verify the %PDF- magic header.
+    const download = await request.get(`${BASE}/api/office-engine/runs/${runId}/artifacts/exported`);
+    expect(download.status()).toBe(200);
+    const body = await download.body();
+    expect(body[0]).toBe(0x25); // %
+    expect(body[1]).toBe(0x50); // P
+    expect(body[2]).toBe(0x44); // D
+    expect(body[3]).toBe(0x46); // F
   });
 
   // 18 — Non-existing artifact kind returns 404 (no stale/silent download).

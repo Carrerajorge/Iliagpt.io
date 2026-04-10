@@ -1,17 +1,35 @@
 /**
- * Fallback ladder for OOXML editing.
+ * Fallback ladder for DOCX editing — architectural priority.
  *
- *   Level 0 — high-level `docx` lib (`generateFreshDocx`). Only when the plan
- *             is "create from scratch": no input file, no edits, jumps
- *             straight to repack/validate.
- *   Level 1 — `docxtemplater` + `pizzip` over the whole package buffer. Used
- *             when the plan contains a `fillPlaceholder` op. On any template
- *             error, the ladder bumps to level 2.
- *   Level 2 — direct OOXML node edit via `editor.applyEdits`. The general
- *             case. On error, the run fails with the validator report.
+ * ── The production-grade engine hierarchy the team agreed on ──
  *
- * The ladder records which level actually executed on the EditResult so the
- * orchestrator can persist `fallback_level` on the run row.
+ *   DOCX  → Docxtemplater (primary for templates) + `docx` lib (fresh)
+ *   XLSX  → ExcelJS (primary structural editor)
+ *   PPTX  → PptxGenJS (primary for presentations)
+ *   PDF   → pdf-lib (primary)
+ *   ----- below: controlled, namespace-safe fallback only -----
+ *   OOXML → direct node edit via `editor.applyEdits` (last resort)
+ *
+ * For DOCX specifically, the ladder runs in this order:
+ *
+ *   Level 0 — `docx` lib (`generateFreshDocx`). Fresh create-from-spec
+ *             path: no input, no edits, straight to repack/validate.
+ *   Level 1 — **Docxtemplater + pizzip** over the whole package buffer.
+ *             The PRIMARY path for any input that carries `{{placeholder}}`
+ *             markers. The planner's `enhancePlanWithPackage()` auto-
+ *             routes template-like inputs here even if the objective
+ *             doesn't explicitly mention "fill placeholder". This matches
+ *             the user-approved architectural role of Docxtemplater as
+ *             the principal template engine of record.
+ *   Level 2 — direct OOXML node edit via `editor.applyEdits` (namespace-
+ *             safe serializer + run-merger + semantic map). Reserved
+ *             for complex structural edits where the high-level libs
+ *             can't express the intent (e.g. "replace 'hola' by 'adiós'
+ *             preserving the anchor run's rPr"). Also the last-resort
+ *             fallback when levels 0/1 throw mid-stream.
+ *
+ * The ladder records which level actually executed on the `EditResult`
+ * so the orchestrator can persist `fallback_level` on the run row.
  */
 
 import PizZip from "pizzip";

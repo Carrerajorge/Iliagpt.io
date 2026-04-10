@@ -24,6 +24,7 @@ import type { SemanticDocument } from "../ooxml/semanticMap";
 import type { DocxPackage } from "../ooxml/zipIO";
 import type { ValidationReport } from "../ooxml/validator";
 import type { DiffReport } from "../ooxml/roundTripDiff";
+import { detectDocxTemplate } from "../ooxml/templateDetect";
 import type { OfficeRunContext, EditOp, EditResult, OfficeFallbackLevel } from "../types";
 import { OfficeEngineError } from "../types";
 
@@ -38,19 +39,40 @@ export interface Plan {
 }
 
 const REPLACE_RE = /(?:replace|reemplaz[ao]r?)\s+["']?(.+?)["']?\s+(?:with|por|con)\s+["']?(.+?)["']?$/i;
-const PLACEHOLDER_RE = /\b(fill|rellenar|completar)\s+(placeholders?|plantilla|template)/i;
+const PLACEHOLDER_RE = /\b(fill|rellenar|completar|llenar)\s+(placeholders?|plantilla|template)/i;
 const CREATE_RE = /\b(create|crea[r]?|generate|generar)\s+(?:un\s+|a\s+)?(?:documento|document|docx|word)/i;
+const KV_RE = /\b([a-zA-Z_][\w.\-]*)\s*=\s*"?([^",\n]+)"?/g;
 
 /**
  * Deterministic rule-based planner. Maps the natural-language objective onto
- * a list of EditOps and an initial fallback level. LLM-driven planning is
- * out of scope for this slice.
+ * a list of EditOps and an initial fallback level.
+ *
+ * ── Architectural priority ──
+ *   Level 0 → `docx` lib                (fresh document creation)
+ *   Level 1 → **Docxtemplater + pizzip** (PRIMARY for any input with
+ *             `{{placeholder}}` markers — the user-approved template
+ *             engine for DOCX/XLSX/PPTX templates)
+ *   Level 2 → direct OOXML node edit     (complex structural edits,
+ *             controlled namespace-safe fallback)
+ *
+ * The initial plan is text-based (no package access). After unpack, the
+ * orchestrator calls `enhancePlanWithPackage(plan, pkg)` to auto-route
+ * template-like inputs to level 1 even when the objective doesn't
+ * explicitly mention "fill placeholder".
  */
 export function planStage(ctx: OfficeRunContext): Plan {
   const step = ctx.streamer.start("thinking", "Planificando edición DOCX", { description: ctx.objective });
 
   let plan: Plan;
   const obj = ctx.objective.trim();
+
+  // Extract any `key=value` pairs from the objective for template fills.
+  const kvPairs: Record<string, string> = {};
+  let m: RegExpExecArray | null;
+  const kvRe = new RegExp(KV_RE.source, "g");
+  while ((m = kvRe.exec(obj)) !== null) {
+    kvPairs[m[1]] = m[2].trim();
+  }
 
   const replaceMatch = obj.match(REPLACE_RE);
   if (replaceMatch) {
@@ -61,17 +83,17 @@ export function planStage(ctx: OfficeRunContext): Plan {
       level: 2,
       rationale: `text replacement: "${find}" → "${replace}"`,
     };
-  } else if (PLACEHOLDER_RE.test(obj)) {
+  } else if (PLACEHOLDER_RE.test(obj) || Object.keys(kvPairs).length > 0) {
     plan = {
-      ops: [{ op: "fillPlaceholder", data: {} }],
+      ops: [{ op: "fillPlaceholder", data: kvPairs }],
       level: 1,
-      rationale: "placeholder template fill",
+      rationale: `placeholder template fill (Docxtemplater primary)${Object.keys(kvPairs).length > 0 ? ` with ${Object.keys(kvPairs).length} data key(s)` : ""}`,
     };
   } else if (CREATE_RE.test(obj)) {
     plan = {
       ops: [],
       level: 0,
-      rationale: "create document from spec",
+      rationale: "create document from spec (docx lib)",
     };
   } else {
     // Catch-all: no recognized edit intent. Run the pipeline as a "no-op
@@ -88,6 +110,29 @@ export function planStage(ctx: OfficeRunContext): Plan {
 
   ctx.streamer.complete(step, { output: plan.rationale });
   return plan;
+}
+
+/**
+ * Refine the plan after the package is unpacked. If the input is a real
+ * Docxtemplater template (contains `{{...}}` markers), bump the level to
+ * 1 unconditionally — Docxtemplater is the PRIMARY path for any template,
+ * regardless of the objective's wording. This matches the user-approved
+ * architecture where Docxtemplater is the template engine of record.
+ */
+export function enhancePlanWithPackage(plan: Plan, pkg: DocxPackage): Plan {
+  const detection = detectDocxTemplate(pkg);
+  if (!detection.hasPlaceholders) return plan;
+  // Already on the Docxtemplater rung — nothing to do.
+  if (plan.level === 1) return plan;
+  // We detected real placeholders. Prefer Docxtemplater with whatever data
+  // the initial planner extracted from the objective (possibly empty).
+  const existingFill = plan.ops.find((o) => o.op === "fillPlaceholder");
+  const data = existingFill && "data" in existingFill ? (existingFill.data as Record<string, unknown>) : {};
+  return {
+    ops: [{ op: "fillPlaceholder", data }],
+    level: 1,
+    rationale: `auto-detected ${detection.placeholders.length} placeholder(s): ${detection.placeholders.slice(0, 4).join(", ")}${detection.placeholders.length > 4 ? "…" : ""} → Docxtemplater (primary)`,
+  };
 }
 
 // ---------------------------------------------------------------------------

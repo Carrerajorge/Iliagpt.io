@@ -1,25 +1,16 @@
 /**
- * Stubs for the PPTX / PDF engines.
+ * Back-compat re-exports for the multi-format engine dispatcher.
  *
- * DOCX ships in `OfficeEngine.ts`. XLSX ships in `XlsxEngine.ts` (wired
- * via dynamic import from `OfficeEngine.run()`). PPTX and PDF remain
- * stubs with the same `run()` signature so the route layer can detect
- * them cleanly and return a 501.
+ * Historically this file held NOT_IMPLEMENTED stubs for XLSX / PPTX / PDF.
+ * All three now have real engines:
+ *
+ *   - xlsxEngine → server/lib/office/engine/XlsxEngine.ts (full pipeline)
+ *   - pptxEngine → server/lib/office/engine/PptxEngine.ts (PptxGenJS primary)
+ *   - pdfEngine  → server/lib/office/engine/PdfEngine.ts  (PDFKit primary)
+ *
+ * The re-exports keep any downstream imports working without touching them.
  */
 
-import type { OfficeRunRequest, OfficeRunResult } from "../types";
-import { OfficeEngineError } from "../types";
-
-async function notImplemented(req: OfficeRunRequest, kind: string): Promise<OfficeRunResult> {
-  throw new OfficeEngineError("NOT_IMPLEMENTED", `${kind} engine is not implemented in this slice`, {
-    details: { docKind: req.docKind },
-  });
-}
-
-export const pptxEngine = {
-  run: (req: OfficeRunRequest) => notImplemented(req, "pptx"),
-};
-
-export const pdfEngine = {
-  run: (req: OfficeRunRequest) => notImplemented(req, "pdf"),
-};
+export { xlsxEngine } from "./XlsxEngine.ts";
+export { pptxEngine } from "./PptxEngine.ts";
+export { pdfEngine } from "./PdfEngine.ts";

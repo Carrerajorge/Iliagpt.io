@@ -22,6 +22,7 @@ import { createSandbox, type Sandbox } from "../sandbox";
 import { officeWorkerPool } from "../workerPool";
 import {
   planStage,
+  enhancePlanWithPackage,
   unpackStage,
   parseStage,
   mapStage,
@@ -102,14 +103,24 @@ export class OfficeEngine {
    * in memory.
    */
   async run(req: OfficeRunRequest, streamer: StepStreamer, externalSignal?: AbortSignal): Promise<OfficeRunResult> {
+    // ── Dispatcher ──
+    // Delegate to the right engine based on docKind. Dynamic imports keep
+    // the dependency graph flat and avoid circular imports via the shared
+    // persistence/metrics modules.
     if (req.docKind === "xlsx") {
-      // Delegate to the XLSX engine. Imported lazily to avoid a circular
-      // import loop through the shared persistence/metrics modules.
       const { xlsxEngine } = await import("./XlsxEngine.ts");
       return xlsxEngine.run(req, streamer, externalSignal);
     }
+    if (req.docKind === "pptx") {
+      const { pptxEngine } = await import("./PptxEngine.ts");
+      return pptxEngine.run(req, streamer, externalSignal);
+    }
+    if (req.docKind === "pdf") {
+      const { pdfEngine } = await import("./PdfEngine.ts");
+      return pdfEngine.run(req, streamer, externalSignal);
+    }
     if (req.docKind !== "docx") {
-      throw new OfficeEngineError("UNSUPPORTED_DOC_KIND", `OfficeEngine slice only handles docx/xlsx, got ${req.docKind}`);
+      throw new OfficeEngineError("UNSUPPORTED_DOC_KIND", `OfficeEngine dispatcher: unsupported docKind ${req.docKind}`);
     }
 
     // Idempotency check.
@@ -271,6 +282,12 @@ export class OfficeEngine {
         // ── Stage 2: unpack ──
         pkg = await unpackStage(ctx, req.inputBuffer);
         workingBuf = req.inputBuffer;
+
+        // Refine the plan now that we have the package: auto-route to
+        // Docxtemplater (level 1) if the input contains real `{{...}}`
+        // template markers. This implements the architectural priority
+        // where Docxtemplater is the PRIMARY engine for DOCX templates.
+        plan = enhancePlanWithPackage(plan, pkg);
 
         // ── Stage 3: parse ──
         const parseClose = stepStart("parse", "analyzing", "Parseando OOXML");
