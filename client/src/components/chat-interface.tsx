@@ -4173,10 +4173,29 @@ export function ChatInterface({
     }
     // Prevent double-submit while THIS chat has a request in flight.
     // If a DIFFERENT chat is busy (aiStateChatId !== chatId), allow submission.
+    // Failsafe: if there's NO active streaming content but aiState is stuck non-idle,
+    // the previous response already finished — force-clear and proceed. This recovers
+    // from the 3rd-message bug where aiState gets stranded after pending → real chat
+    // ID transition and the scoped onAiStateChange callback no-ops silently.
     const thisChatBusy = aiState !== "idle" && (!aiStateChatId || aiStateChatId === chatId);
     if (thisChatBusy) {
-      console.log("[handleSubmit] Blocked: aiState is", aiState, "for chatId", aiStateChatId);
-      return;
+      const hasActiveStream = !!streamingContentRef.current;
+      if (!hasActiveStream) {
+        console.warn(
+          "[handleSubmit] Detected stranded aiState=",
+          aiState,
+          "without active stream — force-clearing to unblock submit"
+        );
+        setAiStateForChat("idle", chatId || 'default');
+        setAiProcessStepsForChat([], chatId || 'default');
+        if (aiStateChatId && aiStateChatId !== chatId) {
+          setAiStateForChat("idle", aiStateChatId);
+          setAiProcessStepsForChat([], aiStateChatId);
+        }
+      } else {
+        console.log("[handleSubmit] Blocked: aiState is", aiState, "for chatId", aiStateChatId);
+        return;
+      }
     }
     setSubmitLock(submitLockScope);
     try {
@@ -4907,6 +4926,14 @@ export function ChatInterface({
         } else {
           markMessageStreamRetryable(userMsgId, streamResult.error);
         }
+        // Force aiState to idle on both the stream chat ID and the current latest chat ID
+        // to prevent the 3rd-message bug where aiState gets stuck after pending → real transition.
+        setAiStateForChat("idle", effectiveChatIdForStream);
+        setAiProcessStepsForChat([], effectiveChatIdForStream);
+        if (latestChatIdRef.current && latestChatIdRef.current !== effectiveChatIdForStream) {
+          setAiStateForChat("idle", latestChatIdRef.current);
+          setAiProcessStepsForChat([], latestChatIdRef.current);
+        }
         return;
       }
 
@@ -5465,6 +5492,14 @@ export function ChatInterface({
             } else {
               clearMessageDeliveryError(userMsgId);
               requestTitleRefresh(effectiveChatIdForStream);
+            }
+            // Force aiState to idle to prevent 3rd-message bug when the scoped
+            // callback silently no-ops due to pending → real chat ID transition.
+            setAiStateForChat("idle", effectiveChatIdForStream);
+            setAiProcessStepsForChat([], effectiveChatIdForStream);
+            if (latestChatIdRef.current && latestChatIdRef.current !== effectiveChatIdForStream) {
+              setAiStateForChat("idle", latestChatIdRef.current);
+              setAiProcessStepsForChat([], latestChatIdRef.current);
             }
           } catch (error: any) {
             if (error.name === "AbortError") return;
@@ -7256,6 +7291,18 @@ IMPORTANTE:
               }
               agent.complete();
               abortControllerRef.current = null;
+
+              // CRITICAL: Force aiState to idle on the real (post-pending) chat ID.
+              // The scoped setAiStateForChat inside the stream's finalize can silently
+              // no-op if the conversation ID changed during the stream (pending → real),
+              // leaving aiState stuck and blocking the next user message in handleSubmit
+              // at the `thisChatBusy` check. This is the root cause of the 3rd-message bug.
+              setAiStateForChat("idle", effectiveStreamChatId);
+              setAiProcessStepsForChat([], effectiveStreamChatId);
+              if (latestChatIdRef.current && latestChatIdRef.current !== effectiveStreamChatId) {
+                setAiStateForChat("idle", latestChatIdRef.current);
+                setAiProcessStepsForChat([], latestChatIdRef.current);
+              }
 
             } else {
               // Legacy mode - fall back to non-streaming /api/chat for Figma diagrams or when no run info
