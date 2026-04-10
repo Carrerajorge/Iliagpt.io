@@ -109,7 +109,7 @@ export const UserMessage = memo(function UserMessage({
                         onReopenDocument={onReopenDocument}
                     />
                     {message.content && (
-                        <div className="liquid-message-user px-4 py-2.5 text-sm break-words leading-relaxed">
+                        <div className="liquid-message-user px-4 py-2.5 text-sm break-words leading-relaxed text-white dark:text-gray-950">
                             {message.content}
                         </div>
                     )}

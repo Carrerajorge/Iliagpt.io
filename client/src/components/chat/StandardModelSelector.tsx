@@ -37,7 +37,7 @@ const CURATED_MODELS: CuratedModel[] = [
         free: true,
     },
     {
-        displayName: "Grok 4.1 Fast",
+        displayName: "Grok 4.1 Rápido",
         matchIds: ["grok-4-1-fast-non-reasoning", "x-ai/grok-4.1-fast"],
         logo: "/logos/grok.png",
         free: true,
@@ -45,13 +45,19 @@ const CURATED_MODELS: CuratedModel[] = [
     {
         displayName: "GPT-5.4",
         matchIds: ["openai/gpt-5.4", "gpt-5.4", "openai/chatgpt-5.4", "openai/gpt-4.1", "gpt-4.1"],
-        logo: "/logos/chatgpt.png",
+        logo: "/logos/openai.png",
+        free: false,
+    },
+    {
+        displayName: "Claude Opus",
+        matchIds: ["claude-opus-4-6", "anthropic/claude-opus-4", "anthropic/claude-opus-4-6", "claude-opus-4-5"],
+        logo: "/logos/claude.svg",
         free: false,
     },
     {
         displayName: "Gemini 3.1 Pro",
         matchIds: ["gemini-3.1-pro", "google/gemini-3.1-pro", "gemini-3.1-pro-preview", "google/gemini-3.1-pro-preview"],
-        logo: "/logos/gemini.png",
+        logo: "/logos/gemini.svg",
         free: false,
     },
     {

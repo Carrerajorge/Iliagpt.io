@@ -1225,6 +1225,11 @@ export function ChatInterface({
   const speechRecognitionRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const [scrollParentEl, setScrollParentEl] = useState<HTMLElement | null>(null);
+  const messagesContainerCallbackRef = useCallback((node: HTMLDivElement | null) => {
+    messagesContainerRef.current = node;
+    setScrollParentEl(node);
+  }, []);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [userHasScrolledUp, setUserHasScrolledUp] = useState(false);
   const lastScrollTimeRef = useRef<number>(0);
@@ -7583,7 +7588,7 @@ IMPORTANTE:
           <PanelGroup direction="horizontal" className="flex-1">
             {/* Left Panel: Chat */}
             <Panel defaultSize={50} minSize={20} maxSize={70}>
-              <div className="flex flex-col min-w-0 h-full bg-background/50">
+              <div className="flex flex-col min-w-0 h-full bg-background">
                 {/* Messages Area */}
                 {showConversationSkeleton ? (
                   <div className="flex-1 overflow-y-auto space-y-3 overscroll-contain pb-[var(--composer-height,120px)] p-4 sm:p-6 md:p-10 space-y-6">
@@ -7886,12 +7891,13 @@ IMPORTANTE:
               <div className="flex-1 min-h-0 relative bg-background">
                 {/* Messages container — ALWAYS mounted to avoid unmount/mount flash */}
                 <div
-                  ref={messagesContainerRef}
+                  ref={messagesContainerCallbackRef}
                   onScroll={handleScroll}
                   className={cn(
-                    "absolute inset-0 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-zinc-300 dark:scrollbar-thumb-zinc-700 scrollbar-track-transparent p-4 sm:p-6 md:p-8 pb-[calc(var(--composer-height,120px)+120px)] space-y-3 bg-background",
+                    "absolute inset-0 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-muted-foreground/30 scrollbar-track-transparent p-4 sm:p-6 md:p-8 pb-[calc(var(--composer-height,120px)+120px)] space-y-3 bg-background",
                     !hasMessages && "invisible"
                   )}
+                  style={{ scrollbarGutter: 'stable' }}
                 >
                   {hasMessages && (
                     <>
@@ -7944,6 +7950,7 @@ IMPORTANTE:
                         }}
                         uiPhase={uiPhase}
                         aiProcessSteps={aiProcessSteps}
+                        scrollParent={scrollParentEl}
                       />
                       </ErrorBoundary>
                       <div className="shrink-0" style={{ height: 'calc(var(--composer-height, 120px) + 40px)' }} aria-hidden="true" />

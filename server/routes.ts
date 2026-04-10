@@ -209,6 +209,19 @@ const PUBLIC_MODEL_FALLBACKS: ReadonlyArray<PublicModelSummary> = Object.freeze(
     contextWindow: 262144,
   },
   {
+    id: "fallback-grok-4-1-fast",
+    name: "Grok 4.1 Rápido",
+    provider: "xai",
+    modelId: XAI_MODELS.GROK_4_1_FAST,
+    description: "Grok 4.1 Fast via xAI — modelo gratuito",
+    isEnabled: "true",
+    enabledAt: null,
+    displayOrder: -1,
+    icon: null,
+    modelType: "TEXT",
+    contextWindow: 131072,
+  },
+  {
     id: "fallback-local-5000",
     name: "Local Model (localhost:5000)",
     provider: "local",
@@ -216,7 +229,7 @@ const PUBLIC_MODEL_FALLBACKS: ReadonlyArray<PublicModelSummary> = Object.freeze(
     description: "Modelo local en localhost:5000",
     isEnabled: "true",
     enabledAt: null,
-    displayOrder: -1,
+    displayOrder: 99,
     icon: null,
     modelType: "TEXT",
     contextWindow: 131072,
@@ -786,14 +799,7 @@ try{
   localStorage.setItem(TK,tk);
 }catch(e){console.error("[OC-Pre]",e)}
 })()</script>`;
-      // Patch: allow ALL file types in drag-and-drop (not just images)
-      // The Control UI's Vs() function only accepts image/* mimeTypes.
-      // We replace it to accept any file type for document analysis.
-      const patchedUiHtml = controlUiHtml.replace(
-        /function Vs\(e\)\{return typeof e==`string`&&e\.startsWith\(`image\/`\)\}/,
-        'function Vs(e){return typeof e==`string`&&e.length>0}'
-      );
-      const modifiedHtml = (patchedUiHtml !== controlUiHtml ? patchedUiHtml : controlUiHtml)
+      const modifiedHtml = controlUiHtml
         .replace("<head>", '<head><base href="/openclaw-ui/">')
         .replace('</head>', preSeedScript + '</head>');
       res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -810,6 +816,60 @@ try{
     });
     app.get("/openclaw-ui", serveControlUiWithAutoConnect);
     app.get("/openclaw-ui/", serveControlUiWithAutoConnect);
+
+    // Patch the Control UI JS bundle at serve-time to:
+    // 1. Accept ALL file types in drag-and-drop (not just image/*)
+    // 2. Include fileName in attachment objects so gateway can identify file type
+    // 3. Handle document attachments in preview (don't render as <img>)
+    let patchedBundleCache: Record<string, string> = {};
+    app.get("/openclaw-ui/assets/:file", (req: Request, res: Response, next: Function) => {
+      const fileName = req.params.file;
+      if (!fileName.endsWith(".js")) return next();
+      const safeName = path.basename(fileName);
+      if (patchedBundleCache[safeName]) {
+        res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        return res.send(patchedBundleCache[safeName]);
+      }
+      const filePath = path.join(openclawControlUiRoot, "assets", safeName);
+      if (!fs.existsSync(filePath)) return next();
+      let js = fs.readFileSync(filePath, "utf-8");
+      let patchCount = 0;
+
+      // Patch 1: Accept all file types (not just image/*)
+      const p1 = js.replace(
+        'function Vs(e){return typeof e==`string`&&e.startsWith(`image/`)}',
+        'function Vs(e){return typeof e==`string`&&e.length>0}'
+      );
+      if (p1 !== js) { js = p1; patchCount++; }
+
+      // Patch 2: Add fileName to drop handler attachment objects
+      // Original: id:Wb(),dataUrl:n.result,mimeType:e.type}
+      // Patched:  id:Wb(),dataUrl:n.result,mimeType:e.type,fileName:e.name}
+      const p2 = js.replaceAll(
+        'id:Wb(),dataUrl:n.result,mimeType:e.type}',
+        'id:Wb(),dataUrl:n.result,mimeType:e.type,fileName:e.name||"file"}'
+      );
+      if (p2 !== js) { js = p2; patchCount++; }
+
+      // Patch 3: Add fileName to clipboard handler
+      // Original: id:Wb(),dataUrl:e,mimeType:n.type}
+      // Patched:  id:Wb(),dataUrl:e,mimeType:n.type,fileName:n.name||"paste"}
+      const p3 = js.replaceAll(
+        'id:Wb(),dataUrl:e,mimeType:n.type}',
+        'id:Wb(),dataUrl:e,mimeType:n.type,fileName:n.name||"paste"}'
+      );
+      if (p3 !== js) { js = p3; patchCount++; }
+
+      if (patchCount > 0) {
+        log.info(`Patched OpenClaw UI bundle: ${patchCount} patches applied (all file types + fileName)`);
+        patchedBundleCache[safeName] = js;
+      }
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.send(js);
+    });
+
     app.use("/openclaw-ui", express.static(openclawControlUiRoot, {
       index: false,
       setHeaders: (res) => {

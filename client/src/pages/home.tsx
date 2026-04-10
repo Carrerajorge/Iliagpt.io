@@ -768,7 +768,7 @@ export default function Home() {
   }
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-background relative">
+    <div className="flex h-dvh w-full overflow-hidden bg-background relative">
       <OfflineBanner />
       <div className="liquid-blob liquid-blob-1 opacity-30"></div>
       <div className="liquid-blob liquid-blob-2 opacity-20"></div>

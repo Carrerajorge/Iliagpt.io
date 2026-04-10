@@ -543,7 +543,7 @@ export function Sidebar({
 
   return (
     <nav
-      className={cn("flex h-screen w-[260px] flex-col bg-[#fafafa] dark:bg-[#111113] border-r border-border/40 text-sidebar-foreground", className)}
+      className={cn("flex h-dvh w-[260px] flex-col bg-[#fafafa] dark:bg-[#111113] border-r border-border/40 text-sidebar-foreground", className)}
       aria-label="Navegación principal y chats"
       data-sidebar-tools-nav
       role="navigation"
@@ -566,13 +566,14 @@ export function Sidebar({
 
       <div className="px-3 pb-2">
         <Button
-          className="w-full justify-start gap-2 h-9 text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg shadow-sm"
+          variant="ghost"
+          className="w-full justify-start gap-2 h-9 text-sm font-medium rounded-lg shadow-sm bg-black text-white hover:bg-black/90 dark:bg-white dark:text-[#0a0a0a] dark:hover:bg-white/90"
           onClick={onNewChat}
           data-testid="button-new-chat"
         >
           <SquarePen className="h-4 w-4" />
           Nuevo chat
-          <span className="ml-auto text-[10px] bg-white/20 rounded px-1 py-0.5 font-mono">KN</span>
+          <span className="ml-auto text-[10px] bg-white/20 dark:bg-black/15 rounded px-1 py-0.5 font-mono">KN</span>
         </Button>
       </div>
 
@@ -596,7 +597,7 @@ export function Sidebar({
       <div className="flex flex-col gap-0.5 px-2 pb-2">
         <button onClick={onOpenLibrary} data-tool-motion="library" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-library">
           <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
-            <Library className="sidebar-tool-icon h-4 w-4 text-primary pointer-events-none" />
+            <Library className="sidebar-tool-icon h-4 w-4 text-indigo-500 pointer-events-none" />
           </span>
           <span className="pointer-events-none">Biblioteca</span>
         </button>

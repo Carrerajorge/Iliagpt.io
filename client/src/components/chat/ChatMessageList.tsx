@@ -82,6 +82,7 @@ export interface ChatMessageListProps {
     onUserRetrySend?: (message: Message) => void;
     onToolConfirm?: (messageId: string, toolName: string, stepIndex: number) => void;
     onToolDeny?: (messageId: string, toolName: string, stepIndex: number) => void;
+    scrollParent?: HTMLElement | null;
 }
 
 export function ChatMessageList({
@@ -129,7 +130,8 @@ export function ChatMessageList({
     streamingMsgId,
     onUserRetrySend,
     onToolConfirm,
-    onToolDeny
+    onToolDeny,
+    scrollParent
 }: ChatMessageListProps) {
     const virtuosoRef = useRef<VirtuosoHandle>(null);
 
@@ -394,7 +396,7 @@ export function ChatMessageList({
     ]);
 
     return (
-        <div className="h-full w-full flex flex-col" role="log" aria-live="polite" aria-label="Chat messages">
+        <div className={scrollParent ? "w-full flex flex-col" : "h-full w-full flex flex-col"} role="log" aria-live="polite" aria-label="Chat messages">
             <Virtuoso
                 ref={virtuosoRef}
                 data={mergedMessages}
@@ -403,7 +405,11 @@ export function ChatMessageList({
                 initialTopMostItemIndex={mergedMessages.length - 1}
                 followOutput="auto"
                 alignToBottom
-                className="h-full w-full scrollbar-thin scrollbar-thumb-muted-foreground/20 hover:scrollbar-thumb-muted-foreground/40"
+                {...(scrollParent ? { customScrollParent: scrollParent } : {})}
+                className={scrollParent
+                    ? "w-full"
+                    : "h-full w-full scrollbar-thin scrollbar-thumb-muted-foreground/20 hover:scrollbar-thumb-muted-foreground/40"
+                }
                 itemContent={renderItem}
             />
         </div>
