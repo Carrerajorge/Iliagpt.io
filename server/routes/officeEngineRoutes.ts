@@ -17,6 +17,7 @@
 import express, { type Request, type Response, Router } from "express";
 import multer from "multer";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { Logger } from "../lib/logger";
 import { initSSEStream } from "../services/streamingResponse";
 import { StepStreamer } from "../agent/stepStreamer";
@@ -56,6 +57,12 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_INPUT_BYTES },
 });
+
+function buildContentDisposition(dispositionType: "inline" | "attachment", fileName: string): string {
+  const asciiName = fileName.replace(/[^\x20-\x7e]/g, "_").replace(/"/g, "");
+  const encodedName = encodeURIComponent(fileName);
+  return `${dispositionType}; filename="${asciiName}"; filename*=UTF-8''${encodedName}`;
+}
 
 export function createOfficeEngineRouter(): Router {
   const router: Router = express.Router();
@@ -333,14 +340,18 @@ export function createOfficeEngineRouter(): Router {
     if (!fs.existsSync(a.path)) {
       return res.status(410).json({ error: "Artifact file no longer available on disk" });
     }
+    const fileName = path.basename(a.path) || `${req.params.kind}.${run.docKind}`;
+    const dispositionType = req.params.kind === "preview" ? "inline" : "attachment";
     res.setHeader("Content-Type", a.mimeType);
     res.setHeader("Content-Length", String(a.sizeBytes));
     res.setHeader("X-Office-Engine-Checksum", a.checksumSha256);
+    res.setHeader("Content-Disposition", buildContentDisposition(dispositionType, fileName));
+    res.setHeader("Cache-Control", "no-store");
     fs.createReadStream(a.path).pipe(res);
   });
 
   router.post("/runs/:id/cancel", (req: Request, res: Response) => {
-    const session = sessions.get(req.params.id);
+    const session = getOfficeRunSession(req.params.id);
     if (!session) return res.status(404).json({ error: "Run not found" });
     session.controller.abort();
     return res.json({ cancelled: true });

@@ -16,11 +16,13 @@ interface OfficeStepsPanelProps {
 export function OfficeStepsPanel({ runId }: OfficeStepsPanelProps) {
   const subscribe = useOfficeEngineStore((s) => s.subscribe);
   const run = useOfficeEngineStore((s) => s.runs.get(runId));
+  const shouldSubscribe = !run || run.status === "running";
 
   useEffect(() => {
+    if (!shouldSubscribe) return;
     const unsub = subscribe(runId);
     return () => unsub();
-  }, [runId, subscribe]);
+  }, [runId, shouldSubscribe, subscribe]);
 
   if (!run) {
     return (

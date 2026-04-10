@@ -13,7 +13,7 @@ import { defineConfig, devices } from "playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: /office-engine-demo\.spec\.ts/,
+  testMatch: /office-engine-(demo|hardening)\.spec\.ts/,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,

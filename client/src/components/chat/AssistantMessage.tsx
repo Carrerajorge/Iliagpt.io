@@ -37,9 +37,11 @@ import { InlineGoogleFormPreview } from "@/components/inline-google-form-preview
 import { InlineGmailPreview } from "@/components/inline-gmail-preview";
 import { FilePreviewSurface } from "@/components/FilePreviewSurface";
 import { isRenderablePreview } from "@/lib/filePreviewTypes";
+import { OfficeStepsPanel } from "@/components/office/OfficeStepsPanel";
 import { SourcesPanel } from "@/components/sources-panel";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { useSettingsContext } from "@/contexts/SettingsContext";
+import type { ReopenDocumentRequest } from "@/lib/documentPreviewContracts";
 
 import {
     parseDocumentBlocks,
@@ -55,7 +57,7 @@ import { AgentRunTimeline } from "./AgentRunTimeline";
 import { AgentStateIndicator } from "./AgentStateIndicator";
 import { type AIState } from "@/components/chat-interface/types";
 import { IliaAdBanner } from "@/components/ilia-ad-banner";
-import { downloadArtifact, fetchArtifactResponse, fetchArtifactText } from "@/lib/localArtifactAccess";
+import { downloadArtifact } from "@/lib/localArtifactAccess";
 
 export interface AssistantMessageProps {
     message: Message;
@@ -79,7 +81,7 @@ export interface AssistantMessageProps {
     onOpenDocumentPreview: (doc: DocumentBlock) => void;
     onDownloadImage: (imageData: string) => void;
     onOpenLightbox: (imageData: string | null) => void;
-    onReopenDocument?: (doc: { type: "word" | "excel" | "ppt"; title: string; content: string }) => void;
+    onReopenDocument?: (doc: ReopenDocumentRequest) => void;
     minimizedDocument?: { type: "word" | "excel" | "ppt"; title: string; content: string; messageId?: string } | null;
     onRestoreDocument?: () => void;
     onAgentCancel?: (messageId: string, runId: string) => void;
@@ -136,6 +138,35 @@ export const AssistantMessage = memo(function AssistantMessage({
             window.open(url, "_blank", "noopener,noreferrer");
         }
     }, []);
+
+    const openArtifactPreview = useCallback(async () => {
+        if (!message.artifact) return;
+
+        if (!onReopenDocument) return;
+        const artTypeNorm: Record<string, "word" | "excel" | "ppt" | "pdf"> = {
+            document: "word",
+            spreadsheet: "excel",
+            presentation: "ppt",
+            pdf: "pdf",
+            docx: "word",
+            xlsx: "excel",
+            pptx: "ppt",
+        };
+        const type = artTypeNorm[String(message.artifact.type).toLowerCase()];
+        if (!type) return;
+
+        onReopenDocument({
+            type,
+            title: String(message.artifact.filename || message.artifact.name || "Documento"),
+            content: "",
+            downloadUrl: message.artifact.downloadUrl,
+            previewUrl: (message.artifact as any)?.previewUrl || message.artifact.downloadUrl,
+            previewHtml: (message.artifact as any)?.previewHtml,
+            mimeType: message.artifact.mimeType,
+            fileName: String(message.artifact.filename || message.artifact.name || "documento"),
+            messageId: message.id,
+        });
+    }, [message.artifact, message.id, onReopenDocument]);
 
     const [sourcesPanelOpen, setSourcesPanelOpen] = useState(false);
     const superAgentState = useSuperAgentRun(message.id);
@@ -358,6 +389,28 @@ export const AssistantMessage = memo(function AssistantMessage({
                             </div>
                         </div>
                     ) : (
+                        (() => {
+                            const officeRunIdFromArtifactUrl = [
+                                message.artifact?.downloadUrl,
+                                (message.artifact as any)?.previewUrl,
+                            ]
+                                .map((value) => (typeof value === "string" ? value.match(/\/api\/office-engine\/runs\/([0-9a-f-]{36})\//i)?.[1] : null))
+                                .find((value): value is string => typeof value === "string" && value.length > 0);
+                            const officeRunId =
+                                typeof (message.artifact as any)?.metadata?.officeRunId === "string"
+                                    ? String((message.artifact as any).metadata.officeRunId)
+                                    : officeRunIdFromArtifactUrl || null;
+
+                            return (
+                        <>
+                            {officeRunId && (
+                                <div
+                                    className="mb-3 rounded-xl border border-border bg-background/70"
+                                    data-testid={`office-steps-${message.id}`}
+                                >
+                                    <OfficeStepsPanel runId={officeRunId} />
+                                </div>
+                            )}
                         <div className="p-4 rounded-lg border bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-blue-200 dark:border-blue-800">
                             {(() => {
                                 const artifactTypeMap: Record<string, "docx" | "xlsx" | "pptx"> = {
@@ -370,18 +423,18 @@ export const AssistantMessage = memo(function AssistantMessage({
                                 const themeLabel = (message.artifact as any)?.metadata?.theme || (message.artifact as any)?.metadata?.brandTheme;
                                 if (!isRenderablePreview(previewHtml ? { type: previewType, html: previewHtml } : null)) return null;
                                 return (
-                                <div className="mb-4 overflow-hidden rounded-xl border bg-white shadow-sm">
+                                <div className="mb-4 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
                                     {themeLabel && (
-                                        <div className="flex items-center justify-between border-b bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">
-                                            <span className="inline-flex rounded-full bg-slate-900 px-2.5 py-1 text-[11px] uppercase tracking-wide text-white">
+                                        <div className="flex items-center justify-between border-b border-border bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
+                                            <span className="inline-flex rounded-full bg-foreground px-2.5 py-1 text-[11px] uppercase tracking-wide text-background">
                                                 {String(themeLabel)}
                                             </span>
                                             {(message.artifact as any)?.metadata?.brandName && (
-                                                <span className="truncate text-slate-500">{String((message.artifact as any).metadata.brandName)}</span>
+                                                <span className="truncate text-muted-foreground">{String((message.artifact as any).metadata.brandName)}</span>
                                             )}
                                         </div>
                                     )}
-                                    <div className="h-52 w-full bg-slate-50">
+                                    <div className="h-52 w-full bg-muted">
                                         <FilePreviewSurface
                                             preview={{ type: previewType, html: previewHtml }}
                                             variant="thumbnail"
@@ -405,7 +458,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                                 </div>
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2">
-                                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                                        <p className="text-sm font-medium text-foreground">
                                             {message.artifact.type === "document" && "Documento Word"}
                                             {message.artifact.type === "spreadsheet" && "Hoja de cálculo Excel"}
                                             {message.artifact.type === "presentation" && "Presentación PowerPoint"}
@@ -415,74 +468,37 @@ export const AssistantMessage = memo(function AssistantMessage({
                                             ✓ Listo
                                         </span>
                                     </div>
-                                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    <p className="text-xs text-muted-foreground">
                                         {message.artifact.name || (message.artifact.sizeBytes ? `${Math.round(message.artifact.sizeBytes / 1024)}KB` : "Listo para descargar")}
                                     </p>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                    {(message.artifact.type === "presentation" || message.artifact.type === "document" || message.artifact.type === "spreadsheet") && onReopenDocument && (
+                                    {(message.artifact.type === "presentation" || message.artifact.type === "document" || message.artifact.type === "spreadsheet" || message.artifact.type === "pdf") && (officeRunId || onReopenDocument) && (
                                         <button
-                                            onClick={async () => {
-                                                const docType = message.artifact?.type === "presentation" ? "ppt"
-                                                    : message.artifact?.type === "document" ? "word"
-                                                        : "excel";
-                                                const docTitle = message.artifact?.type === "presentation" ? "Presentación PowerPoint"
-                                                    : message.artifact?.type === "document" ? "Documento Word"
-                                                        : "Hoja de cálculo Excel";
-
-                                                let content = "";
-                                                const contentUrl = (message.artifact as any)?.contentUrl;
-                                                if (contentUrl && docType === "ppt") {
-                                                    try {
-                                                        content = await fetchArtifactText(contentUrl);
-                                                    } catch (error) {
-                                                        console.error("[View] Failed to fetch content:", error);
-                                                    }
-                                                }
-
-                                                if (!content && docType === "word" && message.artifact?.downloadUrl) {
-                                                    try {
-                                                        const response = await fetchArtifactResponse(message.artifact.downloadUrl);
-                                                        if (response.ok) {
-                                                            const blob = await response.blob();
-                                                            const arrayBuffer = await blob.arrayBuffer();
-                                                            const mammoth = await import("mammoth");
-                                                            const result = await mammoth.convertToHtml({ arrayBuffer });
-                                                            content = result.value;
-                                                        }
-                                                    } catch (error) {
-                                                        console.error("[View] Failed to convert Word doc:", error);
-                                                    }
-                                                }
-
-                                                onReopenDocument({
-                                                    type: docType as "word" | "excel" | "ppt",
-                                                    title: docTitle,
-                                                    content
-                                                });
-                                            }}
-                                            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
+                                            onClick={openArtifactPreview}
+                                            className="px-4 py-2 bg-muted hover:bg-muted/80 text-foreground text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
                                             data-testid={`button-view-artifact-${message.id}`}
+                                            type="button"
                                         >
                                             <Eye className="h-4 w-4" />
                                             Ver
                                         </button>
                                     )}
-                                    {(message.artifact as any)?.previewUrl && (
-                                        <a
-                                            href={(message.artifact as any).previewUrl}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="px-4 py-2 bg-white hover:bg-gray-50 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 text-sm font-medium rounded-lg flex items-center gap-2 transition-colors border"
+                                    {(((message.artifact as any)?.previewUrl) || ((message.artifact as any)?.previewHtml)) && (
+                                        <button
+                                            type="button"
+                                            onClick={openArtifactPreview}
+                                            className="px-4 py-2 bg-card hover:bg-muted text-foreground text-sm font-medium rounded-lg flex items-center gap-2 transition-colors border border-border"
+                                            data-testid={`button-preview-artifact-${message.id}`}
                                         >
                                             <Eye className="h-4 w-4" />
                                             Preview
-                                        </a>
+                                        </button>
                                     )}
                                     <a
                                         href={message.artifact.downloadUrl}
                                         download
-                                        onClick={(event) => void handleArtifactDownload(event, message.artifact?.downloadUrl, message.artifact?.name)}
+                                        onClick={(event) => void handleArtifactDownload(event, message.artifact?.downloadUrl)}
                                         className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
                                         data-testid={`button-download-artifact-${message.id}`}
                                     >
@@ -492,6 +508,9 @@ export const AssistantMessage = memo(function AssistantMessage({
                                 </div>
                             </div>
                         </div>
+                        </>
+                            );
+                        })()
                     )}
                 </div>
             )}

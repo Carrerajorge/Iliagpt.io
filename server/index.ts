@@ -40,6 +40,7 @@ import { Logger } from "./lib/logger";
 import { pythonServiceManager } from "./lib/pythonServiceManager";
 import { requestTracerMiddleware } from "./lib/requestTracer";
 import { getTracingMetrics, initTracing, shutdownTracing } from "./lib/tracing";
+import { isOfficeEngineEnabled } from "./lib/office/featureFlag";
 
 import { seedProductionData } from "./seed-production";
 import { startAggregator } from "./services/analyticsAggregator";
@@ -165,11 +166,20 @@ app.use(
     threshold: 512,
     memLevel: 8,
     filter: (req, res) => {
+      // SSE routes MUST NOT be compressed. The compression transform
+      // buffers small chunks until the zlib internal buffer fills, which
+      // for SSE (event sizes ~200 bytes each) effectively freezes the
+      // stream after the first flush. We match by URL path (authoritative)
+      // instead of relying on the Accept header (some browsers send
+      // "text/event-stream, */*" which breaks strict equality).
+      const url = req.url ?? "";
       if (
-        req.url?.includes("/chat/stream") ||
-        req.url?.includes("/super/stream") ||
-        req.headers.accept === "text/event-stream" ||
-        req.headers['x-no-compression'] ||
+        url.includes("/chat/stream") ||
+        url.includes("/super/stream") ||
+        url.includes("/events") || // Office Engine + any other "/events" SSE path
+        (typeof req.headers.accept === "string" &&
+          req.headers.accept.includes("text/event-stream")) ||
+        req.headers["x-no-compression"] ||
         res.getHeader("Content-Type")?.toString().includes("text/event-stream") ||
         res.getHeader("Content-Type")?.toString().includes("application/octet-stream")
       ) {
@@ -387,7 +397,7 @@ export function log(message: string, source = "express") {
   }
 
   // Initialize the Office Engine worker pool (preprovisioned, behind feature flag)
-  if (process.env.FEATURE_OFFICE_ENGINE === "1") {
+  if (isOfficeEngineEnabled()) {
     try {
       const { officeWorkerPool } = await import("./lib/office/workerPool");
       officeWorkerPool.init();
