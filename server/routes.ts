@@ -786,7 +786,14 @@ try{
   localStorage.setItem(TK,tk);
 }catch(e){console.error("[OC-Pre]",e)}
 })()</script>`;
-      const modifiedHtml = controlUiHtml
+      // Patch: allow ALL file types in drag-and-drop (not just images)
+      // The Control UI's Vs() function only accepts image/* mimeTypes.
+      // We replace it to accept any file type for document analysis.
+      const patchedUiHtml = controlUiHtml.replace(
+        /function Vs\(e\)\{return typeof e==`string`&&e\.startsWith\(`image\/`\)\}/,
+        'function Vs(e){return typeof e==`string`&&e.length>0}'
+      );
+      const modifiedHtml = (patchedUiHtml !== controlUiHtml ? patchedUiHtml : controlUiHtml)
         .replace("<head>", '<head><base href="/openclaw-ui/">')
         .replace('</head>', preSeedScript + '</head>');
       res.setHeader("Content-Type", "text/html; charset=utf-8");

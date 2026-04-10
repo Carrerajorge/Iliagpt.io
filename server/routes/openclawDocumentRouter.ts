@@ -5,7 +5,7 @@ import { documentAnalyzer, type DocumentAnalysis } from "../services/openclawDoc
 import { getUserId } from "../types/express";
 import { llmGateway } from "../lib/llmGateway";
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } }); // 500MB
 
 /** Per-user analysis cache: userId -> (docId -> analysis) */
 const store = new Map<string, Map<string, DocumentAnalysis>>();
