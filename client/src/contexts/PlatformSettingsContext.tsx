@@ -98,16 +98,33 @@ function hexToHslParts(hex: string): string | null {
   return `${hh} ${ss}% ${ll}%`;
 }
 
+function primaryForeground(hslParts: string): string {
+  // Parse lightness from "H S% L%" and pick white or black foreground for contrast
+  const match = hslParts.match(/(\d+)\s+(\d+)%\s+(\d+)%/);
+  if (!match) return "0 0% 100%";
+  const l = parseInt(match[3], 10);
+  // If the primary color is light (L > 55), use dark text; otherwise white text
+  return l > 55 ? "0 0% 4%" : "0 0% 100%";
+}
+
 function applyBrandingCss(settings: PlatformSettings) {
   const fallbackPrimary = hexToHslParts(FALLBACK_SETTINGS.primary_color) || "239 84% 67%";
   const fallbackSecondary = hexToHslParts(FALLBACK_SETTINGS.secondary_color) || "271 81% 66%";
 
   const primary = hexToHslParts(settings.primary_color) || fallbackPrimary;
   const secondary = hexToHslParts(settings.secondary_color) || fallbackSecondary;
+  const fg = primaryForeground(primary);
 
   const css = `
 :root{
   --primary: ${primary};
+  --primary-foreground: ${fg};
+  --ring: ${primary};
+  --secondary: ${secondary};
+}
+.dark{
+  --primary: ${primary};
+  --primary-foreground: ${fg};
   --ring: ${primary};
   --secondary: ${secondary};
 }

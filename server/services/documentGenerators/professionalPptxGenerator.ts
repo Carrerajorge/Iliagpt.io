@@ -1,4 +1,6 @@
-import PptxGenJS from "pptxgenjs";
+import type PptxGenJS from "pptxgenjs";
+
+import { createPptxDocument } from "../pptxRuntime";
 
 // ── Public interfaces ────────────────────────────────────────────────
 
@@ -297,7 +299,7 @@ function buildPreviewHtml(req: PptxRequest, t: Theme): string {
 
 export async function generateProfessionalPptx(request: PptxRequest): Promise<PptxResult> {
   const t = resolveTheme(request.theme);
-  const pptx = new PptxGenJS();
+  const pptx = createPptxDocument();
   pptx.layout = "LAYOUT_WIDE";
   pptx.author = request.author ?? "IliaGPT";
   pptx.title = request.title;

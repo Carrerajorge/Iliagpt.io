@@ -22,7 +22,9 @@ import {
   type DocumentSection,
 } from "../enterpriseDocumentService";
 import { llmGateway } from "../../lib/llmGateway";
-import PptxGenJS from "pptxgenjs";
+import type PptxGenJS from "pptxgenjs";
+
+import { createPptxDocument } from "../pptxRuntime";
 
 // ============================================
 // Interfaces
@@ -447,7 +449,7 @@ export class ProfessionalFileGenerator {
       "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
     try {
-      const pptx = new PptxGenJS();
+      const pptx = createPptxDocument();
 
       // Metadata
       pptx.author = content.author || "ILIAGPT PRO";

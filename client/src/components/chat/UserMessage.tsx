@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { Message } from "@/hooks/use-chats";
 import { AttachmentList, formatMessageTime, DocumentBlock } from "./MessageParts";
+import type { ReopenDocumentRequest } from "@/lib/documentPreviewContracts";
 
 export interface UserMessageProps {
     message: Message;
@@ -25,7 +26,7 @@ export interface UserMessageProps {
     onCopyMessage: (content: string, id: string) => void;
     onStartEdit: (msg: Message) => void;
     onOpenPreview: (attachment: NonNullable<Message["attachments"]>[0]) => void;
-    onReopenDocument?: (doc: { type: "word" | "excel" | "ppt"; title: string; content: string }) => void;
+    onReopenDocument?: (doc: ReopenDocumentRequest) => void;
     onRetrySend?: (msg: Message) => void;
 }
 

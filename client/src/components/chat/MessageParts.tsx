@@ -44,6 +44,7 @@ import { z } from "zod";
 import { Message, WebSource } from "@/hooks/use-chats";
 import { getFileTheme } from "@/lib/fileTypeTheme";
 import { ChatSpreadsheetViewer } from "@/components/chat/ChatSpreadsheetViewer";
+import type { ReopenDocumentRequest } from "@/lib/documentPreviewContracts";
 
 import { formatZonedTime, normalizeTimeZone } from "@/lib/platformDateTime";
 
@@ -557,7 +558,7 @@ interface AttachmentListProps {
     attachments: Message["attachments"];
     variant: "compact" | "default";
     onOpenPreview?: (attachment: NonNullable<Message["attachments"]>[0]) => void;
-    onReopenDocument?: (doc: { type: "word" | "excel" | "ppt"; title: string; content: string }) => void;
+    onReopenDocument?: (doc: ReopenDocumentRequest) => void;
 }
 
 export const AttachmentList = memo(function AttachmentList({

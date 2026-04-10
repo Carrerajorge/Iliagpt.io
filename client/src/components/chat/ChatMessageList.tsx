@@ -17,6 +17,7 @@ import {
     normalizeMessageContentForDedup,
 } from "@/lib/chatMessageIdentity";
 import { AgentArtifact } from "@/components/agent-steps-display";
+import type { ReopenDocumentRequest } from "@/lib/documentPreviewContracts";
 
 // Fallback ID for the synthetic streaming message. When a pre-generated
 // messageId is provided via `streamingMsgId` prop, we use that instead
@@ -63,7 +64,7 @@ export interface ChatMessageListProps {
     handleOpenFileAttachmentPreview: (attachment: NonNullable<Message["attachments"]>[0]) => void;
     handleDownloadImage: (imageData: string) => void;
     setLightboxImage: (imageData: string | null) => void;
-    handleReopenDocument?: (doc: { type: "word" | "excel" | "ppt"; title: string; content: string }) => void;
+    handleReopenDocument?: (doc: ReopenDocumentRequest) => void;
     minimizedDocument?: { type: "word" | "excel" | "ppt"; title: string; content: string; messageId?: string } | null;
     onRestoreDocument?: () => void;
     onSelectSuggestedReply?: (text: string) => void;

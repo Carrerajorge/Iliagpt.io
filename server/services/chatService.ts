@@ -21,6 +21,7 @@ import { agentLoopFacade, promptAnalyzer, type ComplexityLevel } from "../agent/
 import {
   buildInstructionHierarchyPrompt,
   buildSystemPromptWithContext,
+  buildKnowledgeContextForQuery,
   getEnforcedModel,
   type GptSessionContract,
 } from "./gptSessionService";
@@ -2076,6 +2077,23 @@ ${documentModeInstructions}${documentMode.type === 'excel' ? excelChartInstructi
     { title: "Active Document Context", content: fullDocumentContext },
     { title: "Additional System Guidance", content: incomingSystemMessages.join("\n\n") },
   ];
+
+  // Enrich GPT knowledge context with semantic retrieval when a session contract is active
+  if (activeSessionContract && lastUserMessage) {
+    try {
+      const knowledgeItems = await storage.getGptKnowledge(activeSessionContract.gptId);
+      const semanticContext = await buildKnowledgeContextForQuery(
+        activeSessionContract.gptId,
+        typeof lastUserMessage.content === "string" ? lastUserMessage.content : JSON.stringify(lastUserMessage.content),
+        knowledgeItems,
+      );
+      if (semanticContext) {
+        activeSessionContract = { ...activeSessionContract, knowledgeContext: semanticContext };
+      }
+    } catch (err: any) {
+      console.warn("[ChatService] Semantic knowledge retrieval failed, using static context:", err?.message);
+    }
+  }
 
   const systemContent = activeSessionContract
     ? buildSystemPromptWithContext(activeSessionContract, { lowerPrioritySections })

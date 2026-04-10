@@ -1,4 +1,6 @@
-import PptxGenJS from "pptxgenjs";
+import type PptxGenJS from "pptxgenjs";
+
+import { createPptxDocument } from "../pptxRuntime";
 
 export interface PptxContent {
   title: string;
@@ -33,7 +35,7 @@ function addFooter(slide: PptxGenJS.Slide, title: string) {
 }
 
 export async function generatePptx(content: PptxContent): Promise<{ buffer: Buffer; filename: string; mimeType: string }> {
-  const pptx = new PptxGenJS();
+  const pptx = createPptxDocument();
   pptx.layout = "LAYOUT_WIDE";
   pptx.author = content.author || "IliaGPT";
   pptx.title = content.title;

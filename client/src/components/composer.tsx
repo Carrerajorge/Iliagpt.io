@@ -430,7 +430,7 @@ export function Composer({
 
     if ((file.type?.startsWith("image/") || file.mimeType?.startsWith("image/")) && file.dataUrl) {
       return (
-        <div className={cn("overflow-hidden rounded-lg border border-slate-200/80 bg-white shadow-sm", outerClass)}>
+        <div className={cn("overflow-hidden rounded-lg border border-border/80 bg-card shadow-sm", outerClass)}>
           <img
             src={file.dataUrl}
             alt={file.name}
@@ -442,7 +442,7 @@ export function Composer({
 
     if (file.previewData && (file.previewData.html || file.previewData.content)) {
       return (
-        <div className={cn("overflow-hidden rounded-lg border border-slate-200/80 bg-white shadow-sm", outerClass)}>
+        <div className={cn("overflow-hidden rounded-lg border border-border/80 bg-card shadow-sm", outerClass)}>
           <FilePreviewSurface preview={file.previewData} variant="thumbnail" />
         </div>
       );
@@ -605,7 +605,7 @@ export function Composer({
                       file.status === "uploading" && "bg-blue-50 dark:bg-blue-950/30 border-[0.5px] border-blue-200 dark:border-blue-800",
                       file.status === "processing" && "bg-yellow-50 dark:bg-yellow-950/30 border-[0.5px] border-yellow-200 dark:border-yellow-800",
                       file.status === "ready" && cn(
-                        "bg-white/30 dark:bg-white/5 hover:bg-white/40 dark:hover:bg-white/6",
+                        "bg-muted/30 hover:bg-muted/50",
                         SILVER_HAIRLINE,
                         "border-[#c7c7c7]/45 dark:border-white/10",
                         SILVER_HOVER_BORDER_SOFT
@@ -916,7 +916,7 @@ export function Composer({
       )
       : cn(
         "max-w-3xl mx-auto relative transition-all duration-300 ease-out overflow-visible",
-        "bg-white/40 dark:bg-[#0d0d0d]/40 backdrop-blur-2xl",
+        "bg-card/40 backdrop-blur-2xl",
         "border border-[#A5A0FF]/30",
         "hover:border-[#A5A0FF]/50",
         "rounded-[28px] p-2",
@@ -925,7 +925,7 @@ export function Composer({
       ),
     // Keep these highlights in document mode too
     selectedDocText && "border-primary/20",
-    isDraggingOver && cn("border-[#bdbdbd]/85 bg-white/80 ring-2 dark:bg-white/5", SILVER_RING_SOFT)
+    isDraggingOver && cn("border-[#bdbdbd]/85 bg-background/80 ring-2 dark:bg-background/80", SILVER_RING_SOFT)
   );
 
   return (
@@ -941,18 +941,18 @@ export function Composer({
       {isDraggingOver && (
         <div
           className={cn(
-            "absolute inset-0 z-50 bg-white/55 dark:bg-zinc-900/35 backdrop-blur-sm rounded-2xl flex items-center justify-center pointer-events-none",
+            "absolute inset-0 z-50 bg-background/55 backdrop-blur-sm rounded-2xl flex items-center justify-center pointer-events-none",
             SILVER_HAIRLINE_DASHED,
             "border-[#c7c7c7]/70 dark:border-white/20"
           )}
         >
-          <div className="flex max-w-[760px] flex-col items-center gap-3 px-4 text-zinc-700 dark:text-zinc-200">
+          <div className="flex max-w-[760px] flex-col items-center gap-3 px-4 text-foreground">
             {dragPreviewFiles.length > 0 ? (
               <div className="flex flex-wrap items-start justify-center gap-3">
                 {dragPreviewFiles.map((file, index) => (
                   <div
                     key={file.localKey || file.id || `${file.name}-${index}`}
-                    className="w-[152px] rounded-2xl border border-white/70 bg-white/85 p-2 shadow-lg shadow-black/5 dark:border-white/10 dark:bg-zinc-900/75"
+                    className="w-[152px] rounded-2xl border border-border/70 bg-card/85 p-2 shadow-lg shadow-black/5"
                   >
                     <div className="mb-2">
                       {renderPreviewTile(file, "drag")}
@@ -1104,14 +1104,14 @@ export function Composer({
 
         {isDocumentMode && selectedDocText && handleDocTextDeselect && (
           <div className="mb-3 animate-in fade-in duration-150" data-testid="selected-doc-text-banner">
-            <div className="bg-zinc-200/60 dark:bg-zinc-700/40 rounded-lg px-3 py-1.5 text-sm text-zinc-600 dark:text-zinc-300 flex items-center gap-2">
+            <div className="bg-muted rounded-lg px-3 py-1.5 text-sm text-muted-foreground flex items-center gap-2">
               <FileText className="h-3.5 w-3.5 flex-shrink-0 opacity-70" />
               <span className="truncate flex-1" data-testid="selected-doc-text-preview">
                 {selectedDocText.length > 50 ? selectedDocText.substring(0, 50) + '...' : selectedDocText}
               </span>
               <button
                 onClick={handleDocTextDeselect}
-                className="text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-200 flex-shrink-0 p-0.5 rounded hover:bg-zinc-300/50 dark:hover:bg-zinc-600/50 transition-colors"
+                className="text-muted-foreground hover:text-foreground flex-shrink-0 p-0.5 rounded hover:bg-muted-foreground/20 transition-colors"
                 aria-label="Deselect text"
                 data-testid="button-deselect-doc-text"
               >
@@ -1209,7 +1209,7 @@ export function Composer({
                         <ChevronDown className="h-4 w-4" />
                       </button>
                     </PopoverTrigger>
-                    <PopoverContent align="start" className="w-52 p-1 bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700" data-testid="fuentes-popover">
+                    <PopoverContent align="start" className="w-52 p-1 bg-popover border-border" data-testid="fuentes-popover">
                       <div className="grid gap-0.5">
                         <div className="px-2 py-1 text-[10px] font-medium text-zinc-400 uppercase tracking-wider">
                           Fuentes conectadas
@@ -1233,7 +1233,7 @@ export function Composer({
                           ))
                         )}
 
-                        <div className="border-t border-zinc-100 dark:border-zinc-700 mt-0.5 pt-0.5">
+                        <div className="border-t border-border mt-0.5 pt-0.5">
                           <SourceListItem
                             icon={
                               <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="currentColor">
@@ -1314,10 +1314,10 @@ export function Composer({
 
         {showMentionPopover && filteredSources.length > 0 && (
           <div
-            className="absolute bottom-full left-0 mb-2 w-56 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-lg z-50 overflow-hidden"
+            className="absolute bottom-full left-0 mb-2 w-56 bg-popover border border-border rounded-xl shadow-lg z-50 overflow-hidden"
             data-testid="mention-popover"
           >
-            <div className="px-3 py-1.5 text-[11px] font-medium text-zinc-500 border-b border-zinc-100 dark:border-zinc-700 uppercase tracking-wide">
+            <div className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground border-b border-border uppercase tracking-wide">
               Fuentes
             </div>
             <div className="py-0.5">
@@ -1326,17 +1326,17 @@ export function Composer({
                   key={source.id}
                   onClick={() => insertMention(source)}
                   className={cn(
-                    "w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-700/50 transition-colors text-left",
-                    index === mentionIndex && "bg-zinc-100 dark:bg-zinc-700"
+                    "w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted transition-colors text-left",
+                    index === mentionIndex && "bg-muted"
                   )}
                   data-testid={`mention-${source.id}`}
                 >
-                  <div className="flex items-center justify-center w-6 h-6 rounded bg-zinc-100 dark:bg-zinc-700 text-zinc-500">
+                  <div className="flex items-center justify-center w-6 h-6 rounded bg-muted text-muted-foreground">
                     {source.icon}
                   </div>
                   <div className="flex flex-col">
-                    <span className="font-medium text-zinc-800 dark:text-zinc-100 text-sm">{source.name}</span>
-                    <span className="text-[11px] text-zinc-400">{source.mention}</span>
+                    <span className="font-medium text-foreground text-sm">{source.name}</span>
+                    <span className="text-[11px] text-muted-foreground">{source.mention}</span>
                   </div>
                 </button>
               ))}

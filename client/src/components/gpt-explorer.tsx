@@ -17,7 +17,8 @@ import {
   BookOpen,
   Briefcase,
   ArrowRight,
-  Link as LinkIcon
+  Link as LinkIcon,
+  X
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -184,14 +185,24 @@ export function GptExplorer({ open, onOpenChange, onSelectGpt, onCreateGpt, onEd
                 Mis GPT
               </span>
             </div>
-            <Button
-              onClick={handleCreateNew}
-              className="gap-2 mr-[44px]"
-              data-testid="button-create-gpt"
-            >
-              <Plus className="h-4 w-4" />
-              Crear
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={handleCreateNew}
+                className="gap-2"
+                data-testid="button-create-gpt"
+              >
+                <Plus className="h-4 w-4" />
+                Crear
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => onOpenChange(false)}
+                data-testid="button-close-gpt-explorer"
+              >
+                <X className="h-5 w-5" />
+              </Button>
+            </div>
           </div>
 
           <ScrollArea className="flex-1">

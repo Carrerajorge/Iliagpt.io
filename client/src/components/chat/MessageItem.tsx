@@ -7,6 +7,7 @@ import { AssistantMessage } from "./AssistantMessage";
 import { AttachmentList, DocumentBlock } from "./MessageParts";
 import { AgentArtifact } from "@/components/agent-steps-display";
 import { type AIState } from "@/components/chat-interface/types";
+import type { ReopenDocumentRequest } from "@/lib/documentPreviewContracts";
 
 export interface MessageItemProps {
     message: Message;
@@ -36,7 +37,7 @@ export interface MessageItemProps {
     handleOpenFileAttachmentPreview: (attachment: NonNullable<Message["attachments"]>[0]) => void;
     handleDownloadImage: (imageData: string) => void;
     setLightboxImage: (imageData: string | null) => void;
-    handleReopenDocument?: (doc: { type: "word" | "excel" | "ppt"; title: string; content: string }) => void;
+    handleReopenDocument?: (doc: ReopenDocumentRequest) => void;
     minimizedDocument?: { type: "word" | "excel" | "ppt"; title: string; content: string; messageId?: string } | null;
     onRestoreDocument?: () => void;
     setEditContent: (value: string) => void;

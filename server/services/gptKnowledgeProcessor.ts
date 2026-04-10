@@ -89,7 +89,7 @@ async function extractTextFromFile(storageUrl: string, fileType: string): Promis
 
     // Try GCS as fallback
     try {
-      const { ObjectStorageService } = await import("../lib/objectStorage");
+      const { ObjectStorageService } = await import("../replit_integrations/object_storage/objectStorage");
       const objStore = new ObjectStorageService();
       const buffer = await objStore.getObjectEntityBuffer(storageUrl);
 

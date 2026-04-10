@@ -27,10 +27,10 @@ export const SuggestedReplies = memo(function SuggestedReplies({
           onClick={() => onSelect(suggestion)}
           className={cn(
             "px-3.5 py-2 text-[13px] rounded-xl",
-            "bg-white dark:bg-zinc-800/60 border border-zinc-200/80 dark:border-zinc-700/50",
-            "text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white",
+            "bg-card border border-border/80",
+            "text-muted-foreground hover:text-foreground",
             "transition-all duration-150 ease-out",
-            "hover:bg-zinc-50 dark:hover:bg-zinc-700/60 hover:border-zinc-300 dark:hover:border-zinc-600",
+            "hover:bg-muted hover:border-border",
             "hover:shadow-sm active:scale-[0.98]",
             "whitespace-nowrap flex-shrink-0 cursor-pointer select-none"
           )}
