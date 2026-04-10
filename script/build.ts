@@ -111,8 +111,19 @@ async function copyOpenClawControlUI() {
   }
 }
 
+async function pushSchema() {
+  console.log("pushing database schema (drizzle-kit push)...");
+  try {
+    execSync("npx drizzle-kit push --force", { stdio: "inherit" });
+    console.log("database schema push complete.");
+  } catch (err) {
+    console.warn("drizzle-kit push failed (non-fatal):", (err as Error).message?.split("\n")[0]);
+  }
+}
+
 async function buildAll() {
   await rm("dist", { recursive: true, force: true });
+  await pushSchema();
   await buildClient();
   await buildServer();
   await copyOpenClawControlUI();
