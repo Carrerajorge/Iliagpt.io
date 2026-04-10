@@ -56,6 +56,13 @@ interface LLMRequestOptions {
   enableFallback?: boolean;
   skipCache?: boolean;
   disableImageGeneration?: boolean;
+  /**
+   * Optional AbortSignal to cancel the streaming request.
+   * When aborted (e.g. client disconnects), the generator terminates on
+   * the next chunk boundary, releases provider concurrency slots, and
+   * avoids orphan LLM calls consuming quota.
+   */
+  abortSignal?: AbortSignal;
 }
 
 interface LLMResponseUsage {
@@ -2196,6 +2203,13 @@ class LLMGateway {
       : [currentProvider];
 
     for (const provider of providers) {
+      // Fast path: bail out immediately if the caller already cancelled the stream.
+      // This happens when the client disconnects while we're iterating the fallback chain.
+      if (options.abortSignal?.aborted) {
+        console.log(`[LLMGateway] ${requestId} stream aborted before provider ${provider} — caller disconnected`);
+        return;
+      }
+
       const breaker = getCircuitBreaker("system", provider, CIRCUIT_BREAKER_CONFIG);
       if (breaker.getState() === CircuitState.OPEN) {
         continue;
@@ -2214,6 +2228,23 @@ class LLMGateway {
         };
 
         for await (const chunk of this.providerGates[provider].runStream(streamFactory)) {
+          // Check cancellation on every chunk boundary. This gives us a bounded
+          // latency (typically <100ms) between client disconnect and upstream abort.
+          if (options.abortSignal?.aborted) {
+            console.log(`[LLMGateway] ${requestId} stream aborted mid-stream on ${provider} — caller disconnected`);
+            // Persist checkpoint so resume can work if the client reconnects.
+            if (accumulatedContent.length > 0) {
+              this.streamCheckpoints.set(requestId, {
+                requestId,
+                sequenceId,
+                accumulatedContent,
+                timestamp: Date.now(),
+              });
+              this.syncOperationalMetrics();
+            }
+            return;
+          }
+
           accumulatedContent += chunk.content;
 
           // Some providers can return a "done" marker without any visible text (e.g. if the output
@@ -2274,6 +2305,14 @@ class LLMGateway {
           timestamp: Date.now(),
         });
         this.syncOperationalMetrics();
+
+        // If the failure was caused by caller-initiated cancellation, don't
+        // penalize the provider with a circuit breaker failure — this is not
+        // a provider fault, it's a client disconnect. Exit cleanly.
+        if (options.abortSignal?.aborted) {
+          console.log(`[LLMGateway] ${requestId} stream aborted on ${provider} — treating as cancellation, not failure`);
+          return;
+        }
 
         getCircuitBreaker("system", provider, CIRCUIT_BREAKER_CONFIG).recordFailure();
         const latencyMs = Date.now() - providerAttemptStart;

@@ -5395,9 +5395,52 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         },
       };
 
+      // ── Stream abort plumbing (Phase 1.1) ────────────────────────────────
+      // Propagate client disconnects to the upstream LLM stream so we don't
+      // keep consuming provider quota on orphan requests. The abort signal is
+      // passed into llmGateway.streamChat() and checked on every chunk boundary.
+      //
+      // Note: cancelling the upstream does NOT release the conversation lock
+      // early. The lock is released only after persistence completes (see the
+      // extended lifecycle below) — that avoids the race where a new request
+      // sees inconsistent state while the previous write is still in flight.
+      const streamAbortController = new AbortController();
+      const abortUpstream = (reason: string) => {
+        if (!streamAbortController.signal.aborted) {
+          try {
+            streamAbortController.abort(reason);
+          } catch {
+            // AbortController.abort() is no-throw in Node ≥18, guard defensively.
+          }
+        }
+      };
+
       let conversationLockReleased = false;
-      const releaseConversationLock = () => {
+      let pendingPersistencePromise: Promise<void> | null = null;
+      const releaseConversationLock = async () => {
         if (conversationLockReleased) return;
+        // ── Lock lifecycle extension (Phase 1.2) ────────────────────────────
+        // Wait for in-flight persistence (user + assistant message writes, run
+        // updates, state service append) to complete BEFORE releasing the lock.
+        // Capped at 5s to avoid indefinite hold on stuck writes.
+        //
+        // Without this, the next request for the same conversation could start
+        // before our writes are durable and observe stale state during hydration.
+        if (pendingPersistencePromise) {
+          try {
+            await Promise.race([
+              pendingPersistencePromise,
+              new Promise<void>((_, rej) =>
+                setTimeout(() => rej(new Error("persistence_drain_timeout")), 5000)
+              ),
+            ]);
+          } catch (err: any) {
+            console.warn(
+              `[chatStream] ${requestId} lock release: persistence drain incomplete (${err?.message ?? err}), releasing anyway to avoid deadlock`
+            );
+          }
+        }
+        if (conversationLockReleased) return; // re-check after await
         conversationLockReleased = true;
         const current = CONVERSATION_STREAM_LOCKS.get(streamConversationId);
         if (current?.requestId === requestId) {
@@ -5408,9 +5451,22 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         // consuming the LLM stream and persisting the full response to DB.
         // cleanupClaimedRunIfOrphaned will be called at the end of the request if needed.
       };
-      req.on("aborted", releaseConversationLock);
-      res.on("close", releaseConversationLock);
-      res.on("finish", releaseConversationLock);
+      const releaseConversationLockFireAndForget = () => {
+        // Called from Node event emitters (req/res) which don't await promises.
+        // Use detachAsyncTask to ensure errors are observed and the event loop
+        // doesn't keep a hanging unhandled rejection.
+        detachAsyncTask(
+          () => releaseConversationLock(),
+          `release conversation lock for ${streamConversationId}`
+        );
+      };
+      const onClientDisconnect = (source: string) => {
+        abortUpstream(`client_${source}`);
+        releaseConversationLockFireAndForget();
+      };
+      req.on("aborted", () => onClientDisconnect("aborted"));
+      res.on("close", () => onClientDisconnect("close"));
+      res.on("finish", () => releaseConversationLockFireAndForget());
 
       const cancelThisStream = (reason: string = "stream_replaced") => {
         endStreamByTimeout("stream_replaced", `Stream replaced (${reason})`);
@@ -6106,6 +6162,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             temperature: 0.2,
             timeout: 12000,
             enableFallback: true,
+            abortSignal: streamAbortController.signal,
           });
 
           let fastPathSequence = 0;
@@ -7384,6 +7441,40 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       let systemContent = answerFirstPrompt.fullPrompt;
 
+      // GPT Session: inject custom system prompt and semantic knowledge context
+      if (gptSessionContract) {
+        try {
+          const { buildSystemPromptWithContext, buildKnowledgeContextForQuery } = await import("../services/gptSessionService");
+          const { storage: gptStorage } = await import("../storage");
+
+          // Enrich knowledge context with semantic retrieval
+          let enrichedContract = gptSessionContract;
+          if (userMessageText) {
+            const knowledgeItems = await gptStorage.getGptKnowledge(gptSessionContract.gptId);
+            const semanticContext = await buildKnowledgeContextForQuery(
+              gptSessionContract.gptId,
+              userMessageText,
+              knowledgeItems,
+            );
+            if (semanticContext) {
+              enrichedContract = { ...gptSessionContract, knowledgeContext: semanticContext };
+            }
+          }
+
+          // Build the full GPT system prompt with knowledge and capabilities
+          const gptSystemPrompt = buildSystemPromptWithContext(enrichedContract);
+          if (gptSystemPrompt) {
+            systemContent = gptSystemPrompt + "\n\n" + systemContent;
+          }
+        } catch (gptErr: any) {
+          console.warn("[Stream] GPT session prompt injection failed (non-blocking):", gptErr?.message);
+          // Fallback: just prepend the static system prompt
+          if (gptSessionContract.systemPrompt) {
+            systemContent = gptSessionContract.systemPrompt + "\n\n" + systemContent;
+          }
+        }
+      }
+
       // Agentic system prompt enhancement — adds tool awareness, thinking instructions, and memory
       try {
         const memoryContext = await getMemoryContext(userId, userMessageText || "");
@@ -8029,6 +8120,9 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           provider: effectiveProvider,
           disableImageGeneration: hasAttachments,
           maxTokens: laneMaxTokens,
+          // Phase 1.1: propagate caller cancellation down to the provider stream
+          // so client disconnects free upstream quota instead of leaking orphan calls.
+          abortSignal: streamAbortController.signal,
         };
         const streamGenerator = await resolveModelStream(
           modelMessages,
@@ -8224,7 +8318,12 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
       // Update assistant message with full content + webSources
       const finalizePersistenceStageStart = performance.now();
-      if (assistantMessageId) {
+      // Phase 1.2: Track the persistence promise so releaseConversationLock()
+      // can drain it before allowing the next request to proceed. This closes
+      // the race where a follow-up message reads stale conversation state
+      // because the previous write hasn't landed yet.
+      const persistAssistant = async () => {
+        if (!assistantMessageId) return;
         try {
           // --- Persistent CoT Integration ---
           const traceHistory = agentEventBus.getHistory(effectiveRunId);
@@ -8269,7 +8368,9 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         } catch (e) {
           console.warn('[Stream] Failed to finalize assistant message (best-effort):', e);
         }
-      }
+      };
+      pendingPersistencePromise = persistAssistant();
+      await pendingPersistencePromise;
       recordStage("finalize_persistence_ms", finalizePersistenceStageStart);
 
       // Mark run as done if we claimed one
@@ -9191,6 +9292,7 @@ ${documentText}`;
           userId: userId || conversationId || "anonymous",
           requestId,
           disableImageGeneration: true,  // HARD BLOCK
+          abortSignal: streamAbortController.signal,
         });
 
         let answerText = "";

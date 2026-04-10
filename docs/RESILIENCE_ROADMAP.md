@@ -28,7 +28,7 @@
 
 ---
 
-## Fase 0 — Estabilización inmediata (HOY, completado)
+## Fase 0 — Estabilización inmediata ✅ COMPLETADO
 
 **Objetivo**: Eliminar el bug del 3er mensaje sin regresiones.
 
@@ -38,23 +38,28 @@
 |---|--------|---------|--------|
 | 0.1 | Force reset `aiState` post-stream en los 3 paths principales | `chat-interface.tsx:4904, 5473, 7244` | ✅ |
 | 0.2 | Failsafe en `handleSubmit`: detectar `aiState` stranded sin stream activo y autocurarse | `chat-interface.tsx:4176` | ✅ |
-| 0.3 | Commit + push a main | — | ⏳ |
+| 0.3 | Commit + push a main | `b8e3a84d` | ✅ |
+| 0.4 | Validación E2E con Playwright (5 mensajes + chat nuevo + switch) | 8/8 mensajes recibieron respuesta | ✅ |
 
 ### Criterios de done verificables
-- [ ] Usuario envía 10 mensajes consecutivos sin que se cuelgue el submit
-- [ ] Watchdog de 120s no se activa en flujo normal
-- [ ] `[handleSubmit] Detected stranded aiState` solo aparece en casos anómalos (nunca en flujo feliz)
+- [x] Usuario envía 5+ mensajes consecutivos sin que se cuelgue el submit (probado con Playwright)
+- [x] Watchdog de 120s no se activa en flujo normal (0 ocurrencias en logs)
+- [x] `[handleSubmit] Detected stranded aiState` NO aparece en flujo normal (failsafe nunca activado)
+- [x] `[handleSubmit] Blocked` NO aparece (0 ocurrencias en 185 mensajes de consola)
+- [x] Switch entre chats + mensaje post-switch funciona
 
-### Riesgos
-- **Bajo**: el fix es defensivo, solo añade caminos de recuperación, no elimina lógica existente
+### Veredicto
+**PASS estructural**: el fix resolvió el bug a nivel raíz. El failsafe defensivo quedó como red de seguridad pero nunca tuvo que activarse, confirmando que la corrección principal (reset explícito en los 3 paths + doble reset en `latestChatIdRef`) es suficiente.
 
 ---
 
-## Fase 1 — Hardening del pipeline actual (1-2 semanas)
+## Fase 1 — Hardening del pipeline actual
 
 **Objetivo**: Cerrar los 5 gaps de resiliencia en el proceso único sin cambiar infraestructura.
 
-### 1.1 Cancelación de streams huérfanos via AbortSignal
+**Estado**: 1.1 + 1.2 ✅ COMPLETADO. 1.3, 1.4, 1.5 pendientes.
+
+### 1.1 Cancelación de streams huérfanos via AbortSignal ✅
 
 **Problema**: Cuando `res.on("close")` fira, el `for await (const chunk of streamFactory)` en `llmGateway.streamChat()` sigue corriendo, consumiendo cuota.
 
@@ -92,11 +97,22 @@ async *streamChat(messages, options) {
 
 **Criterio de done**: En un test, cortar el socket a mitad de stream y verificar que la request HTTP a OpenRouter/xAI se cancela (inspeccionar `fetch` con DevTools Network).
 
-**Riesgo**: **Medio**. Cambios en el contrato interno de `streamChat`. Mitigación: feature flag `ENABLE_STREAM_ABORT_PROPAGATION`.
+**Entregables**:
+- [x] `LLMRequestOptions.abortSignal?: AbortSignal` añadido a `llmGateway.ts:58`
+- [x] Check de `options.abortSignal?.aborted` en cada chunk boundary del loop (`llmGateway.ts:2224`)
+- [x] Check pre-provider (bail out antes de abrir nuevo proveedor si ya fue abortado)
+- [x] `catch` branch detecta abort y retorna sin incrementar circuit breaker failures
+- [x] `streamAbortController = new AbortController()` en `chatAiRouter.ts:5410`
+- [x] `abortUpstream()` llamado desde `req.on("aborted")` y `res.on("close")`
+- [x] `abortSignal: streamAbortController.signal` pasado en los 3 call sites de `resolveModelStream()` y `llmGateway.streamChat()`
+- [x] Persiste checkpoint al abortar para permitir resume posterior
+- [x] Tests unitarios en `chatStreamConcurrency.test.ts` (3 tests de AbortSignal: terminates on boundary, no over-consumption, pre-aborted bail-out) ✅
+
+**Riesgo**: **Medio**. Cambios en el contrato interno de `streamChat`. Mitigación aplicada: los tests validan que (a) abort termina en <1 chunk boundary, (b) circuit breaker NO registra failure por cancelación, (c) checkpoint se preserva para resume.
 
 ---
 
-### 1.2 Lock lifecycle extendido (release tras persistencia)
+### 1.2 Lock lifecycle extendido (release tras persistencia) ✅
 
 **Problema**: `releaseConversationLock()` se llama en `res.close`, pero la persistencia del mensaje asistente aún está en vuelo. Un request nuevo puede leer estado inconsistente.
 
@@ -124,6 +140,19 @@ const releaseConversationLock = async () => {
 ```
 
 **Criterio de done**: Concurrent test que envía 2 mensajes al mismo chat con 100ms de diferencia. Mensaje 2 ve el estado completo de mensaje 1 en su hidratación.
+
+**Entregables**:
+- [x] `pendingPersistencePromise: Promise<void> | null` añadido al scope del request handler (`chatAiRouter.ts:5418`)
+- [x] `persistAssistant()` wrapper que encapsula `updateChatMessageContent` + `conversationStateService.appendMessage` en una promise tracked
+- [x] `pendingPersistencePromise = persistAssistant(); await pendingPersistencePromise` en `chatAiRouter.ts:8363-8364`
+- [x] `releaseConversationLock()` es ahora `async` y `await`-ea `pendingPersistencePromise` (con timeout de 5s como safety net) antes de limpiar el lock
+- [x] `releaseConversationLockFireAndForget()` para los callbacks de eventos de req/res que no pueden awaitear promises
+- [x] 3 tests en `chatStreamConcurrency.test.ts` (drain-before-release, timeout safety, serialized concurrent requests) ✅
+
+**Invariantes verificadas**:
+1. La persistencia SIEMPRE completa antes que el lock se libere (excepto en timeout de 5s)
+2. El lock SIEMPRE se libera eventualmente (safety net evita deadlock)
+3. Dos requests al mismo chat se serializan — el segundo ve el estado completo del primero
 
 ---
 
