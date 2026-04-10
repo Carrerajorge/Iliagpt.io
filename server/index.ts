@@ -443,6 +443,14 @@ export function log(message: string, source = "express") {
 
     if (dbConnected) {
       try {
+        const { runStartupMigrations } = await import("./startupMigrations");
+        await runStartupMigrations();
+        log("[Schema] Startup migrations complete");
+      } catch (e: any) {
+        log(`[Schema] Startup migrations warning: ${e?.message || e}`);
+      }
+
+      try {
         const { runStripeMigrations } = await import("./stripeClient");
         await runStripeMigrations();
         log("[Stripe] Sync migrations complete");
