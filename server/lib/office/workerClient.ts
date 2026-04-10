@@ -11,6 +11,7 @@ import { officeWorkerPool } from "./workerPool";
 import type { DocxPackage } from "./ooxml/zipIO";
 import type { ValidationReport } from "./ooxml/validator";
 import type { DiffReport } from "./ooxml/roundTripDiff";
+import type { XlsxValidationReport } from "./ooxml-xlsx/xlsxValidator";
 
 interface SerializedEntry {
   path: string;
@@ -84,6 +85,15 @@ export async function workerValidateDocx(pkg: DocxPackage, opts: WorkerClientOpt
   const { serialized } = dehydratePackage(pkg);
   return officeWorkerPool.dispatch<{ pkg: SerializedPackage }, ValidationReport>(
     "docx.validate",
+    { pkg: serialized },
+    opts,
+  );
+}
+
+export async function workerValidateXlsx(pkg: DocxPackage, opts: WorkerClientOpts = {}): Promise<XlsxValidationReport> {
+  const { serialized } = dehydratePackage(pkg);
+  return officeWorkerPool.dispatch<{ pkg: SerializedPackage }, XlsxValidationReport>(
+    "xlsx.validate",
     { pkg: serialized },
     opts,
   );

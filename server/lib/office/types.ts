@@ -88,7 +88,12 @@ export type WorkerTaskName =
   | "docx.parse"
   | "docx.validate"
   | "docx.repack"
-  | "docx.roundtrip_diff";
+  | "docx.roundtrip_diff"
+  | "xlsx.unpack"
+  | "xlsx.parse"
+  | "xlsx.validate"
+  | "xlsx.repack"
+  | "xlsx.roundtrip_diff";
 
 export interface WorkerTaskEnvelope<TIn = unknown> {
   taskId: string;

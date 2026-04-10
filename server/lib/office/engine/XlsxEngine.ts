@@ -20,8 +20,7 @@ import {
   previewStage,
   exportStage,
 } from "../stages/index.ts";
-import { workerValidateDocx } from "../workerClient.ts";
-import { validateXlsx } from "../ooxml-xlsx/xlsxValidator.ts";
+import { workerValidateXlsx } from "../workerClient.ts";
 import type { XlsxValidationReport } from "../ooxml-xlsx/xlsxValidator.ts";
 import { buildXlsxSemanticMap } from "../ooxml-xlsx/xlsxSemanticMap.ts";
 import type { XlsxSemanticWorkbook, XlsxEditOp, XlsxEditResult } from "../ooxml-xlsx/xlsxTypes.ts";
@@ -240,10 +239,10 @@ export class XlsxEngine {
         throw err;
       }
 
-      // ── Stage 6: validate ── (xlsx-specific validator)
+      // ── Stage 6: validate ── (xlsx-specific validator running inside a worker)
       const validateClose = stepStart("validate", "analyzing", "Validando OOXML (xlsx)");
       try {
-        const report: XlsxValidationReport = validateXlsx(pkg);
+        const report: XlsxValidationReport = await workerValidateXlsx(pkg, { signal: ctx.signal });
         ctx.streamer.start("analyzing", "Validando OOXML (xlsx)", {
           description: `valid=${report.valid} sheets=${report.stats.sheetCount} cells=${report.stats.cellCount}`,
         });
@@ -452,5 +451,3 @@ function serializeErr(err: unknown): unknown {
 
 export const xlsxEngine = new XlsxEngine();
 
-// Satisfy unused import check
-void workerValidateDocx;

@@ -21,6 +21,7 @@ import { parentPort } from "node:worker_threads";
 import { unpackDocx, repackDocx } from "./ooxml/zipIO.ts";
 import { parseOoxml } from "./ooxml/xmlSerializer.ts";
 import { validateDocx } from "./ooxml/validator.ts";
+import { validateXlsx } from "./ooxml-xlsx/xlsxValidator.ts";
 import { roundTripDiff } from "./ooxml/roundTripDiff.ts";
 import type { WorkerTaskEnvelope, WorkerTaskResult } from "./types.ts";
 
@@ -111,15 +112,17 @@ function dehydrate(pkg: { entries: Map<string, { path: string; content: Buffer |
 
 async function handle(env: WorkerTaskEnvelope): Promise<{ result: unknown; transferList?: ArrayBuffer[] }> {
   switch (env.task) {
-    case "docx.unpack": {
+    case "docx.unpack":
+    case "xlsx.unpack": {
+      // unpack is doc-kind agnostic (OOXML zip).
       const { bufferAb } = env.payload as UnpackPayload;
       const pkg = await unpackDocx(fromAb(bufferAb));
       const { serialized, transferList } = dehydrate(pkg);
       return { result: serialized as UnpackResult, transferList };
     }
-    case "docx.parse": {
+    case "docx.parse":
+    case "xlsx.parse": {
       const { xml } = env.payload as ParsePayload;
-      // Parse and discard — this confirms well-formedness inside the worker.
       parseOoxml(xml);
       return { result: { ok: true } as ParseResult };
     }
@@ -128,13 +131,22 @@ async function handle(env: WorkerTaskEnvelope): Promise<{ result: unknown; trans
       const report = validateDocx(rehydrate(pkg));
       return { result: report };
     }
-    case "docx.repack": {
+    case "xlsx.validate": {
+      const { pkg } = env.payload as ValidatePayload;
+      const report = validateXlsx(rehydrate(pkg));
+      return { result: report };
+    }
+    case "docx.repack":
+    case "xlsx.repack": {
+      // repack is doc-kind agnostic.
       const { pkg } = env.payload as RepackPayload;
       const buf = await repackDocx(rehydrate(pkg));
       const ab = toAb(buf);
       return { result: { bufferAb: ab } as RepackResult, transferList: [ab] };
     }
-    case "docx.roundtrip_diff": {
+    case "docx.roundtrip_diff":
+    case "xlsx.roundtrip_diff": {
+      // roundtrip_diff is doc-kind agnostic.
       const { originalPkg, repackedAb, allowlist } = env.payload as RoundTripPayload;
       const report = await roundTripDiff(rehydrate(originalPkg), fromAb(repackedAb), { allowlist });
       return { result: report };

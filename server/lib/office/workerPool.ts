@@ -85,6 +85,11 @@ const DEFAULT_TIMEOUTS: Record<WorkerTaskName, number> = {
   "docx.validate": 60_000,
   "docx.repack": 30_000,
   "docx.roundtrip_diff": 90_000,
+  "xlsx.unpack": 30_000,
+  "xlsx.parse": 30_000,
+  "xlsx.validate": 60_000,
+  "xlsx.repack": 30_000,
+  "xlsx.roundtrip_diff": 90_000,
 };
 
 export class OfficeWorkerPool {
