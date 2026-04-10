@@ -6,7 +6,7 @@
 import { db } from "../db";
 import { payments, users } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
-import { getStripeClient } from "../stripeClient";
+import { getUncachableStripeClient } from "../stripeClient";
 import { randomUUID } from "crypto";
 
 import { createRequire } from 'module';
@@ -773,7 +773,7 @@ export async function handlePaymentSucceeded(invoice: any, eventId?: string): Pr
 
   try {
     if (subscriptionId) {
-      const stripe = getStripeClient();
+      const stripe = await getUncachableStripeClient();
       const subscription = await stripe.subscriptions.retrieve(subscriptionId);
       userId = subscription?.metadata?.userId || null;
       planName = getPlanFromPriceId(subscription?.items?.data?.[0]?.price?.id);
@@ -839,7 +839,7 @@ export async function handlePaymentFailed(invoice: any, eventId?: string): Promi
   
   try {
     if (subscriptionId) {
-      const stripe = getStripeClient();
+      const stripe = await getUncachableStripeClient();
       const subscription = await stripe.subscriptions.retrieve(subscriptionId);
       userId = subscription?.metadata?.userId || null;
       planName = getPlanFromPriceId(subscription?.items?.data?.[0]?.price?.id);

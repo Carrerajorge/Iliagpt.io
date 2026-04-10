@@ -96,6 +96,13 @@ Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment varia
 - **New tables created**: `prompt_transformation_log`, `prompt_integrity_checks`, `prompt_analysis_results` — required by the message-save pipeline for audit logging.
 - **Root cause**: Drizzle schema definitions in `shared/schema/chat.ts` had drifted ahead of the actual DB. Manual `ALTER TABLE` / `CREATE TABLE IF NOT EXISTS` used since `drizzle-kit push` requires interactive confirmation.
 
+### Stripe Integration (v2026.4.9)
+- **Replit Connector API**: `server/stripeClient.ts` fetches Stripe credentials via the Replit connector API (`REPLIT_CONNECTORS_HOSTNAME`), with fallback to `STRIPE_SECRET_KEY`/`STRIPE_PUBLISHABLE_KEY` env vars.
+- **stripe-replit-sync**: Installed for automatic Stripe data synchronization. `runStripeMigrations()` runs at server startup to create sync schema tables.
+- **getStripeSync()**: Returns a `StripeSync` instance for webhook processing and backfill operations.
+- **Plans**: Go ($5/mo), Plus ($10/mo), Pro ($200/mo), Business ($25/mo) — price IDs configured via `STRIPE_PRICE_*` env vars.
+- **Key files**: `server/stripeClient.ts`, `server/routes/stripeRouter.ts`, `server/webhookHandlers.ts`, `server/services/subscriptionService.ts`.
+
 ### Memory Optimization (v2026.4.6)
 - **PerformanceAuditor**: Collection interval 60s (was 10s), history buffer 100 (was 1000), memory warning throttling (log first 3 + every 30th).
 - **TokenTracker**: Redis persist circuit breaker — disables after 5 consecutive failures. In-memory records capped at 1000 (was 10000).

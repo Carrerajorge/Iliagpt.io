@@ -1,4 +1,4 @@
-import { getStripeClient } from "../stripeClient";
+import { getUncachableStripeClient } from "../stripeClient";
 import {
   getStripeCustomerIdFromInvoice,
   resolveUserIdFromStripeCustomerId,
@@ -60,7 +60,7 @@ export async function syncStripePaidInvoicesToPayments(params: {
     lte: Math.floor(toDate.getTime() / 1000),
   };
 
-  const stripe = getStripeClient();
+  const stripe = await getUncachableStripeClient();
 
   const userCache = new Map<string, string | null>();
 

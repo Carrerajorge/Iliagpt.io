@@ -442,6 +442,14 @@ export function log(message: string, source = "express") {
     await checkMigrationDrift();
 
     if (dbConnected) {
+      try {
+        const { runStripeMigrations } = await import("./stripeClient");
+        await runStripeMigrations();
+        log("[Stripe] Sync migrations complete");
+      } catch (e: any) {
+        log(`[Stripe] Sync init skipped: ${e?.message || e}`);
+      }
+
       startChatScheduleRunner();
       startMemoryPurgeJob();
       // Daily quota reset, usage summary, anonymous cleanup
