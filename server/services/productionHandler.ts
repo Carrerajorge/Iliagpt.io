@@ -30,6 +30,11 @@ import {
 } from '../agent/production';
 import { exportAcademicArticlesFromPrompt } from './academicArticlesExport';
 import { generateFilePreview } from './filePreviewService';
+import {
+    generateProfessionalPptx,
+    type PptxRequest,
+    type PptxSlide,
+} from "./documentGenerators/professionalPptxGenerator";
 
 // ============================================================================
 // Types
@@ -53,7 +58,7 @@ interface ProductionPresentationHints {
 }
 
 type ArtifactGenerationDocKind = "docx" | "xlsx" | "pptx" | "pdf";
-type ArtifactGenerationEngine = "office-engine" | "artifact-pipeline";
+type ArtifactGenerationEngine = "office-engine" | "artifact-engine" | "artifact-pipeline";
 
 interface ArtifactGenerationSpec {
     workflow: "artifact_generation";
@@ -104,19 +109,46 @@ function resolveRequestedDocKind(intentResult: IntentResult, message?: string): 
             : "docx";
 }
 
-function resolveArtifactGenerationSpec(intentResult: IntentResult, message?: string): ArtifactGenerationSpec {
+function resolveArtifactGenerationEngine(
+    requestedDocKind: ArtifactGenerationDocKind,
+    deliverables: Array<'word' | 'excel' | 'ppt' | 'pdf'>,
+): ArtifactGenerationEngine {
+    if (requestedDocKind === "docx" && deliverables.length === 1 && deliverables[0] === "word") {
+        return "office-engine";
+    }
+
+    if (requestedDocKind === "pptx" && deliverables.length === 1 && deliverables[0] === "ppt") {
+        return "artifact-engine";
+    }
+
+    return "artifact-pipeline";
+}
+
+function resolveArtifactGenerationSpec(
+    intentResult: IntentResult,
+    deliverables: Array<'word' | 'excel' | 'ppt' | 'pdf'>,
+    message?: string,
+): ArtifactGenerationSpec {
     const requestedDocKind = resolveRequestedDocKind(intentResult, message);
     return {
         workflow: "artifact_generation",
-        engine: requestedDocKind === "docx" ? "office-engine" : "artifact-pipeline",
+        engine: resolveArtifactGenerationEngine(requestedDocKind, deliverables),
         requestedDocKind,
     };
 }
 
-function shouldUseOfficeEngine(spec: ArtifactGenerationSpec, deliverables: Array<'word' | 'excel' | 'ppt' | 'pdf'>): boolean {
-    return spec.requestedDocKind === "docx"
+function shouldUseOfficeEngine(spec: ArtifactGenerationSpec): boolean {
+    return spec.engine === "office-engine";
+}
+
+function shouldUseProfessionalPptxEngine(
+    spec: ArtifactGenerationSpec,
+    deliverables: Array<'word' | 'excel' | 'ppt' | 'pdf'>,
+): boolean {
+    return spec.engine === "artifact-engine"
+        && spec.requestedDocKind === "pptx"
         && deliverables.length === 1
-        && deliverables[0] === "word";
+        && deliverables[0] === "ppt";
 }
 
 const OFFICE_STAGE_PROGRESS: Record<string, number> = {
@@ -145,6 +177,179 @@ function inferOfficeStageFromStep(step: { title?: string; type?: string }): stri
     if (title.includes("vista previa") || title.includes("preview")) return "preview";
     if (title.includes("export")) return "export";
     return step.type === "reading" ? "unpack" : step.type === "editing" ? "edit" : "plan";
+}
+
+function normalizeArtifactTopic(raw: string): string {
+    return String(raw || "")
+        .replace(/\b(crea(?:r)?|genera(?:r)?|haz|hacer|arma(?:r)?|prepara(?:r)?|construye|elabora)\b/gi, " ")
+        .replace(/\b(un|una|unos|unas|de|del|para|sobre|con)\b/gi, " ")
+        .replace(/\b(pptx?|powerpoint|presentaci[oó]n(?:es)?|diapositivas?|slides?|deck)\b/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function toTitleCase(input: string): string {
+    return String(input || "")
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+        .join(" ")
+        .trim();
+}
+
+function resolveArtifactTopic(intentResult: IntentResult, message: string, fallback: string): string {
+    const slotTopic = [
+        intentResult.slots.title,
+        intentResult.slots.topic,
+        intentResult.slots.subject,
+    ].find((value) => typeof value === "string" && value.trim().length > 0);
+
+    if (slotTopic) {
+        return normalizeArtifactTopic(slotTopic);
+    }
+
+    const trailingTopicMatch = message.match(/(?:sobre|de|para)\s+(.+)$/i);
+    if (trailingTopicMatch?.[1]) {
+        const topic = normalizeArtifactTopic(trailingTopicMatch[1]);
+        if (topic) return topic;
+    }
+
+    const normalizedFromMessage = normalizeArtifactTopic(message);
+    return normalizedFromMessage || fallback;
+}
+
+function resolveProfessionalPptTheme(hints: ProductionPresentationHints, message: string): string {
+    const normalized = `${hints.template || ""} ${hints.theme || ""} ${message}`.toLowerCase();
+
+    if (/\b(executive|ejecutiv|board|directiv|geren)\b/.test(normalized)) return "executive-dark";
+    if (/\b(minimal|minimalista|academic|academi)\b/.test(normalized)) return "minimal-gray";
+    if (/\b(green|verde|sostenib|nature)\b/.test(normalized)) return "nature-green";
+    if (/\b(creative|creativ|gradient|warm|amber|orange)\b/.test(normalized)) return "warm-amber";
+    if (/\b(tech|tecnolog|dark)\b/.test(normalized)) return "executive-dark";
+
+    return "corporate-blue";
+}
+
+function buildProfessionalPptSlides(topic: string, message: string): PptxSlide[] {
+    const lower = String(message || "").toLowerCase();
+    const wantsFormulas = /\b(f[oó]rmulas?|formulas?|kpi|kpis|m[eé]tricas?|metricas?|roi|cac|ltv)\b/.test(lower);
+    const isSalesDeck = /\b(ventas?|sales|comercial|pipeline|funnel|pricing|revenue|ingresos?)\b/.test(lower);
+    const subject = toTitleCase(topic || "Presentación Ejecutiva");
+
+    const summaryBullets = isSalesDeck
+        ? [
+            `Marco ejecutivo para acelerar ${subject.toLowerCase()} con foco en margen, conversión y recurrencia.`,
+            "Lectura rápida de prioridades, cuellos de botella y decisiones recomendadas para comité.",
+            "Estructura lista para revisión con dirección comercial y operaciones.",
+        ]
+        : [
+            `Visión ejecutiva del frente ${subject.toLowerCase()} con enfoque en impacto, control y ejecución.`,
+            "Resumen listo para presentar a liderazgo con prioridades y riesgos críticos.",
+            "Secuencia clara de implementación, seguimiento y gobierno del trabajo.",
+        ];
+
+    const leftBullets = isSalesDeck
+        ? [
+            "Captación con criterios de calidad y priorización por valor esperado.",
+            "Seguimiento semanal de conversión por etapa del funnel.",
+            "Estandarización del discurso comercial y política de descuentos.",
+        ]
+        : [
+            "Definición de responsables, ritmo de seguimiento y tablero de control.",
+            "Visibilidad de dependencias, hitos y puntos de decisión.",
+            "Régimen de revisión para corregir desvíos temprano.",
+        ];
+
+    const rightBullets = isSalesDeck
+        ? [
+            "Descuento excesivo que erosiona margen y ticket promedio.",
+            "Funnel inflado sin calidad comercial ni pronóstico confiable.",
+            "Dependencia de pocas cuentas o de un solo canal de adquisición.",
+        ]
+        : [
+            "Sobrecarga operativa por procesos manuales o poco estandarizados.",
+            "Riesgo de retrabajo por criterios ambiguos o métricas inconsistentes.",
+            "Pérdida de trazabilidad entre planeación, ejecución y control.",
+        ];
+
+    const metricRows = isSalesDeck
+        ? [
+            ["Ingresos", "Precio promedio x Unidades vendidas", "Monitorea ventas brutas por periodo"],
+            ["Ticket promedio", "Ingresos / Número de pedidos", "Evalúa monetización por cliente"],
+            ["Tasa de conversión", "Clientes cerrados / Leads calificados", "Mide eficiencia del funnel"],
+            ["CAC", "Inversión comercial / Clientes nuevos", "Controla costo de adquisición"],
+            ["Margen comercial", "(Ingresos - Costos directos) / Ingresos", "Protege rentabilidad"],
+        ]
+        : [
+            ["Avance del plan", "Hitos completados / Hitos planificados", "Visibilidad de ejecución"],
+            ["Cumplimiento SLA", "Casos dentro de SLA / Casos totales", "Control operativo"],
+            ["Productividad", "Entregables completados / FTE", "Rendimiento del equipo"],
+            ["Calidad", "Incidencias críticas / Entregables", "Control de retrabajo"],
+        ];
+
+    return [
+        {
+            type: "title",
+            title: subject,
+            subtitle: wantsFormulas
+                ? "Presentación profesional con fórmulas, KPIs y narrativa ejecutiva"
+                : "Presentación ejecutiva lista para revisión y descarga",
+        },
+        {
+            type: "content",
+            title: "Resumen ejecutivo",
+            bullets: summaryBullets,
+        },
+        {
+            type: "two-column",
+            title: isSalesDeck ? "Palancas comerciales y riesgos a controlar" : "Pilares y riesgos de implementación",
+            leftBullets,
+            rightBullets,
+        },
+        {
+            type: "table",
+            title: wantsFormulas ? "Fórmulas y KPIs prioritarios" : "Indicadores de seguimiento",
+            tableData: {
+                headers: ["Métrica", "Fórmula", "Uso"],
+                rows: metricRows,
+            },
+        },
+        {
+            type: "content",
+            title: "Plan de 30-60-90 días",
+            bullets: [
+                `30 días: alinear objetivos, métricas y responsables para ${subject.toLowerCase()}.`,
+                "60 días: ejecutar piloto, estabilizar datos y validar cadencia de seguimiento.",
+                "90 días: escalar la operación, cerrar brechas y formalizar gobierno continuo.",
+            ],
+        },
+        {
+            type: "closing",
+            title: "Siguientes pasos",
+            subtitle: "Documento listo para comité, revisión interna o envío a dirección.",
+        },
+    ];
+}
+
+function buildProfessionalPptxRequest(
+    intentResult: IntentResult,
+    message: string,
+    hints: ProductionPresentationHints,
+): PptxRequest {
+    const topic = resolveArtifactTopic(intentResult, message, "Presentación Ejecutiva");
+    const title = toTitleCase(topic || "Presentación Ejecutiva");
+    const subtitleParts = [
+        hints.brand ? `Marca: ${hints.brand}` : null,
+        "Generado automáticamente con PptxGenJS",
+    ].filter(Boolean);
+
+    return {
+        title,
+        subtitle: subtitleParts.join(" · "),
+        author: "IliaGPT",
+        theme: resolveProfessionalPptTheme(hints, message),
+        slides: buildProfessionalPptSlides(title, message),
+    };
 }
 
 async function buildArtifactPreview(artifact: Artifact): Promise<{ previewUrl?: string; previewHtml?: string } | null> {
@@ -318,13 +523,13 @@ export function getDeliverables(intentResult: IntentResult, message?: string): (
     const topic = intentResult.slots.topic?.toLowerCase() || '';
     const combined = `${topic} ${message || ''}`.toLowerCase();
 
-    if (combined.includes('excel') || combined.includes('hoja de cálculo') || combined.includes('spreadsheet')) {
+    if (/\b(excel|xlsx|hoja\s+de\s+c[aá]lculo|spreadsheet)\b/i.test(combined)) {
         if (!deliverables.includes('excel')) deliverables.push('excel');
     }
-    if (combined.includes('presentación') || combined.includes('presentation') || combined.includes('ppt')) {
+    if (/\b(presentaci[oó]n|presentation|pptx?|powerpoint|diapositivas?|slides?)\b/i.test(combined)) {
         if (!deliverables.includes('ppt')) deliverables.push('ppt');
     }
-    if (combined.includes('word') || combined.includes('documento') || combined.includes('document') || combined.includes('docx')) {
+    if (/\b(word|documento|document|docx)\b/i.test(combined)) {
         if (!deliverables.includes('word')) deliverables.push('word');
     }
     if (/\bpdf\b/i.test(combined)) {
@@ -488,7 +693,7 @@ export async function handleProductionRequest(
     const streamRequestId = requestId || runId;
     const deliverables = getDeliverables(intentResult, message);
     const presentationHints = extractPresentationHints(message);
-    const artifactSpec = resolveArtifactGenerationSpec(intentResult, message);
+    const artifactSpec = resolveArtifactGenerationSpec(intentResult, deliverables, message);
 
     const emit = (event: string, data: Record<string, unknown>): void => {
         writeSse(res, event, {
@@ -789,7 +994,7 @@ export async function handleProductionRequest(
             return finalResult;
         }
 
-        if (shouldUseOfficeEngine(artifactSpec, deliverables)) {
+        if (shouldUseOfficeEngine(artifactSpec)) {
             const officeStreamer = new StepStreamer();
             const officeController = new AbortController();
             const pendingEvents: OfficeRunSession["pendingEvents"] = [];
@@ -1004,6 +1209,155 @@ export async function handleProductionRequest(
                         fallbackLevel: officeResult.fallbackLevel,
                         durationMs: officeResult.durationMs,
                     },
+                },
+            };
+            await persistAssistantResult(finalResult.assistantContent || summary, finalResult.artifact);
+            return finalResult;
+        }
+
+        if (shouldUseProfessionalPptxEngine(artifactSpec, deliverables)) {
+            emit("production_event", {
+                type: "stage_start",
+                stage: "intake",
+                progress: 8,
+                workflow: artifactSpec.workflow,
+                engine: artifactSpec.engine,
+                docKind: "pptx",
+                message: "Analizando requerimientos de la presentación.",
+                timestamp: Date.now(),
+            });
+
+            const pptRequest = buildProfessionalPptxRequest(intentResult, message, presentationHints);
+
+            emit("production_event", {
+                type: "stage_complete",
+                stage: "blueprint",
+                progress: 32,
+                workflow: artifactSpec.workflow,
+                engine: artifactSpec.engine,
+                docKind: "pptx",
+                message: `Estructura lista: ${pptRequest.slides.length} diapositivas profesionales.`,
+                timestamp: Date.now(),
+            });
+
+            emit("production_event", {
+                type: "stage_start",
+                stage: "slides",
+                progress: 58,
+                workflow: artifactSpec.workflow,
+                engine: artifactSpec.engine,
+                docKind: "pptx",
+                message: "Generando presentación profesional con PptxGenJS.",
+                timestamp: Date.now(),
+            });
+
+            const pptResult = await generateProfessionalPptx(pptRequest);
+
+            emit("production_event", {
+                type: "stage_complete",
+                stage: "render",
+                progress: 84,
+                workflow: artifactSpec.workflow,
+                engine: artifactSpec.engine,
+                docKind: "pptx",
+                message: "Vista previa estructural generada.",
+                timestamp: Date.now(),
+            });
+
+            const pptArtifact: Artifact = {
+                type: "ppt",
+                filename: pptResult.filename,
+                buffer: pptResult.buffer,
+                mimeType: pptResult.mimeType,
+                size: pptResult.buffer.length,
+                metadata: {
+                    slideCount: pptResult.slideCount,
+                    theme: pptRequest.theme,
+                    brandName: presentationHints.brand,
+                },
+            };
+
+            const stored = await saveArtifact(pptArtifact, runId, userId, chatId);
+            const summary = "Presentación lista para descargar. Haz clic en descargar para obtenerla.";
+            const artifactMetadata = {
+                workflow: artifactSpec.workflow,
+                classification: artifactSpec.workflow,
+                engine: artifactSpec.engine,
+                docKind: "pptx",
+                slideCount: pptResult.slideCount,
+                theme: pptRequest.theme,
+                ...(presentationHints.brand ? { brandName: presentationHints.brand } : {}),
+            };
+
+            emit("production_event", {
+                type: "stage_complete",
+                stage: "export",
+                progress: 100,
+                workflow: artifactSpec.workflow,
+                engine: artifactSpec.engine,
+                docKind: "pptx",
+                message: "Presentación exportada y lista para descarga.",
+                timestamp: Date.now(),
+            });
+
+            emit("artifact", {
+                type: "ppt",
+                filename: pptResult.filename,
+                downloadUrl: stored.downloadUrl,
+                previewHtml: pptResult.previewHtml,
+                size: pptResult.buffer.length,
+                mimeType: pptResult.mimeType,
+                library: stored.library,
+                metadata: artifactMetadata,
+            });
+
+            emit("production_complete", {
+                runId,
+                success: true,
+                workflow: artifactSpec.workflow,
+                engine: artifactSpec.engine,
+                docKind: "pptx",
+                artifactsCount: 1,
+                summary,
+                timestamp: Date.now(),
+            });
+
+            emit("chunk", {
+                content: summary,
+                sequenceId: 1,
+                runId,
+            });
+
+            emit("done", {
+                sequenceId: 2,
+                runId,
+                timestamp: Date.now(),
+                artifact: {
+                    artifactId: `${runId}_pptx`,
+                    type: "presentation",
+                    mimeType: pptResult.mimeType,
+                    sizeBytes: pptResult.buffer.length,
+                    downloadUrl: stored.downloadUrl,
+                    name: pptResult.filename,
+                    filename: pptResult.filename,
+                    previewHtml: pptResult.previewHtml,
+                    metadata: artifactMetadata,
+                },
+            });
+
+            res.end();
+
+            const finalResult = {
+                handled: true,
+                assistantContent: summary,
+                artifact: {
+                    type: "ppt",
+                    filename: pptResult.filename,
+                    downloadUrl: stored.downloadUrl,
+                    previewHtml: pptResult.previewHtml,
+                    size: pptResult.buffer.length,
+                    mimeType: pptResult.mimeType,
+                    metadata: artifactMetadata,
                 },
             };
             await persistAssistantResult(finalResult.assistantContent || summary, finalResult.artifact);

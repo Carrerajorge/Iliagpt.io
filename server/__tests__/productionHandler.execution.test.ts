@@ -16,6 +16,19 @@ vi.mock("../services/libraryService", () => ({
   },
 }));
 
+vi.mock("../storage", () => ({
+  storage: {
+    createChatMessage: vi.fn(async () => ({ id: "assistant-placeholder" })),
+    updateChatMessageContent: vi.fn(async () => null),
+  },
+}));
+
+vi.mock("../services/conversationStateService", () => ({
+  conversationStateService: {
+    appendMessage: vi.fn(async () => null),
+  },
+}));
+
 vi.mock("../services/academicArticlesExport", () => ({
   exportAcademicArticlesFromPrompt: vi.fn(),
 }));
@@ -24,11 +37,11 @@ import { handleProductionRequest } from "../services/productionHandler";
 
 function makeIntentResult(overrides: Partial<IntentResult> = {}): IntentResult {
   return {
-    intent: "CREATE_PRESENTATION",
-    output_format: "pptx",
+    intent: "CREATE_SPREADSHEET",
+    output_format: "xlsx",
     slots: { topic: "gestion administrativa" },
     confidence: 0.92,
-    normalized_text: "crea una ppt de la gestion administrativa",
+    normalized_text: "crea un excel de la gestion administrativa",
     ...overrides,
   };
 }
@@ -112,14 +125,14 @@ describe("productionHandler execution failures", () => {
     startProductionPipelineMock.mockResolvedValue(
       makeProductionResult({
         status: "failed",
-        summary: "## Producción Fallida\n\n**Error:** No se pudo generar la presentación.",
+        summary: "## Producción Fallida\n\n**Error:** No se pudo generar la hoja de cálculo.",
       }),
     );
 
     const { res, chunks } = createMockResponse();
     const result = await handleProductionRequest(
       {
-        message: "crea una ppt de la gestion administrativa",
+        message: "crea un excel de la gestion administrativa",
         userId: "user-1",
         chatId: "chat-1",
         conversationId: "conv-1",
@@ -135,9 +148,9 @@ describe("productionHandler execution failures", () => {
     const errorEvent = events.find((event) => event.event === "production_error");
     const chunkEvent = events.find((event) => event.event === "chunk");
 
-    expect(result.error).toBe("No se pudo generar la presentación.");
+    expect(result.error).toBe("No se pudo generar la hoja de cálculo.");
     expect(completionEvent?.data.success).toBe(false);
-    expect(errorEvent?.data.error).toBe("No se pudo generar la presentación.");
+    expect(errorEvent?.data.error).toBe("No se pudo generar la hoja de cálculo.");
     expect(chunkEvent?.data.content).toContain("Error en la producción documental");
     expect(chunkEvent?.data.content).not.toContain("## 📄 Documentos Generados");
   });
@@ -153,7 +166,7 @@ describe("productionHandler execution failures", () => {
     const { res, chunks } = createMockResponse();
     const result = await handleProductionRequest(
       {
-        message: "crea una ppt de la gestion administrativa",
+        message: "crea un excel de la gestion administrativa",
         userId: "user-1",
         chatId: "chat-1",
         conversationId: "conv-1",
@@ -179,21 +192,21 @@ describe("productionHandler execution failures", () => {
         status: "success",
         artifacts: [
           {
-            type: "ppt",
-            filename: "gestion_administrativa.pptx",
-            buffer: Buffer.from("pptx"),
-            mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            type: "excel",
+            filename: "gestion_administrativa.xlsx",
+            buffer: Buffer.from("xlsx"),
+            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             size: 4,
           },
         ],
-        summary: "## Producción Completada\n\nPresentación generada.",
+        summary: "## Producción Completada\n\nHoja de cálculo generada.",
       }),
     );
 
     const { res, chunks } = createMockResponse();
     const result = await handleProductionRequest(
       {
-        message: "crea una ppt de la gestion administrativa",
+        message: "crea un excel de la gestion administrativa",
         userId: "user-1",
         chatId: "chat-1",
         conversationId: "conv-1",
@@ -212,8 +225,8 @@ describe("productionHandler execution failures", () => {
     expect(result.handled).toBe(true);
     expect(artifactEvent?.data.downloadUrl).toContain("/api/artifacts/");
     expect(completionEvent?.data.success).toBe(true);
-    expect(completionEvent?.data.summary).toBe("Presentación lista para descargar. Haz clic en descargar para obtenerlo.");
-    expect(chunkEvent?.data.content).toBe("Presentación lista para descargar. Haz clic en descargar para obtenerlo.");
+    expect(completionEvent?.data.summary).toBe("Hoja de cálculo lista para descargar. Haz clic en descargar para obtenerlo.");
+    expect(chunkEvent?.data.content).toBe("Hoja de cálculo lista para descargar. Haz clic en descargar para obtenerlo.");
     expect(chunkEvent?.data.content).not.toContain("## 📄 Documentos Generados");
   });
 });

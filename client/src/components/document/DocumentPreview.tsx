@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef, useCallback, memo } from "react";
+import React, { useState, useEffect, useRef, useCallback, memo, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { FilePreviewSurface } from "@/components/FilePreviewSurface";
+import { downloadArtifact, fetchArtifactResponse } from "@/lib/localArtifactAccess";
 import {
   ZoomIn,
   ZoomOut,
@@ -15,7 +17,6 @@ import {
   FileText,
   FileSpreadsheet,
   Presentation,
-  Loader2,
 } from "lucide-react";
 
 export type DocumentType = "pdf" | "docx" | "xlsx" | "pptx";
@@ -25,6 +26,7 @@ export interface DocumentPreviewProps {
   type: DocumentType;
   title?: string;
   className?: string;
+  html?: string;
 }
 
 interface PDFViewerState {
@@ -36,7 +38,7 @@ interface PDFViewerState {
 }
 
 const PDFJS_WORKER_URL = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
+  "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url,
 ).toString();
 
@@ -52,11 +54,11 @@ const LoadingSkeleton = memo(function LoadingSkeleton() {
   );
 });
 
-const ErrorDisplay = memo(function ErrorDisplay({ 
-  error, 
-  onRetry 
-}: { 
-  error: string; 
+const ErrorDisplay = memo(function ErrorDisplay({
+  error,
+  onRetry,
+}: {
+  error: string;
   onRetry?: () => void;
 }) {
   return (
@@ -66,9 +68,9 @@ const ErrorDisplay = memo(function ErrorDisplay({
       <AlertDescription className="flex flex-col gap-2">
         <span>{error}</span>
         {onRetry && (
-          <Button 
-            variant="outline" 
-            size="sm" 
+          <Button
+            variant="outline"
+            size="sm"
             onClick={onRetry}
             data-testid="button-retry-load"
             className="w-fit"
@@ -108,11 +110,33 @@ const getDocumentLabel = (type: DocumentType) => {
   }
 };
 
-const OfficeDocumentPreview = memo(function OfficeDocumentPreview({
+const HtmlPreview = memo(function HtmlPreview({
+  html,
+  type,
+}: {
+  html: string;
+  type: DocumentType;
+}) {
+  return (
+    <div className="h-full w-full overflow-auto bg-white" data-testid="document-preview-html">
+      <FilePreviewSurface
+        preview={{ type, html }}
+        variant="modal"
+        className="min-h-full rounded-none"
+      />
+    </div>
+  );
+});
+
+const OfficeDocumentFallback = memo(function OfficeDocumentFallback({
   url,
   type,
   title,
-}: Omit<DocumentPreviewProps, "className">) {
+}: Omit<DocumentPreviewProps, "className" | "html">) {
+  const handleDownload = useCallback(async () => {
+    await downloadArtifact(url, title ? `${title}.${type}` : undefined);
+  }, [title, type, url]);
+
   return (
     <Card data-testid="document-preview-office">
       <CardHeader>
@@ -128,11 +152,9 @@ const OfficeDocumentPreview = memo(function OfficeDocumentPreview({
             <br />
             Download the file to view its contents.
           </p>
-          <Button asChild data-testid="button-download-document">
-            <a href={url} download target="_blank" rel="noopener noreferrer">
-              <Download className="h-4 w-4 mr-2" />
-              Download {title || getDocumentLabel(type)}
-            </a>
+          <Button onClick={() => void handleDownload()} data-testid="button-download-document">
+            <Download className="h-4 w-4 mr-2" />
+            Download {title || getDocumentLabel(type)}
           </Button>
         </div>
       </CardContent>
@@ -140,12 +162,91 @@ const OfficeDocumentPreview = memo(function OfficeDocumentPreview({
   );
 });
 
+const DocxViewer = memo(function DocxViewer({
+  url,
+  title,
+}: Omit<DocumentPreviewProps, "type" | "className" | "html">) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadPreview = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetchArtifactResponse(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch DOCX preview (${response.status})`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const { renderAsync } = (await import("docx-preview")) as {
+        renderAsync: (
+          data: BlobPart,
+          container: HTMLElement,
+          styleContainer?: HTMLElement | null,
+          options?: Record<string, unknown>,
+        ) => Promise<void>;
+      };
+
+      if (!containerRef.current) return;
+      containerRef.current.replaceChildren();
+
+      await renderAsync(arrayBuffer, containerRef.current, undefined, {
+        className: "ilia-docx-preview",
+        inWrapper: true,
+        ignoreWidth: false,
+        ignoreHeight: false,
+        breakPages: true,
+        useBase64URL: true,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to render DOCX preview");
+    } finally {
+      setLoading(false);
+    }
+  }, [url]);
+
+  useEffect(() => {
+    void loadPreview();
+  }, [loadPreview]);
+
+  if (error) {
+    return <ErrorDisplay error={error} onRetry={() => void loadPreview()} />;
+  }
+
+  return (
+    <div className="flex h-full flex-col gap-4" data-testid="document-preview-docx">
+      {title && (
+        <h3 className="px-4 pt-4 text-lg font-semibold" data-testid="text-document-title">
+          {title}
+        </h3>
+      )}
+      <div className="relative flex-1 overflow-auto rounded-lg border bg-slate-100 p-6 dark:bg-slate-950/50">
+        {loading && (
+          <div className="absolute inset-0 z-10">
+            <LoadingSkeleton />
+          </div>
+        )}
+        <div
+          ref={containerRef}
+          className={cn(
+            "mx-auto min-h-[200px] w-full max-w-[960px]",
+            loading && "opacity-0 pointer-events-none",
+          )}
+          data-testid="document-preview-docx-canvas"
+        />
+      </div>
+    </div>
+  );
+});
+
 const PDFViewer = memo(function PDFViewer({
   url,
   title,
-}: Omit<DocumentPreviewProps, "type" | "className">) {
+}: Omit<DocumentPreviewProps, "type" | "className" | "html">) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   const pdfDocRef = useRef<any>(null);
   const pdfjsLibRef = useRef<any>(null);
 
@@ -161,17 +262,17 @@ const PDFViewer = memo(function PDFViewer({
     if (pdfjsLibRef.current) return pdfjsLibRef.current;
 
     try {
-      const pdfjsLib = await import('pdfjs-dist');
+      const pdfjsLib = await import("pdfjs-dist");
       pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
       pdfjsLibRef.current = pdfjsLib;
       return pdfjsLib;
-    } catch (err) {
+    } catch {
       throw new Error("Failed to load PDF.js library");
     }
   }, []);
 
   const loadDocument = useCallback(async () => {
-    setState(prev => ({ ...prev, loading: true, error: null }));
+    setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
       const pdfjsLib = await loadPdfJs();
@@ -179,20 +280,20 @@ const PDFViewer = memo(function PDFViewer({
       const pdf = await loadingTask.promise;
       pdfDocRef.current = pdf;
 
-      setState(prev => ({
+      setState((prev) => ({
         ...prev,
         loading: false,
         numPages: pdf.numPages,
         currentPage: 1,
       }));
     } catch (err) {
-      setState(prev => ({
+      setState((prev) => ({
         ...prev,
         loading: false,
         error: err instanceof Error ? err.message : "Failed to load PDF document",
       }));
     }
-  }, [url, loadPdfJs]);
+  }, [loadPdfJs, url]);
 
   const renderPage = useCallback(async (pageNum: number, scale: number) => {
     if (!pdfDocRef.current || !canvasRef.current) return;
@@ -218,7 +319,7 @@ const PDFViewer = memo(function PDFViewer({
   }, []);
 
   useEffect(() => {
-    loadDocument();
+    void loadDocument();
     return () => {
       if (pdfDocRef.current) {
         pdfDocRef.current.destroy();
@@ -229,30 +330,33 @@ const PDFViewer = memo(function PDFViewer({
 
   useEffect(() => {
     if (!state.loading && !state.error && state.numPages > 0) {
-      renderPage(state.currentPage, state.scale);
+      void renderPage(state.currentPage, state.scale);
     }
-  }, [state.currentPage, state.scale, state.loading, state.error, state.numPages, renderPage]);
+  }, [renderPage, state.currentPage, state.error, state.loading, state.numPages, state.scale]);
 
-  const goToPage = useCallback((page: number) => {
-    if (page >= 1 && page <= state.numPages) {
-      setState(prev => ({ ...prev, currentPage: page }));
-    }
-  }, [state.numPages]);
+  const goToPage = useCallback(
+    (page: number) => {
+      if (page >= 1 && page <= state.numPages) {
+        setState((prev) => ({ ...prev, currentPage: page }));
+      }
+    },
+    [state.numPages],
+  );
 
   const zoomIn = useCallback(() => {
-    const currentIndex = ZOOM_LEVELS.findIndex(z => z >= state.scale);
+    const currentIndex = ZOOM_LEVELS.findIndex((z) => z >= state.scale);
     const nextIndex = Math.min(currentIndex + 1, ZOOM_LEVELS.length - 1);
-    setState(prev => ({ ...prev, scale: ZOOM_LEVELS[nextIndex] }));
+    setState((prev) => ({ ...prev, scale: ZOOM_LEVELS[nextIndex] }));
   }, [state.scale]);
 
   const zoomOut = useCallback(() => {
-    const currentIndex = ZOOM_LEVELS.findIndex(z => z >= state.scale);
+    const currentIndex = ZOOM_LEVELS.findIndex((z) => z >= state.scale);
     const prevIndex = Math.max(currentIndex - 1, 0);
-    setState(prev => ({ ...prev, scale: ZOOM_LEVELS[prevIndex] }));
+    setState((prev) => ({ ...prev, scale: ZOOM_LEVELS[prevIndex] }));
   }, [state.scale]);
 
   const resetZoom = useCallback(() => {
-    setState(prev => ({ ...prev, scale: DEFAULT_ZOOM }));
+    setState((prev) => ({ ...prev, scale: DEFAULT_ZOOM }));
   }, []);
 
   if (state.loading) {
@@ -260,7 +364,7 @@ const PDFViewer = memo(function PDFViewer({
   }
 
   if (state.error) {
-    return <ErrorDisplay error={state.error} onRetry={loadDocument} />;
+    return <ErrorDisplay error={state.error} onRetry={() => void loadDocument()} />;
   }
 
   return (
@@ -329,22 +433,9 @@ const PDFViewer = memo(function PDFViewer({
             <ZoomIn className="h-4 w-4" />
           </Button>
         </div>
-
-        <Button
-          variant="outline"
-          size="sm"
-          asChild
-          data-testid="button-download-pdf"
-        >
-          <a href={url} download target="_blank" rel="noopener noreferrer">
-            <Download className="h-4 w-4 mr-2" />
-            Download
-          </a>
-        </Button>
       </div>
 
       <div
-        ref={containerRef}
         className="overflow-auto border rounded-lg bg-muted/50 max-h-[800px]"
         data-testid="pdf-canvas-container"
       >
@@ -365,19 +456,30 @@ export const DocumentPreview = memo(function DocumentPreview({
   type,
   title,
   className,
+  html,
 }: DocumentPreviewProps) {
-  if (!url) {
+  const normalizedType = useMemo(() => type.toLowerCase() as DocumentType, [type]);
+
+  if (html && html.trim().length > 0) {
     return (
-      <ErrorDisplay error="No document URL provided" />
+      <div className={cn("w-full", className)} data-testid="document-preview">
+        <HtmlPreview html={html} type={normalizedType} />
+      </div>
     );
+  }
+
+  if (!url) {
+    return <ErrorDisplay error="No document URL provided" />;
   }
 
   return (
     <div className={cn("w-full", className)} data-testid="document-preview">
-      {type === "pdf" ? (
+      {normalizedType === "pdf" ? (
         <PDFViewer url={url} title={title} />
+      ) : normalizedType === "docx" ? (
+        <DocxViewer url={url} title={title} />
       ) : (
-        <OfficeDocumentPreview url={url} type={type} title={title} />
+        <OfficeDocumentFallback url={url} type={normalizedType} title={title} />
       )}
     </div>
   );

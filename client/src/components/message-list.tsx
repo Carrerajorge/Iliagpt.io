@@ -97,6 +97,7 @@ import { useSettingsContext } from "@/contexts/SettingsContext";
 import { RetrievalVis } from "@/components/retrieval-vis";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { OfficeStepsPanel } from "@/components/office/OfficeStepsPanel";
+import type { ReopenDocumentRequest } from "@/lib/documentPreviewContracts";
 
 import { formatZonedTime, normalizeTimeZone } from "@/lib/platformDateTime";
 
@@ -468,7 +469,7 @@ interface AttachmentListProps {
   attachments: Message["attachments"];
   variant: "compact" | "default";
   onOpenPreview?: (attachment: NonNullable<Message["attachments"]>[0]) => void;
-  onReopenDocument?: (doc: { type: "word" | "excel" | "ppt"; title: string; content: string }) => void;
+  onReopenDocument?: (doc: ReopenDocumentRequest) => void;
 }
 
 const AttachmentList = memo(function AttachmentList({
@@ -888,7 +889,7 @@ interface UserMessageProps {
   onCopyMessage: (content: string, id: string) => void;
   onStartEdit: (msg: Message) => void;
   onOpenPreview?: (attachment: NonNullable<Message["attachments"]>[0]) => void;
-  onReopenDocument?: (doc: { type: "word" | "excel" | "ppt"; title: string; content: string }) => void;
+  onReopenDocument?: (doc: ReopenDocumentRequest) => void;
 }
 
 const UserMessage = memo(function UserMessage({
@@ -1639,7 +1640,7 @@ interface AssistantMessageProps {
   onOpenDocumentPreview: (doc: DocumentBlock) => void;
   onDownloadImage: (imageData: string) => void;
   onOpenLightbox: (imageData: string) => void;
-  onReopenDocument?: (doc: { type: "word" | "excel" | "ppt"; title: string; content: string }) => void;
+  onReopenDocument?: (doc: ReopenDocumentRequest) => void;
   minimizedDocument?: { type: "word" | "excel" | "ppt"; title: string; content: string; messageId?: string } | null;
   onRestoreDocument?: () => void;
   onAgentCancel?: (messageId: string, runId: string) => void;
@@ -1992,10 +1993,16 @@ const AssistantMessage = memo(function AssistantMessage({
               const artTypeNorm: Record<string, string> = { word: 'document', excel: 'spreadsheet', ppt: 'presentation', docx: 'document', xlsx: 'spreadsheet', pptx: 'presentation' };
               const artType = artTypeNorm[message.artifact.type] || message.artifact.type;
               const artFileName = message.artifact.filename || message.artifact.name;
+              const officeRunIdFromArtifactUrl = [
+                message.artifact.downloadUrl,
+                (message.artifact as any)?.previewUrl,
+              ]
+                .map((value) => (typeof value === "string" ? value.match(/\/api\/office-engine\/runs\/([0-9a-f-]{36})\//i)?.[1] : null))
+                .find((value): value is string => typeof value === "string" && value.length > 0);
               const officeRunId =
                 typeof (message.artifact as any)?.metadata?.officeRunId === "string"
                   ? String((message.artifact as any).metadata.officeRunId)
-                  : null;
+                  : officeRunIdFromArtifactUrl || null;
               return (
                 <div className="space-y-3">
                   {officeRunId && (
@@ -2230,7 +2237,7 @@ interface MessageItemProps {
   handleOpenFileAttachmentPreview: (attachment: NonNullable<Message["attachments"]>[0]) => void;
   handleDownloadImage: (imageData: string) => void;
   setLightboxImage: (imageData: string | null) => void;
-  handleReopenDocument?: (doc: { type: "word" | "excel" | "ppt"; title: string; content: string }) => void;
+  handleReopenDocument?: (doc: ReopenDocumentRequest) => void;
   minimizedDocument?: { type: "word" | "excel" | "ppt"; title: string; content: string; messageId?: string } | null;
   onRestoreDocument?: () => void;
   setEditContent: (value: string) => void;
@@ -2411,7 +2418,7 @@ export interface MessageListProps {
   handleOpenFileAttachmentPreview: (attachment: NonNullable<Message["attachments"]>[0]) => void;
   handleDownloadImage: (imageData: string) => void;
   setLightboxImage: (imageData: string | null) => void;
-  handleReopenDocument?: (doc: { type: "word" | "excel" | "ppt"; title: string; content: string }) => void;
+  handleReopenDocument?: (doc: ReopenDocumentRequest) => void;
   minimizedDocument?: { type: "word" | "excel" | "ppt"; title: string; content: string; messageId?: string } | null;
   onRestoreDocument?: () => void;
   onSelectSuggestedReply?: (text: string) => void;

@@ -193,6 +193,8 @@ import { EditableDocumentPreview, type TextSelection } from "./chat-interface/Ed
 import { extractTextFromChildren, isNumericValue } from "./chat-interface/utils";
 import { PdfPreview } from "@/components/PdfPreview";
 import { FilePreviewModal } from "@/components/FilePreviewModal";
+import { OfficeSplitPreview } from "@/components/office/OfficeSplitPreview";
+import type { ReopenDocumentRequest } from "@/lib/documentPreviewContracts";
 
 function AvatarWithFallback({
   src,
@@ -584,6 +586,7 @@ export function ChatInterface({
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [previewDocument, setPreviewDocument] = useState<DocumentBlock | null>(null);
+  const [previewArtifactDocument, setPreviewArtifactDocument] = useState<ReopenDocumentRequest | null>(null);
   const [editedDocumentContent, setEditedDocumentContent] = useState<string>("");
   const [documentPreviewArtifact, setDocumentPreviewArtifact] = useState<DocumentPreviewArtifact | null>(null);
   const [textSelection, setTextSelection] = useState<TextSelection | null>(null);
@@ -708,9 +711,10 @@ export function ChatInterface({
         setSelectedDocTool(null);
       }
       if (minimizedDocument) setMinimizedDocument(null);
+      if (previewArtifactDocument) setPreviewArtifactDocument(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.canvas]);
+  }, [previewArtifactDocument, settings.canvas]);
 
   useEffect(() => {
     const cacheKey = `_planCache_${user?.id || "anon"}`;
@@ -1456,9 +1460,32 @@ export function ChatInterface({
     docInsertContentRef.current = null;
   };
 
-  const handleReopenDocument = (_doc: { type: string; title: string; content: string }) => {
-    // Word/Excel/PPT editors removed
-  };
+  const handleReopenDocument = useCallback((doc: ReopenDocumentRequest) => {
+    const hasArtifactPreview =
+      Boolean(doc.previewUrl) ||
+      Boolean(doc.downloadUrl) ||
+      Boolean(doc.previewHtml);
+
+    if (hasArtifactPreview) {
+      setPreviewDocument(null);
+      setPreviewArtifactDocument(doc);
+      setEditedDocumentContent(doc.content || "");
+      setDocumentPreviewArtifact(null);
+      return;
+    }
+
+    if (doc.type === "pdf") {
+      return;
+    }
+
+    setPreviewArtifactDocument(null);
+    setPreviewDocument({
+      type: doc.type === "word" ? "word" : doc.type === "excel" ? "excel" : "ppt",
+      title: doc.title,
+      content: doc.content || "",
+    });
+    setEditedDocumentContent(doc.content || "");
+  }, []);
 
   const handleApplyPromptSuggestion = useCallback((selection: PromptSuggestionSelection) => {
     setInput(selection.prompt);
@@ -2369,12 +2396,14 @@ export function ChatInterface({
   };
 
   const handleOpenDocumentPreview = useCallback((doc: DocumentBlock) => {
+    setPreviewArtifactDocument(null);
     setPreviewDocument(doc);
     setEditedDocumentContent(doc.content);
   }, []);
 
   const handleCloseDocumentPreview = useCallback(() => {
     setPreviewDocument(null);
+    setPreviewArtifactDocument(null);
     setEditedDocumentContent("");
     setTextSelection(null);
     setEditingSelectionText("");
@@ -6751,12 +6780,6 @@ IMPORTANTE:
                 setAiStateForChat(value, effectiveStreamChatId);
               const setAiProcessStepsForStream = (value: React.SetStateAction<AiProcessStep[]>) =>
                 setAiProcessStepsForChat(value, effectiveStreamChatId);
-              const ensureOfficeRunSubscription = (candidateRunId: unknown) => {
-                if (typeof candidateRunId !== "string" || candidateRunId.trim().length < 8) return;
-                if (activeOfficeRunId === candidateRunId) return;
-                activeOfficeRunId = candidateRunId;
-                useOfficeEngineStore.getState().subscribe(candidateRunId);
-              };
               const pushProductionArtifact = (candidateArtifact: any) => {
                 if (!candidateArtifact || typeof candidateArtifact !== "object") return;
 
@@ -6874,7 +6897,16 @@ IMPORTANTE:
                     isProductionStream = true;
                     setAiStateForStream("agent_working");
                     if (data?.engine === "office-engine" && data?.runId) {
-                      ensureOfficeRunSubscription(data.runId);
+                      activeOfficeRunId = data.runId;
+                      const officeStore = useOfficeEngineStore.getState();
+                      officeStore.startRun(data.runId);
+                      officeStore.applyStep(data.runId, {
+                        id: "handoff",
+                        type: "handoff",
+                        title: "Derivando al Office Engine",
+                        description: "Creando run documental y preparando pipeline estructural.",
+                        status: "running",
+                      });
                     }
                     if (selectedDocTool && ['word', 'excel', 'ppt'].includes(selectedDocTool)) {
                       setDocGenerationState({
@@ -6892,7 +6924,8 @@ IMPORTANTE:
 
                   if (eventType === "production_event") {
                     if (data?.engine === "office-engine" && data?.runId) {
-                      ensureOfficeRunSubscription(data.runId);
+                      activeOfficeRunId = data.runId;
+                      const officeStore = useOfficeEngineStore.getState();
                       const officeStepId = `office-${data?.stepId || data?.stage || Date.now()}`;
                       const officeMessage = [
                         data?.title || data?.message || data?.stage,
@@ -6915,6 +6948,30 @@ IMPORTANTE:
                           return prev.map((step: any) => (step.id === officeStepId ? { ...step, ...nextStep } : step));
                         }
                         return [...prev, nextStep];
+                      });
+                      officeStore.applyStep(data.runId, {
+                        id: String(data?.stepId || data?.stage || Date.now()),
+                        type: String(data?.stepType || data?.stage || "office"),
+                        title: String(data?.title || data?.message || data?.stage || "Office Engine"),
+                        description: typeof data?.message === "string" ? data.message : undefined,
+                        status:
+                          data?.status === "failed"
+                            ? "failed"
+                            : data?.status === "completed"
+                              ? "completed"
+                              : "running",
+                        output: typeof data?.output === "string" ? data.output : undefined,
+                        diff: data?.diff,
+                        artifact: data?.artifact && typeof data.artifact === "object"
+                          ? {
+                            id: String((data.artifact as any).id || (data.artifact as any).artifactId || data?.stepId || data?.stage || "artifact"),
+                            name: String((data.artifact as any).name || (data.artifact as any).filename || "artifact"),
+                            type: String((data.artifact as any).type || "document"),
+                            mimeType: String((data.artifact as any).mimeType || "application/octet-stream"),
+                            downloadUrl: String((data.artifact as any).downloadUrl || ""),
+                            previewUrl: typeof (data.artifact as any).previewUrl === "string" ? (data.artifact as any).previewUrl : undefined,
+                          }
+                          : undefined,
                       });
                     }
                     if (selectedDocTool && ['word', 'excel', 'ppt'].includes(selectedDocTool)) {
@@ -6987,6 +7044,13 @@ IMPORTANTE:
                         )
                       );
                     }
+                    if (data?.engine === "office-engine" && completedOfficeRunId) {
+                      useOfficeEngineStore.getState().finishRun(
+                        completedOfficeRunId,
+                        data?.success === false ? "failed" : "succeeded",
+                        typeof data?.error === "string" ? data.error : undefined,
+                      );
+                    }
                     setDocGenerationState((prev: any) => ({
                       ...prev,
                       status: 'complete',
@@ -7008,9 +7072,6 @@ IMPORTANTE:
                         }
                         : data;
                     const officeRunIdFromArtifact = (artifactPayload?.metadata as any)?.officeRunId;
-                    if (officeRunIdFromArtifact) {
-                      ensureOfficeRunSubscription(officeRunIdFromArtifact);
-                    }
                     pushProductionArtifact(artifactPayload);
                     if (selectedDocTool && ['word', 'excel', 'ppt'].includes(selectedDocTool)) {
                       const artifactDocType =
@@ -7396,10 +7457,6 @@ IMPORTANTE:
                     totalSearches: streamTotalSearches > 0 ? streamTotalSearches : (data?.totalSearches || undefined),
                     followUpSuggestions: data?.followUpSuggestions,
                   });
-                  const finalOfficeRunId = data?.artifact?.metadata?.officeRunId;
-                  if (finalOfficeRunId) {
-                    ensureOfficeRunSubscription(finalOfficeRunId);
-                  }
                   if (cerebroTimeline.subtasks.length > 0 || cerebroTimeline.judgeResult || cerebroTimeline.budget) {
                     finalMsg.cerebroTimeline = { ...cerebroTimeline };
                   }
@@ -7770,7 +7827,7 @@ IMPORTANTE:
         {/* Usage Warning Banner */}
         <UsageWarningBanner />
         {/* Main Content Area with Side Panel - Document Preview */}
-        {previewDocument ? (
+        {(previewDocument || previewArtifactDocument) ? (
           <PanelGroup direction="horizontal" className="flex-1">
             {/* Left Panel: Chat */}
             <Panel defaultSize={50} minSize={20} maxSize={70}>
@@ -8027,7 +8084,12 @@ IMPORTANTE:
             <Panel defaultSize={50} minSize={25}>
               <EditorErrorBoundary>
                 <div className="h-full animate-in slide-in-from-right duration-300">
-                  {previewDocument?.type === "excel" ? (
+                  {previewArtifactDocument ? (
+                    <OfficeSplitPreview
+                      document={previewArtifactDocument}
+                      onClose={handleCloseDocumentPreview}
+                    />
+                  ) : previewDocument?.type === "excel" ? (
                     <SpreadsheetEditorLazy
                       key="excel-preview"
                       title={previewDocument?.title || ""}

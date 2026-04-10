@@ -61,8 +61,8 @@ export async function downloadArtifact(input: string, fallbackName?: string): Pr
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);
   const filename =
-    fallbackName ||
     getFilenameFromDisposition(response.headers.get("content-disposition")) ||
+    fallbackName ||
     getFilenameFromUrl(input);
 
   const link = document.createElement("a");

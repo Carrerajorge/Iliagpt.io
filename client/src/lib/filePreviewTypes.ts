@@ -1,4 +1,4 @@
-export type FilePreviewType = "docx" | "xlsx" | "csv" | "pptx" | "text" | "unknown";
+export type FilePreviewType = "docx" | "xlsx" | "csv" | "pptx" | "pdf" | "text" | "unknown";
 
 export interface FilePreviewData {
   type: FilePreviewType;

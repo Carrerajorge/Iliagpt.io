@@ -62,4 +62,34 @@ describe("OfficeStepsPanel", () => {
 
     expect(screen.getByText("Esperando eventos del run office-run-missing…")).toBeInTheDocument();
   });
+
+  it("does not subscribe again when the run already has seeded progress", () => {
+    const subscribe = vi.fn(() => () => {});
+    useOfficeEngineStore.setState({
+      runs: new Map([
+        [
+          "office-run-seeded",
+          {
+            runId: "office-run-seeded",
+            status: "running",
+            steps: [
+              {
+                id: "handoff",
+                type: "handoff",
+                title: "Derivando al Office Engine",
+                status: "running",
+              },
+            ],
+          },
+        ],
+      ]),
+      activeRunId: "office-run-seeded",
+      subscribe,
+    } as any);
+
+    render(<OfficeStepsPanel runId="office-run-seeded" />);
+
+    expect(screen.getByText("Derivando al Office Engine")).toBeInTheDocument();
+    expect(subscribe).toHaveBeenCalledWith("office-run-seeded");
+  });
 });
