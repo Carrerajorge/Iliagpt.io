@@ -1,6 +1,8 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { randomUUID, createHmac } from "crypto";
 import type { Server as HttpServer } from "http";
+import fs from "fs";
+import path from "path";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { llmGateway } from "../lib/llmGateway";
 import { usageQuotaService } from "./usageQuotaService";
@@ -14,7 +16,11 @@ import {
   hasExplicitSpreadsheetArtifactRequest,
 } from "@shared/explicitArtifactRequests";
 
-const VERSION = "2026.4.5";
+const VERSION = "2026.4.9";
+
+function getWorkspaceRoot(): string {
+  return process.env.OPENCLAW_WORKSPACE_ROOT || path.join(process.cwd(), "openclaw-workspaces");
+}
 const TOKEN_SECRET = process.env.ENCRYPTION_KEY || randomUUID();
 
 const LOCAL_MODEL_BASE_URL = process.env.LOCAL_MODEL_URL || "http://localhost:5000";
@@ -606,17 +612,74 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       });
       break;
 
-    case "agents.files.list":
-      reply(ws, id, { files: [] });
+    case "agents.files.list": {
+      const filesDir = path.join(getWorkspaceRoot(), client.userId || "default", "files");
+      try {
+        if (!fs.existsSync(filesDir)) fs.mkdirSync(filesDir, { recursive: true });
+        const entries = fs.readdirSync(filesDir).map((name) => {
+          const stat = fs.statSync(path.join(filesDir, name));
+          return { name, size: stat.size, modified: stat.mtime.toISOString() };
+        });
+        reply(ws, id, { files: entries });
+      } catch {
+        reply(ws, id, { files: [] });
+      }
       break;
+    }
 
-    case "agents.files.get":
-      replyError(ws, id, -32601, "File not found");
+    case "agents.files.get": {
+      const fileName = params?.name || params?.path;
+      if (!fileName) { replyError(ws, id, -32602, "Missing file name"); break; }
+      const safeName = path.basename(fileName); // prevent path traversal
+      const filePath = path.join(getWorkspaceRoot(), client.userId || "default", "files", safeName);
+      try {
+        if (!fs.existsSync(filePath)) { replyError(ws, id, -32601, "File not found"); break; }
+        const data = fs.readFileSync(filePath);
+        const base64 = data.toString("base64");
+        const stat = fs.statSync(filePath);
+        reply(ws, id, { name: safeName, size: stat.size, data: base64, encoding: "base64" });
+      } catch (e: any) {
+        replyError(ws, id, -32603, e.message || "Failed to read file");
+      }
       break;
+    }
 
-    case "agents.files.set":
-      reply(ws, id, { ok: true });
+    case "agents.files.set": {
+      const setName = params?.name || params?.path;
+      if (!setName) { replyError(ws, id, -32602, "Missing file name"); break; }
+      const safeSetName = path.basename(setName);
+      const setDir = path.join(getWorkspaceRoot(), client.userId || "default", "files");
+      try {
+        if (!fs.existsSync(setDir)) fs.mkdirSync(setDir, { recursive: true });
+        const setPath = path.join(setDir, safeSetName);
+        if (params?.data) {
+          const encoding = params?.encoding === "base64" ? "base64" : "utf-8";
+          fs.writeFileSync(setPath, Buffer.from(params.data, encoding));
+        } else if (params?.content) {
+          fs.writeFileSync(setPath, params.content, "utf-8");
+        }
+        const stat = fs.statSync(setPath);
+        console.log(`[OpenClaw Gateway] File saved: ${safeSetName} (${stat.size} bytes) for user ${client.userId}`);
+        reply(ws, id, { ok: true, name: safeSetName, size: stat.size });
+      } catch (e: any) {
+        replyError(ws, id, -32603, e.message || "Failed to write file");
+      }
       break;
+    }
+
+    case "agents.files.delete": {
+      const delName = params?.name || params?.path;
+      if (!delName) { replyError(ws, id, -32602, "Missing file name"); break; }
+      const safeDelName = path.basename(delName);
+      const delPath = path.join(getWorkspaceRoot(), client.userId || "default", "files", safeDelName);
+      try {
+        if (fs.existsSync(delPath)) fs.unlinkSync(delPath);
+        reply(ws, id, { ok: true });
+      } catch (e: any) {
+        replyError(ws, id, -32603, e.message || "Failed to delete file");
+      }
+      break;
+    }
 
     case "sessions.list": {
       const mainOverride = sessionModelOverrides.get("main");
@@ -833,7 +896,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       break;
 
     case "chat.send": {
-      const userMessage = params?.message || params?.content || "";
+      let userMessage = params?.message || params?.content || "";
       const chatSessionKey = params?.sessionKey || "main";
       const runId = params?.idempotencyKey || randomUUID();
 
@@ -843,12 +906,74 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       const selectedModel = params?.model || sessionOverride?.model || "google/gemma-4-31b-it";
       const selectedProvider = params?.provider || sessionOverride?.provider || "openrouter";
 
-      if (!userMessage.trim()) {
+      // ── Process attachments: save to workspace + extract text for LLM context ──
+      // The Control UI sends: { id, dataUrl: "data:mime;base64,...", mimeType, fileName }
+      const rawAttachments: Array<any> = params?.attachments || [];
+      const attachmentContextParts: string[] = [];
+
+      if (rawAttachments.length > 0) {
+        const userDir = path.join(getWorkspaceRoot(), client.userId || "default", "files");
+        if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
+
+        for (const att of rawAttachments) {
+          const rawName = att.fileName || att.name || att.filename || `file-${Date.now()}`;
+          const safeName = path.basename(rawName).replace(/[^a-zA-Z0-9._\-]/g, "_");
+          const filePath = path.join(userDir, safeName);
+          try {
+            // Handle dataUrl format from Control UI: "data:application/pdf;base64,..."
+            if (att.dataUrl && typeof att.dataUrl === "string" && att.dataUrl.startsWith("data:")) {
+              const commaIdx = att.dataUrl.indexOf(",");
+              if (commaIdx > 0) {
+                fs.writeFileSync(filePath, Buffer.from(att.dataUrl.slice(commaIdx + 1), "base64"));
+              }
+            } else if (att.data) {
+              fs.writeFileSync(filePath, Buffer.from(att.data, att.encoding === "base64" ? "base64" : "utf-8"));
+            } else if (att.content) {
+              fs.writeFileSync(filePath, att.content, "utf-8");
+            }
+            console.log(`[OpenClaw Gateway] Attachment saved: ${safeName} (${att.mimeType || "unknown"}) for user ${client.userId}`);
+
+            // Extract text content for LLM context
+            const buf = fs.readFileSync(filePath);
+            const mime = att.mimeType || "";
+            let extractedText = "";
+
+            if (mime.includes("text") || safeName.endsWith(".csv") || safeName.endsWith(".txt") || safeName.endsWith(".md") || safeName.endsWith(".json")) {
+              extractedText = buf.toString("utf-8").slice(0, 50000);
+            } else if (safeName.endsWith(".xlsx") || safeName.endsWith(".xls")) {
+              try {
+                const XLSX = require("xlsx");
+                const wb = XLSX.read(buf, { type: "buffer" });
+                extractedText = wb.SheetNames.map((name: string) => {
+                  const sheet = wb.Sheets[name];
+                  return `[Hoja: ${name}]\n${XLSX.utils.sheet_to_csv(sheet)}`;
+                }).join("\n\n").slice(0, 50000);
+              } catch { extractedText = `[Archivo Excel: ${safeName} — no se pudo leer]`; }
+            } else if (safeName.endsWith(".docx") || safeName.endsWith(".doc")) {
+              extractedText = `[Documento Word guardado: ${safeName}, ${buf.length} bytes. Usa la herramienta de análisis de documentos para procesarlo en detalle.]`;
+            } else {
+              extractedText = `[Archivo binario: ${safeName}, ${buf.length} bytes, tipo: ${mime || "desconocido"}]`;
+            }
+
+            attachmentContextParts.push(`--- DOCUMENTO ADJUNTO: ${safeName} ---\n${extractedText}\n--- FIN: ${safeName} ---`);
+          } catch (err: any) {
+            console.error(`[OpenClaw Gateway] Failed to process attachment ${safeName}:`, err.message);
+          }
+        }
+      }
+
+      // Prepend attachment context to the user message
+      if (attachmentContextParts.length > 0) {
+        const attachmentContext = attachmentContextParts.join("\n\n");
+        userMessage = `${userMessage}\n\n[DOCUMENTOS ADJUNTOS - Analiza el contenido de estos archivos para responder]\n${attachmentContext}`;
+      }
+
+      if (!userMessage.trim() && rawAttachments.length === 0) {
         replyError(ws, id, "EMPTY_MESSAGE", "Message cannot be empty");
         break;
       }
 
-      reply(ws, id, { ok: true, runId });
+      reply(ws, id, { ok: true, runId, attachments: rawAttachments.length });
 
       client.chatHistory.push({ role: "user", content: userMessage });
       client.activeRuns.add(runId);

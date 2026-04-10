@@ -1,6 +1,6 @@
 import { storage } from "../storage";
 import { db } from "../db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import {
   gptSessions,
   type Gpt,
@@ -8,6 +8,9 @@ import {
   type GptSession,
   type InsertGptSession,
 } from "@shared/schema";
+import { createLogger } from "../utils/logger";
+
+const log = createLogger("gpt-session-service");
 
 export interface GptSessionContract {
   sessionId: string;
@@ -164,7 +167,7 @@ function normalizeRuntimePolicy(value: unknown): ResolvedGptRuntimeConfig["runti
   };
 }
 
-function buildKnowledgeContext(knowledgeItems: GptKnowledge[]): string {
+function buildRawKnowledgeContext(knowledgeItems: GptKnowledge[]): string {
   const activeItems = knowledgeItems.filter(k => k.isActive === "true" && k.extractedText);
   if (activeItems.length === 0) return "";
 
@@ -175,6 +178,59 @@ function buildKnowledgeContext(knowledgeItems: GptKnowledge[]): string {
   });
 
   return contextParts.join("\n\n");
+}
+
+/**
+ * Build knowledge context using semantic vector search against the user's query.
+ * Falls back to raw text concatenation when embeddings are not available.
+ */
+export async function buildKnowledgeContextForQuery(
+  gptId: string,
+  userQuery: string,
+  knowledgeItems: GptKnowledge[],
+  maxChunks: number = 5,
+): Promise<string> {
+  try {
+    const { generateEmbedding } = await import("../embeddingService");
+    const queryEmbedding = await generateEmbedding(userQuery);
+
+    // Vector search in ragChunks for this GPT's knowledge
+    const results = await db.execute(sql`
+      SELECT content, metadata,
+             1 - (embedding <=> ${sql.raw(`'[${queryEmbedding.join(",")}]'::vector`)}) as similarity
+      FROM rag_chunks
+      WHERE source = 'gpt_knowledge' AND source_id = ${gptId} AND is_active = true
+      ORDER BY embedding <=> ${sql.raw(`'[${queryEmbedding.join(",")}]'::vector`)}
+      LIMIT ${maxChunks}
+    `);
+
+    const rows = (results as any).rows;
+    if (!rows || rows.length === 0) {
+      // No embeddings yet — fallback to raw text
+      return buildRawKnowledgeContext(knowledgeItems);
+    }
+
+    const chunks = rows
+      .filter((r: any) => r.similarity > 0.3)
+      .map((r: any) => {
+        const meta = r.metadata as any;
+        return `[${meta?.fileName || "knowledge"}]: ${r.content}`;
+      });
+
+    if (chunks.length === 0) {
+      // Similarity too low — fallback to raw text
+      return buildRawKnowledgeContext(knowledgeItems);
+    }
+
+    return chunks.join("\n\n");
+  } catch (error: any) {
+    // Fallback to existing raw text approach if DB query or embeddings fail
+    log.warn("Semantic knowledge retrieval failed, falling back to raw text", {
+      gptId,
+      error: error.message,
+    });
+    return buildRawKnowledgeContext(knowledgeItems);
+  }
 }
 
 async function resolveGptRuntimeConfig(gpt: Gpt, configVersion: number): Promise<ResolvedGptRuntimeConfig> {
@@ -265,7 +321,7 @@ export async function createGptSession(chatId: string | null, gptId: string): Pr
   }
 
   const knowledgeItems = await storage.getGptKnowledge(gptId);
-  const knowledgeContext = buildKnowledgeContext(knowledgeItems);
+  const knowledgeContext = buildRawKnowledgeContext(knowledgeItems);
   const knowledgeContextIds = knowledgeItems
     .filter(k => k.isActive === "true")
     .map(k => k.id);
@@ -329,7 +385,7 @@ export async function getOrCreateSession(chatId: string, gptId: string): Promise
 
     const knowledgeItems = await storage.getGptKnowledge(gptId);
     const filteredKnowledgeItems = knowledgeItems.filter(k => existingSession.knowledgeContextIds?.includes(k.id));
-    const knowledgeContext = buildKnowledgeContext(filteredKnowledgeItems);
+    const knowledgeContext = buildRawKnowledgeContext(filteredKnowledgeItems);
     const runtimeConfig = await resolveGptRuntimeConfig(gpt, existingSession.configVersion);
 
     return mapDbSessionToContract(existingSession, runtimeConfig, knowledgeContext);
@@ -514,7 +570,7 @@ export async function getSessionById(sessionId: string): Promise<GptSessionContr
   if (!gpt) return null;
   
   const knowledgeItems = await storage.getGptKnowledge(session.gptId);
-  const knowledgeContext = buildKnowledgeContext(
+  const knowledgeContext = buildRawKnowledgeContext(
     knowledgeItems.filter(k => session.knowledgeContextIds?.includes(k.id))
   );
   const runtimeConfig = await resolveGptRuntimeConfig(gpt, session.configVersion);

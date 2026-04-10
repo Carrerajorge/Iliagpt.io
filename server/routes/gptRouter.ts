@@ -836,7 +836,32 @@ export function createGptRouter() {
         metadata: metadata || null,
         isActive: "true"
       });
+
+      // Fire-and-forget: process knowledge into vector chunks for semantic retrieval
+      void import("../services/gptKnowledgeProcessor").then(({ processGptKnowledge }) => {
+        processGptKnowledge(knowledge.id, req.params.id).catch((err) => {
+          console.error(`[GPT Knowledge] Background processing failed for ${knowledge.id}:`, err?.message);
+        });
+      });
+
       res.json(knowledge);
+    } catch (error: any) {
+      res.status(500).json({ error: safeErrorMessage(error) });
+    }
+  });
+
+  // GPT Knowledge processing status
+  router.get("/gpts/:id/knowledge/:knowledgeId/status", async (req, res) => {
+    try {
+      const knowledge = await storage.getGptKnowledgeById(req.params.knowledgeId);
+      if (!knowledge || knowledge.gptId !== req.params.id) {
+        return res.status(404).json({ error: "Knowledge item not found" });
+      }
+      res.json({
+        id: knowledge.id,
+        embeddingStatus: knowledge.embeddingStatus,
+        chunkCount: knowledge.chunkCount,
+      });
     } catch (error: any) {
       res.status(500).json({ error: safeErrorMessage(error) });
     }

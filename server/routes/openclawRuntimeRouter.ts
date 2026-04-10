@@ -409,5 +409,79 @@ export function createOpenClawRuntimeRouter(): Router {
     }
   });
 
+  // ── File upload for OpenClaw workspace ─────────────────────────────
+  router.post("/files/upload", async (req, res) => {
+    try {
+      const multer = (await import("multer")).default;
+      const fsSync = await import("fs");
+      const pathMod = await import("path");
+
+      const userId = getOrCreateSecureUserId(req);
+      const workspaceRoot = process.env.OPENCLAW_WORKSPACE_ROOT || pathMod.join(process.cwd(), "openclaw-workspaces");
+      const userDir = pathMod.join(workspaceRoot, userId, "files");
+      if (!fsSync.existsSync(userDir)) fsSync.mkdirSync(userDir, { recursive: true });
+
+      const upload = multer({
+        dest: userDir,
+        limits: { fileSize: 500 * 1024 * 1024 }, // 500MB — sin límites prácticos
+      }).single("file");
+
+      upload(req, res, async (err: any) => {
+        if (err) return res.status(400).json({ error: err.message });
+        const file = req.file;
+        if (!file) return res.status(400).json({ error: "No file provided" });
+
+        // Rename to original filename (safe)
+        const safeName = pathMod.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, "_");
+        const finalPath = pathMod.join(userDir, safeName);
+        fsSync.renameSync(file.path, finalPath);
+
+        console.log(`[OpenClaw] File uploaded: ${safeName} (${file.size} bytes) for user ${userId}`);
+        return res.json({ ok: true, name: safeName, size: file.size, path: `/openclaw-workspaces/${userId}/files/${safeName}` });
+      });
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+
+  // List files in user's workspace
+  router.get("/files", async (req, res) => {
+    try {
+      const fsSync = await import("fs");
+      const pathMod = await import("path");
+      const userId = getOrCreateSecureUserId(req);
+      const workspaceRoot = process.env.OPENCLAW_WORKSPACE_ROOT || pathMod.join(process.cwd(), "openclaw-workspaces");
+      const userDir = pathMod.join(workspaceRoot, userId, "files");
+
+      if (!fsSync.existsSync(userDir)) return res.json({ files: [] });
+
+      const files = fsSync.readdirSync(userDir).map((name: string) => {
+        const stat = fsSync.statSync(pathMod.join(userDir, name));
+        return { name, size: stat.size, modified: stat.mtime.toISOString() };
+      });
+
+      return res.json({ files });
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+
+  // Delete a file
+  router.delete("/files/:name", async (req, res) => {
+    try {
+      const fsSync = await import("fs");
+      const pathMod = await import("path");
+      const userId = getOrCreateSecureUserId(req);
+      const workspaceRoot = process.env.OPENCLAW_WORKSPACE_ROOT || pathMod.join(process.cwd(), "openclaw-workspaces");
+      const safeName = pathMod.basename(req.params.name);
+      const filePath = pathMod.join(workspaceRoot, userId, "files", safeName);
+
+      if (fsSync.existsSync(filePath)) fsSync.unlinkSync(filePath);
+      return res.json({ ok: true });
+    } catch (error) {
+      return respondError(res, error);
+    }
+  });
+
   return router;
 }
