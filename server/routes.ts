@@ -51,6 +51,7 @@ import { createHealthRouter as createPareHealthRouter, getHealthSummary as getPa
 import { getMetricsSummary as getPareMetricsSummary } from "./lib/pareMetrics";
 import errorRouter from "./routes/errorRouter";
 import { createSpreadsheetRouter } from "./routes/spreadsheetRoutes";
+import { createOfficeEngineRouter } from "./routes/officeEngineRoutes";
 import { createChatRoutes } from "./routes/chatRoutes";
 import { createAgentModeRouter } from "./routes/agentRoutes";
 import { createOrchestratorRouter } from "./routes/orchestratorRoutes";
@@ -1803,6 +1804,9 @@ try{
   app.use("/api/instructions", createInstructionRouter());
   app.use("/api/errors", errorRouter);
   app.use("/api/spreadsheet", createSpreadsheetRouter());
+  if (process.env.FEATURE_OFFICE_ENGINE === "1") {
+    app.use("/api/office-engine", createOfficeEngineRouter());
+  }
   app.use("/api/skills", createSkillsRouter());
   app.use("/api/skill-platform", createSkillPlatformRouter());
   app.use("/api/chat", createChatRoutes());

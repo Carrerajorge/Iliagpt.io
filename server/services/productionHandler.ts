@@ -9,8 +9,18 @@ import type { Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
 import * as path from 'path';
+import { StepStreamer } from "../agent/stepStreamer";
+import { officeEngine } from "../lib/office/engine/OfficeEngine";
+import {
+    markOfficeRunSessionFinished,
+    registerOfficeRunSession,
+    type OfficeRunSession,
+} from "../lib/office/runSessionRegistry";
 import type { IntentResult } from './intentRouter';
 import { libraryService } from "./libraryService";
+import { storage } from "../storage";
+import { conversationStateService } from "./conversationStateService";
+import { buildAssistantMessage, buildAssistantMessageMetadata } from "@shared/assistantMessage";
 import {
     startProductionPipeline,
     type ProductionEvent,
@@ -42,6 +52,15 @@ interface ProductionPresentationHints {
     brand?: string;
 }
 
+type ArtifactGenerationDocKind = "docx" | "xlsx" | "pptx" | "pdf";
+type ArtifactGenerationEngine = "office-engine" | "artifact-pipeline";
+
+interface ArtifactGenerationSpec {
+    workflow: "artifact_generation";
+    engine: ArtifactGenerationEngine;
+    requestedDocKind: ArtifactGenerationDocKind;
+}
+
 function extractPresentationHints(message: string): ProductionPresentationHints {
     const lower = String(message || '').toLowerCase();
 
@@ -68,6 +87,66 @@ function extractPresentationHints(message: string): ProductionPresentationHints 
     };
 }
 
+function resolveRequestedDocKind(intentResult: IntentResult, message?: string): ArtifactGenerationDocKind {
+    const requestedFormat = intentResult.output_format;
+    if (requestedFormat === "docx" || requestedFormat === "xlsx" || requestedFormat === "pptx" || requestedFormat === "pdf") {
+        return requestedFormat;
+    }
+
+    const lower = String(message || "").toLowerCase();
+    if (/\b(pdf)\b/i.test(lower)) return "pdf";
+    if (/\b(excel|xlsx|spreadsheet|hoja de c[aá]lculo)\b/i.test(lower)) return "xlsx";
+    if (/\b(ppt|pptx|powerpoint|presentaci[oó]n|slides?)\b/i.test(lower)) return "pptx";
+    return intentResult.intent === "CREATE_SPREADSHEET"
+        ? "xlsx"
+        : intentResult.intent === "CREATE_PRESENTATION"
+            ? "pptx"
+            : "docx";
+}
+
+function resolveArtifactGenerationSpec(intentResult: IntentResult, message?: string): ArtifactGenerationSpec {
+    const requestedDocKind = resolveRequestedDocKind(intentResult, message);
+    return {
+        workflow: "artifact_generation",
+        engine: requestedDocKind === "docx" ? "office-engine" : "artifact-pipeline",
+        requestedDocKind,
+    };
+}
+
+function shouldUseOfficeEngine(spec: ArtifactGenerationSpec, deliverables: Array<'word' | 'excel' | 'ppt' | 'pdf'>): boolean {
+    return spec.requestedDocKind === "docx"
+        && deliverables.length === 1
+        && deliverables[0] === "word";
+}
+
+const OFFICE_STAGE_PROGRESS: Record<string, number> = {
+    plan: 8,
+    unpack: 16,
+    parse: 26,
+    map: 38,
+    edit: 54,
+    validate: 68,
+    repack: 80,
+    roundtrip_diff: 88,
+    preview: 94,
+    export: 100,
+};
+
+function inferOfficeStageFromStep(step: { title?: string; type?: string }): string {
+    const title = String(step.title || "").toLowerCase();
+    if (title.includes("plan")) return "plan";
+    if (title.includes("descompr")) return "unpack";
+    if (title.includes("parse")) return "parse";
+    if (title.includes("mapa")) return "map";
+    if (title.includes("edici")) return "edit";
+    if (title.includes("valid")) return "validate";
+    if (title.includes("repack")) return "repack";
+    if (title.includes("round-trip") || title.includes("roundtrip")) return "roundtrip_diff";
+    if (title.includes("vista previa") || title.includes("preview")) return "preview";
+    if (title.includes("export")) return "export";
+    return step.type === "reading" ? "unpack" : step.type === "editing" ? "edit" : "plan";
+}
+
 async function buildArtifactPreview(artifact: Artifact): Promise<{ previewUrl?: string; previewHtml?: string } | null> {
     try {
         const preview = await generateFilePreview(artifact.filename, artifact.mimeType || '', artifact.buffer);
@@ -85,6 +164,17 @@ export interface ProductionHandlerResult {
     handled: boolean;
     result?: ProductionResult;
     error?: string;
+    assistantContent?: string;
+    artifact?: {
+        type: string;
+        filename: string;
+        downloadUrl: string;
+        previewUrl?: string;
+        previewHtml?: string;
+        size?: number;
+        mimeType?: string;
+        metadata?: Record<string, unknown>;
+    };
 }
 
 // ============================================================================
@@ -398,6 +488,7 @@ export async function handleProductionRequest(
     const streamRequestId = requestId || runId;
     const deliverables = getDeliverables(intentResult, message);
     const presentationHints = extractPresentationHints(message);
+    const artifactSpec = resolveArtifactGenerationSpec(intentResult, message);
 
     const emit = (event: string, data: Record<string, unknown>): void => {
         writeSse(res, event, {
@@ -406,6 +497,71 @@ export async function handleProductionRequest(
             ...(assistantMessageId ? { assistantMessageId } : {}),
             ...data,
         });
+    };
+
+    let persistedAssistantMessageId = assistantMessageId ?? null;
+
+    const ensureAssistantMessageId = async (): Promise<string | null> => {
+        if (persistedAssistantMessageId) {
+            return persistedAssistantMessageId;
+        }
+
+        try {
+            const assistantMessage = await storage.createChatMessage({
+                chatId,
+                role: "assistant",
+                content: "",
+                status: "pending",
+                requestId: `${streamRequestId}:assistant`,
+            });
+            persistedAssistantMessageId = assistantMessage.id;
+            return persistedAssistantMessageId;
+        } catch (error) {
+            console.warn("[ProductionHandler] Failed to create assistant placeholder:", error);
+            return null;
+        }
+    };
+
+    const persistAssistantResult = async (
+        content: string,
+        artifact?: ProductionHandlerResult["artifact"],
+        failed = false,
+    ): Promise<void> => {
+        const normalizedContent = String(content || "").trim();
+        if (!normalizedContent) {
+            return;
+        }
+
+        const assistantPayload = buildAssistantMessage({
+            content: normalizedContent,
+            artifact,
+        });
+        const finalMetadata = buildAssistantMessageMetadata(assistantPayload);
+        const resolvedAssistantMessageId = await ensureAssistantMessageId();
+
+        if (resolvedAssistantMessageId) {
+            await storage.updateChatMessageContent(
+                resolvedAssistantMessageId,
+                assistantPayload.content,
+                failed ? "failed" : "done",
+                finalMetadata,
+            );
+        }
+
+        try {
+            await conversationStateService.appendMessage(
+                chatId,
+                "assistant",
+                assistantPayload.content,
+                {
+                    chatMessageId: resolvedAssistantMessageId || undefined,
+                    requestId: `${streamRequestId}:state:assistant`,
+                    metadata: finalMetadata || undefined,
+                },
+            );
+        } catch (error) {
+            console.warn("[ProductionHandler] Failed to persist assistant conversation state:", error);
+        }
     };
 
     console.log(`[ProductionHandler] Deliverables: ${deliverables.join(', ')}`);
@@ -426,6 +582,10 @@ export async function handleProductionRequest(
     emit('production_start', {
         runId,
         intent: intentResult.intent,
+        workflow: artifactSpec.workflow,
+        engine: artifactSpec.engine,
+        docKind: artifactSpec.requestedDocKind,
+        classification: artifactSpec.workflow,
         topic: intentResult.slots.topic || message,
         deliverables,
         timestamp: Date.now(),
@@ -498,6 +658,12 @@ export async function handleProductionRequest(
                     downloadUrl: stored.downloadUrl,
                     size: artifact.size,
                     library: stored.library,
+                    metadata: {
+                        workflow: artifactSpec.workflow,
+                        classification: artifactSpec.workflow,
+                        engine: artifactSpec.engine,
+                        docKind: artifact.type === "excel" ? "xlsx" : "docx",
+                    },
                 });
             }
 
@@ -541,6 +707,24 @@ export async function handleProductionRequest(
                 const icon = getArtifactIcon(a.type);
                 return `- ${icon} [${a.filename}](${a.downloadUrl}) (${formatSize(a.size)})`;
             }).join('\n');
+            const primaryArtifact = artifactsWithUrls[0];
+            const doneArtifact = primaryArtifact
+                ? {
+                    artifactId: `${runId}_${primaryArtifact.type}`,
+                    type: primaryArtifact.type,
+                    mimeType: artifacts[0]?.mimeType || "application/octet-stream",
+                    sizeBytes: primaryArtifact.size,
+                    downloadUrl: primaryArtifact.downloadUrl,
+                    name: primaryArtifact.filename,
+                    filename: primaryArtifact.filename,
+                    metadata: {
+                        workflow: artifactSpec.workflow,
+                        classification: artifactSpec.workflow,
+                        engine: artifactSpec.engine,
+                        docKind: primaryArtifact.type === "word" ? "docx" : "pdf",
+                    },
+                }
+                : undefined;
 
             const summary = [
                 '## 📚 Exportacion Academica Completada',
@@ -559,6 +743,8 @@ export async function handleProductionRequest(
             emit('production_complete', {
                 runId,
                 success: true,
+                workflow: artifactSpec.workflow,
+                engine: artifactSpec.engine,
                 artifactsCount: artifacts.length,
                 summary,
                 timestamp: Date.now(),
@@ -575,11 +761,253 @@ export async function handleProductionRequest(
                 sequenceId: 2,
                 runId,
                 timestamp: Date.now(),
+                artifact: doneArtifact,
             });
 
             res.end();
 
-            return { handled: true };
+            const finalResult = {
+                handled: true,
+                assistantContent: summary,
+                artifact: primaryArtifact
+                    ? {
+                        type: primaryArtifact.type,
+                        filename: primaryArtifact.filename,
+                        downloadUrl: primaryArtifact.downloadUrl,
+                        size: primaryArtifact.size,
+                        mimeType: artifacts[0]?.mimeType,
+                        metadata: {
+                            workflow: artifactSpec.workflow,
+                            classification: artifactSpec.workflow,
+                            engine: artifactSpec.engine,
+                            docKind: primaryArtifact.type === "word" ? "docx" : "pdf",
+                        },
+                    }
+                    : undefined,
+            };
+            await persistAssistantResult(finalResult.assistantContent || summary, finalResult.artifact);
+            return finalResult;
+        }
+
+        if (shouldUseOfficeEngine(artifactSpec, deliverables)) {
+            const officeStreamer = new StepStreamer();
+            const officeController = new AbortController();
+            const pendingEvents: OfficeRunSession["pendingEvents"] = [];
+
+            const session: OfficeRunSession = {
+                runId: "",
+                userId,
+                streamer: officeStreamer,
+                controller: officeController,
+                result: undefined as unknown as Promise<any>,
+                finished: false,
+                pendingEvents,
+            };
+
+            officeStreamer.on("step", (step: any) => {
+                pendingEvents.push({ event: "step", data: step });
+                const stage = inferOfficeStageFromStep(step);
+                emit("production_event", {
+                    workflow: artifactSpec.workflow,
+                    engine: "office-engine",
+                    runId: session.runId || runId,
+                    stage,
+                    progress: OFFICE_STAGE_PROGRESS[stage] ?? 0,
+                    status: step.status,
+                    stepId: step.id,
+                    stepType: step.type,
+                    title: step.title,
+                    output: step.output,
+                    diff: step.diff,
+                    artifact: step.artifact,
+                    message: step.output || step.description || step.title,
+                    timestamp: Date.now(),
+                });
+            });
+
+            const officeRunIdPromise = new Promise<string>((resolve) => {
+                session.runId = "";
+                session.pendingEvents = pendingEvents;
+                session.finished = false;
+                const onStart = (officeRunId: string) => {
+                    registerOfficeRunSession(officeRunId, session);
+                    resolve(officeRunId);
+                };
+                session.result = officeEngine.run(
+                    {
+                        userId,
+                        conversationId: streamConversationId,
+                        objective: message,
+                        docKind: "docx",
+                        onStart,
+                    },
+                    officeStreamer,
+                    officeController.signal,
+                );
+            });
+
+            session.result
+                .then((result) => {
+                    markOfficeRunSessionFinished(result.runId, result.status, result.error?.message);
+                })
+                .catch((err) => {
+                    if (session.runId) {
+                        markOfficeRunSessionFinished(
+                            session.runId,
+                            "failed",
+                            err instanceof Error ? err.message : String(err),
+                        );
+                    }
+                });
+
+            const officeRunRequestId = await Promise.race([
+                officeRunIdPromise,
+                session.result.then((result) => result.runId),
+            ]);
+
+            emit("production_event", {
+                workflow: artifactSpec.workflow,
+                engine: "office-engine",
+                runId: officeRunRequestId,
+                stage: "handoff",
+                progress: 4,
+                status: "completed",
+                message: "Solicitud derivada al Office Engine.",
+                timestamp: Date.now(),
+            });
+
+            const officeResult = await session.result;
+
+            if (officeResult.status !== "succeeded" || officeResult.artifacts.length === 0) {
+                const officeFailure = officeResult.error?.message || "No se pudo completar el run documental.";
+
+                emit("production_complete", {
+                    runId: officeResult.runId,
+                    success: false,
+                    workflow: artifactSpec.workflow,
+                    engine: "office-engine",
+                    docKind: "docx",
+                    artifactsCount: officeResult.artifacts.length,
+                    summary: officeFailure,
+                    error: officeFailure,
+                    timestamp: Date.now(),
+                });
+
+                emit("production_error", {
+                    runId: officeResult.runId,
+                    workflow: artifactSpec.workflow,
+                    engine: "office-engine",
+                    error: officeFailure,
+                    timestamp: Date.now(),
+                });
+
+                emit("chunk", {
+                    content: `❌ **Error en la producción documental**\n\n${officeFailure}`,
+                    sequenceId: 1,
+                    runId: officeResult.runId,
+                });
+
+                emit("done", {
+                    sequenceId: 2,
+                    runId: officeResult.runId,
+                    timestamp: Date.now(),
+                });
+
+                res.end();
+
+                const finalResult = {
+                    handled: true,
+                    error: officeFailure,
+                    assistantContent: `❌ **Error en la producción documental**\n\n${officeFailure}`,
+                };
+                await persistAssistantResult(finalResult.assistantContent || officeFailure, undefined, true);
+                return finalResult;
+            }
+
+            const exportedArtifact = officeResult.artifacts[0];
+            const summary = "Documento listo para descargar. Vista previa y pipeline estructural disponibles.";
+            const exportedName = `${intentResult.slots.title || intentResult.slots.topic || "documento"}.docx`;
+            const officeDoneArtifact = {
+                artifactId: `${officeResult.runId}_docx`,
+                type: "document",
+                mimeType: exportedArtifact.mimeType,
+                sizeBytes: exportedArtifact.sizeBytes,
+                downloadUrl: exportedArtifact.downloadUrl || `/api/office-engine/runs/${officeResult.runId}/artifacts/exported`,
+                previewUrl: exportedArtifact.previewUrl || `/api/office-engine/runs/${officeResult.runId}/artifacts/preview`,
+                name: exportedName,
+                filename: exportedName,
+                metadata: {
+                    workflow: artifactSpec.workflow,
+                    classification: artifactSpec.workflow,
+                    engine: "office-engine",
+                    docKind: "docx",
+                    officeRunId: officeResult.runId,
+                    officeStatus: officeResult.status,
+                    fallbackLevel: officeResult.fallbackLevel,
+                    durationMs: officeResult.durationMs,
+                },
+            };
+
+            emit("artifact", {
+                type: "docx",
+                filename: exportedName,
+                downloadUrl: officeDoneArtifact.downloadUrl,
+                previewUrl: officeDoneArtifact.previewUrl,
+                size: exportedArtifact.sizeBytes,
+                mimeType: exportedArtifact.mimeType,
+                metadata: officeDoneArtifact.metadata,
+            });
+
+            emit("production_complete", {
+                runId: officeResult.runId,
+                success: true,
+                workflow: artifactSpec.workflow,
+                engine: "office-engine",
+                docKind: "docx",
+                artifactsCount: officeResult.artifacts.length,
+                summary,
+                timestamp: Date.now(),
+            });
+
+            emit("chunk", {
+                content: summary,
+                sequenceId: 1,
+                runId: officeResult.runId,
+            });
+
+            emit("done", {
+                sequenceId: 2,
+                runId: officeResult.runId,
+                timestamp: Date.now(),
+                artifact: officeDoneArtifact,
+            });
+
+            res.end();
+
+            const finalResult = {
+                handled: true,
+                assistantContent: summary,
+                artifact: {
+                    type: "docx",
+                    filename: exportedName,
+                    downloadUrl: exportedArtifact.downloadUrl || `/api/office-engine/runs/${officeResult.runId}/artifacts/exported`,
+                    previewUrl: exportedArtifact.previewUrl || `/api/office-engine/runs/${officeResult.runId}/artifacts/preview`,
+                    size: exportedArtifact.sizeBytes,
+                    mimeType: exportedArtifact.mimeType,
+                    metadata: {
+                        workflow: artifactSpec.workflow,
+                        classification: artifactSpec.workflow,
+                        engine: "office-engine",
+                        docKind: "docx",
+                        officeRunId: officeResult.runId,
+                        officeStatus: officeResult.status,
+                        fallbackLevel: officeResult.fallbackLevel,
+                        durationMs: officeResult.durationMs,
+                    },
+                },
+            };
+            await persistAssistantResult(finalResult.assistantContent || summary, finalResult.artifact);
+            return finalResult;
         }
 
         const pipelineIntent: DocumentIntent =
@@ -643,12 +1071,46 @@ export async function handleProductionRequest(
                 previewUrl: preview?.previewUrl,
                 previewHtml: preview?.previewHtml,
                 mimeType: artifact.mimeType,
-                metadata: artifact.metadata,
+                metadata: {
+                    workflow: artifactSpec.workflow,
+                    classification: artifactSpec.workflow,
+                    engine: artifactSpec.engine,
+                    docKind: artifactSpec.requestedDocKind,
+                    ...(artifact.metadata || {}),
+                },
             });
         }
 
         const hasArtifacts = artifactsWithUrls.length > 0;
         const isFailure = result.status === 'failed' || !hasArtifacts;
+        const primaryArtifact = artifactsWithUrls[0];
+        const primarySourceArtifact = result.artifacts[0];
+        const doneArtifact = primaryArtifact
+            ? {
+                artifactId: `${runId}_${primaryArtifact.type}`,
+                type: primaryArtifact.type === "word"
+                    ? "document"
+                    : primaryArtifact.type === "excel"
+                        ? "spreadsheet"
+                        : primaryArtifact.type === "ppt"
+                            ? "presentation"
+                            : primaryArtifact.type,
+                mimeType: primarySourceArtifact?.mimeType || "application/octet-stream",
+                sizeBytes: primaryArtifact.size,
+                downloadUrl: primaryArtifact.downloadUrl,
+                name: primaryArtifact.filename,
+                filename: primaryArtifact.filename,
+                previewUrl: undefined,
+                previewHtml: undefined,
+                metadata: {
+                    workflow: artifactSpec.workflow,
+                    classification: artifactSpec.workflow,
+                    engine: artifactSpec.engine,
+                    docKind: artifactSpec.requestedDocKind,
+                    ...(primarySourceArtifact?.metadata || {}),
+                },
+            }
+            : undefined;
 
         if (isFailure) {
             const failureMessage = getProductionFailureMessage(result, deliverables);
@@ -656,6 +1118,9 @@ export async function handleProductionRequest(
             emit('production_complete', {
                 runId,
                 success: false,
+                workflow: artifactSpec.workflow,
+                engine: artifactSpec.engine,
+                docKind: artifactSpec.requestedDocKind,
                 artifactsCount: result.artifacts.length,
                 qaScore: result.qaReport?.overallScore,
                 summary: result.summary,
@@ -665,6 +1130,9 @@ export async function handleProductionRequest(
 
             emit('production_error', {
                 runId,
+                workflow: artifactSpec.workflow,
+                engine: artifactSpec.engine,
+                docKind: artifactSpec.requestedDocKind,
                 error: failureMessage,
                 status: result.status,
                 artifactsCount: result.artifacts.length,
@@ -685,11 +1153,14 @@ export async function handleProductionRequest(
 
             res.end();
 
-            return {
+            const finalResult = {
                 handled: true,
                 result,
                 error: failureMessage,
+                assistantContent: `❌ **Error en la producción documental**\n\n${failureMessage}\n\n${result.summary || 'No se pudo completar la solicitud.'}`,
             };
+            await persistAssistantResult(finalResult.assistantContent || failureMessage, undefined, true);
+            return finalResult;
         }
 
         // Emit completion
@@ -698,6 +1169,9 @@ export async function handleProductionRequest(
         emit('production_complete', {
             runId,
             success: result.status === 'success',
+            workflow: artifactSpec.workflow,
+            engine: artifactSpec.engine,
+            docKind: artifactSpec.requestedDocKind,
             artifactsCount: result.artifacts.length,
             qaScore: result.qaReport?.overallScore,
             summary: deliverySummary,
@@ -715,14 +1189,37 @@ export async function handleProductionRequest(
             sequenceId: 2,
             runId,
             timestamp: Date.now(),
+            artifact: doneArtifact,
         });
 
         res.end();
 
-        return {
+        const finalResult = {
             handled: true,
             result,
+            assistantContent: deliverySummary,
+            artifact: (() => {
+                const primaryArtifact = artifactsWithUrls[0];
+                const sourceArtifact = result.artifacts[0];
+                if (!primaryArtifact) return undefined;
+                return {
+                    type: primaryArtifact.type,
+                    filename: primaryArtifact.filename,
+                    downloadUrl: primaryArtifact.downloadUrl,
+                    size: primaryArtifact.size,
+                    mimeType: sourceArtifact?.mimeType,
+                    metadata: {
+                        workflow: artifactSpec.workflow,
+                        classification: artifactSpec.workflow,
+                        engine: artifactSpec.engine,
+                        docKind: artifactSpec.requestedDocKind,
+                        ...(sourceArtifact?.metadata || {}),
+                    },
+                };
+            })(),
         };
+        await persistAssistantResult(finalResult.assistantContent || deliverySummary, finalResult.artifact);
+        return finalResult;
 
     } catch (error: any) {
         console.error('[ProductionHandler] Pipeline error:', error);
@@ -735,6 +1232,9 @@ export async function handleProductionRequest(
 
         emit('production_error', {
             runId,
+            workflow: artifactSpec.workflow,
+            engine: artifactSpec.engine,
+            docKind: artifactSpec.requestedDocKind,
             error: userMessage,
             timestamp: Date.now(),
         });
@@ -754,10 +1254,13 @@ export async function handleProductionRequest(
 
         res.end();
 
-        return {
+        const finalResult = {
             handled: true,
             error: error.message,
+            assistantContent: `❌ **Error en la producción documental**\n\n${userMessage}\n\nPor favor, intenta de nuevo o reformula tu solicitud.`,
         };
+        await persistAssistantResult(finalResult.assistantContent || userMessage, undefined, true);
+        return finalResult;
     }
 }
 

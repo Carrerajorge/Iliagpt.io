@@ -166,6 +166,7 @@ const PricingPage = lazyWithRetry(() => import("@/pages/pricing"));
 const BusinessPage = lazyWithRetry(() => import("@/pages/business"));
 const DownloadPage = lazyWithRetry(() => import("@/pages/download"));
 const PowerPage = lazyWithRetry(() => import("@/pages/power"));
+const OfficeEngineDemoPage = lazyWithRetry(() => import("@/pages/office-engine-demo"));
 const MemoryPage = lazyWithRetry(() => import("@/pages/memory"));
 const MemoriesPage = lazyWithRetry(() => import("@/pages/memories"));
 const InstructionsPage = lazyWithRetry(() => import("@/pages/instructions"));
@@ -373,6 +374,7 @@ function Router() {
             <Route path="/business" component={BusinessPage} />
             <Route path="/download" component={DownloadPage} />
             <Route path="/power" component={PowerPage} />
+            <Route path="/office-engine-demo" component={OfficeEngineDemoPage} />
             <Route component={NotFound} />
           </Switch>
         </main>

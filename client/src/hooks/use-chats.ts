@@ -85,9 +85,11 @@ export interface MessageArtifact {
   sizeBytes?: number;
   downloadUrl: string;
   previewUrl?: string;
+  previewHtml?: string;
   name?: string;
   filename?: string;
   contentUrl?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface Message {

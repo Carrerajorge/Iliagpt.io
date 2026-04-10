@@ -74,3 +74,35 @@ export const wordGeneratorCapability: AgentCapability = {
         }
     }
 };
+
+// ---------------------------------------------------------------------------
+// Office Engine — level 0 fallback
+// ---------------------------------------------------------------------------
+//
+// Pure buffer-returning helper used by the OfficeEngine fallbackLadder. Does
+// not touch the filesystem and does not depend on the agent capability shape.
+
+export interface FreshDocxSpec {
+    title: string;
+    paragraphs: string[];
+}
+
+export async function generateFreshDocx(spec: FreshDocxSpec): Promise<Buffer> {
+    const docElements: any[] = [];
+    docElements.push(new Paragraph({
+        text: spec.title,
+        heading: HeadingLevel.HEADING_1,
+        spacing: { after: 400 },
+    }));
+    for (const p of spec.paragraphs) {
+        if (p.trim() === "") continue;
+        docElements.push(new Paragraph({
+            children: [new TextRun({ text: p, size: 24, font: "Calibri" })],
+            spacing: { after: 200 },
+        }));
+    }
+    const doc = new Document({
+        sections: [{ properties: {}, children: docElements }],
+    });
+    return Packer.toBuffer(doc);
+}

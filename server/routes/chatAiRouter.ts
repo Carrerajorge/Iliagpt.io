@@ -28,7 +28,12 @@ import { routeIntent, type IntentResult } from "../services/intentRouter";
 import { questionClassifier, type QuestionClassification } from "../services/questionClassifier";
 import { answerFirstEnforcer } from "../services/answerFirstEnforcer";
 import { academicSearchService } from "../services/academicSearchService";
-import { isProductionIntent, handleProductionRequest, getDeliverables } from "../services/productionHandler";
+import {
+  isProductionIntent,
+  handleProductionRequest,
+  getDeliverables,
+  type ProductionHandlerResult,
+} from "../services/productionHandler";
 import type { z } from "zod";
 import { getUserId } from "../types/express";
 import { semanticMemoryStore } from "../memory/SemanticMemoryStore";
@@ -5180,6 +5185,24 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
     let capturedTotalSearches = 0;
     let streamConversationId = "";
 
+    const finalizeProductionAssistantMessage = async (
+      productionResult: ProductionHandlerResult,
+    ): Promise<void> => {
+      const assistantContent = productionResult.assistantContent?.trim();
+
+      if (assistantContent) {
+        fullContent = assistantContent;
+      }
+
+      if (claimedRun && !runFinalized) {
+        await storage.updateChatRunStatus(
+          claimedRun.id,
+          productionResult.error ? "failed" : "done",
+        );
+        runFinalized = true;
+      }
+    };
+
     const STREAM_HARD_TIMEOUT_MS = 180_000;
     const STREAM_IDLE_TIMEOUT_MS = 90_000; // must exceed llmGateway idle timeout (60s)
 
@@ -6533,7 +6556,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           try {
             const effectiveChatId = chatId || conversationId || streamConversationId;
 
-            await handleProductionRequest(
+            const productionResult = await handleProductionRequest(
               {
                 message: userMessageText,
                 userId: userId,
@@ -6546,6 +6569,8 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
               },
               res,
             );
+
+            await finalizeProductionAssistantMessage(productionResult);
 
             return;
           } catch (productionError: any) {
@@ -6987,7 +7012,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           console.log(`[Stream] 🚀 PRODUCTION MODE ACTIVATED: intent=${intentResult.intent}, topic=${intentResult.slots.topic}`);
 
           try {
-            await handleProductionRequest(
+            const productionResult = await handleProductionRequest(
               {
                 message: userMessageText,
                 userId: userId,
@@ -7000,6 +7025,8 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
               },
               res
             );
+
+            await finalizeProductionAssistantMessage(productionResult);
 
             // Production handler takes over response, we're done
             if (heartbeatInterval) clearInterval(heartbeatInterval);

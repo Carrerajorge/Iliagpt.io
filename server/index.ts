@@ -386,6 +386,27 @@ export function log(message: string, source = "express") {
     log(`[WARNING] Agentic system integration failed: ${(err as Error).message}`);
   }
 
+  // Initialize the Office Engine worker pool (preprovisioned, behind feature flag)
+  if (process.env.FEATURE_OFFICE_ENGINE === "1") {
+    try {
+      const { officeWorkerPool } = await import("./lib/office/workerPool");
+      officeWorkerPool.init();
+      registerCleanup(async () => {
+        log("Shutting down Office Engine worker pool...");
+        await officeWorkerPool.shutdown();
+      });
+      // Register the agent capability so the LLM tool-use loop can call it.
+      const [{ capabilityRegistry }, { officeEngineEditDocxCapability }] = await Promise.all([
+        import("./agent/capabilities/registry"),
+        import("./agent/capabilities/office/officeEngineTool"),
+      ]);
+      capabilityRegistry.register(officeEngineEditDocxCapability);
+      log("[OfficeEngine] Worker pool + agent capability initialized");
+    } catch (err) {
+      log(`[WARNING] Office Engine init failed: ${(err as Error).message}`);
+    }
+  }
+
   // Ensure unmatched API routes return consistent JSON (instead of Express' default HTML 404).
   // This MUST be registered after all routes, but before the API error handler.
   app.use("/api", (req, _res, next) => {

@@ -144,6 +144,7 @@ import { parseDocumentBlocks, type DocumentBlock } from "@/components/message-li
 import { ChatMessageList, ChatMessageListProps } from "@/components/chat/ChatMessageList";
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { useChatStore } from "@/stores/chatStore";
+import { useOfficeEngineStore } from "@/stores/officeEngineStore";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { PromptSuggestions, type PromptSuggestionSelection } from "@/components/prompt-suggestions";
 import { MessageFeedback } from "@/components/message-feedback";
@@ -6731,12 +6732,69 @@ IMPORTANTE:
               let streamSearchQueries: Array<{ query: string; resultCount: number; status: string }> = [];
               let streamTotalSearches = 0;
               let isProductionStream = false;
+              let activeOfficeRunId: string | null = null;
               let cerebroTimeline: any = { subtasks: [], judgeResult: null, evidence: [], budget: null, planTitle: "", isActive: false };
+              const normalizedArtifactTypeMap: Record<string, string> = {
+                word: "word",
+                docx: "word",
+                document: "word",
+                excel: "excel",
+                xlsx: "excel",
+                spreadsheet: "excel",
+                ppt: "ppt",
+                pptx: "ppt",
+                presentation: "ppt",
+                pdf: "pdf",
+              };
 
               const setAiStateForStream = (value: React.SetStateAction<AiState>) =>
                 setAiStateForChat(value, effectiveStreamChatId);
               const setAiProcessStepsForStream = (value: React.SetStateAction<AiProcessStep[]>) =>
                 setAiProcessStepsForChat(value, effectiveStreamChatId);
+              const ensureOfficeRunSubscription = (candidateRunId: unknown) => {
+                if (typeof candidateRunId !== "string" || candidateRunId.trim().length < 8) return;
+                if (activeOfficeRunId === candidateRunId) return;
+                activeOfficeRunId = candidateRunId;
+                useOfficeEngineStore.getState().subscribe(candidateRunId);
+              };
+              const pushProductionArtifact = (candidateArtifact: any) => {
+                if (!candidateArtifact || typeof candidateArtifact !== "object") return;
+
+                const normalizedType =
+                  normalizedArtifactTypeMap[String(candidateArtifact.type || "").toLowerCase()] ||
+                  String(candidateArtifact.type || "document");
+                const downloadUrl = String(candidateArtifact.downloadUrl || "").trim();
+                const filename = String(candidateArtifact.filename || candidateArtifact.name || "Documento").trim();
+
+                if (!downloadUrl) return;
+
+                const existingArtifact = productionArtifacts.find((artifact) => artifact.downloadUrl === downloadUrl);
+                const nextArtifact = {
+                  type: normalizedType,
+                  filename,
+                  downloadUrl,
+                  previewUrl: candidateArtifact.previewUrl || undefined,
+                  previewHtml: candidateArtifact.previewHtml || undefined,
+                  size: candidateArtifact.size,
+                  library: candidateArtifact.library,
+                  metadata: candidateArtifact.metadata,
+                };
+
+                if (existingArtifact) {
+                  Object.assign(existingArtifact, { ...existingArtifact, ...nextArtifact });
+                } else {
+                  productionArtifacts.push(nextArtifact);
+                }
+
+                if (normalizedType) {
+                  streamArtifactMimeTypes.set(
+                    normalizedType,
+                    artifactMimeTypeMap[normalizedType] ||
+                    candidateArtifact.mimeType ||
+                    "application/octet-stream",
+                  );
+                }
+              };
 
               const streamResult = await streamChat.stream("/api/chat/stream", {
                 chatId: effectiveStreamChatId,
@@ -6815,6 +6873,9 @@ IMPORTANTE:
                   if (eventType === "production_start") {
                     isProductionStream = true;
                     setAiStateForStream("agent_working");
+                    if (data?.engine === "office-engine" && data?.runId) {
+                      ensureOfficeRunSubscription(data.runId);
+                    }
                     if (selectedDocTool && ['word', 'excel', 'ppt'].includes(selectedDocTool)) {
                       setDocGenerationState({
                         status: 'generating',
@@ -6830,8 +6891,45 @@ IMPORTANTE:
                   }
 
                   if (eventType === "production_event") {
+                    if (data?.engine === "office-engine" && data?.runId) {
+                      ensureOfficeRunSubscription(data.runId);
+                      const officeStepId = `office-${data?.stepId || data?.stage || Date.now()}`;
+                      const officeMessage = [
+                        data?.title || data?.message || data?.stage,
+                        data?.diff ? `+${data.diff.added ?? 0}/-${data.diff.removed ?? 0}` : null,
+                        data?.output || null,
+                      ].filter(Boolean).join(" · ");
+                      setAiProcessStepsForStream((prev: any[]) => {
+                        const exists = prev.find((step: any) => step.id === officeStepId);
+                        const nextStep = {
+                          id: officeStepId,
+                          message: officeMessage || "Office Engine ejecutando pipeline estructural",
+                          status:
+                            data?.status === "failed"
+                              ? "error"
+                              : data?.status === "completed"
+                                ? "done"
+                                : "active",
+                        };
+                        if (exists) {
+                          return prev.map((step: any) => (step.id === officeStepId ? { ...step, ...nextStep } : step));
+                        }
+                        return [...prev, nextStep];
+                      });
+                    }
                     if (selectedDocTool && ['word', 'excel', 'ppt'].includes(selectedDocTool)) {
                       const stageLabels: Record<string, string> = {
+                        handoff: "Derivando al Office Engine...",
+                        plan: "Planificando artefacto...",
+                        unpack: "Descomprimiendo documento...",
+                        parse: "Parseando OOXML...",
+                        map: "Construyendo mapa semántico...",
+                        edit: "Aplicando edición...",
+                        validate: "Validando estructura...",
+                        repack: "Reconstruyendo archivo...",
+                        roundtrip_diff: "Verificando diff estructural...",
+                        preview: "Preparando vista previa...",
+                        export: "Exportando archivo final...",
                         intake: "Procesando solicitud...",
                         blueprint: "Diseñando estructura...",
                         research: "Investigando contenido...",
@@ -6855,6 +6953,40 @@ IMPORTANTE:
 
                   if (eventType === "production_complete") {
                     isProductionStream = true;
+                    const completedOfficeRunId =
+                      typeof data?.runId === "string" && data.runId.trim().length > 0
+                        ? data.runId
+                        : activeOfficeRunId;
+                    if (
+                      data?.engine === "office-engine" &&
+                      completedOfficeRunId &&
+                      productionArtifacts.length === 0
+                    ) {
+                      pushProductionArtifact({
+                        type: data?.docKind || "docx",
+                        filename: "documento.docx",
+                        downloadUrl: `/api/office-engine/runs/${completedOfficeRunId}/artifacts/exported`,
+                        previewUrl: `/api/office-engine/runs/${completedOfficeRunId}/artifacts/preview`,
+                        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        metadata: {
+                          ...(data?.metadata || {}),
+                          workflow: data?.workflow || "artifact_generation",
+                          classification: data?.classification || "artifact_generation",
+                          engine: "office-engine",
+                          docKind: data?.docKind || "docx",
+                          officeRunId: completedOfficeRunId,
+                        },
+                      });
+                    }
+                    if (data?.engine === "office-engine" && activeOfficeRunId) {
+                      setAiProcessStepsForStream((prev: any[]) =>
+                        prev.map((step: any) =>
+                          String(step.id || "").startsWith("office-")
+                            ? { ...step, status: "done" }
+                            : step
+                        )
+                      );
+                    }
                     setDocGenerationState((prev: any) => ({
                       ...prev,
                       status: 'complete',
@@ -6865,31 +6997,34 @@ IMPORTANTE:
                   }
 
                   if (eventType === "artifact") {
-                    productionArtifacts.push({
-                      type: data?.type || "document",
-                      filename: data?.filename || "Documento",
-                      downloadUrl: data?.downloadUrl || "",
-                      previewUrl: data?.previewUrl || undefined,
-                      previewHtml: data?.previewHtml || undefined,
-                      size: data?.size,
-                      library: data?.library,
-                      metadata: data?.metadata,
-                    });
-                    if (data?.type) {
-                      streamArtifactMimeTypes.set(String(data.type), artifactMimeTypeMap[data.type] || data?.mimeType || "application/octet-stream");
+                    const artifactPayload =
+                      data?.artifact && typeof data.artifact === "object"
+                        ? {
+                          ...(data.artifact as Record<string, unknown>),
+                          ...(data?.metadata ? { metadata: data.metadata } : {}),
+                          ...(data?.type ? { type: data.type } : {}),
+                          ...(data?.previewUrl ? { previewUrl: data.previewUrl } : {}),
+                          ...(data?.previewHtml ? { previewHtml: data.previewHtml } : {}),
+                        }
+                        : data;
+                    const officeRunIdFromArtifact = (artifactPayload?.metadata as any)?.officeRunId;
+                    if (officeRunIdFromArtifact) {
+                      ensureOfficeRunSubscription(officeRunIdFromArtifact);
                     }
+                    pushProductionArtifact(artifactPayload);
                     if (selectedDocTool && ['word', 'excel', 'ppt'].includes(selectedDocTool)) {
-                      const docTypeMap: Record<string, string> = { word: 'word', excel: 'excel', ppt: 'ppt', xlsx: 'excel', docx: 'word', pptx: 'ppt' };
-                      const artifactDocType = docTypeMap[data?.type] || String(data?.type || "");
-                      const selectedDocTypeNorm = docTypeMap[selectedDocTool] || selectedDocTool;
+                      const artifactDocType =
+                        normalizedArtifactTypeMap[String(artifactPayload?.type || "").toLowerCase()] ||
+                        String(artifactPayload?.type || "");
+                      const selectedDocTypeNorm = normalizedArtifactTypeMap[selectedDocTool] || selectedDocTool;
                       if (artifactDocType === selectedDocTypeNorm) {
                         setDocGenerationState({
                           status: 'ready',
                           progress: 100,
                           stage: data?.summary || '¡Documento listo!',
-                          downloadUrl: data?.downloadUrl || null,
-                          fileName: data?.filename || data?.name || 'Documento',
-                          fileSize: data?.size || null,
+                          downloadUrl: artifactPayload?.downloadUrl || null,
+                          fileName: artifactPayload?.filename || artifactPayload?.name || 'Documento',
+                          fileSize: artifactPayload?.size || null,
                         });
                       }
                     }
@@ -7155,10 +7290,9 @@ IMPORTANTE:
                     : null;
 
                   if (isProductionStream && productionArtifacts.length > 0) {
-                    const docTypeMap: Record<string, string> = { word: 'word', excel: 'excel', ppt: 'ppt', xlsx: 'excel', docx: 'word', pptx: 'ppt' };
-                    const selectedDocTypeNorm = selectedDocTool ? (docTypeMap[selectedDocTool] || selectedDocTool) : null;
+                    const selectedDocTypeNorm = selectedDocTool ? (normalizedArtifactTypeMap[selectedDocTool] || selectedDocTool) : null;
                     const primaryArtifact = selectedDocTypeNorm
-                      ? productionArtifacts.find((artifact) => (docTypeMap[artifact.type] || artifact.type) === selectedDocTypeNorm) || productionArtifacts[0]
+                      ? productionArtifacts.find((artifact) => (normalizedArtifactTypeMap[artifact.type] || artifact.type) === selectedDocTypeNorm) || productionArtifacts[0]
                       : productionArtifacts[0];
                     const type = artifactTypeMap[primaryArtifact.type] || primaryArtifact.type || "document";
                     const typeConfirm: Record<string, string> = {
@@ -7169,7 +7303,7 @@ IMPORTANTE:
                       doc: 'Documento listo para descargar.',
                       spreadsheet: 'Hoja de cálculo lista para descargar.'
                     };
-                    const friendlyType = selectedDocTypeNorm || docTypeMap[primaryArtifact.type] || 'word';
+                    const friendlyType = selectedDocTypeNorm || normalizedArtifactTypeMap[primaryArtifact.type] || 'word';
                     const messageContent = typeConfirm[friendlyType] || 'Archivo listo para descargar.';
                     const artifactMimeType = primaryArtifact.type ? (artifactMimeTypeMap[primaryArtifact.type] || streamArtifactMimeTypes.get(primaryArtifact.type) || "application/octet-stream") : "application/octet-stream";
                     const artifactName = primaryArtifact.filename || `${friendlyType}.${friendlyType === "word" ? "docx" : friendlyType === "excel" ? "xlsx" : friendlyType === "ppt" ? "pptx" : "bin"}`;
@@ -7256,11 +7390,16 @@ IMPORTANTE:
                     fallbackContent: "No se recibió respuesta del servidor.",
                     confidence: uncertainty?.confidence,
                     uncertaintyReason: uncertainty?.reason,
+                    artifact: data?.artifact,
                     webSources: data?.webSources || streamWebSources,
                     searchQueries: streamSearchQueries.length > 0 ? streamSearchQueries : (data?.searchQueries || undefined),
                     totalSearches: streamTotalSearches > 0 ? streamTotalSearches : (data?.totalSearches || undefined),
                     followUpSuggestions: data?.followUpSuggestions,
                   });
+                  const finalOfficeRunId = data?.artifact?.metadata?.officeRunId;
+                  if (finalOfficeRunId) {
+                    ensureOfficeRunSubscription(finalOfficeRunId);
+                  }
                   if (cerebroTimeline.subtasks.length > 0 || cerebroTimeline.judgeResult || cerebroTimeline.budget) {
                     finalMsg.cerebroTimeline = { ...cerebroTimeline };
                   }

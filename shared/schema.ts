@@ -3302,3 +3302,24 @@ export { openclawInstances, openclawTokenLedger, openclawAdminConfig, insertOpen
 export type { OpenclawInstance, InsertOpenclawInstance, OpenclawTokenLedger, InsertOpenclawTokenLedger, OpenclawAdminConfig, InsertOpenclawAdminConfig } from "./schema/openclaw";
 export { apiKeys, insertApiKeySchema } from "./schema/apiKeys";
 export type { InsertApiKey, ApiKey } from "./schema/apiKeys";
+export {
+  officeEngineRuns,
+  officeEngineSteps,
+  officeEngineArtifacts,
+  insertOfficeEngineRunSchema,
+  insertOfficeEngineStepSchema,
+  insertOfficeEngineArtifactSchema,
+} from "./schema/officeEngine";
+export type {
+  OfficeEngineRun,
+  InsertOfficeEngineRun,
+  OfficeEngineStep,
+  InsertOfficeEngineStep,
+  OfficeEngineArtifact,
+  InsertOfficeEngineArtifact,
+  OfficeDocKind,
+  OfficeRunStatus,
+  OfficeFallbackLevel,
+  OfficeEngineStage,
+  OfficeArtifactKind,
+} from "./schema/officeEngine";

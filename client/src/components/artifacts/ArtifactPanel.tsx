@@ -14,6 +14,7 @@ import { CodeArtifact } from "./CodeArtifact";
 import { HtmlArtifact } from "./HtmlArtifact";
 import { DiagramArtifact } from "./DiagramArtifact";
 import { TableArtifact } from "./TableArtifact";
+import { OfficeArtifact } from "./OfficeArtifact";
 import { toast } from "@/hooks/use-toast";
 
 type Tab = "code" | "preview" | "versions";
@@ -24,6 +25,7 @@ const typeLabels: Record<string, string> = {
   diagram: "Diagram",
   table: "Table",
   text: "Text",
+  office: "DOCX",
 };
 
 const runnableTypes = new Set(["html", "code"]);
@@ -153,7 +155,14 @@ export function ArtifactPanel() {
             {/* Body */}
             <div className="flex-1 overflow-auto">
               {activeTab === "code" && (
-                isEditing ? (
+                artifact.type === "office" && artifact.officeMeta ? (
+                  <OfficeArtifact
+                    title={artifact.title}
+                    previewUrl={artifact.officeMeta.previewUrl}
+                    downloadUrl={artifact.officeMeta.downloadUrl}
+                    mimeType={artifact.officeMeta.mimeType}
+                  />
+                ) : isEditing ? (
                   <textarea
                     className="w-full h-full min-h-[300px] p-4 font-mono text-sm bg-background text-foreground resize-none focus:outline-none"
                     value={editContent}

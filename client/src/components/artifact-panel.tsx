@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, memo, useEffect, useRef } from "react";
-import { X, ChevronLeft, ChevronRight, Copy, Play, Code, Table, FileImage, GitBranch, FileText, Check, Loader2 } from "lucide-react";
+import { X, ChevronLeft, ChevronRight, Copy, Play, Code, Table, FileImage, GitBranch, FileText, Check, Loader2, FileType } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useArtifactStore, type Artifact } from "@/stores/artifactStore";
 import { useShikiHighlight } from "@/hooks/useShikiHighlight";
@@ -17,6 +17,7 @@ const artifactTypeIcon: Record<ArtifactDisplayType, typeof Code> = {
   table: Table,
   diagram: GitBranch,
   text: FileText,
+  office: FileType,
 };
 
 const artifactTypeLabel: Record<ArtifactDisplayType, string> = {
@@ -25,6 +26,7 @@ const artifactTypeLabel: Record<ArtifactDisplayType, string> = {
   table: "Table",
   diagram: "Diagram",
   text: "Text",
+  office: "DOCX",
 };
 
 /**

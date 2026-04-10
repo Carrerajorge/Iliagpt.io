@@ -116,7 +116,7 @@ export interface AiProcessStep {
     id?: string;
     title?: string;
     description?: string;
-    status: 'pending' | 'active' | 'done';
+    status: 'pending' | 'active' | 'done' | 'error';
     step?: string; // Legacy
     message?: string;
     startedAt?: number;

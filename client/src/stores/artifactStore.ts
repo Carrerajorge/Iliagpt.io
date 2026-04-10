@@ -13,12 +13,21 @@ export interface ArtifactVersion {
   label?: string;
 }
 
+export interface OfficeArtifactMeta {
+  runId: string;
+  downloadUrl: string;
+  previewUrl: string;
+  mimeType: string;
+  docKind: "docx" | "xlsx" | "pptx" | "pdf";
+}
+
 export interface Artifact {
   id: string;
-  type: "code" | "html" | "table" | "diagram" | "text";
+  type: "code" | "html" | "table" | "diagram" | "text" | "office";
   title: string;
   content: string;
   language?: string;
+  officeMeta?: OfficeArtifactMeta;
   versions: ArtifactVersion[];
   currentVersionIndex: number;
   messageId: string;
