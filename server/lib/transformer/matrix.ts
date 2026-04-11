@@ -91,6 +91,57 @@ export function xavier(rows: number, cols: number, seed = 42): Matrix {
   return m;
 }
 
+/**
+ * Truncated-normal initializer — BERT's paper-exact init (Devlin et al.
+ * 2018, §A.2 and the reference implementation google-research/bert).
+ *
+ *   θ ~ Normal(μ=0, σ=stddev)   rejected if |θ| > 2·stddev
+ *
+ * The standard BERT stddev is 0.02. Truncation at ±2σ prevents extreme
+ * outliers which would otherwise dominate the softmax early in training.
+ *
+ * We use Box-Muller to draw the underlying normal and re-draw on the
+ * rare samples that fall outside the truncation window. Seeded through
+ * the same Mulberry32 PRNG as `xavier` so everything stays deterministic.
+ */
+export function truncatedNormal(
+  rows: number,
+  cols: number,
+  stddev = 0.02,
+  seed = 42,
+): Matrix {
+  const m = zeros(rows, cols);
+  let state = seed;
+  const rand = (): number => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  /**
+   * Standard-normal sample via Box-Muller. `u1` must be strictly > 0
+   * to keep log() finite, so we re-draw on the exceedingly rare 0 hit.
+   */
+  const standardNormal = (): number => {
+    let u1 = 0;
+    while (u1 === 0) u1 = rand();
+    const u2 = rand();
+    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  };
+
+  for (let i = 0; i < rows * cols; i++) {
+    // Rejection sampling: re-draw until |z| ≤ 2
+    let z: number;
+    do {
+      z = standardNormal();
+    } while (z < -2 || z > 2);
+    m.data[i] = z * stddev;
+  }
+  return m;
+}
+
 // ---------------------------------------------------------------------------
 // Element access helpers
 // ---------------------------------------------------------------------------

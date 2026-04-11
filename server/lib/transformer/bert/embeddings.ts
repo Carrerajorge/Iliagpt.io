@@ -18,7 +18,8 @@
 import {
   type Matrix,
   zeros,
-  xavier,
+  ones,
+  truncatedNormal,
   layerNorm,
   add,
 } from "../matrix";
@@ -41,20 +42,14 @@ export function initBertEmbeddingWeights(
   config: BertConfig,
   seed = 7,
 ): BertEmbeddingWeights {
-  const { vocabSize, typeVocabSize, maxPositionEmbeddings, hiddenSize } = config;
+  const { vocabSize, typeVocabSize, maxPositionEmbeddings, hiddenSize, initStdDev } = config;
   return {
-    tokenEmbeddings: xavier(vocabSize, hiddenSize, seed + 1),
-    segmentEmbeddings: xavier(typeVocabSize, hiddenSize, seed + 2),
-    positionEmbeddings: xavier(maxPositionEmbeddings, hiddenSize, seed + 3),
-    layerNormGamma: fillOnes(1, hiddenSize),
+    tokenEmbeddings: truncatedNormal(vocabSize, hiddenSize, initStdDev, seed + 1),
+    segmentEmbeddings: truncatedNormal(typeVocabSize, hiddenSize, initStdDev, seed + 2),
+    positionEmbeddings: truncatedNormal(maxPositionEmbeddings, hiddenSize, initStdDev, seed + 3),
+    layerNormGamma: ones(1, hiddenSize),
     layerNormBeta: zeros(1, hiddenSize),
   };
-}
-
-function fillOnes(rows: number, cols: number): Matrix {
-  const m = zeros(rows, cols);
-  m.data.fill(1);
-  return m;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,11 +143,13 @@ export function bertEmbeddingForward(
   const summed = add(add(tok, seg), pos);
 
   // LayerNorm(sum) — dedicated γ/β that live on BertEmbeddingWeights, not
-  // shared with any encoder layer's LayerNorm
+  // shared with any encoder layer's LayerNorm. ε passed explicitly so the
+  // BERT-paper value (1e-12) is honored everywhere.
   const normalized = layerNorm(
     summed,
     weights.layerNormGamma.data,
     weights.layerNormBeta.data,
+    1e-12,
   );
 
   // Dropout on the (LN'd) sum — matches §5.4 of the Vaswani paper

@@ -45,7 +45,37 @@ export {
   initBertWeights,
   bertPool,
   bertForward,
+  bertForwardWithLayers,
+  type BertForwardWithLayersResult,
 } from "./model";
+
+export {
+  // (a) + (b) classification
+  type BertClassificationHeadWeights,
+  type ClassificationLossResult,
+  initBertClassificationHead,
+  bertClassificationLogits,
+  bertClassificationLoss,
+  // (c) span prediction
+  type BertSpanHeadWeights,
+  type BertSpanLogits,
+  type SpanLossResult,
+  initBertSpanHead,
+  bertSpanLogits,
+  bertSpanLoss,
+  // (d) token tagging
+  type BertTokenTaggingHeadWeights,
+  type TokenTaggingLossResult,
+  initBertTokenTaggingHead,
+  bertTokenTaggingLogits,
+  bertTokenTaggingLoss,
+} from "./fineTuningHeads";
+
+export {
+  type BertPreTrainingBatch,
+  type BertPreTrainingResult,
+  bertPreTrainingLoss,
+} from "./pretraining";
 
 export {
   type MaskedLMLossResult,

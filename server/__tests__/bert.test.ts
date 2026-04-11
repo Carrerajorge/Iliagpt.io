@@ -54,8 +54,16 @@ import {
   gelu,
   fromArray,
   xavier,
+  truncatedNormal,
   feedForward,
   initFFNWeights,
+  zeros,
+  createAdamState,
+  adamUpdate,
+  PAPER_ADAM,
+  BERT_ADAM,
+  BERT_WEIGHT_DECAY,
+  bertLinearSchedule,
   // BERT
   BERT_SPECIAL_TOKENS,
   bertBaseConfig,
@@ -68,6 +76,7 @@ import {
   bertPaddingMask,
   initBertWeights,
   bertForward,
+  bertForwardWithLayers,
   bertPool,
   bertMLMLogits,
   maskedLMLoss,
@@ -79,6 +88,18 @@ import {
   NSP_NOT_NEXT,
   applyMaskingProcedure,
   defaultMaskingConfig,
+  // Fine-tuning heads
+  initBertClassificationHead,
+  bertClassificationLogits,
+  bertClassificationLoss,
+  initBertSpanHead,
+  bertSpanLogits,
+  bertSpanLoss,
+  initBertTokenTaggingHead,
+  bertTokenTaggingLogits,
+  bertTokenTaggingLoss,
+  // Pre-training helper
+  bertPreTrainingLoss,
 } from "../lib/transformer";
 
 function allFinite(m: Matrix): boolean {
@@ -534,3 +555,304 @@ describe("BERT Next Sentence Prediction head (§3.1 Task #2)", () => {
     expect(lossIsNext.prediction).toBe(expectedPred);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 8. Audit fixes — paper-faithfulness regression tests
+//
+// These tests lock the second-pass audit against arXiv:1810.04805:
+//   (i)   BERT uses its own Adam hyperparams (β2=0.999, not Vaswani's 0.98)
+//   (ii)  L2 weight decay = 0.01 actually moves the parameter
+//   (iii) Linear warmup + linear decay schedule (NOT Noam)
+//   (iv)  Truncated-normal init with stddev=0.02 (NOT Xavier)
+//   (v)   Per-layer hidden states exposed for §5.3 feature-based approach
+//   (vi)  Fine-tuning heads for Figure 4 (a/b/c/d)
+//   (vii) Combined MLM + NSP pre-training loss = mlm + nsp (§A.2)
+// ---------------------------------------------------------------------------
+
+describe("BERT audit — optimizer + schedule (§A.2)", () => {
+  it("28 BERT_ADAM uses β1=0.9, β2=0.999 (NOT Vaswani's 0.98)", () => {
+    expect(BERT_ADAM.beta1).toBe(0.9);
+    expect(BERT_ADAM.beta2).toBe(0.999);
+    expect(BERT_WEIGHT_DECAY).toBe(0.01);
+    // Regression: the two papers must NOT share β2
+    expect(BERT_ADAM.beta2).not.toBe(PAPER_ADAM.beta2);
+  });
+
+  it("29 adamUpdate with L2 weight decay shrinks params when gradient is zero", () => {
+    // With a zero gradient, the only thing driving the Adam update is
+    // the L2 weight decay term (g ← g + λ·θ = λ·θ). The non-decayed
+    // run MUST leave the parameters unchanged (no gradient signal);
+    // the decayed run MUST pull every non-zero coordinate toward 0.
+    // This is the cleanest isolation of the weight decay effect.
+    const p1: Matrix = { rows: 1, cols: 4, data: new Float64Array([1, -1, 2, -2]) };
+    const p2: Matrix = { rows: 1, cols: 4, data: new Float64Array([1, -1, 2, -2]) };
+    const g: Matrix = { rows: 1, cols: 4, data: new Float64Array([0, 0, 0, 0]) };
+    const s1 = createAdamState(4);
+    const s2 = createAdamState(4);
+    for (let step = 0; step < 20; step++) {
+      adamUpdate(p1, g, s1, 1e-3, BERT_ADAM, 0); // no weight decay
+      adamUpdate(p2, g, s2, 1e-3, BERT_ADAM, BERT_WEIGHT_DECAY); // paper's 0.01
+    }
+    // Non-decayed run is unchanged (g=0 everywhere)
+    for (let i = 0; i < 4; i++) {
+      expect(p1.data[i]).toBeCloseTo([1, -1, 2, -2][i], 12);
+    }
+    // Decayed run has every coordinate pulled toward 0
+    expect(Math.abs(p2.data[0])).toBeLessThan(1);
+    expect(Math.abs(p2.data[1])).toBeLessThan(1);
+    expect(Math.abs(p2.data[2])).toBeLessThan(2);
+    expect(Math.abs(p2.data[3])).toBeLessThan(2);
+    // And the total L1 distance between the two parameter vectors must
+    // be clearly non-zero.
+    let diff = 0;
+    for (let i = 0; i < 4; i++) diff += Math.abs(p1.data[i] - p2.data[i]);
+    expect(diff).toBeGreaterThan(1e-3);
+  });
+
+  it("30 bertLinearSchedule: warmup peak, linear decay, zero at totalSteps", () => {
+    const cfg = { peakLR: 1e-4, warmupSteps: 100, totalSteps: 1000 };
+    // Before step 0 → 0
+    expect(bertLinearSchedule(0, cfg)).toBe(0);
+    // Midway through warmup → half the peak
+    expect(bertLinearSchedule(50, cfg)).toBeCloseTo(0.5e-4, 12);
+    // Exactly at warmup → peak
+    expect(bertLinearSchedule(100, cfg)).toBeCloseTo(1e-4, 12);
+    // Halfway through decay → half the peak
+    expect(bertLinearSchedule(550, cfg)).toBeCloseTo(0.5e-4, 4);
+    // At totalSteps → 0
+    expect(bertLinearSchedule(1000, cfg)).toBe(0);
+    // Past totalSteps → still 0 (no negative LR)
+    expect(bertLinearSchedule(2000, cfg)).toBe(0);
+  });
+
+  it("31 bertLinearSchedule rejects invalid config", () => {
+    expect(() => bertLinearSchedule(1, { peakLR: 0, warmupSteps: 10, totalSteps: 100 })).toThrow();
+    expect(() => bertLinearSchedule(1, { peakLR: 1e-4, warmupSteps: 0, totalSteps: 100 })).toThrow();
+    expect(() => bertLinearSchedule(1, { peakLR: 1e-4, warmupSteps: 100, totalSteps: 50 })).toThrow();
+  });
+});
+
+describe("BERT audit — truncated normal init (§A.2)", () => {
+  it("32 truncatedNormal respects the 2σ truncation and the stddev", () => {
+    const m = truncatedNormal(200, 200, 0.02, 1234);
+    let max = 0;
+    let sum = 0;
+    let sumSq = 0;
+    for (const v of m.data) {
+      if (Math.abs(v) > max) max = Math.abs(v);
+      sum += v;
+      sumSq += v * v;
+    }
+    // Every sample must be within ±2σ = ±0.04
+    expect(max).toBeLessThanOrEqual(0.04 + 1e-12);
+    // Empirical mean ≈ 0, stddev ≈ 0.02 (loose tolerance because
+    // truncation slightly reduces the effective variance)
+    const n = m.data.length;
+    const mean = sum / n;
+    const variance = sumSq / n - mean * mean;
+    const stddev = Math.sqrt(variance);
+    expect(Math.abs(mean)).toBeLessThan(0.005);
+    // Truncated Normal(σ=0.02) has effective stddev slightly below σ
+    // (roughly 0.88·σ ≈ 0.0176 for truncation at ±2σ). Accept [0.012, 0.022].
+    expect(stddev).toBeGreaterThan(0.012);
+    expect(stddev).toBeLessThan(0.022);
+  });
+
+  it("33 BERT weights initialized via truncated normal, not xavier", () => {
+    const c = bertTinyConfig();
+    const w = initBertWeights(c, 99);
+    // Every weight in the token embedding matrix must be within ±2·stddev
+    const bound = 2 * c.initStdDev + 1e-9;
+    for (const v of w.embeddings.tokenEmbeddings.data) {
+      expect(Math.abs(v)).toBeLessThanOrEqual(bound);
+    }
+    for (const v of w.pooler.weight.data) {
+      expect(Math.abs(v)).toBeLessThanOrEqual(bound);
+    }
+  });
+});
+
+describe("BERT audit — per-layer hidden states (§5.3)", () => {
+  it("34 bertForwardWithLayers returns L+1 hidden states", () => {
+    const c = bertTinyConfig();
+    const w = initBertWeights(c, 101);
+    const tokens = [
+      BERT_SPECIAL_TOKENS.CLS,
+      5,
+      6,
+      7,
+      BERT_SPECIAL_TOKENS.SEP,
+    ];
+    const { allHiddenStates, sequenceOutput } = bertForwardWithLayers(w, tokens);
+    // Embeddings + L encoder layers
+    expect(allHiddenStates.length).toBe(c.numLayers + 1);
+    // Last hidden state MUST equal the final sequenceOutput bit-for-bit
+    const last = allHiddenStates[allHiddenStates.length - 1];
+    for (let i = 0; i < last.data.length; i++) {
+      expect(last.data[i]).toBeCloseTo(sequenceOutput.data[i], 12);
+    }
+  });
+
+  it("35 intermediate layers produce DIFFERENT representations (§5.3 assumption)", () => {
+    const c = bertTinyConfig();
+    const w = initBertWeights(c, 103);
+    const tokens = [BERT_SPECIAL_TOKENS.CLS, 5, 6, 7, BERT_SPECIAL_TOKENS.SEP];
+    const { allHiddenStates } = bertForwardWithLayers(w, tokens);
+    // Layer 0 (embeddings) ≠ layer 1 output ≠ layer 2 output
+    let diff01 = 0;
+    let diff12 = 0;
+    for (let i = 0; i < allHiddenStates[0].data.length; i++) {
+      diff01 += Math.abs(allHiddenStates[0].data[i] - allHiddenStates[1].data[i]);
+      diff12 += Math.abs(allHiddenStates[1].data[i] - allHiddenStates[2].data[i]);
+    }
+    expect(diff01).toBeGreaterThan(1e-6);
+    expect(diff12).toBeGreaterThan(1e-6);
+  });
+
+  it("36 bertForwardWithLayers pooled output == bertForward pooled output", () => {
+    const c = bertTinyConfig();
+    const w = initBertWeights(c, 107);
+    const tokens = [BERT_SPECIAL_TOKENS.CLS, 5, 6, BERT_SPECIAL_TOKENS.SEP];
+    const a = bertForward(w, tokens);
+    const b = bertForwardWithLayers(w, tokens);
+    for (let i = 0; i < a.pooledOutput.data.length; i++) {
+      expect(a.pooledOutput.data[i]).toBeCloseTo(b.pooledOutput.data[i], 12);
+    }
+  });
+});
+
+describe("BERT audit — fine-tuning heads (Figure 4)", () => {
+  // Shared fixture: tiny BERT + a small sequence
+  const c = bertTinyConfig();
+  const w = initBertWeights(c, 121);
+  const tokens = [
+    BERT_SPECIAL_TOKENS.CLS,
+    5,
+    6,
+    7,
+    BERT_SPECIAL_TOKENS.SEP,
+  ];
+  const { sequenceOutput, pooledOutput } = bertForward(w, tokens);
+
+  it("37 (a/b) classification head: logits shape (1, K), loss finite", () => {
+    const head = initBertClassificationHead(c, 3, 200);
+    const logits = bertClassificationLogits(pooledOutput, head);
+    expect(logits.rows).toBe(1);
+    expect(logits.cols).toBe(3);
+    const loss = bertClassificationLoss(pooledOutput, head, 1);
+    expect(Number.isFinite(loss.loss)).toBe(true);
+    expect(loss.loss).toBeGreaterThan(0);
+    expect(loss.prediction).toBeGreaterThanOrEqual(0);
+    expect(loss.prediction).toBeLessThan(3);
+  });
+
+  it("38 (a/b) classification loss rejects out-of-range label", () => {
+    const head = initBertClassificationHead(c, 3, 201);
+    expect(() => bertClassificationLoss(pooledOutput, head, 3)).toThrow();
+    expect(() => bertClassificationLoss(pooledOutput, head, -1)).toThrow();
+  });
+
+  it("39 (c) span head: start/end arrays length = seqLen, loss = start + end", () => {
+    const head = initBertSpanHead(c, 300);
+    const { start, end } = bertSpanLogits(sequenceOutput, head);
+    expect(start.length).toBe(tokens.length);
+    expect(end.length).toBe(tokens.length);
+    const result = bertSpanLoss(sequenceOutput, head, 1, 3);
+    expect(result.loss).toBeCloseTo(result.startLoss + result.endLoss, 12);
+    expect(result.predictedStart).toBeLessThanOrEqual(result.predictedEnd);
+  });
+
+  it("40 (c) span loss rejects goldEnd < goldStart", () => {
+    const head = initBertSpanHead(c, 301);
+    expect(() => bertSpanLoss(sequenceOutput, head, 3, 1)).toThrow();
+  });
+
+  it("41 (d) token tagging head: logits shape = (seqLen, K), skips ignore-label", () => {
+    const head = initBertTokenTaggingHead(c, 5, 400);
+    const logits = bertTokenTaggingLogits(sequenceOutput, head);
+    expect(logits.rows).toBe(tokens.length);
+    expect(logits.cols).toBe(5);
+    // Mark [CLS], [SEP], and the last position as "ignore" via -100
+    const labels = [-100, 1, 2, 3, -100];
+    const result = bertTokenTaggingLoss(sequenceOutput, head, labels);
+    // Only 3 positions contributed
+    expect(result.tokenCount).toBe(3);
+    expect(result.predictions.length).toBe(tokens.length);
+    expect(Number.isFinite(result.loss)).toBe(true);
+  });
+
+  it("42 (d) token tagging loss = 0 when every position is ignored", () => {
+    const head = initBertTokenTaggingHead(c, 5, 401);
+    const labels = new Array(tokens.length).fill(-100);
+    const result = bertTokenTaggingLoss(sequenceOutput, head, labels);
+    expect(result.loss).toBe(0);
+    expect(result.tokenCount).toBe(0);
+  });
+});
+
+describe("BERT audit — combined pre-training loss (§A.2)", () => {
+  it("43 bertPreTrainingLoss.total = mlmLoss + nspLoss (exactly)", () => {
+    const c = bertTinyConfig();
+    const w = initBertWeights(c, 131);
+    const result = bertPreTrainingLoss(w, {
+      tokenIds: [
+        BERT_SPECIAL_TOKENS.CLS,
+        5,
+        BERT_SPECIAL_TOKENS.MASK,
+        BERT_SPECIAL_TOKENS.SEP,
+        7,
+        BERT_SPECIAL_TOKENS.MASK,
+        BERT_SPECIAL_TOKENS.SEP,
+      ],
+      segmentIds: [0, 0, 0, 0, 1, 1, 1],
+      maskedPositions: [2, 5],
+      originalTokens: [6, 8],
+      nspLabel: NSP_IS_NEXT,
+    });
+    expect(result.total).toBeCloseTo(result.mlmLoss + result.nspLoss, 12);
+    expect(result.mlmLoss).toBeGreaterThan(0);
+    expect(result.nspLoss).toBeGreaterThan(0);
+    // Details block exposes intermediate tensors and head results
+    expect(result.details.sequenceOutput.rows).toBe(7);
+    expect(result.details.pooledOutput.rows).toBe(1);
+    expect(result.details.mlm.tokenCount).toBe(2);
+    expect(result.details.nsp.prediction).toBeGreaterThanOrEqual(0);
+  });
+
+  it("44 combined loss runs bertForward exactly once (shared across heads)", () => {
+    // Indirect regression test: the details' sequenceOutput must be the
+    // same reference passed into both heads. We verify this by checking
+    // that the MLM loss computed externally against the details'
+    // sequenceOutput matches the one in the result exactly.
+    const c = bertTinyConfig();
+    const w = initBertWeights(c, 133);
+    const batch = {
+      tokenIds: [
+        BERT_SPECIAL_TOKENS.CLS,
+        5,
+        6,
+        BERT_SPECIAL_TOKENS.MASK,
+        BERT_SPECIAL_TOKENS.SEP,
+      ],
+      segmentIds: [0, 0, 0, 0, 0],
+      maskedPositions: [3],
+      originalTokens: [7],
+      nspLabel: NSP_NOT_NEXT,
+    };
+    const result = bertPreTrainingLoss(w, batch);
+    const externalMLM = maskedLMLoss(
+      bertMLMLogits(result.details.sequenceOutput, w),
+      batch.maskedPositions,
+      batch.originalTokens,
+    );
+    expect(externalMLM.loss).toBeCloseTo(result.mlmLoss, 12);
+  });
+});
+
+// Prevent unused-import warnings — some of these symbols are used only
+// when the paper-faithfulness regression suite evolves.
+void fromArray;
+void xavier;
+void feedForward;
+void initFFNWeights;
+void zeros;

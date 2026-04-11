@@ -77,6 +77,36 @@ export const PAPER_ADAM: AdamHyperparameters = {
 };
 
 /**
+ * BERT's Adam hyperparameters (Devlin et al. 2018, §A.2).
+ *
+ *   "We use Adam with learning rate of 1e-4, β₁ = 0.9, β₂ = 0.999,
+ *    L2 weight decay of 0.01 ..."
+ *
+ * BERT's β₂ is DIFFERENT from Vaswani's (0.999 vs 0.98). This matters
+ * in practice: BERT's higher β₂ means the running second-moment
+ * estimate is smoother, which pairs with the longer linear schedule
+ * used during BERT pre-training. The paper doesn't spell out ε; we
+ * use the canonical 1e-6 from the reference implementation
+ * (google-research/bert).
+ *
+ * Pair this with `BERT_WEIGHT_DECAY = 0.01` when calling `adamUpdate`
+ * to get the paper's exact optimizer.
+ */
+export const BERT_ADAM: AdamHyperparameters = {
+  beta1: 0.9,
+  beta2: 0.999,
+  epsilon: 1e-6,
+};
+
+/**
+ * BERT's L2 weight decay coefficient (§A.2: "L2 weight decay of 0.01").
+ * When passed to `adamUpdate`, the gradient becomes `g + λ·θ` before
+ * the moment updates — this is standard L2 regularization, equivalent
+ * to adding `½·λ·‖θ‖²` to the loss.
+ */
+export const BERT_WEIGHT_DECAY = 0.01;
+
+/**
  * Per-parameter Adam state. Stored as Float64Array so updates are
  * allocation-free on the hot path.
  */
@@ -112,6 +142,14 @@ export function adamUpdate(
   state: AdamState,
   lr: number,
   hyper: AdamHyperparameters = PAPER_ADAM,
+  /**
+   * Optional L2 weight decay coefficient λ (BERT §A.2 default = 0.01).
+   * When non-zero, the gradient becomes `g + λ·θ` before the moment
+   * updates. This is the classic "L2 regularization inside Adam"
+   * formulation — NOT decoupled weight decay (AdamW). The BERT paper
+   * spells it as "L2 weight decay" so the in-training version matches.
+   */
+  weightDecay = 0,
 ): AdamState {
   if (parameter.data.length !== gradient.data.length) {
     throw new Error(
@@ -129,12 +167,14 @@ export function adamUpdate(
   const biasCorrection2 = 1 - Math.pow(beta2, t);
 
   for (let i = 0; i < parameter.data.length; i++) {
-    const g = gradient.data[i];
+    // L2 regularization: g ← g + λ·θ before the moment updates.
+    const theta = parameter.data[i];
+    const g = gradient.data[i] + (weightDecay > 0 ? weightDecay * theta : 0);
     state.m[i] = beta1 * state.m[i] + (1 - beta1) * g;
     state.v[i] = beta2 * state.v[i] + (1 - beta2) * g * g;
     const mHat = state.m[i] / biasCorrection1;
     const vHat = state.v[i] / biasCorrection2;
-    parameter.data[i] -= lr * mHat / (Math.sqrt(vHat) + epsilon);
+    parameter.data[i] = theta - lr * mHat / (Math.sqrt(vHat) + epsilon);
   }
 
   return state;
@@ -204,6 +244,57 @@ export class AdamOptimizer {
     }
     this.globalStep = 0;
   }
+}
+
+// ---------------------------------------------------------------------------
+// BERT linear warmup + linear decay schedule (Devlin et al. 2018, §A.2)
+// ---------------------------------------------------------------------------
+
+export interface BertLinearScheduleConfig {
+  /** Peak learning rate at the end of warmup. BERT pre-training: 1e-4. */
+  peakLR: number;
+  /** Number of warmup steps (linear ramp 0 → peakLR). Paper: 10,000. */
+  warmupSteps: number;
+  /** Total training steps (linear decay from peakLR → 0). Paper: 1,000,000. */
+  totalSteps: number;
+}
+
+/**
+ * BERT's learning rate schedule (§A.2 of Devlin et al. 2018):
+ *
+ *   "learning rate warmup over the first 10,000 steps, and linear decay
+ *    of the learning rate."
+ *
+ * Piecewise linear:
+ *
+ *   step ∈ [0, warmup]              lr = peak · step / warmup
+ *   step ∈ (warmup, total]          lr = peak · (total - step) / (total - warmup)
+ *   step > total                    lr = 0
+ *
+ * This is DIFFERENT from Vaswani's Noam schedule (inverse-sqrt with
+ * warmup). Noam is bounded below by its tail; BERT's schedule decays
+ * all the way to zero at `totalSteps`, which is the paper's exact
+ * training recipe.
+ */
+export function bertLinearSchedule(step: number, config: BertLinearScheduleConfig): number {
+  const { peakLR, warmupSteps, totalSteps } = config;
+  if (peakLR <= 0) throw new Error(`bertLinearSchedule: peakLR must be > 0`);
+  if (warmupSteps <= 0) throw new Error(`bertLinearSchedule: warmupSteps must be > 0`);
+  if (totalSteps <= warmupSteps) {
+    throw new Error(
+      `bertLinearSchedule: totalSteps (${totalSteps}) must exceed warmupSteps (${warmupSteps})`,
+    );
+  }
+  if (step <= 0) return 0;
+  if (step <= warmupSteps) {
+    // Linear warmup
+    return peakLR * (step / warmupSteps);
+  }
+  if (step >= totalSteps) return 0;
+  // Linear decay
+  const remaining = totalSteps - step;
+  const decaySpan = totalSteps - warmupSteps;
+  return peakLR * (remaining / decaySpan);
 }
 
 // ---------------------------------------------------------------------------

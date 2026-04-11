@@ -34,12 +34,29 @@ import {
   estimateBertParams,
   initBertWeights,
   bertForward,
+  bertForwardWithLayers,
   bertMLMLogits,
   maskedLMLoss,
   bertMLMTopK,
   bertNSPProbabilities,
   applyMaskingProcedure,
   defaultMaskingConfig,
+  // Schedule
+  bertLinearSchedule,
+  // Fine-tuning heads
+  initBertClassificationHead,
+  bertClassificationLogits,
+  bertClassificationLoss,
+  initBertSpanHead,
+  bertSpanLogits,
+  bertSpanLoss,
+  initBertTokenTaggingHead,
+  bertTokenTaggingLogits,
+  bertTokenTaggingLoss,
+  // Pre-training
+  bertPreTrainingLoss,
+  NSP_IS_NEXT,
+  NSP_NOT_NEXT,
 } from "../lib/transformer";
 
 // ── Request schemas ───────────────────────────────────────────────────────
@@ -92,6 +109,61 @@ const maskBatchRequestSchema = z.object({
 const nspRequestSchema = z.object({
   tokenIds: tokenIdsSchema,
   segmentIds: segmentIdsSchema,
+  model: modelParamsSchema.optional(),
+});
+
+// ── Audit-fix endpoints ───────────────────────────────────────────────────
+
+const scheduleRequestSchema = z.object({
+  step: z.number().int().min(0).max(1_000_000),
+  peakLR: z.number().positive().default(1e-4),
+  warmupSteps: z.number().int().min(1).max(100_000).default(10_000),
+  totalSteps: z.number().int().min(2).max(2_000_000).default(1_000_000),
+  curve: z.boolean().optional(),
+});
+
+const hiddenStatesRequestSchema = z.object({
+  tokenIds: tokenIdsSchema,
+  segmentIds: segmentIdsSchema,
+  /** Which hidden states to return. Defaults to all layers (embeddings + L). */
+  layers: z.array(z.number().int().nonnegative()).max(32).optional(),
+  model: modelParamsSchema.optional(),
+});
+
+const classifyRequestSchema = z.object({
+  tokenIds: tokenIdsSchema,
+  segmentIds: segmentIdsSchema,
+  numLabels: z.number().int().min(2).max(100).default(3),
+  label: z.number().int().nonnegative().optional(),
+  headSeed: z.number().int().default(200),
+  model: modelParamsSchema.optional(),
+});
+
+const spanRequestSchema = z.object({
+  tokenIds: tokenIdsSchema,
+  segmentIds: segmentIdsSchema,
+  goldStart: z.number().int().nonnegative().optional(),
+  goldEnd: z.number().int().nonnegative().optional(),
+  headSeed: z.number().int().default(300),
+  model: modelParamsSchema.optional(),
+});
+
+const tagRequestSchema = z.object({
+  tokenIds: tokenIdsSchema,
+  segmentIds: segmentIdsSchema,
+  numLabels: z.number().int().min(2).max(100).default(5),
+  /** Gold labels per token; use -100 (or any negative) to ignore a position. */
+  labels: z.array(z.number().int()).optional(),
+  headSeed: z.number().int().default(400),
+  model: modelParamsSchema.optional(),
+});
+
+const pretrainLossRequestSchema = z.object({
+  tokenIds: tokenIdsSchema,
+  segmentIds: z.array(z.number().int().min(0).max(1)).min(1),
+  maskedPositions: z.array(z.number().int().nonnegative()).min(1).max(32),
+  originalTokens: z.array(z.number().int().nonnegative()).min(1).max(32),
+  nspLabel: z.number().int().min(0).max(1).default(NSP_IS_NEXT),
   model: modelParamsSchema.optional(),
 });
 
@@ -310,6 +382,266 @@ export function createBertRouter(): Router {
     } catch (caught) {
       return res.status(400).json({
         error: "nsp_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /schedule ────────────────────────────────────────────────────
+  //
+  // BERT's linear warmup + linear decay LR schedule (§A.2). Returns the
+  // learning rate at a given step, plus optionally the full [0..step]
+  // curve for plotting.
+  router.post("/schedule", (req: Request, res: Response) => {
+    const parsed = scheduleRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { step, peakLR, warmupSteps, totalSteps, curve } = parsed.data;
+    try {
+      const lr = bertLinearSchedule(step, { peakLR, warmupSteps, totalSteps });
+      let curveData: number[] | undefined;
+      if (curve) {
+        curveData = new Array(step + 1);
+        for (let s = 0; s <= step; s++) {
+          curveData[s] = bertLinearSchedule(s, { peakLR, warmupSteps, totalSteps });
+        }
+      }
+      return res.json({
+        step,
+        learningRate: lr,
+        peakLR,
+        warmupSteps,
+        totalSteps,
+        curve: curveData,
+        formula:
+          "warmup: peakLR · step / warmup;  decay: peakLR · (total - step) / (total - warmup)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "schedule_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /hidden-states ───────────────────────────────────────────────
+  //
+  // Feature-based approach (§5.3): return the hidden state at every
+  // encoder layer (plus the input embeddings) so callers can reproduce
+  // the paper's "concat last 4 layers" recipe or probe the model.
+  router.post("/hidden-states", (req: Request, res: Response) => {
+    const parsed = hiddenStatesRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { tokenIds, segmentIds, layers } = parsed.data;
+    const seed = parsed.data.model?.seed ?? 42;
+    try {
+      const { config, weights } = buildTinyBert(seed);
+      const err = validateVocab(tokenIds, config.vocabSize, "tokenIds");
+      if (err) return res.status(400).json({ error: "invalid_tokens", message: err });
+      const { allHiddenStates, pooledOutput } = bertForwardWithLayers(
+        weights,
+        tokenIds,
+        segmentIds,
+      );
+      const maxIdx = allHiddenStates.length - 1;
+      const layerIndices =
+        layers ?? Array.from({ length: allHiddenStates.length }, (_, i) => i);
+      for (const li of layerIndices) {
+        if (li > maxIdx) {
+          return res.status(400).json({
+            error: "invalid_layer",
+            message: `Requested layer ${li} but only ${allHiddenStates.length} states available (0..${maxIdx})`,
+          });
+        }
+      }
+      return res.json({
+        layers: layerIndices.map((li) => ({
+          index: li,
+          label: li === 0 ? "embeddings" : `encoder_layer_${li}`,
+          hiddenState: toArray(allHiddenStates[li]),
+        })),
+        pooledOutput: toArray(pooledOutput)[0],
+        numLayers: config.numLayers,
+        hiddenSize: config.hiddenSize,
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "hidden_states_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /classify ────────────────────────────────────────────────────
+  //
+  // Figure 4 (a)+(b): sentence-level classification head. Pools [CLS],
+  // runs a Dense(H → K), and returns logits + (optionally) the loss
+  // against a gold label.
+  router.post("/classify", (req: Request, res: Response) => {
+    const parsed = classifyRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { tokenIds, segmentIds, numLabels, label, headSeed } = parsed.data;
+    const seed = parsed.data.model?.seed ?? 42;
+    try {
+      const { config, weights } = buildTinyBert(seed);
+      const err = validateVocab(tokenIds, config.vocabSize, "tokenIds");
+      if (err) return res.status(400).json({ error: "invalid_tokens", message: err });
+      const head = initBertClassificationHead(config, numLabels, headSeed);
+      const { pooledOutput } = bertForward(weights, tokenIds, segmentIds);
+      const logits = bertClassificationLogits(pooledOutput, head);
+      const lossResult =
+        label !== undefined
+          ? bertClassificationLoss(pooledOutput, head, label)
+          : null;
+      return res.json({
+        logits: toArray(logits)[0],
+        numLabels,
+        loss: lossResult,
+        algorithm: "pooled [CLS] → Dense(H → K) (Figure 4a/b)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "classify_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /span ────────────────────────────────────────────────────────
+  //
+  // Figure 4 (c): SQuAD-style span prediction. Two learned vectors S,E
+  // produce start/end logits at every position; optionally returns the
+  // loss against gold (start, end).
+  router.post("/span", (req: Request, res: Response) => {
+    const parsed = spanRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { tokenIds, segmentIds, goldStart, goldEnd, headSeed } = parsed.data;
+    const seed = parsed.data.model?.seed ?? 42;
+    try {
+      const { config, weights } = buildTinyBert(seed);
+      const err = validateVocab(tokenIds, config.vocabSize, "tokenIds");
+      if (err) return res.status(400).json({ error: "invalid_tokens", message: err });
+      const head = initBertSpanHead(config, headSeed);
+      const { sequenceOutput } = bertForward(weights, tokenIds, segmentIds);
+      const { start, end } = bertSpanLogits(sequenceOutput, head);
+      let lossResult: ReturnType<typeof bertSpanLoss> | null = null;
+      if (goldStart !== undefined && goldEnd !== undefined) {
+        if (goldStart >= tokenIds.length || goldEnd >= tokenIds.length) {
+          return res.status(400).json({
+            error: "invalid_gold_span",
+            message: `gold positions out of sequence length ${tokenIds.length}`,
+          });
+        }
+        lossResult = bertSpanLoss(sequenceOutput, head, goldStart, goldEnd);
+      }
+      return res.json({
+        startLogits: start,
+        endLogits: end,
+        loss: lossResult,
+        algorithm: "T_i · S / T_j · E → softmax span (Figure 4c, SQuAD)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "span_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /tag ─────────────────────────────────────────────────────────
+  //
+  // Figure 4 (d): per-token tagging (NER / POS). Dense(H → K) applied
+  // at every position; loss is averaged over non-ignored positions.
+  router.post("/tag", (req: Request, res: Response) => {
+    const parsed = tagRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { tokenIds, segmentIds, numLabels, labels, headSeed } = parsed.data;
+    const seed = parsed.data.model?.seed ?? 42;
+    try {
+      const { config, weights } = buildTinyBert(seed);
+      const err = validateVocab(tokenIds, config.vocabSize, "tokenIds");
+      if (err) return res.status(400).json({ error: "invalid_tokens", message: err });
+      if (labels && labels.length !== tokenIds.length) {
+        return res.status(400).json({
+          error: "shape_mismatch",
+          message: `labels length ${labels.length} != tokenIds length ${tokenIds.length}`,
+        });
+      }
+      const head = initBertTokenTaggingHead(config, numLabels, headSeed);
+      const { sequenceOutput } = bertForward(weights, tokenIds, segmentIds);
+      const logits = bertTokenTaggingLogits(sequenceOutput, head);
+      const lossResult = labels
+        ? bertTokenTaggingLoss(sequenceOutput, head, labels)
+        : null;
+      return res.json({
+        logits: toArray(logits),
+        numLabels,
+        loss: lossResult,
+        algorithm: "Dense(H → K) per T_i, mean CE over scored positions (Figure 4d)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "tag_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /pretrain-loss ───────────────────────────────────────────────
+  //
+  // Combined MLM + NSP pre-training loss (§A.2). Runs the forward pass
+  // ONCE and feeds both heads.
+  router.post("/pretrain-loss", (req: Request, res: Response) => {
+    const parsed = pretrainLossRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { tokenIds, segmentIds, maskedPositions, originalTokens, nspLabel } = parsed.data;
+    const seed = parsed.data.model?.seed ?? 42;
+    try {
+      const { config, weights } = buildTinyBert(seed);
+      const err = validateVocab(tokenIds, config.vocabSize, "tokenIds");
+      if (err) return res.status(400).json({ error: "invalid_tokens", message: err });
+      if (segmentIds.length !== tokenIds.length) {
+        return res.status(400).json({
+          error: "shape_mismatch",
+          message: `segmentIds length ${segmentIds.length} != tokenIds length ${tokenIds.length}`,
+        });
+      }
+      if (maskedPositions.length !== originalTokens.length) {
+        return res.status(400).json({
+          error: "shape_mismatch",
+          message: `maskedPositions and originalTokens must have the same length`,
+        });
+      }
+      const result = bertPreTrainingLoss(weights, {
+        tokenIds,
+        segmentIds,
+        maskedPositions,
+        originalTokens,
+        nspLabel: nspLabel === 0 ? NSP_IS_NEXT : NSP_NOT_NEXT,
+      });
+      return res.json({
+        mlmLoss: result.mlmLoss,
+        nspLoss: result.nspLoss,
+        total: result.total,
+        nspPrediction: result.details.nsp.prediction,
+        mlmTokenCount: result.details.mlm.tokenCount,
+        algorithm:
+          "total = mean(MLM NLL over masked) + NSP NLL on [CLS] (Devlin §A.2)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "pretrain_loss_failed",
         message: caught instanceof Error ? caught.message : String(caught),
       });
     }

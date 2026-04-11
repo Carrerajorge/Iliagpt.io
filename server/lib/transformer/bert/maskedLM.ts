@@ -38,11 +38,12 @@ export function bertMLMLogits(
   );
   const activated = gelu(projected);
 
-  // 2. LayerNorm
+  // 2. LayerNorm (BERT uses ε=1e-12 — §A.2 reference implementation)
   const normalized = layerNorm(
     activated,
     weights.mlmHead.layerNormGamma.data,
     weights.mlmHead.layerNormBeta.data,
+    1e-12,
   );
 
   // 3. Tied vocab projection: transformed · tokenEmbeddings^T

@@ -8,11 +8,21 @@
  * is the entire point of the paper (§1 and Figure 3).
  */
 
-import { type Matrix, zeros, xavier, matmul, addBias, sliceRows } from "../matrix";
+import {
+  type Matrix,
+  zeros,
+  ones,
+  truncatedNormal,
+  matmul,
+  addBias,
+  sliceRows,
+} from "../matrix";
 import {
   initEncoderLayerWeights,
   runEncoder,
+  encoderLayer,
   type EncoderLayerWeights,
+  type LayerNormParams,
 } from "../transformer";
 import { baseConfig as attentionConfig, type MultiHeadConfig } from "../attention";
 import type { DropoutConfig } from "../dropout";
@@ -59,10 +69,13 @@ export function initBertEncoderLayers(
 /**
  * Initialize the pooler dense layer (W, b). γ/β are not needed — the
  * pooler is just Dense → tanh with no LayerNorm.
+ *
+ * Uses truncatedNormal(stddev=config.initStdDev) to match the paper's
+ * exact init (§A.2 + reference impl).
  */
 export function initBertPooler(config: BertConfig, seed = 9000): BertPoolerWeights {
   return {
-    weight: xavier(config.hiddenSize, config.hiddenSize, seed),
+    weight: truncatedNormal(config.hiddenSize, config.hiddenSize, config.initStdDev, seed),
     bias: zeros(1, config.hiddenSize),
   };
 }
@@ -75,12 +88,10 @@ export function initBertPooler(config: BertConfig, seed = 9000): BertPoolerWeigh
  */
 export function initBertMLMHead(config: BertConfig, seed = 12000): BertMLMHeadWeights {
   const H = config.hiddenSize;
-  const g = zeros(1, H);
-  g.data.fill(1);
   return {
-    transformWeight: xavier(H, H, seed),
+    transformWeight: truncatedNormal(H, H, config.initStdDev, seed),
     transformBias: zeros(1, H),
-    layerNormGamma: g,
+    layerNormGamma: ones(1, H),
     layerNormBeta: zeros(1, H),
     outputBias: zeros(1, config.vocabSize),
   };
@@ -92,7 +103,7 @@ export function initBertMLMHead(config: BertConfig, seed = 12000): BertMLMHeadWe
  */
 export function initBertNSPHead(config: BertConfig, seed = 15000): BertNSPHeadWeights {
   return {
-    weight: xavier(config.hiddenSize, 2, seed),
+    weight: truncatedNormal(config.hiddenSize, 2, config.initStdDev, seed),
     bias: zeros(1, 2),
   };
 }
@@ -204,3 +215,77 @@ export function bertForward(
 
   return { sequenceOutput, pooledOutput };
 }
+
+// ---------------------------------------------------------------------------
+// Feature-based approach (§5.3): expose per-layer hidden states
+// ---------------------------------------------------------------------------
+
+export interface BertForwardWithLayersResult extends BertForwardResult {
+  /**
+   * All hidden states produced by the encoder, including the input
+   * embeddings at index 0 and then the output of each of the L encoder
+   * layers in order. Length = L + 1.
+   *
+   * Paper §5.3 "Feature-based Approach with BERT" shows that combining
+   * the top few layers (concat last 4, weighted sum, etc.) competes
+   * with full fine-tuning on CoNLL-2003 NER — so exposing these at
+   * all is the enabling primitive for that whole family of techniques.
+   */
+  allHiddenStates: Matrix[];
+}
+
+/**
+ * Same forward pass as `bertForward` but additionally returns the
+ * hidden state at EVERY layer, not just the final one. Use this when
+ * you want to:
+ *
+ *   - Concatenate the top 4 hidden states (best BERT feature-based
+ *     combination per Table 7 of the paper).
+ *   - Take a weighted sum over all layers.
+ *   - Probe the model layer-by-layer (what does layer 2 know vs. layer 10?).
+ *
+ * The returned list is `[embeddings, layer_1_out, layer_2_out, ..., layer_L_out]`,
+ * so `allHiddenStates.at(-1)` is identical to `sequenceOutput`.
+ */
+export function bertForwardWithLayers(
+  weights: BertWeights,
+  tokenIds: number[],
+  segmentIds?: number[],
+  dropoutConfig?: DropoutConfig,
+): BertForwardWithLayersResult {
+  const config = weights.config;
+  const attn = bertAttentionConfig(config);
+  const paddingMask = bertPaddingMask(tokenIds, BERT_SPECIAL_TOKENS.PAD);
+
+  // 1. Input embeddings
+  const inputEmbeddings = bertEmbeddingForward(
+    weights.embeddings,
+    tokenIds,
+    segmentIds,
+    undefined,
+    dropoutConfig,
+  );
+
+  // 2. Run layers one at a time and collect every hidden state.
+  //    We deliberately do NOT call `runEncoder` here because it only
+  //    returns the final state — we'd lose the intermediates.
+  const allHiddenStates: Matrix[] = [inputEmbeddings];
+  let h = inputEmbeddings;
+  for (let i = 0; i < weights.encoder.length; i++) {
+    const layerDropout = dropoutConfig
+      ? { ...dropoutConfig, seed: (dropoutConfig.seed ?? 0) + i * 1000 }
+      : undefined;
+    h = encoderLayer(h, weights.encoder[i], attn, paddingMask, layerDropout, "gelu");
+    allHiddenStates.push(h);
+  }
+
+  // 3. Pool the final layer output
+  const sequenceOutput = h;
+  const pooledOutput = bertPool(sequenceOutput, weights.pooler);
+
+  return { sequenceOutput, pooledOutput, allHiddenStates };
+}
+
+// Suppress unused LayerNormParams warning — re-exported for fine-tuning
+// heads that may want to build their own LayerNorm down the road.
+void (null as unknown as LayerNormParams);
