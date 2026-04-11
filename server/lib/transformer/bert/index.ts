@@ -28,6 +28,9 @@ export {
   allBertPresets,
   bertPreset,
   estimateBertParams,
+  BERT_PRE_TRAINING_HYPERS,
+  BERT_FINE_TUNING_HYPERS,
+  bertFineTuningGrid,
 } from "./configs";
 
 export {
@@ -56,20 +59,38 @@ export {
   initBertClassificationHead,
   bertClassificationLogits,
   bertClassificationLoss,
-  // (c) span prediction
+  // (c) span prediction — SQuAD v1.1 and v2.0
   type BertSpanHeadWeights,
   type BertSpanLogits,
   type SpanLossResult,
+  type SpanPredictionV2,
   initBertSpanHead,
   bertSpanLogits,
   bertSpanLoss,
+  bertSpanLossV2,
+  bertSpanPredictV2,
   // (d) token tagging
   type BertTokenTaggingHeadWeights,
   type TokenTaggingLossResult,
   initBertTokenTaggingHead,
   bertTokenTaggingLogits,
   bertTokenTaggingLoss,
+  // SWAG / multiple-choice (§4.4)
+  type BertMultipleChoiceHeadWeights,
+  type MultipleChoiceLossResult,
+  initBertMultipleChoiceHead,
+  bertMultipleChoiceScores,
+  bertMultipleChoiceLoss,
 } from "./fineTuningHeads";
+
+// §5.3 feature-based approach utilities
+export {
+  concatLastKLayers,
+  concatLastFourHidden,
+  sumLastKLayers,
+  weightedSumLayers,
+  secondToLastHidden,
+} from "./layerCombination";
 
 export {
   type BertPreTrainingBatch,

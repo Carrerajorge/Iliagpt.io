@@ -183,6 +183,112 @@ export interface SpanLossResult {
 }
 
 /**
+ * Result of a SQuAD v2.0 prediction — distinguishes between the
+ * "has an answer" and "no answer" cases.
+ */
+export interface SpanPredictionV2 {
+  /** Whether the model predicts that an answer exists. */
+  hasAnswer: boolean;
+  /** Predicted start position (1 ≤ start ≤ seqLen-1), meaningless if !hasAnswer. */
+  start: number;
+  /** Predicted end position, meaningless if !hasAnswer. */
+  end: number;
+  /** s_null = S·C + E·C — the score of the "no answer" hypothesis. */
+  nullScore: number;
+  /** ŝ_{i,j} = max_{j≥i, i≥1} S·T_i + E·T_j — best non-null span score. */
+  bestSpanScore: number;
+  /** Decision margin: bestSpanScore - nullScore. Positive iff hasAnswer (when τ=0). */
+  margin: number;
+}
+
+/**
+ * SQuAD v2.0 span prediction (§4.3 of Devlin et al. 2018).
+ *
+ *   "We treat questions that do not have an answer as having an
+ *    answer span with start and end at the [CLS] token. The
+ *    probability space for the start and end answer span positions
+ *    is extended to include the position of the [CLS] token. For
+ *    prediction, we compare the score of the no-answer span:
+ *        s_null = S·C + E·C
+ *    to the score of the best non-null span:
+ *        ŝ_{i,j} = max_{j≥i} S·T_i + E·T_j
+ *    We predict a non-null answer when ŝ_{i,j} > s_null + τ."
+ *
+ * We enforce `i ≥ 1` when scanning for the best non-null span so
+ * that [CLS] itself (position 0) is never returned as an answer
+ * start/end — otherwise the "best span" could trivially equal the
+ * null span by spanning [CLS] to [CLS].
+ *
+ * @param tau Threshold selected on the dev set to maximize F1. At
+ *            τ=0 (the default) the decision is a pure score comparison;
+ *            positive τ makes the model more conservative about
+ *            predicting answers.
+ */
+export function bertSpanPredictV2(
+  sequenceOutput: Matrix,
+  head: BertSpanHeadWeights,
+  tau = 0,
+): SpanPredictionV2 {
+  const n = sequenceOutput.rows;
+  if (n < 2) {
+    throw new Error(
+      `bertSpanPredictV2: sequence too short (n=${n}); need ≥ 2 rows ([CLS] + at least one content token)`,
+    );
+  }
+  const { start, end } = bertSpanLogits(sequenceOutput, head);
+
+  // s_null: S·C + E·C  (C = T_0 = the [CLS] hidden state)
+  const nullScore = start[0] + end[0];
+
+  // Best non-null span: max over i ∈ [1, n-1], j ∈ [i, n-1]
+  let bestStart = 1;
+  let bestEnd = 1;
+  let bestScore = -Infinity;
+  for (let i = 1; i < n; i++) {
+    for (let j = i; j < n; j++) {
+      const s = start[i] + end[j];
+      if (s > bestScore) {
+        bestScore = s;
+        bestStart = i;
+        bestEnd = j;
+      }
+    }
+  }
+
+  const margin = bestScore - nullScore;
+  return {
+    hasAnswer: margin > tau,
+    start: bestStart,
+    end: bestEnd,
+    nullScore,
+    bestSpanScore: bestScore,
+    margin,
+  };
+}
+
+/**
+ * SQuAD v2.0 training loss — extends the v1.1 loss to handle the
+ * "no answer" case. When the gold span is null (`goldStart = goldEnd = 0`),
+ * the loss is computed at the [CLS] position exactly like any other
+ * span (§4.3: "having an answer span with start and end at the [CLS]
+ * token"). For non-null questions, behavior is identical to `bertSpanLoss`.
+ *
+ * Passing `{ goldStart: 0, goldEnd: 0 }` is the paper-exact way to
+ * encode "this question has no answer" during fine-tuning.
+ */
+export function bertSpanLossV2(
+  sequenceOutput: Matrix,
+  head: BertSpanHeadWeights,
+  goldStart: number,
+  goldEnd: number,
+): SpanLossResult {
+  // The underlying formulation is identical — the only semantic
+  // difference is that (0, 0) is a legal gold span in v2.0 but was
+  // effectively meaningless in v1.1.
+  return bertSpanLoss(sequenceOutput, head, goldStart, goldEnd);
+}
+
+/**
  * SQuAD loss: sum of start and end negative log-likelihoods at the
  * gold positions. Uses a stable log-sum-exp.
  */
@@ -352,5 +458,127 @@ export function bertTokenTaggingLoss(
     loss: count > 0 ? total / count : 0,
     predictions,
     tokenCount: count,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Multiple-choice head (SWAG-style, §4.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * SWAG / multiple-choice head (Devlin et al. 2018, §4.4).
+ *
+ * The paper's exact description:
+ *
+ *   "When fine-tuning on the SWAG dataset, we construct four input
+ *    sequences, each containing the concatenation of the given
+ *    sentence (sentence A) and a possible continuation (sentence B).
+ *    The only task-specific parameters introduced is a vector whose
+ *    dot product with the [CLS] token representation C denotes a
+ *    score for each choice which is normalized with a softmax layer."
+ *
+ * So the "head" is literally a single learned vector w ∈ R^H. The
+ * caller runs `bertForward` once per candidate (K times), passes
+ * each pooled output to `bertMultipleChoiceScores`, and gets a
+ * vector of K raw scores. A softmax + cross-entropy over the K
+ * scores gives the training loss.
+ */
+export interface BertMultipleChoiceHeadWeights {
+  /** Learned scoring vector w, shape (hiddenSize, 1). */
+  weight: Matrix;
+}
+
+export function initBertMultipleChoiceHead(
+  config: BertConfig,
+  seed = 50000,
+): BertMultipleChoiceHeadWeights {
+  return {
+    weight: truncatedNormal(config.hiddenSize, 1, config.initStdDev, seed),
+  };
+}
+
+/**
+ * Compute the raw score for each candidate given its pooled [CLS]
+ * representation.
+ *
+ * @param pooledPerCandidate Array of (1, H) pooled outputs, one per
+ *                            candidate (K in total).
+ * @returns Array of K raw scores — one per candidate, in the same order.
+ */
+export function bertMultipleChoiceScores(
+  pooledPerCandidate: Matrix[],
+  head: BertMultipleChoiceHeadWeights,
+): number[] {
+  if (pooledPerCandidate.length === 0) {
+    throw new Error(`bertMultipleChoiceScores: need at least one candidate`);
+  }
+  const scores: number[] = [];
+  for (let k = 0; k < pooledPerCandidate.length; k++) {
+    const p = pooledPerCandidate[k];
+    if (p.rows !== 1) {
+      throw new Error(
+        `bertMultipleChoiceScores: candidate ${k} has shape (${p.rows}, ${p.cols}), expected (1, H)`,
+      );
+    }
+    if (p.cols !== head.weight.rows) {
+      throw new Error(
+        `bertMultipleChoiceScores: candidate ${k} cols (${p.cols}) != hiddenSize (${head.weight.rows})`,
+      );
+    }
+    // Dot product: (1, H) · (H, 1) → scalar
+    const dot = matmul(p, head.weight);
+    scores.push(dot.data[0]);
+  }
+  return scores;
+}
+
+export interface MultipleChoiceLossResult {
+  loss: number;
+  /** Index of the argmax score. */
+  prediction: number;
+  /** Raw per-candidate scores before softmax. */
+  scores: number[];
+  /** Softmax-normalized probabilities over the K candidates. */
+  probabilities: number[];
+}
+
+/**
+ * Cross-entropy loss over the K candidates, with the gold choice
+ * passed as an index into `pooledPerCandidate`. Numerically stable
+ * log-sum-exp.
+ */
+export function bertMultipleChoiceLoss(
+  pooledPerCandidate: Matrix[],
+  head: BertMultipleChoiceHeadWeights,
+  goldIndex: number,
+): MultipleChoiceLossResult {
+  const K = pooledPerCandidate.length;
+  if (!Number.isInteger(goldIndex) || goldIndex < 0 || goldIndex >= K) {
+    throw new Error(
+      `bertMultipleChoiceLoss: goldIndex ${goldIndex} out of range [0, ${K})`,
+    );
+  }
+  const scores = bertMultipleChoiceScores(pooledPerCandidate, head);
+
+  // Stable log-softmax over a flat vector
+  let max = -Infinity;
+  for (const s of scores) if (s > max) max = s;
+  let sumExp = 0;
+  for (const s of scores) sumExp += Math.exp(s - max);
+  const logSum = Math.log(sumExp);
+  const logP = scores.map((s) => s - max - logSum);
+  const probabilities = logP.map((lp) => Math.exp(lp));
+
+  // Argmax prediction
+  let best = 0;
+  for (let k = 1; k < K; k++) {
+    if (scores[k] > scores[best]) best = k;
+  }
+
+  return {
+    loss: -logP[goldIndex],
+    prediction: best,
+    scores,
+    probabilities,
   };
 }

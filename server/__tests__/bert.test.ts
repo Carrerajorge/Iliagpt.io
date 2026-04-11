@@ -95,11 +95,27 @@ import {
   initBertSpanHead,
   bertSpanLogits,
   bertSpanLoss,
+  bertSpanLossV2,
+  bertSpanPredictV2,
   initBertTokenTaggingHead,
   bertTokenTaggingLogits,
   bertTokenTaggingLoss,
+  // Multiple-choice (§4.4)
+  initBertMultipleChoiceHead,
+  bertMultipleChoiceScores,
+  bertMultipleChoiceLoss,
+  // Layer combination (§5.3)
+  concatLastKLayers,
+  concatLastFourHidden,
+  sumLastKLayers,
+  weightedSumLayers,
+  secondToLastHidden,
   // Pre-training helper
   bertPreTrainingLoss,
+  // Hyperparameter constants (§A.2, §A.3)
+  BERT_PRE_TRAINING_HYPERS,
+  BERT_FINE_TUNING_HYPERS,
+  bertFineTuningGrid,
 } from "../lib/transformer";
 
 function allFinite(m: Matrix): boolean {
@@ -849,6 +865,232 @@ describe("BERT audit — combined pre-training loss (§A.2)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// 9. Third-pass audit — SQuAD v2.0, multiple-choice, layer combination,
+//    hyperparameter constants
+// ---------------------------------------------------------------------------
+
+describe("BERT audit 3 — SQuAD v2.0 span prediction (§4.3)", () => {
+  const c = bertTinyConfig();
+  const w = initBertWeights(c, 503);
+  const tokens = [
+    BERT_SPECIAL_TOKENS.CLS,
+    5,
+    6,
+    7,
+    8,
+    9,
+    BERT_SPECIAL_TOKENS.SEP,
+  ];
+  const { sequenceOutput } = bertForward(w, tokens);
+
+  it("45 bertSpanLossV2 accepts (0,0) as the null answer span", () => {
+    const head = initBertSpanHead(c, 801);
+    // (0, 0) = "no answer" in v2.0 — must not throw and must return a
+    // finite loss. This is the paper's exact training convention for
+    // unanswerable questions.
+    const result = bertSpanLossV2(sequenceOutput, head, 0, 0);
+    expect(Number.isFinite(result.loss)).toBe(true);
+    expect(result.loss).toBeGreaterThan(0);
+    expect(result.loss).toBeCloseTo(result.startLoss + result.endLoss, 12);
+  });
+
+  it("46 bertSpanPredictV2 returns null score + best non-null score and margin", () => {
+    const head = initBertSpanHead(c, 803);
+    const pred = bertSpanPredictV2(sequenceOutput, head, 0);
+    expect(Number.isFinite(pred.nullScore)).toBe(true);
+    expect(Number.isFinite(pred.bestSpanScore)).toBe(true);
+    expect(pred.margin).toBeCloseTo(pred.bestSpanScore - pred.nullScore, 12);
+    // Best span MUST skip [CLS]: both start and end ≥ 1
+    expect(pred.start).toBeGreaterThanOrEqual(1);
+    expect(pred.end).toBeGreaterThanOrEqual(pred.start);
+    // hasAnswer is the sign of the margin when τ=0
+    expect(pred.hasAnswer).toBe(pred.margin > 0);
+  });
+
+  it("47 τ threshold makes v2 prediction more conservative about answering", () => {
+    const head = initBertSpanHead(c, 805);
+    const pred0 = bertSpanPredictV2(sequenceOutput, head, 0);
+    // With an absurdly high τ, the model should refuse to answer
+    // regardless of what the margins say
+    const predHuge = bertSpanPredictV2(sequenceOutput, head, 1e9);
+    expect(predHuge.hasAnswer).toBe(false);
+    // With a very negative τ, the model should always answer
+    const predNeg = bertSpanPredictV2(sequenceOutput, head, -1e9);
+    expect(predNeg.hasAnswer).toBe(true);
+    // Sanity: the three calls share the same null/best scores
+    expect(pred0.nullScore).toBeCloseTo(predHuge.nullScore, 12);
+    expect(pred0.bestSpanScore).toBeCloseTo(predNeg.bestSpanScore, 12);
+  });
+
+  it("48 bertSpanPredictV2 rejects sequences too short for a non-null span", () => {
+    // Need at least 2 positions so the "skip [CLS]" constraint leaves
+    // at least one candidate for the answer
+    const head = initBertSpanHead(c, 807);
+    const tiny: Matrix = { rows: 1, cols: c.hiddenSize, data: new Float64Array(c.hiddenSize) };
+    expect(() => bertSpanPredictV2(tiny, head, 0)).toThrow();
+  });
+});
+
+describe("BERT audit 3 — SWAG multiple-choice head (§4.4)", () => {
+  const c = bertTinyConfig();
+  const w = initBertWeights(c, 511);
+
+  // Build 4 candidate sequences, each packed with [CLS] ... [SEP]
+  const buildCandidate = (filler: number): number[] => [
+    BERT_SPECIAL_TOKENS.CLS,
+    5,
+    6,
+    BERT_SPECIAL_TOKENS.SEP,
+    filler,
+    filler + 1,
+    BERT_SPECIAL_TOKENS.SEP,
+  ];
+  const candidates = [10, 15, 20, 25].map(buildCandidate);
+  const pooledPerCandidate = candidates.map(
+    (tok) => bertForward(w, tok, [0, 0, 0, 0, 1, 1, 1]).pooledOutput,
+  );
+
+  it("49 multiple-choice head: one score per candidate", () => {
+    const head = initBertMultipleChoiceHead(c, 911);
+    const scores = bertMultipleChoiceScores(pooledPerCandidate, head);
+    expect(scores.length).toBe(pooledPerCandidate.length);
+    for (const s of scores) expect(Number.isFinite(s)).toBe(true);
+  });
+
+  it("50 multiple-choice loss = -log softmax(scores)[gold] and argmax is consistent", () => {
+    const head = initBertMultipleChoiceHead(c, 913);
+    const result = bertMultipleChoiceLoss(pooledPerCandidate, head, 2);
+    expect(Number.isFinite(result.loss)).toBe(true);
+    expect(result.loss).toBeGreaterThan(0);
+    // Probabilities form a distribution
+    const sumProb = result.probabilities.reduce((a, b) => a + b, 0);
+    expect(sumProb).toBeCloseTo(1, 12);
+    // Argmax prediction is consistent with the raw scores
+    const argmax = result.scores.indexOf(Math.max(...result.scores));
+    expect(result.prediction).toBe(argmax);
+  });
+
+  it("51 multiple-choice loss rejects out-of-range gold", () => {
+    const head = initBertMultipleChoiceHead(c, 915);
+    expect(() => bertMultipleChoiceLoss(pooledPerCandidate, head, -1)).toThrow();
+    expect(() => bertMultipleChoiceLoss(pooledPerCandidate, head, 4)).toThrow();
+  });
+
+  it("52 multiple-choice head rejects candidates with wrong hidden size", () => {
+    const head = initBertMultipleChoiceHead(c, 917);
+    const wrongSize: Matrix = { rows: 1, cols: c.hiddenSize - 1, data: new Float64Array(c.hiddenSize - 1) };
+    expect(() => bertMultipleChoiceScores([...pooledPerCandidate, wrongSize], head)).toThrow();
+  });
+});
+
+describe("BERT audit 3 — §5.3 feature-based layer combination", () => {
+  const c = bertTinyConfig();
+  const w = initBertWeights(c, 521);
+  const tokens = [
+    BERT_SPECIAL_TOKENS.CLS,
+    5,
+    6,
+    7,
+    BERT_SPECIAL_TOKENS.SEP,
+  ];
+  const { allHiddenStates } = bertForwardWithLayers(w, tokens);
+
+  it("53 concatLastKLayers: last k states along the feature axis", () => {
+    // Tiny config has L=2 encoder layers → 3 hidden states total
+    const combined = concatLastKLayers(allHiddenStates, 2);
+    expect(combined.rows).toBe(tokens.length);
+    expect(combined.cols).toBe(2 * c.hiddenSize);
+  });
+
+  it("54 concatLastFourHidden is the paper-exact §5.3 winner, validated on tiny too", () => {
+    // Tiny config only has 3 hidden states, so k=4 should throw on tiny.
+    expect(() => concatLastFourHidden(allHiddenStates)).toThrow();
+    // Build a 4-layer config so the paper's exact method is exercisable
+    const bigger = { ...c, numLayers: 4 };
+    const wBig = initBertWeights(bigger, 523);
+    const { allHiddenStates: statesBig } = bertForwardWithLayers(wBig, tokens);
+    const combined = concatLastFourHidden(statesBig);
+    expect(combined.rows).toBe(tokens.length);
+    expect(combined.cols).toBe(4 * c.hiddenSize);
+  });
+
+  it("55 sumLastKLayers preserves shape and matches a manual sum", () => {
+    const summed = sumLastKLayers(allHiddenStates, 2);
+    expect(summed.rows).toBe(tokens.length);
+    expect(summed.cols).toBe(c.hiddenSize);
+    // Manually compute: last two layers summed element-wise
+    const a = allHiddenStates[allHiddenStates.length - 2];
+    const b = allHiddenStates[allHiddenStates.length - 1];
+    for (let i = 0; i < summed.data.length; i++) {
+      expect(summed.data[i]).toBeCloseTo(a.data[i] + b.data[i], 12);
+    }
+  });
+
+  it("56 weightedSumLayers reproduces a pure selection (weights = [0,...,0,1])", () => {
+    const weights = new Array(allHiddenStates.length).fill(0);
+    weights[allHiddenStates.length - 1] = 1; // pick just the last layer
+    const combined = weightedSumLayers(allHiddenStates, weights);
+    const last = allHiddenStates[allHiddenStates.length - 1];
+    for (let i = 0; i < combined.data.length; i++) {
+      expect(combined.data[i]).toBeCloseTo(last.data[i], 12);
+    }
+  });
+
+  it("57 secondToLastHidden returns allHiddenStates[L-1] (Table 7: 95.6 F1)", () => {
+    const penultimate = secondToLastHidden(allHiddenStates);
+    const expected = allHiddenStates[allHiddenStates.length - 2];
+    for (let i = 0; i < penultimate.data.length; i++) {
+      expect(penultimate.data[i]).toBe(expected.data[i]);
+    }
+  });
+
+  it("58 concatLastKLayers validates k bounds", () => {
+    expect(() => concatLastKLayers(allHiddenStates, 0)).toThrow();
+    expect(() => concatLastKLayers(allHiddenStates, allHiddenStates.length + 1)).toThrow();
+    expect(() => weightedSumLayers(allHiddenStates, [1, 2])).toThrow(); // length mismatch
+  });
+});
+
+describe("BERT audit 3 — documented hyperparameter constants (§A.2, §A.3)", () => {
+  it("59 BERT_PRE_TRAINING_HYPERS match §A.2 verbatim", () => {
+    expect(BERT_PRE_TRAINING_HYPERS.peakLearningRate).toBe(1e-4);
+    expect(BERT_PRE_TRAINING_HYPERS.warmupSteps).toBe(10_000);
+    expect(BERT_PRE_TRAINING_HYPERS.totalSteps).toBe(1_000_000);
+    expect(BERT_PRE_TRAINING_HYPERS.batchSize).toBe(256);
+    expect(BERT_PRE_TRAINING_HYPERS.maxSeqLen).toBe(512);
+    expect(BERT_PRE_TRAINING_HYPERS.dropoutRate).toBe(0.1);
+    expect(BERT_PRE_TRAINING_HYPERS.maskingRate).toBe(0.15);
+    expect(BERT_PRE_TRAINING_HYPERS.weightDecay).toBe(0.01);
+    // The 128k tokens/batch claim from §A.2: 256 × 512 = 131072
+    expect(BERT_PRE_TRAINING_HYPERS.batchSize * BERT_PRE_TRAINING_HYPERS.maxSeqLen).toBe(
+      131_072,
+    );
+  });
+
+  it("60 BERT_FINE_TUNING_HYPERS match §A.3 verbatim", () => {
+    expect([...BERT_FINE_TUNING_HYPERS.batchSizes]).toEqual([16, 32]);
+    expect([...BERT_FINE_TUNING_HYPERS.learningRates]).toEqual([5e-5, 3e-5, 2e-5]);
+    expect([...BERT_FINE_TUNING_HYPERS.epochs]).toEqual([2, 3, 4]);
+    expect(BERT_FINE_TUNING_HYPERS.dropoutRate).toBe(0.1);
+  });
+
+  it("61 bertFineTuningGrid enumerates 2 × 3 × 3 = 18 candidate runs", () => {
+    const grid = bertFineTuningGrid();
+    expect(grid.length).toBe(18);
+    // Every combination must be unique
+    const seen = new Set<string>();
+    for (const run of grid) {
+      const key = `${run.batchSize}-${run.learningRate}-${run.epochs}`;
+      expect(seen.has(key)).toBe(false);
+      seen.add(key);
+    }
+    // Spot-check: the smallest and largest combinations are both in the grid
+    expect(grid).toContainEqual({ batchSize: 16, learningRate: 2e-5, epochs: 2 });
+    expect(grid).toContainEqual({ batchSize: 32, learningRate: 5e-5, epochs: 4 });
+  });
+});
+
 // Prevent unused-import warnings — some of these symbols are used only
 // when the paper-faithfulness regression suite evolves.
 void fromArray;
@@ -856,3 +1098,5 @@ void xavier;
 void feedForward;
 void initFFNWeights;
 void zeros;
+void bertSpanLoss;
+void bertSpanLogits;

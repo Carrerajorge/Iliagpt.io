@@ -50,9 +50,24 @@ import {
   initBertSpanHead,
   bertSpanLogits,
   bertSpanLoss,
+  bertSpanLossV2,
+  bertSpanPredictV2,
   initBertTokenTaggingHead,
   bertTokenTaggingLogits,
   bertTokenTaggingLoss,
+  initBertMultipleChoiceHead,
+  bertMultipleChoiceScores,
+  bertMultipleChoiceLoss,
+  // §5.3 layer combination helpers
+  concatLastKLayers,
+  concatLastFourHidden,
+  sumLastKLayers,
+  weightedSumLayers,
+  secondToLastHidden,
+  // Hyperparameter constants
+  BERT_PRE_TRAINING_HYPERS,
+  BERT_FINE_TUNING_HYPERS,
+  bertFineTuningGrid,
   // Pre-training
   bertPreTrainingLoss,
   NSP_IS_NEXT,
@@ -164,6 +179,48 @@ const pretrainLossRequestSchema = z.object({
   maskedPositions: z.array(z.number().int().nonnegative()).min(1).max(32),
   originalTokens: z.array(z.number().int().nonnegative()).min(1).max(32),
   nspLabel: z.number().int().min(0).max(1).default(NSP_IS_NEXT),
+  model: modelParamsSchema.optional(),
+});
+
+// Third-pass audit schemas
+
+const spanV2RequestSchema = z.object({
+  tokenIds: tokenIdsSchema,
+  segmentIds: segmentIdsSchema,
+  /** Gold span; pass (0, 0) to train on a "no answer" example. */
+  goldStart: z.number().int().nonnegative().optional(),
+  goldEnd: z.number().int().nonnegative().optional(),
+  /** Decision threshold τ. Default 0 (pure score comparison). */
+  tau: z.number().default(0),
+  headSeed: z.number().int().default(301),
+  model: modelParamsSchema.optional(),
+});
+
+const multipleChoiceRequestSchema = z.object({
+  /** K candidate sequences, each an array of token ids. */
+  candidates: z.array(tokenIdsSchema).min(2).max(8),
+  /** K arrays of segment ids; must match the length of each candidate. */
+  segmentIdsPerCandidate: z.array(segmentIdsSchema).optional(),
+  /** Gold choice index in [0, K). Optional — if omitted, only scores are returned. */
+  goldIndex: z.number().int().nonnegative().optional(),
+  headSeed: z.number().int().default(501),
+  model: modelParamsSchema.optional(),
+});
+
+const layerCombineRequestSchema = z.object({
+  tokenIds: tokenIdsSchema,
+  segmentIds: segmentIdsSchema,
+  /** Combination strategy. `concat-last-k` takes a `k`; `weighted-sum` takes `weights`. */
+  strategy: z.enum([
+    "concat-last-k",
+    "concat-last-4",
+    "sum-last-k",
+    "weighted-sum",
+    "second-to-last",
+    "last",
+  ]),
+  k: z.number().int().min(1).max(24).optional(),
+  weights: z.array(z.number()).optional(),
   model: modelParamsSchema.optional(),
 });
 
@@ -645,6 +702,182 @@ export function createBertRouter(): Router {
         message: caught instanceof Error ? caught.message : String(caught),
       });
     }
+  });
+
+  // ── POST /span-v2 ─────────────────────────────────────────────────────
+  //
+  // SQuAD v2.0 span prediction with [CLS] null-answer handling and the
+  // τ decision threshold (§4.3). Optionally computes the training loss
+  // if gold (start, end) is provided — pass (0, 0) for "no answer".
+  router.post("/span-v2", (req: Request, res: Response) => {
+    const parsed = spanV2RequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { tokenIds, segmentIds, goldStart, goldEnd, tau, headSeed } = parsed.data;
+    const seed = parsed.data.model?.seed ?? 42;
+    try {
+      const { config, weights } = buildTinyBert(seed);
+      const err = validateVocab(tokenIds, config.vocabSize, "tokenIds");
+      if (err) return res.status(400).json({ error: "invalid_tokens", message: err });
+      const head = initBertSpanHead(config, headSeed);
+      const { sequenceOutput } = bertForward(weights, tokenIds, segmentIds);
+      const prediction = bertSpanPredictV2(sequenceOutput, head, tau);
+      let lossResult: ReturnType<typeof bertSpanLossV2> | null = null;
+      if (goldStart !== undefined && goldEnd !== undefined) {
+        if (goldStart >= tokenIds.length || goldEnd >= tokenIds.length) {
+          return res.status(400).json({
+            error: "invalid_gold_span",
+            message: `gold positions out of sequence length ${tokenIds.length}`,
+          });
+        }
+        lossResult = bertSpanLossV2(sequenceOutput, head, goldStart, goldEnd);
+      }
+      return res.json({
+        prediction,
+        loss: lossResult,
+        tau,
+        algorithm:
+          "SQuAD v2.0: [CLS]-null answer + τ threshold (Devlin et al. §4.3)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "span_v2_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /multiple-choice ─────────────────────────────────────────────
+  //
+  // SWAG-style multiple-choice head (§4.4). For K candidate sequences,
+  // runs BERT on each, pools the [CLS] output, scores via dot product
+  // with a learned vector, and softmaxes over the K scores. Optionally
+  // computes the cross-entropy loss against a gold choice index.
+  router.post("/multiple-choice", (req: Request, res: Response) => {
+    const parsed = multipleChoiceRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { candidates, segmentIdsPerCandidate, goldIndex, headSeed } = parsed.data;
+    const seed = parsed.data.model?.seed ?? 42;
+    try {
+      const { config, weights } = buildTinyBert(seed);
+      for (let k = 0; k < candidates.length; k++) {
+        const err = validateVocab(candidates[k], config.vocabSize, `candidates[${k}]`);
+        if (err) return res.status(400).json({ error: "invalid_tokens", message: err });
+      }
+      const pooledPerCandidate = candidates.map((tok, k) =>
+        bertForward(weights, tok, segmentIdsPerCandidate?.[k]).pooledOutput,
+      );
+      const head = initBertMultipleChoiceHead(config, headSeed);
+      const scores = bertMultipleChoiceScores(pooledPerCandidate, head);
+      const lossResult =
+        goldIndex !== undefined
+          ? bertMultipleChoiceLoss(pooledPerCandidate, head, goldIndex)
+          : null;
+      return res.json({
+        scores,
+        prediction: scores.indexOf(Math.max(...scores)),
+        loss: lossResult,
+        numCandidates: candidates.length,
+        algorithm:
+          "Per-candidate pooled [CLS] → dot(w) → softmax (SWAG, Devlin §4.4)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "multiple_choice_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /layer-combine ───────────────────────────────────────────────
+  //
+  // §5.3 feature-based approach: given an input sequence, run the full
+  // encoder, then combine the hidden states via one of the paper's
+  // Table 7 strategies. The winning recipe (concatenate last 4 layers,
+  // 96.1 Dev F1) is available as `strategy: "concat-last-4"`.
+  router.post("/layer-combine", (req: Request, res: Response) => {
+    const parsed = layerCombineRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { tokenIds, segmentIds, strategy, k, weights: combinationWeights } = parsed.data;
+    const seed = parsed.data.model?.seed ?? 42;
+    try {
+      const { config, weights } = buildTinyBert(seed);
+      const err = validateVocab(tokenIds, config.vocabSize, "tokenIds");
+      if (err) return res.status(400).json({ error: "invalid_tokens", message: err });
+      const { allHiddenStates } = bertForwardWithLayers(weights, tokenIds, segmentIds);
+
+      let combined;
+      switch (strategy) {
+        case "concat-last-k":
+          if (k === undefined) {
+            return res.status(400).json({
+              error: "missing_k",
+              message: "strategy 'concat-last-k' requires a numeric `k`",
+            });
+          }
+          combined = concatLastKLayers(allHiddenStates, k);
+          break;
+        case "concat-last-4":
+          combined = concatLastFourHidden(allHiddenStates);
+          break;
+        case "sum-last-k":
+          if (k === undefined) {
+            return res.status(400).json({
+              error: "missing_k",
+              message: "strategy 'sum-last-k' requires a numeric `k`",
+            });
+          }
+          combined = sumLastKLayers(allHiddenStates, k);
+          break;
+        case "weighted-sum":
+          if (!combinationWeights) {
+            return res.status(400).json({
+              error: "missing_weights",
+              message: "strategy 'weighted-sum' requires a `weights` array",
+            });
+          }
+          combined = weightedSumLayers(allHiddenStates, combinationWeights);
+          break;
+        case "second-to-last":
+          combined = secondToLastHidden(allHiddenStates);
+          break;
+        case "last":
+          combined = allHiddenStates[allHiddenStates.length - 1];
+          break;
+      }
+      return res.json({
+        combined: toArray(combined),
+        shape: [combined.rows, combined.cols],
+        strategy,
+        numLayers: allHiddenStates.length,
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "layer_combine_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── GET /hypers ───────────────────────────────────────────────────────
+  //
+  // Documented hyperparameter constants from §A.2 (pre-training) and
+  // §A.3 (fine-tuning), including the full 18-run fine-tuning grid.
+  router.get("/hypers", (_req: Request, res: Response) => {
+    return res.json({
+      preTraining: BERT_PRE_TRAINING_HYPERS,
+      fineTuning: BERT_FINE_TUNING_HYPERS,
+      fineTuningGrid: bertFineTuningGrid(),
+      citations: {
+        preTraining: "Devlin et al. 2018, §A.2",
+        fineTuning: "Devlin et al. 2018, §A.3",
+      },
+    });
   });
 
   // ── GET /configs ──────────────────────────────────────────────────────
