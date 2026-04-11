@@ -808,3 +808,405 @@ test.describe("cognitive capabilities — dispatch + error paths", () => {
     expect(hit?.ok).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 12. Additional functional scenarios per capability (Turn K)
+// ---------------------------------------------------------------------------
+
+test.describe("cognitive capabilities — Turn K additional scenarios", () => {
+  test("E29 create_excel_workbook: multi-sheet + totalRows matches sum", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "file_generation.create_excel_workbook", {
+      sheets: [
+        { name: "North", headers: ["rep", "sales"], rows: [["A", 1], ["B", 2]] },
+        { name: "South", headers: ["rep", "sales"], rows: [["C", 3]] },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as {
+      metadata: { sheetCount: number; sheetNames: string[]; totalRows: number };
+    };
+    expect(res.metadata.sheetCount).toBe(2);
+    expect(res.metadata.sheetNames).toEqual(["North", "South"]);
+    expect(res.metadata.totalRows).toBe(3);
+  });
+
+  test("E30 create_excel_workbook: empty sheets array returns handler_threw", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(
+      page,
+      "file_generation.create_excel_workbook",
+      { sheets: [] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.errorCode).toBe("handler_threw");
+  });
+
+  test("E31 create_word_document: long document with 15 sections", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const sections = Array.from({ length: 15 }, (_, i) => ({
+      heading: `Chapter ${i + 1}`,
+      paragraphs: [`This is chapter ${i + 1} content.`],
+    }));
+    const result = await invokeInBrowser(page, "file_generation.create_word_document", {
+      title: "Long Book",
+      sections,
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as { metadata: { sectionCount: number; paragraphCount: number } };
+    expect(res.metadata.sectionCount).toBe(15);
+    expect(res.metadata.paragraphCount).toBe(15);
+  });
+
+  test("E32 create_pdf: single-line body still valid", async ({ page }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "file_generation.create_pdf", {
+      title: "One-liner",
+      body: ["Just this line."],
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as { sizeBytes: number; base64: string };
+    expect(res.sizeBytes).toBeGreaterThan(500);
+  });
+
+  test("E33 create_powerpoint: slide without bullets still renders", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "file_generation.create_powerpoint", {
+      title: "Minimal",
+      slides: [{ title: "Only a title" }],
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as { metadata: { slideCount: number; bulletCount: number } };
+    expect(res.metadata.slideCount).toBe(2);
+    expect(res.metadata.bulletCount).toBe(0);
+  });
+
+  test("E34 create_code_file: unicode source round-trips through base64", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const source = "const saludo = '¡Hola mundo! 🌍';";
+    const result = await invokeInBrowser(page, "file_generation.create_code_file", {
+      language: "ts",
+      filename: "unicode.ts",
+      source,
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as { base64: string };
+    // Decode using TextDecoder in the browser for full unicode fidelity.
+    const decoded = await page.evaluate(async (base64) => {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return new TextDecoder("utf-8").decode(bytes);
+    }, res.base64);
+    expect(decoded).toBe(source);
+  });
+
+  test("E35 describe_dataset: numeric column statistics are mathematically correct", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "data_analysis.describe_dataset", {
+      headers: ["x"],
+      rows: [[2], [4], [4], [4], [5], [5], [7], [9]],
+    });
+    expect(result.ok).toBe(true);
+    const stats = (result.result as {
+      stats: Record<string, { mean: number; min: number; max: number; stddev: number }>;
+    }).stats.x;
+    expect(stats.mean).toBe(5); // (2+4+4+4+5+5+7+9)/8 = 5
+    expect(stats.min).toBe(2);
+    expect(stats.max).toBe(9);
+    expect(stats.stddev).toBeCloseTo(2, 1);
+  });
+
+  test("E36 describe_dataset: CSV with trailing newline still parses", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "data_analysis.describe_dataset", {
+      csv: "a,b\n1,2\n3,4\n5,6\n",
+    });
+    expect(result.ok).toBe(true);
+    expect((result.result as { rowCount: number }).rowCount).toBe(3);
+  });
+
+  test("E37 clean_and_transform: normalizes empty strings to null", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "data_analysis.clean_and_transform", {
+      rows: [
+        [1, ""],
+        [2, "bob"],
+      ],
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as { rows: unknown[][]; normalizedNulls: number };
+    expect(res.normalizedNulls).toBeGreaterThan(0);
+    expect(res.rows[0][1]).toBeNull();
+  });
+
+  test("E38 forecast_series: alpha=1 makes forecast equal last observation", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "data_analysis.forecast_series", {
+      series: [10, 20, 30, 40],
+      horizon: 2,
+      alpha: 1,
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as { pointForecast: number; forecast: number[] };
+    expect(res.pointForecast).toBe(40);
+    expect(res.forecast).toEqual([40, 40]);
+  });
+
+  test("E39 forecast_series: horizon clamps to 365", async ({ page }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "data_analysis.forecast_series", {
+      series: [1, 2, 3],
+      horizon: 10_000,
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as { horizon: number; forecast: number[] };
+    expect(res.horizon).toBe(365);
+    expect(res.forecast.length).toBe(365);
+  });
+
+  test("E40 csv_to_excel_model: string-only CSV produces zero sum formulas", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "format_conversion.csv_to_excel_model", {
+      csv: "name,city\nalice,NYC\nbob,LA",
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as { metadata: { sumFormulas: number; rowCount: number } };
+    expect(res.metadata.sumFormulas).toBe(0);
+    expect(res.metadata.rowCount).toBe(2);
+  });
+
+  test("E41 executive_summary: maxSentences clamps to 20", async ({ page }) => {
+    await openHarness(page);
+    const longText = Array.from({ length: 50 }, (_, i) => `Sentence ${i + 1}.`).join(" ");
+    const result = await invokeInBrowser(page, "research_synthesis.executive_summary", {
+      text: longText,
+      maxSentences: 500,
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as { selectedCount: number };
+    expect(res.selectedCount).toBeLessThanOrEqual(20);
+  });
+
+  test("E42 decompose_task: bullet list is also decomposed", async ({ page }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "sub_agents.decompose_task", {
+      task: "- Gather data\n- Clean dataset\n- Train model\n- Evaluate",
+    });
+    expect(result.ok).toBe(true);
+    expect((result.result as { count: number }).count).toBeGreaterThanOrEqual(3);
+  });
+
+  test("E43 rbac_check: viewer can read, cannot write", async ({ page }) => {
+    await openHarness(page);
+    const read = await invokeInBrowser(page, "enterprise.rbac_check", {
+      userId: "u",
+      action: "view_profile",
+      role: "viewer",
+    });
+    expect(read.ok).toBe(true);
+    expect((read.result as { allowed: boolean }).allowed).toBe(true);
+
+    const write = await invokeInBrowser(page, "enterprise.rbac_check", {
+      userId: "u",
+      action: "create_resource",
+      role: "viewer",
+    });
+    expect(write.ok).toBe(true);
+    expect((write.result as { allowed: boolean }).allowed).toBe(false);
+  });
+
+  test("E44 state isolation: two users don't see each other's projects", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    // Create one project per user.
+    await invokeInBrowser(page, "projects.create_workspace", { name: "alice-proj" }, "iso-alice");
+    await invokeInBrowser(page, "projects.create_workspace", { name: "bob-proj" }, "iso-bob");
+
+    const aliceList = await invokeInBrowser(page, "projects.list_my_projects", {}, "iso-alice");
+    const bobList = await invokeInBrowser(page, "projects.list_my_projects", {}, "iso-bob");
+
+    const aliceProjects = (aliceList.result as { projects: Array<{ name: string }> }).projects;
+    const bobProjects = (bobList.result as { projects: Array<{ name: string }> }).projects;
+
+    expect(aliceProjects.map((p) => p.name)).toEqual(["alice-proj"]);
+    expect(bobProjects.map((p) => p.name)).toEqual(["bob-proj"]);
+  });
+
+  test("E45 state isolation: two users don't see each other's scheduled tasks", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    await invokeInBrowser(
+      page,
+      "scheduled_tasks.create_recurring",
+      { name: "alice-task", cadence: "daily" },
+      "iso-alice2",
+    );
+    await invokeInBrowser(
+      page,
+      "scheduled_tasks.create_recurring",
+      { name: "bob-task", cadence: "weekly" },
+      "iso-bob2",
+    );
+
+    const aliceList = await invokeInBrowser(
+      page,
+      "scheduled_tasks.list_user_schedules",
+      {},
+      "iso-alice2",
+    );
+    const bobList = await invokeInBrowser(
+      page,
+      "scheduled_tasks.list_user_schedules",
+      {},
+      "iso-bob2",
+    );
+
+    expect((aliceList.result as { count: number }).count).toBe(1);
+    expect((bobList.result as { count: number }).count).toBe(1);
+    const aliceNames = (aliceList.result as { tasks: Array<{ name: string }> }).tasks.map(
+      (t) => t.name,
+    );
+    expect(aliceNames).toEqual(["alice-task"]);
+  });
+
+  test("E46 bulk_rename: plain {original} pattern keeps filename", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    // approval challenge first
+    const challenge = await invokeInBrowser(page, "file_management.bulk_rename", {
+      files: ["hello.txt"],
+      pattern: "{original}",
+    });
+    expect(challenge.errorCode).toBe("approval_required");
+
+    const result = await invokeInBrowser(
+      page,
+      "file_management.bulk_rename",
+      { files: ["hello.txt"], pattern: "{original}" },
+      "harness",
+      challenge.approvalChallengeToken,
+    );
+    expect(result.ok).toBe(true);
+    const res = result.result as { renamed: Array<{ renamed: string }> };
+    expect(res.renamed[0].renamed).toBe("hello.txt");
+  });
+
+  test("E47 organize_folder: files without type land in 'other' bucket", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const challenge = await invokeInBrowser(
+      page,
+      "file_management.organize_folder",
+      { files: [{ name: "a" }] },
+    );
+    expect(challenge.errorCode).toBe("approval_required");
+
+    const result = await invokeInBrowser(
+      page,
+      "file_management.organize_folder",
+      { files: [{ name: "a" }, { name: "b" }] },
+      "harness",
+      challenge.approvalChallengeToken,
+    );
+    expect(result.ok).toBe(true);
+    const res = result.result as { plan: Record<string, string[]> };
+    expect(res.plan.other.length).toBe(2);
+  });
+
+  test("E48 invalid args (array) returns invalid_args code", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    // Invoke with args=[] which the registry flags as invalid_args.
+    // Using an array (not null) because the route coerces null via
+    // `args ?? {}` but passes arrays straight through to the
+    // registry's shape check.
+    const result = await page.evaluate(async () => {
+      const res = await fetch(
+        "/api/cognitive/capabilities/availability.echo/invoke",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: "u", args: [] }),
+        },
+      );
+      return (await res.json()) as {
+        ok: boolean;
+        errorCode?: string;
+      };
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errorCode).toBe("invalid_args");
+  });
+
+  test("E49 concurrent invocations produce distinct run records", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const userId = "concurrent-test-user";
+    // Fire 10 concurrent invokes from the browser.
+    const results = await page.evaluate(async (u) => {
+      const promises = [];
+      for (let i = 0; i < 10; i++) {
+        const w = window as unknown as {
+          invokeCapability: (
+            id: string,
+            args: Record<string, unknown>,
+            userId: string,
+            approvalToken?: string,
+          ) => Promise<{ ok: boolean }>;
+        };
+        promises.push(w.invokeCapability("availability.echo", { i }, u, undefined));
+      }
+      return Promise.all(promises);
+    }, userId);
+    expect(results.length).toBe(10);
+    expect(results.every((r) => r.ok)).toBe(true);
+    // Verify persistence.
+    const runs = (await page.evaluate(async (u) => {
+      const r = await fetch(`/api/cognitive/users/${u}/runs?limit=20`);
+      return (await r.json()) as { count: number };
+    }, userId)) as { count: number };
+    expect(runs.count).toBe(10);
+  });
+
+  test("E50 listCapabilities exposes availableCount ≥ 20", async ({ page }) => {
+    await openHarness(page);
+    const catalog = (await page.evaluate(async () => {
+      const w = window as unknown as {
+        listCapabilities: () => Promise<unknown>;
+      };
+      return (await w.listCapabilities()) as {
+        totalCount: number;
+        availableCount: number;
+      };
+    })) as { totalCount: number; availableCount: number };
+    expect(catalog.totalCount).toBeGreaterThanOrEqual(30);
+    expect(catalog.availableCount).toBeGreaterThanOrEqual(20);
+  });
+});
