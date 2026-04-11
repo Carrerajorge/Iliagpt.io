@@ -41,6 +41,10 @@ import {
   type NormalizedProviderRequest,
   type ProviderResponse,
 } from "../cognitive";
+import {
+  buildCapabilityHandlerMap,
+  resetCapabilityHandlerStores,
+} from "../cognitive/capabilityHandlers";
 
 // ── Schemas ───────────────────────────────────────────────────────────────
 
@@ -384,13 +388,15 @@ export function createCognitiveRouter(): Router {
     name: "demo-run-repo",
   });
 
-  // Turn I: full capability catalog mounted into the router. Every
-  // descriptor from the ILIAGPT capability list is pre-registered;
-  // the two "available" entries (platform_status, echo) have real
-  // handlers. Every other entry returns a structured
-  // not_implemented outcome so the UI can render "coming soon" for
-  // capabilities that haven't shipped yet.
-  const demoCapabilityRegistry = buildDefaultCapabilityCatalog();
+  // Turn I: full capability catalog mounted into the router.
+  // Turn J: provides REAL handlers for 20+ capabilities via
+  // buildCapabilityHandlerMap(). Each entry with a real handler
+  // is auto-promoted from "stub" to "available" inside the catalog
+  // builder. Entries without handlers stay as stubs and return
+  // a structured `not_implemented` outcome on invoke.
+  const demoCapabilityRegistry = buildDefaultCapabilityCatalog({
+    handlers: buildCapabilityHandlerMap(),
+  });
 
   // Tiny-bucket limiter for the /throttled-demo route only. Zero
   // refill so the bucket stays drained across smoke test calls
@@ -658,6 +664,74 @@ export function createCognitiveRouter(): Router {
   // main router in production.
   router.post("/throttled-demo/reset", (_req: Request, res: Response) => {
     throttledLimiter.resetAll();
+    return res.json({ ok: true });
+  });
+
+  // ── GET /api/cognitive/test-harness (Turn J) ──────────────────────────
+  //
+  // Minimal HTML page served to a real browser for Playwright E2E
+  // tests. Exposes `window.invokeCapability(id, args, userId)`
+  // and `window.listCapabilities()` helpers so test code can run
+  // as `page.evaluate(({id, args}) => window.invokeCapability(id, args))`
+  // against the browser's own fetch API. This is "navegador real"
+  // from the user's spec — chromium executes real JS hitting real
+  // routes.
+  router.get("/test-harness", (_req: Request, res: Response) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Cognitive Capability Test Harness</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+<body>
+  <h1 id="status">ready</h1>
+  <pre id="last-result"></pre>
+  <div id="registry-count"></div>
+  <script>
+    window.__COGNITIVE_HARNESS__ = true;
+    window.invokeCapability = async function(id, args, userId, approvalToken) {
+      const body = JSON.stringify({
+        userId: userId || 'harness',
+        args: args || {},
+        approvalToken: approvalToken,
+      });
+      const res = await fetch('/api/cognitive/capabilities/' + id + '/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: body,
+      });
+      const json = await res.json();
+      document.getElementById('last-result').textContent = JSON.stringify(json).slice(0, 2000);
+      document.getElementById('status').textContent = json.ok ? 'ok' : 'err';
+      return json;
+    };
+    window.listCapabilities = async function() {
+      const res = await fetch('/api/cognitive/capabilities');
+      const json = await res.json();
+      document.getElementById('registry-count').textContent = 'count=' + json.totalCount;
+      return json;
+    };
+    window.resetHandlerStores = async function() {
+      const res = await fetch('/api/cognitive/test-harness/reset', { method: 'POST' });
+      return res.json();
+    };
+  </script>
+</body>
+</html>`);
+  });
+
+  // ── POST /api/cognitive/test-harness/reset (Turn J) ───────────────────
+  //
+  // Clears the in-memory capability handler stores (scheduled
+  // tasks, projects, dispatch queue) so concurrent Playwright
+  // tests don't see each other's state. Mounted on the cognitive
+  // route because it's a test-only helper; production would not
+  // expose this.
+  router.post("/test-harness/reset", (_req: Request, res: Response) => {
+    resetCapabilityHandlerStores();
     return res.json({ ok: true });
   });
 

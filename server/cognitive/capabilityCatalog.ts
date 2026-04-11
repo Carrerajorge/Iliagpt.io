@@ -472,7 +472,10 @@ export const DEFAULT_CAPABILITY_DESCRIPTORS: ReadonlyArray<CapabilityDescriptor>
  * return a structured `not_implemented` outcome on invoke — which
  * is exactly what the UI wants until a real implementation ships.
  */
-const DEFAULT_HANDLERS: ReadonlyMap<string, CapabilityHandler> = new Map([
+const DEFAULT_HANDLERS: ReadonlyMap<string, CapabilityHandler> = new Map<
+  string,
+  CapabilityHandler
+>([
   [
     "availability.platform_status",
     async () => ({
@@ -488,7 +491,7 @@ const DEFAULT_HANDLERS: ReadonlyMap<string, CapabilityHandler> = new Map([
   ],
   [
     "availability.echo",
-    async (args) => ({
+    async (args: Record<string, unknown>) => ({
       result: { echoed: args },
       message: "echo handler ran",
     }),

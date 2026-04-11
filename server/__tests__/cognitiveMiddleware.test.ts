@@ -4295,6 +4295,429 @@ describe("cognitive: middleware.invokeCapability wiring (Turn I)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// 18. Real capability handlers (Turn J)
+// ---------------------------------------------------------------------------
+
+import {
+  createExcelWorkbookHandler,
+  createWordDocumentHandler,
+  createPdfHandler,
+  createPowerPointHandler,
+  createCodeFileHandler,
+  describeDatasetHandler,
+  cleanAndTransformHandler,
+  forecastSeriesHandler,
+  csvToExcelModelHandler,
+  executiveSummaryHandler,
+  decomposeTaskHandler,
+  listConnectorsHandler,
+  listPluginsHandler,
+  bulkRenameHandler,
+  organizeFolderHandler,
+  createScheduledTaskHandler,
+  listScheduledTasksHandler,
+  createProjectHandler,
+  listProjectsHandler,
+  rbacCheckHandler,
+  queueDispatchTaskHandler,
+  resetCapabilityHandlerStores,
+  buildCapabilityHandlerMap,
+} from "../cognitive/capabilityHandlers";
+
+function handlerCtx(userId: string = "test"): CapabilityContext {
+  return {
+    userId,
+    signal: new AbortController().signal,
+  };
+}
+
+describe("cognitive: real capability handlers (Turn J)", () => {
+  it("238 createExcelWorkbookHandler returns valid xlsx bytes", async () => {
+    const r = await createExcelWorkbookHandler(
+      {
+        sheets: [
+          {
+            name: "Data",
+            headers: ["a", "b"],
+            rows: [
+              [1, 2],
+              [3, 4],
+            ],
+            formulas: [{ cell: "C1", formula: "SUM(A1:B2)" }],
+          },
+        ],
+      },
+      handlerCtx(),
+    );
+    const res = r.result as {
+      format: string;
+      base64: string;
+      sizeBytes: number;
+      metadata: { sheetCount: number; totalRows: number; formulaCount: number };
+    };
+    expect(res.format).toBe("xlsx");
+    expect(res.sizeBytes).toBeGreaterThan(1000); // a minimal xlsx is at least 1KB
+    expect(res.metadata.sheetCount).toBe(1);
+    expect(res.metadata.totalRows).toBe(2);
+    expect(res.metadata.formulaCount).toBe(1);
+    // xlsx is a zip — base64-decoded should start with PK
+    const bytes = Buffer.from(res.base64, "base64");
+    expect(bytes[0]).toBe(0x50); // P
+    expect(bytes[1]).toBe(0x4b); // K
+  });
+
+  it("239 createWordDocumentHandler returns valid docx bytes", async () => {
+    const r = await createWordDocumentHandler(
+      {
+        title: "Test Report",
+        sections: [
+          { heading: "Intro", paragraphs: ["Hello"] },
+          { heading: "Table", table: { headers: ["name"], rows: [["alice"]] } },
+        ],
+      },
+      handlerCtx(),
+    );
+    const res = r.result as { format: string; base64: string; metadata: { paragraphCount: number; tableCount: number } };
+    expect(res.format).toBe("docx");
+    expect(res.metadata.paragraphCount).toBe(1);
+    expect(res.metadata.tableCount).toBe(1);
+    // docx is a zip — PK header
+    const bytes = Buffer.from(res.base64, "base64");
+    expect(bytes[0]).toBe(0x50);
+    expect(bytes[1]).toBe(0x4b);
+  });
+
+  it("240 createPdfHandler returns valid pdf bytes starting with %PDF", async () => {
+    const r = await createPdfHandler(
+      {
+        title: "Test PDF",
+        body: ["First paragraph", "Second paragraph"],
+      },
+      handlerCtx(),
+    );
+    const res = r.result as { format: string; base64: string; sizeBytes: number; metadata: { pageCount: number } };
+    expect(res.format).toBe("pdf");
+    expect(res.sizeBytes).toBeGreaterThan(500);
+    expect(res.metadata.pageCount).toBeGreaterThanOrEqual(1);
+    // pdf header is %PDF
+    const bytes = Buffer.from(res.base64, "base64");
+    expect(bytes.slice(0, 4).toString("ascii")).toBe("%PDF");
+  });
+
+  it("241 createPowerPointHandler returns valid pptx bytes", async () => {
+    const r = await createPowerPointHandler(
+      {
+        title: "Test Deck",
+        slides: [
+          { title: "Intro", bullets: ["a", "b"] },
+          { title: "Conclusion", bullets: ["done"] },
+        ],
+      },
+      handlerCtx(),
+    );
+    const res = r.result as { format: string; base64: string; metadata: { slideCount: number; bulletCount: number } };
+    expect(res.format).toBe("pptx");
+    expect(res.metadata.slideCount).toBe(3); // 2 + title slide
+    expect(res.metadata.bulletCount).toBe(3);
+    const bytes = Buffer.from(res.base64, "base64");
+    expect(bytes[0]).toBe(0x50);
+    expect(bytes[1]).toBe(0x4b);
+  });
+
+  it("242 createCodeFileHandler packages source as base64", async () => {
+    const r = await createCodeFileHandler(
+      {
+        language: "ts",
+        filename: "hello.ts",
+        source: "export const hello = 'world';",
+      },
+      handlerCtx(),
+    );
+    const res = r.result as { format: string; language: string; base64: string; metadata: { lineCount: number } };
+    expect(res.format).toBe("code");
+    expect(res.language).toBe("ts");
+    expect(res.metadata.lineCount).toBe(1);
+    expect(Buffer.from(res.base64, "base64").toString("utf-8")).toBe(
+      "export const hello = 'world';",
+    );
+  });
+
+  it("243 describeDatasetHandler computes stats for numeric columns", async () => {
+    const r = await describeDatasetHandler(
+      {
+        headers: ["price", "city"],
+        rows: [
+          [10, "Paris"],
+          [20, "London"],
+          [30, "Paris"],
+        ],
+      },
+      handlerCtx(),
+    );
+    const res = r.result as {
+      rowCount: number;
+      columnCount: number;
+      stats: Record<string, unknown>;
+    };
+    expect(res.rowCount).toBe(3);
+    expect(res.columnCount).toBe(2);
+    const priceStats = res.stats.price as {
+      type: string;
+      mean: number;
+      min: number;
+      max: number;
+    };
+    expect(priceStats.type).toBe("numeric");
+    expect(priceStats.mean).toBe(20);
+    expect(priceStats.min).toBe(10);
+    expect(priceStats.max).toBe(30);
+    const cityStats = res.stats.city as {
+      type: string;
+      distinctCount: number;
+    };
+    expect(cityStats.type).toBe("string");
+    expect(cityStats.distinctCount).toBe(2);
+  });
+
+  it("244 describeDatasetHandler parses CSV input", async () => {
+    const csv = "a,b\n1,2\n3,4\n5,6";
+    const r = await describeDatasetHandler({ csv }, handlerCtx());
+    const res = r.result as { rowCount: number; columnCount: number };
+    expect(res.rowCount).toBe(3);
+    expect(res.columnCount).toBe(2);
+  });
+
+  it("245 cleanAndTransformHandler deduplicates rows by key column", async () => {
+    const r = await cleanAndTransformHandler(
+      {
+        rows: [
+          [1, "alice"],
+          [2, "bob"],
+          [1, "alice again"],
+        ],
+        dedupeKey: 0,
+      },
+      handlerCtx(),
+    );
+    const res = r.result as {
+      rows: unknown[][];
+      originalRowCount: number;
+      cleanedRowCount: number;
+      removedDuplicates: number;
+    };
+    expect(res.originalRowCount).toBe(3);
+    expect(res.cleanedRowCount).toBe(2);
+    expect(res.removedDuplicates).toBe(1);
+  });
+
+  it("246 forecastSeriesHandler produces forecast of requested horizon", async () => {
+    const r = await forecastSeriesHandler(
+      { series: [1, 2, 3, 4, 5, 6, 7, 8], horizon: 3, alpha: 0.5 },
+      handlerCtx(),
+    );
+    const res = r.result as {
+      forecast: number[];
+      fitted: number[];
+      rmse: number;
+      horizon: number;
+      pointForecast: number;
+    };
+    expect(res.forecast.length).toBe(3);
+    expect(res.fitted.length).toBe(8);
+    expect(res.horizon).toBe(3);
+    expect(typeof res.rmse).toBe("number");
+    expect(typeof res.pointForecast).toBe("number");
+  });
+
+  it("247 csvToExcelModelHandler converts CSV to xlsx with sum formulas", async () => {
+    const csv = "product,price,qty\napple,10,5\nbanana,2,30\ncherry,5,12";
+    const r = await csvToExcelModelHandler({ csv }, handlerCtx());
+    const res = r.result as { format: string; base64: string; metadata: { rowCount: number; sumFormulas: number } };
+    expect(res.format).toBe("xlsx");
+    expect(res.metadata.rowCount).toBe(3);
+    expect(res.metadata.sumFormulas).toBeGreaterThan(0);
+  });
+
+  it("248 executiveSummaryHandler selects top sentences deterministically", async () => {
+    const text =
+      "The new policy takes effect immediately. This document explains the changes. " +
+      "All employees must review the guidelines. Questions should go to HR. " +
+      "We appreciate your cooperation.";
+    const r = await executiveSummaryHandler(
+      { text, maxSentences: 2 },
+      handlerCtx(),
+    );
+    const res = r.result as { summary: string; selectedCount: number; totalSentences: number };
+    expect(res.selectedCount).toBeLessThanOrEqual(2);
+    expect(res.summary.length).toBeGreaterThan(0);
+    expect(res.totalSentences).toBeGreaterThan(0);
+  });
+
+  it("249 decomposeTaskHandler splits task into subtasks with dependencies", async () => {
+    const task =
+      "1. Gather requirements from stakeholders. " +
+      "2. Draft initial design document. " +
+      "3. Review with team and iterate. " +
+      "4. Ship to production.";
+    const r = await decomposeTaskHandler({ task }, handlerCtx());
+    const res = r.result as {
+      subtasks: Array<{ id: string; description: string; priority: string; dependsOn: string[] }>;
+      count: number;
+    };
+    expect(res.count).toBeGreaterThanOrEqual(3);
+    expect(res.subtasks[0].dependsOn).toEqual([]);
+    expect(res.subtasks[1].dependsOn).toEqual([res.subtasks[0].id]);
+  });
+
+  it("250 listConnectorsHandler returns the expected shape", async () => {
+    const r = await listConnectorsHandler({}, handlerCtx());
+    const res = r.result as { connectors: unknown[]; count: number; availableCount: number };
+    expect(res.count).toBeGreaterThan(5);
+    expect(res.availableCount).toBeGreaterThan(0);
+  });
+
+  it("251 listPluginsHandler returns the marketplace shape", async () => {
+    const r = await listPluginsHandler({}, handlerCtx());
+    const res = r.result as { plugins: unknown[]; count: number };
+    expect(res.count).toBeGreaterThan(5);
+  });
+
+  it("252 bulkRenameHandler applies pattern with placeholders", async () => {
+    const r = await bulkRenameHandler(
+      {
+        files: ["a.txt", "b.txt"],
+        pattern: "{date}_{index:03d}_{original}",
+        date: "2026-04-11",
+      },
+      handlerCtx(),
+    );
+    const res = r.result as {
+      renamed: Array<{ original: string; renamed: string }>;
+      count: number;
+    };
+    expect(res.count).toBe(2);
+    expect(res.renamed[0].renamed).toBe("2026-04-11_001_a.txt");
+    expect(res.renamed[1].renamed).toBe("2026-04-11_002_b.txt");
+  });
+
+  it("253 organizeFolderHandler groups files by type", async () => {
+    const r = await organizeFolderHandler(
+      {
+        files: [
+          { name: "a.txt", type: "documents" },
+          { name: "b.jpg", type: "images" },
+          { name: "c.jpg", type: "images" },
+        ],
+      },
+      handlerCtx(),
+    );
+    const res = r.result as { plan: Record<string, string[]>; folderCount: number; fileCount: number };
+    expect(res.fileCount).toBe(3);
+    expect(res.folderCount).toBe(2);
+    expect(res.plan.images).toContain("b.jpg");
+    expect(res.plan.images).toContain("c.jpg");
+  });
+
+  it("254 scheduled tasks create + list round-trip per user", async () => {
+    resetCapabilityHandlerStores();
+    const created = await createScheduledTaskHandler(
+      { name: "daily digest", cadence: "daily" },
+      handlerCtx("alice"),
+    );
+    expect((created.result as { id: string }).id).toMatch(/^sched_alice_/);
+    const listed = await listScheduledTasksHandler({}, handlerCtx("alice"));
+    const res = listed.result as { tasks: unknown[]; count: number };
+    expect(res.count).toBe(1);
+    // Bob's list should be empty.
+    const bob = await listScheduledTasksHandler({}, handlerCtx("bob"));
+    expect((bob.result as { count: number }).count).toBe(0);
+  });
+
+  it("255 projects create + list round-trip per user", async () => {
+    resetCapabilityHandlerStores();
+    await createProjectHandler(
+      { name: "ReportGen", description: "Monthly reports" },
+      handlerCtx("alice"),
+    );
+    const listed = await listProjectsHandler({}, handlerCtx("alice"));
+    const res = listed.result as { projects: Array<{ name: string }>; count: number };
+    expect(res.count).toBe(1);
+    expect(res.projects[0].name).toBe("ReportGen");
+  });
+
+  it("256 rbacCheckHandler grants + denies based on role + action", async () => {
+    const admin = await rbacCheckHandler(
+      { userId: "u", action: "delete_resource", role: "admin" },
+      handlerCtx(),
+    );
+    expect((admin.result as { allowed: boolean }).allowed).toBe(true);
+
+    const editor = await rbacCheckHandler(
+      { userId: "u", action: "delete_resource", role: "editor" },
+      handlerCtx(),
+    );
+    expect((editor.result as { allowed: boolean }).allowed).toBe(false);
+
+    const viewer = await rbacCheckHandler(
+      { userId: "u", action: "list_resources", role: "viewer" },
+      handlerCtx(),
+    );
+    expect((viewer.result as { allowed: boolean }).allowed).toBe(true);
+  });
+
+  it("257 queueDispatchTaskHandler stores a task in the queue", async () => {
+    const r = await queueDispatchTaskHandler(
+      { description: "run monthly report", priority: "high" },
+      handlerCtx("alice"),
+    );
+    const res = r.result as { id: string; userId: string; priority: string };
+    expect(res.userId).toBe("alice");
+    expect(res.priority).toBe("high");
+    expect(res.id).toMatch(/^disp_/);
+  });
+
+  it("258 buildCapabilityHandlerMap exposes all handlers by id", () => {
+    const map = buildCapabilityHandlerMap();
+    expect(map.size).toBeGreaterThanOrEqual(20);
+    expect(map.has("file_generation.create_excel_workbook")).toBe(true);
+    expect(map.has("data_analysis.describe_dataset")).toBe(true);
+    expect(map.has("sub_agents.decompose_task")).toBe(true);
+  });
+
+  it("259 buildDefaultCapabilityCatalog promotes handler-backed entries to available", () => {
+    const registry = buildDefaultCapabilityCatalog({
+      handlers: buildCapabilityHandlerMap(),
+    });
+    const excel = registry.list().find((d) => d.id === "file_generation.create_excel_workbook");
+    expect(excel?.status).toBe("available");
+    // An entry we didn't promote should stay stub.
+    const computer = registry.list().find((d) => d.id === "computer_use.open_application");
+    expect(computer?.status).toBe("stub");
+  });
+
+  it("260 middleware invokeCapability routes through a promoted handler end-to-end", async () => {
+    const registry = buildDefaultCapabilityCatalog({
+      handlers: buildCapabilityHandlerMap(),
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      capabilityRegistry: registry,
+    });
+    const r = await mw.invokeCapability(
+      "file_generation.create_code_file",
+      { language: "ts", filename: "demo.ts", source: "console.log(42);" },
+      { userId: "u" },
+    );
+    expect(r.ok).toBe(true);
+    const res = r.result as { format: string; base64: string };
+    expect(res.format).toBe("code");
+    expect(Buffer.from(res.base64, "base64").toString("utf-8")).toBe(
+      "console.log(42);",
+    );
+  });
+});
+
 // Suppress unused-import warning if any type alias goes unused above.
 const _t1: MemoryRecord = { id: "x", userId: "y", text: "z", importance: 0, createdAt: 0 };
 const _t2: DocumentChunkRecord = {

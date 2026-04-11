@@ -728,7 +728,7 @@ export class CognitiveMiddleware {
       metadata: options.metadata,
     };
 
-    let invocation: CapabilityInvocation;
+    let invocation: CapabilityInvocation | undefined;
     try {
       invocation = await registry.invoke(id, args, capabilityCtx);
     } finally {
@@ -746,6 +746,23 @@ export class CognitiveMiddleware {
         );
       }
       span.end();
+    }
+
+    // If the registry.invoke itself threw before returning (it
+    // shouldn't — never-throws contract — but TypeScript insists
+    // the variable may still be undefined), synthesize a
+    // minimal failure shape so the rest of the method has a
+    // value to work with.
+    if (!invocation) {
+      invocation = {
+        capabilityId: id,
+        ok: false,
+        artifacts: [],
+        errorCode: "handler_threw",
+        error: "registry.invoke returned without assigning",
+        durationMs: 0,
+        category: "availability",
+      };
     }
 
     // ── 4. Best-effort persistence ────────────────────────────────
