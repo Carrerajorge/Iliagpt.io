@@ -107,6 +107,31 @@ export const BERT_ADAM: AdamHyperparameters = {
 export const BERT_WEIGHT_DECAY = 0.01;
 
 /**
+ * GPT-3's Adam hyperparameters (Brown et al. 2020, §2.1 and Appendix C).
+ *
+ *   "We use Adam with β₁ = 0.9, β₂ = 0.95, ε = 10⁻⁸ ..."
+ *
+ * GPT-3's β₂ is distinct from BOTH Vaswani's 0.98 and BERT's 0.999.
+ * Why: GPT-3 trains on much noisier / longer sequences than BERT and
+ * uses a cosine decay schedule, which interacts with β₂ differently.
+ *
+ * Pair with `GPT3_WEIGHT_DECAY = 0.1` (10× BERT's 0.01) when calling
+ * `adamUpdate` to get the paper's exact optimizer.
+ */
+export const GPT3_ADAM: AdamHyperparameters = {
+  beta1: 0.9,
+  beta2: 0.95,
+  epsilon: 1e-8,
+};
+
+/**
+ * GPT-3's L2 weight decay (§C.3: "weight decay of 0.1"). Ten times
+ * BERT's value — reflects the different regularization regime of a
+ * much larger model trained on much more data.
+ */
+export const GPT3_WEIGHT_DECAY = 0.1;
+
+/**
  * Per-parameter Adam state. Stored as Float64Array so updates are
  * allocation-free on the hot path.
  */
@@ -295,6 +320,75 @@ export function bertLinearSchedule(step: number, config: BertLinearScheduleConfi
   const remaining = totalSteps - step;
   const decaySpan = totalSteps - warmupSteps;
   return peakLR * (remaining / decaySpan);
+}
+
+// ---------------------------------------------------------------------------
+// GPT-3 cosine schedule with linear warmup (Brown et al. 2020, Appendix C)
+// ---------------------------------------------------------------------------
+
+export interface Gpt3CosineScheduleConfig {
+  /** Peak learning rate at the end of warmup. Paper varies by model size. */
+  peakLR: number;
+  /** Number of warmup steps (linear ramp 0 → peakLR). */
+  warmupSteps: number;
+  /** Total training steps (cosine decay ends at totalSteps). */
+  totalSteps: number;
+  /**
+   * Minimum LR as a fraction of peak. Paper §C: "cosine decay for
+   * learning rate down to 10% of its value". Default 0.1.
+   */
+  minLRFraction?: number;
+}
+
+/**
+ * GPT-3's learning rate schedule (Brown et al. 2020, Appendix C):
+ *
+ *   "linear warmup over the first 375M tokens, cosine decay for
+ *    learning rate down to 10% of its value over 260B tokens"
+ *
+ * Piecewise:
+ *
+ *   step ∈ [0, warmup]            lr = peak · step / warmup
+ *   step ∈ (warmup, total]        lr = minLR + 0.5·(peak - minLR)·(1 + cos(π·progress))
+ *                                  where progress = (step - warmup) / (total - warmup)
+ *   step > total                  lr = minLR
+ *
+ * Different from both Vaswani's Noam (inverse-sqrt) and BERT's linear
+ * decay. The cosine shape spends more time near the peak LR than a
+ * linear decay would, which GPT-3's authors report as important for
+ * the very long training runs of large models.
+ */
+export function gpt3CosineSchedule(
+  step: number,
+  config: Gpt3CosineScheduleConfig,
+): number {
+  const { peakLR, warmupSteps, totalSteps } = config;
+  const minLRFraction = config.minLRFraction ?? 0.1;
+  const minLR = peakLR * minLRFraction;
+  if (peakLR <= 0) throw new Error(`gpt3CosineSchedule: peakLR must be > 0`);
+  if (warmupSteps <= 0) throw new Error(`gpt3CosineSchedule: warmupSteps must be > 0`);
+  if (totalSteps <= warmupSteps) {
+    throw new Error(
+      `gpt3CosineSchedule: totalSteps (${totalSteps}) must exceed warmupSteps (${warmupSteps})`,
+    );
+  }
+  if (minLRFraction < 0 || minLRFraction > 1) {
+    throw new Error(
+      `gpt3CosineSchedule: minLRFraction ${minLRFraction} must be in [0, 1]`,
+    );
+  }
+
+  if (step <= 0) return 0;
+  if (step <= warmupSteps) {
+    // Linear warmup
+    return peakLR * (step / warmupSteps);
+  }
+  if (step >= totalSteps) return minLR;
+
+  // Cosine decay from peakLR → minLR
+  const progress = (step - warmupSteps) / (totalSteps - warmupSteps);
+  const cosine = 0.5 * (1 + Math.cos(Math.PI * progress));
+  return minLR + (peakLR - minLR) * cosine;
 }
 
 // ---------------------------------------------------------------------------

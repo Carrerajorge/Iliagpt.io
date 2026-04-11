@@ -109,18 +109,22 @@ export {
   klSmoothed,
 } from "./loss";
 
-// ─── Adam optimizer + Noam LR schedule (Eq 3, section 5.3) ─────────────────
+// ─── Adam optimizer + LR schedules (Noam, BERT linear, GPT-3 cosine) ───────
 export {
   type AdamHyperparameters,
   type AdamState,
   type NoamConfig,
   type BertLinearScheduleConfig,
+  type Gpt3CosineScheduleConfig,
   PAPER_ADAM,
   BERT_ADAM,
   BERT_WEIGHT_DECAY,
+  GPT3_ADAM,
+  GPT3_WEIGHT_DECAY,
   noamLearningRate,
   noamPeakLearningRate,
   bertLinearSchedule,
+  gpt3CosineSchedule,
   createAdamState,
   adamUpdate,
   AdamOptimizer,
@@ -197,3 +201,6 @@ export {
 
 // ─── BERT (Devlin et al. 2018, bidirectional encoder) ──────────────────────
 export * from "./bert";
+
+// ─── GPT-3 (Brown et al. 2020, decoder-only autoregressive) ────────────────
+export * from "./gpt";

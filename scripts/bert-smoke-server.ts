@@ -16,14 +16,19 @@
 import express from "express";
 import { createBertRouter } from "../server/routes/bertRoutes";
 import { createTransformerRouter } from "../server/routes/transformerRoutes";
+import { createGpt3Router } from "../server/routes/gpt3Routes";
 
 const app = express();
 app.use(express.json({ limit: "4mb" }));
 app.use("/api/bert", createBertRouter());
 app.use("/api/transformer", createTransformerRouter());
+app.use("/api/gpt3", createGpt3Router());
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, routes: ["/api/bert/*", "/api/transformer/*"] });
+  res.json({
+    ok: true,
+    routes: ["/api/bert/*", "/api/transformer/*", "/api/gpt3/*"],
+  });
 });
 
 const PORT = Number(process.env.BERT_SMOKE_PORT ?? 5174);

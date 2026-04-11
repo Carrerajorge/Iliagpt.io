@@ -54,6 +54,7 @@ import { createSpreadsheetRouter } from "./routes/spreadsheetRoutes";
 import { createOfficeEngineRouter } from "./routes/officeEngineRoutes";
 import { createTransformerRouter } from "./routes/transformerRoutes";
 import { createBertRouter } from "./routes/bertRoutes";
+import { createGpt3Router } from "./routes/gpt3Routes";
 import { isOfficeEngineEnabled } from "./lib/office/featureFlag";
 import { createChatRoutes } from "./routes/chatRoutes";
 import { createAgentModeRouter } from "./routes/agentRoutes";
@@ -116,6 +117,7 @@ import { llmGateway } from "./lib/llmGateway";
 import { generateAnonToken, verifyAnonToken } from "./lib/anonToken";
 import { getUserConfig, setUserConfig, getDefaultConfig, validatePatterns, getFilterStats } from "./services/contentFilter";
 import { isModelEligibleForPublic } from "./services/modelIntegration";
+import { getUnifiedModelCatalog } from "./services/modelCatalogService";
 import { GEMINI_MODELS_REGISTRY, OPENROUTER_MODELS, XAI_MODELS } from "./lib/modelRegistry";
 import { getLogs, getLogStats, type LogFilters } from "./lib/structuredLogger";
 import { getActiveRequests, getRequestStats } from "./lib/requestTracer";
@@ -1812,6 +1814,7 @@ try{
   }
   app.use("/api/transformer", createTransformerRouter());
   app.use("/api/bert", createBertRouter());
+  app.use("/api/gpt3", createGpt3Router());
   app.use("/api/skills", createSkillsRouter());
   app.use("/api/skill-platform", createSkillPlatformRouter());
   app.use("/api/chat", createChatRoutes());
@@ -3257,34 +3260,41 @@ try{
   });
 
   // ===== Public Models Endpoint (for user-facing selector) =====
-  let modelsCache: { data: any; ts: number } | null = null;
+  const modelsCache = new Map<string, { data: any; ts: number }>();
   const MODELS_CACHE_TTL = 30_000;
 
   app.get("/api/models/available", async (req: Request, res: Response) => {
-    res.set({ "Cache-Control": "public, max-age=30" });
+    res.set({ "Cache-Control": "private, max-age=30" });
     try {
       const now = Date.now();
-      if (modelsCache && (now - modelsCache.ts) < MODELS_CACHE_TTL) {
-        return res.json(modelsCache.data);
+      const userId = getSecureUserId(req);
+      const cacheKey = String(userId || "anonymous");
+      const cached = modelsCache.get(cacheKey);
+      if (cached && (now - cached.ts) < MODELS_CACHE_TTL) {
+        return res.json(cached.data);
       }
-      const allModels = await storage.getAiModels();
-      const dbModels = allModels
-        .map((m: any) => ({ ...m, isEnabled: "true", status: "active" }))
-        .map((m: any) => toPublicModelSummary(m));
 
-      const existingModelIds = new Set(dbModels.map((m: PublicModelSummary) => m.modelId));
-      const missingFallbacks = PUBLIC_MODEL_FALLBACKS.filter(
-        (fb) => !existingModelIds.has(fb.modelId)
-      );
-      const models = [...missingFallbacks, ...dbModels]
-        .sort((a: any, b: any) => (a.displayOrder || 0) - (b.displayOrder || 0));
+      const catalog = await getUnifiedModelCatalog({ userId });
+      const result = {
+        models: catalog.models,
+        defaultModelId: catalog.defaultModel?.modelId || catalog.defaultModelId,
+        meta: {
+          unified: true,
+          refreshedAt: catalog.refreshedAt,
+          plan: catalog.userAccess.plan,
+          isAdmin: catalog.userAccess.isAdmin,
+          isPaid: catalog.userAccess.isPaid,
+        },
+      };
 
-      const result = { models };
-      modelsCache = { data: result, ts: now };
+      modelsCache.set(cacheKey, { data: result, ts: now });
       res.json(result);
     } catch (error: any) {
       log.error("Error fetching available models", { error });
-      res.json({ models: PUBLIC_MODEL_FALLBACKS });
+      res.status(500).json({
+        error: "Failed to fetch unified model catalog",
+        models: [],
+      });
     }
   });
 
