@@ -27,6 +27,7 @@ import { type Matrix, zeros } from "./matrix";
 import {
   runEncoder,
   runDecoder,
+  embeddingDropout,
   type EncoderLayerWeights,
   type DecoderLayerWeights,
   type TransformerConfig,
@@ -40,6 +41,7 @@ import {
 import { tiedOutputLogits } from "./outputProjection";
 import { crossEntropyLoss, type LabelSmoothingConfig } from "./loss";
 import { AdamOptimizer, type NoamConfig } from "./optimizer";
+import { type DropoutConfig } from "./dropout";
 
 // ---------------------------------------------------------------------------
 // Forward + loss on a single example
@@ -62,29 +64,60 @@ export interface TrainingSetup {
  * Compute the cross-entropy loss for one example given the current
  * weights. Returns a single scalar; used both by the training step
  * and by the finite-difference gradient helper.
+ *
+ * Paper section 5.4:
+ *   "We apply dropout [...] to the sums of the embeddings and the
+ *    positional encodings in both the encoder and decoder stacks."
+ *
+ * If a `dropoutConfig` is supplied, it is applied to both the src and
+ * tgt embedding+PE sums AND threaded through the encoder and decoder
+ * stacks (where each sub-layer already wires it internally). The seed
+ * is constant across the two FD probes so the dropout mask is identical
+ * on the +h and -h forward passes — a necessary condition for the
+ * finite-difference gradient estimate to remain valid.
  */
 export function computeLoss(
   batch: TrainingBatch,
   setup: TrainingSetup,
   lsConfig: LabelSmoothingConfig,
+  dropoutConfig?: DropoutConfig,
 ): number {
   const dModel = setup.embeddingTable.dModel;
 
-  const srcEmb = addPositional(
+  // Base dropout seed (caller-supplied or deterministic default). The
+  // per-location salt below shifts the seed by a fixed offset for each
+  // of the 4 dropout sites so masks stay independent.
+  const baseSeed = dropoutConfig?.seed ?? 0;
+  const withSalt = (salt: number): DropoutConfig | undefined =>
+    dropoutConfig ? { ...dropoutConfig, seed: baseSeed + salt } : undefined;
+
+  // ── Encoder side ──
+  const srcEmbPE = addPositional(
     embedTokens(setup.embeddingTable, batch.src),
     positionalEncoding(batch.src.length, dModel),
   );
-  const encoderOutput = runEncoder(srcEmb, setup.encoder, setup.config.attention);
+  const srcEmb = embeddingDropout(srcEmbPE, withSalt(1));
+  const encoderOutput = runEncoder(
+    srcEmb,
+    setup.encoder,
+    setup.config.attention,
+    undefined,
+    withSalt(2),
+  );
 
-  const tgtEmb = addPositional(
+  // ── Decoder side ──
+  const tgtEmbPE = addPositional(
     embedTokens(setup.embeddingTable, batch.tgtIn),
     positionalEncoding(batch.tgtIn.length, dModel),
   );
+  const tgtEmb = embeddingDropout(tgtEmbPE, withSalt(3));
   const decoderOutput = runDecoder(
     tgtEmb,
     encoderOutput,
     setup.decoder,
     setup.config.attention,
+    undefined,
+    withSalt(4),
   );
 
   const logits = tiedOutputLogits(decoderOutput, setup.embeddingTable);
@@ -116,6 +149,11 @@ export const FD_DEFAULTS: FDConfig = { h: 1e-4 };
  *
  * This is O(param_count) forward passes — fine for tiny models but
  * exponential for the base model. We cap evaluations via `fdConfig.maxParams`.
+ *
+ * When `dropoutConfig` is supplied, the SAME seed is used for the +h
+ * and -h probes so the dropout mask is identical on both forward passes.
+ * Without this, the FD gradient would be contaminated by mask variance
+ * and effectively random.
  */
 export function finiteDifferenceGradient(
   parameter: Matrix,
@@ -123,6 +161,7 @@ export function finiteDifferenceGradient(
   setup: TrainingSetup,
   lsConfig: LabelSmoothingConfig,
   fdConfig: FDConfig = FD_DEFAULTS,
+  dropoutConfig?: DropoutConfig,
 ): Matrix {
   const grad = zeros(parameter.rows, parameter.cols);
   const h = fdConfig.h;
@@ -131,9 +170,9 @@ export function finiteDifferenceGradient(
   for (let i = 0; i < limit; i++) {
     const original = parameter.data[i];
     parameter.data[i] = original + h;
-    const lossPlus = computeLoss(batch, setup, lsConfig);
+    const lossPlus = computeLoss(batch, setup, lsConfig, dropoutConfig);
     parameter.data[i] = original - h;
-    const lossMinus = computeLoss(batch, setup, lsConfig);
+    const lossMinus = computeLoss(batch, setup, lsConfig, dropoutConfig);
     parameter.data[i] = original;
     grad.data[i] = (lossPlus - lossMinus) / (2 * h);
   }
@@ -223,6 +262,13 @@ export function registerSetupWithOptimizer(setup: TrainingSetup, optimizer: Adam
  * entire parameter collection, then an Adam update.
  *
  * Returns the loss BEFORE the update (the standard reporting convention).
+ *
+ * If `dropoutConfig` is provided, dropout is applied exactly where the
+ * paper requires (sub-layer outputs + embedding+PE sums) during BOTH the
+ * initial `lossBefore` measurement AND the FD probes, with the same seed
+ * on all probes so the gradient estimate remains valid. The seed is
+ * advanced by a constant per step so masks vary across training steps
+ * but remain frozen within a single step.
  */
 export function trainingStep(
   batch: TrainingBatch,
@@ -230,16 +276,24 @@ export function trainingStep(
   lsConfig: LabelSmoothingConfig,
   optimizer: AdamOptimizer,
   fdConfig: FDConfig = FD_DEFAULTS,
+  dropoutConfig?: DropoutConfig,
 ): TrainingStepResult {
+  // Freeze the dropout seed for this step so +h and -h FD probes see
+  // the same mask. We advance the base seed by the optimizer's step
+  // counter so successive training steps see different masks.
+  const frozenDropout: DropoutConfig | undefined = dropoutConfig
+    ? { ...dropoutConfig, seed: (dropoutConfig.seed ?? 0) + optimizer.step * 997 }
+    : undefined;
+
   // 1. Current loss
-  const lossBefore = computeLoss(batch, setup, lsConfig);
+  const lossBefore = computeLoss(batch, setup, lsConfig, frozenDropout);
 
   // 2. Gradients (finite-difference over every registered parameter)
   const params = collectParameters(setup);
   const gradients: Record<string, Matrix> = {};
   let gradientNormSq = 0;
   for (const [name, p] of Object.entries(params)) {
-    const g = finiteDifferenceGradient(p, batch, setup, lsConfig, fdConfig);
+    const g = finiteDifferenceGradient(p, batch, setup, lsConfig, fdConfig, frozenDropout);
     gradients[name] = g;
     for (let i = 0; i < g.data.length; i++) gradientNormSq += g.data[i] * g.data[i];
   }

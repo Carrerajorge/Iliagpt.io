@@ -823,6 +823,94 @@ describe("Transformer — paper-faithfulness audit fixes", () => {
     expect(weights.decoder[0].norm3.gamma.data[0]).not.toBe(decGammaBefore);
   });
 
+  it("74b computeLoss with dropoutConfig is deterministic when seeds are fixed", async () => {
+    const mod = await import("../lib/transformer");
+    const vocabSize = 5;
+    const dModel = 8;
+    const config = {
+      encoderLayers: 1,
+      decoderLayers: 1,
+      attention: mod.baseConfig(dModel, 2),
+      dFF: 16,
+    };
+    const setup: TrainingSetup = {
+      config,
+      embeddingTable: mod.initEmbeddingTable(vocabSize, dModel, 31),
+      encoder: mod.initTransformerWeights(config, 33).encoder,
+      decoder: mod.initTransformerWeights(config, 33).decoder,
+    };
+    const batch = mod.generateCopyTaskBatch(1, {
+      vocabSize,
+      sequenceLength: 2,
+      seed: 5,
+    })[0];
+    const trainingBatch = { src: batch.src, tgtIn: batch.tgtIn, tgtOut: batch.tgtOut };
+    const lsConfig = { epsilon: 0.1, vocabSize };
+    const dropCfg = { rate: 0.2, training: true, seed: 77 };
+    const a = mod.computeLoss(trainingBatch, setup, lsConfig, dropCfg);
+    const b = mod.computeLoss(trainingBatch, setup, lsConfig, dropCfg);
+    // Same seed → same loss → valid FD gradients under dropout
+    expect(a).toBeCloseTo(b, 12);
+    // A different seed should yield a different loss
+    const c = mod.computeLoss(trainingBatch, setup, lsConfig, {
+      ...dropCfg,
+      seed: 78,
+    });
+    expect(Math.abs(a - c)).toBeGreaterThan(0);
+  });
+
+  it("74c trainingStep with paper's P_drop=0.1 still reduces loss on the copy task", async () => {
+    const mod = await import("../lib/transformer");
+    const vocabSize = 6;
+    const dModel = 8;
+    const config = {
+      encoderLayers: 1,
+      decoderLayers: 1,
+      attention: mod.baseConfig(dModel, 2),
+      dFF: 16,
+    };
+    const embeddingTable = mod.initEmbeddingTable(vocabSize, dModel, 41);
+    const weights = mod.initTransformerWeights(config, 43);
+    const setup: TrainingSetup = {
+      config,
+      embeddingTable,
+      encoder: weights.encoder,
+      decoder: weights.decoder,
+    };
+    const batch = mod.generateCopyTaskBatch(1, {
+      vocabSize,
+      sequenceLength: 3,
+      seed: 11,
+    })[0];
+    const trainingBatch = { src: batch.src, tgtIn: batch.tgtIn, tgtOut: batch.tgtOut };
+    const lsConfig = { epsilon: 0.1, vocabSize };
+    const dropCfg = { rate: 0.1, training: true, seed: 101 };
+
+    const initialLoss = mod.computeLoss(trainingBatch, setup, lsConfig, dropCfg);
+    const optimizer = new mod.AdamOptimizer(
+      { dModel, warmupSteps: 4 },
+      mod.PAPER_ADAM,
+    );
+    mod.registerSetupWithOptimizer(setup, optimizer);
+    for (let s = 0; s < 3; s++) {
+      const r = mod.trainingStep(
+        trainingBatch,
+        setup,
+        lsConfig,
+        optimizer,
+        { h: 1e-3, maxParams: 40 },
+        dropCfg,
+      );
+      expect(Number.isFinite(r.loss)).toBe(true);
+      expect(Number.isFinite(r.gradientNorm)).toBe(true);
+    }
+    const finalLoss = mod.computeLoss(trainingBatch, setup, lsConfig, dropCfg);
+    // Must still improve with the paper's actual P_drop enabled. This is
+    // the key signal: the whole pipeline (embedding dropout + per-sub-layer
+    // dropout + learnable LayerNorm γ/β + Adam + Noam) converges coherently.
+    expect(finalLoss).toBeLessThan(initialLoss);
+  }, 120_000);
+
   it("74 serialization round-trips γ/β through the JSON checkpoint", async () => {
     const mod = await import("../lib/transformer");
     const config = mod.tinyTransformerConfig();
