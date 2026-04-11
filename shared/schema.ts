@@ -41,6 +41,9 @@ export const users = pgTable("users", {
   company: varchar("company"),
   role: text("role").default("user"), // admin, editor, viewer, api_only, user
   plan: text("plan").default("free"), // free, pro, enterprise
+  subscriptionPlan: text("subscription_plan"), // free, go, plus, pro, business
+  subscriptionStatus: text("subscription_status"), // active, cancelled, past_due, trialing, inactive
+  subscriptionPeriodEnd: timestamp("subscription_period_end"),
   status: text("status").default("active"), // active, inactive, suspended, pending_verification
   queryCount: integer("query_count").default(0),
   tokensConsumed: integer("tokens_consumed").default(0),

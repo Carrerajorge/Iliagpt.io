@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { users } from "@shared/schema";
 
 type LoadModuleOptions = {
   aiModels?: any[];
@@ -61,6 +62,12 @@ afterEach(() => {
 });
 
 describe("modelCatalogService", () => {
+  it("keeps the users schema aligned with the subscription fields used by the catalog", () => {
+    expect(users.subscriptionPlan).toBeDefined();
+    expect(users.subscriptionStatus).toBeDefined();
+    expect(users.subscriptionPeriodEnd).toBeDefined();
+  });
+
   it("adds the curated OpenClaw/ILIAGPT presets and falls back to a free default for free users", async () => {
     const { getUnifiedModelCatalog } = await loadModelCatalogModule({
       aiModels: [],
