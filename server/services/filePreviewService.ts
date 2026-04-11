@@ -18,6 +18,59 @@ const QUICKLOOK_EXECUTABLE = "/usr/bin/qlmanage";
 const QUICKLOOK_SUPPORTED_EXTENSIONS = new Set(["xls", "xlsx", "csv", "tsv", "ppt", "pptx"]);
 const execFileAsync = promisify(execFile);
 
+/**
+ * Lightweight in-memory counters so we can spot a regression where every
+ * .docx suddenly lands on the degraded fallback. Exposed to the ops router
+ * via `getFilePreviewDiagnostics()` — no Redis required.
+ */
+const previewDiagnostics = {
+  docxPrimary: 0,
+  docxOfficeParser: 0,
+  docxJszip: 0,
+  docxDegraded: 0,
+  docxLastError: null as null | {
+    stage: "mammoth" | "officeParser" | "jszip";
+    message: string;
+    fileSizeBytes: number;
+    at: string;
+  },
+};
+
+export function getFilePreviewDiagnostics() {
+  return { ...previewDiagnostics };
+}
+
+function recordDocxError(
+  stage: "mammoth" | "officeParser" | "jszip",
+  error: unknown,
+  fileSizeBytes: number,
+) {
+  const message =
+    (error as any)?.message ||
+    (typeof error === "string" ? error : JSON.stringify(error));
+  previewDiagnostics.docxLastError = {
+    stage,
+    message: String(message).slice(0, 500),
+    fileSizeBytes,
+    at: new Date().toISOString(),
+  };
+  // Structured line so `grep filePreview.docx` in the production logs
+  // surfaces exactly which stage failed and why.
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[filePreview.docx] ${stage}_failed`,
+    JSON.stringify({
+      stage,
+      fileSizeBytes,
+      message: String(message).slice(0, 500),
+      stack:
+        process.env.NODE_ENV !== "production" && (error as any)?.stack
+          ? String((error as any).stack).split("\n").slice(0, 5).join(" | ")
+          : undefined,
+    }),
+  );
+}
+
 type PreviewKind = "docx" | "xlsx" | "csv" | "pptx" | "text" | "unknown";
 
 export interface FilePreviewPayload {
@@ -571,6 +624,8 @@ function renderPresentationHtml(slides: PresentationSlidePreview[]): string {
 }
 
 async function renderDocxHtml(buffer: Buffer): Promise<FilePreviewPayload> {
+  const fileSizeBytes = buffer.length;
+
   // Primary: mammoth HTML conversion with style mapping.
   try {
     const result = await mammoth.convertToHtml({ buffer }, {
@@ -587,6 +642,7 @@ async function renderDocxHtml(buffer: Buffer): Promise<FilePreviewPayload> {
       ],
     });
 
+    previewDiagnostics.docxPrimary += 1;
     return {
       type: "docx",
       html: renderPreviewShell("Vista previa de Word", `
@@ -599,7 +655,7 @@ async function renderDocxHtml(buffer: Buffer): Promise<FilePreviewPayload> {
       },
     };
   } catch (mammothError: any) {
-    console.warn("[filePreview] mammoth.convertToHtml failed, falling back to text:", mammothError?.message || mammothError);
+    recordDocxError("mammoth", mammothError, fileSizeBytes);
   }
 
   // Fallback 1: extract raw text via officeParser (handles minimal docx that
@@ -607,6 +663,7 @@ async function renderDocxHtml(buffer: Buffer): Promise<FilePreviewPayload> {
   try {
     const text = await officeParser.parseOfficeAsync(buffer);
     if (text && text.trim().length > 0) {
+      previewDiagnostics.docxOfficeParser += 1;
       return {
         type: "text",
         content: text.slice(0, MAX_PREVIEW_TEXT),
@@ -618,7 +675,7 @@ async function renderDocxHtml(buffer: Buffer): Promise<FilePreviewPayload> {
       };
     }
   } catch (officeError: any) {
-    console.warn("[filePreview] officeParser fallback failed:", officeError?.message || officeError);
+    recordDocxError("officeParser", officeError, fileSizeBytes);
   }
 
   // Fallback 2: extract raw text directly from the docx XML parts so we never
@@ -654,6 +711,7 @@ async function renderDocxHtml(buffer: Buffer): Promise<FilePreviewPayload> {
     }
     const joined = parts.join("\n\n");
     if (joined) {
+      previewDiagnostics.docxJszip += 1;
       return {
         type: "text",
         content: joined.slice(0, MAX_PREVIEW_TEXT),
@@ -665,10 +723,11 @@ async function renderDocxHtml(buffer: Buffer): Promise<FilePreviewPayload> {
       };
     }
   } catch (zipError: any) {
-    console.warn("[filePreview] jszip fallback failed:", zipError?.message || zipError);
+    recordDocxError("jszip", zipError, fileSizeBytes);
   }
 
   // Last resort: degraded unknown — never throw to keep the route non-500.
+  previewDiagnostics.docxDegraded += 1;
   return {
     type: "unknown",
     message: "No se pudo generar la vista previa, pero el archivo se recibió correctamente.",
