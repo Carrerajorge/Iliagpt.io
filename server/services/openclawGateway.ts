@@ -1493,12 +1493,19 @@ async function handleMethod(client: GatewayClient, id: number | string, method: 
 
 export function attachOpenClawGateway(httpServer: HttpServer) {
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  const handledFlag = "__iliagptOpenClawUpgradeHandled";
 
-  httpServer.prependListener("upgrade", (req: any, socket, head) => {
-    const pathname = (req.url || "").split("?")[0];
-    if (pathname !== "/openclaw-ws" && pathname !== "/openclaw-ui") {
-      return;
+  const tryHandleUpgrade = (req: any, socket: any, head: Buffer) => {
+    if (req?.[handledFlag]) {
+      return false;
     }
+
+    const pathname = (req?.url || "").split("?")[0];
+    if (pathname !== "/openclaw-ws" && pathname !== "/openclaw-ui") {
+      return false;
+    }
+
+    req[handledFlag] = true;
 
     console.log(`[OpenClaw Gateway] Upgrade request: ${pathname}`);
     console.log(`[OpenClaw Gateway] Handling upgrade for ${pathname}`);
@@ -1506,6 +1513,22 @@ export function attachOpenClawGateway(httpServer: HttpServer) {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req);
     });
+    return true;
+  };
+
+  const originalEmit = httpServer.emit;
+  httpServer.emit = function patchedEmit(event: string, ...args: any[]) {
+    if (event === "upgrade" && tryHandleUpgrade(args[0], args[1], args[2])) {
+      return true;
+    }
+    return originalEmit.call(this, event, ...args);
+  } as typeof httpServer.emit;
+
+  httpServer.prependListener("upgrade", (req: any, socket, head) => {
+    if (req?.[handledFlag]) {
+      return;
+    }
+    tryHandleUpgrade(req, socket, head);
   });
 
   wss.on("connection", (ws) => {
