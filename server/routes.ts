@@ -52,6 +52,7 @@ import { getMetricsSummary as getPareMetricsSummary } from "./lib/pareMetrics";
 import errorRouter from "./routes/errorRouter";
 import { createSpreadsheetRouter } from "./routes/spreadsheetRoutes";
 import { createOfficeEngineRouter } from "./routes/officeEngineRoutes";
+import { createTransformerRouter } from "./routes/transformerRoutes";
 import { isOfficeEngineEnabled } from "./lib/office/featureFlag";
 import { createChatRoutes } from "./routes/chatRoutes";
 import { createAgentModeRouter } from "./routes/agentRoutes";
@@ -1808,6 +1809,7 @@ try{
   if (isOfficeEngineEnabled()) {
     app.use("/api/office-engine", createOfficeEngineRouter());
   }
+  app.use("/api/transformer", createTransformerRouter());
   app.use("/api/skills", createSkillsRouter());
   app.use("/api/skill-platform", createSkillPlatformRouter());
   app.use("/api/chat", createChatRoutes());
