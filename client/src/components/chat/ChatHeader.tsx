@@ -141,26 +141,7 @@ export function ChatHeader({
         <>
         <header className="sticky top-0 z-20 flex items-center justify-between px-3 md:px-4 py-2 border-b border-border/50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 h-14">
             <div className="flex items-center gap-2">
-                {!isSidebarOpen && (
-                    <TooltipProvider>
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <button
-                                    onClick={onToggleSidebar}
-                                    className="group relative -ml-1 flex items-center justify-center h-10 w-10 rounded-xl cursor-pointer"
-                                    aria-label="Toggle sidebar"
-                                    data-testid="button-toggle-sidebar"
-                                >
-                                    <IliaGPTLogo size={28} className="transition-opacity duration-200 group-hover:opacity-30" />
-                                    <PanelLeftOpen className="absolute h-5 w-5 text-muted-foreground opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
-                                </button>
-                            </TooltipTrigger>
-                            <TooltipContent side="right">
-                                <p>Mostrar barra lateral</p>
-                            </TooltipContent>
-                        </Tooltip>
-                    </TooltipProvider>
-                )}
+                {!isSidebarOpen && null}
 
                 {/* STRICT Separation: Custom GPT Actions vs Standard Model Selector */}
                 {isCustomGpt ? (
