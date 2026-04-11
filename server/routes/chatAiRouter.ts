@@ -8842,6 +8842,29 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           getAssistantMessageId: () => `analyze-${requestId}`,
         };
 
+        const streamAbortController = new AbortController();
+        const abortUpstream = (reason: string) => {
+          if (!streamAbortController.signal.aborted) {
+            try {
+              streamAbortController.abort(reason);
+            } catch {
+              // AbortController.abort() is no-throw in Node >=18, guard defensively.
+            }
+          }
+        };
+
+        req.on("aborted", () => abortUpstream("client_aborted"));
+        req.on("close", () => {
+          if (!res.writableEnded) {
+            abortUpstream("client_disconnected");
+          }
+        });
+        res.on("close", () => {
+          if (!res.writableEnded) {
+            abortUpstream("response_closed");
+          }
+        });
+
         // ===================================================================================
         // AGENTIC IMPROVEMENT #1: Use Intent Router to understand user's request
         // ===================================================================================

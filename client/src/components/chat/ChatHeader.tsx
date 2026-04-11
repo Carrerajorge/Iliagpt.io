@@ -139,7 +139,7 @@ export function ChatHeader({
 
     return (
         <>
-        <header className="sticky top-0 z-20 flex items-center justify-between px-3 md:px-4 py-2 border-b border-border/50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 h-14">
+        <header className="sticky top-0 z-20 flex items-center justify-between px-3 md:px-4 py-2 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 h-14">
             <div className="flex items-center gap-2">
                 {!isSidebarOpen && null}
 

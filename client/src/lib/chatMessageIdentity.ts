@@ -99,6 +99,41 @@ function uniqueStrings(values: Array<string | undefined>): string[] {
   return result;
 }
 
+function listRenderableArtifacts(message: MessageLike): Array<Record<string, any>> {
+  if (Array.isArray((message as any).artifacts) && (message as any).artifacts.length > 0) {
+    return (message as any).artifacts.filter(isObject) as Array<Record<string, any>>;
+  }
+
+  if (isObject((message as any).artifact)) {
+    return [(message as any).artifact as Record<string, any>];
+  }
+
+  return [];
+}
+
+function artifactFingerprint(artifact: Record<string, any>): string {
+  return uniqueStrings([
+    typeof artifact.artifactId === "string" ? artifact.artifactId.trim() : undefined,
+    typeof artifact.downloadUrl === "string" ? artifact.downloadUrl.trim() : undefined,
+    typeof artifact.previewUrl === "string" ? artifact.previewUrl.trim() : undefined,
+    typeof artifact.filename === "string" ? artifact.filename.trim() : undefined,
+    typeof artifact.name === "string" ? artifact.name.trim() : undefined,
+    typeof artifact.type === "string" ? artifact.type.trim() : undefined,
+    typeof artifact.mimeType === "string" ? artifact.mimeType.trim() : undefined,
+  ]).join("|");
+}
+
+function hasRenderableArtifactParity(source: MessageLike, candidate: MessageLike): boolean {
+  const sourceArtifacts = listRenderableArtifacts(source);
+  if (sourceArtifacts.length === 0) return true;
+
+  const candidateArtifacts = listRenderableArtifacts(candidate);
+  if (candidateArtifacts.length < sourceArtifacts.length) return false;
+
+  const candidateFingerprints = new Set(candidateArtifacts.map(artifactFingerprint));
+  return sourceArtifacts.every((artifact) => candidateFingerprints.has(artifactFingerprint(artifact)));
+}
+
 function areConsecutiveAssistantDuplicates(a: MessageLike, b: MessageLike): boolean {
   if (a.role !== "assistant" || b.role !== "assistant") return false;
 
@@ -150,6 +185,18 @@ export function mergeMessagesByIdentity<T extends MessageLike>(existing: T, inco
     timestamp: pickTimestamp(existing, incoming),
   } as T;
 
+  if ((incoming as any).artifact == null && (existing as any).artifact != null) {
+    (merged as any).artifact = (existing as any).artifact;
+  }
+
+  if (
+    (!Array.isArray((incoming as any).artifacts) || (incoming as any).artifacts.length === 0) &&
+    Array.isArray((existing as any).artifacts) &&
+    (existing as any).artifacts.length > 0
+  ) {
+    (merged as any).artifacts = (existing as any).artifacts;
+  }
+
   return merged;
 }
 
@@ -175,6 +222,14 @@ export function messagesShareIdentity(a: MessageLike, b: MessageLike): boolean {
   if (aKeys.length === 0) return false;
   const bKeys = new Set(listMessageIdentityKeys(b));
   return aKeys.some((key) => bKeys.has(key));
+}
+
+export function persistedMessageSupersedesOptimistic(
+  optimistic: MessageLike,
+  persisted: MessageLike,
+): boolean {
+  if (!messagesShareIdentity(optimistic, persisted)) return false;
+  return hasRenderableArtifactParity(optimistic, persisted);
 }
 
 export function dedupeMessagesByIdentity<T extends MessageLike>(messages: T[]): T[] {

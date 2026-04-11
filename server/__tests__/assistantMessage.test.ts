@@ -56,10 +56,12 @@ describe("assistantMessage", () => {
       retrievalSteps: [{ id: "step-1", label: "Buscar", status: "complete" }],
       steps: [{ title: "Buscar", status: "complete" }],
       artifact: { artifactId: "artifact-1" },
+      artifacts: [{ artifactId: "artifact-1" }, { artifactId: "artifact-2" }],
     });
 
     expect(buildAssistantMessageMetadata(message)).toEqual({
       artifact: { artifactId: "artifact-1" },
+      artifacts: [{ artifactId: "artifact-1" }, { artifactId: "artifact-2" }],
       webSources: [{ url: "https://example.com" }],
       searchQueries: [{ query: "langchain" }],
       totalSearches: 2,
@@ -69,5 +71,21 @@ describe("assistantMessage", () => {
       retrievalSteps: [{ id: "step-1", label: "Buscar", status: "complete" }],
       steps: [{ title: "Buscar", status: "complete" }],
     });
+  });
+
+  it("preserves multi-artifact assistant payloads", () => {
+    const message = buildAssistantMessage({
+      content: "Se generaron 2 archivos listos para descargar.",
+      artifact: { artifactId: "artifact-primary", type: "document" },
+      artifacts: [
+        { artifactId: "artifact-primary", type: "document" },
+        { artifactId: "artifact-secondary", type: "spreadsheet" },
+      ],
+    });
+
+    expect(message.artifacts).toEqual([
+      { artifactId: "artifact-primary", type: "document" },
+      { artifactId: "artifact-secondary", type: "spreadsheet" },
+    ]);
   });
 });

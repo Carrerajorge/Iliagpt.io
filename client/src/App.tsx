@@ -78,11 +78,12 @@ const isLocalDevHost = () => {
 function RootRoute(props: any) {
   const { isReady, isAuthenticated } = useAuth();
   const [location] = useLocation();
+  const localHost = isLocalDevHost();
   
-  if (!isReady) return <PageLoader />;
+  if (!isReady && !localHost) return <PageLoader />;
   
   // Local experiments can run from chat without forcing login on localhost.
-  if (!(isAuthenticated || isLocalDevHost())) return <LandingPage />;
+  if (!(isAuthenticated || localHost)) return <LandingPage />;
   
   // If viewing a chat or creating new chat, show the chat interface
   if (location.startsWith("/chat")) return <Home />;

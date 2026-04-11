@@ -211,6 +211,16 @@ function sanitizeAssistantArtifact(rawArtifact: any) {
   };
 }
 
+function sanitizeAssistantArtifacts(rawArtifacts: any) {
+  if (!Array.isArray(rawArtifacts)) return undefined;
+
+  const sanitizedArtifacts = rawArtifacts
+    .map((artifact) => sanitizeAssistantArtifact(artifact))
+    .filter((artifact): artifact is NonNullable<ReturnType<typeof sanitizeAssistantArtifact>> => Boolean(artifact));
+
+  return sanitizedArtifacts.length > 0 ? sanitizedArtifacts : undefined;
+}
+
 export function createChatsRouter() {
   const router = Router();
 
@@ -1022,10 +1032,14 @@ export function createChatsRouter() {
       const sanitizedArtifact = normalizedRole === "assistant"
         ? sanitizeAssistantArtifact(req.body?.artifact)
         : null;
+      const sanitizedArtifacts = normalizedRole === "assistant"
+        ? sanitizeAssistantArtifacts(req.body?.artifacts)
+        : undefined;
       const assistantPayload = normalizedRole === "assistant"
         ? buildAssistantMessage({
             content: safeContent,
             artifact: sanitizedArtifact,
+            artifacts: sanitizedArtifacts,
             webSources,
             searchQueries,
             totalSearches,

@@ -459,8 +459,12 @@ export const DocumentPreview = memo(function DocumentPreview({
   html,
 }: DocumentPreviewProps) {
   const normalizedType = useMemo(() => type.toLowerCase() as DocumentType, [type]);
+  const canUseStructuredHtmlPreview =
+    html &&
+    html.trim().length > 0 &&
+    (normalizedType === "xlsx" || normalizedType === "pptx" || !url);
 
-  if (html && html.trim().length > 0) {
+  if (canUseStructuredHtmlPreview) {
     return (
       <div className={cn("w-full", className)} data-testid="document-preview">
         <HtmlPreview html={html} type={normalizedType} />

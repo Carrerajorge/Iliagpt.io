@@ -52,6 +52,27 @@ export interface MessageItemProps {
     onToolDeny?: (messageId: string, toolName: string, stepIndex: number) => void;
 }
 
+function artifactRenderSignature(message: Message): string {
+    const artifacts = Array.isArray(message.artifacts) && message.artifacts.length > 0
+        ? message.artifacts
+        : message.artifact
+            ? [message.artifact]
+            : [];
+
+    return artifacts
+        .map((artifact, index) => [
+            artifact.artifactId || `artifact-${index}`,
+            artifact.type,
+            artifact.mimeType,
+            artifact.downloadUrl,
+            artifact.previewUrl,
+            artifact.filename,
+            artifact.name,
+            artifact.previewHtml ? `html:${artifact.previewHtml.length}` : "",
+        ].filter(Boolean).join("|"))
+        .join("||");
+}
+
 export const MessageItem = memo(function MessageItem({
     message,
     msgIndex,
@@ -187,6 +208,7 @@ export const MessageItem = memo(function MessageItem({
         prevProps.message.role === nextProps.message.role &&
         prevProps.message.deliveryStatus === nextProps.message.deliveryStatus &&
         prevProps.message.deliveryError === nextProps.message.deliveryError &&
+        artifactRenderSignature(prevProps.message) === artifactRenderSignature(nextProps.message) &&
         prevProps.message.agentRun?.status === nextProps.message.agentRun?.status &&
         prevProps.message.agentRun?.eventStream?.length === nextProps.message.agentRun?.eventStream?.length &&
         

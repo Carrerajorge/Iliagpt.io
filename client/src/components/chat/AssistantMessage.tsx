@@ -94,6 +94,27 @@ export interface AssistantMessageProps {
     onToolDeny?: (messageId: string, toolName: string, stepIndex: number) => void;
 }
 
+function artifactRenderSignature(message: Message): string {
+    const artifacts = Array.isArray(message.artifacts) && message.artifacts.length > 0
+        ? message.artifacts
+        : message.artifact
+            ? [message.artifact]
+            : [];
+
+    return artifacts
+        .map((artifact, index) => [
+            artifact.artifactId || `artifact-${index}`,
+            artifact.type,
+            artifact.mimeType,
+            artifact.downloadUrl,
+            artifact.previewUrl,
+            artifact.filename,
+            artifact.name,
+            artifact.previewHtml ? `html:${artifact.previewHtml.length}` : "",
+        ].filter(Boolean).join("|"))
+        .join("||");
+}
+
 export const AssistantMessage = memo(function AssistantMessage({
     message,
     msgIndex,
@@ -139,9 +160,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         }
     }, []);
 
-    const openArtifactPreview = useCallback(async () => {
-        if (!message.artifact) return;
-
+    const openArtifactPreview = useCallback(async (artifact: NonNullable<Message["artifact"]>) => {
         if (!onReopenDocument) return;
         const artTypeNorm: Record<string, "word" | "excel" | "ppt" | "pdf"> = {
             document: "word",
@@ -152,21 +171,21 @@ export const AssistantMessage = memo(function AssistantMessage({
             xlsx: "excel",
             pptx: "ppt",
         };
-        const type = artTypeNorm[String(message.artifact.type).toLowerCase()];
+        const type = artTypeNorm[String(artifact.type).toLowerCase()];
         if (!type) return;
 
         onReopenDocument({
             type,
-            title: String(message.artifact.filename || message.artifact.name || "Documento"),
+            title: String(artifact.filename || artifact.name || "Documento"),
             content: "",
-            downloadUrl: message.artifact.downloadUrl,
-            previewUrl: (message.artifact as any)?.previewUrl || message.artifact.downloadUrl,
-            previewHtml: (message.artifact as any)?.previewHtml,
-            mimeType: message.artifact.mimeType,
-            fileName: String(message.artifact.filename || message.artifact.name || "documento"),
+            downloadUrl: artifact.downloadUrl,
+            previewUrl: (artifact as any)?.previewUrl || artifact.downloadUrl,
+            previewHtml: (artifact as any)?.previewHtml,
+            mimeType: artifact.mimeType,
+            fileName: String(artifact.filename || artifact.name || "documento"),
             messageId: message.id,
         });
-    }, [message.artifact, message.id, onReopenDocument]);
+    }, [message.id, onReopenDocument]);
 
     const [sourcesPanelOpen, setSourcesPanelOpen] = useState(false);
     const superAgentState = useSuperAgentRun(message.id);
@@ -220,6 +239,14 @@ export const AssistantMessage = memo(function AssistantMessage({
     }
 
     const { documents } = parsedContent;
+    const renderedArtifacts = useMemo(
+        () => (Array.isArray(message.artifacts) && message.artifacts.length > 0
+            ? message.artifacts
+            : message.artifact
+                ? [message.artifact]
+                : []),
+        [message.artifact, message.artifacts],
+    );
 
     const showSkeleton =
         isGeneratingImage &&
@@ -358,29 +385,29 @@ export const AssistantMessage = memo(function AssistantMessage({
                     <FigmaBlock diagram={message.figmaDiagram} />
                 </div>
             )}
-            {message.artifact && (
+            {renderedArtifacts.length > 0 && (
                 <div className="mt-3 w-full">
-                    {message.artifact.type === "image" ? (
+                    {renderedArtifacts.length === 1 && renderedArtifacts[0].type === "image" ? (
                         <div className="relative rounded-xl overflow-hidden group">
                             <img
-                                src={message.artifact.previewUrl || message.artifact.downloadUrl}
+                                src={renderedArtifacts[0].previewUrl || renderedArtifacts[0].downloadUrl}
                                 alt="Imagen generada"
                                 className="max-w-full max-h-[500px] object-contain rounded-xl cursor-pointer hover:opacity-95 transition-all shadow-sm hover:shadow-md"
-                                onClick={() => onOpenLightbox(message.artifact?.previewUrl || message.artifact?.downloadUrl || "")}
+                                onClick={() => onOpenLightbox(renderedArtifacts[0]?.previewUrl || renderedArtifacts[0]?.downloadUrl || "")}
                                 data-testid={`image-artifact-${message.id}`}
                             />
                             <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <button
-                                    onClick={() => onOpenLightbox(message.artifact?.previewUrl || message.artifact?.downloadUrl || "")}
+                                    onClick={() => onOpenLightbox(renderedArtifacts[0]?.previewUrl || renderedArtifacts[0]?.downloadUrl || "")}
                                     className="p-2 bg-black/50 hover:bg-black/70 text-white rounded-lg transition-colors backdrop-blur-sm"
                                     title="Ampliar"
                                 >
                                     <ZoomIn className="h-4 w-4" />
                                 </button>
                                 <a
-                                    href={message.artifact.downloadUrl}
+                                    href={renderedArtifacts[0].downloadUrl}
                                     download
-                                    onClick={(event) => void handleArtifactDownload(event, message.artifact?.downloadUrl, message.artifact?.name)}
+                                    onClick={(event) => void handleArtifactDownload(event, renderedArtifacts[0]?.downloadUrl, renderedArtifacts[0]?.name)}
                                     className="p-2 bg-black/50 hover:bg-black/70 text-white rounded-lg transition-colors backdrop-blur-sm"
                                     title="Descargar"
                                 >
@@ -389,128 +416,128 @@ export const AssistantMessage = memo(function AssistantMessage({
                             </div>
                         </div>
                     ) : (
-                        (() => {
-                            const officeRunIdFromArtifactUrl = [
-                                message.artifact?.downloadUrl,
-                                (message.artifact as any)?.previewUrl,
-                            ]
-                                .map((value) => (typeof value === "string" ? value.match(/\/api\/office-engine\/runs\/([0-9a-f-]{36})\//i)?.[1] : null))
-                                .find((value): value is string => typeof value === "string" && value.length > 0);
-                            const officeRunId =
-                                typeof (message.artifact as any)?.metadata?.officeRunId === "string"
-                                    ? String((message.artifact as any).metadata.officeRunId)
-                                    : officeRunIdFromArtifactUrl || null;
-
-                            return (
                         <>
-                            {officeRunId && (
-                                <div
-                                    className="mb-3 rounded-xl border border-border bg-background/70"
-                                    data-testid={`office-steps-${message.id}`}
-                                >
-                                    <OfficeStepsPanel runId={officeRunId} />
-                                </div>
-                            )}
-                        <div className="p-4 rounded-lg border bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-blue-200 dark:border-blue-800">
-                            {(() => {
-                                const artifactTypeMap: Record<string, "docx" | "xlsx" | "pptx"> = {
+                            {renderedArtifacts.map((artifact, index) => {
+                                const officeRunIdFromArtifactUrl = [
+                                    artifact?.downloadUrl,
+                                    (artifact as any)?.previewUrl,
+                                ]
+                                    .map((value) => (typeof value === "string" ? value.match(/\/api\/office-engine\/runs\/([0-9a-f-]{36})\//i)?.[1] : null))
+                                    .find((value): value is string => typeof value === "string" && value.length > 0);
+                                const officeRunId =
+                                    typeof (artifact as any)?.metadata?.officeRunId === "string"
+                                        ? String((artifact as any).metadata.officeRunId)
+                                        : officeRunIdFromArtifactUrl || null;
+                                const artifactTypeMap: Record<string, "docx" | "xlsx" | "pptx" | "pdf"> = {
                                     document: "docx",
                                     spreadsheet: "xlsx",
                                     presentation: "pptx",
+                                    pdf: "pdf",
                                 };
-                                const previewHtml = (message.artifact as any)?.previewHtml;
-                                const previewType = artifactTypeMap[(message.artifact as any)?.type] || "docx";
-                                const themeLabel = (message.artifact as any)?.metadata?.theme || (message.artifact as any)?.metadata?.brandTheme;
-                                if (!isRenderablePreview(previewHtml ? { type: previewType, html: previewHtml } : null)) return null;
+                                const previewHtml = (artifact as any)?.previewHtml;
+                                const previewType = artifactTypeMap[(artifact as any)?.type] || "docx";
+                                const themeLabel = (artifact as any)?.metadata?.theme || (artifact as any)?.metadata?.brandTheme;
+
                                 return (
-                                <div className="mb-4 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-                                    {themeLabel && (
-                                        <div className="flex items-center justify-between border-b border-border bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
-                                            <span className="inline-flex rounded-full bg-foreground px-2.5 py-1 text-[11px] uppercase tracking-wide text-background">
-                                                {String(themeLabel)}
-                                            </span>
-                                            {(message.artifact as any)?.metadata?.brandName && (
-                                                <span className="truncate text-muted-foreground">{String((message.artifact as any).metadata.brandName)}</span>
+                                    <React.Fragment key={`${artifact.artifactId || artifact.downloadUrl || message.id}-${index}`}>
+                                        {officeRunId && (
+                                            <div
+                                                className="mb-3 rounded-xl border border-border bg-background/70"
+                                                data-testid={`office-steps-${message.id}-${index}`}
+                                            >
+                                                <OfficeStepsPanel runId={officeRunId} />
+                                            </div>
+                                        )}
+                                        <div className="mb-3 p-4 rounded-lg border bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border-blue-200 dark:border-blue-800">
+                                            {isRenderablePreview(previewHtml ? { type: previewType, html: previewHtml } : null) && (
+                                                <div className="mb-4 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+                                                    {themeLabel && (
+                                                        <div className="flex items-center justify-between border-b border-border bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
+                                                            <span className="inline-flex rounded-full bg-foreground px-2.5 py-1 text-[11px] uppercase tracking-wide text-background">
+                                                                {String(themeLabel)}
+                                                            </span>
+                                                            {(artifact as any)?.metadata?.brandName && (
+                                                                <span className="truncate text-muted-foreground">{String((artifact as any).metadata.brandName)}</span>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                    <div className="h-52 w-full bg-muted">
+                                                        <FilePreviewSurface
+                                                            preview={{ type: previewType, html: previewHtml }}
+                                                            variant="thumbnail"
+                                                        />
+                                                    </div>
+                                                </div>
                                             )}
+                                            <div className="flex items-center gap-3">
+                                                <div className={cn(
+                                                    "w-12 h-12 rounded-lg flex items-center justify-center flex-shrink-0",
+                                                    artifact.type === "document" && "bg-blue-600",
+                                                    artifact.type === "spreadsheet" && "bg-green-600",
+                                                    artifact.type === "presentation" && "bg-orange-600",
+                                                    artifact.type === "pdf" && "bg-red-600"
+                                                )}>
+                                                    {artifact.type === "document" && <FileText className="h-6 w-6 text-white" />}
+                                                    {artifact.type === "spreadsheet" && <FileSpreadsheet className="h-6 w-6 text-white" />}
+                                                    {artifact.type === "presentation" && <FileIcon className="h-6 w-6 text-white" />}
+                                                    {artifact.type === "pdf" && <FileText className="h-6 w-6 text-white" />}
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-center gap-2">
+                                                        <p className="text-sm font-medium text-foreground">
+                                                            {artifact.type === "document" && "Documento Word"}
+                                                            {artifact.type === "spreadsheet" && "Hoja de cálculo Excel"}
+                                                            {artifact.type === "presentation" && "Presentación PowerPoint"}
+                                                            {artifact.type === "pdf" && "Documento PDF"}
+                                                        </p>
+                                                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-semibold animate-in fade-in duration-500">
+                                                            ✓ Listo
+                                                        </span>
+                                                    </div>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        {artifact.name || (artifact.sizeBytes ? `${Math.round(artifact.sizeBytes / 1024)}KB` : "Listo para descargar")}
+                                                    </p>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    {(artifact.type === "presentation" || artifact.type === "document" || artifact.type === "spreadsheet" || artifact.type === "pdf") && (officeRunId || onReopenDocument) && (
+                                                        <button
+                                                            onClick={() => void openArtifactPreview(artifact)}
+                                                            className="px-4 py-2 bg-muted hover:bg-muted/80 text-foreground text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
+                                                            data-testid={`button-view-artifact-${message.id}-${index}`}
+                                                            type="button"
+                                                        >
+                                                            <Eye className="h-4 w-4" />
+                                                            Ver
+                                                        </button>
+                                                    )}
+                                                    {(((artifact as any)?.previewUrl) || ((artifact as any)?.previewHtml)) && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => void openArtifactPreview(artifact)}
+                                                            className="px-4 py-2 bg-card hover:bg-muted text-foreground text-sm font-medium rounded-lg flex items-center gap-2 transition-colors border border-border"
+                                                            data-testid={`button-preview-artifact-${message.id}-${index}`}
+                                                        >
+                                                            <Eye className="h-4 w-4" />
+                                                            Preview
+                                                        </button>
+                                                    )}
+                                                    <a
+                                                        href={artifact.downloadUrl}
+                                                        download
+                                                        onClick={(event) => void handleArtifactDownload(event, artifact.downloadUrl, artifact.filename || artifact.name)}
+                                                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
+                                                        data-testid={`button-download-artifact-${message.id}-${index}`}
+                                                    >
+                                                        <Download className="h-4 w-4" />
+                                                        Descargar
+                                                    </a>
+                                                </div>
+                                            </div>
                                         </div>
-                                    )}
-                                    <div className="h-52 w-full bg-muted">
-                                        <FilePreviewSurface
-                                            preview={{ type: previewType, html: previewHtml }}
-                                            variant="thumbnail"
-                                        />
-                                    </div>
-                                </div>
+                                    </React.Fragment>
                                 );
-                            })()}
-                            <div className="flex items-center gap-3">
-                                <div className={cn(
-                                    "w-12 h-12 rounded-lg flex items-center justify-center flex-shrink-0",
-                                    message.artifact.type === "document" && "bg-blue-600",
-                                    message.artifact.type === "spreadsheet" && "bg-green-600",
-                                    message.artifact.type === "presentation" && "bg-orange-600",
-                                    message.artifact.type === "pdf" && "bg-red-600"
-                                )}>
-                                    {message.artifact.type === "document" && <FileText className="h-6 w-6 text-white" />}
-                                    {message.artifact.type === "spreadsheet" && <FileSpreadsheet className="h-6 w-6 text-white" />}
-                                    {message.artifact.type === "presentation" && <FileIcon className="h-6 w-6 text-white" />}
-                                    {message.artifact.type === "pdf" && <FileText className="h-6 w-6 text-white" />}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2">
-                                        <p className="text-sm font-medium text-foreground">
-                                            {message.artifact.type === "document" && "Documento Word"}
-                                            {message.artifact.type === "spreadsheet" && "Hoja de cálculo Excel"}
-                                            {message.artifact.type === "presentation" && "Presentación PowerPoint"}
-                                            {message.artifact.type === "pdf" && "Documento PDF"}
-                                        </p>
-                                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-semibold animate-in fade-in duration-500">
-                                            ✓ Listo
-                                        </span>
-                                    </div>
-                                    <p className="text-xs text-muted-foreground">
-                                        {message.artifact.name || (message.artifact.sizeBytes ? `${Math.round(message.artifact.sizeBytes / 1024)}KB` : "Listo para descargar")}
-                                    </p>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    {(message.artifact.type === "presentation" || message.artifact.type === "document" || message.artifact.type === "spreadsheet" || message.artifact.type === "pdf") && (officeRunId || onReopenDocument) && (
-                                        <button
-                                            onClick={openArtifactPreview}
-                                            className="px-4 py-2 bg-muted hover:bg-muted/80 text-foreground text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
-                                            data-testid={`button-view-artifact-${message.id}`}
-                                            type="button"
-                                        >
-                                            <Eye className="h-4 w-4" />
-                                            Ver
-                                        </button>
-                                    )}
-                                    {(((message.artifact as any)?.previewUrl) || ((message.artifact as any)?.previewHtml)) && (
-                                        <button
-                                            type="button"
-                                            onClick={openArtifactPreview}
-                                            className="px-4 py-2 bg-card hover:bg-muted text-foreground text-sm font-medium rounded-lg flex items-center gap-2 transition-colors border border-border"
-                                            data-testid={`button-preview-artifact-${message.id}`}
-                                        >
-                                            <Eye className="h-4 w-4" />
-                                            Preview
-                                        </button>
-                                    )}
-                                    <a
-                                        href={message.artifact.downloadUrl}
-                                        download
-                                        onClick={(event) => void handleArtifactDownload(event, message.artifact?.downloadUrl)}
-                                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors"
-                                        data-testid={`button-download-artifact-${message.id}`}
-                                    >
-                                        <Download className="h-4 w-4" />
-                                        Descargar
-                                    </a>
-                                </div>
-                            </div>
-                        </div>
+                            })}
                         </>
-                            );
-                        })()
                     )}
                 </div>
             )}
@@ -604,6 +631,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         prevProps.message.content === nextProps.message.content &&
         prevProps.message.isThinking === nextProps.message.isThinking &&
         prevProps.message.webSources === nextProps.message.webSources &&
+        artifactRenderSignature(prevProps.message) === artifactRenderSignature(nextProps.message) &&
         prevProps.msgIndex === nextProps.msgIndex &&
         prevProps.totalMessages === nextProps.totalMessages &&
         prevProps.assistantMsgNumber === nextProps.assistantMsgNumber &&

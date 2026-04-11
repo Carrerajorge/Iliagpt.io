@@ -376,6 +376,17 @@ async function getCapturedChatStream(page: Page, previousCount: number): Promise
 
 async function runScenario(page: Page, scenario: Scenario) {
   test.setTimeout(240_000);
+  const pageErrors: string[] = [];
+  const consoleErrors: string[] = [];
+
+  page.on("pageerror", (error) => {
+    pageErrors.push(error.stack || error.message);
+  });
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      consoleErrors.push(message.text());
+    }
+  });
 
   await installChatStreamCapture(page);
   await page.goto("/");
@@ -396,7 +407,34 @@ async function runScenario(page: Page, scenario: Scenario) {
   await composer.fill(scenario.prompt);
   await composer.press("Enter");
 
-  await expect(page.getByText(expectedSuccessMessage(scenario))).toBeVisible({ timeout: 120_000 });
+  const successPattern = expectedSuccessMessage(scenario);
+  const scenarioOutcome = await page
+    .waitForFunction(
+      ({ successSource, successFlags }) => {
+        const bodyText = document.body?.innerText || "";
+        if (new RegExp(successSource, successFlags).test(bodyText)) return "success";
+        if (bodyText.includes("Error en esta sección")) return "section-error";
+        return null;
+      },
+      {
+        successSource: successPattern.source,
+        successFlags: successPattern.flags,
+      },
+      { timeout: 120_000 },
+    )
+    .then((handle) => handle.jsonValue() as Promise<"success" | "section-error">);
+
+  if (scenarioOutcome === "section-error") {
+    throw new Error(
+      [
+        `The chat UI crashed while running scenario "${scenario.name}".`,
+        pageErrors.length > 0 ? `pageerror: ${pageErrors.join(" | ")}` : "pageerror: none",
+        consoleErrors.length > 0 ? `console: ${consoleErrors.join(" | ")}` : "console: none",
+      ].join("\n"),
+    );
+  }
+
+  await expect(page.getByText(successPattern)).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText(/EventSource error/i)).toHaveCount(0);
   await expect(page.getByText(/^failed$/i)).toHaveCount(0);
   await expect(page.locator('[data-testid*="thinking-indicator"]')).toHaveCount(0);
@@ -413,6 +451,33 @@ async function runScenario(page: Page, scenario: Scenario) {
   const productionComplete = [...events].reverse().find((event) => event.type === "production_complete");
   const doneEvent = events.find((event) => event.type === "done");
   const productionError = events.find((event) => event.type === "production_error");
+
+  if (scenario.expectedKinds.length > 1) {
+    const debugSnapshot = await page.evaluate(() => {
+      return (window as typeof window & { __chatArtifactDebug?: unknown }).__chatArtifactDebug || null;
+    });
+    const productionDebugSnapshot = await page.evaluate(() => {
+      return (
+        window as typeof window & { __productionArtifactDebug?: unknown }
+      ).__productionArtifactDebug || null;
+    });
+    const productionEventSnapshot = await page.evaluate(() => {
+      return (
+        window as typeof window & { __productionArtifactEvents?: unknown }
+      ).__productionArtifactEvents || null;
+    });
+    const streamChatDebugSnapshot = await page.evaluate(() => {
+      return (
+        window as typeof window & { __streamChatDebug?: unknown }
+      ).__streamChatDebug || null;
+    });
+    console.log("ARTIFACT_DEBUG", JSON.stringify(debugSnapshot));
+    console.log("PRODUCTION_DEBUG", JSON.stringify(productionDebugSnapshot));
+    console.log("PRODUCTION_EVENTS", JSON.stringify(productionEventSnapshot));
+    console.log("STREAM_CHAT_DEBUG", JSON.stringify(streamChatDebugSnapshot));
+    console.log("EVENT_TYPES", JSON.stringify(events.map((event) => event.type)));
+    console.log("ARTIFACT_EVENTS", JSON.stringify(events.filter((event) => event.type === "artifact")));
+  }
 
   expect(productionStart).toBeTruthy();
   expect(productionEvents.length).toBeGreaterThan(0);

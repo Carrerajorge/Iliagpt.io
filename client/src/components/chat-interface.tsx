@@ -10,6 +10,8 @@ import {
   collectMessageIdentitySet,
   dedupeMessagesByIdentity,
   dedupeRenderableMessages,
+  messagesShareIdentity,
+  persistedMessageSupersedesOptimistic,
   upsertMessageByIdentity,
 } from "@/lib/chatMessageIdentity";
 import {
@@ -820,12 +822,29 @@ export function ChatInterface({
       );
       setOptimisticMessages((prev: Message[]) =>
         prev.filter((m: any) => {
-          const identities = collectMessageIdentitySet([m]);
-          for (const identity of identities) {
-            if (persistedIdentitySet.has(identity)) {
+          const matchingPersistedMessages = messages.filter((candidate: any) =>
+            messagesShareIdentity(candidate, m)
+          );
+          if (matchingPersistedMessages.length > 0) {
+            const hasSupersedingPersistedMessage = matchingPersistedMessages.some((candidate: any) =>
+              persistedMessageSupersedesOptimistic(m, candidate)
+            );
+            if (hasSupersedingPersistedMessage) {
               return false;
             }
+            return true;
           }
+
+          const identities = collectMessageIdentitySet([m]);
+          let hasPersistedIdentityOverlap = false;
+          for (const identity of identities) {
+            if (persistedIdentitySet.has(identity)) {
+              hasPersistedIdentityOverlap = true;
+              break;
+            }
+          }
+          if (hasPersistedIdentityOverlap) return true;
+
           const mergedRenderableMessages = dedupeRenderableMessages(
             sortMessagesChronologically([...persistedRenderableMessages, m])
           );
@@ -934,6 +953,35 @@ export function ChatInterface({
     const chronologicallySortedMessages = sortMessagesChronologically(identityDedupedMessages);
     return dedupeRenderableMessages(chronologicallySortedMessages);
   }, [messages, optimisticMessages, allAgentRuns, chatId, sortMessagesChronologically]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || typeof window === "undefined") return;
+
+    const summarize = (message: Message) => ({
+      id: message.id,
+      clientTempId: message.clientTempId,
+      role: message.role,
+      content: message.content,
+      requestId: message.requestId,
+      userMessageId: message.userMessageId,
+      artifactCount: Array.isArray(message.artifacts)
+        ? message.artifacts.length
+        : message.artifact
+          ? 1
+          : 0,
+      artifactTypes: Array.isArray(message.artifacts)
+        ? message.artifacts.map((artifact) => artifact.type)
+        : message.artifact
+          ? [message.artifact.type]
+          : [],
+    });
+
+    (window as typeof window & { __chatArtifactDebug?: unknown }).__chatArtifactDebug = {
+      messages: messages.map(summarize),
+      optimisticMessages: optimisticMessages.map(summarize),
+      displayMessages: displayMessages.map(summarize),
+    };
+  }, [displayMessages, messages, optimisticMessages]);
 
   // Reset current agent message ID when chatId changes - polling auto-starts via useAgentPolling
   useEffect(() => {
@@ -6763,6 +6811,36 @@ IMPORTANTE:
               let isProductionStream = false;
               let activeOfficeRunId: string | null = null;
               let cerebroTimeline: any = { subtasks: [], judgeResult: null, evidence: [], budget: null, planTitle: "", isActive: false };
+              const shouldExposeProductionDebug =
+                typeof window !== "undefined" &&
+                (
+                  import.meta.env.DEV ||
+                  window.location.hostname === "127.0.0.1" ||
+                  window.location.hostname === "localhost"
+                );
+              const syncProductionArtifactDebug = (label: string) => {
+                if (!shouldExposeProductionDebug || typeof window === "undefined") return;
+                (
+                  window as typeof window & {
+                    __productionArtifactDebug?: unknown;
+                  }
+                ).__productionArtifactDebug = {
+                  label,
+                  isProductionStream,
+                  activeOfficeRunId,
+                  artifactCount: productionArtifacts.length,
+                  artifacts: productionArtifacts.map((artifact) => ({
+                    type: artifact.type,
+                    filename: artifact.filename,
+                    downloadUrl: artifact.downloadUrl,
+                    previewUrl: artifact.previewUrl,
+                    mimeType:
+                      streamArtifactMimeTypes.get(artifact.type) ||
+                      artifact.metadata?.mimeType ||
+                      null,
+                  })),
+                };
+              };
               const normalizedArtifactTypeMap: Record<string, string> = {
                 word: "word",
                 docx: "word",
@@ -6774,6 +6852,33 @@ IMPORTANTE:
                 pptx: "ppt",
                 presentation: "ppt",
                 pdf: "pdf",
+              };
+              const scoreProductionArtifact = (artifact: {
+                type?: string;
+                downloadUrl?: string;
+                previewHtml?: string;
+                metadata?: Record<string, unknown>;
+              }) => {
+                const downloadUrl = String(artifact?.downloadUrl || "");
+                let score = 0;
+
+                if (/\/artifacts\/exported(?:$|\?)/i.test(downloadUrl)) {
+                  score += 100;
+                } else if (/\/artifacts\/preview(?:$|\?)/i.test(downloadUrl)) {
+                  score += 60;
+                } else if (/\/artifacts\/input(?:$|\?)/i.test(downloadUrl)) {
+                  score += 10;
+                }
+
+                if (artifact?.previewHtml) {
+                  score += 25;
+                }
+
+                if (artifact?.metadata && (artifact.metadata as any).officeStatus === "succeeded") {
+                  score += 10;
+                }
+
+                return score;
               };
 
               const setAiStateForStream = (value: React.SetStateAction<AiState>) =>
@@ -6893,8 +6998,30 @@ IMPORTANTE:
                     return;
                   }
 
+                  if (shouldExposeProductionDebug && typeof window !== "undefined") {
+                    (
+                      window as typeof window & {
+                        __productionArtifactEvents?: Array<Record<string, unknown>>;
+                      }
+                    ).__productionArtifactEvents = [
+                      ...(((window as typeof window & {
+                        __productionArtifactEvents?: Array<Record<string, unknown>>;
+                      }).__productionArtifactEvents) || []),
+                      {
+                        eventType,
+                        requestId: data?.requestId,
+                        assistantMessageId: data?.assistantMessageId,
+                        conversationId: data?.conversationId,
+                        type: data?.type,
+                        filename: data?.filename,
+                        downloadUrl: data?.downloadUrl,
+                      },
+                    ].slice(-40);
+                  }
+
                   if (eventType === "production_start") {
                     isProductionStream = true;
+                    syncProductionArtifactDebug("production_start");
                     setAiStateForStream("agent_working");
                     if (data?.engine === "office-engine" && data?.runId) {
                       activeOfficeRunId = data.runId;
@@ -7010,6 +7137,7 @@ IMPORTANTE:
 
                   if (eventType === "production_complete") {
                     isProductionStream = true;
+                    syncProductionArtifactDebug("production_complete");
                     const completedOfficeRunId =
                       typeof data?.runId === "string" && data.runId.trim().length > 0
                         ? data.runId
@@ -7073,6 +7201,7 @@ IMPORTANTE:
                         : data;
                     const officeRunIdFromArtifact = (artifactPayload?.metadata as any)?.officeRunId;
                     pushProductionArtifact(artifactPayload);
+                    syncProductionArtifactDebug("artifact");
                     if (selectedDocTool && ['word', 'excel', 'ppt'].includes(selectedDocTool)) {
                       const artifactDocType =
                         normalizedArtifactTypeMap[String(artifactPayload?.type || "").toLowerCase()] ||
@@ -7350,11 +7479,17 @@ IMPORTANTE:
                     ? detectUncertainty(fullContent)
                     : null;
 
+                  syncProductionArtifactDebug("build_final_message");
+
                   if (isProductionStream && productionArtifacts.length > 0) {
                     const selectedDocTypeNorm = selectedDocTool ? (normalizedArtifactTypeMap[selectedDocTool] || selectedDocTool) : null;
-                    const primaryArtifact = selectedDocTypeNorm
-                      ? productionArtifacts.find((artifact) => (normalizedArtifactTypeMap[artifact.type] || artifact.type) === selectedDocTypeNorm) || productionArtifacts[0]
-                      : productionArtifacts[0];
+                    const candidateArtifacts = selectedDocTypeNorm
+                      ? productionArtifacts.filter((artifact) => (normalizedArtifactTypeMap[artifact.type] || artifact.type) === selectedDocTypeNorm)
+                      : productionArtifacts;
+                    const primaryArtifact =
+                      [...(candidateArtifacts.length > 0 ? candidateArtifacts : productionArtifacts)]
+                        .sort((left, right) => scoreProductionArtifact(right) - scoreProductionArtifact(left))[0] ||
+                      productionArtifacts[0];
                     const type = artifactTypeMap[primaryArtifact.type] || primaryArtifact.type || "document";
                     const typeConfirm: Record<string, string> = {
                       word: 'Documento listo para descargar.',
@@ -7365,30 +7500,43 @@ IMPORTANTE:
                       spreadsheet: 'Hoja de cálculo lista para descargar.'
                     };
                     const friendlyType = selectedDocTypeNorm || normalizedArtifactTypeMap[primaryArtifact.type] || 'word';
-                    const messageContent = typeConfirm[friendlyType] || 'Archivo listo para descargar.';
-                    const artifactMimeType = primaryArtifact.type ? (artifactMimeTypeMap[primaryArtifact.type] || streamArtifactMimeTypes.get(primaryArtifact.type) || "application/octet-stream") : "application/octet-stream";
-                    const artifactName = primaryArtifact.filename || `${friendlyType}.${friendlyType === "word" ? "docx" : friendlyType === "excel" ? "xlsx" : friendlyType === "ppt" ? "pptx" : "bin"}`;
+                    const messageContent =
+                      productionArtifacts.length > 1
+                        ? (fullContent?.trim() || `Se generaron ${productionArtifacts.length} archivos listos para descargar.`)
+                        : (typeConfirm[friendlyType] || 'Archivo listo para descargar.');
+                    const normalizedArtifacts = productionArtifacts.map((artifact, index) => {
+                      const normalizedFriendlyType = normalizedArtifactTypeMap[artifact.type] || artifact.type || "word";
+                      const normalizedType = artifactTypeMap[artifact.type] || artifact.type || "document";
+                      const normalizedMimeType = artifact.type
+                        ? (artifactMimeTypeMap[artifact.type] || streamArtifactMimeTypes.get(artifact.type) || "application/octet-stream")
+                        : "application/octet-stream";
+                      const normalizedName =
+                        artifact.filename ||
+                        `${normalizedFriendlyType}.${normalizedFriendlyType === "word" ? "docx" : normalizedFriendlyType === "excel" ? "xlsx" : normalizedFriendlyType === "ppt" ? "pptx" : "bin"}`;
 
-                    return {
+                      return {
+                        artifactId: `${messageId || Date.now()}_${normalizedFriendlyType}_${index}`,
+                        type: normalizedType,
+                        mimeType: normalizedMimeType,
+                        sizeBytes: artifact.size,
+                        downloadUrl: artifact.downloadUrl,
+                        previewUrl: artifact.previewUrl,
+                        name: normalizedName,
+                        filename: normalizedName,
+                        previewHtml: artifact.previewHtml,
+                        metadata: artifact.metadata,
+                      } as Message["artifact"];
+                    });
+
+                    return buildAssistantMessage({
                       id: messageId || `assistant-${Date.now()}`,
-                      role: "assistant",
-                      content: messageContent,
                       timestamp: new Date(),
                       requestId: data?.requestId || generateRequestId(),
                       userMessageId: userMsgId,
-                      artifact: {
-                        artifactId: `${messageId || Date.now()}_${friendlyType}`,
-                        type: type,
-                        mimeType: artifactMimeType,
-                        sizeBytes: primaryArtifact.size,
-                        downloadUrl: primaryArtifact.downloadUrl,
-                        previewUrl: primaryArtifact.previewUrl,
-                        name: artifactName,
-                        filename: artifactName,
-                        previewHtml: primaryArtifact.previewHtml,
-                        metadata: primaryArtifact.metadata,
-                      } as Message["artifact"],
-                    };
+                      content: messageContent,
+                      artifact: normalizedArtifacts[0],
+                      artifacts: normalizedArtifacts,
+                    });
                   }
 
                   if (isPptMode && shouldWriteToDoc && !isProductionStream) {

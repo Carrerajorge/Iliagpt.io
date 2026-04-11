@@ -100,6 +100,29 @@ describe("OfficeSplitPreview", () => {
     );
   });
 
+  it("passes XLSX previewHtml through as a structured spreadsheet preview", () => {
+    render(
+      <OfficeSplitPreview
+        document={{
+          type: "excel",
+          title: "Modelo Financiero",
+          previewHtml: "<div>Preview Excel financiero</div>",
+          downloadUrl: "/api/artifacts/modelo-financiero.xlsx",
+          fileName: "modelo-financiero.xlsx",
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(documentPreviewMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "/api/artifacts/modelo-financiero.xlsx",
+        type: "xlsx",
+        html: "<div>Preview Excel financiero</div>",
+      }),
+    );
+  });
+
   it("falls back to the download URL when previewUrl is missing", () => {
     render(
       <OfficeSplitPreview
@@ -157,5 +180,23 @@ describe("OfficeSplitPreview", () => {
     );
 
     expect(screen.getByTestId("chat-artifact-preview-button")).toHaveTextContent("Preview activo");
+  });
+
+  it("keeps the split preview header above rendered office content", () => {
+    render(
+      <OfficeSplitPreview
+        document={{
+          type: "excel",
+          title: "Modelo Financiero",
+          previewHtml: "<div style='height:2000px'>Preview Excel financiero</div>",
+          downloadUrl: "/api/artifacts/modelo-financiero.xlsx",
+          fileName: "modelo-financiero.xlsx",
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(screen.getByTestId("chat-artifact-close-button").className).toContain("z-30");
+    expect(screen.getByTestId("chat-artifact-split-preview").firstElementChild?.className).toContain("z-20");
   });
 });

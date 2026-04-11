@@ -1,6 +1,7 @@
 import {
   dedupeMessagesByIdentity,
   dedupeRenderableMessages,
+  persistedMessageSupersedesOptimistic,
 } from "@/lib/chatMessageIdentity";
 
 describe("chatMessageIdentity", () => {
@@ -155,6 +156,87 @@ describe("chatMessageIdentity", () => {
 
     expect(deduped).toHaveLength(1);
     expect(deduped[0].id).toBe("assistant-second");
+  });
+
+  it("preserves artifact payloads when a duplicate assistant summary arrives without metadata", () => {
+    const deduped = dedupeRenderableMessages([
+      {
+        id: "assistant-rich",
+        role: "assistant",
+        userMessageId: "user_123",
+        content: "Se generaron 2 archivos listos para descargar.",
+        timestamp: "2026-04-11T15:36:29.245Z",
+        artifact: { artifactId: "artifact-word", type: "document" },
+        artifacts: [
+          { artifactId: "artifact-word", type: "document" },
+          { artifactId: "artifact-excel", type: "spreadsheet" },
+        ],
+      } as any,
+      {
+        id: "assistant-empty",
+        role: "assistant",
+        userMessageId: "user_123",
+        content: "Se generaron 2 archivos listos para descargar.",
+        timestamp: "2026-04-11T15:36:29.305Z",
+      } as any,
+    ]);
+
+    expect(deduped).toHaveLength(1);
+    expect(deduped[0].artifact).toEqual({ artifactId: "artifact-word", type: "document" });
+    expect(deduped[0].artifacts).toEqual([
+      { artifactId: "artifact-word", type: "document" },
+      { artifactId: "artifact-excel", type: "spreadsheet" },
+    ]);
+  });
+
+  it("does not treat a persisted assistant summary without artifacts as a replacement for a richer optimistic message", () => {
+    expect(
+      persistedMessageSupersedesOptimistic(
+        {
+          id: "assistant-rich",
+          role: "assistant",
+          userMessageId: "user_123",
+          content: "Se generaron 2 archivos listos para descargar.",
+          artifacts: [
+            { artifactId: "artifact-word", type: "document", downloadUrl: "/api/docx" },
+            { artifactId: "artifact-excel", type: "spreadsheet", downloadUrl: "/api/xlsx" },
+          ],
+        } as any,
+        {
+          id: "assistant-persisted",
+          role: "assistant",
+          userMessageId: "user_123",
+          content: "Se generaron 2 archivos listos para descargar.",
+        } as any,
+      ),
+    ).toBe(false);
+  });
+
+  it("allows cleanup once the persisted assistant summary carries the same artifact payload", () => {
+    expect(
+      persistedMessageSupersedesOptimistic(
+        {
+          id: "assistant-rich",
+          role: "assistant",
+          userMessageId: "user_123",
+          content: "Se generaron 2 archivos listos para descargar.",
+          artifacts: [
+            { artifactId: "artifact-word", type: "document", downloadUrl: "/api/docx" },
+            { artifactId: "artifact-excel", type: "spreadsheet", downloadUrl: "/api/xlsx" },
+          ],
+        } as any,
+        {
+          id: "assistant-persisted",
+          role: "assistant",
+          userMessageId: "user_123",
+          content: "Se generaron 2 archivos listos para descargar.",
+          artifacts: [
+            { artifactId: "artifact-word", type: "document", downloadUrl: "/api/docx" },
+            { artifactId: "artifact-excel", type: "spreadsheet", downloadUrl: "/api/xlsx" },
+          ],
+        } as any,
+      ),
+    ).toBe(true);
   });
 
   it("preserves identical assistant replies when a user message exists between them", () => {

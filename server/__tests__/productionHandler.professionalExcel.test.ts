@@ -1,14 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs/promises";
 import type { IntentResult } from "../services/intentRouter";
 
-const { officeEngineRunMock } = vi.hoisted(() => ({
+const { officeEngineRunMock, generateFilePreviewMock } = vi.hoisted(() => ({
   officeEngineRunMock: vi.fn(),
+  generateFilePreviewMock: vi.fn(),
 }));
 
 vi.mock("../lib/office/engine/OfficeEngine", () => ({
   officeEngine: {
     run: officeEngineRunMock,
   },
+}));
+
+vi.mock("../services/filePreviewService", () => ({
+  generateFilePreview: generateFilePreviewMock,
 }));
 
 vi.mock("../services/libraryService", () => ({
@@ -84,8 +90,13 @@ function parseSseEvents(chunks: string[]) {
 }
 
 describe("productionHandler XLSX office-engine bridge", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    await fs.writeFile("/tmp/office-run-xlsx.xlsx", Buffer.from("xlsx-preview-binary"));
+    generateFilePreviewMock.mockResolvedValue({
+      type: "xlsx",
+      html: "<div>Preview Excel SaaS</div>",
+    });
     officeEngineRunMock.mockImplementation(async (req: any, streamer: any) => {
       req.onStart?.("office-run-xlsx");
       const plan = streamer.start("thinking", "Planificando edición XLSX");
@@ -185,6 +196,7 @@ describe("productionHandler XLSX office-engine bridge", () => {
       mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       downloadUrl: "/api/office-engine/runs/office-run-xlsx/artifacts/exported",
       previewUrl: "/api/office-engine/runs/office-run-xlsx/artifacts/preview",
+      previewHtml: "<div>Preview Excel SaaS</div>",
       metadata: expect.objectContaining({
         engine: "office-engine",
         docKind: "xlsx",
@@ -226,6 +238,7 @@ describe("productionHandler XLSX office-engine bridge", () => {
       mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       downloadUrl: "/api/office-engine/runs/office-run-xlsx/artifacts/exported",
       previewUrl: "/api/office-engine/runs/office-run-xlsx/artifacts/preview",
+      previewHtml: "<div>Preview Excel SaaS</div>",
     });
   });
 
@@ -253,6 +266,7 @@ describe("productionHandler XLSX office-engine bridge", () => {
         artifact: expect.objectContaining({
           type: "xlsx",
           previewUrl: "/api/office-engine/runs/office-run-xlsx/artifacts/preview",
+          previewHtml: "<div>Preview Excel SaaS</div>",
           metadata: expect.objectContaining({
             engine: "office-engine",
             docKind: "xlsx",

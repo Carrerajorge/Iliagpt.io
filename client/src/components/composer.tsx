@@ -1276,13 +1276,6 @@ export function Composer({
                 </button>
               )}
 
-              {/* Character counter */}
-              {input.length > 0 && (
-                <span className="text-[11px] text-muted-foreground tabular-nums" data-testid="char-counter">
-                  {input.length.toLocaleString('es-ES')} / 10.000
-                </span>
-              )}
-
               {/* Keyboard shortcut hint */}
               <span className="hidden sm:flex items-center text-[10px] text-muted-foreground/70">
                 <kbd className={SILVER_KBD}>⌘K</kbd>

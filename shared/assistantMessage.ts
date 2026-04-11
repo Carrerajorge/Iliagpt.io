@@ -14,6 +14,7 @@ export interface AssistantMessageMetadataInput<
   TStep = unknown,
 > {
   artifact?: TArtifact | null;
+  artifacts?: TArtifact[] | null;
   webSources?: TWebSource[] | null;
   searchQueries?: TSearchQuery[] | null;
   totalSearches?: unknown;
@@ -65,6 +66,7 @@ export interface AssistantMessageRecord<
   requestId?: string;
   userMessageId?: string;
   artifact?: TArtifact;
+  artifacts?: TArtifact[];
   figmaDiagram?: TFigmaDiagram;
   generatedImage?: string;
   googleFormPreview?: TGoogleFormPreview;
@@ -173,6 +175,7 @@ export function buildAssistantMessage<
     requestId: normalizeOptionalString(input.requestId),
     userMessageId: normalizeOptionalString(input.userMessageId),
     artifact: input.artifact ?? undefined,
+    artifacts: normalizeArray(input.artifacts),
     figmaDiagram: input.figmaDiagram ?? undefined,
     generatedImage: normalizeOptionalString(input.generatedImage),
     googleFormPreview: input.googleFormPreview ?? undefined,
@@ -201,6 +204,8 @@ export function buildAssistantMessageMetadata<
   const metadata: Record<string, unknown> = {};
 
   if (input.artifact) metadata.artifact = input.artifact;
+  const artifacts = normalizeArray(input.artifacts);
+  if (artifacts) metadata.artifacts = artifacts;
 
   const webSources = normalizeArray(input.webSources);
   const searchQueries = normalizeArray(input.searchQueries);

@@ -241,11 +241,36 @@ export class AdvancedExcelBuilder {
         this.workbook.created = new Date();
     }
 
+    private resolveUniqueSheetName(name: string): string {
+        const preferred = String(name || "Hoja")
+            .trim()
+            .slice(0, 31) || "Hoja";
+
+        const existing = new Set(
+            this.workbook.worksheets.map((worksheet) => worksheet.name.toLowerCase()),
+        );
+
+        if (!existing.has(preferred.toLowerCase())) {
+            return preferred;
+        }
+
+        for (let index = 2; index < 100; index += 1) {
+            const suffix = `_${index}`;
+            const base = preferred.slice(0, Math.max(1, 31 - suffix.length)).trim() || "Hoja";
+            const candidate = `${base}${suffix}`;
+            if (!existing.has(candidate.toLowerCase())) {
+                return candidate;
+            }
+        }
+
+        return `Hoja_${Date.now()}`.slice(0, 31);
+    }
+
     /**
      * Add a sheet with data and formatting
      */
     addSheet(name: string, data: any[][], options: SheetOptions = {}): ExcelJS.Worksheet {
-        const sheet = this.workbook.addWorksheet(name);
+        const sheet = this.workbook.addWorksheet(this.resolveUniqueSheetName(name));
         const numCols = data[0]?.length || 0;
 
         // Detect if last row is a total/summary row
@@ -476,7 +501,7 @@ export class AdvancedExcelBuilder {
      * Add summary statistics sheet
      */
     addSummarySheet(dataSheetName: string, data: any[][]): ExcelJS.Worksheet {
-        const sheet = this.workbook.addWorksheet("Resumen");
+        const sheet = this.workbook.addWorksheet(this.resolveUniqueSheetName("Resumen"));
         const numCols = data[0]?.length || 0;
         const numRows = data.length - 1; // Exclude header
 

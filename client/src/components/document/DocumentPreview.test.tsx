@@ -53,6 +53,30 @@ describe("DocumentPreview", () => {
     });
   });
 
+  it("prefers the native DOCX renderer over structured HTML when the file URL exists", async () => {
+    fetchArtifactResponseMock.mockResolvedValue(
+      new Response(new Blob(["fake-docx"], { type: "application/octet-stream" }), {
+        status: 200,
+      }),
+    );
+
+    render(
+      <DocumentPreview
+        url="/api/office-engine/runs/run-1/artifacts/repacked"
+        type="docx"
+        title="Admin"
+        html="<article><h1>Vista previa HTML</h1></article>"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(renderAsyncMock).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("document-preview-docx")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTestId("document-preview-html")).not.toBeInTheDocument();
+  });
+
   it("renders HTML previews directly for PPTX artifacts", () => {
     render(
       <DocumentPreview

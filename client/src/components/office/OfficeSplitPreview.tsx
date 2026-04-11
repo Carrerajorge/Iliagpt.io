@@ -38,7 +38,7 @@ export const OfficeSplitPreview = memo(function OfficeSplitPreview({
 
   return (
     <div className="flex h-full flex-col bg-background" data-testid="chat-artifact-split-preview">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+      <div className="relative z-20 flex shrink-0 items-center justify-between border-b border-border bg-background px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted">
             {resolveIcon(document)}
@@ -80,6 +80,7 @@ export const OfficeSplitPreview = memo(function OfficeSplitPreview({
             type="button"
             variant="ghost"
             size="icon"
+            className="relative z-30"
             onClick={onClose}
             data-testid="chat-artifact-close-button"
           >
@@ -88,7 +89,7 @@ export const OfficeSplitPreview = memo(function OfficeSplitPreview({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden p-4">
+      <div className="relative z-0 min-h-0 flex-1 overflow-hidden p-4">
         <DocumentPreview
           url={previewUrl}
           type={documentType}

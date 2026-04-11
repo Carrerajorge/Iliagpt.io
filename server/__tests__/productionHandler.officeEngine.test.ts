@@ -356,4 +356,130 @@ describe("productionHandler office-engine bridge", () => {
     });
     expect(result.assistantContent).toContain("PDF listo para descargar");
   });
+
+  it("completes hybrid Word + Excel requests with multiple artifact events and a multi-file summary", async () => {
+    officeEngineRunMock.mockImplementation(async (req: any, streamer: any) => {
+      req.onStart?.(`office-run-${req.docKind}`);
+      const plan = streamer.start("thinking", `Planificando ${req.docKind}`);
+      streamer.complete(plan, { output: `artifact ready for ${req.docKind}` });
+
+      return {
+        runId: `office-run-${req.docKind}`,
+        status: "succeeded",
+        fallbackLevel: 0,
+        durationMs: 180,
+        artifacts: [
+          {
+            id: `artifact-${req.docKind}`,
+            kind: "exported",
+            path: `/tmp/hybrid-${req.docKind}.${req.docKind}`,
+            mimeType:
+              req.docKind === "xlsx"
+                ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            sizeBytes: 2048,
+            checksumSha256: `sha256-${req.docKind}`,
+            downloadUrl: `/api/office-engine/runs/office-run-${req.docKind}/artifacts/exported`,
+            previewUrl: `/api/office-engine/runs/office-run-${req.docKind}/artifacts/preview`,
+          },
+        ],
+      };
+    });
+
+    const { res, chunks } = createMockResponse();
+    const result = await handleProductionRequest(
+      {
+        message:
+          "crea un Word y un Excel profesionales con estudio de mercado, benchmark de precios y proyección financiera para una startup de delivery",
+        userId: "user-1",
+        chatId: "chat-1",
+        conversationId: "conv-1",
+        requestId: "req-hybrid-1",
+        assistantMessageId: "assistant-hybrid-1",
+        intentResult: makeIntentResult({
+          intent: "CREATE_DOCUMENT",
+          output_format: "docx",
+          normalized_text:
+            "crea un word y un excel profesionales con estudio de mercado benchmark de precios y proyeccion financiera para una startup de delivery",
+        }),
+      },
+      res,
+    );
+
+    const events = parseSseEvents(chunks);
+    const artifactEvents = events.filter((event) => event.event === "artifact");
+    const completionEvent = events.find((event) => event.event === "production_complete");
+    const doneEvent = events.find((event) => event.event === "done");
+    const chunkEvent = events.find((event) => event.event === "chunk");
+
+    expect(officeEngineRunMock).toHaveBeenCalledTimes(2);
+    expect(officeEngineRunMock.mock.calls.map(([runRequest]) => runRequest.docKind)).toEqual([
+      "docx",
+      "xlsx",
+    ]);
+    expect(artifactEvents).toHaveLength(2);
+    expect(artifactEvents.map((event) => event.data.type)).toEqual(["docx", "xlsx"]);
+    expect(completionEvent?.data.success).toBe(true);
+    expect(completionEvent?.data.artifactsCount).toBe(2);
+    expect(completionEvent?.data.summary).toBe("Se generaron 2 archivos listos para descargar.");
+    expect(chunkEvent?.data.content).toBe("Se generaron 2 archivos listos para descargar.");
+    expect(doneEvent?.data.artifact).toBeUndefined();
+    expect(result.assistantContent).toBe("Se generaron 2 archivos listos para descargar.");
+    expect(result.artifacts).toHaveLength(2);
+    expect(result.artifacts?.map((artifact) => artifact.type)).toEqual(["word", "excel"]);
+  });
+
+  it("bootstraps an assistant placeholder before hybrid SSE so the client can reuse the persisted assistant message", async () => {
+    officeEngineRunMock.mockImplementation(async (req: any, streamer: any) => {
+      req.onStart?.(`office-run-${req.docKind}`);
+      const plan = streamer.start("thinking", `Planificando ${req.docKind}`);
+      streamer.complete(plan, { output: `artifact ready for ${req.docKind}` });
+
+      return {
+        runId: `office-run-${req.docKind}`,
+        status: "succeeded",
+        fallbackLevel: 0,
+        durationMs: 140,
+        artifacts: [
+          {
+            id: `artifact-${req.docKind}`,
+            kind: "exported",
+            path: `/tmp/hybrid-${req.docKind}.${req.docKind}`,
+            mimeType:
+              req.docKind === "xlsx"
+                ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            sizeBytes: 2048,
+            checksumSha256: `sha256-${req.docKind}`,
+            downloadUrl: `/api/office-engine/runs/office-run-${req.docKind}/artifacts/exported`,
+            previewUrl: `/api/office-engine/runs/office-run-${req.docKind}/artifacts/preview`,
+          },
+        ],
+      };
+    });
+
+    const { res, chunks } = createMockResponse();
+    const result = await handleProductionRequest(
+      {
+        message: "crea un Word y un Excel con benchmark de precios y ventas mensuales",
+        userId: "user-1",
+        chatId: "chat-1",
+        conversationId: "conv-1",
+        requestId: "req-hybrid-bootstrap-1",
+        assistantMessageId: null,
+        intentResult: makeIntentResult({
+          normalized_text: "crea un word y un excel con benchmark de precios y ventas mensuales",
+        }),
+      },
+      res,
+    );
+
+    const events = parseSseEvents(chunks);
+    const startEvent = events.find((event) => event.event === "production_start");
+    const doneEvent = events.find((event) => event.event === "done");
+
+    expect(startEvent?.data.assistantMessageId).toBe("assistant-placeholder");
+    expect(doneEvent?.data.assistantMessageId).toBe("assistant-placeholder");
+    expect(result.artifacts).toHaveLength(2);
+  });
 });

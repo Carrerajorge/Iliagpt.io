@@ -1,19 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
+import * as fs from "node:fs/promises";
 import { storage } from "../storage";
 import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
 import { getUserId } from "../types/express";
 import { routeIntent } from "../services/intentRouter";
 
-const { officeEngineRunMock } = vi.hoisted(() => ({
+const { officeEngineRunMock, generateFilePreviewMock } = vi.hoisted(() => ({
   officeEngineRunMock: vi.fn(),
+  generateFilePreviewMock: vi.fn(),
 }));
 
 vi.mock("../lib/office/engine/OfficeEngine", () => ({
   officeEngine: {
     run: officeEngineRunMock,
   },
+}));
+
+vi.mock("../services/filePreviewService", () => ({
+  generateFilePreview: generateFilePreviewMock,
 }));
 
 vi.mock("../storage", () => ({
@@ -185,8 +191,12 @@ async function makeApp() {
 }
 
 describe("chat artifact generation integration", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    generateFilePreviewMock.mockResolvedValue({
+      type: "xlsx",
+      html: "<div>Preview Excel financiero</div>",
+    });
     vi.mocked(getOrCreateSecureUserId).mockReturnValue("user_test");
     vi.mocked(getUserId).mockReturnValue("user_test");
     vi.mocked(routeIntent).mockReturnValue({
@@ -369,6 +379,8 @@ describe("chat artifact generation integration", () => {
       };
     });
 
+    await fs.writeFile("/tmp/office-chat-run-xlsx.xlsx", Buffer.from("xlsx-preview-binary"));
+
     const app = await makeApp();
     const response = await request(app)
       .post("/api/chat/stream")
@@ -395,6 +407,7 @@ describe("chat artifact generation integration", () => {
       type: "xlsx",
       downloadUrl: "/api/office-engine/runs/office-chat-run-xlsx/artifacts/exported",
       previewUrl: "/api/office-engine/runs/office-chat-run-xlsx/artifacts/preview",
+      previewHtml: "<div>Preview Excel financiero</div>",
       metadata: expect.objectContaining({
         officeRunId: "office-chat-run-xlsx",
         engine: "office-engine",

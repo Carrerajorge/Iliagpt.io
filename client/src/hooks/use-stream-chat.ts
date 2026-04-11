@@ -161,6 +161,16 @@ function getServerAssistantMessageId(session: ConversationSession | null | undef
   return candidate.length > 0 ? candidate : null;
 }
 
+function getDoneEventContent(data: any): string {
+  if (typeof data?.answer_text === "string" && data.answer_text.trim()) {
+    return data.answer_text;
+  }
+  if (typeof data?.content === "string" && data.content.trim()) {
+    return data.content;
+  }
+  return "";
+}
+
 function normalizeConversationId(options: StreamOptions): string | null {
   const fromOptions = typeof options.conversationId === "string" ? options.conversationId.trim() : "";
   if (fromOptions) return fromOptions;
@@ -176,6 +186,23 @@ function normalizeConversationId(options: StreamOptions): string | null {
   if (fromBodyChatId) return fromBodyChatId;
 
   return null;
+}
+
+function shouldExposeStreamDebug(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    import.meta.env.DEV ||
+    window.location.hostname === "127.0.0.1" ||
+    window.location.hostname === "localhost"
+  );
+}
+
+function pushStreamDebug(entry: Record<string, unknown>): void {
+  if (!shouldExposeStreamDebug() || typeof window === "undefined") return;
+  const globalWindow = window as typeof window & {
+    __streamChatDebug?: Array<Record<string, unknown>>;
+  };
+  globalWindow.__streamChatDebug = [...(globalWindow.__streamChatDebug || []), entry].slice(-80);
 }
 
 export function useStreamChat(deps: StreamChatDeps) {
@@ -1109,6 +1136,13 @@ export function useStreamChat(deps: StreamChatDeps) {
                   const eventConversationId =
                     typeof data.conversationId === "string" ? data.conversationId.trim() : "";
                   if (!eventConversationId || eventConversationId !== conversationId) {
+                    pushStreamDebug({
+                      phase: "filter",
+                      reason: "conversation_mismatch",
+                      eventType: currentEventType,
+                      expectedConversationId: conversationId,
+                      eventConversationId: eventConversationId || null,
+                    });
                     continue;
                   }
 
@@ -1117,12 +1151,35 @@ export function useStreamChat(deps: StreamChatDeps) {
                     typeof data.assistantMessageId === "string" ? data.assistantMessageId.trim() : "";
 
                   if (!eventRequestId && !eventAssistantMessageId) {
+                    pushStreamDebug({
+                      phase: "filter",
+                      reason: "missing_request_and_assistant_id",
+                      eventType: currentEventType,
+                      conversationId,
+                    });
                     continue;
                   }
 
                   if (eventRequestId && eventRequestId !== streamRequestId) {
+                    pushStreamDebug({
+                      phase: "filter",
+                      reason: "request_mismatch",
+                      eventType: currentEventType,
+                      conversationId,
+                      expectedRequestId: streamRequestId,
+                      eventRequestId,
+                      eventAssistantMessageId: eventAssistantMessageId || null,
+                    });
                     continue;
                   }
+
+                  pushStreamDebug({
+                    phase: "accepted",
+                    eventType: currentEventType,
+                    conversationId,
+                    eventRequestId: eventRequestId || null,
+                    eventAssistantMessageId: eventAssistantMessageId || null,
+                  });
 
                   if (eventAssistantMessageId) {
                     session.serverAssistantMessageId = eventAssistantMessageId;
@@ -1351,10 +1408,12 @@ export function useStreamChat(deps: StreamChatDeps) {
                       return { ok: false, content: fullContent, message: errorMsg, response, error: terminalError };
                     }
 
+                    const terminalContent = fullContent || getDoneEventContent(data);
+
                     // If done arrived but no content was received, throw a retryable error.
                     // The catch block below will auto-retry (up to normalizedMaxRetries times).
                     // This handles cases where SSE events lacked IDs and were silently filtered.
-                    if (!fullContent) {
+                    if (!terminalContent) {
                       console.warn("[useStreamChat] Done received with no content — treating as retryable empty stream");
                       const emptyStreamError = new Error("No se recibió respuesta del servidor.");
                       (emptyStreamError as any).retryable = true;
@@ -1372,7 +1431,7 @@ export function useStreamChat(deps: StreamChatDeps) {
                       id: finalMessageId,
                       timestamp: new Date(),
                       requestId: data.requestId || streamRequestId,
-                      content: fullContent,
+                      content: terminalContent,
                       artifact: data.artifact,
                       webSources: data.webSources,
                       searchQueries: data.searchQueries,
@@ -1394,7 +1453,7 @@ export function useStreamChat(deps: StreamChatDeps) {
                     }
 
                     finalize(msg, conversationId, "done");
-                    return { ok: true, content: fullContent, message: msg, response };
+                    return { ok: true, content: terminalContent, message: msg, response };
                   }
 
                   if (currentEventType === "error" || currentEventType === "production_error") {
@@ -1413,14 +1472,16 @@ export function useStreamChat(deps: StreamChatDeps) {
                 throw pendingTerminalError;
               }
 
-              if (!session.finalizing && fullContent) {
+              const terminalContent = fullContent || getDoneEventContent(lastEventData);
+
+              if (!session.finalizing && terminalContent) {
                 clearTokenTimeouts();
                 flushNow(conversationId);
-                const msg = buildFinalMessage?.(fullContent, lastEventData, messageId) ?? buildAssistantMessage({
+                const msg = buildFinalMessage?.(terminalContent, lastEventData, messageId) ?? buildAssistantMessage({
                   id: messageId,
                   timestamp: new Date(),
                   requestId: streamRequestId,
-                  content: fullContent,
+                  content: terminalContent,
                   artifact: lastEventData?.artifact,
                   webSources: lastEventData?.webSources,
                   searchQueries: lastEventData?.searchQueries,
@@ -1433,7 +1494,7 @@ export function useStreamChat(deps: StreamChatDeps) {
                 });
 
                 finalize(msg, conversationId, "done");
-                return { ok: true, content: fullContent, message: msg, response };
+                return { ok: true, content: terminalContent, message: msg, response };
               }
 
               if (!session.finalizing) {
