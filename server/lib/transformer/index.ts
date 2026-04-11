@@ -1,27 +1,39 @@
 /**
  * Transformer primitives — pure TypeScript implementation of "Attention Is
- * All You Need" (Vaswani et al. 2017).
+ * All You Need" (Vaswani et al. 2017), end-to-end.
  *
- * Zero external dependencies. Pure Float64Array math. Correctness-first,
- * not speed-first: the platform's runtime use case is reranking pgvector
- * search results and powering a pedagogical attention-heatmap demo — not
- * training or large-batch inference.
+ * Zero external dependencies. Pure Float64Array math. This module covers
+ * ALL sections of the paper:
  *
- * Entry points:
+ *   - Section 3: Model architecture
+ *     - Scaled dot-product + multi-head attention (Eq. 1)
+ *     - Positional encoding (sinusoidal, section 3.5)
+ *     - Token embedding with √d_model scaling (section 3.4)
+ *     - Position-wise feed-forward (Eq. 2)
+ *     - Encoder / decoder stacks with residuals + layer norm
+ *     - Tied output projection with softmax for next-token probs (section 3.4)
  *
- *   import { scaledDotProductAttention, multiHeadAttention, ... } from "@/server/lib/transformer";
+ *   - Section 5: Training
+ *     - Adam optimizer β1=0.9 β2=0.98 ε=1e-9 (section 5.3)
+ *     - Noam LR schedule (Eq. 3) with warmup=4000
+ *     - Residual dropout P_drop=0.1 (section 5.4)
+ *     - Label smoothing ε_ls=0.1 (section 5.4)
+ *     - Cross-entropy loss with label smoothing
+ *     - Finite-difference gradients + end-to-end training step
  *
- *   const result = scaledDotProductAttention(Q, K, V);
- *   result.output   // the attended values
- *   result.weights  // softmax(QK^T / sqrt(d_k)), rows sum to 1
+ *   - Section 6: Results / inference
+ *     - Greedy auto-regressive decoding
+ *     - Beam search (beam size 4, length penalty α=0.6)
+ *     - BLEU-4 metric (sentence + corpus level)
  *
- * Corresponds to paper equations (1) and (2), sections 3.1–3.5.
+ *   - Table 3: All config variants (base, big, A/B/C/D/E ablation rows)
+ *   - Serialization: JSON save/load with forward-pass determinism
  */
 
-// Numerical primitives
+// ─── Numerical primitives ──────────────────────────────────────────────────
 export * from "./matrix";
 
-// Attention (eq 1 + multi-head)
+// ─── Attention (Eq 1 + multi-head, section 3.2) ────────────────────────────
 export {
   type AttentionResult,
   type MultiHeadConfig,
@@ -34,7 +46,7 @@ export {
   splitHeads,
 } from "./attention";
 
-// Positional encoding + embeddings
+// ─── Positional encoding + embeddings (section 3.4, 3.5) ───────────────────
 export {
   type EmbeddingTable,
   positionalEncoding,
@@ -43,10 +55,10 @@ export {
   embedTokens,
 } from "./encoding";
 
-// Position-wise feed-forward (eq 2)
+// ─── Position-wise feed-forward (Eq 2, section 3.3) ────────────────────────
 export { type FFNWeights, feedForward, initFFNWeights } from "./feedForward";
 
-// Encoder/decoder stacks + full Transformer
+// ─── Encoder/decoder layers + full stack (section 3.1) ─────────────────────
 export {
   type EncoderLayerWeights,
   type DecoderLayerWeights,
@@ -64,3 +76,110 @@ export {
   tinyTransformerConfig,
   transformerForward,
 } from "./transformer";
+
+// ─── Output projection + softmax (section 3.4) ─────────────────────────────
+export {
+  type UntiedOutputProjection,
+  tiedOutputLogits,
+  initUntiedOutputProjection,
+  untiedOutputLogits,
+  logitsToProbs,
+  argmaxTokens,
+  topK,
+} from "./outputProjection";
+
+// ─── Dropout (section 5.4) ─────────────────────────────────────────────────
+export { type DropoutConfig, dropout, identityDropout, observedKeepRate } from "./dropout";
+
+// ─── Loss / label smoothing (section 5.4) ──────────────────────────────────
+export {
+  type LabelSmoothingConfig,
+  type LossResult,
+  logSoftmax,
+  smoothTargets,
+  crossEntropyLoss,
+  paperDefaultLoss,
+  klSmoothed,
+} from "./loss";
+
+// ─── Adam optimizer + Noam LR schedule (Eq 3, section 5.3) ─────────────────
+export {
+  type AdamHyperparameters,
+  type AdamState,
+  type NoamConfig,
+  PAPER_ADAM,
+  noamLearningRate,
+  noamPeakLearningRate,
+  createAdamState,
+  adamUpdate,
+  AdamOptimizer,
+  clipGradientNorm,
+} from "./optimizer";
+
+// ─── Auto-regressive decoding (section 6.1) ────────────────────────────────
+export {
+  type DecodeContext,
+  type GreedyConfig,
+  type GreedyResult,
+  type BeamSearchConfig,
+  type BeamSearchResult,
+  type BeamHypothesis,
+  nextTokenLogits,
+  greedyDecode,
+  beamSearchDecode,
+} from "./decoding";
+
+// ─── BLEU metric (section 6.1) ─────────────────────────────────────────────
+export {
+  ngramCounts,
+  modifiedPrecision,
+  brevityPenalty,
+  corpusBleu,
+  sentenceBleu,
+  bleu4,
+  corpusBleu4,
+} from "./bleu";
+
+// ─── Configs / Table 3 presets ─────────────────────────────────────────────
+export {
+  type ExtendedTransformerConfig,
+  paperBaseConfig,
+  paperBigConfig,
+  tinyConfig,
+  allPresets,
+  preset,
+} from "./configs";
+
+// ─── Serialization ─────────────────────────────────────────────────────────
+export {
+  type TransformerCheckpointJSON,
+  type TransformerCheckpointInput,
+  embeddingTableToJSON,
+  embeddingTableFromJSON,
+  checkpointToJSON,
+  checkpointToString,
+  checkpointFromJSON,
+  checkpointFromString,
+} from "./serialization";
+
+// ─── Training loop (copy task + finite-difference gradients) ───────────────
+export {
+  PAD_ID,
+  BOS_ID,
+  EOS_ID,
+  type CopyTaskExample,
+  type CopyTaskConfig,
+  generateCopyTaskBatch,
+} from "./copyTask";
+
+export {
+  type TrainingBatch,
+  type TrainingSetup,
+  type TrainingStepResult,
+  type FDConfig,
+  FD_DEFAULTS,
+  computeLoss,
+  finiteDifferenceGradient,
+  trainingStep,
+  registerSetupWithOptimizer,
+} from "./training";

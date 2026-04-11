@@ -1,18 +1,21 @@
 /**
- * Transformer attention visualization — `/transformer-demo` page.
+ * Transformer end-to-end demo — `/transformer-demo` page.
  *
  * Educational surface for the in-house "Attention Is All You Need"
- * implementation. Given a list of tokens (provided by the user as a
- * comma-separated input), it:
+ * implementation. Surfaces every major piece of the paper via the REST
+ * API we wired up under `/api/transformer`:
  *
- *   1. Produces a random but deterministic embedding for each token
- *   2. Runs scaled dot-product attention via `/api/transformer/attention`
- *   3. Renders the attention weights as a colored heatmap (query rows ×
- *      key columns)
- *   4. Shows the final attended output vectors below
+ *   Section 1: Attention heatmap        — POST /api/transformer/attention
+ *   Section 2: Auto-regressive greedy   — POST /api/transformer/generate
+ *              decoding of the copy     ( + /beam-search for top-k )
+ *              task
+ *   Section 3: Live training curve      — POST /api/transformer/train-step
+ *              on a tiny copy task
+ *   Section 4: Noam LR schedule         — POST /api/transformer/schedule
+ *              (Equation 3) visualization
  *
- * No backend rendering — it calls the REST endpoint we just wired up
- * and displays the JSON response as an interactive visualization.
+ * No backend rendering — it calls the REST endpoints we wired up
+ * and displays the JSON responses as interactive visualizations.
  */
 
 import { useCallback, useMemo, useState } from "react";
@@ -67,6 +70,131 @@ function textColor(w: number): string {
   return w > 0.5 ? "#0b1021" : "#f0f4ff";
 }
 
+// ─── Types for the new endpoint responses ────────────────────────────────
+
+interface GenerateResponse {
+  tokens: number[];
+  hitEOS: boolean;
+  steps: number;
+  model: { vocabSize: number; seed: number; dModel: number };
+  algorithm: string;
+}
+
+interface TrainStepResponse {
+  trajectory: Array<{
+    step: number;
+    loss: number;
+    learningRate: number;
+    gradientNorm: number;
+  }>;
+  initialLoss: number;
+  finalLoss: number;
+  improved: boolean;
+  batch: { src: number[]; tgtIn: number[]; tgtOut: number[] };
+  config: Record<string, number>;
+}
+
+interface ScheduleResponse {
+  step: number;
+  learningRate: number;
+  peakLearningRate: number;
+  peakAtStep: number;
+  dModel: number;
+  warmupSteps: number;
+  curve?: number[];
+  formula: string;
+}
+
+/**
+ * Render a simple SVG line chart for a numeric series. No external
+ * charting dependency — the whole page must stay self-contained.
+ */
+function LineChart({
+  data,
+  width = 640,
+  height = 160,
+  color = "#38bdf8",
+  label,
+  yFormat = (v: number) => v.toFixed(3),
+  xLabel,
+  yLabel,
+}: {
+  data: number[];
+  width?: number;
+  height?: number;
+  color?: string;
+  label?: string;
+  yFormat?: (v: number) => string;
+  xLabel?: string;
+  yLabel?: string;
+}) {
+  if (data.length === 0) return null;
+  const minV = Math.min(...data);
+  const maxV = Math.max(...data);
+  const span = maxV - minV || 1;
+  const padding = { top: 16, right: 16, bottom: 28, left: 52 };
+  const plotW = width - padding.left - padding.right;
+  const plotH = height - padding.top - padding.bottom;
+  const x = (i: number) =>
+    padding.left + (data.length <= 1 ? plotW / 2 : (i / (data.length - 1)) * plotW);
+  const y = (v: number) => padding.top + plotH - ((v - minV) / span) * plotH;
+  const path = data.map((v, i) => `${i === 0 ? "M" : "L"}${x(i)},${y(v)}`).join(" ");
+  return (
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      className="bg-background border border-border rounded-md"
+      data-testid="transformer-demo-linechart"
+    >
+      {/* Y axis ticks */}
+      {[0, 0.25, 0.5, 0.75, 1].map((t) => {
+        const v = minV + t * span;
+        const yy = y(v);
+        return (
+          <g key={`yt-${t}`}>
+            <line x1={padding.left} x2={width - padding.right} y1={yy} y2={yy} stroke="#1e293b" strokeWidth={1} />
+            <text x={padding.left - 4} y={yy + 3} fontSize={9} fill="#94a3b8" textAnchor="end">
+              {yFormat(v)}
+            </text>
+          </g>
+        );
+      })}
+      {/* Line */}
+      <path d={path} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" />
+      {/* Dots */}
+      {data.map((v, i) => (
+        <circle key={`dot-${i}`} cx={x(i)} cy={y(v)} r={2.5} fill={color} />
+      ))}
+      {/* X axis label */}
+      {xLabel && (
+        <text x={width / 2} y={height - 6} fontSize={10} fill="#94a3b8" textAnchor="middle">
+          {xLabel}
+        </text>
+      )}
+      {/* Y axis label */}
+      {yLabel && (
+        <text
+          x={12}
+          y={height / 2}
+          fontSize={10}
+          fill="#94a3b8"
+          textAnchor="middle"
+          transform={`rotate(-90, 12, ${height / 2})`}
+        >
+          {yLabel}
+        </text>
+      )}
+      {/* Top-right label */}
+      {label && (
+        <text x={width - padding.right} y={padding.top - 4} fontSize={10} fill="#94a3b8" textAnchor="end">
+          {label}
+        </text>
+      )}
+    </svg>
+  );
+}
+
 export default function TransformerDemoPage() {
   const [input, setInput] = useState<string>(
     "attention, is, all, you, need",
@@ -75,6 +203,29 @@ export default function TransformerDemoPage() {
   const [response, setResponse] = useState<AttentionResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // ── Auto-regressive generation state ────────────────────────────────
+  const [genSrc, setGenSrc] = useState<string>("3, 5, 4");
+  const [genMaxLen, setGenMaxLen] = useState<number>(8);
+  const [genVocab, setGenVocab] = useState<number>(16);
+  const [genSeed, setGenSeed] = useState<number>(42);
+  const [genLoading, setGenLoading] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [genResponse, setGenResponse] = useState<GenerateResponse | null>(null);
+
+  // ── Training curve state ────────────────────────────────────────────
+  const [trainSteps, setTrainSteps] = useState<number>(3);
+  const [trainLoading, setTrainLoading] = useState(false);
+  const [trainError, setTrainError] = useState<string | null>(null);
+  const [trainResponse, setTrainResponse] = useState<TrainStepResponse | null>(null);
+
+  // ── LR schedule state ───────────────────────────────────────────────
+  const [schedSteps, setSchedSteps] = useState<number>(8000);
+  const [schedDModel, setSchedDModel] = useState<number>(512);
+  const [schedWarmup, setSchedWarmup] = useState<number>(4000);
+  const [schedLoading, setSchedLoading] = useState(false);
+  const [schedError, setSchedError] = useState<string | null>(null);
+  const [schedResponse, setSchedResponse] = useState<ScheduleResponse | null>(null);
 
   const tokens = useMemo(
     () =>
@@ -115,6 +266,95 @@ export default function TransformerDemoPage() {
     for (const row of response.output) for (const v of row) m = Math.max(m, Math.abs(v));
     return m || 1;
   }, [response]);
+
+  // ── Generate (greedy auto-regressive copy task) ─────────────────────
+  const handleGenerate = useCallback(async () => {
+    setGenLoading(true);
+    setGenError(null);
+    setGenResponse(null);
+    try {
+      const srcTokens = genSrc
+        .split(",")
+        .map((t) => Number(t.trim()))
+        .filter((n) => Number.isFinite(n));
+      if (srcTokens.length === 0) throw new Error("Sin tokens");
+      const res = await fetch("/api/transformer/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          srcTokens,
+          maxLength: genMaxLen,
+          model: { vocabSize: genVocab, seed: genSeed },
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message ?? `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as GenerateResponse;
+      setGenResponse(data);
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenLoading(false);
+    }
+  }, [genSrc, genMaxLen, genVocab, genSeed]);
+
+  // ── Training step (loss curve on the copy task) ─────────────────────
+  const handleTrain = useCallback(async () => {
+    setTrainLoading(true);
+    setTrainError(null);
+    setTrainResponse(null);
+    try {
+      const res = await fetch("/api/transformer/train-step", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ steps: trainSteps }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message ?? `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as TrainStepResponse;
+      setTrainResponse(data);
+    } catch (err) {
+      setTrainError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTrainLoading(false);
+    }
+  }, [trainSteps]);
+
+  // ── Noam LR schedule ────────────────────────────────────────────────
+  const handleSchedule = useCallback(async () => {
+    setSchedLoading(true);
+    setSchedError(null);
+    setSchedResponse(null);
+    try {
+      const res = await fetch("/api/transformer/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          step: schedSteps,
+          dModel: schedDModel,
+          warmupSteps: schedWarmup,
+          curve: true,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message ?? `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as ScheduleResponse;
+      setSchedResponse(data);
+    } catch (err) {
+      setSchedError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSchedLoading(false);
+    }
+  }, [schedSteps, schedDModel, schedWarmup]);
 
   return (
     <div className="min-h-screen bg-background text-foreground" data-testid="transformer-demo-root">
@@ -279,6 +519,275 @@ export default function TransformerDemoPage() {
             </section>
           </>
         )}
+
+        {/* ─── Section 5 · Auto-regressive generation ─────────────────── */}
+        <section
+          className="border border-border rounded-lg p-4 bg-card mt-6"
+          data-testid="transformer-demo-generate-section"
+        >
+          <h2 className="text-sm font-medium mb-2">
+            5 · Auto-regressive generation (greedy) · copy task
+          </h2>
+          <p className="text-xs text-muted-foreground mb-3 max-w-3xl">
+            Runs the decoder one token at a time against a tiny deterministic
+            Transformer. The server seeds a model, encodes the source, and emits
+            tokens via argmax over tied-embedding logits until it hits EOS (id 1) or
+            the max length. Corresponds to <code className="font-mono">POST /api/transformer/generate</code>.
+          </p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+            <label className="flex flex-col text-xs text-muted-foreground">
+              Tokens (comma-separated ids)
+              <input
+                value={genSrc}
+                onChange={(e) => setGenSrc(e.target.value)}
+                className="mt-1 rounded-md border border-border bg-background p-1.5 text-sm font-mono text-foreground"
+                data-testid="transformer-demo-gen-src"
+              />
+            </label>
+            <label className="flex flex-col text-xs text-muted-foreground">
+              maxLength
+              <input
+                type="number"
+                min={1}
+                max={64}
+                value={genMaxLen}
+                onChange={(e) => setGenMaxLen(Number(e.target.value))}
+                className="mt-1 rounded-md border border-border bg-background p-1.5 text-sm font-mono text-foreground"
+              />
+            </label>
+            <label className="flex flex-col text-xs text-muted-foreground">
+              vocabSize
+              <input
+                type="number"
+                min={3}
+                max={256}
+                value={genVocab}
+                onChange={(e) => setGenVocab(Number(e.target.value))}
+                className="mt-1 rounded-md border border-border bg-background p-1.5 text-sm font-mono text-foreground"
+              />
+            </label>
+            <label className="flex flex-col text-xs text-muted-foreground">
+              seed
+              <input
+                type="number"
+                value={genSeed}
+                onChange={(e) => setGenSeed(Number(e.target.value))}
+                className="mt-1 rounded-md border border-border bg-background p-1.5 text-sm font-mono text-foreground"
+              />
+            </label>
+          </div>
+          <Button
+            onClick={handleGenerate}
+            disabled={genLoading}
+            data-testid="transformer-demo-gen-run"
+          >
+            {genLoading ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                Generando…
+              </>
+            ) : (
+              <>Generar tokens</>
+            )}
+          </Button>
+
+          {genError && (
+            <div className="mt-3 text-sm text-destructive" data-testid="transformer-demo-gen-error">
+              Error: {genError}
+            </div>
+          )}
+
+          {genResponse && (
+            <div className="mt-4 space-y-2 text-xs" data-testid="transformer-demo-gen-result">
+              <div>
+                <span className="text-muted-foreground">Tokens generados: </span>
+                <span className="font-mono text-foreground">
+                  [{genResponse.tokens.join(", ")}]
+                </span>
+              </div>
+              <div className="text-muted-foreground">
+                hitEOS = {String(genResponse.hitEOS)} · pasos = {genResponse.steps} ·
+                d_model = {genResponse.model.dModel}
+              </div>
+              <div className="text-muted-foreground italic">{genResponse.algorithm}</div>
+            </div>
+          )}
+        </section>
+
+        {/* ─── Section 6 · Training curve on the copy task ────────────── */}
+        <section
+          className="border border-border rounded-lg p-4 bg-card mt-6"
+          data-testid="transformer-demo-train-section"
+        >
+          <h2 className="text-sm font-medium mb-2">
+            6 · Training curve · finite-difference gradients + Adam
+          </h2>
+          <p className="text-xs text-muted-foreground mb-3 max-w-3xl">
+            Runs <code className="font-mono">N</code> full training steps on a tiny
+            copy-reverse task. Each step: forward pass → central-difference
+            gradient for up to 40 parameters → Adam update with the Noam schedule.
+            The trajectory proves the full paper machinery (attention + FFN + Adam
+            + label smoothing + tied projection) reduces the loss end-to-end.
+            Uses <code className="font-mono">POST /api/transformer/train-step</code>.
+          </p>
+          <div className="flex items-center gap-3 mb-3">
+            <label className="flex flex-col text-xs text-muted-foreground">
+              Steps
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={trainSteps}
+                onChange={(e) => setTrainSteps(Number(e.target.value))}
+                className="mt-1 rounded-md border border-border bg-background p-1.5 text-sm font-mono text-foreground w-28"
+              />
+            </label>
+            <Button
+              onClick={handleTrain}
+              disabled={trainLoading}
+              data-testid="transformer-demo-train-run"
+            >
+              {trainLoading ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                  Entrenando…
+                </>
+              ) : (
+                <>Ejecutar entrenamiento</>
+              )}
+            </Button>
+          </div>
+
+          {trainError && (
+            <div className="mt-3 text-sm text-destructive" data-testid="transformer-demo-train-error">
+              Error: {trainError}
+            </div>
+          )}
+
+          {trainResponse && (
+            <div className="mt-4 space-y-4" data-testid="transformer-demo-train-result">
+              <LineChart
+                data={trainResponse.trajectory.map((t) => t.loss)}
+                label="cross-entropy loss"
+                xLabel="training step"
+                yLabel="loss"
+                color="#f59e0b"
+                yFormat={(v) => v.toFixed(3)}
+              />
+              <LineChart
+                data={trainResponse.trajectory.map((t) => t.learningRate)}
+                label="Noam learning rate"
+                xLabel="training step"
+                yLabel="lr"
+                color="#38bdf8"
+                yFormat={(v) => v.toExponential(1)}
+              />
+              <div className="text-xs text-muted-foreground">
+                initial={trainResponse.initialLoss.toFixed(4)} · final=
+                {trainResponse.finalLoss.toFixed(4)} ·{" "}
+                <span
+                  className={
+                    trainResponse.improved ? "text-emerald-400" : "text-destructive"
+                  }
+                >
+                  {trainResponse.improved ? "loss decreased" : "no improvement"}
+                </span>{" "}
+                · batch src=[{trainResponse.batch.src.join(",")}] tgtOut=[
+                {trainResponse.batch.tgtOut.join(",")}]
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* ─── Section 7 · Noam LR schedule (Equation 3) ──────────────── */}
+        <section
+          className="border border-border rounded-lg p-4 bg-card mt-6"
+          data-testid="transformer-demo-schedule-section"
+        >
+          <h2 className="text-sm font-medium mb-2">
+            7 · Noam learning-rate schedule (Ecuación 3 del paper)
+          </h2>
+          <p className="text-xs text-muted-foreground mb-3 max-w-3xl">
+            <code className="font-mono">lrate = d_model^(-0.5) · min(step^(-0.5), step · warmup^(-1.5))</code>
+            . Warm-up lineal hasta <code className="font-mono">step = warmup</code>,
+            decaimiento proporcional a <code className="font-mono">1/√step</code> después.
+            Base del paper: <code className="font-mono">d_model=512, warmup=4000</code>.
+            Usa <code className="font-mono">POST /api/transformer/schedule</code>.
+          </p>
+          <div className="grid grid-cols-3 gap-3 mb-3">
+            <label className="flex flex-col text-xs text-muted-foreground">
+              Max step
+              <input
+                type="number"
+                min={1}
+                max={1000000}
+                value={schedSteps}
+                onChange={(e) => setSchedSteps(Number(e.target.value))}
+                className="mt-1 rounded-md border border-border bg-background p-1.5 text-sm font-mono text-foreground"
+              />
+            </label>
+            <label className="flex flex-col text-xs text-muted-foreground">
+              d_model
+              <input
+                type="number"
+                min={1}
+                max={4096}
+                value={schedDModel}
+                onChange={(e) => setSchedDModel(Number(e.target.value))}
+                className="mt-1 rounded-md border border-border bg-background p-1.5 text-sm font-mono text-foreground"
+              />
+            </label>
+            <label className="flex flex-col text-xs text-muted-foreground">
+              warmup
+              <input
+                type="number"
+                min={1}
+                max={100000}
+                value={schedWarmup}
+                onChange={(e) => setSchedWarmup(Number(e.target.value))}
+                className="mt-1 rounded-md border border-border bg-background p-1.5 text-sm font-mono text-foreground"
+              />
+            </label>
+          </div>
+          <Button
+            onClick={handleSchedule}
+            disabled={schedLoading}
+            data-testid="transformer-demo-sched-run"
+          >
+            {schedLoading ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                Calculando…
+              </>
+            ) : (
+              <>Calcular curva</>
+            )}
+          </Button>
+
+          {schedError && (
+            <div className="mt-3 text-sm text-destructive" data-testid="transformer-demo-sched-error">
+              Error: {schedError}
+            </div>
+          )}
+
+          {schedResponse?.curve && (
+            <div className="mt-4 space-y-2" data-testid="transformer-demo-sched-result">
+              <LineChart
+                data={schedResponse.curve}
+                label={`peak=${schedResponse.peakLearningRate.toExponential(2)} @ step ${schedResponse.peakAtStep}`}
+                xLabel="step"
+                yLabel="lr"
+                color="#a78bfa"
+                yFormat={(v) => v.toExponential(1)}
+              />
+              <div className="text-xs text-muted-foreground">
+                lr(step={schedResponse.step}) ={" "}
+                {schedResponse.learningRate.toExponential(4)} · fórmula:{" "}
+                <code className="font-mono">{schedResponse.formula}</code>
+              </div>
+            </div>
+          )}
+        </section>
       </div>
     </div>
   );
