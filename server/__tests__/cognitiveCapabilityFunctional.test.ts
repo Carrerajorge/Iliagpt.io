@@ -72,6 +72,15 @@ import {
   queueDispatchTaskHandler,
   auditRecentActionsHandler,
   usageAnalyticsHandler,
+  // Turn L handlers
+  deduplicateFilesHandler,
+  coordinateParallelHandler,
+  multiDocReportHandler,
+  installPluginHandler,
+  configureEgressHandler,
+  trainPredictiveModelHandler,
+  renderChartImageHandler,
+  invokeMcpToolHandler,
 } from "../cognitive/capabilityHandlers";
 
 // ---------------------------------------------------------------------------
@@ -1171,6 +1180,432 @@ describe("functional: multi-LLM compatibility matrix", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2. GESTIÓN DE ARCHIVOS — deduplicate (Turn L)
+// ---------------------------------------------------------------------------
+
+describe("functional: file_management.deduplicate", () => {
+  it("F210 happy path: identical content in different filenames is grouped", async () => {
+    const r = await deduplicateFilesHandler(
+      {
+        files: [
+          { name: "a.txt", content: "hello world" },
+          { name: "b.txt", content: "different" },
+          { name: "a-copy.txt", content: "hello world" },
+        ],
+      },
+      ctx(),
+    );
+    const res = r.result as {
+      totalFiles: number;
+      uniqueHashes: number;
+      duplicateGroups: Array<{ files: string[]; duplicates: string[] }>;
+      totalDuplicates: number;
+    };
+    expect(res.totalFiles).toBe(3);
+    expect(res.uniqueHashes).toBe(2);
+    expect(res.duplicateGroups.length).toBe(1);
+    expect(res.duplicateGroups[0].files).toContain("a.txt");
+    expect(res.duplicateGroups[0].files).toContain("a-copy.txt");
+    expect(res.totalDuplicates).toBe(1);
+  });
+
+  it("F211 edge: all unique files produce zero duplicate groups", async () => {
+    const r = await deduplicateFilesHandler(
+      {
+        files: [
+          { name: "a", content: "1" },
+          { name: "b", content: "2" },
+          { name: "c", content: "3" },
+        ],
+      },
+      ctx(),
+    );
+    const res = r.result as { duplicateGroups: unknown[]; totalDuplicates: number };
+    expect(res.duplicateGroups.length).toBe(0);
+    expect(res.totalDuplicates).toBe(0);
+  });
+
+  it("F212 error: empty files rejects", async () => {
+    await expectHandlerRejects(
+      () => deduplicateFilesHandler({ files: [] }, ctx()),
+      "empty files",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. SUB-AGENTES — coordinate_parallel (Turn L)
+// ---------------------------------------------------------------------------
+
+describe("functional: sub_agents.coordinate_parallel", () => {
+  it("F220 happy path: completes every task with outcome record", async () => {
+    const r = await coordinateParallelHandler(
+      { tasks: ["task a", "task b", "task c"] },
+      ctx(),
+    );
+    const res = r.result as {
+      totalTasks: number;
+      completed: number;
+      skipped: number;
+      outcomes: Array<{ status: string; index: number }>;
+    };
+    expect(res.totalTasks).toBe(3);
+    expect(res.completed).toBe(3);
+    expect(res.skipped).toBe(0);
+    expect(res.outcomes.map((o) => o.index)).toEqual([0, 1, 2]);
+  });
+
+  it("F221 edge: empty-string task is skipped, not completed", async () => {
+    const r = await coordinateParallelHandler(
+      { tasks: ["a", "", "c"] },
+      ctx(),
+    );
+    const res = r.result as { completed: number; skipped: number };
+    expect(res.completed).toBe(2);
+    expect(res.skipped).toBe(1);
+  });
+
+  it("F222 error: empty tasks rejects", async () => {
+    await expectHandlerRejects(
+      () => coordinateParallelHandler({ tasks: [] }, ctx()),
+      "empty tasks",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. SÍNTESIS — multi_doc_report (Turn L)
+// ---------------------------------------------------------------------------
+
+describe("functional: research_synthesis.multi_doc_report", () => {
+  it("F230 happy path: aggregates word counts + finds shared terms", async () => {
+    const r = await multiDocReportHandler(
+      {
+        docs: [
+          { id: "a", text: "kubernetes cluster deployment with pods and services" },
+          { id: "b", text: "kubernetes pods restart automatically on failure" },
+          { id: "c", text: "kubernetes autoscaling uses pods and metrics" },
+        ],
+      },
+      ctx(),
+    );
+    const res = r.result as {
+      docCount: number;
+      totalWords: number;
+      sharedTerms: string[];
+      perDoc: Array<{ id: string; wordCount: number }>;
+    };
+    expect(res.docCount).toBe(3);
+    expect(res.totalWords).toBeGreaterThan(10);
+    // "kubernetes" and "pods" appear in all three docs.
+    expect(res.sharedTerms).toContain("kubernetes");
+    expect(res.sharedTerms).toContain("pods");
+  });
+
+  it("F231 edge: docs with no overlap produce zero shared terms", async () => {
+    const r = await multiDocReportHandler(
+      {
+        docs: [
+          { id: "a", text: "apple banana cherry" },
+          { id: "b", text: "delta echo foxtrot" },
+        ],
+      },
+      ctx(),
+    );
+    const res = r.result as { sharedTerms: string[]; sharedTermCount: number };
+    expect(res.sharedTermCount).toBe(0);
+    expect(res.sharedTerms).toEqual([]);
+  });
+
+  it("F232 error: single doc rejects (needs at least 2 for cross-doc)", async () => {
+    await expectHandlerRejects(
+      () => multiDocReportHandler({ docs: [{ id: "only", text: "one" }] }, ctx()),
+      "single doc",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. PLUGINS — install (Turn L)
+// ---------------------------------------------------------------------------
+
+describe("functional: plugins.install", () => {
+  it("F240 happy path: install returns record with alreadyInstalled=false", async () => {
+    resetCapabilityHandlerStores();
+    const r = await installPluginHandler(
+      { pluginId: "finance.variance_analysis" },
+      ctx("alice"),
+    );
+    const res = r.result as {
+      pluginId: string;
+      alreadyInstalled: boolean;
+      userId: string;
+    };
+    expect(res.pluginId).toBe("finance.variance_analysis");
+    expect(res.alreadyInstalled).toBe(false);
+    expect(res.userId).toBe("alice");
+  });
+
+  it("F241 idempotent: second install for same user returns alreadyInstalled=true", async () => {
+    resetCapabilityHandlerStores();
+    await installPluginHandler({ pluginId: "x" }, ctx("alice"));
+    const r = await installPluginHandler({ pluginId: "x" }, ctx("alice"));
+    const res = r.result as { alreadyInstalled: boolean };
+    expect(res.alreadyInstalled).toBe(true);
+  });
+
+  it("F242 per-user: bob can install the same plugin as alice", async () => {
+    resetCapabilityHandlerStores();
+    await installPluginHandler({ pluginId: "x" }, ctx("alice"));
+    const r = await installPluginHandler({ pluginId: "x" }, ctx("bob"));
+    const res = r.result as { alreadyInstalled: boolean; userId: string };
+    expect(res.alreadyInstalled).toBe(false);
+    expect(res.userId).toBe("bob");
+  });
+
+  it("F243 error: empty pluginId rejects", async () => {
+    await expectHandlerRejects(
+      () => installPluginHandler({}, ctx("alice")),
+      "empty pluginId",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. GOVERNANCE — configure_egress (Turn L)
+// ---------------------------------------------------------------------------
+
+describe("functional: security_governance.configure_egress", () => {
+  it("F250 add + list round-trip", async () => {
+    resetCapabilityHandlerStores();
+    await configureEgressHandler(
+      { action: "add", hosts: ["api.github.com", "api.openai.com"] },
+      ctx("alice"),
+    );
+    const listed = await configureEgressHandler({ action: "list" }, ctx("alice"));
+    const res = listed.result as { current: string[] };
+    expect(res.current).toContain("api.github.com");
+    expect(res.current).toContain("api.openai.com");
+  });
+
+  it("F251 remove: removes a specific host", async () => {
+    resetCapabilityHandlerStores();
+    await configureEgressHandler(
+      { action: "add", hosts: ["a.com", "b.com", "c.com"] },
+      ctx("alice"),
+    );
+    await configureEgressHandler(
+      { action: "remove", hosts: ["b.com"] },
+      ctx("alice"),
+    );
+    const listed = await configureEgressHandler({ action: "list" }, ctx("alice"));
+    const res = listed.result as { current: string[] };
+    expect(res.current).toContain("a.com");
+    expect(res.current).not.toContain("b.com");
+    expect(res.current).toContain("c.com");
+  });
+
+  it("F252 isolation: bob's allowlist is independent of alice's", async () => {
+    resetCapabilityHandlerStores();
+    await configureEgressHandler(
+      { action: "add", hosts: ["alice.com"] },
+      ctx("alice"),
+    );
+    const bob = await configureEgressHandler({ action: "list" }, ctx("bob"));
+    expect((bob.result as { current: string[] }).current).toEqual([]);
+  });
+
+  it("F253 error: unknown action rejects", async () => {
+    await expectHandlerRejects(
+      () => configureEgressHandler({ action: "destroy" }, ctx("alice")),
+      "unknown action",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. DATA — train_predictive_model (Turn L)
+// ---------------------------------------------------------------------------
+
+describe("functional: data_analysis.train_predictive_model", () => {
+  it("F260 happy path: perfect linear data → R² = 1, slope matches", async () => {
+    // y = 2x + 1
+    const r = await trainPredictiveModelHandler(
+      { x: [1, 2, 3, 4, 5], y: [3, 5, 7, 9, 11] },
+      ctx(),
+    );
+    const res = r.result as {
+      slope: number;
+      intercept: number;
+      r2: number;
+      sampleCount: number;
+    };
+    expect(res.slope).toBeCloseTo(2, 6);
+    expect(res.intercept).toBeCloseTo(1, 6);
+    expect(res.r2).toBeCloseTo(1, 6);
+    expect(res.sampleCount).toBe(5);
+  });
+
+  it("F261 edge: noisy data still produces a valid model with R² in [0,1]", async () => {
+    const r = await trainPredictiveModelHandler(
+      { x: [1, 2, 3, 4, 5], y: [3.1, 4.9, 7.2, 8.8, 11.1] },
+      ctx(),
+    );
+    const res = r.result as { r2: number; slope: number };
+    expect(res.r2).toBeGreaterThan(0.9);
+    expect(res.r2).toBeLessThanOrEqual(1);
+    expect(res.slope).toBeCloseTo(2, 1);
+  });
+
+  it("F262 edge: constant y produces zero slope and r2=0 (SStot=0 → r2=1 fallback)", async () => {
+    const r = await trainPredictiveModelHandler(
+      { x: [1, 2, 3], y: [5, 5, 5] },
+      ctx(),
+    );
+    const res = r.result as { slope: number; r2: number };
+    expect(res.slope).toBe(0);
+    expect(res.r2).toBe(1); // the SStot=0 → r2=1 branch
+  });
+
+  it("F263 error: x and y of different lengths rejects", async () => {
+    await expectHandlerRejects(
+      () => trainPredictiveModelHandler({ x: [1, 2], y: [1, 2, 3] }, ctx()),
+      "mismatched lengths",
+    );
+  });
+
+  it("F264 error: empty arrays rejects", async () => {
+    await expectHandlerRejects(
+      () => trainPredictiveModelHandler({ x: [], y: [] }, ctx()),
+      "empty arrays",
+    );
+  });
+
+  it("F265 error: non-numeric values reject", async () => {
+    await expectHandlerRejects(
+      () => trainPredictiveModelHandler({ x: [1, 2, "bad"], y: [1, 2, 3] }, ctx()),
+      "non-numeric x",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1. FILE GENERATION — render_chart_image (Turn L, SVG)
+// ---------------------------------------------------------------------------
+
+describe("functional: file_generation.render_chart_image", () => {
+  it("F270 happy path: SVG with correct bar count", async () => {
+    const r = await renderChartImageHandler(
+      {
+        title: "Revenue",
+        labels: ["Jan", "Feb", "Mar"],
+        values: [100, 150, 200],
+      },
+      ctx(),
+    );
+    const res = r.result as {
+      format: string;
+      base64: string;
+      metadata: { barCount: number; maxValue: number };
+    };
+    expect(res.format).toBe("svg");
+    expect(res.metadata.barCount).toBe(3);
+    expect(res.metadata.maxValue).toBe(200);
+    // Decoded SVG should contain <rect> tags for each bar + title.
+    const svg = Buffer.from(res.base64, "base64").toString("utf-8");
+    expect(svg).toContain("<svg");
+    expect(svg).toContain("Revenue");
+    expect((svg.match(/<rect/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("F271 edge: labels with special characters are escaped", async () => {
+    const r = await renderChartImageHandler(
+      {
+        title: "Test <script>",
+        labels: ["a&b", "<c>"],
+        values: [1, 2],
+      },
+      ctx(),
+    );
+    const svg = Buffer.from((r.result as { base64: string }).base64, "base64").toString("utf-8");
+    // Special chars in labels/title should be stripped so they
+    // don't break the SVG.
+    expect(svg).not.toContain("<script>");
+  });
+
+  it("F272 error: mismatched labels/values rejects", async () => {
+    await expectHandlerRejects(
+      () =>
+        renderChartImageHandler(
+          { labels: ["a", "b"], values: [1] },
+          ctx(),
+        ),
+      "mismatched lengths",
+    );
+  });
+
+  it("F273 error: empty labels rejects", async () => {
+    await expectHandlerRejects(
+      () =>
+        renderChartImageHandler({ labels: [], values: [] }, ctx()),
+      "empty labels",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. CONNECTORS — invoke_mcp_tool (Turn L, recorder stub)
+// ---------------------------------------------------------------------------
+
+describe("functional: connectors.invoke_mcp_tool", () => {
+  it("F280 happy path: returns structured invocation record", async () => {
+    const r = await invokeMcpToolHandler(
+      {
+        connectorId: "gmail",
+        toolName: "send_email",
+        toolArgs: { to: "user@example.com", subject: "hello" },
+      },
+      ctx("alice"),
+    );
+    const res = r.result as {
+      id: string;
+      userId: string;
+      connectorId: string;
+      toolName: string;
+      note: string;
+    };
+    expect(res.id).toMatch(/^mcp_alice_/);
+    expect(res.userId).toBe("alice");
+    expect(res.connectorId).toBe("gmail");
+    expect(res.toolName).toBe("send_email");
+    expect(res.note).toContain("MCP invocation recorded");
+  });
+
+  it("F281 edge: toolArgs omitted defaults to empty object", async () => {
+    const r = await invokeMcpToolHandler(
+      { connectorId: "slack", toolName: "post_message" },
+      ctx("alice"),
+    );
+    const res = r.result as { args: Record<string, unknown> };
+    expect(res.args).toEqual({});
+  });
+
+  it("F282 error: missing connectorId rejects", async () => {
+    await expectHandlerRejects(
+      () => invokeMcpToolHandler({ toolName: "x" }, ctx("alice")),
+      "missing connectorId",
+    );
+  });
+
+  it("F283 error: missing toolName rejects", async () => {
+    await expectHandlerRejects(
+      () => invokeMcpToolHandler({ connectorId: "gmail" }, ctx("alice")),
+      "missing toolName",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Full catalog health check
 // ---------------------------------------------------------------------------
 
@@ -1180,16 +1615,21 @@ describe("functional: capability catalog health", () => {
       handlers: buildCapabilityHandlerMap(),
     });
     const available = registry.listAvailable();
-    expect(available.length).toBeGreaterThanOrEqual(20);
+    // Turn L: we promoted 12 more capabilities, bringing the
+    // total to 37.
+    expect(available.length).toBeGreaterThanOrEqual(35);
 
-    // Sample a handful of deterministic ones — the matrix above
-    // already spot-checks all categories; this is an aggregate
-    // sanity that the registry agrees on the descriptor count.
     const ids = new Set(available.map((d) => d.id));
     expect(ids.has("availability.echo")).toBe(true);
     expect(ids.has("file_generation.create_excel_workbook")).toBe(true);
     expect(ids.has("data_analysis.describe_dataset")).toBe(true);
     expect(ids.has("enterprise.rbac_check")).toBe(true);
+    // Turn L promotions must all be available.
+    expect(ids.has("file_management.deduplicate")).toBe(true);
+    expect(ids.has("sub_agents.coordinate_parallel")).toBe(true);
+    expect(ids.has("research_synthesis.multi_doc_report")).toBe(true);
+    expect(ids.has("data_analysis.train_predictive_model")).toBe(true);
+    expect(ids.has("file_generation.render_chart_image")).toBe(true);
   });
 
   it("F401 every category has at least one available or stub descriptor", () => {

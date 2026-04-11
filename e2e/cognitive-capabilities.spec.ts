@@ -1207,6 +1207,356 @@ test.describe("cognitive capabilities — Turn K additional scenarios", () => {
       };
     })) as { totalCount: number; availableCount: number };
     expect(catalog.totalCount).toBeGreaterThanOrEqual(30);
-    expect(catalog.availableCount).toBeGreaterThanOrEqual(20);
+    // Turn L promoted 12 more — now at 37 available.
+    expect(catalog.availableCount).toBeGreaterThanOrEqual(35);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Turn L: new capabilities promoted from stub to available
+// ---------------------------------------------------------------------------
+
+test.describe("cognitive capabilities — Turn L newly promoted", () => {
+  test("E51 deduplicate: groups identical content under one hash", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    // deduplicate has requiresApproval — two-phase handshake.
+    const challenge = await invokeInBrowser(page, "file_management.deduplicate", {
+      files: [{ name: "a", content: "x" }],
+    });
+    expect(challenge.errorCode).toBe("approval_required");
+
+    const result = await invokeInBrowser(
+      page,
+      "file_management.deduplicate",
+      {
+        files: [
+          { name: "a.txt", content: "hello world" },
+          { name: "b.txt", content: "different" },
+          { name: "a-copy.txt", content: "hello world" },
+        ],
+      },
+      "harness",
+      challenge.approvalChallengeToken,
+    );
+    expect(result.ok).toBe(true);
+    const res = result.result as {
+      duplicateGroups: Array<{ files: string[]; duplicates: string[] }>;
+      totalDuplicates: number;
+    };
+    expect(res.duplicateGroups.length).toBe(1);
+    expect(res.totalDuplicates).toBe(1);
+    expect(res.duplicateGroups[0].files).toContain("a.txt");
+    expect(res.duplicateGroups[0].files).toContain("a-copy.txt");
+  });
+
+  test("E52 coordinate_parallel: runs every task concurrently", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "sub_agents.coordinate_parallel", {
+      tasks: ["task a", "task b", "task c", "task d"],
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as {
+      totalTasks: number;
+      completed: number;
+      outcomes: Array<{ index: number }>;
+    };
+    expect(res.totalTasks).toBe(4);
+    expect(res.completed).toBe(4);
+    expect(res.outcomes.map((o) => o.index)).toEqual([0, 1, 2, 3]);
+  });
+
+  test("E53 multi_doc_report: finds shared terms across 3 docs", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "research_synthesis.multi_doc_report", {
+      docs: [
+        { id: "a", text: "kubernetes cluster deployment pods services" },
+        { id: "b", text: "kubernetes pods restart on failure" },
+        { id: "c", text: "kubernetes autoscaling uses pods metrics" },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as {
+      docCount: number;
+      sharedTerms: string[];
+      perDoc: Array<{ id: string; wordCount: number }>;
+    };
+    expect(res.docCount).toBe(3);
+    expect(res.sharedTerms).toContain("kubernetes");
+    expect(res.sharedTerms).toContain("pods");
+  });
+
+  test("E54 plugins.install: install + dedupe returns alreadyInstalled", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const userId = "e2e-plugin-user";
+    // plugins.install has requiresApproval — two-phase handshake.
+    const challenge = await invokeInBrowser(
+      page,
+      "plugins.install",
+      { pluginId: "finance.variance_analysis" },
+      userId,
+    );
+    expect(challenge.errorCode).toBe("approval_required");
+
+    const first = await invokeInBrowser(
+      page,
+      "plugins.install",
+      { pluginId: "finance.variance_analysis" },
+      userId,
+      challenge.approvalChallengeToken,
+    );
+    expect(first.ok).toBe(true);
+    expect((first.result as { alreadyInstalled: boolean }).alreadyInstalled).toBe(false);
+
+    const second = await invokeInBrowser(
+      page,
+      "plugins.install",
+      { pluginId: "finance.variance_analysis" },
+      userId,
+      challenge.approvalChallengeToken,
+    );
+    expect(second.ok).toBe(true);
+    expect((second.result as { alreadyInstalled: boolean }).alreadyInstalled).toBe(true);
+  });
+
+  test("E55 configure_egress: add + list + remove round-trip", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const userId = "e2e-egress-user";
+    // configure_egress has requiresApproval — get a token once + reuse.
+    const challenge = await invokeInBrowser(
+      page,
+      "security_governance.configure_egress",
+      { action: "list" },
+      userId,
+    );
+    expect(challenge.errorCode).toBe("approval_required");
+    const token = challenge.approvalChallengeToken;
+
+    const added = await invokeInBrowser(
+      page,
+      "security_governance.configure_egress",
+      { action: "add", hosts: ["api.github.com", "api.openai.com"] },
+      userId,
+      token,
+    );
+    expect(added.ok).toBe(true);
+
+    const listed = await invokeInBrowser(
+      page,
+      "security_governance.configure_egress",
+      { action: "list" },
+      userId,
+      token,
+    );
+    const listRes = listed.result as { current: string[] };
+    expect(listRes.current).toContain("api.github.com");
+    expect(listRes.current).toContain("api.openai.com");
+
+    const removed = await invokeInBrowser(
+      page,
+      "security_governance.configure_egress",
+      { action: "remove", hosts: ["api.github.com"] },
+      userId,
+      token,
+    );
+    const removedRes = removed.result as { current: string[] };
+    expect(removedRes.current).not.toContain("api.github.com");
+    expect(removedRes.current).toContain("api.openai.com");
+  });
+
+  test("E56 train_predictive_model: perfect linear data → R² ≈ 1", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "data_analysis.train_predictive_model", {
+      x: [1, 2, 3, 4, 5],
+      y: [3, 5, 7, 9, 11],
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as { slope: number; intercept: number; r2: number };
+    expect(res.slope).toBeCloseTo(2, 4);
+    expect(res.intercept).toBeCloseTo(1, 4);
+    expect(res.r2).toBeCloseTo(1, 4);
+  });
+
+  test("E57 render_chart_image: SVG bar chart with N bars", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "file_generation.render_chart_image", {
+      title: "Q4 Revenue",
+      labels: ["Oct", "Nov", "Dec"],
+      values: [100, 150, 200],
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as {
+      format: string;
+      base64: string;
+      metadata: { barCount: number; maxValue: number };
+    };
+    expect(res.format).toBe("svg");
+    expect(res.metadata.barCount).toBe(3);
+    expect(res.metadata.maxValue).toBe(200);
+
+    // Decode SVG in the browser and verify it parses as XML.
+    const decoded = await page.evaluate((base64) => {
+      const binary = atob(base64);
+      return binary.includes("<svg") && binary.includes("Q4 Revenue");
+    }, res.base64);
+    expect(decoded).toBe(true);
+  });
+
+  test("E58 invoke_mcp_tool: records structured invocation without executing", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const userId = "e2e-mcp-user";
+    // invoke_mcp_tool has requiresApproval — handshake first.
+    const challenge = await invokeInBrowser(
+      page,
+      "connectors.invoke_mcp_tool",
+      { connectorId: "gmail", toolName: "send_email" },
+      userId,
+    );
+    expect(challenge.errorCode).toBe("approval_required");
+
+    const result = await invokeInBrowser(
+      page,
+      "connectors.invoke_mcp_tool",
+      {
+        connectorId: "gmail",
+        toolName: "send_email",
+        toolArgs: { to: "user@example.com", subject: "Test" },
+      },
+      userId,
+      challenge.approvalChallengeToken,
+    );
+    expect(result.ok).toBe(true);
+    const res = result.result as {
+      connectorId: string;
+      toolName: string;
+      note: string;
+    };
+    expect(res.connectorId).toBe("gmail");
+    expect(res.toolName).toBe("send_email");
+    expect(res.note).toContain("MCP invocation recorded");
+  });
+
+  test("E59 browser_automation.extract_page: fetches the test harness itself", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    // The harness page IS a valid HTTP endpoint served by the smoke
+    // server, so extract_page can fetch it end-to-end. This proves
+    // the capability works with a real HTTP round trip from Node
+    // fetch against localhost.
+    const result = await invokeInBrowser(page, "browser_automation.extract_page", {
+      url: "http://127.0.0.1:5174/api/cognitive/test-harness",
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as {
+      url: string;
+      status: number;
+      title: string;
+      headings: Array<{ level: number; text: string }>;
+      linkCount: number;
+    };
+    expect(res.status).toBe(200);
+    expect(res.title).toContain("Cognitive Capability Test Harness");
+    expect(res.headings.length).toBeGreaterThan(0);
+  });
+
+  test("E60 web_research: fetches and extracts from the harness", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const result = await invokeInBrowser(page, "research_synthesis.web_research", {
+      url: "http://127.0.0.1:5174/api/cognitive/test-harness",
+    });
+    expect(result.ok).toBe(true);
+    const res = result.result as {
+      status: number;
+      title: string;
+      excerpt: string;
+    };
+    expect(res.status).toBe(200);
+    expect(res.title.length).toBeGreaterThan(0);
+    expect(res.excerpt.length).toBeGreaterThan(0);
+  });
+
+  test("E61 pdf_to_pptx: chains PDF generation into PPTX conversion", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    // First create a PDF, then feed its base64 into pdf_to_pptx.
+    const pdf = await invokeInBrowser(page, "file_generation.create_pdf", {
+      title: "Source PDF",
+      body: [
+        "This is the first paragraph of the source document.",
+        "Here is a second paragraph with more content.",
+        "And a third paragraph to round it out.",
+      ],
+    });
+    expect(pdf.ok).toBe(true);
+    const pdfBase64 = (pdf.result as { base64: string }).base64;
+
+    const pptx = await invokeInBrowser(page, "format_conversion.pdf_to_pptx", {
+      pdfBase64,
+      title: "Converted from PDF",
+    });
+    expect(pptx.ok).toBe(true);
+    const res = pptx.result as {
+      format: string;
+      metadata: { slideCount: number; sourcePageCount: number };
+    };
+    expect(res.format).toBe("pptx");
+    expect(res.metadata.slideCount).toBeGreaterThanOrEqual(1);
+  });
+
+  test("E62 word_to_pptx: chains DOCX generation into PPTX conversion", async ({
+    page,
+  }) => {
+    await openHarness(page);
+    const docx = await invokeInBrowser(page, "file_generation.create_word_document", {
+      title: "Source Doc",
+      sections: [
+        {
+          heading: "Intro",
+          paragraphs: [
+            "First paragraph of the doc.",
+            "Second paragraph explaining something.",
+          ],
+        },
+        {
+          heading: "Conclusion",
+          paragraphs: ["The final wrap-up paragraph."],
+        },
+      ],
+    });
+    expect(docx.ok).toBe(true);
+    const docxBase64 = (docx.result as { base64: string }).base64;
+
+    const pptx = await invokeInBrowser(page, "format_conversion.word_to_pptx", {
+      docxBase64,
+      title: "Converted from Word",
+      paragraphsPerSlide: 2,
+    });
+    expect(pptx.ok).toBe(true);
+    const res = pptx.result as {
+      format: string;
+      metadata: { slideCount: number; sourceParagraphCount: number };
+    };
+    expect(res.format).toBe("pptx");
+    expect(res.metadata.slideCount).toBeGreaterThanOrEqual(2);
+    expect(res.metadata.sourceParagraphCount).toBeGreaterThan(0);
   });
 });
