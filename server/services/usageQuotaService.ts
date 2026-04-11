@@ -1,6 +1,8 @@
 import { db } from "../db";
-import { apiLogs, billingCreditGrants, users } from "@shared/schema";
-import { and, asc, eq, gt, gte, lt, sql } from "drizzle-orm";
+import { apiLogs, users } from "@shared/schema";
+import { and, eq, gte, lt, sql } from "drizzle-orm";
+
+import { consumeBillingCredits, getBillingCreditSummary } from "./billingCreditLedgerService";
 
 export interface UsageCheckResult {
   allowed: boolean;
@@ -577,20 +579,8 @@ export class UsageQuotaService {
         .where(eq(users.id, userId));
     }
 
-    const [{ extraCredits = 0 } = { extraCredits: 0 }] = await db
-      .select({
-        extraCredits: sql<number>`COALESCE(SUM(${billingCreditGrants.creditsRemaining}), 0)`,
-      })
-      .from(billingCreditGrants)
-      .where(
-        and(
-          eq(billingCreditGrants.userId, userId),
-          gt(billingCreditGrants.creditsRemaining, 0),
-          gt(billingCreditGrants.expiresAt, now)
-        )
-      );
-
-    const normalizedExtraCredits = Math.max(0, Number(extraCredits) || 0);
+    const creditSummary = await getBillingCreditSummary(userId, now, db);
+    const normalizedExtraCredits = Math.max(0, Number(creditSummary.extraCredits) || 0);
     const remaining =
       limitTokens === null
         ? null
@@ -755,38 +745,7 @@ export class UsageQuotaService {
 
       if (overageToCharge <= 0) return;
 
-      let remainingToCharge = overageToCharge;
-      let charged = 0;
-
-      const grants = await tx
-        .select({
-          id: billingCreditGrants.id,
-          creditsRemaining: billingCreditGrants.creditsRemaining,
-        })
-        .from(billingCreditGrants)
-        .where(
-          and(
-            eq(billingCreditGrants.userId, userId),
-            gt(billingCreditGrants.creditsRemaining, 0),
-            gt(billingCreditGrants.expiresAt, now)
-          )
-        )
-        .orderBy(asc(billingCreditGrants.expiresAt), asc(billingCreditGrants.createdAt));
-
-      for (const grant of grants) {
-        if (remainingToCharge <= 0) break;
-        const remaining = typeof grant.creditsRemaining === "number" ? grant.creditsRemaining : Number(grant.creditsRemaining || 0);
-        if (!Number.isFinite(remaining) || remaining <= 0) continue;
-
-        const take = Math.min(remaining, remainingToCharge);
-        await tx
-          .update(billingCreditGrants)
-          .set({ creditsRemaining: Math.max(0, remaining - take) })
-          .where(eq(billingCreditGrants.id, grant.id));
-
-        remainingToCharge -= take;
-        charged += take;
-      }
+      const charged = await consumeBillingCredits(tx as any, userId, overageToCharge, now);
 
       if (charged > 0) {
         await tx
@@ -862,38 +821,7 @@ export class UsageQuotaService {
 
       if (overageToCharge <= 0) return;
 
-      let remainingToCharge = overageToCharge;
-      let charged = 0;
-
-      const grants = await tx
-        .select({
-          id: billingCreditGrants.id,
-          creditsRemaining: billingCreditGrants.creditsRemaining,
-        })
-        .from(billingCreditGrants)
-        .where(
-          and(
-            eq(billingCreditGrants.userId, userId),
-            gt(billingCreditGrants.creditsRemaining, 0),
-            gt(billingCreditGrants.expiresAt, now)
-          )
-        )
-        .orderBy(asc(billingCreditGrants.expiresAt), asc(billingCreditGrants.createdAt));
-
-      for (const grant of grants) {
-        if (remainingToCharge <= 0) break;
-        const remaining = typeof grant.creditsRemaining === "number" ? grant.creditsRemaining : Number(grant.creditsRemaining || 0);
-        if (!Number.isFinite(remaining) || remaining <= 0) continue;
-
-        const take = Math.min(remaining, remainingToCharge);
-        await tx
-          .update(billingCreditGrants)
-          .set({ creditsRemaining: Math.max(0, remaining - take) })
-          .where(eq(billingCreditGrants.id, grant.id));
-
-        remainingToCharge -= take;
-        charged += take;
-      }
+      const charged = await consumeBillingCredits(tx as any, userId, overageToCharge, now);
 
       if (charged > 0) {
         await tx

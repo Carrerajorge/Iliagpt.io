@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getUncachableStripeClient, getStripePublishableKey } from "../stripeClient";
 import { db } from "../db";
-import { apiLogs, billingCreditGrants, invoices, payments, users } from "@shared/schema";
+import { apiLogs, invoices, payments, users } from "@shared/schema";
 import { and, eq, gte, gt, lt, or, sql } from "drizzle-orm";
 import { withRetry } from "../lib/retryUtility";
 import { z } from "zod";
@@ -10,6 +10,7 @@ import { requireAdmin } from "./admin/utils";
 import { auditLog, AuditActions } from "../services/auditLogger";
 import { isSystemAdminRole, isWorkspaceAdminRole, normalizeRoleKey, resolveRolePermissionsForOrg } from "../services/workspaceRoleService";
 import { decimalFromMinorUnits, parseMoneyDecimal, toMinorUnits } from "../lib/money";
+import { createBillingCreditGrant, getBillingCreditSummary } from "../services/billingCreditLedgerService";
 
 const PLAN_PRICE_MAPPING: Record<string, { name: string; amount: number; interval?: string }> = {
   price_go_monthly: { name: "Go", amount: 500, interval: "month" },
@@ -53,6 +54,54 @@ function normalizeRole(value: any): string {
 
 function normalizeEmail(value: any): string {
   return String(value || "").toLowerCase().trim();
+}
+
+function summarizeStripePaymentMethod(paymentMethod: any): {
+  brand: string | null;
+  last4: string | null;
+  expMonth: number | null;
+  expYear: number | null;
+  funding: string | null;
+} | null {
+  const card = paymentMethod?.card;
+  if (!card || typeof card !== "object") return null;
+  return {
+    brand: typeof card.brand === "string" ? card.brand : null,
+    last4: typeof card.last4 === "string" ? card.last4 : null,
+    expMonth: typeof card.exp_month === "number" ? card.exp_month : null,
+    expYear: typeof card.exp_year === "number" ? card.exp_year : null,
+    funding: typeof card.funding === "string" ? card.funding : null,
+  };
+}
+
+function summarizeStripeSubscription(subscription: any): {
+  id: string | null;
+  status: string | null;
+  displayName: string | null;
+  amountMinor: number | null;
+  currency: string | null;
+  interval: string | null;
+  currentPeriodEnd: string | null;
+} | null {
+  if (!subscription || typeof subscription !== "object") return null;
+  const firstItem = Array.isArray(subscription?.items?.data) ? subscription.items.data[0] : null;
+  const price = firstItem?.price;
+  const product = price?.product;
+  return {
+    id: typeof subscription.id === "string" ? subscription.id : null,
+    status: typeof subscription.status === "string" ? subscription.status : null,
+    displayName:
+      (typeof price?.nickname === "string" && price.nickname) ||
+      (typeof product?.name === "string" && product.name) ||
+      null,
+    amountMinor: typeof price?.unit_amount === "number" ? price.unit_amount : null,
+    currency: typeof price?.currency === "string" ? price.currency : null,
+    interval: typeof price?.recurring?.interval === "string" ? price.recurring.interval : null,
+    currentPeriodEnd:
+      typeof subscription.current_period_end === "number"
+        ? new Date(subscription.current_period_end * 1000).toISOString()
+        : null,
+  };
 }
 
 function escapeHtml(text: string): string {
@@ -595,18 +644,11 @@ export function createStripeRouter() {
                       : null;
 
                 if (checkoutSessionId) {
-                  const [existing] = await db
-                    .select({ id: billingCreditGrants.id })
-                    .from(billingCreditGrants)
-                    .where(eq(billingCreditGrants.stripeCheckoutSessionId, checkoutSessionId))
-                    .limit(1);
-
-                  if (!existing) {
-                    const expiresAt = addMonths(now, 12);
-                    await db.insert(billingCreditGrants).values({
+                  const expiresAt = addMonths(now, 12);
+                  const inserted = await createBillingCreditGrant(
+                    {
                       userId,
                       creditsGranted,
-                      creditsRemaining: creditsGranted,
                       currency,
                       amountMinor: amountMinorRaw,
                       stripeCheckoutSessionId: checkoutSessionId,
@@ -614,8 +656,11 @@ export function createStripeRouter() {
                       createdAt: now,
                       expiresAt,
                       metadata: { source: "stripe_checkout", kind: "credits_topup" },
-                    });
+                    },
+                    db as any,
+                  );
 
+                  if (inserted) {
                     // Maintain legacy aggregate on users for convenience (best-effort).
                     await db
                       .update(users)
@@ -881,13 +926,51 @@ export function createStripeRouter() {
       }
 
 	      const [dbUser] = await db.select().from(users).where(eq(users.id, userId));
+      const canManageBilling = await canManageBillingForDbUser(dbUser);
 	      const subscriptionStatusRaw = (dbUser as any)?.subscriptionStatus || null;
       const inferredStatus =
         subscriptionStatusRaw ||
         ((dbUser as any)?.stripeSubscriptionId ? "active" : null) ||
         ((dbUser as any)?.plan && (dbUser as any).plan !== "free" ? "active" : null);
-      const subscriptionStatus = inferredStatus;
-      const subscriptionPeriodEnd = dbUser?.subscriptionPeriodEnd || null;
+      let liveSubscriptionSummary: ReturnType<typeof summarizeStripeSubscription> = null;
+      let paymentMethodSummary: ReturnType<typeof summarizeStripePaymentMethod> = null;
+
+      if (canManageBilling && dbUser?.stripeCustomerId) {
+        try {
+          const stripe = await getUncachableStripeClient();
+          if (dbUser?.stripeSubscriptionId) {
+            const stripeSubscription = await stripe.subscriptions.retrieve(String(dbUser.stripeSubscriptionId), {
+              expand: ["default_payment_method", "items.data.price.product"],
+            });
+            liveSubscriptionSummary = summarizeStripeSubscription(stripeSubscription);
+            paymentMethodSummary = summarizeStripePaymentMethod((stripeSubscription as any)?.default_payment_method);
+          }
+
+          if (!paymentMethodSummary) {
+            const customer = await stripe.customers.retrieve(String(dbUser.stripeCustomerId), {
+              expand: ["invoice_settings.default_payment_method"],
+            });
+            if (!(customer as any)?.deleted) {
+              paymentMethodSummary = summarizeStripePaymentMethod((customer as any)?.invoice_settings?.default_payment_method);
+            }
+          }
+
+          if (!paymentMethodSummary) {
+            const methods = await stripe.paymentMethods.list({
+              customer: String(dbUser.stripeCustomerId),
+              type: "card",
+              limit: 1,
+            });
+            paymentMethodSummary = summarizeStripePaymentMethod(methods.data?.[0]);
+          }
+        } catch (stripeError: any) {
+          console.warn("[Billing] Unable to enrich billing status from Stripe:", stripeError?.message || stripeError);
+        }
+      }
+
+      const subscriptionStatus = liveSubscriptionSummary?.status || inferredStatus;
+      const subscriptionPeriodEnd =
+        liveSubscriptionSummary?.currentPeriodEnd || dbUser?.subscriptionPeriodEnd || null;
 
       const now = Date.now();
       const periodEndMs = subscriptionPeriodEnd ? new Date(subscriptionPeriodEnd).getTime() : null;
@@ -913,18 +996,8 @@ export function createStripeRouter() {
         );
 
 	      const nowDate = new Date();
-      const [{ extraCredits = 0 } = { extraCredits: 0 }] = await db
-        .select({
-          extraCredits: sql<number>`COALESCE(SUM(${billingCreditGrants.creditsRemaining}), 0)`,
-        })
-        .from(billingCreditGrants)
-        .where(
-          and(
-            eq(billingCreditGrants.userId, userId),
-            gt(billingCreditGrants.creditsRemaining, 0),
-            gt(billingCreditGrants.expiresAt, nowDate)
-          )
-        );
+      const creditSummary = await getBillingCreditSummary(userId, nowDate, db as any);
+      const extraCredits = creditSummary.extraCredits;
 
       const { usageQuotaService } = await import("../services/usageQuotaService");
       const quota = await usageQuotaService.getUnifiedQuotaSnapshot(userId);
@@ -937,7 +1010,10 @@ export function createStripeRouter() {
 	        monthsPaid,
 	        extraCredits,
           quota,
-	        canManageBilling: await canManageBillingForDbUser(dbUser),
+	        canManageBilling,
+          portalAvailable: canManageBilling && !!dbUser?.stripeCustomerId,
+          subscription: liveSubscriptionSummary,
+          paymentMethod: paymentMethodSummary,
 	      });
 	    } catch (error: any) {
 	      console.error("Billing status error:", error);
@@ -1004,31 +1080,9 @@ export function createStripeRouter() {
 
       const percentUsed = limitTokens ? Math.min(100, (totalTokens / limitTokens) * 100) : null;
 
-      const [{ extraCredits = 0 } = { extraCredits: 0 }] = await db
-        .select({
-          extraCredits: sql<number>`COALESCE(SUM(${billingCreditGrants.creditsRemaining}), 0)`,
-        })
-        .from(billingCreditGrants)
-        .where(
-          and(
-            eq(billingCreditGrants.userId, userId),
-            gt(billingCreditGrants.creditsRemaining, 0),
-            gt(billingCreditGrants.expiresAt, now)
-          )
-        );
-
-      const [{ nextExpiry = null } = { nextExpiry: null }] = await db
-        .select({
-          nextExpiry: sql<Date | null>`MIN(${billingCreditGrants.expiresAt})`,
-        })
-        .from(billingCreditGrants)
-        .where(
-          and(
-            eq(billingCreditGrants.userId, userId),
-            gt(billingCreditGrants.creditsRemaining, 0),
-            gt(billingCreditGrants.expiresAt, now)
-          )
-        );
+      const creditSummary = await getBillingCreditSummary(userId, now, db as any);
+      const extraCredits = creditSummary.extraCredits;
+      const nextExpiry = creditSummary.nextExpiry;
 
       res.json({
         cycleStart: cycleStart.toISOString(),

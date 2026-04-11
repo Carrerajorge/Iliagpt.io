@@ -115,6 +115,57 @@ export async function runStartupMigrations(): Promise<void> {
         CREATE INDEX IF NOT EXISTS billing_credit_grants_user_idx ON billing_credit_grants (user_id);
       `,
     },
+    {
+      name: "upgrade_billing_credit_grants_ledger_columns",
+      query: `
+        ALTER TABLE IF EXISTS billing_credit_grants ADD COLUMN IF NOT EXISTS credits_granted integer;
+        ALTER TABLE IF EXISTS billing_credit_grants ADD COLUMN IF NOT EXISTS credits_remaining integer;
+        ALTER TABLE IF EXISTS billing_credit_grants ADD COLUMN IF NOT EXISTS currency text DEFAULT 'usd';
+        ALTER TABLE IF EXISTS billing_credit_grants ADD COLUMN IF NOT EXISTS amount_minor integer;
+        ALTER TABLE IF EXISTS billing_credit_grants ADD COLUMN IF NOT EXISTS stripe_payment_intent_id text;
+        ALTER TABLE IF EXISTS billing_credit_grants ADD COLUMN IF NOT EXISTS expires_at timestamp;
+
+        DO $$
+        BEGIN
+          IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'billing_credit_grants'
+              AND column_name = 'amount'
+          ) THEN
+            UPDATE billing_credit_grants
+            SET
+              credits_granted = COALESCE(credits_granted, amount, 0),
+              credits_remaining = COALESCE(credits_remaining, amount, 0),
+              currency = COALESCE(NULLIF(currency, ''), 'usd'),
+              amount_minor = COALESCE(amount_minor, 0),
+              expires_at = COALESCE(expires_at, COALESCE(created_at, NOW()) + INTERVAL '12 months')
+            WHERE credits_granted IS NULL
+               OR credits_remaining IS NULL
+               OR currency IS NULL
+               OR amount_minor IS NULL
+               OR expires_at IS NULL;
+          ELSE
+            UPDATE billing_credit_grants
+            SET
+              credits_granted = COALESCE(credits_granted, 0),
+              credits_remaining = COALESCE(credits_remaining, credits_granted, 0),
+              currency = COALESCE(NULLIF(currency, ''), 'usd'),
+              amount_minor = COALESCE(amount_minor, 0),
+              expires_at = COALESCE(expires_at, COALESCE(created_at, NOW()) + INTERVAL '12 months')
+            WHERE credits_granted IS NULL
+               OR credits_remaining IS NULL
+               OR currency IS NULL
+               OR amount_minor IS NULL
+               OR expires_at IS NULL;
+          END IF;
+        END $$;
+
+        CREATE INDEX IF NOT EXISTS billing_credit_grants_expires_idx ON billing_credit_grants (expires_at);
+        CREATE INDEX IF NOT EXISTS billing_credit_grants_user_expires_idx ON billing_credit_grants (user_id, expires_at);
+      `,
+    },
   ];
 
   for (const migration of migrations) {
