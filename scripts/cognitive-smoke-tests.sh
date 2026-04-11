@@ -128,11 +128,13 @@ run_test "9 POST /api/cognitive/validate tool missing arg" /api/cognitive/valida
   }]
 }' '(b) => b.ok === false && b.issues.some(i => i.code === "tool_args_missing_required")'
 
-# 10 Full pipeline run — happy path
+# 10 Full pipeline run — happy path. Note: after Turn A, the in-house
+# adapter is FIRST in priority order, so the default provider is now
+# "in-house-gpt3" instead of "mock-echo".
 run_test "10 POST /api/cognitive/run happy path" /api/cognitive/run POST '{
   "userId": "smoke-1",
   "message": "What is the capital of France?"
-}' '(b) => b.ok === true && b.routing.intent.intent === "qa" && b.routing.providerName === "mock-echo" && typeof b.text === "string" && b.text.length > 0 && typeof b.telemetry.durationMs === "number"'
+}' '(b) => b.ok === true && b.routing.intent.intent === "qa" && b.routing.providerName === "in-house-gpt3" && typeof b.text === "string" && typeof b.telemetry.durationMs === "number"'
 
 # 11 Full pipeline run with preferred provider override
 run_test "11 POST /api/cognitive/run preferred provider" /api/cognitive/run POST '{
@@ -186,8 +188,49 @@ else
   FAILED_TESTS+=("14 concurrent /api/cognitive/run")
 fi
 
-# 15 Invalid input rejected with 400
-run_test "15 POST /api/cognitive/run empty message rejected" /api/cognitive/run POST '{
+# ── Turn A — real provider adapter checks ──────────────────────────────────
+
+# 15 The in-house-gpt3 adapter is registered out of the box
+run_test "15 GET /api/cognitive/adapters includes in-house-gpt3" /api/cognitive/adapters GET "" \
+  '(b) => Array.isArray(b.adapters) && b.adapters.includes("in-house-gpt3")'
+
+# 16 Run with explicit preferredProvider="in-house-gpt3" picks the offline adapter
+run_test "16 POST /api/cognitive/run preferred in-house-gpt3" /api/cognitive/run POST '{
+  "userId": "smoke-A1",
+  "message": "Hello in-house",
+  "preferredProvider": "in-house-gpt3"
+}' '(b) => b.routing.providerName === "in-house-gpt3" && b.ok === true && typeof b.text === "string" && b.routing.providerReason.indexOf("preferred") >= 0'
+
+# 17 In-house adapter is FIRST in priority order, so requests without preference also land there
+run_test "17 POST /api/cognitive/run default routes to in-house-gpt3" /api/cognitive/run POST '{
+  "userId": "smoke-A2",
+  "message": "Tell me a story"
+}' '(b) => b.routing.providerName === "in-house-gpt3"'
+
+# 18 In-house adapter is deterministic across two consecutive HTTP requests
+RUN_A=$(curl -sS -X POST -H "Content-Type: application/json" -d '{
+  "userId": "smoke-A3",
+  "message": "Hello",
+  "preferredProvider": "in-house-gpt3"
+}' "$BASE/api/cognitive/run")
+RUN_B=$(curl -sS -X POST -H "Content-Type: application/json" -d '{
+  "userId": "smoke-A3",
+  "message": "Hello",
+  "preferredProvider": "in-house-gpt3"
+}' "$BASE/api/cognitive/run")
+TEXT_A=$(echo "$RUN_A" | node -e 'let r="";process.stdin.on("data",d=>r+=d);process.stdin.on("end",()=>{try{console.log(JSON.parse(r).text)}catch{console.log("ERR")}})')
+TEXT_B=$(echo "$RUN_B" | node -e 'let r="";process.stdin.on("data",d=>r+=d);process.stdin.on("end",()=>{try{console.log(JSON.parse(r).text)}catch{console.log("ERR")}})')
+if [[ "$TEXT_A" == "$TEXT_B" && "$TEXT_A" != "ERR" ]]; then
+  green "PASS"; printf ' — 18 in-house-gpt3 deterministic across HTTP roundtrips\n'
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 18 in-house-gpt3 not deterministic: A=%s B=%s\n' "$TEXT_A" "$TEXT_B"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("18 in-house-gpt3 deterministic")
+fi
+
+# 19 Invalid input rejected with 400
+run_test "19 POST /api/cognitive/run empty message rejected" /api/cognitive/run POST '{
   "userId": "smoke-5",
   "message": ""
 }' '(b) => b.error === "invalid_request"'

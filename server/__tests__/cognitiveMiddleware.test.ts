@@ -29,6 +29,13 @@ import {
   FailingMockAdapter,
   AbortableMockAdapter,
   ToolEmittingMockAdapter,
+  // Real provider adapters (Turn A)
+  SmartRouterAdapter,
+  InHouseGptAdapter,
+  mapGatewayFinishReason,
+  translateGatewayResponse,
+  type GatewayResponse,
+  type GatewayChatFn,
   type ProviderAdapter,
   type ProviderResponse,
   type CognitiveIntent,
@@ -621,6 +628,300 @@ describe("cognitive: tool call flow", () => {
     expect(r.toolCalls[0].name).toBe("calculator");
     expect(r.toolCalls[0].args).toEqual({ expression: "2+2" });
     expect(r.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Turn A — SmartRouterAdapter (wraps the existing llmGateway)
+// ---------------------------------------------------------------------------
+
+describe("cognitive: SmartRouterAdapter (gateway shim)", () => {
+  /**
+   * Build a stub `chatFn` that returns a canned GatewayResponse and
+   * records the messages it received. We use this everywhere instead
+   * of the real gateway so the test never touches network or env vars.
+   */
+  function makeStubChatFn(canned: GatewayResponse) {
+    const calls: Array<{ messages: unknown; options: unknown }> = [];
+    const fn: GatewayChatFn = async (messages, options) => {
+      calls.push({ messages, options });
+      return canned;
+    };
+    return { fn, calls };
+  }
+
+  it("47 forwards system + user messages in OpenAI shape", async () => {
+    const stub = makeStubChatFn({
+      content: "ok",
+      requestId: "req-1",
+      latencyMs: 10,
+      model: "gpt-4o-mini",
+      provider: "openai",
+      status: "completed",
+      usage: { promptTokens: 5, completionTokens: 2, totalTokens: 7 },
+    });
+    const adapter = new SmartRouterAdapter({ chatFn: stub.fn });
+    const r = await adapter.generate({
+      systemPrompt: "You are helpful.",
+      messages: [{ role: "user", content: "Hello" }],
+      temperature: 0.5,
+      maxTokens: 200,
+    });
+    expect(r.text).toBe("ok");
+    expect(r.finishReason).toBe("stop");
+    expect(r.usage).toEqual({ promptTokens: 5, completionTokens: 2, totalTokens: 7 });
+    expect(stub.calls.length).toBe(1);
+    const call = stub.calls[0];
+    // System message must come first
+    expect((call.messages as Array<{ role: string }>)[0].role).toBe("system");
+    expect((call.messages as Array<{ role: string }>)[1].role).toBe("user");
+    // Options propagated
+    expect((call.options as { temperature?: number }).temperature).toBe(0.5);
+    expect((call.options as { maxTokens?: number }).maxTokens).toBe(200);
+  });
+
+  it("48 maps gateway 'incomplete + max_output_tokens' to 'length'", () => {
+    const reason = mapGatewayFinishReason({
+      content: "truncated...",
+      requestId: "x",
+      latencyMs: 1,
+      model: "x",
+      provider: "x",
+      status: "incomplete",
+      incompleteDetails: { reason: "max_output_tokens" },
+    });
+    expect(reason).toBe("length");
+  });
+
+  it("49 maps gateway 'incomplete + content_filter' to 'content_filter'", () => {
+    const reason = mapGatewayFinishReason({
+      content: "",
+      requestId: "x",
+      latencyMs: 1,
+      model: "x",
+      provider: "x",
+      status: "incomplete",
+      incompleteDetails: { reason: "content_filter" },
+    });
+    expect(reason).toBe("content_filter");
+  });
+
+  it("50 maps gateway 'incomplete + provider_error' to 'error'", () => {
+    const reason = mapGatewayFinishReason({
+      content: "",
+      requestId: "x",
+      latencyMs: 1,
+      model: "x",
+      provider: "x",
+      status: "incomplete",
+      incompleteDetails: { reason: "provider_error" },
+    });
+    expect(reason).toBe("error");
+  });
+
+  it("51 maps undefined / completed status to 'stop'", () => {
+    expect(
+      mapGatewayFinishReason({
+        content: "",
+        requestId: "x",
+        latencyMs: 1,
+        model: "x",
+        provider: "x",
+      }),
+    ).toBe("stop");
+    expect(
+      mapGatewayFinishReason({
+        content: "",
+        requestId: "x",
+        latencyMs: 1,
+        model: "x",
+        provider: "x",
+        status: "completed",
+      }),
+    ).toBe("stop");
+  });
+
+  it("52 wraps thrown gateway errors into a finishReason='error' response", async () => {
+    const fn: GatewayChatFn = async () => {
+      throw new Error("boom");
+    };
+    const adapter = new SmartRouterAdapter({ chatFn: fn });
+    const r = await adapter.generate({
+      messages: [{ role: "user", content: "test" }],
+    });
+    expect(r.finishReason).toBe("error");
+    expect(r.text).toBe("");
+    expect((r.raw as { error?: string }).error).toContain("boom");
+  });
+
+  it("53 honors AbortSignal aborted-before-call", async () => {
+    const fn: GatewayChatFn = async () => {
+      throw new Error("should not be called");
+    };
+    const adapter = new SmartRouterAdapter({ chatFn: fn });
+    const controller = new AbortController();
+    controller.abort();
+    const r = await adapter.generate(
+      { messages: [{ role: "user", content: "x" }] },
+      controller.signal,
+    );
+    expect(r.finishReason).toBe("aborted");
+  });
+
+  it("54 translateGatewayResponse copies usage faithfully", () => {
+    const r = translateGatewayResponse({
+      content: "hello",
+      requestId: "r",
+      latencyMs: 5,
+      model: "m",
+      provider: "p",
+      status: "completed",
+      usage: { promptTokens: 3, completionTokens: 1, totalTokens: 4 },
+    });
+    expect(r.text).toBe("hello");
+    expect(r.usage).toEqual({ promptTokens: 3, completionTokens: 1, totalTokens: 4 });
+    expect(r.finishReason).toBe("stop");
+  });
+
+  it("55 capabilities set excludes image_generation but includes text intents", () => {
+    const adapter = new SmartRouterAdapter();
+    expect(adapter.capabilities.has("qa")).toBe(true);
+    expect(adapter.capabilities.has("code_generation")).toBe(true);
+    expect(adapter.capabilities.has("translation")).toBe(true);
+    expect(adapter.capabilities.has("image_generation")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Turn A — InHouseGptAdapter (in-house GPT-3, fully offline)
+// ---------------------------------------------------------------------------
+
+describe("cognitive: InHouseGptAdapter (offline tiny model)", () => {
+  it("56 generates a deterministic response", async () => {
+    const a = new InHouseGptAdapter({ seed: 7 });
+    const b = new InHouseGptAdapter({ seed: 7 });
+    const r1 = await a.generate({
+      messages: [{ role: "user", content: "Hello" }],
+    });
+    const r2 = await b.generate({
+      messages: [{ role: "user", content: "Hello" }],
+    });
+    expect(r1.text).toBe(r2.text);
+    expect(r1.finishReason).toBe(r2.finishReason);
+  });
+
+  it("57 different seeds produce different output", async () => {
+    const a = new InHouseGptAdapter({ seed: 1 });
+    const b = new InHouseGptAdapter({ seed: 99 });
+    const r1 = await a.generate({
+      messages: [{ role: "user", content: "Hello" }],
+    });
+    const r2 = await b.generate({
+      messages: [{ role: "user", content: "Hello" }],
+    });
+    // Highly likely to differ — toy model with 4 layers, but
+    // different seeds give different weight matrices.
+    expect(r1.text).not.toBe(r2.text);
+  });
+
+  it("58 records call count for observability", async () => {
+    const adapter = new InHouseGptAdapter();
+    expect(adapter.callCount).toBe(0);
+    await adapter.generate({ messages: [{ role: "user", content: "x" }] });
+    await adapter.generate({ messages: [{ role: "user", content: "y" }] });
+    expect(adapter.callCount).toBe(2);
+  });
+
+  it("59 returns finishReason='aborted' when signal is pre-aborted", async () => {
+    const adapter = new InHouseGptAdapter();
+    const controller = new AbortController();
+    controller.abort();
+    const r = await adapter.generate(
+      { messages: [{ role: "user", content: "x" }] },
+      controller.signal,
+    );
+    expect(r.finishReason).toBe("aborted");
+    expect(r.text).toBe("");
+  });
+
+  it("60 capabilities set covers every text intent", () => {
+    const adapter = new InHouseGptAdapter();
+    expect(adapter.capabilities.has("chat")).toBe(true);
+    expect(adapter.capabilities.has("qa")).toBe(true);
+    expect(adapter.capabilities.has("code_generation")).toBe(true);
+    expect(adapter.capabilities.has("summarization")).toBe(true);
+    expect(adapter.capabilities.has("translation")).toBe(true);
+  });
+
+  it("61 returns usage stats in the response", async () => {
+    const adapter = new InHouseGptAdapter();
+    const r = await adapter.generate({
+      messages: [{ role: "user", content: "Hello" }],
+    });
+    expect(r.usage).toBeDefined();
+    expect(r.usage?.promptTokens).toBeGreaterThan(0);
+    expect(r.usage?.completionTokens).toBeGreaterThan(0);
+    expect(r.usage?.totalTokens).toBeGreaterThan(0);
+  });
+
+  it("62 honors maxTokens via the orchestrator's request", async () => {
+    const adapter = new InHouseGptAdapter({ defaultMaxNewTokens: 16 });
+    const r = await adapter.generate({
+      messages: [{ role: "user", content: "Hello" }],
+      maxTokens: 4,
+    });
+    // Generation should be capped near maxTokens (allowing for the
+    // tiny model's stop-token quirks).
+    expect(r.usage?.completionTokens).toBeLessThanOrEqual(5);
+  });
+
+  it("63 plugs into CognitiveMiddleware end-to-end", async () => {
+    const adapter = new InHouseGptAdapter({ seed: 11 });
+    const mw = new CognitiveMiddleware({ adapters: [adapter] });
+    const r = await mw.run({
+      userId: "u",
+      message: "What is 2 + 2?",
+    });
+    expect(r.ok).toBe(true);
+    expect(r.routing.providerName).toBe("in-house-gpt3");
+    expect(r.routing.intent.intent).toBe("qa");
+    expect(r.text.length).toBeGreaterThan(0);
+    expect(r.telemetry.providerCallMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("64 truncates the front of an over-long prompt instead of erroring", async () => {
+    const adapter = new InHouseGptAdapter();
+    // Fallback config has contextWindow=512. A 5000-char prompt
+    // tokenizes to 5000 tokens which overflows by ~10×. The adapter
+    // must truncate the FRONT (matches the standard "keep most
+    // recent" policy) and produce a normal response.
+    const longText = "x".repeat(5000);
+    const r = await adapter.generate({
+      messages: [{ role: "user", content: longText }],
+    });
+    expect(r.finishReason).not.toBe("error");
+    expect(r.text.length).toBeGreaterThan(0);
+    const dropped = (r.raw as { tokensDroppedByTruncation?: number })
+      .tokensDroppedByTruncation;
+    expect(typeof dropped).toBe("number");
+    expect(dropped).toBeGreaterThan(0);
+  });
+
+  it("65 useTinyConfig opts into the math-library tinyConfig (for math tests)", async () => {
+    // This proves the escape hatch still works for tests of the
+    // underlying math kernels. Tiny config has contextWindow=32 so
+    // even a short prompt + the truncation reserve will leave very
+    // little headroom — but a single short message should still fit.
+    const adapter = new InHouseGptAdapter({
+      useTinyConfig: true,
+      defaultMaxNewTokens: 4,
+      seed: 31,
+    });
+    const r = await adapter.generate({
+      messages: [{ role: "user", content: "Hi" }],
+    });
+    expect(r.finishReason).not.toBe("error");
+    expect(r.usage?.completionTokens).toBeGreaterThan(0);
   });
 });
 

@@ -23,6 +23,7 @@ import {
   EchoMockAdapter,
   ScriptedMockAdapter,
   ToolEmittingMockAdapter,
+  InHouseGptAdapter,
   classifyIntent,
   validateOutput,
   type ProviderAdapter,
@@ -105,6 +106,13 @@ const validateRequestSchema = z.object({
 
 function buildDefaultAdapters(): ProviderAdapter[] {
   return [
+    // Real adapter that runs entirely offline against the in-house
+    // GPT-3 implementation. Always available — no API keys, no
+    // network. Lives at the front of the priority order so the
+    // cognitive layer has at least one real provider out of the box.
+    new InHouseGptAdapter(),
+    // Mock adapters for tests + demos. Useful when callers explicitly
+    // request `preferredProvider: "mock-echo"`.
     new EchoMockAdapter(),
     new ScriptedMockAdapter(
       [
@@ -114,6 +122,10 @@ function buildDefaultAdapters(): ProviderAdapter[] {
       "mock-scripted",
     ),
     new ToolEmittingMockAdapter("noop_tool", { ok: true }),
+    // NOTE: SmartRouterAdapter is NOT registered here by default.
+    // Mounting it requires the heavy llmGateway module which has
+    // its own boot dependencies (Redis, env vars). A follow-up
+    // turn that introduces a feature flag will toggle it on.
   ];
 }
 
@@ -143,8 +155,24 @@ export function createCognitiveRouter(): Router {
     try {
       // Forward client disconnect → AbortSignal so cancellation
       // propagates all the way through the cognitive pipeline.
+      //
+      // Important: use `res.on("close")`, NOT `req.on("close")`. In
+      // Node 22+ the REQUEST stream's "close" event fires as soon as
+      // express.json() finishes reading the body, even though the
+      // underlying TCP socket is still open and the client is happily
+      // waiting for the response. That race kills slow adapters.
+      //
+      // The RESPONSE stream's "close" only fires when:
+      //   (a) we finished writing the response (writableEnded === true,
+      //       so the controller is NOT aborted) OR
+      //   (b) the client actually disconnected mid-response
+      //       (writableEnded === false, so we DO abort).
+      //
+      // This matches Express's recommended cancellation pattern in
+      // Node 22+ and is consistent with how the existing chat router
+      // in this repo handles client disconnects.
       const controller = new AbortController();
-      req.on("close", () => {
+      res.on("close", () => {
         if (!res.writableEnded) controller.abort();
       });
       const result = await middleware.run({

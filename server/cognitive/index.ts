@@ -52,3 +52,23 @@ export {
   AbortableMockAdapter,
   ToolEmittingMockAdapter,
 } from "./providerAdapters/mockAdapter";
+
+// Real provider adapters (Turn A of the cognitive roadmap)
+export {
+  SmartRouterAdapter,
+  type SmartRouterAdapterOptions,
+  type GatewayMessage,
+  type GatewayRequestOptions,
+  type GatewayResponse,
+  type GatewayResponseUsage,
+  type GatewayResponseStatus,
+  type GatewayIncompleteDetails,
+  type GatewayChatFn,
+  mapGatewayFinishReason,
+  translateGatewayResponse,
+} from "./providerAdapters/smartRouterAdapter";
+
+export {
+  InHouseGptAdapter,
+  type InHouseGptAdapterOptions,
+} from "./providerAdapters/inHouseGptAdapter";
