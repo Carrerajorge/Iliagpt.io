@@ -13,6 +13,8 @@ const IGNORED_CONSOLE_ERRORS = [
   "ERR_CONNECTION_REFUSED",
   "violates the following Content Security Policy",
   "Failed to load resource: the server responded with a status of 404",
+  "Failed to load resource: the server responded with a status of 401",
+  "Failed to load resource: the server responded with a status of 403",
 ];
 
 function parseSse(raw) {
