@@ -1,12 +1,13 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useLocation } from "wouter";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Megaphone, Eye, MousePointer,
   Trash2, BarChart3, Target, Globe, DollarSign, ChevronRight, ChevronLeft,
   MessageCircle, Zap, Users, Calendar, CreditCard, MapPin,
   TrendingUp, CheckCircle2, Radio, Image as ImageIcon, Sparkles, Info,
   ArrowUpRight, Pause, Play, Upload, Link, Phone, X,
-  LayoutList
+  LayoutList, Loader2, RefreshCw, AlertTriangle
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,9 +15,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
+import { apiFetch } from "@/lib/apiClient";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -60,8 +65,12 @@ interface Stats {
   totalClicks: number;
   totalMessages: number;
   totalSpentSoles: string;
+  totalBudgetSoles?: string;
+  remainingBudgetSoles?: string;
   ctr: string;
   avgCostPerClick: string;
+  bestPerformingAdId?: number | null;
+  bestPerformingAdTitle?: string | null;
 }
 
 interface Estimate {
@@ -72,6 +81,32 @@ interface Estimate {
   recommendation: { avgSpend: number; avgResponses: number; label: string };
   symbol: string;
 }
+
+interface AdsOverviewResponse {
+  ads: Ad[];
+  summary: Stats | null;
+}
+
+type AdFormState = {
+  title: string;
+  description: string;
+  imageUrl: string;
+  targetUrl: string;
+  whatsappNumber: string;
+  advertiser: string;
+  keywords: string;
+  category: string;
+  objective: string;
+  dailyBudget: number;
+  durationDays: number;
+  targetCountry: string;
+  minAge: number;
+  maxAge: number;
+  gender: string;
+  advantagePlus: boolean;
+  placements: string[];
+  paymentMethod: string;
+};
 
 const OBJECTIVES = [
   { id: "automatic", title: "Automatico", desc: "Recibir mas mensajes — seleccionado en funcion de tu actividad anterior", icon: Sparkles, recommended: true },
@@ -105,26 +140,24 @@ function formatNumber(n: number): string {
   return n.toString();
 }
 
-export default function IliaAdsPage() {
-  const [, setLocation] = useLocation();
-  const [view, setView] = useState<"wizard" | "ads">("wizard");
-  const [ads, setAds] = useState<Ad[]>([]);
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [wizardStep, setWizardStep] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [estimate, setEstimate] = useState<Estimate | null>(null);
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const { toast } = useToast();
+function resolveAdvertiserSeed(user: { company?: string | null; fullName?: string | null; email?: string | null } | null | undefined): string {
+  const company = user?.company?.trim();
+  if (company) return company;
+  const fullName = user?.fullName?.trim();
+  if (fullName) return fullName;
+  const emailPrefix = user?.email?.split("@")[0]?.trim();
+  if (emailPrefix) return emailPrefix;
+  return "";
+}
 
-  const [form, setForm] = useState({
+function createInitialForm(advertiser = ""): AdFormState {
+  return {
     title: "",
     description: "",
     imageUrl: "",
     targetUrl: "",
     whatsappNumber: "",
-    advertiser: "",
+    advertiser,
     keywords: "",
     category: "general",
     objective: "automatic",
@@ -137,45 +170,207 @@ export default function IliaAdsPage() {
     advantagePlus: true,
     placements: ["in_chat"],
     paymentMethod: "per_impression",
-  });
+  };
+}
 
-  const fetchAds = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [adsRes, statsRes] = await Promise.all([
-        fetch("/api/ads/list"),
-        fetch("/api/ads/stats"),
-      ]);
-      if (adsRes.ok) setAds((await adsRes.json()).ads || []);
-      if (statsRes.ok) setStats((await statsRes.json()).summary || null);
-    } catch (e) {
-      console.error("Error fetching ads:", e);
-    } finally {
-      setLoading(false);
+function buildTargetUrl(whatsappNumber: string, targetUrl: string): string {
+  if (whatsappNumber.trim()) {
+    const normalized = whatsappNumber.replace(/\D/g, "");
+    return normalized ? `https://wa.me/${normalized}` : "";
+  }
+  return targetUrl.trim();
+}
+
+function isValidDestinationUrl(value: string): boolean {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+async function parseApiError(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await response.json();
+    if (typeof payload?.error === "string") return payload.error;
+    if (Array.isArray(payload?.error)) {
+      return payload.error.map((item: any) => item?.message || item?.path?.join(".") || "Dato invalido").join(", ");
     }
-  }, []);
+  } catch {
+    // Ignore JSON parsing failures and fall back to generic message.
+  }
+  return fallback;
+}
+
+export default function IliaAdsPage() {
+  const [, setLocation] = useLocation();
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const [view, setView] = useState<"wizard" | "ads">("wizard");
+  const [wizardStep, setWizardStep] = useState(0);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [pendingToggleId, setPendingToggleId] = useState<number | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
+  const advertiserSeed = useMemo(
+    () => resolveAdvertiserSeed(user),
+    [user?.company, user?.fullName, user?.email],
+  );
+
+  const [form, setForm] = useState<AdFormState>(() => createInitialForm(advertiserSeed));
 
   useEffect(() => {
-    const fetchEstimate = async () => {
-      try {
-        const res = await fetch(
-          `/api/ads/estimate?budget=${form.dailyBudget}&category=${form.category}&days=${form.durationDays}`
-        );
-        if (res.ok) setEstimate(await res.json());
-      } catch {}
-    };
-    fetchEstimate();
-  }, [form.dailyBudget, form.category, form.durationDays]);
+    if (!advertiserSeed) return;
+    setForm((current) => (
+      current.advertiser.trim()
+        ? current
+        : { ...current, advertiser: advertiserSeed }
+    ));
+  }, [advertiserSeed]);
 
   const totalBudget = useMemo(() => form.dailyBudget * form.durationDays, [form.dailyBudget, form.durationDays]);
+  const finalTargetUrl = useMemo(() => buildTargetUrl(form.whatsappNumber, form.targetUrl), [form.whatsappNumber, form.targetUrl]);
 
-  const finalTargetUrl = useMemo(() => {
-    if (form.whatsappNumber) {
-      const num = form.whatsappNumber.replace(/\D/g, "");
-      return `https://wa.me/${num}`;
-    }
-    return form.targetUrl;
-  }, [form.whatsappNumber, form.targetUrl]);
+  const {
+    data: overviewData,
+    isLoading: isOverviewLoading,
+    isFetching: isOverviewFetching,
+    isError: isOverviewError,
+    error: overviewError,
+    refetch: refetchOverview,
+  } = useQuery<AdsOverviewResponse>({
+    queryKey: ["ads", "overview"],
+    queryFn: async () => {
+      const response = await apiFetch("/api/ads/stats", { credentials: "include" });
+      if (!response.ok) {
+        throw new Error(await parseApiError(response, "No pudimos cargar tu panel de anuncios."));
+      }
+      return response.json();
+    },
+    staleTime: 15_000,
+    retry: 1,
+  });
+
+  const {
+    data: estimate,
+    isFetching: isEstimateFetching,
+  } = useQuery<Estimate>({
+    queryKey: ["ads", "estimate", form.dailyBudget, form.category, form.durationDays],
+    queryFn: async () => {
+      const response = await apiFetch(
+        `/api/ads/estimate?budget=${form.dailyBudget}&category=${form.category}&days=${form.durationDays}`,
+      );
+      if (!response.ok) {
+        throw new Error(await parseApiError(response, "No pudimos calcular la estimacion."));
+      }
+      return response.json();
+    },
+    staleTime: 30_000,
+  });
+
+  const ads = overviewData?.ads || [];
+  const stats = overviewData?.summary || null;
+
+  const createMutation = useMutation({
+    mutationFn: async (payload: AdFormState) => {
+      const targetUrl = buildTargetUrl(payload.whatsappNumber, payload.targetUrl);
+      if (!isValidDestinationUrl(targetUrl)) {
+        throw new Error("El enlace de destino debe ser una URL valida o un numero de WhatsApp valido.");
+      }
+
+      const response = await apiFetch("/api/ads/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          ...payload,
+          targetUrl,
+          keywords: payload.keywords.split(",").map((keyword) => keyword.trim()).filter(Boolean),
+          imageUrl: payload.imageUrl || null,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await parseApiError(response, "No pudimos publicar el anuncio."));
+      }
+
+      return response.json();
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["ads", "overview"] });
+      toast({
+        title: "Anuncio publicado",
+        description: "Tu anuncio ya quedo activo y sincronizado con IliaADS.",
+      });
+      setWizardStep(0);
+      resetForm();
+      setView("ads");
+    },
+    onError: (error) => {
+      toast({
+        title: "No pudimos publicar el anuncio",
+        description: error instanceof Error ? error.message : "Intenta nuevamente.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: async ({ id, active }: { id: number; active: boolean }) => {
+      const response = await apiFetch(`/api/ads/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ active: !active, status: !active ? "active" : "paused" }),
+      });
+      if (!response.ok) {
+        throw new Error(await parseApiError(response, "No pudimos actualizar el estado del anuncio."));
+      }
+      return response.json();
+    },
+    onSuccess: async (_, variables) => {
+      await queryClient.invalidateQueries({ queryKey: ["ads", "overview"] });
+      toast({
+        title: variables.active ? "Anuncio pausado" : "Anuncio reactivado",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "No pudimos actualizar el anuncio",
+        description: error instanceof Error ? error.message : "Intenta nuevamente.",
+        variant: "destructive",
+      });
+    },
+    onSettled: () => setPendingToggleId(null),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const response = await apiFetch(`/api/ads/${id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(await parseApiError(response, "No pudimos eliminar el anuncio."));
+      }
+      return response.json();
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["ads", "overview"] });
+      toast({ title: "Anuncio eliminado" });
+    },
+    onError: (error) => {
+      toast({
+        title: "No pudimos eliminar el anuncio",
+        description: error instanceof Error ? error.message : "Intenta nuevamente.",
+        variant: "destructive",
+      });
+    },
+    onSettled: () => setPendingDeleteId(null),
+  });
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -198,61 +393,34 @@ export default function IliaAdsPage() {
   };
 
   const handleCreate = async () => {
-    try {
-      const res = await fetch("/api/ads/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...form,
-          targetUrl: finalTargetUrl,
-          dailyBudget: form.dailyBudget,
-          keywords: form.keywords.split(",").map(k => k.trim()).filter(Boolean),
-          imageUrl: form.imageUrl || null,
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error ? JSON.stringify(err.error) : "Error al crear anuncio");
-      }
-      toast({ title: "Anuncio publicado", description: "Tu anuncio esta activo y comenzara a mostrarse a millones de usuarios." });
-      setWizardStep(0);
-      resetForm();
-      setView("ads");
-      fetchAds();
-    } catch (e: any) {
-      toast({ title: "Error", description: e.message, variant: "destructive" });
-    }
+    await createMutation.mutateAsync(form);
   };
 
   const resetForm = () => {
-    setForm({
-      title: "", description: "", imageUrl: "", targetUrl: "", whatsappNumber: "",
-      advertiser: "", keywords: "", category: "general", objective: "automatic",
-      dailyBudget: 3.5, durationDays: 7, targetCountry: "PE", minAge: 18,
-      maxAge: 65, gender: "all", advantagePlus: true, placements: ["in_chat"],
-      paymentMethod: "per_impression",
-    });
+    setForm(createInitialForm(advertiserSeed));
     setImagePreview(null);
   };
 
   const toggleAd = async (id: number, active: boolean) => {
-    await fetch(`/api/ads/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ active: !active, status: !active ? "active" : "paused" }),
-    });
-    fetchAds();
+    setPendingToggleId(id);
+    await toggleMutation.mutateAsync({ id, active });
   };
 
   const deleteAd = async (id: number) => {
-    await fetch(`/api/ads/${id}`, { method: "DELETE" });
-    fetchAds();
-    toast({ title: "Anuncio eliminado" });
+    setPendingDeleteId(id);
+    await deleteMutation.mutateAsync(id);
   };
 
   const canAdvance = useMemo(() => {
     switch (wizardStep) {
-      case 0: return !!(form.title && form.description && (form.targetUrl || form.whatsappNumber) && form.advertiser && (form.imageUrl || imagePreview));
+      case 0:
+        return !!(
+          form.title.trim() &&
+          form.description.trim() &&
+          form.advertiser.trim() &&
+          (form.imageUrl || imagePreview) &&
+          isValidDestinationUrl(finalTargetUrl)
+        );
       case 1: return !!form.objective;
       case 2: return !!form.targetCountry;
       case 3: return form.dailyBudget >= 0.5;
@@ -284,6 +452,15 @@ export default function IliaAdsPage() {
 
           <div className="ml-auto flex items-center gap-2">
             <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => refetchOverview()}
+              disabled={isOverviewFetching}
+              data-testid="button-refresh-ads"
+            >
+              {isOverviewFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            </Button>
+            <Button
               variant={view === "wizard" ? "default" : "outline"}
               size="sm"
               onClick={() => { setView("wizard"); setWizardStep(0); resetForm(); }}
@@ -295,7 +472,7 @@ export default function IliaAdsPage() {
             <Button
               variant={view === "ads" ? "default" : "outline"}
               size="sm"
-              onClick={() => { setView("ads"); fetchAds(); }}
+              onClick={() => { setView("ads"); refetchOverview(); }}
               data-testid="button-my-ads"
             >
               <LayoutList className="h-3.5 w-3.5 mr-1.5" />
@@ -420,6 +597,11 @@ export default function IliaAdsPage() {
                           className="mt-1.5"
                           data-testid="input-advertiser"
                         />
+                        {advertiserSeed && form.advertiser === advertiserSeed && (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Autocompletado desde tu cuenta conectada.
+                          </p>
+                        )}
                       </div>
 
                       <div>
@@ -872,9 +1054,19 @@ export default function IliaAdsPage() {
                     </Card>
                   </div>
 
-                  <Button size="lg" className="w-full h-14 text-base" onClick={handleCreate} data-testid="button-publish-ad">
-                    <Megaphone className="h-5 w-5 mr-2" />
-                    Publicar anuncio — S/{totalBudget.toFixed(2)}
+                  <Button
+                    size="lg"
+                    className="w-full h-14 text-base"
+                    onClick={handleCreate}
+                    disabled={createMutation.isPending}
+                    data-testid="button-publish-ad"
+                  >
+                    {createMutation.isPending ? (
+                      <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                    ) : (
+                      <Megaphone className="h-5 w-5 mr-2" />
+                    )}
+                    {createMutation.isPending ? "Publicando anuncio..." : `Publicar anuncio — S/${totalBudget.toFixed(2)}`}
                   </Button>
                   <p className="text-xs text-center text-muted-foreground">
                     Tu anuncio comenzara a mostrarse a millones de usuarios de IliaGPT inmediatamente
@@ -885,6 +1077,48 @@ export default function IliaAdsPage() {
 
             <div className="hidden lg:block">
               <div className="sticky top-20 space-y-4">
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-1.5">
+                      <BarChart3 className="h-3.5 w-3.5" /> Cuenta publicitaria
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {isOverviewLoading ? (
+                      <div className="space-y-2">
+                        <Skeleton className="h-8 w-full rounded-lg" />
+                        <Skeleton className="h-8 w-full rounded-lg" />
+                        <Skeleton className="h-8 w-full rounded-lg" />
+                      </div>
+                    ) : stats ? (
+                      <>
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">Anuncios activos</span>
+                          <span className="font-semibold">{stats.activeAds}/{stats.totalAds}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">Invertido</span>
+                          <span className="font-semibold">S/{stats.totalSpentSoles}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">Saldo de campaña</span>
+                          <span className="font-semibold">S/{stats.remainingBudgetSoles || "0.00"}</span>
+                        </div>
+                        <div className="rounded-lg border bg-muted/30 p-3">
+                          <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Mejor anuncio</p>
+                          <p className="text-sm font-medium mt-1 line-clamp-2">
+                            {stats.bestPerformingAdTitle || "Aun no hay rendimiento suficiente"}
+                          </p>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        Tu panel se completara cuando publiques el primer anuncio.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+
                 <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm flex items-center gap-1.5">
@@ -933,7 +1167,10 @@ export default function IliaAdsPage() {
                       <div className="flex justify-between"><span className="text-muted-foreground">Duracion</span><span className="font-medium">{form.durationDays} dias</span></div>
                       <Separator />
                       <div className="flex justify-between"><span className="text-muted-foreground">Total</span><span className="font-bold text-primary">S/{totalBudget.toFixed(2)}</span></div>
-                      <div className="flex justify-between"><span className="text-muted-foreground">Costo/imp</span><span className="font-medium">0.1 cent.</span></div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Costo/imp</span>
+                        <span className="font-medium">{isEstimateFetching ? "Calculando..." : "0.1 cent."}</span>
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
@@ -942,11 +1179,20 @@ export default function IliaAdsPage() {
           </div>
 
           <div className="flex justify-between mt-8 pt-6 border-t">
-            <Button variant="outline" onClick={() => setWizardStep(s => Math.max(0, s - 1))} disabled={wizardStep === 0} data-testid="button-wizard-prev">
+            <Button
+              variant="outline"
+              onClick={() => setWizardStep(s => Math.max(0, s - 1))}
+              disabled={wizardStep === 0 || createMutation.isPending}
+              data-testid="button-wizard-prev"
+            >
               <ChevronLeft className="h-4 w-4 mr-1" /> Anterior
             </Button>
             {wizardStep < STEPS.length - 1 && (
-              <Button onClick={() => setWizardStep(s => s + 1)} disabled={!canAdvance} data-testid="button-wizard-next">
+              <Button
+                onClick={() => setWizardStep(s => s + 1)}
+                disabled={!canAdvance || createMutation.isPending}
+                data-testid="button-wizard-next"
+              >
                 Siguiente <ChevronRight className="h-4 w-4 ml-1" />
               </Button>
             )}
@@ -956,6 +1202,19 @@ export default function IliaAdsPage() {
 
       {view === "ads" && (
         <div className="max-w-5xl mx-auto px-4 py-6">
+          {isOverviewError && (
+            <Alert variant="destructive" className="mb-6">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>No pudimos cargar IliaADS</AlertTitle>
+              <AlertDescription className="flex items-center justify-between gap-3">
+                <span>{overviewError instanceof Error ? overviewError.message : "Intenta nuevamente en unos segundos."}</span>
+                <Button size="sm" variant="outline" onClick={() => refetchOverview()}>
+                  Reintentar
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
           {stats && (
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
               {[
@@ -979,9 +1238,9 @@ export default function IliaAdsPage() {
             </div>
           )}
 
-          {loading ? (
+          {!stats && isOverviewLoading ? (
             <div className="space-y-3">
-              {[1, 2].map(i => <div key={i} className="h-24 bg-muted rounded-lg animate-pulse" />)}
+              {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24 rounded-lg" />)}
             </div>
           ) : ads.length === 0 ? (
             <div className="text-center py-16">
@@ -1031,11 +1290,31 @@ export default function IliaAdsPage() {
                           )}
                         </div>
                         <div className="flex gap-1 flex-shrink-0">
-                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => toggleAd(ad.id, ad.active)} data-testid={`button-toggle-ad-${ad.id}`}>
-                            {ad.active ? <Pause className="h-4 w-4 text-yellow-500" /> : <Play className="h-4 w-4 text-green-500" />}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => toggleAd(ad.id, ad.active)}
+                            disabled={pendingToggleId === ad.id}
+                            data-testid={`button-toggle-ad-${ad.id}`}
+                          >
+                            {pendingToggleId === ad.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : ad.active ? (
+                              <Pause className="h-4 w-4 text-yellow-500" />
+                            ) : (
+                              <Play className="h-4 w-4 text-green-500" />
+                            )}
                           </Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 text-red-500 hover:text-red-600" onClick={() => deleteAd(ad.id)} data-testid={`button-delete-ad-${ad.id}`}>
-                            <Trash2 className="h-4 w-4" />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-red-500 hover:text-red-600"
+                            onClick={() => deleteAd(ad.id)}
+                            disabled={pendingDeleteId === ad.id}
+                            data-testid={`button-delete-ad-${ad.id}`}
+                          >
+                            {pendingDeleteId === ad.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                           </Button>
                         </div>
                       </div>

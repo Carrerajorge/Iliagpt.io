@@ -40,6 +40,69 @@ function solesToDc(soles: number): number {
   return Math.round(soles * SOLES_TO_DECI_CENTIMOS);
 }
 
+function isValidHttpUrl(value: unknown): boolean {
+  if (typeof value !== "string" || !value.trim()) {
+    return false;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function serializeAd(ad: typeof iliaAds.$inferSelect) {
+  const dailyBudgetDC = ad.dailyBudget || 0;
+  const totalBudgetDC = ad.totalBudget || 0;
+  const costSpentDC = ad.costSpent || 0;
+  const impressions = ad.impressions || 0;
+  const clicks = ad.clicks || 0;
+
+  return {
+    ...ad,
+    dailyBudgetSoles: dcToSoles(dailyBudgetDC).toFixed(2),
+    totalBudgetSoles: dcToSoles(totalBudgetDC).toFixed(2),
+    costSpentSoles: dcToSoles(costSpentDC).toFixed(2),
+    remainingBudgetSoles: Math.max(dcToSoles(totalBudgetDC - costSpentDC), 0).toFixed(2),
+    ctr: impressions > 0 ? ((clicks / impressions) * 100).toFixed(2) : "0.00",
+    avgCostPerClickSoles: clicks > 0 ? dcToSoles(costSpentDC / clicks).toFixed(2) : "0.00",
+    estimatedDaily: estimateImpressions(dcToSoles(dailyBudgetDC)),
+  };
+}
+
+function summarizeAds(ads: (typeof iliaAds.$inferSelect)[]) {
+  const totalImpressions = ads.reduce((sum, ad) => sum + (ad.impressions || 0), 0);
+  const totalClicks = ads.reduce((sum, ad) => sum + (ad.clicks || 0), 0);
+  const totalSpentDC = ads.reduce((sum, ad) => sum + (ad.costSpent || 0), 0);
+  const totalBudgetDC = ads.reduce((sum, ad) => sum + (ad.totalBudget || 0), 0);
+  const totalMessages = ads.reduce((sum, ad) => sum + (ad.messagesReceived || 0), 0);
+  const bestPerformingAd =
+    ads.length > 0
+      ? ads.reduce((best, current) => {
+          const bestScore = (best.clicks || 0) + (best.messagesReceived || 0) * 2;
+          const currentScore = (current.clicks || 0) + (current.messagesReceived || 0) * 2;
+          return currentScore > bestScore ? current : best;
+        })
+      : null;
+
+  return {
+    totalAds: ads.length,
+    activeAds: ads.filter((ad) => ad.active).length,
+    totalImpressions,
+    totalClicks,
+    totalMessages,
+    totalSpentSoles: dcToSoles(totalSpentDC).toFixed(2),
+    totalBudgetSoles: dcToSoles(totalBudgetDC).toFixed(2),
+    remainingBudgetSoles: Math.max(dcToSoles(totalBudgetDC - totalSpentDC), 0).toFixed(2),
+    ctr: totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(2) : "0.00",
+    avgCostPerClick: totalClicks > 0 ? dcToSoles(totalSpentDC / totalClicks).toFixed(2) : "0.00",
+    bestPerformingAdId: bestPerformingAd?.id ?? null,
+    bestPerformingAdTitle: bestPerformingAd?.title ?? null,
+  };
+}
+
 router.get("/match", async (req: Request, res: Response) => {
   try {
     const query = (req.query.q as string) || "";
@@ -240,7 +303,7 @@ router.get("/list", requireAuth, async (req: Request, res: Response) => {
       .orderBy(desc(iliaAds.createdAt))
       .limit(100);
 
-    res.json({ ads });
+    res.json({ ads: ads.map(serializeAd) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -277,14 +340,21 @@ router.post("/create", requireAuth, async (req: Request, res: Response) => {
     }
 
     body.imageUrl = body.imageUrl || null;
+    body.placements = Array.isArray(body.placements) && body.placements.length > 0 ? body.placements : ["in_chat"];
 
     if (body.minAge && body.maxAge && body.minAge > body.maxAge) {
       return res.status(400).json({ error: "minAge must be <= maxAge" });
     }
+    if (!isValidHttpUrl(body.targetUrl)) {
+      return res.status(400).json({ error: "targetUrl must be a valid http(s) URL" });
+    }
+    if (body.imageUrl && !isValidHttpUrl(body.imageUrl) && !String(body.imageUrl).startsWith("data:image/")) {
+      return res.status(400).json({ error: "imageUrl must be a valid URL or data image" });
+    }
 
     const parsed = insertIliaAdSchema.parse(body);
     const [ad] = await db.insert(iliaAds).values(parsed).returning();
-    res.json({ ad });
+    res.json({ ad: serializeAd(ad) });
   } catch (error: any) {
     if (error instanceof z.ZodError) {
       return res.status(400).json({ error: error.errors });
@@ -298,7 +368,12 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
     const id = parseInt(req.params.id);
     const userId = (req as any).user?.id || (req as any).sessionID;
 
-    const existing = await db.select({ createdBy: iliaAds.createdBy })
+    const existing = await db.select({
+      createdBy: iliaAds.createdBy,
+      dailyBudget: iliaAds.dailyBudget,
+      durationDays: iliaAds.durationDays,
+      startDate: iliaAds.startDate,
+    })
       .from(iliaAds).where(eq(iliaAds.id, id)).limit(1);
     if (!existing.length || existing[0].createdBy !== userId) {
       return res.status(403).json({ error: "Forbidden" });
@@ -319,13 +394,44 @@ router.patch("/:id", requireAuth, async (req: Request, res: Response) => {
       }
     }
 
+    if (updates.targetUrl !== undefined && !isValidHttpUrl(updates.targetUrl)) {
+      return res.status(400).json({ error: "targetUrl must be a valid http(s) URL" });
+    }
+    if (updates.imageUrl && !isValidHttpUrl(updates.imageUrl) && !String(updates.imageUrl).startsWith("data:image/")) {
+      return res.status(400).json({ error: "imageUrl must be a valid URL or data image" });
+    }
+    if (typeof updates.dailyBudget === "number") {
+      updates.dailyBudget = solesToDc(updates.dailyBudget);
+    }
+    if (typeof updates.durationDays === "number" || typeof updates.dailyBudget === "number") {
+      const durationDays = typeof updates.durationDays === "number" ? updates.durationDays : (existing[0].durationDays || 7);
+      const dailyBudgetDC = typeof updates.dailyBudget === "number" ? updates.dailyBudget : (existing[0].dailyBudget || 0);
+      updates.totalBudget = dailyBudgetDC * durationDays;
+
+      const startDate =
+        updates.startDate !== undefined
+          ? new Date(updates.startDate)
+          : existing[0].startDate
+            ? new Date(existing[0].startDate)
+            : new Date();
+      const endDate = new Date(startDate);
+      endDate.setDate(endDate.getDate() + durationDays);
+      updates.endDate = endDate.toISOString();
+    }
+    if (updates.minAge && updates.maxAge && updates.minAge > updates.maxAge) {
+      return res.status(400).json({ error: "minAge must be <= maxAge" });
+    }
+    if (Array.isArray(updates.placements) && updates.placements.length === 0) {
+      updates.placements = ["in_chat"];
+    }
+
     const [ad] = await db
       .update(iliaAds)
       .set(updates)
       .where(eq(iliaAds.id, id))
       .returning();
 
-    res.json({ ad });
+    res.json({ ad: serializeAd(ad) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -359,29 +465,9 @@ router.get("/stats", requireAuth, async (req: Request, res: Response) => {
       .orderBy(desc(iliaAds.impressions))
       .limit(100);
 
-    const totalImpressions = ads.reduce((s, a) => s + (a.impressions || 0), 0);
-    const totalClicks = ads.reduce((s, a) => s + (a.clicks || 0), 0);
-    const totalSpentDC = ads.reduce((s, a) => s + (a.costSpent || 0), 0);
-    const totalMessages = ads.reduce((s, a) => s + (a.messagesReceived || 0), 0);
-
     res.json({
-      ads: ads.map(a => ({
-        ...a,
-        dailyBudgetSoles: dcToSoles(a.dailyBudget || 0).toFixed(2),
-        totalBudgetSoles: dcToSoles(a.totalBudget || 0).toFixed(2),
-        costSpentSoles: dcToSoles(a.costSpent || 0).toFixed(2),
-        estimatedDaily: estimateImpressions(dcToSoles(a.dailyBudget || 0)),
-      })),
-      summary: {
-        totalAds: ads.length,
-        activeAds: ads.filter(a => a.active).length,
-        totalImpressions,
-        totalClicks,
-        totalMessages,
-        totalSpentSoles: dcToSoles(totalSpentDC).toFixed(2),
-        ctr: totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(2) : "0.00",
-        avgCostPerClick: totalClicks > 0 ? dcToSoles(totalSpentDC / totalClicks).toFixed(2) : "0.00",
-      },
+      ads: ads.map(serializeAd),
+      summary: summarizeAds(ads),
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
