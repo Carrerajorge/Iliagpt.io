@@ -55,6 +55,7 @@ import { createOfficeEngineRouter } from "./routes/officeEngineRoutes";
 import { createTransformerRouter } from "./routes/transformerRoutes";
 import { createBertRouter } from "./routes/bertRoutes";
 import { createGpt3Router } from "./routes/gpt3Routes";
+import { createCognitiveRouter } from "./routes/cognitiveRoutes";
 import { isOfficeEngineEnabled } from "./lib/office/featureFlag";
 import { createChatRoutes } from "./routes/chatRoutes";
 import { createAgentModeRouter } from "./routes/agentRoutes";
@@ -2088,6 +2089,7 @@ try{
   app.use("/api/transformer", createTransformerRouter());
   app.use("/api/bert", createBertRouter());
   app.use("/api/gpt3", createGpt3Router());
+  app.use("/api/cognitive", createCognitiveRouter());
   app.use("/api/skills", createSkillsRouter());
   app.use("/api/skill-platform", createSkillPlatformRouter());
   app.use("/api/chat", createChatRoutes());

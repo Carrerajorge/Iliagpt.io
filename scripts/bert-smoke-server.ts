@@ -17,17 +17,24 @@ import express from "express";
 import { createBertRouter } from "../server/routes/bertRoutes";
 import { createTransformerRouter } from "../server/routes/transformerRoutes";
 import { createGpt3Router } from "../server/routes/gpt3Routes";
+import { createCognitiveRouter } from "../server/routes/cognitiveRoutes";
 
 const app = express();
 app.use(express.json({ limit: "4mb" }));
 app.use("/api/bert", createBertRouter());
 app.use("/api/transformer", createTransformerRouter());
 app.use("/api/gpt3", createGpt3Router());
+app.use("/api/cognitive", createCognitiveRouter());
 
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    routes: ["/api/bert/*", "/api/transformer/*", "/api/gpt3/*"],
+    routes: [
+      "/api/bert/*",
+      "/api/transformer/*",
+      "/api/gpt3/*",
+      "/api/cognitive/*",
+    ],
   });
 });
 
