@@ -440,6 +440,64 @@ else
   FAILED_TESTS+=("31 /stream context-enriched chunksIncluded")
 fi
 
+# ── Turn D — tool execution loop checks ───────────────────────────────────
+#
+# The cognitive router registers a `demo_sum` tool and a `mock-tool-agent`
+# adapter that drives one full agentic round trip: ask for the tool,
+# receive the result, emit a stop response with the sum. Smoke tests
+# verify telemetry + event ordering from end to end.
+
+# 32 /run with mock-tool-agent executes the demo_sum tool
+run_test "32 POST /api/cognitive/run tool loop executes demo_sum" /api/cognitive/run POST '{
+  "userId": "smoke-tool",
+  "message": "please add two numbers",
+  "preferredProvider": "mock-tool-agent"
+}' '(b) => b.ok === true && b.telemetry.toolCallCount === 1 && b.telemetry.agenticIterations === 2 && Array.isArray(b.toolExecutions) && b.toolExecutions.length === 1 && b.toolExecutions[0].ok === true && b.toolExecutions[0].result && b.toolExecutions[0].result.sum === 5'
+
+# 33 /run without registry bypass: regular runs still work
+run_test "33 POST /api/cognitive/run default path has zero tool calls" /api/cognitive/run POST '{
+  "userId": "smoke-tool",
+  "message": "say hi",
+  "preferredProvider": "mock-echo"
+}' '(b) => b.telemetry.toolCallCount === 0 && Array.isArray(b.toolExecutions)'
+
+# 34 /stream with mock-tool-agent emits tool-call then tool-result
+BODY_34=$(stream_test "34" '{
+  "userId": "smoke-tool",
+  "message": "please add 2 plus 3",
+  "preferredProvider": "mock-tool-agent"
+}')
+TOOL_CALL_LINE=$(echo "$BODY_34" | grep -n '^event: tool-call$' | head -1 | cut -d: -f1)
+TOOL_RESULT_LINE=$(echo "$BODY_34" | grep -n '^event: tool-result$' | head -1 | cut -d: -f1)
+DONE_LINE_34=$(echo "$BODY_34" | grep -n '^event: done$' | head -1 | cut -d: -f1)
+if [[ -n "$TOOL_CALL_LINE" && -n "$TOOL_RESULT_LINE" && -n "$DONE_LINE_34" && "$TOOL_CALL_LINE" -lt "$TOOL_RESULT_LINE" && "$TOOL_RESULT_LINE" -lt "$DONE_LINE_34" ]]; then
+  green "PASS"; printf ' — 34 /stream tool-call → tool-result → done ordering\n'
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 34 /stream ordering wrong (call=%s result=%s done=%s)\n' "$TOOL_CALL_LINE" "$TOOL_RESULT_LINE" "$DONE_LINE_34"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("34 /stream tool event ordering")
+fi
+
+# 35 /stream tool-result payload carries the outcome
+TOOL_RESULT_JSON=$(echo "$BODY_34" | awk '/^event: tool-result$/{flag=1;next} flag && /^data: /{print substr($0,7);exit}')
+TOOL_OK=$(echo "$TOOL_RESULT_JSON" | node -e 'let r="";process.stdin.on("data",d=>r+=d);process.stdin.on("end",()=>{try{const p=JSON.parse(r);console.log(p.outcome && p.outcome.ok === true && p.outcome.toolName === "demo_sum" && p.outcome.result && p.outcome.result.sum === 5 ? "OK" : "NOK")}catch{console.log("ERR")}})')
+if [[ "$TOOL_OK" == "OK" ]]; then
+  green "PASS"; printf ' — 35 /stream tool-result payload carries demo_sum outcome with sum=5\n'
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 35 /stream tool-result payload wrong: %s\n' "$TOOL_OK"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("35 /stream tool-result payload")
+fi
+
+# 36 /run telemetry surfaces new Turn D fields
+run_test "36 POST /api/cognitive/run telemetry has Turn D fields" /api/cognitive/run POST '{
+  "userId": "smoke-tool",
+  "message": "add some numbers",
+  "preferredProvider": "mock-tool-agent"
+}' '(b) => typeof b.telemetry.toolCallCount === "number" && typeof b.telemetry.toolTotalMs === "number" && typeof b.telemetry.agenticIterations === "number"'
+
 echo
 echo "=== Results: $(green $PASS) passed, $(red $FAIL) failed ==="
 if [[ $FAIL -gt 0 ]]; then

@@ -54,6 +54,14 @@ import {
   type DocumentStore,
   type MemoryRecord,
   type DocumentChunkRecord,
+  // Tool execution layer (Turn D)
+  InMemoryToolRegistry,
+  serializeToolOutcomeForModel,
+  type ToolRegistry,
+  type ToolHandler,
+  type ToolExecutionContext,
+  type ToolExecutionOutcome,
+  type RegisteredTool,
 } from "../cognitive";
 
 // ---------------------------------------------------------------------------
@@ -1873,6 +1881,540 @@ describe("cognitive: middleware pipeline with context enrichment (Turn C)", () =
     // but we can verify no cross-contamination via error absence.)
     expect(results[0].errors).toEqual([]);
     expect(results[1].errors).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Tool execution layer (Turn D)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a minimal descriptor for a tool so tests can register one
+ * inline without duplicating the shape every time.
+ */
+function toolDescriptor(name: string, required: string[] = []) {
+  return {
+    name,
+    description: `test tool ${name}`,
+    inputSchema: {
+      type: "object",
+      properties: Object.fromEntries(required.map((k) => [k, { type: "string" }])),
+      required,
+    } as Record<string, unknown>,
+  };
+}
+
+/**
+ * Helper: build a scripted adapter that first emits a tool call,
+ * then on the next turn emits a stop response with text. This is
+ * the minimal shape of a "model that uses one tool and then
+ * answers". Used by several Turn D tests.
+ */
+function buildOneShotToolAdapter(toolName: string, args: Record<string, unknown>, finalText: string): ScriptedMockAdapter {
+  return new ScriptedMockAdapter(
+    [
+      {
+        text: "",
+        finishReason: "tool_calls",
+        toolCalls: [{ id: "c1", name: toolName, args }],
+      },
+      { text: finalText, finishReason: "stop", toolCalls: [] },
+    ],
+    "mock-tool-adapter",
+  );
+}
+
+describe("cognitive: InMemoryToolRegistry (Turn D)", () => {
+  const baseCtx = (): ToolExecutionContext => ({
+    userId: "u",
+    signal: new AbortController().signal,
+    iteration: 0,
+    toolCallId: "c1",
+  });
+
+  it("118 register + list + has round-trip", () => {
+    const registry = new InMemoryToolRegistry();
+    const handler: ToolHandler = async (args) => ({ echoed: args });
+    registry.register({
+      descriptor: toolDescriptor("echo", ["text"]),
+      handler,
+    });
+    expect(registry.has("echo")).toBe(true);
+    expect(registry.size).toBe(1);
+    expect(registry.list().map((d) => d.name)).toEqual(["echo"]);
+  });
+
+  it("119 execute returns ok outcome with result", async () => {
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("echo", ["text"]),
+        handler: async (args) => ({ got: args.text }),
+      },
+    ]);
+    const outcome = await registry.execute("echo", { text: "hi" }, baseCtx());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result).toEqual({ got: "hi" });
+    expect(outcome.errorCode).toBeUndefined();
+    expect(outcome.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("120 unknown tool returns unknown_tool error", async () => {
+    const registry = new InMemoryToolRegistry();
+    const outcome = await registry.execute("ghost", {}, baseCtx());
+    expect(outcome.ok).toBe(false);
+    expect(outcome.errorCode).toBe("unknown_tool");
+  });
+
+  it("121 invalid args shape returns invalid_args", async () => {
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("echo"),
+        handler: async () => ({ ok: true }),
+      },
+    ]);
+    const outcome = await registry.execute(
+      "echo",
+      [] as unknown as Record<string, unknown>,
+      baseCtx(),
+    );
+    expect(outcome.ok).toBe(false);
+    expect(outcome.errorCode).toBe("invalid_args");
+  });
+
+  it("122 handler exception returns handler_threw", async () => {
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("bomb"),
+        handler: async () => {
+          throw new Error("kaboom");
+        },
+      },
+    ]);
+    const outcome = await registry.execute("bomb", {}, baseCtx());
+    expect(outcome.ok).toBe(false);
+    expect(outcome.errorCode).toBe("handler_threw");
+    expect(outcome.error).toContain("kaboom");
+  });
+
+  it("123 timeout returns timeout outcome without waiting forever", async () => {
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("slow"),
+        // Handler ignores the signal and would run for 5 seconds.
+        handler: () => new Promise(() => {}),
+        timeoutMs: 15,
+      },
+    ]);
+    const start = Date.now();
+    const outcome = await registry.execute("slow", {}, baseCtx());
+    const elapsed = Date.now() - start;
+    expect(outcome.ok).toBe(false);
+    expect(outcome.errorCode).toBe("timeout");
+    expect(elapsed).toBeLessThan(500); // the Promise.race resolved promptly
+  });
+
+  it("124 pre-aborted signal returns aborted without running handler", async () => {
+    let handlerRan = false;
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("echo"),
+        handler: async () => {
+          handlerRan = true;
+          return { ok: true };
+        },
+      },
+    ]);
+    const ctx = baseCtx();
+    const ac = new AbortController();
+    ac.abort();
+    ctx.signal = ac.signal;
+    const outcome = await registry.execute("echo", {}, ctx);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.errorCode).toBe("aborted");
+    expect(handlerRan).toBe(false);
+  });
+
+  it("125 non-serializable result returns result_not_serializable", async () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("bad"),
+        handler: async () => cyclic,
+      },
+    ]);
+    const outcome = await registry.execute("bad", {}, baseCtx());
+    expect(outcome.ok).toBe(false);
+    expect(outcome.errorCode).toBe("result_not_serializable");
+  });
+
+  it("126 serializeToolOutcomeForModel produces a JSON string for ok outcomes", () => {
+    const s = serializeToolOutcomeForModel({
+      toolCallId: "c1",
+      toolName: "echo",
+      ok: true,
+      result: { foo: "bar" },
+      durationMs: 1,
+      iteration: 0,
+    });
+    expect(JSON.parse(s)).toEqual({ foo: "bar" });
+  });
+
+  it("127 serializeToolOutcomeForModel produces error shape for failed outcomes", () => {
+    const s = serializeToolOutcomeForModel({
+      toolCallId: "c1",
+      toolName: "echo",
+      ok: false,
+      error: "nope",
+      errorCode: "handler_threw",
+      durationMs: 1,
+      iteration: 0,
+    });
+    expect(JSON.parse(s)).toEqual({ error: "nope", code: "handler_threw" });
+  });
+});
+
+describe("cognitive: middleware agentic loop (Turn D)", () => {
+  it("128 run() without registry: tool calls still forwarded (backwards compat)", async () => {
+    const adapter = new ToolEmittingMockAdapter("search", { q: "cats" });
+    const mw = new CognitiveMiddleware({ adapters: [adapter] });
+    const r = await mw.run({ userId: "u", message: "search cats" });
+    expect(r.toolCalls.length).toBe(1);
+    expect(r.toolExecutions).toEqual([]);
+    expect(r.telemetry.toolCallCount).toBe(0);
+    expect(r.telemetry.agenticIterations).toBe(1);
+  });
+
+  it("129 run() with registry: model → tool → model → stop", async () => {
+    const adapter = buildOneShotToolAdapter(
+      "add",
+      { a: 2, b: 3 },
+      "The answer is 5.",
+    );
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("add"),
+        handler: async (args) => ({
+          sum: (args.a as number) + (args.b as number),
+        }),
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+    });
+    const r = await mw.run({ userId: "u", message: "What is 2+3?" });
+    expect(r.ok).toBe(true);
+    expect(r.text).toBe("The answer is 5.");
+    expect(r.telemetry.agenticIterations).toBe(2);
+    expect(r.telemetry.toolCallCount).toBe(1);
+    expect(r.toolExecutions.length).toBe(1);
+    expect(r.toolExecutions[0].ok).toBe(true);
+    expect((r.toolExecutions[0].result as { sum: number }).sum).toBe(5);
+  });
+
+  it("130 run() with registry: tool failure is fed back, model recovers", async () => {
+    const adapter = new ScriptedMockAdapter(
+      [
+        {
+          text: "",
+          finishReason: "tool_calls",
+          toolCalls: [{ id: "c1", name: "bomb", args: {} }],
+        },
+        { text: "I received an error but I can still answer: 42.", finishReason: "stop", toolCalls: [] },
+      ],
+      "mock-tool-bomb",
+    );
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("bomb"),
+        handler: async () => {
+          throw new Error("kaboom");
+        },
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+    });
+    const r = await mw.run({ userId: "u", message: "use the bomb tool" });
+    // The run still succeeds — the validator grades the final text.
+    expect(r.telemetry.toolCallCount).toBe(1);
+    expect(r.toolExecutions[0].ok).toBe(false);
+    expect(r.toolExecutions[0].errorCode).toBe("handler_threw");
+    expect(r.text).toContain("42");
+  });
+
+  it("131 run() unknown tool → error outcome fed back, no throw", async () => {
+    const adapter = new ScriptedMockAdapter(
+      [
+        {
+          text: "",
+          finishReason: "tool_calls",
+          toolCalls: [{ id: "c1", name: "ghost", args: {} }],
+        },
+        { text: "Fallback answer.", finishReason: "stop", toolCalls: [] },
+      ],
+      "mock-ghost",
+    );
+    const registry = new InMemoryToolRegistry([]); // empty
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+    });
+    const r = await mw.run({ userId: "u", message: "use ghost tool" });
+    expect(r.toolExecutions[0].ok).toBe(false);
+    expect(r.toolExecutions[0].errorCode).toBe("unknown_tool");
+  });
+
+  it("132 run() respects maxToolIterations budget", async () => {
+    // Adapter that emits a tool call FOREVER.
+    const infinite: ProviderAdapter = {
+      name: "infinite-tool-caller",
+      capabilities: new Set(["chat", "tool_call"]),
+      generate: async () => ({
+        text: "",
+        finishReason: "tool_calls",
+        toolCalls: [{ id: `c${Math.random()}`, name: "echo", args: {} }],
+      }),
+    };
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("echo"),
+        handler: async () => ({ ok: true }),
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [infinite],
+      toolRegistry: registry,
+      maxToolIterations: 3,
+    });
+    const r = await mw.run({ userId: "u", message: "loop forever" });
+    expect(r.telemetry.agenticIterations).toBe(3);
+    expect(r.telemetry.toolCallCount).toBe(3);
+  });
+
+  it("133 run() parallel tool calls: two tools in one turn execute concurrently", async () => {
+    const adapter = new ScriptedMockAdapter(
+      [
+        {
+          text: "",
+          finishReason: "tool_calls",
+          toolCalls: [
+            { id: "c1", name: "fetchA", args: {} },
+            { id: "c2", name: "fetchB", args: {} },
+          ],
+        },
+        { text: "Done.", finishReason: "stop", toolCalls: [] },
+      ],
+      "mock-parallel",
+    );
+    // Each tool delays 60ms. If they run sequentially total ~120ms;
+    // parallel should be closer to 60ms. Give a generous 110ms
+    // ceiling so CI jitter doesn't flake.
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("fetchA"),
+        handler: async () => {
+          await delay(60);
+          return { id: "A" };
+        },
+      },
+      {
+        descriptor: toolDescriptor("fetchB"),
+        handler: async () => {
+          await delay(60);
+          return { id: "B" };
+        },
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+    });
+    const start = Date.now();
+    const r = await mw.run({ userId: "u", message: "fetch both" });
+    const elapsed = Date.now() - start;
+    expect(r.telemetry.toolCallCount).toBe(2);
+    expect(elapsed).toBeLessThan(200); // sequential would be >120ms
+    expect(r.toolExecutions.map((o) => o.toolName).sort()).toEqual(["fetchA", "fetchB"]);
+  });
+
+  it("134 run() tool loop telemetry: toolTotalMs > 0, providerCallMs accumulates", async () => {
+    const adapter = buildOneShotToolAdapter("add", { a: 1, b: 1 }, "Sum is 2.");
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("add"),
+        handler: async () => ({ sum: 2 }),
+      },
+    ]);
+    const mw = new CognitiveMiddleware({ adapters: [adapter], toolRegistry: registry });
+    const r = await mw.run({ userId: "u", message: "add" });
+    expect(r.telemetry.toolCallCount).toBe(1);
+    expect(r.telemetry.toolTotalMs).toBeGreaterThanOrEqual(0);
+    expect(r.telemetry.providerCallMs).toBeGreaterThanOrEqual(0);
+    expect(r.telemetry.agenticIterations).toBe(2);
+  });
+
+  it("135 registry tools merged into the adapter's tools list", async () => {
+    const adapter = new EchoMockAdapter();
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("echo", ["text"]),
+        handler: async () => ({ ok: true }),
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+    });
+    await mw.run({ userId: "u", message: "hi" });
+    expect(adapter.lastRequest?.tools?.map((t) => t.name)).toContain("echo");
+  });
+});
+
+describe("cognitive: streaming agentic loop (Turn D)", () => {
+  it("136 runStream() with registry emits tool-result events after tool-call", async () => {
+    const adapter = buildOneShotToolAdapter("add", { a: 2, b: 2 }, "The sum is 4.");
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("add"),
+        handler: async () => ({ sum: 4 }),
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+    });
+    const events: CognitiveStreamEvent[] = [];
+    for await (const e of mw.runStream({ userId: "u", message: "add 2+2" })) {
+      events.push(e);
+    }
+    const kinds = events.map((e) => e.kind);
+    const toolCallIdx = kinds.indexOf("tool-call");
+    const toolResultIdx = kinds.indexOf("tool-result");
+    expect(toolCallIdx).toBeGreaterThanOrEqual(0);
+    expect(toolResultIdx).toBeGreaterThan(toolCallIdx);
+    // Final done event with the full assembled text.
+    const done = events.find((e) => e.kind === "done");
+    if (done && done.kind === "done") {
+      expect(done.response.text).toContain("4");
+      expect(done.response.toolExecutions.length).toBe(1);
+      expect(done.response.telemetry.agenticIterations).toBe(2);
+    }
+  });
+
+  it("137 runStream() tool-result event carries the outcome payload", async () => {
+    const adapter = buildOneShotToolAdapter("search", { q: "cats" }, "Found cats.");
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("search"),
+        handler: async (args) => ({ hits: [args.q] }),
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+    });
+    const events: CognitiveStreamEvent[] = [];
+    for await (const e of mw.runStream({ userId: "u", message: "find cats" })) {
+      events.push(e);
+    }
+    const toolResult = events.find((e) => e.kind === "tool-result");
+    expect(toolResult).toBeDefined();
+    if (toolResult && toolResult.kind === "tool-result") {
+      expect(toolResult.outcome.toolName).toBe("search");
+      expect(toolResult.outcome.ok).toBe(true);
+      expect((toolResult.outcome.result as { hits: unknown[] }).hits).toEqual(["cats"]);
+    }
+  });
+
+  it("138 runStream() multi-iteration tool loop stops on final stop", async () => {
+    // 3 iterations: tool → tool → stop
+    const adapter = new ScriptedMockAdapter(
+      [
+        {
+          text: "",
+          finishReason: "tool_calls",
+          toolCalls: [{ id: "c1", name: "stepA", args: {} }],
+        },
+        {
+          text: "",
+          finishReason: "tool_calls",
+          toolCalls: [{ id: "c2", name: "stepB", args: {} }],
+        },
+        { text: "All done.", finishReason: "stop", toolCalls: [] },
+      ],
+      "mock-multi-tool",
+    );
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("stepA"),
+        handler: async () => ({ step: "A" }),
+      },
+      {
+        descriptor: toolDescriptor("stepB"),
+        handler: async () => ({ step: "B" }),
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+    });
+    const events: CognitiveStreamEvent[] = [];
+    for await (const e of mw.runStream({ userId: "u", message: "step through it" })) {
+      events.push(e);
+    }
+    const toolResults = events.filter((e) => e.kind === "tool-result");
+    expect(toolResults.length).toBe(2);
+    const done = events.find((e) => e.kind === "done");
+    if (done && done.kind === "done") {
+      expect(done.response.telemetry.agenticIterations).toBe(3);
+      expect(done.response.telemetry.toolCallCount).toBe(2);
+      expect(done.response.text).toBe("All done.");
+    }
+  });
+
+  it("139 runStream() tool-result outcome is included in final response.toolExecutions", async () => {
+    const adapter = buildOneShotToolAdapter("ping", {}, "Pong.");
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: toolDescriptor("ping"),
+        handler: async () => ({ pong: true }),
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+    });
+    const events: CognitiveStreamEvent[] = [];
+    for await (const e of mw.runStream({ userId: "u", message: "ping" })) {
+      events.push(e);
+    }
+    const done = events.find((e) => e.kind === "done");
+    if (done && done.kind === "done") {
+      expect(done.response.toolExecutions.length).toBe(1);
+      expect(done.response.toolExecutions[0].toolName).toBe("ping");
+    }
+  });
+
+  it("140 runStream() without registry: tool calls still surface via tool-call events", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [new ToolEmittingMockAdapter("search", { q: "x" })],
+    });
+    const events: CognitiveStreamEvent[] = [];
+    for await (const e of mw.runStream({ userId: "u", message: "search" })) {
+      events.push(e);
+    }
+    const toolCalls = events.filter((e) => e.kind === "tool-call");
+    const toolResults = events.filter((e) => e.kind === "tool-result");
+    expect(toolCalls.length).toBe(1);
+    expect(toolResults.length).toBe(0);
+    const done = events.find((e) => e.kind === "done");
+    if (done && done.kind === "done") {
+      expect(done.response.toolExecutions).toEqual([]);
+    }
   });
 });
 

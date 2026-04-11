@@ -350,7 +350,11 @@ export interface CognitiveTelemetry {
    * Added in Turn C.
    */
   contextEnrichmentMs: number;
-  /** Time spent inside the provider adapter's generate() call. */
+  /**
+   * Total wall-clock time across every provider adapter call.
+   * A multi-iteration agentic loop sums every iteration's
+   * `generate()` time here.
+   */
   providerCallMs: number;
   /** Time spent inside the output validator. */
   validationMs: number;
@@ -362,6 +366,24 @@ export interface CognitiveTelemetry {
    * Added in Turn C.
    */
   contextChunksIncluded: number;
+  /**
+   * How many tool calls the agentic loop executed, summed across
+   * every iteration. 0 when no registry is configured or the
+   * model never chose a tool. Added in Turn D.
+   */
+  toolCallCount: number;
+  /**
+   * Total wall-clock ms spent inside tool handlers, summed across
+   * every execution in every iteration. 0 when no tools ran.
+   * Added in Turn D.
+   */
+  toolTotalMs: number;
+  /**
+   * How many iterations of the agentic loop completed (1 means the
+   * model returned `stop` on the first call — no tool use). Capped
+   * at the middleware's `maxToolIterations`. Added in Turn D.
+   */
+  agenticIterations: number;
   promptTokens?: number;
   completionTokens?: number;
 }
@@ -387,13 +409,45 @@ export interface RoutingDecision {
 // Response
 // ---------------------------------------------------------------------------
 
+/**
+ * Result of one handler invocation inside the agentic tool loop
+ * (Turn D). Defined here — in the shape layer — so both the
+ * orchestrator and the response type can reference it without the
+ * circular import that would arise if it lived in `tools.ts`.
+ */
+export interface ToolExecutionOutcomeLike {
+  toolCallId: string;
+  toolName: string;
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+  errorCode?: string;
+  durationMs: number;
+  iteration: number;
+}
+
 export interface CognitiveResponse {
   /** True iff the pipeline completed without an error-severity validation issue. */
   ok: boolean;
   /** Final assistant text shown to the user. */
   text: string;
-  /** Tool calls extracted from the provider response, if any. */
+  /**
+   * Tool calls extracted from the provider response, if any.
+   *
+   * When the agentic loop executed tools internally (Turn D) this
+   * holds the tool calls from the LAST model turn — i.e., the ones
+   * the model emitted but could not execute (usually empty on a
+   * well-formed loop that ended in `stop`). Callers that want the
+   * full execution history should read `toolExecutions` instead.
+   */
   toolCalls: ProviderToolCall[];
+  /**
+   * Every tool execution that ran during the agentic loop, in
+   * chronological order across iterations. Empty when no registry
+   * was configured or the model never picked a tool. Added in
+   * Turn D.
+   */
+  toolExecutions: ToolExecutionOutcomeLike[];
   /** What the orchestrator decided to do (intent + provider + reasons). */
   routing: RoutingDecision;
   validation: ValidationReport;
@@ -439,6 +493,17 @@ export type CognitiveStreamEvent =
     }
   | { kind: "text-delta"; delta: string }
   | { kind: "tool-call"; toolCall: ProviderToolCall }
+  /**
+   * Turn D: emitted AFTER the orchestrator has executed a tool call
+   * against its registry. Consumers can show "✓ searched the web"
+   * style UI indicators between text deltas. Fires exactly once
+   * per tool call that ran; never fires for tool calls the model
+   * emitted without an executor (those surface via `tool-call`).
+   */
+  | {
+      kind: "tool-result";
+      outcome: ToolExecutionOutcomeLike;
+    }
   | { kind: "validation"; validation: ValidationReport }
   | { kind: "error"; code: string; message: string }
   | { kind: "done"; response: CognitiveResponse };

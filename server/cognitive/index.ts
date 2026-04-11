@@ -60,6 +60,22 @@ export {
   type InMemoryDocument,
 } from "./contextStores";
 
+// Tool execution layer (Turn D)
+export type {
+  ToolExecutionContext,
+  ToolExecutionOutcome,
+  ToolExecutionErrorCode,
+  ToolHandler,
+  RegisteredTool,
+  ToolRegistry,
+} from "./tools";
+export {
+  InMemoryToolRegistry,
+  DEFAULT_TOOL_TIMEOUT_MS,
+  serializeToolOutcomeForModel,
+} from "./tools";
+export type { ToolExecutionOutcomeLike } from "./types";
+
 // Orchestrator
 export {
   CognitiveMiddleware,

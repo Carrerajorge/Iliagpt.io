@@ -27,11 +27,13 @@ import {
   InHouseGptAdapter,
   InMemoryMemoryStore,
   InMemoryDocumentStore,
+  InMemoryToolRegistry,
   classifyIntent,
   validateOutput,
   type ProviderAdapter,
   type CognitiveIntent,
   type CognitiveStreamEvent,
+  type NormalizedProviderRequest,
   type ProviderResponse,
 } from "../cognitive";
 
@@ -121,6 +123,89 @@ function stripEventKind(event: CognitiveStreamEvent): Record<string, unknown> {
   return rest as Record<string, unknown>;
 }
 
+// ── Demo tool-loop adapter (Turn D smoke tests) ───────────────────────────
+
+/**
+ * Deterministic adapter that drives the Turn D agentic loop through
+ * one full tool round trip. Looks at the incoming message history
+ * and decides:
+ *
+ *   • First turn (no "tool" role messages yet) → emit a tool_calls
+ *     response that invokes `demo_sum` with a=2, b=3.
+ *
+ *   • Subsequent turns (there is a "tool" role message) → parse the
+ *     tool result and emit a `stop` response containing the sum.
+ *
+ * Unlike ScriptedMockAdapter, this instance is stateless across
+ * calls so every smoke test run starts from the same behavior. It
+ * also gracefully handles multiple tool loops because the decision
+ * rule is "is there already a tool result in my history".
+ */
+class DemoToolLoopAdapter implements ProviderAdapter {
+  readonly name = "mock-tool-agent";
+  readonly capabilities: ReadonlySet<CognitiveIntent> = new Set<CognitiveIntent>([
+    "chat",
+    "qa",
+    "tool_call",
+    "data_analysis",
+    "agent_task",
+    "code_generation",
+    "doc_generation",
+    "summarization",
+    "translation",
+    "unknown",
+  ]);
+
+  async generate(
+    request: NormalizedProviderRequest,
+    signal?: AbortSignal,
+  ): Promise<ProviderResponse> {
+    if (signal?.aborted) {
+      return {
+        text: "",
+        finishReason: "aborted",
+        toolCalls: [],
+        raw: { error: "aborted before call" },
+      };
+    }
+
+    const hasToolResult = request.messages.some((m) => m.role === "tool");
+
+    if (!hasToolResult) {
+      // First turn — ask the tool registry for a demo sum.
+      return {
+        text: "",
+        finishReason: "tool_calls",
+        toolCalls: [
+          {
+            id: `call_${Date.now()}`,
+            name: "demo_sum",
+            args: { a: 2, b: 3 },
+          },
+        ],
+        usage: { promptTokens: 0, completionTokens: 0 },
+      };
+    }
+
+    // Second turn — locate the most recent tool message and parse
+    // the result the orchestrator serialized into it.
+    const lastTool = [...request.messages].reverse().find((m) => m.role === "tool");
+    let parsed: unknown = null;
+    try {
+      parsed = lastTool?.content ? JSON.parse(lastTool.content) : null;
+    } catch {
+      parsed = null;
+    }
+    const sum = (parsed as { sum?: number } | null)?.sum ?? "unknown";
+    return {
+      text: `The demo_sum tool returned ${JSON.stringify(parsed)}. The sum is ${sum}.`,
+      finishReason: "stop",
+      toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 30 },
+    };
+  }
+}
+
 // ── Default adapter set (mock-only until real wiring lands) ───────────────
 
 function buildDefaultAdapters(): ProviderAdapter[] {
@@ -150,6 +235,9 @@ function buildDefaultAdapters(): ProviderAdapter[] {
       delayMs: 10,
       name: "mock-streaming",
     }),
+    // Demo tool-loop adapter (Turn D). Drives the agentic loop end-
+    // to-end against the demo tool registry wired into the router.
+    new DemoToolLoopAdapter(),
     // NOTE: SmartRouterAdapter is NOT registered here by default.
     // Mounting it requires the heavy llmGateway module which has
     // its own boot dependencies (Redis, env vars). A follow-up
@@ -191,6 +279,32 @@ export function createCognitiveRouter(): Router {
     ],
   });
 
+  // Demo tool registry (Turn D). Registers a single deterministic
+  // `demo_sum` tool that the `mock-tool-agent` adapter invokes via
+  // the agentic loop so live HTTP smoke tests can exercise the
+  // full tool-execution path without any external dependencies.
+  const demoRegistry = new InMemoryToolRegistry([
+    {
+      descriptor: {
+        name: "demo_sum",
+        description: "Return the arithmetic sum of two integers.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            a: { type: "number" },
+            b: { type: "number" },
+          },
+          required: ["a", "b"],
+        },
+      },
+      handler: async (args) => {
+        const a = Number(args.a ?? 0);
+        const b = Number(args.b ?? 0);
+        return { sum: a + b };
+      },
+    },
+  ]);
+
   // Single shared instance — the middleware itself is stateless and
   // re-entrant, so one instance handles every concurrent request.
   const middleware = new CognitiveMiddleware({
@@ -200,6 +314,8 @@ export function createCognitiveRouter(): Router {
     defaultSystemPrompt: "You are a helpful assistant.",
     memoryStore: demoMemory,
     documentStore: demoDocs,
+    toolRegistry: demoRegistry,
+    maxToolIterations: 5,
   });
 
   // ── POST /api/cognitive/run ───────────────────────────────────────────

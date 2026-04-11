@@ -56,11 +56,17 @@
 import { classifyIntent } from "./intentRouter";
 import { validateOutput } from "./outputValidator";
 import { enrichContext, renderContextBundle } from "./contextEnricher";
+import { serializeToolOutcomeForModel } from "./tools";
 import type {
   ContextBundle,
   DocumentStore,
   MemoryStore,
 } from "./context";
+import type {
+  ToolExecutionContext,
+  ToolExecutionOutcome,
+  ToolRegistry,
+} from "./tools";
 import type {
   CognitiveIntent,
   CognitiveRequest,
@@ -71,6 +77,7 @@ import type {
   NormalizedProviderRequest,
   ProviderAdapter,
   ProviderFinishReason,
+  ProviderMessage,
   ProviderResponse,
   ProviderToolCall,
   ProviderToolDescriptor,
@@ -134,12 +141,29 @@ export interface CognitiveMiddlewareOptions {
    * order. Added in Turn C.
    */
   contextBudgetChars?: number;
+  /**
+   * Optional tool registry. When provided, the orchestrator turns
+   * tool calls into actual handler invocations and loops until the
+   * model emits a `stop` finishReason or hits `maxToolIterations`.
+   * The registry's `list()` is merged into the `tools` field of
+   * every provider request so the model always sees the available
+   * tools. Added in Turn D.
+   */
+  toolRegistry?: ToolRegistry;
+  /**
+   * Maximum number of agentic-loop iterations. Each iteration is
+   * one provider call + one batch of tool executions. Default 5 —
+   * enough for typical tool chains (search → fetch → summarize)
+   * without letting a broken model spin forever. Added in Turn D.
+   */
+  maxToolIterations?: number;
 }
 
 const DEFAULT_OPTIONS = {
   maxRetries: 2,
   timeoutMs: 60_000,
   contextBudgetChars: 4000,
+  maxToolIterations: 5,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -232,6 +256,10 @@ export function selectProvider(
  * If `contextBundle` has chunks, they are rendered into a block and
  * appended to the system prompt so the model sees them exactly once,
  * in a provenance-tagged format, before processing the user message.
+ *
+ * If a tool registry is configured (Turn D), every tool it lists is
+ * merged into the request's `tools` field. Static `defaultTools`
+ * are preserved and listed first so existing callers are unaffected.
  */
 export function buildNormalizedRequest(
   req: CognitiveRequest,
@@ -246,6 +274,12 @@ export function buildNormalizedRequest(
       ? `${baseSystemPrompt}\n\n${rendered}`
       : rendered;
   }
+  const staticTools = options.defaultTools ?? [];
+  const registryTools = options.toolRegistry?.list() ?? [];
+  const mergedTools: ProviderToolDescriptor[] | undefined =
+    staticTools.length + registryTools.length > 0
+      ? [...staticTools, ...registryTools]
+      : undefined;
   return {
     systemPrompt,
     messages: [
@@ -254,7 +288,7 @@ export function buildNormalizedRequest(
         content: req.message,
       },
     ],
-    tools: options.defaultTools,
+    tools: mergedTools,
     maxTokens: req.maxTokens,
     temperature: req.temperature ?? 0.7,
   };
@@ -399,6 +433,60 @@ function sleep(ms: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Tool execution helpers (Turn D)
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute every tool call from one provider turn against the
+ * registry, in parallel. Returns the outcomes in the same order as
+ * the input `toolCalls`. Never throws.
+ *
+ * Shared by `run()` and `runStream()` so both paths use identical
+ * concurrency + error semantics.
+ */
+async function executeToolBatch(
+  registry: ToolRegistry,
+  toolCalls: readonly ProviderToolCall[],
+  baseCtx: Omit<ToolExecutionContext, "signal" | "toolCallId">,
+  signal: AbortSignal,
+): Promise<ToolExecutionOutcome[]> {
+  return Promise.all(
+    toolCalls.map((tc) =>
+      registry.execute(tc.name, tc.args, {
+        ...baseCtx,
+        toolCallId: tc.id,
+        signal,
+      }),
+    ),
+  );
+}
+
+/**
+ * Append one provider turn's output + the batch of tool executions
+ * to the running message history in the format every adapter
+ * expects: the assistant's tool-calling turn (empty text is fine)
+ * followed by one `{ role: "tool", name, content }` message per
+ * execution. Mutates the supplied array in-place.
+ */
+function appendToolTurn(
+  messages: ProviderMessage[],
+  turnText: string,
+  toolCalls: readonly ProviderToolCall[],
+  outcomes: readonly ToolExecutionOutcome[],
+): void {
+  messages.push({ role: "assistant", content: turnText });
+  for (let i = 0; i < outcomes.length; i++) {
+    const outcome = outcomes[i];
+    const toolCall = toolCalls[i];
+    messages.push({
+      role: "tool",
+      name: toolCall.name,
+      content: serializeToolOutcomeForModel(outcome),
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main orchestrator
 // ---------------------------------------------------------------------------
 
@@ -448,6 +536,11 @@ export class CognitiveMiddleware {
 
   /**
    * Run a single cognitive request end-to-end. Never throws.
+   *
+   * Turn D: when a `toolRegistry` is configured the orchestrator
+   * enters an agentic loop that executes tool calls locally and
+   * feeds their results back to the provider until the model
+   * produces a `stop` finishReason or `maxToolIterations` is hit.
    */
   async run(req: CognitiveRequest): Promise<CognitiveResponse> {
     const startedAt = Date.now();
@@ -457,6 +550,10 @@ export class CognitiveMiddleware {
     let validationMs = 0;
     let retries = 0;
     let contextChunksIncluded = 0;
+    let toolCallCount = 0;
+    let toolTotalMs = 0;
+    let agenticIterations = 0;
+    const toolExecutions: ToolExecutionOutcome[] = [];
     const errors: string[] = [];
 
     // ── 1. Intent classification ──────────────────────────────────
@@ -505,6 +602,7 @@ export class CognitiveMiddleware {
         ok: false,
         text: "",
         toolCalls: [],
+        toolExecutions: [],
         routing: {
           intent,
           providerName: "(none)",
@@ -540,28 +638,103 @@ export class CognitiveMiddleware {
     };
 
     // ── 4. Build the normalized provider request ──────────────────
-    const normalizedRequest = buildNormalizedRequest(
+    // The message history is mutated during the agentic loop to
+    // accumulate the model's tool-calling turns + the tool results
+    // fed back. We start with just the user message and let the
+    // loop append as it goes.
+    let normalizedRequest = buildNormalizedRequest(
       req,
       this.options,
       contextBundle,
     );
+    const messages: ProviderMessage[] = [...normalizedRequest.messages];
 
-    // ── 5. Call the provider with retry / timeout / cancellation ──
-    const t0 = Date.now();
-    const callResult = await callProviderWithRetry(
-      selection.adapter,
-      normalizedRequest,
-      this.options.maxRetries ?? DEFAULT_OPTIONS.maxRetries,
-      this.options.timeoutMs ?? DEFAULT_OPTIONS.timeoutMs,
-      req.signal,
-    );
-    providerCallMs = Date.now() - t0;
-    retries = callResult.retries;
-    for (const e of callResult.errors) errors.push(e);
+    // ── 5. Agentic tool loop (Turn D) ─────────────────────────────
+    const registry = this.options.toolRegistry;
+    const maxIterations =
+      this.options.maxToolIterations ?? DEFAULT_OPTIONS.maxToolIterations;
+    const maxRetries = this.options.maxRetries ?? DEFAULT_OPTIONS.maxRetries;
+    const timeoutMs = this.options.timeoutMs ?? DEFAULT_OPTIONS.timeoutMs;
+
+    let lastResponse: ProviderResponse | null = null;
+
+    for (let iter = 0; iter < maxIterations; iter++) {
+      agenticIterations = iter + 1;
+
+      const pT0 = Date.now();
+      const callResult = await callProviderWithRetry(
+        selection.adapter,
+        normalizedRequest,
+        maxRetries,
+        timeoutMs,
+        req.signal,
+      );
+      providerCallMs += Date.now() - pT0;
+      retries += callResult.retries;
+      for (const e of callResult.errors) errors.push(e);
+      lastResponse = callResult.response;
+
+      // If the model is done, or there is no registry to dispatch
+      // tool calls to, or the model produced no tool calls, exit
+      // the loop.
+      if (
+        !registry ||
+        callResult.response.finishReason !== "tool_calls" ||
+        callResult.response.toolCalls.length === 0
+      ) {
+        break;
+      }
+
+      // Execute every tool call from this turn in parallel.
+      const ttT0 = Date.now();
+      const outcomes = await executeToolBatch(
+        registry,
+        callResult.response.toolCalls,
+        {
+          userId: req.userId,
+          conversationId: req.conversationId,
+          iteration: iter,
+        },
+        req.signal ?? new AbortController().signal,
+      );
+      toolTotalMs += Date.now() - ttT0;
+      toolExecutions.push(...outcomes);
+      toolCallCount += outcomes.length;
+
+      // Append the model's tool turn + the results to the running
+      // history so the next iteration's provider call sees them.
+      appendToolTurn(
+        messages,
+        callResult.response.text,
+        callResult.response.toolCalls,
+        outcomes,
+      );
+
+      // Rebuild the normalized request with the extended message
+      // list. The systemPrompt + tools stay the same.
+      normalizedRequest = {
+        ...normalizedRequest,
+        messages: [...messages],
+      };
+
+      // If the caller aborted mid-loop, don't start another iteration.
+      if (req.signal?.aborted) break;
+    }
+
+    // Synthetic safety net: every path above should have populated
+    // `lastResponse` (the loop always runs at least one iteration).
+    // This defensive fallback keeps the orchestrator from crashing
+    // if someone ever sets `maxToolIterations` to 0.
+    const finalResponse: ProviderResponse = lastResponse ?? {
+      text: "",
+      finishReason: "error",
+      toolCalls: [],
+      raw: { error: "no provider response captured (maxToolIterations=0?)" },
+    };
 
     // ── 6. Validate the response ──────────────────────────────────
     const t1 = Date.now();
-    const validation: ValidationReport = validateOutput(callResult.response, {
+    const validation: ValidationReport = validateOutput(finalResponse, {
       toolDescriptors: normalizedRequest.tools,
       contextBundle,
       userMessage: req.message,
@@ -580,14 +753,18 @@ export class CognitiveMiddleware {
       validationMs,
       retries,
       contextChunksIncluded,
-      promptTokens: callResult.response.usage?.promptTokens,
-      completionTokens: callResult.response.usage?.completionTokens,
+      toolCallCount,
+      toolTotalMs,
+      agenticIterations,
+      promptTokens: finalResponse.usage?.promptTokens,
+      completionTokens: finalResponse.usage?.completionTokens,
     };
 
     return {
       ok: validation.ok,
-      text: callResult.response.text,
-      toolCalls: callResult.response.toolCalls,
+      text: finalResponse.text,
+      toolCalls: finalResponse.toolCalls,
+      toolExecutions,
       routing,
       validation,
       telemetry,
@@ -701,6 +878,7 @@ export class CognitiveMiddleware {
           ok: false,
           text: "",
           toolCalls: [],
+          toolExecutions: [],
           routing: {
             intent,
             providerName: "(none)",
@@ -753,143 +931,224 @@ export class CognitiveMiddleware {
     };
 
     // ── 4. Build the normalized provider request ──────────────────
-    const normalizedRequest = buildNormalizedRequest(
+    // The message history mutates during the agentic loop; start
+    // with just the user message and accumulate tool turns + tool
+    // results as iterations progress.
+    let normalizedRequest = buildNormalizedRequest(
       req,
       this.options,
       contextBundle,
     );
+    const messages: ProviderMessage[] = [...normalizedRequest.messages];
 
-    // ── 4. Wire cancellation + timeout ────────────────────────────
-    // Combine the caller's signal with a per-call timeout via a
-    // fresh AbortController. Same pattern as callProviderWithRetry —
-    // streaming and non-streaming paths must have identical
-    // hang-protection semantics.
-    const controller = new AbortController();
+    // Cancellation + timeout: a fresh controller that wires the
+    // caller's signal + a per-iteration timeout. Rebuilt each
+    // iteration so a previous timer doesn't leak.
     const externalSignal = req.signal;
-    const onExternalAbort = (): void => controller.abort();
-    if (externalSignal) {
-      if (externalSignal.aborted) {
-        controller.abort();
-      } else {
-        externalSignal.addEventListener("abort", onExternalAbort, { once: true });
-      }
-    }
     const timeoutMs = this.options.timeoutMs ?? DEFAULT_OPTIONS.timeoutMs;
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const registry = this.options.toolRegistry;
+    const maxIterations =
+      this.options.maxToolIterations ?? DEFAULT_OPTIONS.maxToolIterations;
 
-    // ── 5. Drive the provider stream ──────────────────────────────
+    // ── 5. Agentic streaming loop (Turn D) ────────────────────────
     let accumulatedText = "";
-    const toolCalls: ProviderToolCall[] = [];
+    const accumulatedToolCalls: ProviderToolCall[] = [];
+    const toolExecutions: ToolExecutionOutcome[] = [];
     let finishReason: ProviderFinishReason = "stop";
     let usage: ProviderUsage | undefined;
+    let toolCallCount = 0;
+    let toolTotalMs = 0;
+    let agenticIterations = 0;
+    let terminatedByErrorEvent = false;
 
-    const pt0 = Date.now();
-    try {
-      if (typeof selection.adapter.generateStream === "function") {
-        // Native streaming path.
-        try {
-          const iterator = selection.adapter.generateStream(
-            normalizedRequest,
-            controller.signal,
-          );
-          for await (const chunk of iterator) {
-            if (chunk.delta && chunk.delta.length > 0) {
-              accumulatedText += chunk.delta;
-              yield { kind: "text-delta", delta: chunk.delta };
-            }
-            if (chunk.toolCall) {
-              toolCalls.push(chunk.toolCall);
-              yield { kind: "tool-call", toolCall: chunk.toolCall };
-            }
-            if (chunk.done) {
-              if (chunk.finishReason) {
-                finishReason = chunk.finishReason;
+    for (let iter = 0; iter < maxIterations; iter++) {
+      agenticIterations = iter + 1;
+
+      // Per-iteration controller so the timeout and listeners don't
+      // leak across iterations.
+      const controller = new AbortController();
+      const onExternalAbort = (): void => controller.abort();
+      if (externalSignal) {
+        if (externalSignal.aborted) {
+          controller.abort();
+        } else {
+          externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+        }
+      }
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      // One provider turn's accumulators — reset per iteration so
+      // the tool loop appends only this iteration's text + tool
+      // calls to the running history.
+      let turnText = "";
+      const turnToolCalls: ProviderToolCall[] = [];
+      let turnFinishReason: ProviderFinishReason = "stop";
+      let turnUsage: ProviderUsage | undefined;
+
+      const pt0 = Date.now();
+      try {
+        if (typeof selection.adapter.generateStream === "function") {
+          try {
+            const iterator = selection.adapter.generateStream(
+              normalizedRequest,
+              controller.signal,
+            );
+            for await (const chunk of iterator) {
+              if (chunk.delta && chunk.delta.length > 0) {
+                turnText += chunk.delta;
+                accumulatedText += chunk.delta;
+                yield { kind: "text-delta", delta: chunk.delta };
               }
-              if (chunk.usage) {
-                usage = chunk.usage;
+              if (chunk.toolCall) {
+                turnToolCalls.push(chunk.toolCall);
+                accumulatedToolCalls.push(chunk.toolCall);
+                yield { kind: "tool-call", toolCall: chunk.toolCall };
               }
-              break;
+              if (chunk.done) {
+                if (chunk.finishReason) turnFinishReason = chunk.finishReason;
+                if (chunk.usage) turnUsage = chunk.usage;
+                break;
+              }
             }
-          }
-          // Record terminal aborts / errors in the errors[] array so
-          // the done response lets callers distinguish "ok ended" from
-          // "ended because of cancellation/error" without having to
-          // dig into finishReason.
-          if (finishReason === "aborted") {
-            errors.push("aborted");
-            yield { kind: "error", code: "aborted", message: "request aborted" };
-          } else if (finishReason === "error") {
-            errors.push("provider_error");
+            if (turnFinishReason === "aborted") {
+              errors.push("aborted");
+              yield { kind: "error", code: "aborted", message: "request aborted" };
+              terminatedByErrorEvent = true;
+            } else if (turnFinishReason === "error") {
+              errors.push("provider_error");
+              yield {
+                kind: "error",
+                code: "provider_error",
+                message: "provider stream terminated with error",
+              };
+              terminatedByErrorEvent = true;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            errors.push(`provider_stream_threw: ${msg}`);
+            turnFinishReason = controller.signal.aborted ? "aborted" : "error";
             yield {
               kind: "error",
-              code: "provider_error",
-              message: "provider stream terminated with error",
+              code: turnFinishReason === "aborted" ? "aborted" : "provider_stream_threw",
+              message: msg,
             };
+            terminatedByErrorEvent = true;
           }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          errors.push(`provider_stream_threw: ${msg}`);
-          finishReason = controller.signal.aborted ? "aborted" : "error";
-          yield {
-            kind: "error",
-            code: finishReason === "aborted" ? "aborted" : "provider_stream_threw",
-            message: msg,
-          };
+        } else {
+          // Streaming-naive adapter fallback: one generate() call
+          // per iteration, synthesize a single text-delta for the
+          // full response so the event contract stays intact.
+          try {
+            const response = await selection.adapter.generate(
+              normalizedRequest,
+              controller.signal,
+            );
+            if (response.text.length > 0) {
+              turnText = response.text;
+              accumulatedText += response.text;
+              yield { kind: "text-delta", delta: response.text };
+            }
+            for (const tc of response.toolCalls) {
+              turnToolCalls.push(tc);
+              accumulatedToolCalls.push(tc);
+              yield { kind: "tool-call", toolCall: tc };
+            }
+            turnFinishReason = response.finishReason;
+            turnUsage = response.usage;
+            if (turnFinishReason === "error") {
+              const errMsg =
+                (response.raw as { error?: string } | undefined)?.error ??
+                "unknown provider error";
+              errors.push(errMsg);
+              yield { kind: "error", code: "provider_error", message: errMsg };
+              terminatedByErrorEvent = true;
+            } else if (turnFinishReason === "aborted") {
+              errors.push("aborted");
+              yield { kind: "error", code: "aborted", message: "request aborted" };
+              terminatedByErrorEvent = true;
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            errors.push(`generate_threw: ${msg}`);
+            turnFinishReason = controller.signal.aborted ? "aborted" : "error";
+            yield {
+              kind: "error",
+              code: turnFinishReason === "aborted" ? "aborted" : "generate_threw",
+              message: msg,
+            };
+            terminatedByErrorEvent = true;
+          }
         }
-      } else {
-        // Fallback: the adapter doesn't implement streaming, so call
-        // generate() once and emit the entire response as a single
-        // text-delta. Preserves the event contract for streaming-
-        // naive adapters (mock-echo, InHouseGpt pre-Turn-B, etc.).
-        try {
-          const response = await selection.adapter.generate(
-            normalizedRequest,
-            controller.signal,
-          );
-          if (response.text.length > 0) {
-            accumulatedText = response.text;
-            yield { kind: "text-delta", delta: response.text };
-          }
-          for (const tc of response.toolCalls) {
-            toolCalls.push(tc);
-            yield { kind: "tool-call", toolCall: tc };
-          }
-          finishReason = response.finishReason;
-          usage = response.usage;
-          if (finishReason === "error") {
-            const errMsg =
-              (response.raw as { error?: string } | undefined)?.error ??
-              "unknown provider error";
-            errors.push(errMsg);
-            yield { kind: "error", code: "provider_error", message: errMsg };
-          } else if (finishReason === "aborted") {
-            errors.push("aborted");
-            yield { kind: "error", code: "aborted", message: "request aborted" };
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          errors.push(`generate_threw: ${msg}`);
-          finishReason = controller.signal.aborted ? "aborted" : "error";
-          yield {
-            kind: "error",
-            code: finishReason === "aborted" ? "aborted" : "generate_threw",
-            message: msg,
-          };
+      } finally {
+        clearTimeout(timer);
+        if (externalSignal) {
+          externalSignal.removeEventListener("abort", onExternalAbort);
         }
       }
-    } finally {
-      clearTimeout(timer);
-      if (externalSignal) {
-        externalSignal.removeEventListener("abort", onExternalAbort);
+      providerCallMs += Date.now() - pt0;
+      // Keep usage on the LAST iteration's totals — matches the
+      // non-streaming run() which reports the terminal turn's usage.
+      usage = turnUsage;
+      finishReason = turnFinishReason;
+
+      // Break on error / abort — no point looping further.
+      if (turnFinishReason === "error" || turnFinishReason === "aborted") break;
+
+      // No tool loop needed if the model is done, or no registry,
+      // or there are no tool calls to dispatch.
+      if (
+        !registry ||
+        turnFinishReason !== "tool_calls" ||
+        turnToolCalls.length === 0
+      ) {
+        break;
       }
+
+      // Execute every tool call from this turn in parallel.
+      const ttT0 = Date.now();
+      const outcomes = await executeToolBatch(
+        registry,
+        turnToolCalls,
+        {
+          userId: req.userId,
+          conversationId: req.conversationId,
+          iteration: iter,
+        },
+        externalSignal ?? new AbortController().signal,
+      );
+      toolTotalMs += Date.now() - ttT0;
+      toolExecutions.push(...outcomes);
+      toolCallCount += outcomes.length;
+
+      // Tell the consumer each tool has run — these events drive
+      // the "✓ searched the web" style UI ticks.
+      for (const outcome of outcomes) {
+        yield { kind: "tool-result", outcome };
+      }
+
+      // Extend the message history + rebuild the request so the
+      // next iteration's provider sees the tool results.
+      appendToolTurn(messages, turnText, turnToolCalls, outcomes);
+      normalizedRequest = {
+        ...normalizedRequest,
+        messages: [...messages],
+      };
+
+      // Respect mid-loop cancellation.
+      if (externalSignal?.aborted) break;
     }
-    providerCallMs = Date.now() - pt0;
+
+    // Suppress an unused-variable warning when the early-exit path
+    // sets `terminatedByErrorEvent` but the rest of the function
+    // doesn't need it — its purpose is to make error → done ordering
+    // obvious to future readers.
+    void terminatedByErrorEvent;
 
     // ── 6. Validate the assembled response ────────────────────────
     const assembled: ProviderResponse = {
       text: accumulatedText,
       finishReason,
-      toolCalls,
+      toolCalls: accumulatedToolCalls,
       usage,
     };
     const vt0 = Date.now();
@@ -914,6 +1173,9 @@ export class CognitiveMiddleware {
       validationMs,
       retries: 0,
       contextChunksIncluded,
+      toolCallCount,
+      toolTotalMs,
+      agenticIterations,
       promptTokens: usage?.promptTokens,
       completionTokens: usage?.completionTokens,
     };
@@ -921,7 +1183,8 @@ export class CognitiveMiddleware {
     const response: CognitiveResponse = {
       ok: validation.ok,
       text: accumulatedText,
-      toolCalls,
+      toolCalls: accumulatedToolCalls,
+      toolExecutions,
       routing,
       validation,
       telemetry,
@@ -958,5 +1221,8 @@ function emptyTelemetry(
     validationMs: 0,
     retries: 0,
     contextChunksIncluded,
+    toolCallCount: 0,
+    toolTotalMs: 0,
+    agenticIterations: 0,
   };
 }
