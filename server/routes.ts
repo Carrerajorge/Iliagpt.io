@@ -987,9 +987,22 @@ rootObserver.observe(document.documentElement,{childList:true,subtree:true});
         const userId = getSecureUserId(req) || ((req as any).user?.id || (req as any).session?.passport?.user || "anon-" + (req.ip || "unknown"));
         const token = generateGatewayToken(userId);
         const safeToken = token.replace(/[<>&"'\\]/g, '');
-        const pickerEnhancer = buildOpenClawModelPickerEnhancer(
-          await getOpenClawGatewayModelCatalog({ userId }),
-        );
+        // Fetching the unified model catalog can fail transiently (DB hiccup,
+        // upstream provider lookup, missing env vars). The picker enhancer
+        // is OPTIONAL polish — the control UI itself renders fine without
+        // it — so we degrade gracefully instead of crashing the whole page.
+        let pickerEnhancer = "";
+        try {
+          const catalog = await getOpenClawGatewayModelCatalog({ userId });
+          pickerEnhancer = buildOpenClawModelPickerEnhancer(catalog);
+        } catch (catalogError: any) {
+          log.warn("OpenClaw picker enhancer disabled (catalog fetch failed)", {
+            errorMessage: catalogError?.message ?? String(catalogError),
+            errorName: catalogError?.name ?? "UnknownError",
+            errorStack: catalogError?.stack ?? null,
+          });
+          // pickerEnhancer stays "" — the page will render without the picker.
+        }
 
         const preSeedScript = `<script>(function(){
 try{
@@ -1027,6 +1040,12 @@ try{
   s.themeMode=s.themeMode||"system";
   s.chatShowThinking=s.chatShowThinking!==false;
   s.chatShowToolCalls=s.chatShowToolCalls!==false;
+  for(var j=0;j<keys.length;j++){
+    var key=keys[j];
+    if(key===SK||key===TK||key.indexOf(SK+":")===0||key.indexOf(TK+":")===0){
+      localStorage.removeItem(key);
+    }
+  }
   var gk=normalizeGatewayUrl(w);
   localStorage.setItem(SK+":"+gk,JSON.stringify(s));
   localStorage.setItem(SK+":default",JSON.stringify(s));
@@ -1042,7 +1061,17 @@ try{
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
         res.send(modifiedHtml);
       } catch (error: any) {
-        log.error("Failed to render OpenClaw control UI", { error });
+        // Serialize the error explicitly — Pino (and most structured loggers)
+        // drop Error fields because `message`/`stack` are not enumerable.
+        // Without this, the log line reads `error: {}` and the real cause is
+        // invisible. With it, the next time this path blows up we'll see the
+        // actual stack trace and message in the dev server console.
+        log.error("Failed to render OpenClaw control UI", {
+          errorMessage: error?.message ?? String(error),
+          errorName: error?.name ?? "UnknownError",
+          errorStack: error?.stack ?? null,
+          errorCause: error?.cause ?? null,
+        });
         res.status(500).send("Failed to render OpenClaw control UI");
       }
     }

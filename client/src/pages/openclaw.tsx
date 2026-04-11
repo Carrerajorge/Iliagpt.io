@@ -34,6 +34,7 @@ export default function OpenClawPage() {
   const [, setLocation] = useLocation();
   const optimizationStartedRef = useRef(false);
   const [iframeReloadToken, setIframeReloadToken] = useState(0);
+  const [iframeBootToken] = useState(() => Date.now());
 
   useEffect(() => {
     if (optimizationStartedRef.current) {
@@ -79,7 +80,9 @@ export default function OpenClawPage() {
   }, []);
 
   const iframeSrc =
-    iframeReloadToken > 0 ? `/openclaw-ui?refresh=${iframeReloadToken}` : "/openclaw-ui";
+    iframeReloadToken > 0
+      ? `/openclaw-ui?boot=${iframeBootToken}&refresh=${iframeReloadToken}`
+      : `/openclaw-ui?boot=${iframeBootToken}`;
 
   return (
     <div className="flex flex-col h-screen bg-background" data-testid="openclaw-page">

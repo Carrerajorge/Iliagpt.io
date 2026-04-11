@@ -459,7 +459,7 @@ export function log(message: string, source = "express") {
 
   const listenOptions = isProduction
     ? ({ port, host: "0.0.0.0", reusePort: true } as const)
-    : port;
+    : ({ port, host: process.env.HOST || "127.0.0.1" } as const);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const server = (httpServer.listen as any)(listenOptions, async () => {
