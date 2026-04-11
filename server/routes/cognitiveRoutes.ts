@@ -25,6 +25,8 @@ import {
   ToolEmittingMockAdapter,
   StreamingMockAdapter,
   InHouseGptAdapter,
+  InMemoryMemoryStore,
+  InMemoryDocumentStore,
   classifyIntent,
   validateOutput,
   type ProviderAdapter,
@@ -161,6 +163,34 @@ export function createCognitiveRouter(): Router {
   const router: Router = express.Router();
   router.use(express.json({ limit: "1mb" }));
 
+  // Default in-memory stores seeded with a tiny demo corpus so the
+  // /run and /stream routes exercise the context enrichment layer
+  // (Turn C) out of the box. Production wiring replaces these with
+  // pgvector-backed implementations without touching the pipeline.
+  const demoMemory = new InMemoryMemoryStore({
+    seed: [
+      {
+        id: "seed-demo-1",
+        userId: "smoke-demo",
+        text: "smoke-demo user prefers Spanish replies and short answers",
+        importance: 0.9,
+        createdAt: 0,
+      },
+    ],
+  });
+  const demoDocs = new InMemoryDocumentStore({
+    documents: [
+      {
+        docId: "demo-handbook",
+        title: "Demo Handbook",
+        text:
+          "Refund policy: refunds are allowed within 30 days of purchase. " +
+          "Shipping takes 3 to 5 business days to anywhere worldwide. " +
+          "Our support team answers every email within 24 hours.",
+      },
+    ],
+  });
+
   // Single shared instance — the middleware itself is stateless and
   // re-entrant, so one instance handles every concurrent request.
   const middleware = new CognitiveMiddleware({
@@ -168,6 +198,8 @@ export function createCognitiveRouter(): Router {
     maxRetries: 2,
     timeoutMs: 30_000,
     defaultSystemPrompt: "You are a helpful assistant.",
+    memoryStore: demoMemory,
+    documentStore: demoDocs,
   });
 
   // ── POST /api/cognitive/run ───────────────────────────────────────────

@@ -377,6 +377,69 @@ else
   FAILED_TESTS+=("25 /stream invalid input")
 fi
 
+# ── Turn C — context enrichment checks ────────────────────────────────────
+#
+# The cognitive router boots with a tiny demo memory + document store
+# so live HTTP smoke tests can exercise the enrichment stage without
+# any external dependencies.
+
+# 26 /run telemetry exposes contextEnrichmentMs + contextChunksIncluded
+run_test "26 POST /api/cognitive/run telemetry has context fields" /api/cognitive/run POST '{
+  "userId": "smoke-demo",
+  "message": "Tell me about the refund policy",
+  "preferredProvider": "mock-echo"
+}' '(b) => typeof b.telemetry.contextEnrichmentMs === "number" && typeof b.telemetry.contextChunksIncluded === "number"'
+
+# 27 /run with matching document query pulls at least one chunk
+run_test "27 POST /api/cognitive/run picks up doc store chunk" /api/cognitive/run POST '{
+  "userId": "smoke-demo",
+  "message": "Tell me about the refund policy in detail",
+  "preferredProvider": "mock-echo"
+}' '(b) => b.telemetry.contextChunksIncluded >= 1'
+
+# 28 /run with matching memory query pulls the user memory
+run_test "28 POST /api/cognitive/run picks up user memory" /api/cognitive/run POST '{
+  "userId": "smoke-demo",
+  "message": "Give me a Spanish short answer reply",
+  "preferredProvider": "mock-echo"
+}' '(b) => b.telemetry.contextChunksIncluded >= 1'
+
+# 29 /run with unrelated query yields zero chunks (but no errors)
+run_test "29 POST /api/cognitive/run unrelated query yields 0 chunks" /api/cognitive/run POST '{
+  "userId": "smoke-demo",
+  "message": "astrophysics quasar jet",
+  "preferredProvider": "mock-echo"
+}' '(b) => b.telemetry.contextChunksIncluded === 0 && Array.isArray(b.errors)'
+
+# 30 /stream emits a context-enriched event after intent-decided
+BODY_30=$(stream_test "30" '{
+  "userId": "smoke-demo",
+  "message": "Tell me about the refund policy",
+  "preferredProvider": "mock-streaming"
+}')
+INTENT_LINE=$(echo "$BODY_30" | grep -n '^event: intent-decided' | head -1 | cut -d: -f1)
+CTX_LINE=$(echo "$BODY_30" | grep -n '^event: context-enriched' | head -1 | cut -d: -f1)
+if [[ -n "$INTENT_LINE" && -n "$CTX_LINE" && "$INTENT_LINE" -lt "$CTX_LINE" ]]; then
+  green "PASS"; printf ' — 30 /stream context-enriched event fires after intent-decided\n'
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 30 /stream context/intent ordering wrong (intent=%s ctx=%s)\n' "$INTENT_LINE" "$CTX_LINE"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("30 /stream context-enriched ordering")
+fi
+
+# 31 /stream context-enriched event payload carries chunksIncluded >= 1
+CTX_JSON=$(echo "$BODY_30" | awk '/^event: context-enriched$/{flag=1;next} flag && /^data: /{print substr($0,7);exit}')
+CHUNKS=$(echo "$CTX_JSON" | node -e 'let r="";process.stdin.on("data",d=>r+=d);process.stdin.on("end",()=>{try{const p=JSON.parse(r);console.log(p.chunksIncluded ?? 0)}catch{console.log(-1)}})')
+if [[ "$CHUNKS" -ge 1 ]]; then
+  green "PASS"; printf ' — 31 /stream context-enriched payload has chunksIncluded=%s\n' "$CHUNKS"
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 31 /stream expected chunksIncluded >= 1, got %s\n' "$CHUNKS"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("31 /stream context-enriched chunksIncluded")
+fi
+
 echo
 echo "=== Results: $(green $PASS) passed, $(red $FAIL) failed ==="
 if [[ $FAIL -gt 0 ]]; then

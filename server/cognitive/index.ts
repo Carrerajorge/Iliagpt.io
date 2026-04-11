@@ -37,6 +37,29 @@ export { classifyIntent, evaluateRules } from "./intentRouter";
 // Output validator
 export { validateOutput, type ValidateOutputOptions } from "./outputValidator";
 
+// Context enrichment layer (Turn C)
+export type {
+  ContextChunk,
+  ContextSourceKind,
+  ContextBundle,
+  ContextTelemetry,
+  MemoryRecord,
+  MemoryStore,
+  DocumentChunkRecord,
+  DocumentStore,
+  ContextEnricherOptions,
+} from "./context";
+export { enrichContext, renderContextBundle } from "./contextEnricher";
+export {
+  InMemoryMemoryStore,
+  InMemoryDocumentStore,
+  tokenizeForContext,
+  scoreQueryAgainst,
+  type InMemoryMemoryStoreOptions,
+  type InMemoryDocumentStoreOptions,
+  type InMemoryDocument,
+} from "./contextStores";
+
 // Orchestrator
 export {
   CognitiveMiddleware,

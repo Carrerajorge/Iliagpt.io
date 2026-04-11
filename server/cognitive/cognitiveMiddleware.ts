@@ -55,6 +55,12 @@
 
 import { classifyIntent } from "./intentRouter";
 import { validateOutput } from "./outputValidator";
+import { enrichContext, renderContextBundle } from "./contextEnricher";
+import type {
+  ContextBundle,
+  DocumentStore,
+  MemoryStore,
+} from "./context";
 import type {
   CognitiveIntent,
   CognitiveRequest,
@@ -110,11 +116,30 @@ export interface CognitiveMiddlewareOptions {
    * built-in execution loop).
    */
   defaultTools?: ProviderToolDescriptor[];
+  /**
+   * Optional long-term memory store. When provided, every request
+   * goes through the context enrichment stage to recall relevant
+   * memories for the user. Added in Turn C.
+   */
+  memoryStore?: MemoryStore;
+  /**
+   * Optional document store for RAG-style context retrieval. When
+   * provided, every request goes through the enrichment stage.
+   * Added in Turn C.
+   */
+  documentStore?: DocumentStore;
+  /**
+   * Hard character budget for the assembled context bundle. Default
+   * 4000. Chunks beyond this budget are dropped in lowest-score-first
+   * order. Added in Turn C.
+   */
+  contextBudgetChars?: number;
 }
 
 const DEFAULT_OPTIONS = {
   maxRetries: 2,
   timeoutMs: 60_000,
+  contextBudgetChars: 4000,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -201,15 +226,28 @@ export function selectProvider(
 
 /**
  * Build a normalized provider request from the user's CognitiveRequest
- * + the middleware's defaults. Pure function — output depends only
- * on inputs, no global state.
+ * + the middleware's defaults + an optional enriched context bundle.
+ * Pure function — output depends only on inputs, no global state.
+ *
+ * If `contextBundle` has chunks, they are rendered into a block and
+ * appended to the system prompt so the model sees them exactly once,
+ * in a provenance-tagged format, before processing the user message.
  */
 export function buildNormalizedRequest(
   req: CognitiveRequest,
   options: CognitiveMiddlewareOptions,
+  contextBundle?: ContextBundle,
 ): NormalizedProviderRequest {
+  const baseSystemPrompt = options.defaultSystemPrompt;
+  let systemPrompt = baseSystemPrompt;
+  if (contextBundle && contextBundle.chunks.length > 0) {
+    const rendered = renderContextBundle(contextBundle);
+    systemPrompt = baseSystemPrompt
+      ? `${baseSystemPrompt}\n\n${rendered}`
+      : rendered;
+  }
   return {
-    systemPrompt: options.defaultSystemPrompt,
+    systemPrompt,
     messages: [
       {
         role: "user",
@@ -372,14 +410,53 @@ export class CognitiveMiddleware {
   }
 
   /**
+   * Run the context enrichment stage for a request. Never throws.
+   * Returns an empty bundle when no stores are configured so the
+   * caller can treat the result uniformly.
+   *
+   * Added in Turn C.
+   */
+  private async runContextEnrichment(
+    req: CognitiveRequest,
+  ): Promise<ContextBundle> {
+    if (!this.options.memoryStore && !this.options.documentStore) {
+      return {
+        chunks: [],
+        totalChars: 0,
+        retrievedCount: 0,
+        includedCount: 0,
+        errors: [],
+        telemetry: {
+          memoryLookupMs: 0,
+          documentLookupMs: 0,
+          totalMs: 0,
+        },
+      };
+    }
+    return enrichContext(
+      req.userId,
+      req.message,
+      {
+        memoryStore: this.options.memoryStore,
+        documentStore: this.options.documentStore,
+        maxTotalChars:
+          this.options.contextBudgetChars ?? DEFAULT_OPTIONS.contextBudgetChars,
+      },
+      req.signal,
+    );
+  }
+
+  /**
    * Run a single cognitive request end-to-end. Never throws.
    */
   async run(req: CognitiveRequest): Promise<CognitiveResponse> {
     const startedAt = Date.now();
     let intentClassificationMs = 0;
+    let contextEnrichmentMs = 0;
     let providerCallMs = 0;
     let validationMs = 0;
     let retries = 0;
+    let contextChunksIncluded = 0;
     const errors: string[] = [];
 
     // ── 1. Intent classification ──────────────────────────────────
@@ -401,7 +478,19 @@ export class CognitiveMiddleware {
       };
     }
 
-    // ── 2. Provider selection ─────────────────────────────────────
+    // ── 2. Context enrichment (Turn C) ────────────────────────────
+    // Runs before provider selection so enrichment failures are
+    // visible even when no provider could be picked. Never throws;
+    // a store error lands as `errors[]` on the bundle.
+    const ctxT0 = Date.now();
+    const contextBundle = await this.runContextEnrichment(req);
+    contextEnrichmentMs = Date.now() - ctxT0;
+    contextChunksIncluded = contextBundle.includedCount;
+    for (const e of contextBundle.errors) {
+      errors.push(`context: ${e}`);
+    }
+
+    // ── 3. Provider selection ─────────────────────────────────────
     const selection = selectProvider(
       this.options.adapters,
       intent.intent,
@@ -433,7 +522,13 @@ export class CognitiveMiddleware {
           refusalDetected: false,
           toolCallsValid: true,
         },
-        telemetry: emptyTelemetry(startedAt, endedAt, intentClassificationMs),
+        telemetry: emptyTelemetry(
+          startedAt,
+          endedAt,
+          intentClassificationMs,
+          contextEnrichmentMs,
+          contextChunksIncluded,
+        ),
         errors: [...errors, "no_capable_provider"],
       };
     }
@@ -444,10 +539,14 @@ export class CognitiveMiddleware {
       providerReason: selection.reason,
     };
 
-    // ── 3. Build the normalized provider request ──────────────────
-    const normalizedRequest = buildNormalizedRequest(req, this.options);
+    // ── 4. Build the normalized provider request ──────────────────
+    const normalizedRequest = buildNormalizedRequest(
+      req,
+      this.options,
+      contextBundle,
+    );
 
-    // ── 4. Call the provider with retry / timeout / cancellation ──
+    // ── 5. Call the provider with retry / timeout / cancellation ──
     const t0 = Date.now();
     const callResult = await callProviderWithRetry(
       selection.adapter,
@@ -460,23 +559,27 @@ export class CognitiveMiddleware {
     retries = callResult.retries;
     for (const e of callResult.errors) errors.push(e);
 
-    // ── 5. Validate the response ──────────────────────────────────
+    // ── 6. Validate the response ──────────────────────────────────
     const t1 = Date.now();
     const validation: ValidationReport = validateOutput(callResult.response, {
       toolDescriptors: normalizedRequest.tools,
+      contextBundle,
+      userMessage: req.message,
     });
     validationMs = Date.now() - t1;
 
-    // ── 6. Assemble the final response ────────────────────────────
+    // ── 7. Assemble the final response ────────────────────────────
     const endedAt = Date.now();
     const telemetry: CognitiveTelemetry = {
       startedAt,
       endedAt,
       durationMs: endedAt - startedAt,
       intentClassificationMs,
+      contextEnrichmentMs,
       providerCallMs,
       validationMs,
       retries,
+      contextChunksIncluded,
       promptTokens: callResult.response.usage?.promptTokens,
       completionTokens: callResult.response.usage?.completionTokens,
     };
@@ -546,8 +649,10 @@ export class CognitiveMiddleware {
   ): AsyncGenerator<CognitiveStreamEvent, void, void> {
     const startedAt = Date.now();
     let intentClassificationMs = 0;
+    let contextEnrichmentMs = 0;
     let providerCallMs = 0;
     let validationMs = 0;
+    let contextChunksIncluded = 0;
     const errors: string[] = [];
 
     // ── 1. Intent classification ──────────────────────────────────
@@ -567,7 +672,16 @@ export class CognitiveMiddleware {
       };
     }
 
-    // ── 2. Provider selection ─────────────────────────────────────
+    // ── 2. Context enrichment (Turn C) ────────────────────────────
+    const ctxT0 = Date.now();
+    const contextBundle = await this.runContextEnrichment(req);
+    contextEnrichmentMs = Date.now() - ctxT0;
+    contextChunksIncluded = contextBundle.includedCount;
+    for (const e of contextBundle.errors) {
+      errors.push(`context: ${e}`);
+    }
+
+    // ── 3. Provider selection ─────────────────────────────────────
     const selection = selectProvider(
       this.options.adapters,
       intent.intent,
@@ -604,7 +718,13 @@ export class CognitiveMiddleware {
             refusalDetected: false,
             toolCallsValid: true,
           },
-          telemetry: emptyTelemetry(startedAt, endedAt, intentClassificationMs),
+          telemetry: emptyTelemetry(
+            startedAt,
+            endedAt,
+            intentClassificationMs,
+            contextEnrichmentMs,
+            contextChunksIncluded,
+          ),
           errors: [...errors, "no_capable_provider"],
         },
       };
@@ -622,8 +742,22 @@ export class CognitiveMiddleware {
     // chunk takes a while to arrive.
     yield { kind: "intent-decided", routing };
 
-    // ── 3. Build the normalized provider request ──────────────────
-    const normalizedRequest = buildNormalizedRequest(req, this.options);
+    // Emit a context-enriched event immediately after intent so the
+    // UI can render "read N memories / docs" indicators before the
+    // first token arrives.
+    yield {
+      kind: "context-enriched",
+      chunksIncluded: contextBundle.includedCount,
+      totalChars: contextBundle.totalChars,
+      contextEnrichmentMs,
+    };
+
+    // ── 4. Build the normalized provider request ──────────────────
+    const normalizedRequest = buildNormalizedRequest(
+      req,
+      this.options,
+      contextBundle,
+    );
 
     // ── 4. Wire cancellation + timeout ────────────────────────────
     // Combine the caller's signal with a per-call timeout via a
@@ -761,6 +895,8 @@ export class CognitiveMiddleware {
     const vt0 = Date.now();
     const validation: ValidationReport = validateOutput(assembled, {
       toolDescriptors: normalizedRequest.tools,
+      contextBundle,
+      userMessage: req.message,
     });
     validationMs = Date.now() - vt0;
 
@@ -773,9 +909,11 @@ export class CognitiveMiddleware {
       endedAt,
       durationMs: endedAt - startedAt,
       intentClassificationMs,
+      contextEnrichmentMs,
       providerCallMs,
       validationMs,
       retries: 0,
+      contextChunksIncluded,
       promptTokens: usage?.promptTokens,
       completionTokens: usage?.completionTokens,
     };
@@ -807,14 +945,18 @@ function emptyTelemetry(
   startedAt: number,
   endedAt: number,
   intentClassificationMs: number,
+  contextEnrichmentMs: number = 0,
+  contextChunksIncluded: number = 0,
 ): CognitiveTelemetry {
   return {
     startedAt,
     endedAt,
     durationMs: endedAt - startedAt,
     intentClassificationMs,
+    contextEnrichmentMs,
     providerCallMs: 0,
     validationMs: 0,
     retries: 0,
+    contextChunksIncluded,
   };
 }

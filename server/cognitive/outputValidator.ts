@@ -44,6 +44,7 @@ import type {
   ValidationIssue,
   ValidationReport,
 } from "./types";
+import type { ContextBundle } from "./context";
 
 // ---------------------------------------------------------------------------
 // Refusal heuristic
@@ -177,6 +178,27 @@ export interface ValidateOutputOptions {
    * Default 100,000 characters.
    */
   maxLengthSoftCap?: number;
+  /**
+   * The context bundle that was injected into the request. Enables
+   * the alignment-inspired checks:
+   *
+   *   • `citation_without_context` — the response cites a source
+   *     (URL, document id, "according to the memo") but the context
+   *     bundle was empty. The model is making something up.
+   *
+   *   • `false_premise_echoed` — the original user message contained
+   *     a clearly wrong factual premise and the response parroted it
+   *     instead of correcting.
+   *
+   * Optional: callers that don't build a context bundle still get
+   * the full shape-level checks.
+   */
+  contextBundle?: ContextBundle;
+  /**
+   * The original user message. Used by `false_premise_echoed` to
+   * detect dangerous premise echoing. Optional.
+   */
+  userMessage?: string;
 }
 
 /**
@@ -188,7 +210,12 @@ export function validateOutput(
   response: ProviderResponse,
   options: ValidateOutputOptions = {},
 ): ValidationReport {
-  const { toolDescriptors, maxLengthSoftCap = 100_000 } = options;
+  const {
+    toolDescriptors,
+    maxLengthSoftCap = 100_000,
+    contextBundle,
+    userMessage,
+  } = options;
   const issues: ValidationIssue[] = [];
 
   // 1. Finish reason gate
@@ -265,6 +292,71 @@ export function validateOutput(
     });
   }
 
+  // 6. Alignment-inspired checks (Turn C).
+  //
+  // These are HEURISTIC checks — they will miss subtle failures and
+  // occasionally false-positive on tricky text. They are cheap,
+  // deterministic, and good enough to catch the bulk of the obvious
+  // cases. The validator grades them at "warning" severity so
+  // callers see the signal without breaking otherwise-healthy
+  // responses.
+  if (response.text.length > 0) {
+    // 6a. Citation without grounding context.
+    // If the response cites a URL or uses "according to" / "the
+    // document says" style phrasing, but the enrichment stage
+    // injected ZERO context chunks, the model is inventing sources.
+    const cites = CITATION_PATTERNS.some((re) => re.test(response.text));
+    const hasContext =
+      contextBundle !== undefined && contextBundle.chunks.length > 0;
+    if (cites && !hasContext) {
+      issues.push({
+        severity: "warning",
+        code: "citation_without_context",
+        message:
+          "response contains citation-style phrases but no context chunks were injected",
+      });
+    }
+
+    // 6b. Prompt injection echo.
+    // The response contains the exact phrasing of a classic prompt
+    // injection attempt. Usually means the model repeated attacker
+    // text from a tool result or document chunk.
+    if (PROMPT_INJECTION_ECHO.test(response.text)) {
+      issues.push({
+        severity: "warning",
+        code: "prompt_injection_echo",
+        message: "response echoes classic prompt-injection instructions",
+      });
+    }
+
+    // 6c. Unsafe content patterns. Deliberately narrow — the goal is
+    // not to replace a full safety classifier but to catch the
+    // obvious "how do I hurt myself" type patterns that should
+    // never land in a user-visible reply from our system.
+    for (const pattern of UNSAFE_CONTENT_PATTERNS) {
+      if (pattern.regex.test(response.text)) {
+        issues.push({
+          severity: "error",
+          code: `unsafe_${pattern.code}`,
+          message: `response contains unsafe ${pattern.code} content`,
+        });
+        break; // One strike is enough — don't spam issues.
+      }
+    }
+
+    // 6d. False-premise echo.
+    // The user stated a demonstrably false premise ("the sun is
+    // cold", "2 + 2 = 5", "water boils at 50 °C") and the response
+    // parroted it without correcting.
+    if (userMessage && echoesFalsePremise(userMessage, response.text)) {
+      issues.push({
+        severity: "warning",
+        code: "false_premise_echoed",
+        message: "response repeats a demonstrably false premise from the user's message",
+      });
+    }
+  }
+
   const ok = !issues.some((i) => i.severity === "error");
   return {
     ok,
@@ -272,4 +364,82 @@ export function validateOutput(
     refusalDetected,
     toolCallsValid: toolValidation.allValid,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Alignment-inspired heuristics (Turn C)
+// ---------------------------------------------------------------------------
+
+/**
+ * Citation-style phrasing patterns. Presence of one of these + zero
+ * injected context chunks is a strong signal the model is
+ * confabulating sources.
+ *
+ * Explicitly kept narrow: we want a LOW false-positive rate on
+ * legitimate prose. Passing these means the model is really making
+ * a claim that implies a source.
+ */
+const CITATION_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bhttps?:\/\/\S+/i, // bare URL in response
+  /\baccording to (the|this|that|a)\s+(document|memo|article|report|study|paper|source)\b/i,
+  /\bas (mentioned|stated|noted) in the (document|memo|article|report|context)\b/i,
+  /\b(see|refer to) (the|that)\s+(document|memo|attachment|file)\b/i,
+  /\bseg[uú]n (el|la|los|las)\s+(documento|memo|art[ií]culo|informe|estudio|fuente)\b/i,
+  /\bcomo (se menciona|se dice|se nota) en (el|la)\s+(documento|memo|art[ií]culo|informe|contexto)\b/i,
+];
+
+/**
+ * Prompt injection echoes — if the MODEL'S OUTPUT contains one of
+ * these, it's repeating attacker text from a context source back to
+ * the user.
+ */
+const PROMPT_INJECTION_ECHO =
+  /\b(ignore (all )?(previous|prior|above) (instructions|rules)|disregard the system prompt|you are now (in|playing|acting as) dan|jailbreak mode)\b/i;
+
+/**
+ * Unsafe content patterns. Narrow scope: things no production LLM
+ * assistant should ever ship to a user. These are the obvious cases
+ * that a safety classifier would catch — we keep a tiny regex
+ * backstop here so that even if the provider doesn't flag it, we do.
+ *
+ * This is NOT a replacement for the provider's own safety layer.
+ * It's a last-line defence.
+ */
+const UNSAFE_CONTENT_PATTERNS: ReadonlyArray<{ code: string; regex: RegExp }> = [
+  {
+    code: "self_harm_instructions",
+    regex:
+      /\b(step[- ]by[- ]step|instructions?|how to)\b[^\n]{0,40}\b(kill yourself|end your life|commit suicide|self[- ]?harm)\b/i,
+  },
+  {
+    code: "weapon_synthesis",
+    regex:
+      /\b(synthesize|produce|make|build|create)\b[^\n]{0,40}\b(nerve agent|sarin|vx gas|biological weapon|nuclear weapon|dirty bomb)\b/i,
+  },
+];
+
+/**
+ * Simple false-premise catalogue. We keep this tight on purpose:
+ * false-positive here means we scold the model for repeating an
+ * arithmetic fact that was actually correct.
+ *
+ * Each entry is a regex that matches a clearly wrong premise in
+ * either the user message or the response. If the entry matches
+ * BOTH the user message AND the response, we flag it.
+ */
+const FALSE_PREMISE_PATTERNS: ReadonlyArray<RegExp> = [
+  /\b2\s*\+\s*2\s*=\s*5\b/i,
+  /\bthe (sun|moon) is cold\b/i,
+  /\bel sol es fr[ií]o\b/i,
+  /\bwater (boils|freezes) at 50\s*°?\s*c\b/i,
+  /\bel agua hierve a 50\s*°?\s*c\b/i,
+  /\bthe earth is flat\b/i,
+  /\bla tierra es plana\b/i,
+];
+
+function echoesFalsePremise(userMessage: string, responseText: string): boolean {
+  for (const re of FALSE_PREMISE_PATTERNS) {
+    if (re.test(userMessage) && re.test(responseText)) return true;
+  }
+  return false;
 }

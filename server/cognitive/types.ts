@@ -344,12 +344,24 @@ export interface CognitiveTelemetry {
   durationMs: number;
   /** Time spent inside the intent classifier. */
   intentClassificationMs: number;
+  /**
+   * Time spent inside the context enrichment stage (memory + doc
+   * lookups + budget packing). 0 when no stores are configured.
+   * Added in Turn C.
+   */
+  contextEnrichmentMs: number;
   /** Time spent inside the provider adapter's generate() call. */
   providerCallMs: number;
   /** Time spent inside the output validator. */
   validationMs: number;
   /** How many provider call retries happened (0 means first call succeeded). */
   retries: number;
+  /**
+   * How many context chunks survived the budget cut and ended up in
+   * the request. 0 when no stores are configured or none matched.
+   * Added in Turn C.
+   */
+  contextChunksIncluded: number;
   promptTokens?: number;
   completionTokens?: number;
 }
@@ -419,6 +431,12 @@ export interface CognitiveResponse {
  */
 export type CognitiveStreamEvent =
   | { kind: "intent-decided"; routing: RoutingDecision }
+  | {
+      kind: "context-enriched";
+      chunksIncluded: number;
+      totalChars: number;
+      contextEnrichmentMs: number;
+    }
   | { kind: "text-delta"; delta: string }
   | { kind: "tool-call"; toolCall: ProviderToolCall }
   | { kind: "validation"; validation: ValidationReport }
