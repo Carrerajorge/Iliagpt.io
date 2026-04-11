@@ -23,11 +23,13 @@ import {
   EchoMockAdapter,
   ScriptedMockAdapter,
   ToolEmittingMockAdapter,
+  StreamingMockAdapter,
   InHouseGptAdapter,
   classifyIntent,
   validateOutput,
   type ProviderAdapter,
   type CognitiveIntent,
+  type CognitiveStreamEvent,
   type ProviderResponse,
 } from "../cognitive";
 
@@ -102,6 +104,21 @@ const validateRequestSchema = z.object({
     .optional(),
 });
 
+// ── SSE helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Drop the `kind` field from a stream event before serializing to SSE.
+ * The event name already lives in the `event:` header line, so
+ * embedding it a second time in the data payload is pure noise.
+ */
+function stripEventKind(event: CognitiveStreamEvent): Record<string, unknown> {
+  const { kind: _kind, ...rest } = event as CognitiveStreamEvent & {
+    kind: string;
+  };
+  void _kind;
+  return rest as Record<string, unknown>;
+}
+
 // ── Default adapter set (mock-only until real wiring lands) ───────────────
 
 function buildDefaultAdapters(): ProviderAdapter[] {
@@ -122,6 +139,15 @@ function buildDefaultAdapters(): ProviderAdapter[] {
       "mock-scripted",
     ),
     new ToolEmittingMockAdapter("noop_tool", { ok: true }),
+    // Streaming mock used by /api/cognitive/stream live smoke tests +
+    // UI demos. Splits a canned reply into 4 chunks so the SSE
+    // consumer gets to see real incremental deltas. Deterministic,
+    // no network, no API keys.
+    new StreamingMockAdapter({
+      chunks: ["hola ", "mundo ", "del ", "streaming"],
+      delayMs: 10,
+      name: "mock-streaming",
+    }),
     // NOTE: SmartRouterAdapter is NOT registered here by default.
     // Mounting it requires the heavy llmGateway module which has
     // its own boot dependencies (Redis, env vars). A follow-up
@@ -190,6 +216,99 @@ export function createCognitiveRouter(): Router {
         error: "cognitive_run_failed",
         message: caught instanceof Error ? caught.message : String(caught),
       });
+    }
+  });
+
+  // ── POST /api/cognitive/stream ────────────────────────────────────────
+  //
+  // Streaming twin of /run. Emits Server-Sent Events as the pipeline
+  // progresses:
+  //
+  //   event: intent-decided    → { routing }
+  //   event: text-delta        → { delta }           (0..N)
+  //   event: tool-call         → { toolCall }        (0..N)
+  //   event: validation        → { validation }
+  //   event: done              → { response }        (terminal)
+  //   event: error             → { code, message }   (only on failures)
+  //
+  // A blank "event: ping" message is written every 15 s to keep
+  // proxies from timing out the connection — mirrors the keepalive
+  // pattern the rest of the repo uses for its SSE routes.
+  router.post("/stream", async (req: Request, res: Response) => {
+    const parsed = runRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+
+    // SSE headers (mirrors server/realtime/presence.ts + chat SSE).
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    // Disable nginx buffering so chunks reach the browser immediately.
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+
+    const writeEvent = (event: string, data: unknown): void => {
+      // Each SSE message is two framed lines:
+      //   event: <name>
+      //   data: <json>
+      // followed by an empty line as the end-of-message marker.
+      try {
+        res.write(`event: ${event}\n`);
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      } catch {
+        // Socket already closed — nothing to do.
+      }
+    };
+
+    // Keepalive ping every 15s. Note: SSE comments are lines starting
+    // with ":" — consumers ignore them, proxies reset their idle
+    // timers on any byte.
+    const keepalive = setInterval(() => {
+      try {
+        res.write(": ping\n\n");
+      } catch {
+        clearInterval(keepalive);
+      }
+    }, 15_000);
+
+    // Wire cancellation. Same Node-22 pattern as /run: use res.on("close")
+    // because req.on("close") fires as soon as express.json() finishes
+    // reading the body.
+    const controller = new AbortController();
+    res.on("close", () => {
+      if (!res.writableEnded) {
+        controller.abort();
+      }
+    });
+
+    try {
+      const stream = middleware.runStream({
+        ...parsed.data,
+        signal: controller.signal,
+      });
+      for await (const event of stream) {
+        writeEvent(event.kind, stripEventKind(event));
+        // Safety: if the consumer already disconnected, stop pulling.
+        if (res.writableEnded) break;
+      }
+    } catch (caught) {
+      // The generator is contractually not supposed to throw, but
+      // defensive coding keeps the route robust.
+      writeEvent("error", {
+        code: "stream_threw",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    } finally {
+      clearInterval(keepalive);
+      try {
+        res.end();
+      } catch {
+        // Already ended.
+      }
     }
   });
 

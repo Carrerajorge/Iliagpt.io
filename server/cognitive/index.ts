@@ -26,7 +26,9 @@ export type {
   ProviderResponse,
   ProviderFinishReason,
   ProviderUsage,
+  ProviderStreamChunk,
   NormalizedProviderRequest,
+  CognitiveStreamEvent,
 } from "./types";
 
 // Intent router
@@ -51,6 +53,8 @@ export {
   FailingMockAdapter,
   AbortableMockAdapter,
   ToolEmittingMockAdapter,
+  StreamingMockAdapter,
+  type StreamingMockAdapterOptions,
 } from "./providerAdapters/mockAdapter";
 
 // Real provider adapters (Turn A of the cognitive roadmap)

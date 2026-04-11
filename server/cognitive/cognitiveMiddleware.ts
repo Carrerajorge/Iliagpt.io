@@ -59,12 +59,16 @@ import type {
   CognitiveIntent,
   CognitiveRequest,
   CognitiveResponse,
+  CognitiveStreamEvent,
   CognitiveTelemetry,
   IntentClassification,
   NormalizedProviderRequest,
   ProviderAdapter,
+  ProviderFinishReason,
   ProviderResponse,
+  ProviderToolCall,
   ProviderToolDescriptor,
+  ProviderUsage,
   RoutingDecision,
   ValidationReport,
 } from "./types";
@@ -486,6 +490,307 @@ export class CognitiveMiddleware {
       telemetry,
       errors,
     };
+  }
+
+  /**
+   * Stream a single cognitive request end-to-end. Never throws.
+   *
+   * Emits a fixed sequence of `CognitiveStreamEvent`s as the pipeline
+   * progresses. The happy-path order is:
+   *
+   *   1. exactly ONE  "intent-decided"
+   *   2. zero or more "text-delta"
+   *   3. zero or more "tool-call"
+   *   4. exactly ONE  "validation"
+   *   5. exactly ONE  "done"           (terminates the stream)
+   *
+   * On failure before provider selection (no capable adapter,
+   * classifier threw), the generator emits ONE "error" followed by
+   * ONE "done" whose response has `ok: false`. The "done" event
+   * ALWAYS fires, so consumers can rely on it as the single
+   * termination marker.
+   *
+   * Streaming strategy:
+   *
+   *   • If the chosen adapter implements `generateStream`, we pipe
+   *     its chunks through directly. The adapter is responsible for
+   *     aggregating multi-chunk tool calls into complete ones before
+   *     yielding them.
+   *
+   *   • If the chosen adapter does NOT implement `generateStream`,
+   *     we fall back to calling `generate()` once and synthesizing
+   *     a single text-delta from the full response. Streaming-naive
+   *     adapters still work — just not incrementally.
+   *
+   * Cancellation:
+   *
+   *   • The caller's `req.signal` is forwarded to the adapter. When
+   *     it aborts, the adapter's iterator receives an aborted signal,
+   *     the generator records an "aborted" finish reason, and the
+   *     "done" event fires with `ok: false`.
+   *
+   *   • A timeout AbortController is also chained in — matches the
+   *     retry path's semantics so streaming and non-streaming have
+   *     identical hang-protection.
+   *
+   * Retries:
+   *
+   *   • Streaming requests are NOT retried. By the time the first
+   *     chunk reaches the consumer, the stream is committed. A
+   *     mid-stream error is reported via the "error" event plus a
+   *     done event with `ok: false`; the consumer can re-issue the
+   *     request if desired.
+   */
+  async *runStream(
+    req: CognitiveRequest,
+  ): AsyncGenerator<CognitiveStreamEvent, void, void> {
+    const startedAt = Date.now();
+    let intentClassificationMs = 0;
+    let providerCallMs = 0;
+    let validationMs = 0;
+    const errors: string[] = [];
+
+    // ── 1. Intent classification ──────────────────────────────────
+    let intent: IntentClassification;
+    try {
+      const t0 = Date.now();
+      intent = classifyIntent(req.message, req.intentHint);
+      intentClassificationMs = Date.now() - t0;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errors.push(`intent_classifier_threw: ${message}`);
+      intent = {
+        intent: "unknown",
+        confidence: 0,
+        reasoning: `classifier threw: ${message}`,
+        alternatives: [],
+      };
+    }
+
+    // ── 2. Provider selection ─────────────────────────────────────
+    const selection = selectProvider(
+      this.options.adapters,
+      intent.intent,
+      req.preferredProvider,
+    );
+
+    if (!selection.adapter) {
+      yield {
+        kind: "error",
+        code: "no_capable_provider",
+        message: selection.reason,
+      };
+      const endedAt = Date.now();
+      yield {
+        kind: "done",
+        response: {
+          ok: false,
+          text: "",
+          toolCalls: [],
+          routing: {
+            intent,
+            providerName: "(none)",
+            providerReason: selection.reason,
+          },
+          validation: {
+            ok: false,
+            issues: [
+              {
+                severity: "error",
+                code: "no_capable_provider",
+                message: selection.reason,
+              },
+            ],
+            refusalDetected: false,
+            toolCallsValid: true,
+          },
+          telemetry: emptyTelemetry(startedAt, endedAt, intentClassificationMs),
+          errors: [...errors, "no_capable_provider"],
+        },
+      };
+      return;
+    }
+
+    const routing: RoutingDecision = {
+      intent,
+      providerName: selection.adapter.name,
+      providerReason: selection.reason,
+    };
+
+    // Emit the routing decision BEFORE we call the provider so the
+    // consumer can surface "thinking…" UI even if the first text
+    // chunk takes a while to arrive.
+    yield { kind: "intent-decided", routing };
+
+    // ── 3. Build the normalized provider request ──────────────────
+    const normalizedRequest = buildNormalizedRequest(req, this.options);
+
+    // ── 4. Wire cancellation + timeout ────────────────────────────
+    // Combine the caller's signal with a per-call timeout via a
+    // fresh AbortController. Same pattern as callProviderWithRetry —
+    // streaming and non-streaming paths must have identical
+    // hang-protection semantics.
+    const controller = new AbortController();
+    const externalSignal = req.signal;
+    const onExternalAbort = (): void => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else {
+        externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+      }
+    }
+    const timeoutMs = this.options.timeoutMs ?? DEFAULT_OPTIONS.timeoutMs;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    // ── 5. Drive the provider stream ──────────────────────────────
+    let accumulatedText = "";
+    const toolCalls: ProviderToolCall[] = [];
+    let finishReason: ProviderFinishReason = "stop";
+    let usage: ProviderUsage | undefined;
+
+    const pt0 = Date.now();
+    try {
+      if (typeof selection.adapter.generateStream === "function") {
+        // Native streaming path.
+        try {
+          const iterator = selection.adapter.generateStream(
+            normalizedRequest,
+            controller.signal,
+          );
+          for await (const chunk of iterator) {
+            if (chunk.delta && chunk.delta.length > 0) {
+              accumulatedText += chunk.delta;
+              yield { kind: "text-delta", delta: chunk.delta };
+            }
+            if (chunk.toolCall) {
+              toolCalls.push(chunk.toolCall);
+              yield { kind: "tool-call", toolCall: chunk.toolCall };
+            }
+            if (chunk.done) {
+              if (chunk.finishReason) {
+                finishReason = chunk.finishReason;
+              }
+              if (chunk.usage) {
+                usage = chunk.usage;
+              }
+              break;
+            }
+          }
+          // Record terminal aborts / errors in the errors[] array so
+          // the done response lets callers distinguish "ok ended" from
+          // "ended because of cancellation/error" without having to
+          // dig into finishReason.
+          if (finishReason === "aborted") {
+            errors.push("aborted");
+            yield { kind: "error", code: "aborted", message: "request aborted" };
+          } else if (finishReason === "error") {
+            errors.push("provider_error");
+            yield {
+              kind: "error",
+              code: "provider_error",
+              message: "provider stream terminated with error",
+            };
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(`provider_stream_threw: ${msg}`);
+          finishReason = controller.signal.aborted ? "aborted" : "error";
+          yield {
+            kind: "error",
+            code: finishReason === "aborted" ? "aborted" : "provider_stream_threw",
+            message: msg,
+          };
+        }
+      } else {
+        // Fallback: the adapter doesn't implement streaming, so call
+        // generate() once and emit the entire response as a single
+        // text-delta. Preserves the event contract for streaming-
+        // naive adapters (mock-echo, InHouseGpt pre-Turn-B, etc.).
+        try {
+          const response = await selection.adapter.generate(
+            normalizedRequest,
+            controller.signal,
+          );
+          if (response.text.length > 0) {
+            accumulatedText = response.text;
+            yield { kind: "text-delta", delta: response.text };
+          }
+          for (const tc of response.toolCalls) {
+            toolCalls.push(tc);
+            yield { kind: "tool-call", toolCall: tc };
+          }
+          finishReason = response.finishReason;
+          usage = response.usage;
+          if (finishReason === "error") {
+            const errMsg =
+              (response.raw as { error?: string } | undefined)?.error ??
+              "unknown provider error";
+            errors.push(errMsg);
+            yield { kind: "error", code: "provider_error", message: errMsg };
+          } else if (finishReason === "aborted") {
+            errors.push("aborted");
+            yield { kind: "error", code: "aborted", message: "request aborted" };
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(`generate_threw: ${msg}`);
+          finishReason = controller.signal.aborted ? "aborted" : "error";
+          yield {
+            kind: "error",
+            code: finishReason === "aborted" ? "aborted" : "generate_threw",
+            message: msg,
+          };
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+      if (externalSignal) {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      }
+    }
+    providerCallMs = Date.now() - pt0;
+
+    // ── 6. Validate the assembled response ────────────────────────
+    const assembled: ProviderResponse = {
+      text: accumulatedText,
+      finishReason,
+      toolCalls,
+      usage,
+    };
+    const vt0 = Date.now();
+    const validation: ValidationReport = validateOutput(assembled, {
+      toolDescriptors: normalizedRequest.tools,
+    });
+    validationMs = Date.now() - vt0;
+
+    yield { kind: "validation", validation };
+
+    // ── 7. Emit the terminal "done" event ─────────────────────────
+    const endedAt = Date.now();
+    const telemetry: CognitiveTelemetry = {
+      startedAt,
+      endedAt,
+      durationMs: endedAt - startedAt,
+      intentClassificationMs,
+      providerCallMs,
+      validationMs,
+      retries: 0,
+      promptTokens: usage?.promptTokens,
+      completionTokens: usage?.completionTokens,
+    };
+
+    const response: CognitiveResponse = {
+      ok: validation.ok,
+      text: accumulatedText,
+      toolCalls,
+      routing,
+      validation,
+      telemetry,
+      errors,
+    };
+
+    yield { kind: "done", response };
   }
 
   /**

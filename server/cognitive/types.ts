@@ -225,6 +225,39 @@ export interface ProviderResponse {
 }
 
 /**
+ * One incremental chunk in a streaming provider response. The
+ * adapter yields a sequence of these as the model generates output.
+ *
+ * Conventions:
+ *   • `delta` is the text the chunk contributes — empty string for
+ *     non-text events (tool call announcements, finish-reason).
+ *   • `done` is true ONLY on the LAST chunk. The orchestrator uses
+ *     this as the loop terminator. After yielding `{done: true}`,
+ *     the adapter must not yield anything else.
+ *   • `toolCall` carries one tool call when the chunk represents a
+ *     tool emission (some providers split tool calls across multiple
+ *     chunks; the adapter is responsible for assembling them so the
+ *     orchestrator only sees complete calls).
+ *   • `finishReason` is set on the LAST chunk (when `done: true`)
+ *     and tells the orchestrator how generation ended.
+ *   • `usage` is set on the LAST chunk and reports prompt +
+ *     completion tokens for telemetry.
+ *
+ * Backpressure: chunks are pulled by the orchestrator using
+ * `for await (const chunk of stream)`. Adapters that produce faster
+ * than the consumer can absorb should NOT buffer indefinitely —
+ * the AsyncIterable contract handles backpressure by suspending
+ * the producer at each yield.
+ */
+export interface ProviderStreamChunk {
+  delta: string;
+  done: boolean;
+  toolCall?: ProviderToolCall;
+  finishReason?: ProviderFinishReason;
+  usage?: ProviderUsage;
+}
+
+/**
  * The single seam between the cognitive layer and any LLM provider.
  *
  * Adapters MUST:
@@ -236,6 +269,13 @@ export interface ProviderResponse {
  *   • Implement `generate` as an async function that respects the
  *     supplied `AbortSignal` and never throws — it must return a
  *     `ProviderResponse` with `finishReason: "error"` on failure.
+ *
+ * Adapters MAY:
+ *   • Implement `generateStream` for true streaming. When the
+ *     orchestrator's `runStream()` is called and an adapter does
+ *     not implement this method, the orchestrator falls back to
+ *     calling `generate()` and emitting the entire response as a
+ *     single chunk — so streaming-naive adapters still work.
  *
  * Adapters MUST NOT:
  *   • Mutate the request object.
@@ -250,6 +290,18 @@ export interface ProviderAdapter {
     request: NormalizedProviderRequest,
     signal?: AbortSignal,
   ): Promise<ProviderResponse>;
+  /**
+   * Optional streaming entry point. When present, the orchestrator's
+   * `runStream()` calls this instead of `generate()` and forwards
+   * each chunk to the consumer.
+   *
+   * Same hard guarantees as `generate`: never throws, honors the
+   * signal, doesn't mutate the request.
+   */
+  generateStream?(
+    request: NormalizedProviderRequest,
+    signal?: AbortSignal,
+  ): AsyncIterable<ProviderStreamChunk>;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,3 +392,35 @@ export interface CognitiveResponse {
    */
   errors: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Streaming events (Turn B)
+// ---------------------------------------------------------------------------
+
+/**
+ * Discriminated union of events the orchestrator emits while
+ * streaming a request. Consumers do `for await (const event of
+ * middleware.runStream(req))` and switch on `event.kind`.
+ *
+ * Event order is fixed:
+ *
+ *   1. exactly ONE  "intent-decided"   (right after classification + provider pick)
+ *   2. zero or more "text-delta"        (incremental text chunks from the provider)
+ *   3. zero or more "tool-call"         (one event per complete tool call emitted)
+ *   4. exactly ONE  "validation"        (after the provider stream ends)
+ *   5. exactly ONE  "done"              (carries the assembled CognitiveResponse)
+ *
+ * If anything fails before step 1 (no capable provider, classifier
+ * threw, etc.), the orchestrator emits ONE "error" event followed
+ * immediately by ONE "done" event whose response has `ok: false`.
+ *
+ * The "done" event ALWAYS fires — even on errors — so consumers
+ * can rely on it as a single termination point.
+ */
+export type CognitiveStreamEvent =
+  | { kind: "intent-decided"; routing: RoutingDecision }
+  | { kind: "text-delta"; delta: string }
+  | { kind: "tool-call"; toolCall: ProviderToolCall }
+  | { kind: "validation"; validation: ValidationReport }
+  | { kind: "error"; code: string; message: string }
+  | { kind: "done"; response: CognitiveResponse };

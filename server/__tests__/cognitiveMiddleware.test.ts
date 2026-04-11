@@ -29,6 +29,8 @@ import {
   FailingMockAdapter,
   AbortableMockAdapter,
   ToolEmittingMockAdapter,
+  // Streaming mock (Turn B)
+  StreamingMockAdapter,
   // Real provider adapters (Turn A)
   SmartRouterAdapter,
   InHouseGptAdapter,
@@ -39,6 +41,7 @@ import {
   type ProviderAdapter,
   type ProviderResponse,
   type CognitiveIntent,
+  type CognitiveStreamEvent,
 } from "../cognitive";
 
 // ---------------------------------------------------------------------------
@@ -922,6 +925,365 @@ describe("cognitive: InHouseGptAdapter (offline tiny model)", () => {
     });
     expect(r.finishReason).not.toBe("error");
     expect(r.usage?.completionTokens).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Streaming (Turn B)
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect every event from an async generator into an array. Keeps
+ * test assertions dead simple — tests inspect the event sequence
+ * end-to-end without having to keep a for-await loop around.
+ */
+async function collectStream(
+  stream: AsyncGenerator<CognitiveStreamEvent, void, void>,
+): Promise<CognitiveStreamEvent[]> {
+  const events: CognitiveStreamEvent[] = [];
+  for await (const event of stream) {
+    events.push(event);
+  }
+  return events;
+}
+
+describe("cognitive: streaming (Turn B)", () => {
+  it("66 StreamingMockAdapter yields deltas in order", async () => {
+    const adapter = new StreamingMockAdapter({
+      chunks: ["a", "b", "c"],
+    });
+    const deltas: string[] = [];
+    for await (const chunk of adapter.generateStream({
+      messages: [{ role: "user", content: "hi" }],
+    })) {
+      if (chunk.delta.length > 0) deltas.push(chunk.delta);
+    }
+    expect(deltas).toEqual(["a", "b", "c"]);
+  });
+
+  it("67 StreamingMockAdapter terminates with a done chunk", async () => {
+    const adapter = new StreamingMockAdapter({ chunks: ["x"] });
+    let sawDone = false;
+    let finishReason: string | undefined;
+    for await (const chunk of adapter.generateStream({
+      messages: [{ role: "user", content: "hi" }],
+    })) {
+      if (chunk.done) {
+        sawDone = true;
+        finishReason = chunk.finishReason;
+      }
+    }
+    expect(sawDone).toBe(true);
+    expect(finishReason).toBe("stop");
+  });
+
+  it("68 runStream emits intent-decided before any text-delta", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [new StreamingMockAdapter({ chunks: ["hello", " world"] })],
+    });
+    const events = await collectStream(
+      mw.runStream({ userId: "u", message: "Hi there" }),
+    );
+    const firstEventKinds = events.map((e) => e.kind);
+    expect(firstEventKinds[0]).toBe("intent-decided");
+    // Every text-delta must appear AFTER intent-decided.
+    const intentIdx = firstEventKinds.indexOf("intent-decided");
+    const firstDeltaIdx = firstEventKinds.indexOf("text-delta");
+    expect(firstDeltaIdx).toBeGreaterThan(intentIdx);
+  });
+
+  it("69 runStream emits each streaming chunk as a separate text-delta", async () => {
+    const chunks = ["alpha", "beta", "gamma"];
+    const mw = new CognitiveMiddleware({
+      adapters: [new StreamingMockAdapter({ chunks })],
+    });
+    const events = await collectStream(
+      mw.runStream({ userId: "u", message: "Stream me something" }),
+    );
+    const deltas = events
+      .filter((e): e is Extract<CognitiveStreamEvent, { kind: "text-delta" }> =>
+        e.kind === "text-delta",
+      )
+      .map((e) => e.delta);
+    expect(deltas).toEqual(chunks);
+  });
+
+  it("70 runStream always terminates with a done event", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [new StreamingMockAdapter({ chunks: ["ok"] })],
+    });
+    const events = await collectStream(
+      mw.runStream({ userId: "u", message: "any" }),
+    );
+    const last = events[events.length - 1];
+    expect(last.kind).toBe("done");
+    if (last.kind === "done") {
+      expect(last.response.ok).toBe(true);
+      expect(last.response.text).toBe("ok");
+    }
+  });
+
+  it("71 done event carries assembled text + routing + telemetry", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [new StreamingMockAdapter({ chunks: ["one ", "two ", "three"] })],
+    });
+    const events = await collectStream(
+      mw.runStream({ userId: "u", message: "ping" }),
+    );
+    const done = events.find((e) => e.kind === "done");
+    expect(done).toBeDefined();
+    if (done && done.kind === "done") {
+      expect(done.response.text).toBe("one two three");
+      expect(done.response.routing.providerName).toBe("mock-streaming");
+      expect(done.response.routing.providerReason).toMatch(/first capable|preferred/);
+      expect(done.response.telemetry.providerCallMs).toBeGreaterThanOrEqual(0);
+      expect(done.response.telemetry.validationMs).toBeGreaterThanOrEqual(0);
+      expect(done.response.errors).toEqual([]);
+    }
+  });
+
+  it("72 validation event precedes the done event", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [new StreamingMockAdapter({ chunks: ["hola"] })],
+    });
+    const events = await collectStream(
+      mw.runStream({ userId: "u", message: "hola" }),
+    );
+    const kinds = events.map((e) => e.kind);
+    const validationIdx = kinds.indexOf("validation");
+    const doneIdx = kinds.indexOf("done");
+    expect(validationIdx).toBeGreaterThan(0);
+    expect(doneIdx).toBeGreaterThan(validationIdx);
+  });
+
+  it("73 runStream falls back to generate() for non-streaming adapters", async () => {
+    // EchoMockAdapter has no generateStream — the orchestrator
+    // should synthesize a single text-delta from the full response.
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+    });
+    const events = await collectStream(
+      mw.runStream({ userId: "u", message: "hola" }),
+    );
+    const deltas = events.filter((e) => e.kind === "text-delta");
+    expect(deltas.length).toBe(1);
+    const textDelta = deltas[0] as Extract<
+      CognitiveStreamEvent,
+      { kind: "text-delta" }
+    >;
+    expect(textDelta.delta).toBe("Echo: hola");
+    const done = events.find((e) => e.kind === "done");
+    expect(done).toBeDefined();
+    if (done && done.kind === "done") {
+      expect(done.response.ok).toBe(true);
+      expect(done.response.text).toBe("Echo: hola");
+    }
+  });
+
+  it("74 runStream forwards tool calls as tool-call events", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [new ToolEmittingMockAdapter("search", { q: "cats" })],
+    });
+    const events = await collectStream(
+      mw.runStream({ userId: "u", message: "search cats for me" }),
+    );
+    const toolEvents = events.filter((e) => e.kind === "tool-call");
+    expect(toolEvents.length).toBe(1);
+    if (toolEvents[0].kind === "tool-call") {
+      expect(toolEvents[0].toolCall.name).toBe("search");
+      expect(toolEvents[0].toolCall.args).toEqual({ q: "cats" });
+    }
+    const done = events.find((e) => e.kind === "done");
+    if (done && done.kind === "done") {
+      expect(done.response.toolCalls.length).toBe(1);
+    }
+  });
+
+  it("75 runStream emits error + done when classifier has no capable provider", async () => {
+    // Adapter that only handles "translation" but we ask an image question.
+    const narrow: ProviderAdapter = {
+      name: "narrow",
+      capabilities: new Set<CognitiveIntent>(["translation"]),
+      generate: async () => ({
+        text: "",
+        finishReason: "stop",
+        toolCalls: [],
+      }),
+    };
+    const mw = new CognitiveMiddleware({ adapters: [narrow] });
+    const events = await collectStream(
+      mw.runStream({ userId: "u", message: "Generate an image of a cat" }),
+    );
+    const errorEvents = events.filter((e) => e.kind === "error");
+    const doneEvents = events.filter((e) => e.kind === "done");
+    expect(errorEvents.length).toBe(1);
+    expect(doneEvents.length).toBe(1);
+    if (doneEvents[0].kind === "done") {
+      expect(doneEvents[0].response.ok).toBe(false);
+      expect(doneEvents[0].response.errors).toContain("no_capable_provider");
+    }
+  });
+
+  it("76 runStream honors cooperative cancellation via AbortSignal", async () => {
+    const adapter = new StreamingMockAdapter({
+      chunks: ["a", "b", "c", "d", "e"],
+      delayMs: 50,
+    });
+    const mw = new CognitiveMiddleware({ adapters: [adapter] });
+    const controller = new AbortController();
+    const stream = mw.runStream({
+      userId: "u",
+      message: "slow stream",
+      signal: controller.signal,
+    });
+    // Abort after 60ms — enough to see at least one delta but not
+    // all of them.
+    setTimeout(() => controller.abort(), 60);
+    const events = await collectStream(stream);
+    const deltas = events.filter((e) => e.kind === "text-delta");
+    // We should have received 0-2 deltas but NEVER all 5.
+    expect(deltas.length).toBeLessThan(5);
+    const done = events.find((e) => e.kind === "done");
+    expect(done).toBeDefined();
+    if (done && done.kind === "done") {
+      // Aborted streams come back as ok=false with validation
+      // error on empty/insufficient text.
+      expect(done.response.errors.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("77 InHouseGptAdapter streams token-by-token", async () => {
+    const adapter = new InHouseGptAdapter({ defaultMaxNewTokens: 6, seed: 17 });
+    const chunks: string[] = [];
+    let sawDone = false;
+    for await (const chunk of adapter.generateStream({
+      messages: [{ role: "user", content: "hello" }],
+    })) {
+      if (chunk.delta.length > 0) chunks.push(chunk.delta);
+      if (chunk.done) sawDone = true;
+    }
+    expect(sawDone).toBe(true);
+    // With maxNewTokens=6 we should see up to 6 deltas; empty
+    // decodes of special tokens are skipped.
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.length).toBeLessThanOrEqual(6);
+  });
+
+  it("78 InHouseGptAdapter streaming honors maxTokens override", async () => {
+    const adapter = new InHouseGptAdapter({ defaultMaxNewTokens: 32, seed: 19 });
+    let totalDeltas = 0;
+    let usage: { promptTokens: number; completionTokens: number } | undefined;
+    for await (const chunk of adapter.generateStream({
+      messages: [{ role: "user", content: "hi" }],
+      maxTokens: 3,
+    })) {
+      if (chunk.delta.length > 0) totalDeltas++;
+      if (chunk.done) {
+        usage = chunk.usage;
+      }
+    }
+    expect(totalDeltas).toBeLessThanOrEqual(3);
+    expect(usage?.completionTokens).toBeLessThanOrEqual(3);
+  });
+
+  it("79 InHouseGptAdapter streaming aborts cleanly mid-generation", async () => {
+    const adapter = new InHouseGptAdapter({ defaultMaxNewTokens: 24, seed: 23 });
+    const controller = new AbortController();
+    // Abort very quickly — the streaming loop yields at every step,
+    // so the abort should take effect within the first few tokens.
+    setTimeout(() => controller.abort(), 1);
+    let finishReason: string | undefined;
+    for await (const chunk of adapter.generateStream(
+      { messages: [{ role: "user", content: "abort me" }] },
+      controller.signal,
+    )) {
+      if (chunk.done) finishReason = chunk.finishReason;
+    }
+    // Must end with a done chunk. Either "aborted" (hit the signal
+    // between steps) or "stop" (generation finished before the
+    // timer fired — acceptable on a fast machine).
+    expect(["aborted", "stop", "length"]).toContain(finishReason);
+  });
+
+  it("80 runStream end-to-end with InHouseGptAdapter produces a terminal done", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [new InHouseGptAdapter({ defaultMaxNewTokens: 8, seed: 29 })],
+    });
+    const events = await collectStream(
+      mw.runStream({ userId: "u", message: "Hola desde Turno B" }),
+    );
+    const last = events[events.length - 1];
+    expect(last.kind).toBe("done");
+    if (last.kind === "done") {
+      expect(last.response.routing.providerName).toBe("in-house-gpt3");
+      expect(last.response.telemetry.durationMs).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("81 streamed text equals the done response text", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [new StreamingMockAdapter({ chunks: ["foo", "bar", "baz"] })],
+    });
+    const events = await collectStream(
+      mw.runStream({ userId: "u", message: "concat check" }),
+    );
+    const streamed = events
+      .filter((e) => e.kind === "text-delta")
+      .map((e) => (e.kind === "text-delta" ? e.delta : ""))
+      .join("");
+    const done = events.find((e) => e.kind === "done");
+    if (done && done.kind === "done") {
+      expect(done.response.text).toBe(streamed);
+    }
+  });
+
+  it("82 concurrent runStream calls are isolated", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [
+        new StreamingMockAdapter({ chunks: ["iso", "lated"] }),
+      ],
+    });
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        collectStream(mw.runStream({ userId: `u${i}`, message: `hi ${i}` })),
+      ),
+    );
+    for (const events of results) {
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done && done.kind === "done") {
+        expect(done.response.ok).toBe(true);
+        expect(done.response.text).toBe("isolated");
+      }
+    }
+  });
+
+  it("83 streamed tool-call arrives after accumulating its configured chunk", async () => {
+    const adapter = new StreamingMockAdapter({
+      chunks: ["pre ", "mid", " post"],
+      toolCallAfterChunk: {
+        index: 1,
+        id: "c1",
+        name: "search",
+        args: { q: "hi" },
+      },
+      finishReason: "tool_calls",
+    });
+    const mw = new CognitiveMiddleware({ adapters: [adapter] });
+    const events = await collectStream(
+      mw.runStream({ userId: "u", message: "mixed flow" }),
+    );
+    const kinds = events.map((e) => e.kind);
+    const firstToolIdx = kinds.indexOf("tool-call");
+    const firstTextIdx = kinds.indexOf("text-delta");
+    expect(firstTextIdx).toBeGreaterThan(-1);
+    expect(firstToolIdx).toBeGreaterThan(firstTextIdx);
+    // Accumulated text before tool call should be "pre mid".
+    const done = events.find((e) => e.kind === "done");
+    if (done && done.kind === "done") {
+      expect(done.response.text).toBe("pre mid post");
+      expect(done.response.toolCalls.length).toBe(1);
+    }
   });
 });
 

@@ -38,6 +38,8 @@ import {
   initGptWeights,
   gptTinyConfig,
   gptGenerate,
+  gptNextTokenLogits,
+  sampleFromLogits,
   gpt3CosineSchedule,
 } from "../../lib/transformer";
 import { defaultAlternatingPattern } from "../../lib/transformer";
@@ -45,7 +47,9 @@ import type {
   CognitiveIntent,
   NormalizedProviderRequest,
   ProviderAdapter,
+  ProviderFinishReason,
   ProviderResponse,
+  ProviderStreamChunk,
 } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -342,6 +346,149 @@ export class InHouseGptAdapter implements ProviderAdapter {
         tokensDroppedByTruncation,
       },
     };
+  }
+
+  /**
+   * Streaming entry point. Runs the same autoregressive loop as
+   * `gptGenerate` but yields each decoded token as a `text-delta`
+   * chunk the moment it is produced. The in-house math library is
+   * synchronous, so we surrender the event loop between steps with
+   * a `Promise.resolve()` await — this is enough to let the
+   * orchestrator forward the chunk to the consumer and to let the
+   * AbortSignal's "abort" event fire between token steps.
+   *
+   * Hard guarantees (same as `generate`):
+   *   • Never throws. Errors are yielded as a terminal chunk with
+   *     `finishReason: "error"`.
+   *   • Respects the signal. Aborting mid-generation yields a
+   *     terminal chunk with `finishReason: "aborted"` and stops the
+   *     loop — we never waste cycles after the user gave up.
+   *   • Returns the same usage tallies as `generate` so downstream
+   *     telemetry is identical whether the consumer called the
+   *     streaming or non-streaming path.
+   */
+  async *generateStream(
+    request: NormalizedProviderRequest,
+    signal?: AbortSignal,
+  ): AsyncIterable<ProviderStreamChunk> {
+    this.callCount++;
+
+    if (signal?.aborted) {
+      yield { delta: "", done: true, finishReason: "aborted" };
+      return;
+    }
+
+    // Lazy init (same as generate()).
+    if (!this.weights) {
+      try {
+        const config = this.useTinyConfig ? gptTinyConfig() : buildFallbackConfig();
+        this.weights = initGptWeights(config, this.seed);
+      } catch (err) {
+        yield {
+          delta: "",
+          done: true,
+          finishReason: "error",
+          usage: { promptTokens: 0, completionTokens: 0 },
+          toolCall: undefined,
+        };
+        return;
+      }
+    }
+
+    const concatenated = buildPromptString(request);
+    const rawPromptTokens = tokenize(concatenated, this.weights.config.vocabSize);
+
+    if (rawPromptTokens.length === 0) {
+      yield { delta: "", done: true, finishReason: "error" };
+      return;
+    }
+
+    const reserveForGeneration = Math.max(1, this.defaultMaxNewTokens);
+    const promptCap = Math.max(1, this.weights.config.contextWindow - reserveForGeneration);
+    const { tokens: promptTokens } = truncateToFit(rawPromptTokens, promptCap);
+
+    const requestedNewTokens = request.maxTokens && request.maxTokens > 0
+      ? request.maxTokens
+      : this.defaultMaxNewTokens;
+    const headroom = this.weights.config.contextWindow - promptTokens.length;
+    const maxNewTokens = Math.max(1, Math.min(requestedNewTokens, headroom));
+
+    // Custom autoregressive loop so we can emit per-step deltas and
+    // check the AbortSignal between steps. Mirrors the logic of
+    // `gptGenerate` but in a generator-friendly shape.
+    const tokens = promptTokens.slice();
+    const baseSeed = 0xdeadbeef;
+    const contextWindow = this.weights.config.contextWindow;
+    let steps = 0;
+    let finishReason: ProviderFinishReason = "length";
+    let generatedCount = 0;
+
+    try {
+      for (let i = 0; i < maxNewTokens; i++) {
+        if (signal?.aborted) {
+          finishReason = "aborted";
+          break;
+        }
+        if (tokens.length >= contextWindow) {
+          finishReason = "length";
+          break;
+        }
+
+        // Compute the next token.
+        const logits = gptNextTokenLogits(this.weights, tokens);
+        const nextId = sampleFromLogits(logits, {
+          greedy: true,
+          seed: baseSeed + i * 1009,
+        });
+        tokens.push(nextId);
+        steps++;
+        generatedCount++;
+
+        // Decode just this token to a delta string. `decode` skips
+        // special ids, so occasional empty deltas are possible — we
+        // still yield them so the step count stays accurate.
+        const delta = decode([nextId]);
+        if (delta.length > 0) {
+          yield { delta, done: false };
+        }
+
+        // Surrender the event loop so pending abort events fire and
+        // the consumer can drain backpressure. Cheap — a resolved
+        // promise microtask per token.
+        await Promise.resolve();
+
+        if (i === maxNewTokens - 1) {
+          finishReason = "stop";
+        }
+      }
+    } catch (err) {
+      yield {
+        delta: "",
+        done: true,
+        finishReason: "error",
+        usage: {
+          promptTokens: promptTokens.length,
+          completionTokens: generatedCount,
+          totalTokens: promptTokens.length + generatedCount,
+        },
+      };
+      return;
+    }
+
+    yield {
+      delta: "",
+      done: true,
+      finishReason,
+      usage: {
+        promptTokens: promptTokens.length,
+        completionTokens: generatedCount,
+        totalTokens: promptTokens.length + generatedCount,
+      },
+    };
+
+    // Unused local suppression — steps is logged here for parity
+    // with the non-streaming path's `raw.steps` telemetry hook.
+    void steps;
   }
 }
 

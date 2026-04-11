@@ -41,6 +41,7 @@ import type {
   NormalizedProviderRequest,
   ProviderAdapter,
   ProviderResponse,
+  ProviderStreamChunk,
 } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -271,8 +272,167 @@ export class ToolEmittingMockAdapter implements ProviderAdapter {
 }
 
 // ---------------------------------------------------------------------------
+// Streaming adapter — emits chunks via `generateStream`
+// ---------------------------------------------------------------------------
+
+/**
+ * Streaming mock that yields a fixed sequence of text chunks with an
+ * optional per-chunk delay. When the caller aborts mid-stream the
+ * iterator yields a terminal `{done: true, finishReason: "aborted"}`
+ * chunk and stops. Also exposes a plain `generate()` path that
+ * returns the concatenated text, so tests can exercise BOTH the
+ * native streaming branch AND the single-shot fallback against the
+ * same adapter.
+ *
+ * The adapter optionally emits a tool call right after a specific
+ * chunk index (`toolCallAfterChunk`) for tests that need to verify
+ * the interleaved text-delta / tool-call ordering.
+ */
+export interface StreamingMockAdapterOptions {
+  chunks: readonly string[];
+  /** Delay between chunks in milliseconds. 0 means "no delay". */
+  delayMs?: number;
+  /** Optional tool call to emit after chunk[index]. */
+  toolCallAfterChunk?: {
+    index: number;
+    id: string;
+    name: string;
+    args: Record<string, unknown>;
+  };
+  /** Adapter name override. Default "mock-streaming". */
+  name?: string;
+  /** Finish reason to emit on the final chunk. Default "stop". */
+  finishReason?: "stop" | "length" | "tool_calls";
+}
+
+export class StreamingMockAdapter implements ProviderAdapter {
+  readonly name: string;
+  readonly capabilities = ALL_INTENTS;
+  lastRequest: NormalizedProviderRequest | null = null;
+  streamCallCount = 0;
+  generateCallCount = 0;
+
+  constructor(private readonly options: StreamingMockAdapterOptions) {
+    if (options.chunks.length === 0) {
+      throw new Error("StreamingMockAdapter: chunks must not be empty");
+    }
+    this.name = options.name ?? "mock-streaming";
+  }
+
+  async generate(
+    request: NormalizedProviderRequest,
+    signal?: AbortSignal,
+  ): Promise<ProviderResponse> {
+    this.lastRequest = request;
+    this.generateCallCount++;
+    if (signal?.aborted) {
+      return errorResponse("aborted before call", "aborted");
+    }
+    const text = this.options.chunks.join("");
+    return {
+      text,
+      finishReason: this.options.finishReason ?? "stop",
+      toolCalls: this.options.toolCallAfterChunk
+        ? [
+            {
+              id: this.options.toolCallAfterChunk.id,
+              name: this.options.toolCallAfterChunk.name,
+              args: this.options.toolCallAfterChunk.args,
+            },
+          ]
+        : [],
+      usage: {
+        promptTokens: estimatePromptTokens(request),
+        completionTokens: text.length,
+      },
+    };
+  }
+
+  async *generateStream(
+    request: NormalizedProviderRequest,
+    signal?: AbortSignal,
+  ): AsyncIterable<ProviderStreamChunk> {
+    this.lastRequest = request;
+    this.streamCallCount++;
+    const { chunks, delayMs = 0, toolCallAfterChunk } = this.options;
+
+    if (signal?.aborted) {
+      yield { delta: "", done: true, finishReason: "aborted" };
+      return;
+    }
+
+    for (let i = 0; i < chunks.length; i++) {
+      // Cooperative cancellation check before each delta.
+      if (signal?.aborted) {
+        yield { delta: "", done: true, finishReason: "aborted" };
+        return;
+      }
+
+      if (delayMs > 0) {
+        // Abortable sleep so cancel kicks in mid-delay.
+        const aborted = await abortableSleep(delayMs, signal);
+        if (aborted) {
+          yield { delta: "", done: true, finishReason: "aborted" };
+          return;
+        }
+      }
+
+      yield { delta: chunks[i], done: false };
+
+      // Emit a tool call right after the configured chunk index, if set.
+      if (toolCallAfterChunk && toolCallAfterChunk.index === i) {
+        yield {
+          delta: "",
+          done: false,
+          toolCall: {
+            id: toolCallAfterChunk.id,
+            name: toolCallAfterChunk.name,
+            args: toolCallAfterChunk.args,
+          },
+        };
+      }
+    }
+
+    const total = chunks.join("");
+    yield {
+      delta: "",
+      done: true,
+      finishReason: this.options.finishReason ?? "stop",
+      usage: {
+        promptTokens: estimatePromptTokens(request),
+        completionTokens: total.length,
+      },
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Sleep that resolves early when the caller aborts. Returns `true`
+ * if the sleep was interrupted by an abort, `false` if it ran to
+ * completion. Used by the streaming adapter to keep per-chunk delay
+ * cancellable.
+ */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(true);
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(false);
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 function errorResponse(
   message: string,

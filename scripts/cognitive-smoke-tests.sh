@@ -235,6 +235,148 @@ run_test "19 POST /api/cognitive/run empty message rejected" /api/cognitive/run 
   "message": ""
 }' '(b) => b.error === "invalid_request"'
 
+# ── Turn B — streaming SSE checks ──────────────────────────────────────────
+#
+# The SSE endpoint emits framed events:
+#   event: <kind>
+#   data: <json>
+#
+# We assert on the raw text body instead of JSON because SSE is a
+# line-based protocol, not JSON. `curl --max-time` keeps the tests
+# bounded even if the server hangs. Each test checks the presence of
+# specific event types and their order.
+
+stream_test() {
+  # name is the caller-readable label; payload is the JSON body.
+  # We keep the name in the signature even though it's unused here
+  # because the call sites already pass it — makes greps easier.
+  local name="$1" payload="$2"
+  local body
+  # `--no-buffer` flushes chunks to stdout as they arrive; `--max-time 10`
+  # caps the run; `-N` disables curl's own buffering.
+  body=$(curl -sS -N --no-buffer --max-time 10 \
+    -X POST -H "Content-Type: application/json" \
+    -d "$payload" "$BASE/api/cognitive/stream")
+  printf '%s' "$body"
+  # Silence shellcheck on unused var.
+  : "$name"
+}
+
+# 20 /stream emits intent-decided before text-delta
+BODY_20=$(stream_test "20" '{
+  "userId": "stream-1",
+  "message": "Hola mundo streaming",
+  "preferredProvider": "mock-streaming"
+}')
+if echo "$BODY_20" | grep -q '^event: intent-decided' && \
+   echo "$BODY_20" | grep -q '^event: text-delta' && \
+   echo "$BODY_20" | grep -q '^event: done'; then
+  # Check ordering: intent-decided must appear before any text-delta
+  FIRST_INTENT=$(echo "$BODY_20" | grep -n '^event: intent-decided' | head -1 | cut -d: -f1)
+  FIRST_DELTA=$(echo "$BODY_20" | grep -n '^event: text-delta' | head -1 | cut -d: -f1)
+  if [[ -n "$FIRST_INTENT" && -n "$FIRST_DELTA" && "$FIRST_INTENT" -lt "$FIRST_DELTA" ]]; then
+    green "PASS"; printf ' — 20 /stream emits intent-decided → text-delta → done\n'
+    PASS=$((PASS + 1))
+  else
+    red "FAIL"; printf ' — 20 /stream event ordering wrong (intent=%s delta=%s)\n' "$FIRST_INTENT" "$FIRST_DELTA"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("20 /stream event ordering")
+  fi
+else
+  red "FAIL"; printf ' — 20 /stream missing required events\n'
+  printf '      body: %s\n' "$(echo "$BODY_20" | head -20)"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("20 /stream required events")
+fi
+
+# 21 /stream yields exactly 4 text-deltas for the mock-streaming preset
+BODY_21=$(stream_test "21" '{
+  "userId": "stream-2",
+  "message": "quiero ver chunks",
+  "preferredProvider": "mock-streaming"
+}')
+DELTA_COUNT=$(echo "$BODY_21" | grep -c '^event: text-delta' || true)
+if [[ "$DELTA_COUNT" -eq 4 ]]; then
+  green "PASS"; printf ' — 21 /stream yields 4 text-delta events (mock-streaming preset)\n'
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 21 /stream expected 4 deltas got %s\n' "$DELTA_COUNT"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("21 /stream delta count")
+fi
+
+# 22 /stream terminates with a done event carrying a CognitiveResponse
+BODY_22=$(stream_test "22" '{
+  "userId": "stream-3",
+  "message": "termina con done",
+  "preferredProvider": "mock-streaming"
+}')
+LAST_EVENT=$(echo "$BODY_22" | grep '^event:' | tail -1)
+if [[ "$LAST_EVENT" == "event: done" ]]; then
+  # Extract the JSON that follows the final done event.
+  DONE_JSON=$(echo "$BODY_22" | awk '/^event: done$/{flag=1;next} flag && /^data: /{print substr($0,7);exit}')
+  OK=$(echo "$DONE_JSON" | node -e 'let r="";process.stdin.on("data",d=>r+=d);process.stdin.on("end",()=>{try{const p=JSON.parse(r);console.log(p.response && p.response.ok === true ? "OK" : "NOK")}catch(e){console.log("ERR")}})')
+  if [[ "$OK" == "OK" ]]; then
+    green "PASS"; printf ' — 22 /stream done event carries ok=true CognitiveResponse\n'
+    PASS=$((PASS + 1))
+  else
+    red "FAIL"; printf ' — 22 /stream done response not ok: %s\n' "$OK"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("22 /stream done ok")
+  fi
+else
+  red "FAIL"; printf ' — 22 /stream did not end with done (last=%s)\n' "$LAST_EVENT"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("22 /stream terminal done")
+fi
+
+# 23 /stream with InHouseGpt adapter streams token-by-token
+BODY_23=$(stream_test "23" '{
+  "userId": "stream-4",
+  "message": "hola in-house",
+  "preferredProvider": "in-house-gpt3",
+  "maxTokens": 6
+}')
+INHOUSE_DELTAS=$(echo "$BODY_23" | grep -c '^event: text-delta' || true)
+if [[ "$INHOUSE_DELTAS" -ge 1 ]]; then
+  green "PASS"; printf ' — 23 /stream in-house-gpt3 yields %s token deltas\n' "$INHOUSE_DELTAS"
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 23 /stream in-house-gpt3 produced 0 deltas\n'
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("23 /stream in-house deltas")
+fi
+
+# 24 /stream validation event arrives before done
+BODY_24=$(stream_test "24" '{
+  "userId": "stream-5",
+  "message": "validation ordering",
+  "preferredProvider": "mock-streaming"
+}')
+VAL_LINE=$(echo "$BODY_24" | grep -n '^event: validation' | head -1 | cut -d: -f1)
+DONE_LINE=$(echo "$BODY_24" | grep -n '^event: done' | head -1 | cut -d: -f1)
+if [[ -n "$VAL_LINE" && -n "$DONE_LINE" && "$VAL_LINE" -lt "$DONE_LINE" ]]; then
+  green "PASS"; printf ' — 24 /stream validation fires before done\n'
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 24 /stream validation/done ordering wrong (val=%s done=%s)\n' "$VAL_LINE" "$DONE_LINE"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("24 /stream validation order")
+fi
+
+# 25 /stream rejects invalid input with 400
+STREAM_INVALID_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"s","message":""}' "$BASE/api/cognitive/stream")
+if [[ "$STREAM_INVALID_STATUS" == "400" ]]; then
+  green "PASS"; printf ' — 25 /stream rejects empty message with 400\n'
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 25 /stream expected 400, got %s\n' "$STREAM_INVALID_STATUS"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("25 /stream invalid input")
+fi
+
 echo
 echo "=== Results: $(green $PASS) passed, $(red $FAIL) failed ==="
 if [[ $FAIL -gt 0 ]]; then
