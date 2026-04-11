@@ -9186,6 +9186,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             message: `No se pudieron procesar todos los archivos. Procesados: ${batchResult.processedFiles}/${batchResult.attachmentsCount}`,
             requestId,
           });
+          writeSse(res, "done", { error: true, requestId });
           res.end();
           return;
         }
@@ -9197,6 +9198,7 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             message: "No se pudo extraer texto de los documentos adjuntos.",
             requestId,
           });
+          writeSse(res, "done", { error: true, requestId });
           res.end();
           return;
         }
@@ -9281,6 +9283,8 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
               return `[${docRef} p:1]`;
             case 'word':
               return `[${docRef} section:Título]`;
+            case 'presentation':
+              return `[${docRef} slide:1]`;
             default:
               return `[${docRef}]`;
           }
@@ -9719,6 +9723,7 @@ ${documentText}`;
             message: "La respuesta no cumple con el contrato de respuesta PARE Phase 2",
             requestId,
           });
+          writeSse(res, "done", { error: true, requestId });
           res.end();
           return;
         }
@@ -9740,6 +9745,7 @@ ${documentText}`;
             message: "La respuesta contiene elementos prohibidos en DATA_MODE",
             requestId,
           });
+          writeSse(res, "done", { error: true, requestId });
           res.end();
           return;
         }
@@ -9811,6 +9817,7 @@ ${documentText}`;
             message: error.message || "Error durante el análisis de documentos",
             requestId,
           });
+          writeSse(res, "done", { error: true, requestId });
           res.end();
         } else {
           res.status(500).json({

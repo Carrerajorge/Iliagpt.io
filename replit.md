@@ -103,6 +103,12 @@ Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment varia
 - **Plans**: Go ($5/mo), Plus ($10/mo), Pro ($200/mo), Business ($25/mo) — price IDs configured via `STRIPE_PRICE_*` env vars.
 - **Key files**: `server/stripeClient.ts`, `server/routes/stripeRouter.ts`, `server/webhookHandlers.ts`, `server/services/subscriptionService.ts`.
 
+### Document Analysis Fix (v2026.4.11)
+- **PPTX support**: Added `pptxExtractor.ts` to `server/parsers/structured/` — converts PowerPoint files into `DocumentSemanticModel` with sections per slide, table extraction, notes, and metadata. Added `"presentation"` to `documentType` enum in `shared/schemas/documentSemanticModel.ts`.
+- **normalizeDocument**: Added `case MIME_TYPES.PPTX` to both the parser switch and `inferMimeTypeFromExtension` fallback in `server/services/structuredDocumentNormalizer.ts`.
+- **SSE error→done fix**: All error paths in `/api/analyze` now send `writeSse(res, "done", { error: true })` after `writeSse(res, "error", ...)` before `res.end()`. This ensures the frontend's stream handler receives a `done` event with `pendingTerminalError` set, instead of falling to EMPTY_STREAM and showing the generic "No se recibió respuesta del servidor" message.
+- **Key files**: `server/parsers/structured/pptxExtractor.ts`, `server/services/structuredDocumentNormalizer.ts`, `server/routes/chatAiRouter.ts`, `shared/schemas/documentSemanticModel.ts`.
+
 ### Memory Optimization (v2026.4.6)
 - **PerformanceAuditor**: Collection interval 60s (was 10s), history buffer 100 (was 1000), memory warning throttling (log first 3 + every 30th).
 - **TokenTracker**: Redis persist circuit breaker — disables after 5 consecutive failures. In-memory records capped at 1000 (was 10000).

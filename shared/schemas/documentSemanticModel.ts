@@ -140,7 +140,7 @@ export const DocumentMetaSchema = z.object({
   fileName: z.string(),
   fileSize: z.number(),
   mimeType: z.string(),
-  documentType: z.enum(["excel", "csv", "word", "pdf", "text", "unknown"]),
+  documentType: z.enum(["excel", "csv", "word", "pdf", "text", "presentation", "unknown"]),
   createdAt: z.string().optional(),
   modifiedAt: z.string().optional(),
   author: z.string().optional(),

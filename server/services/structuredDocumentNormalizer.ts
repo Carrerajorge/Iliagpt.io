@@ -8,6 +8,7 @@ import { extractExcel } from "../parsers/structured/excelExtractor";
 import { extractCSV } from "../parsers/structured/csvExtractor";
 import { extractWord } from "../parsers/structured/wordExtractor";
 import { extractPDF } from "../parsers/structured/pdfExtractor";
+import { extractPptx } from "../parsers/structured/pptxExtractor";
 
 const MAGIC_BYTES = {
   ZIP: [0x50, 0x4b, 0x03, 0x04],
@@ -160,6 +161,8 @@ function getDocumentType(mimeType: string): DocumentMeta["documentType"] {
       return "word";
     case MIME_TYPES.PDF:
       return "pdf";
+    case MIME_TYPES.PPTX:
+      return "presentation";
     case MIME_TYPES.TEXT:
       return "text";
     default:
@@ -188,6 +191,8 @@ function inferMimeTypeFromExtension(fileName: string): string | null {
       return MIME_TYPES.DOC;
     case "pdf":
       return MIME_TYPES.PDF;
+    case "pptx":
+      return MIME_TYPES.PPTX;
     case "txt":
       return MIME_TYPES.TEXT;
     default:
@@ -237,6 +242,11 @@ export async function normalizeDocument(
       case MIME_TYPES.PDF:
         partialResult = await extractPDF(buffer, fileName);
         parserUsed = "pdfExtractor";
+        break;
+
+      case MIME_TYPES.PPTX:
+        partialResult = await extractPptx(buffer, fileName);
+        parserUsed = "pptxExtractor";
         break;
         
       case MIME_TYPES.TEXT:
