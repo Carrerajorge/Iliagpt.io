@@ -98,6 +98,20 @@ export {
   CircuitBreakerRegistry,
 } from "./circuitBreaker";
 
+// OpenTelemetry tracing facade (Turn F)
+export {
+  getCognitiveTracer,
+  resetCognitiveTracerCache,
+  withCognitiveSpan,
+  withCognitiveSpanSync,
+  CognitiveSpanNames,
+  CognitiveAttributes,
+  COGNITIVE_TRACER_NAME,
+  COGNITIVE_TRACER_VERSION,
+  type CognitiveSpanName,
+  type CognitiveAttributeKey,
+} from "./tracing";
+
 // Orchestrator
 export {
   CognitiveMiddleware,

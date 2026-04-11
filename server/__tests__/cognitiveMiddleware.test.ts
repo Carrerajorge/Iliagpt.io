@@ -71,6 +71,12 @@ import {
   type RateLimiter,
   type RateLimitCheckResult,
   type CircuitBreakerState,
+  // OTel tracing facade (Turn F)
+  CognitiveSpanNames,
+  CognitiveAttributes,
+  COGNITIVE_TRACER_NAME,
+  resetCognitiveTracerCache,
+  withCognitiveSpan,
 } from "../cognitive";
 
 // ---------------------------------------------------------------------------
@@ -2872,6 +2878,362 @@ describe("cognitive: middleware rate limit + breaker wiring (Turn E)", () => {
     const r = await mw.run({ userId: "u", message: "attempt 2" });
     expect(r.ok).toBe(true);
     expect(breakers.get("mock-flaky").getStatus().state).toBe("closed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. OpenTelemetry tracing (Turn F)
+// ---------------------------------------------------------------------------
+
+import {
+  trace as otelTrace,
+  context as otelContextApi,
+  SpanKind,
+} from "@opentelemetry/api";
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+  type ReadableSpan,
+} from "@opentelemetry/sdk-trace-base";
+import { AsyncHooksContextManager } from "@opentelemetry/context-async-hooks";
+
+/**
+ * Test harness: install a BasicTracerProvider with an in-memory
+ * exporter so we can inspect every span emitted by the middleware.
+ *
+ * OTel's global tracer API refuses to replace a previously-
+ * registered provider (logs a warning and returns false), so each
+ * call DISABLES the old global first, then registers the new one.
+ * Without the disable() step, tests after the first would keep
+ * emitting to a stale exporter and assertions would see zero spans.
+ */
+function installTestTracer(): {
+  provider: BasicTracerProvider;
+  exporter: InMemorySpanExporter;
+} {
+  // Clear any previously-installed provider before registering a
+  // fresh one. Also force-refresh our tracer cache so the next
+  // getCognitiveTracer() call resolves via the new provider.
+  // @ts-expect-error - disable() is the documented reset API
+  otelTrace.disable();
+  // Disable any previously-installed context manager before
+  // enabling a new one. Otherwise context.with becomes a no-op
+  // and child spans never learn who their parent is.
+  // @ts-expect-error - disable() is the documented reset API
+  otelContextApi.disable();
+  const contextManager = new AsyncHooksContextManager();
+  contextManager.enable();
+  otelContextApi.setGlobalContextManager(contextManager);
+  const exporter = new InMemorySpanExporter();
+  const provider = new BasicTracerProvider({
+    spanProcessors: [new SimpleSpanProcessor(exporter)],
+  });
+  otelTrace.setGlobalTracerProvider(provider);
+  resetCognitiveTracerCache();
+  return { provider, exporter };
+}
+
+function finishedSpansByName(spans: ReadableSpan[], name: string): ReadableSpan[] {
+  return spans.filter((s) => s.name === name);
+}
+
+describe("cognitive: tracing facade (Turn F)", () => {
+  it("171 withCognitiveSpan runs fn and emits a span", async () => {
+    const { exporter } = installTestTracer();
+    const result = await withCognitiveSpan(
+      CognitiveSpanNames.INTENT_CLASSIFY,
+      { [CognitiveAttributes.INTENT]: "qa" },
+      async () => "done",
+    );
+    expect(result).toBe("done");
+    const spans = exporter.getFinishedSpans();
+    expect(spans.length).toBe(1);
+    expect(spans[0].name).toBe(CognitiveSpanNames.INTENT_CLASSIFY);
+    expect(spans[0].attributes[CognitiveAttributes.INTENT]).toBe("qa");
+    exporter.reset();
+  });
+
+  it("172 withCognitiveSpan rethrows on error and records the exception", async () => {
+    const { exporter } = installTestTracer();
+    await expect(
+      withCognitiveSpan(
+        CognitiveSpanNames.INTENT_CLASSIFY,
+        {},
+        async () => {
+          throw new Error("boom");
+        },
+      ),
+    ).rejects.toThrow("boom");
+    const spans = exporter.getFinishedSpans();
+    expect(spans.length).toBe(1);
+    expect(spans[0].status.code).toBe(2); // ERROR
+    expect(spans[0].events.some((e) => e.name === "exception")).toBe(true);
+    exporter.reset();
+  });
+
+  it("173 nested withCognitiveSpan builds a parent-child hierarchy", async () => {
+    const { exporter } = installTestTracer();
+    await withCognitiveSpan(
+      CognitiveSpanNames.RUN,
+      {},
+      async () => {
+        await withCognitiveSpan(
+          CognitiveSpanNames.INTENT_CLASSIFY,
+          {},
+          async () => {
+            return "ok";
+          },
+        );
+      },
+    );
+    const spans = exporter.getFinishedSpans();
+    expect(spans.length).toBe(2);
+    const child = spans.find((s) => s.name === CognitiveSpanNames.INTENT_CLASSIFY);
+    const parent = spans.find((s) => s.name === CognitiveSpanNames.RUN);
+    expect(child?.parentSpanContext?.spanId).toBe(parent?.spanContext().spanId);
+    exporter.reset();
+  });
+
+  it("174 tracer name matches COGNITIVE_TRACER_NAME constant", async () => {
+    const { exporter } = installTestTracer();
+    await withCognitiveSpan(CognitiveSpanNames.VALIDATE, {}, async () => "x");
+    const spans = exporter.getFinishedSpans();
+    // The instrumentation library name is attached to each span's
+    // `instrumentationScope.name` field.
+    expect(spans[0].instrumentationScope.name).toBe(COGNITIVE_TRACER_NAME);
+    exporter.reset();
+  });
+});
+
+describe("cognitive: middleware OTel integration (Turn F)", () => {
+  it("175 run() emits a root cognitive.run span per request", async () => {
+    const { exporter } = installTestTracer();
+    const mw = new CognitiveMiddleware({ adapters: [new EchoMockAdapter()] });
+    await mw.run({ userId: "u", message: "hi there" });
+    const spans = exporter.getFinishedSpans();
+    const roots = finishedSpansByName(spans, CognitiveSpanNames.RUN);
+    expect(roots.length).toBe(1);
+    expect(roots[0].attributes[CognitiveAttributes.USER_ID]).toBe("u");
+    expect(roots[0].attributes[CognitiveAttributes.REQUEST_MESSAGE_LENGTH]).toBe(8);
+    exporter.reset();
+  });
+
+  it("176 run() emits intent_classify, context_enrich, provider_call, validate children", async () => {
+    const { exporter } = installTestTracer();
+    const mw = new CognitiveMiddleware({ adapters: [new EchoMockAdapter()] });
+    await mw.run({ userId: "u", message: "What is the capital of France?" });
+    const spans = exporter.getFinishedSpans();
+    const names = new Set(spans.map((s) => s.name));
+    expect(names.has(CognitiveSpanNames.RUN)).toBe(true);
+    expect(names.has(CognitiveSpanNames.INTENT_CLASSIFY)).toBe(true);
+    expect(names.has(CognitiveSpanNames.CONTEXT_ENRICH)).toBe(true);
+    expect(names.has(CognitiveSpanNames.PROVIDER_CALL)).toBe(true);
+    expect(names.has(CognitiveSpanNames.VALIDATE)).toBe(true);
+    exporter.reset();
+  });
+
+  it("177 run() child spans are parented to the root run span", async () => {
+    const { exporter } = installTestTracer();
+    const mw = new CognitiveMiddleware({ adapters: [new EchoMockAdapter()] });
+    await mw.run({ userId: "u", message: "hi" });
+    const spans = exporter.getFinishedSpans();
+    const root = spans.find((s) => s.name === CognitiveSpanNames.RUN);
+    expect(root).toBeDefined();
+    const rootId = root!.spanContext().spanId;
+    const childNames = [
+      CognitiveSpanNames.INTENT_CLASSIFY,
+      CognitiveSpanNames.CONTEXT_ENRICH,
+      CognitiveSpanNames.PROVIDER_CALL,
+      CognitiveSpanNames.VALIDATE,
+    ];
+    for (const name of childNames) {
+      const child = spans.find((s) => s.name === name);
+      expect(child).toBeDefined();
+      expect(child!.parentSpanContext?.spanId).toBe(rootId);
+    }
+    exporter.reset();
+  });
+
+  it("178 run() with rate limiter emits a rate_limit_check span", async () => {
+    const { exporter } = installTestTracer();
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 5,
+      refillPerSecond: 1,
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      rateLimiter: limiter,
+    });
+    await mw.run({ userId: "u", message: "hi" });
+    const spans = exporter.getFinishedSpans();
+    const rl = spans.find((s) => s.name === CognitiveSpanNames.RATE_LIMIT_CHECK);
+    expect(rl).toBeDefined();
+    expect(rl!.attributes[CognitiveAttributes.RATE_LIMIT_ALLOWED]).toBe(true);
+    expect(rl!.attributes[CognitiveAttributes.RATE_LIMIT_REMAINING]).toBe(4);
+    expect(rl!.attributes[CognitiveAttributes.RATE_LIMIT_CAPACITY]).toBe(5);
+    exporter.reset();
+  });
+
+  it("179 run() without rate limiter emits NO rate_limit_check span", async () => {
+    const { exporter } = installTestTracer();
+    const mw = new CognitiveMiddleware({ adapters: [new EchoMockAdapter()] });
+    await mw.run({ userId: "u", message: "hi" });
+    const spans = exporter.getFinishedSpans();
+    const rl = spans.find((s) => s.name === CognitiveSpanNames.RATE_LIMIT_CHECK);
+    expect(rl).toBeUndefined();
+    exporter.reset();
+  });
+
+  it("180 run() context_enrich span carries chunk counts", async () => {
+    const { exporter } = installTestTracer();
+    const docs = new InMemoryDocumentStore({
+      documents: [
+        { docId: "d", title: "D", text: "refund policy: refund allowed within 30 days" },
+      ],
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      documentStore: docs,
+    });
+    await mw.run({ userId: "u", message: "what is the refund policy" });
+    const spans = exporter.getFinishedSpans();
+    const ctx = spans.find((s) => s.name === CognitiveSpanNames.CONTEXT_ENRICH);
+    expect(ctx).toBeDefined();
+    expect(
+      (ctx!.attributes[CognitiveAttributes.CONTEXT_CHUNKS_INCLUDED] as number),
+    ).toBeGreaterThan(0);
+    exporter.reset();
+  });
+
+  it("181 run() with tool loop emits tool_execute spans per tool", async () => {
+    const { exporter } = installTestTracer();
+    const adapter = new ScriptedMockAdapter(
+      [
+        {
+          text: "",
+          finishReason: "tool_calls",
+          toolCalls: [
+            { id: "c1", name: "alpha", args: {} },
+            { id: "c2", name: "beta", args: {} },
+          ],
+        },
+        { text: "done", finishReason: "stop", toolCalls: [] },
+      ],
+      "mock-two-tools",
+    );
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: { name: "alpha", description: "a", inputSchema: { type: "object" } },
+        handler: async () => ({ ok: "a" }),
+      },
+      {
+        descriptor: { name: "beta", description: "b", inputSchema: { type: "object" } },
+        handler: async () => ({ ok: "b" }),
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+    });
+    await mw.run({ userId: "u", message: "do stuff" });
+    const spans = exporter.getFinishedSpans();
+    const toolSpans = spans.filter((s) => s.name === CognitiveSpanNames.TOOL_EXECUTE);
+    expect(toolSpans.length).toBe(2);
+    const toolNames = toolSpans
+      .map((s) => s.attributes[CognitiveAttributes.TOOL_NAME])
+      .sort();
+    expect(toolNames).toEqual(["alpha", "beta"]);
+    // Both tool spans should report ok=true
+    for (const s of toolSpans) {
+      expect(s.attributes[CognitiveAttributes.TOOL_OK]).toBe(true);
+    }
+    exporter.reset();
+  });
+
+  it("182 run() emits one provider_call span per agentic iteration", async () => {
+    const { exporter } = installTestTracer();
+    const adapter = new ScriptedMockAdapter(
+      [
+        { text: "", finishReason: "tool_calls", toolCalls: [{ id: "c1", name: "x", args: {} }] },
+        { text: "ok", finishReason: "stop", toolCalls: [] },
+      ],
+      "mock-loop-provider",
+    );
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: { name: "x", description: "x", inputSchema: { type: "object" } },
+        handler: async () => ({ ok: true }),
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+    });
+    await mw.run({ userId: "u", message: "loop" });
+    const spans = exporter.getFinishedSpans();
+    const providerSpans = spans.filter(
+      (s) => s.name === CognitiveSpanNames.PROVIDER_CALL,
+    );
+    expect(providerSpans.length).toBe(2);
+    // Iteration attribute increments 0, 1
+    const iterations = providerSpans
+      .map((s) => s.attributes[CognitiveAttributes.AGENTIC_ITERATION])
+      .sort();
+    expect(iterations).toEqual([0, 1]);
+    exporter.reset();
+  });
+
+  it("183 run() root span carries final intent + provider + validation attrs", async () => {
+    const { exporter } = installTestTracer();
+    const mw = new CognitiveMiddleware({ adapters: [new EchoMockAdapter()] });
+    await mw.run({ userId: "u", message: "Generate an image of a cat" });
+    const root = exporter
+      .getFinishedSpans()
+      .find((s) => s.name === CognitiveSpanNames.RUN);
+    expect(root).toBeDefined();
+    expect(root!.attributes[CognitiveAttributes.INTENT]).toBe("image_generation");
+    expect(root!.attributes[CognitiveAttributes.PROVIDER_NAME]).toBe("mock-echo");
+    expect(typeof root!.attributes[CognitiveAttributes.VALIDATION_OK]).toBe("boolean");
+    exporter.reset();
+  });
+
+  it("184 runStream() emits a root cognitive.run_stream span", async () => {
+    const { exporter } = installTestTracer();
+    const mw = new CognitiveMiddleware({
+      adapters: [new StreamingMockAdapter({ chunks: ["ok"] })],
+    });
+    for await (const _ of mw.runStream({ userId: "u", message: "hi" })) void _;
+    const spans = exporter.getFinishedSpans();
+    const root = spans.find((s) => s.name === CognitiveSpanNames.RUN_STREAM);
+    expect(root).toBeDefined();
+    expect(root!.attributes[CognitiveAttributes.USER_ID]).toBe("u");
+    exporter.reset();
+  });
+
+  it("185 runStream() child spans are parented to the root run_stream span", async () => {
+    const { exporter } = installTestTracer();
+    const mw = new CognitiveMiddleware({
+      adapters: [new StreamingMockAdapter({ chunks: ["ok"] })],
+    });
+    for await (const _ of mw.runStream({ userId: "u", message: "hi" })) void _;
+    const spans = exporter.getFinishedSpans();
+    const root = spans.find((s) => s.name === CognitiveSpanNames.RUN_STREAM);
+    const intentSpan = spans.find((s) => s.name === CognitiveSpanNames.INTENT_CLASSIFY);
+    expect(root).toBeDefined();
+    expect(intentSpan).toBeDefined();
+    expect(intentSpan!.parentSpanContext?.spanId).toBe(root!.spanContext().spanId);
+    exporter.reset();
+  });
+
+  it("186 backwards compat: run() works when global tracer is the no-op default", async () => {
+    // Reset to no global provider, force tracer cache refresh.
+    // @ts-expect-error - disable internal test hook
+    otelTrace.disable();
+    resetCognitiveTracerCache();
+    const mw = new CognitiveMiddleware({ adapters: [new EchoMockAdapter()] });
+    const r = await mw.run({ userId: "u", message: "hi" });
+    expect(r.ok).toBe(true);
   });
 });
 

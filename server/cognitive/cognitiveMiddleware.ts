@@ -58,8 +58,20 @@ import { validateOutput } from "./outputValidator";
 import { enrichContext, renderContextBundle } from "./contextEnricher";
 import { serializeToolOutcomeForModel } from "./tools";
 import { defaultRateLimitKey } from "./rateLimit";
+import {
+  CognitiveAttributes,
+  CognitiveSpanNames,
+  getCognitiveTracer,
+  withCognitiveSpan,
+} from "./tracing";
 import type { CircuitBreakerRegistry } from "./circuitBreaker";
 import type { RateLimitCheckResult, RateLimiter } from "./rateLimit";
+import {
+  SpanStatusCode,
+  context as otelContext,
+  trace as otelTrace,
+  type Span,
+} from "@opentelemetry/api";
 import type {
   ContextBundle,
   DocumentStore,
@@ -610,8 +622,36 @@ export class CognitiveMiddleware {
    * enters an agentic loop that executes tool calls locally and
    * feeds their results back to the provider until the model
    * produces a `stop` finishReason or `maxToolIterations` is hit.
+   *
+   * Turn F: emits OpenTelemetry spans for every pipeline stage.
+   * The whole method runs inside a root `cognitive.run` span so
+   * child spans (intent, rate limit, context, provider calls,
+   * tool executions, validate) auto-parent via the OTel context
+   * API.
    */
   async run(req: CognitiveRequest): Promise<CognitiveResponse> {
+    return withCognitiveSpan(
+      CognitiveSpanNames.RUN,
+      {
+        [CognitiveAttributes.USER_ID]: req.userId,
+        [CognitiveAttributes.CONVERSATION_ID]: req.conversationId ?? "",
+        [CognitiveAttributes.REQUEST_MESSAGE_LENGTH]: req.message.length,
+      },
+      (rootSpan) => this.runInner(req, rootSpan),
+    );
+  }
+
+  /**
+   * The actual body of `run()`, split out so the root span wrapper
+   * above can pass down a reference to the root span (we enrich
+   * the root with final routing + validation attrs at the end).
+   * Never throws.
+   */
+  private async runInner(
+    req: CognitiveRequest,
+    rootSpan: Span,
+  ): Promise<CognitiveResponse> {
+    const tracer = getCognitiveTracer();
     const startedAt = Date.now();
     let intentClassificationMs = 0;
     let contextEnrichmentMs = 0;
@@ -631,21 +671,34 @@ export class CognitiveMiddleware {
 
     // ── 1. Intent classification ──────────────────────────────────
     let intent: IntentClassification;
+    const intentSpan = tracer.startSpan(CognitiveSpanNames.INTENT_CLASSIFY);
     try {
       const t0 = Date.now();
       intent = classifyIntent(req.message, req.intentHint);
       intentClassificationMs = Date.now() - t0;
+      intentSpan.setAttribute(CognitiveAttributes.INTENT, intent.intent);
+      intentSpan.setAttribute(
+        CognitiveAttributes.INTENT_CONFIDENCE,
+        intent.confidence,
+      );
+      intentSpan.setAttribute(
+        CognitiveAttributes.INTENT_REASONING,
+        intent.reasoning,
+      );
     } catch (err) {
       // classifyIntent throws on non-string input — caller bug. We
       // still don't propagate; we wrap and return.
       const message = err instanceof Error ? err.message : String(err);
       errors.push(`intent_classifier_threw: ${message}`);
+      if (err instanceof Error) intentSpan.recordException(err);
       intent = {
         intent: "unknown",
         confidence: 0,
         reasoning: `classifier threw: ${message}`,
         alternatives: [],
       };
+    } finally {
+      intentSpan.end();
     }
 
     // ── 2. Rate limit check (Turn E) ──────────────────────────────
@@ -655,17 +708,37 @@ export class CognitiveMiddleware {
     // a diagnostic code which we fold into `errors[]`.
     let rateLimitResult: RateLimitCheckResult | null = null;
     if (this.options.rateLimiter) {
+      const rlSpan = tracer.startSpan(CognitiveSpanNames.RATE_LIMIT_CHECK);
       const rlT0 = Date.now();
       try {
         const key = this.options.rateLimitKeyFn
           ? this.options.rateLimitKeyFn(req, intent.intent)
           : defaultRateLimitKey(req.userId, intent.intent);
+        rlSpan.setAttribute(CognitiveAttributes.RATE_LIMIT_KEY, key);
         rateLimitResult = await this.options.rateLimiter.check(
           key,
           this.options.rateLimitCost ?? 1,
         );
         rateLimitAllowed = rateLimitResult.allowed;
         rateLimitRemaining = rateLimitResult.remaining;
+        rlSpan.setAttribute(
+          CognitiveAttributes.RATE_LIMIT_ALLOWED,
+          rateLimitResult.allowed,
+        );
+        rlSpan.setAttribute(
+          CognitiveAttributes.RATE_LIMIT_REMAINING,
+          rateLimitResult.remaining,
+        );
+        rlSpan.setAttribute(
+          CognitiveAttributes.RATE_LIMIT_CAPACITY,
+          rateLimitResult.capacity,
+        );
+        if (rateLimitResult.retryAfterMs !== undefined) {
+          rlSpan.setAttribute(
+            CognitiveAttributes.RATE_LIMIT_RETRY_AFTER_MS,
+            rateLimitResult.retryAfterMs,
+          );
+        }
       } catch (err) {
         // Defensive — limiters should not throw, but if one does
         // we let the request through so a broken limiter doesn't
@@ -673,7 +746,10 @@ export class CognitiveMiddleware {
         errors.push(
           `rate_limiter_threw: ${err instanceof Error ? err.message : String(err)}`,
         );
+        if (err instanceof Error) rlSpan.recordException(err);
         rateLimitAllowed = true;
+      } finally {
+        rlSpan.end();
       }
       rateLimitCheckMs = Date.now() - rlT0;
     }
@@ -724,6 +800,7 @@ export class CognitiveMiddleware {
     // Runs before provider selection so enrichment failures are
     // visible even when no provider could be picked. Never throws;
     // a store error lands as `errors[]` on the bundle.
+    const ctxSpan = tracer.startSpan(CognitiveSpanNames.CONTEXT_ENRICH);
     const ctxT0 = Date.now();
     const contextBundle = await this.runContextEnrichment(req);
     contextEnrichmentMs = Date.now() - ctxT0;
@@ -731,6 +808,27 @@ export class CognitiveMiddleware {
     for (const e of contextBundle.errors) {
       errors.push(`context: ${e}`);
     }
+    ctxSpan.setAttribute(
+      CognitiveAttributes.CONTEXT_CHUNKS_RETRIEVED,
+      contextBundle.retrievedCount,
+    );
+    ctxSpan.setAttribute(
+      CognitiveAttributes.CONTEXT_CHUNKS_INCLUDED,
+      contextBundle.includedCount,
+    );
+    ctxSpan.setAttribute(
+      CognitiveAttributes.CONTEXT_TOTAL_CHARS,
+      contextBundle.totalChars,
+    );
+    ctxSpan.setAttribute(
+      CognitiveAttributes.CONTEXT_MEMORY_LOOKUP_MS,
+      contextBundle.telemetry.memoryLookupMs,
+    );
+    ctxSpan.setAttribute(
+      CognitiveAttributes.CONTEXT_DOCUMENT_LOOKUP_MS,
+      contextBundle.telemetry.documentLookupMs,
+    );
+    ctxSpan.end();
 
     // ── 4. Provider selection ─────────────────────────────────────
     // Passes the breaker registry so selectProvider filters out
@@ -828,6 +926,14 @@ export class CognitiveMiddleware {
     for (let iter = 0; iter < maxIterations; iter++) {
       agenticIterations = iter + 1;
 
+      // ── Provider call span (per iteration) ───────────────────
+      const pcSpan = tracer.startSpan(CognitiveSpanNames.PROVIDER_CALL, {
+        attributes: {
+          [CognitiveAttributes.PROVIDER_NAME]: selection.adapter.name,
+          [CognitiveAttributes.AGENTIC_ITERATION]: iter,
+          [CognitiveAttributes.AGENTIC_MAX_ITERATIONS]: maxIterations,
+        },
+      });
       const pT0 = Date.now();
       const callResult = await callProviderWithRetry(
         selection.adapter,
@@ -840,6 +946,25 @@ export class CognitiveMiddleware {
       retries += callResult.retries;
       for (const e of callResult.errors) errors.push(e);
       lastResponse = callResult.response;
+      pcSpan.setAttribute(
+        CognitiveAttributes.PROVIDER_FINISH_REASON,
+        callResult.response.finishReason,
+      );
+      pcSpan.setAttribute(
+        CognitiveAttributes.PROVIDER_RETRIES,
+        callResult.retries,
+      );
+      if (callResult.response.usage) {
+        pcSpan.setAttribute(
+          CognitiveAttributes.PROVIDER_PROMPT_TOKENS,
+          callResult.response.usage.promptTokens,
+        );
+        pcSpan.setAttribute(
+          CognitiveAttributes.PROVIDER_COMPLETION_TOKENS,
+          callResult.response.usage.completionTokens,
+        );
+      }
+      pcSpan.end();
 
       // If the model is done, or there is no registry to dispatch
       // tool calls to, or the model produced no tool calls, exit
@@ -852,17 +977,43 @@ export class CognitiveMiddleware {
         break;
       }
 
-      // Execute every tool call from this turn in parallel.
+      // Execute every tool call from this turn in parallel. Each
+      // handler invocation gets its own OTel span so users can
+      // inspect per-tool latency + success/failure in a waterfall.
       const ttT0 = Date.now();
-      const outcomes = await executeToolBatch(
-        registry,
-        callResult.response.toolCalls,
-        {
-          userId: req.userId,
-          conversationId: req.conversationId,
-          iteration: iter,
-        },
-        req.signal ?? new AbortController().signal,
+      const outcomes = await Promise.all(
+        callResult.response.toolCalls.map((tc) => {
+          const toolSpan = tracer.startSpan(CognitiveSpanNames.TOOL_EXECUTE, {
+            attributes: {
+              [CognitiveAttributes.TOOL_NAME]: tc.name,
+              [CognitiveAttributes.TOOL_CALL_ID]: tc.id,
+              [CognitiveAttributes.AGENTIC_ITERATION]: iter,
+            },
+          });
+          return registry
+            .execute(tc.name, tc.args, {
+              userId: req.userId,
+              conversationId: req.conversationId,
+              iteration: iter,
+              toolCallId: tc.id,
+              signal: req.signal ?? new AbortController().signal,
+            })
+            .then((outcome) => {
+              toolSpan.setAttribute(CognitiveAttributes.TOOL_OK, outcome.ok);
+              if (!outcome.ok && outcome.errorCode) {
+                toolSpan.setAttribute(
+                  CognitiveAttributes.TOOL_ERROR_CODE,
+                  outcome.errorCode,
+                );
+                toolSpan.setStatus({
+                  code: 2, // SpanStatusCode.ERROR
+                  message: outcome.error ?? outcome.errorCode,
+                });
+              }
+              toolSpan.end();
+              return outcome;
+            });
+        }),
       );
       toolTotalMs += Date.now() - ttT0;
       toolExecutions.push(...outcomes);
@@ -917,6 +1068,7 @@ export class CognitiveMiddleware {
     }
 
     // ── 7. Validate the response ──────────────────────────────────
+    const valSpan = tracer.startSpan(CognitiveSpanNames.VALIDATE);
     const t1 = Date.now();
     const validation: ValidationReport = validateOutput(finalResponse, {
       toolDescriptors: normalizedRequest.tools,
@@ -924,6 +1076,46 @@ export class CognitiveMiddleware {
       userMessage: req.message,
     });
     validationMs = Date.now() - t1;
+    valSpan.setAttribute(CognitiveAttributes.VALIDATION_OK, validation.ok);
+    valSpan.setAttribute(
+      CognitiveAttributes.VALIDATION_ISSUE_COUNT,
+      validation.issues.length,
+    );
+    valSpan.setAttribute(
+      CognitiveAttributes.VALIDATION_REFUSAL,
+      validation.refusalDetected,
+    );
+    valSpan.end();
+
+    // Enrich the root span with final routing + validation attrs so
+    // a dashboard filter can surface "all failed runs" with a single
+    // attribute filter.
+    rootSpan.setAttribute(CognitiveAttributes.INTENT, intent.intent);
+    rootSpan.setAttribute(
+      CognitiveAttributes.INTENT_CONFIDENCE,
+      intent.confidence,
+    );
+    rootSpan.setAttribute(
+      CognitiveAttributes.PROVIDER_NAME,
+      routing.providerName,
+    );
+    rootSpan.setAttribute(
+      CognitiveAttributes.PROVIDER_REASON,
+      routing.providerReason,
+    );
+    rootSpan.setAttribute(
+      CognitiveAttributes.PROVIDER_FINISH_REASON,
+      finalResponse.finishReason,
+    );
+    rootSpan.setAttribute(
+      CognitiveAttributes.AGENTIC_ITERATION,
+      agenticIterations,
+    );
+    rootSpan.setAttribute(CognitiveAttributes.VALIDATION_OK, validation.ok);
+    rootSpan.setAttribute(
+      CognitiveAttributes.CIRCUIT_BREAKER_STATE,
+      circuitBreakerState,
+    );
 
     // ── 8. Assemble the final response ────────────────────────────
     const endedAt = Date.now();
@@ -1012,6 +1204,21 @@ export class CognitiveMiddleware {
   async *runStream(
     req: CognitiveRequest,
   ): AsyncGenerator<CognitiveStreamEvent, void, void> {
+    const tracer = getCognitiveTracer();
+    // Root span for the whole streaming request. Because this is an
+    // async generator we cannot use `withCognitiveSpan`'s callback
+    // form — context.with doesn't propagate across `yield` points.
+    // Instead we start the span manually and pass `rootCtx` as the
+    // explicit parent context to every child span.
+    const rootSpan = tracer.startSpan(CognitiveSpanNames.RUN_STREAM, {
+      attributes: {
+        [CognitiveAttributes.USER_ID]: req.userId,
+        [CognitiveAttributes.CONVERSATION_ID]: req.conversationId ?? "",
+        [CognitiveAttributes.REQUEST_MESSAGE_LENGTH]: req.message.length,
+      },
+    });
+    const rootCtx = otelTrace.setSpan(otelContext.active(), rootSpan);
+
     const startedAt = Date.now();
     let intentClassificationMs = 0;
     let contextEnrichmentMs = 0;
@@ -1024,21 +1231,36 @@ export class CognitiveMiddleware {
     let circuitBreakerState: CognitiveTelemetry["circuitBreakerState"] = "none";
     const errors: string[] = [];
 
+    try {
+
     // ── 1. Intent classification ──────────────────────────────────
     let intent: IntentClassification;
+    const intentSpan = tracer.startSpan(
+      CognitiveSpanNames.INTENT_CLASSIFY,
+      undefined,
+      rootCtx,
+    );
     try {
       const t0 = Date.now();
       intent = classifyIntent(req.message, req.intentHint);
       intentClassificationMs = Date.now() - t0;
+      intentSpan.setAttribute(CognitiveAttributes.INTENT, intent.intent);
+      intentSpan.setAttribute(
+        CognitiveAttributes.INTENT_CONFIDENCE,
+        intent.confidence,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       errors.push(`intent_classifier_threw: ${message}`);
+      if (err instanceof Error) intentSpan.recordException(err);
       intent = {
         intent: "unknown",
         confidence: 0,
         reasoning: `classifier threw: ${message}`,
         alternatives: [],
       };
+    } finally {
+      intentSpan.end();
     }
 
     // ── 2. Rate limit check (Turn E) ──────────────────────────────
@@ -1496,6 +1718,42 @@ export class CognitiveMiddleware {
     };
 
     yield { kind: "done", response };
+
+    // Enrich root span with final routing + validation attrs.
+    rootSpan.setAttribute(CognitiveAttributes.INTENT, intent.intent);
+    rootSpan.setAttribute(
+      CognitiveAttributes.PROVIDER_NAME,
+      routing.providerName,
+    );
+    rootSpan.setAttribute(
+      CognitiveAttributes.PROVIDER_FINISH_REASON,
+      finishReason,
+    );
+    rootSpan.setAttribute(
+      CognitiveAttributes.AGENTIC_ITERATION,
+      agenticIterations,
+    );
+    rootSpan.setAttribute(CognitiveAttributes.VALIDATION_OK, validation.ok);
+    rootSpan.setAttribute(
+      CognitiveAttributes.CIRCUIT_BREAKER_STATE,
+      circuitBreakerState,
+    );
+    } catch (streamErr) {
+      // Belt-and-braces: the generator body is already "never
+      // throws" by design, but if some future stage adds a throw
+      // we still want the root span closed + the exception
+      // recorded so dashboards can see it.
+      if (streamErr instanceof Error) {
+        rootSpan.recordException(streamErr);
+        rootSpan.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: streamErr.message,
+        });
+      }
+      throw streamErr;
+    } finally {
+      rootSpan.end();
+    }
   }
 
   /**
