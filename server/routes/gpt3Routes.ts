@@ -41,6 +41,19 @@ import {
   stridedSparseMask,
   fullCausalMask,
   maskDensity,
+  // GPT-4 additions
+  type ChatMessage,
+  buildChatPrompt,
+  validateChatStructure,
+  fitScalingLaw,
+  predictLoss,
+  extrapolationError,
+  bradleyTerryLoss,
+  batchBradleyTerryLoss,
+  reinforceStep,
+  expectedCalibrationError,
+  withChainOfThought,
+  CHAIN_OF_THOUGHT_PREAMBLE,
 } from "../lib/transformer";
 
 // ---------------------------------------------------------------------------
@@ -119,6 +132,66 @@ const sparseMaskRequestSchema = z.object({
   kind: z.enum(["dense", "local-band", "strided"]).default("strided"),
   bandSize: z.number().int().min(1).max(128).optional(),
   stride: z.number().int().min(1).max(128).optional(),
+});
+
+// ── GPT-4 schemas (chat, scaling laws, RLHF, calibration) ─────────────────
+
+const chatMessageSchema = z.object({
+  role: z.enum(["system", "user", "assistant"]),
+  content: z.string().min(1).max(4096),
+});
+
+const chatRequestSchema = z.object({
+  messages: z.array(chatMessageSchema).min(1).max(32),
+  addAssistantPrimer: z.boolean().default(true),
+});
+
+const scalingLawFitSchema = z.object({
+  observations: z
+    .array(
+      z.object({
+        compute: z.number().positive().finite(),
+        loss: z.number().finite(),
+      }),
+    )
+    .min(2)
+    .max(200),
+  asymptote: z.number().optional(),
+});
+
+const scalingLawPredictSchema = z.object({
+  params: z.object({
+    a: z.number().finite(),
+    b: z.number().finite(),
+    c: z.number().finite(),
+  }),
+  compute: z.number().positive().finite(),
+});
+
+const preferenceLossSchema = z.object({
+  rChosen: z.union([z.number().finite(), z.array(z.number().finite()).min(1).max(256)]),
+  rRejected: z.union([z.number().finite(), z.array(z.number().finite()).min(1).max(256)]),
+});
+
+const reinforceStepSchema = z.object({
+  logProbs: z.array(z.number().finite()).min(1).max(512),
+  reward: z.number().finite(),
+  baseline: z.number().finite().optional(),
+  klDivergencePerToken: z.array(z.number().finite()).optional(),
+  klCoefficient: z.number().min(0).optional(),
+});
+
+const calibrationSchema = z.object({
+  predictions: z
+    .array(
+      z.object({
+        probability: z.number().min(0).max(1),
+        correct: z.boolean(),
+      }),
+    )
+    .min(1)
+    .max(10_000),
+  numBins: z.number().int().min(1).max(100).default(10),
 });
 
 // ---------------------------------------------------------------------------
@@ -398,6 +471,198 @@ export function createGpt3Router(): Router {
         message: caught instanceof Error ? caught.message : String(caught),
       });
     }
+  });
+
+  // ─── GPT-4 Technical Report endpoints (arXiv:2303.08774) ───────────────
+
+  // ── POST /chat ────────────────────────────────────────────────────────
+  //
+  // §2 canonical ChatML-style transcript builder. Accepts a list of
+  // {role, content} messages and renders a flat token id sequence
+  // that can be fed straight into /generate.
+  router.post("/chat", (req: Request, res: Response) => {
+    const parsed = chatRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { messages, addAssistantPrimer } = parsed.data;
+    try {
+      // Validate structural invariants first — gives better errors
+      validateChatStructure(messages as ChatMessage[], { addAssistantPrimer });
+      // Per-char stand-in tokenizer — production callers would plug in
+      // a real BPE. The key artifact is the structure (role markers +
+      // ordering), which is tokenizer-agnostic.
+      const tokenize = (s: string): number[] => {
+        const out: number[] = [];
+        for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i));
+        return out;
+      };
+      const built = buildChatPrompt(messages as ChatMessage[], {
+        tokenize,
+        addAssistantPrimer,
+      });
+      return res.json({
+        tokenIds: built.tokenIds,
+        roles: built.roles,
+        numTurns: built.numTurns,
+        mode: built.mode,
+        algorithm: "ChatML-style transcript (GPT-4 §2)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "chat_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /scaling-law-fit ─────────────────────────────────────────────
+  router.post("/scaling-law-fit", (req: Request, res: Response) => {
+    const parsed = scalingLawFitSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { observations, asymptote } = parsed.data;
+    try {
+      const fit = fitScalingLaw(observations, { asymptote });
+      return res.json({
+        params: fit.params,
+        rmseTrain: fit.rmseTrain,
+        r2Train: fit.r2Train,
+        formula: "L(C) = a · C^b + c (Brown 2020 / Hoffmann 2022 / GPT-4 §2.1)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "scaling_law_fit_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /scaling-law-predict ─────────────────────────────────────────
+  router.post("/scaling-law-predict", (req: Request, res: Response) => {
+    const parsed = scalingLawPredictSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { params, compute } = parsed.data;
+    try {
+      const predictedLoss = predictLoss(compute, params);
+      return res.json({
+        compute,
+        params,
+        predictedLoss,
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "scaling_law_predict_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /preference-loss ─────────────────────────────────────────────
+  //
+  // Bradley-Terry preference loss for reward model training (§2.3).
+  // Accepts either scalar rewards (single pair) or arrays (minibatch).
+  router.post("/preference-loss", (req: Request, res: Response) => {
+    const parsed = preferenceLossSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { rChosen, rRejected } = parsed.data;
+    try {
+      if (Array.isArray(rChosen) !== Array.isArray(rRejected)) {
+        return res.status(400).json({
+          error: "shape_mismatch",
+          message: "rChosen and rRejected must be both scalars or both arrays",
+        });
+      }
+      if (Array.isArray(rChosen) && Array.isArray(rRejected)) {
+        const result = batchBradleyTerryLoss(rChosen, rRejected);
+        return res.json({
+          meanLoss: result.meanLoss,
+          perPair: result.perPair,
+          algorithm: "batched Bradley-Terry (InstructGPT / GPT-4 §2.3)",
+        });
+      }
+      const result = bradleyTerryLoss(rChosen as number, rRejected as number);
+      return res.json({
+        loss: result.loss,
+        probChosenWins: result.probChosenWins,
+        rewardGap: result.rewardGap,
+        algorithm: "Bradley-Terry preference loss (InstructGPT / GPT-4 §2.3)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "preference_loss_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /reinforce-step ──────────────────────────────────────────────
+  router.post("/reinforce-step", (req: Request, res: Response) => {
+    const parsed = reinforceStepSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    try {
+      const result = reinforceStep(parsed.data);
+      return res.json({
+        loss: result.loss,
+        advantage: result.advantage,
+        klPenalty: result.klPenalty,
+        perTokenGradient: result.perTokenGradient,
+        algorithm: "REINFORCE policy gradient with optional KL penalty (§2.3)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "reinforce_step_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /calibration ─────────────────────────────────────────────────
+  //
+  // Expected Calibration Error (Naeini et al. 2015, used in Figure 8 of
+  // the GPT-4 technical report to track how RLHF affects calibration).
+  router.post("/calibration", (req: Request, res: Response) => {
+    const parsed = calibrationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    const { predictions, numBins } = parsed.data;
+    try {
+      const result = expectedCalibrationError(predictions, numBins);
+      return res.json({
+        ece: result.ece,
+        bins: result.bins,
+        numPredictions: predictions.length,
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "calibration_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /chain-of-thought ────────────────────────────────────────────
+  //
+  // Wraps a question with "Let's think step by step." (Wei et al. 2022),
+  // the preamble the GPT-4 paper uses for multi-step reasoning benchmarks.
+  router.post("/chain-of-thought", (req: Request, res: Response) => {
+    const schema = z.object({ question: z.string().min(1).max(4096) });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    return res.json({
+      wrapped: withChainOfThought(parsed.data.question),
+      preamble: CHAIN_OF_THOUGHT_PREAMBLE,
+    });
   });
 
   // ── GET /configs ──────────────────────────────────────────────────────

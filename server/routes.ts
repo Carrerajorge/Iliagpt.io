@@ -997,6 +997,19 @@ try{
   var tk="${safeToken}";
   var SK="openclaw.control.settings.v1";
   var TK="openclaw.control.token.v1";
+  function normalizeGatewayUrl(input){
+    var raw=String(input||"").trim();
+    if(!raw)return "default";
+    try{
+      var parsed=new URL(raw,window.location.href);
+      var pathname=parsed.pathname==="/"
+        ? ""
+        : (parsed.pathname.replace(/\/+$/,"")||parsed.pathname);
+      return parsed.protocol+"//"+parsed.host+pathname;
+    }catch{
+      return raw;
+    }
+  }
   var existing=null;
   var keys=Object.keys(localStorage);
   for(var i=0;i<keys.length;i++){if(keys[i].indexOf(SK)===0){existing=localStorage.getItem(keys[i]);if(existing)break;}}
@@ -1014,9 +1027,7 @@ try{
   s.themeMode=s.themeMode||"system";
   s.chatShowThinking=s.chatShowThinking!==false;
   s.chatShowToolCalls=s.chatShowToolCalls!==false;
-  var h=w.replace(/^wss?:\\/\\//,"").replace(/[\\/\\?#].*/,"");
-  var p=w.replace(/^wss?:\\/\\/[^\\/]*/,"");
-  var gk=h+(p||"/");
+  var gk=normalizeGatewayUrl(w);
   localStorage.setItem(SK+":"+gk,JSON.stringify(s));
   localStorage.setItem(SK+":default",JSON.stringify(s));
   localStorage.setItem(SK,JSON.stringify(s));

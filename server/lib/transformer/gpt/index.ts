@@ -106,3 +106,54 @@ export {
   clozePrompt,
   translationPrompt,
 } from "./taskTemplates";
+
+// ─── GPT-4 technical report additions (arXiv:2303.08774) ───────────────────
+
+// Chat format (§2 canonical ChatML-style transcript)
+export {
+  type ChatRole,
+  type ChatMessage,
+  type ChatMarkers,
+  type BuildChatPromptOptions,
+  type BuiltChatPrompt,
+  defaultChatMarkers,
+  buildChatPrompt,
+  validateChatStructure,
+  inContextModeOfChat,
+} from "./chatFormat";
+
+// Predictable scaling laws (§2.1)
+export {
+  type ScalingObservation,
+  type ScalingLawParams,
+  type ScalingLawFit,
+  type FitScalingLawOptions,
+  fitScalingLaw,
+  predictLoss,
+  extrapolationError,
+} from "./scalingLaws";
+
+// RLHF primitives (§2.3)
+export {
+  type GptRewardHeadWeights,
+  type PreferenceLossResult,
+  type ReinforceStepInput,
+  type ReinforceStepResult,
+  initGptRewardHead,
+  gptReward,
+  bradleyTerryLoss,
+  batchBradleyTerryLoss,
+  reinforceStep,
+} from "./rlhf";
+
+// Evaluation + calibration (§3, Figure 8)
+export {
+  type MultipleChoiceResult,
+  type CalibrationPrediction,
+  type CalibrationResult,
+  CHAIN_OF_THOUGHT_PREAMBLE,
+  sequenceLogLikelihood,
+  multipleChoiceEval,
+  expectedCalibrationError,
+  withChainOfThought,
+} from "./evaluation";
