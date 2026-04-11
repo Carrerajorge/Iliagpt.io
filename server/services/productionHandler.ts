@@ -585,7 +585,9 @@ async function generateOfficeEngineDeliveryArtifact(params: {
         throw new Error(officeResult.error?.message || `No se pudo generar el artefacto ${docKind.toUpperCase()}.`);
     }
 
-    const exportedArtifact = officeResult.artifacts[0];
+    const exportedArtifact =
+        officeResult.artifacts.find((artifact) => artifact.kind === "exported") ||
+        officeResult.artifacts[0];
     const fallbackTopic = docKind === "xlsx" ? "hoja de cálculo" : "documento";
     const resolvedTopic = resolveArtifactTopic(intentResult, message, fallbackTopic);
     const exportedName = getOfficeArtifactFilename(resolvedTopic, docKind);

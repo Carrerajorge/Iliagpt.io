@@ -67,8 +67,10 @@ export class XlsxEngine {
     const inputChecksum = req.inputBuffer
       ? createHash("sha256").update(req.inputBuffer).digest("hex")
       : "no-input";
-    const objectiveHash = createHash("sha256").update(req.objective).digest("hex");
-    const existing = await findIdempotentRun(inputChecksum, objectiveHash);
+    const objectiveHash = createHash("sha256")
+      .update(`${req.docKind}:${req.objective}`)
+      .digest("hex");
+    const existing = await findIdempotentRun(inputChecksum, objectiveHash, req.docKind);
     if (existing) {
       const cachedArtifacts = await listArtifacts(existing.id);
       const exported = cachedArtifacts.find((a) => a.kind === "exported");
@@ -81,7 +83,9 @@ export class XlsxEngine {
           fallbackLevel: existing.fallbackLevel as OfficeFallbackLevel,
           durationMs: existing.durationMs ?? 0,
           idempotent: true,
-          artifacts: cachedArtifacts.map((a) => ({
+          artifacts: cachedArtifacts
+            .filter((a) => a.kind === "exported")
+            .map((a) => ({
             id: a.id,
             kind: a.kind,
             path: a.path,

@@ -19,6 +19,7 @@ import {
 export async function findIdempotentRun(
   inputChecksum: string,
   objectiveHash: string,
+  docKind: string,
 ): Promise<OfficeEngineRun | null> {
   const rows = await db
     .select()
@@ -27,6 +28,7 @@ export async function findIdempotentRun(
       and(
         eq(officeEngineRuns.inputChecksum, inputChecksum),
         eq(officeEngineRuns.objectiveHash, objectiveHash),
+        eq(officeEngineRuns.docKind, docKind),
         eq(officeEngineRuns.status, "succeeded"),
       ),
     )

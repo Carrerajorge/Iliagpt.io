@@ -274,4 +274,69 @@ describe("AssistantMessage", () => {
       }),
     );
   });
+
+  it("renders PDF artifacts with the PDF label and routes preview as pdf", () => {
+    const onReopenDocument = vi.fn();
+
+    render(
+      <AssistantMessage
+        message={{
+          id: "assistant-pdf",
+          role: "assistant",
+          content: "PDF listo para descargar.",
+          timestamp: new Date("2026-04-11T18:00:00.000Z"),
+          artifacts: [
+            {
+              artifactId: "artifact-pdf",
+              type: "pdf",
+              mimeType: "application/pdf",
+              downloadUrl: "/api/office-engine/runs/run-pdf/artifacts/exported",
+              previewUrl: "/api/office-engine/runs/run-pdf/artifacts/preview",
+              previewHtml: "<div>pdf preview</div>",
+              filename: "reporte.pdf",
+              name: "reporte.pdf",
+              metadata: { officeRunId: "run-pdf" },
+            },
+          ],
+        }}
+        msgIndex={0}
+        totalMessages={1}
+        assistantMsgNumber={1}
+        variant="default"
+        copiedMessageId={null}
+        messageFeedback={{}}
+        speakingMessageId={null}
+        aiState="idle"
+        isRegenerating={false}
+        isGeneratingImage={false}
+        pendingGeneratedImage={null}
+        latestGeneratedImageRef={{ current: null }}
+        onCopyMessage={() => {}}
+        onFeedback={() => {}}
+        onRegenerate={() => {}}
+        onShare={() => {}}
+        onReadAloud={() => {}}
+        onOpenDocumentPreview={() => {}}
+        onDownloadImage={() => {}}
+        onOpenLightbox={() => {}}
+        onReopenDocument={onReopenDocument}
+      />,
+    );
+
+    expect(screen.getByText("Documento PDF")).toBeInTheDocument();
+    expect(screen.getByText("reporte.pdf")).toBeInTheDocument();
+    expect(screen.getByText("Ver")).toBeInTheDocument();
+    expect(screen.getByText("Preview")).toBeInTheDocument();
+    expect(screen.getByText("Descargar")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Preview"));
+
+    expect(onReopenDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "pdf",
+        fileName: "reporte.pdf",
+        downloadUrl: "/api/office-engine/runs/run-pdf/artifacts/exported",
+      }),
+    );
+  });
 });

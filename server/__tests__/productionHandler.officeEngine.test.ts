@@ -429,6 +429,76 @@ describe("productionHandler office-engine bridge", () => {
     expect(result.artifacts?.map((artifact) => artifact.type)).toEqual(["word", "excel"]);
   });
 
+  it("prefers exported artifacts over repacked artifacts when the office engine response is unordered", async () => {
+    officeEngineRunMock.mockImplementation(async (req: any, streamer: any) => {
+      req.onStart?.(`office-run-${req.docKind}`);
+      const plan = streamer.start("thinking", `Planificando ${req.docKind}`);
+      streamer.complete(plan, { output: `artifact ready for ${req.docKind}` });
+
+      const mimeType =
+        req.docKind === "xlsx"
+          ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+      return {
+        runId: `office-run-${req.docKind}`,
+        status: "succeeded",
+        fallbackLevel: 0,
+        durationMs: 90,
+        idempotent: true,
+        artifacts: [
+          {
+            id: `repacked-${req.docKind}`,
+            kind: "repacked",
+            path: `/tmp/repacked-${req.docKind}.${req.docKind}`,
+            mimeType,
+            sizeBytes: 1024,
+            checksumSha256: `sha256-repacked-${req.docKind}`,
+            downloadUrl: `/api/office-engine/runs/office-run-${req.docKind}/artifacts/repacked`,
+            previewUrl: `/api/office-engine/runs/office-run-${req.docKind}/artifacts/preview`,
+          },
+          {
+            id: `exported-${req.docKind}`,
+            kind: "exported",
+            path: `/tmp/exported-${req.docKind}.${req.docKind}`,
+            mimeType,
+            sizeBytes: 2048,
+            checksumSha256: `sha256-exported-${req.docKind}`,
+            downloadUrl: `/api/office-engine/runs/office-run-${req.docKind}/artifacts/exported`,
+            previewUrl: `/api/office-engine/runs/office-run-${req.docKind}/artifacts/preview`,
+          },
+        ],
+      };
+    });
+
+    const { res, chunks } = createMockResponse();
+    const result = await handleProductionRequest(
+      {
+        message:
+          "crea un Word y un Excel profesionales con estudio de mercado, benchmark de precios y proyección financiera para una startup de delivery",
+        userId: "user-1",
+        chatId: "chat-1",
+        conversationId: "conv-1",
+        requestId: "req-hybrid-exported-1",
+        assistantMessageId: "assistant-hybrid-exported-1",
+        intentResult: makeIntentResult({
+          intent: "CREATE_DOCUMENT",
+          output_format: "docx",
+          normalized_text:
+            "crea un word y un excel profesionales con estudio de mercado benchmark de precios y proyeccion financiera para una startup de delivery",
+        }),
+      },
+      res,
+    );
+
+    const artifactEvents = parseSseEvents(chunks).filter((event) => event.event === "artifact");
+    expect(artifactEvents).toHaveLength(2);
+    expect(artifactEvents[0]?.data.downloadUrl).toMatch(/\/artifacts\/exported$/);
+    expect(artifactEvents[1]?.data.downloadUrl).toMatch(/\/artifacts\/exported$/);
+    expect(result.artifacts).toHaveLength(2);
+    expect(result.artifacts?.every((artifact) => /\/artifacts\/exported$/.test(artifact.downloadUrl))).toBe(true);
+  });
+
   it("bootstraps an assistant placeholder before hybrid SSE so the client can reuse the persisted assistant message", async () => {
     officeEngineRunMock.mockImplementation(async (req: any, streamer: any) => {
       req.onStart?.(`office-run-${req.docKind}`);

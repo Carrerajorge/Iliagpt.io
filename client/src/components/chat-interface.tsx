@@ -5393,6 +5393,97 @@ export function ChatInterface({
               return;
             }
 
+            const normalizedArtifactTypeMap: Record<string, string> = {
+              word: "word",
+              docx: "word",
+              document: "word",
+              excel: "excel",
+              xlsx: "excel",
+              spreadsheet: "excel",
+              ppt: "ppt",
+              pptx: "ppt",
+              presentation: "ppt",
+              pdf: "pdf",
+            };
+            const artifactTypeMap: Record<string, string> = {
+              word: "document",
+              excel: "spreadsheet",
+              ppt: "presentation",
+              docx: "document",
+              xlsx: "spreadsheet",
+              pptx: "presentation",
+              pdf: "pdf",
+            };
+            const artifactMimeTypeMap: Record<string, string> = {
+              word: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              excel: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              ppt: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+              docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+              pdf: "application/pdf",
+            };
+            const productionArtifacts: Array<{
+              type: string;
+              filename: string;
+              downloadUrl: string;
+              previewUrl?: string;
+              previewHtml?: string;
+              size?: number;
+              metadata?: Record<string, unknown>;
+            }> = [];
+            const streamArtifactMimeTypes = new Map<string, string>();
+            let isProductionStream = false;
+            let activeOfficeRunId: string | null = null;
+            const scoreProductionArtifact = (artifact: {
+              downloadUrl?: string;
+              previewHtml?: string;
+              metadata?: Record<string, unknown>;
+            }) => {
+              const downloadUrl = String(artifact?.downloadUrl || "");
+              let score = 0;
+              if (/\/artifacts\/exported(?:$|\?)/i.test(downloadUrl)) score += 100;
+              else if (/\/artifacts\/preview(?:$|\?)/i.test(downloadUrl)) score += 60;
+              else if (/\/artifacts\/input(?:$|\?)/i.test(downloadUrl)) score += 10;
+              if (artifact?.previewHtml) score += 25;
+              if (artifact?.metadata && (artifact.metadata as any).officeStatus === "succeeded") score += 10;
+              return score;
+            };
+            const pushProductionArtifact = (candidateArtifact: any) => {
+              if (!candidateArtifact || typeof candidateArtifact !== "object") return;
+
+              const normalizedType =
+                normalizedArtifactTypeMap[String(candidateArtifact.type || "").toLowerCase()] ||
+                String(candidateArtifact.type || "document");
+              const downloadUrl = String(candidateArtifact.downloadUrl || "").trim();
+              const filename = String(candidateArtifact.filename || candidateArtifact.name || "Documento").trim();
+
+              if (!downloadUrl) return;
+
+              const nextArtifact = {
+                type: normalizedType,
+                filename,
+                downloadUrl,
+                previewUrl: candidateArtifact.previewUrl || undefined,
+                previewHtml: candidateArtifact.previewHtml || undefined,
+                size: candidateArtifact.size,
+                metadata: candidateArtifact.metadata,
+              };
+              const existingArtifact = productionArtifacts.find((artifact) => artifact.downloadUrl === downloadUrl);
+              if (existingArtifact) {
+                Object.assign(existingArtifact, { ...existingArtifact, ...nextArtifact });
+              } else {
+                productionArtifacts.push(nextArtifact);
+              }
+
+              streamArtifactMimeTypes.set(
+                normalizedType,
+                artifactMimeTypeMap[normalizedType] ||
+                  candidateArtifact.mimeType ||
+                  "application/octet-stream",
+              );
+            };
+
             const generationResult = await streamChat.stream("/api/chat/stream", {
               chatId: effectiveChatIdForStream,
               signal: abortControllerRef.current.signal,
@@ -5447,6 +5538,10 @@ export function ChatInterface({
                     }];
                   }, effectiveChatIdForStream);
                 } else if (eventType === "production_start") {
+                  isProductionStream = true;
+                  if (data?.engine === "office-engine" && typeof data?.runId === "string" && data.runId.trim()) {
+                    activeOfficeRunId = data.runId.trim();
+                  }
                   setAiStateForChat("agent_working", effectiveChatIdForStream);
                   setAiProcessStepsForChat([{
                     id: "init",
@@ -5473,7 +5568,46 @@ export function ChatInterface({
                     return newSteps;
                   }, effectiveChatIdForStream);
                 } else if (eventType === "production_complete") {
+                  isProductionStream = true;
+                  if (
+                    data?.engine === "office-engine" &&
+                    productionArtifacts.length === 0
+                  ) {
+                    const completedRunId =
+                      typeof data?.runId === "string" && data.runId.trim()
+                        ? data.runId.trim()
+                        : activeOfficeRunId;
+                    if (completedRunId) {
+                      const docKind = String(data?.docKind || "docx").toLowerCase();
+                      pushProductionArtifact({
+                        type: docKind,
+                        filename:
+                          docKind === "xlsx"
+                            ? "documento.xlsx"
+                            : docKind === "pptx"
+                              ? "documento.pptx"
+                              : docKind === "pdf"
+                                ? "documento.pdf"
+                                : "documento.docx",
+                        downloadUrl: `/api/office-engine/runs/${completedRunId}/artifacts/exported`,
+                        previewUrl: `/api/office-engine/runs/${completedRunId}/artifacts/preview`,
+                        mimeType:
+                          artifactMimeTypeMap[
+                            normalizedArtifactTypeMap[docKind] || docKind
+                          ] || "application/octet-stream",
+                        metadata: {
+                          ...(data?.metadata || {}),
+                          engine: "office-engine",
+                          docKind,
+                          officeRunId: completedRunId,
+                        },
+                      });
+                    }
+                  }
                   setAiProcessStepsForChat((prev: any[]) => prev.map((s: any) => ({ ...s, status: "done" })), effectiveChatIdForStream);
+                } else if (eventType === "artifact") {
+                  isProductionStream = true;
+                  pushProductionArtifact(data);
                 } else if (eventType === "tool_start") {
                   if (data.toolName === "browse_and_act") {
                     setAiStateForChat("agent_working", effectiveChatIdForStream);
@@ -5530,19 +5664,93 @@ export function ChatInterface({
               onAiStateChange: (nextState) => {
                 setAiStateForChat(nextState, effectiveChatIdForStream);
               },
-              buildFinalMessage: (fullContent, data, messageId) => buildAssistantMessage({
-                id: messageId || `assistant-${Date.now()}`,
-                timestamp: new Date(),
-                requestId: data?.requestId || generateRequestId(),
-                userMessageId: userMsgId,
-                content: fullContent,
-                fallbackContent: "No se recibió respuesta del servidor.",
-                artifact: data?.artifact,
-                webSources: data?.webSources,
-                searchQueries: data?.searchQueries,
-                totalSearches: data?.totalSearches,
-                followUpSuggestions: data?.followUpSuggestions,
-              }),
+              buildFinalMessage: (fullContent, data, messageId) => {
+                if (isProductionStream && productionArtifacts.length > 0) {
+                  const selectedDocTypeNorm = selectedDocTool
+                    ? (normalizedArtifactTypeMap[selectedDocTool] || selectedDocTool)
+                    : null;
+                  const candidateArtifacts = selectedDocTypeNorm
+                    ? productionArtifacts.filter((artifact) => artifact.type === selectedDocTypeNorm)
+                    : productionArtifacts;
+                  const primaryArtifact =
+                    [...(candidateArtifacts.length > 0 ? candidateArtifacts : productionArtifacts)]
+                      .sort((left, right) => scoreProductionArtifact(right) - scoreProductionArtifact(left))[0] ||
+                    productionArtifacts[0];
+                  const normalizedArtifacts = productionArtifacts.map((artifact, index) => {
+                    const normalizedFriendlyType = normalizedArtifactTypeMap[artifact.type] || artifact.type || "word";
+                    const normalizedType = artifactTypeMap[artifact.type] || artifact.type || "document";
+                    const normalizedMimeType =
+                      streamArtifactMimeTypes.get(artifact.type) ||
+                      artifact.metadata?.mimeType ||
+                      "application/octet-stream";
+                    const normalizedName =
+                      artifact.filename ||
+                      `${normalizedFriendlyType}.${normalizedFriendlyType === "word"
+                        ? "docx"
+                        : normalizedFriendlyType === "excel"
+                          ? "xlsx"
+                          : normalizedFriendlyType === "ppt"
+                            ? "pptx"
+                            : normalizedFriendlyType}`;
+
+                    return {
+                      artifactId: `${messageId || Date.now()}_${normalizedFriendlyType}_${index}`,
+                      type: normalizedType,
+                      mimeType: normalizedMimeType,
+                      sizeBytes: artifact.size,
+                      downloadUrl: artifact.downloadUrl,
+                      previewUrl: artifact.previewUrl,
+                      name: normalizedName,
+                      filename: normalizedName,
+                      previewHtml: artifact.previewHtml,
+                      metadata: artifact.metadata,
+                    };
+                  });
+
+                  const friendlyType =
+                    selectedDocTypeNorm ||
+                    normalizedArtifactTypeMap[primaryArtifact.type] ||
+                    "word";
+                  const typeConfirm: Record<string, string> = {
+                    word: "Documento listo para descargar.",
+                    excel: "Hoja de cálculo lista para descargar.",
+                    ppt: "Presentación lista para descargar.",
+                    pdf: "PDF listo para descargar.",
+                  };
+
+                  return buildAssistantMessage({
+                    id: messageId || `assistant-${Date.now()}`,
+                    timestamp: new Date(),
+                    requestId: data?.requestId || generateRequestId(),
+                    userMessageId: userMsgId,
+                    content:
+                      productionArtifacts.length > 1
+                        ? (fullContent?.trim() || `Se generaron ${productionArtifacts.length} archivos listos para descargar.`)
+                        : (fullContent?.trim() || typeConfirm[friendlyType] || "Archivo listo para descargar."),
+                    fallbackContent: "No se recibió respuesta del servidor.",
+                    artifact: normalizedArtifacts[0],
+                    artifacts: normalizedArtifacts,
+                    webSources: data?.webSources,
+                    searchQueries: data?.searchQueries,
+                    totalSearches: data?.totalSearches,
+                    followUpSuggestions: data?.followUpSuggestions,
+                  });
+                }
+
+                return buildAssistantMessage({
+                  id: messageId || `assistant-${Date.now()}`,
+                  timestamp: new Date(),
+                  requestId: data?.requestId || generateRequestId(),
+                  userMessageId: userMsgId,
+                  content: fullContent,
+                  fallbackContent: "No se recibió respuesta del servidor.",
+                  artifact: data?.artifact,
+                  webSources: data?.webSources,
+                  searchQueries: data?.searchQueries,
+                  totalSearches: data?.totalSearches,
+                  followUpSuggestions: data?.followUpSuggestions,
+                });
+              },
               buildErrorMessage: (error, messageId) => ({
                 id: messageId || `error-${Date.now()}`,
                 role: "assistant",
