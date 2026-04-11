@@ -60,6 +60,22 @@ import {
   wordScramblingPrompt,
   clozePrompt,
   translationPrompt,
+  // fifth audit: new §3.9.3–§3.9.6 task templates
+  satAnalogyPrompt,
+  newsArticlePrompt,
+  novelWordPrompt,
+  grammarCorrectionPrompt,
+  // fifth audit: §2.4 dynamic K selection
+  pickExamplesThatFit,
+  // fifth audit: §D training compute formulas
+  estimateTrainingFlops,
+  estimateTrainingPfDays,
+  estimateFlopsPerStep,
+  estimateTotalFlopsFromSteps,
+  flopsToPfDays,
+  pfDaysToFlops,
+  FLOPS_PER_PF_DAY,
+  TRAINING_FLOPS_PER_PARAM_PER_TOKEN,
   // optimizer / schedule
   GPT3_ADAM,
   GPT3_WEIGHT_DECAY,
@@ -817,6 +833,320 @@ describe("GPT-3 audit 4 — canonical task prompt templates (§3.9 + §G)", () =
     expect(built.mode).toBe("zero-shot");
     const decoded = String.fromCharCode(...built.tokenIds);
     expect(decoded).toBe("Q: What is 2 plus 3?\nA: ");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Fifth-pass audit — §3.9.3–§3.9.6 templates, §2.4 dynamic K,
+//    §D training compute formulas
+// ---------------------------------------------------------------------------
+
+describe("GPT-3 audit 5 — §3.9.3 SAT analogies template", () => {
+  const charTokenizer = (s: string): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i));
+    return out;
+  };
+
+  it("62 satAnalogyPrompt renders the paper's verbatim shape", () => {
+    const built = satAnalogyPrompt({
+      examples: [
+        {
+          sourceLeft: "Audacious",
+          sourceRight: "boldness",
+          choices: [
+            { label: "a", left: "sanctimonious", right: "hypocrisy" },
+            { label: "b", left: "anonymous", right: "identity" },
+            { label: "c", left: "remorseful", right: "misdeed" },
+          ],
+          answer: "a",
+        },
+      ],
+      query: {
+        sourceLeft: "Ephemeral",
+        sourceRight: "brevity",
+        choices: [
+          { label: "a", left: "eternal", right: "duration" },
+          { label: "b", left: "permanent", right: "stability" },
+        ],
+      },
+      tokenize: charTokenizer,
+    });
+    const decoded = String.fromCharCode(...built.tokenIds);
+    expect(decoded).toBe(
+      "Audacious is to boldness as\n(a) sanctimonious is to hypocrisy\n(b) anonymous is to identity\n(c) remorseful is to misdeed\nAnswer: a\n\n" +
+        "Ephemeral is to brevity as\n(a) eternal is to duration\n(b) permanent is to stability\nAnswer: ",
+    );
+    expect(built.mode).toBe("one-shot");
+    expect(built.numExamples).toBe(1);
+  });
+});
+
+describe("GPT-3 audit 5 — §3.9.4 news article generation template", () => {
+  const tok = (s: string): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i));
+    return out;
+  };
+
+  it("63 newsArticlePrompt renders the (title, body) shape", () => {
+    const built = newsArticlePrompt({
+      examples: [
+        {
+          title: "Samsung unveils new phone",
+          body: "SAN FRANCISCO — Samsung said on Tuesday ...",
+        },
+      ],
+      queryTitle: "Scientists discover new species",
+      tokenize: tok,
+    });
+    const decoded = String.fromCharCode(...built.tokenIds);
+    expect(decoded).toBe(
+      "Title: Samsung unveils new phone\nArticle: SAN FRANCISCO — Samsung said on Tuesday ...\n\n" +
+        "Title: Scientists discover new species\nArticle: ",
+    );
+  });
+
+  it("64 newsArticlePrompt honors the optional subtitle", () => {
+    const built = newsArticlePrompt({
+      examples: [],
+      queryTitle: "Breaking News",
+      querySubtitle: "A kicker line",
+      tokenize: tok,
+    });
+    const decoded = String.fromCharCode(...built.tokenIds);
+    expect(decoded).toBe("Title: Breaking News\nSubtitle: A kicker line\nArticle: ");
+  });
+});
+
+describe("GPT-3 audit 5 — §3.9.5 novel word template (whatpu / farduddle)", () => {
+  const tok = (s: string): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i));
+    return out;
+  };
+
+  it("65 novelWordPrompt reproduces the paper's whatpu example exactly", () => {
+    const built = novelWordPrompt({
+      examples: [
+        {
+          word: "whatpu",
+          definition: "is a small, furry animal native to Tanzania",
+          exampleSentence:
+            "We were traveling in Africa and we saw these very cute whatpus.",
+        },
+      ],
+      queryWord: "farduddle",
+      queryDefinition: "means to jump up and down really fast",
+      tokenize: tok,
+    });
+    const decoded = String.fromCharCode(...built.tokenIds);
+    // Paper's famous two-shot layout
+    expect(decoded).toBe(
+      'A "whatpu" is a small, furry animal native to Tanzania. An example of a sentence that uses the word whatpu is:\n' +
+        "We were traveling in Africa and we saw these very cute whatpus.\n\n" +
+        'A "farduddle" means to jump up and down really fast. An example of a sentence that uses the word farduddle is:\n',
+    );
+  });
+});
+
+describe("GPT-3 audit 5 — §3.9.6 grammar correction template", () => {
+  const tok = (s: string): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i));
+    return out;
+  };
+
+  it("66 grammarCorrectionPrompt renders the Poor→Good pattern", () => {
+    const built = grammarCorrectionPrompt({
+      examples: [{ poor: "I eated the purple berries.", good: "I ate the purple berries." }],
+      query: "Yesterday I goed to the store.",
+      tokenize: tok,
+    });
+    const decoded = String.fromCharCode(...built.tokenIds);
+    expect(decoded).toBe(
+      "Poor English input: I eated the purple berries.\n" +
+        "Good English output: I ate the purple berries.\n\n" +
+        "Poor English input: Yesterday I goed to the store.\n" +
+        "Good English output: ",
+    );
+  });
+});
+
+describe("GPT-3 audit 5 — §2.4 dynamic K selection (pickExamplesThatFit)", () => {
+  const makeExample = (cost: number) => ({
+    // An example whose combined input+output token length is `cost - 2`,
+    // so that adding our per-example overhead (2) gives exactly `cost`.
+    input: new Array(Math.ceil((cost - 2) / 2)).fill(1),
+    output: new Array(Math.floor((cost - 2) / 2)).fill(1),
+  });
+
+  it("67 packs the largest prefix that fits under the budget", () => {
+    const examples = [
+      makeExample(20),
+      makeExample(30),
+      makeExample(40),
+      makeExample(50),
+      makeExample(60),
+    ];
+    // Budget = 200, fixed = 10, reserve = 10 → tokensBudget = 180
+    const result = pickExamplesThatFit({
+      examples,
+      contextBudget: 200,
+      fixedPromptTokens: 10,
+      reserveForCompletion: 10,
+      perExampleOverhead: 2,
+    });
+    expect(result.tokensBudget).toBe(180);
+    // 20 + 30 + 40 + 50 = 140 ≤ 180, + 60 = 200 > 180 → keep 4
+    expect(result.k).toBe(4);
+    expect(result.kept.length).toBe(4);
+    expect(result.tokensUsedByExamples).toBe(140);
+    expect(result.tokensRemaining).toBe(40);
+  });
+
+  it("68 returns k=0 when the fixed prompt already exceeds the budget", () => {
+    const result = pickExamplesThatFit({
+      examples: [makeExample(10)],
+      contextBudget: 100,
+      fixedPromptTokens: 95,
+      reserveForCompletion: 20,
+      perExampleOverhead: 0,
+    });
+    // 95 + 20 = 115 > 100 → no room for examples
+    expect(result.k).toBe(0);
+    expect(result.kept.length).toBe(0);
+    expect(result.tokensUsedByExamples).toBe(0);
+  });
+
+  it("69 respects reserveForCompletion to leave room for model output", () => {
+    const examples = [makeExample(50)];
+    // Budget 100, fixed 0, reserve 60 → tokensBudget = 40, one example = 50
+    // doesn't fit
+    const stingy = pickExamplesThatFit({
+      examples,
+      contextBudget: 100,
+      fixedPromptTokens: 0,
+      reserveForCompletion: 60,
+      perExampleOverhead: 0,
+    });
+    expect(stingy.k).toBe(0);
+    // Lower reserve → same example now fits
+    const generous = pickExamplesThatFit({
+      examples,
+      contextBudget: 100,
+      fixedPromptTokens: 0,
+      reserveForCompletion: 10,
+      perExampleOverhead: 0,
+    });
+    expect(generous.k).toBe(1);
+  });
+
+  it("70 rejects invalid configuration", () => {
+    const examples = [makeExample(10)];
+    expect(() =>
+      pickExamplesThatFit({
+        examples,
+        contextBudget: 0,
+        fixedPromptTokens: 10,
+      }),
+    ).toThrow();
+    expect(() =>
+      pickExamplesThatFit({
+        examples,
+        contextBudget: 100,
+        fixedPromptTokens: -5,
+      }),
+    ).toThrow();
+    expect(() =>
+      pickExamplesThatFit({
+        examples,
+        contextBudget: 100,
+        fixedPromptTokens: 0,
+        reserveForCompletion: -1,
+      }),
+    ).toThrow();
+  });
+});
+
+describe("GPT-3 audit 5 — §D training compute formulas", () => {
+  it("71 estimateTrainingFlops returns 6·N·D exactly", () => {
+    expect(
+      estimateTrainingFlops({ numParams: 1e9, numTokens: 1e12 }),
+    ).toBe(6 * 1e9 * 1e12);
+    expect(TRAINING_FLOPS_PER_PARAM_PER_TOKEN).toBe(6);
+  });
+
+  it("72 GPT-3 175B training compute ≈ paper's headline (few PF-days)", () => {
+    // Brown et al. 2020 §D reports GPT-3 175B training at ~3640 PF-days
+    // using 6·N·D over 300B tokens and 175B params.
+    //
+    //   6 · 175e9 · 300e9 = 3.15e23 flops
+    //   3.15e23 / 8.64e19 = ~3646 PF-days
+    //
+    // We don't try to match the paper's rounding — just verify order of
+    // magnitude and the 6·N·D computation.
+    const flops = estimateTrainingFlops({
+      numParams: 175e9,
+      numTokens: 300e9,
+    });
+    expect(flops).toBe(6 * 175e9 * 300e9);
+    const pfDays = estimateTrainingPfDays({
+      numParams: 175e9,
+      numTokens: 300e9,
+    });
+    expect(pfDays).toBeGreaterThan(3000);
+    expect(pfDays).toBeLessThan(4000);
+  });
+
+  it("73 flopsToPfDays / pfDaysToFlops round-trip", () => {
+    const flops = 1.23e20;
+    expect(pfDaysToFlops(flopsToPfDays(flops))).toBeCloseTo(flops, 5);
+    expect(flopsToPfDays(pfDaysToFlops(7.5))).toBeCloseTo(7.5, 12);
+    expect(FLOPS_PER_PF_DAY).toBe(8.64e19);
+  });
+
+  it("74 estimateFlopsPerStep = 6 · N · (batchSize · seqLen)", () => {
+    expect(
+      estimateFlopsPerStep({
+        numParams: 125e6,
+        batchSize: 32,
+        seqLen: 2048,
+      }),
+    ).toBe(6 * 125e6 * 32 * 2048);
+  });
+
+  it("75 estimateTotalFlopsFromSteps is consistent with estimateTrainingFlops", () => {
+    // 10 steps × (batch 16 × seqLen 1024) = 163,840 tokens
+    const viaSteps = estimateTotalFlopsFromSteps({
+      numParams: 1e8,
+      batchSize: 16,
+      seqLen: 1024,
+      totalSteps: 10,
+    });
+    const viaTokens = estimateTrainingFlops({
+      numParams: 1e8,
+      numTokens: 16 * 1024 * 10,
+    });
+    expect(viaSteps).toBe(viaTokens);
+  });
+
+  it("76 compute helpers reject invalid inputs", () => {
+    expect(() =>
+      estimateTrainingFlops({ numParams: -1, numTokens: 100 }),
+    ).toThrow();
+    expect(() =>
+      estimateFlopsPerStep({ numParams: 100, batchSize: 0, seqLen: 10 }),
+    ).toThrow();
+    expect(() =>
+      estimateTotalFlopsFromSteps({
+        numParams: 100,
+        batchSize: 1,
+        seqLen: 1,
+        totalSteps: 0,
+      }),
+    ).toThrow();
+    expect(() => flopsToPfDays(Infinity)).toThrow();
   });
 });
 

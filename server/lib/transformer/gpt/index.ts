@@ -83,10 +83,15 @@ export {
   type InContextMode,
   type InContextPromptSpec,
   type BuiltInContextPrompt,
+  // §2.4 dynamic K selection (fifth audit pass)
+  type InContextExamplePair,
+  type PickExamplesInput,
+  type PickExamplesResult,
   inContextModeOf,
   assertInContextMode,
   buildInContextPrompt,
   validateInContextPrompt,
+  pickExamplesThatFit,
 } from "./inContextLearning";
 
 // §3.9 + §G task templates
@@ -101,11 +106,42 @@ export {
   type ClozeTemplateInput,
   type TranslationExample,
   type TranslationTemplateInput,
+  // Fifth audit pass: §3.9.3–§3.9.6
+  type SatAnalogyChoice,
+  type SatAnalogyExample,
+  type SatAnalogyTemplateInput,
+  type NewsArticleExample,
+  type NewsArticleTemplateInput,
+  type NovelWordExample,
+  type NovelWordTemplateInput,
+  type GrammarCorrectionExample,
+  type GrammarCorrectionTemplateInput,
   arithmeticPrompt,
   wordScramblingPrompt,
   clozePrompt,
   translationPrompt,
+  satAnalogyPrompt,
+  newsArticlePrompt,
+  novelWordPrompt,
+  grammarCorrectionPrompt,
 } from "./taskTemplates";
+
+// §D training compute formulas (fifth audit pass)
+export {
+  type TrainingFlopsInput,
+  type PerStepFlopsInput,
+  type TotalFlopsFromStepsInput,
+  FLOPS_PER_PF_DAY,
+  FORWARD_FLOPS_PER_PARAM_PER_TOKEN,
+  BACKWARD_FLOPS_PER_PARAM_PER_TOKEN,
+  TRAINING_FLOPS_PER_PARAM_PER_TOKEN,
+  estimateTrainingFlops,
+  estimateTrainingPfDays,
+  estimateFlopsPerStep,
+  estimateTotalFlopsFromSteps,
+  flopsToPfDays,
+  pfDaysToFlops,
+} from "./computeFormulas";
 
 // ─── GPT-4 technical report additions (arXiv:2303.08774) ───────────────────
 

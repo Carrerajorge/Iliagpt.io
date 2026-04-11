@@ -54,6 +54,19 @@ import {
   expectedCalibrationError,
   withChainOfThought,
   CHAIN_OF_THOUGHT_PREAMBLE,
+  // Fifth audit: §3.9.3–§3.9.6 task templates
+  satAnalogyPrompt,
+  newsArticlePrompt,
+  novelWordPrompt,
+  grammarCorrectionPrompt,
+  // Fifth audit: §2.4 dynamic K
+  pickExamplesThatFit,
+  // Fifth audit: §D compute formulas
+  estimateTrainingFlops,
+  estimateTrainingPfDays,
+  estimateFlopsPerStep,
+  estimateTotalFlopsFromSteps,
+  flopsToPfDays,
 } from "../lib/transformer";
 
 // ---------------------------------------------------------------------------
@@ -192,6 +205,100 @@ const calibrationSchema = z.object({
     .min(1)
     .max(10_000),
   numBins: z.number().int().min(1).max(100).default(10),
+});
+
+// ── Fifth-audit schemas: §3.9.3–§3.9.6 templates + §2.4 + §D ──────────────
+
+const satAnalogyChoiceSchema = z.object({
+  label: z.string().min(1).max(4),
+  left: z.string().min(1).max(120),
+  right: z.string().min(1).max(120),
+});
+
+const satAnalogyRequestSchema = z.object({
+  examples: z
+    .array(
+      z.object({
+        sourceLeft: z.string().min(1).max(120),
+        sourceRight: z.string().min(1).max(120),
+        choices: z.array(satAnalogyChoiceSchema).min(2).max(8),
+        answer: z.string().min(1).max(4),
+      }),
+    )
+    .max(16),
+  query: z.object({
+    sourceLeft: z.string().min(1).max(120),
+    sourceRight: z.string().min(1).max(120),
+    choices: z.array(satAnalogyChoiceSchema).min(2).max(8),
+  }),
+});
+
+const newsArticleRequestSchema = z.object({
+  examples: z
+    .array(
+      z.object({
+        title: z.string().min(1).max(240),
+        subtitle: z.string().max(240).optional(),
+        body: z.string().min(1).max(4000),
+      }),
+    )
+    .max(8),
+  queryTitle: z.string().min(1).max(240),
+  querySubtitle: z.string().max(240).optional(),
+});
+
+const novelWordRequestSchema = z.object({
+  examples: z
+    .array(
+      z.object({
+        word: z.string().min(1).max(40),
+        definition: z.string().min(1).max(240),
+        exampleSentence: z.string().min(1).max(400),
+      }),
+    )
+    .max(8),
+  queryWord: z.string().min(1).max(40),
+  queryDefinition: z.string().min(1).max(240),
+});
+
+const grammarCorrectionRequestSchema = z.object({
+  examples: z
+    .array(
+      z.object({
+        poor: z.string().min(1).max(400),
+        good: z.string().min(1).max(400),
+      }),
+    )
+    .max(16),
+  query: z.string().min(1).max(400),
+});
+
+const pickExamplesRequestSchema = z.object({
+  /** Each example carries its already-tokenized input/output. */
+  examples: z
+    .array(
+      z.object({
+        input: z.array(z.number().int().nonnegative()).min(0).max(2048),
+        output: z.array(z.number().int().nonnegative()).min(0).max(2048),
+      }),
+    )
+    .max(256),
+  contextBudget: z.number().int().min(1).max(8192),
+  fixedPromptTokens: z.number().int().min(0).max(8192),
+  reserveForCompletion: z.number().int().min(0).max(2048).default(50),
+  perExampleOverhead: z.number().int().min(0).max(64).default(0),
+});
+
+const trainingFlopsRequestSchema = z.object({
+  numParams: z.number().positive().finite(),
+  numTokens: z.number().positive().finite(),
+});
+
+const flopsPerStepRequestSchema = z.object({
+  numParams: z.number().positive().finite(),
+  batchSize: z.number().int().min(1).max(1_000_000),
+  seqLen: z.number().int().min(1).max(8192),
+  totalSteps: z.number().int().min(1).max(10_000_000).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -663,6 +770,195 @@ export function createGpt3Router(): Router {
       wrapped: withChainOfThought(parsed.data.question),
       preamble: CHAIN_OF_THOUGHT_PREAMBLE,
     });
+  });
+
+  // ─── Fifth-pass audit endpoints (§3.9.3–§3.9.6, §2.4, §D) ──────────────
+
+  // Per-char tokenizer used by the four §3.9 prompt builder endpoints.
+  // Production callers would plug in a real BPE; the structure of the
+  // rendered prompt is what's paper-faithful, not the byte-level encoding.
+  const charTokenizer = (s: string): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i));
+    return out;
+  };
+
+  // ── POST /prompt/sat-analogy ──────────────────────────────────────────
+  router.post("/prompt/sat-analogy", (req: Request, res: Response) => {
+    const parsed = satAnalogyRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    try {
+      const built = satAnalogyPrompt({ ...parsed.data, tokenize: charTokenizer });
+      return res.json({
+        tokenIds: built.tokenIds,
+        decoded: String.fromCharCode(...built.tokenIds),
+        mode: built.mode,
+        numExamples: built.numExamples,
+        algorithm: "SAT analogies template (Brown 2020 §3.9.3 + §G)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "sat_analogy_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /prompt/news-article ─────────────────────────────────────────
+  router.post("/prompt/news-article", (req: Request, res: Response) => {
+    const parsed = newsArticleRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    try {
+      const built = newsArticlePrompt({ ...parsed.data, tokenize: charTokenizer });
+      return res.json({
+        tokenIds: built.tokenIds,
+        decoded: String.fromCharCode(...built.tokenIds),
+        mode: built.mode,
+        numExamples: built.numExamples,
+        algorithm: "News article generation template (Brown 2020 §3.9.4)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "news_article_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /prompt/novel-word ───────────────────────────────────────────
+  router.post("/prompt/novel-word", (req: Request, res: Response) => {
+    const parsed = novelWordRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    try {
+      const built = novelWordPrompt({ ...parsed.data, tokenize: charTokenizer });
+      return res.json({
+        tokenIds: built.tokenIds,
+        decoded: String.fromCharCode(...built.tokenIds),
+        mode: built.mode,
+        numExamples: built.numExamples,
+        algorithm: 'Novel word usage template — paper\'s "whatpu" pattern (§3.9.5)',
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "novel_word_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /prompt/grammar-correction ───────────────────────────────────
+  router.post("/prompt/grammar-correction", (req: Request, res: Response) => {
+    const parsed = grammarCorrectionRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    try {
+      const built = grammarCorrectionPrompt({ ...parsed.data, tokenize: charTokenizer });
+      return res.json({
+        tokenIds: built.tokenIds,
+        decoded: String.fromCharCode(...built.tokenIds),
+        mode: built.mode,
+        numExamples: built.numExamples,
+        algorithm: "English grammar correction template (Brown 2020 §3.9.6)",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "grammar_correction_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /pick-examples ───────────────────────────────────────────────
+  //
+  // §2.4 dynamic K selection: greedy packer that returns the largest
+  // prefix of demonstrations that fits in the model's context window
+  // after reserving room for the query and the generated completion.
+  router.post("/pick-examples", (req: Request, res: Response) => {
+    const parsed = pickExamplesRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    try {
+      const result = pickExamplesThatFit(parsed.data);
+      return res.json({
+        k: result.k,
+        kept: result.kept,
+        tokensUsedByExamples: result.tokensUsedByExamples,
+        tokensRemaining: result.tokensRemaining,
+        tokensBudget: result.tokensBudget,
+        algorithm: "§2.4 dynamic K — greedy packer over context budget",
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "pick_examples_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /training-flops ──────────────────────────────────────────────
+  //
+  // §D training compute formulas. Returns flops, PF-days, and (if
+  // batch / seqLen / totalSteps are provided) per-step + total flops.
+  router.post("/training-flops", (req: Request, res: Response) => {
+    // Accept either {numParams, numTokens} or {numParams, batchSize,
+    // seqLen, totalSteps}. Try the simple form first.
+    const simple = trainingFlopsRequestSchema.safeParse(req.body);
+    if (simple.success) {
+      try {
+        const flops = estimateTrainingFlops(simple.data);
+        const pfDays = estimateTrainingPfDays(simple.data);
+        return res.json({
+          flops,
+          pfDays,
+          formula: "C ≈ 6·N·D (Brown 2020 §D)",
+          inputs: simple.data,
+        });
+      } catch (caught) {
+        return res.status(400).json({
+          error: "training_flops_failed",
+          message: caught instanceof Error ? caught.message : String(caught),
+        });
+      }
+    }
+    // Fall back to the per-step / total-step variant.
+    const stepwise = flopsPerStepRequestSchema.safeParse(req.body);
+    if (!stepwise.success) {
+      return res.status(400).json({
+        error: "invalid_request",
+        issues: stepwise.error.issues,
+      });
+    }
+    try {
+      const perStep = estimateFlopsPerStep(stepwise.data);
+      const total = stepwise.data.totalSteps
+        ? estimateTotalFlopsFromSteps({
+            numParams: stepwise.data.numParams,
+            batchSize: stepwise.data.batchSize,
+            seqLen: stepwise.data.seqLen,
+            totalSteps: stepwise.data.totalSteps,
+          })
+        : null;
+      return res.json({
+        flopsPerStep: perStep,
+        totalFlops: total,
+        totalPfDays: total !== null ? flopsToPfDays(total) : null,
+        formula: "flops_per_step = 6·N·(batch·seqLen) (Brown 2020 §D)",
+        inputs: stepwise.data,
+      });
+    } catch (caught) {
+      return res.status(400).json({
+        error: "training_flops_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
   });
 
   // ── GET /configs ──────────────────────────────────────────────────────

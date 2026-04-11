@@ -178,3 +178,147 @@ export function validateInContextPrompt(
   });
   checkSeq(spec.query, "query");
 }
+
+// ---------------------------------------------------------------------------
+// Dynamic K selection (§2.4 of Brown et al. 2020)
+// ---------------------------------------------------------------------------
+
+/**
+ * §2.4 of Brown et al. 2020: "For most tasks we use a value of K
+ * between 10 and 100 as this is how many demonstrations can fit in
+ * the model's context window (n_ctx = 2048)."
+ *
+ * In other words: K is NOT a fixed hyperparameter in GPT-3's
+ * in-context learning protocol. Instead, you greedily pack as many
+ * demonstrations as possible into the context window, leaving room
+ * for the query and the model's completion.
+ *
+ * `pickExamplesThatFit` encodes that policy exactly: given a pool of
+ * candidate examples, a tokenize callback, the context budget, and
+ * the already-known lengths of the fixed prompt pieces, it returns
+ * the largest PREFIX of the example list that still fits under the
+ * budget after reserving room for the query + completion.
+ *
+ * The function is greedy-in-order — examples are kept in the order
+ * they arrive. Callers who want "most informative K" should sort the
+ * pool BEFORE calling this helper. The paper itself does uniform
+ * random sampling per §2.4.
+ */
+
+/** One example in the form the picker consumes. */
+export interface InContextExamplePair {
+  input: number[];
+  output: number[];
+}
+
+export interface PickExamplesInput {
+  /** Candidate demonstrations to consider, in priority order. */
+  examples: InContextExamplePair[];
+  /** Context window size of the target model (e.g. 2048 for GPT-3). */
+  contextBudget: number;
+  /**
+   * Tokens that will ALWAYS be in the rendered prompt no matter how
+   * many examples are kept: task description, query, separators, etc.
+   * Pass the total length as a scalar rather than re-tokenizing.
+   */
+  fixedPromptTokens: number;
+  /**
+   * Reserve at least this many tokens for the model's generated
+   * completion (so we don't pack the prompt to the very edge of the
+   * context window). Default 50 — matches the GPT-3 paper's "input
+   * length + 50" convention for max output length.
+   */
+  reserveForCompletion?: number;
+  /**
+   * Per-example overhead in tokens NOT accounted for by `input.length +
+   * output.length` — typically the input→output separator + the
+   * example separator. Length of the `inputOutputSeparator` +
+   * `exampleSeparator` token arrays the prompt uses. Default 0.
+   */
+  perExampleOverhead?: number;
+}
+
+export interface PickExamplesResult {
+  /** The chosen prefix of examples. */
+  kept: InContextExamplePair[];
+  /** How many examples were kept — the dynamic K from §2.4. */
+  k: number;
+  /** Total tokens used by the packed demonstrations. */
+  tokensUsedByExamples: number;
+  /** Tokens remaining in the budget after packing. */
+  tokensRemaining: number;
+  /** Tokens available for demonstrations (budget − fixed − reserve). */
+  tokensBudget: number;
+}
+
+/**
+ * Greedy packer: keep the largest prefix of `examples` that fits
+ * under the context budget after reserving room for the fixed prompt
+ * and the generated completion.
+ *
+ * Returns `k` (the number kept) so callers can use it for §2.4-style
+ * reporting and plumbing into `buildInContextPrompt`.
+ */
+export function pickExamplesThatFit(
+  input: PickExamplesInput,
+): PickExamplesResult {
+  const {
+    examples,
+    contextBudget,
+    fixedPromptTokens,
+    reserveForCompletion = 50,
+    perExampleOverhead = 0,
+  } = input;
+
+  if (!Number.isInteger(contextBudget) || contextBudget <= 0) {
+    throw new Error(
+      `pickExamplesThatFit: contextBudget ${contextBudget} must be a positive integer`,
+    );
+  }
+  if (fixedPromptTokens < 0) {
+    throw new Error(
+      `pickExamplesThatFit: fixedPromptTokens ${fixedPromptTokens} must be ≥ 0`,
+    );
+  }
+  if (reserveForCompletion < 0) {
+    throw new Error(
+      `pickExamplesThatFit: reserveForCompletion ${reserveForCompletion} must be ≥ 0`,
+    );
+  }
+  if (perExampleOverhead < 0) {
+    throw new Error(
+      `pickExamplesThatFit: perExampleOverhead ${perExampleOverhead} must be ≥ 0`,
+    );
+  }
+
+  // Tokens available for demonstrations = total − fixed − reserve.
+  const tokensBudget = contextBudget - fixedPromptTokens - reserveForCompletion;
+  if (tokensBudget <= 0) {
+    // The fixed prompt + completion reserve already exceed the budget —
+    // return an empty pack, caller will see `k = 0` and decide.
+    return {
+      kept: [],
+      k: 0,
+      tokensUsedByExamples: 0,
+      tokensRemaining: contextBudget - fixedPromptTokens - reserveForCompletion,
+      tokensBudget: Math.max(0, tokensBudget),
+    };
+  }
+
+  const kept: InContextExamplePair[] = [];
+  let used = 0;
+  for (const ex of examples) {
+    const cost = ex.input.length + ex.output.length + perExampleOverhead;
+    if (used + cost > tokensBudget) break;
+    kept.push(ex);
+    used += cost;
+  }
+
+  return {
+    kept,
+    k: kept.length,
+    tokensUsedByExamples: used,
+    tokensRemaining: tokensBudget - used,
+    tokensBudget,
+  };
+}

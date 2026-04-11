@@ -186,6 +186,86 @@ run_test "16 POST /api/gpt3/generate with stop token halts" /api/gpt3/generate P
   \"stopToken\": $STOP_TOK, \"sampling\": {\"greedy\": true}
 }" '(b) => b.stopReason === "stop-token" && b.generated[b.generated.length - 1] === '"$STOP_TOK"
 
+# ── Fifth-pass audit endpoints ───────────────────────────────────────────
+
+# 17 SAT analogies prompt template (§3.9.3)
+run_test "17 POST /api/gpt3/prompt/sat-analogy" /api/gpt3/prompt/sat-analogy POST '{
+  "examples": [{
+    "sourceLeft": "Audacious",
+    "sourceRight": "boldness",
+    "choices": [
+      {"label": "a", "left": "sanctimonious", "right": "hypocrisy"},
+      {"label": "b", "left": "anonymous", "right": "identity"}
+    ],
+    "answer": "a"
+  }],
+  "query": {
+    "sourceLeft": "Ephemeral",
+    "sourceRight": "brevity",
+    "choices": [
+      {"label": "a", "left": "eternal", "right": "duration"},
+      {"label": "b", "left": "permanent", "right": "stability"}
+    ]
+  }
+}' '(b) => typeof b.decoded === "string" && b.decoded.indexOf("Audacious is to boldness as") === 0 && b.decoded.indexOf("Answer: a") > 0 && b.mode === "one-shot"'
+
+# 18 News article generation prompt template (§3.9.4)
+run_test "18 POST /api/gpt3/prompt/news-article" /api/gpt3/prompt/news-article POST '{
+  "examples": [
+    {"title": "Samsung unveils new phone", "body": "SAN FRANCISCO — Samsung said on Tuesday..."}
+  ],
+  "queryTitle": "Scientists discover new species"
+}' '(b) => b.decoded === "Title: Samsung unveils new phone\nArticle: SAN FRANCISCO — Samsung said on Tuesday...\n\nTitle: Scientists discover new species\nArticle: " && b.mode === "one-shot"'
+
+# 19 Novel word usage template (§3.9.5 — paper'\''s whatpu example)
+run_test "19 POST /api/gpt3/prompt/novel-word" /api/gpt3/prompt/novel-word POST '{
+  "examples": [{
+    "word": "whatpu",
+    "definition": "is a small, furry animal native to Tanzania",
+    "exampleSentence": "We were traveling in Africa and we saw these very cute whatpus."
+  }],
+  "queryWord": "farduddle",
+  "queryDefinition": "means to jump up and down really fast"
+}' '(b) => b.decoded.indexOf("A \"whatpu\" is a small, furry animal native to Tanzania.") === 0 && b.decoded.indexOf("A \"farduddle\" means to jump up and down really fast.") > 0'
+
+# 20 Grammar correction template (§3.9.6)
+run_test "20 POST /api/gpt3/prompt/grammar-correction" /api/gpt3/prompt/grammar-correction POST '{
+  "examples": [{"poor": "I eated the berries.", "good": "I ate the berries."}],
+  "query": "Yesterday I goed to the store."
+}' '(b) => b.decoded.indexOf("Poor English input: I eated the berries.") === 0 && b.decoded.indexOf("Good English output: ") > 0'
+
+# 21 §2.4 dynamic K picker
+run_test "21 POST /api/gpt3/pick-examples greedy pack" /api/gpt3/pick-examples POST '{
+  "examples": [
+    {"input":[1,2,3,4,5,6,7,8,9,10],"output":[11,12]},
+    {"input":[1,2,3,4,5,6,7,8,9,10,11,12,13,14],"output":[15,16]},
+    {"input":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],"output":[17,18]}
+  ],
+  "contextBudget": 100,
+  "fixedPromptTokens": 20,
+  "reserveForCompletion": 10,
+  "perExampleOverhead": 2
+}' '(b) => b.k >= 1 && b.tokensBudget === 70 && b.tokensUsedByExamples <= 70 && Array.isArray(b.kept)'
+
+# 22 §D training compute formula (numParams + numTokens form)
+run_test "22 POST /api/gpt3/training-flops C=6ND form" /api/gpt3/training-flops POST '{
+  "numParams": 175e9,
+  "numTokens": 300e9
+}' '(b) => Math.abs(b.flops - 6 * 175e9 * 300e9) < 1 && b.pfDays > 3000 && b.pfDays < 4000'
+
+# 23 §D training compute formula (per-step + total form)
+run_test "23 POST /api/gpt3/training-flops per-step form" /api/gpt3/training-flops POST '{
+  "numParams": 1e8,
+  "batchSize": 16,
+  "seqLen": 1024,
+  "totalSteps": 10
+}' '(b) => b.flopsPerStep === 6 * 1e8 * 16 * 1024 && b.totalFlops === b.flopsPerStep * 10 && typeof b.totalPfDays === "number"'
+
+# 24 §3.9.3 SAT — invalid input rejected
+run_test "24 POST /api/gpt3/prompt/sat-analogy invalid rejected" /api/gpt3/prompt/sat-analogy POST '{
+  "query": {"sourceLeft": "X", "sourceRight": "Y", "choices": []}
+}' '(b) => b.error === "invalid_request"'
+
 echo
 echo "=== Results: $(green $PASS) passed, $(red $FAIL) failed ==="
 if [[ $FAIL -gt 0 ]]; then
