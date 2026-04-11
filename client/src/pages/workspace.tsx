@@ -443,6 +443,11 @@ function WorkspaceContent() {
               <MiniSidebar
                 onNewChat={handleNewChat}
                 onExpand={() => setIsSidebarOpen(true)}
+                onOpenLibrary={() => setIsSidebarOpen(true)}
+                onOpenGpts={() => setIsSidebarOpen(true)}
+                onOpenSkills={() => setIsSidebarOpen(true)}
+                onOpenApps={() => setIsSidebarOpen(true)}
+                onOpenWhatsAppConnect={() => setIsSidebarOpen(true)}
               />
             </div>
           )}

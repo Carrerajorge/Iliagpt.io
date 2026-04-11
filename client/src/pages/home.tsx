@@ -813,6 +813,11 @@ export default function Home() {
           <MiniSidebar
             onNewChat={handleNewChat}
             onExpand={() => setIsSidebarOpen(true)}
+            onOpenLibrary={handleOpenLibrary}
+            onOpenGpts={handleOpenGpts}
+            onOpenSkills={handleOpenSkills}
+            onOpenApps={handleOpenApps}
+            onOpenWhatsAppConnect={() => setIsWhatsAppConnectOpen(true)}
           />
         </div>
       )}
