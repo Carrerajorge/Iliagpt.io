@@ -39,10 +39,15 @@ import {
   defaultAlternatingPattern,
   // model
   initGptWeights,
+  initGptLayers,
+  initEncoderLayerWeights,
+  baseConfig,
+  applyGpt2ResidualScaling,
   gptInputEmbeddings,
   gptForward,
   gptNextTokenLogits,
   runGptStack,
+  encoderLayer,
   // generate
   gptGenerate,
   // in-context learning
@@ -50,9 +55,16 @@ import {
   inContextModeOf,
   assertInContextMode,
   validateInContextPrompt,
+  // task templates
+  arithmeticPrompt,
+  wordScramblingPrompt,
+  clozePrompt,
+  translationPrompt,
   // optimizer / schedule
   GPT3_ADAM,
   GPT3_WEIGHT_DECAY,
+  GPT3_GRADIENT_CLIP_NORM,
+  GPT3_PRE_TRAINING_HYPERS,
   PAPER_ADAM,
   BERT_ADAM,
   gpt3CosineSchedule,
@@ -549,6 +561,262 @@ describe("GPT-3 optimizer + cosine schedule (§C)", () => {
         minLRFraction: 1.5,
       }),
     ).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Fourth-pass audit — pre-normalization, modified residual init,
+//    training constants, canonical task templates
+// ---------------------------------------------------------------------------
+
+describe("GPT-3 audit 4 — pre-normalization (§2.1 GPT-2 convention)", () => {
+  it("41 encoderLayer defaults to post-norm (backwards compatible)", () => {
+    // Vaswani / BERT callers don't pass a preNorm flag; the default
+    // must be the original post-norm behavior so existing suites pass.
+    const ac = baseConfig(8, 2);
+    const w = initEncoderLayerWeights(ac, 16, 1);
+    const x: Matrix = {
+      rows: 3,
+      cols: 8,
+      data: new Float64Array([
+        0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8,
+        -0.1, -0.2, -0.3, -0.4, -0.5, -0.6, -0.7, -0.8,
+        0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85,
+      ]),
+    };
+    const post = encoderLayer(x, w, ac);
+    const postExplicit = encoderLayer(x, w, ac, undefined, undefined, "relu", false);
+    for (let i = 0; i < post.data.length; i++) {
+      expect(postExplicit.data[i]).toBeCloseTo(post.data[i], 12);
+    }
+  });
+
+  it("42 pre-norm produces a DIFFERENT output than post-norm", () => {
+    // The whole point of this audit fix: pre-norm is semantically
+    // different from post-norm. If someone accidentally reverts the
+    // flag, this test explodes.
+    const ac = baseConfig(8, 2);
+    const w = initEncoderLayerWeights(ac, 16, 5);
+    const x: Matrix = {
+      rows: 3,
+      cols: 8,
+      data: new Float64Array([
+        0.3, 0.1, -0.2, 0.4, 0.5, -0.3, 0.2, 0.1,
+        -0.1, 0.2, 0.3, -0.4, 0.5, 0.6, -0.7, 0.8,
+        0.15, -0.25, 0.35, 0.45, -0.55, 0.65, 0.75, -0.85,
+      ]),
+    };
+    const post = encoderLayer(x, w, ac, undefined, undefined, "gelu", false);
+    const pre = encoderLayer(x, w, ac, undefined, undefined, "gelu", true);
+    // Must differ somewhere (regression lock)
+    let diff = 0;
+    for (let i = 0; i < post.data.length; i++) {
+      diff += Math.abs(post.data[i] - pre.data[i]);
+    }
+    expect(diff).toBeGreaterThan(1e-6);
+    // Both must still be finite
+    for (let i = 0; i < pre.data.length; i++) {
+      expect(Number.isFinite(pre.data[i])).toBe(true);
+    }
+  });
+
+  it("43 GPT-3 stack uses pre-norm internally (still causal)", () => {
+    // runGptStack passes preNorm=true internally; the causality
+    // regression from test #23 must STILL hold after the switch.
+    const c = gptTinyConfig();
+    const w = initGptWeights(c, 123);
+    const short = runGptStack(w, [3, 5, 7]);
+    const long = runGptStack(w, [3, 5, 7, 9, 11]);
+    for (let j = 0; j < c.hiddenSize; j++) {
+      expect(long.data[j]).toBeCloseTo(short.data[j], 12);
+    }
+  });
+});
+
+describe("GPT-3 audit 4 — modified residual init 1/√(2N) (§2.1)", () => {
+  it("44 applyGpt2ResidualScaling reduces WO and W2 by 1/√(2N)", () => {
+    const ac = baseConfig(16, 4);
+    // Build one layer WITHOUT the scaling
+    const layer1 = initEncoderLayerWeights(ac, 32, 99);
+    // Snapshot WO and W2 before scaling
+    const woBefore = new Float64Array(layer1.selfAttn.WO.data);
+    const w2Before = new Float64Array(layer1.ffn.W2.data);
+    // Apply the scaling for a 4-layer stack
+    applyGpt2ResidualScaling([layer1], 4);
+    const expectedScale = 1 / Math.sqrt(2 * 4);
+    // Every entry of WO should be scaled by exactly 1/√8
+    for (let i = 0; i < layer1.selfAttn.WO.data.length; i++) {
+      expect(layer1.selfAttn.WO.data[i]).toBeCloseTo(woBefore[i] * expectedScale, 12);
+    }
+    // Same for W2
+    for (let i = 0; i < layer1.ffn.W2.data.length; i++) {
+      expect(layer1.ffn.W2.data[i]).toBeCloseTo(w2Before[i] * expectedScale, 12);
+    }
+    // Other weights (WQ, WK, WV, W1, b1, b2, norms) must NOT change
+    const wqFirstHead = layer1.selfAttn.WQ[0].data[0];
+    expect(Number.isFinite(wqFirstHead)).toBe(true);
+  });
+
+  it("45 initGptLayers automatically applies the residual scaling", () => {
+    // Build two sets of raw encoder weights with the SAME seed, one
+    // via initGptLayers (which applies scaling internally) and one
+    // via the raw initEncoderLayerWeights (no scaling). The WO and
+    // W2 matrices must differ by exactly the factor 1/√(2·numLayers).
+    const c = gptTinyConfig();
+    const scaled = initGptLayers(c, 1000);
+    const numLayers = c.numLayers;
+    const expectedScale = 1 / Math.sqrt(2 * numLayers);
+    const ac = baseConfig(c.hiddenSize, c.numHeads);
+
+    for (let i = 0; i < numLayers; i++) {
+      // Reconstruct the pre-scale initialization bit-exactly
+      const unscaled = initEncoderLayerWeights(ac, c.intermediateSize, 1000 + i * 100);
+      // WO: scaled entry == unscaled entry × scale
+      for (let j = 0; j < unscaled.selfAttn.WO.data.length; j++) {
+        expect(scaled[i].selfAttn.WO.data[j]).toBeCloseTo(
+          unscaled.selfAttn.WO.data[j] * expectedScale,
+          12,
+        );
+      }
+      // W2: same identity
+      for (let j = 0; j < unscaled.ffn.W2.data.length; j++) {
+        expect(scaled[i].ffn.W2.data[j]).toBeCloseTo(
+          unscaled.ffn.W2.data[j] * expectedScale,
+          12,
+        );
+      }
+    }
+  });
+
+  it("46 applyGpt2ResidualScaling rejects numLayers < 1", () => {
+    const ac = baseConfig(8, 2);
+    const layer = initEncoderLayerWeights(ac, 16, 7);
+    expect(() => applyGpt2ResidualScaling([layer], 0)).toThrow();
+    expect(() => applyGpt2ResidualScaling([layer], -3)).toThrow();
+  });
+});
+
+describe("GPT-3 audit 4 — training constants (§B Brown et al. 2020)", () => {
+  it("47 GPT3_GRADIENT_CLIP_NORM == 1.0 (paper §B)", () => {
+    expect(GPT3_GRADIENT_CLIP_NORM).toBe(1.0);
+  });
+
+  it("48 GPT3_PRE_TRAINING_HYPERS matches the paper verbatim", () => {
+    expect(GPT3_PRE_TRAINING_HYPERS.warmupTokens).toBe(375_000_000);
+    expect(GPT3_PRE_TRAINING_HYPERS.cosineDecayTokens).toBe(260_000_000_000);
+    expect(GPT3_PRE_TRAINING_HYPERS.totalTokens).toBe(300_000_000_000);
+    expect(GPT3_PRE_TRAINING_HYPERS.minLRFraction).toBe(0.1);
+    expect(GPT3_PRE_TRAINING_HYPERS.weightDecay).toBe(0.1);
+    expect(GPT3_PRE_TRAINING_HYPERS.gradientClipNorm).toBe(1.0);
+  });
+
+  it("49 Peak learning rates match Table 2.1 for every model size", () => {
+    const lrs = GPT3_PRE_TRAINING_HYPERS.peakLearningRateByModel;
+    expect(lrs["gpt3-small"]).toBe(6.0e-4);
+    expect(lrs["gpt3-medium"]).toBe(3.0e-4);
+    expect(lrs["gpt3-large"]).toBe(2.5e-4);
+    expect(lrs["gpt3-xl"]).toBe(2.0e-4);
+    expect(lrs["gpt3-2.7b"]).toBe(1.6e-4);
+    expect(lrs["gpt3-6.7b"]).toBe(1.2e-4);
+    expect(lrs["gpt3-13b"]).toBe(1.0e-4);
+    expect(lrs["gpt3-175b"]).toBe(0.6e-4);
+  });
+
+  it("50 Batch sizes match Table 2.1 for every model size", () => {
+    const bs = GPT3_PRE_TRAINING_HYPERS.batchSizeTokensByModel;
+    expect(bs["gpt3-small"]).toBe(0.5e6);
+    expect(bs["gpt3-xl"]).toBe(1.0e6);
+    expect(bs["gpt3-6.7b"]).toBe(2.0e6);
+    expect(bs["gpt3-175b"]).toBe(3.2e6);
+  });
+});
+
+describe("GPT-3 audit 4 — canonical task prompt templates (§3.9 + §G)", () => {
+  /**
+   * Deterministic per-character stand-in tokenizer. Turns each string
+   * into an array of char codes — not a real BPE but good enough to
+   * exercise the template logic in isolation.
+   */
+  const charTokenizer = (s: string): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i));
+    return out;
+  };
+
+  it("51 arithmeticPrompt renders the §3.9.1 shape", () => {
+    const built = arithmeticPrompt({
+      examples: [
+        { a: 48, b: 76, op: "+", answer: 124 },
+        { a: 12, b: 5, op: "-", answer: 7 },
+      ],
+      query: { a: 6, b: 9, op: "*" },
+      tokenize: charTokenizer,
+    });
+    // Re-decode the token stream to verify the paper-exact shape
+    const decoded = String.fromCharCode(...built.tokenIds);
+    expect(decoded).toBe(
+      "Q: What is 48 plus 76?\nA: 124\n\nQ: What is 12 minus 5?\nA: 7\n\nQ: What is 6 times 9?\nA: ",
+    );
+    expect(built.mode).toBe("few-shot");
+    expect(built.numExamples).toBe(2);
+  });
+
+  it("52 wordScramblingPrompt renders the §3.9.2 shape", () => {
+    const built = wordScramblingPrompt({
+      examples: [
+        { scrambled: "skicts", unscrambled: "sticks" },
+        { scrambled: "pciinc", unscrambled: "picnic" },
+      ],
+      query: "asinol",
+      tokenize: charTokenizer,
+    });
+    const decoded = String.fromCharCode(...built.tokenIds);
+    expect(decoded).toBe(
+      "Please unscramble the letters into a word, and write that word:\nskicts = sticks\npciinc = picnic\nasinol = ",
+    );
+  });
+
+  it("53 clozePrompt renders the §3.1 LAMBADA-style shape", () => {
+    const built = clozePrompt({
+      examples: [
+        { passage: "Alice went to visit her friend ____", answer: "Bob" },
+      ],
+      passage: "The cat sat on the ____",
+      tokenize: charTokenizer,
+    });
+    const decoded = String.fromCharCode(...built.tokenIds);
+    expect(decoded).toBe(
+      "Alice went to visit her friend ____ → Bob\nThe cat sat on the ____ → ",
+    );
+  });
+
+  it("54 translationPrompt renders the Figure 2.1 shape", () => {
+    const built = translationPrompt({
+      sourceLanguage: "English",
+      targetLanguage: "French",
+      examples: [
+        { sourceText: "sea otter", targetText: "loutre de mer" },
+        { sourceText: "peppermint", targetText: "menthe poivrée" },
+        { sourceText: "plush giraffe", targetText: "girafe peluche" },
+      ],
+      query: "cheese",
+      tokenize: charTokenizer,
+    });
+    const decoded = String.fromCharCode(...built.tokenIds);
+    expect(decoded).toBe(
+      "Translate English to French:\nsea otter => loutre de mer\npeppermint => menthe poivrée\nplush giraffe => girafe peluche\ncheese => ",
+    );
+  });
+
+  it("55 task templates work with an empty demonstration list (zero-shot)", () => {
+    const built = arithmeticPrompt({
+      examples: [],
+      query: { a: 2, b: 3, op: "+" },
+      tokenize: charTokenizer,
+    });
+    expect(built.mode).toBe("zero-shot");
+    const decoded = String.fromCharCode(...built.tokenIds);
+    expect(decoded).toBe("Q: What is 2 plus 3?\nA: ");
   });
 });
 

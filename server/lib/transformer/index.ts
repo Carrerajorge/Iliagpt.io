@@ -121,6 +121,8 @@ export {
   BERT_WEIGHT_DECAY,
   GPT3_ADAM,
   GPT3_WEIGHT_DECAY,
+  GPT3_GRADIENT_CLIP_NORM,
+  GPT3_PRE_TRAINING_HYPERS,
   noamLearningRate,
   noamPeakLearningRate,
   bertLinearSchedule,

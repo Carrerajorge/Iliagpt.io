@@ -64,6 +64,7 @@ export {
   gptAttentionConfig,
   initGptLayers,
   initGptWeights,
+  applyGpt2ResidualScaling,
   gptInputEmbeddings,
   runGptStack,
   gptLogits,
@@ -87,3 +88,21 @@ export {
   buildInContextPrompt,
   validateInContextPrompt,
 } from "./inContextLearning";
+
+// §3.9 + §G task templates
+export {
+  type TokenizeFn,
+  type ArithmeticOp,
+  type ArithmeticExample,
+  type ArithmeticTemplateInput,
+  type WordScramblingExample,
+  type WordScramblingTemplateInput,
+  type ClozeExample,
+  type ClozeTemplateInput,
+  type TranslationExample,
+  type TranslationTemplateInput,
+  arithmeticPrompt,
+  wordScramblingPrompt,
+  clozePrompt,
+  translationPrompt,
+} from "./taskTemplates";

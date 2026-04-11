@@ -63,6 +63,13 @@ export function gptAttentionConfig(config: GptConfig): MultiHeadConfig {
 /**
  * Initialize the decoder layer stack for a GPT-3 config. Each layer
  * gets a distinct seed offset so the weights are independent.
+ *
+ * After the base init, the GPT-2 modified residual init (§2.1 of
+ * Brown et al. 2020, cited from the GPT-2 paper) is applied: the
+ * output projections of every residual sub-layer (WO in multi-head,
+ * W2 in FFN) are scaled by 1/√(2·numLayers) to counteract the
+ * accumulation of variance along the residual path. Without this
+ * scaling, very deep stacks diverge during training.
  */
 export function initGptLayers(config: GptConfig, seed = 1000): EncoderLayerWeights[] {
   const attn = gptAttentionConfig(config);
@@ -72,7 +79,42 @@ export function initGptLayers(config: GptConfig, seed = 1000): EncoderLayerWeigh
       initEncoderLayerWeights(attn, config.intermediateSize, seed + i * 100),
     );
   }
+  applyGpt2ResidualScaling(layers, config.numLayers);
   return layers;
+}
+
+/**
+ * Apply the GPT-2 modified residual init (§2.1 Brown 2020, referenced
+ * from the GPT-2 technical report):
+ *
+ *   "A modified initialization which accounts for the accumulation on
+ *    the residual path with model depth is used. We scale the weights
+ *    of residual layers at initialization by a factor of 1/√N where
+ *    N is the number of residual layers."
+ *
+ * The "residual layers" are the output projections of each residual
+ * sub-layer — concretely, W^O in the multi-head attention and W_2 in
+ * the position-wise FFN. Each encoder block has TWO residual
+ * sub-layers, so the total scaling factor is `1/√(2·numLayers)`.
+ *
+ * This mutates the provided layer weights in place.
+ */
+export function applyGpt2ResidualScaling(
+  layers: EncoderLayerWeights[],
+  numLayers: number,
+): void {
+  if (numLayers < 1) {
+    throw new Error(`applyGpt2ResidualScaling: numLayers ${numLayers} must be ≥ 1`);
+  }
+  const scale = 1 / Math.sqrt(2 * numLayers);
+  for (const layer of layers) {
+    // Scale W^O (multi-head output projection)
+    const WO = layer.selfAttn.WO;
+    for (let i = 0; i < WO.data.length; i++) WO.data[i] *= scale;
+    // Scale W_2 (FFN output projection)
+    const W2 = layer.ffn.W2;
+    for (let i = 0; i < W2.data.length; i++) W2.data[i] *= scale;
+  }
 }
 
 /**
@@ -205,7 +247,12 @@ export function runGptStack(
   // 1. Input embeddings (token + position)
   let h = gptInputEmbeddings(weights, tokenIds);
 
-  // 2. Run every layer with its resolved mask and GELU FFN.
+  // 2. Run every layer with its resolved mask, GELU FFN, and
+  //    pre-normalization. Pre-norm is the GPT-2/GPT-3 convention
+  //    described in §2.1 of Brown et al. 2020: LayerNorm is applied
+  //    at the INPUT of each sub-block, not after it like Vaswani.
+  //    This is what makes very deep transformers (L=96 for GPT-3 175B)
+  //    trainable without warmup tricks.
   for (let i = 0; i < config.numLayers; i++) {
     const mask = resolveMaskForLayer(seqLen, config.attentionPatterns[i]);
     const layerDropout = dropoutConfig
@@ -218,6 +265,7 @@ export function runGptStack(
       mask,
       layerDropout,
       "gelu",
+      /* preNorm */ true,
     );
   }
   return h;

@@ -132,6 +132,72 @@ export const GPT3_ADAM: AdamHyperparameters = {
 export const GPT3_WEIGHT_DECAY = 0.1;
 
 /**
+ * GPT-3's global gradient clipping norm (§B of Brown et al. 2020):
+ *
+ *   "we clip the global norm of the gradient at 1.0 during training"
+ *
+ * Pair with `clipGradientNorm(gradients, GPT3_GRADIENT_CLIP_NORM)` at
+ * every training step, immediately before the Adam update.
+ */
+export const GPT3_GRADIENT_CLIP_NORM = 1.0;
+
+/**
+ * GPT-3 pre-training hyperparameters from §B of Brown et al. 2020.
+ *
+ * Every value is cited against the paper's Appendix B "Details of
+ * Model Training":
+ *
+ *   "We use Adam with β₁ = 0.9, β₂ = 0.95, ε = 10⁻⁸ ... clip the
+ *    global norm of the gradient at 1.0 ... linear warmup over the
+ *    first 375M tokens, cosine decay for learning rate down to 10%
+ *    of its value over 260B tokens ... We use a weight decay of 0.1."
+ *
+ * The per-model-size peak learning rates come from Table 2.1 and are
+ * paired with the model-size-specific batch sizes. Training ran on
+ * ~300B tokens total.
+ *
+ * These are frozen documentation constants — they do not drive any
+ * runtime code path. Training scripts and UIs that want to reproduce
+ * GPT-3's exact recipe should read them here.
+ */
+export const GPT3_PRE_TRAINING_HYPERS = {
+  /** Tokens of linear warmup at the start of training. */
+  warmupTokens: 375_000_000,
+  /** Tokens over which the cosine schedule decays from peakLR → minLR. */
+  cosineDecayTokens: 260_000_000_000,
+  /** Total token count of the full training run. */
+  totalTokens: 300_000_000_000,
+  /** Min-LR as a fraction of peak-LR at the bottom of the cosine decay. */
+  minLRFraction: 0.1,
+  /** L2 weight decay coefficient passed to adamUpdate. */
+  weightDecay: 0.1,
+  /** Global gradient-norm clipping threshold. */
+  gradientClipNorm: 1.0,
+  /** Peak learning rates per Table 2.1 model size. */
+  peakLearningRateByModel: {
+    "gpt3-small": 6.0e-4,
+    "gpt3-medium": 3.0e-4,
+    "gpt3-large": 2.5e-4,
+    "gpt3-xl": 2.0e-4,
+    "gpt3-2.7b": 1.6e-4,
+    "gpt3-6.7b": 1.2e-4,
+    "gpt3-13b": 1.0e-4,
+    "gpt3-175b": 0.6e-4,
+  },
+  /** Batch size (in tokens) per Table 2.1 model size. */
+  batchSizeTokensByModel: {
+    "gpt3-small": 0.5e6,
+    "gpt3-medium": 0.5e6,
+    "gpt3-large": 0.5e6,
+    "gpt3-xl": 1.0e6,
+    "gpt3-2.7b": 1.0e6,
+    "gpt3-6.7b": 2.0e6,
+    "gpt3-13b": 2.0e6,
+    "gpt3-175b": 3.2e6,
+  },
+} as const;
+
+/**
  * Per-parameter Adam state. Stored as Float64Array so updates are
  * allocation-free on the hot path.
  */

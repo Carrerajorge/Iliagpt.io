@@ -121,13 +121,27 @@ export function initEncoderLayerWeights(
 /**
  * Apply one encoder layer.
  *
- *   x → LayerNorm(x + Dropout(SelfAttention(x, x, x)); γ1, β1)
- *     → LayerNorm(_ + Dropout(FFN(_));                 γ2, β2)
+ * Two conventions are supported via the `preNorm` flag:
  *
- * The paper's original recipe is "post-norm" (Add & Norm). We match it
- * exactly so any correctness test against the paper's algebra passes.
- * Dropout placement matches section 5.4 verbatim: applied to the output
- * of each sub-layer, *before* the residual + normalization.
+ *   Post-norm (Vaswani et al. 2017, default):
+ *       x → LayerNorm(x + Dropout(SelfAttention(x)); γ1, β1)
+ *         → LayerNorm(_ + Dropout(FFN(_));            γ2, β2)
+ *
+ *   Pre-norm (GPT-2 / GPT-3, Brown et al. 2020 §2.1):
+ *       x → x + Dropout(SelfAttention(LayerNorm(x; γ1, β1)))
+ *         → _ + Dropout(FFN(LayerNorm(_; γ2, β2)))
+ *
+ * The paper of GPT-2 explains the switch: "Layer normalization was
+ * moved to the input of each sub-block, similar to a pre-activation
+ * residual network". Pre-norm is what makes very deep transformers
+ * (GPT-3 has L=96) trainable without warmup tricks.
+ *
+ * Dropout is applied to the output of each sub-layer BEFORE the
+ * residual in both conventions — that matches the paper in both
+ * cases.
+ *
+ * @param preNorm  false = Vaswani/BERT post-norm (default, backward
+ *                 compatible), true = GPT-2/GPT-3 pre-norm.
  */
 export function encoderLayer(
   x: Matrix,
@@ -136,12 +150,33 @@ export function encoderLayer(
   srcPaddingMask?: boolean[][],
   dropoutConfig?: DropoutConfig,
   ffnActivation: FFNActivation = "relu",
+  preNorm = false,
 ): Matrix {
   const drop = (m: Matrix, salt: number): Matrix =>
     dropoutConfig
       ? dropout(m, { ...dropoutConfig, seed: (dropoutConfig.seed ?? 0) + salt })
       : identityDropout(m);
 
+  if (preNorm) {
+    // ── GPT-2 / GPT-3 pre-norm ──────────────────────────────────────
+    // Sublayer 1: x + Dropout(SelfAttention(LayerNorm(x)))
+    const normed1 = applyLearnableLayerNorm(x, weights.norm1);
+    const attn = multiHeadAttention(
+      normed1,
+      normed1,
+      normed1,
+      config,
+      weights.selfAttn,
+      srcPaddingMask,
+    );
+    const afterAttn = add(x, drop(attn.output, 1));
+    // Sublayer 2: _ + Dropout(FFN(LayerNorm(_)))
+    const normed2 = applyLearnableLayerNorm(afterAttn, weights.norm2);
+    const ffnOut = feedForward(normed2, weights.ffn, ffnActivation);
+    return add(afterAttn, drop(ffnOut, 2));
+  }
+
+  // ── Vaswani / BERT post-norm (default, unchanged) ──────────────────
   // 1. Multi-head self-attention (Q = K = V = x)
   const attn = multiHeadAttention(x, x, x, config, weights.selfAttn, srcPaddingMask);
   // 2. Residual + LayerNorm (Add & Norm #1)
@@ -338,13 +373,22 @@ export function runEncoder(
   srcPaddingMask?: boolean[][],
   dropoutConfig?: DropoutConfig,
   ffnActivation: FFNActivation = "relu",
+  preNorm = false,
 ): Matrix {
   let h = x;
   for (let i = 0; i < weights.length; i++) {
     const layerDropout = dropoutConfig
       ? { ...dropoutConfig, seed: (dropoutConfig.seed ?? 0) + i * 1000 }
       : undefined;
-    h = encoderLayer(h, weights[i], config, srcPaddingMask, layerDropout, ffnActivation);
+    h = encoderLayer(
+      h,
+      weights[i],
+      config,
+      srcPaddingMask,
+      layerDropout,
+      ffnActivation,
+      preNorm,
+    );
   }
   return h;
 }
