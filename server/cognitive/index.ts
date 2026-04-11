@@ -76,6 +76,28 @@ export {
 } from "./tools";
 export type { ToolExecutionOutcomeLike } from "./types";
 
+// Rate limit + circuit breaker layer (Turn E)
+export type {
+  RateLimiter,
+  RateLimitCheckResult,
+  TokenBucketOptions,
+} from "./rateLimit";
+export {
+  InMemoryTokenBucketLimiter,
+  UnboundedRateLimiter,
+  defaultRateLimitKey,
+} from "./rateLimit";
+export type {
+  CircuitBreakerState,
+  CircuitBreakerOptions,
+  CircuitBreakerStatus,
+  CircuitBreakerRegistryOptions,
+} from "./circuitBreaker";
+export {
+  CircuitBreaker,
+  CircuitBreakerRegistry,
+} from "./circuitBreaker";
+
 // Orchestrator
 export {
   CognitiveMiddleware,

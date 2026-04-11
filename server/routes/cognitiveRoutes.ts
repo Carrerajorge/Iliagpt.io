@@ -28,6 +28,8 @@ import {
   InMemoryMemoryStore,
   InMemoryDocumentStore,
   InMemoryToolRegistry,
+  InMemoryTokenBucketLimiter,
+  CircuitBreakerRegistry,
   classifyIntent,
   validateOutput,
   type ProviderAdapter,
@@ -305,6 +307,39 @@ export function createCognitiveRouter(): Router {
     },
   ]);
 
+  // Demo rate limiter (Turn E). Generous per-user bucket so normal
+  // smoke tests pass. A dedicated throttled middleware with a
+  // tiny-capacity limiter is mounted below for rate-limit specific
+  // smoke tests.
+  const demoLimiter = new InMemoryTokenBucketLimiter({
+    name: "demo-limiter",
+    capacity: 100,
+    refillPerSecond: 10,
+  });
+
+  // Demo circuit breaker registry (Turn E). Generous thresholds so
+  // normal smoke tests never trip it.
+  const demoBreakers = new CircuitBreakerRegistry({
+    defaults: { failureThreshold: 3, cooldownMs: 60_000 },
+  });
+
+  // Tiny-bucket limiter for the /throttled-demo route only. Zero
+  // refill so the bucket stays drained across smoke test calls
+  // and the denial path is deterministic.
+  const throttledLimiter = new InMemoryTokenBucketLimiter({
+    name: "throttled-demo-limiter",
+    capacity: 2,
+    refillPerSecond: 0,
+  });
+
+  // Second middleware that shares the same adapter set but uses
+  // the tiny limiter. Mounted under /throttled-demo/run only.
+  const throttledMiddleware = new CognitiveMiddleware({
+    adapters: buildDefaultAdapters(),
+    defaultSystemPrompt: "You are a helpful assistant.",
+    rateLimiter: throttledLimiter,
+  });
+
   // Single shared instance — the middleware itself is stateless and
   // re-entrant, so one instance handles every concurrent request.
   const middleware = new CognitiveMiddleware({
@@ -316,6 +351,13 @@ export function createCognitiveRouter(): Router {
     documentStore: demoDocs,
     toolRegistry: demoRegistry,
     maxToolIterations: 5,
+    rateLimiter: demoLimiter,
+    // The default keyFn is `user:${userId}:intent:${intent}` which
+    // gives each (user, intent) pair its own bucket. That's the
+    // right default but makes it hard to drain a bucket in a smoke
+    // test that hits different intents, so we scope smoke tests on
+    // the "smoke-rate-limited" userId only.
+    circuitBreakers: demoBreakers,
   });
 
   // ── POST /api/cognitive/run ───────────────────────────────────────────
@@ -501,6 +543,48 @@ export function createCognitiveRouter(): Router {
         message: caught instanceof Error ? caught.message : String(caught),
       });
     }
+  });
+
+  // ── POST /api/cognitive/throttled-demo/run (Turn E) ───────────────────
+  //
+  // Dedicated endpoint for Turn E rate-limit smoke tests. Uses a
+  // tiny-bucket limiter (capacity=2, no refill) so smoke tests can
+  // drain the bucket in a few calls and assert the rate_limited
+  // response shape deterministically. Does NOT share state with
+  // the main /run path.
+  router.post("/throttled-demo/run", async (req: Request, res: Response) => {
+    const parsed = runRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: "invalid_request", issues: parsed.error.issues });
+    }
+    try {
+      const controller = new AbortController();
+      res.on("close", () => {
+        if (!res.writableEnded) controller.abort();
+      });
+      const result = await throttledMiddleware.run({
+        ...parsed.data,
+        signal: controller.signal,
+      });
+      return res.json(result);
+    } catch (caught) {
+      return res.status(500).json({
+        error: "cognitive_run_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /api/cognitive/throttled-demo/reset (Turn E test helper) ─────
+  //
+  // Lets smoke tests reset the throttled limiter's buckets between
+  // runs so the suite is order-independent. Not exposed through the
+  // main router in production.
+  router.post("/throttled-demo/reset", (_req: Request, res: Response) => {
+    throttledLimiter.resetAll();
+    return res.json({ ok: true });
   });
 
   // ── GET /api/cognitive/adapters ───────────────────────────────────────

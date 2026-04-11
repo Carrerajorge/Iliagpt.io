@@ -62,6 +62,15 @@ import {
   type ToolExecutionContext,
   type ToolExecutionOutcome,
   type RegisteredTool,
+  // Rate limit + circuit breaker layer (Turn E)
+  InMemoryTokenBucketLimiter,
+  UnboundedRateLimiter,
+  defaultRateLimitKey,
+  CircuitBreaker,
+  CircuitBreakerRegistry,
+  type RateLimiter,
+  type RateLimitCheckResult,
+  type CircuitBreakerState,
 } from "../cognitive";
 
 // ---------------------------------------------------------------------------
@@ -2415,6 +2424,454 @@ describe("cognitive: streaming agentic loop (Turn D)", () => {
     if (done && done.kind === "done") {
       expect(done.response.toolExecutions).toEqual([]);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14. Rate limit + circuit breaker (Turn E)
+// ---------------------------------------------------------------------------
+
+describe("cognitive: InMemoryTokenBucketLimiter (Turn E)", () => {
+  it("141 first request always allowed with fresh bucket", async () => {
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 5,
+      refillPerSecond: 1,
+    });
+    const r = await limiter.check("u1");
+    expect(r.allowed).toBe(true);
+    expect(r.remaining).toBe(4);
+    expect(r.capacity).toBe(5);
+  });
+
+  it("142 denies after bucket is drained", async () => {
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 3,
+      refillPerSecond: 0, // no refill so denial is deterministic
+    });
+    await limiter.check("u");
+    await limiter.check("u");
+    await limiter.check("u");
+    const r = await limiter.check("u");
+    expect(r.allowed).toBe(false);
+    expect(r.code).toBe("rate_limited");
+    expect(r.remaining).toBe(0);
+  });
+
+  it("143 computes retryAfterMs from deficit and refill rate", async () => {
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 1,
+      refillPerSecond: 2, // 1 token per 500ms
+    });
+    await limiter.check("u"); // spend the only token
+    const r = await limiter.check("u", 1);
+    expect(r.allowed).toBe(false);
+    expect(r.retryAfterMs).toBeGreaterThanOrEqual(400);
+    expect(r.retryAfterMs).toBeLessThanOrEqual(600);
+  });
+
+  it("144 lazy refill restores tokens after elapsed time (injected clock)", async () => {
+    let now = 1_000_000;
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 2,
+      refillPerSecond: 1,
+      now: () => now,
+    });
+    await limiter.check("u"); // 1 left
+    await limiter.check("u"); // 0 left
+    const denied = await limiter.check("u");
+    expect(denied.allowed).toBe(false);
+    now += 2500; // 2.5 seconds -> full refill
+    const allowed = await limiter.check("u");
+    expect(allowed.allowed).toBe(true);
+    expect(allowed.remaining).toBeGreaterThanOrEqual(1);
+  });
+
+  it("145 distinct keys have distinct buckets", async () => {
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 1,
+      refillPerSecond: 0,
+    });
+    const r1 = await limiter.check("alice");
+    const r2 = await limiter.check("bob");
+    expect(r1.allowed).toBe(true);
+    expect(r2.allowed).toBe(true);
+  });
+
+  it("146 cost=0 is read-only, never drains the bucket", async () => {
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 3,
+      refillPerSecond: 0,
+    });
+    for (let i = 0; i < 10; i++) {
+      await limiter.check("u", 0);
+    }
+    const real = await limiter.check("u", 1);
+    expect(real.allowed).toBe(true);
+    expect(real.remaining).toBe(2);
+  });
+
+  it("147 invalid cost returns invalid_cost code without throwing", async () => {
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 1,
+      refillPerSecond: 1,
+    });
+    const r = await limiter.check("u", Number.NaN);
+    expect(r.allowed).toBe(false);
+    expect(r.code).toBe("invalid_cost");
+  });
+
+  it("148 UnboundedRateLimiter always allows", async () => {
+    const limiter = new UnboundedRateLimiter();
+    for (let i = 0; i < 50; i++) {
+      const r = await limiter.check("u");
+      expect(r.allowed).toBe(true);
+    }
+  });
+
+  it("149 defaultRateLimitKey produces stable format", () => {
+    expect(defaultRateLimitKey("alice", "qa")).toBe("user:alice:intent:qa");
+  });
+});
+
+describe("cognitive: CircuitBreaker (Turn E)", () => {
+  it("150 closed breaker reports available", () => {
+    const cb = new CircuitBreaker("p", { failureThreshold: 3, cooldownMs: 100 });
+    expect(cb.isAvailable()).toBe(true);
+    expect(cb.getStatus().state).toBe("closed");
+  });
+
+  it("151 opens after consecutive failures hit the threshold", () => {
+    const cb = new CircuitBreaker("p", { failureThreshold: 3, cooldownMs: 500 });
+    cb.recordFailure();
+    cb.recordFailure();
+    expect(cb.getStatus().state).toBe("closed");
+    cb.recordFailure();
+    expect(cb.getStatus().state).toBe("open");
+    expect(cb.isAvailable()).toBe(false);
+  });
+
+  it("152 success resets consecutive failures below threshold", () => {
+    const cb = new CircuitBreaker("p", { failureThreshold: 3 });
+    cb.recordFailure();
+    cb.recordFailure();
+    cb.recordSuccess();
+    cb.recordFailure();
+    cb.recordFailure(); // only 2 in a row, still closed
+    expect(cb.getStatus().state).toBe("closed");
+  });
+
+  it("153 transitions to half-open after cooldown elapses (injected clock)", () => {
+    let now = 1000;
+    const cb = new CircuitBreaker("p", {
+      failureThreshold: 1,
+      cooldownMs: 500,
+      now: () => now,
+    });
+    cb.recordFailure();
+    expect(cb.isAvailable()).toBe(false);
+    now += 600;
+    expect(cb.isAvailable()).toBe(true);
+    expect(cb.getStatus().state).toBe("half-open");
+  });
+
+  it("154 half-open → closed on success", () => {
+    let now = 1000;
+    const cb = new CircuitBreaker("p", {
+      failureThreshold: 1,
+      cooldownMs: 100,
+      now: () => now,
+    });
+    cb.recordFailure();
+    now += 200;
+    cb.isAvailable(); // transitions to half-open
+    cb.recordSuccess();
+    expect(cb.getStatus().state).toBe("closed");
+    expect(cb.getStatus().consecutiveFailures).toBe(0);
+  });
+
+  it("155 half-open → open on failure, cooldown restarts", () => {
+    let now = 1000;
+    const cb = new CircuitBreaker("p", {
+      failureThreshold: 1,
+      cooldownMs: 100,
+      now: () => now,
+    });
+    cb.recordFailure();
+    now += 200;
+    cb.isAvailable(); // → half-open
+    cb.recordFailure();
+    expect(cb.getStatus().state).toBe("open");
+    expect(cb.isAvailable()).toBe(false);
+  });
+
+  it("156 CircuitBreakerRegistry lazily creates breakers per name", () => {
+    const registry = new CircuitBreakerRegistry({
+      defaults: { failureThreshold: 2, cooldownMs: 100 },
+    });
+    const b1 = registry.get("alpha");
+    const b2 = registry.get("beta");
+    const b1Again = registry.get("alpha");
+    expect(b1).toBe(b1Again);
+    expect(b1).not.toBe(b2);
+    expect(registry.size).toBe(2);
+  });
+
+  it("157 CircuitBreakerRegistry honors per-name overrides", () => {
+    const registry = new CircuitBreakerRegistry({
+      defaults: { failureThreshold: 5 },
+      overrides: { sensitive: { failureThreshold: 1 } },
+    });
+    const sensitive = registry.get("sensitive");
+    sensitive.recordFailure();
+    expect(sensitive.getStatus().state).toBe("open");
+    const normal = registry.get("normal");
+    normal.recordFailure();
+    expect(normal.getStatus().state).toBe("closed");
+  });
+
+  it("158 snapshot returns the full status of every known breaker", () => {
+    const registry = new CircuitBreakerRegistry();
+    registry.get("a");
+    registry.get("b").recordFailure();
+    const snap = registry.snapshot();
+    expect(snap.map((s) => s.name).sort()).toEqual(["a", "b"]);
+  });
+});
+
+describe("cognitive: middleware rate limit + breaker wiring (Turn E)", () => {
+  it("159 run() denies with rate_limited when limiter says no", async () => {
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 1,
+      refillPerSecond: 0,
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      rateLimiter: limiter,
+    });
+    const a = await mw.run({ userId: "u", message: "hi 1" });
+    expect(a.ok).toBe(true);
+    const b = await mw.run({ userId: "u", message: "hi 2" });
+    expect(b.ok).toBe(false);
+    expect(b.errors.some((e) => e.startsWith("rate_limited"))).toBe(true);
+    expect(b.telemetry.rateLimitAllowed).toBe(false);
+    expect(b.validation.issues.some((i) => i.code === "rate_limited")).toBe(true);
+  });
+
+  it("160 run() rate limit telemetry fields populate", async () => {
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 5,
+      refillPerSecond: 1,
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      rateLimiter: limiter,
+    });
+    const r = await mw.run({ userId: "u", message: "hi" });
+    expect(r.telemetry.rateLimitAllowed).toBe(true);
+    expect(r.telemetry.rateLimitRemaining).toBe(4);
+    expect(r.telemetry.rateLimitCheckMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("161 run() distinct users get distinct buckets", async () => {
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 1,
+      refillPerSecond: 0,
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      rateLimiter: limiter,
+    });
+    const alice = await mw.run({ userId: "alice", message: "hi" });
+    const bob = await mw.run({ userId: "bob", message: "hi" });
+    expect(alice.ok).toBe(true);
+    expect(bob.ok).toBe(true);
+  });
+
+  it("162 run() custom rateLimitKeyFn drives the bucket", async () => {
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 1,
+      refillPerSecond: 0,
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      rateLimiter: limiter,
+      rateLimitKeyFn: () => "global",
+    });
+    const a = await mw.run({ userId: "alice", message: "hi" });
+    const b = await mw.run({ userId: "bob", message: "hi" });
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(false); // same bucket → bob gets denied
+  });
+
+  it("163 run() rate limiter that throws is non-fatal", async () => {
+    const broken: RateLimiter = {
+      name: "broken",
+      check: async () => {
+        throw new Error("redis down");
+      },
+    };
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      rateLimiter: broken,
+    });
+    const r = await mw.run({ userId: "u", message: "hi" });
+    expect(r.ok).toBe(true);
+    expect(r.errors.some((e) => e.startsWith("rate_limiter_threw"))).toBe(true);
+  });
+
+  it("164 run() breaker filters out failing provider after threshold", async () => {
+    const failing = new FailingMockAdapter("always fails", Infinity, "mock-failing-cb");
+    const good = new EchoMockAdapter();
+    const breakers = new CircuitBreakerRegistry({
+      defaults: { failureThreshold: 2, cooldownMs: 5_000 },
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [failing, good],
+      circuitBreakers: breakers,
+      maxRetries: 0, // fail fast so we don't waste 2 retries per call
+    });
+    // Each run with adapter list = [failing, good] picks failing
+    // first (both handle "chat"). Two consecutive failures should
+    // trip its breaker.
+    await mw.run({ userId: "u", message: "hi 1" });
+    await mw.run({ userId: "u", message: "hi 2" });
+    const status = breakers.get("mock-failing-cb").getStatus();
+    expect(status.state).toBe("open");
+    // Third call should route around the circuit-broken adapter.
+    const third = await mw.run({ userId: "u", message: "hi 3" });
+    expect(third.ok).toBe(true);
+    expect(third.routing.providerName).toBe("mock-echo");
+  });
+
+  it("165 run() returns circuit_breaker_open when ALL adapters are broken", async () => {
+    const a = new FailingMockAdapter("a", Infinity, "cb-only-a");
+    const breakers = new CircuitBreakerRegistry({
+      defaults: { failureThreshold: 1, cooldownMs: 60_000 },
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [a],
+      circuitBreakers: breakers,
+      maxRetries: 0,
+    });
+    // First call trips the breaker, returns error response.
+    await mw.run({ userId: "u", message: "hi 1" });
+    // Second call should hit the all-broken path.
+    const r = await mw.run({ userId: "u", message: "hi 2" });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e === "circuit_breaker_open")).toBe(true);
+    expect(r.telemetry.circuitBreakerState).toBe("open");
+    expect(r.validation.issues.some((i) => i.code === "circuit_breaker_open")).toBe(true);
+  });
+
+  it("166 run() breaker records success path keeps it closed", async () => {
+    const breakers = new CircuitBreakerRegistry({
+      defaults: { failureThreshold: 2, cooldownMs: 1000 },
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      circuitBreakers: breakers,
+    });
+    for (let i = 0; i < 5; i++) {
+      await mw.run({ userId: "u", message: `hi ${i}` });
+    }
+    expect(breakers.get("mock-echo").getStatus().state).toBe("closed");
+  });
+
+  it("167 runStream() emits error+done on rate limit denial", async () => {
+    const limiter = new InMemoryTokenBucketLimiter({
+      capacity: 1,
+      refillPerSecond: 0,
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      rateLimiter: limiter,
+    });
+    // Drain the bucket.
+    for await (const _ of mw.runStream({ userId: "u", message: "hi 1" })) void _;
+    // Second call should fail.
+    const events: CognitiveStreamEvent[] = [];
+    for await (const e of mw.runStream({ userId: "u", message: "hi 2" })) {
+      events.push(e);
+    }
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).toContain("error");
+    expect(kinds).toContain("done");
+    const errorEvent = events.find((e) => e.kind === "error");
+    if (errorEvent && errorEvent.kind === "error") {
+      expect(errorEvent.code).toBe("rate_limited");
+    }
+    const done = events.find((e) => e.kind === "done");
+    if (done && done.kind === "done") {
+      expect(done.response.ok).toBe(false);
+      expect(done.response.telemetry.rateLimitAllowed).toBe(false);
+    }
+  });
+
+  it("168 runStream() emits error+done when all adapters circuit-broken", async () => {
+    const breakers = new CircuitBreakerRegistry({
+      defaults: { failureThreshold: 1, cooldownMs: 60_000 },
+    });
+    // Pre-trip the only adapter's breaker.
+    breakers.get("mock-echo").recordFailure();
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      circuitBreakers: breakers,
+    });
+    const events: CognitiveStreamEvent[] = [];
+    for await (const e of mw.runStream({ userId: "u", message: "hi" })) {
+      events.push(e);
+    }
+    const errorEvent = events.find((e) => e.kind === "error");
+    expect(errorEvent).toBeDefined();
+    if (errorEvent && errorEvent.kind === "error") {
+      expect(errorEvent.code).toBe("circuit_breaker_open");
+    }
+    const done = events.find((e) => e.kind === "done");
+    if (done && done.kind === "done") {
+      expect(done.response.ok).toBe(false);
+      expect(done.response.telemetry.circuitBreakerState).toBe("open");
+    }
+  });
+
+  it("169 backwards compat: no limiter + no breakers works with Turn D telemetry shape", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+    });
+    const r = await mw.run({ userId: "u", message: "hi" });
+    expect(r.ok).toBe(true);
+    expect(r.telemetry.rateLimitAllowed).toBe(true);
+    expect(Number.isNaN(r.telemetry.rateLimitRemaining)).toBe(true);
+    expect(r.telemetry.rateLimitCheckMs).toBe(0);
+    expect(r.telemetry.circuitBreakerState).toBe("none");
+  });
+
+  it("170 half-open probe succeeds → breaker closes → normal traffic resumes", async () => {
+    let now = 1000;
+    const breakers = new CircuitBreakerRegistry({
+      defaults: { failureThreshold: 1, cooldownMs: 100, now: () => now },
+    });
+    // Use a scripted adapter that fails once then succeeds.
+    const flaky = new ScriptedMockAdapter(
+      [
+        { text: "", finishReason: "error", toolCalls: [] },
+        { text: "ok", finishReason: "stop", toolCalls: [] },
+        { text: "ok", finishReason: "stop", toolCalls: [] },
+      ],
+      "mock-flaky",
+    );
+    const mw = new CognitiveMiddleware({
+      adapters: [flaky],
+      circuitBreakers: breakers,
+      maxRetries: 0,
+    });
+    // First call fails → breaker opens.
+    await mw.run({ userId: "u", message: "attempt 1" });
+    expect(breakers.get("mock-flaky").getStatus().state).toBe("open");
+    // Advance clock past cooldown; probe succeeds.
+    now += 200;
+    const r = await mw.run({ userId: "u", message: "attempt 2" });
+    expect(r.ok).toBe(true);
+    expect(breakers.get("mock-flaky").getStatus().state).toBe("closed");
   });
 });
 

@@ -384,6 +384,29 @@ export interface CognitiveTelemetry {
    * at the middleware's `maxToolIterations`. Added in Turn D.
    */
   agenticIterations: number;
+  /**
+   * Whether the rate limiter allowed this request. True when no
+   * limiter is configured. Added in Turn E.
+   */
+  rateLimitAllowed: boolean;
+  /**
+   * Tokens remaining in the user's rate-limit bucket after this
+   * call. NaN when no limiter is configured. Added in Turn E.
+   */
+  rateLimitRemaining: number;
+  /**
+   * Time spent inside the rate-limit check. Added in Turn E.
+   */
+  rateLimitCheckMs: number;
+  /**
+   * State of the chosen provider's circuit breaker at selection
+   * time — "closed", "open", "half-open", or "none" when no
+   * breaker registry is configured. `open` never actually reaches
+   * telemetry in practice (the request fails before that), but the
+   * field can read "half-open" when the breaker let through a
+   * probe. Added in Turn E.
+   */
+  circuitBreakerState: "closed" | "open" | "half-open" | "none";
   promptTokens?: number;
   completionTokens?: number;
 }

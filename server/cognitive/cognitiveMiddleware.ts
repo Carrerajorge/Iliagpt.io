@@ -57,6 +57,9 @@ import { classifyIntent } from "./intentRouter";
 import { validateOutput } from "./outputValidator";
 import { enrichContext, renderContextBundle } from "./contextEnricher";
 import { serializeToolOutcomeForModel } from "./tools";
+import { defaultRateLimitKey } from "./rateLimit";
+import type { CircuitBreakerRegistry } from "./circuitBreaker";
+import type { RateLimitCheckResult, RateLimiter } from "./rateLimit";
 import type {
   ContextBundle,
   DocumentStore,
@@ -157,6 +160,41 @@ export interface CognitiveMiddlewareOptions {
    * without letting a broken model spin forever. Added in Turn D.
    */
   maxToolIterations?: number;
+  /**
+   * Optional rate limiter. When provided, every request goes
+   * through a `check` call before any provider work. On denial the
+   * middleware returns a graceful failure response with
+   * `errors: ["rate_limited"]` and the retryAfter value lifted to
+   * the top-level CognitiveResponse (via `validation.issues`).
+   * Added in Turn E.
+   */
+  rateLimiter?: RateLimiter;
+  /**
+   * How to compute the limiter key for a given request. Defaults
+   * to `user:${userId}:intent:${intent}`. Use `"user"` for a
+   * simple per-user limit, or any custom function for tiered
+   * limits (e.g., paid vs free users). Added in Turn E.
+   */
+  rateLimitKeyFn?: (
+    req: CognitiveRequest,
+    intent: CognitiveIntent,
+  ) => string;
+  /**
+   * Token cost charged to the bucket per request. Default 1.
+   * Production can vary this based on expected token usage (e.g.,
+   * a long image-generation request might cost 5 tokens). Added
+   * in Turn E.
+   */
+  rateLimitCost?: number;
+  /**
+   * Optional per-provider circuit breakers. When supplied, the
+   * orchestrator filters the adapter list to only those whose
+   * breakers are currently available (closed or half-open) before
+   * picking one. After each provider call the orchestrator
+   * records a success or failure against the chosen adapter's
+   * breaker. Added in Turn E.
+   */
+  circuitBreakers?: CircuitBreakerRegistry;
 }
 
 const DEFAULT_OPTIONS = {
@@ -180,36 +218,60 @@ interface ProviderSelectionResult {
  *
  * Algorithm:
  *
- *   1. If `preferredProvider` is set AND that provider exists AND
- *      claims it can serve `intent` → use it. Reason: "preferred".
+ *   1. If a circuit breaker registry is supplied, filter out every
+ *      adapter whose breaker currently reports unavailable
+ *      (`open` with a still-running cooldown). The filtered list
+ *      is what steps 2–4 operate on.
  *
- *   2. Otherwise, scan `adapters` in order and pick the first one
- *      whose `capabilities` set contains `intent`. Reason:
- *      "first capable".
+ *   2. If `preferredProvider` is set AND that provider exists AND
+ *      claims it can serve `intent` AND its breaker is available
+ *      → use it. Reason: "preferred".
  *
- *   3. If no adapter matches → return null. The orchestrator will
- *      then return an `ok=false` response.
+ *   3. Otherwise, scan the filtered list in order and pick the
+ *      first one whose `capabilities` set contains `intent`.
+ *      Reason: "first capable".
  *
- * Test-friendly: pure function, no side effects.
+ *   4. If no adapter matches → return null. When the filter
+ *      removed everything, the reason says so explicitly so the
+ *      caller knows this is a transient outage and not a
+ *      misconfiguration.
+ *
+ * Test-friendly: pure function, no side effects (breaker state is
+ * only read here; mutation happens in the middleware after the
+ * provider call returns).
  */
 export function selectProvider(
   adapters: readonly ProviderAdapter[],
   intent: CognitiveIntent,
   preferredProvider?: string,
+  breakers?: CircuitBreakerRegistry,
 ): ProviderSelectionResult {
   if (adapters.length === 0) {
     return { adapter: null, reason: "no adapters registered" };
   }
 
+  // Filter by breaker availability first, in a stable order so the
+  // `first capable` tiebreaker still respects the priority list.
+  const availableAdapters = breakers
+    ? adapters.filter((a) => breakers.get(a.name).isAvailable())
+    : adapters;
+
+  if (availableAdapters.length === 0) {
+    return {
+      adapter: null,
+      reason: `all ${adapters.length} adapters are circuit-broken`,
+    };
+  }
+
   if (preferredProvider) {
-    const preferred = adapters.find((a) => a.name === preferredProvider);
+    const preferred = availableAdapters.find((a) => a.name === preferredProvider);
     if (preferred && preferred.capabilities.has(intent)) {
       return { adapter: preferred, reason: `preferred provider ${preferred.name}` };
     }
     if (preferred && !preferred.capabilities.has(intent)) {
       // Preferred exists but can't handle this intent — fall through
       // to first-capable, log the mismatch in the reason.
-      const first = adapters.find((a) => a.capabilities.has(intent));
+      const first = availableAdapters.find((a) => a.capabilities.has(intent));
       if (first) {
         return {
           adapter: first,
@@ -222,12 +284,19 @@ export function selectProvider(
       };
     }
     if (!preferred) {
-      // Preferred name doesn't exist at all — fall through.
-      const first = adapters.find((a) => a.capabilities.has(intent));
+      // Preferred name doesn't exist at all (or is circuit-broken)
+      // — fall through to the first capable adapter.
+      const brokenButExists =
+        breakers &&
+        adapters.find((a) => a.name === preferredProvider) &&
+        !availableAdapters.find((a) => a.name === preferredProvider);
+      const first = availableAdapters.find((a) => a.capabilities.has(intent));
       if (first) {
         return {
           adapter: first,
-          reason: `preferred provider "${preferredProvider}" not registered, fell back to ${first.name}`,
+          reason: brokenButExists
+            ? `preferred provider "${preferredProvider}" is circuit-broken, fell back to ${first.name}`
+            : `preferred provider "${preferredProvider}" not registered, fell back to ${first.name}`,
         };
       }
       return {
@@ -237,7 +306,7 @@ export function selectProvider(
     }
   }
 
-  const first = adapters.find((a) => a.capabilities.has(intent));
+  const first = availableAdapters.find((a) => a.capabilities.has(intent));
   if (first) {
     return { adapter: first, reason: `first capable: ${first.name}` };
   }
@@ -553,6 +622,10 @@ export class CognitiveMiddleware {
     let toolCallCount = 0;
     let toolTotalMs = 0;
     let agenticIterations = 0;
+    let rateLimitCheckMs = 0;
+    let rateLimitAllowed = true;
+    let rateLimitRemaining = Number.NaN;
+    let circuitBreakerState: CognitiveTelemetry["circuitBreakerState"] = "none";
     const toolExecutions: ToolExecutionOutcome[] = [];
     const errors: string[] = [];
 
@@ -575,7 +648,79 @@ export class CognitiveMiddleware {
       };
     }
 
-    // ── 2. Context enrichment (Turn C) ────────────────────────────
+    // ── 2. Rate limit check (Turn E) ──────────────────────────────
+    // Fails fast BEFORE any store or provider work so a throttled
+    // user never consumes downstream budget. The limiter itself
+    // never throws — on impl errors it returns allowed=false with
+    // a diagnostic code which we fold into `errors[]`.
+    let rateLimitResult: RateLimitCheckResult | null = null;
+    if (this.options.rateLimiter) {
+      const rlT0 = Date.now();
+      try {
+        const key = this.options.rateLimitKeyFn
+          ? this.options.rateLimitKeyFn(req, intent.intent)
+          : defaultRateLimitKey(req.userId, intent.intent);
+        rateLimitResult = await this.options.rateLimiter.check(
+          key,
+          this.options.rateLimitCost ?? 1,
+        );
+        rateLimitAllowed = rateLimitResult.allowed;
+        rateLimitRemaining = rateLimitResult.remaining;
+      } catch (err) {
+        // Defensive — limiters should not throw, but if one does
+        // we let the request through so a broken limiter doesn't
+        // brick the whole pipeline.
+        errors.push(
+          `rate_limiter_threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        rateLimitAllowed = true;
+      }
+      rateLimitCheckMs = Date.now() - rlT0;
+    }
+
+    if (rateLimitResult && !rateLimitResult.allowed) {
+      const endedAt = Date.now();
+      const retryAfterMs = rateLimitResult.retryAfterMs ?? 0;
+      return {
+        ok: false,
+        text: "",
+        toolCalls: [],
+        toolExecutions: [],
+        routing: {
+          intent,
+          providerName: "(none)",
+          providerReason: "rate_limited",
+        },
+        validation: {
+          ok: false,
+          issues: [
+            {
+              severity: "error",
+              code: "rate_limited",
+              message: `request denied by rate limiter (key=${rateLimitResult.limiterKey}, retry after ~${retryAfterMs}ms)`,
+            },
+          ],
+          refusalDetected: false,
+          toolCallsValid: true,
+        },
+        telemetry: {
+          ...emptyTelemetry(
+            startedAt,
+            endedAt,
+            intentClassificationMs,
+            0,
+            0,
+          ),
+          rateLimitAllowed: false,
+          rateLimitRemaining: rateLimitResult.remaining,
+          rateLimitCheckMs,
+          circuitBreakerState: "none",
+        },
+        errors: [...errors, `rate_limited:retry_after_ms=${retryAfterMs}`],
+      };
+    }
+
+    // ── 3. Context enrichment (Turn C) ────────────────────────────
     // Runs before provider selection so enrichment failures are
     // visible even when no provider could be picked. Never throws;
     // a store error lands as `errors[]` on the bundle.
@@ -587,17 +732,21 @@ export class CognitiveMiddleware {
       errors.push(`context: ${e}`);
     }
 
-    // ── 3. Provider selection ─────────────────────────────────────
+    // ── 4. Provider selection ─────────────────────────────────────
+    // Passes the breaker registry so selectProvider filters out
+    // known-sick adapters before picking one.
     const selection = selectProvider(
       this.options.adapters,
       intent.intent,
       req.preferredProvider,
+      this.options.circuitBreakers,
     );
 
     if (!selection.adapter) {
       // No capable provider — return a graceful failure response
       // with the routing decision attached for visibility.
       const endedAt = Date.now();
+      const circuitBroken = selection.reason.includes("circuit-broken");
       return {
         ok: false,
         text: "",
@@ -613,21 +762,30 @@ export class CognitiveMiddleware {
           issues: [
             {
               severity: "error",
-              code: "no_capable_provider",
+              code: circuitBroken ? "circuit_breaker_open" : "no_capable_provider",
               message: selection.reason,
             },
           ],
           refusalDetected: false,
           toolCallsValid: true,
         },
-        telemetry: emptyTelemetry(
-          startedAt,
-          endedAt,
-          intentClassificationMs,
-          contextEnrichmentMs,
-          contextChunksIncluded,
-        ),
-        errors: [...errors, "no_capable_provider"],
+        telemetry: {
+          ...emptyTelemetry(
+            startedAt,
+            endedAt,
+            intentClassificationMs,
+            contextEnrichmentMs,
+            contextChunksIncluded,
+          ),
+          rateLimitAllowed,
+          rateLimitRemaining,
+          rateLimitCheckMs,
+          circuitBreakerState: circuitBroken ? "open" : "none",
+        },
+        errors: [
+          ...errors,
+          circuitBroken ? "circuit_breaker_open" : "no_capable_provider",
+        ],
       };
     }
 
@@ -637,7 +795,16 @@ export class CognitiveMiddleware {
       providerReason: selection.reason,
     };
 
-    // ── 4. Build the normalized provider request ──────────────────
+    // Capture the breaker state at selection time so telemetry
+    // reflects whether this call was a probe.
+    if (this.options.circuitBreakers) {
+      const status = this.options.circuitBreakers
+        .get(selection.adapter.name)
+        .getStatus();
+      circuitBreakerState = status.state;
+    }
+
+    // ── 5. Build the normalized provider request ──────────────────
     // The message history is mutated during the agentic loop to
     // accumulate the model's tool-calling turns + the tool results
     // fed back. We start with just the user message and let the
@@ -732,7 +899,24 @@ export class CognitiveMiddleware {
       raw: { error: "no provider response captured (maxToolIterations=0?)" },
     };
 
-    // ── 6. Validate the response ──────────────────────────────────
+    // ── 6. Record breaker success/failure (Turn E) ────────────────
+    // A finishReason of "stop" or "tool_calls" is a healthy outcome.
+    // "error" / "aborted" / "content_filter" counts as a failure so
+    // the breaker trips after enough consecutive bad calls.
+    if (this.options.circuitBreakers) {
+      const breaker = this.options.circuitBreakers.get(selection.adapter.name);
+      const healthy =
+        finalResponse.finishReason === "stop" ||
+        finalResponse.finishReason === "tool_calls" ||
+        finalResponse.finishReason === "length";
+      if (healthy) {
+        breaker.recordSuccess();
+      } else {
+        breaker.recordFailure();
+      }
+    }
+
+    // ── 7. Validate the response ──────────────────────────────────
     const t1 = Date.now();
     const validation: ValidationReport = validateOutput(finalResponse, {
       toolDescriptors: normalizedRequest.tools,
@@ -741,7 +925,7 @@ export class CognitiveMiddleware {
     });
     validationMs = Date.now() - t1;
 
-    // ── 7. Assemble the final response ────────────────────────────
+    // ── 8. Assemble the final response ────────────────────────────
     const endedAt = Date.now();
     const telemetry: CognitiveTelemetry = {
       startedAt,
@@ -756,6 +940,10 @@ export class CognitiveMiddleware {
       toolCallCount,
       toolTotalMs,
       agenticIterations,
+      rateLimitAllowed,
+      rateLimitRemaining,
+      rateLimitCheckMs,
+      circuitBreakerState,
       promptTokens: finalResponse.usage?.promptTokens,
       completionTokens: finalResponse.usage?.completionTokens,
     };
@@ -830,6 +1018,10 @@ export class CognitiveMiddleware {
     let providerCallMs = 0;
     let validationMs = 0;
     let contextChunksIncluded = 0;
+    let rateLimitCheckMs = 0;
+    let rateLimitAllowed = true;
+    let rateLimitRemaining = Number.NaN;
+    let circuitBreakerState: CognitiveTelemetry["circuitBreakerState"] = "none";
     const errors: string[] = [];
 
     // ── 1. Intent classification ──────────────────────────────────
@@ -849,7 +1041,81 @@ export class CognitiveMiddleware {
       };
     }
 
-    // ── 2. Context enrichment (Turn C) ────────────────────────────
+    // ── 2. Rate limit check (Turn E) ──────────────────────────────
+    let rateLimitResult: RateLimitCheckResult | null = null;
+    if (this.options.rateLimiter) {
+      const rlT0 = Date.now();
+      try {
+        const key = this.options.rateLimitKeyFn
+          ? this.options.rateLimitKeyFn(req, intent.intent)
+          : defaultRateLimitKey(req.userId, intent.intent);
+        rateLimitResult = await this.options.rateLimiter.check(
+          key,
+          this.options.rateLimitCost ?? 1,
+        );
+        rateLimitAllowed = rateLimitResult.allowed;
+        rateLimitRemaining = rateLimitResult.remaining;
+      } catch (err) {
+        errors.push(
+          `rate_limiter_threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        rateLimitAllowed = true;
+      }
+      rateLimitCheckMs = Date.now() - rlT0;
+    }
+
+    if (rateLimitResult && !rateLimitResult.allowed) {
+      const retryAfterMs = rateLimitResult.retryAfterMs ?? 0;
+      yield {
+        kind: "error",
+        code: "rate_limited",
+        message: `request denied by rate limiter (retry after ~${retryAfterMs}ms)`,
+      };
+      const endedAt = Date.now();
+      yield {
+        kind: "done",
+        response: {
+          ok: false,
+          text: "",
+          toolCalls: [],
+          toolExecutions: [],
+          routing: {
+            intent,
+            providerName: "(none)",
+            providerReason: "rate_limited",
+          },
+          validation: {
+            ok: false,
+            issues: [
+              {
+                severity: "error",
+                code: "rate_limited",
+                message: `request denied by rate limiter (key=${rateLimitResult.limiterKey}, retry after ~${retryAfterMs}ms)`,
+              },
+            ],
+            refusalDetected: false,
+            toolCallsValid: true,
+          },
+          telemetry: {
+            ...emptyTelemetry(
+              startedAt,
+              endedAt,
+              intentClassificationMs,
+              0,
+              0,
+            ),
+            rateLimitAllowed: false,
+            rateLimitRemaining: rateLimitResult.remaining,
+            rateLimitCheckMs,
+            circuitBreakerState: "none",
+          },
+          errors: [...errors, `rate_limited:retry_after_ms=${retryAfterMs}`],
+        },
+      };
+      return;
+    }
+
+    // ── 3. Context enrichment (Turn C) ────────────────────────────
     const ctxT0 = Date.now();
     const contextBundle = await this.runContextEnrichment(req);
     contextEnrichmentMs = Date.now() - ctxT0;
@@ -858,17 +1124,19 @@ export class CognitiveMiddleware {
       errors.push(`context: ${e}`);
     }
 
-    // ── 3. Provider selection ─────────────────────────────────────
+    // ── 4. Provider selection ─────────────────────────────────────
     const selection = selectProvider(
       this.options.adapters,
       intent.intent,
       req.preferredProvider,
+      this.options.circuitBreakers,
     );
 
     if (!selection.adapter) {
+      const circuitBroken = selection.reason.includes("circuit-broken");
       yield {
         kind: "error",
-        code: "no_capable_provider",
+        code: circuitBroken ? "circuit_breaker_open" : "no_capable_provider",
         message: selection.reason,
       };
       const endedAt = Date.now();
@@ -889,21 +1157,30 @@ export class CognitiveMiddleware {
             issues: [
               {
                 severity: "error",
-                code: "no_capable_provider",
+                code: circuitBroken ? "circuit_breaker_open" : "no_capable_provider",
                 message: selection.reason,
               },
             ],
             refusalDetected: false,
             toolCallsValid: true,
           },
-          telemetry: emptyTelemetry(
-            startedAt,
-            endedAt,
-            intentClassificationMs,
-            contextEnrichmentMs,
-            contextChunksIncluded,
-          ),
-          errors: [...errors, "no_capable_provider"],
+          telemetry: {
+            ...emptyTelemetry(
+              startedAt,
+              endedAt,
+              intentClassificationMs,
+              contextEnrichmentMs,
+              contextChunksIncluded,
+            ),
+            rateLimitAllowed,
+            rateLimitRemaining,
+            rateLimitCheckMs,
+            circuitBreakerState: circuitBroken ? "open" : "none",
+          },
+          errors: [
+            ...errors,
+            circuitBroken ? "circuit_breaker_open" : "no_capable_provider",
+          ],
         },
       };
       return;
@@ -914,6 +1191,15 @@ export class CognitiveMiddleware {
       providerName: selection.adapter.name,
       providerReason: selection.reason,
     };
+
+    // Capture the breaker state at selection time so the stream
+    // consumer can distinguish a normal call from a half-open probe.
+    if (this.options.circuitBreakers) {
+      const status = this.options.circuitBreakers
+        .get(selection.adapter.name)
+        .getStatus();
+      circuitBreakerState = status.state;
+    }
 
     // Emit the routing decision BEFORE we call the provider so the
     // consumer can surface "thinking…" UI even if the first text
@@ -1144,7 +1430,21 @@ export class CognitiveMiddleware {
     // obvious to future readers.
     void terminatedByErrorEvent;
 
-    // ── 6. Validate the assembled response ────────────────────────
+    // ── 6. Record breaker outcome (Turn E) ────────────────────────
+    if (this.options.circuitBreakers) {
+      const breaker = this.options.circuitBreakers.get(selection.adapter.name);
+      const healthy =
+        finishReason === "stop" ||
+        finishReason === "tool_calls" ||
+        finishReason === "length";
+      if (healthy) {
+        breaker.recordSuccess();
+      } else {
+        breaker.recordFailure();
+      }
+    }
+
+    // ── 7. Validate the assembled response ────────────────────────
     const assembled: ProviderResponse = {
       text: accumulatedText,
       finishReason,
@@ -1161,7 +1461,7 @@ export class CognitiveMiddleware {
 
     yield { kind: "validation", validation };
 
-    // ── 7. Emit the terminal "done" event ─────────────────────────
+    // ── 8. Emit the terminal "done" event ─────────────────────────
     const endedAt = Date.now();
     const telemetry: CognitiveTelemetry = {
       startedAt,
@@ -1176,6 +1476,10 @@ export class CognitiveMiddleware {
       toolCallCount,
       toolTotalMs,
       agenticIterations,
+      rateLimitAllowed,
+      rateLimitRemaining,
+      rateLimitCheckMs,
+      circuitBreakerState,
       promptTokens: usage?.promptTokens,
       completionTokens: usage?.completionTokens,
     };
@@ -1224,5 +1528,9 @@ function emptyTelemetry(
     toolCallCount: 0,
     toolTotalMs: 0,
     agenticIterations: 0,
+    rateLimitAllowed: true,
+    rateLimitRemaining: Number.NaN,
+    rateLimitCheckMs: 0,
+    circuitBreakerState: "none",
   };
 }

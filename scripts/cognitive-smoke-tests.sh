@@ -498,6 +498,52 @@ run_test "36 POST /api/cognitive/run telemetry has Turn D fields" /api/cognitive
   "preferredProvider": "mock-tool-agent"
 }' '(b) => typeof b.telemetry.toolCallCount === "number" && typeof b.telemetry.toolTotalMs === "number" && typeof b.telemetry.agenticIterations === "number"'
 
+# ── Turn E — rate limit + circuit breaker checks ──────────────────────────
+#
+# Uses the dedicated /throttled-demo middleware with a tiny-bucket
+# limiter (capacity=2, no refill) so denial is deterministic. The
+# /reset helper clears the limiter between test groups.
+
+# Reset the throttled limiter so tests are order-independent.
+curl -sS -X POST "$BASE/api/cognitive/throttled-demo/reset" -o /dev/null
+
+# 37 /run main path telemetry has Turn E fields (normal limiter, generous)
+run_test "37 POST /api/cognitive/run main path telemetry has Turn E fields" /api/cognitive/run POST '{
+  "userId": "smoke-e1",
+  "message": "hola turno e",
+  "preferredProvider": "mock-echo"
+}' '(b) => b.telemetry.rateLimitAllowed === true && typeof b.telemetry.rateLimitRemaining === "number" && typeof b.telemetry.rateLimitCheckMs === "number" && typeof b.telemetry.circuitBreakerState === "string"'
+
+# 38 /throttled-demo/run first 2 calls allowed
+run_test "38 POST /api/cognitive/throttled-demo/run first call ok" /api/cognitive/throttled-demo/run POST '{
+  "userId": "smoke-drain",
+  "message": "first call",
+  "preferredProvider": "mock-echo"
+}' '(b) => b.ok === true && b.telemetry.rateLimitAllowed === true && b.telemetry.rateLimitRemaining === 1'
+
+run_test "39 POST /api/cognitive/throttled-demo/run second call ok" /api/cognitive/throttled-demo/run POST '{
+  "userId": "smoke-drain",
+  "message": "second call",
+  "preferredProvider": "mock-echo"
+}' '(b) => b.ok === true && b.telemetry.rateLimitRemaining === 0'
+
+# 40 /throttled-demo/run third call is denied with rate_limited
+run_test "40 POST /api/cognitive/throttled-demo/run third call rate limited" /api/cognitive/throttled-demo/run POST '{
+  "userId": "smoke-drain",
+  "message": "third call should be denied",
+  "preferredProvider": "mock-echo"
+}' '(b) => b.ok === false && b.telemetry.rateLimitAllowed === false && b.validation.issues && b.validation.issues.some(i => i.code === "rate_limited") && b.errors && b.errors.some(e => e.indexOf("rate_limited") === 0)'
+
+# 41 /throttled-demo/run isolates buckets by user
+run_test "41 POST /api/cognitive/throttled-demo/run distinct user has fresh bucket" /api/cognitive/throttled-demo/run POST '{
+  "userId": "smoke-drain-other",
+  "message": "different user",
+  "preferredProvider": "mock-echo"
+}' '(b) => b.ok === true && b.telemetry.rateLimitAllowed === true'
+
+# Reset before next group
+curl -sS -X POST "$BASE/api/cognitive/throttled-demo/reset" -o /dev/null
+
 echo
 echo "=== Results: $(green $PASS) passed, $(red $FAIL) failed ==="
 if [[ $FAIL -gt 0 ]]; then
