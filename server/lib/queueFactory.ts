@@ -2,33 +2,100 @@ let Queue: any, Worker: any, QueueEvents: any;
 try { const bullmq = require('bullmq'); Queue = bullmq.Queue; Worker = bullmq.Worker; QueueEvents = bullmq.QueueEvents; } catch {}
 import IORedis, { RedisOptions } from 'ioredis';
 
-// Shared connection configuration - only connect if Redis is available
-const REDIS_URL = process.env.REDIS_URL;
+const LOOPBACK_BASE_URL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+function isLoopbackBaseUrl(baseUrl?: string): boolean {
+    if (!baseUrl?.trim()) return false;
+    try {
+        const parsed = new URL(baseUrl);
+        return LOOPBACK_BASE_URL_HOSTS.has(parsed.hostname);
+    } catch {
+        return false;
+    }
+}
+
+function isUpstashRedisUrl(redisUrl?: string): boolean {
+    if (!redisUrl?.trim()) return false;
+    try {
+        return /upstash/i.test(new URL(redisUrl).hostname);
+    } catch {
+        return /upstash/i.test(redisUrl);
+    }
+}
+
+export function shouldEnableRedisQueues(params: {
+    nodeEnv?: string;
+    redisUrl?: string;
+    redisHost?: string;
+    baseUrl?: string;
+    bullmqDisable?: string;
+    bullmqForceEnable?: string;
+}): boolean {
+    if (params.bullmqForceEnable === "true") {
+        return true;
+    }
+    if (params.bullmqDisable === "true") {
+        return false;
+    }
+    if (!params.redisUrl && !params.redisHost) {
+        return false;
+    }
+    if (
+        params.nodeEnv === "production" &&
+        isLoopbackBaseUrl(params.baseUrl) &&
+        isUpstashRedisUrl(params.redisUrl)
+    ) {
+        return false;
+    }
+    return true;
+}
 
 // Lazy connection - only create when needed and if Redis is configured
 let sharedConnection: IORedis | null = null;
+let queueDisableNoticeShown = false;
 function getConnection(): IORedis | null {
     // Tests should be hermetic: don't try to connect to Redis unless explicitly enabled.
     if (process.env.NODE_ENV === "test" && process.env.ENABLE_QUEUES_IN_TEST !== "true") {
         return null;
     }
-    if (!REDIS_URL && !process.env.REDIS_HOST) {
-        console.warn('[QueueFactory] No REDIS_URL configured, queues disabled');
+    const redisUrl = process.env.REDIS_URL;
+    const redisHost = process.env.REDIS_HOST;
+    const queuesEnabled = shouldEnableRedisQueues({
+        nodeEnv: process.env.NODE_ENV,
+        redisUrl,
+        redisHost,
+        baseUrl: process.env.BASE_URL,
+        bullmqDisable: process.env.BULLMQ_DISABLE,
+        bullmqForceEnable: process.env.BULLMQ_FORCE_ENABLE,
+    });
+    if (!queuesEnabled) {
+        if (!queueDisableNoticeShown) {
+            const reason =
+                process.env.BULLMQ_DISABLE === "true"
+                    ? "disabled via BULLMQ_DISABLE=true"
+                    : (!redisUrl && !redisHost)
+                        ? "no Redis configuration present"
+                        : "loopback production runtime detected with managed Upstash Redis; using local/no-queue mode";
+            console.warn(`[QueueFactory] BullMQ queues disabled (${reason})`);
+            queueDisableNoticeShown = true;
+        }
         return null;
     }
     if (!sharedConnection) {
         // Use REDIS_URL directly if available (Docker/production)
         // BullMQ requires maxRetriesPerRequest: null for blocking operations
-        if (REDIS_URL) {
-            sharedConnection = new IORedis(REDIS_URL, {
+        if (redisUrl) {
+            sharedConnection = new IORedis(redisUrl, {
                 maxRetriesPerRequest: null,
+                enableOfflineQueue: false,
             });
         } else {
             sharedConnection = new IORedis({
-                host: process.env.REDIS_HOST || 'localhost',
+                host: redisHost || 'localhost',
                 port: parseInt(process.env.REDIS_PORT || '6379'),
                 password: process.env.REDIS_PASSWORD || undefined,
                 maxRetriesPerRequest: null,
+                enableOfflineQueue: false,
             });
         }
         sharedConnection.on('error', (err) => console.warn('[QueueFactory] Redis error:', err.message));

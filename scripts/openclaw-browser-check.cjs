@@ -1,5 +1,7 @@
 const { chromium } = require("playwright");
 
+const DEFAULT_BASE_URL = process.env.PLAYWRIGHT_BASE_URL || "http://127.0.0.1:41731";
+
 const IGNORED_CONSOLE_ERRORS = [
   "fonts.googleapis.com",
   "cdn.jsdelivr.net",
@@ -47,7 +49,7 @@ async function main() {
     });
   });
 
-  const response = await page.goto("http://127.0.0.1:41731/openclaw", {
+  const response = await page.goto(`${DEFAULT_BASE_URL}/openclaw`, {
     waitUntil: "domcontentloaded",
     timeout: 30000,
   });

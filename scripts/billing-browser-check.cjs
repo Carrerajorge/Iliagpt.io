@@ -51,6 +51,7 @@ async function main() {
   const page = await context.newPage();
   const consoleErrors = [];
   const pageErrors = [];
+  const failedResponses = [];
 
   page.on("console", (msg) => {
     if (msg.type() !== "error") return;
@@ -65,12 +66,26 @@ async function main() {
     console.log("PAGE_ERROR", text);
   });
 
+  page.on("response", async (response) => {
+    const url = response.url();
+    const status = response.status();
+    if (!url.startsWith(DEFAULT_BASE_URL) || status < 400) return;
+    let bodyPreview = "";
+    try {
+      bodyPreview = (await response.text()).slice(0, 300);
+    } catch {
+      bodyPreview = "";
+    }
+    failedResponses.push({ url, status, bodyPreview });
+    console.log("FAILED_RESPONSE", status, url, bodyPreview);
+  });
+
   const billingResponsePromise = page.waitForResponse(
     (response) => response.url().includes("/api/billing/status"),
     { timeout: 20000 },
   );
 
-  const navResponse = await page.goto(`${DEFAULT_BASE_URL}/billing`, {
+  const navResponse = await page.goto(`${DEFAULT_BASE_URL}/workspace-settings?section=billing`, {
     waitUntil: "domcontentloaded",
     timeout: 30000,
   });
@@ -96,6 +111,7 @@ async function main() {
     hasHeader,
     hasErrorBanner,
     failedStatusVisible,
+    failedResponses,
     relevantConsoleErrors,
     pageErrors,
   };

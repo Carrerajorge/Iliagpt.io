@@ -133,14 +133,29 @@ export function createWorkspaceRouter() {
       if (!actor) return res.status(401).json({ error: "Debes iniciar sesión" });
 
       const orgId = actor.orgId;
+      let workspaceId = `workspace:${orgId}`;
+      let workspaceName = "Espacio de trabajo";
+      let logoFileUuid: string | null = null;
 
-      const ws = await ensureWorkspace(orgId);
+      try {
+        const ws = await ensureWorkspace(orgId);
+        workspaceId = String(ws.id || workspaceId);
+        workspaceName = String(ws.name || workspaceName);
+        logoFileUuid = ws.logoFileUuid || null;
+      } catch (workspaceError: any) {
+        console.warn("[Workspace] Failed to bootstrap workspace metadata, using defaults:", workspaceError?.message || workspaceError);
+      }
 
-      const [{ count: memberCountRaw } = { count: 0 }] = await db
-        .select({ count: sql<number>`COUNT(*)` })
-        .from(users)
-        .where(and(eq(users.orgId, orgId), isNull(users.deletedAt)));
-      const memberCount = typeof memberCountRaw === "number" ? memberCountRaw : Number(memberCountRaw || 0);
+      let memberCount = 0;
+      try {
+        const [{ count: memberCountRaw } = { count: 0 }] = await db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(users)
+          .where(and(eq(users.orgId, orgId), isNull(users.deletedAt)));
+        memberCount = typeof memberCountRaw === "number" ? memberCountRaw : Number(memberCountRaw || 0);
+      } catch (memberCountError: any) {
+        console.warn("[Workspace] Failed to count members, defaulting to 0:", memberCountError?.message || memberCountError);
+      }
 
       const [canManageWorkspaceFlag, canManageMembersFlag, canManageRolesFlag, canManageBillingFlag] = await Promise.all([
         canManageWorkspace(actor),
@@ -151,9 +166,9 @@ export function createWorkspaceRouter() {
 
       res.json({
         orgId,
-        workspaceId: ws.id,
-        name: ws.name,
-        logoFileUuid: ws.logoFileUuid || null,
+        workspaceId,
+        name: workspaceName,
+        logoFileUuid,
         memberCount,
         canManageWorkspace: canManageWorkspaceFlag,
         canManageMembers: canManageMembersFlag,

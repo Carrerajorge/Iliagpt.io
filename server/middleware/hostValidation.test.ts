@@ -49,6 +49,7 @@ describe("hostValidation", () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("ALLOWED_HOSTS", "myapp.example.com");
     vi.stubEnv("APP_URL", "");
+    vi.stubEnv("BASE_URL", "");
   });
 
   it("allows requests with host in ALLOWED_HOSTS", async () => {
@@ -167,10 +168,35 @@ describe("hostValidation", () => {
     expect(next).toHaveBeenCalled();
   });
 
+  it("allows loopback hosts declared via BASE_URL in production-like mode", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("ALLOWED_HOSTS", "");
+    vi.stubEnv("APP_URL", "");
+    vi.stubEnv("BASE_URL", "http://127.0.0.1:41734");
+    vi.resetModules();
+    vi.mock("../lib/structuredLogger", () => ({
+      createLogger: () => ({
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      }),
+    }));
+
+    const freshMod = await import("../middleware/hostValidation");
+    const middleware = freshMod.hostValidation();
+    const req = mockReq("127.0.0.1:41734", "/openclaw");
+    const res = mockRes();
+    const next = vi.fn();
+    middleware(req as Request, res as Response, next as NextFunction);
+    expect(next).toHaveBeenCalled();
+  });
+
   it("skips validation entirely in non-production without config", async () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("ALLOWED_HOSTS", "");
     vi.stubEnv("APP_URL", "");
+    vi.stubEnv("BASE_URL", "");
     // Re-import to pick up new env
     vi.resetModules();
     vi.mock("../lib/structuredLogger", () => ({

@@ -3,7 +3,6 @@ const path = require("path");
 const { chromium } = require("playwright");
 
 const DEFAULT_BASE_URL = process.env.PLAYWRIGHT_BASE_URL || "http://127.0.0.1:41731";
-const DEFAULT_FIXTURE = process.env.DOCUMENT_ANALYZE_FIXTURE || path.join(process.cwd(), "artifacts", "1775856519337_ventas.xlsx");
 const IGNORED_CONSOLE_ERRORS = [
   "fonts.googleapis.com",
   "cdn.jsdelivr.net",
@@ -16,6 +15,32 @@ const IGNORED_CONSOLE_ERRORS = [
   "Failed to load resource: the server responded with a status of 401",
   "Failed to load resource: the server responded with a status of 403",
 ];
+
+function resolveFixture() {
+  if (process.env.DOCUMENT_ANALYZE_FIXTURE) {
+    return process.env.DOCUMENT_ANALYZE_FIXTURE;
+  }
+
+  const artifactsDir = path.join(process.cwd(), "artifacts");
+  if (!fs.existsSync(artifactsDir)) {
+    return null;
+  }
+
+  const candidates = fs
+    .readdirSync(artifactsDir)
+    .filter((entry) => /\.xlsx$/i.test(entry))
+    .map((entry) => {
+      const absolutePath = path.join(artifactsDir, entry);
+      const stats = fs.statSync(absolutePath);
+      return {
+        absolutePath,
+        mtimeMs: stats.mtimeMs,
+      };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  return candidates[0]?.absolutePath || null;
+}
 
 function parseSse(raw) {
   return String(raw || "")
@@ -41,12 +66,17 @@ function parseSse(raw) {
 }
 
 async function main() {
-  if (!fs.existsSync(DEFAULT_FIXTURE)) {
-    throw new Error(`Fixture not found: ${DEFAULT_FIXTURE}`);
+  const fixturePath = resolveFixture();
+  if (!fixturePath || !fs.existsSync(fixturePath)) {
+    throw new Error(
+      `Fixture not found. Set DOCUMENT_ANALYZE_FIXTURE or place an .xlsx file in ${path.join(process.cwd(), "artifacts")}`,
+    );
   }
 
-  const fileName = path.basename(DEFAULT_FIXTURE);
-  const base64 = fs.readFileSync(DEFAULT_FIXTURE).toString("base64");
+  console.log("FIXTURE", fixturePath);
+
+  const fileName = path.basename(fixturePath);
+  const base64 = fs.readFileSync(fixturePath).toString("base64");
 
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
@@ -75,12 +105,16 @@ async function main() {
 
   const rawSse = await page.evaluate(
     async ({ baseUrl, fileName, base64 }) => {
+      const csrfMatch = document.cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
+      const csrfToken = csrfMatch ? decodeURIComponent(csrfMatch[1]) : "";
       const response = await fetch(`${baseUrl}/api/analyze`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken,
           "X-Anonymous-User-Id": "browser-check-user",
         },
+        credentials: "include",
         body: JSON.stringify({
           messages: [{ role: "user", content: "Dame un resumen ejecutivo" }],
           conversationId: "browser-check-analyze",
@@ -99,7 +133,8 @@ async function main() {
 
       const reader = response.body?.getReader();
       if (!reader) {
-        throw new Error(`Missing readable body: ${response.status}`);
+        const text = await response.text().catch(() => "");
+        throw new Error(`Missing readable body: ${response.status} ${text}`);
       }
 
       const decoder = new TextDecoder();

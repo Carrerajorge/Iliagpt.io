@@ -27,6 +27,18 @@ function dedupeAllowedOrigins(origins: string[]): string[] {
     return [...new Set((origins || []).filter(Boolean))];
 }
 
+function parseConfiguredOrigin(rawValue: string | undefined): string | null {
+    const value = String(rawValue || "").trim();
+    if (!value) return null;
+
+    try {
+        const url = new URL(value.startsWith("http") ? value : `https://${value}`);
+        return url.origin;
+    } catch {
+        return null;
+    }
+}
+
 export interface OriginValidationOptions {
     allowAnyLocalhost?: boolean;
 }
@@ -34,6 +46,10 @@ export interface OriginValidationOptions {
 export function getAllowedOrigins(options: OriginValidationOptions = {}): string[] | '*' {
     const allowAnyLocalhost = options.allowAnyLocalhost ?? !isProduction;
     const configuredOrigins = (process.env.ALLOWED_ORIGINS?.split(",").map(d => d.trim()).filter(Boolean) || []);
+    const configuredAppOrigins = [
+        parseConfiguredOrigin(process.env.APP_URL),
+        parseConfiguredOrigin(process.env.BASE_URL),
+    ].filter((origin): origin is string => Boolean(origin));
     const replitOrigins = (process.env.REPLIT_DOMAINS?.split(",") || [])
         .filter(isValidReplitDomain)
         .map(d => `https://${d.trim()}`);
@@ -43,18 +59,21 @@ export function getAllowedOrigins(options: OriginValidationOptions = {}): string
             return dedupeAllowedOrigins([
                 ...DEVELOPMENT_ORIGINS,
                 ...configuredOrigins,
+                ...configuredAppOrigins,
                 ...replitOrigins,
             ]);
         }
 
         return dedupeAllowedOrigins([
             ...configuredOrigins,
+            ...configuredAppOrigins,
             ...replitOrigins,
             ...(PRODUCTION_ORIGINS || []),
         ]);
     }
 
     return dedupeAllowedOrigins([
+        ...configuredAppOrigins,
         ...(configuredOrigins.length > 0 ? configuredOrigins : PRODUCTION_ORIGINS),
         ...replitOrigins,
     ]);
@@ -65,9 +84,9 @@ export function isAllowedOrigin(originHeader: string | undefined): boolean {
 
     const allowedOrigins = getAllowedOrigins();
     if (allowedOrigins === '*') return true;
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(originHeader);
+    const localhostAllowed = !isProduction && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(originHeader);
 
-    return isLocalhost || allowedOrigins.includes(originHeader);
+    return localhostAllowed || allowedOrigins.includes(originHeader);
 }
 
 /** Security: validate Replit domain format to prevent injection */

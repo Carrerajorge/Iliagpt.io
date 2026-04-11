@@ -54,6 +54,22 @@ export async function runStartupMigrations(): Promise<void> {
       `,
     },
     {
+      name: "create_workspaces",
+      query: `
+        CREATE TABLE IF NOT EXISTS workspaces (
+          id text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+          org_id text NOT NULL,
+          name text NOT NULL,
+          logo_file_uuid text,
+          created_at timestamp DEFAULT now() NOT NULL,
+          updated_at timestamp DEFAULT now() NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS workspaces_org_unique ON workspaces (org_id);
+        CREATE INDEX IF NOT EXISTS workspaces_org_idx ON workspaces (org_id);
+        CREATE INDEX IF NOT EXISTS workspaces_updated_idx ON workspaces (updated_at);
+      `,
+    },
+    {
       name: "create_magic_links",
       query: `
         CREATE TABLE IF NOT EXISTS magic_links (

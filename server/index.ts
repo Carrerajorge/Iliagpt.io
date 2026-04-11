@@ -54,6 +54,7 @@ import { updateContext } from "./middleware/correlationContext";
 import { validateApiKey } from "./routes/apiKeysRouter";
 import { AppError } from "./utils/errors";
 import { checkMigrationDrift } from "./lib/migrationDriftCheck";
+import { listenWithFallback, resolveHttpListenCandidates } from "./lib/httpListen";
 import { startMemoryPurgeJob } from "./services/memoryPurgeService";
 initTracing();
 
@@ -457,12 +458,7 @@ export function log(message: string, source = "express") {
   // Other ports are firewalled. Default to 5000 if not specified.
   const port = env.PORT;
 
-  const listenOptions = isProduction
-    ? ({ port, host: "0.0.0.0", reusePort: true } as const)
-    : ({ port, host: process.env.HOST || "127.0.0.1" } as const);
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const server = (httpServer.listen as any)(listenOptions, async () => {
+  const finishServerStartup = async () => {
     log(`serving on port ${port}`);
     log(`Environment: ${isProduction ? "PRODUCTION" : "development"}`);
     log(`Database: ${dbConnected ? "connected" : "NOT CONNECTED"}`);
@@ -509,14 +505,6 @@ export function log(message: string, source = "express") {
           const message = error instanceof Error ? error.message : String(error);
           log(`[OpenClawSkills] Automatic optimization failed: ${message}`);
         });
-    }
-
-    if (isProdEnv) {
-      server.keepAliveTimeout = 65000;
-      server.headersTimeout = 66000;
-    } else {
-      server.keepAliveTimeout = 360000;
-      server.headersTimeout = 361000;
     }
 
     // Setup graceful shutdown with connection draining
@@ -606,5 +594,33 @@ export function log(message: string, source = "express") {
           .catch((e) => log(`[Telegram] Webhook auto-config failed: ${e?.message || e}`));
       }, 1500);
     }
+  };
+
+  const listenCandidates = resolveHttpListenCandidates({
+    port,
+    configuredHost: process.env.HOST,
+    baseUrl: env.BASE_URL,
+    isProduction,
+    preferReusePort: isProduction && process.env.HTTP_REUSE_PORT === "true",
   });
+  const listenResult = await listenWithFallback(httpServer, listenCandidates, (error, failed, next) => {
+    log(
+      `[server] Listen failed on ${failed.host}:${failed.port} (reusePort=${failed.reusePort}) with ${error.code || error.message}; retrying ${next.host}:${next.port} (reusePort=${next.reusePort})`,
+    );
+  });
+  const server = httpServer;
+
+  if (isProdEnv) {
+    server.keepAliveTimeout = 65000;
+    server.headersTimeout = 66000;
+  } else {
+    server.keepAliveTimeout = 360000;
+    server.headersTimeout = 361000;
+  }
+
+  log(
+    `HTTP listener bound to ${listenResult.host}:${listenResult.port} (reusePort=${listenResult.reusePort})`,
+  );
+
+  await finishServerStartup();
 })();

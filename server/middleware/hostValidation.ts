@@ -53,11 +53,11 @@ function buildAllowedHosts(): Set<string> {
     }
   }
 
-  // Parse APP_URL for the primary domain
-  const appUrl = process.env.APP_URL || process.env.REPL_SLUG;
-  if (appUrl) {
+  // Parse canonical app URLs for the primary domain and local production-like hosts.
+  for (const rawUrl of [process.env.APP_URL, process.env.BASE_URL, process.env.REPL_SLUG]) {
+    if (!rawUrl) continue;
     try {
-      const url = new URL(appUrl.startsWith("http") ? appUrl : `https://${appUrl}`);
+      const url = new URL(rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`);
       hosts.add(url.host.toLowerCase());
       hosts.add(url.hostname.toLowerCase());
     } catch {
@@ -135,7 +135,8 @@ export function hostValidation(config?: HostValidationConfig) {
   // to avoid breaking local development setups
   const hasExplicitConfig =
     (process.env.ALLOWED_HOSTS && process.env.ALLOWED_HOSTS.trim().length > 0) ||
-    (process.env.APP_URL && process.env.APP_URL.trim().length > 0);
+    (process.env.APP_URL && process.env.APP_URL.trim().length > 0) ||
+    (process.env.BASE_URL && process.env.BASE_URL.trim().length > 0);
 
   if (!isProduction && !hasExplicitConfig) {
     return (_req: Request, _res: Response, next: NextFunction) => next();

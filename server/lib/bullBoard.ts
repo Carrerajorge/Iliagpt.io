@@ -11,24 +11,32 @@ export function setupBullBoard() {
         console.warn('[BullBoard] @bull-board not available, skipping setup');
         return null;
     }
-    const serverAdapter = new ExpressAdapter();
-    serverAdapter.setBasePath('/api/admin/queues');
+    try {
+        const serverAdapter = new ExpressAdapter();
+        serverAdapter.setBasePath('/api/admin/queues');
 
-    if (!queues.has(QUEUE_NAMES.PROCESSING)) {
-        createQueue(QUEUE_NAMES.PROCESSING);
+        if (!queues.has(QUEUE_NAMES.PROCESSING)) {
+            createQueue(QUEUE_NAMES.PROCESSING);
+        }
+        if (!queues.has(QUEUE_NAMES.WEBHOOK_NOTIFICATION)) {
+            createQueue(QUEUE_NAMES.WEBHOOK_NOTIFICATION);
+        }
+
+        const boardQueues = Array.from(queues.values())
+            .filter(Boolean)
+            .map(q => new BullMQAdapter(q));
+
+        createBullBoard({
+            queues: boardQueues,
+            serverAdapter,
+        });
+
+        return serverAdapter;
+    } catch (error: any) {
+        console.warn('[BullBoard] Failed to initialize, skipping setup', {
+            errorMessage: error?.message ?? String(error),
+            errorName: error?.name ?? 'UnknownError',
+        });
+        return null;
     }
-    if (!queues.has(QUEUE_NAMES.WEBHOOK_NOTIFICATION)) {
-        createQueue(QUEUE_NAMES.WEBHOOK_NOTIFICATION);
-    }
-
-    const boardQueues = Array.from(queues.values())
-        .filter(Boolean)
-        .map(q => new BullMQAdapter(q));
-
-    createBullBoard({
-        queues: boardQueues,
-        serverAdapter,
-    });
-
-    return serverAdapter;
 }

@@ -28,6 +28,31 @@ Additional verification:
 - Repo-wide TypeScript check still fails in many unrelated modules outside this integration scope
 - One new relevant nullability issue in [`server/services/usageQuotaService.ts`](/Users/luis/Iliagpt.io/server/services/usageQuotaService.ts) was identified and fixed during this work
 
+Production-like browser/runtime verification:
+
+```bash
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:41734 node scripts/openclaw-browser-check.cjs
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:41734 node scripts/billing-browser-check.cjs
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:41734 node scripts/document-analyze-browser-check.cjs
+npm run test:run -- \
+  server/replit_integrations/auth/sessionCookiePolicy.test.ts \
+  server/middleware/abuseDetection.test.ts \
+  server/middleware/hostValidation.test.ts \
+  server/middleware/cors.test.ts \
+  server/lib/__tests__/httpListen.test.ts \
+  server/lib/__tests__/queueFactory.test.ts
+```
+
+Result:
+
+- `openclaw-browser-check`: PASS on `http://127.0.0.1:41734`
+- `billing-browser-check`: PASS on `http://127.0.0.1:41734`
+- `document-analyze-browser-check`: PASS on `http://127.0.0.1:41734`
+- Middleware/runtime regression suite: `28/28` PASS
+- OpenClaw browser evidence: `wsOpened=["ws://127.0.0.1:41734/openclaw-ws"]`, `wsClosed=[]`, `relevantConsoleErrors=[]`, `pageErrors=[]`
+- Billing browser evidence: `hasHeader=true`, `hasErrorBanner=false`, `failedStatusVisible=false`, `failedResponses=[]`
+- Document browser evidence: `done` event emitted with structured `answer_text`, `insights`, `suggestedQuestions`, and `documentsProcessed=1`
+
 ## Implementation summary
 
 - Unified OpenClaw quota state onto the central billing/quota service via `getUnifiedQuotaSnapshot()`
@@ -37,6 +62,9 @@ Additional verification:
 - Injected the unified quota snapshot into gateway config/billing state and billing status APIs
 - Hardened the OpenClaw WebSocket upgrade path by replacing the fragile `httpServer.emit` interception with a real `upgrade` listener
 - Added a formal gateway/runtime contract suite covering auth, catalog, commands, config, sessions, skills, tools, files, streaming, quota enforcement and upgrade blocking
+- Hardened the production-like local runtime so browser verification over loopback behaves like a deployable build instead of a dev-only environment
+- Added runtime compatibility for local production verification around host validation, CORS allowlists, session cookies, Redis queue fallback, and workspace bootstrap
+- Stabilized browser smoke scripts so they detect real regressions instead of stale fixtures or route drift
 
 ## Formal test matrix
 
@@ -70,6 +98,14 @@ Additional verification:
 | 26 | Desktop native execution | executes the native runtime with unified catalog and billing | PASS | same suite |
 | 27 | Desktop shared quota | blocks native execution when unified quota is exhausted | PASS | same suite |
 | 28 | Desktop upgrade gating | blocks native execution when the model requires upgrade | PASS | same suite |
+| 29 | Production-like runtime/bootstrap | accepts `BASE_URL=http://127.0.0.1:41734` in host validation and CORS | PASS | [`server/middleware/hostValidation.test.ts`](/Users/luis/Iliagpt.io/server/middleware/hostValidation.test.ts), [`server/middleware/cors.test.ts`](/Users/luis/Iliagpt.io/server/middleware/cors.test.ts) |
+| 30 | Production-like runtime/queues | disables BullMQ cleanly on loopback production runtime when managed Upstash is exhausted | PASS | [`server/lib/__tests__/queueFactory.test.ts`](/Users/luis/Iliagpt.io/server/lib/__tests__/queueFactory.test.ts) |
+| 31 | Production-like runtime/listener | falls back safely when the preferred HTTP listen host is unavailable | PASS | [`server/lib/__tests__/httpListen.test.ts`](/Users/luis/Iliagpt.io/server/lib/__tests__/httpListen.test.ts) |
+| 32 | Production-like auth/cookies | uses loopback-safe session cookies in production-like local verification | PASS | [`server/replit_integrations/auth/sessionCookiePolicy.test.ts`](/Users/luis/Iliagpt.io/server/replit_integrations/auth/sessionCookiePolicy.test.ts) |
+| 33 | Production-like abuse control | does not rate-limit loopback browser bootstrap as abuse | PASS | [`server/middleware/abuseDetection.test.ts`](/Users/luis/Iliagpt.io/server/middleware/abuseDetection.test.ts) |
+| 34 | Browser/OpenClaw WebSocket | opens `/openclaw-ws` and stays connected without `1006` disconnects | PASS | `node scripts/openclaw-browser-check.cjs` on `http://127.0.0.1:41734` |
+| 35 | Browser/Billing | renders the billing screen without banner, hidden `500`, or quota drift | PASS | `node scripts/billing-browser-check.cjs` on `http://127.0.0.1:41734` |
+| 36 | Browser/Documents | analyzes a real `.xlsx` artifact end-to-end and returns a `done` payload | PASS | `node scripts/document-analyze-browser-check.cjs` on `http://127.0.0.1:41734` |
 
 ## Failures encountered during implementation
 
@@ -94,17 +130,54 @@ Additional verification:
 - Correction applied: guarded the comparisons with explicit `!== null` checks
 - Outcome: no new TypeScript issue remains in the quota logic introduced by this change set
 
+### 4. Production-like browser runtime rejected loopback hosts
+
+- Initial symptom: `/openclaw` and control UI assets booted inconsistently on `http://127.0.0.1:41734`, despite backend contract tests passing
+- Root cause: host validation and CORS allowlists did not treat `BASE_URL` / `APP_URL` loopback origins as first-class production-like runtime origins
+- Correction applied: extended [`server/middleware/hostValidation.ts`](/Users/luis/Iliagpt.io/server/middleware/hostValidation.ts) and [`server/middleware/cors.ts`](/Users/luis/Iliagpt.io/server/middleware/cors.ts) to trust the configured loopback base URL
+- Outcome: the production build can now be verified in a real browser on loopback without bypasses
+
+### 5. Loopback production sessions were broken by strict secure-cookie policy
+
+- Initial symptom: browser verification could authenticate via API but protected pages still behaved as anonymous users on `http://127.0.0.1:41734`
+- Root cause: [`server/replit_integrations/auth/replitAuth.ts`](/Users/luis/Iliagpt.io/server/replit_integrations/auth/replitAuth.ts) always emitted `secure=true` and `SameSite=None` cookies in `production`, which are invalid for plain HTTP loopback verification
+- Correction applied: introduced [`server/replit_integrations/auth/sessionCookiePolicy.ts`](/Users/luis/Iliagpt.io/server/replit_integrations/auth/sessionCookiePolicy.ts) so real deployments keep hardened cookies, while loopback production-like verification uses `secure=false` and `SameSite=Lax`
+- Outcome: browser-authenticated billing and protected runtime checks now persist sessions correctly on the local production-like environment
+
+### 6. Abuse protection blocked local production verification with `429`
+
+- Initial symptom: OpenClaw/browser bootstrap intermittently failed with `429 Too Many Requests` while loading profile and MFA status endpoints
+- Root cause: [`server/middleware/abuseDetection.ts`](/Users/luis/Iliagpt.io/server/middleware/abuseDetection.ts) treated high-frequency loopback bootstrap traffic as abuse in `NODE_ENV=production`
+- Correction applied: bypassed abuse scoring for loopback requests when the runtime itself is a loopback production verification target
+- Outcome: the browser smoke test now exercises the same production code path without tripping local false positives
+
+### 7. Billing page had a hidden `500` via workspace metadata
+
+- Initial symptom: billing UI rendered and `/api/billing/status` returned `200`, but the browser still logged a hidden `500` from `/api/workspace/me`
+- Root cause: legacy installs could reach the billing page before `workspaces` metadata existed or before workspace bootstrapping completed cleanly
+- Correction applied: added a startup migration that guarantees the `workspaces` table, and made [`server/routes/workspaceRouter.ts`](/Users/luis/Iliagpt.io/server/routes/workspaceRouter.ts) degrade to safe defaults if workspace metadata cannot be materialized
+- Outcome: `billing-browser-check` now passes with no hidden `500`, no error banner, and a clean console signal
+
+### 8. Document analysis smoke was brittle for runtime verification
+
+- Initial symptom: the browser smoke used a stale artifact path and could also fail to send the CSRF token expected by `/api/analyze`
+- Root cause: [`scripts/document-analyze-browser-check.cjs`](/Users/luis/Iliagpt.io/scripts/document-analyze-browser-check.cjs) depended on a hard-coded artifact and incomplete request headers
+- Correction applied: the script now auto-discovers the latest `.xlsx` artifact, forwards `X-CSRF-Token`, and keeps credentials attached
+- Outcome: document analysis now validates a real artifact end-to-end on the production-like runtime and returns a structured `done` payload consistently
+
 ## Residual risk
 
 - Full repo `npm run check` is still red due extensive pre-existing TypeScript failures outside the OpenClaw integration slice. This is repo debt, not introduced by the changes in this report.
 - I validated desktop parity through the embedded native runtime test surface already present in the backend contract. I did not run a packaged Electron build in this pass because the repo-wide static state is already failing outside this scope.
 - There are unrelated dirty changes already present on `main`; the OpenClaw integration commit should include only the files listed in this report.
+- The production-like runtime still logs unrelated Upstash request-limit exhaustion and optional-route import warnings. They were contained so they no longer break OpenClaw, billing, or document analysis, but they remain operational debt outside this closure scope.
 
 ## Files changed for this integration
 
 - [`client/src/components/openclaw-panel.tsx`](/Users/luis/Iliagpt.io/client/src/components/openclaw-panel.tsx)
 - [`server/agent/openclaw/index.ts`](/Users/luis/Iliagpt.io/server/agent/openclaw/index.ts)
 - [`server/openclaw/gateway/rpcHandlers.ts`](/Users/luis/Iliagpt.io/server/openclaw/gateway/rpcHandlers.ts)
+- [`server/index.ts`](/Users/luis/Iliagpt.io/server/index.ts)
 - [`server/routes/openClawRouter.ts`](/Users/luis/Iliagpt.io/server/routes/openClawRouter.ts)
 - [`server/routes/openclawAdminRouter.ts`](/Users/luis/Iliagpt.io/server/routes/openclawAdminRouter.ts)
 - [`server/routes/stripeRouter.ts`](/Users/luis/Iliagpt.io/server/routes/stripeRouter.ts)
@@ -113,8 +186,32 @@ Additional verification:
 - [`server/services/openclawInstanceService.ts`](/Users/luis/Iliagpt.io/server/services/openclawInstanceService.ts)
 - [`server/services/usageQuotaService.ts`](/Users/luis/Iliagpt.io/server/services/usageQuotaService.ts)
 - [`server/services/__tests__/openclawGateway.contract.test.ts`](/Users/luis/Iliagpt.io/server/services/__tests__/openclawGateway.contract.test.ts)
+- [`server/lib/__tests__/httpListen.test.ts`](/Users/luis/Iliagpt.io/server/lib/__tests__/httpListen.test.ts)
+- [`server/lib/__tests__/queueFactory.test.ts`](/Users/luis/Iliagpt.io/server/lib/__tests__/queueFactory.test.ts)
+- [`server/lib/bullBoard.ts`](/Users/luis/Iliagpt.io/server/lib/bullBoard.ts)
+- [`server/lib/httpListen.ts`](/Users/luis/Iliagpt.io/server/lib/httpListen.ts)
+- [`server/lib/queueFactory.ts`](/Users/luis/Iliagpt.io/server/lib/queueFactory.ts)
+- [`server/middleware/abuseDetection.ts`](/Users/luis/Iliagpt.io/server/middleware/abuseDetection.ts)
+- [`server/middleware/abuseDetection.test.ts`](/Users/luis/Iliagpt.io/server/middleware/abuseDetection.test.ts)
+- [`server/middleware/cors.ts`](/Users/luis/Iliagpt.io/server/middleware/cors.ts)
+- [`server/middleware/cors.test.ts`](/Users/luis/Iliagpt.io/server/middleware/cors.test.ts)
+- [`server/middleware/hostValidation.ts`](/Users/luis/Iliagpt.io/server/middleware/hostValidation.ts)
+- [`server/middleware/hostValidation.test.ts`](/Users/luis/Iliagpt.io/server/middleware/hostValidation.test.ts)
+- [`server/replit_integrations/auth/replitAuth.ts`](/Users/luis/Iliagpt.io/server/replit_integrations/auth/replitAuth.ts)
+- [`server/replit_integrations/auth/sessionCookiePolicy.ts`](/Users/luis/Iliagpt.io/server/replit_integrations/auth/sessionCookiePolicy.ts)
+- [`server/replit_integrations/auth/sessionCookiePolicy.test.ts`](/Users/luis/Iliagpt.io/server/replit_integrations/auth/sessionCookiePolicy.test.ts)
+- [`server/routes/workspaceRouter.ts`](/Users/luis/Iliagpt.io/server/routes/workspaceRouter.ts)
+- [`server/startupMigrations.ts`](/Users/luis/Iliagpt.io/server/startupMigrations.ts)
+- [`scripts/billing-browser-check.cjs`](/Users/luis/Iliagpt.io/scripts/billing-browser-check.cjs)
+- [`scripts/document-analyze-browser-check.cjs`](/Users/luis/Iliagpt.io/scripts/document-analyze-browser-check.cjs)
+- [`scripts/openclaw-browser-check.cjs`](/Users/luis/Iliagpt.io/scripts/openclaw-browser-check.cjs)
 - [`shared/schema/openclaw.ts`](/Users/luis/Iliagpt.io/shared/schema/openclaw.ts)
+- [`vitest.config.ts`](/Users/luis/Iliagpt.io/vitest.config.ts)
 
 ## Commit
 
 - `9179bbeb` — `Align OpenClaw enterprise gateway and shared quota`
+- `4ce2f29f` — `Prevent duplicate OpenClaw websocket upgrades`
+- `ce79f8eb` — `Add document analysis regression coverage`
+- `47f43dea` — `Fix document analysis parser telemetry`
+- `ee842e19` — `Harden billing credit ledger compatibility`

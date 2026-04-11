@@ -10,6 +10,7 @@ const MAX_REQUESTS_PER_WINDOW = clampThreshold(
   Number(process.env.ABUSE_DETECTION_MAX_REQUESTS || DEFAULT_MAX_REQUESTS_PER_WINDOW),
 );
 const MAX_ABUSE_SCORE = clampThreshold(Number(process.env.ABUSE_DETECTION_MAX_SCORE || DEFAULT_MAX_SCORE), 1, 1000);
+const LOOPBACK_BASE_URL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 const EXEMPT_PATH_PREFIX = new Set([
   "/api/health", "/health", "/ready", "/metrics",
@@ -67,6 +68,29 @@ function getIdentity(req: Request): string {
   return String(raw).replace(/[\r\n]/g, "").slice(0, 96);
 }
 
+function isLoopbackBaseUrl(baseUrl?: string): boolean {
+  if (!baseUrl?.trim()) {
+    return false;
+  }
+  try {
+    const parsed = new URL(baseUrl);
+    return LOOPBACK_BASE_URL_HOSTS.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackRequest(req: Request): boolean {
+  const host = String(req.headers.host || "").split(":")[0].trim().toLowerCase();
+  const ip = String(req.ip || req.socket?.remoteAddress || "").trim().toLowerCase();
+  return (
+    LOOPBACK_BASE_URL_HOSTS.has(host) ||
+    ip === "127.0.0.1" ||
+    ip === "::1" ||
+    ip === "::ffff:127.0.0.1"
+  );
+}
+
 const ALWAYS_EXEMPT = new Set(["/api/health", "/health", "/ready", "/metrics"]);
 
 function isExempt(req: Request): boolean {
@@ -119,6 +143,8 @@ export function stopAbuseDetectionCleanup(): void {
 
 export function abuseDetection() {
   startCleanupLoop();
+  const bypassLoopbackProtection =
+    process.env.NODE_ENV === "production" && isLoopbackBaseUrl(process.env.BASE_URL);
 
   return function abuseDetectionMiddleware(
     req: Request,
@@ -126,6 +152,10 @@ export function abuseDetection() {
     next: NextFunction,
   ): void {
     if (process.env.NODE_ENV !== "production") {
+      next();
+      return;
+    }
+    if (bypassLoopbackProtection && isLoopbackRequest(req)) {
       next();
       return;
     }
@@ -197,4 +227,3 @@ if (process.env.NODE_ENV === "test") {
   // Keep runtime deterministic in tests by not scheduling timers.
   stopAbuseDetectionCleanup();
 }
-

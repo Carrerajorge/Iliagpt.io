@@ -13,6 +13,7 @@ import { rateLimiter as authRateLimiter } from "../../middleware/userRateLimiter
 import { recordLoginAttempt } from "../../services/twoFactorAuth";
 import { getSettingValue } from "../../services/settingsConfigService";
 import { setLogoutMarker } from "../../lib/logoutMarker";
+import { resolveSessionCookieSettings } from "./sessionCookiePolicy";
 
 const PRE_EMPTIVE_REFRESH_THRESHOLD_SECONDS = 300;
 const AUTH_METRICS = {
@@ -176,6 +177,7 @@ const getOidcConfig = memoize(
 export function getSession() {
   const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week
   const isTest = process.env.NODE_ENV === "test";
+  const cookieSettings = resolveSessionCookieSettings();
 
   const sessionStore = isTest
     ? undefined
@@ -189,9 +191,7 @@ export function getSession() {
     rolling: true,
     proxy: true,
     cookie: {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" as const : "lax" as const,
+      ...cookieSettings,
       maxAge: sessionTtl,
       path: "/",
     },
