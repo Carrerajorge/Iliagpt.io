@@ -60,6 +60,7 @@ export { type FFNWeights, feedForward, initFFNWeights } from "./feedForward";
 
 // ─── Encoder/decoder layers + full stack (section 3.1) ─────────────────────
 export {
+  type LayerNormParams,
   type EncoderLayerWeights,
   type DecoderLayerWeights,
   type TransformerConfig,
@@ -75,6 +76,7 @@ export {
   baseTransformerConfig,
   tinyTransformerConfig,
   transformerForward,
+  embeddingDropout,
 } from "./transformer";
 
 // ─── Output projection + softmax (section 3.4) ─────────────────────────────

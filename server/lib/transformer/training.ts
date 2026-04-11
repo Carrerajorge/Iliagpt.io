@@ -164,6 +164,11 @@ function collectParameters(setup: TrainingSetup): Record<string, Matrix> {
     params[`enc${i}.b1`] = layer.ffn.b1;
     params[`enc${i}.W2`] = layer.ffn.W2;
     params[`enc${i}.b2`] = layer.ffn.b2;
+    // Learnable LayerNorm params (Ba et al. 2016) — γ, β per Add & Norm
+    params[`enc${i}.norm1.gamma`] = layer.norm1.gamma;
+    params[`enc${i}.norm1.beta`] = layer.norm1.beta;
+    params[`enc${i}.norm2.gamma`] = layer.norm2.gamma;
+    params[`enc${i}.norm2.beta`] = layer.norm2.beta;
   }
 
   for (let i = 0; i < setup.decoder.length; i++) {
@@ -182,6 +187,13 @@ function collectParameters(setup: TrainingSetup): Record<string, Matrix> {
     params[`dec${i}.b1`] = layer.ffn.b1;
     params[`dec${i}.W2`] = layer.ffn.W2;
     params[`dec${i}.b2`] = layer.ffn.b2;
+    // Learnable LayerNorm params — 3 Add & Norm blocks in the decoder layer
+    params[`dec${i}.norm1.gamma`] = layer.norm1.gamma;
+    params[`dec${i}.norm1.beta`] = layer.norm1.beta;
+    params[`dec${i}.norm2.gamma`] = layer.norm2.gamma;
+    params[`dec${i}.norm2.beta`] = layer.norm2.beta;
+    params[`dec${i}.norm3.gamma`] = layer.norm3.gamma;
+    params[`dec${i}.norm3.beta`] = layer.norm3.beta;
   }
 
   return params;

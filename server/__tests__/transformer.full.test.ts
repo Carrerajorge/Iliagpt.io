@@ -650,3 +650,215 @@ describe("Transformer — end-to-end training step", () => {
     expect(result.gradientNorm).toBeGreaterThan(0);
   }, 60_000);
 });
+
+// ---------------------------------------------------------------------------
+// Paper-faithfulness regression tests
+//
+// These tests catch two subtle bugs that existed before the audit fix:
+//
+//   1. Dropout was implemented but never wired into the encoder/decoder
+//      layers (section 5.4 requires dropout on every sub-layer output
+//      *before* the residual + LayerNorm, plus on the embedding+PE sum).
+//
+//   2. LayerNorm's learnable γ/β parameters (Ba et al. 2016) were never
+//      actually stored on the layer weights — layerNorm() was called
+//      without any γ/β so the scale/shift was locked at 1/0.
+//
+// The fix exposes γ/β as `LayerNormParams` on every encoder/decoder layer
+// and threads an optional `DropoutConfig` through `encoderLayer`,
+// `decoderLayer`, `runEncoder`, `runDecoder`, `transformerForward` and
+// `embeddingDropout`. Both are trainable parameters and participate in
+// `collectParameters` so Adam updates them.
+// ---------------------------------------------------------------------------
+
+describe("Transformer — paper-faithfulness audit fixes", () => {
+  it("68 encoder layers carry learnable γ/β initialized to ones/zeros", async () => {
+    const { initEncoderLayerWeights: initEnc, baseConfig: bc } = await import(
+      "../lib/transformer"
+    );
+    const layer = initEnc(bc(16, 4), 32, 1);
+    // γ init = 1 for every feature
+    for (const v of layer.norm1.gamma.data) expect(v).toBe(1);
+    for (const v of layer.norm2.gamma.data) expect(v).toBe(1);
+    // β init = 0 for every feature
+    for (const v of layer.norm1.beta.data) expect(v).toBe(0);
+    for (const v of layer.norm2.beta.data) expect(v).toBe(0);
+    // Shapes (1, d_model)
+    expect(layer.norm1.gamma.rows).toBe(1);
+    expect(layer.norm1.gamma.cols).toBe(16);
+  });
+
+  it("69 decoder layers carry three LayerNorm param sets (Ba et al. 2016)", async () => {
+    const { initDecoderLayerWeights: initDec, baseConfig: bc } = await import(
+      "../lib/transformer"
+    );
+    const layer = initDec(bc(12, 3), 24, 2);
+    // Three Add & Norm blocks in the decoder layer (masked self, cross, FFN)
+    expect(layer.norm1).toBeDefined();
+    expect(layer.norm2).toBeDefined();
+    expect(layer.norm3).toBeDefined();
+    expect(layer.norm1.gamma.cols).toBe(12);
+    expect(layer.norm2.gamma.cols).toBe(12);
+    expect(layer.norm3.gamma.cols).toBe(12);
+  });
+
+  it("70 dropout at training time shifts the forward pass vs inference", async () => {
+    const mod = await import("../lib/transformer");
+    const config = mod.tinyTransformerConfig();
+    const dModel = config.attention.dModel;
+    const weights = mod.initTransformerWeights(config, 5);
+    const src = mod.addPositional(
+      mod.xavier(4, dModel, 11),
+      mod.positionalEncoding(4, dModel),
+    );
+    const tgt = mod.addPositional(
+      mod.xavier(3, dModel, 13),
+      mod.positionalEncoding(3, dModel),
+    );
+    const inference = mod.transformerForward(src, tgt, weights, config);
+    const trained = mod.transformerForward(src, tgt, weights, config, undefined, {
+      rate: 0.5,
+      training: true,
+      seed: 42,
+    });
+    // With rate=0.5 training dropout the outputs MUST differ from the
+    // no-dropout inference pass. This is the test that would have caught
+    // the "dropout never wired" bug.
+    let sumDiff = 0;
+    for (let i = 0; i < inference.decoderOutput.data.length; i++) {
+      sumDiff += Math.abs(
+        inference.decoderOutput.data[i] - trained.decoderOutput.data[i],
+      );
+    }
+    expect(sumDiff).toBeGreaterThan(1e-6);
+    // And the inference call must still be finite (no NaNs from the new
+    // LayerNorm-with-γ/β path)
+    for (const v of inference.decoderOutput.data) expect(Number.isFinite(v)).toBe(true);
+  });
+
+  it("71 training inference path with rate=0 is identical to no dropout", async () => {
+    const mod = await import("../lib/transformer");
+    const config = mod.tinyTransformerConfig();
+    const dModel = config.attention.dModel;
+    const weights = mod.initTransformerWeights(config, 9);
+    const src = mod.addPositional(mod.xavier(3, dModel, 21), mod.positionalEncoding(3, dModel));
+    const tgt = mod.addPositional(mod.xavier(2, dModel, 23), mod.positionalEncoding(2, dModel));
+    const noDrop = mod.transformerForward(src, tgt, weights, config);
+    const rateZero = mod.transformerForward(src, tgt, weights, config, undefined, {
+      rate: 0,
+      training: true,
+    });
+    for (let i = 0; i < noDrop.decoderOutput.data.length; i++) {
+      expect(rateZero.decoderOutput.data[i]).toBeCloseTo(noDrop.decoderOutput.data[i], 12);
+    }
+  });
+
+  it("72 embeddingDropout applies residual dropout on the embedding+PE sum", async () => {
+    const mod = await import("../lib/transformer");
+    const dModel = 16;
+    const table = mod.initEmbeddingTable(20, dModel, 3);
+    const tokens = [2, 5, 7, 11];
+    const embPE = mod.addPositional(
+      mod.embedTokens(table, tokens),
+      mod.positionalEncoding(tokens.length, dModel),
+    );
+    const identityRes = mod.embeddingDropout(embPE, undefined);
+    // Undefined config → passthrough (identity)
+    for (let i = 0; i < embPE.data.length; i++) {
+      expect(identityRes.data[i]).toBe(embPE.data[i]);
+    }
+    const dropped = mod.embeddingDropout(embPE, { rate: 0.5, training: true, seed: 7 });
+    // Something must have changed
+    let diff = 0;
+    for (let i = 0; i < embPE.data.length; i++) {
+      if (Math.abs(dropped.data[i] - embPE.data[i]) > 1e-9) diff++;
+    }
+    expect(diff).toBeGreaterThan(0);
+  });
+
+  it("73 learnable γ/β are picked up by the optimizer's parameter collection", async () => {
+    const mod = await import("../lib/transformer");
+    const config = mod.tinyTransformerConfig();
+    const dModel = config.attention.dModel;
+    const weights = mod.initTransformerWeights(config, 17);
+    const setup: TrainingSetup = {
+      config,
+      embeddingTable: mod.initEmbeddingTable(8, dModel, 23),
+      encoder: weights.encoder,
+      decoder: weights.decoder,
+    };
+    const optimizer = new mod.AdamOptimizer(
+      { dModel, warmupSteps: 1 },
+      mod.PAPER_ADAM,
+    );
+    mod.registerSetupWithOptimizer(setup, optimizer);
+    // Drive a gradient update with a synthetic non-zero gradient on γ/β.
+    const fakeGrads: Record<string, Matrix> = {};
+    for (let i = 0; i < config.encoderLayers; i++) {
+      fakeGrads[`enc${i}.norm1.gamma`] = {
+        rows: 1,
+        cols: dModel,
+        data: new Float64Array(dModel).fill(0.1),
+      };
+      fakeGrads[`enc${i}.norm2.beta`] = {
+        rows: 1,
+        cols: dModel,
+        data: new Float64Array(dModel).fill(-0.05),
+      };
+    }
+    for (let i = 0; i < config.decoderLayers; i++) {
+      fakeGrads[`dec${i}.norm3.gamma`] = {
+        rows: 1,
+        cols: dModel,
+        data: new Float64Array(dModel).fill(0.2),
+      };
+    }
+    const gammaBefore = weights.encoder[0].norm1.gamma.data[0];
+    const betaBefore = weights.encoder[0].norm2.beta.data[0];
+    const decGammaBefore = weights.decoder[0].norm3.gamma.data[0];
+    optimizer.stepOnce(fakeGrads);
+    // γ and β are mutated in place by adamUpdate → values must have moved
+    expect(weights.encoder[0].norm1.gamma.data[0]).not.toBe(gammaBefore);
+    expect(weights.encoder[0].norm2.beta.data[0]).not.toBe(betaBefore);
+    expect(weights.decoder[0].norm3.gamma.data[0]).not.toBe(decGammaBefore);
+  });
+
+  it("74 serialization round-trips γ/β through the JSON checkpoint", async () => {
+    const mod = await import("../lib/transformer");
+    const config = mod.tinyTransformerConfig();
+    const dModel = config.attention.dModel;
+    const weights = mod.initTransformerWeights(config, 29);
+    // Mutate γ/β so the round-trip test is meaningful (not the default 1/0)
+    for (const layer of weights.encoder) {
+      for (let j = 0; j < dModel; j++) {
+        layer.norm1.gamma.data[j] = 0.5 + j * 0.01;
+        layer.norm2.beta.data[j] = -0.3 - j * 0.02;
+      }
+    }
+    for (const layer of weights.decoder) {
+      for (let j = 0; j < dModel; j++) {
+        layer.norm3.gamma.data[j] = 1.7 + j * 0.03;
+      }
+    }
+    const checkpoint = mod.checkpointToJSON({ config, weights });
+    const restored = mod.checkpointFromJSON(checkpoint);
+    // Bit-exact comparison
+    for (let i = 0; i < config.encoderLayers; i++) {
+      for (let j = 0; j < dModel; j++) {
+        expect(restored.weights.encoder[i].norm1.gamma.data[j]).toBe(
+          weights.encoder[i].norm1.gamma.data[j],
+        );
+        expect(restored.weights.encoder[i].norm2.beta.data[j]).toBe(
+          weights.encoder[i].norm2.beta.data[j],
+        );
+      }
+    }
+    for (let i = 0; i < config.decoderLayers; i++) {
+      for (let j = 0; j < dModel; j++) {
+        expect(restored.weights.decoder[i].norm3.gamma.data[j]).toBe(
+          weights.decoder[i].norm3.gamma.data[j],
+        );
+      }
+    }
+  });
+});

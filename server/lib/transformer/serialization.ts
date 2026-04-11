@@ -18,7 +18,13 @@
 import { type Matrix, zeros } from "./matrix";
 import type { MultiHeadWeights } from "./attention";
 import type { FFNWeights } from "./feedForward";
-import type { EncoderLayerWeights, DecoderLayerWeights, TransformerWeights, TransformerConfig } from "./transformer";
+import type {
+  EncoderLayerWeights,
+  DecoderLayerWeights,
+  TransformerWeights,
+  TransformerConfig,
+  LayerNormParams,
+} from "./transformer";
 import type { EmbeddingTable } from "./encoding";
 
 // ---------------------------------------------------------------------------
@@ -107,23 +113,52 @@ function ffnFromJSON(json: FFNJSON): FFNWeights {
 // Encoder / decoder layers
 // ---------------------------------------------------------------------------
 
+// LayerNorm params serialization (γ and β as 1×d_model matrices)
+interface LayerNormJSON {
+  gamma: MatrixJSON;
+  beta: MatrixJSON;
+}
+
+function layerNormToJSON(ln: LayerNormParams): LayerNormJSON {
+  return { gamma: matrixToJSON(ln.gamma), beta: matrixToJSON(ln.beta) };
+}
+
+function layerNormFromJSON(json: LayerNormJSON): LayerNormParams {
+  return { gamma: matrixFromJSON(json.gamma), beta: matrixFromJSON(json.beta) };
+}
+
 interface EncoderLayerJSON {
   selfAttn: MultiHeadJSON;
   ffn: FFNJSON;
+  norm1: LayerNormJSON;
+  norm2: LayerNormJSON;
 }
 
 interface DecoderLayerJSON {
   maskedSelfAttn: MultiHeadJSON;
   crossAttn: MultiHeadJSON;
   ffn: FFNJSON;
+  norm1: LayerNormJSON;
+  norm2: LayerNormJSON;
+  norm3: LayerNormJSON;
 }
 
 function encoderLayerToJSON(w: EncoderLayerWeights): EncoderLayerJSON {
-  return { selfAttn: multiHeadToJSON(w.selfAttn), ffn: ffnToJSON(w.ffn) };
+  return {
+    selfAttn: multiHeadToJSON(w.selfAttn),
+    ffn: ffnToJSON(w.ffn),
+    norm1: layerNormToJSON(w.norm1),
+    norm2: layerNormToJSON(w.norm2),
+  };
 }
 
 function encoderLayerFromJSON(json: EncoderLayerJSON): EncoderLayerWeights {
-  return { selfAttn: multiHeadFromJSON(json.selfAttn), ffn: ffnFromJSON(json.ffn) };
+  return {
+    selfAttn: multiHeadFromJSON(json.selfAttn),
+    ffn: ffnFromJSON(json.ffn),
+    norm1: layerNormFromJSON(json.norm1),
+    norm2: layerNormFromJSON(json.norm2),
+  };
 }
 
 function decoderLayerToJSON(w: DecoderLayerWeights): DecoderLayerJSON {
@@ -131,6 +166,9 @@ function decoderLayerToJSON(w: DecoderLayerWeights): DecoderLayerJSON {
     maskedSelfAttn: multiHeadToJSON(w.maskedSelfAttn),
     crossAttn: multiHeadToJSON(w.crossAttn),
     ffn: ffnToJSON(w.ffn),
+    norm1: layerNormToJSON(w.norm1),
+    norm2: layerNormToJSON(w.norm2),
+    norm3: layerNormToJSON(w.norm3),
   };
 }
 
@@ -139,6 +177,9 @@ function decoderLayerFromJSON(json: DecoderLayerJSON): DecoderLayerWeights {
     maskedSelfAttn: multiHeadFromJSON(json.maskedSelfAttn),
     crossAttn: multiHeadFromJSON(json.crossAttn),
     ffn: ffnFromJSON(json.ffn),
+    norm1: layerNormFromJSON(json.norm1),
+    norm2: layerNormFromJSON(json.norm2),
+    norm3: layerNormFromJSON(json.norm3),
   };
 }
 
