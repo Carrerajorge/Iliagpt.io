@@ -24,23 +24,7 @@ export function MiniSidebar({ className, onNewChat, onExpand }: MiniSidebarProps
         "flex h-screen w-[60px] flex-col items-center py-3 liquid-sidebar-light dark:liquid-sidebar border-r border-border",
         className
       )}>
-        <div className="flex flex-col items-center gap-1 mb-4">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="h-10 w-10 rounded-xl hover:bg-accent transition-all duration-200"
-                onClick={onExpand}
-              >
-                <IliaGPTLogo size={28} />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Expandir Sidebar</p>
-            </TooltipContent>
-          </Tooltip>
-        </div>
+        <div className="mb-4" />
 
         <div className="flex flex-col items-center gap-1">
           <Tooltip>
