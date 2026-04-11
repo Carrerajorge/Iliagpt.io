@@ -145,14 +145,9 @@ export function ChatHeader({
                     <TooltipProvider>
                         <Tooltip>
                             <TooltipTrigger asChild>
-                                <button
-                                    onClick={onToggleSidebar}
-                                    className="-ml-1 group relative flex items-center justify-center h-9 w-9 rounded-[12px] transition-all duration-200 hover:bg-muted/60 hover:shadow-sm active:scale-95"
-                                    aria-label="Toggle sidebar"
-                                    data-testid="button-toggle-sidebar"
-                                >
-                                    <IliaGPTLogo size={26} className="transition-transform duration-200 group-hover:scale-110" />
-                                </button>
+                                <Button variant="ghost" size="icon" onClick={onToggleSidebar} className="-ml-2 h-9 w-9" aria-label="Toggle sidebar" data-testid="button-toggle-sidebar">
+                                    <PanelLeftOpen className="h-5 w-5 text-muted-foreground" />
+                                </Button>
                             </TooltipTrigger>
                             <TooltipContent side="right">
                                 <p>Mostrar barra lateral</p>
