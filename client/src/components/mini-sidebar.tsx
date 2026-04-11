@@ -1,7 +1,7 @@
 import { SquarePen, Search, Library, Bot, Zap, LayoutGrid, MessageSquare, Code } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
 import { IliaGPTLogo } from "@/components/iliagpt-logo";
@@ -25,7 +25,7 @@ export function MiniSidebar({ className, onNewChat, onExpand, onOpenLibrary, onO
   const isAdmin = isAdminUser(user as any);
   const displayName = isAdmin ? "Admin" : (user?.firstName || user?.email?.split("@")[0] || "Usuario");
   const avatarInitial = isAdmin ? "A" : (user?.firstName?.[0] || user?.email?.[0] || "U").toUpperCase();
-
+  const avatarUrl = (user as any)?.profileImageUrl || (user as any)?.avatarUrl || null;
   const btnClass = "h-10 w-10 rounded-xl hover:bg-accent transition-all duration-200";
 
   return (
@@ -133,6 +133,13 @@ export function MiniSidebar({ className, onNewChat, onExpand, onOpenLibrary, onO
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon" className={btnClass} data-testid="mini-button-user">
                 <Avatar className="h-8 w-8">
+                  {avatarUrl ? (
+                    <AvatarImage
+                      src={avatarUrl}
+                      alt={`Foto de perfil de ${displayName}`}
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : null}
                   <AvatarFallback className="bg-muted text-muted-foreground text-sm">{avatarInitial}</AvatarFallback>
                 </Avatar>
               </Button>

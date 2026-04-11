@@ -865,6 +865,13 @@ export function Sidebar({
             <button className="flex w-full items-center gap-2.5 p-1 rounded-md hover:bg-accent/40 transition-colors cursor-pointer" data-testid="button-user-menu">
               <div className="relative shrink-0">
                 <Avatar className="h-8 w-8">
+                  {(user as any)?.profileImageUrl || (user as any)?.avatarUrl ? (
+                    <AvatarImage
+                      src={(user as any)?.profileImageUrl || (user as any)?.avatarUrl}
+                      alt={`Foto de perfil de ${user?.fullName || user?.firstName || user?.email || "Usuario"}`}
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : null}
                   <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
                     {isAdmin ? "A" : (user?.firstName?.[0] || user?.email?.[0] || "U").toUpperCase()}
                   </AvatarFallback>

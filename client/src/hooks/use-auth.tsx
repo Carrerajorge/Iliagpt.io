@@ -43,18 +43,40 @@ function getStoredUser(): User | null {
   }
 }
 
+function resolveUserAvatarUrl(user: Partial<User> | null | undefined): string | undefined {
+  const anyUser = user as any;
+  const candidates = [anyUser?.profileImageUrl, anyUser?.avatarUrl];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
 // FRONTEND FIX #5: Only store non-sensitive user data in localStorage
 function setStoredUser(user: User | null): void {
   try {
     if (user) {
+      const anyUser = user as any;
       // Only store minimal user info, never store tokens or sensitive data
       const safeUserData = {
         id: user.id,
         email: user.email,
         fullName: user.fullName,
+        firstName: anyUser.firstName,
+        username: anyUser.username,
+        company: anyUser.company,
         role: user.role,
         plan: user.plan,
-        avatarUrl: user.avatarUrl,
+        authProvider: anyUser.authProvider,
+        profileImageUrl: resolveUserAvatarUrl(user),
+        subscriptionPlan: anyUser.subscriptionPlan,
+        subscriptionStatus: anyUser.subscriptionStatus,
+        subscriptionPeriodEnd: anyUser.subscriptionPeriodEnd,
+        subscriptionExpiresAt: anyUser.subscriptionExpiresAt,
+        lastLoginAt: anyUser.lastLoginAt,
+        createdAt: anyUser.createdAt,
         // Explicitly exclude: password, tokens, secrets, etc.
       };
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(safeUserData));
@@ -72,16 +94,43 @@ function parseUserPayload(payload: unknown): User | null {
   if (typeof data.id !== "string" || data.id.trim().length === 0 || data.id.length > 128) {
     return null;
   }
+  const profileImageUrl =
+    typeof data.profileImageUrl === "string"
+      ? data.profileImageUrl
+      : typeof data.avatarUrl === "string"
+        ? data.avatarUrl
+        : undefined;
   return {
     id: data.id,
     email: typeof data.email === "string" ? data.email : undefined,
     fullName: typeof data.fullName === "string" ? data.fullName : undefined,
+    firstName: typeof data.firstName === "string" ? data.firstName : undefined,
+    username: typeof data.username === "string" ? data.username : undefined,
+    company: typeof data.company === "string" ? data.company : undefined,
     role: typeof data.role === "string" ? data.role : undefined,
     plan: typeof data.plan === "string" ? data.plan : undefined,
-    avatarUrl: typeof data.avatarUrl === "string" ? data.avatarUrl : undefined,
+    profileImageUrl,
+    avatarUrl: profileImageUrl,
     isAnonymous: data.isAnonymous === true,
-    username: typeof data.username === "string" ? data.username : undefined,
     authProvider: typeof data.authProvider === "string" ? data.authProvider : undefined,
+    subscriptionPlan: typeof data.subscriptionPlan === "string" ? data.subscriptionPlan : undefined,
+    subscriptionStatus: typeof data.subscriptionStatus === "string" ? data.subscriptionStatus : undefined,
+    subscriptionPeriodEnd:
+      typeof data.subscriptionPeriodEnd === "string" || data.subscriptionPeriodEnd instanceof Date
+        ? (data.subscriptionPeriodEnd as any)
+        : undefined,
+    subscriptionExpiresAt:
+      typeof data.subscriptionExpiresAt === "string" || data.subscriptionExpiresAt instanceof Date
+        ? (data.subscriptionExpiresAt as any)
+        : undefined,
+    lastLoginAt:
+      typeof data.lastLoginAt === "string" || data.lastLoginAt instanceof Date
+        ? (data.lastLoginAt as any)
+        : undefined,
+    createdAt:
+      typeof data.createdAt === "string" || data.createdAt instanceof Date
+        ? (data.createdAt as any)
+        : undefined,
   } as User;
 }
 
