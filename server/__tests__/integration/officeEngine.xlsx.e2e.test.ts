@@ -24,6 +24,7 @@ import { validateXlsx } from "../../lib/office/ooxml-xlsx/xlsxValidator";
 import { buildXlsxSemanticMap, parseAddress, toAddress } from "../../lib/office/ooxml-xlsx/xlsxSemanticMap";
 import { applyXlsxEdits } from "../../lib/office/ooxml-xlsx/xlsxEditor";
 import { executeXlsxWithFallback } from "../../lib/office/engine/xlsxFallbackLadder";
+import { buildSeedXlsxFromObjective } from "../../lib/office/engine/xlsxCreateFromSpec";
 
 const FIXTURES = path.resolve(process.cwd(), "test_fixtures", "xlsx");
 const SNAPSHOTS = path.join(FIXTURES, "__snapshots__");
@@ -53,6 +54,33 @@ beforeAll(() => {
 }, 120_000);
 
 describe("OfficeEngine XLSX slice — 20 production tests", () => {
+  it("creates a valid professional workbook from a natural-language objective", async () => {
+    const generated = await buildSeedXlsxFromObjective(
+      "crea un Excel profesional con proyección financiera trimestral para una empresa SaaS B2B",
+    );
+    expect(generated.fileName.toLowerCase()).toContain(".xlsx");
+
+    const pkg = await unpackDocx(generated.buffer);
+    const report = validateXlsx(pkg);
+    expect(report.valid).toBe(true);
+
+    const workbook = buildXlsxSemanticMap(pkg);
+    expect(workbook.sheets.length).toBeGreaterThanOrEqual(2);
+    expect(workbook.sheets.map((sheet) => sheet.name)).toContain("Proyeccion");
+  });
+
+  it("maps business funnel objectives to a workbook with operational sheets", async () => {
+    const generated = await buildSeedXlsxFromObjective(
+      "crea un Excel con funnel comercial lead a cierre para una consultora B2B",
+    );
+    const pkg = await unpackDocx(generated.buffer);
+    const workbook = buildXlsxSemanticMap(pkg);
+    const sheetNames = workbook.sheets.map((sheet) => sheet.name);
+
+    expect(sheetNames).toContain("Funnel");
+    expect(sheetNames).toContain("Conversion");
+  });
+
   // 1
   it("preserves all namespaces + mc:Ignorable after round-trip", async () => {
     const pkg = await loadPkg("namespace-stress.xlsx");

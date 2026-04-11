@@ -4,6 +4,7 @@
  */
 
 import { Router, Request, Response } from "express";
+import { OPENCLAW_RELEASE_URL, OPENCLAW_RELEASE_VERSION } from "@shared/openclawRelease";
 import {
   OPENCLAW_500,
   getOpenClawStats,
@@ -29,6 +30,8 @@ import {
 } from "../services/openClaw1000Service";
 import { requireAuth } from "../middleware/auth";
 import { getSecureUserId } from "../lib/anonUserHelper";
+import { getUnifiedModelCatalog } from "../services/modelCatalogService";
+import { getUserId } from "../types/express";
 
 
 const router = Router();
@@ -578,21 +581,25 @@ router.get("/health", (_req: Request, res: Response) => {
   }
 });
 
-router.get("/instance/status", (req: Request, res: Response) => {
+router.get("/instance/status", async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).session?.passport?.user?.id ||
-                   (req as any).session?.userId ||
-                   "anon_" + (req.ip || "unknown").replace(/[:.]/g, "_");
+    const userId = getUserId(req) || "anon_" + (req.ip || "unknown").replace(/[:.]/g, "_");
 
     const instanceId = `oc_${Buffer.from(userId).toString("base64url").slice(0, 16)}`;
-
+    const catalog = await getUnifiedModelCatalog({ userId });
     const stats = getOpenClawStats();
     const uptimeMs = process.uptime() * 1000;
-
-    const models = [
-      { id: "google/gemma-4-31b-it", name: "Gemma 4 31B", provider: "Google", enabled: true, tier: "free" as const, contextWindow: 131072, description: "Open model by Google, free for all users" },
-      { id: "local-5000", name: "Local Model (localhost:5000)", provider: "Local", enabled: true, tier: "free" as const, contextWindow: 131072, description: "Modelo local en localhost:5000" },
-    ];
+    const models = catalog.models.map((model) => ({
+      id: model.modelId,
+      name: model.name,
+      provider: model.providerDisplayName,
+      enabled: model.availableToUser,
+      tier: model.tier,
+      contextWindow: model.contextWindow,
+      description: model.description,
+      requiresUpgrade: model.requiresUpgrade,
+      logoUrl: model.logoUrl,
+    }));
 
     const fusionModules = [
       "task-board",
@@ -600,14 +607,16 @@ router.get("/instance/status", (req: Request, res: Response) => {
       "model-switch-queue",
       "zai-models",
       "gateway-resilience",
-      "cron-tools-allowlist",
-      "minimax-auto-enable",
-      "agent-compaction",
+      "commands-list-rpc",
+      "native-exec-api",
+      "desktop-local-mode",
+      "unified-model-catalog",
+      "unified-quota-billing",
     ];
 
     res.json({
-      version: "2026.4.1",
-      latestVersion: "2026.4.2",
+      version: OPENCLAW_RELEASE_VERSION,
+      latestVersion: OPENCLAW_RELEASE_VERSION,
       instanceId,
       userId: userId.slice(0, 20) + "...",
       uptime: uptimeMs,
@@ -619,6 +628,14 @@ router.get("/instance/status", (req: Request, res: Response) => {
       agentsRegistered: 10,
       isShared: false,
       lastHealthCheck: new Date().toISOString(),
+      meta: {
+        unified: true,
+        plan: catalog.userAccess.plan,
+        isAdmin: catalog.userAccess.isAdmin,
+        isPaid: catalog.userAccess.isPaid,
+        defaultModelId: catalog.defaultModel?.modelId || catalog.defaultModelId,
+        refreshedAt: catalog.refreshedAt,
+      },
     });
   } catch (error: any) {
     console.error("[OpenClaw] Error getting instance status:", error);
@@ -641,20 +658,20 @@ router.post("/instance/models", (req: Request, res: Response) => {
 
 router.get("/instance/check-update", (_req: Request, res: Response) => {
   try {
-    const currentVersion = "2026.4.1";
-    const latestVersion = "2026.4.2";
+    const currentVersion = OPENCLAW_RELEASE_VERSION;
+    const latestVersion = OPENCLAW_RELEASE_VERSION;
     res.json({
       success: true,
       currentVersion,
       latestVersion,
       updateAvailable: currentVersion !== latestVersion,
-      releaseUrl: "https://github.com/nicobrave/openclaw/releases/tag/v2026.4.2",
+      releaseUrl: OPENCLAW_RELEASE_URL,
       changelog: [
-        "Agent compaction for long conversations",
-        "Z.AI GLM 5.1 and GLM 5V Turbo models",
-        "Gateway resilience improvements",
-        "SearXNG search provider integration",
-        "Per-user private instances",
+        "Unified model catalog between OpenClaw and ILIAGPT",
+        "Unified quota and billing across chat, web runtime, and desktop native mode",
+        "Extended gateway compatibility for the latest OpenClaw control UI",
+        "Native runtime bridge and desktop local execution hardening",
+        "Release metadata aligned to the bundled OpenClaw build",
       ],
     });
   } catch (error: any) {

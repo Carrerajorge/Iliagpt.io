@@ -1,9 +1,9 @@
 import { Logger } from '../../../lib/logger';
 import type { OpenClawConfig } from '../../config';
 
-export const OPENCLAW_VERSION = '2026.4.8';
-export const OPENCLAW_RELEASE_DATE = '2026-04-08T03:00:00Z';
-export const OPENCLAW_COMMIT = 'v2026.4.8';
+export const OPENCLAW_VERSION = '2026.4.10';
+export const OPENCLAW_RELEASE_DATE = '2026-04-11T02:43:00Z';
+export const OPENCLAW_COMMIT = 'v2026.4.10';
 
 export interface OpenClaw2026_4_2Features {
   taskBoard: boolean;

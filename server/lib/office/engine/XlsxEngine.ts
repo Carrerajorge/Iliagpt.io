@@ -25,6 +25,7 @@ import type { XlsxValidationReport } from "../ooxml-xlsx/xlsxValidator.ts";
 import { buildXlsxSemanticMap } from "../ooxml-xlsx/xlsxSemanticMap.ts";
 import type { XlsxSemanticWorkbook, XlsxEditOp, XlsxEditResult } from "../ooxml-xlsx/xlsxTypes.ts";
 import { executeXlsxWithFallback } from "./xlsxFallbackLadder.ts";
+import { buildSeedXlsxFromObjective } from "./xlsxCreateFromSpec.ts";
 import {
   createRun,
   findIdempotentRun,
@@ -157,19 +158,8 @@ export class XlsxEngine {
     try {
       await markRunStarted(run.id);
 
-      // Persist input as first artifact.
-      if (req.inputBuffer) {
-        const inputPath = await sandbox.writeBinary("input.xlsx", req.inputBuffer);
-        await recordArtifact({
-          runId: run.id,
-          kind: "input",
-          path: inputPath,
-          mimeType: XLSX_MIME,
-          sizeBytes: req.inputBuffer.length,
-          checksumSha256: inputChecksum,
-          versionLabel: "v1",
-        });
-      }
+      let workingInputBuffer = req.inputBuffer;
+      let workingInputName = req.inputName;
 
       // ── Stage 1: plan ──
       // XLSX plan is delivered by the caller via req.objective for now. We
@@ -182,16 +172,39 @@ export class XlsxEngine {
       ctx.streamer.start("thinking", "Planificando edición XLSX", { description: ctx.objective });
       await planClose("completed");
 
-      if (!req.inputBuffer) {
-        throw new OfficeEngineError(
-          "INVALID_INPUT",
-          "XlsxEngine requires an input buffer in this slice (create-from-spec XLSX not implemented)",
-          { stage: "unpack" },
-        );
+      if (!workingInputBuffer) {
+        const seedClose = stepStart("generate", "generating", "Construyendo workbook base xlsx");
+        try {
+          ctx.streamer.start("generating", "Construyendo workbook base xlsx", {
+            description: "create-from-spec con plantilla profesional ExcelJS",
+          });
+          const seed = await buildSeedXlsxFromObjective(req.objective);
+          workingInputBuffer = seed.buffer;
+          workingInputName = seed.fileName;
+          await seedClose("completed", { diff: { added: seed.buffer.length, removed: 0 } });
+        } catch (err) {
+          await seedClose("failed", { error: serializeErr(err) });
+          throw new OfficeEngineError(
+            "GENERATE_FAILED",
+            err instanceof Error ? err.message : String(err),
+            { stage: "generate", cause: err },
+          );
+        }
       }
 
+      const inputPath = await sandbox.writeBinary("input.xlsx", workingInputBuffer!);
+      await recordArtifact({
+        runId: run.id,
+        kind: "input",
+        path: inputPath,
+        mimeType: XLSX_MIME,
+        sizeBytes: workingInputBuffer!.length,
+        checksumSha256: createHash("sha256").update(workingInputBuffer!).digest("hex"),
+        versionLabel: "v1",
+      });
+
       // ── Stage 2: unpack ──
-      let pkg = await unpackStage(ctx, req.inputBuffer);
+      let pkg = await unpackStage(ctx, workingInputBuffer!);
 
       // ── Stage 3: parse ── (well-formed check + worker.parse on the workbook)
       const parseClose = stepStart("parse", "analyzing", "Parseando OOXML (xlsx)");
@@ -308,7 +321,7 @@ export class XlsxEngine {
 
       // ── Stage 10: export ──
       const exportClose = stepStart("export", "completed", "Exportando xlsx final");
-      const outName = (req.inputName?.replace(/\.xlsx$/i, "") ?? "workbook") + ".edited.xlsx";
+      const outName = (workingInputName?.replace(/\.xlsx$/i, "") ?? "workbook") + ".edited.xlsx";
       const exportArtifact = await exportStage(
         ctx,
         repacked.buffer,
@@ -450,4 +463,3 @@ function serializeErr(err: unknown): unknown {
 }
 
 export const xlsxEngine = new XlsxEngine();
-

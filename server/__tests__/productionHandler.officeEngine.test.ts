@@ -219,27 +219,33 @@ describe("productionHandler office-engine bridge", () => {
     expect(doneEvent?.data.runId).toBe("office-run-failed");
   });
 
-  it("keeps non-DOCX artifact requests in artifact_generation while using the legacy pipeline", async () => {
-    const { startProductionPipeline } = await import("../agent/production");
-    vi.mocked(startProductionPipeline).mockResolvedValue({
-      workOrderId: "wo-xlsx-1",
-      status: "success",
-      artifacts: [],
-      summary: "ok",
-      evidencePack: { sources: [], notes: [], dataPoints: [], gaps: [], limitations: [] },
-      traceMap: { links: [], inconsistencies: [], coverageScore: 0 },
-      qaReport: { overallScore: 0, passed: false, checks: [], suggestions: [], blockers: [] },
-      timing: {
-        startedAt: new Date("2026-04-10T00:00:00.000Z"),
-        completedAt: new Date("2026-04-10T00:00:01.000Z"),
-        durationMs: 1000,
-        stageTimings: {} as any,
-      },
-      costs: { llmCalls: 0, searchQueries: 0, tokensUsed: 0 },
-    } as any);
+  it("routes XLSX requests to the office engine with spreadsheet metadata", async () => {
+    officeEngineRunMock.mockImplementation(async (req: any, streamer: any) => {
+      req.onStart?.("office-run-xlsx");
+      const plan = streamer.start("thinking", "Planificando edición XLSX");
+      streamer.complete(plan, { output: "financial projection workbook" });
+      return {
+        runId: "office-run-xlsx",
+        status: "succeeded",
+        fallbackLevel: 1,
+        durationMs: 205,
+        artifacts: [
+          {
+            id: "artifact-xlsx-1",
+            kind: "exported",
+            path: "/tmp/office-run-xlsx.xlsx",
+            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            sizeBytes: 5120,
+            checksumSha256: "sha256-xlsx",
+            downloadUrl: "/api/office-engine/runs/office-run-xlsx/artifacts/exported",
+            previewUrl: "/api/office-engine/runs/office-run-xlsx/artifacts/preview",
+          },
+        ],
+      };
+    });
 
     const { res, chunks } = createMockResponse();
-    await handleProductionRequest(
+    const result = await handleProductionRequest(
       {
         message: "crea un Excel de la IA",
         userId: "user-1",
@@ -258,11 +264,96 @@ describe("productionHandler office-engine bridge", () => {
 
     const events = parseSseEvents(chunks);
     const startEvent = events.find((event) => event.event === "production_start");
+    const artifactEvent = events.find((event) => event.event === "artifact");
     expect(startEvent?.data).toMatchObject({
       workflow: "artifact_generation",
       classification: "artifact_generation",
-      engine: "artifact-pipeline",
+      engine: "office-engine",
       docKind: "xlsx",
     });
+    expect(artifactEvent?.data).toMatchObject({
+      type: "xlsx",
+      downloadUrl: "/api/office-engine/runs/office-run-xlsx/artifacts/exported",
+      previewUrl: "/api/office-engine/runs/office-run-xlsx/artifacts/preview",
+      metadata: expect.objectContaining({
+        engine: "office-engine",
+        docKind: "xlsx",
+        officeRunId: "office-run-xlsx",
+      }),
+    });
+    expect(result.artifact).toMatchObject({
+      type: "xlsx",
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    expect(result.assistantContent).toContain("Hoja de cálculo lista para descargar");
+  });
+
+  it("routes PDF requests to the office engine with final pdf metadata", async () => {
+    officeEngineRunMock.mockImplementation(async (req: any, streamer: any) => {
+      req.onStart?.("office-run-pdf");
+      const plan = streamer.start("thinking", "Planificando PDF ejecutivo");
+      streamer.complete(plan, { output: "executive pdf ready" });
+      return {
+        runId: "office-run-pdf",
+        status: "succeeded",
+        fallbackLevel: 0,
+        durationMs: 144,
+        artifacts: [
+          {
+            id: "artifact-pdf-1",
+            kind: "exported",
+            path: "/tmp/office-run-pdf.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 6144,
+            checksumSha256: "sha256-pdf",
+            downloadUrl: "/api/office-engine/runs/office-run-pdf/artifacts/exported",
+            previewUrl: "/api/office-engine/runs/office-run-pdf/artifacts/preview",
+          },
+        ],
+      };
+    });
+
+    const { res, chunks } = createMockResponse();
+    const result = await handleProductionRequest(
+      {
+        message: "crea un pdf ejecutivo de la IA",
+        userId: "user-1",
+        chatId: "chat-1",
+        conversationId: "conv-1",
+        requestId: "req-pdf-1",
+        assistantMessageId: "assistant-pdf-1",
+        intentResult: makeIntentResult({
+          intent: "CREATE_DOCUMENT",
+          output_format: "pdf",
+          normalized_text: "crea un pdf ejecutivo de la ia",
+        }),
+      },
+      res,
+    );
+
+    const events = parseSseEvents(chunks);
+    const startEvent = events.find((event) => event.event === "production_start");
+    const artifactEvent = events.find((event) => event.event === "artifact");
+    expect(startEvent?.data).toMatchObject({
+      workflow: "artifact_generation",
+      classification: "artifact_generation",
+      engine: "office-engine",
+      docKind: "pdf",
+    });
+    expect(artifactEvent?.data).toMatchObject({
+      type: "pdf",
+      downloadUrl: "/api/office-engine/runs/office-run-pdf/artifacts/exported",
+      previewUrl: "/api/office-engine/runs/office-run-pdf/artifacts/preview",
+      metadata: expect.objectContaining({
+        engine: "office-engine",
+        docKind: "pdf",
+        officeRunId: "office-run-pdf",
+      }),
+    });
+    expect(result.artifact).toMatchObject({
+      type: "pdf",
+      mimeType: "application/pdf",
+    });
+    expect(result.assistantContent).toContain("PDF listo para descargar");
   });
 });

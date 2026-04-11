@@ -11,6 +11,8 @@ export interface AvailableModel {
   id: string;
   name: string;
   provider: string;
+  providerDisplayName?: string;
+  gatewayProvider?: string;
   modelId: string;
   description: string | null;
   isEnabled: string;
@@ -18,8 +20,13 @@ export interface AvailableModel {
   enabledByAdminId: string | null;
   displayOrder: number;
   icon: string | null;
+  logoUrl?: string | null;
   modelType: string;
   contextWindow: number | null;
+  tier?: "free" | "paid";
+  availableToUser?: boolean;
+  accessState?: "available" | "upgrade_required";
+  requiresUpgrade?: boolean;
 }
 
 interface ModelAvailabilityContextType {

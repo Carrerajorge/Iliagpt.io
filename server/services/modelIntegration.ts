@@ -241,9 +241,11 @@ export function isModelEligibleForPublic(model: {
     status?: unknown;
     isEnabled?: unknown;
   }): boolean {
-    const modelId = String(model.modelId || "").toLowerCase();
-    // Permitir solo Minimax M2.5
-    return modelId.includes("minimax") && modelId.includes("m2.5");
+    if (!model || typeof model !== "object") return false;
+    if (sanitize(model.isEnabled) !== "true") return false;
+    if (sanitize(model.status) !== "active") return false;
+    if (!isModelProviderIntegrated(model.provider)) return false;
+    return isModelChatCapable(model);
   }
 
 /**

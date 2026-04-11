@@ -384,40 +384,35 @@ export async function editImage(
 // Detection functions
 export function detectImageRequest(message: string): boolean {
   const lowerMessage = message.toLowerCase();
-  
-  const imageKeywords = [
-    "genera", "crea", "dibuja", "haz", "hazme", "diseña",
-    "generate", "create", "draw", "make", "design",
-    "imagen", "image", "foto", "photo", "picture", "ilustración", "illustration",
-    "dibujo", "drawing", "arte", "art", "gráfico", "graphic",
-    "logo", "icono", "icon", "banner", "poster", "cartel"
-  ];
-  
+
   const imagePatterns = [
-    /genera(r)?\s+(una?\s+)?imagen/i,
-    /crea(r)?\s+(una?\s+)?imagen/i,
-    /dibuja(r)?\s+(una?|un)/i,
-    /haz(me)?\s+(una?\s+)?imagen/i,
-    /diseña(r)?\s+(una?|un)/i,
-    /generate\s+(an?\s+)?image/i,
-    /create\s+(an?\s+)?image/i,
-    /draw\s+(an?\s+|a\s+)?/i,
-    /make\s+(an?\s+)?image/i,
-    /imagen\s+de\s+/i,
-    /image\s+of\s+/i,
+    /\b(?:genera(?:r)?|crea(?:r)?|haz(?:me)?|diseña(?:r)?|dibuja(?:r)?)\s+(?:una?\s+)?(?:imagen|foto|ilustraci[oó]n|dibujo|logo|banner|poster|cartel)\b/i,
+    /\b(?:generate|create|make|design|draw)\s+(?:an?\s+)?(?:image|photo|picture|illustration|drawing|logo|icon|banner|poster)\b/i,
+    /\b(?:imagen|image)\s+(?:de|of)\b/i,
+    /\bcreate\s+art\b/i,
+    /\bgenera(?:r)?\s+arte\b/i,
   ];
-  
+
   // Check patterns first (more specific)
   for (const pattern of imagePatterns) {
     if (pattern.test(lowerMessage)) {
       return true;
     }
   }
-  
-  // Check keywords (less specific, requires image-related context)
-  const hasActionKeyword = imageKeywords.slice(0, 12).some(kw => lowerMessage.includes(kw));
-  const hasImageKeyword = imageKeywords.slice(12).some(kw => lowerMessage.includes(kw));
-  
+
+  // Check keyword classes with word boundaries to avoid false positives like
+  // "startup" -> "art" or "excelente" -> "excel".
+  const actionKeywordPatterns = [
+    /\b(?:genera(?:r)?|crea(?:r)?|haz(?:me)?|diseña(?:r)?|dibuja(?:r)?|generate|create|draw|make|design)\b/i,
+  ];
+  const imageContextPatterns = [
+    /\b(?:imagen|image|foto|photo|picture|ilustraci[oó]n|illustration|dibujo|drawing|arte|logo|icono|icon|banner|poster|cartel)\b/i,
+    /\bart\b/i,
+  ];
+
+  const hasActionKeyword = actionKeywordPatterns.some((pattern) => pattern.test(lowerMessage));
+  const hasImageKeyword = imageContextPatterns.some((pattern) => pattern.test(lowerMessage));
+
   return hasActionKeyword && hasImageKeyword;
 }
 

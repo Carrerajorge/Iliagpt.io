@@ -12,6 +12,7 @@ import {
     isModelProviderSupported,
     normalizeModelProviderToRuntime,
 } from "../../services/modelIntegration";
+import { invalidateModelCatalogCache } from "../../services/modelCatalogService";
 
 export const modelsRouter = Router();
 
@@ -33,6 +34,7 @@ modelsRouter.post("/", async (req, res) => {
         const model = await storage.createAiModel({
             name, provider, modelId, costPer1k, description, status
         });
+        invalidateModelCatalogCache();
 
         await auditLog(req, {
             action: AuditActions.MODEL_CREATED,
@@ -164,6 +166,7 @@ modelsRouter.patch("/:id", async (req, res) => {
         if (!model) {
             return res.status(404).json({ error: "Model not found" });
         }
+        invalidateModelCatalogCache();
         await auditLog(req, {
             action: AuditActions.MODEL_UPDATED,
             resource: "ai_models",
@@ -189,6 +192,7 @@ modelsRouter.delete("/:id", async (req, res) => {
     try {
         const existing = await storage.getAiModelById(req.params.id);
         await storage.deleteAiModel(req.params.id);
+        invalidateModelCatalogCache();
         await auditLog(req, {
             action: AuditActions.MODEL_DELETED,
             resource: "ai_models",
@@ -243,6 +247,7 @@ modelsRouter.patch("/:id/toggle", async (req, res) => {
 
         const model = await storage.updateAiModel(req.params.id, updateData);
         if (!model) return res.status(404).json({ error: "Model not found" });
+        invalidateModelCatalogCache();
 
         await auditLog(req, {
             action: requestedEnabled ? AuditActions.MODEL_ENABLED : AuditActions.MODEL_DISABLED,
@@ -269,6 +274,7 @@ modelsRouter.post("/sync/:provider", async (req, res) => {
     try {
         const { provider } = req.params;
         const result = await syncModelsForProvider(provider);
+        invalidateModelCatalogCache();
 
         await auditLog(req, {
             action: AuditActions.MODELS_SYNC,
@@ -302,6 +308,7 @@ modelsRouter.post("/sync", async (req, res) => {
         for (const provider of providersToSync) {
             results[provider] = await syncModelsForProvider(provider);
         }
+        invalidateModelCatalogCache();
 
         let totalAdded = 0;
         let totalUpdated = 0;
@@ -396,6 +403,9 @@ modelsRouter.post("/openrouter/sync", async (req, res) => {
             onlyFree: onlyFree === true,
             dryRun: dryRun === true,
         });
+        if (!dryRun) {
+            invalidateModelCatalogCache();
+        }
 
         await auditLog(req, {
             action: AuditActions.MODELS_SYNC,

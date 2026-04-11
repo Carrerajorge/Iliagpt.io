@@ -113,7 +113,27 @@ function resolveArtifactGenerationEngine(
     requestedDocKind: ArtifactGenerationDocKind,
     deliverables: Array<'word' | 'excel' | 'ppt' | 'pdf'>,
 ): ArtifactGenerationEngine {
-    if (requestedDocKind === "docx" && deliverables.length === 1 && deliverables[0] === "word") {
+    if (
+        requestedDocKind === "docx" &&
+        deliverables.length === 1 &&
+        deliverables[0] === "word"
+    ) {
+        return "office-engine";
+    }
+
+    if (
+        requestedDocKind === "xlsx" &&
+        deliverables.length === 1 &&
+        deliverables[0] === "excel"
+    ) {
+        return "office-engine";
+    }
+
+    if (
+        requestedDocKind === "pdf" &&
+        deliverables.length === 1 &&
+        deliverables[0] === "pdf"
+    ) {
         return "office-engine";
     }
 
@@ -139,6 +159,51 @@ function resolveArtifactGenerationSpec(
 
 function shouldUseOfficeEngine(spec: ArtifactGenerationSpec): boolean {
     return spec.engine === "office-engine";
+}
+
+function getOfficeArtifactFilename(topic: string, docKind: ArtifactGenerationDocKind): string {
+    const safeBaseName = (topic || "documento")
+        .replace(/[\\/:*?"<>|]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 80) || "documento";
+
+    const extension = docKind === "docx"
+        ? "docx"
+        : docKind === "xlsx"
+            ? "xlsx"
+            : docKind === "pptx"
+                ? "pptx"
+                : "pdf";
+
+    return `${safeBaseName}.${extension}`;
+}
+
+function getOfficeArtifactEventType(docKind: ArtifactGenerationDocKind): "docx" | "xlsx" | "ppt" | "pdf" {
+    if (docKind === "docx") return "docx";
+    if (docKind === "xlsx") return "xlsx";
+    if (docKind === "pptx") return "ppt";
+    return "pdf";
+}
+
+function getOfficeDoneArtifactType(docKind: ArtifactGenerationDocKind): "document" | "spreadsheet" | "presentation" | "pdf" {
+    if (docKind === "xlsx") return "spreadsheet";
+    if (docKind === "pptx") return "presentation";
+    if (docKind === "pdf") return "pdf";
+    return "document";
+}
+
+function getOfficeSuccessSummary(docKind: ArtifactGenerationDocKind): string {
+    if (docKind === "xlsx") {
+        return "Hoja de cálculo lista para descargar. Vista previa y pipeline estructural disponibles.";
+    }
+    if (docKind === "pptx") {
+        return "Presentación lista para descargar. Vista previa y pipeline estructural disponibles.";
+    }
+    if (docKind === "pdf") {
+        return "PDF listo para descargar. Vista previa y pipeline estructural disponibles.";
+    }
+    return "Documento listo para descargar. Vista previa y pipeline estructural disponibles.";
 }
 
 function shouldUseProfessionalPptxEngine(
@@ -489,12 +554,19 @@ export function isProductionIntent(intentResult: IntentResult | null, message?: 
 
 export function getDeliverables(intentResult: IntentResult, message?: string): ('word' | 'excel' | 'ppt' | 'pdf')[] {
     const deliverables: ('word' | 'excel' | 'ppt' | 'pdf')[] = [];
+    const normalizedMessage = String(message || "").toLowerCase();
+    const explicitlyMentionsWord = /\b(word|docx)\b/i.test(normalizedMessage);
+    const explicitlyMentionsPdf = /\bpdf\b/i.test(normalizedMessage);
 
     switch (intentResult.intent) {
         case 'CREATE_DOCUMENT':
-            deliverables.push('word');
-            if (intentResult.output_format === 'pdf') {
+            if (intentResult.output_format === 'pdf' && !explicitlyMentionsWord) {
                 deliverables.push('pdf');
+            } else {
+                deliverables.push('word');
+                if (intentResult.output_format === 'pdf') {
+                    deliverables.push('pdf');
+                }
             }
             break;
         case 'CREATE_PRESENTATION':
@@ -521,7 +593,7 @@ export function getDeliverables(intentResult: IntentResult, message?: string): (
 
     // Check for compound requests in slots
     const topic = intentResult.slots.topic?.toLowerCase() || '';
-    const combined = `${topic} ${message || ''}`.toLowerCase();
+    const combined = `${topic} ${normalizedMessage}`.toLowerCase();
 
     if (/\b(excel|xlsx|hoja\s+de\s+c[aá]lculo|spreadsheet)\b/i.test(combined)) {
         if (!deliverables.includes('excel')) deliverables.push('excel');
@@ -532,7 +604,7 @@ export function getDeliverables(intentResult: IntentResult, message?: string): (
     if (/\b(word|documento|document|docx)\b/i.test(combined)) {
         if (!deliverables.includes('word')) deliverables.push('word');
     }
-    if (/\bpdf\b/i.test(combined)) {
+    if (explicitlyMentionsPdf || /\bpdf\b/i.test(combined)) {
         if (!deliverables.includes('pdf')) deliverables.push('pdf');
     }
 
@@ -998,6 +1070,7 @@ export async function handleProductionRequest(
             const officeStreamer = new StepStreamer();
             const officeController = new AbortController();
             const pendingEvents: OfficeRunSession["pendingEvents"] = [];
+            const officeDocKind = artifactSpec.requestedDocKind;
 
             const session: OfficeRunSession = {
                 runId: "",
@@ -1043,7 +1116,7 @@ export async function handleProductionRequest(
                         userId,
                         conversationId: streamConversationId,
                         objective: message,
-                        docKind: "docx",
+                        docKind: officeDocKind,
                         onStart,
                     },
                     officeStreamer,
@@ -1091,7 +1164,7 @@ export async function handleProductionRequest(
                     success: false,
                     workflow: artifactSpec.workflow,
                     engine: "office-engine",
-                    docKind: "docx",
+                    docKind: officeDocKind,
                     artifactsCount: officeResult.artifacts.length,
                     summary: officeFailure,
                     error: officeFailure,
@@ -1130,11 +1203,14 @@ export async function handleProductionRequest(
             }
 
             const exportedArtifact = officeResult.artifacts[0];
-            const summary = "Documento listo para descargar. Vista previa y pipeline estructural disponibles.";
-            const exportedName = `${intentResult.slots.title || intentResult.slots.topic || "documento"}.docx`;
+            const resolvedTopic =
+                resolveArtifactTopic(intentResult, message, officeDocKind === "xlsx" ? "hoja de cálculo" : "documento");
+            const summary = getOfficeSuccessSummary(officeDocKind);
+            const exportedName = getOfficeArtifactFilename(resolvedTopic, officeDocKind);
+            const streamArtifactType = getOfficeArtifactEventType(officeDocKind);
             const officeDoneArtifact = {
-                artifactId: `${officeResult.runId}_docx`,
-                type: "document",
+                artifactId: `${officeResult.runId}_${officeDocKind}`,
+                type: getOfficeDoneArtifactType(officeDocKind),
                 mimeType: exportedArtifact.mimeType,
                 sizeBytes: exportedArtifact.sizeBytes,
                 downloadUrl: exportedArtifact.downloadUrl || `/api/office-engine/runs/${officeResult.runId}/artifacts/exported`,
@@ -1145,7 +1221,7 @@ export async function handleProductionRequest(
                     workflow: artifactSpec.workflow,
                     classification: artifactSpec.workflow,
                     engine: "office-engine",
-                    docKind: "docx",
+                    docKind: officeDocKind,
                     officeRunId: officeResult.runId,
                     officeStatus: officeResult.status,
                     fallbackLevel: officeResult.fallbackLevel,
@@ -1154,7 +1230,7 @@ export async function handleProductionRequest(
             };
 
             emit("artifact", {
-                type: "docx",
+                type: streamArtifactType,
                 filename: exportedName,
                 downloadUrl: officeDoneArtifact.downloadUrl,
                 previewUrl: officeDoneArtifact.previewUrl,
@@ -1168,7 +1244,7 @@ export async function handleProductionRequest(
                 success: true,
                 workflow: artifactSpec.workflow,
                 engine: "office-engine",
-                docKind: "docx",
+                docKind: officeDocKind,
                 artifactsCount: officeResult.artifacts.length,
                 summary,
                 timestamp: Date.now(),
@@ -1193,7 +1269,7 @@ export async function handleProductionRequest(
                 handled: true,
                 assistantContent: summary,
                 artifact: {
-                    type: "docx",
+                    type: streamArtifactType,
                     filename: exportedName,
                     downloadUrl: exportedArtifact.downloadUrl || `/api/office-engine/runs/${officeResult.runId}/artifacts/exported`,
                     previewUrl: exportedArtifact.previewUrl || `/api/office-engine/runs/${officeResult.runId}/artifacts/preview`,
@@ -1203,7 +1279,7 @@ export async function handleProductionRequest(
                         workflow: artifactSpec.workflow,
                         classification: artifactSpec.workflow,
                         engine: "office-engine",
-                        docKind: "docx",
+                        docKind: officeDocKind,
                         officeRunId: officeResult.runId,
                         officeStatus: officeResult.status,
                         fallbackLevel: officeResult.fallbackLevel,

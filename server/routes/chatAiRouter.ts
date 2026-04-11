@@ -147,6 +147,44 @@ function canUseAnonymousLocalGemma(req: AuthenticatedRequest | Request, model: s
   if (!normalizedModel.startsWith("google/gemma-")) return false;
   return isLoopbackHost(req.headers.host) || isLoopbackIp(req.ip) || isLoopbackIp(req.socket.remoteAddress);
 }
+
+function resolveAnonymousRequestedModel(
+  req: AuthenticatedRequest | Request,
+  requestedModel: string | undefined,
+  authenticatedUserId: string | null | undefined,
+  effectiveUserId: string,
+  routeLabel: "Chat" | "Stream",
+): {
+  requestedModel: string;
+  isUsingFreeModel: boolean;
+  allowAnonymousLocalGemma: boolean;
+  downgraded: boolean;
+} {
+  const normalizedModel = typeof requestedModel === "string" ? requestedModel.trim() : "";
+  const isUsingFreeModel =
+    !normalizedModel || normalizedModel === FREE_MODEL_ID || isModelFreeForAll(normalizedModel);
+  const allowAnonymousLocalGemma = canUseAnonymousLocalGemma(req, normalizedModel);
+  const isAnonymousUser = !authenticatedUserId && effectiveUserId.startsWith("anon_");
+
+  if (isAnonymousUser && !isUsingFreeModel && !allowAnonymousLocalGemma) {
+    console.warn(
+      `[${routeLabel}] Anonymous request with restricted model "${normalizedModel}" downgraded to ${FREE_MODEL_ID}`,
+    );
+    return {
+      requestedModel: FREE_MODEL_ID,
+      isUsingFreeModel: true,
+      allowAnonymousLocalGemma: false,
+      downgraded: true,
+    };
+  }
+
+  return {
+    requestedModel: normalizedModel,
+    isUsingFreeModel,
+    allowAnonymousLocalGemma,
+    downgraded: false,
+  };
+}
 const MAX_STREAM_SKILL_ATTACHMENTS = 12;
 const DEFAULT_STREAM_SKILL_SCOPES: SkillScope[] = ["storage.read", "files", "code_interpreter"];
 const VALID_STREAM_SCOPE_SET = new Set<SkillScope>([
@@ -452,17 +490,47 @@ function createMemoryDiagnosticsFallback(
   };
 }
 
+const STREAM_CONTEXT_TIMEOUT_MS = 4000;
+
+async function withStreamGuardTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  let timeoutId: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 async function augmentHistoryWithCompatibility(
   chatId: string | undefined,
   clientMessages: ConversationMemoryChatMessage[],
   maxTokens = 8000,
 ): Promise<ConversationContextResult> {
   if (typeof conversationMemoryManager.augmentWithHistoryWithDiagnostics === "function") {
-    return conversationMemoryManager.augmentWithHistoryWithDiagnostics(chatId, clientMessages, maxTokens);
+    return withStreamGuardTimeout(
+      conversationMemoryManager.augmentWithHistoryWithDiagnostics(chatId, clientMessages, maxTokens),
+      STREAM_CONTEXT_TIMEOUT_MS,
+      "conversation history",
+    );
   }
 
   if (typeof conversationMemoryManager.augmentWithHistory === "function") {
-    const messages = await conversationMemoryManager.augmentWithHistory(chatId, clientMessages, maxTokens);
+    const messages = await withStreamGuardTimeout(
+      conversationMemoryManager.augmentWithHistory(chatId, clientMessages, maxTokens),
+      STREAM_CONTEXT_TIMEOUT_MS,
+      "conversation history",
+    );
     return {
       messages,
       diagnostics: createMemoryDiagnosticsFallback(messages),
@@ -968,7 +1036,9 @@ function extractDesktopFolderNameFromPrompt(input: string): string | null {
   // extract token after "nombre/llamada/named" until first connector.
   const hasCreateVerb = /\b(?:crea|crear|creame|creá|crees|haz|hazme|genera|generar|make|create)\b/i.test(prompt);
   const hasFolderWord = /\b(?:carpeta|caroeta|carepta|carptea|careta|folder|directorio|directory)\b/i.test(prompt);
-  const intent = hasCreateVerb && hasFolderWord;
+  const hasDesktopContext = /\b(?:escritorio|excritorio|desktop|mi\s+mac|my\s+mac)\b/i.test(prompt);
+  const hasExplicitFolderNamingMarker = /\b(?:nombre|llamada|named|que\s+se\s+llame)\b/i.test(prompt);
+  const intent = hasCreateVerb && hasFolderWord && (hasDesktopContext || hasExplicitFolderNamingMarker);
 
   if (intent) {
     // Strategy A: explicit name markers
@@ -4501,14 +4571,9 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
       const effectiveUserId = authenticatedUserId || getOrCreateSecureUserId(req);
       const userId = effectiveUserId;
 
-      const isRequestedModelFree = !model || model === FREE_MODEL_ID || isModelFreeForAll(model);
-      if (!authenticatedUserId && userId.startsWith("anon_") && !isRequestedModelFree && !canUseAnonymousLocalGemma(req, model)) {
-        console.warn(`[Chat] Blocked anonymous chat attempt from IP=${req.ip}, UA=${(req.headers["user-agent"] || "").slice(0, 80)}`);
-        return res.status(401).json({
-          error: "Authentication required. Please sign in with Google to use the chat.",
-          code: "AUTH_REQUIRED"
-        });
-      }
+      const {
+        requestedModel: normalizedChatModel,
+      } = resolveAnonymousRequestedModel(req, model, authenticatedUserId, userId, "Chat");
 
       // Local control commands (safe mode): /local ..., DETENEROFF/DETENERON, and desktop-folder shortcut.
       const latestUserMessage = [...clientMessages].reverse().find((m: any) => m?.role === "user");
@@ -4566,7 +4631,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
       // GPT Session Contract Resolution
       // Priority: session_id (reuse existing) > gptId (create new) > gptConfig (legacy)
       let gptSessionContract: GptSessionContract | null = null;
-      let effectiveModel = model;
+      let effectiveModel = normalizedChatModel;
       let serverSessionId: string | null = null;
 
       // Helper to determine if conversationId is valid for session lookup
@@ -4583,7 +4648,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
           gptSessionContract = await getSessionById(session_id);
           if (gptSessionContract) {
             serverSessionId = gptSessionContract.sessionId;
-            effectiveModel = getEnforcedModel(gptSessionContract, model);
+            effectiveModel = getEnforcedModel(gptSessionContract, normalizedChatModel);
             console.log(`[Chat API] Reusing existing session: session_id=${session_id}, gptId=${gptSessionContract.gptId}, configVersion=${gptSessionContract.configVersion}`);
           } else {
             console.log(`[Chat API] Session not found: session_id=${session_id}, will create new if gptId provided`);
@@ -4606,7 +4671,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
             console.log(`[Chat API] New GPT Session created: gptId=${gptId}, sessionId=${gptSessionContract.sessionId}, configVersion=${gptSessionContract.configVersion}`);
           }
           serverSessionId = gptSessionContract.sessionId;
-          effectiveModel = getEnforcedModel(gptSessionContract, model);
+          effectiveModel = getEnforcedModel(gptSessionContract, normalizedChatModel);
         } catch (sessionError) {
           console.error(`[Chat API] Error creating GPT session for gptId=${gptId}:`, sessionError);
           // Fall back to legacy gptConfig if session creation fails
@@ -5328,18 +5393,13 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       latencyMode = ['fast', 'deep', 'auto'].includes(rawLatencyMode) ? rawLatencyMode : 'auto';
       const authenticatedStreamUser = getUserId(req);
       const effectiveUserId = authenticatedStreamUser || getOrCreateSecureUserId(req);
-      const requestedModel = typeof model === "string" ? model.trim() : "";
-      const isUsingFreeModel = !requestedModel || requestedModel === FREE_MODEL_ID || isModelFreeForAll(requestedModel);
-      const allowAnonymousLocalGemma = canUseAnonymousLocalGemma(req, requestedModel);
-      if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && !isUsingFreeModel && !allowAnonymousLocalGemma) {
-        console.warn(`[Stream] Blocked anonymous stream attempt from IP=${req.ip}, model=${requestedModel}`);
-        res.setHeader("Content-Type", "text/event-stream");
-        applySseSecurityHeaders(res);
-        res.write(`data: ${JSON.stringify({ type: "error", error: "Authentication required. Please sign in with Google to use this model.", code: "AUTH_REQUIRED" })}\n\n`);
-        return res.end();
-      }
+      const {
+        requestedModel: normalizedStreamModel,
+        isUsingFreeModel,
+        allowAnonymousLocalGemma,
+      } = resolveAnonymousRequestedModel(req, model, authenticatedStreamUser, effectiveUserId, "Stream");
       if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && allowAnonymousLocalGemma) {
-        console.log(`[Stream] Anonymous localhost Gemma allowed in development from IP=${req.ip}, model=${requestedModel}`);
+        console.log(`[Stream] Anonymous localhost Gemma allowed in development from IP=${req.ip}, model=${normalizedStreamModel}`);
       }
       if (!authenticatedStreamUser && effectiveUserId.startsWith("anon_") && isUsingFreeModel) {
         console.log(`[Stream] Anonymous user allowed with free model (${FREE_MODEL_ID}) from IP=${req.ip}`);
@@ -5939,7 +5999,11 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       const userSettingsPromise = (async () => {
         const userSettingsStageStart = performance.now();
         try {
-          return await storage.getUserSettings(effectiveUserId);
+          return await withStreamGuardTimeout(
+            storage.getUserSettings(effectiveUserId),
+            STREAM_CONTEXT_TIMEOUT_MS,
+            "user settings",
+          );
         } catch (error) {
           console.warn("[Stream] Failed to load user settings:", (error as any)?.message || error);
           return null;
@@ -6179,7 +6243,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           const quickStream = await resolveModelStream(llmMessages as any, {
             userId: effectiveUserId || streamConversationId || "anonymous",
             requestId,
-            model: model || DEFAULT_MODEL,
+            model: normalizedStreamModel || DEFAULT_MODEL,
             provider,
             maxTokens: Math.min(answerFirstPrompt.maxTokens || 300, 600), // Was 200 cap — caused mid-sentence truncation on simple questions
             temperature: 0.2,
@@ -6417,7 +6481,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       // GPT Session Contract Resolution for streaming
       // Priority: session_id (reuse existing) > gptId (create new)
       let gptSessionContract: GptSessionContract | null = null;
-      let effectiveModel = model || DEFAULT_MODEL;
+      let effectiveModel = normalizedStreamModel || DEFAULT_MODEL;
       let serverSessionId: string | null = null;
       const effectiveProvider = provider || DEFAULT_PROVIDER;
 
@@ -6434,7 +6498,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           gptSessionContract = await getSessionById(session_id);
           if (gptSessionContract) {
             serverSessionId = gptSessionContract.sessionId;
-            effectiveModel = getEnforcedModel(gptSessionContract, model);
+            effectiveModel = getEnforcedModel(gptSessionContract, normalizedStreamModel);
             console.log(`[Stream] Reusing existing session: session_id=${session_id}, gptId=${gptSessionContract.gptId}, configVersion=${gptSessionContract.configVersion}`);
           } else {
             console.log(`[Stream] Session not found: session_id=${session_id}, will create new if gptId provided`);
@@ -6456,7 +6520,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
             console.log(`[Stream] New GPT Session created: gptId=${gptId}, sessionId=${gptSessionContract.sessionId}`);
           }
           serverSessionId = gptSessionContract.sessionId;
-          effectiveModel = getEnforcedModel(gptSessionContract, model);
+          effectiveModel = getEnforcedModel(gptSessionContract, normalizedStreamModel);
         } catch (sessionError) {
           console.error(`[Stream] Error creating GPT session for gptId=${gptId}:`, sessionError);
         }

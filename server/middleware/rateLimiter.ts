@@ -22,6 +22,19 @@ const WINDOW_MS = 60_000;
 // key: `${userId}:${category}`
 const windows = new Map<string, WindowEntry>();
 
+function isLoopbackRequest(req: Request): boolean {
+  const host = String(req.headers.host || "").split(":")[0].trim().toLowerCase();
+  const ip = String(req.ip || req.socket.remoteAddress || "").trim().toLowerCase();
+  return (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "[::1]" ||
+    ip === "127.0.0.1" ||
+    ip === "::1" ||
+    ip === "::ffff:127.0.0.1"
+  );
+}
+
 // Periodic cleanup of expired windows
 setInterval(() => {
   const now = Date.now();
@@ -52,6 +65,10 @@ export function rateLimiter(category: string) {
   const limits = TIERS[category] ?? TIERS.api;
 
   return (req: Request, res: Response, next: NextFunction) => {
+    if (process.env.NODE_ENV !== "production" && isLoopbackRequest(req)) {
+      return next();
+    }
+
     const { id, tier } = resolveUser(req);
     const key = `${id}:${category}`;
     const entry = getOrCreateWindow(key);
