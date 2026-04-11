@@ -488,6 +488,13 @@ export async function getOpenClawGatewayModelCatalog(options?: {
     contextWindow: number | null;
     tier: ModelTier;
     requiresUpgrade: boolean;
+    accessState: AccessState;
+    status: "active";
+    permissions: {
+      chat: boolean;
+      tools: boolean;
+      streaming: boolean;
+    };
     order: number;
   }>;
   default: { provider: string; model: string };
@@ -513,6 +520,13 @@ export async function getOpenClawGatewayModelCatalog(options?: {
       contextWindow: model.contextWindow,
       tier: model.tier,
       requiresUpgrade: model.requiresUpgrade,
+      accessState: model.accessState,
+      status: model.status,
+      permissions: {
+        chat: model.availableToUser,
+        tools: model.availableToUser,
+        streaming: model.availableToUser,
+      },
       order: model.displayOrder,
     })),
     default: {

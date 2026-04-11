@@ -4,7 +4,11 @@
  */
 
 import { Router, Request, Response } from "express";
-import { OPENCLAW_RELEASE_URL, OPENCLAW_RELEASE_VERSION } from "@shared/openclawRelease";
+import {
+  DEFAULT_OPENCLAW_RELEASE_TAG,
+  OPENCLAW_RELEASE_URL,
+  OPENCLAW_RELEASE_VERSION,
+} from "@shared/openclawRelease";
 import {
   OPENCLAW_500,
   getOpenClawStats,
@@ -32,6 +36,9 @@ import { requireAuth } from "../middleware/auth";
 import { getSecureUserId } from "../lib/anonUserHelper";
 import { getUnifiedModelCatalog } from "../services/modelCatalogService";
 import { getUserId } from "../types/express";
+import * as openclaw from "../agent/openclaw";
+import { getOpenClawHealth } from "../openclaw/lib/healthCheck";
+import { usageQuotaService } from "../services/usageQuotaService";
 
 
 const router = Router();
@@ -492,9 +499,10 @@ export function createOpenClawRouter(): Router {
   const runtimeRouter = Router();
 
   try {
-    const openclaw = require("../agent/openclaw");
-    const { requireAuth } = require("../middleware/auth");
-
+    // `openclaw` and `requireAuth` are imported statically at the top of
+    // the file. The previous CJS `require()` calls here crashed under ESM
+    // ("require is not defined") because tsx loads this file as an ES
+    // module. Static imports work in both CJS and ESM.
     openclaw.initializeOpenClawTools();
 
     runtimeRouter.get("/status", (_req: Request, res: Response) => {
@@ -572,7 +580,8 @@ export function createOpenClawRouter(): Router {
  */
 router.get("/health", (_req: Request, res: Response) => {
   try {
-    const { getOpenClawHealth } = require("../openclaw/lib/healthCheck");
+    // `getOpenClawHealth` is now imported statically at the top of the
+    // file — the old `require()` here crashed under ESM.
     const health = getOpenClawHealth();
     const httpStatus = health.status === "unhealthy" ? 503 : 200;
     res.status(httpStatus).json({ success: true, ...health });
@@ -681,16 +690,11 @@ router.get("/instance/check-update", (_req: Request, res: Response) => {
 
 import {
   getOrCreateInstance,
-  getUserInstance,
   getAllInstances,
-  updateInstanceTokenLimit,
   updateInstanceStatus,
   getUserTokenHistory,
-  checkTokenBudget,
   getAdminConfig,
   updateAdminConfig,
-  resetUserTokens,
-  getGlobalStats,
   deleteInstance,
 } from "../services/openclawInstanceService";
 import { users } from "@shared/schema";
@@ -707,18 +711,59 @@ function isAdminUser(req: Request): boolean {
   return email === ADMIN_EMAIL || role === "admin";
 }
 
+async function buildUnifiedOpenClawBudget(userId: string) {
+  const quota = await usageQuotaService.getUnifiedQuotaSnapshot(userId);
+  return {
+    unified: true as const,
+    scope: "shared_global",
+    allowed:
+      quota.blockingState === "ok" &&
+      quota.requests.allowed &&
+      quota.daily.allowed &&
+      quota.monthly.allowed,
+    blockingState: quota.blockingState,
+    used: quota.monthly.used,
+    limit: quota.monthly.limit,
+    remaining: quota.monthly.remaining,
+    resetAt: quota.monthly.resetAt?.toISOString?.() || null,
+    requestLimit: {
+      allowed: quota.requests.allowed,
+      remaining: quota.requests.remaining,
+      limit: quota.requests.limit,
+      resetAt: quota.requests.resetAt?.toISOString?.() || null,
+    },
+    daily: {
+      allowed: quota.daily.allowed,
+      resetAt: quota.daily.resetAt?.toISOString?.() || null,
+      inputUsed: quota.daily.inputUsed,
+      inputLimit: quota.daily.inputLimit,
+      inputRemaining: quota.daily.inputRemaining,
+      outputUsed: quota.daily.outputUsed,
+      outputLimit: quota.daily.outputLimit,
+      outputRemaining: quota.daily.outputRemaining,
+      totalUsed: quota.daily.totalUsed,
+    },
+    channels: quota.channels,
+    plan: quota.plan,
+    isAdmin: quota.isAdmin,
+    isPaid: quota.isPaid,
+    billing: quota.billing,
+  };
+}
+
 router.get("/instance", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id;
     if (!userId) return res.status(401).json({ success: false, error: "Not authenticated" });
 
     const instance = await getOrCreateInstance(userId);
-    const budget = await checkTokenBudget(userId);
+    const budget = await buildUnifiedOpenClawBudget(userId);
 
     res.json({
       success: true,
       instance: {
         ...instance,
+        version: instance.version || DEFAULT_OPENCLAW_RELEASE_TAG,
         budget,
       },
     });
@@ -735,7 +780,7 @@ router.get("/instance/tokens", requireAuth, async (req: Request, res: Response) 
 
     const limit = parseInt(req.query.limit as string) || 50;
     const history = await getUserTokenHistory(userId, limit);
-    const budget = await checkTokenBudget(userId);
+    const budget = await buildUnifiedOpenClawBudget(userId);
 
     res.json({ success: true, budget, history });
   } catch (error: any) {
@@ -747,27 +792,41 @@ router.get("/admin/instances", requireAuth, async (req: Request, res: Response) 
   try {
     if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
 
-    const stats = await getGlobalStats();
     const config = await getAdminConfig();
+    const instances = await getAllInstances();
 
     const instancesWithUsers = await Promise.all(
-      stats.instances.map(async (inst) => {
+      instances.map(async (inst) => {
+        const quota = await buildUnifiedOpenClawBudget(inst.userId);
         const [user] = await db.select({ email: users.email, firstName: users.firstName, lastName: users.lastName, plan: users.plan })
           .from(users)
           .where(eq(users.id, inst.userId))
           .limit(1);
-        return { ...inst, user: user || null };
+        return {
+          ...inst,
+          version: inst.version || DEFAULT_OPENCLAW_RELEASE_TAG,
+          user: user || null,
+          quota,
+          tokensUsed: quota.channels.openclawUsed,
+          tokensLimit: quota.limit,
+          tokensRemaining: quota.remaining,
+          sharedTokensUsed: quota.used,
+          sharedTokensLimit: quota.limit,
+        };
       })
     );
 
+    const stats = {
+      totalInstances: instancesWithUsers.length,
+      activeInstances: instancesWithUsers.filter((inst) => inst.status === "active").length,
+      totalTokensUsed: instancesWithUsers.reduce((sum, inst) => sum + (inst.quota.channels.openclawUsed || 0), 0),
+      totalSharedTokensUsed: instancesWithUsers.reduce((sum, inst) => sum + (inst.quota.used || 0), 0),
+      totalRequests: instancesWithUsers.reduce((sum, inst) => sum + (inst.requestCount || 0), 0),
+    };
+
     res.json({
       success: true,
-      stats: {
-        totalInstances: stats.totalInstances,
-        activeInstances: stats.activeInstances,
-        totalTokensUsed: stats.totalTokensUsed,
-        totalRequests: stats.totalRequests,
-      },
+      stats,
       config,
       instances: instancesWithUsers,
     });
@@ -779,14 +838,12 @@ router.get("/admin/instances", requireAuth, async (req: Request, res: Response) 
 router.patch("/admin/instances/:id/tokens", requireAuth, async (req: Request, res: Response) => {
   try {
     if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
-
-    const { tokensLimit } = req.body;
-    if (typeof tokensLimit !== "number" || tokensLimit < 0) {
-      return res.status(400).json({ success: false, error: "Invalid tokens limit" });
-    }
-
-    const updated = await updateInstanceTokenLimit(req.params.id, tokensLimit);
-    res.json({ success: true, instance: updated });
+    return res.status(409).json({
+      success: false,
+      code: "UNIFIED_BILLING_MANAGED_EXTERNALLY",
+      error:
+        "Los límites de OpenClaw ahora se gestionan desde el sistema central de billing y cuotas. Ajusta el plan o saldo global desde billing.",
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -811,9 +868,12 @@ router.patch("/admin/instances/:id/status", requireAuth, async (req: Request, re
 router.post("/admin/instances/:id/reset-tokens", requireAuth, async (req: Request, res: Response) => {
   try {
     if (!isAdminUser(req)) return res.status(403).json({ success: false, error: "Admin access required" });
-
-    const updated = await resetUserTokens(req.params.id);
-    res.json({ success: true, instance: updated });
+    return res.status(409).json({
+      success: false,
+      code: "UNIFIED_BILLING_MANAGED_EXTERNALLY",
+      error:
+        "El saldo compartido ya no se reinicia desde OpenClaw. Usa las herramientas centrales de billing o créditos para administrar la cuota.",
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -867,7 +927,7 @@ router.post("/admin/sync", requireAuth, async (req: Request, res: Response) => {
     const snapshot = await getOpenClawReleaseSnapshot("latest");
 
     await updateAdminConfig({
-      currentVersion: snapshot.bundled.version || "v2026.4.1",
+      currentVersion: snapshot.bundled.version || DEFAULT_OPENCLAW_RELEASE_TAG,
       lastSyncAt: new Date(),
     });
 
@@ -950,7 +1010,7 @@ router.post("/internet/search", requireIdentity as any, async (req: Request, res
 router.get("/internet/status", (_req: Request, res: Response) => {
   res.json({
     ok: true,
-    version: "2026.4.5",
+    version: OPENCLAW_RELEASE_VERSION,
     capabilities: ["web-fetch", "web-search"],
     provider: "openclaw-internet-access",
   });

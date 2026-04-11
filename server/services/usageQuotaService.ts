@@ -31,6 +31,40 @@ export interface DailyTokenQuotaStatus {
   message?: string;
 }
 
+export interface MonthlyTokenQuotaStatus {
+  allowed: boolean;
+  resetAt: Date | null;
+  used: number;
+  limit: number | null;
+  remaining: number | null;
+  extraCredits: number;
+  plan: string;
+  isAdmin: boolean;
+  isPaid: boolean;
+  message?: string;
+}
+
+export interface UnifiedQuotaSnapshot {
+  unified: true;
+  userId: string;
+  plan: string;
+  isAdmin: boolean;
+  isPaid: boolean;
+  blockingState: "ok" | "request_limit" | "daily_token_limit" | "monthly_token_limit";
+  billing: {
+    statusUrl: string;
+    upgradeUrl: string;
+  };
+  requests: UsageCheckResult;
+  daily: DailyTokenQuotaStatus;
+  monthly: MonthlyTokenQuotaStatus;
+  channels: {
+    totalConsumed: number;
+    openclawUsed: number;
+    creditsBalance: number;
+  };
+}
+
 export interface UnifiedQuotaErrorPayload {
   ok: false;
   code: "TOKEN_QUOTA_EXCEEDED" | "DAILY_TOKEN_LIMIT_EXCEEDED" | "QUOTA_EXCEEDED";
@@ -441,7 +475,9 @@ export class UsageQuotaService {
     const outputRemaining = outputLimit === null ? null : Math.max(0, outputLimit - outputUsed);
     const totalUsed = inputUsed + outputUsed;
 
-    if (inputLimit !== null && estimatedInputTokens > inputRemaining) {
+    const exceedsInputLimit =
+      inputLimit !== null && inputRemaining !== null && estimatedInputTokens > inputRemaining;
+    if (exceedsInputLimit) {
       return {
         allowed: false,
         resetAt,
@@ -456,7 +492,9 @@ export class UsageQuotaService {
       };
     }
 
-    if (outputLimit !== null && outputRemaining <= 0) {
+    const exceedsOutputLimit =
+      outputLimit !== null && outputRemaining !== null && outputRemaining <= 0;
+    if (exceedsOutputLimit) {
       return {
         allowed: false,
         resetAt,
@@ -484,24 +522,39 @@ export class UsageQuotaService {
     };
   }
 
-  async hasTokenQuota(userId: string): Promise<boolean> {
-    const [user] = await db.select().from(users).where(eq(users.id, userId));
-    if (!user) return false;
+  async getMonthlyTokenQuotaStatus(userId: string): Promise<MonthlyTokenQuotaStatus> {
+    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+
+    if (!user) {
+      return {
+        allowed: false,
+        resetAt: null,
+        used: 0,
+        limit: 0,
+        remaining: 0,
+        extraCredits: 0,
+        plan: "free",
+        isAdmin: false,
+        isPaid: false,
+        message: "Usuario no encontrado",
+      };
+    }
 
     const isAdmin = isSystemAdminUser(user);
     const planKey = getEffectivePlanKey(user, isAdmin);
+    const isPaid = isAdmin || !["", "free"].includes(planKey);
     const limitTokens = getMonthlyTokenLimitTokens(user, planKey);
-    if (limitTokens === null) return true;
-
     const now = new Date();
     const cycleEnd = getCurrentCycleEnd(user, now);
     const cycleStart = addMonths(cycleEnd, -1);
 
     const resetAt = toValidDate((user as any).tokensResetAt);
-    let monthlyUsed = typeof (user as any).monthlyTokensUsed === "number" ? (user as any).monthlyTokensUsed : 0;
+    let monthlyUsed =
+      typeof (user as any).monthlyTokensUsed === "number" && Number.isFinite((user as any).monthlyTokensUsed)
+        ? Math.max(0, (user as any).monthlyTokensUsed)
+        : 0;
 
     if (!resetAt) {
-      // First time we enforce monthly quotas for this user: bootstrap from api_logs for the current cycle.
       const [usageRow] = await db
         .select({
           tokensIn: sql<number>`COALESCE(SUM(${apiLogs.tokensIn}), 0)`,
@@ -510,23 +563,19 @@ export class UsageQuotaService {
         .from(apiLogs)
         .where(and(eq(apiLogs.userId, userId), gte(apiLogs.createdAt, cycleStart), lt(apiLogs.createdAt, cycleEnd)));
 
-      const tokensIn = usageRow?.tokensIn ?? 0;
-      const tokensOut = usageRow?.tokensOut ?? 0;
-      monthlyUsed = Math.max(0, tokensIn + tokensOut);
+      monthlyUsed = Math.max(0, (usageRow?.tokensIn ?? 0) + (usageRow?.tokensOut ?? 0));
 
       await db
         .update(users)
-        .set({ monthlyTokensUsed: monthlyUsed, tokensResetAt: cycleEnd, updatedAt: new Date() })
+        .set({ monthlyTokensUsed: monthlyUsed, tokensResetAt: cycleEnd, updatedAt: new Date() } as any)
         .where(eq(users.id, userId));
     } else if (now.getTime() >= resetAt.getTime()) {
       monthlyUsed = 0;
       await db
         .update(users)
-        .set({ monthlyTokensUsed: 0, tokensResetAt: cycleEnd, updatedAt: new Date() })
+        .set({ monthlyTokensUsed: 0, tokensResetAt: cycleEnd, updatedAt: new Date() } as any)
         .where(eq(users.id, userId));
     }
-
-    if (monthlyUsed < limitTokens) return true;
 
     const [{ extraCredits = 0 } = { extraCredits: 0 }] = await db
       .select({
@@ -541,7 +590,125 @@ export class UsageQuotaService {
         )
       );
 
-    return (extraCredits ?? 0) > 0;
+    const normalizedExtraCredits = Math.max(0, Number(extraCredits) || 0);
+    const remaining =
+      limitTokens === null
+        ? null
+        : Math.max(0, limitTokens + normalizedExtraCredits - monthlyUsed);
+    const allowed =
+      limitTokens === null ? true : monthlyUsed < limitTokens || normalizedExtraCredits > 0;
+
+    return {
+      allowed,
+      resetAt: cycleEnd,
+      used: monthlyUsed,
+      limit: limitTokens,
+      remaining,
+      extraCredits: normalizedExtraCredits,
+      plan: planKey,
+      isAdmin,
+      isPaid,
+      message:
+        allowed || limitTokens === null
+          ? undefined
+          : "Has agotado tu saldo global mensual de tokens. Actualiza tu plan o compra más capacidad.",
+    };
+  }
+
+  async hasTokenQuota(userId: string): Promise<boolean> {
+    const snapshot = await this.getMonthlyTokenQuotaStatus(userId);
+    return snapshot.allowed;
+  }
+
+  async getUnifiedQuotaSnapshot(userId: string): Promise<UnifiedQuotaSnapshot> {
+    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+
+    if (!user) {
+      return {
+        unified: true,
+        userId,
+        plan: "free",
+        isAdmin: false,
+        isPaid: false,
+        blockingState: "monthly_token_limit",
+        billing: {
+          statusUrl: "/api/billing/status",
+          upgradeUrl: "/workspace-settings?section=billing",
+        },
+        requests: {
+          allowed: false,
+          remaining: 0,
+          limit: 0,
+          resetAt: null,
+          plan: "free",
+          message: "Usuario no encontrado",
+        },
+        daily: {
+          allowed: false,
+          resetAt: null,
+          inputUsed: 0,
+          outputUsed: 0,
+          totalUsed: 0,
+          inputLimit: 0,
+          outputLimit: 0,
+          inputRemaining: 0,
+          outputRemaining: 0,
+          message: "Usuario no encontrado",
+        },
+        monthly: {
+          allowed: false,
+          resetAt: null,
+          used: 0,
+          limit: 0,
+          remaining: 0,
+          extraCredits: 0,
+          plan: "free",
+          isAdmin: false,
+          isPaid: false,
+          message: "Usuario no encontrado",
+        },
+        channels: {
+          totalConsumed: 0,
+          openclawUsed: 0,
+          creditsBalance: 0,
+        },
+      };
+    }
+
+    const [requests, daily, monthly] = await Promise.all([
+      this.getUsageStatus(userId),
+      this.getDailyTokenQuotaStatus(userId, 0),
+      this.getMonthlyTokenQuotaStatus(userId),
+    ]);
+
+    const blockingState = !monthly.allowed
+      ? "monthly_token_limit"
+      : !daily.allowed
+      ? "daily_token_limit"
+      : !requests.allowed
+      ? "request_limit"
+      : "ok";
+
+    return {
+      unified: true,
+      userId,
+      plan: monthly.plan,
+      isAdmin: monthly.isAdmin,
+      isPaid: monthly.isPaid,
+      blockingState,
+      billing: {
+        statusUrl: "/api/billing/status",
+        upgradeUrl: "/workspace-settings?section=billing",
+      },
+      requests,
+      daily,
+      monthly,
+      channels: {
+        totalConsumed: Math.max(0, Number((user as any).tokensConsumed || 0)),
+        openclawUsed: Math.max(0, Number((user as any).openclawTokensConsumed || 0)),
+        creditsBalance: Math.max(0, Number((user as any).creditsBalance || 0)),
+      },
+    };
   }
 
   async recordTokenUsage(userId: string, tokens: number): Promise<void> {

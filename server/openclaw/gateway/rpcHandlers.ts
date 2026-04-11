@@ -1,4 +1,5 @@
 import type { WsRequest } from '../types';
+import { OPENCLAW_RELEASE_VERSION } from '@shared/openclawRelease';
 import { createResponse, createErrorResponse } from './protocol';
 import { openclawSessionManager } from './sessionManager';
 import { toolRegistry } from '../../agent/toolRegistry';
@@ -13,7 +14,7 @@ const handlers = new Map<string, RpcHandler>();
 handlers.set('health', async () => ({
   status: 'ok',
   uptime: process.uptime(),
-  version: '2026.4.8',
+  version: OPENCLAW_RELEASE_VERSION,
   timestamp: Date.now(),
   modules: {
     gateway: true,

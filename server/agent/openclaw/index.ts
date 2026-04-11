@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_OPENCLAW_RELEASE_TAG } from "@shared/openclawRelease";
 import type { ToolDefinition, ToolContext, ToolResult } from "../toolRegistry";
 import { toolRegistry } from "../toolRegistry";
 import {
@@ -1540,7 +1541,7 @@ export function initializeOpenClawTools(): void {
   }
 
   initialized = true;
-  console.log(`[OpenClaw] Initialized ${openclawTools.length} agentic tools from OpenClaw v2026.4.1 source`);
+  console.log(`[OpenClaw] Initialized ${openclawTools.length} agentic tools from OpenClaw ${DEFAULT_OPENCLAW_RELEASE_TAG} source`);
 }
 
 export function getOpenClawToolsForUser(plan: UserPlan): ToolDefinition[] {
@@ -1625,7 +1626,7 @@ export function buildOpenClawSystemPromptSection(options: {
 }): string {
   const sections: string[] = [];
 
-  sections.push("You are an AI assistant powered by IliaGPT with OpenClaw v2026.4.1 agentic capabilities.");
+  sections.push(`You are an AI assistant powered by IliaGPT with OpenClaw ${DEFAULT_OPENCLAW_RELEASE_TAG} agentic capabilities.`);
   sections.push("");
 
   sections.push("## Tooling");

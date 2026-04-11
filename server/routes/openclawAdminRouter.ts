@@ -4,8 +4,31 @@
  */
 
 import { Router, type Request, type Response } from "express";
-import { openclawTokenTracker } from "../services/openclawTokenTracker";
+import { db } from "../db";
+import { openclawTokenLedger, users } from "@shared/schema";
+import { desc, eq, sql } from "drizzle-orm";
 import { openclawConversationManager } from "../services/openclawConversationManager";
+import { usageQuotaService } from "../services/usageQuotaService";
+
+async function buildUserQuotaSummary(userId: string) {
+  const quota = await usageQuotaService.getUnifiedQuotaSnapshot(userId);
+  return {
+    userId,
+    totalInputTokens: quota.daily.inputUsed,
+    totalOutputTokens: quota.daily.outputUsed,
+    totalTokens: quota.channels.openclawUsed,
+    totalConsumed: quota.channels.totalConsumed,
+    sharedMonthlyUsed: quota.monthly.used,
+    sharedMonthlyLimit: quota.monthly.limit,
+    estimatedCostUsd: 0,
+    conversationCount: 0,
+    lastActivity: quota.monthly.resetAt,
+    blockingState: quota.blockingState,
+    byModel: {},
+    byFeature: {},
+    quota,
+  };
+}
 
 export function createOpenClawAdminRouter(): Router {
   const router = Router();
@@ -13,32 +36,69 @@ export function createOpenClawAdminRouter(): Router {
   // ── Token Usage (Admin) ──────────────────────────────────────────────────
 
   /** GET /api/admin/openclaw/tokens/stats — Platform-wide stats */
-  router.get("/tokens/stats", (_req: Request, res: Response) => {
-    res.json(openclawTokenTracker.getPlatformStats());
+  router.get("/tokens/stats", async (_req: Request, res: Response) => {
+    const [row] = await db
+      .select({
+        totalTokens: sql<number>`COALESCE(SUM(${users.openclawTokensConsumed}), 0)`,
+        totalConsumed: sql<number>`COALESCE(SUM(${users.tokensConsumed}), 0)`,
+        activeUsers: sql<number>`COALESCE(COUNT(*) FILTER (WHERE ${users.openclawTokensConsumed} > 0), 0)`,
+      })
+      .from(users);
+
+    res.json({
+      totalTokens: Number(row?.totalTokens || 0),
+      totalConsumed: Number(row?.totalConsumed || 0),
+      totalCostUsd: 0,
+      activeUsers: Number(row?.activeUsers || 0),
+      totalConversations: 0,
+      unified: true,
+    });
   });
 
   /** GET /api/admin/openclaw/tokens/users — All user summaries */
-  router.get("/tokens/users", (_req: Request, res: Response) => {
-    const summaries = openclawTokenTracker.getAllSummaries();
+  router.get("/tokens/users", async (_req: Request, res: Response) => {
+    const rows = await db
+      .select({
+        id: users.id,
+      })
+      .from(users)
+      .where(sql`${users.openclawTokensConsumed} > 0`)
+      .orderBy(desc(users.openclawTokensConsumed))
+      .limit(200);
+
+    const summaries = await Promise.all(rows.map((row) => buildUserQuotaSummary(row.id)));
     res.json({ users: summaries, total: summaries.length });
   });
 
   /** GET /api/admin/openclaw/tokens/users/:userId — Specific user */
-  router.get("/tokens/users/:userId", (req: Request, res: Response) => {
-    const summary = openclawTokenTracker.getUserSummary(req.params.userId);
-    if (!summary) return res.status(404).json({ error: "User not found" });
+  router.get("/tokens/users/:userId", async (req: Request, res: Response) => {
+    const [user] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, req.params.userId))
+      .limit(1);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    const summary = await buildUserQuotaSummary(req.params.userId);
     res.json(summary);
   });
 
   /** GET /api/admin/openclaw/tokens/recent — Recent usage log */
-  router.get("/tokens/recent", (req: Request, res: Response) => {
+  router.get("/tokens/recent", async (req: Request, res: Response) => {
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 500);
-    res.json(openclawTokenTracker.getRecentUsage(limit));
+    const rows = await db
+      .select()
+      .from(openclawTokenLedger)
+      .orderBy(desc(openclawTokenLedger.createdAt))
+      .limit(limit);
+    res.json(rows);
   });
 
   /** POST /api/admin/openclaw/tokens/reset/:userId — Reset user counters */
-  router.post("/tokens/reset/:userId", (req: Request, res: Response) => {
-    openclawTokenTracker.resetUser(req.params.userId);
+  router.post("/tokens/reset/:userId", async (req: Request, res: Response) => {
+    await db
+      .update(users)
+      .set({ openclawTokensConsumed: 0, updatedAt: new Date() })
+      .where(eq(users.id, req.params.userId));
     res.json({ success: true, message: `Tokens reset for ${req.params.userId}` });
   });
 
@@ -117,11 +177,11 @@ export function createOpenClawUserRouter(): Router {
   });
 
   /** GET /api/openclaw/tokens/me — Current user's token usage */
-  router.get("/tokens/me", (req: Request, res: Response) => {
+  router.get("/tokens/me", async (req: Request, res: Response) => {
     const userId = (req as any).user?.id || req.headers["x-anonymous-user-id"] as string;
     if (!userId) return res.status(401).json({ error: "Authentication required" });
-    const summary = openclawTokenTracker.getUserSummary(userId);
-    res.json(summary || { userId, totalTokens: 0, estimatedCostUsd: 0 });
+    const summary = await buildUserQuotaSummary(userId);
+    res.json(summary);
   });
 
   return router;

@@ -1,5 +1,6 @@
 import { db } from "../db";
 import { openclawInstances, openclawTokenLedger, openclawAdminConfig } from "@shared/schema";
+import { DEFAULT_OPENCLAW_RELEASE_TAG } from "@shared/openclawRelease";
 import { eq, sql, desc, and, gte } from "drizzle-orm";
 import crypto from "crypto";
 
@@ -20,11 +21,15 @@ export async function getOrCreateInstance(userId: string) {
     .limit(1);
 
   if (existing.length > 0) {
+    const nextVersion =
+      existing[0].version && existing[0].version !== DEFAULT_OPENCLAW_RELEASE_TAG
+        ? DEFAULT_OPENCLAW_RELEASE_TAG
+        : existing[0].version;
     await db
       .update(openclawInstances)
-      .set({ lastActiveAt: new Date(), updatedAt: new Date() })
+      .set({ lastActiveAt: new Date(), updatedAt: new Date(), version: nextVersion })
       .where(eq(openclawInstances.id, existing[0].id));
-    return existing[0];
+    return { ...existing[0], version: nextVersion };
   }
 
   const adminConfig = await getAdminConfig();
@@ -46,6 +51,7 @@ export async function getOrCreateInstance(userId: string) {
       userId,
       instanceId,
       status: "active",
+      version: DEFAULT_OPENCLAW_RELEASE_TAG,
       tokensLimit: adminConfig.defaultTokensLimit,
     })
     .returning();

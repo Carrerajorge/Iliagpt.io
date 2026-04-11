@@ -12,9 +12,10 @@ import { useAuth } from "@/hooks/use-auth";
 import { apiFetch } from "@/lib/apiClient";
 import { useState } from "react";
 import { toast } from "sonner";
+import { DEFAULT_OPENCLAW_RELEASE_TAG } from "@shared/openclawRelease";
 import {
-  Activity, Cpu, Database, GitBranch, RefreshCw, Settings, Shield,
-  Zap, Clock, Hash, BarChart3, Users, Trash2, Pause, Play, RotateCcw,
+  Activity, Cpu, GitBranch, RefreshCw, Settings,
+  Zap, Clock, Hash, Users, Trash2, Pause, Play,
 } from "lucide-react";
 
 function OpenClawLogo({ className }: { className?: string }) {
@@ -57,6 +58,11 @@ function formatNumber(n: number): string {
   return n.toString();
 }
 
+function formatQuotaLimit(value: number | null | undefined): string {
+  if (value == null || value < 0) return "Ilimitado";
+  return formatNumber(value);
+}
+
 function formatDate(d: string | null | undefined): string {
   if (!d) return "Nunca";
   return new Date(d).toLocaleDateString("es", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -88,7 +94,10 @@ function UserInstanceTab() {
   const instance = data?.instance;
   const budget = instance?.budget;
   const history = tokenData?.history || [];
-  const usagePercent = budget ? Math.min(100, (budget.used / budget.limit) * 100) : 0;
+  const usagePercent =
+    budget && typeof budget.limit === "number" && budget.limit > 0
+      ? Math.min(100, (budget.used / budget.limit) * 100)
+      : 0;
 
   return (
     <div className="space-y-4">
@@ -100,7 +109,7 @@ function UserInstanceTab() {
               <span className="font-semibold text-sm" data-testid="text-instance-id">{instance?.instanceId || "Sin instancia"}</span>
               <StatusBadge status={instance?.status || "unknown"} />
             </div>
-            <p className="text-xs text-muted-foreground">v{instance?.version || "2026.4.1"}</p>
+            <p className="text-xs text-muted-foreground">{instance?.version || DEFAULT_OPENCLAW_RELEASE_TAG}</p>
           </div>
         </div>
         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => refetch()} data-testid="button-refresh-instance">
@@ -113,10 +122,20 @@ function UserInstanceTab() {
       <div className="space-y-2">
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground flex items-center gap-1.5"><Zap className="h-3.5 w-3.5" /> Tokens utilizados</span>
-          <span className="font-medium" data-testid="text-tokens-used">{formatNumber(budget?.used || 0)} / {formatNumber(budget?.limit || 0)}</span>
+          <span className="font-medium" data-testid="text-tokens-used">
+            {formatNumber(budget?.used || 0)} / {formatQuotaLimit(budget?.limit)}
+          </span>
         </div>
         <Progress value={usagePercent} className="h-2" />
-        {usagePercent > 80 && <p className="text-xs text-amber-500">Advertencia: has usado el {usagePercent.toFixed(0)}% de tus tokens</p>}
+        <p className="text-[11px] text-muted-foreground">
+          Cuota global compartida entre OpenClaw e ILIAGPTChatbot.
+        </p>
+        {typeof budget?.channels?.openclawUsed === "number" && (
+          <p className="text-[11px] text-muted-foreground">
+            Consumo acumulado originado desde OpenClaw: {formatNumber(budget.channels.openclawUsed)} tokens
+          </p>
+        )}
+        {usagePercent > 80 && <p className="text-xs text-amber-500">Advertencia: has usado el {usagePercent.toFixed(0)}% del saldo global compartido</p>}
       </div>
 
       <div className="grid grid-cols-3 gap-3">
@@ -165,7 +184,6 @@ function UserInstanceTab() {
 
 function AdminInstancesTab() {
   const queryClient = useQueryClient();
-  const [editingLimit, setEditingLimit] = useState<{ id: string; value: string } | null>(null);
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["/api/openclaw/admin/instances"],
@@ -180,24 +198,10 @@ function AdminInstancesTab() {
     return data;
   }
 
-  const updateTokensMutation = useMutation({
-    mutationFn: ({ id, tokensLimit }: { id: string; tokensLimit: number }) =>
-      checkedFetch(`/api/openclaw/admin/instances/${id}/tokens`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tokensLimit }) }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/openclaw/admin/instances"] }); toast.success("Límite actualizado"); setEditingLimit(null); },
-    onError: (e: Error) => toast.error(e.message),
-  });
-
   const toggleStatusMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) =>
       checkedFetch(`/api/openclaw/admin/instances/${id}/status`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/openclaw/admin/instances"] }); toast.success("Estado actualizado"); },
-    onError: (e: Error) => toast.error(e.message),
-  });
-
-  const resetTokensMutation = useMutation({
-    mutationFn: (id: string) =>
-      checkedFetch(`/api/openclaw/admin/instances/${id}/reset-tokens`, { method: "POST" }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/openclaw/admin/instances"] }); toast.success("Tokens reiniciados"); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -233,7 +237,7 @@ function AdminInstancesTab() {
         </div>
         <div className="rounded-lg border p-2.5 text-center">
           <p className="text-lg font-bold text-orange-500">{formatNumber(stats?.totalTokensUsed || 0)}</p>
-          <p className="text-[10px] text-muted-foreground uppercase">Tokens</p>
+          <p className="text-[10px] text-muted-foreground uppercase">OpenClaw</p>
         </div>
         <div className="rounded-lg border p-2.5 text-center">
           <p className="text-lg font-bold text-blue-500">{formatNumber(stats?.totalRequests || 0)}</p>
@@ -247,7 +251,10 @@ function AdminInstancesTab() {
         <div className="space-y-2">
           {instances.length === 0 && <p className="text-sm text-muted-foreground text-center py-8">No hay instancias registradas</p>}
           {instances.map((inst: any) => {
-            const pct = inst.tokensLimit > 0 ? Math.min(100, (inst.tokensUsed / inst.tokensLimit) * 100) : 0;
+            const pct =
+              typeof inst.sharedTokensLimit === "number" && inst.sharedTokensLimit > 0
+                ? Math.min(100, (inst.sharedTokensUsed / inst.sharedTokensLimit) * 100)
+                : 0;
             return (
               <div key={inst.id} className="rounded-lg border p-3 space-y-2" data-testid={`admin-instance-${inst.id}`}>
                 <div className="flex items-center justify-between">
@@ -263,9 +270,6 @@ function AdminInstancesTab() {
                     <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => toggleStatusMutation.mutate({ id: inst.id, status: inst.status === "active" ? "suspended" : "active" })} data-testid={`button-toggle-${inst.id}`}>
                       {inst.status === "active" ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
                     </Button>
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => resetTokensMutation.mutate(inst.id)} data-testid={`button-reset-${inst.id}`}>
-                      <RotateCcw className="h-3 w-3" />
-                    </Button>
                     <Button variant="ghost" size="icon" className="h-6 w-6 text-red-500" onClick={() => { if (confirm("¿Eliminar esta instancia?")) deleteInstanceMutation.mutate(inst.id); }} data-testid={`button-delete-${inst.id}`}>
                       <Trash2 className="h-3 w-3" />
                     </Button>
@@ -274,23 +278,18 @@ function AdminInstancesTab() {
 
                 <div className="flex items-center gap-2">
                   <Progress value={pct} className="h-1.5 flex-1" />
-                  <span className="text-[10px] text-muted-foreground shrink-0">{formatNumber(inst.tokensUsed)}/{formatNumber(inst.tokensLimit)}</span>
+                  <span className="text-[10px] text-muted-foreground shrink-0">
+                    Global {formatNumber(inst.sharedTokensUsed || 0)}/{formatQuotaLimit(inst.sharedTokensLimit)}
+                  </span>
                 </div>
 
-                {editingLimit?.id === inst.id ? (
-                  <div className="flex items-center gap-2">
-                    <Input type="number" value={editingLimit.value} onChange={(e) => setEditingLimit({ id: inst.id, value: e.target.value })} className="h-7 text-xs" data-testid={`input-limit-${inst.id}`} />
-                    <Button size="sm" className="h-7 text-xs" onClick={() => updateTokensMutation.mutate({ id: inst.id, tokensLimit: parseInt(editingLimit.value) || 0 })} data-testid={`button-save-limit-${inst.id}`}>Guardar</Button>
-                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingLimit(null)}>Cancelar</Button>
-                  </div>
-                ) : (
-                  <Button variant="ghost" size="sm" className="h-6 text-[10px]" onClick={() => setEditingLimit({ id: inst.id, value: String(inst.tokensLimit) })} data-testid={`button-edit-limit-${inst.id}`}>
-                    Editar límite
-                  </Button>
-                )}
+                <div className="rounded-md border border-dashed px-2 py-1.5 text-[10px] text-muted-foreground">
+                  Billing centralizado: el saldo y los límites ya no se editan desde OpenClaw.
+                </div>
 
                 <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
                   <span>{inst.requestCount} solicitudes</span>
+                  <span>OpenClaw: {formatNumber(inst.tokensUsed || 0)} tok</span>
                   <span>Creado: {formatDate(inst.createdAt)}</span>
                   <span>Último: {formatDate(inst.lastActiveAt)}</span>
                 </div>
@@ -360,7 +359,7 @@ function AdminConfigTab() {
               <p className="text-sm font-medium flex items-center gap-2"><GitBranch className="h-3.5 w-3.5" /> Repositorio GitHub</p>
               <p className="text-xs text-muted-foreground">{config?.githubRepo || "openclaw/openclaw"}</p>
             </div>
-            <Badge variant="outline" className="text-[10px]">{config?.currentVersion || "v2026.4.1"}</Badge>
+            <Badge variant="outline" className="text-[10px]">{config?.currentVersion || DEFAULT_OPENCLAW_RELEASE_TAG}</Badge>
           </div>
           {config?.lastSyncAt && <p className="text-[10px] text-muted-foreground">Última sincronización: {formatDate(config.lastSyncAt)}</p>}
         </div>

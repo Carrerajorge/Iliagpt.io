@@ -926,6 +926,9 @@ export function createStripeRouter() {
           )
         );
 
+      const { usageQuotaService } = await import("../services/usageQuotaService");
+      const quota = await usageQuotaService.getUnifiedQuotaSnapshot(userId);
+
 	      res.json({
 	        subscriptionStatus,
 	        subscriptionPeriodEnd,
@@ -933,6 +936,7 @@ export function createStripeRouter() {
 	        plan: (dbUser as any)?.plan || "free",
 	        monthsPaid,
 	        extraCredits,
+          quota,
 	        canManageBilling: await canManageBillingForDbUser(dbUser),
 	      });
 	    } catch (error: any) {

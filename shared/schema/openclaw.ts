@@ -2,6 +2,7 @@ import { pgTable, text, varchar, integer, timestamp, jsonb, index, boolean } fro
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { users } from "../schema";
+import { DEFAULT_OPENCLAW_RELEASE_TAG } from "../openclawRelease";
 
 export const openclawInstances = pgTable(
   "openclaw_instances",
@@ -10,7 +11,7 @@ export const openclawInstances = pgTable(
     userId: varchar("user_id").notNull().references(() => users.id),
     instanceId: varchar("instance_id").notNull().unique(),
     status: text("status").notNull().default("active"),
-    version: varchar("version").default("v2026.4.1"),
+    version: varchar("version").default(DEFAULT_OPENCLAW_RELEASE_TAG),
     config: jsonb("config").default({}),
     tokensUsed: integer("tokens_used").notNull().default(0),
     tokensLimit: integer("tokens_limit").notNull().default(50000),
@@ -52,7 +53,7 @@ export const openclawAdminConfig = pgTable("openclaw_admin_config", {
   globalEnabled: boolean("global_enabled").notNull().default(true),
   autoProvisionOnLogin: boolean("auto_provision_on_login").notNull().default(true),
   githubRepo: varchar("github_repo").default("openclaw/openclaw"),
-  currentVersion: varchar("current_version").default("v2026.4.8"),
+  currentVersion: varchar("current_version").default(DEFAULT_OPENCLAW_RELEASE_TAG),
   lastSyncAt: timestamp("last_sync_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

@@ -179,6 +179,7 @@ function estimateMessageTokens(payload: unknown): number {
 }
 
 const BUILTIN_GATEWAY_COMMANDS = Object.freeze([
+  { name: "commands.list", description: "List the built-in OpenClaw gateway RPC commands.", category: "commands" },
   { name: "models.list", description: "List the unified ILIAGPT/OpenClaw model catalog.", category: "models" },
   { name: "skills.status", description: "Show installed OpenClaw skills.", category: "skills" },
   { name: "skills.search", description: "Search installed OpenClaw skills.", category: "skills" },
@@ -240,7 +241,10 @@ function searchInstalledSkills(query: string) {
 }
 
 async function buildGatewayConfig(userId?: string) {
-  const catalog = await getOpenClawGatewayModelCatalog({ userId });
+  const [catalog, quotaSnapshot] = await Promise.all([
+    getOpenClawGatewayModelCatalog({ userId }),
+    userId ? usageQuotaService.getUnifiedQuotaSnapshot(userId) : Promise.resolve(null),
+  ]);
   const providers = Array.from(
     new Map(
       catalog.models.map((model) => [
@@ -266,6 +270,7 @@ async function buildGatewayConfig(userId?: string) {
       unified: true,
       statusUrl: "/api/billing/status",
       upgradeUrl: "/workspace-settings?section=billing",
+      snapshot: quotaSnapshot,
     },
     desktopNativeMode: {
       enabled: true,
@@ -1489,24 +1494,19 @@ async function handleMethod(client: GatewayClient, id: number | string, method: 
 export function attachOpenClawGateway(httpServer: HttpServer) {
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
-  const origEmit = httpServer.emit.bind(httpServer);
-  httpServer.emit = function (event: string, ...args: any[]) {
-    if (event === "upgrade") {
-      const req = args[0] as any;
-      const socket = args[1];
-      const head = args[2];
-      const pathname = (req.url || "").split("?")[0];
-      console.log(`[OpenClaw Gateway] Upgrade request: ${pathname}`);
-      if (pathname === "/openclaw-ws" || pathname === "/openclaw-ui") {
-        console.log(`[OpenClaw Gateway] Handling upgrade for ${pathname}`);
-        wss.handleUpgrade(req, socket, head, (ws) => {
-          wss.emit("connection", ws, req);
-        });
-        return true;
-      }
+  httpServer.prependListener("upgrade", (req: any, socket, head) => {
+    const pathname = (req.url || "").split("?")[0];
+    if (pathname !== "/openclaw-ws" && pathname !== "/openclaw-ui") {
+      return;
     }
-    return origEmit(event, ...args);
-  } as any;
+
+    console.log(`[OpenClaw Gateway] Upgrade request: ${pathname}`);
+    console.log(`[OpenClaw Gateway] Handling upgrade for ${pathname}`);
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
+  });
 
   wss.on("connection", (ws) => {
     const connId = randomUUID();
