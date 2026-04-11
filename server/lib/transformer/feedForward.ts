@@ -13,7 +13,19 @@
  *   - inner layer:  d_ff = 2048
  */
 
-import { type Matrix, matmul, addBias, relu, xavier } from "./matrix";
+import { type Matrix, matmul, addBias, relu, gelu, xavier } from "./matrix";
+
+/**
+ * Activation function choice for the position-wise feed-forward.
+ *
+ *   "relu" — Vaswani et al. 2017, section 3.3 "max(0, ·)"
+ *   "gelu" — Devlin et al. 2018 (BERT), Appendix A.2: "We use a gelu
+ *            activation rather than the standard relu"
+ *
+ * Defaults to `"relu"` so the original Transformer implementation keeps
+ * its paper-exact behavior. BERT callers must pass `"gelu"` explicitly.
+ */
+export type FFNActivation = "relu" | "gelu";
 
 export interface FFNWeights {
   /** W_1 ∈ R^(d_model × d_ff) */
@@ -49,9 +61,14 @@ export function initFFNWeights(dModel: number, dFF: number, seed = 7): FFNWeight
  *
  * The same W/b are applied to every position in the sequence; this is
  * the "applied to each position separately and identically" clause from
- * section 3.3.
+ * section 3.3. The `activation` parameter selects between the paper's
+ * ReLU (default, Vaswani et al. 2017) and GELU (BERT, Devlin et al. 2018).
  */
-export function feedForward(x: Matrix, weights: FFNWeights): Matrix {
+export function feedForward(
+  x: Matrix,
+  weights: FFNWeights,
+  activation: FFNActivation = "relu",
+): Matrix {
   if (x.cols !== weights.W1.rows) {
     throw new Error(
       `feedForward: x.cols (${x.cols}) must equal W1.rows (${weights.W1.rows}) — both are d_model`,
@@ -73,8 +90,9 @@ export function feedForward(x: Matrix, weights: FFNWeights): Matrix {
     );
   }
 
-  // max(0, x W_1 + b_1)
-  const hidden = relu(addBias(matmul(x, weights.W1), weights.b1));
+  // activation(x W_1 + b_1)
+  const preact = addBias(matmul(x, weights.W1), weights.b1);
+  const hidden = activation === "gelu" ? gelu(preact) : relu(preact);
   // ... W_2 + b_2
   return addBias(matmul(hidden, weights.W2), weights.b2);
 }

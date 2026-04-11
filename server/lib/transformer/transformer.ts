@@ -53,6 +53,7 @@ import {
 } from "./attention";
 import {
   type FFNWeights,
+  type FFNActivation,
   feedForward,
   initFFNWeights,
 } from "./feedForward";
@@ -134,6 +135,7 @@ export function encoderLayer(
   config: MultiHeadConfig,
   srcPaddingMask?: boolean[][],
   dropoutConfig?: DropoutConfig,
+  ffnActivation: FFNActivation = "relu",
 ): Matrix {
   const drop = (m: Matrix, salt: number): Matrix =>
     dropoutConfig
@@ -144,8 +146,8 @@ export function encoderLayer(
   const attn = multiHeadAttention(x, x, x, config, weights.selfAttn, srcPaddingMask);
   // 2. Residual + LayerNorm (Add & Norm #1)
   const afterAttn = applyLearnableLayerNorm(add(x, drop(attn.output, 1)), weights.norm1);
-  // 3. Position-wise feed-forward
-  const ffnOut = feedForward(afterAttn, weights.ffn);
+  // 3. Position-wise feed-forward (ReLU for Vaswani, GELU for BERT)
+  const ffnOut = feedForward(afterAttn, weights.ffn, ffnActivation);
   // 4. Residual + LayerNorm (Add & Norm #2)
   return applyLearnableLayerNorm(add(afterAttn, drop(ffnOut, 2)), weights.norm2);
 }
@@ -335,13 +337,14 @@ export function runEncoder(
   config: MultiHeadConfig,
   srcPaddingMask?: boolean[][],
   dropoutConfig?: DropoutConfig,
+  ffnActivation: FFNActivation = "relu",
 ): Matrix {
   let h = x;
   for (let i = 0; i < weights.length; i++) {
     const layerDropout = dropoutConfig
       ? { ...dropoutConfig, seed: (dropoutConfig.seed ?? 0) + i * 1000 }
       : undefined;
-    h = encoderLayer(h, weights[i], config, srcPaddingMask, layerDropout);
+    h = encoderLayer(h, weights[i], config, srcPaddingMask, layerDropout, ffnActivation);
   }
   return h;
 }

@@ -56,7 +56,12 @@ export {
 } from "./encoding";
 
 // ─── Position-wise feed-forward (Eq 2, section 3.3) ────────────────────────
-export { type FFNWeights, feedForward, initFFNWeights } from "./feedForward";
+export {
+  type FFNWeights,
+  type FFNActivation,
+  feedForward,
+  initFFNWeights,
+} from "./feedForward";
 
 // ─── Encoder/decoder layers + full stack (section 3.1) ─────────────────────
 export {
@@ -185,3 +190,6 @@ export {
   trainingStep,
   registerSetupWithOptimizer,
 } from "./training";
+
+// ─── BERT (Devlin et al. 2018, bidirectional encoder) ──────────────────────
+export * from "./bert";

@@ -173,6 +173,59 @@ export function relu(m: Matrix): Matrix {
   return out;
 }
 
+/**
+ * Element-wise GELU (Gaussian Error Linear Unit).
+ *
+ * Hendrycks & Gimpel 2016 — the activation used by BERT (Devlin et al. 2018,
+ * Appendix A.2: "We use a gelu activation rather than the standard relu,
+ * following OpenAI GPT.").
+ *
+ *   GELU(x) = x · Φ(x)
+ *
+ * where Φ is the CDF of the standard normal. The closed-form exact version
+ * (not the tanh approximation) is:
+ *
+ *   GELU(x) = x · 0.5 · (1 + erf(x / √2))
+ *
+ * We use the exact version for maximum paper-faithfulness. `erf` is
+ * implemented via the Abramowitz & Stegun 7.1.26 rational approximation,
+ * which has max error ≈ 1.5e-7 across the real line — well below our
+ * Float64 forward-pass precision budget.
+ */
+export function gelu(m: Matrix): Matrix {
+  const out = zeros(m.rows, m.cols);
+  const invSqrt2 = 1 / Math.SQRT2;
+  for (let i = 0; i < m.data.length; i++) {
+    const x = m.data[i];
+    out.data[i] = 0.5 * x * (1 + erf(x * invSqrt2));
+  }
+  return out;
+}
+
+/**
+ * Error function `erf(x)` via Abramowitz & Stegun 7.1.26.
+ *
+ *   erf(x) ≈ 1 - (a1·t + a2·t² + a3·t³ + a4·t⁴ + a5·t⁵) · exp(-x²)
+ *   t = 1 / (1 + p·x)
+ *
+ * Max absolute error ≈ 1.5e-7 for all real x. We handle the sign
+ * explicitly because erf is odd: erf(-x) = -erf(x).
+ */
+function erf(x: number): number {
+  const sign = x < 0 ? -1 : 1;
+  const ax = Math.abs(x);
+  const p = 0.3275911;
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const t = 1 / (1 + p * ax);
+  const poly = ((((a5 * t + a4) * t) + a3) * t + a2) * t + a1;
+  const y = 1 - poly * t * Math.exp(-ax * ax);
+  return sign * y;
+}
+
 // ---------------------------------------------------------------------------
 // Softmax (row-wise, numerically stable)
 // ---------------------------------------------------------------------------
