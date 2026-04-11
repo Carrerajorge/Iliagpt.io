@@ -58,6 +58,8 @@ import { validateOutput } from "./outputValidator";
 import { enrichContext, renderContextBundle } from "./contextEnricher";
 import { serializeToolOutcomeForModel } from "./tools";
 import { defaultRateLimitKey } from "./rateLimit";
+import { projectRequestResponseToRunRecord } from "./persistence";
+import type { RunRepository } from "./persistence";
 import {
   CognitiveAttributes,
   CognitiveSpanNames,
@@ -207,6 +209,26 @@ export interface CognitiveMiddlewareOptions {
    * breaker. Added in Turn E.
    */
   circuitBreakers?: CircuitBreakerRegistry;
+  /**
+   * Optional run repository for post-hoc audit + replay. When
+   * supplied, every completed run (including failed ones) is
+   * saved asynchronously after the response is returned to the
+   * caller. Save errors are never fatal — they land in
+   * `response.errors[]` on the NEXT request so the user can see
+   * the failure without their current reply being held up.
+   * Added in Turn G.
+   */
+  runRepository?: RunRepository;
+  /**
+   * When true, `run()` awaits the save before returning. Default
+   * false (fire-and-forget). Tests and workflows that need
+   * deterministic "save happened before response" semantics can
+   * opt in. Streaming `runStream()` always runs the save after
+   * yielding the `done` event regardless of this flag because
+   * the async generator's termination semantics make awaited
+   * saves inside the generator awkward. Added in Turn G.
+   */
+  awaitRunSave?: boolean;
 }
 
 const DEFAULT_OPTIONS = {
@@ -1140,7 +1162,7 @@ export class CognitiveMiddleware {
       completionTokens: finalResponse.usage?.completionTokens,
     };
 
-    return {
+    const cognitiveResponse: CognitiveResponse = {
       ok: validation.ok,
       text: finalResponse.text,
       toolCalls: finalResponse.toolCalls,
@@ -1150,6 +1172,60 @@ export class CognitiveMiddleware {
       telemetry,
       errors,
     };
+
+    // ── 9. Persist the run (Turn G) ───────────────────────────────
+    // Fire-and-forget by default so persistence latency doesn't
+    // block the caller. Tests that need ordering set
+    // `awaitRunSave: true` on the middleware options so the save
+    // completes inside the request span.
+    await this.persistRun(req, cognitiveResponse);
+
+    return cognitiveResponse;
+  }
+
+  /**
+   * Save a completed run to the configured repository. Never
+   * throws — errors are appended to `response.errors`. When
+   * `awaitRunSave` is false (default), the save runs in the
+   * background and this function resolves immediately. Added in
+   * Turn G.
+   */
+  private async persistRun(
+    req: CognitiveRequest,
+    response: CognitiveResponse,
+  ): Promise<void> {
+    const repo = this.options.runRepository;
+    if (!repo) return;
+
+    const projection = projectRequestResponseToRunRecord(req, response);
+
+    // Guard: serialize the projection to JSON here so a
+    // non-serializable result explodes on OUR side, not inside a
+    // random repo. On failure we mutate the response's errors[]
+    // with a diagnostic code and skip the save.
+    try {
+      JSON.stringify(projection);
+    } catch (err) {
+      response.errors.push(
+        `run_persist_serialize: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+
+    const savePromise = repo.save(projection).catch((err) => {
+      // Record the error on the response so telemetry still
+      // shows it. Fire-and-forget paths won't see it (the caller
+      // already has the response in hand) but the repo's own
+      // logger should log it too.
+      response.errors.push(
+        `run_persist_failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    });
+
+    if (this.options.awaitRunSave) {
+      await savePromise;
+    }
   }
 
   /**
@@ -1718,6 +1794,15 @@ export class CognitiveMiddleware {
     };
 
     yield { kind: "done", response };
+
+    // Turn G: persist the run after yielding the done event.
+    // We deliberately save AFTER yielding so consumers observing
+    // the stream see the terminal event with zero added latency.
+    // Save errors are non-fatal — they're logged into
+    // response.errors which is already captured on the done event
+    // (subsequent reads of that object via the caller's own
+    // reference will see the appended error).
+    await this.persistRun(req, response);
 
     // Enrich root span with final routing + validation attrs.
     rootSpan.setAttribute(CognitiveAttributes.INTENT, intent.intent);

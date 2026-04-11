@@ -77,6 +77,15 @@ import {
   COGNITIVE_TRACER_NAME,
   resetCognitiveTracerCache,
   withCognitiveSpan,
+  // Run persistence (Turn G)
+  InMemoryRunRepository,
+  projectRequestResponseToRunRecord,
+  PgMemoryStoreAdapter,
+  convertPgMemoryToCognitive,
+  type CognitiveRunRecord,
+  type RunRepository,
+  type PgVectorMemoryStoreLike,
+  type PgMemoryLike,
 } from "../cognitive";
 
 // ---------------------------------------------------------------------------
@@ -3234,6 +3243,537 @@ describe("cognitive: middleware OTel integration (Turn F)", () => {
     const mw = new CognitiveMiddleware({ adapters: [new EchoMockAdapter()] });
     const r = await mw.run({ userId: "u", message: "hi" });
     expect(r.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. Run persistence layer (Turn G)
+// ---------------------------------------------------------------------------
+
+describe("cognitive: InMemoryRunRepository (Turn G)", () => {
+  it("187 save assigns runId + persistedAt and returns the full record", async () => {
+    const repo = new InMemoryRunRepository({
+      now: () => 123_000,
+      generateRunId: (userId, counter) => `run_${userId}_${counter}`,
+    });
+    const record = await repo.save({
+      userId: "alice",
+      userMessage: "hello",
+      ok: true,
+      text: "hi",
+      toolCallCount: 0,
+      toolExecutions: [],
+      intent: "chat",
+      providerName: "mock-echo",
+      providerReason: "first capable",
+      validationOk: true,
+      validationIssueCount: 0,
+      refusalDetected: false,
+      durationMs: 5,
+      providerCallMs: 2,
+      toolTotalMs: 0,
+      contextEnrichmentMs: 0,
+      agenticIterations: 1,
+      rateLimitAllowed: true,
+      circuitBreakerState: "none",
+      errors: [],
+    });
+    expect(record.runId).toBe("run_alice_1");
+    expect(record.persistedAt).toBe(123_000);
+    expect(record.providerName).toBe("mock-echo");
+  });
+
+  it("188 get returns null for unknown runId", async () => {
+    const repo = new InMemoryRunRepository();
+    const r = await repo.get("ghost");
+    expect(r).toBeNull();
+  });
+
+  it("189 get round-trips a saved record", async () => {
+    const repo = new InMemoryRunRepository();
+    const saved = await repo.save({
+      userId: "u",
+      userMessage: "m",
+      ok: true,
+      text: "t",
+      toolCallCount: 0,
+      toolExecutions: [],
+      intent: "chat",
+      providerName: "p",
+      providerReason: "r",
+      validationOk: true,
+      validationIssueCount: 0,
+      refusalDetected: false,
+      durationMs: 1,
+      providerCallMs: 1,
+      toolTotalMs: 0,
+      contextEnrichmentMs: 0,
+      agenticIterations: 1,
+      rateLimitAllowed: true,
+      circuitBreakerState: "none",
+      errors: [],
+    });
+    const fetched = await repo.get(saved.runId);
+    expect(fetched).toEqual(saved);
+  });
+
+  it("190 listByUser returns newest first, respects limit", async () => {
+    const repo = new InMemoryRunRepository({
+      generateRunId: (userId, counter) => `${userId}-${counter}`,
+    });
+    const base = {
+      userMessage: "m",
+      ok: true,
+      text: "t",
+      toolCallCount: 0,
+      toolExecutions: [],
+      intent: "chat",
+      providerName: "p",
+      providerReason: "r",
+      validationOk: true,
+      validationIssueCount: 0,
+      refusalDetected: false,
+      durationMs: 1,
+      providerCallMs: 1,
+      toolTotalMs: 0,
+      contextEnrichmentMs: 0,
+      agenticIterations: 1,
+      rateLimitAllowed: true,
+      circuitBreakerState: "none",
+      errors: [],
+    };
+    await repo.save({ userId: "alice", ...base });
+    await repo.save({ userId: "alice", ...base });
+    await repo.save({ userId: "bob", ...base });
+    await repo.save({ userId: "alice", ...base });
+
+    const alice = await repo.listByUser("alice");
+    expect(alice.length).toBe(3);
+    // Newest first — last inserted should be index 0.
+    expect(alice[0].runId).toBe("alice-4");
+    expect(alice[2].runId).toBe("alice-1");
+
+    const aliceLimited = await repo.listByUser("alice", 2);
+    expect(aliceLimited.length).toBe(2);
+    expect(aliceLimited[0].runId).toBe("alice-4");
+  });
+
+  it("191 deleteByRunId removes the record and user index entry", async () => {
+    const repo = new InMemoryRunRepository();
+    const saved = await repo.save({
+      userId: "u",
+      userMessage: "m",
+      ok: true,
+      text: "t",
+      toolCallCount: 0,
+      toolExecutions: [],
+      intent: "chat",
+      providerName: "p",
+      providerReason: "r",
+      validationOk: true,
+      validationIssueCount: 0,
+      refusalDetected: false,
+      durationMs: 1,
+      providerCallMs: 1,
+      toolTotalMs: 0,
+      contextEnrichmentMs: 0,
+      agenticIterations: 1,
+      rateLimitAllowed: true,
+      circuitBreakerState: "none",
+      errors: [],
+    });
+    const count = await repo.deleteByRunId(saved.runId);
+    expect(count).toBe(1);
+    expect(await repo.get(saved.runId)).toBeNull();
+    expect(await repo.listByUser("u")).toEqual([]);
+  });
+
+  it("192 maxPerUser caps the user index + evicts oldest", async () => {
+    const repo = new InMemoryRunRepository({
+      maxPerUser: 3,
+      generateRunId: (u, c) => `${u}-${c}`,
+    });
+    const base = {
+      userId: "alice",
+      userMessage: "m",
+      ok: true,
+      text: "t",
+      toolCallCount: 0,
+      toolExecutions: [],
+      intent: "chat",
+      providerName: "p",
+      providerReason: "r",
+      validationOk: true,
+      validationIssueCount: 0,
+      refusalDetected: false,
+      durationMs: 1,
+      providerCallMs: 1,
+      toolTotalMs: 0,
+      contextEnrichmentMs: 0,
+      agenticIterations: 1,
+      rateLimitAllowed: true,
+      circuitBreakerState: "none",
+      errors: [],
+    };
+    for (let i = 0; i < 5; i++) await repo.save(base);
+    const list = await repo.listByUser("alice");
+    expect(list.length).toBe(3);
+    // Oldest two should be evicted.
+    const ids = list.map((r) => r.runId);
+    expect(ids).toEqual(["alice-5", "alice-4", "alice-3"]);
+    expect(await repo.get("alice-1")).toBeNull();
+  });
+
+  it("193 projectRequestResponseToRunRecord produces a flat snapshot", () => {
+    const projection = projectRequestResponseToRunRecord(
+      { userId: "u", message: "hi there" },
+      {
+        ok: true,
+        text: "hello back",
+        toolCalls: [],
+        toolExecutions: [
+          {
+            toolCallId: "c1",
+            toolName: "demo_sum",
+            ok: true,
+            result: { sum: 5 },
+            durationMs: 1,
+            iteration: 0,
+          },
+        ],
+        routing: {
+          intent: {
+            intent: "chat",
+            confidence: 1,
+            reasoning: "greeting",
+            alternatives: [],
+          },
+          providerName: "mock-echo",
+          providerReason: "first capable: mock-echo",
+        },
+        validation: {
+          ok: true,
+          issues: [],
+          refusalDetected: false,
+          toolCallsValid: true,
+        },
+        telemetry: {
+          startedAt: 0,
+          endedAt: 10,
+          durationMs: 10,
+          intentClassificationMs: 1,
+          contextEnrichmentMs: 0,
+          providerCallMs: 5,
+          validationMs: 1,
+          retries: 0,
+          contextChunksIncluded: 0,
+          toolCallCount: 1,
+          toolTotalMs: 1,
+          agenticIterations: 2,
+          rateLimitAllowed: true,
+          rateLimitRemaining: Number.NaN,
+          rateLimitCheckMs: 0,
+          circuitBreakerState: "none",
+        },
+        errors: [],
+      },
+    );
+    expect(projection.toolCallCount).toBe(1);
+    expect(projection.intent).toBe("chat");
+    expect(projection.providerName).toBe("mock-echo");
+    expect(projection.durationMs).toBe(10);
+    expect(projection.toolExecutions.length).toBe(1);
+    expect(projection.userMessage).toBe("hi there");
+  });
+});
+
+describe("cognitive: middleware persistence hook (Turn G)", () => {
+  it("194 run() with awaitRunSave saves synchronously", async () => {
+    const repo = new InMemoryRunRepository();
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      runRepository: repo,
+      awaitRunSave: true,
+    });
+    await mw.run({ userId: "u", message: "hi" });
+    expect(repo.size).toBe(1);
+    const runs = await repo.listByUser("u");
+    expect(runs.length).toBe(1);
+    expect(runs[0].intent).toBe("chat");
+    expect(runs[0].providerName).toBe("mock-echo");
+    expect(runs[0].text).toBe("Echo: hi");
+  });
+
+  it("195 run() fire-and-forget save completes after microtask settle", async () => {
+    const repo = new InMemoryRunRepository();
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      runRepository: repo,
+    });
+    await mw.run({ userId: "u", message: "hi" });
+    // Yield the microtask queue so the background save can flush.
+    await new Promise((r) => setImmediate(r));
+    expect(repo.size).toBe(1);
+  });
+
+  it("196 run() repo failure is non-fatal and recorded in errors[]", async () => {
+    const brokenRepo: RunRepository = {
+      name: "broken",
+      save: async () => {
+        throw new Error("db offline");
+      },
+      get: async () => null,
+      listByUser: async () => [],
+      deleteByRunId: async () => 0,
+    };
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      runRepository: brokenRepo,
+      awaitRunSave: true,
+    });
+    const r = await mw.run({ userId: "u", message: "hi" });
+    expect(r.ok).toBe(true);
+    expect(
+      r.errors.some((e) => e.startsWith("run_persist_failed")),
+    ).toBe(true);
+  });
+
+  it("197 run() without repo does not touch persistence", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+    });
+    const r = await mw.run({ userId: "u", message: "hi" });
+    expect(r.ok).toBe(true);
+    expect(r.errors).toEqual([]);
+  });
+
+  it("198 saved record carries full tool execution history", async () => {
+    const repo = new InMemoryRunRepository();
+    const adapter = new ScriptedMockAdapter(
+      [
+        {
+          text: "",
+          finishReason: "tool_calls",
+          toolCalls: [{ id: "c1", name: "add", args: { a: 2, b: 3 } }],
+        },
+        { text: "Answer is 5.", finishReason: "stop", toolCalls: [] },
+      ],
+      "mock-tool-for-persist",
+    );
+    const registry = new InMemoryToolRegistry([
+      {
+        descriptor: {
+          name: "add",
+          description: "adds",
+          inputSchema: { type: "object" },
+        },
+        handler: async (args) => ({
+          sum: (args.a as number) + (args.b as number),
+        }),
+      },
+    ]);
+    const mw = new CognitiveMiddleware({
+      adapters: [adapter],
+      toolRegistry: registry,
+      runRepository: repo,
+      awaitRunSave: true,
+    });
+    await mw.run({ userId: "u", message: "add 2+3" });
+    const runs = await repo.listByUser("u");
+    expect(runs[0].toolExecutions.length).toBe(1);
+    expect(runs[0].toolExecutions[0].ok).toBe(true);
+    expect((runs[0].toolExecutions[0].result as { sum: number }).sum).toBe(5);
+  });
+
+  it("199 runStream() fire-and-forget save lands after done event", async () => {
+    const repo = new InMemoryRunRepository();
+    const mw = new CognitiveMiddleware({
+      adapters: [new StreamingMockAdapter({ chunks: ["ok"] })],
+      runRepository: repo,
+    });
+    let sawDone = false;
+    for await (const e of mw.runStream({ userId: "u", message: "hi" })) {
+      if (e.kind === "done") sawDone = true;
+    }
+    expect(sawDone).toBe(true);
+    // The save happens inside the generator after yielding done.
+    // Wait one tick for the background save promise to settle.
+    await new Promise((r) => setImmediate(r));
+    const list = await repo.listByUser("u");
+    expect(list.length).toBe(1);
+    expect(list[0].text).toBe("ok");
+  });
+
+  it("200 concurrent runs against the same repo produce distinct records", async () => {
+    const repo = new InMemoryRunRepository();
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      runRepository: repo,
+      awaitRunSave: true,
+    });
+    await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        mw.run({ userId: "u", message: `hi ${i}` }),
+      ),
+    );
+    expect(repo.size).toBe(10);
+    const runs = await repo.listByUser("u", 20);
+    expect(runs.length).toBe(10);
+    const runIds = new Set(runs.map((r) => r.runId));
+    expect(runIds.size).toBe(10);
+  });
+});
+
+describe("cognitive: PgMemoryStoreAdapter bridge (Turn G)", () => {
+  /**
+   * Minimal mock shape-compatible with `PgVectorMemoryStoreLike`.
+   * Records every call so tests can assert the adapter passed
+   * the right arguments.
+   */
+  function buildMockPgStore(
+    results: PgMemoryLike[] = [],
+  ): PgVectorMemoryStoreLike & {
+    lastSearchOptions: unknown;
+    lastStoreOptions: unknown;
+    calls: { search: number; store: number };
+  } {
+    return {
+      lastSearchOptions: null,
+      lastStoreOptions: null,
+      calls: { search: 0, store: 0 },
+      async search(options) {
+        this.lastSearchOptions = options;
+        this.calls.search++;
+        return results;
+      },
+      async store(options) {
+        this.lastStoreOptions = options;
+        this.calls.store++;
+        return `pg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      },
+    };
+  }
+
+  it("201 recall delegates to pgStore.search with semantic type", async () => {
+    const mock = buildMockPgStore([
+      {
+        id: "m1",
+        userId: "alice",
+        content: "alice prefers kubernetes",
+        importance: 0.8,
+        createdAt: new Date(2026, 0, 1),
+      },
+    ]);
+    const adapter = new PgMemoryStoreAdapter({ pgStore: mock });
+    const r = await adapter.recall("alice", "kubernetes", 5);
+    expect(r.length).toBe(1);
+    expect(r[0].text).toBe("alice prefers kubernetes");
+    expect(r[0].userId).toBe("alice");
+    expect(r[0].importance).toBe(0.8);
+    const opts = mock.lastSearchOptions as {
+      queryText: string;
+      userId: string;
+      limit: number;
+      type: string;
+    };
+    expect(opts.queryText).toBe("kubernetes");
+    expect(opts.userId).toBe("alice");
+    expect(opts.limit).toBe(5);
+    expect(opts.type).toBe("semantic");
+  });
+
+  it("202 recall returns empty array on pgStore failure (never throws)", async () => {
+    const broken: PgVectorMemoryStoreLike = {
+      async search() {
+        throw new Error("db down");
+      },
+      async store() {
+        return "_";
+      },
+    };
+    const adapter = new PgMemoryStoreAdapter({ pgStore: broken });
+    const r = await adapter.recall("alice", "anything", 5);
+    expect(r).toEqual([]);
+  });
+
+  it("203 recall filters cross-user results defensively", async () => {
+    const mock = buildMockPgStore([
+      { id: "m1", userId: "alice", content: "alice fact", importance: 0.5 },
+      { id: "m2", userId: "bob", content: "bob fact", importance: 0.5 },
+      { id: "m3", userId: null, content: "system fact", importance: 0.5 },
+    ]);
+    const adapter = new PgMemoryStoreAdapter({ pgStore: mock });
+    const r = await adapter.recall("alice", "fact", 5);
+    // bob's fact is filtered; null-user fact is accepted with
+    // the caller's userId as fallback.
+    const ids = r.map((m) => m.id).sort();
+    expect(ids).toEqual(["m1", "m3"]);
+  });
+
+  it("204 recall honors AbortSignal and returns []", async () => {
+    const mock = buildMockPgStore([
+      { id: "m1", userId: "alice", content: "x", importance: 0.5 },
+    ]);
+    const adapter = new PgMemoryStoreAdapter({ pgStore: mock });
+    const ac = new AbortController();
+    ac.abort();
+    const r = await adapter.recall("alice", "query", 5, ac.signal);
+    expect(r).toEqual([]);
+    expect(mock.calls.search).toBe(0);
+  });
+
+  it("205 remember calls pgStore.store with defaultImportance when none supplied", async () => {
+    const mock = buildMockPgStore();
+    const adapter = new PgMemoryStoreAdapter({
+      pgStore: mock,
+      defaultImportance: 0.75,
+      memoryType: "cognitive-test",
+    });
+    const saved = await adapter.remember({
+      userId: "alice",
+      text: "I love spicy food",
+      importance: 0.9,
+    });
+    expect(saved.text).toBe("I love spicy food");
+    const opts = mock.lastStoreOptions as {
+      content: string;
+      userId: string;
+      importance: number;
+      memoryType: string;
+    };
+    expect(opts.content).toBe("I love spicy food");
+    expect(opts.userId).toBe("alice");
+    // Explicit importance wins over defaultImportance.
+    expect(opts.importance).toBe(0.9);
+    expect(opts.memoryType).toBe("cognitive-test");
+  });
+
+  it("206 convertPgMemoryToCognitive maps all shape fields", () => {
+    const pgMem: PgMemoryLike = {
+      id: "pg_1",
+      userId: "alice",
+      content: "test",
+      importance: 0.6,
+      createdAt: new Date(2026, 2, 1).toISOString(),
+      metadata: { source: "chat" },
+    };
+    const cog = convertPgMemoryToCognitive(pgMem, "alice");
+    expect(cog.id).toBe("pg_1");
+    expect(cog.text).toBe("test");
+    expect(cog.importance).toBe(0.6);
+    expect(cog.metadata).toEqual({ source: "chat" });
+    expect(typeof cog.createdAt).toBe("number");
+  });
+
+  it("207 convertPgMemoryToCognitive defaults importance and createdAt when missing", () => {
+    const pgMem: PgMemoryLike = {
+      id: "pg_2",
+      content: "no metadata",
+    };
+    const cog = convertPgMemoryToCognitive(pgMem, "fallback-user");
+    expect(cog.importance).toBe(0.5);
+    expect(cog.userId).toBe("fallback-user");
+    expect(typeof cog.createdAt).toBe("number");
   });
 });
 

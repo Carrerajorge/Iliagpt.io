@@ -112,6 +112,44 @@ export {
   type CognitiveAttributeKey,
 } from "./tracing";
 
+// Run persistence layer (Turn G)
+export type {
+  RunRepository,
+  CognitiveRunRecord,
+  InMemoryRunRepositoryOptions,
+} from "./persistence";
+export {
+  InMemoryRunRepository,
+  projectRequestResponseToRunRecord,
+} from "./persistence";
+export type {
+  PostgresRunRepositoryOptions,
+  RunRepositoryDbHandle,
+} from "./postgresRunRepository";
+export {
+  PostgresRunRepository,
+  cognitiveRunRecords,
+} from "./postgresRunRepository";
+export type {
+  PgMemoryStoreAdapterOptions,
+  PgVectorMemoryStoreLike,
+  PgMemoryLike,
+  PgMemorySearchOptions,
+  PgMemoryStoreOptions,
+} from "./pgMemoryStoreAdapter";
+export {
+  PgMemoryStoreAdapter,
+  convertPgMemoryToCognitive,
+} from "./pgMemoryStoreAdapter";
+
+// Chat kernel preflight
+export type {
+  ChatCognitiveWorkflow,
+  ChatCognitiveKernelOptions,
+  ChatCognitiveKernelDecision,
+} from "./chatKernel";
+export { createChatCognitiveKernelDecision } from "./chatKernel";
+
 // Orchestrator
 export {
   CognitiveMiddleware,

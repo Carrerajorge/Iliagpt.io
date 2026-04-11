@@ -544,6 +544,79 @@ run_test "41 POST /api/cognitive/throttled-demo/run distinct user has fresh buck
 # Reset before next group
 curl -sS -X POST "$BASE/api/cognitive/throttled-demo/reset" -o /dev/null
 
+# ── Turn G — run persistence checks ───────────────────────────────────────
+#
+# The main /run endpoint is wired with an in-memory repo and
+# awaitRunSave=true so every smoke request is retrievable via
+# GET /runs/:runId immediately after.
+
+# 42 /run response includes no runId today, but the saved record
+# MUST be retrievable via /users/:userId/runs afterwards.
+PERSIST_USER="smoke-persist-$$"
+curl -sS -X POST -H "Content-Type: application/json" -d "{
+  \"userId\": \"$PERSIST_USER\",
+  \"message\": \"hola turno g\",
+  \"preferredProvider\": \"mock-echo\"
+}" "$BASE/api/cognitive/run" -o /dev/null
+LIST_BODY=$(curl -sS "$BASE/api/cognitive/users/$PERSIST_USER/runs?limit=10")
+assert "42 GET /users/:userId/runs returns saved run" "$LIST_BODY" \
+  '(b) => b.count === 1 && b.runs.length === 1 && b.runs[0].userMessage === "hola turno g" && b.runs[0].providerName === "mock-echo" && b.runs[0].intent === "chat"'
+
+# 43 listByUser newest-first ordering across multiple saves
+curl -sS -X POST -H "Content-Type: application/json" -d "{
+  \"userId\": \"$PERSIST_USER\",
+  \"message\": \"second call\",
+  \"preferredProvider\": \"mock-echo\"
+}" "$BASE/api/cognitive/run" -o /dev/null
+curl -sS -X POST -H "Content-Type: application/json" -d "{
+  \"userId\": \"$PERSIST_USER\",
+  \"message\": \"third call\",
+  \"preferredProvider\": \"mock-echo\"
+}" "$BASE/api/cognitive/run" -o /dev/null
+LIST2_BODY=$(curl -sS "$BASE/api/cognitive/users/$PERSIST_USER/runs?limit=10")
+assert "43 GET /users/:userId/runs newest first" "$LIST2_BODY" \
+  '(b) => b.count === 3 && b.runs[0].userMessage === "third call" && b.runs[1].userMessage === "second call" && b.runs[2].userMessage === "hola turno g"'
+
+# 44 /run preserves tool executions in the persisted record
+curl -sS -X POST -H "Content-Type: application/json" -d "{
+  \"userId\": \"$PERSIST_USER-tools\",
+  \"message\": \"please add numbers\",
+  \"preferredProvider\": \"mock-tool-agent\"
+}" "$BASE/api/cognitive/run" -o /dev/null
+LIST3_BODY=$(curl -sS "$BASE/api/cognitive/users/$PERSIST_USER-tools/runs?limit=5")
+assert "44 GET /users/:userId/runs carries toolExecutions" "$LIST3_BODY" \
+  '(b) => b.count === 1 && Array.isArray(b.runs[0].toolExecutions) && b.runs[0].toolExecutions.length === 1 && b.runs[0].toolExecutions[0].ok === true && b.runs[0].toolExecutions[0].result && b.runs[0].toolExecutions[0].result.sum === 5 && b.runs[0].toolCallCount === 1'
+
+# 45 GET /runs/:runId returns 404 for unknown id
+NOT_FOUND_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/api/cognitive/runs/ghost-run-id")
+if [[ "$NOT_FOUND_STATUS" == "404" ]]; then
+  green "PASS"; printf ' — 45 GET /runs/:runId returns 404 for unknown id\n'
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 45 expected 404, got %s\n' "$NOT_FOUND_STATUS"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("45 GET unknown run 404")
+fi
+
+# 46 GET /runs/:runId round-trips a just-saved record
+PERSIST_USER2="smoke-roundtrip-$$"
+curl -sS -X POST -H "Content-Type: application/json" -d "{
+  \"userId\": \"$PERSIST_USER2\",
+  \"message\": \"round trip\",
+  \"preferredProvider\": \"mock-echo\"
+}" "$BASE/api/cognitive/run" -o /dev/null
+LIST4_BODY=$(curl -sS "$BASE/api/cognitive/users/$PERSIST_USER2/runs?limit=1")
+RUN_ID=$(echo "$LIST4_BODY" | node -e 'let r="";process.stdin.on("data",d=>r+=d);process.stdin.on("end",()=>{try{console.log(JSON.parse(r).runs[0].runId)}catch{console.log("")}})')
+if [[ -z "$RUN_ID" ]]; then
+  red "FAIL"; printf ' — 46 could not read runId from list response\n'
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("46 runId read")
+else
+  GET_BODY=$(curl -sS "$BASE/api/cognitive/runs/$RUN_ID")
+  assert "46 GET /runs/:runId round-trips the record" "$GET_BODY" \
+    '(b) => b.runId && b.userMessage === "round trip" && b.ok === true'
+fi
+
 echo
 echo "=== Results: $(green $PASS) passed, $(red $FAIL) failed ==="
 if [[ $FAIL -gt 0 ]]; then

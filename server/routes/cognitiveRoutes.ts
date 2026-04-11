@@ -30,6 +30,7 @@ import {
   InMemoryToolRegistry,
   InMemoryTokenBucketLimiter,
   CircuitBreakerRegistry,
+  InMemoryRunRepository,
   classifyIntent,
   validateOutput,
   type ProviderAdapter,
@@ -323,6 +324,13 @@ export function createCognitiveRouter(): Router {
     defaults: { failureThreshold: 3, cooldownMs: 60_000 },
   });
 
+  // Demo run repository (Turn G). In-memory so smoke tests can save
+  // + retrieve runs without touching Postgres. Production wiring
+  // swaps this for a PostgresRunRepository initialized at boot.
+  const demoRunRepo = new InMemoryRunRepository({
+    name: "demo-run-repo",
+  });
+
   // Tiny-bucket limiter for the /throttled-demo route only. Zero
   // refill so the bucket stays drained across smoke test calls
   // and the denial path is deterministic.
@@ -358,6 +366,10 @@ export function createCognitiveRouter(): Router {
     // test that hits different intents, so we scope smoke tests on
     // the "smoke-rate-limited" userId only.
     circuitBreakers: demoBreakers,
+    runRepository: demoRunRepo,
+    // Smoke tests need deterministic "save happened before
+    // response" semantics so they can GET /runs/:id right after.
+    awaitRunSave: true,
   });
 
   // ── POST /api/cognitive/run ───────────────────────────────────────────
@@ -585,6 +597,44 @@ export function createCognitiveRouter(): Router {
   router.post("/throttled-demo/reset", (_req: Request, res: Response) => {
     throttledLimiter.resetAll();
     return res.json({ ok: true });
+  });
+
+  // ── GET /api/cognitive/runs/:runId (Turn G) ───────────────────────────
+  //
+  // Fetch a previously-saved run by its runId. Returns 404 if the
+  // run doesn't exist.
+  router.get("/runs/:runId", async (req: Request, res: Response) => {
+    try {
+      const record = await demoRunRepo.get(req.params.runId);
+      if (!record) {
+        return res.status(404).json({ error: "run_not_found" });
+      }
+      return res.json(record);
+    } catch (caught) {
+      return res.status(500).json({
+        error: "run_fetch_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── GET /api/cognitive/users/:userId/runs (Turn G) ────────────────────
+  //
+  // List the most recent runs for a user, newest first. Caps at 50.
+  router.get("/users/:userId/runs", async (req: Request, res: Response) => {
+    try {
+      const limit = Number(req.query.limit ?? 50);
+      const records = await demoRunRepo.listByUser(
+        req.params.userId,
+        Number.isFinite(limit) ? limit : 50,
+      );
+      return res.json({ runs: records, count: records.length });
+    } catch (caught) {
+      return res.status(500).json({
+        error: "run_list_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
   });
 
   // ── GET /api/cognitive/adapters ───────────────────────────────────────
