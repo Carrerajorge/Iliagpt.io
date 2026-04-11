@@ -617,6 +617,55 @@ else
     '(b) => b.runId && b.userMessage === "round trip" && b.ok === true'
 fi
 
+# ── Turn H — artifact extraction checks ───────────────────────────────────
+#
+# The main /run endpoint now attaches typed CognitiveArtifact[]
+# to every response. The mock-artifact adapter always emits a
+# response with a fenced TypeScript code block so smoke tests
+# can verify extraction + telemetry + persistence end-to-end.
+
+# 47 /run includes an artifacts array on every response
+run_test "47 POST /api/cognitive/run response has artifacts field" /api/cognitive/run POST '{
+  "userId": "smoke-h1",
+  "message": "hello",
+  "preferredProvider": "mock-echo"
+}' '(b) => Array.isArray(b.artifacts) && typeof b.telemetry.artifactCount === "number"'
+
+# 48 /run with mock-artifact adapter extracts a CodeArtifact
+run_test "48 POST /api/cognitive/run extracts a CodeArtifact" /api/cognitive/run POST '{
+  "userId": "smoke-h2",
+  "message": "show me an add function",
+  "preferredProvider": "mock-artifact"
+}' '(b) => b.artifacts.length >= 1 && b.artifacts[0].kind === "code" && b.artifacts[0].language === "typescript" && b.artifacts[0].source.indexOf("function add") >= 0 && b.telemetry.artifactCount >= 1'
+
+# 49 /stream emits a done event with artifacts for a code-block response
+BODY_49=$(stream_test "49" '{
+  "userId": "smoke-h3",
+  "message": "show me a function",
+  "preferredProvider": "mock-artifact"
+}')
+DONE_JSON_49=$(echo "$BODY_49" | awk '/^event: done$/{flag=1;next} flag && /^data: /{print substr($0,7);exit}')
+DONE_ARTIFACTS_OK=$(echo "$DONE_JSON_49" | node -e 'let r="";process.stdin.on("data",d=>r+=d);process.stdin.on("end",()=>{try{const p=JSON.parse(r);const arts=p.response && p.response.artifacts;console.log(Array.isArray(arts) && arts.length >= 1 && arts[0].kind === "code" ? "OK" : "NOK:"+JSON.stringify(arts))}catch(e){console.log("ERR:"+e.message)}})')
+if [[ "$DONE_ARTIFACTS_OK" == "OK" ]]; then
+  green "PASS"; printf ' — 49 /stream done event carries code artifact\n'
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 49 /stream done event artifacts wrong: %s\n' "$DONE_ARTIFACTS_OK"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("49 /stream artifact")
+fi
+
+# 50 persisted run record contains the artifacts count + text
+PERSIST_USER3="smoke-h-persist-$$"
+curl -sS -X POST -H "Content-Type: application/json" -d "{
+  \"userId\": \"$PERSIST_USER3\",
+  \"message\": \"show me some code\",
+  \"preferredProvider\": \"mock-artifact\"
+}" "$BASE/api/cognitive/run" -o /dev/null
+LIST5_BODY=$(curl -sS "$BASE/api/cognitive/users/$PERSIST_USER3/runs?limit=1")
+assert "50 GET /users/:userId/runs persists artifact-producing run" "$LIST5_BODY" \
+  '(b) => b.count === 1 && b.runs[0].text.indexOf("function add") >= 0 && b.runs[0].ok === true'
+
 echo
 echo "=== Results: $(green $PASS) passed, $(red $FAIL) failed ==="
 if [[ $FAIL -gt 0 ]]; then

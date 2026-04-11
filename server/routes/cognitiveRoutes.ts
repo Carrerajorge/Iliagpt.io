@@ -209,6 +209,53 @@ class DemoToolLoopAdapter implements ProviderAdapter {
   }
 }
 
+// ── Artifact demo adapter (Turn H smoke tests) ────────────────────────────
+
+/**
+ * Stateless adapter that always returns a response with an
+ * embedded fenced TypeScript code block so the Turn H artifact
+ * extraction path can be verified end-to-end over HTTP. Unlike
+ * ScriptedMockAdapter, there's no cursor so every smoke request
+ * sees the same output regardless of test ordering.
+ */
+class DemoArtifactAdapter implements ProviderAdapter {
+  readonly name = "mock-artifact";
+  readonly capabilities: ReadonlySet<CognitiveIntent> = new Set<CognitiveIntent>([
+    "chat",
+    "qa",
+    "code_generation",
+    "doc_generation",
+    "unknown",
+  ]);
+
+  async generate(
+    _request: NormalizedProviderRequest,
+    signal?: AbortSignal,
+  ): Promise<ProviderResponse> {
+    if (signal?.aborted) {
+      return {
+        text: "",
+        finishReason: "aborted",
+        toolCalls: [],
+        raw: { error: "aborted before call" },
+      };
+    }
+    return {
+      text:
+        "Here is a short example:\n\n" +
+        "```typescript\n" +
+        "function add(a: number, b: number): number {\n" +
+        "  return a + b;\n" +
+        "}\n" +
+        "```\n\n" +
+        "You can call it with any two numbers.",
+      finishReason: "stop",
+      toolCalls: [],
+      usage: { promptTokens: 5, completionTokens: 40 },
+    };
+  }
+}
+
 // ── Default adapter set (mock-only until real wiring lands) ───────────────
 
 function buildDefaultAdapters(): ProviderAdapter[] {
@@ -241,6 +288,10 @@ function buildDefaultAdapters(): ProviderAdapter[] {
     // Demo tool-loop adapter (Turn D). Drives the agentic loop end-
     // to-end against the demo tool registry wired into the router.
     new DemoToolLoopAdapter(),
+    // Demo artifact adapter (Turn H). Always emits a response with
+    // a fenced TypeScript code block so smoke tests can verify
+    // the artifact extraction path end-to-end.
+    new DemoArtifactAdapter(),
     // NOTE: SmartRouterAdapter is NOT registered here by default.
     // Mounting it requires the heavy llmGateway module which has
     // its own boot dependencies (Redis, env vars). A follow-up

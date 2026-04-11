@@ -59,6 +59,8 @@ import { enrichContext, renderContextBundle } from "./contextEnricher";
 import { serializeToolOutcomeForModel } from "./tools";
 import { defaultRateLimitKey } from "./rateLimit";
 import { projectRequestResponseToRunRecord } from "./persistence";
+import { extractArtifacts } from "./artifacts";
+import type { CognitiveArtifact } from "./artifacts";
 import type { RunRepository } from "./persistence";
 import {
   CognitiveAttributes,
@@ -784,6 +786,7 @@ export class CognitiveMiddleware {
         text: "",
         toolCalls: [],
         toolExecutions: [],
+        artifacts: [],
         routing: {
           intent,
           providerName: "(none)",
@@ -872,6 +875,7 @@ export class CognitiveMiddleware {
         text: "",
         toolCalls: [],
         toolExecutions: [],
+        artifacts: [],
         routing: {
           intent,
           providerName: "(none)",
@@ -1158,15 +1162,24 @@ export class CognitiveMiddleware {
       rateLimitRemaining,
       rateLimitCheckMs,
       circuitBreakerState,
+      artifactCount: 0, // filled in by the artifact extraction below
       promptTokens: finalResponse.usage?.promptTokens,
       completionTokens: finalResponse.usage?.completionTokens,
     };
+
+    // ── 8b. Extract typed artifacts (Turn H) ──────────────────────
+    // Runs AFTER validation so validation failures still get
+    // their artifacts — consumers may want to render partial
+    // output even on rejection.
+    const artifacts: CognitiveArtifact[] = extractArtifacts(finalResponse.text);
+    telemetry.artifactCount = artifacts.length;
 
     const cognitiveResponse: CognitiveResponse = {
       ok: validation.ok,
       text: finalResponse.text,
       toolCalls: finalResponse.toolCalls,
       toolExecutions,
+      artifacts,
       routing,
       validation,
       telemetry,
@@ -1377,6 +1390,7 @@ export class CognitiveMiddleware {
           text: "",
           toolCalls: [],
           toolExecutions: [],
+          artifacts: [],
           routing: {
             intent,
             providerName: "(none)",
@@ -1445,6 +1459,7 @@ export class CognitiveMiddleware {
           text: "",
           toolCalls: [],
           toolExecutions: [],
+          artifacts: [],
           routing: {
             intent,
             providerName: "(none)",
@@ -1778,15 +1793,21 @@ export class CognitiveMiddleware {
       rateLimitRemaining,
       rateLimitCheckMs,
       circuitBreakerState,
+      artifactCount: 0, // filled in below
       promptTokens: usage?.promptTokens,
       completionTokens: usage?.completionTokens,
     };
+
+    // Extract typed artifacts from the assembled text (Turn H).
+    const streamArtifacts: CognitiveArtifact[] = extractArtifacts(accumulatedText);
+    telemetry.artifactCount = streamArtifacts.length;
 
     const response: CognitiveResponse = {
       ok: validation.ok,
       text: accumulatedText,
       toolCalls: accumulatedToolCalls,
       toolExecutions,
+      artifacts: streamArtifacts,
       routing,
       validation,
       telemetry,
@@ -1875,5 +1896,6 @@ function emptyTelemetry(
     rateLimitRemaining: Number.NaN,
     rateLimitCheckMs: 0,
     circuitBreakerState: "none",
+    artifactCount: 0,
   };
 }

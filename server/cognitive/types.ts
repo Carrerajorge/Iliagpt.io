@@ -385,6 +385,12 @@ export interface CognitiveTelemetry {
    */
   agenticIterations: number;
   /**
+   * Number of typed artifacts (code blocks, tables, diagrams,
+   * markdown documents) extracted from the response text. Added
+   * in Turn H.
+   */
+  artifactCount: number;
+  /**
    * Whether the rate limiter allowed this request. True when no
    * limiter is configured. Added in Turn E.
    */
@@ -433,6 +439,25 @@ export interface RoutingDecision {
 // ---------------------------------------------------------------------------
 
 /**
+ * Opaque artifact type. The middleware attaches a
+ * `CognitiveArtifact[]` to every response (Turn H) but we don't
+ * want `types.ts` to import from `artifacts.ts` because `types.ts`
+ * is the shape layer. Consumers that need the concrete shape
+ * import from `./artifacts` directly.
+ *
+ * Using a structural interface (not an index-signature object)
+ * keeps this assignable from the concrete discriminated union
+ * `CognitiveArtifact` in `artifacts.ts` — an index signature
+ * would collide with the specific typed fields on each variant.
+ */
+export interface CognitiveArtifactLike {
+  id: string;
+  kind: string;
+  offset: number;
+  length: number;
+}
+
+/**
  * Result of one handler invocation inside the agentic tool loop
  * (Turn D). Defined here — in the shape layer — so both the
  * orchestrator and the response type can reference it without the
@@ -471,6 +496,14 @@ export interface CognitiveResponse {
    * Turn D.
    */
   toolExecutions: ToolExecutionOutcomeLike[];
+  /**
+   * Typed artifacts (code, tables, diagrams, documents) extracted
+   * from `text`. Populated automatically by the middleware at
+   * the end of every run so consumers can render without
+   * re-parsing. Empty when the response text has no detectable
+   * artifacts. Added in Turn H.
+   */
+  artifacts: CognitiveArtifactLike[];
   /** What the orchestrator decided to do (intent + provider + reasons). */
   routing: RoutingDecision;
   validation: ValidationReport;

@@ -112,6 +112,21 @@ export {
   type CognitiveAttributeKey,
 } from "./tracing";
 
+// Artifact extraction + session layer (Turn H)
+export type {
+  CognitiveArtifact,
+  CodeArtifact,
+  DiagramArtifact,
+  TableArtifact,
+  MarkdownArtifact,
+} from "./artifacts";
+export { extractArtifacts } from "./artifacts";
+export type {
+  CognitiveSessionOptions,
+  CognitiveSessionSnapshot,
+} from "./session";
+export { CognitiveSession } from "./session";
+
 // Run persistence layer (Turn G)
 export type {
   RunRepository,
