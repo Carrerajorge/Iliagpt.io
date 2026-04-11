@@ -2597,10 +2597,29 @@ export function createFilesRouter() {
       }
 
       const buffer = await fsSync.promises.readFile(filePath);
-      const preview = await generateFilePreview(file.name || "file", file.type || "", buffer, {
-        sourcePath: filePath,
-      });
-      return res.json(preview);
+      try {
+        const preview = await generateFilePreview(file.name || "file", file.type || "", buffer, {
+          sourcePath: filePath,
+        });
+        return res.json(preview);
+      } catch (previewError: any) {
+        // Never return 500 for a preview failure: the upload succeeded and the
+        // downstream analyze pipeline can still run on the raw bytes. Returning
+        // 500 here caused the client to retry in a tight loop and saturate the
+        // rate limiter. Respond with a degraded payload instead.
+        console.error("[preview-html] preview generation failed, returning degraded payload:", previewError);
+        return res.json({
+          type: "unknown",
+          message: "Vista previa no disponible para este archivo.",
+          meta: {
+            degraded: true,
+            reason: "preview_generation_failed",
+            error: process.env.NODE_ENV === "production"
+              ? undefined
+              : (previewError?.message || String(previewError)),
+          },
+        });
+      }
     } catch (error: any) {
       console.error("Error generating preview:", error);
       res.status(500).json({ error: "Failed to generate preview" });

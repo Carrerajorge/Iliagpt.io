@@ -558,6 +558,21 @@ export function ChatInterface({
     summarizedMessages?: number;
     relevantMessagesKept?: number;
     recentMessagesKept?: number;
+    workflow?: string;
+    capabilityId?: string;
+    handler?: string;
+    renderSurface?: string;
+    splitView?: boolean;
+    showSteps?: boolean;
+    provider?: string;
+    providerReason?: string | null;
+    corrected?: boolean;
+    correctedFrom?: string | null;
+    correctedTo?: string | null;
+    memoryHits?: number;
+    policyAllowed?: boolean;
+    policyCode?: string | null;
+    estimatedInputTokens?: number;
   } | null>(null);
   const [isBrowserOpen, setIsBrowserOpen] = useState(false);
   const [browserUrl, setBrowserUrl] = useState("https://www.google.com");
@@ -1912,8 +1927,14 @@ export function ChatInterface({
         doneTimeoutMs: 60_000,
         onEvent: (eventType, data) => {
           if (eventType === "error") {
-            const errMsg = data?.message || "Error durante el análisis";
-            console.error("[DocumentAnalysis] SSE error:", errMsg);
+            const rawErr: any = data?.message ?? data?.error ?? "Error durante el análisis";
+            const errMsg =
+              typeof rawErr === "string"
+                ? rawErr
+                : (rawErr?.message || rawErr?.error || rawErr?.code || (() => {
+                    try { return JSON.stringify(rawErr); } catch { return "Error durante el análisis"; }
+                  })());
+            console.error("[DocumentAnalysis] SSE error:", errMsg, rawErr);
           }
           if (eventType === "done") {
             analyzeMetadata = data || {};
@@ -1931,16 +1952,40 @@ export function ChatInterface({
           }),
           deliveryStatus: "sent" as const,
         }),
-        buildErrorMessage: (error, messageId) => ({
-          id: messageId || `analysis-${opts.userMessageId}`,
-          role: "assistant" as const,
-          content: `No se pudo analizar el documento. ${error?.message || "Error de conexión con el servidor."}`,
-          timestamp: new Date(),
-          requestId: generateRequestId(),
-          userMessageId: opts.userMessageId,
-          deliveryStatus: "error" as const,
-          deliveryError: error?.message || "Error de conexión con el servidor.",
-        }),
+        buildErrorMessage: (error, messageId) => {
+          // Translate structured error payloads (e.g. { code: "RATE_LIMIT", ... })
+          // into user-friendly Spanish messages instead of leaking "[object Object]".
+          const payload: any = (error as any)?.payload;
+          const code: string | undefined =
+            (error as any)?.code ||
+            (payload && typeof payload.code === "string" ? payload.code : undefined);
+          let friendly: string;
+          if (code === "RATE_LIMIT") {
+            const retryMs = Number(payload?.retryAfterMs) || 0;
+            const seconds = retryMs > 0 ? Math.ceil(retryMs / 1000) : 0;
+            friendly = seconds > 0
+              ? `Has alcanzado el límite de solicitudes. Intenta de nuevo en ${seconds} s.`
+              : "Has alcanzado el límite de solicitudes. Espera unos segundos e inténtalo de nuevo.";
+          } else if (code === "PREVIEW_FAILED" || code === "FILE_PREVIEW_FAILED") {
+            friendly = "No se pudo generar la vista previa del archivo. Intenta subirlo de nuevo.";
+          } else {
+            const rawMsg = error?.message;
+            friendly =
+              typeof rawMsg === "string" && rawMsg && rawMsg !== "[object Object]"
+                ? rawMsg
+                : "Error de conexión con el servidor.";
+          }
+          return {
+            id: messageId || `analysis-${opts.userMessageId}`,
+            role: "assistant" as const,
+            content: `No se pudo analizar el documento. ${friendly}`,
+            timestamp: new Date(),
+            requestId: generateRequestId(),
+            userMessageId: opts.userMessageId,
+            deliveryStatus: "error" as const,
+            deliveryError: friendly,
+          };
+        },
       });
 
       if (import.meta.env.DEV) {
@@ -7206,6 +7251,31 @@ IMPORTANTE:
                     return;
                   }
 
+                  if (eventType === "notice" && data?.type === "chat_control_plane") {
+                    setContextNotice({
+                      type: data.type,
+                      originalTokens: 0,
+                      finalTokens: 0,
+                      droppedMessages: 0,
+                      workflow: data.workflow,
+                      capabilityId: data.capabilityId,
+                      handler: data.handler,
+                      renderSurface: data.renderSurface,
+                      splitView: data.splitView,
+                      showSteps: data.showSteps,
+                      provider: data.provider,
+                      providerReason: data.providerReason,
+                      corrected: data.corrected,
+                      correctedFrom: data.correctedFrom,
+                      correctedTo: data.correctedTo,
+                      memoryHits: data.memoryHits,
+                      policyAllowed: data.policyAllowed,
+                      policyCode: data.policyCode,
+                      estimatedInputTokens: data.estimatedInputTokens,
+                    });
+                    return;
+                  }
+
                   if (shouldExposeProductionDebug && typeof window !== "undefined") {
                     (
                       window as typeof window & {
@@ -8307,6 +8377,8 @@ IMPORTANTE:
                                 <>Prompt ambiguo (confianza: {((contextNotice as any).confidence * 100).toFixed(0)}%). {(contextNotice as any).clarificationQuestions?.[0] || "Intenta ser más específico."}</>
                               ) : contextNotice.type === "memory_compacted" ? (
                                 <>Memoria compactada antes de responder: {((contextNotice as any).originalMessageCount ?? 0).toLocaleString()} &rarr; {((contextNotice as any).finalMessageCount ?? 0).toLocaleString()} mensajes, {((contextNotice as any).summarizedMessages ?? 0).toLocaleString()} resumidos y {((contextNotice as any).relevantMessagesKept ?? 0).toLocaleString()} relevantes preservados.</>
+                              ) : contextNotice.type === "chat_control_plane" ? (
+                                <>Núcleo del chat activo: flujo {(contextNotice as any).workflow || "conversation"}, capacidad {(contextNotice as any).capabilityId || "chat"}, handler {(contextNotice as any).handler || "model_stream"}, proveedor {(contextNotice as any).provider || "auto"}{(contextNotice as any).corrected ? `, corrección ${(contextNotice as any).correctedFrom || "none"} → ${(contextNotice as any).correctedTo || "none"}` : ""}{typeof (contextNotice as any).memoryHits === "number" ? `, memoria ${(contextNotice as any).memoryHits}` : ""}.</>
                               ) : contextNotice.type === "provider_fallback" ? (
                                 <>El sistema cambió el proveedor de respuesta de {(contextNotice as any).fromProvider || "uno anterior"} a {(contextNotice as any).toProvider || "otro disponible"} para mantener el stream estable.</>
                               ) : (

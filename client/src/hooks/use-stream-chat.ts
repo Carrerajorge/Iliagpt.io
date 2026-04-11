@@ -1457,8 +1457,37 @@ export function useStreamChat(deps: StreamChatDeps) {
                   }
 
                   if (currentEventType === "error" || currentEventType === "production_error") {
-                    const errorMsg = data.message || data.error || "Stream error";
-                    pendingTerminalError = new Error(errorMsg);
+                    const rawError: any = data.message ?? data.error ?? "Stream error";
+                    let errorMsg: string;
+                    if (typeof rawError === "string") {
+                      errorMsg = rawError;
+                    } else if (rawError && typeof rawError === "object") {
+                      // Handle structured error payloads like
+                      // { code: "RATE_LIMIT", message: "...", retryAfterMs: 4046 }
+                      errorMsg =
+                        (typeof rawError.message === "string" && rawError.message) ||
+                        (typeof rawError.error === "string" && rawError.error) ||
+                        (typeof rawError.code === "string" && rawError.code) ||
+                        (() => {
+                          try {
+                            return JSON.stringify(rawError);
+                          } catch {
+                            return "Stream error";
+                          }
+                        })();
+                    } else {
+                      errorMsg = String(rawError ?? "Stream error");
+                    }
+                    const terminalError = new Error(errorMsg);
+                    // Preserve structured payload for callers that want to react
+                    // to error codes (e.g. RATE_LIMIT) instead of a plain string.
+                    if (rawError && typeof rawError === "object") {
+                      (terminalError as any).payload = rawError;
+                      if (typeof (rawError as any).code === "string") {
+                        (terminalError as any).code = (rawError as any).code;
+                      }
+                    }
+                    pendingTerminalError = terminalError;
                     if (!isStaleConversation) {
                       setAiState("error", conversationId);
                       onAiStateChange?.("error");

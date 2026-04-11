@@ -571,30 +571,108 @@ function renderPresentationHtml(slides: PresentationSlidePreview[]): string {
 }
 
 async function renderDocxHtml(buffer: Buffer): Promise<FilePreviewPayload> {
-  const result = await mammoth.convertToHtml({ buffer }, {
-    styleMap: [
-      "p[style-name='Heading 1'] => h1:fresh",
-      "p[style-name='Heading 2'] => h2:fresh",
-      "p[style-name='Heading 3'] => h3:fresh",
-      "p[style-name='Heading 4'] => h4:fresh",
-      "p[style-name='Title'] => h1.title:fresh",
-      "p[style-name='Subtitle'] => h2.subtitle:fresh",
-      "b => strong",
-      "i => em",
-      "u => u",
-    ],
-  });
+  // Primary: mammoth HTML conversion with style mapping.
+  try {
+    const result = await mammoth.convertToHtml({ buffer }, {
+      styleMap: [
+        "p[style-name='Heading 1'] => h1:fresh",
+        "p[style-name='Heading 2'] => h2:fresh",
+        "p[style-name='Heading 3'] => h3:fresh",
+        "p[style-name='Heading 4'] => h4:fresh",
+        "p[style-name='Title'] => h1.title:fresh",
+        "p[style-name='Subtitle'] => h2.subtitle:fresh",
+        "b => strong",
+        "i => em",
+        "u => u",
+      ],
+    });
 
+    return {
+      type: "docx",
+      html: renderPreviewShell("Vista previa de Word", `
+        <article style="max-width: 840px; margin: 0 auto; background: #fff; border-radius: 24px; box-shadow: 0 18px 40px rgba(15, 23, 42, 0.10); border: 1px solid #dbe4f0; padding: 36px 42px; font: 400 16px/1.7 Georgia, Cambria, 'Times New Roman', serif; color: #111827;">
+          ${result.value}
+        </article>
+      `, { kind: "document" }),
+      meta: {
+        warnings: result.messages,
+      },
+    };
+  } catch (mammothError: any) {
+    console.warn("[filePreview] mammoth.convertToHtml failed, falling back to text:", mammothError?.message || mammothError);
+  }
+
+  // Fallback 1: extract raw text via officeParser (handles minimal docx that
+  // mammoth chokes on because of missing styles.xml or unusual relationships).
+  try {
+    const text = await officeParser.parseOfficeAsync(buffer);
+    if (text && text.trim().length > 0) {
+      return {
+        type: "text",
+        content: text.slice(0, MAX_PREVIEW_TEXT),
+        truncated: text.length > MAX_PREVIEW_TEXT,
+        meta: {
+          degraded: true,
+          reason: "mammoth_failed_using_officeparser",
+        } as any,
+      };
+    }
+  } catch (officeError: any) {
+    console.warn("[filePreview] officeParser fallback failed:", officeError?.message || officeError);
+  }
+
+  // Fallback 2: extract raw text directly from the docx XML parts so we never
+  // return 500 for a readable document. This keeps the analyze pipeline alive.
+  try {
+    const { default: JSZip } = await import("jszip");
+    const zip = await JSZip.loadAsync(buffer);
+    const parts: string[] = [];
+    const candidates = [
+      "word/document.xml",
+      "word/header1.xml",
+      "word/footer1.xml",
+    ];
+    for (const name of candidates) {
+      const entry = zip.file(name);
+      if (!entry) continue;
+      const xml = await entry.async("string");
+      // naive but safe: strip tags, collapse whitespace.
+      const text = xml
+        .replace(/<w:tab[^>]*\/>/g, "\t")
+        .replace(/<w:br[^>]*\/>/g, "\n")
+        .replace(/<\/w:p>/g, "\n")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      if (text) parts.push(text);
+    }
+    const joined = parts.join("\n\n");
+    if (joined) {
+      return {
+        type: "text",
+        content: joined.slice(0, MAX_PREVIEW_TEXT),
+        truncated: joined.length > MAX_PREVIEW_TEXT,
+        meta: {
+          degraded: true,
+          reason: "mammoth_and_officeparser_failed_using_jszip",
+        } as any,
+      };
+    }
+  } catch (zipError: any) {
+    console.warn("[filePreview] jszip fallback failed:", zipError?.message || zipError);
+  }
+
+  // Last resort: degraded unknown — never throw to keep the route non-500.
   return {
-    type: "docx",
-    html: renderPreviewShell("Vista previa de Word", `
-      <article style="max-width: 840px; margin: 0 auto; background: #fff; border-radius: 24px; box-shadow: 0 18px 40px rgba(15, 23, 42, 0.10); border: 1px solid #dbe4f0; padding: 36px 42px; font: 400 16px/1.7 Georgia, Cambria, 'Times New Roman', serif; color: #111827;">
-        ${result.value}
-      </article>
-    `, { kind: "document" }),
-    meta: {
-      warnings: result.messages,
-    },
+    type: "unknown",
+    message: "No se pudo generar la vista previa, pero el archivo se recibió correctamente.",
+    meta: { degraded: true, reason: "all_docx_fallbacks_failed" } as any,
   };
 }
 
