@@ -1107,4 +1107,76 @@ describe("useStreamChat conversation isolation", () => {
     expect(result.current.optimisticMessages[0].clientTempId).toMatch(/^assistant-/);
     expect(result.current.optimisticMessages[0].content).toBe("respuesta sin duplicado");
   });
+
+  it("accepts done.answer_text when the server finishes without chunk events", async () => {
+    const sentMessages: any[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const payload = JSON.parse(String(init?.body || "{}"));
+
+        return makeSseResponse([
+          {
+            event: "thinking",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              step: "llm",
+            },
+          },
+          {
+            event: "done",
+            data: {
+              conversationId: payload.conversationId,
+              requestId: payload.requestId,
+              answer_text: "Resumen ejecutivo listo.",
+            },
+          },
+        ]);
+      })
+    );
+
+    const { result } = renderHook(() => {
+      const [optimisticMessages, setOptimisticMessages] = useState<any[]>([]);
+      const [streamingContent, setStreamingContent] = useState("");
+      const [aiState, setAiState] = useState<any>("idle");
+      const [steps, setAiProcessSteps] = useState<any[]>([]);
+      const streamingContentRef = useRef("");
+
+      const hook = useStreamChat({
+        setOptimisticMessages,
+        onSendMessage: async (message) => {
+          sentMessages.push(message);
+          return undefined;
+        },
+        setStreamingContent,
+        streamingContentRef,
+        setAiState,
+        setAiProcessSteps,
+        getActiveConversationId: () => "chat_done_only",
+      });
+
+      return { hook, optimisticMessages, streamingContent, aiState, steps };
+    });
+
+    let streamResult: any;
+    await act(async () => {
+      streamResult = await result.current.hook.stream("/api/analyze", {
+        conversationId: "chat_done_only",
+        chatId: "chat_done_only",
+        body: {
+          messages: [{ role: "user", content: "analiza el documento" }],
+          conversationId: "chat_done_only",
+          requestId: "req_done_only",
+        },
+      });
+    });
+
+    expect(streamResult.ok).toBe(true);
+    expect(streamResult.content).toBe("Resumen ejecutivo listo.");
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].content).toBe("Resumen ejecutivo listo.");
+    expect(streamResult.message?.content).toBe("Resumen ejecutivo listo.");
+  });
 });
