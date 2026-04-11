@@ -351,15 +351,36 @@ export class LongTermMemoryService {
     }
     const whereClause = and(...conditions);
 
-    const memories = await db
-      .select()
-      .from(userMemories)
-      .where(whereClause)
-      .orderBy(desc(userMemories.salienceScore))
-      .limit(limit)
-      .offset(offset);
+    // Explicitly project columns we need. Avoid `select()` which pulls the
+    // pgvector `embedding` column — that occasionally fails to deserialize in
+    // Drizzle when the index is degraded, producing a 500 on a read that
+    // should simply return an empty list.
+    try {
+      const memories = await db
+        .select({
+          id: userMemories.id,
+          userId: userMemories.userId,
+          fact: userMemories.fact,
+          category: userMemories.category,
+          salienceScore: userMemories.salienceScore,
+          accessCount: userMemories.accessCount,
+          createdAt: userMemories.createdAt,
+          updatedAt: userMemories.updatedAt,
+        })
+        .from(userMemories)
+        .where(whereClause)
+        .orderBy(desc(userMemories.salienceScore))
+        .limit(limit)
+        .offset(offset);
 
-    return memories.map((m) => this.toMemoryFact(m));
+      return memories.map((m) => this.toMemoryFact(m));
+    } catch (err) {
+      // If the memories table or its index is missing entirely (e.g. fresh
+      // install without migrations), fall back to an empty list rather than
+      // throwing a 500 at the route layer.
+      log.warn("getUserMemories failed, returning empty list", { error: (err as Error)?.message });
+      return [];
+    }
   }
 
   /**
