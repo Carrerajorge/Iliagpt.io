@@ -31,6 +31,25 @@ export interface DailyTokenQuotaStatus {
   message?: string;
 }
 
+export interface UnifiedQuotaErrorPayload {
+  ok: false;
+  code: "TOKEN_QUOTA_EXCEEDED" | "DAILY_TOKEN_LIMIT_EXCEEDED" | "QUOTA_EXCEEDED";
+  message: string;
+  statusCode: 402;
+  quota: {
+    unified: true;
+    resetAt: string | null;
+    monthlyAllowed: boolean;
+    dailyAllowed: boolean;
+    requestAllowed: boolean;
+  };
+  billing: {
+    unified: true;
+    statusUrl: string;
+    upgradeUrl: string;
+  };
+}
+
 const PLAN_LIMITS: Record<string, PlanLimits> = {
   free: { dailyRequests: 3, model: "grok-4-1-fast-non-reasoning" },
   go: { dailyRequests: 50, model: "grok-4-1-fast-non-reasoning" },
@@ -127,7 +146,105 @@ function normalizeTokenLimit(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
+function isTrackedQuotaUserId(userId: string): boolean {
+  const normalized = String(userId || "").trim();
+  if (!normalized) return false;
+  if (normalized === "anonymous" || normalized === "openclaw-user") return false;
+  if (normalized.startsWith("token:") || normalized.startsWith("anon_")) return false;
+  return true;
+}
+
 export class UsageQuotaService {
+  async validateUnifiedQuota(
+    userId: string,
+    estimatedInputTokens = 0,
+  ): Promise<
+    | { allowed: true }
+    | {
+        allowed: false;
+        payload: UnifiedQuotaErrorPayload;
+      }
+  > {
+    if (!isTrackedQuotaUserId(userId)) {
+      return { allowed: true };
+    }
+
+    const billing = {
+      unified: true as const,
+      statusUrl: "/api/billing/status",
+      upgradeUrl: "/workspace-settings?section=billing",
+    };
+
+    const hasMonthlyQuota = await this.hasTokenQuota(userId);
+    if (!hasMonthlyQuota) {
+      return {
+        allowed: false,
+        payload: {
+          ok: false,
+          code: "TOKEN_QUOTA_EXCEEDED",
+          message: "Has agotado tu saldo global de tokens. Actualiza tu plan o compra más capacidad para continuar.",
+          statusCode: 402,
+          quota: {
+            unified: true,
+            resetAt: null,
+            monthlyAllowed: false,
+            dailyAllowed: true,
+            requestAllowed: true,
+          },
+          billing,
+        },
+      };
+    }
+
+    const dailyQuota = await this.getDailyTokenQuotaStatus(userId, estimatedInputTokens);
+    if (!dailyQuota.allowed) {
+      return {
+        allowed: false,
+        payload: {
+          ok: false,
+          code: "DAILY_TOKEN_LIMIT_EXCEEDED",
+          message:
+            dailyQuota.message ||
+            "Has alcanzado tu límite diario de tokens. Espera al reinicio o mejora el plan para continuar.",
+          statusCode: 402,
+          quota: {
+            unified: true,
+            resetAt: dailyQuota.resetAt?.toISOString?.() || null,
+            monthlyAllowed: true,
+            dailyAllowed: false,
+            requestAllowed: true,
+          },
+          billing,
+        },
+      };
+    }
+
+    const requestQuota = await this.checkAndIncrementUsage(userId);
+    if (!requestQuota.allowed) {
+      return {
+        allowed: false,
+        payload: {
+          ok: false,
+          code: "QUOTA_EXCEEDED",
+          message:
+            requestQuota.message ||
+            "Has alcanzado el límite operativo de tu cuenta. Actualiza tu plan para continuar.",
+          statusCode: 402,
+          quota: {
+            unified: true,
+            resetAt: requestQuota.resetAt?.toISOString?.() || null,
+            monthlyAllowed: true,
+            dailyAllowed: true,
+            requestAllowed: false,
+          },
+          billing,
+        },
+      };
+    }
+
+    return { allowed: true };
+  }
+
   async checkAndIncrementUsage(userId: string): Promise<UsageCheckResult> {
     const [user] = await db.select().from(users).where(eq(users.id, userId));
 
@@ -638,6 +755,25 @@ export class UsageQuotaService {
     } catch (err: any) {
       console.error(`[UsageQuota] Failed to record OpenClaw tokens for ${userId}:`, err?.message);
     }
+  }
+
+  async recordUnifiedOpenClawUsage(
+    userId: string,
+    inputTokens: number,
+    outputTokens: number,
+  ): Promise<void> {
+    const normalizedInput = Math.max(0, Math.round(Number.isFinite(inputTokens) ? inputTokens : 0));
+    const normalizedOutput = Math.max(0, Math.round(Number.isFinite(outputTokens) ? outputTokens : 0));
+    const totalTokens = normalizedInput + normalizedOutput;
+
+    if (totalTokens <= 0 || !isTrackedQuotaUserId(userId)) {
+      return;
+    }
+
+    await Promise.allSettled([
+      this.recordTokenUsageDetailed(userId, normalizedInput, normalizedOutput),
+      this.recordOpenClawTokenUsage(userId, totalTokens),
+    ]);
   }
 }
 

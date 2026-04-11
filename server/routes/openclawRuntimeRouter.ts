@@ -1,12 +1,15 @@
 import { Router } from "express";
 import { z } from "zod";
 import { getOrCreateSecureUserId } from "../lib/anonUserHelper";
+import { ensureUserRowExists } from "../lib/ensureUserRowExists";
 import { getOpenClawConfig } from "../openclaw/config";
 import { openclawSubagentService } from "../openclaw/agents/subagentService";
 import { skillRegistry } from "../openclaw/skills/skillRegistry";
 import { initSkills } from "../openclaw/skills/skillLoader";
 import { RAGService } from "../services/ragService";
+import { getCatalogModelBySelection } from "../services/modelCatalogService";
 import { orchestrationEngine } from "../services/orchestrationEngine";
+import { usageQuotaService } from "../services/usageQuotaService";
 import { openclawMetrics } from "../openclaw/lib/metrics";
 import { auditLog } from "../openclaw/lib/auditLog";
 import { searchSkills as marketplaceSearch, getPopularSkills, installSkill } from "../openclaw/skills/marketplace";
@@ -45,6 +48,16 @@ const orchestratorFlowSchema = objectiveSchema.extend({
   chatId: z.string().trim().optional(),
 });
 
+const nativeExecSchema = z.object({
+  prompt: z.string().trim().min(1, "prompt is required"),
+  context: z.unknown().optional(),
+  chatId: z.string().trim().optional(),
+  provider: z.string().trim().optional(),
+  model: z.string().trim().optional(),
+  timeoutMs: z.coerce.number().int().min(5_000).max(600_000).optional(),
+  enableTools: z.boolean().optional(),
+});
+
 function normalizeComplexity(objective: string, complexity?: number): number {
   if (typeof complexity === "number" && Number.isFinite(complexity)) {
     return Math.max(1, Math.min(10, complexity));
@@ -71,6 +84,10 @@ function parseSubagentStatus(raw: unknown) {
     return normalized;
   }
   return undefined;
+}
+
+function estimateTextTokens(text: string): number {
+  return Math.max(0, Math.ceil(String(text || "").length / 4));
 }
 
 function buildRunStats(
@@ -347,6 +364,88 @@ export function createOpenClawRuntimeRouter(): Router {
       runId: run.id,
       cancelled,
     });
+  });
+
+  router.get("/native/status", async (_req, res) => {
+    try {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const packageJsonPath = path.join(process.cwd(), "node_modules", "openclaw", "package.json");
+      const entryPath = path.join(process.cwd(), "node_modules", "openclaw", "openclaw.mjs");
+      const [pkgRaw, entryStat] = await Promise.all([
+        fs.readFile(packageJsonPath, "utf8"),
+        fs.stat(entryPath),
+      ]);
+      const pkg = JSON.parse(pkgRaw) as { version?: string; name?: string };
+
+      return res.json({
+        ok: true,
+        packageName: pkg.name || "openclaw",
+        packageVersion: pkg.version || null,
+        entryPath,
+        entryAvailable: entryStat.isFile(),
+        workspaceRoot: process.env.OPENCLAW_WORKSPACE_ROOT || null,
+      });
+    } catch (error: any) {
+      return res.status(503).json({
+        ok: false,
+        error: error?.message || "Native OpenClaw runtime unavailable",
+      });
+    }
+  });
+
+  router.post("/native/exec", async (req, res) => {
+    const userId = getOrCreateSecureUserId(req);
+    try {
+      const parsed = nativeExecSchema.parse(req.body || {});
+      await ensureUserRowExists(userId, req).catch(() => {});
+
+      const estimatedInputTokens =
+        estimateTextTokens(parsed.prompt) +
+        (parsed.context == null ? 0 : estimateTextTokens(JSON.stringify(parsed.context)));
+      const quotaCheck = await usageQuotaService.validateUnifiedQuota(userId, estimatedInputTokens);
+      if (!quotaCheck.allowed) {
+        return res.status(quotaCheck.payload.statusCode).json(quotaCheck.payload);
+      }
+
+      const selectedModel = await getCatalogModelBySelection(parsed.model, { userId });
+      if (selectedModel && !selectedModel.availableToUser) {
+        return res.status(403).json({
+          ok: false,
+          code: "MODEL_UPGRADE_REQUIRED",
+          message:
+            "El modelo solicitado no está disponible para tu plan actual. Actualiza tu suscripción para ejecutar este runtime nativo.",
+          billing: {
+            unified: true,
+            statusUrl: "/api/billing/status",
+            upgradeUrl: "/workspace-settings?section=billing",
+          },
+        });
+      }
+
+      const { executeOpenClawNativePrompt } = await import("../services/openClawNativeExecution");
+      const result = await executeOpenClawNativePrompt({
+        prompt: parsed.prompt,
+        context: parsed.context,
+        userId,
+        chatId: parsed.chatId || "openclaw-native-web",
+        provider: parsed.provider || selectedModel?.gatewayProvider,
+        model: parsed.model || selectedModel?.modelId,
+        timeoutMs: parsed.timeoutMs,
+        enableTools: parsed.enableTools,
+      });
+
+      usageQuotaService
+        .recordUnifiedOpenClawUsage(userId, estimatedInputTokens, estimateTextTokens(result.response))
+        .catch(() => {});
+
+      return res.json({
+        ok: true,
+        ...result,
+      });
+    } catch (error) {
+      return respondError(res, error);
+    }
   });
 
   // ── Observability endpoints ──

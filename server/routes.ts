@@ -117,7 +117,7 @@ import { llmGateway } from "./lib/llmGateway";
 import { generateAnonToken, verifyAnonToken } from "./lib/anonToken";
 import { getUserConfig, setUserConfig, getDefaultConfig, validatePatterns, getFilterStats } from "./services/contentFilter";
 import { isModelEligibleForPublic } from "./services/modelIntegration";
-import { getUnifiedModelCatalog } from "./services/modelCatalogService";
+import { getOpenClawGatewayModelCatalog, getUnifiedModelCatalog } from "./services/modelCatalogService";
 import { GEMINI_MODELS_REGISTRY, OPENROUTER_MODELS, XAI_MODELS } from "./lib/modelRegistry";
 import { getLogs, getLogStats, type LogFilters } from "./lib/structuredLogger";
 import { getActiveRequests, getRequestStats } from "./lib/requestTracer";
@@ -759,6 +759,221 @@ export async function registerRoutes(
     : nmOpenclawUi;
   if (fs.existsSync(path.join(openclawControlUiRoot, "index.html"))) {
     const controlUiHtml = fs.readFileSync(path.join(openclawControlUiRoot, "index.html"), "utf-8");
+    function escapeInlineJson(value: unknown): string {
+      return JSON.stringify(value)
+        .replace(/</g, "\\u003c")
+        .replace(/>/g, "\\u003e")
+        .replace(/&/g, "\\u0026");
+    }
+    function buildOpenClawModelPickerEnhancer(catalog: Awaited<ReturnType<typeof getOpenClawGatewayModelCatalog>>): string {
+      const pickerPayload = escapeInlineJson({
+        default: catalog.default,
+        models: catalog.models.map((model) => ({
+          id: model.id,
+          provider: model.provider,
+          name: model.name,
+          available: model.available,
+          requiresUpgrade: model.requiresUpgrade,
+          logoUrl: model.logoUrl || "/logos/openai.png",
+          order: model.order,
+        })),
+      });
+
+      return `<style id="ilia-openclaw-model-picker-style">
+.chat-controls__model{position:relative}
+.ilia-oc-model-picker__native{position:absolute!important;opacity:0!important;pointer-events:none!important;width:1px!important;height:1px!important;overflow:hidden!important}
+.ilia-oc-model-picker{position:relative;display:block;width:100%}
+.ilia-oc-model-picker__trigger{width:100%;display:flex;align-items:center;gap:10px;min-height:38px;padding:8px 14px;border:1px solid rgba(17,24,39,.10);border-radius:14px;background:#fff;color:#1f2937;font:inherit;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.ilia-oc-model-picker__trigger:disabled{cursor:not-allowed;opacity:.65}
+.ilia-oc-model-picker__trigger-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:14px;font-weight:500}
+.ilia-oc-model-picker__trigger-logo{width:18px;height:18px;flex:0 0 auto;object-fit:contain}
+.ilia-oc-model-picker__trigger-chevron{flex:0 0 auto;color:#6b7280;transition:transform .15s ease}
+.ilia-oc-model-picker.is-open .ilia-oc-model-picker__trigger-chevron{transform:rotate(180deg)}
+.ilia-oc-model-picker__menu{position:absolute;top:calc(100% + 8px);left:0;right:0;display:none;padding:8px 0;border:1px solid rgba(17,24,39,.10);border-radius:16px;background:#fff;box-shadow:0 16px 40px rgba(15,23,42,.16);z-index:80;overflow:hidden}
+.ilia-oc-model-picker.is-open .ilia-oc-model-picker__menu{display:block}
+.ilia-oc-model-picker__item{width:100%;display:flex;align-items:center;gap:10px;padding:10px 14px;border:0;background:transparent;color:#111827;text-align:left;font:inherit;cursor:pointer}
+.ilia-oc-model-picker__item:hover{background:rgba(15,23,42,.05)}
+.ilia-oc-model-picker__item.is-selected{background:rgba(37,99,235,.08);font-weight:600}
+.ilia-oc-model-picker__item.is-locked{color:#6b7280;cursor:not-allowed}
+.ilia-oc-model-picker__item.is-locked:hover{background:transparent}
+.ilia-oc-model-picker__item-default{font-size:14px;font-weight:500}
+.ilia-oc-model-picker__item-logo{width:18px;height:18px;flex:0 0 auto;object-fit:contain}
+.ilia-oc-model-picker__item-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.ilia-oc-model-picker__item-icon{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;color:#9ca3af}
+.ilia-oc-model-picker__item-icon svg{width:14px;height:14px;display:block}
+</style><script>(function(){
+if(window.__ILIA_OPENCLAW_MODEL_PICKER__)return;
+window.__ILIA_OPENCLAW_MODEL_PICKER__=true;
+var pickerCatalog=${pickerPayload};
+var lockSvg='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>';
+var checkSvg='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"></path></svg>';
+var chevronSvg='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>';
+function normalizeValue(value){return String(value||'').trim().toLowerCase();}
+function buildCandidateValues(model){
+  var values=[model.id,model.provider+'/'+model.id];
+  if(model.modelId){
+    values.push(model.modelId,model.provider+'/'+model.modelId);
+  }
+  return Array.from(new Set(values.map(normalizeValue).filter(Boolean)));
+}
+var models=(pickerCatalog.models||[]).slice().sort(function(left,right){return (left.order||0)-(right.order||0);}).map(function(model){
+  var normalizedModel=Object.assign({},model);
+  normalizedModel.modelId=model.id;
+  normalizedModel._candidates=buildCandidateValues(normalizedModel);
+  return normalizedModel;
+});
+function resolveMeta(value){
+  var normalized=normalizeValue(value);
+  if(!normalized)return null;
+  for(var i=0;i<models.length;i++){
+    if(models[i]._candidates.indexOf(normalized)!==-1)return models[i];
+  }
+  for(var j=0;j<models.length;j++){
+    var model=models[j];
+    var modelId=normalizeValue(model.id);
+    if(modelId&&(normalized===modelId||normalized.endsWith('/'+modelId)))return model;
+  }
+  return null;
+}
+function resolveDefaultMeta(){
+  var currentDefault=pickerCatalog.default||{};
+  return resolveMeta((currentDefault.provider?currentDefault.provider+'/':'')+(currentDefault.model||''))||resolveMeta(currentDefault.model)||models.find(function(model){return !!model.available;})||models[0]||null;
+}
+function closePickers(exceptWrapper){
+  document.querySelectorAll('.ilia-oc-model-picker.is-open').forEach(function(node){
+    if(node!==exceptWrapper)node.classList.remove('is-open');
+  });
+}
+function createIcon(markup,className){
+  var span=document.createElement('span');
+  span.className=className;
+  span.innerHTML=markup;
+  return span;
+}
+function createLogo(meta,className){
+  if(!meta||!meta.logoUrl)return null;
+  var image=document.createElement('img');
+  image.className=className;
+  image.alt='';
+  image.src=meta.logoUrl;
+  return image;
+}
+function resolveOptionLabel(option,meta,isDefault){
+  if(isDefault){
+    return meta&&meta.name?'Default ('+meta.name+')':String(option&&option.textContent||'Default').trim()||'Default';
+  }
+  return meta&&meta.name?meta.name:String(option&&option.textContent||'Modelo').trim();
+}
+function buildTrigger(button,selectedOption,meta,isDefault){
+  button.innerHTML='';
+  if(meta){
+    var logo=createLogo(meta,'ilia-oc-model-picker__trigger-logo');
+    if(logo)button.appendChild(logo);
+  }
+  var label=document.createElement('span');
+  label.className='ilia-oc-model-picker__trigger-label';
+  label.textContent=resolveOptionLabel(selectedOption,meta,isDefault);
+  button.appendChild(label);
+  if(meta&&!meta.available){
+    button.appendChild(createIcon(lockSvg,'ilia-oc-model-picker__item-icon'));
+  }
+  button.appendChild(createIcon(chevronSvg,'ilia-oc-model-picker__trigger-chevron'));
+}
+function enhanceSelect(select){
+  if(select.dataset.iliaOcEnhanced==='true'){
+    if(select.__iliaOpenClawSync)select.__iliaOpenClawSync();
+    return;
+  }
+  select.dataset.iliaOcEnhanced='true';
+  select.classList.add('ilia-oc-model-picker__native');
+  select.setAttribute('tabindex','-1');
+  var wrapper=document.createElement('div');
+  wrapper.className='ilia-oc-model-picker';
+  var trigger=document.createElement('button');
+  trigger.type='button';
+  trigger.className='ilia-oc-model-picker__trigger';
+  var menu=document.createElement('div');
+  menu.className='ilia-oc-model-picker__menu';
+  wrapper.appendChild(trigger);
+  wrapper.appendChild(menu);
+  select.insertAdjacentElement('afterend',wrapper);
+  function sync(){
+    var options=Array.from(select.options||[]);
+    var selectedOption=options[select.selectedIndex]||options[0]||null;
+    var selectedValue=selectedOption?String(selectedOption.value||'').trim():'';
+    var isDefault=selectedValue==='';
+    var selectedMeta=isDefault?resolveDefaultMeta():resolveMeta(selectedValue);
+    trigger.disabled=!!select.disabled;
+    buildTrigger(trigger,selectedOption,selectedMeta,isDefault);
+    menu.innerHTML='';
+    options.forEach(function(option){
+      var optionValue=String(option.value||'').trim();
+      var optionIsDefault=optionValue==='';
+      var meta=optionIsDefault?resolveDefaultMeta():resolveMeta(optionValue);
+      var item=document.createElement('button');
+      item.type='button';
+      item.className='ilia-oc-model-picker__item'+(option.selected?' is-selected':'');
+      if(optionIsDefault)item.className+=' ilia-oc-model-picker__item-default';
+      var locked=!!(meta&&!meta.available);
+      if(locked)item.className+=' is-locked';
+      item.disabled=!!select.disabled||!!option.disabled||locked;
+      item.setAttribute('aria-pressed',option.selected?'true':'false');
+      if(!optionIsDefault&&meta){
+        var logo=createLogo(meta,'ilia-oc-model-picker__item-logo');
+        if(logo)item.appendChild(logo);
+      }
+      var itemLabel=document.createElement('span');
+      itemLabel.className='ilia-oc-model-picker__item-label';
+      itemLabel.textContent=resolveOptionLabel(option,meta,optionIsDefault);
+      item.appendChild(itemLabel);
+      if(option.selected){
+        item.appendChild(createIcon(checkSvg,'ilia-oc-model-picker__item-icon'));
+      }else if(locked){
+        item.appendChild(createIcon(lockSvg,'ilia-oc-model-picker__item-icon'));
+      }
+      item.addEventListener('click',function(event){
+        event.preventDefault();
+        if(item.disabled)return;
+        closePickers();
+        select.value=option.value;
+        select.dispatchEvent(new Event('change',{bubbles:true}));
+        sync();
+      });
+      menu.appendChild(item);
+    });
+  }
+  trigger.addEventListener('click',function(event){
+    event.preventDefault();
+    if(trigger.disabled)return;
+    var open=wrapper.classList.contains('is-open');
+    closePickers(open?null:wrapper);
+    wrapper.classList.toggle('is-open',!open);
+  });
+  select.addEventListener('change',sync);
+  var optionObserver=new MutationObserver(sync);
+  optionObserver.observe(select,{attributes:true,childList:true,subtree:true});
+  select.__iliaOpenClawSync=sync;
+  sync();
+}
+function scan(){
+  document.querySelectorAll('select[data-chat-model-select=\"true\"]').forEach(function(select){
+    enhanceSelect(select);
+  });
+}
+document.addEventListener('click',function(event){
+  if(!(event.target instanceof Element))return;
+  var wrapper=event.target.closest('.ilia-oc-model-picker');
+  closePickers(wrapper);
+});
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded',scan,{once:true});
+}else{
+  scan();
+}
+var rootObserver=new MutationObserver(function(){scan();});
+rootObserver.observe(document.documentElement,{childList:true,subtree:true});
+})();</script>`;
+    }
     function buildGatewayHash(req: Request): string {
       const userId = (req as any).user?.id || (req as any).session?.passport?.user || "anon-" + (req.ip || "unknown");
       const token = generateGatewayToken(userId);
@@ -767,12 +982,16 @@ export async function registerRoutes(
       const wsUrl = `${proto}//${host}/openclaw-ws`;
       return `gatewayUrl=${encodeURIComponent(wsUrl)}&token=${encodeURIComponent(token)}`;
     }
-    function serveControlUiWithAutoConnect(req: Request, res: Response) {
-      const userId = (req as any).user?.id || (req as any).session?.passport?.user || "anon-" + (req.ip || "unknown");
-      const token = generateGatewayToken(userId);
-      const safeToken = token.replace(/[<>&"'\\]/g, '');
+    async function serveControlUiWithAutoConnect(req: Request, res: Response) {
+      try {
+        const userId = getSecureUserId(req) || ((req as any).user?.id || (req as any).session?.passport?.user || "anon-" + (req.ip || "unknown"));
+        const token = generateGatewayToken(userId);
+        const safeToken = token.replace(/[<>&"'\\]/g, '');
+        const pickerEnhancer = buildOpenClawModelPickerEnhancer(
+          await getOpenClawGatewayModelCatalog({ userId }),
+        );
 
-      const preSeedScript = `<script>(function(){
+        const preSeedScript = `<script>(function(){
 try{
   var w=(location.protocol==="https:"?"wss:":"ws:")+"//"+location.host+"/openclaw-ws";
   var tk="${safeToken}";
@@ -805,12 +1024,16 @@ try{
   localStorage.setItem(TK,tk);
 }catch(e){console.error("[OC-Pre]",e)}
 })()</script>`;
-      const modifiedHtml = controlUiHtml
-        .replace("<head>", '<head><base href="/openclaw-ui/">')
-        .replace('</head>', preSeedScript + '</head>');
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-      res.send(modifiedHtml);
+        const modifiedHtml = controlUiHtml
+          .replace("<head>", '<head><base href="/openclaw-ui/">')
+          .replace("</head>", preSeedScript + pickerEnhancer + "</head>");
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        res.send(modifiedHtml);
+      } catch (error: any) {
+        log.error("Failed to render OpenClaw control UI", { error });
+        res.status(500).send("Failed to render OpenClaw control UI");
+      }
     }
 
     app.get("/openclaw-ui/__openclaw/control-ui-config.json", (req: Request, res: Response) => {
@@ -820,8 +1043,12 @@ try{
     app.get("/openclaw-boot", (req: Request, res: Response) => {
       res.redirect("/openclaw-ui");
     });
-    app.get("/openclaw-ui", serveControlUiWithAutoConnect);
-    app.get("/openclaw-ui/", serveControlUiWithAutoConnect);
+    app.get("/openclaw-ui", (req: Request, res: Response) => {
+      void serveControlUiWithAutoConnect(req, res);
+    });
+    app.get("/openclaw-ui/", (req: Request, res: Response) => {
+      void serveControlUiWithAutoConnect(req, res);
+    });
 
     // Patch the Control UI JS bundle at serve-time to:
     // 1. Accept ALL file types in drag-and-drop (not just image/*)
@@ -867,6 +1094,12 @@ try{
       );
       if (p3 !== js) { js = p3; patchCount++; }
 
+      const p4 = js.replace(
+        'function ri(e){let t=e.provider?.trim();return{value:(()=>{if(!t)return e.id;let n=`${t.toLowerCase()}/`;return e.id.toLowerCase().startsWith(n)?e.id:`${t}/${e.id}`})(),label:t?`${e.id} · ${t}`:e.id}}',
+        'function ri(e){let t=e.provider?.trim(),n=e.name?.trim()||e.id;return{value:(()=>{if(!t)return e.id;let r=`${t.toLowerCase()}/`;return e.id.toLowerCase().startsWith(r)?e.id:`${t}/${e.id}`})(),label:n}}'
+      );
+      if (p4 !== js) { js = p4; patchCount++; }
+
       if (patchCount > 0) {
         log.info(`Patched OpenClaw UI bundle: ${patchCount} patches applied (all file types + fileName)`);
         patchedBundleCache[safeName] = js;
@@ -886,7 +1119,7 @@ try{
       if (req.path.includes(".") && !req.path.endsWith(".html")) {
         return res.status(404).send("Not found");
       }
-      serveControlUiWithAutoConnect(req, res);
+      void serveControlUiWithAutoConnect(req, res);
     });
     log.info("Control UI mounted at /openclaw-ui");
   } else {

@@ -35,7 +35,9 @@ export function setupTray(): Tray {
         {
             label: '🌐 Panel en Navegador',
             click: () => {
-                const panelUrl = process.env.ILIAGPT_PANEL_URL || 'https://iliagpt.com';
+                const panelUrl = app.isPackaged
+                    ? (process.env.ILIAGPT_LOCAL_PANEL_URL || 'http://127.0.0.1:5000/openclaw')
+                    : (process.env.ILIAGPT_DEV_PANEL_URL || 'http://localhost:5050/openclaw');
                 shell.openExternal(panelUrl);
             }
         },

@@ -3,6 +3,26 @@ import express from "express";
 import { createHttpTestClient } from "../../tests/helpers/httpTestClient";
 
 const runtimeRuns: any[] = [];
+const ensureUserRowExistsMock = vi.fn(async () => {});
+const getCatalogModelBySelectionMock = vi.fn(async (selection?: string) => ({
+  id: selection || "gpt-5.4",
+  modelId: selection || "gpt-5.4",
+  gatewayProvider: "openai",
+  availableToUser: true,
+}));
+const validateUnifiedQuotaMock = vi.fn(async () => ({ allowed: true as const }));
+const recordUnifiedOpenClawUsageMock = vi.fn(async () => {});
+const executeOpenClawNativePromptMock = vi.fn(async (params: any) => ({
+  engine: "OpenClaw native embedded runtime",
+  sessionId: "native-session-1",
+  sessionKey: "iliagpt:native:test",
+  workspaceDir: "/tmp/openclaw-native",
+  response: `respuesta nativa para ${params.prompt}`,
+  payloads: [{ text: `respuesta nativa para ${params.prompt}` }],
+  mediaUrls: [],
+  meta: { durationMs: 42 },
+  nativeToolsEnabled: Boolean(params.enableTools),
+}));
 
 const orchestrationEngineMock = {
   decomposeTask: vi.fn(async (objective: string) => [
@@ -58,6 +78,10 @@ vi.mock("../lib/anonUserHelper", () => ({
   getOrCreateSecureUserId: () => "user_test",
 }));
 
+vi.mock("../lib/ensureUserRowExists", () => ({
+  ensureUserRowExists: (...args: any[]) => ensureUserRowExistsMock(...args),
+}));
+
 vi.mock("../services/ragService", () => ({
   RAGService: class {
     async search() {
@@ -72,6 +96,21 @@ vi.mock("../services/ragService", () => ({
 
 vi.mock("../services/orchestrationEngine", () => ({
   orchestrationEngine: orchestrationEngineMock,
+}));
+
+vi.mock("../services/modelCatalogService", () => ({
+  getCatalogModelBySelection: (...args: any[]) => getCatalogModelBySelectionMock(...args),
+}));
+
+vi.mock("../services/usageQuotaService", () => ({
+  usageQuotaService: {
+    validateUnifiedQuota: (...args: any[]) => validateUnifiedQuotaMock(...args),
+    recordUnifiedOpenClawUsage: (...args: any[]) => recordUnifiedOpenClawUsageMock(...args),
+  },
+}));
+
+vi.mock("../services/openClawNativeExecution", () => ({
+  executeOpenClawNativePrompt: (...args: any[]) => executeOpenClawNativePromptMock(...args),
 }));
 
 vi.mock("../openclaw/skills/skillRegistry", () => ({
@@ -177,6 +216,24 @@ describe("openclawRuntimeRouter smoke flow", () => {
   beforeEach(() => {
     runtimeRuns.length = 0;
     vi.clearAllMocks();
+    getCatalogModelBySelectionMock.mockResolvedValue({
+      id: "gpt-5.4",
+      modelId: "gpt-5.4",
+      gatewayProvider: "openai",
+      availableToUser: true,
+    });
+    validateUnifiedQuotaMock.mockResolvedValue({ allowed: true });
+    executeOpenClawNativePromptMock.mockImplementation(async (params: any) => ({
+      engine: "OpenClaw native embedded runtime",
+      sessionId: "native-session-1",
+      sessionKey: "iliagpt:native:test",
+      workspaceDir: "/tmp/openclaw-native",
+      response: `respuesta nativa para ${params.prompt}`,
+      payloads: [{ text: `respuesta nativa para ${params.prompt}` }],
+      mediaUrls: [],
+      meta: { durationMs: 42 },
+      nativeToolsEnabled: Boolean(params.enableTools),
+    }));
   });
 
   it("executes objective -> plan -> subagents -> consolidated response", async () => {
@@ -225,6 +282,112 @@ describe("openclawRuntimeRouter smoke flow", () => {
       expect(flowRes.body.delegatedRuns.length).toBeGreaterThanOrEqual(1);
       expect(flowRes.body.delegatedRuns.every((run: any) => typeof run.id === "string")).toBe(true);
       expect(flowRes.body.combined.summary.completed).toBe(2);
+    } finally {
+      await close();
+    }
+  });
+
+  it("reports native runtime status", async () => {
+    const app = await createTestApp();
+    const { client, close } = await createHttpTestClient(app);
+    try {
+      const res = await client.get("/api/openclaw/runtime/native/status");
+      expect([200, 503]).toContain(res.status);
+      expect(typeof res.body.ok).toBe("boolean");
+    } finally {
+      await close();
+    }
+  });
+
+  it("executes the native runtime with unified catalog and billing", async () => {
+    const app = await createTestApp();
+    const { client, close } = await createHttpTestClient(app);
+    try {
+      const res = await client.post("/api/openclaw/runtime/native/exec").send({
+        prompt: "resume este documento",
+        model: "gpt-5.4",
+        chatId: "chat-native",
+        enableTools: true,
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(ensureUserRowExistsMock).toHaveBeenCalledWith("user_test", expect.anything());
+      expect(validateUnifiedQuotaMock).toHaveBeenCalledWith("user_test", expect.any(Number));
+      expect(getCatalogModelBySelectionMock).toHaveBeenCalledWith("gpt-5.4", { userId: "user_test" });
+      expect(executeOpenClawNativePromptMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: "resume este documento",
+          userId: "user_test",
+          chatId: "chat-native",
+          provider: "openai",
+          model: "gpt-5.4",
+          enableTools: true,
+        }),
+      );
+      expect(recordUnifiedOpenClawUsageMock).toHaveBeenCalledWith("user_test", expect.any(Number), expect.any(Number));
+    } finally {
+      await close();
+    }
+  });
+
+  it("blocks native execution when unified quota is exhausted", async () => {
+    validateUnifiedQuotaMock.mockResolvedValueOnce({
+      allowed: false,
+      payload: {
+        ok: false,
+        code: "TOKEN_QUOTA_EXCEEDED",
+        message: "saldo agotado",
+        statusCode: 402,
+        quota: {
+          unified: true,
+          resetAt: null,
+          monthlyAllowed: false,
+          dailyAllowed: true,
+          requestAllowed: true,
+        },
+        billing: {
+          unified: true,
+          statusUrl: "/api/billing/status",
+          upgradeUrl: "/workspace-settings?section=billing",
+        },
+      },
+    });
+
+    const app = await createTestApp();
+    const { client, close } = await createHttpTestClient(app);
+    try {
+      const res = await client.post("/api/openclaw/runtime/native/exec").send({
+        prompt: "ejecuta algo costoso",
+      });
+
+      expect(res.status).toBe(402);
+      expect(res.body.code).toBe("TOKEN_QUOTA_EXCEEDED");
+      expect(executeOpenClawNativePromptMock).not.toHaveBeenCalled();
+    } finally {
+      await close();
+    }
+  });
+
+  it("blocks native execution when the model requires upgrade", async () => {
+    getCatalogModelBySelectionMock.mockResolvedValueOnce({
+      id: "claude-opus-4",
+      modelId: "claude-opus-4",
+      gatewayProvider: "anthropic",
+      availableToUser: false,
+    });
+
+    const app = await createTestApp();
+    const { client, close } = await createHttpTestClient(app);
+    try {
+      const res = await client.post("/api/openclaw/runtime/native/exec").send({
+        prompt: "usa claude opus",
+        model: "claude-opus-4",
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe("MODEL_UPGRADE_REQUIRED");
+      expect(executeOpenClawNativePromptMock).not.toHaveBeenCalled();
     } finally {
       await close();
     }

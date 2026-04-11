@@ -56,13 +56,17 @@ describe("modelIntegration", () => {
     expect(isModelChatCapable({ provider: "openai", modelId: "gpt-5", modelType: "TEXT" })).toBe(true);
   });
 
-  it("only exposes Minimax M2.5 models publicly", async () => {
+  it("only exposes enabled, active, integrated chat models publicly", async () => {
     const { isModelEligibleForPublic } = await import("../modelIntegration");
 
     process.env.GEMINI_API_KEY = "x";
-    expect(isModelEligibleForPublic({ provider: "google", modelId: "gemini-2.0-flash", modelType: "TEXT", status: "active", isEnabled: "true" })).toBe(false);
+    process.env.OPENAI_API_KEY = "x";
+
+    expect(isModelEligibleForPublic({ provider: "google", modelId: "gemini-2.0-flash", modelType: "TEXT", status: "active", isEnabled: "true" })).toBe(true);
     expect(isModelEligibleForPublic({ provider: "google", modelId: "gemini-2.0-flash", modelType: "TEXT", status: "inactive", isEnabled: "true" })).toBe(false);
+    expect(isModelEligibleForPublic({ provider: "google", modelId: "gemini-2.0-flash", modelType: "TEXT", status: "active", isEnabled: "false" })).toBe(false);
     expect(isModelEligibleForPublic({ provider: "google", modelId: "imagen-4", modelType: "IMAGE", status: "active", isEnabled: "true" })).toBe(false);
-    expect(isModelEligibleForPublic({ provider: "openai", modelId: "minimax-m2.5", modelType: "TEXT", status: "active", isEnabled: "true" })).toBe(true);
+    expect(isModelEligibleForPublic({ provider: "openai", modelId: "gpt-5.4", modelType: "TEXT", status: "active", isEnabled: "true" })).toBe(true);
+    expect(isModelEligibleForPublic({ provider: "anthropic", modelId: "claude-opus-4", modelType: "TEXT", status: "active", isEnabled: "true" })).toBe(false);
   });
 });

@@ -4,8 +4,14 @@ import type { Server as HttpServer } from "http";
 import fs from "fs";
 import path from "path";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import { OPENCLAW_RELEASE_VERSION } from "@shared/openclawRelease";
 import { llmGateway } from "../lib/llmGateway";
+import { ensureUserRowExists } from "../lib/ensureUserRowExists";
 import { usageQuotaService } from "./usageQuotaService";
+import {
+  getCatalogModelBySelection,
+  getOpenClawGatewayModelCatalog,
+} from "./modelCatalogService";
 import { internetToolDefinitions, executeInternetTool } from "../openclaw/lib/internetAccess";
 import { gatherInternetContext, buildInternetSystemPrompt } from "../openclaw/lib/chatInternetBridge";
 import { skillRegistry } from "../openclaw/skills/skillRegistry";
@@ -16,7 +22,7 @@ import {
   hasExplicitSpreadsheetArtifactRequest,
 } from "@shared/explicitArtifactRequests";
 
-const VERSION = "2026.4.9";
+const VERSION = OPENCLAW_RELEASE_VERSION;
 
 function getWorkspaceRoot(): string {
   return process.env.OPENCLAW_WORKSPACE_ROOT || path.join(process.cwd(), "openclaw-workspaces");
@@ -154,6 +160,145 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function estimateTextTokens(text: string): number {
+  return Math.max(0, Math.ceil(String(text || "").length / 4));
+}
+
+function estimateMessageTokens(payload: unknown): number {
+  if (typeof payload === "string") {
+    return estimateTextTokens(payload);
+  }
+
+  try {
+    return estimateTextTokens(JSON.stringify(payload));
+  } catch {
+    return estimateTextTokens(String(payload || ""));
+  }
+}
+
+const BUILTIN_GATEWAY_COMMANDS = Object.freeze([
+  { name: "models.list", description: "List the unified ILIAGPT/OpenClaw model catalog.", category: "models" },
+  { name: "skills.status", description: "Show installed OpenClaw skills.", category: "skills" },
+  { name: "skills.search", description: "Search installed OpenClaw skills.", category: "skills" },
+  { name: "skills.detail", description: "Show detail for one installed OpenClaw skill.", category: "skills" },
+  { name: "sessions.list", description: "List current OpenClaw sessions.", category: "sessions" },
+  { name: "sessions.patch", description: "Update per-session runtime options such as model.", category: "sessions" },
+  { name: "sessions.compaction.list", description: "List compaction checkpoints for the session.", category: "sessions" },
+  { name: "chat.send", description: "Send a message through the unified OpenClaw gateway.", category: "chat" },
+  { name: "chat.abort", description: "Abort an active OpenClaw run.", category: "chat" },
+  { name: "config.get", description: "Return the effective gateway configuration.", category: "config" },
+  { name: "config.patch", description: "Apply a best-effort config patch.", category: "config" },
+  { name: "config.schema.lookup", description: "Inspect a config path in the effective schema.", category: "config" },
+  { name: "doctor.memory.status", description: "Return Active Memory / dreaming status.", category: "memory" },
+]);
+
+function lookupConfigValue(config: Record<string, unknown>, dottedPath: string): unknown {
+  const segments = dottedPath
+    .split(".")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  let cursor: unknown = config;
+  for (const segment of segments) {
+    if (!isRecord(cursor) || !(segment in cursor)) {
+      return undefined;
+    }
+    cursor = cursor[segment];
+  }
+
+  return cursor;
+}
+
+function buildCommandsListPayload() {
+  return {
+    commands: BUILTIN_GATEWAY_COMMANDS.map((command) => ({
+      name: command.name,
+      description: command.description,
+      category: command.category,
+    })),
+  };
+}
+
+function searchInstalledSkills(query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  return skillRegistry
+    .list()
+    .filter((skill) => {
+      const haystack = [skill.id, skill.name, skill.description].join(" ").toLowerCase();
+      return haystack.includes(normalizedQuery);
+    })
+    .map((skill) => ({
+      id: skill.id,
+      slug: skill.id,
+      name: skill.name,
+      description: skill.description,
+      source: skill.source || "builtin",
+      tools: skill.tools || [],
+    }));
+}
+
+async function buildGatewayConfig(userId?: string) {
+  const catalog = await getOpenClawGatewayModelCatalog({ userId });
+  const providers = Array.from(
+    new Map(
+      catalog.models.map((model) => [
+        model.provider,
+        {
+          id: model.provider,
+          label: model.providerDisplayName,
+        },
+      ]),
+    ).values(),
+  );
+
+  return {
+    version: VERSION,
+    model: {
+      provider: catalog.default.provider,
+      model: catalog.default.model,
+    },
+    catalog,
+    providers,
+    commands: buildCommandsListPayload().commands,
+    quota: {
+      unified: true,
+      statusUrl: "/api/billing/status",
+      upgradeUrl: "/workspace-settings?section=billing",
+    },
+    desktopNativeMode: {
+      enabled: true,
+    },
+  };
+}
+
+function emitGatewayChatError(
+  ws: WebSocket,
+  id: number | string,
+  sessionKey: string,
+  runId: string,
+  payload: {
+    code: string;
+    message: string;
+    quota?: unknown;
+    billing?: unknown;
+  },
+) {
+  replyError(ws, id, payload.code, payload.message);
+  send(ws, {
+    type: "event",
+    event: "chat",
+    payload: {
+      sessionKey,
+      runId,
+      state: "error",
+      errorCode: payload.code,
+      errorMessage: payload.message,
+      quota: payload.quota,
+      billing: payload.billing,
+    },
+  });
 }
 
 function inferGatewayDocumentType(message: string): GatewayDocumentType | null {
@@ -463,7 +608,7 @@ function replyError(ws: WebSocket, id: number | string, code: string | number, m
   send(ws, { type: "res", id, ok: false, error: { code: String(code), message } });
 }
 
-function handleMethod(client: GatewayClient, id: number | string, method: string, params: any) {
+async function handleMethod(client: GatewayClient, id: number | string, method: string, params: any) {
   const ws = client.ws;
 
   switch (method) {
@@ -474,12 +619,30 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       if (params?.auth?.authToken) {
         const resolvedUserId = resolveUserIdFromToken(params.auth.authToken);
         client.userId = resolvedUserId || `token:${params.auth.authToken.slice(0, 8)}`;
+        if (resolvedUserId) {
+          ensureUserRowExists(resolvedUserId).catch(() => {});
+        }
       }
       console.log(`[OpenClaw Gateway] Client authenticated: ${client.clientName} (role=${client.role})`);
       reply(ws, id, {
         version: VERSION,
         gatewayId: "iliagpt-gateway",
-        features: ["chat", "agents", "sessions", "cron", "channels", "skills", "nodes", "config", "internet", "web-fetch", "web-search"],
+        features: [
+          "chat",
+          "agents",
+          "sessions",
+          "cron",
+          "channels",
+          "skills",
+          "commands",
+          "nodes",
+          "config",
+          "memory",
+          "internet",
+          "web-fetch",
+          "web-search",
+          "desktop-native-mode",
+        ],
         auth: { mode: "token", accepted: true, role: client.role, scopes: ["operator.read", "operator.write"] },
         presence: [],
       });
@@ -528,21 +691,7 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       break;
 
     case "config.get":
-      reply(ws, id, {
-        models: {
-          default: { provider: "openrouter", model: "google/gemma-4-31b-it" },
-          providers: {
-            openrouter: { enabled: true },
-            local: { enabled: true },
-            gemini: { enabled: false },
-            openai: { enabled: false },
-            xai: { enabled: false },
-            anthropic: { enabled: false },
-          },
-        },
-        agents: { default: { id: "main" } },
-        gateway: { port: 18789, auth: { mode: "none" } },
-      });
+      reply(ws, id, await buildGatewayConfig(client.userId));
       break;
 
     case "config.schema":
@@ -570,6 +719,45 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       break;
     }
 
+    case "config.patch": {
+      const rawConfig = params?.raw || params?.config || "";
+      const sessionKeyForConfig = params?.sessionKey || "main";
+      if (typeof rawConfig === "string" && rawConfig.includes("model")) {
+        try {
+          const parsed = JSON.parse(rawConfig);
+          if (parsed?.model?.model) {
+            sessionModelOverrides.set(sessionKeyForConfig, {
+              model: parsed.model.model,
+              provider: parsed.model.provider || "openrouter",
+            });
+          }
+        } catch {
+          // Best-effort only for compatibility with the control UI.
+        }
+      }
+      reply(ws, id, { ok: true });
+      break;
+    }
+
+    case "config.schema.lookup": {
+      const lookupPath = asString(params?.path);
+      if (!lookupPath) {
+        replyError(ws, id, -32602, "Missing schema lookup path");
+        break;
+      }
+      const value = lookupConfigValue(await buildGatewayConfig(client.userId), lookupPath);
+      if (value === undefined) {
+        replyError(ws, id, -32602, `config schema path not found: ${lookupPath}`);
+        break;
+      }
+      reply(ws, id, {
+        path: lookupPath,
+        value,
+        type: Array.isArray(value) ? "array" : typeof value,
+      });
+      break;
+    }
+
     case "config.openFile":
       reply(ws, id, { ok: true });
       break;
@@ -586,13 +774,11 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       break;
 
     case "models.list":
-      reply(ws, id, {
-        models: [
-          { id: "google/gemma-4-31b-it", provider: "openrouter", name: "Gemma 4 31B IT", available: true },
-          { id: "local-5000", provider: "local", name: "Local Model (localhost:5000)", available: true },
-        ],
-        default: { provider: "openrouter", model: "google/gemma-4-31b-it" },
-      });
+      reply(ws, id, await getOpenClawGatewayModelCatalog({ userId: client.userId }));
+      break;
+
+    case "commands.list":
+      reply(ws, id, buildCommandsListPayload());
       break;
 
     case "agents.list":
@@ -683,6 +869,12 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
 
     case "sessions.list": {
       const mainOverride = sessionModelOverrides.get("main");
+      const defaultCatalogModel = await getCatalogModelBySelection(mainOverride?.model, {
+        userId: client.userId,
+      });
+      const resolvedSessionModel = mainOverride?.model || defaultCatalogModel?.modelId || "google/gemma-4-31b-it";
+      const resolvedSessionProvider =
+        mainOverride?.provider || defaultCatalogModel?.gatewayProvider || "openrouter";
       reply(ws, id, {
         sessions: [
           {
@@ -690,15 +882,17 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
             agentId: "main",
             label: "main",
             status: "idle",
-            model: mainOverride?.model || "google/gemma-4-31b-it",
-            provider: mainOverride?.provider || "openrouter",
+            model: resolvedSessionModel,
+            provider: resolvedSessionProvider,
+            modelProvider: resolvedSessionProvider,
             createdAt: Date.now() - 60000,
             updatedAt: Date.now(),
           },
         ],
         defaults: {
-          model: "google/gemma-4-31b-it",
-          provider: "openrouter",
+          model: defaultCatalogModel?.modelId || "google/gemma-4-31b-it",
+          provider: defaultCatalogModel?.gatewayProvider || "openrouter",
+          modelProvider: defaultCatalogModel?.gatewayProvider || "openrouter",
           agentId: "main",
         },
       });
@@ -732,24 +926,46 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       reply(ws, id, { ok: true });
       break;
 
+    case "sessions.compaction.list":
+      reply(ws, id, {
+        ok: true,
+        key: params?.key || params?.sessionKey || "main",
+        checkpoints: [],
+      });
+      break;
+
     case "sessions.patch": {
       const patchKey = params?.key || params?.sessionKey || "main";
-      if (params?.model) {
-        const modelId = params.model.trim();
-        const modelsList = [
-          { id: "google/gemma-4-31b-it", provider: "openrouter" },
-          { id: "local-5000", provider: "local" },
-        ];
-        const found = modelsList.find(m => m.id === modelId);
-        const patchProvider = params.provider || found?.provider || (modelId.includes("/") ? "openrouter" : "openai");
-        sessionModelOverrides.set(patchKey, { model: modelId, provider: patchProvider });
-        console.log(`[OpenClaw Gateway] sessions.patch model override: ${patchKey} -> ${modelId} (${patchProvider})`);
+      const modelsCatalog = await getOpenClawGatewayModelCatalog({ userId: client.userId });
+      if (params && Object.prototype.hasOwnProperty.call(params, "model")) {
+        const requestedModel = typeof params.model === "string" ? params.model.trim() : "";
+
+        if (!requestedModel) {
+          sessionModelOverrides.delete(patchKey);
+        } else {
+          const resolvedModel = await getCatalogModelBySelection(requestedModel, {
+            userId: client.userId,
+          });
+          const modelId = resolvedModel?.modelId || requestedModel;
+          const patchProvider =
+            params.provider ||
+            resolvedModel?.gatewayProvider ||
+            sessionModelOverrides.get(patchKey)?.provider ||
+            (modelId.includes("/") ? "openrouter" : "openai");
+          sessionModelOverrides.set(patchKey, { model: modelId, provider: patchProvider });
+          console.log(`[OpenClaw Gateway] sessions.patch model override: ${patchKey} -> ${modelId} (${patchProvider})`);
+        }
       }
+      const effectiveOverride = sessionModelOverrides.get(patchKey);
+      const effectiveCatalogModel = await getCatalogModelBySelection(effectiveOverride?.model, {
+        userId: client.userId,
+      });
       reply(ws, id, {
         ok: true,
         resolved: {
-          model: params?.model || sessionModelOverrides.get(patchKey)?.model || "google/gemma-4-31b-it",
-          modelProvider: params?.provider || sessionModelOverrides.get(patchKey)?.provider || "openrouter",
+          model: effectiveOverride?.model || effectiveCatalogModel?.modelId || modelsCatalog.default.model,
+          modelProvider:
+            effectiveOverride?.provider || effectiveCatalogModel?.gatewayProvider || modelsCatalog.default.provider,
         },
       });
       break;
@@ -757,6 +973,18 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
 
     case "sessions.steer":
       reply(ws, id, { ok: true });
+      break;
+
+    case "doctor.memory.status":
+      reply(ws, id, {
+        dreaming: {
+          enabled: process.env.OPENCLAW_ACTIVE_MEMORY === "true",
+          storageMode: process.env.OPENCLAW_ACTIVE_MEMORY_MODE || "recent",
+          shortTermCount: client.chatHistory.length,
+          promotedEntries: [],
+          signalEntries: [],
+        },
+      });
       break;
 
     case "tools.catalog":
@@ -821,6 +1049,43 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
         total: skillEntries.length,
         ready: skillEntries.filter(s => s.status === 'ready').length,
         needsSetup: skillEntries.filter(s => s.status === 'needs_setup').length,
+      });
+      break;
+    }
+
+    case "skills.search": {
+      const query = asString(params?.query) || asString(params?.q) || "";
+      if (!query) {
+        reply(ws, id, { results: [] });
+        break;
+      }
+      reply(ws, id, {
+        query,
+        results: searchInstalledSkills(query),
+      });
+      break;
+    }
+
+    case "skills.detail": {
+      const slug = asString(params?.slug) || asString(params?.id) || asString(params?.skillId);
+      if (!slug) {
+        replyError(ws, id, -32602, "Missing skill slug");
+        break;
+      }
+      const skill = skillRegistry.list().find((entry) => entry.id === slug || entry.name === slug);
+      if (!skill) {
+        replyError(ws, id, -32601, `Skill not found: ${slug}`);
+        break;
+      }
+      reply(ws, id, {
+        id: skill.id,
+        slug: skill.id,
+        name: skill.name,
+        description: skill.description,
+        source: skill.source || "builtin",
+        tools: skill.tools || [],
+        filePath: skill.filePath,
+        updatedAt: skill.updatedAt,
       });
       break;
     }
@@ -899,12 +1164,19 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
       let userMessage = params?.message || params?.content || "";
       const chatSessionKey = params?.sessionKey || "main";
       const runId = params?.idempotencyKey || randomUUID();
+      const sessionOverride = sessionModelOverrides.get(chatSessionKey);
+      const catalogModel = await getCatalogModelBySelection(
+        params?.model || sessionOverride?.model,
+        { userId: client.userId },
+      );
+      const selectedModel = params?.model || sessionOverride?.model || catalogModel?.modelId || "google/gemma-4-31b-it";
+      const selectedProvider =
+        params?.provider ||
+        sessionOverride?.provider ||
+        catalogModel?.gatewayProvider ||
+        "openrouter";
 
       console.log(`[OpenClaw Gateway] chat.send params:`, JSON.stringify(params, null, 0)?.slice(0, 500));
-
-      const sessionOverride = sessionModelOverrides.get(chatSessionKey);
-      const selectedModel = params?.model || sessionOverride?.model || "google/gemma-4-31b-it";
-      const selectedProvider = params?.provider || sessionOverride?.provider || "openrouter";
 
       // ── Process attachments: save to workspace + extract text for LLM context ──
       // The Control UI sends: { id, dataUrl: "data:mime;base64,...", mimeType, fileName }
@@ -973,6 +1245,33 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
         break;
       }
 
+      if (catalogModel && !catalogModel.availableToUser) {
+        emitGatewayChatError(ws, id, chatSessionKey, runId, {
+          code: "MODEL_UPGRADE_REQUIRED",
+          message: "El modelo seleccionado no está disponible para tu plan actual. Actualiza tu suscripción para usarlo.",
+          billing: {
+            unified: true,
+            statusUrl: "/api/billing/status",
+            upgradeUrl: "/workspace-settings?section=billing",
+          },
+        });
+        break;
+      }
+
+      if (client.userId) {
+        ensureUserRowExists(client.userId).catch(() => {});
+      }
+
+      const estimatedInputTokens = estimateMessageTokens(userMessage);
+      const quotaCheck = await usageQuotaService.validateUnifiedQuota(
+        client.userId || "",
+        estimatedInputTokens,
+      );
+      if (!quotaCheck.allowed) {
+        emitGatewayChatError(ws, id, chatSessionKey, runId, quotaCheck.payload);
+        break;
+      }
+
       reply(ws, id, { ok: true, runId, attachments: rawAttachments.length });
 
       client.chatHistory.push({ role: "user", content: userMessage });
@@ -1014,8 +1313,13 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
               client.chatHistory.splice(1, client.chatHistory.length - 40);
             }
 
-            const estimatedTokens = Math.ceil(fullResponse.length / 4) + Math.ceil(userMessage.length / 4);
-            usageQuotaService.recordOpenClawTokenUsage(client.userId || "", estimatedTokens).catch(() => {});
+            usageQuotaService
+              .recordUnifiedOpenClawUsage(
+                client.userId || "",
+                estimatedInputTokens,
+                estimateTextTokens(fullResponse),
+              )
+              .catch(() => {});
 
             if (client.activeRuns.has(runId)) {
               send(ws, {
@@ -1123,8 +1427,13 @@ function handleMethod(client: GatewayClient, id: number | string, method: string
             client.chatHistory.splice(1, client.chatHistory.length - 40);
           }
 
-          const estimatedTokens = Math.ceil(fullResponse.length / 4) + Math.ceil(userMessage.length / 4);
-          usageQuotaService.recordOpenClawTokenUsage(client.userId || "", estimatedTokens).catch(() => {});
+          usageQuotaService
+            .recordUnifiedOpenClawUsage(
+              client.userId || "",
+              estimatedInputTokens,
+              estimateTextTokens(fullResponse),
+            )
+            .catch(() => {});
 
           if (client.activeRuns.has(runId)) {
             send(ws, {

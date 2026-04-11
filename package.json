@@ -278,7 +278,7 @@
     "node-cron": "^4.2.1",
     "officeparser": "^5.2.2",
     "openai": "^6.10.0",
-    "openclaw": "^2026.4.9",
+    "openclaw": "^2026.4.10",
     "openid-client": "^6.8.1",
     "opossum": "^9.0.0",
     "p-limit": "^7.3.0",
