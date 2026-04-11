@@ -86,6 +86,16 @@ import {
   type RunRepository,
   type PgVectorMemoryStoreLike,
   type PgMemoryLike,
+  // Capability registry (Turn I)
+  InMemoryCapabilityRegistry,
+  buildDefaultCapabilityCatalog,
+  summarizeDefaultCatalog,
+  DEFAULT_CAPABILITY_DESCRIPTORS,
+  CAPABILITY_CATEGORY_LABELS,
+  type CapabilityDescriptor,
+  type CapabilityHandler,
+  type CapabilityContext,
+  type CapabilityRegistry,
 } from "../cognitive";
 
 // ---------------------------------------------------------------------------
@@ -3774,6 +3784,514 @@ describe("cognitive: PgMemoryStoreAdapter bridge (Turn G)", () => {
     expect(cog.importance).toBe(0.5);
     expect(cog.userId).toBe("fallback-user");
     expect(typeof cog.createdAt).toBe("number");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17. Capability registry + catalog (Turn I)
+// ---------------------------------------------------------------------------
+
+function testDescriptor(
+  id: string,
+  overrides: Partial<CapabilityDescriptor> = {},
+): CapabilityDescriptor {
+  return {
+    id,
+    category: overrides.category ?? "file_generation",
+    title: overrides.title ?? `Test ${id}`,
+    description: overrides.description ?? "test",
+    intents: overrides.intents ?? ["chat"],
+    inputSchema: overrides.inputSchema ?? { type: "object" },
+    requiresApproval: overrides.requiresApproval ?? false,
+    timeoutMs: overrides.timeoutMs,
+    supportedTools: overrides.supportedTools ?? [],
+    status: overrides.status ?? "available",
+  };
+}
+
+function ctxForUser(user: string = "u"): CapabilityContext {
+  return {
+    userId: user,
+    signal: new AbortController().signal,
+  };
+}
+
+describe("cognitive: InMemoryCapabilityRegistry (Turn I)", () => {
+  it("208 register + has + list round-trip", () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(testDescriptor("cap.a"), async () => ({ result: 1 }));
+    expect(registry.has("cap.a")).toBe(true);
+    expect(registry.size).toBe(1);
+    expect(registry.list().map((d) => d.id)).toEqual(["cap.a"]);
+  });
+
+  it("209 listByCategory filters descriptors by category", () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(
+      testDescriptor("cap.a", { category: "data_analysis" }),
+      async () => ({ result: 1 }),
+    );
+    registry.register(
+      testDescriptor("cap.b", { category: "file_generation" }),
+      async () => ({ result: 2 }),
+    );
+    expect(
+      registry.listByCategory("data_analysis").map((d) => d.id),
+    ).toEqual(["cap.a"]);
+    expect(
+      registry.listByCategory("file_generation").map((d) => d.id),
+    ).toEqual(["cap.b"]);
+  });
+
+  it("210 listByIntent filters descriptors by declared intent", () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(
+      testDescriptor("cap.a", { intents: ["doc_generation"] }),
+      async () => ({ result: 1 }),
+    );
+    registry.register(
+      testDescriptor("cap.b", { intents: ["data_analysis", "doc_generation"] }),
+      async () => ({ result: 2 }),
+    );
+    registry.register(
+      testDescriptor("cap.c", { intents: ["translation"] }),
+      async () => ({ result: 3 }),
+    );
+    const ids = registry
+      .listByIntent("doc_generation")
+      .map((d) => d.id)
+      .sort();
+    expect(ids).toEqual(["cap.a", "cap.b"]);
+  });
+
+  it("211 listAvailable excludes stub descriptors", () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(
+      testDescriptor("cap.real", { status: "available" }),
+      async () => ({ result: 1 }),
+    );
+    registry.register(testDescriptor("cap.stub", { status: "stub" }));
+    const available = registry.listAvailable();
+    expect(available.length).toBe(1);
+    expect(available[0].id).toBe("cap.real");
+  });
+
+  it("212 invoke unknown capability returns unknown_capability", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    const r = await registry.invoke("ghost", {}, ctxForUser());
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("unknown_capability");
+  });
+
+  it("213 invoke stub returns not_implemented without running handler", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(testDescriptor("cap.stub", { status: "stub" }));
+    const r = await registry.invoke("cap.stub", {}, ctxForUser());
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("not_implemented");
+  });
+
+  it("214 invoke with non-object args returns invalid_args", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(testDescriptor("cap.a"), async () => ({ result: 1 }));
+    const r = await registry.invoke(
+      "cap.a",
+      [] as unknown as Record<string, unknown>,
+      ctxForUser(),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("invalid_args");
+  });
+
+  it("215 invoke successful handler returns ok + result + category", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(
+      testDescriptor("cap.echo", { category: "availability" }),
+      async (args) => ({ result: { got: args } }),
+    );
+    const r = await registry.invoke("cap.echo", { a: 1 }, ctxForUser());
+    expect(r.ok).toBe(true);
+    expect((r.result as { got: { a: number } }).got.a).toBe(1);
+    expect(r.category).toBe("availability");
+    expect(r.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("216 invoke handler throw returns handler_threw", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(testDescriptor("cap.bomb"), async () => {
+      throw new Error("kaboom");
+    });
+    const r = await registry.invoke("cap.bomb", {}, ctxForUser());
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("handler_threw");
+    expect(r.error).toContain("kaboom");
+  });
+
+  it("217 invoke slow handler with low timeout returns timeout promptly", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(
+      testDescriptor("cap.slow", { timeoutMs: 15 }),
+      () => new Promise(() => {}), // never resolves
+    );
+    const start = Date.now();
+    const r = await registry.invoke("cap.slow", {}, ctxForUser());
+    const elapsed = Date.now() - start;
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("timeout");
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("218 invoke pre-aborted signal returns aborted without running handler", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    let ran = false;
+    registry.register(testDescriptor("cap.a"), async () => {
+      ran = true;
+      return { result: 1 };
+    });
+    const ctx = ctxForUser();
+    const ac = new AbortController();
+    ac.abort();
+    ctx.signal = ac.signal;
+    const r = await registry.invoke("cap.a", {}, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("aborted");
+    expect(ran).toBe(false);
+  });
+
+  it("219 approval gate denies without token, allows with token", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(
+      testDescriptor("cap.dangerous", { requiresApproval: true }),
+      async () => ({ result: "did dangerous thing" }),
+    );
+    // First call: no token → approval_required
+    const denied = await registry.invoke("cap.dangerous", {}, ctxForUser());
+    expect(denied.ok).toBe(false);
+    expect(denied.errorCode).toBe("approval_required");
+    expect(denied.approvalChallengeToken).toBeDefined();
+    // Second call: with token → runs
+    const allowed = await registry.invoke(
+      "cap.dangerous",
+      {},
+      { userId: "u", signal: new AbortController().signal, approvalToken: "any" },
+    );
+    expect(allowed.ok).toBe(true);
+  });
+
+  it("220 non-serializable result returns result_not_serializable", async () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(testDescriptor("cap.cyclic"), async () => ({
+      result: cyclic,
+    }));
+    const r = await registry.invoke("cap.cyclic", {}, ctxForUser());
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("result_not_serializable");
+  });
+
+  it("221 handler can attach artifacts that flow through the invocation", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(testDescriptor("cap.arts"), async () => ({
+      result: { ok: true },
+      artifacts: [
+        {
+          id: "code:0",
+          kind: "code",
+          language: "ts",
+          source: "const x = 1;",
+          offset: 0,
+          length: 12,
+        },
+      ],
+      message: "artifacts attached",
+    }));
+    const r = await registry.invoke("cap.arts", {}, ctxForUser());
+    expect(r.ok).toBe(true);
+    expect(r.artifacts.length).toBe(1);
+    expect(r.artifacts[0].kind).toBe("code");
+    expect(r.message).toBe("artifacts attached");
+  });
+});
+
+describe("cognitive: default capability catalog (Turn I)", () => {
+  it("222 default catalog has at least one descriptor in each ILIAGPT category", () => {
+    const summary = summarizeDefaultCatalog();
+    // Every category must have at least 1 descriptor.
+    const categoriesPresent = Object.keys(summary);
+    expect(categoriesPresent).toContain("file_generation");
+    expect(categoriesPresent).toContain("file_management");
+    expect(categoriesPresent).toContain("data_analysis");
+    expect(categoriesPresent).toContain("research_synthesis");
+    expect(categoriesPresent).toContain("format_conversion");
+    expect(categoriesPresent).toContain("browser_automation");
+    expect(categoriesPresent).toContain("computer_use");
+    expect(categoriesPresent).toContain("scheduled_tasks");
+    expect(categoriesPresent).toContain("connectors");
+    expect(categoriesPresent).toContain("plugins");
+    expect(categoriesPresent).toContain("code_execution");
+    expect(categoriesPresent).toContain("sub_agents");
+    expect(categoriesPresent).toContain("projects");
+    expect(categoriesPresent).toContain("security_governance");
+    expect(categoriesPresent).toContain("enterprise");
+    expect(categoriesPresent).toContain("dispatch_mobile");
+    expect(categoriesPresent).toContain("availability");
+    // Sanity check: total descriptors > 30 (we wrote 40+ entries)
+    const total = Object.values(summary).reduce((a, b) => a + b, 0);
+    expect(total).toBeGreaterThan(30);
+  });
+
+  it("223 buildDefaultCapabilityCatalog returns a registry with every descriptor", () => {
+    const registry = buildDefaultCapabilityCatalog();
+    expect(registry.size).toBe(DEFAULT_CAPABILITY_DESCRIPTORS.length);
+    // availability.platform_status should be available, not a stub.
+    expect(registry.has("availability.platform_status")).toBe(true);
+    const status = registry
+      .list()
+      .find((d) => d.id === "availability.platform_status");
+    expect(status?.status).toBe("available");
+  });
+
+  it("224 default catalog platform_status handler returns buildInfo", async () => {
+    const registry = buildDefaultCapabilityCatalog();
+    const r = await registry.invoke(
+      "availability.platform_status",
+      {},
+      ctxForUser(),
+    );
+    expect(r.ok).toBe(true);
+    expect((r.result as { buildInfo: string }).buildInfo).toBeDefined();
+  });
+
+  it("225 default catalog echo handler passes args through", async () => {
+    const registry = buildDefaultCapabilityCatalog();
+    const r = await registry.invoke(
+      "availability.echo",
+      { hello: "world", n: 42 },
+      ctxForUser(),
+    );
+    expect(r.ok).toBe(true);
+    expect((r.result as { echoed: Record<string, unknown> }).echoed).toEqual({
+      hello: "world",
+      n: 42,
+    });
+  });
+
+  it("226 default catalog stubs return not_implemented when invoked", async () => {
+    const registry = buildDefaultCapabilityCatalog();
+    // Pick one we know is a stub.
+    const r = await registry.invoke(
+      "file_generation.create_excel_workbook",
+      {},
+      ctxForUser(),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("not_implemented");
+  });
+
+  it("227 extraDescriptors + handlers promote stubs to available", async () => {
+    const registry = buildDefaultCapabilityCatalog({
+      handlers: new Map<string, CapabilityHandler>([
+        [
+          "file_generation.create_excel_workbook",
+          async () => ({ result: { sheets: 3 }, message: "workbook ready" }),
+        ],
+      ]),
+    });
+    const r = await registry.invoke(
+      "file_generation.create_excel_workbook",
+      {},
+      ctxForUser(),
+    );
+    expect(r.ok).toBe(true);
+    expect((r.result as { sheets: number }).sheets).toBe(3);
+  });
+
+  it("228 CAPABILITY_CATEGORY_LABELS has every category", () => {
+    const categories = Object.keys(CAPABILITY_CATEGORY_LABELS);
+    expect(categories.length).toBeGreaterThanOrEqual(17);
+    // Every label is non-empty
+    for (const label of Object.values(CAPABILITY_CATEGORY_LABELS)) {
+      expect(label.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("cognitive: middleware.invokeCapability wiring (Turn I)", () => {
+  it("229 invokeCapability without registry returns unknown_capability", async () => {
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+    });
+    const r = await mw.invokeCapability(
+      "availability.echo",
+      {},
+      { userId: "u" },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("unknown_capability");
+  });
+
+  it("230 invokeCapability with catalog runs the echo handler", async () => {
+    const registry = buildDefaultCapabilityCatalog();
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      capabilityRegistry: registry,
+    });
+    const r = await mw.invokeCapability(
+      "availability.echo",
+      { hello: "world" },
+      { userId: "u" },
+    );
+    expect(r.ok).toBe(true);
+    expect((r.result as { echoed: Record<string, unknown> }).echoed).toEqual({
+      hello: "world",
+    });
+  });
+
+  it("231 invokeCapability persists an entry to the run repository", async () => {
+    const registry = buildDefaultCapabilityCatalog();
+    const repo = new InMemoryRunRepository();
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      capabilityRegistry: registry,
+      runRepository: repo,
+      awaitRunSave: true,
+    });
+    await mw.invokeCapability("availability.echo", { ping: true }, { userId: "u" });
+    const runs = await repo.listByUser("u");
+    expect(runs.length).toBe(1);
+    expect(runs[0].providerName).toBe("capability:availability.echo");
+    expect(runs[0].ok).toBe(true);
+    expect(runs[0].intent).toBe("agent_task");
+  });
+
+  it("232 invokeCapability failure is recorded in persistence with errorCode", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(testDescriptor("cap.fail"), async () => {
+      throw new Error("handler down");
+    });
+    const repo = new InMemoryRunRepository();
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      capabilityRegistry: registry,
+      runRepository: repo,
+      awaitRunSave: true,
+    });
+    const r = await mw.invokeCapability("cap.fail", {}, { userId: "u" });
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("handler_threw");
+    const runs = await repo.listByUser("u");
+    expect(runs.length).toBe(1);
+    expect(runs[0].ok).toBe(false);
+    expect(runs[0].errors.some((e) => e.includes("capability_failed"))).toBe(true);
+  });
+
+  it("233 invokeCapability honors AbortSignal from caller", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    let ran = false;
+    registry.register(testDescriptor("cap.slow"), async () => {
+      ran = true;
+      return { result: 1 };
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      capabilityRegistry: registry,
+    });
+    const ac = new AbortController();
+    ac.abort();
+    const r = await mw.invokeCapability(
+      "cap.slow",
+      {},
+      { userId: "u", signal: ac.signal },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("aborted");
+    expect(ran).toBe(false);
+  });
+
+  it("234 invokeCapability approval gate returns challenge token + metadata", async () => {
+    const registry = new InMemoryCapabilityRegistry();
+    registry.register(
+      testDescriptor("cap.dangerous", { requiresApproval: true }),
+      async () => ({ result: "done" }),
+    );
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      capabilityRegistry: registry,
+    });
+    const r = await mw.invokeCapability(
+      "cap.dangerous",
+      {},
+      { userId: "u" },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe("approval_required");
+    expect(r.approvalChallengeToken).toBeDefined();
+  });
+
+  it("235 invokeCapability rate limited returns structured error when limiter denies", async () => {
+    const registry = buildDefaultCapabilityCatalog();
+    const tinyLimiter = new InMemoryTokenBucketLimiter({
+      capacity: 1,
+      refillPerSecond: 0,
+    });
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      capabilityRegistry: registry,
+      rateLimiter: tinyLimiter,
+    });
+    const first = await mw.invokeCapability(
+      "availability.echo",
+      {},
+      { userId: "u" },
+    );
+    expect(first.ok).toBe(true);
+    const second = await mw.invokeCapability(
+      "availability.echo",
+      {},
+      { userId: "u" },
+    );
+    expect(second.ok).toBe(false);
+    expect(second.error).toContain("rate limited");
+  });
+
+  it("236 invokeCapability is never fatal: broken repo doesn't poison the invocation", async () => {
+    const registry = buildDefaultCapabilityCatalog();
+    const brokenRepo: RunRepository = {
+      name: "broken",
+      save: async () => {
+        throw new Error("db down");
+      },
+      get: async () => null,
+      listByUser: async () => [],
+      deleteByRunId: async () => 0,
+    };
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      capabilityRegistry: registry,
+      runRepository: brokenRepo,
+      awaitRunSave: true,
+    });
+    const r = await mw.invokeCapability("availability.echo", {}, { userId: "u" });
+    expect(r.ok).toBe(true);
+  });
+
+  it("237 run() and invokeCapability can share the same middleware instance", async () => {
+    const registry = buildDefaultCapabilityCatalog();
+    const mw = new CognitiveMiddleware({
+      adapters: [new EchoMockAdapter()],
+      capabilityRegistry: registry,
+    });
+    // A chat run + a capability invocation both use the same
+    // middleware without interfering.
+    const chat = await mw.run({ userId: "u", message: "hi" });
+    const cap = await mw.invokeCapability(
+      "availability.echo",
+      {},
+      { userId: "u" },
+    );
+    expect(chat.ok).toBe(true);
+    expect(cap.ok).toBe(true);
   });
 });
 

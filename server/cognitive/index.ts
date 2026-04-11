@@ -112,6 +112,29 @@ export {
   type CognitiveAttributeKey,
 } from "./tracing";
 
+// Capability registry + catalog (Turn I)
+export type {
+  CapabilityCategory,
+  CapabilityDescriptor,
+  CapabilityContext,
+  CapabilityHandler,
+  CapabilityHandlerResult,
+  CapabilityInvocation,
+  CapabilityErrorCode,
+  CapabilityRegistry,
+} from "./capabilities";
+export {
+  InMemoryCapabilityRegistry,
+  DEFAULT_CAPABILITY_TIMEOUT_MS,
+  CAPABILITY_CATEGORY_LABELS,
+} from "./capabilities";
+export {
+  buildDefaultCapabilityCatalog,
+  summarizeDefaultCatalog,
+  DEFAULT_CAPABILITY_DESCRIPTORS,
+  type BuildDefaultCapabilityCatalogOptions,
+} from "./capabilityCatalog";
+
 // Artifact extraction + session layer (Turn H)
 export type {
   CognitiveArtifact,

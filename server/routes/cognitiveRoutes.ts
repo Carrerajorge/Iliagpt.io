@@ -31,6 +31,8 @@ import {
   InMemoryTokenBucketLimiter,
   CircuitBreakerRegistry,
   InMemoryRunRepository,
+  buildDefaultCapabilityCatalog,
+  CAPABILITY_CATEGORY_LABELS,
   classifyIntent,
   validateOutput,
   type ProviderAdapter,
@@ -382,6 +384,14 @@ export function createCognitiveRouter(): Router {
     name: "demo-run-repo",
   });
 
+  // Turn I: full capability catalog mounted into the router. Every
+  // descriptor from the ILIAGPT capability list is pre-registered;
+  // the two "available" entries (platform_status, echo) have real
+  // handlers. Every other entry returns a structured
+  // not_implemented outcome so the UI can render "coming soon" for
+  // capabilities that haven't shipped yet.
+  const demoCapabilityRegistry = buildDefaultCapabilityCatalog();
+
   // Tiny-bucket limiter for the /throttled-demo route only. Zero
   // refill so the bucket stays drained across smoke test calls
   // and the denial path is deterministic.
@@ -421,6 +431,7 @@ export function createCognitiveRouter(): Router {
     // Smoke tests need deterministic "save happened before
     // response" semantics so they can GET /runs/:id right after.
     awaitRunSave: true,
+    capabilityRegistry: demoCapabilityRegistry,
   });
 
   // ── POST /api/cognitive/run ───────────────────────────────────────────
@@ -649,6 +660,89 @@ export function createCognitiveRouter(): Router {
     throttledLimiter.resetAll();
     return res.json({ ok: true });
   });
+
+  // ── GET /api/cognitive/capabilities (Turn I) ──────────────────────────
+  //
+  // Returns the full capability catalog. UIs render "everything
+  // the platform can do" grouped by category. Response shape:
+  //   { categories: [{ key, label, count }],
+  //     capabilities: [descriptor, ...],
+  //     totalCount, availableCount }
+  router.get("/capabilities", (_req: Request, res: Response) => {
+    try {
+      const capabilities = demoCapabilityRegistry.list();
+      const categoryCounts = new Map<string, number>();
+      for (const c of capabilities) {
+        categoryCounts.set(c.category, (categoryCounts.get(c.category) ?? 0) + 1);
+      }
+      const categories = Array.from(categoryCounts.entries())
+        .map(([key, count]) => ({
+          key,
+          label:
+            CAPABILITY_CATEGORY_LABELS[
+              key as keyof typeof CAPABILITY_CATEGORY_LABELS
+            ] ?? key,
+          count,
+        }))
+        .sort((a, b) => a.key.localeCompare(b.key));
+      return res.json({
+        categories,
+        capabilities,
+        totalCount: capabilities.length,
+        availableCount: demoCapabilityRegistry.listAvailable().length,
+      });
+    } catch (caught) {
+      return res.status(500).json({
+        error: "capability_list_failed",
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  });
+
+  // ── POST /api/cognitive/capabilities/:id/invoke (Turn I) ──────────────
+  //
+  // Invoke a capability by id. Body: { userId, args,
+  // approvalToken?, conversationId? }. Returns the full
+  // CapabilityInvocation as JSON.
+  router.post(
+    "/capabilities/:id/invoke",
+    async (req: Request, res: Response) => {
+      const id = req.params.id;
+      const body = (req.body ?? {}) as {
+        userId?: string;
+        conversationId?: string;
+        args?: Record<string, unknown>;
+        approvalToken?: string;
+      };
+      if (!body.userId || typeof body.userId !== "string") {
+        return res
+          .status(400)
+          .json({ error: "invalid_request", message: "userId is required" });
+      }
+      try {
+        const controller = new AbortController();
+        res.on("close", () => {
+          if (!res.writableEnded) controller.abort();
+        });
+        const invocation = await middleware.invokeCapability(
+          id,
+          body.args ?? {},
+          {
+            userId: body.userId,
+            conversationId: body.conversationId,
+            signal: controller.signal,
+            approvalToken: body.approvalToken,
+          },
+        );
+        return res.json(invocation);
+      } catch (caught) {
+        return res.status(500).json({
+          error: "capability_invoke_failed",
+          message: caught instanceof Error ? caught.message : String(caught),
+        });
+      }
+    },
+  );
 
   // ── GET /api/cognitive/runs/:runId (Turn G) ───────────────────────────
   //

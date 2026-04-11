@@ -666,6 +666,64 @@ LIST5_BODY=$(curl -sS "$BASE/api/cognitive/users/$PERSIST_USER3/runs?limit=1")
 assert "50 GET /users/:userId/runs persists artifact-producing run" "$LIST5_BODY" \
   '(b) => b.count === 1 && b.runs[0].text.indexOf("function add") >= 0 && b.runs[0].ok === true'
 
+# ── Turn I — capability registry + catalog checks ─────────────────────────
+#
+# The main router boots with the full ILIAGPT capability catalog
+# (40+ descriptors across 17 categories). Two entries are
+# "available" (platform_status + echo); the rest are stubs that
+# return structured not_implemented outcomes.
+
+# 51 GET /capabilities returns the full catalog with category grouping
+run_test "51 GET /api/cognitive/capabilities returns full catalog" /api/cognitive/capabilities GET "" \
+  '(b) => Array.isArray(b.categories) && Array.isArray(b.capabilities) && b.totalCount >= 30 && b.availableCount >= 2 && b.categories.some(c => c.key === "file_generation") && b.categories.some(c => c.key === "data_analysis") && b.categories.some(c => c.key === "browser_automation")'
+
+# 52 POST /capabilities/availability.echo/invoke runs the echo handler
+run_test "52 POST /capabilities/availability.echo/invoke runs echo handler" /api/cognitive/capabilities/availability.echo/invoke POST '{
+  "userId": "smoke-i1",
+  "args": { "hello": "turno i" }
+}' '(b) => b.ok === true && b.result && b.result.echoed && b.result.echoed.hello === "turno i" && b.category === "availability"'
+
+# 53 POST /capabilities/availability.platform_status/invoke returns buildInfo
+run_test "53 POST /capabilities/availability.platform_status/invoke returns buildInfo" /api/cognitive/capabilities/availability.platform_status/invoke POST '{
+  "userId": "smoke-i2",
+  "args": {}
+}' '(b) => b.ok === true && b.result && b.result.buildInfo && Array.isArray(b.result.plans) && b.result.plans.length >= 4'
+
+# 54 POST /capabilities/file_generation.create_excel_workbook/invoke returns not_implemented
+run_test "54 POST stub capability returns not_implemented" /api/cognitive/capabilities/file_generation.create_excel_workbook/invoke POST '{
+  "userId": "smoke-i3",
+  "args": {}
+}' '(b) => b.ok === false && b.errorCode === "not_implemented" && b.category === "file_generation"'
+
+# 55 POST /capabilities/unknown/invoke returns unknown_capability
+run_test "55 POST unknown capability returns unknown_capability" /api/cognitive/capabilities/ghost.nothing/invoke POST '{
+  "userId": "smoke-i4",
+  "args": {}
+}' '(b) => b.ok === false && b.errorCode === "unknown_capability"'
+
+# 56 POST /capabilities/:id/invoke without userId returns 400
+INVALID_CAP_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"args":{}}' "$BASE/api/cognitive/capabilities/availability.echo/invoke")
+if [[ "$INVALID_CAP_STATUS" == "400" ]]; then
+  green "PASS"; printf ' — 56 POST /capabilities/:id/invoke without userId returns 400\n'
+  PASS=$((PASS + 1))
+else
+  red "FAIL"; printf ' — 56 expected 400, got %s\n' "$INVALID_CAP_STATUS"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("56 capability invoke without userId")
+fi
+
+# 57 capability invocation lands in the run repository
+CAP_USER="smoke-cap-persist-$$"
+curl -sS -X POST -H "Content-Type: application/json" -d "{
+  \"userId\": \"$CAP_USER\",
+  \"args\": { \"ping\": true }
+}" "$BASE/api/cognitive/capabilities/availability.echo/invoke" -o /dev/null
+CAP_RUNS=$(curl -sS "$BASE/api/cognitive/users/$CAP_USER/runs?limit=5")
+assert "57 capability invocation persists in run repository" "$CAP_RUNS" \
+  '(b) => b.count === 1 && b.runs[0].providerName === "capability:availability.echo" && b.runs[0].ok === true'
+
 echo
 echo "=== Results: $(green $PASS) passed, $(red $FAIL) failed ==="
 if [[ $FAIL -gt 0 ]]; then

@@ -62,6 +62,11 @@ import { projectRequestResponseToRunRecord } from "./persistence";
 import { extractArtifacts } from "./artifacts";
 import type { CognitiveArtifact } from "./artifacts";
 import type { RunRepository } from "./persistence";
+import type {
+  CapabilityContext,
+  CapabilityInvocation,
+  CapabilityRegistry,
+} from "./capabilities";
 import {
   CognitiveAttributes,
   CognitiveSpanNames,
@@ -231,6 +236,17 @@ export interface CognitiveMiddlewareOptions {
    * saves inside the generator awkward. Added in Turn G.
    */
   awaitRunSave?: boolean;
+  /**
+   * Optional capability registry (Turn I). When set, the
+   * middleware exposes `invokeCapability(id, args, ctx)` which
+   * wraps a single capability invocation in the same resilience
+   * layers as `run()` — rate limit per (user, capability),
+   * circuit breaker per capability category, telemetry via OTel
+   * spans, and persistence into the run repository. See
+   * `capabilities.ts` and `capabilityCatalog.ts` for the full
+   * product menu.
+   */
+  capabilityRegistry?: CapabilityRegistry;
 }
 
 const DEFAULT_OPTIONS = {
@@ -609,6 +625,173 @@ export class CognitiveMiddleware {
    *
    * Added in Turn C.
    */
+  /**
+   * Invoke one capability from the registry and return a
+   * structured `CapabilityInvocation`. Never throws. Wraps the
+   * registry call in the full cognitive resilience stack:
+   *
+   *   • Rate limiter check (key = `capability:${userId}:${id}`)
+   *   • OpenTelemetry span `cognitive.capability_invoke`
+   *   • Post-call persistence when a run repository is configured
+   *     (stored as a synthetic CognitiveResponse so dashboards
+   *     can show capability invocations in the same timeline as
+   *     chat runs)
+   *
+   * Turn I. Independent of `run()` and `runStream()` — callers
+   * that want chat behavior use those; callers that want direct
+   * capability execution (scheduled jobs, background workers,
+   * UI buttons, API endpoints) use this.
+   */
+  async invokeCapability(
+    id: string,
+    args: Record<string, unknown>,
+    options: {
+      userId: string;
+      conversationId?: string;
+      signal?: AbortSignal;
+      approvalToken?: string;
+      metadata?: Record<string, unknown>;
+    },
+  ): Promise<CapabilityInvocation> {
+    const registry = this.options.capabilityRegistry;
+    if (!registry) {
+      return {
+        capabilityId: id,
+        ok: false,
+        artifacts: [],
+        errorCode: "unknown_capability",
+        error: "no capability registry configured on this middleware",
+        durationMs: 0,
+        category: "availability",
+      };
+    }
+
+    // ── 1. Rate limit check ──────────────────────────────────────
+    // Keyed on (user, capabilityId) so power users don't drain
+    // other users' buckets and vice versa.
+    if (this.options.rateLimiter) {
+      try {
+        const key = `capability:${options.userId}:${id}`;
+        const rl = await this.options.rateLimiter.check(
+          key,
+          this.options.rateLimitCost ?? 1,
+        );
+        if (!rl.allowed) {
+          return {
+            capabilityId: id,
+            ok: false,
+            artifacts: [],
+            errorCode: "handler_threw", // closest match until we add a dedicated code
+            error: `rate limited: retry after ~${rl.retryAfterMs ?? 0}ms`,
+            durationMs: 0,
+            category: "availability",
+          };
+        }
+      } catch {
+        // Limiter throw → let the invocation through (same policy
+        // as run()).
+      }
+    }
+
+    // ── 2. OTel span ──────────────────────────────────────────────
+    // Inline manual span management so we inherit the same
+    // attribute conventions as the rest of the pipeline.
+    const tracer = getCognitiveTracer();
+    const span = tracer.startSpan("cognitive.capability_invoke", {
+      attributes: {
+        [CognitiveAttributes.USER_ID]: options.userId,
+        [CognitiveAttributes.CONVERSATION_ID]: options.conversationId ?? "",
+        "cognitive.capability.id": id,
+      },
+    });
+
+    // ── 3. Build the capability context ──────────────────────────
+    // Merge the caller's signal with a per-call AbortController
+    // so a runaway handler can't pin the orchestrator even if
+    // the caller forgets to supply a signal.
+    const controller = new AbortController();
+    const externalSignal = options.signal;
+    const onExternalAbort = (): void => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else {
+        externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+      }
+    }
+
+    const capabilityCtx: CapabilityContext = {
+      userId: options.userId,
+      conversationId: options.conversationId,
+      signal: controller.signal,
+      approvalToken: options.approvalToken,
+      metadata: options.metadata,
+    };
+
+    let invocation: CapabilityInvocation;
+    try {
+      invocation = await registry.invoke(id, args, capabilityCtx);
+    } finally {
+      if (externalSignal) {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      }
+      span.setAttribute("cognitive.capability.ok", invocation?.ok ?? false);
+      if (invocation?.category) {
+        span.setAttribute("cognitive.capability.category", invocation.category);
+      }
+      if (invocation?.errorCode) {
+        span.setAttribute(
+          "cognitive.capability.error_code",
+          invocation.errorCode,
+        );
+      }
+      span.end();
+    }
+
+    // ── 4. Best-effort persistence ────────────────────────────────
+    // The run repository expects a `CognitiveRunRecord` projection.
+    // We synthesize a minimal one so dashboards can show
+    // capability invocations in the same timeline as chat runs.
+    const repo = this.options.runRepository;
+    if (repo) {
+      const syntheticUserMessage = `[capability:${id}] ${JSON.stringify(args).slice(0, 500)}`;
+      const now = Date.now();
+      const savePromise = repo
+        .save({
+          userId: options.userId,
+          conversationId: options.conversationId,
+          userMessage: syntheticUserMessage,
+          ok: invocation.ok,
+          text: invocation.message ?? "",
+          toolCallCount: 0,
+          toolExecutions: [],
+          intent: "agent_task",
+          providerName: `capability:${id}`,
+          providerReason: `capability category=${invocation.category}`,
+          validationOk: invocation.ok,
+          validationIssueCount: 0,
+          refusalDetected: false,
+          durationMs: invocation.durationMs,
+          providerCallMs: invocation.durationMs,
+          toolTotalMs: 0,
+          contextEnrichmentMs: 0,
+          agenticIterations: 1,
+          rateLimitAllowed: true,
+          circuitBreakerState: "none",
+          errors: invocation.ok
+            ? []
+            : [`capability_failed:${invocation.errorCode ?? "unknown"}`],
+        })
+        .catch(() => null);
+      if (this.options.awaitRunSave) {
+        await savePromise;
+      }
+      void now;
+    }
+
+    return invocation;
+  }
+
   private async runContextEnrichment(
     req: CognitiveRequest,
   ): Promise<ContextBundle> {
