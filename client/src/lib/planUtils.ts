@@ -72,3 +72,8 @@ export function isFreeTierUser(user?: UserPlan | null): boolean {
   const plan = getEffectivePlan(user);
   return plan === "free";
 }
+
+export function hasUnrestrictedModelAccess(user?: UserPlan | null): boolean {
+  const plan = getEffectivePlan(user);
+  return plan === "admin" || isPaidPlan(user);
+}

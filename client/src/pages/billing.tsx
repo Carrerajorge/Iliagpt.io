@@ -13,7 +13,7 @@ export default function BillingPage() {
   const isAdmin = isAdminUser(user as any);
 
   useEffect(() => {
-    if (!isLoading && !isAdmin) {
+    if (!isLoading && isAdmin) {
       setLocation("/");
     }
   }, [isAdmin, isLoading, setLocation]);
@@ -26,13 +26,13 @@ export default function BillingPage() {
     );
   }
 
-  if (!isAdmin) {
+  if (isAdmin) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center space-y-4">
           <ShieldAlert className="h-16 w-16 text-muted-foreground mx-auto" />
-          <h1 className="text-xl font-semibold">Acceso restringido</h1>
-          <p className="text-muted-foreground">Esta página solo está disponible para administradores.</p>
+          <h1 className="text-xl font-semibold">No disponible</h1>
+          <p className="text-muted-foreground">Como administrador tienes acceso completo sin necesidad de suscripción.</p>
           <Button onClick={() => setLocation("/")}>Volver al inicio</Button>
         </div>
       </div>

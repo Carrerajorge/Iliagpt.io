@@ -500,7 +500,7 @@ export function ChatInterface({
     incrementQuery,
     closePrompt: closeUpgradePrompt,
     isFreeUser,
-  } = useUpgradePrompt(user?.plan ?? undefined);
+  } = useUpgradePrompt(user?.plan ?? undefined, (user as any)?.role ?? null);
 
   const [showUpgradeDialog, setShowUpgradeDialog] = useState(false);
 

@@ -93,7 +93,7 @@ export default function ProfilePage() {
 
   const quickActions = [
     { label: "Privacidad y seguridad", icon: Shield, path: "/privacy" },
-    ...(isAdmin ? [{ label: "Facturación", icon: Sparkles, path: "/billing" }] : []),
+    ...(!isAdmin ? [{ label: "Facturación", icon: Sparkles, path: "/billing" }] : []),
     { label: "Configuración", icon: Globe, path: "/settings" },
   ];
 

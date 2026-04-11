@@ -132,12 +132,14 @@ export function UpgradePromptModal({
 }
 
 // Hook to manage upgrade prompt state
-export function useUpgradePrompt(userPlan: string | undefined) {
+export function useUpgradePrompt(userPlan: string | undefined, userRole?: string | null) {
   const [showPrompt, setShowPrompt] = React.useState(false);
   const [queryCount, setQueryCount] = React.useState(0);
   const [lastPromptQuery, setLastPromptQuery] = React.useState(0);
   
-  const isFreeUser = !userPlan || userPlan === "free";
+  const role = (userRole || "").trim().toLowerCase();
+  const isAdmin = role === "admin" || role === "superadmin";
+  const isFreeUser = !isAdmin && (!userPlan || userPlan === "free");
   
   // Increment query count and check if should show prompt
   const incrementQuery = React.useCallback(() => {

@@ -42,7 +42,8 @@ export function StandardModelSelector({
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const isDisabled = !!activeGptName || modelChangeDisabled;
-  const isFreeUser = isFreeTierUser(
+  const isAdmin = userPlanInfo?.isAdmin === true;
+  const isFreeUser = !isAdmin && isFreeTierUser(
     userPlanInfo ? { plan: userPlanInfo.plan, role: userPlanInfo.isAdmin ? "admin" : undefined } : null,
   );
 
@@ -139,7 +140,7 @@ export function StandardModelSelector({
           <span className="font-medium text-sm truncate max-w-[180px]">
             {selectedModel?.name || "Modelo"}
           </span>
-          {selectedModel && !isModelFree(selectedModel) ? (
+          {selectedModel && !isModelFree(selectedModel) && !isAdmin ? (
             <Lock className="h-3 w-3 text-muted-foreground/40 flex-shrink-0" />
           ) : null}
           <ChevronDown
@@ -155,8 +156,8 @@ export function StandardModelSelector({
             <div className="py-1.5">
               {resolvedModels.map((model) => {
                 const isSelected = selectedModel?.id === model.id;
-                const paidModel = !isModelFree(model);
-                const unavailableForUser = model.availableToUser === false && model.requiresUpgrade;
+                const paidModel = !isModelFree(model) && !isAdmin;
+                const unavailableForUser = !isAdmin && model.availableToUser === false && model.requiresUpgrade;
 
                 return (
                   <button

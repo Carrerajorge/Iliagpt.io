@@ -896,7 +896,7 @@ export function Sidebar({
                   <User className="h-4 w-4" />
                   Perfil
                 </Button>
-                {isAdmin && (
+                {!isAdmin && (
                   <Button variant="ghost" className="justify-start gap-3 text-sm h-10 font-normal liquid-button" onClick={() => { setIsUserMenuOpen(false); setLocation("/billing"); }} data-testid="button-billing">
                     <CreditCard className="h-4 w-4" />
                     Facturación
