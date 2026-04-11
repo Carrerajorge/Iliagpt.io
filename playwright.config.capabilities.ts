@@ -22,7 +22,7 @@ const reuseExistingServer = process.env.PLAYWRIGHT_REUSE_SERVER === "1";
 
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: /cognitive-capabilities\.spec\.ts/,
+  testMatch: /cognitive-(capabilities|domain-runtime-matrix)\.spec\.ts/,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
