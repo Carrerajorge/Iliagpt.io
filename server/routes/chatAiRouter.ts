@@ -30,7 +30,6 @@ import { questionClassifier, type QuestionClassification } from "../services/que
 import { answerFirstEnforcer } from "../services/answerFirstEnforcer";
 import { academicSearchService } from "../services/academicSearchService";
 import {
-  isProductionIntent,
   handleProductionRequest,
   getDeliverables,
   type ProductionHandlerResult,
@@ -122,6 +121,10 @@ import { promptPreProcessor } from "../lib/promptPreProcessor";
 import { promptAuditStore } from "../lib/promptAuditStore";
 import { promptAnalysisService } from "../services/promptAnalysisService";
 import * as macos from "../lib/macos";
+import {
+  createChatControlPlaneDecision,
+  type ChatControlPlaneDecision,
+} from "../core/chatControlPlane";
 
 type ErrorCategory = 'network' | 'rate_limit' | 'api_error' | 'validation' | 'auth' | 'timeout' | 'unknown';
 const isDebugLogEnabled = process.env.DEBUG === "true";
@@ -5993,6 +5996,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       (res as any).__doneSent = false;
 
       let intentResult: IntentResult | null = null;
+      let controlPlaneDecision: ChatControlPlaneDecision | null = null;
       let messages: ConversationMemoryChatMessage[] = clientMessages;
       let memoryDiagnostics: MemoryCompressionDiagnostics = createMemoryDiagnosticsFallback(clientMessages);
       const userMessageText = userQuery || "";
@@ -6464,18 +6468,11 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         console.log(`[Stream] 📝 DOC TOOL STREAMING: docTool=${docTool} - using real-time editor streaming`);
       }
 
-      // DATA_MODE ENFORCEMENT: Reject document attachments - must use /analyze endpoint
+      // DATA_MODE ENFORCEMENT: document attachments must route through /analyze.
+      // Do not terminate here with JSON because the SSE stream is already open.
       const hasDocumentAttachments = sanitizedRunAttachments && sanitizedRunAttachments.length > 0
         ? sanitizedRunAttachments.some((a) => a && isDocumentAttachment(a.mimeType || a.type || "", a.name || "", a.type || a.mimeType || ""))
         : false;
-
-      if (hasDocumentAttachments) {
-        console.log(`[Stream API] DATA_MODE: Rejecting document attachments - must use /analyze endpoint`);
-        return res.status(400).json({
-          error: "Document attachments must be processed via /api/analyze endpoint for proper analysis",
-          code: "USE_ANALYZE_ENDPOINT"
-        });
-      }
 
       const userId = effectiveUserId;
 
@@ -6554,6 +6551,108 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         }
       }
 
+      const controlPlaneStageStart = performance.now();
+      controlPlaneDecision = await createChatControlPlaneDecision({
+        requestId,
+        userId: effectiveUserId,
+        message: userMessageText,
+        clientMessages: clientMessages.map((message: any) => ({
+          role: String(message?.role || "user"),
+          content: typeof message?.content === "string" ? message.content : extractUserText(message?.content),
+        })),
+        systemSections: skillSystemSection ? [skillSystemSection] : [],
+        chatId: chatId || undefined,
+        conversationId: streamConversationId,
+        provider: effectiveProvider,
+        model: effectiveModel,
+        latencyMode,
+        attachmentsCount: sanitizedRunAttachments?.length || 0,
+        hasDocumentAttachments,
+        intentResult,
+        featureFlags,
+        signal: streamAbortController.signal,
+      });
+      recordStage("chat_control_plane_ms", controlPlaneStageStart);
+
+      if (controlPlaneDecision.authoritativeIntentResult) {
+        intentResult = controlPlaneDecision.authoritativeIntentResult;
+      }
+
+      if (!isConnectionClosed) {
+        writeSse(res, "notice", {
+          type: "chat_control_plane",
+          domainId: controlPlaneDecision.contract?.domainId || controlPlaneDecision.capability.domainId,
+          workflow: controlPlaneDecision.capability.workflow,
+          capabilityId: controlPlaneDecision.capability.id,
+          contractStatus: controlPlaneDecision.capability.contractStatus,
+          handler: controlPlaneDecision.capability.handler,
+          renderSurface: controlPlaneDecision.capability.renderSurface,
+          splitView: controlPlaneDecision.capability.splitView,
+          showSteps: controlPlaneDecision.capability.showSteps,
+          requiresApproval: controlPlaneDecision.capability.requiresApproval,
+          multiLlm: controlPlaneDecision.capability.multiLlm,
+          provider: controlPlaneDecision.cognitive?.provider.name || effectiveProvider,
+          providerReason: controlPlaneDecision.cognitive?.provider.reason || null,
+          corrected: controlPlaneDecision.cognitive?.corrected || false,
+          correctedFrom: controlPlaneDecision.cognitive?.sharedIntent?.intent || null,
+          correctedTo: controlPlaneDecision.cognitive?.authoritativeIntentResult?.intent || intentResult?.intent || null,
+          memoryHits: controlPlaneDecision.cognitive?.context.includedCount || 0,
+          policyAllowed: controlPlaneDecision.policy.allowed,
+          policyCode: controlPlaneDecision.policy.code,
+          estimatedInputTokens: controlPlaneDecision.envelope.estimatedInputTokens,
+          requestId,
+          timestamp: Date.now(),
+        });
+      }
+
+      if (!controlPlaneDecision.policy.allowed) {
+        const blockedCode = controlPlaneDecision.policy.code || "CONTROL_PLANE_BLOCKED";
+        const blockedReason =
+          controlPlaneDecision.policy.reason || "La solicitud fue bloqueada por la política central del chat.";
+
+        writeSse(res, "error", {
+          code: blockedCode,
+          error: blockedReason,
+          requestId,
+          timestamp: Date.now(),
+          quota: controlPlaneDecision.policy.quota?.quota || null,
+          billing: controlPlaneDecision.policy.quota?.billing || null,
+          controlPlane: {
+            workflow: controlPlaneDecision.capability.workflow,
+            capabilityId: controlPlaneDecision.capability.id,
+            handler: controlPlaneDecision.capability.handler,
+          },
+        });
+
+        const blockedTimings = reportTimings(blockedCode);
+        emitDoneEvent(res, {
+          requestId,
+          runId: claimedRun?.id || requestId,
+          assistantMessageId,
+          latencyMode,
+          totalSequences: 0,
+          contentLength: 0,
+          completionReason: blockedCode,
+          error: true,
+          traceId: requestId,
+          timings: blockedTimings,
+        });
+        emitCompleteEvent(res, {
+          requestId,
+          runId: claimedRun?.id || requestId,
+          assistantMessageId,
+          latencyMode,
+          totalSequences: 0,
+          contentLength: 0,
+          durationMs: blockedTimings.totalMs ?? 0,
+          status: "error",
+          completionReason: blockedCode,
+          traceId: requestId,
+          timings: blockedTimings,
+        });
+        return res.end();
+      }
+
       if (intentResult) {
         console.log(`[Stream] IntentRouter: intent=${intentResult.intent}, confidence=${intentResult.confidence.toFixed(2)}, format=${intentResult.output_format || 'none'}`);
 
@@ -6615,7 +6714,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           }
         }
 
-        if (featureFlags.canvasEnabled && isProductionIntent(intentResult, userMessageText) && intentResult.confidence >= 0.5) {
+        if (controlPlaneDecision?.capability.handler === "production_handler" && intentResult && intentResult.confidence >= 0.5) {
           console.log(`[Stream] 🚀 PRODUCTION MODE ACTIVATED: intent=${intentResult.intent}, topic=${intentResult.slots.topic}`);
 
           try {
@@ -6631,6 +6730,26 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
                 assistantMessageId,
                 intentResult,
                 locale: intentResult.language_detected || "es",
+                controlPlaneMetadata: controlPlaneDecision
+                  ? {
+                    workflow: controlPlaneDecision.capability.workflow,
+                      domainId: controlPlaneDecision.contract?.domainId || controlPlaneDecision.capability.domainId,
+                      capabilityId: controlPlaneDecision.capability.id,
+                      contractStatus: controlPlaneDecision.capability.contractStatus,
+                      handler: controlPlaneDecision.capability.handler,
+                      renderSurface: controlPlaneDecision.capability.renderSurface,
+                      splitView: controlPlaneDecision.capability.splitView,
+                      showSteps: controlPlaneDecision.capability.showSteps,
+                      requiresApproval: controlPlaneDecision.capability.requiresApproval,
+                      multiLlm: controlPlaneDecision.capability.multiLlm,
+                      estimatedInputTokens: controlPlaneDecision.envelope.estimatedInputTokens,
+                      corrected: controlPlaneDecision.cognitive?.corrected || false,
+                      correctedFrom: controlPlaneDecision.cognitive?.sharedIntent?.intent || null,
+                      correctedTo: controlPlaneDecision.cognitive?.authoritativeIntentResult?.intent || intentResult.intent,
+                      provider: controlPlaneDecision.cognitive?.provider.name || effectiveProvider,
+                      memoryHits: controlPlaneDecision.cognitive?.context.includedCount || 0,
+                    }
+                  : undefined,
               },
               res,
             );
@@ -6645,7 +6764,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         }
 
         // ── SKILL AUTO-DISPATCHER: handle non-production intents (code, search, media, integrations) ──
-        if (intentResult && intentResult.intent !== "CHAT_GENERAL" && intentResult.intent !== "NEED_CLARIFICATION") {
+        if (controlPlaneDecision?.capability.handler === "skill_auto_dispatcher" && intentResult) {
           try {
             const effectiveChatId = chatId || conversationId || streamConversationId;
             // Prepare SSE step emitter for agentic visualization
@@ -7066,12 +7185,12 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         // PRODUCTION MODE INTERCEPT: Handle document creation requests
         // Debug log to trace production mode evaluation
         console.log(`\n\n🔥🔥🔥 [Stream] PRODUCTION CHECK START 🔥🔥🔥`);
-        console.log(`[Stream] PRODUCTION CHECK: intent=${intentResult.intent}, confidence=${intentResult.confidence.toFixed(2)}, isProductionIntent=${isProductionIntent(intentResult, userMessageText)}`);
+        console.log(`[Stream] PRODUCTION CHECK: intent=${intentResult.intent}, confidence=${intentResult.confidence.toFixed(2)}, handler=${controlPlaneDecision?.capability.handler || "model_stream"}`);
         console.log(`🔥🔥🔥 [Stream] PRODUCTION CHECK END 🔥🔥🔥\n\n`);
 
         // Pass userMessageText to detect if user wants to search for articles first
         // Skip production mode if this is an image generation request
-        if (featureFlags.canvasEnabled && !detectImageRequest(userMessageText) && isProductionIntent(intentResult, userMessageText) && intentResult.confidence >= 0.5) {
+        if (controlPlaneDecision?.capability.handler === "production_handler" && intentResult && intentResult.confidence >= 0.5) {
           const effectiveChatId = chatId || conversationId || streamConversationId;
 
           console.log(`[Stream] 🚀 PRODUCTION MODE ACTIVATED: intent=${intentResult.intent}, topic=${intentResult.slots.topic}`);
@@ -7087,6 +7206,26 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
                 assistantMessageId,
                 intentResult,
                 locale: intentResult.language_detected || 'es',
+                controlPlaneMetadata: controlPlaneDecision
+                  ? {
+                    workflow: controlPlaneDecision.capability.workflow,
+                      domainId: controlPlaneDecision.contract?.domainId || controlPlaneDecision.capability.domainId,
+                      capabilityId: controlPlaneDecision.capability.id,
+                      contractStatus: controlPlaneDecision.capability.contractStatus,
+                      handler: controlPlaneDecision.capability.handler,
+                      renderSurface: controlPlaneDecision.capability.renderSurface,
+                      splitView: controlPlaneDecision.capability.splitView,
+                      showSteps: controlPlaneDecision.capability.showSteps,
+                      requiresApproval: controlPlaneDecision.capability.requiresApproval,
+                      multiLlm: controlPlaneDecision.capability.multiLlm,
+                      estimatedInputTokens: controlPlaneDecision.envelope.estimatedInputTokens,
+                      corrected: controlPlaneDecision.cognitive?.corrected || false,
+                      correctedFrom: controlPlaneDecision.cognitive?.sharedIntent?.intent || null,
+                      correctedTo: controlPlaneDecision.cognitive?.authoritativeIntentResult?.intent || intentResult.intent,
+                      provider: controlPlaneDecision.cognitive?.provider.name || effectiveProvider,
+                      memoryHits: controlPlaneDecision.cognitive?.context.includedCount || 0,
+                    }
+                  : undefined,
               },
               res
             );
@@ -7104,7 +7243,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         }
 
         // ── SKILL AUTO-DISPATCHER (second intercept): non-production skills ──
-        if (intentResult && intentResult.intent !== "CHAT_GENERAL" && intentResult.intent !== "NEED_CLARIFICATION") {
+        if (controlPlaneDecision?.capability.handler === "skill_auto_dispatcher" && intentResult) {
           try {
             const effectiveChatId = chatId || conversationId || streamConversationId;
             const emitAgentStep2 = (step: Record<string, any>) => {
@@ -7674,37 +7813,40 @@ ${attachmentContext}`;
         }`
         : '';
 
-      let semanticMemoryContext: string | null = null;
+      let semanticMemoryContext: string | null =
+        controlPlaneDecision?.cognitive?.context.renderedContext || null;
       if ((featureFlags.memoryEnabled || featureFlags.recordingHistoryEnabled) && userId && userMessageText) {
         try {
-          await semanticMemoryStore.initialize();
-          const types: Array<"fact" | "preference" | "conversation" | "instruction" | "note"> = [];
-          if (featureFlags.memoryEnabled) {
-            types.push("fact", "preference", "instruction", "note");
-          }
-          if (featureFlags.recordingHistoryEnabled) {
-            types.push("conversation");
-          }
+          if (!semanticMemoryContext) {
+            await semanticMemoryStore.initialize();
+            const types: Array<"fact" | "preference" | "conversation" | "instruction" | "note"> = [];
+            if (featureFlags.memoryEnabled) {
+              types.push("fact", "preference", "instruction", "note");
+            }
+            if (featureFlags.recordingHistoryEnabled) {
+              types.push("conversation");
+            }
 
-          if (types.length > 0) {
-            const results = await semanticMemoryStore.search(userId, userMessageText, {
-              limit: 10,
-              minScore: 0.4,
-              types,
-              hybridSearch: true,
-            });
+            if (types.length > 0) {
+              const results = await semanticMemoryStore.search(userId, userMessageText, {
+                limit: 10,
+                minScore: 0.4,
+                types,
+                hybridSearch: true,
+              });
 
-            if (results.length > 0) {
-              const lines: string[] = ["[Memoria relevante]"];
-              let tokenBudget = 350;
-              for (const r of results) {
-                const line = `• [${r.chunk.type}] ${r.chunk.content}`;
-                const estTokens = Math.ceil(line.length / 4);
-                if (tokenBudget - estTokens < 0) break;
-                tokenBudget -= estTokens;
-                lines.push(line);
+              if (results.length > 0) {
+                const lines: string[] = ["[Memoria relevante]"];
+                let tokenBudget = 350;
+                for (const r of results) {
+                  const line = `• [${r.chunk.type}] ${r.chunk.content}`;
+                  const estTokens = Math.ceil(line.length / 4);
+                  if (tokenBudget - estTokens < 0) break;
+                  tokenBudget -= estTokens;
+                  lines.push(line);
+                }
+                semanticMemoryContext = lines.length > 1 ? lines.join("\n") : null;
               }
-              semanticMemoryContext = lines.length > 1 ? lines.join("\n") : null;
             }
           }
         } catch (e) {
@@ -8436,7 +8578,27 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
             totalSearches: capturedTotalSearches,
             followUpSuggestions,
           });
-          const finalMetadata = buildAssistantMessageMetadata(assistantPayload);
+          const finalMetadata = buildAssistantMessageMetadata(assistantPayload) ?? {};
+          if (controlPlaneDecision) {
+            (finalMetadata as Record<string, unknown>).controlPlane = {
+              workflow: controlPlaneDecision.capability.workflow,
+              domainId: controlPlaneDecision.contract?.domainId || controlPlaneDecision.capability.domainId,
+              capabilityId: controlPlaneDecision.capability.id,
+              contractStatus: controlPlaneDecision.capability.contractStatus,
+              handler: controlPlaneDecision.capability.handler,
+              renderSurface: controlPlaneDecision.capability.renderSurface,
+              splitView: controlPlaneDecision.capability.splitView,
+              showSteps: controlPlaneDecision.capability.showSteps,
+              requiresApproval: controlPlaneDecision.capability.requiresApproval,
+              multiLlm: controlPlaneDecision.capability.multiLlm,
+              estimatedInputTokens: controlPlaneDecision.envelope.estimatedInputTokens,
+              corrected: controlPlaneDecision.cognitive?.corrected || false,
+              correctedFrom: controlPlaneDecision.cognitive?.sharedIntent?.intent || null,
+              correctedTo: controlPlaneDecision.cognitive?.authoritativeIntentResult?.intent || intentResult?.intent || null,
+              provider: controlPlaneDecision.cognitive?.provider.name || effectiveProvider,
+              memoryHits: controlPlaneDecision.cognitive?.context.includedCount || 0,
+            };
+          }
 
           await storage.updateChatMessageContent(
             assistantMessageId,

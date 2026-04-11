@@ -559,11 +559,15 @@ export function ChatInterface({
     relevantMessagesKept?: number;
     recentMessagesKept?: number;
     workflow?: string;
+    domainId?: string;
     capabilityId?: string;
+    contractStatus?: string;
     handler?: string;
     renderSurface?: string;
     splitView?: boolean;
     showSteps?: boolean;
+    requiresApproval?: boolean;
+    multiLlm?: boolean;
     provider?: string;
     providerReason?: string | null;
     corrected?: boolean;
@@ -7258,11 +7262,15 @@ IMPORTANTE:
                       finalTokens: 0,
                       droppedMessages: 0,
                       workflow: data.workflow,
+                      domainId: data.domainId,
                       capabilityId: data.capabilityId,
+                      contractStatus: data.contractStatus,
                       handler: data.handler,
                       renderSurface: data.renderSurface,
                       splitView: data.splitView,
                       showSteps: data.showSteps,
+                      requiresApproval: data.requiresApproval,
+                      multiLlm: data.multiLlm,
                       provider: data.provider,
                       providerReason: data.providerReason,
                       corrected: data.corrected,
@@ -8378,7 +8386,7 @@ IMPORTANTE:
                               ) : contextNotice.type === "memory_compacted" ? (
                                 <>Memoria compactada antes de responder: {((contextNotice as any).originalMessageCount ?? 0).toLocaleString()} &rarr; {((contextNotice as any).finalMessageCount ?? 0).toLocaleString()} mensajes, {((contextNotice as any).summarizedMessages ?? 0).toLocaleString()} resumidos y {((contextNotice as any).relevantMessagesKept ?? 0).toLocaleString()} relevantes preservados.</>
                               ) : contextNotice.type === "chat_control_plane" ? (
-                                <>Núcleo del chat activo: flujo {(contextNotice as any).workflow || "conversation"}, capacidad {(contextNotice as any).capabilityId || "chat"}, handler {(contextNotice as any).handler || "model_stream"}, proveedor {(contextNotice as any).provider || "auto"}{(contextNotice as any).corrected ? `, corrección ${(contextNotice as any).correctedFrom || "none"} → ${(contextNotice as any).correctedTo || "none"}` : ""}{typeof (contextNotice as any).memoryHits === "number" ? `, memoria ${(contextNotice as any).memoryHits}` : ""}.</>
+                                <>Núcleo del chat activo: dominio {(contextNotice as any).domainId || "general"}, capacidad {(contextNotice as any).capabilityId || "chat"}, estado {(contextNotice as any).contractStatus || "partial"}, handler {(contextNotice as any).handler || "model_stream"}, proveedor {(contextNotice as any).provider || "auto"}{(contextNotice as any).corrected ? `, corrección ${(contextNotice as any).correctedFrom || "none"} → ${(contextNotice as any).correctedTo || "none"}` : ""}{typeof (contextNotice as any).memoryHits === "number" ? `, memoria ${(contextNotice as any).memoryHits}` : ""}{(contextNotice as any).requiresApproval ? ", requiere aprobación" : ""}.</>
                               ) : contextNotice.type === "provider_fallback" ? (
                                 <>El sistema cambió el proveedor de respuesta de {(contextNotice as any).fromProvider || "uno anterior"} a {(contextNotice as any).toProvider || "otro disponible"} para mantener el stream estable.</>
                               ) : (

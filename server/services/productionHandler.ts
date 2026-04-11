@@ -49,6 +49,7 @@ export interface ProductionRequest {
     assistantMessageId?: string | null;
     intentResult: IntentResult;
     locale?: string;
+    controlPlaneMetadata?: Record<string, unknown>;
 }
 
 interface ProductionPresentationHints {
@@ -1045,7 +1046,17 @@ export async function handleProductionRequest(
     req: ProductionRequest,
     res: Response
 ): Promise<ProductionHandlerResult> {
-    const { message, userId, chatId, conversationId, requestId, assistantMessageId, intentResult, locale } = req;
+    const {
+        message,
+        userId,
+        chatId,
+        conversationId,
+        requestId,
+        assistantMessageId,
+        intentResult,
+        locale,
+        controlPlaneMetadata,
+    } = req;
 
     console.log(`[ProductionHandler] Starting production for intent: ${intentResult.intent}`);
     console.log(`[ProductionHandler] Topic: ${intentResult.slots.topic || message}`);
@@ -1118,7 +1129,10 @@ export async function handleProductionRequest(
             artifact,
             artifacts,
         });
-        const finalMetadata = buildAssistantMessageMetadata(assistantPayload);
+        const finalMetadata = buildAssistantMessageMetadata(assistantPayload) ?? {};
+        if (controlPlaneMetadata) {
+            (finalMetadata as Record<string, unknown>).controlPlane = controlPlaneMetadata;
+        }
         const resolvedAssistantMessageId = await ensureAssistantMessageId();
 
         if (resolvedAssistantMessageId) {
