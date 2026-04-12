@@ -15,6 +15,8 @@ import {
   Loader2,
   ExternalLink,
   AlertTriangle,
+  CheckCircle2,
+  Archive,
 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -44,6 +46,7 @@ export default function PrivacyPage() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [isDownloading, setIsDownloading] = useState(false);
 
+  // ── Fetch privacy settings via dedicated router ──
   const { data: privacyData, isLoading: isLoadingPrivacy } = useQuery<{
     privacySettings: {
       trainingOptIn: boolean;
@@ -51,10 +54,11 @@ export default function PrivacyPage() {
       analyticsTracking: boolean;
       chatHistoryEnabled: boolean;
     };
+    consentHistory?: any[];
   }>({
-    queryKey: ["/api/users", userId, "privacy"],
+    queryKey: ["/api/settings/privacy"],
     queryFn: async () => {
-      const res = await apiFetch(`/api/users/${userId}/privacy`);
+      const res = await apiFetch("/api/settings/privacy");
       if (!res.ok) throw new Error("Failed to fetch privacy settings");
       return res.json();
     },
@@ -72,9 +76,10 @@ export default function PrivacyPage() {
     );
   }, [privacyData?.privacySettings]);
 
+  // ── Update privacy toggle ──
   const updatePrivacy = useMutation({
     mutationFn: async (data: Partial<typeof privacySettings>) => {
-      const res = await apiFetch(`/api/users/${userId}/privacy`, {
+      const res = await apiFetch("/api/settings/privacy", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -82,27 +87,37 @@ export default function PrivacyPage() {
       if (!res.ok) throw new Error("Failed to update privacy settings");
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["/api/users", userId, "privacy"],
-      });
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/privacy"] });
+      // Also invalidate old endpoint cache in case other components use it
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "privacy"] });
+
+      const labels: Record<string, string> = {
+        trainingOptIn: "Compartir datos de uso",
+        analyticsTracking: "Seguimiento de análisis",
+        chatHistoryEnabled: "Historial de chat",
+        remoteBrowserDataAccess: "Acceso a datos del navegador",
+      };
+      const key = Object.keys(variables)[0];
+      const value = Object.values(variables)[0];
       toast({
         title: "Preferencia actualizada",
-        description: "Tu configuración de privacidad se guardó correctamente.",
+        description: `${labels[key] || key}: ${value ? "activado" : "desactivado"}`,
       });
     },
     onError: () => {
       toast({
         title: "Error",
-        description: "No se pudo actualizar la configuración.",
+        description: "No se pudo actualizar la configuración. Intenta de nuevo.",
         variant: "destructive",
       });
     },
   });
 
+  // ── Clear chat history ──
   const clearHistory = useMutation({
     mutationFn: async () => {
-      const res = await apiFetch(`/api/users/${userId}/chats/delete-all`, {
+      const res = await apiFetch("/api/settings/clear-history", {
         method: "POST",
       });
       if (!res.ok) throw new Error("Failed to delete chats");
@@ -110,15 +125,10 @@ export default function PrivacyPage() {
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/chats"] });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/users", userId, "chats", "deleted"],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["/api/users", userId, "chats", "archived"],
-      });
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId, "chats"] });
       toast({
         title: "Historial eliminado correctamente",
-        description: `Se eliminaron ${data.count ?? 0} conversaciones. Esta acción no se puede deshacer.`,
+        description: `Se eliminaron ${data.count ?? 0} conversaciones permanentemente.`,
       });
       setShowClearHistoryConfirm(false);
       window.dispatchEvent(new CustomEvent("refresh-chats"));
@@ -126,15 +136,16 @@ export default function PrivacyPage() {
     onError: () => {
       toast({
         title: "Error",
-        description: "No se pudo borrar el historial.",
+        description: "No se pudo borrar el historial. Intenta de nuevo.",
         variant: "destructive",
       });
     },
   });
 
+  // ── Delete account ──
   const deleteAccount = useMutation({
     mutationFn: async () => {
-      const res = await apiFetch(`/api/user/account`, {
+      const res = await apiFetch("/api/settings/delete-account", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirmation: "DELETE_MY_ACCOUNT" }),
@@ -150,8 +161,7 @@ export default function PrivacyPage() {
     onSuccess: async () => {
       toast({
         title: "Cuenta eliminada",
-        description:
-          "Tu cuenta ha sido eliminada. Serás redirigido al inicio.",
+        description: "Tu cuenta ha sido eliminada. Redirigiendo...",
       });
       setShowDeleteAccountConfirm(false);
       setDeleteConfirmText("");
@@ -166,29 +176,33 @@ export default function PrivacyPage() {
     },
   });
 
+  // ── Download data as ZIP ──
   const handleDownloadData = async () => {
     setIsDownloading(true);
     try {
-      const res = await apiFetch(`/api/user/export`);
+      toast({
+        title: "Preparando tus datos...",
+        description: "Generando archivo ZIP con toda tu información.",
+      });
+
+      const res = await apiFetch("/api/settings/export-data");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
       const blob = await res.blob();
-      const contentDisposition =
-        res.headers.get("Content-Disposition") || "";
+      const contentDisposition = res.headers.get("Content-Disposition") || "";
       const match = contentDisposition.match(/filename="([^"]+)"/i);
-      const filename =
-        match?.[1] || `iliagpt-export-${Date.now()}.json`;
+      const filename = match?.[1] || `iliagpt-export-${new Date().toISOString().slice(0, 10)}.zip`;
       saveAs(blob, filename);
+
       toast({
-        title: "Descarga lista",
-        description:
-          "Tu exportación de datos fue generada y descargada correctamente.",
+        title: "Descarga completada",
+        description: "Tu archivo ZIP con todos tus datos fue descargado correctamente.",
       });
     } catch (error) {
       console.error("Download export failed:", error);
       toast({
-        title: "Error",
-        description: "No se pudo descargar tu información. Intenta de nuevo.",
+        title: "Error en la exportación",
+        description: "No se pudo generar la exportación. Intenta de nuevo más tarde.",
         variant: "destructive",
       });
     } finally {
@@ -214,12 +228,13 @@ export default function PrivacyPage() {
           >
             <ArrowLeft className="h-5 w-5" />
           </Button>
-          <div>
+          <div className="flex-1">
             <h1 className="text-xl font-semibold">Privacidad y datos</h1>
             <p className="text-xs text-muted-foreground">
-              Gestiona cómo se usan y almacenan tus datos
+              Gestiona cómo se usan y almacenan tus datos personales
             </p>
           </div>
+          <Shield className="h-5 w-5 text-muted-foreground" />
         </div>
       </div>
 
@@ -228,58 +243,30 @@ export default function PrivacyPage() {
           {/* ─── CONTROL DE DATOS ─── */}
           <section className="space-y-4">
             <div className="flex items-center gap-2">
-              <Shield className="h-4 w-4 text-muted-foreground" />
+              <Shield className="h-4 w-4 text-primary" />
               <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
                 Control de datos
               </h2>
             </div>
             <div className="rounded-lg border divide-y">
-              <div className="flex items-center justify-between p-4 gap-4">
-                <div className="flex items-start gap-4 min-w-0">
-                  <Shield className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
-                  <div className="min-w-0">
-                    <p className="font-medium">Compartir datos de uso</p>
-                    <p className="text-sm text-muted-foreground mt-0.5">
-                      Permite compartir datos anónimos de uso para mejorar la
-                      calidad del servicio. No incluye el contenido de tus
-                      conversaciones.
-                    </p>
-                  </div>
-                </div>
-                <Switch
-                  checked={privacySettings.trainingOptIn}
-                  onCheckedChange={(checked) =>
-                    updatePrivacy.mutate({ trainingOptIn: checked })
-                  }
-                  disabled={
-                    !userId || isLoadingPrivacy || updatePrivacy.isPending
-                  }
-                  data-testid="switch-share-data"
-                />
-              </div>
-              <div className="flex items-center justify-between p-4 gap-4">
-                <div className="flex items-start gap-4 min-w-0">
-                  <Eye className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
-                  <div className="min-w-0">
-                    <p className="font-medium">Seguimiento de análisis</p>
-                    <p className="text-sm text-muted-foreground mt-0.5">
-                      Recopila estadísticas anónimas sobre cómo usas la
-                      aplicación para optimizar la experiencia. Puedes
-                      desactivarlo en cualquier momento.
-                    </p>
-                  </div>
-                </div>
-                <Switch
-                  checked={privacySettings.analyticsTracking}
-                  onCheckedChange={(checked) =>
-                    updatePrivacy.mutate({ analyticsTracking: checked })
-                  }
-                  disabled={
-                    !userId || isLoadingPrivacy || updatePrivacy.isPending
-                  }
-                  data-testid="switch-analytics"
-                />
-              </div>
+              <ToggleRow
+                icon={<Shield className="h-5 w-5 text-muted-foreground" />}
+                title="Compartir datos de uso"
+                description="Permite compartir datos anónimos de uso para mejorar la calidad del servicio. No incluye el contenido de tus conversaciones ni datos personales identificables."
+                checked={privacySettings.trainingOptIn}
+                onCheckedChange={(checked) => updatePrivacy.mutate({ trainingOptIn: checked })}
+                disabled={!userId || isLoadingPrivacy || updatePrivacy.isPending}
+                testId="switch-share-data"
+              />
+              <ToggleRow
+                icon={<Eye className="h-5 w-5 text-muted-foreground" />}
+                title="Seguimiento de análisis"
+                description="Recopila estadísticas anónimas sobre patrones de uso de la aplicación para optimizar el rendimiento y la experiencia. Sin acceso a contenido de conversaciones."
+                checked={privacySettings.analyticsTracking}
+                onCheckedChange={(checked) => updatePrivacy.mutate({ analyticsTracking: checked })}
+                disabled={!userId || isLoadingPrivacy || updatePrivacy.isPending}
+                testId="switch-analytics"
+              />
             </div>
           </section>
 
@@ -288,43 +275,40 @@ export default function PrivacyPage() {
           {/* ─── HISTORIAL ─── */}
           <section className="space-y-4">
             <div className="flex items-center gap-2">
-              <History className="h-4 w-4 text-muted-foreground" />
+              <History className="h-4 w-4 text-primary" />
               <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-                Historial
+                Historial de conversaciones
               </h2>
             </div>
             <div className="rounded-lg border divide-y">
-              <div className="flex items-center justify-between p-4 gap-4">
-                <div className="flex items-start gap-4 min-w-0">
-                  <History className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
-                  <div className="min-w-0">
-                    <p className="font-medium">Guardar historial de chat</p>
-                    <p className="text-sm text-muted-foreground mt-0.5">
-                      Cuando está desactivado, las nuevas conversaciones no se
-                      guardarán en tu historial. Las conversaciones existentes
-                      no se verán afectadas.
-                    </p>
-                  </div>
-                </div>
-                <Switch
-                  checked={privacySettings.chatHistoryEnabled}
-                  onCheckedChange={(checked) =>
-                    updatePrivacy.mutate({ chatHistoryEnabled: checked })
-                  }
-                  disabled={
-                    !userId || isLoadingPrivacy || updatePrivacy.isPending
-                  }
-                  data-testid="switch-save-history"
-                />
-              </div>
+              <ToggleRow
+                icon={<History className="h-5 w-5 text-muted-foreground" />}
+                title="Guardar historial de chat"
+                description="Cuando está desactivado, las nuevas conversaciones no se guardarán en tu historial. Las conversaciones existentes no se eliminan automáticamente."
+                checked={privacySettings.chatHistoryEnabled}
+                onCheckedChange={(checked) => updatePrivacy.mutate({ chatHistoryEnabled: checked })}
+                disabled={!userId || isLoadingPrivacy || updatePrivacy.isPending}
+                testId="switch-save-history"
+                badge={
+                  privacySettings.chatHistoryEnabled ? (
+                    <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30 rounded-full px-2 py-0.5">
+                      <CheckCircle2 className="h-3 w-3" /> Activo
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 rounded-full px-2 py-0.5">
+                      Pausado
+                    </span>
+                  )
+                }
+              />
               <div className="flex items-center justify-between p-4 gap-4">
                 <div className="flex items-start gap-4 min-w-0">
                   <Trash2 className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
                   <div className="min-w-0">
-                    <p className="font-medium">Borrar historial</p>
+                    <p className="font-medium">Borrar todo el historial</p>
                     <p className="text-sm text-muted-foreground mt-0.5">
-                      Elimina permanentemente todas tus conversaciones y
-                      mensajes. Esta acción no se puede deshacer.
+                      Elimina permanentemente todas tus conversaciones, mensajes y
+                      enlaces compartidos. Esta acción es irreversible.
                     </p>
                   </div>
                 </div>
@@ -354,7 +338,7 @@ export default function PrivacyPage() {
           {/* ─── TUS DATOS ─── */}
           <section className="space-y-4">
             <div className="flex items-center gap-2">
-              <Download className="h-4 w-4 text-muted-foreground" />
+              <Archive className="h-4 w-4 text-primary" />
               <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
                 Tus datos
               </h2>
@@ -366,10 +350,17 @@ export default function PrivacyPage() {
                   <div className="min-w-0">
                     <p className="font-medium">Descargar mis datos</p>
                     <p className="text-sm text-muted-foreground mt-0.5">
-                      Exporta toda tu información en formato JSON: perfil,
-                      conversaciones, mensajes, configuración y estadísticas de
-                      uso. Cumplimiento GDPR.
+                      Exporta toda tu información en un archivo ZIP que incluye:
+                      perfil, conversaciones, mensajes, documentos, memorias,
+                      configuración y estadísticas de uso. Cumplimiento GDPR/RGPD.
                     </p>
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {["profile.json", "chats.json", "messages.json", "documents.json", "memories.json", "usage.json", "settings.json"].map((f) => (
+                        <span key={f} className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-mono">
+                          {f}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </div>
                 <Button
@@ -386,7 +377,10 @@ export default function PrivacyPage() {
                       Preparando...
                     </>
                   ) : (
-                    "Descargar"
+                    <>
+                      <Download className="h-4 w-4 mr-1" />
+                      ZIP
+                    </>
                   )}
                 </Button>
               </div>
@@ -417,32 +411,44 @@ export default function PrivacyPage() {
 
           <Separator />
 
-          {/* ─── ELIMINAR CUENTA ─── */}
-          <section className="rounded-lg border border-red-200 bg-red-50/50 dark:bg-red-950/20 dark:border-red-900/50 p-5">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-start gap-4 min-w-0">
-                <AlertTriangle className="h-5 w-5 text-red-500 mt-0.5 shrink-0" />
-                <div className="min-w-0">
-                  <p className="font-medium text-red-600 dark:text-red-400">
-                    Eliminar cuenta
-                  </p>
-                  <p className="text-sm text-red-500/80 dark:text-red-400/60 mt-0.5">
-                    Se eliminarán permanentemente todos tus datos, incluyendo
-                    conversaciones, documentos y configuración. Esta acción es
-                    irreversible.
-                  </p>
+          {/* ─── ZONA DE PELIGRO ─── */}
+          <section className="space-y-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-red-500" />
+              <h2 className="text-sm font-medium text-red-500 uppercase tracking-wide">
+                Zona de peligro
+              </h2>
+            </div>
+            <div className="rounded-lg border border-red-200 bg-red-50/50 dark:bg-red-950/20 dark:border-red-900/50 p-5">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-start gap-4 min-w-0">
+                  <Trash2 className="h-5 w-5 text-red-500 mt-0.5 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="font-medium text-red-600 dark:text-red-400">
+                      Eliminar cuenta permanentemente
+                    </p>
+                    <p className="text-sm text-red-500/80 dark:text-red-400/60 mt-0.5">
+                      Se eliminarán todos tus datos: conversaciones, documentos,
+                      memorias, configuración y sesiones activas. Los datos se
+                      eliminan completamente en un plazo de 30 días.
+                    </p>
+                  </div>
                 </div>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={!userId || deleteAccount.isPending}
+                  onClick={() => setShowDeleteAccountConfirm(true)}
+                  className="shrink-0"
+                  data-testid="button-delete-account"
+                >
+                  {deleteAccount.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    "Eliminar"
+                  )}
+                </Button>
               </div>
-              <Button
-                variant="destructive"
-                size="sm"
-                disabled={!userId || deleteAccount.isPending}
-                onClick={() => setShowDeleteAccountConfirm(true)}
-                className="shrink-0"
-                data-testid="button-delete-account"
-              >
-                Eliminar
-              </Button>
             </div>
           </section>
         </div>
@@ -462,11 +468,11 @@ export default function PrivacyPage() {
             <AlertDialogDescription className="space-y-2">
               <span className="block">
                 ¿Estás seguro? Esta acción eliminará{" "}
-                <strong>TODAS</strong> tus conversaciones y mensajes. No se
-                puede deshacer.
+                <strong>TODAS</strong> tus conversaciones y mensajes.
+                No se puede deshacer.
               </span>
               <span className="block text-xs text-muted-foreground">
-                Los datos eliminados no podrán ser recuperados.
+                Los enlaces compartidos de tus chats también serán revocados.
               </span>
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -485,7 +491,7 @@ export default function PrivacyPage() {
                   Eliminando...
                 </>
               ) : (
-                "Borrar todo"
+                "Sí, borrar todo"
               )}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -501,32 +507,42 @@ export default function PrivacyPage() {
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-red-500" />
-              ¿Estás seguro que deseas eliminar tu cuenta?
+              ¿Eliminar tu cuenta?
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-3">
                 <p>
                   Esta acción es <strong>permanente e irreversible</strong>.
-                  Se eliminarán:
+                  Se eliminarán todos tus datos:
                 </p>
                 <ul className="list-disc list-inside text-sm space-y-1 text-muted-foreground">
                   <li>Todas tus conversaciones y mensajes</li>
-                  <li>Tus documentos y archivos generados</li>
-                  <li>Tu configuración y preferencias</li>
-                  <li>Tus memorias y datos de perfil</li>
+                  <li>Documentos y archivos generados</li>
+                  <li>Configuración y preferencias</li>
+                  <li>Memorias y datos de perfil</li>
                   <li>Todas las sesiones activas</li>
+                  <li>Claves API e integraciones</li>
                 </ul>
+                <div className="rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 p-3 mt-2">
+                  <p className="text-sm text-amber-700 dark:text-amber-400">
+                    Te recomendamos exportar tus datos antes de eliminar tu cuenta.
+                  </p>
+                </div>
                 <div className="pt-2">
                   <label
                     htmlFor="delete-confirm-input"
                     className="text-sm font-medium text-foreground"
                   >
-                    Escribe <strong className="text-red-600 dark:text-red-400">ELIMINAR</strong> para confirmar:
+                    Escribe{" "}
+                    <strong className="text-red-600 dark:text-red-400 font-mono">
+                      ELIMINAR
+                    </strong>{" "}
+                    para confirmar:
                   </label>
                   <Input
                     id="delete-confirm-input"
-                    className="mt-2"
-                    placeholder="Escribe ELIMINAR"
+                    className="mt-2 font-mono"
+                    placeholder="ELIMINAR"
                     value={deleteConfirmText}
                     onChange={(e) => setDeleteConfirmText(e.target.value)}
                     disabled={deleteAccount.isPending}
@@ -543,9 +559,7 @@ export default function PrivacyPage() {
             </AlertDialogCancel>
             <Button
               variant="destructive"
-              disabled={
-                deleteConfirmText !== "ELIMINAR" || deleteAccount.isPending
-              }
+              disabled={deleteConfirmText !== "ELIMINAR" || deleteAccount.isPending}
               onClick={() => deleteAccount.mutate()}
               data-testid="button-confirm-delete-account"
             >
@@ -561,6 +575,48 @@ export default function PrivacyPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+// ── Reusable toggle row component ──
+function ToggleRow({
+  icon,
+  title,
+  description,
+  checked,
+  onCheckedChange,
+  disabled,
+  testId,
+  badge,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled: boolean;
+  testId: string;
+  badge?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between p-4 gap-4">
+      <div className="flex items-start gap-4 min-w-0">
+        <div className="mt-0.5 shrink-0">{icon}</div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="font-medium">{title}</p>
+            {badge}
+          </div>
+          <p className="text-sm text-muted-foreground mt-0.5">{description}</p>
+        </div>
+      </div>
+      <Switch
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        disabled={disabled}
+        data-testid={testId}
+      />
     </div>
   );
 }
