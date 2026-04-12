@@ -105,6 +105,11 @@ export async function runStartupMigrations(): Promise<void> {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_input_tokens_limit integer;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_output_tokens_limit integer;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_token_usage_reset_at timestamp;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS org_id varchar;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS network_access_enabled boolean DEFAULT true;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS login_count integer DEFAULT 0;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id text;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_id text;
       `,
     },
     {
