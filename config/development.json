@@ -1,0 +1,94 @@
+{
+  "_comment": "IliaGPT — Development configuration. All guards relaxed for fast iteration.",
+  "_extends": "production",
+
+  "server": {
+    "port": 5000,
+    "host": "0.0.0.0",
+    "trustProxy": false,
+    "proxyHops": 0,
+    "shutdownTimeoutMs": 5000
+  },
+
+  "logging": {
+    "level": "debug",
+    "format": "pretty",
+    "prettyPrint": true,
+    "includeRequestId": true,
+    "includeUserId": true,
+    "redactFields": []
+  },
+
+  "database": {
+    "pool": { "min": 1, "max": 5, "idleTimeoutMs": 10000, "connectionTimeoutMs": 3000 },
+    "statementTimeoutMs": 0,
+    "queryTimeoutMs": 0,
+    "ssl": false
+  },
+
+  "redis": {
+    "keyPrefix": "iliagpt-dev:",
+    "sessionTtlSeconds": 86400,
+    "cacheTtlSeconds": 60,
+    "connectTimeoutMs": 3000
+  },
+
+  "session": {
+    "cookieName": "iliagpt-dev.sid",
+    "maxAgeMs": 604800000,
+    "secure": false,
+    "httpOnly": false,
+    "sameSite": "lax"
+  },
+
+  "llm": {
+    "defaultProvider": "openai",
+    "fallbackChain": ["openai"],
+    "circuitBreaker": { "failureThreshold": 10, "cooldownMs": 10000 },
+    "budgets": {
+      "free": { "dailyUsd": 100.00 },
+      "pro": { "dailyUsd": 100.00 },
+      "enterprise": { "dailyUsd": 100.00 }
+    }
+  },
+
+  "rateLimiting": { "windowMs": 60000, "maxRequests": 10000, "skipSuccessfulRequests": true },
+  "uploads": { "maxSizeMb": 200, "storagePath": "./uploads" },
+
+  "streaming": {
+    "sseIdleTimeoutMs": 600000,
+    "wsHeartbeatIntervalMs": 60000
+  },
+
+  "agents": {
+    "maxLoopIterations": 200,
+    "stuckLoopDetectionThreshold": 10,
+    "taskQueueConcurrency": 20
+  },
+
+  "monitoring": {
+    "metricsEnabled": false,
+    "metricsPort": 9090,
+    "tracingEnabled": false
+  },
+
+  "security": {
+    "csrfEnabled": false,
+    "helmetEnabled": false,
+    "ssrfProtectionEnabled": false,
+    "promptInjectionDetectionEnabled": false,
+    "maxPromptLength": 999999
+  },
+
+  "features": {
+    "longTermMemory": true,
+    "webSearch": true,
+    "browserAgent": true,
+    "codeExecution": true,
+    "documentGeneration": true,
+    "telegramIntegration": true,
+    "whatsappIntegration": true,
+    "openaiCompatibleApi": true,
+    "hybridSearch": true
+  }
+}

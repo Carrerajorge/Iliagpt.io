@@ -1,0 +1,157 @@
+{
+  "_comment": "IliaGPT — Production configuration defaults. Secrets via env vars.",
+
+  "server": {
+    "port": 5000,
+    "host": "0.0.0.0",
+    "trustProxy": true,
+    "proxyHops": 2,
+    "shutdownTimeoutMs": 30000
+  },
+
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "prettyPrint": false,
+    "includeRequestId": true,
+    "includeUserId": true,
+    "redactFields": ["password", "token", "apiKey", "secret", "authorization"]
+  },
+
+  "database": {
+    "pool": {
+      "min": 5,
+      "max": 20,
+      "idleTimeoutMs": 30000,
+      "connectionTimeoutMs": 5000,
+      "acquireTimeoutMs": 10000
+    },
+    "statementTimeoutMs": 30000,
+    "queryTimeoutMs": 15000,
+    "ssl": true,
+    "sslMode": "require"
+  },
+
+  "redis": {
+    "keyPrefix": "iliagpt:",
+    "sessionTtlSeconds": 86400,
+    "cacheTtlSeconds": 3600,
+    "connectTimeoutMs": 5000,
+    "commandTimeoutMs": 3000,
+    "retryAttempts": 3
+  },
+
+  "session": {
+    "cookieName": "iliagpt.sid",
+    "maxAgeMs": 86400000,
+    "secure": true,
+    "httpOnly": true,
+    "sameSite": "lax",
+    "rolling": true
+  },
+
+  "llm": {
+    "defaultProvider": "openai",
+    "fallbackChain": ["openai", "anthropic", "openrouter"],
+    "complexityThresholds": {
+      "simple": { "maxLength": 500, "maxTokens": 1000 },
+      "medium": { "maxLength": 2000, "maxTokens": 4000 },
+      "complex": { "maxLength": 99999, "maxTokens": 128000 }
+    },
+    "circuitBreaker": {
+      "failureThreshold": 3,
+      "cooldownMs": 300000,
+      "halfOpenProbeIntervalMs": 60000
+    },
+    "budgets": {
+      "free": { "dailyUsd": 0.50 },
+      "pro": { "dailyUsd": 5.00 },
+      "enterprise": { "dailyUsd": 50.00 }
+    },
+    "healthCheckIntervalMs": 60000,
+    "requestTimeoutMs": 120000,
+    "streamingTimeoutMs": 180000
+  },
+
+  "rateLimiting": {
+    "windowMs": 60000,
+    "maxRequests": 100,
+    "skipSuccessfulRequests": false,
+    "skipFailedRequests": false,
+    "standardHeaders": true,
+    "legacyHeaders": false
+  },
+
+  "uploads": {
+    "maxSizeMb": 50,
+    "allowedMimeTypes": [
+      "image/jpeg", "image/png", "image/gif", "image/webp",
+      "application/pdf",
+      "text/plain", "text/csv", "text/markdown",
+      "application/json",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    ],
+    "storagePath": "/app/uploads"
+  },
+
+  "streaming": {
+    "sseIdleTimeoutMs": 60000,
+    "wsHeartbeatIntervalMs": 30000,
+    "wsMaxConnectionsPerUser": 10,
+    "responseBufferSizeBytes": 65536
+  },
+
+  "search": {
+    "resultsLimit": 20,
+    "semanticWeight": 0.5,
+    "fulltextWeight": 0.5,
+    "hybridRrfK": 60,
+    "embeddingDimensions": 1536
+  },
+
+  "memory": {
+    "maxFactsPerUser": 200,
+    "extractionDelayMs": 5000,
+    "importanceThreshold": 0.3,
+    "mentionCountWeight": 0.1
+  },
+
+  "agents": {
+    "maxLoopIterations": 50,
+    "stuckLoopDetectionThreshold": 3,
+    "taskQueueConcurrency": 5,
+    "browserAgentTimeoutMs": 120000,
+    "codeExecutionTimeoutMs": 30000
+  },
+
+  "monitoring": {
+    "metricsEnabled": true,
+    "metricsPort": 9090,
+    "healthCheckPath": "/api/health",
+    "readinessCheckPath": "/api/ready",
+    "tracingEnabled": false
+  },
+
+  "security": {
+    "csrfEnabled": true,
+    "helmetEnabled": true,
+    "ssrfProtectionEnabled": true,
+    "promptInjectionDetectionEnabled": true,
+    "maxPromptLength": 100000,
+    "domPurifyEnabled": true
+  },
+
+  "features": {
+    "longTermMemory": true,
+    "webSearch": true,
+    "browserAgent": true,
+    "codeExecution": true,
+    "documentGeneration": true,
+    "telegramIntegration": false,
+    "whatsappIntegration": false,
+    "openaiCompatibleApi": true,
+    "hybridSearch": true
+  }
+}

@@ -1,0 +1,118 @@
+# =============================================================================
+# IliaGPT — Dependabot Configuration
+# Weekly updates for npm, Docker, and GitHub Actions
+# =============================================================================
+version: 2
+
+updates:
+  # ── npm dependencies ──────────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    reviewers:
+      - IliaGPT
+    labels:
+      - dependencies
+      - npm
+    commit-message:
+      prefix: "chore(deps)"
+    # Group minor/patch updates to reduce PR noise
+    groups:
+      # Group all non-major production updates
+      production-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+        dependency-type: production
+        patterns:
+          - "*"
+      # Keep major production updates separate
+      production-major:
+        applies-to: version-updates
+        update-types:
+          - major
+        dependency-type: production
+        patterns:
+          - "*"
+      # Group all dev dependency updates
+      dev-dependencies:
+        applies-to: version-updates
+        dependency-type: development
+        patterns:
+          - "*"
+      # Separate group for LLM/AI SDKs
+      ai-sdks:
+        applies-to: version-updates
+        patterns:
+          - "openai"
+          - "@anthropic-ai/*"
+          - "@google-ai/*"
+          - "langchain"
+          - "@langchain/*"
+          - "langgraph"
+      # Security-sensitive packages — keep separate
+      security-critical:
+        applies-to: version-updates
+        patterns:
+          - "passport"
+          - "passport-*"
+          - "express-session"
+          - "connect-pg-simple"
+          - "helmet"
+          - "csurf"
+          - "express-rate-limit"
+          - "jsonwebtoken"
+          - "bcrypt"
+          - "argon2"
+    ignore:
+      # Don't auto-update Electron (requires manual testing)
+      - dependency-name: "electron"
+        update-types: ["version-update:semver-major"]
+
+  # ── Docker base images ────────────────────────────────────────────────────────
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    reviewers:
+      - IliaGPT
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "chore(docker)"
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - IliaGPT
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+        patterns:
+          - "*"

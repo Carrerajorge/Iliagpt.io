@@ -1,0 +1,87 @@
+{
+  "_comment": "IliaGPT — Staging configuration. Extends production with relaxed limits.",
+  "_extends": "production",
+
+  "server": {
+    "port": 5000,
+    "host": "0.0.0.0",
+    "trustProxy": true,
+    "proxyHops": 1,
+    "shutdownTimeoutMs": 15000
+  },
+
+  "logging": {
+    "level": "debug",
+    "format": "json",
+    "prettyPrint": false,
+    "includeRequestId": true,
+    "includeUserId": true,
+    "redactFields": ["password", "secret"]
+  },
+
+  "database": {
+    "pool": { "min": 2, "max": 10, "idleTimeoutMs": 30000, "connectionTimeoutMs": 5000 },
+    "statementTimeoutMs": 60000,
+    "ssl": true,
+    "sslMode": "require"
+  },
+
+  "redis": {
+    "keyPrefix": "iliagpt-staging:",
+    "sessionTtlSeconds": 3600,
+    "cacheTtlSeconds": 300,
+    "connectTimeoutMs": 5000
+  },
+
+  "session": {
+    "cookieName": "iliagpt-staging.sid",
+    "maxAgeMs": 3600000,
+    "secure": true,
+    "httpOnly": true,
+    "sameSite": "lax"
+  },
+
+  "llm": {
+    "defaultProvider": "openai",
+    "fallbackChain": ["openai", "anthropic"],
+    "circuitBreaker": { "failureThreshold": 5, "cooldownMs": 60000 },
+    "budgets": {
+      "free": { "dailyUsd": 1.00 },
+      "pro": { "dailyUsd": 10.00 },
+      "enterprise": { "dailyUsd": 100.00 }
+    }
+  },
+
+  "rateLimiting": { "windowMs": 60000, "maxRequests": 500 },
+  "uploads": { "maxSizeMb": 100 },
+
+  "agents": {
+    "maxLoopIterations": 100,
+    "taskQueueConcurrency": 10
+  },
+
+  "monitoring": {
+    "metricsEnabled": true,
+    "metricsPort": 9090,
+    "tracingEnabled": true
+  },
+
+  "security": {
+    "csrfEnabled": true,
+    "helmetEnabled": true,
+    "ssrfProtectionEnabled": false,
+    "promptInjectionDetectionEnabled": true
+  },
+
+  "features": {
+    "longTermMemory": true,
+    "webSearch": true,
+    "browserAgent": true,
+    "codeExecution": true,
+    "documentGeneration": true,
+    "telegramIntegration": true,
+    "whatsappIntegration": true,
+    "openaiCompatibleApi": true,
+    "hybridSearch": true
+  }
+}

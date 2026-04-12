@@ -1,0 +1,118 @@
+# =============================================================================
+# IliaGPT — Development Docker Compose Override
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# =============================================================================
+
+version: "3.9"
+
+services:
+
+  # ── App — hot-reload dev server ──────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder          # stop at builder stage (includes devDeps)
+    image: iliagpt/app:dev
+    command: ["npm", "run", "dev"]
+    environment:
+      NODE_ENV: development
+      PORT: 5000
+      DATABASE_URL: postgres://iliagpt:iliagpt@postgres:5432/iliagpt_dev
+      REDIS_URL: redis://redis:6379
+      SESSION_SECRET: dev-session-secret-not-for-production
+      LOG_LEVEL: debug
+      VITE_DEV_MODE: "true"
+      # Override any prod keys if needed via .env.local
+    volumes:
+      # Source mounts for hot reload
+      - ./client:/app/client
+      - ./server:/app/server
+      - ./shared:/app/shared
+      - ./scripts:/app/scripts
+      - ./migrations:/app/migrations
+      # Keep node_modules from container — don't override with host
+      - /app/node_modules
+    ports:
+      - "5000:5000"    # Express API
+      - "5173:5173"    # Vite HMR websocket
+      - "9229:9229"    # Node.js debugger (--inspect)
+    healthcheck:
+      # Relaxed for dev; app may restart frequently
+      test: ["CMD", "curl", "-fsSL", "http://localhost:5000/api/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
+
+  # ── PostgreSQL — dev DB (no tuning flags) ────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: iliagpt_dev
+      POSTGRES_USER: iliagpt
+      POSTGRES_PASSWORD: iliagpt
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"    # Expose to host for local DB clients (TablePlus, pgAdmin)
+    command: >
+      postgres
+        -c log_statement=all
+        -c log_min_duration_statement=0
+        -c max_connections=50
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+
+  # ── Redis — dev instance ─────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    command: redis-server --loglevel debug --save "" --appendonly no
+    ports:
+      - "6379:6379"    # Expose to host for inspection (redis-cli, RedisInsight)
+    volumes: []         # no persistence in dev
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ── Nginx — skip in dev (app handles its own port) ───────────────────────────
+  nginx:
+    profiles:
+      - nginx-dev     # Only start if explicitly requested: --profile nginx-dev
+
+  # ── Adminer — lightweight DB UI for dev ─────────────────────────────────────
+  adminer:
+    image: adminer:4-standalone
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    networks:
+      - backend
+      - frontend
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DESIGN: hydra
+
+  # ── Redis Commander — Redis UI for dev ──────────────────────────────────────
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    restart: unless-stopped
+    depends_on:
+      - redis
+    networks:
+      - backend
+      - frontend
+    ports:
+      - "8081:8081"
+    environment:
+      REDIS_HOSTS: local:redis:6379

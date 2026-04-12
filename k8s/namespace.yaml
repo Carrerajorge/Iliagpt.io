@@ -1,0 +1,57 @@
+# =============================================================================
+# IliaGPT — Kubernetes Namespace
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: iliagpt
+  labels:
+    app.kubernetes.io/name: iliagpt
+    app.kubernetes.io/managed-by: kubectl
+    environment: production
+  annotations:
+    description: "IliaGPT AI chat platform — production namespace"
+---
+# ResourceQuota — prevent runaway resource usage
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: iliagpt-quota
+  namespace: iliagpt
+spec:
+  hard:
+    requests.cpu: "20"
+    requests.memory: 40Gi
+    limits.cpu: "40"
+    limits.memory: 80Gi
+    persistentvolumeclaims: "20"
+    services: "20"
+    secrets: "50"
+    configmaps: "50"
+    pods: "100"
+---
+# LimitRange — default requests/limits for pods that don't specify them
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: iliagpt-limits
+  namespace: iliagpt
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      max:
+        cpu: "8"
+        memory: 16Gi
+    - type: Pod
+      max:
+        cpu: "16"
+        memory: 32Gi
+    - type: PersistentVolumeClaim
+      max:
+        storage: 500Gi

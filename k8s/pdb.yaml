@@ -1,0 +1,22 @@
+# =============================================================================
+# IliaGPT — Pod Disruption Budget
+# Ensures at least 2 pods are always available during voluntary disruptions
+# (node drains, cluster upgrades, rolling restarts)
+# =============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: iliagpt-pdb
+  namespace: iliagpt
+  labels:
+    app.kubernetes.io/name: iliagpt
+    app.kubernetes.io/component: pdb
+spec:
+  selector:
+    matchLabels:
+      app: iliagpt
+  # At least 2 pods must remain available during voluntary disruptions.
+  # With minReplicas=3 this means at most 1 pod can be disrupted at a time.
+  minAvailable: 2
+  # Alternatively, allow at most 1 pod to be unavailable at once:
+  # maxUnavailable: 1

@@ -1,0 +1,116 @@
+# =============================================================================
+# IliaGPT — Kubernetes ConfigMap (non-secret configuration)
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iliagpt-config
+  namespace: iliagpt
+  labels:
+    app.kubernetes.io/name: iliagpt
+    app.kubernetes.io/component: config
+data:
+  # ── Application ─────────────────────────────────────────────────────────────
+  NODE_ENV: "production"
+  PORT: "5000"
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+
+  # ── App URL ──────────────────────────────────────────────────────────────────
+  APP_URL: "https://iliagpt.io"
+  API_URL: "https://api.iliagpt.io"
+  ALLOWED_ORIGINS: "https://iliagpt.io,https://www.iliagpt.io,https://app.iliagpt.io"
+
+  # ── Database ─────────────────────────────────────────────────────────────────
+  DB_POOL_MIN: "5"
+  DB_POOL_MAX: "20"
+  DB_IDLE_TIMEOUT: "30000"
+  DB_CONNECTION_TIMEOUT: "5000"
+  DB_STATEMENT_TIMEOUT: "30000"
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  REDIS_KEY_PREFIX: "iliagpt:"
+  REDIS_SESSION_TTL: "86400"
+  REDIS_CACHE_TTL: "3600"
+
+  # ── Session ──────────────────────────────────────────────────────────────────
+  SESSION_COOKIE_NAME: "iliagpt.sid"
+  SESSION_MAX_AGE: "86400000"
+  SESSION_SAME_SITE: "lax"
+  SESSION_SECURE: "true"
+
+  # ── LLM / Smart Router ───────────────────────────────────────────────────────
+  LLM_DEFAULT_PROVIDER: "openai"
+  LLM_FALLBACK_CHAIN: "openai,anthropic,openrouter"
+  LLM_CIRCUIT_BREAKER_FAILURES: "3"
+  LLM_CIRCUIT_BREAKER_COOLDOWN_MS: "300000"
+  LLM_BUDGET_FREE_DAILY_USD: "0.50"
+  LLM_BUDGET_PRO_DAILY_USD: "5.00"
+  LLM_BUDGET_ENTERPRISE_DAILY_USD: "50.00"
+  LLM_HEALTH_CHECK_INTERVAL_MS: "60000"
+
+  # ── Rate Limiting ─────────────────────────────────────────────────────────────
+  RATE_LIMIT_WINDOW_MS: "60000"
+  RATE_LIMIT_MAX_REQUESTS: "100"
+  RATE_LIMIT_SKIP_SUCCESSFUL_REQUESTS: "false"
+
+  # ── File uploads ─────────────────────────────────────────────────────────────
+  MAX_UPLOAD_SIZE_MB: "50"
+  UPLOAD_PATH: "/app/uploads"
+  ALLOWED_UPLOAD_TYPES: "image/*,application/pdf,text/*,application/json,application/vnd.openxmlformats*"
+
+  # ── Streaming ────────────────────────────────────────────────────────────────
+  SSE_IDLE_TIMEOUT_MS: "60000"
+  WS_HEARTBEAT_INTERVAL_MS: "30000"
+  WS_MAX_CONNECTIONS_PER_USER: "10"
+
+  # ── Features ─────────────────────────────────────────────────────────────────
+  ENABLE_LONG_TERM_MEMORY: "true"
+  ENABLE_WEB_SEARCH: "true"
+  ENABLE_BROWSER_AGENT: "true"
+  ENABLE_CODE_EXECUTION: "true"
+  ENABLE_DOCUMENT_GENERATION: "true"
+  ENABLE_TELEGRAM_INTEGRATION: "false"
+  ENABLE_WHATSAPP_INTEGRATION: "false"
+
+  # ── Search ───────────────────────────────────────────────────────────────────
+  SEARCH_RESULTS_LIMIT: "20"
+  SEMANTIC_SEARCH_WEIGHT: "0.5"
+  FULLTEXT_SEARCH_WEIGHT: "0.5"
+  HYBRID_SEARCH_K: "60"
+
+  # ── Memory ───────────────────────────────────────────────────────────────────
+  MEMORY_MAX_FACTS_PER_USER: "200"
+  MEMORY_EXTRACTION_DELAY_MS: "5000"
+  MEMORY_IMPORTANCE_THRESHOLD: "0.3"
+
+  # ── Monitoring ───────────────────────────────────────────────────────────────
+  METRICS_ENABLED: "true"
+  METRICS_PORT: "9090"
+  HEALTH_CHECK_PATH: "/api/health"
+  READINESS_CHECK_PATH: "/api/ready"
+
+  # ── Security ─────────────────────────────────────────────────────────────────
+  CSRF_ENABLED: "true"
+  HELMET_ENABLED: "true"
+  SSRF_PROTECTION_ENABLED: "true"
+  PROMPT_INJECTION_DETECTION: "true"
+  MAX_PROMPT_LENGTH: "100000"
+
+  # ── Nginx / CDN ──────────────────────────────────────────────────────────────
+  TRUST_PROXY: "true"
+  PROXY_HOPS: "2"
+
+---
+# ── Nginx configuration ──────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: iliagpt
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/component: proxy
+data:
+  upstream-host: "iliagpt-service.iliagpt.svc.cluster.local"
+  upstream-port: "5000"
