@@ -4,7 +4,7 @@
 # =============================================================================
 
 # ── Stage 1: base ─────────────────────────────────────────────────────────────
-FROM node:20-alpine AS base
+FROM node:25-alpine AS base
 
 # Install OS-level deps needed at runtime
 RUN apk add --no-cache \
