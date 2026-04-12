@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: Docker image tag to deploy (default: latest sha)
+        description: "Docker image tag to deploy (default: latest sha)"
         required: false
         default: ""
 
