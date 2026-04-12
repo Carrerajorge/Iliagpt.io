@@ -1,0 +1,16 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: iliagpt-pdb
+  namespace: iliagpt
+  labels:
+    app: iliagpt
+    app.kubernetes.io/component: pdb
+spec:
+  # At least 2 pods must always be available during voluntary disruptions
+  # (node drain, rolling upgrades, cluster maintenance)
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: iliagpt
+      component: app

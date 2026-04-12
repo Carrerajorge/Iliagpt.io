@@ -1,0 +1,121 @@
+name: Security Scan
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"   # every Monday 03:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - "package*.json"
+      - "**/*.ts"
+      - "**/*.tsx"
+      - "Dockerfile*"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  # ── CodeQL static analysis ───────────────────────────────────────────────────
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended,security-and-quality
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  # ── Dependency vulnerability scan ────────────────────────────────────────────
+  npm-audit:
+    name: npm Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci --frozen-lockfile
+      - name: Audit production deps
+        run: npm audit --audit-level=high --omit=dev
+        continue-on-error: false
+      - name: Generate audit report
+        run: npm audit --json > audit-report.json || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report
+          path: audit-report.json
+
+  # ── Docker image scan ────────────────────────────────────────────────────────
+  trivy-image:
+    name: Trivy Image Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: iliagpt:scan
+          cache-from: type=gha
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: iliagpt:scan
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+
+  # ── Secret detection ──────────────────────────────────────────────────────────
+  secrets-scan:
+    name: Secret Detection (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── SAST with Semgrep ─────────────────────────────────────────────────────────
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config "p/typescript" \
+            --config "p/nodejs" \
+            --config "p/owasp-top-ten" \
+            --config "p/security-audit" \
+            --sarif \
+            --output semgrep.sarif \
+            --error
+        continue-on-error: true
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif

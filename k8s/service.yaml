@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: iliagpt-service
+  namespace: iliagpt
+  labels:
+    app: iliagpt
+    app.kubernetes.io/name: iliagpt
+    app.kubernetes.io/component: service
+  annotations:
+    # Preserve client IP for rate limiting
+    service.beta.kubernetes.io/aws-load-balancer-proxy-protocol: "*"
+spec:
+  type: ClusterIP
+  selector:
+    app: iliagpt
+    component: app
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+  sessionAffinity: None
+---
+# ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: iliagpt-sa
+  namespace: iliagpt
+  labels:
+    app: iliagpt
+  annotations:
+    # Link to IAM role for IRSA (AWS)
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/iliagpt-role
+automountServiceAccountToken: false
+---
+# PersistentVolumeClaim for uploads
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: iliagpt-uploads-pvc
+  namespace: iliagpt
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc   # AWS EFS CSI driver; change for other clouds
+  resources:
+    requests:
+      storage: 20Gi

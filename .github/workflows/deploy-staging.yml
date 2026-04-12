@@ -1,0 +1,114 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Docker image tag to deploy (default: latest sha)
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false   # never cancel in-flight deployments
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  ENVIRONMENT: staging
+  K8S_NAMESPACE: iliagpt-staging
+  SLACK_CHANNEL: "#deployments"
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.iliagpt.io
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine image tag
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.image_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="sha-$(echo ${{ github.sha }} | cut -c1-7)"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v4
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.STAGING_KUBECONFIG }}
+
+      - name: Run database migrations
+        run: |
+          kubectl run db-migrate-${{ github.run_id }} \
+            --image=${{ steps.tag.outputs.image }} \
+            --restart=Never \
+            --namespace=${{ env.K8S_NAMESPACE }} \
+            --command -- node -e "require('./dist/index.cjs').runMigrations()" \
+            --env="DATABASE_URL=${{ secrets.STAGING_DATABASE_URL }}" \
+            --wait=true \
+            --timeout=120s
+          kubectl logs db-migrate-${{ github.run_id }} -n ${{ env.K8S_NAMESPACE }}
+          kubectl delete pod db-migrate-${{ github.run_id }} -n ${{ env.K8S_NAMESPACE }}
+
+      - name: Update Kubernetes deployment
+        run: |
+          kubectl set image deployment/iliagpt-app \
+            app=${{ steps.tag.outputs.image }} \
+            --namespace=${{ env.K8S_NAMESPACE }}
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/iliagpt-app \
+            --namespace=${{ env.K8S_NAMESPACE }} \
+            --timeout=300s
+
+      - name: Smoke test staging
+        run: |
+          echo "Waiting 15s for pods to be ready..."
+          sleep 15
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://staging.iliagpt.io/api/health)
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Health check failed with status $HTTP_STATUS — rolling back"
+            kubectl rollout undo deployment/iliagpt-app -n ${{ env.K8S_NAMESPACE }}
+            exit 1
+          fi
+          echo "Health check passed: $HTTP_STATUS"
+
+      - name: Run E2E smoke tests
+        run: |
+          npm ci --frozen-lockfile
+          APP_URL=https://staging.iliagpt.io npm run test:smoke
+        env:
+          APP_URL: https://staging.iliagpt.io
+
+      - name: Notify Slack
+        if: always()
+        uses: slackapi/slack-github-action@v1
+        with:
+          channel-id: ${{ env.SLACK_CHANNEL }}
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '✅' || '❌' }} *Staging deploy ${{ job.status }}*",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ job.status == 'success' && '✅' || '❌' }} *Staging Deploy ${{ job.status }}*\n*Image:* `${{ steps.tag.outputs.tag }}`\n*Commit:* ${{ github.sha }}\n*By:* ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

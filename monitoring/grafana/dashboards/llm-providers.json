@@ -1,0 +1,731 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "10.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "bargauge",
+      "name": "Bar gauge",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "table",
+      "name": "Table",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "stat",
+      "name": "Stat",
+      "version": ""
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "IliaGPT LLM Provider deep-dive — request rates, error rates, latency, token usage, cost, and circuit-breaker state per provider",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "req/s",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "unit": "reqps"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "openai" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#74b9ff", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "anthropic" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#fd79a8", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "gemini" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#55efc4", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "xai" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#fdcb6e", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "deepseek" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#a29bfe", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_requests_total{job=\"iliagpt\", provider=\"openai\"}[2m]))",
+          "legendFormat": "openai",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_requests_total{job=\"iliagpt\", provider=\"anthropic\"}[2m]))",
+          "legendFormat": "anthropic",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_requests_total{job=\"iliagpt\", provider=\"gemini\"}[2m]))",
+          "legendFormat": "gemini",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_requests_total{job=\"iliagpt\", provider=\"xai\"}[2m]))",
+          "legendFormat": "xai",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_requests_total{job=\"iliagpt\", provider=\"deepseek\"}[2m]))",
+          "legendFormat": "deepseek",
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "title": "Requests/sec per Provider",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "errors/s",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_requests_total{job=\"iliagpt\", provider=\"openai\", status=\"error\"}[2m]))",
+          "legendFormat": "openai",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_requests_total{job=\"iliagpt\", provider=\"anthropic\", status=\"error\"}[2m]))",
+          "legendFormat": "anthropic",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_requests_total{job=\"iliagpt\", provider=\"gemini\", status=\"error\"}[2m]))",
+          "legendFormat": "gemini",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_requests_total{job=\"iliagpt\", provider=\"xai\", status=\"error\"}[2m]))",
+          "legendFormat": "xai",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_requests_total{job=\"iliagpt\", provider=\"deepseek\", status=\"error\"}[2m]))",
+          "legendFormat": "deepseek",
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "title": "Error Rate per Provider",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "latency (s)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 20 }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum(rate(llm_request_duration_seconds_bucket{job=\"iliagpt\"}[5m])) by (le, provider))",
+          "legendFormat": "{{provider}} P50",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "P50 Latency per Provider",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "latency (s)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 30 }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(llm_request_duration_seconds_bucket{job=\"iliagpt\"}[5m])) by (le, provider))",
+          "legendFormat": "{{provider}} P95",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "P95 Latency per Provider",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "tokens/s",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 5,
+      "options": {
+        "legend": { "calcs": ["mean", "sum"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_tokens_total{job=\"iliagpt\", token_type=\"prompt\"}[2m])) by (provider)",
+          "legendFormat": "{{provider}} prompt",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_tokens_total{job=\"iliagpt\", token_type=\"completion\"}[2m])) by (provider)",
+          "legendFormat": "{{provider}} completion",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Token Usage per Provider (stacked)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 20 }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 6,
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "namePlacement": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(llm_daily_cost_usd{job=\"iliagpt\"}) by (provider)",
+          "legendFormat": "{{provider}}",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Estimated Cost per Provider Today (USD)",
+      "type": "bargauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-background",
+              "mode": "basic"
+            },
+            "inspect": false
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": { "color": "green", "index": 0, "text": "CLOSED" },
+                "1": { "color": "red", "index": 1, "text": "OPEN" }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "provider" },
+            "properties": [
+              { "id": "custom.width", "value": 120 },
+              { "id": "displayName", "value": "Provider" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Value" },
+            "properties": [
+              { "id": "displayName", "value": "Circuit Breaker State" },
+              { "id": "custom.width", "value": 200 }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 7,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": ["sum"],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [{ "desc": false, "displayName": "Provider" }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "llm_circuit_breaker_open{job=\"iliagpt\"}",
+          "legendFormat": "{{provider}}",
+          "instant": true,
+          "refId": "A",
+          "format": "table"
+        }
+      ],
+      "title": "Circuit Breaker State per Provider (0=closed, 1=open)",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "job": true, "__name__": true },
+            "renameByName": { "provider": "Provider" }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "id": 8,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["mean"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_requests_total{job=\"iliagpt\", status=\"success\"}[10m])) by (provider) / sum(rate(llm_requests_total{job=\"iliagpt\"}[10m])) by (provider) * 100",
+          "legendFormat": "{{provider}} success %",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Provider Success Rate (10m window)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "tokens/s",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "id": 9,
+      "options": {
+        "legend": { "calcs": ["mean", "max", "sum"], "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(rate(llm_tokens_total{job=\"iliagpt\"}[2m])) by (provider, model)",
+          "legendFormat": "{{provider}} / {{model}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Token Throughput by Provider + Model",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["iliagpt", "llm", "providers"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(llm_requests_total{job=\"iliagpt\"}, provider)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "provider",
+        "options": [],
+        "query": {
+          "query": "label_values(llm_requests_total{job=\"iliagpt\"}, provider)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query",
+        "label": "Provider"
+      },
+      {
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(llm_requests_total{job=\"iliagpt\", provider=~\"$provider\"}, model)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "model",
+        "options": [],
+        "query": {
+          "query": "label_values(llm_requests_total{job=\"iliagpt\", provider=~\"$provider\"}, model)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query",
+        "label": "Model"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"],
+    "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"]
+  },
+  "timezone": "browser",
+  "title": "IliaGPT — LLM Providers",
+  "uid": "iliagpt-llm-providers",
+  "version": 1,
+  "weekStart": ""
+}

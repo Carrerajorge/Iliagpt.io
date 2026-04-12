@@ -1,0 +1,193 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iliagpt-app
+  namespace: iliagpt
+  labels:
+    app: iliagpt
+    app.kubernetes.io/name: iliagpt
+    app.kubernetes.io/component: app
+    version: "latest"
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: iliagpt
+      component: app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0        # zero-downtime
+  template:
+    metadata:
+      labels:
+        app: iliagpt
+        component: app
+        version: "latest"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      # ── Topology ──────────────────────────────────────────────────────────────
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: [iliagpt]
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: iliagpt
+
+      # ── Security context (pod-level) ──────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ── Service account ───────────────────────────────────────────────────────
+      serviceAccountName: iliagpt-sa
+      automountServiceAccountToken: false
+
+      # ── Grace period ──────────────────────────────────────────────────────────
+      terminationGracePeriodSeconds: 30
+
+      # ── Init containers ───────────────────────────────────────────────────────
+      initContainers:
+        - name: db-migrate
+          image: ghcr.io/carrerajorge/iliagpt:latest
+          command: ["node", "-e", "require('./dist/index.cjs').runMigrations()"]
+          envFrom:
+            - configMapRef:
+                name: iliagpt-config
+            - secretRef:
+                name: iliagpt-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            capabilities:
+              drop: [ALL]
+
+      # ── Main container ────────────────────────────────────────────────────────
+      containers:
+        - name: app
+          image: ghcr.io/carrerajorge/iliagpt:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+
+          # ── Environment ─────────────────────────────────────────────────────
+          envFrom:
+            - configMapRef:
+                name: iliagpt-config
+            - secretRef:
+                name: iliagpt-secrets
+
+          # ── Probes ──────────────────────────────────────────────────────────
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+
+          # ── Resources ───────────────────────────────────────────────────────
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1Gi"
+
+          # ── Security context ─────────────────────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            capabilities:
+              drop: [ALL]
+
+          # ── Volume mounts ────────────────────────────────────────────────────
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+            - name: tmp
+              mountPath: /app/tmp
+            - name: logs
+              mountPath: /app/logs
+
+          # ── Lifecycle ────────────────────────────────────────────────────────
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]  # allow LB to drain
+
+      # ── Volumes ───────────────────────────────────────────────────────────────
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: iliagpt-uploads-pvc
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+        - name: logs
+          emptyDir: {}
+
+      # ── Image pull secrets ────────────────────────────────────────────────────
+      imagePullSecrets:
+        - name: ghcr-secret

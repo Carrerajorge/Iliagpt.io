@@ -1,0 +1,105 @@
+# =============================================================================
+# IliaGPT.io — Development Docker Compose override
+# Hot reload, debug ports, relaxed resource limits
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# =============================================================================
+
+version: "3.9"
+
+services:
+
+  postgres:
+    ports:
+      - "5432:5432"        # expose for local tools (DBeaver, psql, etc.)
+    environment:
+      POSTGRES_PASSWORD: devpassword
+    command: >
+      postgres
+        -c shared_buffers=128MB
+        -c log_statement=all
+        -c log_min_duration_statement=0
+
+  redis:
+    ports:
+      - "6379:6379"        # expose for redis-cli / RedisInsight
+    environment:
+      REDIS_PASSWORD: devpassword
+    command: redis-server --requirepass devpassword --loglevel verbose
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: deps          # stop at deps stage — mount source for hot reload
+    command: npm run dev
+    ports:
+      - "5000:5000"         # app
+      - "9229:9229"         # Node.js inspector (--inspect)
+    volumes:
+      # Mount source for hot reload — override built dist
+      - .:/app
+      - /app/node_modules   # anonymous volume so container node_modules win
+    environment:
+      NODE_ENV: development
+      PORT: 5000
+      DATABASE_URL: postgresql://iliagpt:devpassword@postgres:5432/iliagpt
+      REDIS_URL: redis://:devpassword@redis:6379
+      SESSION_SECRET: dev-session-secret-change-in-prod
+      LOG_LEVEL: debug
+      VITE_HMR_PORT: 5173
+    healthcheck:
+      # More lenient in dev
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2G
+
+  nginx:
+    # Skip nginx in dev — Vite dev server handles HMR
+    profiles:
+      - nginx-dev          # only start with: --profile nginx-dev
+
+  # ── Dev-only: pgAdmin ────────────────────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    profiles:
+      - tools
+    networks:
+      - backend
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@localhost
+      PGADMIN_DEFAULT_PASSWORD: admin
+    depends_on:
+      - postgres
+
+  # ── Dev-only: Redis Commander ────────────────────────────────────────────────
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    profiles:
+      - tools
+    networks:
+      - backend
+    ports:
+      - "8081:8081"
+    environment:
+      REDIS_HOSTS: "local:redis:6379:0:devpassword"
+    depends_on:
+      - redis
+
+  # ── Dev-only: Mailhog (catch outgoing emails) ────────────────────────────────
+  mailhog:
+    image: mailhog/mailhog:latest
+    profiles:
+      - tools
+    networks:
+      - backend
+    ports:
+      - "1025:1025"        # SMTP
+      - "8025:8025"        # Web UI

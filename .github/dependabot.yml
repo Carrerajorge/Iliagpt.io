@@ -1,0 +1,95 @@
+version: 2
+
+updates:
+  # ── npm dependencies ────────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 10
+    target-branch: develop
+    labels:
+      - dependencies
+      - automated
+    reviewers:
+      - Carrerajorge
+    groups:
+      # Group patch updates together
+      patch-updates:
+        update-types:
+          - patch
+      # Group React ecosystem updates
+      react:
+        patterns:
+          - "react"
+          - "react-*"
+          - "@types/react*"
+      # Group Radix UI updates
+      radix-ui:
+        patterns:
+          - "@radix-ui/*"
+      # Group testing tools
+      testing:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+          - "playwright"
+          - "@playwright/*"
+          - "@testing-library/*"
+      # Group LangChain / LangGraph
+      langchain:
+        patterns:
+          - "@langchain/*"
+          - "langchain"
+          - "@langgraph/*"
+      # Group database tooling
+      database:
+        patterns:
+          - "drizzle-*"
+          - "@neondatabase/*"
+          - "pg"
+          - "@types/pg"
+    ignore:
+      # Don't auto-update major versions of these
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vite"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "drizzle-orm"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "express"
+        update-types: ["version-update:semver-major"]
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+      - automated
+    groups:
+      actions-updates:
+        patterns:
+          - "*"
+
+  # ── Docker base images ────────────────────────────────────────────────────────
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "09:00"
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - docker
+      - automated

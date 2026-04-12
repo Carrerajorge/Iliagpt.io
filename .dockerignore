@@ -1,6 +1,11 @@
+# =============================================================================
+# IliaGPT.io — .dockerignore (production-optimized)
+# =============================================================================
+
 # Version control
 .git
 .gitignore
+.gitattributes
 .github/
 
 # Rust build artifacts (~881 MB, dev-only)
