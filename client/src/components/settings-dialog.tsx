@@ -40,7 +40,13 @@ import {
   CheckCircle2,
   XCircle,
   ExternalLink,
-  RefreshCw
+  RefreshCw,
+  Star,
+  Cpu,
+  ChevronDown,
+  Zap,
+  Key,
+  Search,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
@@ -52,7 +58,7 @@ import { formatZonedDate, formatZonedTime, normalizeTimeZone } from "@/lib/platf
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
-import { useModelAvailability } from "@/contexts/ModelAvailabilityContext";
+import { useModelAvailability, type AvailableModel } from "@/contexts/ModelAvailabilityContext";
 import { SchedulesManagerDialog } from "@/components/schedules-manager-dialog";
 import { SessionsManagerDialog } from "@/components/sessions-manager-dialog";
 import { saveAs } from "file-saver";
@@ -2070,6 +2076,331 @@ function SecuritySection(props: {
   );
 }
 
+// ── AI Config Section (Model Browser) ──
+function AiConfigSection({
+  availableModels,
+  settings,
+  updateSetting,
+  currentApiKey,
+  updateAiKey,
+}: {
+  availableModels: AvailableModel[];
+  settings: { defaultModel?: string };
+  updateSetting: (key: any, value: any) => void;
+  currentApiKey: { value?: string } | undefined;
+  updateAiKey: { mutate: (key: string) => void };
+}) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
+  const [favoriteModels, setFavoriteModels] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem("iliagpt_favorite_models");
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+
+  const toggleFavorite = (modelId: string) => {
+    setFavoriteModels((prev) => {
+      const next = new Set(prev);
+      if (next.has(modelId)) {
+        next.delete(modelId);
+      } else {
+        next.add(modelId);
+      }
+      localStorage.setItem("iliagpt_favorite_models", JSON.stringify([...next]));
+      return next;
+    });
+  };
+
+  const providerIcons: Record<string, string> = {
+    openai: "OpenAI",
+    anthropic: "Anthropic",
+    google: "Google",
+    xai: "xAI",
+    deepseek: "DeepSeek",
+    openrouter: "OpenRouter",
+    cerebras: "Cerebras",
+    meta: "Meta",
+  };
+
+  // Group models by provider
+  const filteredModels = availableModels.filter(
+    (m) =>
+      !searchQuery ||
+      m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      m.provider.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      m.modelId.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const groupedByProvider = filteredModels.reduce<Record<string, AvailableModel[]>>(
+    (acc, model) => {
+      const provider = model.provider || "other";
+      if (!acc[provider]) acc[provider] = [];
+      acc[provider].push(model);
+      return acc;
+    },
+    {}
+  );
+
+  const providerOrder = Object.keys(groupedByProvider).sort((a, b) => {
+    const aCount = groupedByProvider[a].length;
+    const bCount = groupedByProvider[b].length;
+    return bCount - aCount;
+  });
+
+  const favorites = filteredModels.filter((m) => favoriteModels.has(m.modelId));
+
+  const formatContextWindow = (ctx: number | null) => {
+    if (!ctx) return null;
+    if (ctx >= 1_000_000) return `${(ctx / 1_000_000).toFixed(0)}M tokens`;
+    if (ctx >= 1000) return `${(ctx / 1000).toFixed(0)}K tokens`;
+    return `${ctx} tokens`;
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold">Modelos AI</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Explora los modelos disponibles, marca favoritos y configura tu modelo predeterminado
+        </p>
+      </div>
+
+      {/* Default model selector */}
+      <div className="rounded-lg border p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Zap className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">Modelo predeterminado</span>
+        </div>
+        <Select
+          value={settings.defaultModel || ""}
+          onValueChange={(value) => updateSetting("defaultModel", value)}
+        >
+          <SelectTrigger data-testid="select-default-model">
+            <SelectValue placeholder="Selecciona un modelo" />
+          </SelectTrigger>
+          <SelectContent>
+            {availableModels.map((model) => (
+              <SelectItem key={model.id} value={model.modelId}>
+                <div className="flex items-center gap-2">
+                  {favoriteModels.has(model.modelId) && (
+                    <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
+                  )}
+                  <span>{model.name}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {providerIcons[model.provider] || model.provider}
+                  </span>
+                </div>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          className="pl-9"
+          placeholder="Buscar modelos por nombre o proveedor..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          data-testid="input-model-search"
+        />
+      </div>
+
+      {/* Favorites */}
+      {favorites.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+            <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500" />
+            Favoritos
+          </h3>
+          <div className="rounded-lg border divide-y">
+            {favorites.map((model) => (
+              <ModelRow
+                key={model.id}
+                model={model}
+                isFavorite={true}
+                isDefault={settings.defaultModel === model.modelId}
+                onToggleFavorite={() => toggleFavorite(model.modelId)}
+                onSetDefault={() => updateSetting("defaultModel", model.modelId)}
+                formatContextWindow={formatContextWindow}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Models by provider */}
+      <div className="space-y-3">
+        <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+          Todos los modelos ({filteredModels.length})
+        </h3>
+        {providerOrder.map((provider) => {
+          const models = groupedByProvider[provider];
+          const isExpanded = expandedProvider === provider;
+          return (
+            <div key={provider} className="rounded-lg border">
+              <button
+                className="w-full flex items-center justify-between p-3 hover:bg-muted/50 transition-colors"
+                onClick={() =>
+                  setExpandedProvider(isExpanded ? null : provider)
+                }
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-md bg-muted flex items-center justify-center">
+                    <Cpu className="h-4 w-4" />
+                  </div>
+                  <div className="text-left">
+                    <span className="text-sm font-medium">
+                      {providerIcons[provider] || provider}
+                    </span>
+                    <span className="text-xs text-muted-foreground ml-2">
+                      {models.length} modelo{models.length !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+                </div>
+                <ChevronDown
+                  className={cn(
+                    "h-4 w-4 text-muted-foreground transition-transform",
+                    isExpanded && "rotate-180"
+                  )}
+                />
+              </button>
+              {isExpanded && (
+                <div className="border-t divide-y">
+                  {models.map((model) => (
+                    <ModelRow
+                      key={model.id}
+                      model={model}
+                      isFavorite={favoriteModels.has(model.modelId)}
+                      isDefault={settings.defaultModel === model.modelId}
+                      onToggleFavorite={() => toggleFavorite(model.modelId)}
+                      onSetDefault={() =>
+                        updateSetting("defaultModel", model.modelId)
+                      }
+                      formatContextWindow={formatContextWindow}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {filteredModels.length === 0 && (
+          <p className="text-sm text-muted-foreground text-center py-6">
+            No se encontraron modelos con "{searchQuery}"
+          </p>
+        )}
+      </div>
+
+      <Separator />
+
+      {/* API Key config */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Key className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+            Claves API
+          </h3>
+        </div>
+        <div className="rounded-lg border p-4 space-y-3">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">OpenRouter API Key</label>
+            <Input
+              type="password"
+              placeholder="sk-or-..."
+              defaultValue={currentApiKey?.value || ""}
+              onBlur={(e) => {
+                if (e.target.value) updateAiKey.mutate(e.target.value);
+              }}
+              data-testid="input-openrouter-key"
+            />
+            <p className="text-xs text-muted-foreground">
+              Clave para acceder a modelos adicionales via OpenRouter. Se almacena de forma segura.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModelRow({
+  model,
+  isFavorite,
+  isDefault,
+  onToggleFavorite,
+  onSetDefault,
+  formatContextWindow,
+}: {
+  model: AvailableModel;
+  isFavorite: boolean;
+  isDefault: boolean;
+  onToggleFavorite: () => void;
+  onSetDefault: () => void;
+  formatContextWindow: (ctx: number | null) => string | null;
+}) {
+  const ctx = formatContextWindow(model.contextWindow);
+  return (
+    <div className="flex items-center justify-between p-3 gap-3 hover:bg-muted/30 transition-colors">
+      <div className="flex items-center gap-3 min-w-0">
+        <button
+          onClick={onToggleFavorite}
+          className="shrink-0 hover:scale-110 transition-transform"
+          title={isFavorite ? "Quitar de favoritos" : "Agregar a favoritos"}
+        >
+          <Star
+            className={cn(
+              "h-4 w-4",
+              isFavorite
+                ? "text-yellow-500 fill-yellow-500"
+                : "text-muted-foreground/40 hover:text-yellow-400"
+            )}
+          />
+        </button>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium truncate">{model.name}</span>
+            {isDefault && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium shrink-0">
+                Predeterminado
+              </span>
+            )}
+            {model.tier === "free" && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 font-medium shrink-0">
+                Gratis
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-xs text-muted-foreground">{model.modelId}</span>
+            {ctx && (
+              <>
+                <span className="text-xs text-muted-foreground/50">·</span>
+                <span className="text-xs text-muted-foreground">{ctx}</span>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+      {!isDefault && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-xs shrink-0"
+          onClick={onSetDefault}
+        >
+          Usar
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>("general");
   const [playingVoice, setPlayingVoice] = useState<string | null>(null);
@@ -2165,35 +2496,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const renderSectionContent = () => {
     switch (activeSection) {
       case "ai_config":
-        return (
-          <div className="space-y-6">
-            <div>
-              <h2 className="text-xl font-semibold">Configuración de Modelos AI</h2>
-              <p className="text-sm text-muted-foreground mt-1">
-                Configura las credenciales para el modelo Minimax M2.5 vía OpenRouter
-              </p>
-            </div>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">OpenRouter API Key</label>
-                <div className="flex gap-2">
-                  <Input 
-                    type="password" 
-                    placeholder="Introduzca su API Key de OpenRouter"
-                    defaultValue={currentApiKey?.value || ""}
-                    onBlur={(e) => {
-                      if (e.target.value) updateAiKey.mutate(e.target.value);
-                    }}
-                    data-testid="input-openrouter-key"
-                  />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Esta clave se utilizará para todas las interacciones con el modelo Minimax-M2.5 a través de OpenRouter.
-                </p>
-              </div>
-            </div>
-          </div>
-        );
+        return <AiConfigSection
+          availableModels={availableModels}
+          settings={settings}
+          updateSetting={updateSetting}
+          currentApiKey={currentApiKey}
+          updateAiKey={updateAiKey}
+        />;
       case "general":
         return (
           <div className="space-y-6">
