@@ -205,6 +205,12 @@ export class UsageQuotaService {
       return { allowed: true };
     }
 
+    // Admin users bypass all quota checks
+    const [adminCheck] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (adminCheck && isSystemAdminUser(adminCheck)) {
+      return { allowed: true };
+    }
+
     const billing = {
       unified: true as const,
       statusUrl: "/api/billing/status",
@@ -446,6 +452,21 @@ export class UsageQuotaService {
         inputRemaining: null,
         outputRemaining: null,
         message: "Usuario no encontrado",
+      };
+    }
+
+    // Admin users bypass all daily token limits
+    if (isSystemAdminUser(user)) {
+      return {
+        allowed: true,
+        resetAt: null,
+        inputUsed: 0,
+        outputUsed: 0,
+        totalUsed: 0,
+        inputLimit: null,
+        outputLimit: null,
+        inputRemaining: null,
+        outputRemaining: null,
       };
     }
 

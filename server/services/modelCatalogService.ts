@@ -328,10 +328,13 @@ async function resolveUserAccessProfile(userId?: string | null): Promise<UserAcc
     return { plan: "free", isAdmin: false, isPaid: false };
   }
 
+  const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "").toLowerCase().trim();
+
   const [user] = await dbRead
     .select({
       role: users.role,
       plan: users.plan,
+      email: users.email,
       subscriptionPlan: users.subscriptionPlan,
       subscriptionStatus: users.subscriptionStatus,
     })
@@ -344,7 +347,8 @@ async function resolveUserAccessProfile(userId?: string | null): Promise<UserAcc
   }
 
   const role = normalizeLower(user.role);
-  const isAdmin = role === "admin" || role === "superadmin";
+  const email = normalizeLower(user.email);
+  const isAdmin = role === "admin" || role === "superadmin" || (ADMIN_EMAIL !== "" && email === ADMIN_EMAIL);
   const subscriptionStatus = normalizeLower(user.subscriptionStatus);
   const subscriptionPlan = normalizeLower(user.subscriptionPlan);
   const plan = normalizeLower(user.plan) || "free";

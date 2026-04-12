@@ -2,6 +2,7 @@
   "name": "iliagpt",
   "version": "1.0.0",
   "type": "module",
+  "engines": { "node": ">=22" },
   "license": "MIT",
   "scripts": {
     "dev:client": "vite dev --port 5000",

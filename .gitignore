@@ -5,6 +5,18 @@ server/public
 vite.config.ts.*
 *.tar.gz
 
+# Claude Code / Claire worktrees (full repo copies, never commit)
+.claude/worktrees/
+.claire/worktrees/
+
+# User document uploads and temp files — never track
+Downloads/
+uploads/
+~$*
+
+# OCR training data (binary blobs)
+*.traineddata
+
 # =============================================================================
 # SECURITY: Aggressive patterns to prevent secret leaks
 # =============================================================================

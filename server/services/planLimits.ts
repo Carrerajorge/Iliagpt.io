@@ -116,6 +116,30 @@ const PLAN_CONFIGS_MUTABLE: Record<string, PlanConfig> = {
     priceMonthlyUSD: 50,
     priceYearlyUSD: 480,
   },
+  admin: {
+    name: "admin",
+    displayName: "Administrador",
+    tokensPerDay: -1,
+    queriesPerDay: -1,
+    queriesPerMinute: -1,
+    maxFileUploadMB: -1,
+    maxChats: -1,
+    modelsAllowed: "all",
+    documentsPerDay: -1,
+    searchesPerDay: -1,
+    codeExecutionsPerDay: -1,
+    features: {
+      webSearch: true,
+      codeExecution: true,
+      documentGeneration: true,
+      voiceChat: true,
+      imageGeneration: true,
+      browserAutomation: true,
+    },
+    monthlyTokenLimit: null,
+    priceMonthlyUSD: 0,
+    priceYearlyUSD: 0,
+  },
 };
 
 // Freeze all objects so consumers cannot mutate plan configs at runtime
@@ -141,11 +165,13 @@ export function isFeatureAllowed(
   plan: string,
   feature: keyof PlanFeatures,
 ): boolean {
+  if (plan === "admin") return true;
   return getPlanConfig(plan).features[feature];
 }
 
 /** Checks whether a model is available on the given plan. */
 export function isModelAllowed(plan: string, modelId: string): boolean {
+  if (plan === "admin") return true;
   const { modelsAllowed } = getPlanConfig(plan);
   return modelsAllowed === "all" || modelsAllowed.includes(modelId);
 }

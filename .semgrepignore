@@ -25,3 +25,15 @@ build/
 # Generated files
 *.min.js
 *.bundle.js
+
+# User content / binary blobs
+Downloads/
+uploads/
+*.traineddata
+e2e-reports/
+generated_reports/
+cowork_test_suite/
+
+# Claude/Claire worktrees
+.claude/worktrees/
+.claire/worktrees/

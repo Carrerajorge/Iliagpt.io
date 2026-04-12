@@ -99,6 +99,7 @@ export const BUDGET_LIMITS: Record<string, number> = {
   free: 0.50,
   pro: 5.00,
   enterprise: 50.00,
+  admin: Infinity,
 };
 
 // ---------------------------------------------------------------------------

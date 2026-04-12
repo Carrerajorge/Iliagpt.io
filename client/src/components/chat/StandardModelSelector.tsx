@@ -82,15 +82,18 @@ export function StandardModelSelector({
   const handleSelect = (model: AvailableModel) => {
     if (isDisabled) return;
 
-    const freeModel = isModelFree(model);
-    if (isFreeUser && !freeModel) {
-      onUpgradeClick?.();
-      return;
-    }
+    // Admin bypasses all model restrictions
+    if (!isAdmin) {
+      const freeModel = isModelFree(model);
+      if (isFreeUser && !freeModel) {
+        onUpgradeClick?.();
+        return;
+      }
 
-    if (model.availableToUser === false && model.requiresUpgrade) {
-      onUpgradeClick?.();
-      return;
+      if (model.availableToUser === false && model.requiresUpgrade) {
+        onUpgradeClick?.();
+        return;
+      }
     }
 
     const handler = onModelChange ?? setSelectedModelId;
@@ -153,7 +156,7 @@ export function StandardModelSelector({
 
         {isOpen ? (
           <div className="absolute top-full left-0 mt-1.5 w-72 bg-popover border border-border/40 rounded-xl shadow-xl z-50 overflow-hidden animate-in fade-in-0 zoom-in-95 duration-100">
-            <div className="py-1.5">
+            <div className="py-1.5 max-h-[60vh] overflow-y-auto">
               {resolvedModels.map((model) => {
                 const isSelected = selectedModel?.id === model.id;
                 const paidModel = !isModelFree(model) && !isAdmin;
