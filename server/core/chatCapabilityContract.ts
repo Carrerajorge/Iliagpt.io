@@ -192,7 +192,7 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(excel|xlsx|hoja de calculo|spreadsheet|dashboard de ventas|cohortes|funnel|margenes|inventario y demanda|modelo financiero)\\b"),
+      rx("\\b(excel|xlsx|hoja de calculo|spreadsheet|dashboard de ventas|cohortes|funnel|margenes|inventario y demanda|modelo financiero|vlookup|sumif|formato condicional|multiples pestañas|multiples hojas|graficos|visualizacion de datos|analisis de escenarios|tracker de presupuesto|tablas dinamicas|limpieza y transformacion de datos)\\b"),
     ],
   },
   {
@@ -208,7 +208,7 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(pptx?|powerpoint|presentacion|diapositivas|slides|deck para directorio|propuesta comercial)\\b"),
+      rx("\\b(pptx?|powerpoint|presentacion|diapositivas|slides|deck para directorio|propuesta comercial|speaker notes|notas del expositor|transcripcion|layouts? con imagenes|gifs?|imagenes animadas|marca de agua|watermark|editable despues con claude)\\b"),
     ],
   },
   {
@@ -224,7 +224,7 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(word|docx|documento profesional|memo|carta|reporte|paper|informe)\\b"),
+      rx("\\b(word|docx|documento profesional|memo|carta|reporte|paper|informe|headings?|tablas formateadas|redlines?|sugerencias|comentarios|documentos tecnicos|documentos técnicos|papers)\\b"),
     ],
   },
   {
@@ -240,7 +240,7 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(pdf|reporte pdf|formulario pdf|merge pdf|split pdf|combina pdf|divide pdf)\\b"),
+      rx("\\b(pdf|reporte pdf|formulario pdf|merge pdf|split pdf|combina pdf|divide pdf|creacion de pdfs? nuevos|crear pdf nuevo|llenado de formularios pdf|extraccion de datos de pdf|extrae datos de pdf)\\b"),
     ],
   },
   {
@@ -249,14 +249,15 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Otros formatos estructurados",
     description: "Markdown, HTML, React, LaTeX, CSV, TSV, JSON, PNG y código.",
     status: "partial",
-    priority: 80,
+    priority: 175,
     workflow: "artifact_generation",
     handler: "production_handler",
     renderSurface: "artifact_card",
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(markdown|html|react|jsx|tsx|latex|csv|tsv|json|png|matplotlib|archivo de codigo|archivo .py|archivo .js)\\b"),
+      rx("\\b(markdown|html|react|jsx|tsx|latex|csv|tsv|json|archivo de codigo|archivo .py|archivo .js|archivos de codigo en cualquier lenguaje)\\b"),
+      rx("\\b(png|chart en png|salida final png|exporta.*png)\\b"),
     ],
   },
   {
@@ -272,7 +273,8 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     multiLlm: true,
     requiresApproval: true,
     matchers: [
-      rx("\\b(organiza mi carpeta|renombra archivos|deduplica archivos|clasifica archivos|crea subcarpetas|log de decisiones)\\b"),
+      rx("\\b(gestion de archivos|administracion de archivos|organiza mi carpeta|organizacion inteligente de carpetas|renombra archivos|deduplica archivos|clasifica archivos|crea subcarpetas|log de decisiones|clasificacion por contenido real|deduplicacion de archivos)\\b"),
+      rx("\\b(lectura y escritura a carpetas autorizadas|lectura escritura a carpetas autorizadas|acceso directo de lectura|acceso directo de escritura|prefijos de fecha|yyyy-mm-dd|proteccion contra borrado)\\b"),
     ],
   },
   {
@@ -281,14 +283,14 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Análisis de datos y ML",
     description: "Estadística, forecasting, ML, gráficos y tablas desde datos del usuario.",
     status: "partial",
-    priority: 120,
+    priority: 155,
     workflow: "agent_execution",
     handler: "skill_auto_dispatcher",
     renderSurface: "agent_steps",
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(outliers|cross[- ]?tab|series temporales|forecast|forecasting|machine learning|modelo predictivo|anova|varianza|limpieza de datos|visualizacion de datos)\\b"),
+      rx("\\b(outliers|cross[- ]?tab|series temporales|forecast|forecasting|machine learning|modelo predictivo|anova|varianza|limpieza de datos|visualizacion de datos|analisis estadistico|analisis de varianza|extraccion de tablas de pdfs? a excel)\\b"),
     ],
   },
   {
@@ -297,14 +299,14 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Síntesis e investigación",
     description: "Reporte de síntesis, citas, contradicciones y research integrado.",
     status: "partial",
-    priority: 110,
+    priority: 165,
     workflow: "agent_execution",
     handler: "skill_auto_dispatcher",
     renderSurface: "agent_steps",
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(sintesis|reporte de sintesis|contradicciones entre documentos|cita fuentes|resumen ejecutivo|investigacion web|estudio de mercado)\\b"),
+      rx("\\b(sintesis|reporte de sintesis|contradicciones entre documentos|cita fuentes|resumen(?:es)? ejecutiv(?:o|os)|investigacion web|estudio de mercado|lee multiples documentos|patrones cruzados entre fuentes)\\b"),
     ],
   },
   {
@@ -313,14 +315,14 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Conversión entre formatos",
     description: "Transformaciones entre PDF, Word, Excel, PPT y capturas.",
     status: "partial",
-    priority: 170,
+    priority: 190,
     workflow: "agent_execution",
     handler: "skill_auto_dispatcher",
     renderSurface: "agent_steps",
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(pdf a powerpoint|notas de reunion a documento|csv a excel|word a presentacion|facturas a spreadsheet|excel a reporte en word)\\b"),
+      rx("\\b(pdf a powerpoint|notas de reunion a documento|csv a excel|convierte csv|word a presentacion|facturas a spreadsheet|excel a reporte en word|facturas|recibos|screenshots a spreadsheet|conversion)\\b"),
     ],
   },
   {
@@ -329,14 +331,14 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Automatización de navegador",
     description: "Navegar, hacer clic, extraer, llenar formularios y ejecutar JS.",
     status: "partial",
-    priority: 150,
+    priority: 170,
     workflow: "agent_execution",
     handler: "skill_auto_dispatcher",
     renderSurface: "agent_steps",
     multiLlm: true,
     requiresApproval: true,
     matchers: [
-      rx("\\b(navega .*sitio|haz click|llen(a|e) formulario|screenshot de pagina|extrae contenido de la pagina|ejecuta javascript en la pagina|investigacion web directa)\\b"),
+      rx("\\b(automatizacion de navegador|navega .*sitio|haz click|llen(?:a|e|ar) formulari(?:o|os)|screenshot de pagina|extra(?:e|er) contenido de la pagina|extra(?:e|er) contenido de paginas web|ejecuta(?:r)? javascript en (?:la |)pagina|ejecuta(?:r)? javascript en contexto de pagina|investigacion web directa|tomar screenshots de paginas|navegar sitios web)\\b"),
     ],
   },
   {
@@ -352,7 +354,7 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     multiLlm: true,
     requiresApproval: true,
     matchers: [
-      rx("\\b(abre excel|abre chrome|usa mi computadora|navega el navegador|llena la hoja de calculo directamente|completa formularios web en mi pc)\\b"),
+      rx("\\b(abre excel|abre chrome|usa mi computadora|navega el navegador|llena hojas? de calculo directamente|llena la hoja de calculo directamente|completa formularios web en mi (?:pc|computadora)|abrir aplicaciones en tu escritorio|cualquier accion manual en mi (?:pc|computadora)|cualquier accion que harias manualmente en mi (?:pc|computadora)|cualquier accion que harias manualmente en tu pc)\\b"),
     ],
   },
   {
@@ -368,7 +370,7 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(cada manana|cada mañana|semanalmente|programa una tarea|task recurrente|digest semanal|cuando quiera ejecutar)\\b"),
+      rx("\\b(cada manana|semanalmente|programa una tarea|task recurrente|digest semanal|cuando quiera ejecutar|on-demand guardad(?:a|as)|check de email cada manana|metricas semanales|cadencia diaria|tareas programadas)\\b"),
     ],
   },
   {
@@ -377,14 +379,14 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Dispatch móvil",
     description: "Envío desde iOS/Android para ejecución en desktop.",
     status: "gap",
-    priority: 110,
+    priority: 150,
     workflow: "conversation",
     handler: "model_stream",
     renderSurface: "conversation_stream",
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(desde el celular|dispatch|ios|android|ejecuta en tu computadora de escritorio|hilo persistente entre dispositivos)\\b"),
+      rx("\\b(desde el celular|dispatch|ios|android|ejecuta en tu computadora de escritorio|hilo persistente entre dispositivos|desde movil|desde móvil)\\b"),
     ],
   },
   {
@@ -400,7 +402,7 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     multiLlm: true,
     requiresApproval: true,
     matchers: [
-      rx("\\b(google drive|gmail|docusign|factset|zoom|slack|jira|asana|notion|github|linear|crm|fellow)\\b"),
+      rx("\\b(google drive|gmail|docusign|factset|zoom|slack|jira|asana|notion|github|linear|crm|crms|fellow|marketplace de plugins personalizables)\\b"),
     ],
   },
   {
@@ -409,14 +411,14 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Plugins y personalización",
     description: "Marketplace, skills y configuración global o por carpeta.",
     status: "partial",
-    priority: 120,
+    priority: 205,
     workflow: "skill_dispatch",
     handler: "skill_auto_dispatcher",
     renderSurface: "agent_steps",
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(marketplace de plugins|plugin privado|plugin publico|skill creator|crea un skill|instrucciones globales|instrucciones por carpeta|actualiza instrucciones de carpeta)\\b"),
+      rx("\\b(marketplace de plugins|plugin privado|plugin publico|skill creator|skill-creator|crea un skill|instrucciones globales|instrucciones por carpeta|actualiza instrucciones de carpeta|plugins por dominio|skills incorporados)\\b"),
     ],
   },
   {
@@ -425,14 +427,15 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Ejecución de código",
     description: "Python y Node aislados con librerías comunes.",
     status: "partial",
-    priority: 160,
+    priority: 185,
     workflow: "skill_dispatch",
     handler: "skill_auto_dispatcher",
     renderSurface: "agent_steps",
     multiLlm: true,
     requiresApproval: true,
     matchers: [
-      rx("\\b(ejecuta python|ejecuta node|matplotlib|pandas|script de automatizacion|sandbox seguro|vm aislada)\\b"),
+      rx("\\b(ejecuta python|ejecuta node|script de automatizacion|python y node|scripts de automatizacion)\\b"),
+      rx("\\b(pandas|sandbox seguro|vm aislada|todo en sandbox seguro)\\b"),
     ],
   },
   {
@@ -448,7 +451,7 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(subagentes|sub-agentes|divide en subtareas|trabaja en paralelo|todo list interna|periodos extendidos)\\b"),
+      rx("\\b(subagentes|sub-agentes|divide en subtareas|descompone .* subtareas|trabaja en paralelo|todo list interna|periodos extendidos)\\b"),
     ],
   },
   {
@@ -464,7 +467,7 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(workspace persistente|cowork|proyecto recurrente|memoria propia por proyecto|archivos y links por proyecto)\\b"),
+      rx("\\b(workspace persistente|cowork|proyecto recurrente|memoria propia por proyecto|memoria y archivos propios por proyecto|archivos y links por proyecto|workspaces persistentes por proyecto)\\b"),
     ],
   },
   {
@@ -473,14 +476,14 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Seguridad y governance",
     description: "Aprobaciones, permisos de red, sandbox y protección de borrado.",
     status: "partial",
-    priority: 110,
+    priority: 140,
     workflow: "conversation",
     handler: "model_stream",
     renderSurface: "conversation_stream",
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(acceso solo a carpetas autorizadas|permisos de red|egress|pide aprobacion|proteccion contra borrado|historial almacenado localmente)\\b"),
+      rx("\\b(acceso solo a carpetas autorizadas|permisos de red|egress|pide aprobacion|proteccion contra borrado|historial almacenado localmente|controles de seguridad|governance)\\b"),
     ],
   },
   {
@@ -489,14 +492,14 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Enterprise",
     description: "RBAC, analytics, OpenTelemetry, toggles y marketplace privado.",
     status: "partial",
-    priority: 110,
+    priority: 160,
     workflow: "conversation",
     handler: "model_stream",
     renderSurface: "conversation_stream",
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(rbac|limites de gasto|analytics de uso|opentelemetry|siem|marketplace privado|toggle on/off por equipo|control granular por conector)\\b"),
+      rx("\\b(rbac|role-based access controls|limites de gasto|analytics de uso|opentelemetry|siem|marketplace privado|toggle on/off por equipo|control granular por conector|api de analytics|zoom mcp)\\b"),
     ],
   },
   {
@@ -505,14 +508,14 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Packs por función",
     description: "Workflows orientados a legal, finanzas, marketing, ops, RRHH e investigación.",
     status: "partial",
-    priority: 120,
+    priority: 170,
     workflow: "skill_dispatch",
     handler: "skill_auto_dispatcher",
     renderSurface: "agent_steps",
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(revision de contratos|triage de ndas|asientos contables|conciliacion|voz de marca|briefing diario|reviews de desempeno|sintesis de entrevistas)\\b"),
+      rx("\\b(revision de contratos|triage de ndas|asientos contables|conciliacion|voz de marca|briefing diario|reviews de desempeno|sintesis de entrevistas|organizacion de exhibiciones judiciales|estados financieros|tracking de proyectos|workflow de competencias|feedback multicanal)\\b"),
     ],
   },
   {
@@ -521,14 +524,14 @@ export const CHAT_CAPABILITY_DEFINITIONS: readonly ChatCapabilityDefinition[] = 
     title: "Disponibilidad",
     description: "Información sobre plataformas, planes y límites de archivos.",
     status: "partial",
-    priority: 100,
+    priority: 165,
     workflow: "conversation",
     handler: "model_stream",
     renderSurface: "conversation_stream",
     multiLlm: true,
     requiresApproval: false,
     matchers: [
-      rx("\\b(macos|windows|pro|max|team|enterprise|claude desktop|30mb|google drive o descarga)\\b"),
+      rx("\\b(disponibilidad|macos|windows|pro|max|team|plan enterprise|claude desktop|30mb|google drive o descarga|ga desde abril 2026|dispatch ios|dispatch android|planes pro|limite de archivos|limites de archivos)\\b"),
     ],
   },
 ] as const;

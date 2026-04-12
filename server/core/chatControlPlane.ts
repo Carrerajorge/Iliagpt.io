@@ -9,6 +9,7 @@ import {
 } from "../services/usageQuotaService";
 import { isProductionIntent } from "../services/productionHandler";
 import {
+  getChatCapabilityById,
   matchChatCapabilityRequest,
   type ChatCapabilityDefinition,
 } from "./chatCapabilityContract";
@@ -108,17 +109,22 @@ function buildCapabilityDecision(
 ): ChatControlPlaneDecision["capability"] {
   if (authoritativeIntentResult && isProductionIntent(authoritativeIntentResult, message)) {
     const outputFormat = authoritativeIntentResult.output_format || "artifact";
+    const artifactContract =
+      contract?.domainId === "artifact_generation"
+        ? contract
+        : getArtifactContractForFormat(outputFormat);
+
     return {
-      id: contract?.capabilityId || `artifact.${outputFormat}`,
-      domainId: contract?.domainId || "artifact_generation",
-      contractStatus: contract?.status || "integrated",
+      id: artifactContract?.capabilityId || `artifact.${outputFormat}`,
+      domainId: artifactContract?.domainId || "artifact_generation",
+      contractStatus: artifactContract?.status || "integrated",
       workflow: "artifact_generation",
       handler: "production_handler",
       renderSurface: "artifact_card",
       splitView: true,
       showSteps: true,
-      requiresApproval: contract?.requiresApproval || false,
-      multiLlm: contract?.multiLlm ?? true,
+      requiresApproval: artifactContract?.requiresApproval || false,
+      multiLlm: artifactContract?.multiLlm ?? true,
     };
   }
 
@@ -168,6 +174,32 @@ function buildCapabilityDecision(
     requiresApproval: false,
     multiLlm: true,
   };
+}
+
+function getArtifactContractForFormat(outputFormat: string | null | undefined): ChatCapabilityDefinition | null {
+  const normalized = String(outputFormat || "artifact").toLowerCase();
+  const formatMap: Record<string, string> = {
+    docx: "artifact.docx.professional",
+    doc: "artifact.docx.professional",
+    xlsx: "artifact.xlsx.professional",
+    xls: "artifact.xlsx.professional",
+    pptx: "artifact.pptx.professional",
+    ppt: "artifact.pptx.professional",
+    pdf: "artifact.pdf.professional",
+    markdown: "artifact.structured.outputs",
+    md: "artifact.structured.outputs",
+    html: "artifact.structured.outputs",
+    jsx: "artifact.structured.outputs",
+    tsx: "artifact.structured.outputs",
+    latex: "artifact.structured.outputs",
+    csv: "artifact.structured.outputs",
+    tsv: "artifact.structured.outputs",
+    json: "artifact.structured.outputs",
+    png: "artifact.structured.outputs",
+  };
+
+  const capabilityId = formatMap[normalized];
+  return capabilityId ? getChatCapabilityById(capabilityId) : null;
 }
 
 async function evaluatePolicy(
