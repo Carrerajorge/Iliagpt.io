@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { useShallow } from 'zustand/shallow';
 
-export type StreamingStatus = 'idle' | 'started' | 'streaming' | 'completed' | 'failed' | 'aborted';
+export type StreamingStatus = 'idle' | 'started' | 'streaming' | 'completed' | 'failed' | 'aborted' | 'stalled' | 'reconnecting';
 
 export interface StreamingRun {
   chatId: string;
@@ -14,6 +14,12 @@ export interface StreamingRun {
   startedAt: number;
   completedAt?: number;
   error?: string;
+  /** Timestamp del último chunk recibido (para detectar stalling) */
+  lastChunkAt?: number;
+  /** Contenido acumulado antes del fallo (para recuperación parcial) */
+  partialContent?: string;
+  /** Número de reintentos de reconexión */
+  reconnectAttempts?: number;
 }
 
 export interface BackgroundNotification {
@@ -25,6 +31,10 @@ export interface BackgroundNotification {
   timestamp: number;
   dismissed: boolean;
 }
+
+/** Configuración de monitoreo de salud de streams */
+const STREAM_STALL_THRESHOLD_MS = 15_000; // 15s sin chunks = stalled
+const MAX_STREAM_RECONNECT_ATTEMPTS = 3;
 
 interface StreamingState {
   runs: Map<string, StreamingRun>;
@@ -54,6 +64,60 @@ interface StreamingState {
   isProcessing: (chatId: string) => boolean;
   getProcessingChatIds: () => string[];
   getRun: (chatId: string) => StreamingRun | undefined;
+
+  // ══════════════════════════════════════════
+  //  RESILIENCIA DE STREAMS
+  // ══════════════════════════════════════════
+
+  /** Marcar un stream como stancado */
+  markStalled: (chatId: string) => void;
+  /** Intentar reconectar un stream */
+  reconnectStream: (chatId: string) => void;
+  /** Obtener runs que están stancados */
+  getStalledRuns: () => StreamingRun[];
+  /** Verificar salud de todos los streams activos */
+  checkStreamHealth: () => void;
+  /** Limpiar monitoreo */
+  destroyHealthMonitor: () => void;
+}
+
+// ─── Health Check Timer ──────────────────────────────────────────────
+
+let _healthCheckInterval: ReturnType<typeof setInterval> | null = null;
+
+function startStreamHealthCheck(store: () => StreamingState): void {
+  if (_healthCheckInterval) return; // Ya corriendo
+
+  _healthCheckInterval = setInterval(() => {
+    try {
+      const state = store();
+      const now = Date.now();
+
+      state.runs.forEach((run: StreamingRun) => {
+        if (!['started', 'streaming', 'reconnecting'].includes(run.status)) return;
+
+        const lastActivity = run.lastChunkAt ?? run.startedAt;
+        const idleMs = now - lastActivity;
+
+        if (idleMs > STREAM_STALL_THRESHOLD_MS) {
+          console.warn(
+            `[StreamingHealth] Stream ${run.runId} stancado por ${Math.round(idleMs / 1000)}s` +
+            ` (último chunk hace ${idleMs}ms)`
+          );
+          store().markStalled(run.chatId);
+        }
+      });
+    } catch (err) {
+      console.error('[StreamingHealth] Error en health check:', err);
+    }
+  }, 5_000); // Cada 5 segundos
+}
+
+function stopStreamHealthCheck(): void {
+  if (_healthCheckInterval) {
+    clearInterval(_healthCheckInterval);
+    _healthCheckInterval = null;
+  }
 }
 
 export const useStreamingStore = create<StreamingState>((set, get) => ({
@@ -74,6 +138,9 @@ export const useStreamingStore = create<StreamingState>((set, get) => ({
         content: '',
         lastSeq: -1,
         startedAt: Date.now(),
+        lastChunkAt: Date.now(),
+        partialContent: '',
+        reconnectAttempts: 0,
       });
       return { runs: newRuns };
     });
@@ -109,6 +176,7 @@ export const useStreamingStore = create<StreamingState>((set, get) => ({
         content: currentRun.content + chunk,
         lastSeq: seq,
         status: 'streaming',
+        lastChunkAt: Date.now(), // ← Actualizar timestamp de actividad
       });
       return { runs: newRuns };
     });
@@ -163,6 +231,9 @@ export const useStreamingStore = create<StreamingState>((set, get) => ({
       const run = state.runs.get(chatId);
       if (!run) return state;
 
+      // Guardar contenido parcial para posible recuperación
+      const partialContent = run.content.length > 0 ? run.content : undefined;
+
       const newRuns = new Map(state.runs);
       newRuns.set(chatId, {
         ...run,
@@ -170,6 +241,7 @@ export const useStreamingStore = create<StreamingState>((set, get) => ({
         completedAt: Date.now(),
         error,
         chatTitle: chatTitle || run.chatTitle,
+        partialContent,
       });
 
       const isBackground = chatId !== activeChatId;
@@ -206,6 +278,7 @@ export const useStreamingStore = create<StreamingState>((set, get) => ({
         ...run,
         status: 'aborted',
         completedAt: Date.now(),
+        partialContent: run.content.length > 0 ? run.content : run.partialContent,
       });
 
       return { runs: newRuns };
@@ -277,6 +350,76 @@ export const useStreamingStore = create<StreamingState>((set, get) => ({
   getRun: (chatId: string) => {
     return get().runs.get(chatId);
   },
+
+  // ══════════════════════════════════════════
+  //  Acciones de resiliencia para streams
+  // ══════════════════════════════════════════
+
+  markStalled: (chatId: string) => {
+    set((state) => {
+      const run = state.runs.get(chatId);
+      if (!run || !['started', 'streaming', 'reconnecting'].includes(run.status)) return state;
+
+      console.warn(`[StreamingStore] Marcando stream ${chatId} como stancado`);
+      const newRuns = new Map(state.runs);
+      newRuns.set(chatId, { ...run, status: 'stalled' });
+      return { runs: newRuns };
+    });
+  },
+
+  reconnectStream: (chatId: string) => {
+    set((state) => {
+      const run = state.runs.get(chatId);
+      if (!run) return state;
+
+      const attempts = (run.reconnectAttempts || 0) + 1;
+      if (attempts > MAX_STREAM_RECONNECT_ATTEMPTS) {
+        console.warn(`[StreamingStore] Máximos intentos de reconexión (${MAX_STREAM_RECONNECT_ATTEMPTS}) para ${chatId}`);
+        const newRuns = new Map(state.runs);
+        newRuns.set(chatId, { ...run, status: 'failed', reconnectAttempts: attempts });
+        return { runs: newRuns };
+      }
+
+      console.log(`[StreamingStore] Reconectando stream ${chatId} (intento ${attempts}/${MAX_STREAM_RECONNECT_ATTEMPTS})`);
+      const newRuns = new Map(state.runs);
+      newRuns.set(chatId, {
+        ...run,
+        status: 'reconnecting',
+        reconnectAttempts: attempts,
+        lastChunkAt: Date.now(),
+        // Preservar contenido parcial por si la reconexión continúa desde aquí
+        partialContent: run.content.length > 0 ? run.content : run.partialContent,
+      });
+      return { runs: newRuns };
+    });
+  },
+
+  getStalledRuns: () => {
+    const state = get();
+    const stalled: StreamingRun[] = [];
+    state.runs.forEach((run: StreamingRun) => {
+      if (run.status === 'stalled') stalled.push(run);
+    });
+    return stalled;
+  },
+
+  checkStreamHealth: () => {
+    const state = get() as StreamingState;
+    const now = Date.now();
+
+    state.runs.forEach((run, chatId) => {
+      if (!['started', 'streaming', 'reconnecting'].includes(run.status)) return;
+
+      const lastActivity = run.lastChunkAt ?? run.startedAt;
+      const idleMs = now - lastActivity;
+
+      if (idleMs > STREAM_STALL_THRESHOLD_MS) {
+        get().markStalled(chatId);
+      }
+    });
+  },
+
+  destroyHealthMonitor: () => stopStreamHealthCheck(),
 }));
 
 // Selectors
@@ -322,3 +465,7 @@ export function useChatStreamContent(chatId: string | null | undefined): string 
     return state.runs.get(chatId)?.content || '';
   });
 }
+
+// ─── Iniciar health check tras definición del store ──────────────────
+// Se usa getState() que está disponible tras create()
+startStreamHealthCheck(() => useStreamingStore.getState());

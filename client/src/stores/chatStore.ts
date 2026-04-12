@@ -3,6 +3,17 @@ import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import { Message } from '@/types/chat';
 
+// ─── Tipos de error y conexión ──────────────────────────────────────────
+
+export type ConnectionStatus = 'online' | 'offline' | 'reconnecting';
+
+export interface ChatErrorInfo {
+  message: string;
+  category?: string;
+  timestamp: number;
+  attempt?: number;
+}
+
 interface ChatState {
     // Messages
     messages: Message[];
@@ -31,13 +42,49 @@ interface ChatState {
     editingMessageId: string | null;
     setEditingMessageId: (id: string | null) => void;
 
+    // ══════════════════════════════════════════════
+    //  RESILIENCIA - Estado de errores y conexión
+    // ══════════════════════════════════════════════
+
+    /** Último error ocurrido (null si no hay) */
+    lastError: ChatErrorInfo | null;
+    /** Número de errores consecutivos */
+    errorCount: number;
+    /** Si estamos en proceso de recuperación */
+    isRecovering: boolean;
+    /** Estado de conexión */
+    connectionStatus: ConnectionStatus;
+    /** Mensaje que falló para reenviar */
+    failedMessage: Message | null;
+    /** Auto-reintentar cuando hay errores */
+    autoRetryEnabled: boolean;
+
+    /** Registrar un nuevo error */
+    setError: (error: ChatErrorInfo | null) => void;
+    /** Incrementar contador y marcar recuperación */
+    incrementError: (error: ChatErrorInfo) => void;
+    /** Limpiar error y resetear contadores */
+    clearError: () => void;
+    /** Intentar recuperar del último error (reenvía el mensaje fallido) */
+    recoverFromError: () => void;
+    /** Actualizar estado de conexión */
+    setConnectionStatus: (status: ConnectionStatus) => void;
+    /** Guardar mensaje que falló para reintento */
+    setFailedMessage: (msg: Message | null) => void;
+    /** Toggle auto-retry */
+    toggleAutoRetry: () => void;
+    /** Agregar mensaje optimista (muestra inmediatamente, sincroniza después) */
+    addOptimisticMessage: (message: Message) => void;
+    /** Remover mensaje optimista si falló */
+    removeOptimisticMessage: (id: string) => void;
+
     // Actions
     resetState: () => void;
 }
 
 export const useChatStore = create<ChatState>()(
     devtools(
-        (set) => ({
+        (set, get) => ({
             // Initial State
             messages: [],
             input: '',
@@ -46,6 +93,14 @@ export const useChatStore = create<ChatState>()(
             activeRunId: null,
             streamingContent: '',
             editingMessageId: null,
+
+            // Resilience initial state
+            lastError: null,
+            errorCount: 0,
+            isRecovering: false,
+            connectionStatus: navigator.onLine ? 'online' as ConnectionStatus : 'offline' as ConnectionStatus,
+            failedMessage: null,
+            autoRetryEnabled: true,
 
             // Setters
             setMessages: (messages) => set((state) => ({
@@ -74,13 +129,72 @@ export const useChatStore = create<ChatState>()(
 
             setEditingMessageId: (id) => set({ editingMessageId: id }),
 
+            // ── Resilience actions ──
+
+            setError: (error) => set({ lastError: error }),
+
+            incrementError: (error) => set((state) => ({
+                lastError: error,
+                errorCount: state.errorCount + 1,
+                isRecovering: true,
+            })),
+
+            clearError: () => set({
+                lastError: null,
+                errorCount: 0,
+                isRecovering: false,
+                failedMessage: null,
+            }),
+
+            recoverFromError: () => {
+                const state = get();
+                if (!state.failedMessage || !state.autoRetryEnabled) return;
+
+                console.log('[ChatStore] Recuperando del error — reenviando mensaje');
+                const msgToResend = state.failedMessage;
+
+                set({
+                    isRecovering: true,
+                    failedMessage: null,
+                    errorCount: 0,
+                    lastError: null,
+                });
+
+                // Re-agregar el mensaje a la lista para reenvío
+                // El componente que escucha este cambio debe detectar el estado recovering
+                // y re-ejecutar el envío con el mensaje guardado
+                get().addMessage(msgToResend);
+                get().setFailedMessage(msgToResend); // Guardar de nuevo como referencia
+            },
+
+            setConnectionStatus: (status) => set({ connectionStatus: status }),
+
+            setFailedMessage: (msg) => set({ failedMessage: msg }),
+
+            toggleAutoRetry: () => set((state) => ({
+                autoRetryEnabled: !state.autoRetryEnabled,
+            })),
+
+            addOptimisticMessage: (message) => set((state) => ({
+                messages: [...state.messages, { ...message, _optimistic: true }],
+            })),
+
+            removeOptimisticMessage: (id) => set((state) => ({
+                messages: state.messages.filter(m => m.id !== id),
+            })),
+
             resetState: () => set({
                 messages: [],
                 input: '',
                 uiPhase: 'idle',
                 activeRunId: null,
                 streamingContent: '',
-                editingMessageId: null
+                editingMessageId: null,
+                lastError: null,
+                errorCount: 0,
+                isRecovering: false,
+                failedMessage: null,
+                connectionStatus: navigator.onLine ? ('online' as ConnectionStatus) : ('offline' as ConnectionStatus),
             })
         }),
         { name: 'ChatStore' }
