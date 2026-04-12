@@ -67,6 +67,7 @@ import { classifyIntent as enhancedClassifyIntent } from "../agent/enhancedInten
 import { generateSmartSuggestions } from "../agent/smartSuggestions";
 import { detectProactiveActions } from "../agent/proactiveBehaviors";
 import { enrichContext } from "../agent/contextEnricher";
+import { chatResilienceMiddleware, chatErrorHandler, withStreamErrorBoundary } from "../middleware/chatResilienceMiddleware";
 
 type AttachmentSpec = z.infer<typeof AttachmentSpecSchema>;
 type StreamProviderSwitch = {
@@ -4511,6 +4512,9 @@ function categorizeError(error: any, requestId: string): CategorizedError {
 export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update: any) => void) {
   const router = Router();
 
+  // Resiliencia: inyectar requestId, timing y catch-all en TODAS las rutas del chat
+  router.use(chatResilienceMiddleware);
+
   router.get("/models", (req, res) => {
     res.json(AVAILABLE_MODELS);
   });
@@ -4565,12 +4569,16 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
 
   router.post("/chat", async (req, res) => {
     try {
+      // Tracking de fase para resiliencia
+      if (req.resilience) req.resilience.phase = 'parsing';
+
       const { messages: clientMessages, useRag = true, conversationId, images, gptConfig, gptId, documentMode, figmaMode, provider = DEFAULT_PROVIDER, model = DEFAULT_MODEL, attachments, lastImageBase64, lastImageId, session_id, skillId, skill } = req.body;
 
       if (!clientMessages || !Array.isArray(clientMessages)) {
         return res.status(400).json({ error: "Messages array is required" });
       }
 
+      if (req.resilience) req.resilience.phase = 'auth';
       const authenticatedUserId = getUserId(req);
       const effectiveUserId = authenticatedUserId || getOrCreateSecureUserId(req);
       const userId = effectiveUserId;
@@ -4825,6 +4833,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
         legacyConfig: gptConfig
       } : undefined;
 
+      if (req.resilience) req.resilience.phase = 'llm_call';
       const response = await chatService.chat(messagesWithSkill, {
         useRag,
         conversationId,
@@ -4899,6 +4908,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
         session_id: serverSessionId || gptSessionContract.sessionId
       } : response;
 
+      if (req.resilience) req.resilience.phase = 'response';
       res.json({
         ...responseWithMetadata,
         memoryCompression: memoryDiagnostics.compressionApplied
@@ -4914,17 +4924,8 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
           : undefined,
       });
     } catch (error: any) {
-      const requestId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      console.error(`[Chat API Error] requestId=${requestId}:`, error);
-
-      const categorized = categorizeError(error, requestId);
-      res.status(categorized.statusCode).json({
-        error: categorized.userMessage,
-        category: categorized.category,
-        details: categorized.technicalDetails,
-        requestId: categorized.requestId,
-        retryable: categorized.retryable
-      });
+      // Usar el error handler mejorado de resiliencia que NUNCA deja la respuesta colgada
+      chatErrorHandler(error, req, res, () => {});
     }
   });
 
@@ -5189,6 +5190,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
   router.post("/chat/stream", validate({ body: streamChatRequestSchema }), async (req, res) => {
     const requestId = sanitizeStreamIdentifier(req.headers["x-request-id"], `stream_${Date.now()}`);
+    if (req.resilience) req.resilience.phase = 'streaming';
     const streamStartMs = performance.now();
     const stageTimings: Record<string, number> = {};
     let firstTokenAtMs: number | null = null;
@@ -8740,6 +8742,11 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
     } catch (error: any) {
       console.error(`[SSE] Stream error ${requestId}:`, error);
+
+      // Inyectar categorización de resiliencia en headers si aún es posible
+      if (req.resilience && !res.headersSent) {
+        res.setHeader('X-Request-Id', req.resilience.requestId);
+      }
 
       // ── Structured CHAT_FAILURE log for monitoring and debugging ─────────────
       const userMsg = (() => {
