@@ -9423,19 +9423,19 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
         // Build citation format examples - use generic labels instead of filenames
         const citationFormats = documentModels.map((doc, idx) => {
           const meta = doc.documentMeta;
-          const docRef = documentModels.length === 1 ? 'documento' : `doc${idx + 1}`;
+          const docRef = documentModels.length === 1 ? '' : `doc${idx + 1} `;
           switch (meta.documentType) {
             case 'excel':
             case 'csv':
-              return `[${docRef} sheet:NombreHoja!A1:Z100]`;
+              return `[${docRef}hoja:NombreHoja]`;
             case 'pdf':
-              return `[${docRef} p:1]`;
+              return `[${docRef}p.1]`;
             case 'word':
-              return `[${docRef} section:Título]`;
+              return `[${docRef}sec.Título]`;
             case 'presentation':
-              return `[${docRef} slide:1]`;
+              return `[${docRef}diap.1]`;
             default:
-              return `[${docRef}]`;
+              return `[${docRef}ref]`;
           }
         });
 
@@ -9459,12 +9459,14 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
           switch (detectedIntent) {
             case 'SUMMARIZE':
               return `
-OBJETIVO PRINCIPAL: CREAR UN RESUMEN EJECUTIVO
+OBJETIVO PRINCIPAL: RESUMIR EL CONTENIDO
 
-TU RESPUESTA DEBE INCLUIR:
-1. **RESUMEN EJECUTIVO** (obligatorio): Síntesis concisa de 2-3 párrafos del contenido principal
-2. **PUNTOS CLAVE**: Lista de 5-7 puntos más importantes
-3. **CONCLUSIONES**: Principales conclusiones del documento
+INSTRUCCIONES DE FORMATO:
+- NO uses encabezados como "RESUMEN EJECUTIVO", "PUNTOS CLAVE" ni títulos en mayúsculas
+- Escribe de forma fluida y natural, como un párrafo bien redactado
+- Si el usuario pide un solo párrafo, responde con un solo párrafo conciso
+- Si no especifica formato, usa 2-3 párrafos cortos sin encabezados
+- Sé directo: comienza con el contenido, no con preámbulos
 ${slots.style ? `\nEstilo solicitado: ${slots.style}` : ''}`;
 
             case 'TRANSLATE':

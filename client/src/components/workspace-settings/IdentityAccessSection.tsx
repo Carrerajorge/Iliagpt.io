@@ -319,7 +319,6 @@ export function IdentityAccessSection({
   useEffect(() => {
     void loadSettings();
     void loadTwoFactorStatus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
 
   const discardChanges = () => {

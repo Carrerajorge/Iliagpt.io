@@ -282,7 +282,7 @@ export function useBackgroundTasks(chatId: string): {
       // onerror is always followed by onclose, so reconnect is handled there
       ws.close();
     };
-  }, [chatId, handleWsMessage]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [chatId, handleWsMessage]);
 
   function scheduleReconnect(): void {
     if (!mountedRef.current) return;

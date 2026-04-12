@@ -88,7 +88,6 @@ export default function LoginApprovePage() {
 
   useEffect(() => {
     fetchApproval();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [approvalId]);
 
   // Auto-action when opened from a notification action button.
@@ -101,7 +100,6 @@ export default function LoginApprovePage() {
     if (isResponding) return;
 
     respond(action === "approve" ? "approved" : "denied");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [approvalId, action, isAuthenticated]);
 
   const status = approval?.status ?? null;

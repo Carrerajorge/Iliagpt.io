@@ -487,7 +487,7 @@ export function ChatInterface({
   const userPlanInfo = useMemo(() => {
     if (!user) return null;
     const plan = user.plan || 'free';
-    const isAdmin = Boolean((user as any)?.isAdmin || (user?.email === 'Carrerajorge874@gmail.com'));
+    const isAdmin = Boolean((user as any)?.role === 'admin' || (user as any)?.role === 'superadmin' || (user?.email?.toLowerCase() === 'carrerajorge874@gmail.com'));
     // isPaid = true only if plan is NOT 'free' AND status is 'active'
     const isPaid = Boolean(plan && plan !== 'free' && (user?.status === 'active'));
     return { plan, isAdmin, isPaid };
@@ -723,7 +723,6 @@ export function ChatInterface({
       if (isVoiceChatOpen) setIsVoiceChatOpen(false);
       if (isRecording || isPaused) stopVoiceRecording();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.voiceMode]);
 
   useEffect(() => {
@@ -734,7 +733,6 @@ export function ChatInterface({
       if (minimizedDocument) setMinimizedDocument(null);
       if (previewArtifactDocument) setPreviewArtifactDocument(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewArtifactDocument, settings.canvas]);
 
   useEffect(() => {
@@ -3080,67 +3078,77 @@ export function ChatInterface({
     streamingContentRef.current = "";
     setStreamingContent("");
 
-    abortControllerRef.current = new AbortController();
+    const editMsgKey = `edit-${Date.now()}`;
+
+    // Build history up to the edited message
+    const historyUpToEdit = messages.slice(0, msgIndex).map(m => ({
+      role: m.role as "user" | "assistant",
+      content: m.content
+    }));
+    historyUpToEdit.push({ role: "user", content: editedContent });
+
+    // Collect attachments from the edited message and all prior messages in the conversation
+    const editedMsg = messages[msgIndex];
+    const allRelevantMessages = [...messages.slice(0, msgIndex), editedMsg];
+    const editAttachments = allRelevantMessages
+      .flatMap((m: any) => m.attachments || [])
+      .map((att: any) => ({
+        type: att?.type === "image" ? "image" : "document",
+        name: att?.name,
+        mimeType: att?.mimeType || att?.type,
+        storagePath: att?.storagePath,
+        fileId: att?.fileId || att?.id,
+      }))
+      .filter((att: any) => !!att?.name);
 
     try {
-      const historyUpToEdit = messages.slice(0, msgIndex).map(m => ({
-        role: m.role as "user" | "assistant",
-        content: m.content
-      }));
-      historyUpToEdit.push({ role: "user", content: editedContent });
-
-      const response = await apiFetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAnonUserIdHeader() },
-        credentials: "include",
-        body: JSON.stringify({
+      const result = await streamChat.stream("/api/chat/stream", {
+        chatId: editConversationId || undefined,
+        body: {
           messages: historyUpToEdit,
+          conversationId: editConversationId,
+          chatId: editConversationId,
+          attachments: editAttachments.length > 0 ? editAttachments : undefined,
           provider: selectedProvider,
-          model: selectedModel
+          model: selectedModel,
+        },
+        buildFinalMessage: (fullContent, data, messageId) => ({
+          ...buildAssistantMessage({
+            id: messageId || `assistant-${Date.now()}`,
+            timestamp: new Date(),
+            requestId: data?.requestId || generateRequestId(),
+            userMessageId: editMsgKey,
+            content: fullContent,
+            fallbackContent: "No se recibió respuesta del servidor.",
+            artifact: data?.artifact,
+            webSources: data?.webSources,
+            searchQueries: data?.searchQueries,
+            followUpSuggestions: data?.followUpSuggestions,
+          }),
+          serverPersisted: !!(data?.assistantMessageId),
         }),
-        signal: abortControllerRef.current.signal
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error: ${response.status}`);
-      }
-
-      const data = await response.json();
-
-      if (data.content) {
-        const aiMsg: Message = {
-          id: (Date.now() + 1).toString(),
+        buildErrorMessage: (error, messageId) => ({
+          id: messageId || `error-${Date.now()}`,
           role: "assistant",
-          content: data.content,
+          content: formatStreamFailureMessage(error),
           timestamp: new Date(),
           requestId: generateRequestId(),
-          webSources: data.webSources,
-          followUpSuggestions: data.followUpSuggestions,
-        };
-        onSendMessage(aiMsg);
-      }
+          userMessageId: editMsgKey,
+        }),
+      });
 
-      setAiStateForChat("idle", editConversationId);
-      abortControllerRef.current = null;
+      setAiState("idle");
+      setAiProcessSteps([]);
 
     } catch (error: any) {
-      if (error.name === "AbortError") {
+      if (error?.name === "AbortError") {
         setAiStateForChat("idle", editConversationId);
         return;
       }
       console.error("Edit regenerate error:", error);
-
-      const errorMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: "Lo siento, hubo un error al procesar tu mensaje editado. Por favor intenta de nuevo.",
-        timestamp: new Date(),
-      };
-      onSendMessage(errorMsg);
-      setAiStateForChat("idle", editConversationId);
-      abortControllerRef.current = null;
+      setAiState("idle");
     }
-  }, [editContent, messages, chatId, latestChatIdRef, onEditMessageAndTruncate, selectedProvider, selectedModel, onSendMessage, setAiStateForChat]);
+  }, [editContent, messages, chatId, latestChatIdRef, onEditMessageAndTruncate, selectedProvider, selectedModel, streamChat, setAiStateForChat, setAiState, setAiProcessSteps, formatStreamFailureMessage]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;

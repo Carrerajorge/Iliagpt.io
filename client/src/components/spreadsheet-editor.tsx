@@ -632,7 +632,6 @@ export function SpreadsheetEditor({
 
   useEffect(() => {
     streaming.setOnGridChange(handleSparseGridChange);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handleSparseGridChange]);
 
   const handleAIGenerate = useCallback(async () => {

@@ -211,7 +211,6 @@ export function AgenticChatProvider({ children, chatId: initialChatId }: Agentic
   // Derive current run from agent store
   const currentRun = useMemo(
     () => (activeChatId ? agentStore.getRunByChatId(activeChatId) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [activeChatId, agentStore]
   );
 

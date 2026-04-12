@@ -96,12 +96,12 @@ REGLA CRÍTICA - ANSWER-FIRST:
 
 EJEMPLOS DE RESPUESTAS CORRECTAS:
 Usuario: "¿Qué día es el vuelo?"
-✓ CORRECTO: "El vuelo es el 19 de enero de 2026, con salida a las 09:25 [documento p:1]."
+✓ CORRECTO: "El vuelo es el 19 de enero de 2026, con salida a las 09:25 [p.1]."
 ✗ INCORRECTO: "RESUMEN EJECUTIVO: El documento detalla información de un boleto..."
 ✗ INCORRECTO: "Basándome en el documento adjunto, puedo informarte que..."
 
 Usuario: "¿Cuánto cuesta el boleto?"
-✓ CORRECTO: "El boleto cuesta USD 360.64 en total (USD 280.00 + USD 80.64 de impuestos) [documento p:1]."
+✓ CORRECTO: "El boleto cuesta USD 360.64 en total (USD 280.00 + USD 80.64 de impuestos) [p.1]."
 ✗ INCORRECTO: "El documento contiene información detallada sobre los costos..."`;
 
 // Lite rules for non-document contexts. Gemini (and other providers) can behave
@@ -127,7 +127,7 @@ function getFormatInstructions(classification: QuestionClassification, hasDocume
 FORMATO POR DEFECTO (salvo que el usuario indique otro formato):
 - Respuesta directa y concisa
 - Incluye el dato exacto que busca el usuario${extractedTarget ? `: ${extractedTarget.entity}` : ''}
-- ${hasDocuments ? 'Incluye cita [documento p:X]' : 'NO inventes citas ni fuentes'}
+- ${hasDocuments ? 'Incluye cita [p.X]' : 'NO inventes citas ni fuentes'}
 - Si el usuario pide una extensión o formato específico, sigue esas instrucciones en vez de estas`;
 
         case 'yes_no':
@@ -212,7 +212,7 @@ export function buildAnswerFirstPrompt(context: AnswerFirstContext): AnswerFirst
         parts.push(`
 CONTEXTO DEL DOCUMENTO:
 El usuario ha adjuntado un documento. Usa la información del documento para responder.
-${classification.requiresCitation ? 'SIEMPRE cita la fuente: [documento p:X] o [hoja:X celda:Y]' : ''}`);
+${classification.requiresCitation ? 'SIEMPRE cita la fuente: [p.X] o [hoja:X celda:Y]' : ''}`);
         constraints.push('Citar fuente del documento');
     }
 
@@ -316,7 +316,7 @@ export function validateAnswerFirstResponse(
 
     if (classification.requiresCitation && !hasCitation) {
         issues.push('Falta cita del documento');
-        suggestions.push('Añade [documento p:X] al final de la respuesta');
+        suggestions.push('Añade [p.X] al final de la respuesta');
     }
 
     // Check length

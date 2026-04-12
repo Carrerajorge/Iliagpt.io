@@ -450,7 +450,7 @@ export function getResponseGuidelines(classification: QuestionClassification): s
     }
 
     if (classification.requiresCitation) {
-        guidelines.push('SIEMPRE incluye la cita [documento p:X] o [hoja:X].');
+        guidelines.push('SIEMPRE incluye la cita [p.X] o [hoja:X].');
     }
 
     return guidelines.join('\n');

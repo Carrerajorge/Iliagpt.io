@@ -110,7 +110,6 @@ export function VoiceChatMode({ open, onClose }: VoiceChatModeProps) {
       if (isCameraActive) stopCamera();
       if (inputMode === "uploading") setInputMode("idle");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [advancedVoiceEnabled]);
 
   const cleanupAudio = () => {

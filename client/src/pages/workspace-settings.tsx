@@ -909,13 +909,11 @@ export default function WorkspaceSettingsPage() {
     if (activeSection !== "members") return;
     if (!canManageMembers) return;
     void loadPendingInvites();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSection, canManageMembers]);
 
   useEffect(() => {
     if (activeSection !== "members" && activeSection !== "permissions") return;
     void loadRoles();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSection]);
 
   const inviteMember = async () => {

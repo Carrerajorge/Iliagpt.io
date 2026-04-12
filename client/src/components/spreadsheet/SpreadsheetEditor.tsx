@@ -760,7 +760,6 @@ export function SpreadsheetEditor({
     }
     setIsModified(true);
     // Note: handleCut, handleCopy, handlePaste are called but not in deps to avoid hoisting issues
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSmartAutofill = useCallback((selectionData: any[][], sourceRange: any, targetRange: any, direction: string) => {

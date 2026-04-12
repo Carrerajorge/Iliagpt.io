@@ -1606,8 +1606,12 @@ export function useChats() {
   useEffect(() => {
     if (activeChatId && !isPendingChat(activeChatId)) {
       const chat = chatsRef.current.find(c => c.id === activeChatId);
-      if (chat && chat.messages.length === 0) {
-        fetchChatDetails(activeChatId);
+      if (chat) {
+        const hasNoMessages = chat.messages.length === 0;
+        const hasOnlyUserMessages = chat.messages.length > 0 && !chat.messages.some(m => m.role === 'assistant');
+        if (hasNoMessages || hasOnlyUserMessages) {
+          fetchChatDetails(activeChatId);
+        }
       }
     }
   }, [activeChatId, fetchChatDetails]);
@@ -1784,7 +1788,6 @@ export function useChats() {
     if (!isLoadingRef.current && chatsLengthRef.current > 0) {
       debouncedLocalStorageSave(chats, STORAGE_KEY);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chats]);
 
   // Flush pending saves on page unload

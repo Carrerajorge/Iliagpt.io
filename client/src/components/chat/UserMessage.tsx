@@ -73,32 +73,28 @@ export const UserMessage = memo(function UserMessage({
     return (
         <div className="flex flex-col items-end gap-1">
             {isEditing ? (
-                <div className="w-full min-w-0 sm:min-w-[300px] max-w-[500px]">
+                <div className="w-full min-w-0 sm:min-w-[450px] max-w-[650px]">
                     <Textarea
                         value={editContent}
                         onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onEditContentChange(e.target.value)}
-                        className="w-full px-4 py-3 text-sm min-h-[80px] resize-y rounded-2xl border border-border bg-card focus:border-primary focus:ring-1 focus:ring-primary"
+                        className="w-full px-4 py-3 text-sm min-h-[150px] resize-y rounded-2xl border border-border/20 bg-background/50 focus:border-border/30 focus:ring-0 outline-none transition-colors"
                         autoFocus
                     />
                     <div className="flex items-center justify-end gap-2 mt-2">
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 px-3 text-sm text-muted-foreground hover:text-foreground"
+                        <button
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded-lg"
                             onClick={onCancelEdit}
                         >
-                            <X className="h-4 w-4 mr-1" />
+                            <X className="h-3.5 w-3.5" />
                             Cancelar
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 px-3 text-sm text-muted-foreground hover:text-foreground"
+                        </button>
+                        <button
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded-lg"
                             onClick={() => onSendEdit(message.id)}
                         >
-                            <Send className="h-4 w-4 mr-1" />
+                            <Send className="h-3.5 w-3.5" />
                             Enviar
-                        </Button>
+                        </button>
                     </div>
                 </div>
             ) : (
@@ -176,8 +172,8 @@ export const UserMessage = memo(function UserMessage({
                                 className="h-6 w-6 text-muted-foreground hover:text-foreground"
                                 onClick={() => onStartEdit(message)}
                                 data-testid={`button-edit-user-${message.id}`}
-                                title="Editar mensaje"
-                                aria-label="Editar mensaje"
+                                title="Editar"
+                                aria-label="Editar"
                             >
                                 <Pencil className="h-4 w-4" />
                             </Button>

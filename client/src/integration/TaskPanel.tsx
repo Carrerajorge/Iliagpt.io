@@ -245,7 +245,6 @@ export function TaskPanel() {
     }
 
     prevTaskIdsRef.current = currentIds;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backgroundTasks.length]);
 
   // Clean up timer on unmount
