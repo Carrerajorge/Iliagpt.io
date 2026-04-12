@@ -410,4 +410,56 @@ describe("chat control plane integration", () => {
     expect(officeEngineRunMock).not.toHaveBeenCalled();
     expect(llmStreamChatMock).not.toHaveBeenCalled();
   });
+
+  it("uses the control plane provider for model streaming when provider is auto", async () => {
+    routeIntentMock.mockReturnValueOnce({
+      intent: "CHAT_GENERAL",
+      output_format: null,
+      slots: {},
+      confidence: 0.88,
+      normalized_text: "hola",
+      language_detected: "es",
+    });
+    createChatCognitiveKernelDecisionMock.mockImplementationOnce(async ({ intentResult }: any) => ({
+      workflow: "conversation",
+      cognitiveIntent: { intent: "general_chat", confidence: 0.9, reasoning: "test" },
+      sharedIntent: intentResult ?? null,
+      authoritativeIntentResult: intentResult ?? null,
+      provider: { name: "gemini", reason: "control-plane", capabilities: [] },
+      context: {
+        retrievedCount: 0,
+        includedCount: 0,
+        totalChars: 0,
+        errors: [],
+        renderedContext: null,
+        telemetry: { memoryLookupMs: 0, documentLookupMs: 0, totalMs: 0 },
+      },
+      corrected: false,
+      correctionReason: null,
+      metadata: {},
+    }));
+    llmStreamChatMock.mockImplementation(async function* (_messages: any, options: any) {
+      yield { content: "hola", done: false, provider: options?.provider || "unknown" };
+      yield { content: "", done: true, provider: options?.provider || "unknown" };
+    });
+
+    const app = await makeApp();
+    const response = await request(app)
+      .post("/api/chat/stream")
+      .send({
+        messages: [{ role: "user", content: "hola" }],
+        conversationId: "chat-control-plane",
+        chatId: "chat-control-plane",
+        latencyMode: "fast",
+        provider: "auto",
+      });
+
+    expect(response.status).toBe(200);
+    expect(llmStreamChatMock).toHaveBeenCalled();
+    expect(llmStreamChatMock.mock.calls.at(-1)?.[1]).toMatchObject({ provider: "gemini" });
+
+    const events = parseSsePayloads(response.text);
+    const controlPlaneNotice = events.find((event) => event.event === "notice" && event.data?.type === "chat_control_plane");
+    expect(controlPlaneNotice?.data?.provider).toBe("gemini");
+  });
 });

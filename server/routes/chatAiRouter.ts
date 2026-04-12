@@ -6483,7 +6483,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
       let gptSessionContract: GptSessionContract | null = null;
       let effectiveModel = normalizedStreamModel || DEFAULT_MODEL;
       let serverSessionId: string | null = null;
-      const effectiveProvider = provider || DEFAULT_PROVIDER;
+      let effectiveProvider = provider && provider !== "auto" ? provider : DEFAULT_PROVIDER;
 
       const isValidConversationIdForStream = (id?: string): boolean => {
         if (!id) return false;
@@ -6565,7 +6565,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         systemSections: skillSystemSection ? [skillSystemSection] : [],
         chatId: chatId || undefined,
         conversationId: streamConversationId,
-        provider: effectiveProvider,
+        provider: provider || "auto",
         model: effectiveModel,
         latencyMode,
         attachmentsCount: sanitizedRunAttachments?.length || 0,
@@ -6578,6 +6578,10 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       if (controlPlaneDecision.authoritativeIntentResult) {
         intentResult = controlPlaneDecision.authoritativeIntentResult;
+      }
+
+      if ((!provider || provider === "auto") && controlPlaneDecision.cognitive?.provider.name) {
+        effectiveProvider = controlPlaneDecision.cognitive.provider.name;
       }
 
       if (!isConnectionClosed) {

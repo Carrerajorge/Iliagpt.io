@@ -32,6 +32,67 @@ function generateId(): string {
   return Math.random().toString(36).substring(2, 10);
 }
 
+function decodeTextBuffer(buffer: Buffer): string {
+  const utf8Bom = buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf;
+  return (utf8Bom ? buffer.slice(3) : buffer).toString("utf8");
+}
+
+async function extractTextDocument(buffer: Buffer, fileName: string): Promise<Partial<DocumentSemanticModel>> {
+  const rawText = decodeTextBuffer(buffer);
+  const trimmedText = rawText.trim();
+  const extension = getFileExtension(fileName);
+
+  let content = trimmedText || rawText;
+  if ((extension === "json" || trimmedText.startsWith("{") || trimmedText.startsWith("[")) && trimmedText) {
+    try {
+      content = JSON.stringify(JSON.parse(trimmedText), null, 2);
+    } catch {
+      // Keep the original text when the payload is not valid JSON.
+    }
+  }
+
+  const paragraphs = content
+    .split(/\n\s*\n/g)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+
+  const sections = (paragraphs.length > 0 ? paragraphs : [content])
+    .filter((paragraph) => paragraph.trim().length > 0)
+    .map((paragraph, index) => ({
+      id: `section_${index + 1}`,
+      type: "paragraph" as const,
+      title: index === 0 ? fileName : undefined,
+      content: paragraph,
+      sourceRef: `text:${index + 1}`,
+    }));
+
+  return {
+    sections,
+    tables: [],
+    metrics: [],
+    anomalies: [],
+    insights: [],
+    sources: sections.map((section, index) => ({
+      id: `source_${index + 1}`,
+      type: "section" as const,
+      location: `text:${index + 1}`,
+      previewText: (section.content || "").slice(0, 240),
+    })),
+    suggestedQuestions: [],
+    documentMeta: {
+      id: generateId(),
+      fileName,
+      fileSize: buffer.length,
+      mimeType: MIME_TYPES.TEXT,
+      documentType: "text",
+      title: fileName,
+      wordCount: content ? content.split(/\s+/).filter(Boolean).length : 0,
+      language: "unknown",
+      createdAt: new Date().toISOString(),
+    },
+  };
+}
+
 function matchesMagicBytes(buffer: Buffer, magic: number[]): boolean {
   if (buffer.length < magic.length) return false;
   return magic.every((byte, i) => buffer[i] === byte);
@@ -194,6 +255,10 @@ function inferMimeTypeFromExtension(fileName: string): string | null {
     case "pptx":
       return MIME_TYPES.PPTX;
     case "txt":
+    case "md":
+    case "markdown":
+    case "json":
+    case "log":
       return MIME_TYPES.TEXT;
     default:
       return null;
@@ -203,7 +268,7 @@ function inferMimeTypeFromExtension(fileName: string): string | null {
 export async function normalizeDocument(
   buffer: Buffer,
   fileName: string,
-  storagePath?: string
+  _storagePath?: string
 ): Promise<DocumentSemanticModel> {
   const startTime = Date.now();
   const warnings: string[] = [];
@@ -250,8 +315,8 @@ export async function normalizeDocument(
         break;
         
       case MIME_TYPES.TEXT:
-        partialResult = await extractCSV(buffer, fileName);
-        parserUsed = "csvExtractor (text fallback)";
+        partialResult = await extractTextDocument(buffer, fileName);
+        parserUsed = "textExtractor";
         break;
         
       default:
