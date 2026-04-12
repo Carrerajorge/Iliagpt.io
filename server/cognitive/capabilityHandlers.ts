@@ -843,7 +843,7 @@ export const decomposeTaskHandler: CapabilityHandler = async (args) => {
 
   // Split on common step delimiters.
   const raw = task
-    .split(/(?:\n+|(?:^|\s)(?:\d+[\.\)]|[-*•])\s|(?<=[.!?])\s+)/g)
+    .split(/(?:\n+|(?:^|\s)(?:\d+[.)]|[-*•])\s|(?<=[.!?])\s+)/g)
     .map((s) => s.trim())
     .filter((s) => s.length > 3);
 

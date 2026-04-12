@@ -93,8 +93,8 @@ const RULES: IntentRule[] = [
   {
     intent: "translation",
     strong: [
-      /\btranslate\b[^\.\n]*\b(to|into|al|en)\b/i,
-      /\btraduce\b[^\.\n]*\b(al|en|a)\b/i,
+      /\btranslate\b[^.\n]*\b(to|into|al|en)\b/i,
+      /\btraduce\b[^.\n]*\b(al|en|a)\b/i,
       /\btraducci[oó]n\s+(al|en)\b/i,
       /\bin\s+(spanish|english|french|german|italian|portuguese|chinese|japanese|korean|russian|arabic|hindi)\b.*\btranslate\b/i,
     ],

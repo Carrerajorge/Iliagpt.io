@@ -740,8 +740,9 @@ describe("deep coverage: browser_automation", () => {
       () => {
         // Import the handler directly to test it in isolation (requires network)
         // We test the validation branch which doesn't need network
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { createRequire } = require("module");
-        void createRequire; // just reference
+        void createRequire;
         // Invoke via registry so we get a structured error, not a throw
         const registry = buildDefaultCapabilityCatalog({ handlers: buildCapabilityHandlerMap() });
         return registry.invoke("browser_automation.extract_page", { url: "" }, ctx()).then(
