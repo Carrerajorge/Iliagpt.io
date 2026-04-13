@@ -35,6 +35,8 @@ import {
     type PptxRequest,
     type PptxSlide,
 } from "./documentGenerators/professionalPptxGenerator";
+import { ProfessionalFileGenerator } from "./skillHandlers/professionalFileGenerator";
+import { buildWorkbookDataFromObjective } from "../lib/office/engine/xlsxCreateFromSpec";
 
 // ============================================================================
 // Types
@@ -58,7 +60,7 @@ interface ProductionPresentationHints {
     brand?: string;
 }
 
-type ArtifactGenerationDocKind = "docx" | "xlsx" | "pptx" | "pdf";
+type ArtifactGenerationDocKind = "docx" | "xlsx" | "pptx" | "pdf" | "csv";
 type ArtifactGenerationEngine = "office-engine" | "artifact-engine" | "artifact-pipeline";
 
 interface ArtifactGenerationSpec {
@@ -94,15 +96,17 @@ function extractPresentationHints(message: string): ProductionPresentationHints 
 }
 
 function resolveRequestedDocKind(intentResult: IntentResult, message?: string): ArtifactGenerationDocKind {
+    const lower = String(message || "").toLowerCase();
+    if (/\b(pdf)\b/i.test(lower)) return "pdf";
+    if (/\bcsv\b/i.test(lower)) return "csv";
+    if (/\b(excel|xlsx|spreadsheet|hoja de c[aá]lculo)\b/i.test(lower)) return "xlsx";
+    if (/\b(ppt|pptx|powerpoint|presentaci[oó]n|slides?)\b/i.test(lower)) return "pptx";
+    if (/\b(word|docx|documento|document)\b/i.test(lower)) return "docx";
+
     const requestedFormat = intentResult.output_format;
     if (requestedFormat === "docx" || requestedFormat === "xlsx" || requestedFormat === "pptx" || requestedFormat === "pdf") {
         return requestedFormat;
     }
-
-    const lower = String(message || "").toLowerCase();
-    if (/\b(pdf)\b/i.test(lower)) return "pdf";
-    if (/\b(excel|xlsx|spreadsheet|hoja de c[aá]lculo)\b/i.test(lower)) return "xlsx";
-    if (/\b(ppt|pptx|powerpoint|presentaci[oó]n|slides?)\b/i.test(lower)) return "pptx";
     return intentResult.intent === "CREATE_SPREADSHEET"
         ? "xlsx"
         : intentResult.intent === "CREATE_PRESENTATION"
@@ -112,7 +116,7 @@ function resolveRequestedDocKind(intentResult: IntentResult, message?: string): 
 
 function resolveArtifactGenerationEngine(
     requestedDocKind: ArtifactGenerationDocKind,
-    deliverables: Array<'word' | 'excel' | 'ppt' | 'pdf'>,
+    deliverables: Array<'word' | 'excel' | 'ppt' | 'pdf' | 'csv'>,
 ): ArtifactGenerationEngine {
     if (
         requestedDocKind === "docx" &&
@@ -147,7 +151,7 @@ function resolveArtifactGenerationEngine(
 
 function resolveArtifactGenerationSpec(
     intentResult: IntentResult,
-    deliverables: Array<'word' | 'excel' | 'ppt' | 'pdf'>,
+    deliverables: Array<'word' | 'excel' | 'ppt' | 'pdf' | 'csv'>,
     message?: string,
 ): ArtifactGenerationSpec {
     const requestedDocKind = resolveRequestedDocKind(intentResult, message);
@@ -173,9 +177,11 @@ function getOfficeArtifactFilename(topic: string, docKind: ArtifactGenerationDoc
         ? "docx"
         : docKind === "xlsx"
             ? "xlsx"
-            : docKind === "pptx"
+        : docKind === "pptx"
                 ? "pptx"
-                : "pdf";
+                : docKind === "csv"
+                    ? "csv"
+                    : "pdf";
 
     return `${safeBaseName}.${extension}`;
 }
@@ -296,6 +302,13 @@ function resolveProfessionalPptTheme(hints: ProductionPresentationHints, message
     return "corporate-blue";
 }
 
+function extractRequestedSlideCount(message: string): number | null {
+    const match = String(message || "").match(/\b(\d{1,3})\s*(?:slides?|diapositivas?)\b/i);
+    if (!match) return null;
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 function buildProfessionalPptSlides(topic: string, message: string): PptxSlide[] {
     const lower = String(message || "").toLowerCase();
     const wantsFormulas = /\b(f[oó]rmulas?|formulas?|kpi|kpis|m[eé]tricas?|metricas?|roi|cac|ltv)\b/.test(lower);
@@ -353,7 +366,7 @@ function buildProfessionalPptSlides(topic: string, message: string): PptxSlide[]
             ["Calidad", "Incidencias críticas / Entregables", "Control de retrabajo"],
         ];
 
-    return [
+    const slides: PptxSlide[] = [
         {
             type: "title",
             title: subject,
@@ -395,6 +408,22 @@ function buildProfessionalPptSlides(topic: string, message: string): PptxSlide[]
             subtitle: "Documento listo para comité, revisión interna o envío a dirección.",
         },
     ];
+
+    const requestedSlides = extractRequestedSlideCount(message) ?? slides.length;
+    while (slides.length < requestedSlides) {
+        const extraIndex = slides.length - 4 + 1;
+        slides.splice(slides.length - 1, 0, {
+            type: "content",
+            title: `Detalle ${extraIndex}`,
+            bullets: [
+                `Profundización ejecutiva del frente ${subject.toLowerCase()}.`,
+                "Implicaciones, riesgos y seguimiento recomendado.",
+                "Acciones sugeridas para la siguiente revisión.",
+            ],
+        });
+    }
+
+    return slides.slice(0, requestedSlides);
 }
 
 function buildProfessionalPptxRequest(
@@ -459,7 +488,7 @@ async function buildOfficeEngineArtifactPreview(
 }
 
 interface GeneratedDeliveryArtifact {
-    type: "word" | "excel" | "ppt" | "pdf";
+    type: "word" | "excel" | "ppt" | "pdf" | "csv";
     filename: string;
     downloadUrl: string;
     previewUrl?: string;
@@ -470,9 +499,99 @@ interface GeneratedDeliveryArtifact {
 }
 
 function shouldUseDeterministicMultiArtifactFlow(
-    deliverables: Array<"word" | "excel" | "ppt" | "pdf">,
+    deliverables: Array<"word" | "excel" | "ppt" | "pdf" | "csv">,
 ): boolean {
-    return deliverables.length > 1 && deliverables.every((item) => item === "word" || item === "excel" || item === "ppt");
+    return deliverables.length > 1 && deliverables.every((item) => item === "word" || item === "excel" || item === "ppt" || item === "csv");
+}
+
+function selectPrimaryGeneratedArtifact(
+    artifacts: GeneratedDeliveryArtifact[],
+    requestedDocKind: ArtifactGenerationDocKind,
+): GeneratedDeliveryArtifact | undefined {
+    const preferredByDocKind: Record<ArtifactGenerationDocKind, GeneratedDeliveryArtifact["type"]> = {
+        docx: "word",
+        xlsx: "excel",
+        pptx: "ppt",
+        pdf: "pdf",
+        csv: "csv",
+    };
+    return artifacts.find((artifact) => artifact.type === preferredByDocKind[requestedDocKind]) || artifacts[0];
+}
+
+function selectPrimaryPipelineArtifact(
+    artifacts: Artifact[],
+    requestedDocKind: ArtifactGenerationDocKind,
+): Artifact | undefined {
+    const preferredByDocKind: Record<ArtifactGenerationDocKind, Artifact["type"] | "data"> = {
+        docx: "word",
+        xlsx: "excel",
+        pptx: "ppt",
+        pdf: "pdf",
+        csv: "data",
+    };
+    return artifacts.find((artifact) => artifact.type === preferredByDocKind[requestedDocKind]) || artifacts[0];
+}
+
+const professionalFileGenerator = new ProfessionalFileGenerator();
+
+async function generateCsvDeliveryArtifact(params: {
+    runId: string;
+    userId: string;
+    chatId: string;
+    message: string;
+    workflow: ArtifactGenerationSpec["workflow"];
+    engine: ArtifactGenerationSpec["engine"];
+    emit: (event: string, data: Record<string, unknown>) => void;
+}): Promise<GeneratedDeliveryArtifact> {
+    const { runId, userId, chatId, message, workflow, engine, emit } = params;
+    const workbookData = buildWorkbookDataFromObjective(message);
+    const primarySheet = workbookData.sheets[0];
+    const fileResult = await professionalFileGenerator.generateCSV({
+        headers: primarySheet.headers,
+        rows: primarySheet.rows,
+        title: workbookData.title,
+    });
+
+    const artifact: Artifact = {
+        type: "data",
+        filename: fileResult.filename,
+        buffer: fileResult.buffer,
+        mimeType: fileResult.mimeType,
+        size: fileResult.buffer.length,
+        metadata: {
+            format: "csv",
+            rowCount: primarySheet.rows.length,
+            sheetName: primarySheet.name,
+        },
+    };
+    const stored = await saveArtifact(artifact, runId, userId, chatId);
+    const metadata = {
+        workflow,
+        classification: workflow,
+        engine,
+        docKind: "csv",
+        rowCount: primarySheet.rows.length,
+        sheetName: primarySheet.name,
+    };
+
+    emit("artifact", {
+        type: "csv",
+        filename: artifact.filename,
+        downloadUrl: stored.downloadUrl,
+        size: artifact.size,
+        mimeType: artifact.mimeType,
+        library: stored.library,
+        metadata,
+    });
+
+    return {
+        type: "csv",
+        filename: artifact.filename,
+        downloadUrl: stored.downloadUrl,
+        size: artifact.size,
+        mimeType: artifact.mimeType,
+        metadata,
+    };
 }
 
 async function generateOfficeEngineDeliveryArtifact(params: {
@@ -843,11 +962,12 @@ export function isProductionIntent(intentResult: IntentResult | null, message?: 
     return PRODUCTION_INTENTS.includes(intentResult.intent as any);
 }
 
-export function getDeliverables(intentResult: IntentResult, message?: string): ('word' | 'excel' | 'ppt' | 'pdf')[] {
-    const deliverables: ('word' | 'excel' | 'ppt' | 'pdf')[] = [];
+export function getDeliverables(intentResult: IntentResult, message?: string): ('word' | 'excel' | 'ppt' | 'pdf' | 'csv')[] {
+    const deliverables: ('word' | 'excel' | 'ppt' | 'pdf' | 'csv')[] = [];
     const normalizedMessage = String(message || "").toLowerCase();
     const explicitlyMentionsWord = /\b(word|docx)\b/i.test(normalizedMessage);
     const explicitlyMentionsPdf = /\bpdf\b/i.test(normalizedMessage);
+    const explicitlyMentionsCsv = /\bcsv\b/i.test(normalizedMessage);
 
     switch (intentResult.intent) {
         case 'CREATE_DOCUMENT':
@@ -864,15 +984,16 @@ export function getDeliverables(intentResult: IntentResult, message?: string): (
             deliverables.push('ppt');
             break;
         case 'CREATE_SPREADSHEET':
-            deliverables.push('excel');
+            deliverables.push(explicitlyMentionsCsv ? 'csv' : 'excel');
             break;
     }
 
-    const outputFormatToDeliverable: Record<string, 'word' | 'excel' | 'ppt' | 'pdf'> = {
+    const outputFormatToDeliverable: Record<string, 'word' | 'excel' | 'ppt' | 'pdf' | 'csv'> = {
         docx: 'word',
         xlsx: 'excel',
         pptx: 'ppt',
         pdf: 'pdf',
+        csv: 'csv',
     };
 
     const outputDeliverable = intentResult.output_format
@@ -889,6 +1010,9 @@ export function getDeliverables(intentResult: IntentResult, message?: string): (
     if (/\b(excel|xlsx|hoja\s+de\s+c[aá]lculo|spreadsheet)\b/i.test(combined)) {
         if (!deliverables.includes('excel')) deliverables.push('excel');
     }
+    if (explicitlyMentionsCsv || /\bcsv\b/i.test(combined)) {
+        if (!deliverables.includes('csv')) deliverables.push('csv');
+    }
     if (/\b(presentaci[oó]n|presentation|pptx?|powerpoint|diapositivas?|slides?)\b/i.test(combined)) {
         if (!deliverables.includes('ppt')) deliverables.push('ppt');
     }
@@ -899,7 +1023,10 @@ export function getDeliverables(intentResult: IntentResult, message?: string): (
         if (!deliverables.includes('pdf')) deliverables.push('pdf');
     }
 
-    return deliverables;
+    return deliverables.filter((deliverable, index, all) => {
+        if (deliverable === 'excel' && all.includes('csv')) return false;
+        return all.indexOf(deliverable) === index;
+    });
 }
 
 // ============================================================================
@@ -1664,6 +1791,21 @@ export async function handleProductionRequest(
                     continue;
                 }
 
+                if (deliverable === "csv") {
+                    generatedArtifacts.push(
+                        await generateCsvDeliveryArtifact({
+                            runId,
+                            userId,
+                            chatId,
+                            message,
+                            workflow: artifactSpec.workflow,
+                            engine: artifactSpec.engine,
+                            emit,
+                        }),
+                    );
+                    continue;
+                }
+
                 if (deliverable === "ppt") {
                     generatedArtifacts.push(
                         await generateProfessionalPptDeliveryArtifact({
@@ -1708,7 +1850,7 @@ export async function handleProductionRequest(
 
             res.end();
 
-            const primaryArtifact = generatedArtifacts[0];
+            const primaryArtifact = selectPrimaryGeneratedArtifact(generatedArtifacts, artifactSpec.requestedDocKind);
             const mappedArtifacts = generatedArtifacts.map((artifact) => ({
                 type: artifact.type,
                 filename: artifact.filename,
@@ -1889,6 +2031,69 @@ export async function handleProductionRequest(
             return finalResult;
         }
 
+        if (artifactSpec.requestedDocKind === 'csv' && deliverables.length === 1 && deliverables[0] === 'csv') {
+            const generatedCsv = await generateCsvDeliveryArtifact({
+                runId,
+                userId,
+                chatId,
+                message,
+                workflow: artifactSpec.workflow,
+                engine: artifactSpec.engine,
+                emit,
+            });
+            const summary = 'CSV listo para descargar. Haz clic en descargar para obtenerlo.';
+
+            emit('production_complete', {
+                runId,
+                success: true,
+                workflow: artifactSpec.workflow,
+                engine: artifactSpec.engine,
+                docKind: artifactSpec.requestedDocKind,
+                artifactsCount: 1,
+                summary,
+                timestamp: Date.now(),
+            });
+
+            emit('chunk', {
+                content: summary,
+                sequenceId: 1,
+                runId,
+            });
+
+            emit('done', {
+                sequenceId: 2,
+                runId,
+                timestamp: Date.now(),
+                artifact: {
+                    artifactId: `${runId}_csv`,
+                    type: 'csv',
+                    mimeType: generatedCsv.mimeType,
+                    sizeBytes: generatedCsv.size,
+                    downloadUrl: generatedCsv.downloadUrl,
+                    name: generatedCsv.filename,
+                    filename: generatedCsv.filename,
+                    metadata: generatedCsv.metadata,
+                },
+            });
+
+            res.end();
+
+            const finalResult = {
+                handled: true,
+                assistantContent: summary,
+                artifact: {
+                    type: 'csv',
+                    filename: generatedCsv.filename,
+                    downloadUrl: generatedCsv.downloadUrl,
+                    size: generatedCsv.size,
+                    mimeType: generatedCsv.mimeType,
+                    metadata: generatedCsv.metadata,
+                },
+            };
+            await persistAssistantResult(finalResult.assistantContent || summary, finalResult.artifact, undefined);
+            return finalResult;
+        }
+
         const pipelineIntent: DocumentIntent =
             intentResult.intent === 'CREATE_PRESENTATION'
                 ? 'presentation'
@@ -1962,8 +2167,12 @@ export async function handleProductionRequest(
 
         const hasArtifacts = artifactsWithUrls.length > 0;
         const isFailure = result.status === 'failed' || !hasArtifacts;
-        const primaryArtifact = artifactsWithUrls[0];
-        const primarySourceArtifact = result.artifacts[0];
+        const primarySourceArtifact = selectPrimaryPipelineArtifact(result.artifacts, artifactSpec.requestedDocKind);
+        const primaryArtifact = primarySourceArtifact
+            ? artifactsWithUrls.find((artifact) => artifact.filename === primarySourceArtifact.filename)
+                || artifactsWithUrls.find((artifact) => artifact.type === primarySourceArtifact.type)
+                || artifactsWithUrls[0]
+            : artifactsWithUrls[0];
         const doneArtifact = primaryArtifact
             ? {
                 artifactId: `${runId}_${primaryArtifact.type}`,
@@ -2219,6 +2428,8 @@ function getArtifactReadyLabel(type: string): string {
         case 'excel':
         case 'xlsx':
             return 'Hoja de cálculo lista para descargar.';
+        case 'csv':
+            return 'CSV listo para descargar.';
         case 'ppt':
         case 'pptx':
             return 'Presentación lista para descargar.';

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import * as fs from "fs";
 import * as path from "path";
+import { generateFilePreview } from "../services/filePreviewService";
 import {
   toolRegistry,
   agentRegistry,
@@ -750,6 +751,9 @@ export function createRegistryRouter(): Router {
       
       const ext = path.extname(filename).toLowerCase();
       const mimeTypes: Record<string, string> = {
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".png": "image/png",
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
@@ -760,6 +764,16 @@ export function createRegistryRouter(): Router {
       };
       
       const contentType = mimeTypes[ext] || "application/octet-stream";
+
+      if ([".pptx", ".docx", ".xlsx"].includes(ext)) {
+        const buffer = await fs.promises.readFile(filePath);
+        const preview = await generateFilePreview(filename, contentType, buffer, { sourcePath: filePath });
+        if (preview.html) {
+          res.type("text/html");
+          return res.send(preview.html);
+        }
+      }
+
       res.type(contentType);
       res.sendFile(filePath);
     } catch (error: any) {
@@ -774,12 +788,34 @@ export function createRegistryRouter(): Router {
     try {
       const { filename } = req.params;
       
-      // Security: Only allow JSON files (deckState content files) via this endpoint
-      // Other files must use /download or /preview which have their own access controls
       const ext = path.extname(filename).toLowerCase();
       if (ext !== ".json") {
-        // Redirect non-JSON files to the proper download endpoint
-        return res.redirect(301, `/api/artifacts/${encodeURIComponent(filename)}/download`);
+        const artifactsDir = path.join(process.cwd(), "artifacts");
+        const filePath = path.join(artifactsDir, filename);
+        const realPath = path.resolve(filePath);
+        if (!realPath.startsWith(path.resolve(artifactsDir))) {
+          return res.status(403).json({ success: false, error: "Invalid file path" });
+        }
+        if (!fs.existsSync(filePath)) {
+          return res.status(404).json({ success: false, error: "Artifact not found" });
+        }
+
+        const mimeTypes: Record<string, string> = {
+          ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          ".csv": "text/csv; charset=utf-8",
+          ".pdf": "application/pdf",
+          ".png": "image/png",
+          ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg",
+          ".html": "text/html",
+        };
+        const stats = fs.statSync(filePath);
+        res.setHeader("Content-Type", mimeTypes[ext] || "application/octet-stream");
+        res.setHeader("Content-Length", stats.size);
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        return fs.createReadStream(filePath).pipe(res);
       }
       
       const artifactsDir = path.join(process.cwd(), "artifacts");

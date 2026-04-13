@@ -6078,7 +6078,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
                 language_detected: intentResult.language_detected,
               }
               : undefined,
-            autoCreate: true,
+            autoCreate: false,
             maxRetries: 1,
             emitTrace: emitSkillTrace,
             now: new Date(),
@@ -6547,10 +6547,19 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         const visualKw = ["diagrama","flowchart","organigrama","mapa mental","mindmap","diagrama de flujo","diagrama de secuencia","diagrama de clases","timeline","linea de tiempo","wireframe","mockup","infografia","kanban","esquema","flujograma","mermaid","diagram","flow chart","org chart","mind map","sequence diagram","class diagram","er diagram","architecture diagram","process map","gantt","svg","ilustracion","ilustración","icono","logo","dibujo","dibuja","grafico","gráfico","chart","pie chart","bar chart","line chart","tabla comparativa","cuadro comparativo","dashboard visual","calendario visual",
           "grafica 3d","grafico 3d","superficie 3d","parabola","funcion 3d","ecuacion parametrica","campo vectorial","fractal","curva 3d","plotear","graficar","3d graph","3d plot","surface plot","parametric","vector field"];
         const msgLower = (userMessageText || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-        if (visualKw.some(kw => msgLower.includes(kw))) {
+        const explicitArtifactIntent = intentResult.intent === "CREATE_SPREADSHEET" || intentResult.intent === "CREATE_DOCUMENT" || intentResult.intent === "CREATE_PRESENTATION";
+        if (!explicitArtifactIntent && visualKw.some(kw => msgLower.includes(kw))) {
           console.log(`[Stream] 🎨 RENDER_VISUAL override: "${userMessageText.slice(0, 60)}..." — forcing inline rendering (was: ${intentResult.intent})`);
           intentResult = { ...intentResult, intent: "CHAT_GENERAL" as any, confidence: 0.95 };
         }
+
+        writeSse(res, 'intent_notice', {
+          requestId,
+          intent: intentResult.intent,
+          outputFormat: intentResult.output_format || null,
+          confidence: intentResult.confidence,
+          timestamp: Date.now(),
+        });
       }
 
       const controlPlaneStageStart = performance.now();

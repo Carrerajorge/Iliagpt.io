@@ -1,5 +1,6 @@
 import { createMultiSheetExcel } from "../../../services/advancedExcelBuilder.ts";
 import type { StructuredData } from "../../../services/skillHandlers/professionalFileGenerator.ts";
+import JSZip from "jszip";
 
 interface SeedWorkbook {
   buffer: Buffer;
@@ -14,6 +15,7 @@ type SeedScenario =
   | "costs_margins"
   | "inventory_demand"
   | "operational_schedule"
+  | "product_catalog"
   | "default";
 
 function normalizeObjective(value: string): string {
@@ -32,7 +34,16 @@ function inferScenario(objective: string): SeedScenario {
   if (normalized.includes("costos y margenes") || normalized.includes("margenes")) return "costs_margins";
   if (normalized.includes("inventario") || normalized.includes("demanda")) return "inventory_demand";
   if (normalized.includes("cronograma operativo") || normalized.includes("capacidad semanal")) return "operational_schedule";
+  if (normalized.includes("producto") || normalized.includes("productos") || normalized.includes("precios")) return "product_catalog";
   return "default";
+}
+
+function inferRequestedItemCount(objective: string, fallback: number): number {
+  const match = objective.match(/\b(\d{1,3})\b/);
+  if (!match) return fallback;
+  const parsed = Number(match[1]);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, 200);
 }
 
 function inferTitle(objective: string, fallback: string): string {
@@ -274,6 +285,29 @@ function buildOperationsWorkbook(title: string): StructuredData {
   };
 }
 
+function buildProductCatalogWorkbook(title: string, count: number): StructuredData {
+  const rows = Array.from({ length: count }, (_, index) => {
+    const sku = `SKU-${String(index + 1).padStart(3, "0")}`;
+    const category = ["Tecnologia", "Hogar", "Salud", "Oficina", "Retail"][index % 5];
+    const price = Number((9.99 + index * 2.75).toFixed(2));
+    const cost = Number((price * 0.58).toFixed(2));
+    const stock = 25 + (index % 12) * 7;
+    return [sku, `Producto ${index + 1}`, category, price, cost, stock];
+  });
+
+  return {
+    title,
+    theme: "professional",
+    sheets: [
+      {
+        name: "Catalogo",
+        headers: ["SKU", "Producto", "Categoria", "Precio", "Costo", "Stock"],
+        rows,
+      },
+    ],
+  };
+}
+
 function buildDefaultWorkbook(title: string): StructuredData {
   return {
     title,
@@ -306,6 +340,7 @@ function buildDefaultWorkbook(title: string): StructuredData {
 function buildWorkbookData(objective: string): StructuredData {
   const scenario = inferScenario(objective);
   const title = inferTitle(objective, "Workbook profesional");
+  const requestedCount = inferRequestedItemCount(objective, 50);
 
   switch (scenario) {
     case "financial_projection":
@@ -322,19 +357,77 @@ function buildWorkbookData(objective: string): StructuredData {
       return buildInventoryWorkbook(title);
     case "operational_schedule":
       return buildOperationsWorkbook(title);
+    case "product_catalog":
+      return buildProductCatalogWorkbook(title, requestedCount);
     default:
       return buildDefaultWorkbook(title);
   }
 }
 
+async function injectChartParts(buffer: Buffer): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(buffer);
+
+  zip.file(
+    "xl/charts/chart1.xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Ventas mensuales</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea><c:layout/></c:plotArea></c:chart>
+</c:chartSpace>`,
+  );
+  zip.file(
+    "xl/drawings/drawing1.xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><xdr:twoCellAnchor><xdr:from><xdr:col>5</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>12</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>18</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Chart 1"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>`,
+  );
+  zip.file(
+    "xl/drawings/_rels/drawing1.xml.rels",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>`,
+  );
+
+  const sheet1 = await zip.file("xl/worksheets/sheet1.xml")?.async("string");
+  if (sheet1 && !sheet1.includes("<drawing ")) {
+    zip.file("xl/worksheets/sheet1.xml", sheet1.replace("</worksheet>", `<drawing xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rIdChart1"/></worksheet>`));
+  }
+
+  const relsPath = "xl/worksheets/_rels/sheet1.xml.rels";
+  const sheetRels = await zip.file(relsPath)?.async("string");
+  if (sheetRels) {
+    if (!sheetRels.includes("rIdChart1")) {
+      zip.file(relsPath, sheetRels.replace("</Relationships>", `<Relationship Id="rIdChart1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>`));
+    }
+  } else {
+    zip.file(relsPath, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdChart1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>`);
+  }
+
+  const contentTypes = await zip.file("[Content_Types].xml")?.async("string");
+  if (contentTypes && !contentTypes.includes('/xl/charts/chart1.xml')) {
+    zip.file(
+      "[Content_Types].xml",
+      contentTypes.replace("</Types>", `<Override PartName="/xl/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>`),
+    );
+  }
+
+  return Buffer.from(await zip.generateAsync({ type: "nodebuffer" }));
+}
+
+export function buildWorkbookDataFromObjective(objective: string): StructuredData {
+  return buildWorkbookData(objective);
+}
+
 export async function buildSeedXlsxFromObjective(objective: string): Promise<SeedWorkbook> {
   const data = buildWorkbookData(objective);
+  const normalizedObjective = normalizeObjective(objective);
+  const wantsConditionalFormatting = /condicional|conditional/.test(normalizedObjective);
+  const wantsChart = /grafico|grafica|chart|dashboard/.test(normalizedObjective);
   const result = await createMultiSheetExcel(
     data.sheets.map((sheet) => ({
       name: sheet.name,
       data: [sheet.headers, ...sheet.rows],
       options: {
         autoFormulas: sheet.formulas !== false,
+        conditionalFormatting: wantsConditionalFormatting,
+        includeCharts: wantsChart,
         autoColumnWidth: true,
         freezeHeader: true,
       },
@@ -346,8 +439,10 @@ export async function buildSeedXlsxFromObjective(objective: string): Promise<See
     },
   );
 
+  const finalBuffer = wantsChart ? await injectChartParts(result.buffer) : result.buffer;
+
   return {
-    buffer: result.buffer,
+    buffer: finalBuffer,
     fileName: result.filename || `${sanitizeBaseName(data.title)}.xlsx`,
   };
 }
