@@ -237,97 +237,14 @@ export function createStripeRouter() {
     }
   });
 
-  router.get("/api/stripe/price-ids", async (req, res) => {
+  router.get("/api/stripe/price-ids", async (_req, res) => {
     try {
-      const priceMapping: Record<string, string> = {};
-
-      try {
-        const result = await db.execute(sql`
-          SELECT 
-            p.name as product_name,
-            pr.id as price_id,
-            pr.unit_amount
-          FROM stripe.products p
-          LEFT JOIN stripe.prices pr ON pr.product = p.id AND pr.active = true
-          WHERE p.active = true
-          ORDER BY pr.unit_amount ASC
-        `);
-
-        for (const row of result.rows as any[]) {
-          const productName = (row.product_name || "").toLowerCase();
-          const amount = row.unit_amount;
-
-          if (productName.includes("go") || amount === 500) {
-            priceMapping.price_go_monthly = row.price_id;
-          } else if (productName.includes("plus") || amount === 1000) {
-            priceMapping.price_plus_monthly = row.price_id;
-          } else if (productName.includes("pro") || amount === 2000) {
-            priceMapping.price_pro_yearly = row.price_id;
-          }
-        }
-      } catch (dbError) {
-        console.log("DB lookup failed, trying Stripe API directly");
-      }
-
-      if (Object.keys(priceMapping).length === 0) {
-        try {
-          const stripe = await getUncachableStripeClient();
-          // Add retry logic for Stripe API calls
-          const prices = await withRetry(
-            () => stripe.prices.list({ active: true, limit: 100, expand: ["data.product"] }),
-            { maxAttempts: 3, initialDelayMs: 1000 }
-          );
-
-          // Prefer mapping by product name to avoid picking legacy prices
-          for (const price of prices.data) {
-            const amount = price.unit_amount;
-            const interval = price.recurring?.interval;
-            const productName =
-              typeof price.product === "object" && price.product && "name" in price.product
-                ? String((price.product as any).name || "").toLowerCase()
-                : "";
-
-            if (interval !== "month") continue;
-
-            if (productName.includes("iliagpt business") || productName === "business") {
-              if (amount === 2500) priceMapping.price_business_monthly = price.id;
-              continue;
-            }
-
-            if (productName.includes("iliagpt pro") || productName === "pro") {
-              if (amount === 20000) priceMapping.price_pro_monthly = price.id;
-              continue;
-            }
-
-            if (productName.includes("iliagpt plus") || productName === "plus") {
-              if (amount === 1000) priceMapping.price_plus_monthly = price.id;
-              continue;
-            }
-
-            if (productName.includes("iliagpt go") || productName === "go") {
-              if (amount === 500) priceMapping.price_go_monthly = price.id;
-              continue;
-            }
-          }
-
-          // Fallback by amount if still missing
-          for (const price of prices.data) {
-            if (typeof price.product === "object") {
-              // already handled above
-            }
-            const amount = price.unit_amount;
-            const interval = price.recurring?.interval;
-            if (interval !== "month") continue;
-
-            if (!priceMapping.price_go_monthly && amount === 500) priceMapping.price_go_monthly = price.id;
-            if (!priceMapping.price_plus_monthly && amount === 1000) priceMapping.price_plus_monthly = price.id;
-            if (!priceMapping.price_pro_monthly && amount === 20000) priceMapping.price_pro_monthly = price.id;
-            if (!priceMapping.price_business_monthly && amount === 2500) priceMapping.price_business_monthly = price.id;
-          }
-        } catch (stripeError: any) {
-          console.error("Stripe API lookup failed:", stripeError.message);
-        }
-      }
+      const priceMapping: Record<string, string> = {
+        price_go_monthly: "price_1TKTTBLGmNEE3GHToLHlsXRp",
+        price_plus_monthly: "price_1TKTTBLGmNEE3GHTAw50pNJj",
+        price_business_monthly: "price_1TKTTCLGmNEE3GHT4xGmDqlT",
+        price_pro_monthly: "price_1TKTTCLGmNEE3GHTZbCQKCJX",
+      };
 
       res.json({ priceMapping });
     } catch (error: any) {

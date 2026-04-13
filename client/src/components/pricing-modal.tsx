@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Check, Zap, Rocket, Star, Crown, Clock } from "lucide-react";
+import { Check, Zap, Rocket, Star, Crown, Clock, Shield } from "lucide-react";
 import { apiFetch } from "@/lib/apiClient";
 
 interface QuotaInfo {
@@ -103,10 +103,30 @@ const plans: PlanInfo[] = [
     ],
   },
   {
+    id: "business",
+    name: "Business",
+    price: "$25",
+    priceId: "price_business_monthly",
+    description: "Mejora la productividad con IA para equipos",
+    icon: <Shield className="h-6 w-6" />,
+    gradient: "from-emerald-500 to-teal-600",
+    buttonText: "Obtener Business",
+    features: [
+      { text: "Análisis profesional avanzado", included: true },
+      { text: "Mensajes ilimitados con GPT-5", included: true },
+      { text: "Produce imágenes, videos, presentaciones y más", included: true },
+      { text: "Protege tu espacio con SSO, MFA y más", included: true },
+      { text: "Privacidad; datos nunca usados para entrenamiento", included: true },
+      { text: "Comparte proyectos y GPT personalizados", included: true },
+      { text: "Integración con SharePoint y otras herramientas", included: true },
+      { text: "Facturación y administración de usuarios simplificada", included: true },
+    ],
+  },
+  {
     id: "pro",
     name: "Pro",
-    price: "$20",
-    priceId: "price_pro_yearly",
+    price: "$200",
+    priceId: "price_pro_monthly",
     description: "Maximiza tu productividad",
     icon: <Crown className="h-6 w-6" />,
     gradient: "from-amber-500 to-orange-600",
