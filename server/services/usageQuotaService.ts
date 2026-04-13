@@ -91,6 +91,8 @@ const PLAN_LIMITS: Record<string, PlanLimits> = {
   go: { dailyRequests: 50, model: "grok-4-1-fast-non-reasoning" },
   plus: { dailyRequests: 200, model: "grok-4-1-fast-non-reasoning" },
   pro: { dailyRequests: -1, model: "grok-4-1-fast-non-reasoning" },
+  business: { dailyRequests: -1, model: "grok-4-1-fast-non-reasoning" },
+  enterprise: { dailyRequests: -1, model: "grok-4-1-fast-non-reasoning" },
   admin: { dailyRequests: -1, model: "grok-4-1-fast-non-reasoning" },
 };
 
