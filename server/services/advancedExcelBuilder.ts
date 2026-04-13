@@ -460,20 +460,49 @@ export class AdvancedExcelBuilder {
 
             if (values.length > 0) {
                 const range = `${colLetter}2:${colLetter}${numRows}`;
+                const hasNegative = values.some(v => v < 0);
 
-                // Add data bar
-                sheet.addConditionalFormatting({
-                    ref: range,
-                    rules: [{
-                        type: "dataBar",
-                        priority: 1,
-                        dataBar: {
-                            showValue: true,
-                            gradient: true,
-                            color: { argb: this.theme.accentColor }
-                        }
-                    }]
-                });
+                if (hasNegative) {
+                    // Red for negative, green for positive
+                    sheet.addConditionalFormatting({
+                        ref: range,
+                        rules: [
+                            {
+                                type: "cellIs",
+                                priority: 1,
+                                operator: "lessThan",
+                                formulae: [0],
+                                style: { font: { color: { argb: "FF9C0006" } }, fill: { type: "pattern", pattern: "solid", bgColor: { argb: "FFFFC7CE" } } },
+                            },
+                            {
+                                type: "cellIs",
+                                priority: 2,
+                                operator: "greaterThan",
+                                formulae: [0],
+                                style: { font: { color: { argb: "FF006100" } }, fill: { type: "pattern", pattern: "solid", bgColor: { argb: "FFC6EFCE" } } },
+                            },
+                        ],
+                    });
+                } else {
+                    // Color scale: green to yellow to red
+                    sheet.addConditionalFormatting({
+                        ref: range,
+                        rules: [{
+                            type: "colorScale",
+                            priority: 1,
+                            cfvo: [
+                                { type: "min" },
+                                { type: "percentile", value: 50 },
+                                { type: "max" },
+                            ],
+                            color: [
+                                { argb: "FFF8696B" },
+                                { argb: "FFFFEB84" },
+                                { argb: "FF63BE7B" },
+                            ],
+                        }],
+                    });
+                }
             }
         }
     }

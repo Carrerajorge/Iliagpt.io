@@ -29,10 +29,13 @@ function ensureArtifactsDir(): void {
 }
 
 function sanitizeFilename(name: string): string {
-  return name
+  const ext = path.extname(name);
+  const base = name.slice(0, name.length - ext.length);
+  const sanitized = base
     .replace(/[^a-zA-Z0-9\u00C0-\u024F _-]/g, "")
     .replace(/\s+/g, "_")
     .slice(0, 60);
+  return sanitized + ext;
 }
 
 /**
