@@ -617,16 +617,19 @@ async function handleMethod(client: GatewayClient, id: number | string, method: 
   const ws = client.ws;
 
   switch (method) {
-    case "connect":
+    case "connect": {
       client.authenticated = true;
       client.clientName = params?.client?.name || "control-ui";
       client.role = params?.client?.role || "control";
-      if (params?.auth?.authToken) {
-        const resolvedUserId = resolveUserIdFromToken(params.auth.authToken);
-        client.userId = resolvedUserId || `token:${params.auth.authToken.slice(0, 8)}`;
+      const providedToken = params?.auth?.authToken || params?.auth?.token || params?.token;
+      let authMode: string = "none";
+      if (providedToken) {
+        const resolvedUserId = resolveUserIdFromToken(providedToken);
+        client.userId = resolvedUserId || `token:${providedToken.slice(0, 8)}`;
         if (resolvedUserId) {
           ensureUserRowExists(resolvedUserId).catch(() => {});
         }
+        authMode = "token";
       }
       console.log(`[OpenClaw Gateway] Client authenticated: ${client.clientName} (role=${client.role})`);
       reply(ws, id, {
@@ -648,7 +651,7 @@ async function handleMethod(client: GatewayClient, id: number | string, method: 
           "web-search",
           "desktop-native-mode",
         ],
-        auth: { mode: "token", accepted: true, role: client.role, scopes: ["operator.read", "operator.write"] },
+        auth: { mode: authMode, accepted: true, role: client.role, scopes: ["operator.read", "operator.write"] },
         presence: [],
       });
       send(ws, {
@@ -661,6 +664,7 @@ async function handleMethod(client: GatewayClient, id: number | string, method: 
         },
       });
       break;
+    }
 
     case "status":
       reply(ws, id, {
