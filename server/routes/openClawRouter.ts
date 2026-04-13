@@ -395,10 +395,10 @@ import {
   OPENCLAW_RELEASE_DATE,
   OPENCLAW_VERSION,
   getEnabledFeatures,
-} from "../openclaw/fusion/v2026_4_2";
-import { getTaskBoard } from "../openclaw/fusion/v2026_4_2/taskBoard";
-import { getGatewayResilience } from "../openclaw/fusion/v2026_4_2/gatewayResilience";
-import { getModelSwitchQueue } from "../openclaw/fusion/v2026_4_2/modelSwitchQueue";
+} from "../openclaw/fusion/v2026_4_3";
+import { getTaskBoard } from "../openclaw/fusion/v2026_4_3/taskBoard";
+import { getGatewayResilience } from "../openclaw/fusion/v2026_4_3/gatewayResilience";
+import { getModelSwitchQueue } from "../openclaw/fusion/v2026_4_3/modelSwitchQueue";
 
 router.get("/version", (_req: Request, res: Response) => {
   res.json({

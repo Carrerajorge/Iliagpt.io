@@ -611,7 +611,8 @@ export function Sidebar({
           <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
             <span aria-hidden="true" className="sidebar-tool-icon text-[14px] leading-none pointer-events-none">🦞</span>
           </span>
-          <span className="pointer-events-none">OpenClaw</span>
+          <span className="pointer-events-none flex-1">OpenClaw</span>
+          <span className="pointer-events-none text-[9px] font-mono text-muted-foreground/50 shrink-0">v2026.4.12</span>
         </button>
         <button onClick={onOpenSkills} data-tool-motion="skills" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-skills">
           <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">

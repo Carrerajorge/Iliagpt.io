@@ -3,6 +3,9 @@ import { useLocation } from "wouter";
 import { ChevronLeft } from "lucide-react";
 import { apiFetch } from "@/lib/apiClient";
 
+const OPENCLAW_VERSION = "2026.4.12";
+const OPENCLAW_RELEASE_URL = `https://github.com/openclaw/openclaw/releases/tag/v${OPENCLAW_VERSION}`;
+
 const OPENCLAW_OPTIMIZE_STORAGE_KEY = "ilia:openclaw:last-optimize-at";
 const OPENCLAW_OPTIMIZE_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -97,6 +100,15 @@ export default function OpenClawPage() {
         </button>
         <span className="text-muted-foreground/50">›</span>
         <span className="text-sm font-medium">OpenClaw</span>
+        <a
+          href={OPENCLAW_RELEASE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="ml-1 text-[10px] font-mono text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+          data-testid="link-openclaw-version"
+        >
+          v{OPENCLAW_VERSION}
+        </a>
       </div>
       <iframe
         src={iframeSrc}
