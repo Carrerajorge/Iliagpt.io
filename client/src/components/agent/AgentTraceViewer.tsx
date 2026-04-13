@@ -163,9 +163,10 @@ function StepTimeline({ steps, runId }: { steps: TraceStep[]; runId: string }) {
 }
 
 function StepDetails({ step }: { step: TraceStep }) {
-  const shellEvents = step.events.filter(e => 
-    e.event_type === 'shell_output' || e.event_type === 'shell_chunk' || e.event_type === 'shell_exit' || e.event_type === 'tool_call'
-  );
+  const shellEvents = step.events.filter((e) => {
+    const eventType = String(e.event_type);
+    return eventType === 'shell_output' || eventType === 'shell_chunk' || eventType === 'shell_exit' || eventType === 'tool_call';
+  });
   
   const hasArtifacts = step.artifacts.length > 0;
   const hasLogs = step.events.length > 0;
@@ -279,13 +280,10 @@ function ArtifactsPanel({ step }: { step: TraceStep }) {
 }
 
 function ShellPanel({ step }: { step: TraceStep }) {
-  const shellEvents = step.events.filter(e => 
-    e.event_type === 'shell_output' || 
-    e.event_type === 'shell_chunk' ||
-    e.event_type === 'shell_exit' ||
-    e.event_type === 'tool_call' ||
-    e.event_type === 'tool_output'
-  );
+  const shellEvents = step.events.filter((e) => {
+    const eventType = String(e.event_type);
+    return eventType === 'shell_output' || eventType === 'shell_chunk' || eventType === 'shell_exit' || eventType === 'tool_call' || eventType === 'tool_output';
+  });
 
   if (shellEvents.length === 0) {
     return (

@@ -81,7 +81,7 @@ function StreamingCursor() {
     <motion.span
       className="inline-block w-[2px] h-[1em] bg-foreground align-middle ml-[1px]"
       animate={{ opacity: [1, 0, 1] }}
-      transition={{ duration: 0.9, repeat: Infinity, ease: 'steps(2)' }}
+      transition={{ duration: 0.9, repeat: Infinity, ease: 'linear' }}
     />
   );
 }
@@ -232,7 +232,7 @@ export function AgenticChat({
   placeholder = 'Message the agent…',
   onMessageSent,
 }: AgenticChatProps) {
-  const { state, sendMessage, cancelStream } = useAgenticChat(chatId);
+  const { state, sendMessage, cancel } = useAgenticChat({ chatId });
 
   const [input, setInput] = useState('');
   const [errorDismissed, setErrorDismissed] = useState(false);
@@ -436,7 +436,7 @@ export function AgenticChat({
             <Button
               size="sm"
               variant="ghost"
-              onClick={cancelStream}
+              onClick={cancel}
               className="h-6 px-2 text-xs gap-1 text-muted-foreground hover:text-foreground"
             >
               <Square className="h-2.5 w-2.5 fill-current" />
