@@ -11,7 +11,7 @@
  *   plain content         → MarkdownContent fallback
  */
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { createElement, useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Brain,
@@ -24,7 +24,7 @@ import {
 import { cn } from '@/lib/utils';
 import { ToolCallCard } from '@/components/agentic/ToolCallCard';
 import { CodeExecutionView, type CodeExecutionResult } from '@/components/agentic/CodeExecutionView';
-import type { ToolCall, ParsedAgenticMessage } from '@/hooks/useAgenticChat';
+import type { ToolCall, ParsedAgenticMessage } from '@/lib/agentic/agenticStreamParser';
 import type { MessageNode } from '@/lib/agentic/agenticStreamParser';
 import { useAgenticChatContext } from './AgenticChatProvider';
 
@@ -138,12 +138,13 @@ function parseMarkdown(raw: string): React.ReactNode[] {
       flushList(`list-${i}`);
       const level = headingMatch[1].length as 1 | 2 | 3;
       const content = headingMatch[2];
-      const Tag = `h${level}` as keyof JSX.IntrinsicElements;
       const sizeClass = level === 1 ? 'text-lg font-bold' : level === 2 ? 'text-base font-bold' : 'text-sm font-semibold';
       nodes.push(
-        <Tag key={`h-${i}`} className={cn(sizeClass, 'mt-3 mb-1')}>
-          {renderInline(content)}
-        </Tag>
+        createElement(
+          `h${level}`,
+          { key: `h-${i}`, className: cn(sizeClass, 'mt-3 mb-1') },
+          renderInline(content),
+        )
       );
       i++;
       continue;
@@ -362,12 +363,13 @@ function buildExecution(toolCall: ToolCall): CodeExecutionResult {
   const result = toolCall.result as Record<string, unknown> | null | undefined;
 
   return {
+    id: toolCall.id,
     code: typeof args.code === 'string' ? args.code : '',
     language: typeof args.language === 'string' ? args.language : 'python',
     status:
-      toolCall.status === 'succeeded'
+      toolCall.status === 'success'
         ? 'success'
-        : toolCall.status === 'failed'
+        : toolCall.status === 'error'
         ? 'error'
         : 'running',
     stdout:

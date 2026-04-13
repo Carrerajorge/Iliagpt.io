@@ -39,7 +39,7 @@ import type { BackgroundTask } from '@/hooks/useBackgroundTasks';
 // ─── Task status helpers ──────────────────────────────────────────────────────
 
 function isRunningStatus(status: BackgroundTask['status']): boolean {
-  return status === 'running' || status === 'pending' || status === 'queued';
+  return status === 'running' || status === 'queued';
 }
 
 function isTerminalStatus(status: BackgroundTask['status']): boolean {
@@ -49,7 +49,6 @@ function isTerminalStatus(status: BackgroundTask['status']): boolean {
 function statusLabel(status: BackgroundTask['status']): string {
   switch (status) {
     case 'running': return 'Running';
-    case 'pending': return 'Pending';
     case 'queued': return 'Queued';
     case 'completed': return 'Done';
     case 'failed': return 'Failed';

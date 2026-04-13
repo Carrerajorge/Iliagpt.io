@@ -19,6 +19,7 @@ import { SkipLink } from "@/lib/accessibility";
 import { trackWorkspaceEvent } from "@/lib/analytics";
 import { Loader2 } from "lucide-react";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const lazyWithRetry = <T extends React.ComponentType<any>>(
   componentImport: () => Promise<{ default: T }>
 ) =>
@@ -75,7 +76,8 @@ const isLocalDevHost = () => {
   return false;
 };
 
-function RootRoute(props: any) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars
+function RootRoute(_props: any) {
   const { isReady, isAuthenticated } = useAuth();
   const [location] = useLocation();
   const localHost = isLocalDevHost();
@@ -94,7 +96,9 @@ function RootRoute(props: any) {
 
 // Wouter passes RouteComponentProps to route components; pages typically ignore them.
 // Keep this permissive so protected routes type-check cleanly.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function requireAuth(Component: ComponentType<any>) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return function ProtectedRoute(props: any) {
     const { isReady, isAuthenticated } = useAuth();
     const [, setLocation] = useLocation();
@@ -128,6 +132,7 @@ function WorkspaceAnalyticsTracker() {
   return null;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function ChatPageRedirect() {
   const params = useParams<{ id: string }>();
   const [, setLocation] = useLocation();

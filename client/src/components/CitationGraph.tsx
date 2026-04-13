@@ -1,6 +1,7 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Citation Graph Component
- * 
+ *
  * Features:
  * - D3.js force-directed graph visualization
  * - Interactive node exploration

@@ -158,9 +158,10 @@ export function OfficeArtifact({ title, previewUrl, downloadUrl, mimeType, docKi
         if (kind === "pptx") {
           // Try PptxViewJS for real in-browser PPTX rendering
           try {
-            const PptxViewJS = (await import("pptxviewjs")).default;
-            const viewer = new PptxViewJS(container);
-            await viewer.load(buf);
+            const pptxMod = await import("pptxviewjs");
+            const ViewerClass = pptxMod.PPTXViewer ?? (pptxMod.default as any)?.PPTXViewer;
+            const viewer = new ViewerClass();
+            await viewer.loadFile(buf);
             if (!cancelled) setStatus("ready");
           } catch (pptxErr) {
             console.warn("[OfficeArtifact] PptxViewJS failed, showing download fallback:", pptxErr);
