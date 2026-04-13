@@ -362,6 +362,14 @@ async function resolveUserAccessProfile(userId?: string | null): Promise<UserAcc
   };
 }
 
+function isPresetModel(modelId: string): boolean {
+  const lower = normalizeLower(modelId);
+  return BRANDING_PRESETS.some((preset) =>
+    preset.matchIds.some((candidate) => candidate.toLowerCase() === lower) ||
+    preset.canonicalModelId.toLowerCase() === lower,
+  );
+}
+
 async function loadBaseCatalog(): Promise<BaseCatalogState> {
   const now = Date.now();
   if (baseCatalogCache && baseCatalogCacheExpiresAt > now) {
@@ -371,9 +379,10 @@ async function loadBaseCatalog(): Promise<BaseCatalogState> {
   const allModels = await storage.getAiModels();
   const models = mergeCuratedPresetEntries(
     allModels
-    .filter((model: any) => isModelEligibleForPublic(model))
+    .filter((model: any) => isModelEligibleForPublic(model) && isPresetModel(model.modelId))
     .map((model: any) => buildBaseEntry(model))
   )
+    .filter((model) => isPresetModel(model.modelId))
     .sort((left, right) => {
       const orderDelta = (left.displayOrder || 0) - (right.displayOrder || 0);
       if (orderDelta !== 0) return orderDelta;
