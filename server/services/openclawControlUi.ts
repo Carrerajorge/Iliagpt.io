@@ -82,6 +82,57 @@ try{
   localStorage.setItem(SK,JSON.stringify(s));
   localStorage.setItem(TK+":"+gk,tk);
   localStorage.setItem(TK,tk);
+
+  function tryAutoConnect(){
+    var tried=0;
+    var maxTries=40;
+    function attempt(){
+      tried++;
+      var inputs=document.querySelectorAll("input");
+      var wsInput=null;
+      for(var k=0;k<inputs.length;k++){
+        var v=inputs[k].value||inputs[k].placeholder||"";
+        if(v.indexOf("ws")===0||v.indexOf("openclaw")>=0){wsInput=inputs[k];break;}
+      }
+      if(!wsInput&&tried<maxTries){setTimeout(attempt,150);return;}
+      var nativeInputValueSetter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,"value").set;
+      if(wsInput&&!wsInput.value){
+        nativeInputValueSetter.call(wsInput,w);
+        wsInput.dispatchEvent(new Event("input",{bubbles:true}));
+      }
+      var tokenInputs=document.querySelectorAll("input[type='password'],input[type='text']");
+      for(var m=0;m<tokenInputs.length;m++){
+        var ti=tokenInputs[m];
+        var ph=ti.getAttribute("placeholder")||"";
+        if(ph.indexOf("oken")>=0||ph.indexOf("TOKEN")>=0){
+          if(!ti.value&&tk){
+            nativeInputValueSetter.call(ti,tk);
+            ti.dispatchEvent(new Event("input",{bubbles:true}));
+          }
+          break;
+        }
+      }
+      setTimeout(function(){
+        var btns=document.querySelectorAll("button");
+        var connectBtn=null;
+        for(var b=0;b<btns.length;b++){
+          var txt=(btns[b].textContent||"").toLowerCase().trim();
+          if(txt==="conectar"||txt==="connect"||txt==="connect gateway"){connectBtn=btns[b];break;}
+        }
+        if(connectBtn&&!connectBtn.disabled){
+          connectBtn.click();
+        } else if(tried<maxTries){
+          setTimeout(attempt,200);
+        }
+      },100);
+    }
+    if(document.readyState==="loading"){
+      document.addEventListener("DOMContentLoaded",function(){setTimeout(attempt,300);});
+    } else {
+      setTimeout(attempt,300);
+    }
+  }
+  tryAutoConnect();
 }catch(e){console.error("[OC-Pre]",e)}
 })()`;
 }
