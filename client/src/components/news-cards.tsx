@@ -508,51 +508,6 @@ export const NewsCards = memo(function NewsCards({ sources, maxDisplay = 8, onRe
           )}
         </div>
 
-        <div className="mt-3 space-y-1.5">
-          {displaySources.map((source, idx) => {
-            const domain = source.domain?.replace(/^www\./, "") || "";
-            const academic = isAcademicSource(source);
-            return (
-              <a
-                key={`summary-${idx}`}
-                href={source.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-start gap-2 px-2 py-1.5 rounded-md hover:bg-muted/60 transition-colors group text-left"
-                data-testid={`source-link-${idx}`}
-              >
-                <span className="text-[10px] text-muted-foreground/50 font-mono mt-0.5 w-4 flex-shrink-0 text-right">
-                  {idx + 1}
-                </span>
-                <img
-                  src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`}
-                  alt=""
-                  className="w-4 h-4 rounded-full mt-0.5 flex-shrink-0"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1 min-w-0">
-                    <span className="text-xs font-medium text-foreground truncate group-hover:text-primary transition-colors min-w-0">
-                      {source.title || domain}
-                    </span>
-                    {academic && <GraduationCap className="w-3 h-3 text-amber-500 flex-shrink-0" />}
-                    <ExternalLink className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
-                  </div>
-                  {source.snippet && (
-                    <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">
-                      {source.snippet}
-                    </p>
-                  )}
-                  <span className="text-[10px] text-muted-foreground/60">
-                    {domain}
-                    {source.date && ` · ${formatRelativeDate(source.date, { timeZone: platformTimeZone, dateFormat: platformDateFormat })}`}
-                  </span>
-                  {academic && <AcademicCitation source={source} />}
-                </div>
-              </a>
-            );
-          })}
-        </div>
       </div>
 
       <SourcesPanel
