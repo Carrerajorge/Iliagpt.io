@@ -213,7 +213,7 @@ export function useStreamChat(deps: StreamChatDeps) {
 
   const setAiState = useCallback<StreamChatDeps["setAiState"]>((...args) => depsRef.current.setAiState(...args), []);
   const setAiProcessSteps = useCallback<NonNullable<StreamChatDeps["setAiProcessSteps"]>>((...args) => depsRef.current.setAiProcessSteps?.(...args), []);
-  const getActiveConversationId = useCallback<NonNullable<StreamChatDeps["getActiveConversationId"]>>(() => depsRef.current.getActiveConversationId?.(), []);
+  const getActiveConversationId = useCallback<NonNullable<StreamChatDeps["getActiveConversationId"]>>(() => depsRef.current.getActiveConversationId?.() ?? null, []);
   const setOptimisticMessages = useCallback<StreamChatDeps["setOptimisticMessages"]>((...args) => depsRef.current.setOptimisticMessages(...args), []);
   const onSendMessage = useCallback<StreamChatDeps["onSendMessage"]>((...args) => depsRef.current.onSendMessage(...args), []);
   const setStreamingContent = useCallback<StreamChatDeps["setStreamingContent"]>((...args) => depsRef.current.setStreamingContent(...args), []);
@@ -238,7 +238,7 @@ export function useStreamChat(deps: StreamChatDeps) {
     const activeSession = session || getSession(conversationId);
     setAiProcessSteps?.(
       activeSession.queueDepth > 0
-        ? [{ id: "conversation-queue", label: "En cola", status: "in_progress" as const }]
+        ? [{ id: "conversation-queue", label: "En cola", status: "active" as const }]
         : [],
       conversationId,
     );
@@ -735,7 +735,7 @@ export function useStreamChat(deps: StreamChatDeps) {
                   requestId: restoredRequestId || `req_hydrated_${Date.now()}`,
                   content: restoredContent,
                   fallbackContent: "Respuesta recuperada.",
-                });
+                }) as Message;
                 finalize(msg, conversationId, "done");
               } else if (progress.status === "failed") {
                 clearResilienceUi(conversationId);
@@ -1427,7 +1427,7 @@ export function useStreamChat(deps: StreamChatDeps) {
                       : messageId;
                     const isServerPersisted = finalMessageId !== messageId;
 
-                    const msg = buildFinalMessage?.(fullContent, data, finalMessageId) ?? buildAssistantMessage({
+                    const msg = (buildFinalMessage?.(fullContent, data, finalMessageId) ?? buildAssistantMessage({
                       id: finalMessageId,
                       timestamp: new Date(),
                       requestId: data.requestId || streamRequestId,
@@ -1441,7 +1441,7 @@ export function useStreamChat(deps: StreamChatDeps) {
                       uncertaintyReason: data.uncertaintyReason,
                       retrievalSteps: data.retrievalSteps,
                       steps: data.steps,
-                    });
+                    })) as Message;
 
                     if (isServerPersisted) {
                       (msg as any).serverPersisted = true;
@@ -1506,7 +1506,7 @@ export function useStreamChat(deps: StreamChatDeps) {
               if (!session.finalizing && terminalContent) {
                 clearTokenTimeouts();
                 flushNow(conversationId);
-                const msg = buildFinalMessage?.(terminalContent, lastEventData, messageId) ?? buildAssistantMessage({
+                const msg = (buildFinalMessage?.(terminalContent, lastEventData, messageId) ?? buildAssistantMessage({
                   id: messageId,
                   timestamp: new Date(),
                   requestId: streamRequestId,
@@ -1520,7 +1520,7 @@ export function useStreamChat(deps: StreamChatDeps) {
                   uncertaintyReason: lastEventData?.uncertaintyReason,
                   retrievalSteps: lastEventData?.retrievalSteps,
                   steps: lastEventData?.steps,
-                });
+                })) as Message;
 
                 finalize(msg, conversationId, "done");
                 return { ok: true, content: terminalContent, message: msg, response };
