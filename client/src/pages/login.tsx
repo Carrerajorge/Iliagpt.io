@@ -522,35 +522,6 @@ export default function LoginPage() {
               {/* Coming Soon Options */}
               <ComingSoonButton icon={Apple} label="Continuar con Apple" />
 
-              {/* Microsoft - Coming Soon */}
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div className="relative fade-in-up fade-in-up-delay-3">
-                      <Button
-                        variant="outline"
-                        className="w-full h-12 justify-start gap-3 rounded-xl text-base font-normal bg-muted/30 border-border text-muted-foreground cursor-not-allowed"
-                        disabled
-                      >
-                        <svg className="h-5 w-5" viewBox="0 0 23 23" aria-hidden="true">
-                          <path fill="#f35325" d="M1 1h10v10H1z" />
-                          <path fill="#81bc06" d="M12 1h10v10H12z" />
-                          <path fill="#05a6f0" d="M1 12h10v10H1z" />
-                          <path fill="#ffba08" d="M12 12h10v10H12z" />
-                        </svg>
-                        <span className="text-muted-foreground">Continuar con Microsoft</span>
-                        <span className="ml-auto text-xs bg-background text-muted-foreground border border-border px-2 py-0.5 rounded-full font-medium">
-                          Próximamente
-                        </span>
-                      </Button>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Esta opción estará disponible pronto</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-
               {/* Phone Authentication */}
               <Button
                 variant="outline"
