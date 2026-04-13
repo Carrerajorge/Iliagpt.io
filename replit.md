@@ -1,29 +1,27 @@
 # IliaGPT
 
 ## Overview
-IliaGPT is an AI-powered chat application designed as an intelligent assistant for autonomous web browsing and document creation. Its core purpose is to offer a versatile platform for AI-driven tasks, including economic data analysis, multi-intent prompt processing, and professional document generation. The ambition is for IliaGPT to become a leading AI assistant for productivity.
+IliaGPT is an AI-powered chat application designed as an intelligent assistant for autonomous web browsing and document creation. Its primary purpose is to provide a versatile platform for AI-driven tasks, including economic data analysis, multi-intent prompt processing, and professional document generation. The project's vision is to become a leading AI assistant for productivity, offering advanced capabilities for various AI-driven tasks.
 
 ## User Preferences
 Preferred communication style: Simple, everyday language.
 
 ## System Architecture
-IliaGPT employs a monorepo structure with distinct client, server, and shared components, enforcing type safety with Zod schemas.
+IliaGPT is built with a monorepo structure, ensuring type safety with Zod schemas across client, server, and shared components.
 
-The frontend, built with React, TypeScript, Vite, shadcn/ui, and Tailwind CSS, provides a modern, themable interface supporting light/dark modes. Key UI features include chat management, prompt templates, PWA capabilities, keyboard shortcuts, and rich rendering of Markdown, code, and mathematical expressions. Data visualization is powered by Recharts, ECharts, and TanStack Table, with performance optimized through virtualization, memoization, lazy loading, and streaming UX.
+The frontend, developed with React, TypeScript, Vite, shadcn/ui, and Tailwind CSS, offers a modern, themable interface with light/dark modes, chat management, prompt templates, PWA capabilities, and keyboard shortcuts. It supports rich rendering of Markdown, code, and mathematical expressions, with data visualization via Recharts, ECharts, and TanStack Table. Performance is optimized using virtualization, memoization, lazy loading, and streaming UX.
 
-The backend, developed with Node.js and Express.js, features a robust LLM Gateway for AI model interactions, incorporating multi-provider fallback, caching, token tracking, and circuit breakers. It supports advanced agentic capabilities like OpenAI-compatible function calling and an ETL Agent for economic data. A Multi-Intent Pipeline processes complex prompts, while a PARE System handles document processing with per-document citations. A Document Generation System orchestrates LLMs for creating Excel and Word files, augmented by a Spreadsheet Analyzer Module for AI-powered analysis within a secure Python sandbox.
+The backend, powered by Node.js and Express.js, includes a robust LLM Gateway for AI model interactions, featuring multi-provider fallback, caching, token tracking, and circuit breakers. It supports OpenAI-compatible function calling and an ETL Agent for economic data. A Multi-Intent Pipeline processes complex prompts, while a PARE System handles document processing with per-document citations. The Document Generation System orchestrates LLMs for creating Excel and Word files, augmented by a Spreadsheet Analyzer Module within a secure Python sandbox.
 
-The system integrates an AGENTOS-ASI Cerebro Pipeline, a neuro-symbolic hierarchical agent comprising Planner, Executor, Critic, and Judge stages, alongside a WorldModel for environmental state tracking. A Multi-Model Router manages policy-based routing across model tiers with integrated circuit breakers. Universal Tool Calling supports diverse model output formats and utilizes a Tool Execution Engine for unified execution, health monitoring, and error classification. An Agent Executor manages tool dispatching, including aliasing and parameter normalization.
+The system incorporates an AGENTOS-ASI Cerebro Pipeline, a neuro-symbolic hierarchical agent with Planner, Executor, Critic, and Judge stages, alongside a WorldModel. A Multi-Model Router manages policy-based routing with integrated circuit breakers. Universal Tool Calling supports diverse model output formats and utilizes a Tool Execution Engine for unified execution. An Agent Executor manages tool dispatching, including aliasing and parameter normalization.
 
-Authentication is handled via Google OAuth, featuring robust identity resolution and auto-migration for user profiles. The system operates in an always-on Agentic Mode, employing intent-aware tool forcing and providing structured progress tracking through execution plan SSE events. It incorporates a secure File-Plane, a Computer-Control-Plane for command governance, a Skills Kernel for enhanced tool management, and an Enhanced Memory System. Event Sourcing and OpenTelemetry Tracing are used for agent run monitoring, and a RAG++ Service offers advanced document understanding.
+Authentication is managed via Google OAuth with robust identity resolution. The system operates in an always-on Agentic Mode, employing intent-aware tool forcing and providing structured progress tracking via SSE events. It includes a secure File-Plane, Computer-Control-Plane for command governance, a Skills Kernel for tool management, and an Enhanced Memory System. Event Sourcing and OpenTelemetry Tracing are used for agent run monitoring, and a RAG++ Service offers advanced document understanding.
 
-Frontend enhancements include live streaming of tool outputs, real-time DAG visualizations of agent execution, run replay, plan diff viewing, and budget dashboards. The system supports Super-Agent Proactive Behavior, an Agent Soul & Personality system, a Deep Research Agent, and Continuous Self-Improvement. The core Agent Infrastructure is built upon a modular plugin architecture, StateMachine, Typed Contracts, and a PolicyEngine. A Tool Registry provides 103 sandboxed agent tools, with Agent Orchestration leveraging a Manus-like architecture and LangGraph, including human-in-the-loop approvals. Unified tool execution is facilitated by a Python Agent Tools System (FastAPI microservice) and a TypeScript Tool Execution Engine.
+Frontend features include live streaming of tool outputs, real-time DAG visualizations of agent execution, run replay, plan diff viewing, and budget dashboards. The system supports Super-Agent Proactive Behavior, an Agent Soul & Personality system, a Deep Research Agent, and Continuous Self-Improvement. The core Agent Infrastructure is built upon a modular plugin architecture, StateMachine, Typed Contracts, and a PolicyEngine. A Tool Registry provides 103 sandboxed agent tools, with Agent Orchestration leveraging a Manus-like architecture and LangGraph, including human-in-the-loop approvals. Unified tool execution is facilitated by a Python Agent Tools System (FastAPI microservice) and a TypeScript Tool Execution Engine.
 
-The system integrates live OpenRouter API for fetching a comprehensive model catalog and offers multi-provider Image and Video Generation capabilities, along with a Media Cost Tracker for unified cost and budget enforcement. A Governance Mode System defines explicit operational modes with permissions and audit trails. The Security-Plane includes prompt injection detection and output sanitization.
+The system integrates the OpenRouter API for a comprehensive model catalog and offers multi-provider Image and Video Generation with a Media Cost Tracker for unified cost and budget enforcement. A Governance Mode System defines explicit operational modes with permissions and audit trails. The Security-Plane includes prompt injection detection and output sanitization.
 
-An experimental SuperOrchestrator v1 provides distributed agent execution with DAG scheduling and BullMQ persistent queues, including governance features like kill switches and budget auto-pause. An in-chat advertising platform, IliaADS, serves contextual ads. The search UX is enhanced with URL paste fixes, intent-aware labels, a unified source panel with academic citations, and deep search capabilities with progress tracking. Content rendering supports professional-grade markdown with citation-aware formatting. The Intent Engine has been improved with new intent types (`CITATION_FORMAT`, `ACADEMIC_SEARCH`, `FACT_CHECK`) and enhanced constraint extraction.
-
-Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment variable, defaulting to `fast_first` in production. The system is designed for high scalability, targeting 100M simultaneous users, utilizing optimized DB pools, Redis-backed rate limiting, compression, response caching, and socket hardening. Free users are restricted to specific free-tier models. Cerebras Direct Provider is integrated for faster inference when configured. OCR extracts text from images for non-vision models. A Workspace Agent System provides an agentic coding engine for the Codex VC workspace with SSE-streaming endpoints. Anonymous users are blocked from creating chat sessions and require Google OAuth authentication. Security enhancements include IP/User-Agent tracking for authenticated users and an enhanced admin panel for security overview.
+An experimental SuperOrchestrator provides distributed agent execution with DAG scheduling and BullMQ persistent queues, including governance features like kill switches and budget auto-pause. Search UX is enhanced with URL paste fixes, intent-aware labels, a unified source panel with academic citations, and deep search capabilities with progress tracking. Content rendering supports professional-grade markdown with citation-aware formatting. The Intent Engine has been improved with new intent types and enhanced constraint extraction. Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment variable. The system is designed for high scalability, targeting 100M simultaneous users, utilizing optimized DB pools, Redis-backed rate limiting, compression, response caching, and socket hardening. Cerebras Direct Provider is integrated for faster inference. OCR extracts text from images for non-vision models. A Workspace Agent System provides an agentic coding engine for the Codex VC workspace with SSE-streaming endpoints.
 
 ## External Dependencies
 ### AI Services
@@ -48,69 +46,8 @@ Web retrieval is configurable via the `WEB_RETRIEVAL_PIPELINE` environment varia
 - **Tesseract.js**: OCR for image text extraction.
 
 ### Session & Auth Architecture
-- **Session cookie**: `SameSite=None; Secure; HttpOnly` — works in cross-origin iframes (Replit preview, embedded contexts).
-- **Cookie-less fallback**: When third-party cookies are blocked (Safari ITP), the frontend sends `X-Anonymous-User-Id` + `X-Anonymous-Token` (HMAC-SHA256) headers. The server validates the token via `verifyAnonToken()` and recovers the user's identity without a cookie.
-- **Identity resolution order**: `req.user.claims.sub` → `req.user.id` → `session.authUserId` → `session.passport.user` → verified header token → `session.anonUserId` → new anon ID.
-- **Token generation**: `server/lib/anonToken.ts` — HMAC-SHA256 with `ANON_TOKEN_SECRET` env var (or random fallback).
-- **Key files**: `server/lib/anonUserHelper.ts` (identity resolution), `server/replit_integrations/auth/replitAuth.ts` (session config), `server/routes.ts` (`/api/session/identity`).
+- **Stripe**: Payment processing and subscription management.
+- **Replit Connector API**: For fetching Stripe credentials.
 
 ### Runtime Integration Modules
-- **Qdrant Dual-Write**: Ingestion pipeline writes to both pgvector and Qdrant (when `QDRANT_URL` env var is set). `FusedRetrieveStage` merges results via RRF fusion. Gracefully skips when Qdrant is unavailable.
-- **LlamaIndex RAG**: Available at `POST /api/rag/llamaindex/query` for advanced document Q&A. Uses OpenAI embeddings and LLM via `OPENAI_API_KEY`.
-- **OpenAI Agents SDK**: Auto-routes GPT-model agentic requests through the SDK. Falls back to built-in `AgenticLoop` on failure. Respects `allowedTools` restrictions.
-- **Integration Health**: `GET /api/integrations/status` returns availability and latency for all three integrations.
-
-### OpenClaw Integration (v2026.4.5)
-- **OpenClaw Control UI**: Served at `/openclaw-ui` with auto-connect.
-- **WebSocket Gateway**: For OpenClaw communication at `/openclaw-ws`.
-- **Internet Access Library**: `server/openclaw/lib/internetAccess.ts` — robust multi-engine web search and page fetcher.
-  - Multi-engine search: DuckDuckGo (primary) with automatic retry (GET→POST→alt query) + Wikipedia EN/ES fallback.
-  - URL verification: HEAD request reachability check + well-known domain whitelist for fast path.
-  - In-memory search cache (5 min TTL, 200 entries) to reduce redundant requests.
-  - SSRF protection: blocks localhost, private IPs, cloud metadata, non-HTTP protocols.
-  - `POST /api/openclaw/internet/fetch` — fetch and parse any URL, extract clean text and links.
-  - `POST /api/openclaw/internet/search` — multi-engine search with verified results.
-  - `GET /api/openclaw/internet/status` — internet capability status.
-  - Gateway tools: `openclaw.web.fetch`, `openclaw.web.search` available via `tools.execute` WebSocket method.
-- **Chat Internet Bridge**: `server/openclaw/lib/chatInternetBridge.ts` — auto-detects when user queries need internet.
-  - 40+ trigger patterns covering Spanish and English (links, news, prices, questions, brands, etc.).
-  - Automatically searches and fetches top pages before sending to LLM.
-  - System prompt injects verified URLs and instructs model to NEVER hallucinate links.
-- **Fusion Features**: task-board, searxng-search, model-switch-queue, gateway-resilience, internet-access.
-- **Skills Context in System Prompt**: `buildInternetSystemPrompt` injects up to 30 ready skills (sanitized, max 3K chars) into every OpenClaw chat session. Circuit-breaker pattern: silent fallback on registry errors.
-
-### Message Duplication Fix (v2026.4.6)
-- **Root cause**: Server creates assistant message during SSE streaming (placeholder → update with final content), then client's `finalize()` also POSTs the same message via `addMessage()`, creating a duplicate in the DB.
-- **Client-side fix**: `use-stream-chat.ts` captures `assistantMessageId` from SSE `context`/`done` events, uses it as the message ID, and marks the message with `serverPersisted: true`. `addMessage()` in `use-chats.ts` skips the server POST for `serverPersisted` messages.
-- **Server-side safety net**: `POST /api/chats/:id/messages` deduplicates assistant messages by `userMessageId` using `findAssistantResponseForUserMessage()` with primary DB fallback to avoid replica lag.
-- **Key files**: `client/src/hooks/use-stream-chat.ts` (finalize, SSE event handling), `client/src/hooks/use-chats.ts` (addMessage), `server/routes/chatsRouter.ts` (dedup guard), `server/storage.ts` (primary DB fallback).
-
-### Free-Tier Model Expansion (v2026.4.7)
-- **Free models**: Both `google/gemma-4-31b-it` and `grok-4-1-fast-non-reasoning` are now available to unauthenticated/free-tier users.
-- **Frontend**: `FREE_MODEL_IDS` set in `client/src/lib/planUtils.ts` + `isModelFreeForAll()` used by `StandardModelSelector.tsx` and `ModelAvailabilityContext.tsx`.
-- **Backend**: `FREE_MODEL_IDS` set in `server/lib/modelRegistry.ts` + `isModelFreeForAll()` used by `chatAiRouter.ts` for both pre- and post-enforcement anonymous access checks.
-
-### DB Schema Drift Fixes (v2026.4.8)
-- **chats table**: Added missing columns `folder_id`, `tags`, `rag_enabled`, `rag_collection_ids`.
-- **chat_messages table**: Added missing columns `parent_message_id`, `branch_label`, `rag_sources`.
-- **New tables created**: `prompt_transformation_log`, `prompt_integrity_checks`, `prompt_analysis_results` — required by the message-save pipeline for audit logging.
-- **Root cause**: Drizzle schema definitions in `shared/schema/chat.ts` had drifted ahead of the actual DB. Manual `ALTER TABLE` / `CREATE TABLE IF NOT EXISTS` used since `drizzle-kit push` requires interactive confirmation.
-
-### Stripe Integration (v2026.4.9)
-- **Replit Connector API**: `server/stripeClient.ts` fetches Stripe credentials via the Replit connector API (`REPLIT_CONNECTORS_HOSTNAME`), with fallback to `STRIPE_SECRET_KEY`/`STRIPE_PUBLISHABLE_KEY` env vars.
-- **stripe-replit-sync**: Installed for automatic Stripe data synchronization. `runStripeMigrations()` runs at server startup to create sync schema tables.
-- **getStripeSync()**: Returns a `StripeSync` instance for webhook processing and backfill operations.
-- **Plans**: Go ($5/mo), Plus ($10/mo), Pro ($200/mo), Business ($25/mo) — price IDs configured via `STRIPE_PRICE_*` env vars.
-- **Key files**: `server/stripeClient.ts`, `server/routes/stripeRouter.ts`, `server/webhookHandlers.ts`, `server/services/subscriptionService.ts`.
-
-### Document Analysis Fix (v2026.4.11)
-- **PPTX support**: Added `pptxExtractor.ts` to `server/parsers/structured/` — converts PowerPoint files into `DocumentSemanticModel` with sections per slide, table extraction, notes, and metadata. Added `"presentation"` to `documentType` enum in `shared/schemas/documentSemanticModel.ts`.
-- **normalizeDocument**: Added `case MIME_TYPES.PPTX` to both the parser switch and `inferMimeTypeFromExtension` fallback in `server/services/structuredDocumentNormalizer.ts`.
-- **SSE error→done fix**: All error paths in `/api/analyze` now send `writeSse(res, "done", { error: true })` after `writeSse(res, "error", ...)` before `res.end()`. This ensures the frontend's stream handler receives a `done` event with `pendingTerminalError` set, instead of falling to EMPTY_STREAM and showing the generic "No se recibió respuesta del servidor" message.
-- **Key files**: `server/parsers/structured/pptxExtractor.ts`, `server/services/structuredDocumentNormalizer.ts`, `server/routes/chatAiRouter.ts`, `shared/schemas/documentSemanticModel.ts`.
-
-### Memory Optimization (v2026.4.6)
-- **PerformanceAuditor**: Collection interval 60s (was 10s), history buffer 100 (was 1000), memory warning throttling (log first 3 + every 30th).
-- **TokenTracker**: Redis persist circuit breaker — disables after 5 consecutive failures. In-memory records capped at 1000 (was 10000).
-- **PerformanceAuditor Redis flush**: Circuit breaker — disables after 5 consecutive failures.
-- **DB Pool**: Production write max 20 (was 100), read max 20 (was 150), min 2 (was 10/20).
+- **OpenClaw Control UI**: For web browsing and internet access.
