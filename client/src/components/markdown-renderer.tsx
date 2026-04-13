@@ -7,7 +7,7 @@ import rehypeHighlight from "rehype-highlight";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import DOMPurify from "dompurify";
 import { cn } from "@/lib/utils";
-import { Check, Copy, Loader2, Download, Maximize2, Minimize2, FileText, FileSpreadsheet, Presentation, ChevronRight, Globe, ExternalLink } from "lucide-react";
+import { Check, Copy, Loader2, Download, Maximize2, Minimize2, FileText, FileSpreadsheet, Presentation, ChevronRight, ExternalLink } from "lucide-react";
 import { preprocessMathInMarkdown } from "@/lib/mathParser";
 import { CodeBlockShell } from "./code-block-shell";
 import { isLanguageRunnable } from "@/lib/sandboxApi";
@@ -268,70 +268,32 @@ const InlineHtmlBlock = memo(function InlineHtmlBlock({ code }: { code: string }
 });
 
 const InlineSourceBadge = memo(function InlineSourceBadge({ name, url }: { name: string; url: string }) {
-  const [showTooltip, setShowTooltip] = useState(false);
-  const [imageError, setImageError] = useState(false);
-
-  let domain = "";
+  let label = "";
   try {
     const urlObj = new URL(url);
-    domain = urlObj.hostname.replace(/^www\./, "");
+    const host = urlObj.hostname.replace(/^www\./, "");
+    if (host === "doi.org" || urlObj.pathname.startsWith("/doi/")) {
+      const doiPath = urlObj.pathname.replace(/^\//, "").slice(0, 20);
+      label = `doi:${doiPath}`;
+    } else {
+      const parts = host.split(".");
+      label = parts.length >= 2 ? parts[parts.length - 2] : host;
+    }
   } catch {
-    domain = name.toLowerCase().replace(/\s+/g, "");
+    label = name.slice(0, 16);
   }
 
-  const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
-
   return (
-    <span className="relative inline-block align-baseline">
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={cn(
-          "inline-flex items-center gap-1 px-2 py-0.5 ml-1",
-          "text-xs font-medium rounded-full",
-          "bg-sky-500/10 hover:bg-sky-500/20",
-          "border border-sky-500/30 hover:border-sky-500/50",
-          "text-sky-500 hover:text-sky-400",
-          "transition-all duration-200 cursor-pointer",
-          "no-underline hover:no-underline"
-        )}
-        onMouseEnter={() => setShowTooltip(true)}
-        onMouseLeave={() => setShowTooltip(false)}
-        data-testid={`source-badge-${name.toLowerCase().replace(/\s+/g, '-')}`}
-      >
-        {!imageError ? (
-          <img
-            src={faviconUrl}
-            alt=""
-            className="w-3 h-3 rounded-full object-contain"
-            onError={() => setImageError(true)}
-          />
-        ) : (
-          <Globe className="w-3 h-3" />
-        )}
-        <span className="max-w-[100px] truncate">{name}</span>
-      </a>
-
-      {showTooltip && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 pointer-events-none">
-          <div className="bg-popover border border-border rounded-lg shadow-lg p-2 min-w-[160px] max-w-[240px]">
-            <div className="flex items-center gap-2">
-              {!imageError ? (
-                // FRONTEND FIX #15: Add meaningful alt text for favicon
-                <img src={faviconUrl} alt={`${name || domain} favicon`} className="w-4 h-4 rounded-full object-contain" />
-              ) : (
-                <Globe className="w-4 h-4 text-muted-foreground" />
-              )}
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-xs text-foreground truncate">{name}</p>
-                <p className="text-[10px] text-muted-foreground truncate">{domain}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </span>
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center mx-0.5 px-1.5 py-px text-[10px] font-mono rounded text-muted-foreground/70 hover:text-primary border border-border/40 hover:border-primary/40 bg-muted/30 hover:bg-primary/5 transition-colors no-underline hover:no-underline align-baseline"
+      title={name}
+      data-testid={`source-badge-${name.toLowerCase().replace(/\s+/g, '-')}`}
+    >
+      {label}
+    </a>
   );
 });
 
