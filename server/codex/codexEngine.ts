@@ -17,6 +17,8 @@ import crypto from "crypto";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { llmGateway } from "../lib/llmGateway";
 import { Sandbox, createSandbox } from "./sandbox";
+import { getTemplate } from "./templates";
+import { PreviewManager } from "./previewServer";
 
 // --- Types ---
 
@@ -158,23 +160,20 @@ export async function createSession(
   userId: string,
   projectName: string,
   instruction: string,
-  template?: string,
+  templateId?: string,
 ): Promise<CodexSession> {
   const id = crypto.randomUUID();
   const sandbox = await createSandbox(id);
 
-  // Initialize from template if provided
-  const framework = template || "blank";
-  if (template) {
-    const templateCommands: Record<string, string> = {
-      react: "npm init vite@latest . -- --template react-ts && npm install",
-      next: "npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --no-git --use-npm",
-      express: 'npm init -y && npm install express typescript @types/express @types/node ts-node && npx tsc --init',
-      node: "npm init -y",
-    };
-    const cmd = templateCommands[template];
-    if (cmd) {
-      await sandbox.exec(cmd, 120_000);
+  // Initialize from template files if provided
+  let framework = "blank";
+  if (templateId) {
+    const tpl = getTemplate(templateId);
+    if (tpl) {
+      framework = tpl.framework;
+      for (const [filePath, content] of Object.entries(tpl.files)) {
+        await sandbox.writeFile(filePath, content);
+      }
     }
   }
 
@@ -436,4 +435,56 @@ export async function writeFile(sessionId: string, filePath: string, content: st
 
 export async function runCommand(sessionId: string, command: string) {
   return getSandboxOrThrow(sessionId).exec(command);
+}
+
+export async function installDeps(sessionId: string, deps: string[]) {
+  const sandbox = getSandboxOrThrow(sessionId);
+  const depStr = deps.join(" ");
+  return sandbox.exec(`npm install ${depStr}`, 120_000);
+}
+
+export async function startPreview(sessionId: string) {
+  const sandbox = getSandboxOrThrow(sessionId);
+  const session = sessions.get(sessionId);
+  if (!session) throw new Error(`Session "${sessionId}" not found`);
+  return PreviewManager.instance().start(sessionId, sandbox.workspace, session.framework);
+}
+
+export function stopPreview(sessionId: string) {
+  PreviewManager.instance().stop(sessionId);
+}
+
+export function getPreviewPort(sessionId: string): number | undefined {
+  return PreviewManager.instance().getPort(sessionId);
+}
+
+// --- Project-level convenience wrappers ---
+
+/**
+ * Create a project: creates a session and returns its id + workspace.
+ * Thin wrapper over createSession for callers that think in terms of
+ * "projects" rather than "sessions".
+ */
+export async function createProject(
+  userId: string,
+  projectName: string,
+  templateId?: string,
+): Promise<{ projectId: string; workspace: string; framework: string }> {
+  const session = await createSession(userId, projectName, "", templateId);
+  return { projectId: session.id, workspace: session.workspace, framework: session.framework };
+}
+
+/**
+ * Edit a project: convenience that takes a projectId (= sessionId) and an
+ * instruction, runs the agent loop, and collects all steps.
+ */
+export async function editProject(
+  projectId: string,
+  instruction: string,
+): Promise<CodexStep[]> {
+  const steps: CodexStep[] = [];
+  for await (const step of executeInstruction(projectId, instruction)) {
+    steps.push(step);
+  }
+  return steps;
 }

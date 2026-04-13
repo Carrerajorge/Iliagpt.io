@@ -5,6 +5,7 @@
 import { Router, type Request, type Response } from "express";
 import { getUserId } from "../types/express";
 import { listTemplates } from "../codex/templates";
+import { PreviewManager } from "../codex/previewServer";
 
 export function createCodexRouter(): Router {
   const router = Router();
@@ -13,6 +14,22 @@ export function createCodexRouter(): Router {
   const getEngine = async () => {
     return await import("../codex/codexEngine");
   };
+
+  /**
+   * Verify auth + session ownership.  Returns { userId, session, engine } on
+   * success, or sends an error response and returns null.
+   */
+  async function requireOwner(req: Request, res: Response) {
+    const userId = getUserId(req);
+    if (!userId) { res.status(401).json({ error: "Auth required" }); return null; }
+
+    const engine = await getEngine();
+    const session = engine.getSession(req.params.sessionId);
+    if (!session) { res.status(404).json({ error: "Session not found" }); return null; }
+    if (session.userId !== userId) { res.status(403).json({ error: "Not your session" }); return null; }
+
+    return { userId, session, engine };
+  }
 
   // List available templates
   router.get("/templates", (_req: Request, res: Response) => {
@@ -45,16 +62,11 @@ export function createCodexRouter(): Router {
 
   // Send instruction to agent (SSE stream)
   router.post("/:sessionId/instruction", async (req: Request, res: Response) => {
-    const userId = getUserId(req);
-    if (!userId) return res.status(401).json({ error: "Auth required" });
+    const ctx = await requireOwner(req, res);
+    if (!ctx) return;
 
     const { instruction } = req.body;
     if (!instruction) return res.status(400).json({ error: "instruction required" });
-
-    const engine = await getEngine();
-    const session = engine.getSession(req.params.sessionId);
-    if (!session) return res.status(404).json({ error: "Session not found" });
-    if (session.userId !== userId) return res.status(403).json({ error: "Not your session" });
 
     // SSE streaming
     res.setHeader("Content-Type", "text/event-stream");
@@ -63,7 +75,7 @@ export function createCodexRouter(): Router {
     res.flushHeaders();
 
     try {
-      for await (const step of engine.executeInstruction(req.params.sessionId, instruction)) {
+      for await (const step of ctx.engine.executeInstruction(req.params.sessionId, instruction)) {
         res.write(`event: step\ndata: ${JSON.stringify(step)}\n\n`);
         if (typeof (res as any).flush === "function") (res as any).flush();
       }
@@ -77,15 +89,11 @@ export function createCodexRouter(): Router {
 
   // Get file tree
   router.get("/:sessionId/files", async (req: Request, res: Response) => {
-    const userId = getUserId(req);
-    if (!userId) return res.status(401).json({ error: "Auth required" });
-
-    const engine = await getEngine();
-    const session = engine.getSession(req.params.sessionId);
-    if (!session) return res.status(404).json({ error: "Session not found" });
+    const ctx = await requireOwner(req, res);
+    if (!ctx) return;
 
     try {
-      const files = await engine.listFiles(req.params.sessionId);
+      const files = await ctx.engine.listFiles(req.params.sessionId);
       return res.json({ files });
     } catch (err: any) {
       return res.status(500).json({ error: err?.message });
@@ -94,15 +102,14 @@ export function createCodexRouter(): Router {
 
   // Read a file
   router.get("/:sessionId/file", async (req: Request, res: Response) => {
-    const userId = getUserId(req);
-    if (!userId) return res.status(401).json({ error: "Auth required" });
+    const ctx = await requireOwner(req, res);
+    if (!ctx) return;
 
     const filePath = req.query.path as string;
     if (!filePath) return res.status(400).json({ error: "path query param required" });
 
-    const engine = await getEngine();
     try {
-      const content = await engine.readFile(req.params.sessionId, filePath);
+      const content = await ctx.engine.readFile(req.params.sessionId, filePath);
       return res.json({ path: filePath, content });
     } catch (err: any) {
       return res.status(500).json({ error: err?.message });
@@ -111,17 +118,16 @@ export function createCodexRouter(): Router {
 
   // Write/update a file (user edit)
   router.put("/:sessionId/file", async (req: Request, res: Response) => {
-    const userId = getUserId(req);
-    if (!userId) return res.status(401).json({ error: "Auth required" });
+    const ctx = await requireOwner(req, res);
+    if (!ctx) return;
 
     const { path: filePath, content } = req.body;
     if (!filePath || content === undefined) {
       return res.status(400).json({ error: "path and content required" });
     }
 
-    const engine = await getEngine();
     try {
-      await engine.writeFile(req.params.sessionId, filePath, content);
+      await ctx.engine.writeFile(req.params.sessionId, filePath, content);
       return res.json({ success: true });
     } catch (err: any) {
       return res.status(500).json({ error: err?.message });
@@ -130,29 +136,64 @@ export function createCodexRouter(): Router {
 
   // Execute terminal command
   router.post("/:sessionId/terminal", async (req: Request, res: Response) => {
-    const userId = getUserId(req);
-    if (!userId) return res.status(401).json({ error: "Auth required" });
+    const ctx = await requireOwner(req, res);
+    if (!ctx) return;
 
     const { command } = req.body;
     if (!command) return res.status(400).json({ error: "command required" });
 
-    const engine = await getEngine();
     try {
-      const result = await engine.runCommand(req.params.sessionId, command);
+      const result = await ctx.engine.runCommand(req.params.sessionId, command);
       return res.json(result);
     } catch (err: any) {
       return res.status(500).json({ error: err?.message });
     }
   });
 
+  // Start or proxy preview
+  router.get("/:sessionId/preview", async (req: Request, res: Response) => {
+    const ctx = await requireOwner(req, res);
+    if (!ctx) return;
+
+    const pm = PreviewManager.instance();
+
+    // Auto-start preview if not running
+    if (!pm.isRunning(req.params.sessionId)) {
+      try {
+        await ctx.engine.startPreview(req.params.sessionId);
+      } catch (err: any) {
+        return res.status(500).json({ error: `Failed to start preview: ${err?.message}` });
+      }
+    }
+
+    // Proxy the request to the dev server — root path
+    pm.proxyPath(req.params.sessionId, "/", req, res);
+  });
+
+  // Preview sub-paths (assets, HMR, etc.)
+  router.get("/:sessionId/preview/*", async (req: Request, res: Response) => {
+    const ctx = await requireOwner(req, res);
+    if (!ctx) return;
+
+    const pm = PreviewManager.instance();
+    if (!pm.isRunning(req.params.sessionId)) {
+      return res.status(503).json({ error: "Preview not running" });
+    }
+
+    // Extract the subpath after /preview — req.params[0] is the wildcard match
+    const subpath = "/" + ((req.params as any)[0] || "");
+    const query = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+    pm.proxyPath(req.params.sessionId, subpath + query, req, res);
+  });
+
   // Close session and cleanup
   router.delete("/:sessionId", async (req: Request, res: Response) => {
-    const userId = getUserId(req);
-    if (!userId) return res.status(401).json({ error: "Auth required" });
+    const ctx = await requireOwner(req, res);
+    if (!ctx) return;
 
-    const engine = await getEngine();
     try {
-      await engine.closeSession(req.params.sessionId);
+      ctx.engine.stopPreview(req.params.sessionId);
+      await ctx.engine.closeSession(req.params.sessionId);
       return res.json({ success: true });
     } catch (err: any) {
       return res.status(500).json({ error: err?.message });

@@ -33,6 +33,8 @@ export interface FileEntry {
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_DISK_BYTES = 500 * 1024 * 1024; // 500 MB
+const MAX_CONCURRENT_PROCESSES = 10;
+const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 
 const BLOCKED_COMMANDS: Array<[RegExp, string]> = [
   [/\brm\s+(-[^\s]*)?-r[f]?\s+\/(?:\s|$)/, "Recursive delete on root filesystem"],
@@ -60,9 +62,48 @@ export class Sandbox {
   public readonly workspace: string;
   public readonly sessionId: string;
 
+  /** Timestamp of the most recent exec / file operation (ms since epoch). */
+  private _lastActivity: number;
+  /** Number of child processes currently running inside this sandbox. */
+  private _activeProcesses = 0;
+  /** Timer handle for the inactivity auto-cleanup. */
+  private _inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Callback invoked when the sandbox is cleaned up due to inactivity. */
+  onInactivityCleanup: (() => void) | null = null;
+
   constructor(sessionId: string, workspace: string) {
     this.sessionId = sessionId;
     this.workspace = workspace;
+    this._lastActivity = Date.now();
+    this._resetInactivityTimer();
+  }
+
+  // --- Inactivity tracking ---
+
+  private _touch(): void {
+    this._lastActivity = Date.now();
+    this._resetInactivityTimer();
+  }
+
+  private _resetInactivityTimer(): void {
+    if (this._inactivityTimer) clearTimeout(this._inactivityTimer);
+    this._inactivityTimer = setTimeout(() => {
+      this.cleanup().then(() => this.onInactivityCleanup?.()).catch(() => {});
+    }, INACTIVITY_TIMEOUT_MS);
+    // Don't let the timer keep the process alive
+    if (this._inactivityTimer && typeof this._inactivityTimer === "object" && "unref" in this._inactivityTimer) {
+      this._inactivityTimer.unref();
+    }
+  }
+
+  /** Milliseconds since the last sandbox activity. */
+  get idleMs(): number {
+    return Date.now() - this._lastActivity;
+  }
+
+  /** Number of child processes currently running. */
+  get activeProcesses(): number {
+    return this._activeProcesses;
   }
 
   /** Execute a shell command inside the sandbox workspace. */
@@ -74,6 +115,14 @@ export class Sandbox {
       }
     }
 
+    if (this._activeProcesses >= MAX_CONCURRENT_PROCESSES) {
+      throw new Error(
+        `Process limit reached: max ${MAX_CONCURRENT_PROCESSES} simultaneous processes per sandbox`,
+      );
+    }
+
+    this._touch();
+    this._activeProcesses++;
     const start = Date.now();
 
     return new Promise((resolve, reject) => {
@@ -98,6 +147,8 @@ export class Sandbox {
 
       proc.on("close", (exitCode) => {
         clearTimeout(timer);
+        this._activeProcesses--;
+        this._touch();
         if (killed) {
           resolve({ stdout, stderr: stderr + "\n[killed: timeout]", exitCode: -1, durationMs: Date.now() - start });
         } else {
@@ -107,6 +158,7 @@ export class Sandbox {
 
       proc.on("error", (err) => {
         clearTimeout(timer);
+        this._activeProcesses--;
         reject(err);
       });
     });
@@ -114,12 +166,14 @@ export class Sandbox {
 
   /** Read a file from the sandbox workspace. */
   async readFile(relativePath: string): Promise<string> {
+    this._touch();
     const resolved = validatePath(relativePath, this.workspace);
     return fs.readFile(resolved, "utf-8");
   }
 
   /** Write a file to the sandbox workspace, enforcing disk limit. */
   async writeFile(relativePath: string, content: string): Promise<void> {
+    this._touch();
     const resolved = validatePath(relativePath, this.workspace);
 
     // Check disk usage before writing
@@ -163,6 +217,10 @@ export class Sandbox {
 
   /** Remove the workspace directory entirely. */
   async cleanup(): Promise<void> {
+    if (this._inactivityTimer) {
+      clearTimeout(this._inactivityTimer);
+      this._inactivityTimer = null;
+    }
     await fs.rm(this.workspace, { recursive: true, force: true });
   }
 

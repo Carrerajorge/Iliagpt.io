@@ -122,6 +122,39 @@ export const TEMPLATES: ProjectTemplate[] = [
     },
   },
   {
+    id: "vue3-vite",
+    name: "Vue 3 + Vite",
+    description: "Vue 3 SPA with Vite and TypeScript",
+    framework: "vue",
+    language: "typescript",
+    icon: "💚",
+    files: {
+      "package.json": JSON.stringify({
+        name: "vue-app",
+        private: true,
+        version: "0.0.0",
+        type: "module",
+        scripts: { dev: "vite", build: "vue-tsc && vite build", preview: "vite preview" },
+        dependencies: { vue: "^3.5.0" },
+        devDependencies: {
+          "@vitejs/plugin-vue": "^5.0.0", typescript: "^5.6.0",
+          vite: "^6.0.0", "vue-tsc": "^2.0.0",
+        },
+      }, null, 2),
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          target: "ES2020", module: "ESNext", moduleResolution: "bundler",
+          strict: true, jsx: "preserve", skipLibCheck: true, noEmit: true,
+        },
+        include: ["src/**/*.ts", "src/**/*.vue"],
+      }, null, 2),
+      "vite.config.ts": `import { defineConfig } from 'vite'\nimport vue from '@vitejs/plugin-vue'\n\nexport default defineConfig({\n  plugins: [vue()],\n})\n`,
+      "index.html": `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>Vue App</title>\n</head>\n<body>\n  <div id="app"></div>\n  <script type="module" src="/src/main.ts"></script>\n</body>\n</html>\n`,
+      "src/main.ts": `import { createApp } from 'vue'\nimport App from './App.vue'\n\ncreateApp(App).mount('#app')\n`,
+      "src/App.vue": `<script setup lang="ts">\nimport { ref } from 'vue'\nconst count = ref(0)\n</script>\n\n<template>\n  <div style="text-align: center; padding: 2rem">\n    <h1>Welcome to Vue 3</h1>\n    <button @click="count++">Count is: {{ count }}</button>\n  </div>\n</template>\n`,
+    },
+  },
+  {
     id: "cli-nodejs",
     name: "CLI Tool Node.js",
     description: "Command-line tool with Node.js",
