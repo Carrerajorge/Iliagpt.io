@@ -1160,7 +1160,7 @@ export function ChatInterface({
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const latestGeneratedImageRef = useRef<{ messageId: string; imageData: string } | null>(null);
   const dragCounterRef = useRef(0);
-  const activeDocEditorRef = useRef<null>(null);
+  const activeDocEditorRef = useRef<DocumentBlock | null>(null);
   const previewDocumentRef = useRef<DocumentBlock | null>(null);
   const orchestratorRef = useRef<{ runOrchestrator: (prompt: string) => Promise<void> } | null>(null);
   const editedDocumentContentRef = useRef<string>("");
@@ -1953,7 +1953,7 @@ export function ChatInterface({
             ui_components: lastEventData?.ui_components || analyzeMetadata?.ui_components || [],
           }),
           deliveryStatus: "sent" as const,
-        }),
+        } as Message),
         buildErrorMessage: (error, messageId) => {
           // Translate structured error payloads (e.g. { code: "RATE_LIMIT", ... })
           // into user-friendly Spanish messages instead of leaking "[object Object]".
@@ -2304,7 +2304,7 @@ export function ChatInterface({
           followUpSuggestions: data?.followUpSuggestions,
         }),
         serverPersisted: !!(data?.assistantMessageId),
-      }),
+      } as Message),
       buildErrorMessage: (error, messageId) => ({
         id: messageId || `error-${Date.now()}`,
         role: "assistant",
@@ -2907,7 +2907,7 @@ export function ChatInterface({
         searchQueries: data?.searchQueries,
         totalSearches: data?.totalSearches,
         followUpSuggestions: data?.followUpSuggestions,
-      }),
+      }) as Message,
       buildErrorMessage: (error, messageId) => ({
         id: messageId || (Date.now() + 1).toString(),
         role: "assistant",
@@ -3126,7 +3126,7 @@ export function ChatInterface({
             followUpSuggestions: data?.followUpSuggestions,
           }),
           serverPersisted: !!(data?.assistantMessageId),
-        }),
+        } as Message),
         buildErrorMessage: (error, messageId) => ({
           id: messageId || `error-${Date.now()}`,
           role: "assistant",
@@ -4386,7 +4386,7 @@ export function ChatInterface({
             timestamp: new Date(),
             content,
             fallbackContent: "No response received",
-          }),
+          }) as Message,
         });
         if (emergencyResult.ok) requestTitleRefresh(effectiveChatIdForStream);
         return;
@@ -4913,7 +4913,7 @@ export function ChatInterface({
                   for (const block of event.content) {
                     if (block.type === "text") {
                       fullContent += block.text;
-                      streamChat.deps.setStreamingContent(fullContent);
+                      setStreamingContent(fullContent);
                       setAiStateForChat("streaming", effectiveChatIdForStream);
                     }
                   }
@@ -4944,13 +4944,13 @@ export function ChatInterface({
             userMessageId: userMsgId,
             content: fullContent || "El agente completó la tarea sin respuesta de texto.",
             fallbackContent: "Sin respuesta del agente.",
-          });
+          }) as Message;
           appendOptimisticMessage(assistantMsg);
-          streamChat.deps.setStreamingContent("");
+          setStreamingContent("");
           clearMessageDeliveryError(userMsgId);
           requestTitleRefresh(effectiveChatIdForStream);
         } catch (err: any) {
-          const errorMsg: any = {
+          const errorMsg: Message = {
             id: `error-${Date.now()}`,
             role: "assistant",
             content: formatStreamFailureMessage(err),
@@ -4961,7 +4961,7 @@ export function ChatInterface({
         } finally {
           setAiState("idle");
           setAiProcessSteps([]);
-          streamChat.deps.setStreamingContent("");
+          setStreamingContent("");
         }
         return;
       }
@@ -5047,7 +5047,7 @@ export function ChatInterface({
             userMessageId: userMsgId,
             content: fullContent,
             fallbackContent: "No se recibió respuesta del servidor.",
-          }),
+          }) as Message,
           buildErrorMessage: (error, messageId) => ({
             id: messageId || `error-${Date.now()}`,
             role: "assistant",
@@ -5791,7 +5791,7 @@ export function ChatInterface({
                     searchQueries: data?.searchQueries,
                     totalSearches: data?.totalSearches,
                     followUpSuggestions: data?.followUpSuggestions,
-                  });
+                  }) as Message;
                 }
 
                 return buildAssistantMessage({
@@ -5806,7 +5806,7 @@ export function ChatInterface({
                   searchQueries: data?.searchQueries,
                   totalSearches: data?.totalSearches,
                   followUpSuggestions: data?.followUpSuggestions,
-                });
+                }) as Message;
               },
               buildErrorMessage: (error, messageId) => ({
                 id: messageId || `error-${Date.now()}`,
@@ -7830,7 +7830,7 @@ IMPORTANTE:
                       content: messageContent,
                       artifact: normalizedArtifacts[0],
                       artifacts: normalizedArtifacts,
-                    });
+                    }) as Message;
                   }
 
                   if (isPptMode && shouldWriteToDoc && !isProductionStream) {
@@ -7884,7 +7884,7 @@ IMPORTANTE:
                     };
                   }
 
-                  const finalMsg: any = buildAssistantMessage({
+                  const finalMsg = buildAssistantMessage({
                     id: messageId || `assistant-${Date.now()}`,
                     timestamp: new Date(),
                     requestId: data?.requestId || generateRequestId(),
@@ -7898,9 +7898,9 @@ IMPORTANTE:
                     searchQueries: streamSearchQueries.length > 0 ? streamSearchQueries : (data?.searchQueries || undefined),
                     totalSearches: streamTotalSearches > 0 ? streamTotalSearches : (data?.totalSearches || undefined),
                     followUpSuggestions: data?.followUpSuggestions,
-                  });
+                  }) as Message;
                   if (cerebroTimeline.subtasks.length > 0 || cerebroTimeline.judgeResult || cerebroTimeline.budget) {
-                    finalMsg.cerebroTimeline = { ...cerebroTimeline };
+                    (finalMsg as Message & { cerebroTimeline?: unknown }).cerebroTimeline = { ...cerebroTimeline };
                   }
                   return finalMsg;
                 },

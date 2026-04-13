@@ -3,6 +3,7 @@ export interface ActiveGpt {
     id: string;
     name: string;
     description: string | null;
+    placeholder?: string | null;
     systemPrompt: string;
     model: string;
     temperature: number | null;
