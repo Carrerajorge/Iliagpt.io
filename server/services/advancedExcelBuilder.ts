@@ -462,7 +462,6 @@ export class AdvancedExcelBuilder {
                 const range = `${colLetter}2:${colLetter}${numRows}`;
                 const hasNegative = values.some(v => v < 0);
 
-<<<<<<< HEAD
                 if (hasNegative) {
                     // Red for negative, green for positive
                     sheet.addConditionalFormatting({
@@ -504,30 +503,6 @@ export class AdvancedExcelBuilder {
                         }],
                     });
                 }
-=======
-                // Add data bar
-                sheet.addConditionalFormatting({
-                    ref: range,
-                    rules: [{
-                        type: "cellIs",
-                        priority: 1,
-                        operator: "greaterThan",
-                        formulae: [String(Math.min(...values))],
-                        style: {
-                            fill: {
-                                type: "pattern",
-                                pattern: "solid",
-                                fgColor: { argb: this.theme.alternateFill },
-                                bgColor: { argb: this.theme.alternateFill },
-                            },
-                            font: {
-                                color: { argb: this.theme.accentColor },
-                                bold: true,
-                            },
-                        },
-                    }]
-                });
->>>>>>> 60c9fbaa (feat: improve professional document generation and add sprint e2e coverage)
             }
         }
     }
