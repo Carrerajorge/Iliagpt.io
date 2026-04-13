@@ -18,6 +18,7 @@ import { searchRedalyc, RedalycArticle, generateRedalycAPA7Citation, isRedalycCo
 import { searchOpenAlex, type AcademicCandidate } from "./openAlexClient";
 import { lookupDOI, type CrossRefMetadata } from "./crossrefClient";
 import { searchWos, type WosArticle, isWosConfigured } from "./wosClient";
+import { getBulkCitationCounts } from "./openCitationsClient";
 import * as XLSX from "xlsx";
 import { sanitizePlainText, sanitizeSearchQuery, sanitizeHttpUrl } from "../../lib/textSanitizers";
 
@@ -674,6 +675,36 @@ export async function searchAllSources(
 
     // Cross-source enrichment: fill in missing fields from duplicate entries
     enrichArticles(deduplicated);
+
+    // OpenCitations enrichment: fill in missing citation counts using COCI/POCI/DOCI (2B+ citation records)
+    try {
+        const doisToEnrich = deduplicated
+            .filter(a => a.doi && (a.citationCount === undefined || a.citationCount === null))
+            .map(a => a.doi!)
+            .slice(0, 40); // cap to avoid slow enrichment
+
+        if (doisToEnrich.length > 0) {
+            const ocCounts = await withTimeout(
+                getBulkCitationCounts(doisToEnrich),
+                10_000,
+                "OpenCitations"
+            );
+            if (ocCounts) {
+                for (const article of deduplicated) {
+                    if (article.doi && (article.citationCount === undefined || article.citationCount === null)) {
+                        const norm = article.doi.replace(/^https?:\/\/doi\.org\//i, "").replace(/^doi:/i, "");
+                        const count = ocCounts.get(norm);
+                        if (count !== undefined) {
+                            article.citationCount = count;
+                        }
+                    }
+                }
+                console.log(`[UnifiedSearch] OpenCitations: enriched ${ocCounts.size} citation counts`);
+            }
+        }
+    } catch (err: any) {
+        console.warn(`[UnifiedSearch] OpenCitations enrichment failed: ${err.message}`);
+    }
 
     // Rank articles by multi-factor score
     rankArticles(deduplicated);

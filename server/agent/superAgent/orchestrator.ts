@@ -611,8 +611,8 @@ export class SuperAgentOrchestrator extends EventEmitter {
 
     if (isScientific) {
       if (hasScopus || hasWos) {
-        const sourceNames = [hasScopus ? "Scopus" : "", hasWos ? "Web of Science" : "", "OpenAlex"].filter(Boolean).join(" + ");
-        this.emitThought(`Estrategia: Búsqueda académica multi-fuente. Usando ${sourceNames} en paralelo.`);
+        const sourceNames = [hasScopus ? "Scopus" : "", hasWos ? "Web of Science" : "", "OpenAlex", "OpenCitations"].filter(Boolean).join(" + ");
+        this.emitThought(`Estrategia: Búsqueda académica multi-fuente. Usando ${sourceNames} en paralelo (2B+ relaciones de citación vía OpenCitations).`);
         await this.executeSignalsWithAcademicDatabases(params.query, params.limit, hasScopus, hasWos);
       } else {
         this.emitThought("Estrategia: Búsqueda científica con OpenAlex (271M+ trabajos, índice abierto más grande del mundo).");

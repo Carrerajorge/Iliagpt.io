@@ -25,6 +25,12 @@ import {
 } from "../services/unifiedAcademicSearch";
 import { sanitizePlainText, sanitizeSearchQuery } from "../lib/textSanitizers";
 import { lookupUnpaywallByDoi } from "../services/unpayWallSearch";
+import {
+  getForwardCitations,
+  getReferences,
+  getBulkCitationCounts,
+  expandCitationNetwork,
+} from "../agent/superAgent/openCitationsClient";
 
 export const academicSearchRouter = Router();
 
@@ -302,6 +308,68 @@ academicSearchRouter.post("/cite", async (req, res) => {
         doi: cleanDoi
       }
     });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =============================================================================
+// OpenCitations endpoints (2B+ citation records, CC0, no auth required)
+// =============================================================================
+
+// GET /api/academic/citations/:doi - Forward citations for a DOI (who cites this paper)
+academicSearchRouter.get("/citations/:doi", async (req, res) => {
+  try {
+    const rawDoi = decodeURIComponent(req.params.doi).trim();
+    if (!rawDoi) return res.status(400).json({ error: "doi is required" });
+    const doi = sanitizePlainText(rawDoi, { maxLen: 300 });
+    const citations = await getForwardCitations(doi);
+    res.json({ doi, count: citations.length, citations });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/academic/references/:doi - References of a DOI (what this paper cites)
+academicSearchRouter.get("/references/:doi", async (req, res) => {
+  try {
+    const rawDoi = decodeURIComponent(req.params.doi).trim();
+    if (!rawDoi) return res.status(400).json({ error: "doi is required" });
+    const doi = sanitizePlainText(rawDoi, { maxLen: 300 });
+    const references = await getReferences(doi);
+    res.json({ doi, count: references.length, references });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/academic/citation-network/:doi - Full citation network expansion (forward + backward)
+academicSearchRouter.get("/citation-network/:doi", async (req, res) => {
+  try {
+    const rawDoi = decodeURIComponent(req.params.doi).trim();
+    if (!rawDoi) return res.status(400).json({ error: "doi is required" });
+    const doi = sanitizePlainText(rawDoi, { maxLen: 300 });
+    const network = await expandCitationNetwork(doi);
+    res.json(network);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/academic/citation-counts - Bulk citation counts for multiple DOIs
+academicSearchRouter.post("/citation-counts", async (req, res) => {
+  try {
+    const { dois } = req.body;
+    if (!Array.isArray(dois) || dois.length === 0) {
+      return res.status(400).json({ error: "dois array is required" });
+    }
+    const cleanDois = dois
+      .map((d: any) => sanitizePlainText(String(d), { maxLen: 300 }))
+      .filter(Boolean)
+      .slice(0, 50);
+    const counts = await getBulkCitationCounts(cleanDois);
+    const result = Object.fromEntries(counts);
+    res.json({ counts: result, total: counts.size });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
