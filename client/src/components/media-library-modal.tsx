@@ -227,8 +227,8 @@ function VirtualizedGrid({
 
   return (
     <Grid
-      cellComponent={GridCell}
-      cellProps={cellProps}
+      cellComponent={GridCell as any}
+      cellProps={cellProps as any}
       columnCount={columnCount}
       columnWidth={itemWidth}
       defaultHeight={containerHeight}

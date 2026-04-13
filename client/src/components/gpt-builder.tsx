@@ -982,7 +982,7 @@ export function GptBuilder({ open, onOpenChange, editingGpt, onSave }: GptBuilde
                                     endpoint: action.endpoint ?? "",
                                     authType: action.authType ?? "none",
                                     authConfig: action.authConfig ? (action.authConfig as any).token : "",
-                                    openApiSpec: action.openApiSpec ? JSON.stringify(action.openApiSpec, null, 2) : ""
+                                    openApiSpec: (action as { openApiSpec?: unknown }).openApiSpec ? JSON.stringify((action as { openApiSpec?: unknown }).openApiSpec, null, 2) : ""
                                   });
                                   setShowActionEditor(true);
                                 }}>

@@ -21,7 +21,7 @@ vi.mock("@/lib/localArtifactAccess", () => ({
 }));
 
 vi.mock("docx-preview", () => ({
-  renderAsync: (...args: unknown[]) => renderAsyncMock(...args),
+  renderAsync: (data: unknown, container: HTMLElement) => renderAsyncMock(data, container),
 }));
 
 vi.mock("@/components/FilePreviewSurface", () => ({

@@ -1979,7 +1979,10 @@ const AssistantMessage = memo(function AssistantMessage({
                 <a
                   href={message.artifact.downloadUrl}
                   download
-                  onClick={(event) => void handleArtifactDownload(event, message.artifact?.downloadUrl, message.artifact?.name)}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void downloadArtifact(message.artifact?.downloadUrl || "", message.artifact?.name);
+                  }}
                   className="p-2 bg-black/50 hover:bg-black/70 text-white rounded-lg transition-colors backdrop-blur-sm"
                   title="Descargar"
                 >
@@ -1990,18 +1993,20 @@ const AssistantMessage = memo(function AssistantMessage({
           ) : (
             (() => {
               // Normalize artifact type for display: accept both word/excel/ppt and document/spreadsheet/presentation
+              const artifact = message.artifact;
+              if (!artifact) return null;
               const artTypeNorm: Record<string, string> = { word: 'document', excel: 'spreadsheet', ppt: 'presentation', docx: 'document', xlsx: 'spreadsheet', pptx: 'presentation' };
-              const artType = artTypeNorm[message.artifact.type] || message.artifact.type;
-              const artFileName = message.artifact.filename || message.artifact.name;
+              const artType = artTypeNorm[artifact.type] || artifact.type;
+              const artFileName = artifact.filename || artifact.name;
               const officeRunIdFromArtifactUrl = [
-                message.artifact.downloadUrl,
-                (message.artifact as any)?.previewUrl,
+                artifact.downloadUrl,
+                (artifact as any)?.previewUrl,
               ]
                 .map((value) => (typeof value === "string" ? value.match(/\/api\/office-engine\/runs\/([0-9a-f-]{36})\//i)?.[1] : null))
                 .find((value): value is string => typeof value === "string" && value.length > 0);
               const officeRunId =
-                typeof (message.artifact as any)?.metadata?.officeRunId === "string"
-                  ? String((message.artifact as any).metadata.officeRunId)
+                typeof (artifact as any)?.metadata?.officeRunId === "string"
+                  ? String((artifact as any).metadata.officeRunId)
                   : officeRunIdFromArtifactUrl || null;
               return (
                 <div className="space-y-3">
@@ -2053,7 +2058,7 @@ const AssistantMessage = memo(function AssistantMessage({
 
                               // Try to fetch content from contentUrl if available (for PPT deck JSON)
                               let content = "";
-                              const contentUrl = (message.artifact as any)?.contentUrl;
+                              const contentUrl = (artifact as any)?.contentUrl;
                               if (contentUrl && docType === "ppt") {
                                 try {
                                   content = await fetchArtifactText(contentUrl);
@@ -2064,9 +2069,9 @@ const AssistantMessage = memo(function AssistantMessage({
                               }
 
                               // For Word documents from production pipeline, fetch the docx and convert to HTML
-                              if (!content && docType === "word" && message.artifact.downloadUrl) {
+                              if (!content && docType === "word" && artifact.downloadUrl) {
                                 try {
-                                  const response = await fetchArtifactResponse(message.artifact.downloadUrl);
+                                  const response = await fetchArtifactResponse(artifact.downloadUrl);
                                   if (response.ok) {
                                     const blob = await response.blob();
                                     const arrayBuffer = await blob.arrayBuffer();
@@ -2094,9 +2099,12 @@ const AssistantMessage = memo(function AssistantMessage({
                           </button>
                         )}
                         <a
-                          href={message.artifact.downloadUrl}
+                          href={artifact.downloadUrl}
                           download={artFileName || true}
-                          onClick={(event) => void handleArtifactDownload(event, message.artifact?.downloadUrl, artFileName)}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            void downloadArtifact(artifact.downloadUrl, artFileName);
+                          }}
                           className={cn("px-4 py-2 text-white text-sm font-medium rounded-lg flex items-center gap-2 transition-colors",
                             artType === "document" && "bg-blue-600 hover:bg-blue-700",
                             artType === "spreadsheet" && "bg-green-600 hover:bg-green-700",
