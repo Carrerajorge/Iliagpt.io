@@ -30,8 +30,8 @@ interface UserLibraryProps {
 
 type FilterType = "all" | "image" | "video" | "document" | "app";
 
-import { FixedSizeGrid as Grid, type GridChildComponentProps } from "react-window";
-import AutoSizer from "react-virtualized-auto-sizer";
+import { Grid, type CellComponentProps } from "react-window";
+import { AutoSizer } from "react-virtualized-auto-sizer";
 
 // ... existing imports ...
 
@@ -42,9 +42,51 @@ interface VirtualizedGridProps {
   onDownload: (item: LibraryFile) => void;
 }
 
+interface VirtualizedGridCellProps {
+  items: LibraryFile[];
+  onSelect: (item: LibraryFile) => void;
+  onDelete: (item: LibraryFile) => void;
+  onDownload: (item: LibraryFile) => void;
+  columnCount: number;
+}
+
 const GUTTER_SIZE = 16;
 const ITEM_HEIGHT = 200; // Approximate height of card + text
 const OPTS_MIN_COLUMN_WIDTH = 180;
+
+function VirtualizedMediaGridCell({
+  columnIndex,
+  rowIndex,
+  style,
+  items,
+  onSelect,
+  onDelete,
+  onDownload,
+  columnCount,
+}: CellComponentProps<VirtualizedGridCellProps>) {
+  const index = rowIndex * columnCount + columnIndex;
+  if (index >= items.length) return null;
+  const item = items[index];
+
+  const itemStyle = {
+    ...style,
+    left: Number(style.left),
+    top: Number(style.top),
+    width: Number(style.width) - GUTTER_SIZE,
+    height: ITEM_HEIGHT,
+  };
+
+  return (
+    <div style={itemStyle}>
+      <MediaThumbnail
+        item={item}
+        onClick={() => onSelect(item)}
+        onDelete={() => onDelete(item)}
+        onDownload={() => onDownload(item)}
+      />
+    </div>
+  );
+}
 
 function VirtualizedMediaGrid({ items, onSelect, onDelete, onDownload }: VirtualizedGridProps) {
   return (
@@ -57,6 +99,8 @@ function VirtualizedMediaGrid({ items, onSelect, onDelete, onDownload }: Virtual
 
         return (
           <Grid
+            cellComponent={VirtualizedMediaGridCell}
+            cellProps={{ items, onSelect, onDelete, onDownload, columnCount: safeColumnCount }}
             columnCount={safeColumnCount}
             columnWidth={columnWidth + GUTTER_SIZE}
             height={height}
@@ -64,33 +108,7 @@ function VirtualizedMediaGrid({ items, onSelect, onDelete, onDownload }: Virtual
             rowHeight={ITEM_HEIGHT + GUTTER_SIZE}
             width={width}
             className="px-6 py-4"
-          >
-            {({ columnIndex, rowIndex, style }: GridChildComponentProps) => {
-              const index = rowIndex * safeColumnCount + columnIndex;
-              if (index >= items.length) return null;
-              const item = items[index];
-
-              // Adjust style for gutter
-              const itemStyle = {
-                ...style,
-                left: Number(style.left),
-                top: Number(style.top),
-                width: columnWidth,
-                height: ITEM_HEIGHT,
-              };
-
-              return (
-                <div style={itemStyle}>
-                  <MediaThumbnail
-                    item={item}
-                    onClick={() => onSelect(item)}
-                    onDelete={() => onDelete(item)}
-                    onDownload={() => onDownload(item)}
-                  />
-                </div>
-              );
-            }}
-          </Grid>
+          />
         );
       }}
     </AutoSizer>

@@ -125,7 +125,9 @@ export function useSendMessage(options: UseSendMessageOptions): UseSendMessageRe
           updateMessageStatus(clientMessageId, { retryCount: retryCount + 1 });
           
           retryTimeoutRef.current = setTimeout(() => {
-            setPendingMessage(prev => prev && executeSend({ ...prev, retryCount: retryCount + 1 }, true));
+            const retriedMessage = { ...message, retryCount: retryCount + 1 };
+            setPendingMessage(retriedMessage);
+            void executeSend(retriedMessage, true);
           }, delay);
           return;
         }

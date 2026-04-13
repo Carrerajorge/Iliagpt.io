@@ -106,7 +106,7 @@ export interface Message {
   runId?: string; // ID of the run this message belongs to
   status?: 'pending' | 'processing' | 'done' | 'failed'; // Processing status for idempotency
   // Message delivery state for optimistic UI.
-  deliveryStatus?: 'sending' | 'sent' | 'delivered' | 'error';
+  deliveryStatus?: 'queued' | 'sending' | 'sent' | 'delivered' | 'error';
   deliveryError?: string;
   isThinking?: boolean;
   steps?: { title: string; status: "pending" | "loading" | "complete" }[];
@@ -1521,7 +1521,7 @@ export function useChats() {
             });
           }
 
-          return { ...chat, messages: dedupeMessagesByIdentity(updated) };
+          return { ...chat, messages: dedupeMessagesByIdentity(updated as Message[]) as Message[] };
         }));
       };
 
@@ -1904,7 +1904,7 @@ export function useChats() {
           });
         }
 
-        return { ...chat, messages: dedupeMessagesByIdentity(updated) };
+          return { ...chat, messages: dedupeMessagesByIdentity(updated as Message[]) as Message[] };
       }));
     };
 
@@ -1982,7 +1982,7 @@ export function useChats() {
             changed = true;
             return { ...m, deliveryStatus: "delivered", deliveryError: undefined };
           });
-          return changed ? patched : msgs;
+          return (changed ? patched : msgs) as Message[];
         };
 
         const messageExists = chat.messages.some((m) => messagesShareIdentity(m, normalizedMessage));
