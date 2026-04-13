@@ -522,13 +522,14 @@ function safeWriteFailedQueue(items: FailedMessageQueueItem[]): void {
 
 function enqueueFailedMessageForRecovery(chatId: string, message: Message): void {
   if (!message.requestId) return;
+  if (message.role !== "user") return;
   if (chatId.startsWith(PENDING_CHAT_PREFIX)) return; // Can't recover a message for a chat that doesn't exist on server.
   const existing = safeReadFailedQueue();
   if (existing.some((q) => q?.requestId === message.requestId)) return;
 
   existing.push({
     chatId,
-    role: message.role,
+    role: "user",
     content: message.content,
     requestId: message.requestId,
     clientRequestId: message.clientRequestId,

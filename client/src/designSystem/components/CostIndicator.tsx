@@ -52,7 +52,7 @@ function formatTokens(n: number): string {
 
 function useAnimatedNumber(target: number, decimals = 4): string {
   const [display, setDisplay] = useState(target);
-  const rafRef = useRef<number>();
+  const rafRef = useRef<number | null>(null);
   const startRef = useRef(display);
   const startTimeRef = useRef<number | null>(null);
   const DURATION = 400; // ms
@@ -79,7 +79,7 @@ function useAnimatedNumber(target: number, decimals = 4): string {
 
     rafRef.current = requestAnimationFrame(animate);
     return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
   }, [target]);
 

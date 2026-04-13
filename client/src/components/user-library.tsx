@@ -30,8 +30,8 @@ interface UserLibraryProps {
 
 type FilterType = "all" | "image" | "video" | "document" | "app";
 
-import { Grid } from "react-window";
-import { AutoSizer } from "react-virtualized-auto-sizer";
+import { FixedSizeGrid as Grid, type GridChildComponentProps } from "react-window";
+import AutoSizer from "react-virtualized-auto-sizer";
 
 // ... existing imports ...
 
@@ -65,7 +65,7 @@ function VirtualizedMediaGrid({ items, onSelect, onDelete, onDownload }: Virtual
             width={width}
             className="px-6 py-4"
           >
-            {({ columnIndex, rowIndex, style }: { columnIndex: number; rowIndex: number; style: React.CSSProperties }) => {
+            {({ columnIndex, rowIndex, style }: GridChildComponentProps) => {
               const index = rowIndex * safeColumnCount + columnIndex;
               if (index >= items.length) return null;
               const item = items[index];

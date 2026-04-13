@@ -131,7 +131,7 @@ function parseUserPayload(payload: unknown): User | null {
       typeof data.createdAt === "string" || data.createdAt instanceof Date
         ? (data.createdAt as any)
         : undefined,
-  } as User;
+  } as unknown as User;
 }
 
 function clearOldUserData(): void {
@@ -251,7 +251,7 @@ async function fetchUser(): Promise<User | null> {
             isAnonymous: true,
             username: `Guest-${identity.userId.slice(0, 4)}`,
             role: 'user',
-          } as User;
+          } as unknown as User;
         }
       }
     } catch (e) {

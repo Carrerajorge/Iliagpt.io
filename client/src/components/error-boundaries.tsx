@@ -212,10 +212,10 @@ export function ModalErrorBoundary({ children }: { children: ReactNode }) {
     );
 }
 
-export function EditorErrorBoundary({ children }: { children: ReactNode }) {
-    return (
-        <ErrorBoundary level="component" onError={(error) => {
-            console.error('[Editor] Error:', error);
+export function EditorErrorBoundary({ children }: { children: ReactNode; editorType?: string; fallbackContent?: string }) {
+  return (
+    <ErrorBoundary level="component" onError={(error) => {
+      console.error('[Editor] Error:', error);
         }}>
             {children}
         </ErrorBoundary>
