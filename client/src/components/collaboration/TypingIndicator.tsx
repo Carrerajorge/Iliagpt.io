@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import type { Variants } from 'framer-motion';
 import { useTypingUsers } from '@/lib/collaboration/PresenceManager';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -8,7 +9,7 @@ const MAX_SHOWN_NAMES = 2;
 
 // ─── Dot animation variants ───────────────────────────────────────────────────
 
-const DOT_CONTAINER_VARIANTS = {
+const DOT_CONTAINER_VARIANTS: Variants = {
   animate: {
     transition: {
       staggerChildren: 0.18,
@@ -16,7 +17,7 @@ const DOT_CONTAINER_VARIANTS = {
   },
 };
 
-const DOT_VARIANTS = {
+const DOT_VARIANTS: Variants = {
   initial: { y: 0, opacity: 0.4 },
   animate: {
     y: [-3, 0, -3],
@@ -24,7 +25,7 @@ const DOT_VARIANTS = {
     transition: {
       duration: 0.9,
       repeat: Infinity,
-      ease: 'easeInOut',
+      ease: 'easeInOut' as const,
     },
   },
 };

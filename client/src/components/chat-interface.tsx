@@ -679,7 +679,7 @@ export function ChatInterface({
   const [selectedTool, setSelectedTool] = useState<"web" | "agent" | "image" | null>(null);
   const [latencyMode, setLatencyMode] = useState<"fast" | "deep" | "auto">("auto");
   const activeDocEditor = null;
-  const [minimizedDocument, setMinimizedDocument] = useState<{ type: string; title: string; content: string; messageId?: string } | null>(null);
+  const [minimizedDocument, setMinimizedDocument] = useState<{ type: "word" | "excel" | "ppt"; title: string; content: string; messageId?: string } | null>(null);
   // DOCX Generation State - prefer parent prop (survives remount), fallback to local state
   const [docGenerationStateLocal, setDocGenerationStateLocal] = useState<{
     status: 'idle' | 'generating' | 'ready' | 'error';
@@ -8682,11 +8682,11 @@ IMPORTANTE:
                       uiPhase={uiPhase}
                     />
                     {streamingContent && (
-                      <ThrottledStreamingContent
-                        content={streamingContent}
-                        isStreaming={aiState !== "idle"}
-                        customComponents={CleanDataTableComponents}
-                      />
+                        <ThrottledStreamingContent
+                          content={streamingContent}
+                          isStreaming={true}
+                          customComponents={CleanDataTableComponents}
+                        />
                     )}
                   </div>
                 ) : (

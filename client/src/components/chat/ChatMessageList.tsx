@@ -4,7 +4,7 @@ import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import { motion, AnimatePresence } from "framer-motion";
 import { Message } from "@/hooks/use-chats";
 import { MessageItem } from "./MessageItem";
-import { type AIState, isAiBusyState } from "@/components/chat-interface/types";
+import { type AIState, type AiProcessStep, isAiBusyState } from "@/components/chat-interface/types";
 import { SuggestedReplies, generateSuggestions } from "@/components/suggested-replies";
 import { PhaseNarrator } from "@/components/thinking-indicator";
 import { LiveExecutionConsole } from "@/components/live-execution-console";
@@ -78,7 +78,7 @@ export interface ChatMessageListProps {
     activeRunId?: string | null;
     onRunComplete?: (artifacts: Array<{ id: string; type: string; name: string; url: string }>) => void;
     uiPhase?: 'idle' | 'thinking' | 'console' | 'done';
-    aiProcessSteps?: { step: string; status: "pending" | "active" | "done" }[];
+    aiProcessSteps?: AiProcessStep[];
     streamingMsgId?: string | null;
     onUserRetrySend?: (message: Message) => void;
     onToolConfirm?: (messageId: string, toolName: string, stepIndex: number) => void;

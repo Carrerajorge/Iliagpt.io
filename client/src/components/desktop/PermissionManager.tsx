@@ -3,6 +3,16 @@ import { ShieldAlert, MonitorUp, Accessibility, CheckCircle2, ChevronRight } fro
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
+declare global {
+    interface Window {
+        electron?: {
+            ipcRenderer: {
+                send: (channel: string) => void;
+            };
+        };
+    }
+}
+
 interface PermissionStatus {
     screenRecording: boolean;
     accessibility: boolean;
