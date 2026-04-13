@@ -14,9 +14,34 @@ import React, { memo, useCallback, useEffect, useState } from "react";
 import { ChatRuntime } from "./chat/ChatRuntime";
 import { ChatErrorBoundary } from "./error-boundaries";
 import { ScreenReaderAnnouncement, SkipLink } from "./accessibility";
-import { useErrorDisplay } from "@/stores/errorStore";
-import { validateMessage, checkRateLimit } from "@/lib/validation";
-import type { Message, ActiveGpt } from "@/hooks/use-chats";
+import type { Message, ActiveGpt } from "@/types/chat";
+
+function validateMessage(content: string): { valid: boolean; error?: string } {
+  if (!content || !content.trim()) {
+    return { valid: false, error: "El mensaje no puede estar vacío" };
+  }
+  if (content.length > 20000) {
+    return { valid: false, error: "El mensaje es demasiado largo" };
+  }
+  return { valid: true };
+}
+
+const localRateLimitState = new Map<string, number[]>();
+
+function checkRateLimit(key: string, limit: number, windowMs: number): { allowed: boolean; resetTime: number } {
+  const now = Date.now();
+  const history = localRateLimitState.get(key) ?? [];
+  const recent = history.filter((ts) => ts > now - windowMs);
+  localRateLimitState.set(key, recent);
+
+  if (recent.length >= limit) {
+    return { allowed: false, resetTime: recent[0] + windowMs };
+  }
+
+  recent.push(now);
+  localRateLimitState.set(key, recent);
+  return { allowed: true, resetTime: now + windowMs };
+}
 
 // Props compatibles con el ChatInterface original
 interface ChatInterfaceV2Props {
@@ -55,8 +80,11 @@ export const ChatInterfaceV2 = memo(function ChatInterfaceV2({
   streamingContent: externalStreamingContent,
   streamingMessageId,
 }: ChatInterfaceV2Props) {
-  const { addError } = useErrorDisplay();
   const [announcement, setAnnouncement] = useState("");
+
+  const addError = useCallback((error: Error, details?: Record<string, unknown>) => {
+    console.error("[ChatInterfaceV2]", error, details);
+  }, []);
 
   // Wrapper para onSendMessage con validación y rate limiting
   const handleSendMessage = useCallback(async (content: string, attachments?: string[]) => {

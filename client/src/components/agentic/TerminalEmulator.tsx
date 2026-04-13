@@ -216,7 +216,7 @@ export function TerminalEmulator({
   readOnly = false,
 }: TerminalEmulatorProps) {
   const { session, sendCommand, sendRaw, clear, navigateHistory, reconnect } =
-    useTerminal(sessionId);
+    useTerminal({ sessionId });
 
   const [inputValue, setInputValue] = useState('');
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
@@ -228,10 +228,15 @@ export function TerminalEmulator({
   const lastScrollTopRef = useRef(0);
 
   const connectionStatus: ConnectionStatus =
-    (session?.connectionStatus as ConnectionStatus) ?? 'disconnected';
+    (session?.status as ConnectionStatus) ?? 'disconnected';
 
   // Cap lines at 1000
-  const rawLines: TerminalLine[] = session?.lines ?? [];
+  const rawLines: TerminalLine[] = (session?.lines ?? []).map((line) => ({
+    id: line.id,
+    type: line.type,
+    text: line.content,
+    createdAt: line.timestamp,
+  }));
   const lines: TerminalLine[] =
     rawLines.length > 1000 ? rawLines.slice(rawLines.length - 1000) : rawLines;
 

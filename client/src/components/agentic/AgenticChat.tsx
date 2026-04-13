@@ -407,8 +407,8 @@ export function AgenticChat({
                 >
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   <span className="italic">
-                    {state.currentToolName
-                      ? `Using ${state.currentToolName}…`
+                    {state.currentToolCall?.toolName
+                      ? `Using ${state.currentToolCall.toolName}…`
                       : 'Thinking…'}
                   </span>
                 </motion.div>
