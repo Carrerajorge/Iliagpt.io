@@ -288,6 +288,23 @@ function TelegramConfigPanel({ onBack, onSaved }: { onBack: () => void; onSaved?
         <Button onClick={save} disabled={status === "saving"} className="w-full bg-blue-500 hover:bg-blue-600 text-white">
           {status === "saving" ? "Guardando..." : "Conectar Bot"}
         </Button>
+
+        <Button
+          variant="outline"
+          className="w-full text-red-500 border-red-300 hover:bg-red-50 dark:hover:bg-red-950/20"
+          onClick={async () => {
+            try {
+              await apiFetch("/api/integrations/telegram/disconnect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+              setStatus("idle");
+              setBotToken("");
+              setWebhookUrl("");
+              onSaved?.();
+              onBack();
+            } catch {}
+          }}
+        >
+          Desconectar Telegram
+        </Button>
       </div>
     </div>
   );
@@ -395,6 +412,24 @@ function MessengerConfigPanel({ onBack, onSaved }: { onBack: () => void; onSaved
 
         <Button onClick={save} disabled={status === "saving"} className="w-full bg-purple-600 hover:bg-purple-700 text-white">
           {status === "saving" ? "Guardando..." : "Conectar Messenger"}
+        </Button>
+
+        <Button
+          variant="outline"
+          className="w-full text-red-500 border-red-300 hover:bg-red-50 dark:hover:bg-red-950/20"
+          onClick={async () => {
+            if (!pageId.trim()) { setError("Ingresa el Page ID para desconectar"); return; }
+            try {
+              await apiFetch("/api/integrations/messenger/disconnect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pageId: pageId.trim() }) });
+              setStatus("idle");
+              setPageId("");
+              setAccessToken("");
+              onSaved?.();
+              onBack();
+            } catch {}
+          }}
+        >
+          Desconectar Messenger
         </Button>
       </div>
     </div>

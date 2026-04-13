@@ -118,7 +118,7 @@ import { llmGateway } from "./lib/llmGateway";
 import { generateAnonToken, verifyAnonToken } from "./lib/anonToken";
 import { getUserConfig, setUserConfig, getDefaultConfig, validatePatterns, getFilterStats } from "./services/contentFilter";
 import { isModelEligibleForPublic } from "./services/modelIntegration";
-import { buildOpenClawPreSeedScript } from "./services/openclawControlUi";
+import { buildOpenClawPreSeedScript, buildOpenClawAutoConnectScript } from "./services/openclawControlUi";
 import { getOpenClawGatewayModelCatalog, getUnifiedModelCatalog } from "./services/modelCatalogService";
 import { GEMINI_MODELS_REGISTRY, OPENROUTER_MODELS, XAI_MODELS } from "./lib/modelRegistry";
 import { getLogs, getLogStats, type LogFilters } from "./lib/structuredLogger";
@@ -1008,9 +1008,10 @@ rootObserver.observe(document.documentElement,{childList:true,subtree:true});
         }
 
         const preSeedScript = `<script>${buildOpenClawPreSeedScript({ safeToken })}</script>`;
+        const autoConnectScript = `<script>${buildOpenClawAutoConnectScript()}</script>`;
         const modifiedHtml = controlUiHtml
           .replace("<head>", '<head><base href="/openclaw-ui/">')
-          .replace("</head>", preSeedScript + pickerEnhancer + "</head>");
+          .replace("</head>", preSeedScript + autoConnectScript + pickerEnhancer + "</head>");
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
         res.send(modifiedHtml);

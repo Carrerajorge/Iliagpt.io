@@ -3,6 +3,31 @@ type BuildOpenClawPreSeedScriptOptions = {
   gatewayPath?: string;
 };
 
+/**
+ * Build a script that auto-clicks the Connect button once the Control UI renders.
+ * The Control UI build does not support `autoConnect` natively — the pre-seed sets
+ * the token + URL in localStorage, but the login gate still waits for the user to
+ * click "Conectar".  This script observes the DOM and clicks it automatically.
+ */
+export function buildOpenClawAutoConnectScript(): string {
+  return `(function(){
+try{
+  var MAX_WAIT=8000;
+  var start=Date.now();
+  function tryClick(){
+    var btn=document.querySelector(".login-gate__connect");
+    if(btn){btn.click();return;}
+    if(Date.now()-start<MAX_WAIT){requestAnimationFrame(tryClick);}
+  }
+  if(document.readyState==="loading"){
+    document.addEventListener("DOMContentLoaded",function(){requestAnimationFrame(tryClick);});
+  }else{
+    requestAnimationFrame(tryClick);
+  }
+}catch(e){console.error("[OC-AutoConnect]",e)}
+})()`;
+}
+
 export function buildOpenClawPreSeedScript({
   safeToken,
   gatewayPath = "/openclaw-ws",

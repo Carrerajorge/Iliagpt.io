@@ -1658,6 +1658,8 @@ export function parseExcelFromText(text: string): any[][] {
 
     const trimmedLine = line.trim();
     if (!trimmedLine) continue;
+    // Skip pure markdown table separator lines (|---|---|)
+    if (/^\|?[\s\-:|]+\|[\s\-:|]*$/.test(trimmedLine)) continue;
 
     let cells: string[];
     if (trimmedLine.includes("|")) {

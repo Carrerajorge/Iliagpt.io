@@ -1417,7 +1417,12 @@ export function createDocumentsRouter() {
                 toolRunnerReport = result.report;
               } else {
                 const excelData = parseExcelFromText(safeContent);
-                buffer = await generateExcelDocument(safeTitle, excelData);
+                buffer = await generateExcelDocument(safeTitle, excelData, {
+                  useProfessionalStyles: true,
+                  freezeHeader: true,
+                  autoFilter: true,
+                  alternateRows: true,
+                });
               }
             } catch (error) {
               logDocumentEvent({
@@ -1444,7 +1449,12 @@ export function createDocumentsRouter() {
                 error,
                 async () => {
                   const excelData = parseExcelFromText(safeContent);
-                  return generateExcelDocument(safeTitle, excelData);
+                  return generateExcelDocument(safeTitle, excelData, {
+                    useProfessionalStyles: true,
+                    freezeHeader: true,
+                    autoFilter: true,
+                    alternateRows: true,
+                  });
                 }
               );
               toolRunnerReport = fallbackResult.report;
@@ -3279,7 +3289,27 @@ Generate the command plan:`;
   // PDF conversion endpoint (placeholder)
   router.post("/convert-to-pdf", async (req, res) => {
     try {
-      res.status(501).json({ error: "PDF conversion requires LibreOffice installation" });
+      const { isLibreOfficeAvailable, convertDocument } = await import("../services/libreofficeConverter");
+      if (!isLibreOfficeAvailable()) {
+        return res.status(501).json({ error: "LibreOffice not installed. Set LIBREOFFICE_PATH in .env or run: brew install --cask libreoffice" });
+      }
+
+      const { fileUrl, fileName } = req.body;
+      if (!fileUrl || !fileName) {
+        return res.status(400).json({ error: "fileUrl and fileName are required" });
+      }
+
+      // Fetch the source file
+      const fileRes = await fetch(fileUrl);
+      if (!fileRes.ok) {
+        return res.status(400).json({ error: `Failed to fetch source file: HTTP ${fileRes.status}` });
+      }
+      const inputBuffer = Buffer.from(await fileRes.arrayBuffer());
+
+      const result = await convertDocument(inputBuffer, fileName, "pdf");
+      res.setHeader("Content-Type", result.mimeType);
+      res.setHeader("Content-Disposition", `attachment; filename="${result.filename}"`);
+      res.send(result.buffer);
     } catch (error: any) {
       res.status(500).json(safeErrorResponse("PDF conversion failed", error));
     }

@@ -1669,7 +1669,12 @@ const generateDocumentTool: ToolDefinition = {
           }
 
           const excelData = isBlankContent ? [[""]] : parseExcelFromText(normalizedContent);
-          buffer = await generateExcelDocument(input.title, excelData);
+          buffer = await generateExcelDocument(input.title, excelData, {
+            useProfessionalStyles: true,
+            freezeHeader: true,
+            autoFilter: true,
+            alternateRows: true,
+          });
           mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
           extension = "xlsx";
           break;

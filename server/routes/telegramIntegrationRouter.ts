@@ -171,5 +171,23 @@ export function createTelegramIntegrationRouter(): Router {
     return res.json({ success: true, settings: extractRuntimeSettings(mergedMetadata) });
   });
 
+  router.post("/disconnect", async (req: Request, res: Response) => {
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const now = new Date();
+    await db
+      .update(integrationAccounts)
+      .set({ status: "inactive", updatedAt: now })
+      .where(
+        and(
+          eq(integrationAccounts.userId, userId),
+          eq(integrationAccounts.providerId, "telegram"),
+        ),
+      );
+
+    return res.json({ success: true });
+  });
+
   return router;
 }

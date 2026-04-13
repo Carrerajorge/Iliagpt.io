@@ -5603,6 +5603,15 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         return res.status(400).json({ error: "Messages array is required" });
       }
 
+      // DEBUG: Log client messages received for context tracking
+      console.log(`[Stream] CLIENT MESSAGES RECEIVED: ${clientMessages.length} messages`, {
+        chatId,
+        conversationId,
+        roles: clientMessages.map((m: any) => m.role),
+        contentLengths: clientMessages.map((m: any) => (m.content || "").length),
+        lastUserMsg: clientMessages.filter((m: any) => m.role === "user").pop()?.content?.slice(0, 100),
+      });
+
       // ── Prompt Integrity Check ──
       // Verify the latest user message was not altered/truncated in transit.
       const clientPromptLen = (req.body as any).clientPromptLen;
@@ -6237,11 +6246,26 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
         !skipSkillShortcuts
       ) {
         try {
+          // Augment with server-side history even in fast path so the AI remembers context
+          const effectiveChatIdForFastPath = chatId || conversationId || streamConversationId;
+          let fastPathMessages = clientMessages;
+          if (effectiveChatIdForFastPath) {
+            try {
+              const augmented = await augmentHistoryWithCompatibility(
+                effectiveChatIdForFastPath,
+                clientMessages,
+                4000 // smaller budget for fast path
+              );
+              fastPathMessages = augmented.messages;
+            } catch (_e) {
+              // fall back to client messages only
+            }
+          }
           const answerFirstPrompt = answerFirstEnforcer.generateAnswerFirstSystemPrompt(userQuery, false);
           const fastPathSystemPrompt = `${answerFirstPrompt.fullPrompt}${skillSystemSection}`;
           const llmMessages = [
             { role: "system" as const, content: fastPathSystemPrompt },
-            ...clientMessages.map((m: any) => ({
+            ...fastPathMessages.map((m: any) => ({
               role: m.role as "user" | "assistant" | "system",
               content: String(m.content ?? "")
             }))
@@ -6400,7 +6424,7 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
           return await augmentHistoryWithCompatibility(
             effectiveChatIdForMemory,
             clientMessages,
-            8000,
+            12000,
           );
         } catch (memoryError) {
           console.warn("[Stream] Failed to augment conversation history:", (memoryError as any)?.message || memoryError);
@@ -7926,13 +7950,70 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
 
       systemContent += `${currentDateTimeContext}${localControlSystemPrompt}${userProfileContext}${customInstructionsSection}${responseStyleModifier}${semanticMemoryContext ? `\n\n${semanticMemoryContext}` : ''}${codeInterpreterPrompt}${webSearchContextForLLM}${skillSystemSection}`;
 
+      // CONVERSATION DOCUMENTS: Load previously uploaded documents so the AI can reference them
+      const effectiveChatIdForDocs = chatId || conversationId || streamConversationId;
+      if (effectiveChatIdForDocs) {
+        try {
+          const convDocs = await storage.getConversationDocuments(effectiveChatIdForDocs);
+          if (convDocs.length > 0) {
+            const docContextParts = convDocs.map((doc) => {
+              const text = doc.extractedText?.slice(0, 8000) || '';
+              return `### ${doc.fileName}\n${text}`;
+            });
+            const totalDocContext = docContextParts.join('\n\n');
+            if (totalDocContext.length > 0) {
+              systemContent += `\n\n## Documentos subidos en esta conversación\nEl usuario subió los siguientes documentos en este hilo de chat. Usa esta información para responder preguntas sobre ellos:\n\n${totalDocContext.slice(0, 32000)}`;
+              console.log(`[Stream] Injected ${convDocs.length} conversation document(s) into context (${totalDocContext.length} chars)`);
+            }
+          }
+        } catch (docError) {
+          console.warn("[Stream] Failed to load conversation documents:", (docError as any)?.message);
+        }
+      }
+
       // DOC TOOL: Add format-specific system prompt so the LLM outputs structured content
       // that the client-side editors can render (markdown for Word, CSV for Excel, JSON for PPT)
       if (docTool && ['word', 'excel', 'ppt'].includes(docTool)) {
         const docSystemPrompts: Record<string, string> = {
-          word: '\n\nMODO DOCUMENTO WORD:\nGenera el contenido del documento en formato Markdown bien estructurado con títulos (#, ##, ###), párrafos, listas, tablas y formato de texto (negrita, cursiva). Escribe contenido completo y profesional. No incluyas bloques de código, instrucciones meta ni explicaciones sobre lo que estás haciendo — solo el contenido del documento.',
-          excel: '\n\nMODO HOJA DE CÁLCULO:\nGenera los datos en formato CSV con cabeceras en la primera fila. Usa comas como separador de columnas y saltos de línea como separador de filas. No incluyas explicaciones ni texto adicional, solo los datos tabulares puros.',
-          ppt: '\n\nMODO PRESENTACIÓN:\nGenera una presentación como JSON array de slides con esta estructura: [{"title":"Título de slide", "bullets":["Punto 1","Punto 2"]}, ...]. No incluyas explicaciones ni bloques de código, solo el JSON puro.',
+          word: `\n\nMODO DOCUMENTO WORD — INSTRUCCIONES OBLIGATORIAS:
+Genera el contenido COMPLETO del documento en formato Markdown profesional. Reglas estrictas:
+1. Usa títulos jerárquicos: # para título principal, ## para secciones, ### para subsecciones.
+2. Escribe párrafos completos y detallados (mínimo 3-5 oraciones por sección). NO uses placeholders como "[insertar aquí]" o "Lorem ipsum".
+3. Incluye datos específicos, cifras reales o realistas, nombres concretos y ejemplos detallados.
+4. Usa tablas Markdown cuando haya datos comparativos: | Col1 | Col2 |\\n|---|---|\\n| dato | dato |
+5. Usa listas con viñetas (-) o numeradas (1.) cuando corresponda.
+6. Usa **negrita** para términos clave y *cursiva* para énfasis.
+7. Si el usuario pide un contrato, informe o documento formal: incluye TODAS las cláusulas/secciones completas con contenido real.
+8. Genera contenido extenso y profesional — un documento Word real debe tener sustancia, no esqueletos vacíos.
+9. NO incluyas bloques de código (\`\`\`), instrucciones meta, ni explicaciones sobre lo que haces.
+10. Responde SOLO con el contenido del documento, nada más.`,
+
+          excel: `\n\nMODO HOJA DE CÁLCULO — INSTRUCCIONES OBLIGATORIAS:
+Genera datos tabulares en formato pipe-delimited (|). Reglas estrictas:
+1. Primera fila: cabeceras de columnas separadas por |. Ejemplo: Producto | Cantidad | Precio Unitario | Total
+2. Filas siguientes: datos reales y específicos, NO placeholders. Usa datos concretos y realistas.
+3. Para valores numéricos: usa números sin formato de moneda (el sistema formatea automáticamente). Ejemplo: 1500.00
+4. Para porcentajes: escribe el número con % al final. Ejemplo: 15.5%
+5. Genera MUCHOS datos: si el usuario pide una tabla, genera al menos 15-30 filas de datos reales.
+6. Si el usuario pide fórmulas o cálculos: incluye una fila final con "Total" o "Promedio" y el sistema generará las fórmulas SUM automáticamente.
+7. Si el usuario pide múltiples categorías o secciones: agrupa los datos por categoría con una fila de encabezado de grupo.
+8. Para presupuestos: incluye columnas de Descripción, Unidad, Cantidad, Precio Unitario, Subtotal.
+9. Para cronogramas: incluye Actividad, Fecha Inicio, Fecha Fin, Duración, Responsable, Estado.
+10. NO incluyas explicaciones ni texto fuera de la tabla. Solo datos tabulares puros.
+11. NO uses formato CSV con comas dentro de valores numéricos. Usa | como separador.`,
+
+          ppt: `\n\nMODO PRESENTACIÓN — INSTRUCCIONES OBLIGATORIAS:
+Genera la presentación usando secciones Markdown con ##. Reglas estrictas:
+1. Cada slide empieza con ## Título del Slide.
+2. Debajo del título, usa viñetas con - para los puntos de cada slide.
+3. Genera contenido SUSTANCIAL: cada slide debe tener 4-6 puntos detallados, no frases genéricas.
+4. Incluye datos específicos, estadísticas, ejemplos concretos en cada punto.
+5. Mínimo de slides: genera al menos el número que pida el usuario, o 10 si no especifica.
+6. Estructura típica: Portada, Introducción/Contexto, Desarrollo (3-6 slides), Datos/Estadísticas, Conclusiones, Referencias.
+7. Para cada punto usa oraciones completas y descriptivas, no solo palabras sueltas.
+8. Si el tema requiere datos numéricos, inclúyelos directamente en los bullets.
+9. NO incluyas bloques de código, JSON, ni explicaciones meta.
+10. Responde SOLO con el contenido de la presentación en formato ## Título + viñetas.`,
         };
         systemContent += docSystemPrompts[docTool] || '';
         console.log(`[Stream] 📝 Added docTool system prompt for: ${docTool}`);
@@ -8000,10 +8081,17 @@ Si el usuario pregunta si tienes acceso a su terminal/computadora/archivos, conf
                 })).filter((att: any) => att.name)
                 : null);
 
+            // Enrich user message content with extracted document text so it persists in history
+            let enrichedUserContent = userMessageText;
+            if (attachmentContext && attachmentContext.length > 0) {
+              const docSummary = attachmentContext.slice(0, 6000);
+              enrichedUserContent = `${userMessageText}\n\n[Contenido de documentos adjuntos]:\n${docSummary}`;
+            }
+
             const userMsg = await storage.createChatMessage({
               chatId: effectiveChatIdForPersistence,
               role: 'user',
-              content: userMessageText,
+              content: enrichedUserContent,
               status: 'done',
               requestId,
               attachments: sanitizedAttachments,

@@ -41,25 +41,61 @@ export async function getOpenClawSkillsRuntimeSnapshot(): Promise<OpenClawSkills
 
     const runtimeSkills = skillRegistry.list();
     if (runtimeSkills.length > 0) {
-      const skills: RuntimeSkillDescriptor[] = runtimeSkills.map(skill => ({
-        id: skill.id,
-        name: skill.name,
-        description: skill.description,
-        enabled: skill.status !== "disabled",
-        status: normalizeOpenClawSkillStatus(skill.status),
-        certification: "runtime",
-        source: skill.source === "filesystem" ? "filesystem" : "builtin",
-        fallback: false,
-        tools: skill.tools || [],
-        filePath: skill.filePath,
-        updatedAt: skill.updatedAt,
-        vendor:
-          typeof skill.metadata?.vendor === "string" ? (skill.metadata.vendor as string) : undefined,
-        homepage:
-          typeof skill.metadata?.homepage === "string"
-            ? (skill.metadata.homepage as string)
-            : undefined,
-      }));
+      const registeredById = new Map<string, RuntimeSkillDescriptor>();
+
+      for (const skill of runtimeSkills) {
+        registeredById.set(skill.id, {
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+          enabled: skill.status !== "disabled",
+          status: normalizeOpenClawSkillStatus(skill.status),
+          certification: "runtime",
+          source: skill.source === "filesystem" ? "filesystem" : "builtin",
+          fallback: false,
+          tools: skill.tools || [],
+          filePath: skill.filePath,
+          updatedAt: skill.updatedAt,
+          vendor:
+            typeof skill.metadata?.vendor === "string" ? (skill.metadata.vendor as string) : undefined,
+          homepage:
+            typeof skill.metadata?.homepage === "string"
+              ? (skill.metadata.homepage as string)
+              : undefined,
+        });
+      }
+
+      // Promote bundled catalog skills to "ready" when the runtime is active,
+      // so they show green in the UI instead of "catalog_only" (blue).
+      for (const bundled of BUNDLED_SKILLS) {
+        if (!registeredById.has(bundled.id)) {
+          registeredById.set(bundled.id, {
+            id: bundled.id,
+            name: bundled.name,
+            description: bundled.description,
+            enabled: true,
+            status: "ready",
+            certification: "runtime",
+            source: "catalog",
+            fallback: false,
+            vendor: bundled.vendor,
+            homepage: bundled.homepage,
+          });
+        }
+      }
+
+      // Also include Anthropic catalog skills not yet registered.
+      for (const catalogSkill of listAnthropicCatalogRuntimeSkills(config.skills.workspaceDirectory)) {
+        if (!registeredById.has(catalogSkill.id)) {
+          registeredById.set(catalogSkill.id, {
+            ...catalogSkill,
+            status: "ready",
+            fallback: false,
+          });
+        }
+      }
+
+      const skills = Array.from(registeredById.values());
 
       return {
         runtimeAvailable: true,

@@ -156,18 +156,25 @@ export function OfficeArtifact({ title, previewUrl, downloadUrl, mimeType, docKi
         }
 
         if (kind === "pptx") {
-          // PPTX rendering in-browser is notoriously hard. We surface a clear
-          // "download to open" UX with an explicit external-open button.
-          const wrapper = document.createElement("div");
-          wrapper.className = "h-full flex flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground p-6";
-          wrapper.innerHTML = `
-            <div class="text-base font-medium text-foreground">Presentación lista</div>
-            <div>${title}</div>
-            <div>${(buf.byteLength / 1024).toFixed(1)} KB · PPTX</div>
-            <div class="text-xs">El preview inline de PPTX se renderiza mejor fuera del navegador — usa el botón de descarga.</div>
-          `;
-          container.appendChild(wrapper);
-          if (!cancelled) setStatus("ready");
+          // Try PptxViewJS for real in-browser PPTX rendering
+          try {
+            const PptxViewJS = (await import("pptxviewjs")).default;
+            const viewer = new PptxViewJS(container);
+            await viewer.load(buf);
+            if (!cancelled) setStatus("ready");
+          } catch (pptxErr) {
+            console.warn("[OfficeArtifact] PptxViewJS failed, showing download fallback:", pptxErr);
+            const wrapper = document.createElement("div");
+            wrapper.className = "h-full flex flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground p-6";
+            wrapper.innerHTML = `
+              <div class="text-base font-medium text-foreground">Presentación lista</div>
+              <div>${title}</div>
+              <div>${(buf.byteLength / 1024).toFixed(1)} KB · PPTX</div>
+              <div class="text-xs">Descarga el archivo para visualizarlo en PowerPoint o Google Slides.</div>
+            `;
+            container.appendChild(wrapper);
+            if (!cancelled) setStatus("ready");
+          }
           return;
         }
       } catch (err) {

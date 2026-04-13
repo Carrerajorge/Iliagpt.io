@@ -47,12 +47,12 @@ export interface ConversationContextResult {
 }
 
 const DEFAULT_OPTIONS: Required<MemoryOptions> = {
-    maxTokens: 8000,
+    maxTokens: 12000,
     maxMessages: 100,
     preserveSystemPrompts: true,
-    preserveRecentCount: 10,
-    relevantHistoryCount: 4,
-    relevantCandidateWindow: 40,
+    preserveRecentCount: 20,
+    relevantHistoryCount: 8,
+    relevantCandidateWindow: 60,
     userId: "",
 };
 
@@ -300,7 +300,8 @@ async function findRelevantHistory(
     try {
         const queryTerms = new Set(tokenizeForRelevance(queryMessage));
         if (queryTerms.size === 0) {
-            return [];
+            // If no keywords found, return the most recent candidates instead of nothing
+            return historyMessages.slice(-limit);
         }
 
         const queryNormalized = normalizeTextForRelevance(queryMessage);
@@ -314,7 +315,7 @@ async function findRelevantHistory(
                 msg,
                 score: computeLexicalRelevanceScore(queryTerms, queryNormalized, msg, idx, candidateMessages.length),
             }))
-            .filter((entry) => entry.score > 0.5)
+            .filter((entry) => entry.score > 0.15)
             .sort((a, b) => b.score - a.score);
 
         const selectedIndices = new Set<number>();
@@ -461,9 +462,11 @@ export async function getConversationContextWithDiagnostics(
 
     // If no chatId, just use client messages
     if (!chatId) {
-        console.log(`[ConversationMemory] No chatId, using client messages only (${clientMessages.length})`);
+        console.log(`[ConversationMemory] ⚠️ No chatId, using client messages only (${clientMessages.length})`);
         return enforceTokenBudget(clientMessages, opts);
     }
+
+    console.log(`[ConversationMemory] 🔍 Fetching history for chatId=${chatId}, clientMessages=${clientMessages.length}`);
 
     try {
         // Fetch server-side history optimized
@@ -471,6 +474,7 @@ export async function getConversationContextWithDiagnostics(
             limit: opts.maxMessages,
             orderBy: "desc"
         });
+        console.log(`[ConversationMemory] 📊 DB returned ${dbMessagesRaw.length} messages for chatId=${chatId}`);
         // Since we fetched descending (newest first), reverse to restore chronological order
         const limitedMessages = dbMessagesRaw.reverse();
 
