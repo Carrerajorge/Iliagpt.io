@@ -18,6 +18,7 @@ import { evaluateQualityGate, shouldRetry, formatGateReport } from "./qualityGat
 import { searchScopus, scopusArticlesToSourceSignals, isScopusConfigured, ScopusArticle } from "./scopusClient";
 import { searchWos, WosArticle } from "./wosClient";
 import { runAcademicPipeline, candidatesToSourceSignals, PipelineResult, PipelineConfig } from "./academicPipeline";
+import { searchOpenAlex } from "./openAlexClient";
 import { PromptUnderstanding, UserSpec, TaskSpec } from "../promptUnderstanding";
 import { requestUnderstandingAgent } from "../requestUnderstanding";
 import {
@@ -610,10 +611,11 @@ export class SuperAgentOrchestrator extends EventEmitter {
 
     if (isScientific) {
       if (hasScopus || hasWos) {
-        this.emitThought(`Estrategia: Búsqueda académica propietaria detectada. Usando ${hasScopus ? "Scopus" : ""} ${hasWos ? "Web of Science" : ""}.`);
+        const sourceNames = [hasScopus ? "Scopus" : "", hasWos ? "Web of Science" : "", "OpenAlex"].filter(Boolean).join(" + ");
+        this.emitThought(`Estrategia: Búsqueda académica multi-fuente. Usando ${sourceNames} en paralelo.`);
         await this.executeSignalsWithAcademicDatabases(params.query, params.limit, hasScopus, hasWos);
       } else {
-        this.emitThought("Estrategia: Búsqueda científica solicitada pero sin llaves API propietarias. Usando pipeline OpenAlex.");
+        this.emitThought("Estrategia: Búsqueda científica con OpenAlex (271M+ trabajos, índice abierto más grande del mundo).");
         await this.executeSignalsWithOpenAlex(params.query, params.limit);
       }
     } else {
@@ -812,6 +814,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
     const sources: string[] = [];
     if (useScopus) sources.push("Scopus");
     if (useWos) sources.push("Web of Science");
+    sources.push("OpenAlex");
 
     this.emitSSE("tool_call", {
       id: "tc_signals",
@@ -822,15 +825,27 @@ export class SuperAgentOrchestrator extends EventEmitter {
     this.emitSSE("progress", {
       phase: "signals",
       status: "searching_academic",
-      message: `Buscando artículos científicos en ${sources.join(" y ")}: "${searchTopic}"`,
+      message: `Buscando artículos científicos en ${sources.join(" + ")}: "${searchTopic}"`,
     });
 
     const allSignals: SourceSignal[] = [];
+    const seenDois = new Set<string>();
     let totalInDatabase = 0;
     let searchTime = 0;
     const errors: string[] = [];
     let queriesCurrent = 0;
-    const queriesTotal = (useScopus ? 1 : 0) + (useWos ? 1 : 0);
+    const queriesTotal = (useScopus ? 1 : 0) + (useWos ? 1 : 0) + 1; // +1 for OpenAlex
+
+    const addSignalsDeduped = (signals: SourceSignal[]) => {
+      for (const signal of signals) {
+        const key = signal.doi ? signal.doi.toLowerCase() : signal.title?.toLowerCase()?.substring(0, 60) || signal.id;
+        if (!seenDois.has(key)) {
+          seenDois.add(key);
+          allSignals.push(signal);
+          this.emitSSE("source_signal", signal);
+        }
+      }
+    };
 
     const searchPromises: Promise<void>[] = [];
 
@@ -844,13 +859,11 @@ export class SuperAgentOrchestrator extends EventEmitter {
           .then(result => {
             queriesCurrent++;
             const signals = scopusArticlesToSourceSignals(result.articles);
-            for (const signal of signals) {
-              this.emitSSE("source_signal", signal);
-            }
-            allSignals.push(...signals);
+            addSignalsDeduped(signals);
             totalInDatabase += result.totalResults;
             searchTime = Math.max(searchTime, result.searchTime);
             this.emitSSE("search_progress", {
+              provider: "Scopus",
               queries_current: queriesCurrent,
               queries_total: queriesTotal,
               pages_searched: queriesCurrent,
@@ -874,13 +887,11 @@ export class SuperAgentOrchestrator extends EventEmitter {
           .then(result => {
             queriesCurrent++;
             const signals = wosArticlesToSourceSignals(result.articles);
-            for (const signal of signals) {
-              this.emitSSE("source_signal", signal);
-            }
-            allSignals.push(...signals);
+            addSignalsDeduped(signals);
             totalInDatabase += result.totalResults;
             searchTime = Math.max(searchTime, result.searchTime);
             this.emitSSE("search_progress", {
+              provider: "Web of Science",
               queries_current: queriesCurrent,
               queries_total: queriesTotal,
               pages_searched: queriesCurrent,
@@ -893,6 +904,33 @@ export class SuperAgentOrchestrator extends EventEmitter {
           })
       );
     }
+
+    // Always run OpenAlex in parallel — free, 271M+ works, 100k calls/day
+    searchPromises.push(
+      searchOpenAlex(searchTopic, {
+        maxResults: Math.min(targetCount, 100),
+        yearStart: yearRange.start,
+        yearEnd: yearRange.end,
+      })
+        .then(candidates => {
+          queriesCurrent++;
+          const signals = candidatesToSourceSignals(candidates);
+          addSignalsDeduped(signals);
+          totalInDatabase += candidates.length;
+          this.emitSSE("search_progress", {
+            provider: "OpenAlex",
+            queries_current: queriesCurrent,
+            queries_total: queriesTotal,
+            pages_searched: queriesCurrent,
+            candidates_found: allSignals.length,
+          });
+          console.log(`[OpenAlex] Found ${candidates.length} works (total unique: ${allSignals.length})`);
+        })
+        .catch(err => {
+          console.error(`[OpenAlex] Error: ${err.message}`);
+          errors.push(`OpenAlex: ${err.message}`);
+        })
+    );
 
     await Promise.all(searchPromises);
 
@@ -925,11 +963,6 @@ export class SuperAgentOrchestrator extends EventEmitter {
       success: allSignals.length > 0,
       output: { collected: allSignals.length, source: sources.join("+") },
     });
-
-    if (allSignals.length < targetCount) {
-      console.log(`[AcademicDatabases] Only found ${allSignals.length}/${targetCount} from Scopus/WoS, falling back to OpenAlex pipeline`);
-      await this.executeSignalsWithOpenAlex(query, targetCount);
-    }
   }
 
 
