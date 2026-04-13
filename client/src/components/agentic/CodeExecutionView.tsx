@@ -39,7 +39,7 @@ interface CodeArtifact {
   sizeBytes?: number;
 }
 
-interface CodeExecutionResult {
+export interface CodeExecutionResult {
   id: string;
   code: string;
   language: string;

@@ -238,7 +238,7 @@ export function useStreamChat(deps: StreamChatDeps) {
     const activeSession = session || getSession(conversationId);
     setAiProcessSteps?.(
       activeSession.queueDepth > 0
-        ? [{ id: "conversation-queue", label: "En cola", status: "active" as const }]
+        ? [{ id: "conversation-queue", title: "En cola", status: "active" as const }]
         : [],
       conversationId,
     );

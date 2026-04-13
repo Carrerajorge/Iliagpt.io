@@ -226,33 +226,34 @@ export function AgenticChatProvider({ children, chatId: initialChatId }: Agentic
 
   // ── Agentic chat hook ──────────────────────────────────────────────────────
   const {
+    state: agenticState,
     sendMessage: agenticSendMessage,
-    toolCalls,
-    isStreaming: agenticIsStreaming,
   } = useAgenticChat({
     chatId: activeChatId ?? '',
     endpoint: '/api/chat/stream',
   });
 
   // Active tool calls derived from hook
-  const activeToolCalls: ToolCall[] = toolCalls;
+  const activeToolCalls: ToolCall[] = agenticState.currentToolCall ? [agenticState.currentToolCall] : [];
+  const agenticIsStreaming = agenticState.isStreaming;
 
   // Auto-enable agentic mode when any tool call arrives
   const prevToolCallCountRef = useRef<number>(0);
   useEffect(() => {
-    if (toolCalls.length > prevToolCallCountRef.current && !isAgenticMode && activeChatId) {
+    if (activeToolCalls.length > prevToolCallCountRef.current && !isAgenticMode && activeChatId) {
       setIsAgenticModeRaw(true);
       writeAgenticMode(activeChatId, true);
     }
-    prevToolCallCountRef.current = toolCalls.length;
-  }, [toolCalls.length, isAgenticMode, activeChatId]);
+    prevToolCallCountRef.current = activeToolCalls.length;
+  }, [activeToolCalls.length, isAgenticMode, activeChatId]);
 
   // ── Background tasks ───────────────────────────────────────────────────────
   const {
     tasks: backgroundTasks,
-    taskCount,
-    runningTaskCount,
+    runningCount,
   } = useBackgroundTasks(activeChatId ?? '');
+  const taskCount = backgroundTasks.length;
+  const runningTaskCount = runningCount;
 
   // ── Terminal state ─────────────────────────────────────────────────────────
   const [terminalOpen, setTerminalOpen] = useState<boolean>(false);
@@ -281,15 +282,12 @@ export function AgenticChatProvider({ children, chatId: initialChatId }: Agentic
 
       // Create or update the run in agentStore
       const existingRun = agentStore.getRunByChatId(chatId);
+      const runEntry = Object.entries(agentStore.runs).find(([, run]) => run.chatId === chatId);
+      const runMessageId = runEntry?.[0] || `agentic-${chatId}-${Date.now()}`;
       if (!existingRun) {
-        agentStore.createRun({
-          chatId,
-          status: 'starting',
-          steps: [],
-          startedAt: new Date().toISOString(),
-        });
+        agentStore.createRun(chatId, text, runMessageId);
       } else {
-        agentStore.updateRun(chatId, { status: 'starting' });
+        agentStore.updateRun(runMessageId, { status: 'starting' });
       }
 
       try {
@@ -297,10 +295,10 @@ export function AgenticChatProvider({ children, chatId: initialChatId }: Agentic
         // On success, mark run as completed if it didn't self-complete
         const run = agentStore.getRunByChatId(chatId);
         if (run && run.status !== 'completed' && run.status !== 'failed') {
-          agentStore.completeRun(chatId);
+          agentStore.completeRun(runMessageId, 'Agentic message completed');
         }
       } catch (err) {
-        agentStore.failRun(chatId, err instanceof Error ? err.message : 'Unknown error');
+        agentStore.failRun(runMessageId, err instanceof Error ? err.message : 'Unknown error');
         throw err;
       }
     },

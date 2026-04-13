@@ -14,6 +14,8 @@ import {
   type ToolCall,
 } from '@/lib/agentic/agenticStreamParser';
 
+export type { ToolCall } from '@/lib/agentic/agenticStreamParser';
+
 // ---------------------------------------------------------------------------
 // Exported types
 // ---------------------------------------------------------------------------

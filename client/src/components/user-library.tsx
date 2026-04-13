@@ -90,6 +90,7 @@ function VirtualizedMediaGridCell({
 
 function VirtualizedMediaGrid({ items, onSelect, onDelete, onDownload }: VirtualizedGridProps) {
   const AutoSizerComponent = AutoSizer as any;
+  const GridComponent = Grid as any;
   return (
     <AutoSizerComponent>
       {({ height, width }: { height: number; width: number }) => {
@@ -99,7 +100,7 @@ function VirtualizedMediaGrid({ items, onSelect, onDelete, onDownload }: Virtual
         const rowCount = Math.ceil(items.length / safeColumnCount);
 
         return (
-          <Grid
+          <GridComponent
             cellComponent={VirtualizedMediaGridCell as any}
             cellProps={{ items, onSelect, onDelete, onDownload, columnCount: safeColumnCount } as any}
             columnCount={safeColumnCount}
