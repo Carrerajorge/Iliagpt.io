@@ -82,6 +82,10 @@ try{
   localStorage.setItem(SK,JSON.stringify(s));
   localStorage.setItem(TK+":"+gk,tk);
   localStorage.setItem(TK,tk);
+  try{
+    var hashVal="#gatewayUrl="+encodeURIComponent(w)+"&token="+encodeURIComponent(tk);
+    history.replaceState(null,"",hashVal);
+  }catch{}
 
   function tryAutoConnect(){
     var tried=0;
