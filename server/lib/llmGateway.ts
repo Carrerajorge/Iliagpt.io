@@ -1330,7 +1330,7 @@ class LLMGateway {
       );
     }
 
-    if (options.provider && options.provider !== "auto" && !this.isProviderConfigured(options.provider)) {
+    if (options.provider && options.provider !== "auto" && options.provider !== "smart-router" && !this.isProviderConfigured(options.provider)) {
       throw new Error(`Provider '${options.provider}' requested but not configured (missing API key).`);
     }
 
@@ -2158,7 +2158,7 @@ class LLMGateway {
       );
     }
 
-    if (options.provider && options.provider !== "auto" && !this.isProviderConfigured(options.provider)) {
+    if (options.provider && options.provider !== "auto" && options.provider !== "smart-router" && !this.isProviderConfigured(options.provider)) {
       throw new Error(`Provider '${options.provider}' requested but not configured (missing API key).`);
     }
 
