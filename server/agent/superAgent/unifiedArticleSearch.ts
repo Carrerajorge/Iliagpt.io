@@ -19,6 +19,7 @@ import { searchOpenAlex, type AcademicCandidate } from "./openAlexClient";
 import { lookupDOI, type CrossRefMetadata } from "./crossrefClient";
 import { searchWos, type WosArticle, isWosConfigured } from "./wosClient";
 import { getBulkCitationCounts } from "./openCitationsClient";
+import { searchArXiv as searchArXivAPI, type ArXivSearchOptions } from "./arXivClient";
 import * as XLSX from "xlsx";
 import { sanitizePlainText, sanitizeSearchQuery, sanitizeHttpUrl } from "../../lib/textSanitizers";
 
@@ -30,6 +31,7 @@ const SOURCE_PRIORITY: Record<string, number> = {
     wos: 9,
     pubmed: 8,
     openalex: 6,
+    arxiv: 7,
     scielo: 7,
     redalyc: 6,
     duckduckgo: 3,
@@ -109,6 +111,7 @@ export type FieldProvenanceSource =
     | "scopus"
     | "wos"
     | "openalex"
+    | "arxiv"
     | "duckduckgo"
     | "pubmed"
     | "scielo"
@@ -126,7 +129,7 @@ export interface FieldProvenance {
 
 export interface UnifiedArticle {
     id: string;
-    source: "scopus" | "wos" | "openalex" | "duckduckgo" | "pubmed" | "scielo" | "redalyc";
+    source: "scopus" | "wos" | "openalex" | "arxiv" | "duckduckgo" | "pubmed" | "scielo" | "redalyc";
     title: string;
     authors: string[];
     year: string;
@@ -156,6 +159,7 @@ export interface UnifiedSearchResult {
         scopus: number;
         wos: number;
         openalex: number;
+        arxiv: number;
         duckduckgo: number;
         pubmed: number;
         scielo: number;
@@ -171,7 +175,7 @@ export interface SearchOptions {
     maxPerSource?: number;
     startYear?: number;
     endYear?: number;
-    sources?: ("scopus" | "wos" | "openalex" | "duckduckgo" | "pubmed" | "scielo" | "redalyc")[];
+    sources?: ("scopus" | "wos" | "openalex" | "arxiv" | "duckduckgo" | "pubmed" | "scielo" | "redalyc")[];
     language?: string;
     // Scopus-only: filter by affiliation country (e.g. ["Spain","Mexico"]).
     // Note: SciELO/Redalyc are already LatAm-focused; PubMed doesn't reliably expose affiliation country at search time.
@@ -415,7 +419,7 @@ export async function searchAllSources(
         console.error("[UnifiedSearch] Empty query after sanitization, aborting search");
         return {
             articles: [],
-            totalBySource: { scopus: 0, wos: 0, openalex: 0, duckduckgo: 0, pubmed: 0, scielo: 0, redalyc: 0 },
+            totalBySource: { scopus: 0, wos: 0, openalex: 0, arxiv: 0, duckduckgo: 0, pubmed: 0, scielo: 0, redalyc: 0 },
             query: query,
             searchTime: 0,
             errors: ["Query was empty or invalid after sanitization"],
@@ -445,6 +449,7 @@ export async function searchAllSources(
         scopus: UnifiedArticle[];
         wos: UnifiedArticle[];
         openalex: UnifiedArticle[];
+        arxiv: UnifiedArticle[];
         duckduckgo: UnifiedArticle[];
         pubmed: UnifiedArticle[];
         scielo: UnifiedArticle[];
@@ -453,6 +458,7 @@ export async function searchAllSources(
         scopus: [],
         wos: [],
         openalex: [],
+        arxiv: [],
         duckduckgo: [],
         pubmed: [],
         scielo: [],
@@ -538,6 +544,32 @@ export async function searchAllSources(
                 } catch (error: any) {
                     errors.push(`OpenAlex: ${error.message}`);
                     console.error(`[UnifiedSearch] OpenAlex error: ${error.message}`);
+                }
+            })()
+        );
+    }
+
+    // arXiv (free — 2.4M+ preprints, all open access)
+    if (sources.includes("arxiv")) {
+        searchPromises.push(
+            (async () => {
+                try {
+                    const arXivCandidates = await withTimeout(
+                        searchArXivAPI(englishQuery, {
+                            maxResults: Math.min(100, maxPerSource * 2),
+                            yearStart: startYear,
+                            yearEnd: endYear,
+                        }),
+                        PER_SOURCE_TIMEOUT_MS,
+                        "arXiv"
+                    );
+                    if (arXivCandidates) {
+                        results.arxiv = arXivCandidates.map(c => convertArXivToUnified(c));
+                    }
+                    console.log(`[UnifiedSearch] arXiv: ${results.arxiv.length} preprints`);
+                } catch (error: any) {
+                    errors.push(`arXiv: ${error.message}`);
+                    console.error(`[UnifiedSearch] arXiv error: ${error.message}`);
                 }
             })()
         );
@@ -662,6 +694,7 @@ export async function searchAllSources(
         ...results.scopus,
         ...results.wos,
         ...results.openalex,
+        ...results.arxiv,
         ...results.duckduckgo,
         ...results.pubmed,
         ...results.scielo,
@@ -719,6 +752,7 @@ export async function searchAllSources(
             scopus: results.scopus.length,
             wos: results.wos.length,
             openalex: results.openalex.length,
+            arxiv: results.arxiv.length,
             duckduckgo: results.duckduckgo.length,
             pubmed: results.pubmed.length,
             scielo: results.scielo.length,
@@ -842,6 +876,43 @@ function convertPubMedToUnified(article: PubMedArticle): UnifiedArticle {
         city: "n.d.",
         apaCitation: generatePubMedAPA7Citation(article)
     };
+}
+
+function convertArXivToUnified(candidate: AcademicCandidate & { arxivId?: string; pdfUrl?: string; categories?: string[] }): UnifiedArticle {
+    const year = candidate.year && candidate.year > 0 ? String(candidate.year) : "n.d.";
+    const doi = (candidate.doi || "").trim();
+    const arxivId = candidate.arxivId || candidate.sourceId || "";
+    const pdfUrl = candidate.pdfUrl || (arxivId ? `https://arxiv.org/pdf/${arxivId}.pdf` : "");
+    const landingUrl = arxivId ? `https://arxiv.org/abs/${arxivId}` : candidate.landingUrl || "";
+
+    const unified: UnifiedArticle = {
+        id: `arxiv_${arxivId || candidate.sourceId}`,
+        source: "arxiv",
+        title: candidate.title || "n.d.",
+        authors: candidate.authors || [],
+        year,
+        publicationDate: candidate.publicationDate || undefined,
+        journal: (candidate.categories as string[] | undefined)?.[0] || candidate.journal || "arXiv",
+        abstract: candidate.abstract || "",
+        keywords: candidate.categories || candidate.keywords || [],
+        doi: doi || undefined,
+        url: landingUrl || pdfUrl,
+        language: candidate.language || "en",
+        documentType: "preprint",
+        country: "n.d.",
+        city: "n.d.",
+        citationCount: candidate.citationCount || 0,
+        apaCitation: "",
+    };
+
+    // Generate APA7 citation for preprint
+    const authorStr = unified.authors.length > 0
+        ? unified.authors.slice(0, 6).join(", ") + (unified.authors.length > 6 ? ", et al." : "")
+        : "Unknown";
+    const doiLink = doi ? ` https://doi.org/${doi}` : (landingUrl ? ` ${landingUrl}` : "");
+    unified.apaCitation = `${authorStr} (${year}). ${unified.title}. *arXiv preprint*.${doiLink}`;
+
+    return unified;
 }
 
 function convertOpenAlexToUnified(candidate: AcademicCandidate): UnifiedArticle {

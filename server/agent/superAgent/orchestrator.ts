@@ -19,6 +19,7 @@ import { searchScopus, scopusArticlesToSourceSignals, isScopusConfigured, Scopus
 import { searchWos, WosArticle } from "./wosClient";
 import { runAcademicPipeline, candidatesToSourceSignals, PipelineResult, PipelineConfig } from "./academicPipeline";
 import { searchOpenAlex } from "./openAlexClient";
+import { searchArXiv as searchArXivParallel } from "./arXivClient";
 import { PromptUnderstanding, UserSpec, TaskSpec } from "../promptUnderstanding";
 import { requestUnderstandingAgent } from "../requestUnderstanding";
 import {
@@ -611,11 +612,11 @@ export class SuperAgentOrchestrator extends EventEmitter {
 
     if (isScientific) {
       if (hasScopus || hasWos) {
-        const sourceNames = [hasScopus ? "Scopus" : "", hasWos ? "Web of Science" : "", "OpenAlex", "OpenCitations"].filter(Boolean).join(" + ");
+        const sourceNames = [hasScopus ? "Scopus" : "", hasWos ? "Web of Science" : "", "OpenAlex", "arXiv", "OpenCitations"].filter(Boolean).join(" + ");
         this.emitThought(`Estrategia: Búsqueda académica multi-fuente. Usando ${sourceNames} en paralelo (2B+ relaciones de citación vía OpenCitations).`);
         await this.executeSignalsWithAcademicDatabases(params.query, params.limit, hasScopus, hasWos);
       } else {
-        this.emitThought("Estrategia: Búsqueda científica con OpenAlex (271M+ trabajos, índice abierto más grande del mundo).");
+        this.emitThought("Estrategia: Búsqueda científica con OpenAlex (271M+ trabajos) + arXiv (2.4M+ preprints, acceso abierto total).");
         await this.executeSignalsWithOpenAlex(params.query, params.limit);
       }
     } else {
@@ -815,6 +816,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
     if (useScopus) sources.push("Scopus");
     if (useWos) sources.push("Web of Science");
     sources.push("OpenAlex");
+    sources.push("arXiv");
 
     this.emitSSE("tool_call", {
       id: "tc_signals",
@@ -834,7 +836,7 @@ export class SuperAgentOrchestrator extends EventEmitter {
     let searchTime = 0;
     const errors: string[] = [];
     let queriesCurrent = 0;
-    const queriesTotal = (useScopus ? 1 : 0) + (useWos ? 1 : 0) + 1; // +1 for OpenAlex
+    const queriesTotal = (useScopus ? 1 : 0) + (useWos ? 1 : 0) + 2; // +1 OpenAlex, +1 arXiv
 
     const addSignalsDeduped = (signals: SourceSignal[]) => {
       for (const signal of signals) {
@@ -929,6 +931,37 @@ export class SuperAgentOrchestrator extends EventEmitter {
         .catch(err => {
           console.error(`[OpenAlex] Error: ${err.message}`);
           errors.push(`OpenAlex: ${err.message}`);
+        })
+    );
+
+    // Always run arXiv in parallel — free, 2.4M+ preprints, all open access
+    searchPromises.push(
+      searchArXivParallel(searchTopic, {
+        maxResults: Math.min(targetCount, 50),
+        yearStart: yearRange.start,
+        yearEnd: yearRange.end,
+      })
+        .then(candidates => {
+          queriesCurrent++;
+          const signals = candidatesToSourceSignals(candidates).map(s => ({
+            ...s,
+            source: "arxiv" as const,
+            domain: "arxiv.org",
+          }));
+          addSignalsDeduped(signals);
+          totalInDatabase += candidates.length;
+          this.emitSSE("search_progress", {
+            provider: "arXiv",
+            queries_current: queriesCurrent,
+            queries_total: queriesTotal,
+            pages_searched: queriesCurrent,
+            candidates_found: allSignals.length,
+          });
+          console.log(`[arXiv] Found ${candidates.length} preprints (total unique: ${allSignals.length})`);
+        })
+        .catch(err => {
+          console.error(`[arXiv] Error: ${err.message}`);
+          errors.push(`arXiv: ${err.message}`);
         })
     );
 
