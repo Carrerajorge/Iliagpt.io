@@ -32,6 +32,8 @@ const CSRF_EXEMPT_PATHS = new Set([
   "/api/callback",
   "/api/login",
   "/api/webhooks",
+  "/api/stripe/webhook",
+  "/webhook",
 ]);
 
 /**

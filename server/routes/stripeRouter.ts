@@ -336,10 +336,10 @@ export function createStripeRouter() {
     }
   });
 
-	  router.post("/api/checkout", async (req, res) => {
-	    try {
-	      const user = (req as any).user;
-	      const userId = user?.claims?.sub;
+          router.post("/api/checkout", async (req, res) => {
+            try {
+              const user = (req as any).user;
+              const userId = user?.claims?.sub;
 
       if (!userId) {
         return res.status(401).json({ error: "Debes iniciar sesión para suscribirte" });
@@ -565,7 +565,7 @@ export function createStripeRouter() {
     }
   });
 
-  router.post("/webhook", async (req, res) => {
+  router.post(["/webhook", "/api/stripe/webhook"], async (req, res) => {
     const sig = req.headers['stripe-signature'];
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
@@ -670,14 +670,14 @@ export function createStripeRouter() {
                       })
                       .where(eq(users.id, userId));
 
-	                    await auditLog(req as any, {
-	                      action: "billing.credits_topup_completed",
-	                      resource: "billing_credit_grants",
-	                      resourceId: checkoutSessionId,
-	                      details: { userId, creditsGranted, amountMinor: amountMinorRaw, currency, expiresAt: expiresAt.toISOString() },
-	                      category: "system",
-	                      severity: "info",
-	                    });
+                            await auditLog(req as any, {
+                              action: "billing.credits_topup_completed",
+                              resource: "billing_credit_grants",
+                              resourceId: checkoutSessionId,
+                              details: { userId, creditsGranted, amountMinor: amountMinorRaw, currency, expiresAt: expiresAt.toISOString() },
+                              category: "system",
+                              severity: "info",
+                            });
                   }
                 }
               }
@@ -776,20 +776,20 @@ export function createStripeRouter() {
               await db.update(invoices).set({ status: "refunded" }).where(eq(invoices.stripeInvoiceId, stripeInvoiceId));
             }
 
-	            await auditLog(req as any, {
-	              action: AuditActions.PAYMENT_REFUNDED,
-	              resource: "payments",
-	              resourceId: stripeInvoiceId || chargeId || null,
-	              details: {
-	                stripeChargeId: chargeId,
-	                stripePaymentIntentId: paymentIntentId,
-	                stripeInvoiceId,
-	                amountRefunded: charge?.amount_refunded ?? null,
-	                currency: charge?.currency ?? null,
-	              },
-	              category: "system",
-	              severity: "warning",
-	            });
+                    await auditLog(req as any, {
+                      action: AuditActions.PAYMENT_REFUNDED,
+                      resource: "payments",
+                      resourceId: stripeInvoiceId || chargeId || null,
+                      details: {
+                        stripeChargeId: chargeId,
+                        stripePaymentIntentId: paymentIntentId,
+                        stripeInvoiceId,
+                        amountRefunded: charge?.amount_refunded ?? null,
+                        currency: charge?.currency ?? null,
+                      },
+                      category: "system",
+                      severity: "warning",
+                    });
           }
           break;
         }
@@ -837,23 +837,23 @@ export function createStripeRouter() {
               await db.update(invoices).set({ status: "disputed" }).where(eq(invoices.stripeInvoiceId, stripeInvoiceId));
             }
 
-	            await auditLog(req as any, {
-	              action: AuditActions.PAYMENT_DISPUTED,
-	              resource: "payments",
-	              resourceId: stripeInvoiceId || chargeId,
-	              details: {
-	                stripeChargeId: chargeId,
-	                stripeInvoiceId,
-	                stripePaymentIntentId: paymentIntentId,
-	                stripeDisputeId: dispute?.id ?? null,
-	                reason: dispute?.reason ?? null,
-	                amount: dispute?.amount ?? null,
-	                currency: dispute?.currency ?? null,
-	                status: dispute?.status ?? null,
-	              },
-	              category: "system",
-	              severity: "critical",
-	            });
+                    await auditLog(req as any, {
+                      action: AuditActions.PAYMENT_DISPUTED,
+                      resource: "payments",
+                      resourceId: stripeInvoiceId || chargeId,
+                      details: {
+                        stripeChargeId: chargeId,
+                        stripeInvoiceId,
+                        stripePaymentIntentId: paymentIntentId,
+                        stripeDisputeId: dispute?.id ?? null,
+                        reason: dispute?.reason ?? null,
+                        amount: dispute?.amount ?? null,
+                        currency: dispute?.currency ?? null,
+                        status: dispute?.status ?? null,
+                      },
+                      category: "system",
+                      severity: "critical",
+                    });
           }
           break;
         }
@@ -917,17 +917,17 @@ export function createStripeRouter() {
     }
   });
 
-	  router.get("/api/billing/status", async (req, res) => {
-	    try {
-	      const userId = getEffectiveUserId(req);
+          router.get("/api/billing/status", async (req, res) => {
+            try {
+              const userId = getEffectiveUserId(req);
 
       if (!userId) {
         return res.status(401).json({ error: "Debes iniciar sesión" });
       }
 
-	      const [dbUser] = await db.select().from(users).where(eq(users.id, userId));
+              const [dbUser] = await db.select().from(users).where(eq(users.id, userId));
       const canManageBilling = await canManageBillingForDbUser(dbUser);
-	      const subscriptionStatusRaw = (dbUser as any)?.subscriptionStatus || null;
+              const subscriptionStatusRaw = (dbUser as any)?.subscriptionStatus || null;
       const inferredStatus =
         subscriptionStatusRaw ||
         ((dbUser as any)?.stripeSubscriptionId ? "active" : null) ||
@@ -981,10 +981,10 @@ export function createStripeRouter() {
         !!periodEndMs &&
         periodEndMs > now;
 
-	      const [{ monthsPaid = 0 } = { monthsPaid: 0 }] = await db
-	        .select({
-	          monthsPaid: sql<number>`COALESCE(COUNT(*), 0)`,
-	        })
+              const [{ monthsPaid = 0 } = { monthsPaid: 0 }] = await db
+                .select({
+                  monthsPaid: sql<number>`COALESCE(COUNT(*), 0)`,
+                })
         .from(payments)
         .where(
           and(
@@ -995,31 +995,31 @@ export function createStripeRouter() {
           )
         );
 
-	      const nowDate = new Date();
+              const nowDate = new Date();
       const creditSummary = await getBillingCreditSummary(userId, nowDate, db as any);
       const extraCredits = creditSummary.extraCredits;
 
       const { usageQuotaService } = await import("../services/usageQuotaService");
       const quota = await usageQuotaService.getUnifiedQuotaSnapshot(userId);
 
-	      res.json({
-	        subscriptionStatus,
-	        subscriptionPeriodEnd,
-	        willDeactivate,
-	        plan: (dbUser as any)?.plan || "free",
-	        monthsPaid,
-	        extraCredits,
+              res.json({
+                subscriptionStatus,
+                subscriptionPeriodEnd,
+                willDeactivate,
+                plan: (dbUser as any)?.plan || "free",
+                monthsPaid,
+                extraCredits,
           quota,
-	        canManageBilling,
+                canManageBilling,
           portalAvailable: canManageBilling && !!dbUser?.stripeCustomerId,
           subscription: liveSubscriptionSummary,
           paymentMethod: paymentMethodSummary,
-	      });
-	    } catch (error: any) {
-	      console.error("Billing status error:", error);
-	      res.status(500).json({ error: "Failed to get billing status" });
-	    }
-	  });
+              });
+            } catch (error: any) {
+              console.error("Billing status error:", error);
+              res.status(500).json({ error: "Failed to get billing status" });
+            }
+          });
 
   router.get("/api/billing/credits/usage", async (req, res) => {
     try {
@@ -1154,7 +1154,7 @@ export function createStripeRouter() {
       const domain = process.env.REPLIT_DOMAINS?.split(",")[0] || "localhost:5000";
       const protocol = domain.includes("localhost") ? "http" : "https";
       const configuredBaseUrl = (process.env.BASE_URL || process.env.APP_URL || "").trim();
-	      const baseUrl = (configuredBaseUrl || `${protocol}://${domain}`).replace(/\/$/, "");
+              const baseUrl = (configuredBaseUrl || `${protocol}://${domain}`).replace(/\/$/, "");
 
       const withQueryParam = (inputUrl: string, key: string, value: string) => {
         const u = new URL(inputUrl);
@@ -1215,14 +1215,14 @@ export function createStripeRouter() {
         { maxAttempts: 3, initialDelayMs: 1000 }
       );
 
-	      await auditLog(req as any, {
-	        action: "billing.credits_topup_checkout_created",
-	        resource: "stripe.checkout_session",
-	        resourceId: session.id,
-	        details: { userId, amountUsd, amountMinor, creditsGranted },
-	        category: "user",
-	        severity: "info",
-	      });
+              await auditLog(req as any, {
+                action: "billing.credits_topup_checkout_created",
+                resource: "stripe.checkout_session",
+                resourceId: session.id,
+                details: { userId, amountUsd, amountMinor, creditsGranted },
+                category: "user",
+                severity: "info",
+              });
 
       res.json({ url: session.url });
     } catch (error: any) {
@@ -1281,14 +1281,14 @@ export function createStripeRouter() {
       }
       const body = parsedBody.data;
 
-	      const [dbUser] = await db.select().from(users).where(eq(users.id, userId));
-	      if (!dbUser) {
-	        return res.status(404).json({ error: "User not found" });
-	      }
-	      // Only billing managers can start a subscription checkout for the workspace.
-	      if (!(await canManageBillingForDbUser(dbUser))) {
-	        return res.status(403).json({ error: "Insufficient permissions", code: "PERMISSION_DENIED" });
-	      }
+              const [dbUser] = await db.select().from(users).where(eq(users.id, userId));
+              if (!dbUser) {
+                return res.status(404).json({ error: "User not found" });
+              }
+              // Only billing managers can start a subscription checkout for the workspace.
+              if (!(await canManageBillingForDbUser(dbUser))) {
+                return res.status(403).json({ error: "Insufficient permissions", code: "PERMISSION_DENIED" });
+              }
 
       const role = normalizeRole((dbUser as any).role);
       const canManage = await canManageBillingForDbUser(dbUser);
