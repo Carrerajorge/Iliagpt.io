@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { InputOTP, InputOTPGroup, InputOTPSlot, InputOTPSeparator } from "@/components/ui/input-otp";
-import { X, Apple, Phone, Loader2, Mail, Sparkles, ArrowLeft, CheckCircle2, XCircle, AlertCircle, ShieldCheck, ChevronDown } from "lucide-react";
+import { X, Phone, Loader2, Mail, Sparkles, ArrowLeft, CheckCircle2, XCircle, AlertCircle, ShieldCheck, ChevronDown } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { usePlatformSettings } from "@/contexts/PlatformSettingsContext";
 import { apiFetch } from "@/lib/apiClient";
@@ -433,31 +433,6 @@ export default function LoginPage() {
     setSuccessMessage("");
   };
 
-  const ComingSoonButton = ({ icon: Icon, label }: { icon: any; label: string }) => (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div className="relative fade-in-up fade-in-up-delay-3">
-            <Button
-              variant="outline"
-              className="w-full h-12 justify-start gap-3 rounded-xl text-base font-normal bg-muted/30 border-border text-muted-foreground cursor-not-allowed"
-              disabled
-            >
-              <Icon className="h-5 w-5 text-muted-foreground" />
-              <span className="text-muted-foreground">{label}</span>
-              <span className="ml-auto text-xs bg-background text-muted-foreground border border-border px-2 py-0.5 rounded-full font-medium">
-                Próximamente
-              </span>
-            </Button>
-          </div>
-        </TooltipTrigger>
-        <TooltipContent>
-          <p>Esta opción estará disponible pronto</p>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-
   return (
     <div className="min-h-screen paper-grid flex items-center justify-center p-4">
       <div className={`w-full relative transition-all duration-300 ${showPhoneAuth ? "max-w-2xl" : "max-w-md"}`}>
@@ -518,9 +493,6 @@ export default function LoginPage() {
                 )}
                 {isGoogleLoading ? "Conectando..." : "Continuar con Google"}
               </Button>
-
-              {/* Coming Soon Options */}
-              <ComingSoonButton icon={Apple} label="Continuar con Apple" />
 
               {/* Phone Authentication */}
               <Button
