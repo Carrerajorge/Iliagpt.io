@@ -649,6 +649,16 @@ function inferMimeTypeFromFileName(fileName: string): string | null {
     tif: "image/tiff",
     tiff: "image/tiff",
     svg: "image/svg+xml",
+
+    // audio
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    ogg: "audio/ogg",
+    webm: "audio/webm",
+    m4a: "audio/mp4",
+    flac: "audio/flac",
+    aac: "audio/aac",
+    mp4: "audio/mp4",
   };
 
   return map[ext] || null;

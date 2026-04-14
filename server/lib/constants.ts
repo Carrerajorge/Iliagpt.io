@@ -18,6 +18,17 @@ export const ALLOWED_MIME_TYPES = [
   "image/bmp",
   "image/webp",
   "image/tiff",
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/ogg",
+  "audio/webm",
+  "audio/mp4",
+  "audio/m4a",
+  "audio/x-m4a",
+  "audio/flac",
+  "audio/aac",
 ] as const;
 
 export const HTTP_HEADERS = {
@@ -79,5 +90,16 @@ export const ALLOWED_EXTENSIONS: Record<string, string> = {
   "image/gif": ".gif",
   "image/bmp": ".bmp",
   "image/webp": ".webp",
-  "image/tiff": ".tiff"
+  "image/tiff": ".tiff",
+  "audio/mpeg": ".mp3",
+  "audio/mp3": ".mp3",
+  "audio/wav": ".wav",
+  "audio/x-wav": ".wav",
+  "audio/ogg": ".ogg",
+  "audio/webm": ".webm",
+  "audio/mp4": ".m4a",
+  "audio/m4a": ".m4a",
+  "audio/x-m4a": ".m4a",
+  "audio/flac": ".flac",
+  "audio/aac": ".aac"
 } as const;

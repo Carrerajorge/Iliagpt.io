@@ -1764,6 +1764,8 @@ export function ChatInterface({
 
     if (lowerType === "image" || lowerMime.startsWith("image/")) return false;
 
+    if (lowerMime.startsWith("audio/")) return true;
+
     const docMimePatterns = [
       "pdf",
       "word",
@@ -1780,7 +1782,7 @@ export function ChatInterface({
     ];
     if (docMimePatterns.some(p => lowerMime.includes(p))) return true;
 
-    const docExtensions = [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".txt", ".json", ".rtf", ".odt", ".ods", ".odp"];
+    const docExtensions = [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".txt", ".json", ".rtf", ".odt", ".ods", ".odp", ".mp3", ".wav", ".ogg", ".m4a", ".webm", ".flac", ".aac"];
     if (docExtensions.some(ext => lowerName.endsWith(ext))) return true;
 
     if (["pdf", "word", "excel", "ppt", "document"].includes(lowerType)) return true;
@@ -3248,6 +3250,17 @@ export function ChatInterface({
     "image/bmp",
     "image/webp",
     "image/tiff",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/ogg",
+    "audio/webm",
+    "audio/mp4",
+    "audio/m4a",
+    "audio/x-m4a",
+    "audio/flac",
+    "audio/aac",
   ];
 
   const MAX_FILE_SIZE_MB = 500;

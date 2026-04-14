@@ -209,11 +209,24 @@ export class DocumentBatchProcessor {
         let buffer: Buffer;
         let bytesRead = 0;
         
+        const audioFormats = ['mp3', 'wav', 'ogg', 'webm', 'm4a', 'flac', 'aac', 'mp4'];
         const binaryFormats = ['pdf', 'xlsx', 'xls', 'docx', 'doc', 'pptx', 'ppt'];
         const ext = this.getExtensionFromFileName(attachment.name);
+        const isAudioFormat = audioFormats.includes(ext) || attachment.mimeType.startsWith('audio/');
         const isBinaryFormat = binaryFormats.includes(ext);
         
-        if (isBinaryFormat || !attachment.content || attachment.content.trim().length === 0) {
+        if (isAudioFormat) {
+          if (!attachment.storagePath) {
+            throw new Error(`No storage path provided for audio file: ${attachment.name}`);
+          }
+          buffer = await this.fetchDocument(attachment.storagePath);
+          bytesRead = buffer.length;
+
+          const transcribedText = await this.transcribeAudio(buffer, attachment.name);
+          normalized = transcribedText;
+          parsed = { text: transcribedText, metadata: { pages: 1, type: 'audio' } };
+
+        } else if (isBinaryFormat || !attachment.content || attachment.content.trim().length === 0) {
           if (!attachment.storagePath) {
             throw new Error(`No storage path provided for binary file: ${attachment.name}`);
           }
@@ -487,6 +500,92 @@ export class DocumentBatchProcessor {
     }
     
     return providedMimeType || 'application/octet-stream';
+  }
+
+  private async transcribeAudio(buffer: Buffer, filename: string): Promise<string> {
+    const MAX_AUDIO_SIZE_BYTES = 25 * 1024 * 1024;
+    if (buffer.length > MAX_AUDIO_SIZE_BYTES) {
+      const sizeMB = (buffer.length / (1024 * 1024)).toFixed(1);
+      return `[Audio: "${filename}" (${sizeMB}MB) — El archivo excede el límite de ${MAX_AUDIO_SIZE_BYTES / (1024 * 1024)}MB para transcripción. Por favor sube un archivo más corto.]`;
+    }
+
+    if (process.env.OPENAI_API_KEY) {
+      try {
+        const { AudioPipeline } = await import("../multimodal/AudioPipeline");
+        const pipeline = new AudioPipeline();
+        const result = await pipeline.transcribe(buffer, filename, {
+          language: "es",
+          generateSummary: false,
+          analyzeSentiment: false,
+          detectSpeakers: true,
+        });
+
+        const header = `[Transcripción de audio: "${filename}" — Duración: ${Math.round(result.duration / 60)} min ${Math.round(result.duration % 60)} seg — Idioma: ${result.language}]`;
+
+        let transcriptionText = `${header}\n\n${result.fullText}`;
+
+        if (result.speakers && result.speakers.length > 1 && result.segments.length > 0) {
+          transcriptionText += "\n\n[Segmentos por hablante]:\n";
+          for (const seg of result.segments) {
+            const speaker = seg.speaker || "Hablante";
+            transcriptionText += `${speaker} (${seg.start.toFixed(1)}s - ${seg.end.toFixed(1)}s): ${seg.text}\n`;
+          }
+        }
+
+        if (result.keywords && result.keywords.length > 0) {
+          transcriptionText += `\n[Palabras clave]: ${result.keywords.join(", ")}`;
+        }
+
+        return transcriptionText;
+      } catch (err: any) {
+        console.error(`[DocumentBatchProcessor] Whisper transcription failed for ${filename}:`, err.message);
+      }
+    }
+
+    try {
+      return await this.transcribeWithGemini(buffer, filename);
+    } catch (geminiErr: any) {
+      console.error(`[DocumentBatchProcessor] Gemini audio transcription failed for ${filename}:`, geminiErr.message);
+      return `[Audio: "${filename}" — No se pudo transcribir. Asegúrese de tener configurada una API de transcripción (OpenAI/Whisper o Gemini)]`;
+    }
+  }
+
+  private async transcribeWithGemini(buffer: Buffer, filename: string): Promise<string> {
+    const { GoogleGenerativeAI } = await import("@google/generative-ai");
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
+    if (!apiKey) {
+      throw new Error("No Gemini API key available for audio transcription");
+    }
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+    const ext = filename.split('.').pop()?.toLowerCase() || 'mp3';
+    const mimeMap: Record<string, string> = {
+      mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg",
+      webm: "audio/webm", m4a: "audio/mp4", flac: "audio/flac",
+      aac: "audio/aac", mp4: "audio/mp4",
+    };
+
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          mimeType: mimeMap[ext] || "audio/mpeg",
+          data: buffer.toString("base64"),
+        },
+      },
+      {
+        text: "Transcribe este audio completo en el idioma original. Devuelve SOLO la transcripción textual, sin comentarios adicionales. Si detectas varios hablantes, indícalos con etiquetas como [Hablante 1], [Hablante 2], etc.",
+      },
+    ]);
+
+    const transcription = result.response.text();
+
+    if (!transcription || transcription.trim().length === 0) {
+      throw new Error("Gemini returned empty transcription");
+    }
+
+    return `[Transcripción de audio: "${filename}" — Transcrito con Gemini]\n\n${transcription}`;
   }
 
   private selectParser(mimeType: string): ParserConfig | null {

@@ -49,5 +49,11 @@ An experimental SuperOrchestrator provides distributed agent execution with DAG 
 - **Stripe**: Payment processing and subscription management.
 - **Replit Connector API**: For fetching Stripe credentials.
 
+### Audio Transcription
+- **OpenAI Whisper API**: Primary audio transcription (STT) with speaker diarization and keyword extraction.
+- **Google Gemini 2.0 Flash**: Fallback audio transcription when Whisper/OpenAI is unavailable.
+- Supported formats: MP3, WAV, OGG, WebM, M4A, FLAC, AAC (max 25MB per file).
+- Audio files uploaded to chat are automatically transcribed and the text is sent to the selected AI model.
+
 ### Runtime Integration Modules
 - **OpenClaw Control UI**: For web browsing and internet access.
