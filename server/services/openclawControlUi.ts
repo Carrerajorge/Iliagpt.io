@@ -7,61 +7,82 @@ export function buildOpenClawAutoConnectScript(): string {
   return `(function(){
 try{
   var MAX_WAIT=30000;
-  var INTERVAL=250;
+  var INTERVAL=200;
   var start=Date.now();
   var done=false;
-  var connectAttempted=false;
+  var phase=0;
+  var GW=window.__OPENCLAW_GATEWAY_URL__;
+  var TK=window.__OPENCLAW_TOKEN__;
+  if(!GW||!TK){console.error("[OC-AC] Missing gateway creds");return;}
   function tryConnect(){
     if(done)return;
+    if(Date.now()-start>MAX_WAIT){console.warn("[OC-AC] Gave up after",MAX_WAIT,"ms");return;}
     var el=document.querySelector("openclaw-app");
-    if(el&&el.connected){
-      done=true;
-      return;
+    if(!el){setTimeout(tryConnect,INTERVAL);return;}
+    if(el.connected){done=true;console.log("[OC-AC] Already connected");return;}
+    if(typeof el.connect!=="function"){
+      setTimeout(tryConnect,INTERVAL);return;
     }
-    if(el&&typeof el.connect==="function"&&el.settings&&el.settings.gatewayUrl&&el.settings.token&&!connectAttempted){
-      connectAttempted=true;
-      el.connect();
+    if(phase===0){
+      console.log("[OC-AC] Phase 1: applySettings + connect");
+      if(typeof el.applySettings==="function"){
+        var cur=el.settings||{};
+        el.applySettings(Object.assign({},cur,{gatewayUrl:GW,token:TK}));
+      }
+      setTimeout(function(){
+        if(!el.connected&&typeof el.connect==="function"){
+          el.connect();
+        }
+      },100);
+      phase=1;
     }
-    if(!connectAttempted&&el){
-      var SK="openclaw.control.settings.v1";
-      var keys=Object.keys(localStorage);
-      for(var i=0;i<keys.length;i++){
-        if(keys[i].indexOf(SK)===0){
-          try{
-            var s=JSON.parse(localStorage.getItem(keys[i]));
-            if(s&&s.token&&s.gatewayUrl&&typeof el.applySettings==="function"){
-              el.applySettings(Object.assign({},el.settings||{},{ gatewayUrl:s.gatewayUrl, token:s.token }));
-              connectAttempted=true;
-              setTimeout(function(){if(typeof el.connect==="function")el.connect();},150);
+    if(phase>=1&&!el.connected){
+      var elapsed=Date.now()-start;
+      if(elapsed>3000&&phase===1){
+        console.log("[OC-AC] Phase 2: retry connect @",elapsed,"ms");
+        if(typeof el.applySettings==="function"){
+          el.applySettings(Object.assign({},el.settings||{},{gatewayUrl:GW,token:TK}));
+        }
+        el.connect();
+        phase=2;
+      }
+      if(elapsed>6000&&phase===2){
+        console.log("[OC-AC] Phase 3: login gate fallback @",elapsed,"ms");
+        var btn=document.querySelector(".login-gate__connect");
+        if(btn){
+          var inputs=document.querySelectorAll(".login-gate input");
+          for(var k=0;k<inputs.length;k++){
+            var inp=inputs[k];
+            if(inp.type==="password"||inp.placeholder&&inp.placeholder.indexOf("TOKEN")>=0){
+              var nv=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value");
+              if(nv&&nv.set){nv.set.call(inp,TK);inp.dispatchEvent(new Event("input",{bubbles:true}));}
+              else{inp.value=TK;inp.dispatchEvent(new Event("input",{bubbles:true}));}
             }
-          }catch(e2){}
-          break;
+            if(!inp.type||inp.type==="text"||inp.type==="url"){
+              var nv2=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value");
+              if(nv2&&nv2.set){nv2.set.call(inp,GW);inp.dispatchEvent(new Event("input",{bubbles:true}));}
+              else{inp.value=GW;inp.dispatchEvent(new Event("input",{bubbles:true}));}
+            }
+          }
+          setTimeout(function(){
+            var btn2=document.querySelector(".login-gate__connect");
+            if(btn2&&!btn2.disabled)btn2.click();
+          },200);
         }
+        phase=3;
+      }
+      if(elapsed>10000&&phase===3){
+        console.log("[OC-AC] Phase 4: final retry @",elapsed,"ms");
+        el.connect();
+        phase=4;
       }
     }
-    if(!done&&!connectAttempted){
-      var btn=document.querySelector(".login-gate__connect");
-      if(btn&&!btn.disabled){
-        var inputs=document.querySelectorAll(".login-gate input");
-        var hasUrl=false;var hasToken=false;
-        for(var k=0;k<inputs.length;k++){
-          if(inputs[k].value&&inputs[k].value.indexOf("ws")===0)hasUrl=true;
-          if(inputs[k].type==="password"&&inputs[k].value)hasToken=true;
-        }
-        if(hasUrl&&hasToken){
-          connectAttempted=true;
-          btn.click();
-        }
-      }
-    }
-    if(!done&&Date.now()-start<MAX_WAIT){
-      setTimeout(tryConnect,INTERVAL);
-    }
+    if(!done){setTimeout(tryConnect,INTERVAL);}
   }
   if(document.readyState==="loading"){
-    document.addEventListener("DOMContentLoaded",function(){setTimeout(tryConnect,300);});
+    document.addEventListener("DOMContentLoaded",function(){setTimeout(tryConnect,200);});
   }else{
-    setTimeout(tryConnect,300);
+    setTimeout(tryConnect,200);
   }
 }catch(e){console.error("[OC-AC]",e)}
 })()`;
@@ -75,25 +96,22 @@ export function buildOpenClawPreSeedScript({
 
   return `(function(){
 try{
-  window.__OPENCLAW_CONTROL_UI_BASE_PATH__="${normalizedGatewayPath}";
   var proto=(location.protocol==="https:"?"wss:":"ws:");
   var w=proto+"//"+location.host+"${normalizedGatewayPath}";
   var tk="${safeToken}";
+  window.__OPENCLAW_GATEWAY_URL__=w;
+  window.__OPENCLAW_TOKEN__=tk;
   var SK="openclaw.control.settings.v1";
   var TK="openclaw.control.token.v1";
-  function normalizeGatewayUrl(input){
+  function norm(input){
     var raw=String(input||"").trim();
     if(!raw)return "default";
     try{
       var base=location.protocol+"//"+location.host+(location.pathname||"/");
-      var parsed=new URL(raw,base);
-      var pathname=parsed.pathname==="/"
-        ? ""
-        : (parsed.pathname.replace(/\\/+$/,"")||parsed.pathname);
-      return parsed.protocol+"//"+parsed.host+pathname;
-    }catch{
-      return raw;
-    }
+      var p=new URL(raw,base);
+      var pn=p.pathname==="/"?"":p.pathname.replace(/\\/+$/,"")||p.pathname;
+      return p.protocol+"//"+p.host+pn;
+    }catch{return raw;}
   }
   var existing=null;
   var keys=Object.keys(localStorage);
@@ -102,10 +120,8 @@ try{
   s.gatewayUrl=w;
   s.token=tk;
   s.autoConnect=true;
-  s.version=s.version||1;
   s.sessionKey=s.sessionKey||"main";
   s.lastActiveSessionKey=s.lastActiveSessionKey||"main";
-  s.sidebarWidth=s.sidebarWidth||220;
   s.navGroupsCollapsed=s.navGroupsCollapsed||{};
   s.borderRadius=s.borderRadius!=null?s.borderRadius:50;
   s.theme=s.theme||"claw";
@@ -118,20 +134,19 @@ try{
       localStorage.removeItem(key);
     }
   }
-  var gk=normalizeGatewayUrl(w);
-  var pageGk=normalizeGatewayUrl(proto+"//"+location.host+location.pathname);
-  localStorage.setItem(SK+":"+gk,JSON.stringify(s));
-  localStorage.setItem(SK+":default",JSON.stringify(s));
-  localStorage.setItem(SK,JSON.stringify(s));
-  if(pageGk&&pageGk!==gk){
-    localStorage.setItem(SK+":"+pageGk,JSON.stringify(s));
-  }
+  var gk=norm(w);
+  var pk=norm(proto+"//"+location.host+location.pathname);
+  var sj=JSON.stringify(s);
+  localStorage.setItem(SK+":"+gk,sj);
+  localStorage.setItem(SK+":default",sj);
+  localStorage.setItem(SK,sj);
   localStorage.setItem(TK+":"+gk,tk);
   localStorage.setItem(TK,tk);
-  if(pageGk&&pageGk!==gk){
-    localStorage.setItem(TK+":"+pageGk,tk);
+  if(pk&&pk!==gk){
+    localStorage.setItem(SK+":"+pk,sj);
+    localStorage.setItem(TK+":"+pk,tk);
   }
-  console.log("[OC-Pre] seeded gateway:",w,"wsKey:",gk,"pageKey:",pageGk,"token:",tk.length,"chars");
+  console.log("[OC-Pre] seeded:",w,"tk:",tk.length,"ch, wsKey:",gk,"pageKey:",pk);
 }catch(e){console.error("[OC-Pre]",e)}
 })()`;
 }
