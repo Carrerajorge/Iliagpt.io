@@ -75,6 +75,7 @@ export function buildOpenClawPreSeedScript({
 
   return `(function(){
 try{
+  window.__OPENCLAW_CONTROL_UI_BASE_PATH__="${normalizedGatewayPath}";
   var proto=(location.protocol==="https:"?"wss:":"ws:");
   var w=proto+"//"+location.host+"${normalizedGatewayPath}";
   var tk="${safeToken}";
@@ -118,12 +119,19 @@ try{
     }
   }
   var gk=normalizeGatewayUrl(w);
+  var pageGk=normalizeGatewayUrl(proto+"//"+location.host+location.pathname);
   localStorage.setItem(SK+":"+gk,JSON.stringify(s));
   localStorage.setItem(SK+":default",JSON.stringify(s));
   localStorage.setItem(SK,JSON.stringify(s));
+  if(pageGk&&pageGk!==gk){
+    localStorage.setItem(SK+":"+pageGk,JSON.stringify(s));
+  }
   localStorage.setItem(TK+":"+gk,tk);
   localStorage.setItem(TK,tk);
-  console.log("[OC-Pre] localStorage seeded for gateway:",w,"key:",gk,"token length:",tk.length);
+  if(pageGk&&pageGk!==gk){
+    localStorage.setItem(TK+":"+pageGk,tk);
+  }
+  console.log("[OC-Pre] seeded gateway:",w,"wsKey:",gk,"pageKey:",pageGk,"token:",tk.length,"chars");
 }catch(e){console.error("[OC-Pre]",e)}
 })()`;
 }
