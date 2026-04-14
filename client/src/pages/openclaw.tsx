@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { ChevronLeft } from "lucide-react";
 import { apiFetch } from "@/lib/apiClient";
 
-const OPENCLAW_VERSION = "2026.4.12";
+const OPENCLAW_VERSION = "2026.4.14";
 const OPENCLAW_RELEASE_URL = `https://github.com/openclaw/openclaw/releases/tag/v${OPENCLAW_VERSION}`;
 
 const OPENCLAW_OPTIMIZE_STORAGE_KEY = "ilia:openclaw:last-optimize-at";
