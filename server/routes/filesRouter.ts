@@ -749,7 +749,7 @@ export function validateUploadIntentMetadata(input: {
       error: "Missing or invalid file metadata: fileName, mimeType, fileSize",
     };
   }
-  if (!ALLOWED_MIME_TYPES.includes(mimeType as any)) {
+  if (!mimeType.startsWith("audio/") && !ALLOWED_MIME_TYPES.includes(mimeType as any)) {
     return {
       ok: false,
       status: 415,
@@ -1032,7 +1032,7 @@ export function createFilesRouter() {
         const fileName = sanitizeFileName(multerFile.originalname || "preview");
         const mimeType = normalizeUploadIntentMimeType(multerFile.mimetype, fileName) || multerFile.mimetype;
 
-        if (!ALLOWED_MIME_TYPES.includes(mimeType as any)) {
+        if (!mimeType.startsWith("audio/") && !ALLOWED_MIME_TYPES.includes(mimeType as any)) {
           return res.status(400).json({ error: `Unsupported file type: ${mimeType}` });
         }
 
@@ -1067,7 +1067,8 @@ export function createFilesRouter() {
       const fileName = sanitizeFileName(multerFile.originalname || "upload");
       const mimeType = normalizeUploadIntentMimeType(multerFile.mimetype, fileName) || multerFile.mimetype;
 
-      if (!ALLOWED_MIME_TYPES.includes(mimeType as any)) {
+      const isAllowedAudio = mimeType.startsWith("audio/");
+      if (!isAllowedAudio && !ALLOWED_MIME_TYPES.includes(mimeType as any)) {
         try { fsSync.unlinkSync(multerFile.path); } catch {}
         return res.status(400).json({ error: `Unsupported file type: ${mimeType}` });
       }

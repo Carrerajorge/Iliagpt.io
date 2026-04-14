@@ -3471,8 +3471,9 @@ export function ChatInterface({
 
     const oversizedFiles = dedupedFiles.filter(file => file.size > MAX_FILE_SIZE_BYTES);
     const invalidTypeFiles = dedupedFiles.filter(file => {
-      const t = file.type || "";
+      const t = (file.type || "").split(";")[0].trim();
       if (t.startsWith("image/")) return false;
+      if (t.startsWith("audio/")) return false;
       return !ALLOWED_TYPES.includes(t);
     });
 
@@ -3496,8 +3497,8 @@ export function ChatInterface({
     }
 
     const validFiles = dedupedFiles.filter(file => {
-      const t = file.type || "";
-      const typeOk = t.startsWith("image/") || ALLOWED_TYPES.includes(t);
+      const t = (file.type || "").split(";")[0].trim();
+      const typeOk = t.startsWith("image/") || t.startsWith("audio/") || ALLOWED_TYPES.includes(t);
       return typeOk && file.size <= MAX_FILE_SIZE_BYTES;
     });
 
