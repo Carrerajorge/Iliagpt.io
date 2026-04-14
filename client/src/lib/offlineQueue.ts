@@ -153,7 +153,7 @@ class OfflineQueue {
         }
       };
       request.onerror = () => reject(request.error);
-      request.onblocked = () => reject(new Error('Failed to add pending message: database blocked'));
+      (request as any).onblocked = () => reject(new Error('Failed to add pending message: database blocked'));
     });
   }
 

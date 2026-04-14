@@ -8,6 +8,7 @@ import {
   isRtlLanguage,
   normalizeLanguageCode,
   type SupportedLanguage,
+  type LanguageDefinition,
 } from "@/locales/registry";
 
 export type TranslationKeys = Record<string, string>;
@@ -184,7 +185,7 @@ function reportMissingKey(scope: "message" | "literal", key: string): void {
 }
 
 function normalizeBundle(language: SupportedLanguage, bundle: LocaleBundle | undefined): NormalizedLocaleBundle {
-  const definition = getLanguageDefinition(language);
+  const definition = getLanguageDefinition(language) as LanguageDefinition | null;
 
   return {
     metadata: {
@@ -743,8 +744,8 @@ export function getLanguageName(code: SupportedLanguage): string {
 }
 
 export function getSupportedLanguages(): { code: SupportedLanguage; name: string; rtl: boolean }[] {
-  return LANGUAGE_REGISTRY.map((language) => ({
-    code: language.code,
+  return (LANGUAGE_REGISTRY as readonly LanguageDefinition[]).map((language) => ({
+    code: language.code as SupportedLanguage,
     name:
       language.nativeName === language.name
         ? language.name

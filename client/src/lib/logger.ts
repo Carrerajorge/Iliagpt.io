@@ -138,4 +138,6 @@ export const voiceLogger = loggers.voice;
 export const docsLogger = loggers.docs;
 export const agentLogger = loggers.agent;
 
+export const logger = createLogger('App');
+
 export default ClientLogger;

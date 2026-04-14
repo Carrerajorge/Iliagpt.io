@@ -153,7 +153,7 @@ function useCanvasRenderer(containerRef: React.RefObject<HTMLDivElement | null>)
 
       // If html-in-canvas is available, render card elements into canvas
       if (supportsHtmlInCanvas.current) {
-        const cards = container.querySelectorAll<HTMLElement>("[data-canvas-card]");
+        const cards = container!.querySelectorAll<HTMLElement>("[data-canvas-card]");
         cards.forEach((el) => {
           try {
             (ctx as any).drawElementImage(el, 0, 0);

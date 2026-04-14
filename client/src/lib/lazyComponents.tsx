@@ -1,7 +1,8 @@
 import React, { Suspense, ComponentType, useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { LazyLoadErrorBoundary } from '@/components/error-boundaries';
+import { LazyLoadErrorBoundary as _LazyLoadErrorBoundary } from '@/components/error-boundaries';
+const LazyLoadErrorBoundary: any = _LazyLoadErrorBoundary;
 
 interface LoadingFallbackProps {
   height?: string | number;
