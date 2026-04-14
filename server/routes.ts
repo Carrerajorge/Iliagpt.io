@@ -1014,6 +1014,8 @@ rootObserver.observe(document.documentElement,{childList:true,subtree:true});
           .replace("</head>", preSeedScript + autoConnectScript + pickerEnhancer + "</head>");
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        res.removeHeader("X-Frame-Options");
+        res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https:; connect-src 'self' ws: wss: https:; frame-ancestors 'self'");
         res.send(modifiedHtml);
       } catch (error: any) {
         // Serialize the error explicitly — Pino (and most structured loggers)

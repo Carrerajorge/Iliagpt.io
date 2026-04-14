@@ -57,4 +57,4 @@ An experimental SuperOrchestrator provides distributed agent execution with DAG 
 - Audio attachments display as a minimalist inline player with waveform visualization, play/pause, seek, and duration (in composer.tsx `AudioAttachmentPlayer` component).
 
 ### Runtime Integration Modules
-- **OpenClaw Control UI**: For web browsing and internet access.
+- **OpenClaw v2026.4.14**: Agentic framework with Control UI, gateway, tools, skills, and fusion features. Served via iframe at `/openclaw`, with WebSocket gateway at `/openclaw-ws`.
