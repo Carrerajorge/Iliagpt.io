@@ -3305,6 +3305,8 @@ export { openclawInstances, openclawTokenLedger, openclawAdminConfig, insertOpen
 export type { OpenclawInstance, InsertOpenclawInstance, OpenclawTokenLedger, InsertOpenclawTokenLedger, OpenclawAdminConfig, InsertOpenclawAdminConfig } from "./schema/openclaw";
 export { apiKeys, insertApiKeySchema } from "./schema/apiKeys";
 export type { InsertApiKey, ApiKey } from "./schema/apiKeys";
+export { customAgents, insertCustomAgentSchema } from "./schema/customAgents";
+export type { CustomAgent, InsertCustomAgent } from "./schema/customAgents";
 export {
   officeEngineRuns,
   officeEngineSteps,

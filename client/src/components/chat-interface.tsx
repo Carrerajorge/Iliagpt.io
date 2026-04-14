@@ -467,6 +467,15 @@ export function ChatInterface({
 }: ChatInterfaceProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const { settings } = useSettingsContext();
+
+  // Custom Agent: read from URL ?agent=<id>
+  const customAgentId = useMemo(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("agent") || null;
+    } catch { return null; }
+  }, [chatId]);
+
   const {
     projects,
     getProject
@@ -2288,6 +2297,7 @@ export function ChatInterface({
         provider: selectedProvider,
         model: selectedModel,
         latencyMode,
+        customAgentId: customAgentId || undefined,
       },
       buildFinalMessage: (fullContent, data, messageId) => ({
         ...buildAssistantMessage({
@@ -3248,6 +3258,18 @@ export function ChatInterface({
     "image/bmp",
     "image/webp",
     "image/tiff",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/wave",
+    "audio/x-wav",
+    "audio/ogg",
+    "audio/webm",
+    "audio/flac",
+    "audio/aac",
+    "audio/mp4",
+    "audio/x-m4a",
+    "audio/m4a",
   ];
 
   const MAX_FILE_SIZE_MB = 500;
@@ -3456,10 +3478,17 @@ export function ChatInterface({
       dedupedFiles.push(f);
     }
 
+    const AUDIO_EXTENSIONS = /\.(mp3|wav|m4a|ogg|flac|webm|aac|opus|wma|amr|spx|oga)$/i;
+    const isAudioFile = (f: File) => {
+      const t = f.type || "";
+      return t.startsWith("audio/") || t === "application/ogg" || t === "video/ogg" || AUDIO_EXTENSIONS.test(f.name);
+    };
+
     const oversizedFiles = dedupedFiles.filter(file => file.size > MAX_FILE_SIZE_BYTES);
     const invalidTypeFiles = dedupedFiles.filter(file => {
       const t = file.type || "";
       if (t.startsWith("image/")) return false;
+      if (isAudioFile(file)) return false;
       return !ALLOWED_TYPES.includes(t);
     });
 
@@ -3484,7 +3513,7 @@ export function ChatInterface({
 
     const validFiles = dedupedFiles.filter(file => {
       const t = file.type || "";
-      const typeOk = t.startsWith("image/") || ALLOWED_TYPES.includes(t);
+      const typeOk = t.startsWith("image/") || isAudioFile(file) || ALLOWED_TYPES.includes(t);
       return typeOk && file.size <= MAX_FILE_SIZE_BYTES;
     });
 
@@ -6270,15 +6299,16 @@ export function ChatInterface({
         // For UI: include anything not in a terminal error state so the message shows files immediately.
         .filter((f: any) => f?.status !== "error")
         .map((f: any) => ({
-          type: (f.type.startsWith("image/") ? "image" : "document") as "image" | "document",
+          type: (f.type.startsWith("image/") ? "image" : f.type.startsWith("audio/") ? "audio" : "document") as "image" | "audio" | "document",
           name: f.name,
           documentType: (() => {
             if (f.type.startsWith("image/")) return undefined;
+            if (f.type.startsWith("audio/") || f.name.match(/\.(mp3|wav|m4a|ogg|flac|webm|aac)$/i)) return "audio";
             if (f.type.includes("pdf") || f.name.toLowerCase().endsWith(".pdf")) return "pdf";
             if (f.type.includes("sheet") || f.type.includes("excel") || f.type.includes("csv") || f.name.match(/\.(xlsx|xls|csv)$/i)) return "excel";
             if (f.type.includes("presentation") || f.type.includes("powerpoint") || f.name.match(/\.(pptx|ppt)$/i)) return "ppt";
             return "word"; // default to word for text/docs
-          })() as "word" | "excel" | "ppt" | "pdf",
+          })() as "word" | "excel" | "ppt" | "pdf" | "audio",
           mimeType: f.type,
           imageUrl: f.dataUrl,
           storagePath: f.storagePath,
@@ -7964,7 +7994,8 @@ IMPORTANTE:
                   model: selectedModel,
                   attachments: attachments.length > 0 ? attachments : undefined,
                   gptId: activeGpt?.id,
-                  session_id: gptSessionId
+                  session_id: gptSessionId,
+                  customAgentId: customAgentId || undefined
                 }),
                 signal: abortControllerRef.current?.signal
               });

@@ -2,38 +2,243 @@
   "version": "7",
   "dialect": "postgresql",
   "entries": [
-    { "idx": 0,  "version": "7", "when": 1766557255843, "tag": "0000_pale_timeslip",                                          "breakpoints": true },
-    { "idx": 1,  "version": "7", "when": 1768285293978, "tag": "0001_faulty_vance_astro",                                    "breakpoints": true },
-    { "idx": 2,  "version": "7", "when": 1769880000000, "tag": "0002_add_last_synced_at",                                    "breakpoints": true },
-    { "idx": 3,  "version": "7", "when": 1771710153585, "tag": "0003_glorious_baron_strucker",                               "breakpoints": true },
-    { "idx": 4,  "version": "7", "when": 1771710200000, "tag": "0003_agent_mode_run_confirmations",                          "breakpoints": true },
-    { "idx": 5,  "version": "7", "when": 1771710300000, "tag": "0004_sync_users_and_auth_tokens",                            "breakpoints": true },
-    { "idx": 6,  "version": "7", "when": 1771710400000, "tag": "0004_workspace_invitations",                                  "breakpoints": true },
-    { "idx": 7,  "version": "7", "when": 1771710500000, "tag": "0005_session_user_tracking",                                  "breakpoints": true },
-    { "idx": 8,  "version": "7", "when": 1771710600000, "tag": "0005_users_phone_verified",                                   "breakpoints": true },
-    { "idx": 9,  "version": "7", "when": 1771710700000, "tag": "0006_agent_gap_logs_user_id",                                 "breakpoints": true },
-    { "idx": 10, "version": "7", "when": 1771710800000, "tag": "0006_users_org_id",                                           "breakpoints": true },
-    { "idx": 11, "version": "7", "when": 1771710900000, "tag": "0007_users_network_access_enabled",                           "breakpoints": true },
-    { "idx": 12, "version": "7", "when": 1771711000000, "tag": "0008_seed_gemini_models",                                     "breakpoints": true },
-    { "idx": 13, "version": "7", "when": 1771711100000, "tag": "0009_add_keywords_to_conversation_messages",                  "breakpoints": true },
-    { "idx": 14, "version": "7", "when": 1771711200000, "tag": "0010_create_processed_requests",                              "breakpoints": true },
-    { "idx": 15, "version": "7", "when": 1771711300000, "tag": "0011_payments_indexes",                                       "breakpoints": true },
-    { "idx": 16, "version": "7", "when": 1771711400000, "tag": "0012_chat_schedules",                                         "breakpoints": true },
-    { "idx": 17, "version": "7", "when": 1771711500000, "tag": "0013_billing_credit_grants",                                  "breakpoints": true },
-    { "idx": 18, "version": "7", "when": 1771711600000, "tag": "0013_workspace_groups",                                       "breakpoints": true },
-    { "idx": 19, "version": "7", "when": 1771711700000, "tag": "0013_workspace_roles",                                        "breakpoints": true },
-    { "idx": 20, "version": "7", "when": 1771711800000, "tag": "0014_chat_group_shares",                                      "breakpoints": true },
-    { "idx": 21, "version": "7", "when": 1771711900000, "tag": "0015_remote_shell_targets",                                   "breakpoints": true },
-    { "idx": 22, "version": "7", "when": 1771712000000, "tag": "0016_channel_conversations_and_pairing_codes",                "breakpoints": true },
-    { "idx": 23, "version": "7", "when": 1771712100000, "tag": "0016_package_manager",                                        "breakpoints": true },
-    { "idx": 24, "version": "7", "when": 1771712200000, "tag": "0017_package_operations",                                     "breakpoints": true },
-    { "idx": 25, "version": "7", "when": 1771712300000, "tag": "0018_package_operations_align",                               "breakpoints": true },
-    { "idx": 26, "version": "7", "when": 1771712400000, "tag": "0019_gpt_definition_versioning",                              "breakpoints": true },
-    { "idx": 27, "version": "7", "when": 1771712500000, "tag": "0020_iam_hardening_phase1",                                   "breakpoints": true },
-    { "idx": 28, "version": "7", "when": 1771712600000, "tag": "0021_admin_user_projection",                                  "breakpoints": true },
-    { "idx": 29, "version": "7", "when": 1771712700000, "tag": "0022_automation_triggers_and_features",                       "breakpoints": true },
-    { "idx": 30, "version": "7", "when": 1771712800000, "tag": "0023_prompt_audit_trail",                                     "breakpoints": true },
-    { "idx": 31, "version": "7", "when": 1775440000000, "tag": "0024_users_indexes_and_sanitize_fields",                      "breakpoints": true },
-    { "idx": 32, "version": "7", "when": 1775450000000, "tag": "0025_daily_user_token_limits",                                "breakpoints": true }
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1766557255843,
+      "tag": "0000_pale_timeslip",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1768285293978,
+      "tag": "0001_faulty_vance_astro",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1769880000000,
+      "tag": "0002_add_last_synced_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1771710153585,
+      "tag": "0003_glorious_baron_strucker",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1771710200000,
+      "tag": "0003_agent_mode_run_confirmations",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1771710300000,
+      "tag": "0004_sync_users_and_auth_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1771710400000,
+      "tag": "0004_workspace_invitations",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1771710500000,
+      "tag": "0005_session_user_tracking",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1771710600000,
+      "tag": "0005_users_phone_verified",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1771710700000,
+      "tag": "0006_agent_gap_logs_user_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1771710800000,
+      "tag": "0006_users_org_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1771710900000,
+      "tag": "0007_users_network_access_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1771711000000,
+      "tag": "0008_seed_gemini_models",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1771711100000,
+      "tag": "0009_add_keywords_to_conversation_messages",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1771711200000,
+      "tag": "0010_create_processed_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1771711300000,
+      "tag": "0011_payments_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1771711400000,
+      "tag": "0012_chat_schedules",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1771711500000,
+      "tag": "0013_billing_credit_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1771711600000,
+      "tag": "0013_workspace_groups",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1771711700000,
+      "tag": "0013_workspace_roles",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1771711800000,
+      "tag": "0014_chat_group_shares",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1771711900000,
+      "tag": "0015_remote_shell_targets",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1771712000000,
+      "tag": "0016_channel_conversations_and_pairing_codes",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1771712100000,
+      "tag": "0016_package_manager",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1771712200000,
+      "tag": "0017_package_operations",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1771712300000,
+      "tag": "0018_package_operations_align",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1771712400000,
+      "tag": "0019_gpt_definition_versioning",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1771712500000,
+      "tag": "0020_iam_hardening_phase1",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1771712600000,
+      "tag": "0021_admin_user_projection",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1771712700000,
+      "tag": "0022_automation_triggers_and_features",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1771712800000,
+      "tag": "0023_prompt_audit_trail",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1775440000000,
+      "tag": "0024_users_indexes_and_sanitize_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1775450000000,
+      "tag": "0025_daily_user_token_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1776142354963,
+      "tag": "0033_spooky_penance",
+      "breakpoints": true
+    }
   ]
 }

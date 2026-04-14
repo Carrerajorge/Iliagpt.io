@@ -649,6 +649,20 @@ function inferMimeTypeFromFileName(fileName: string): string | null {
     tif: "image/tiff",
     tiff: "image/tiff",
     svg: "image/svg+xml",
+
+    // audio
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    ogg: "audio/ogg",
+    oga: "audio/ogg",
+    opus: "audio/opus",
+    m4a: "audio/mp4",
+    aac: "audio/aac",
+    flac: "audio/flac",
+    webm: "audio/webm",
+    wma: "audio/x-ms-wma",
+    amr: "audio/amr",
+    spx: "audio/ogg",
   };
 
   return map[ext] || null;
@@ -660,6 +674,8 @@ const UPLOAD_MIME_TYPE_ALIASES: Record<string, string> = {
   "application/vnd.pdf": "application/pdf",
   "image/pjpeg": "image/jpeg",
   "image/x-png": "image/png",
+  "application/ogg": "audio/ogg",
+  "video/ogg": "audio/ogg",
 };
 
 const KNOWN_NONSTRICT_MIME_TYPES = new Set([
@@ -739,7 +755,8 @@ export function validateUploadIntentMetadata(input: {
       error: "Missing or invalid file metadata: fileName, mimeType, fileSize",
     };
   }
-  if (!ALLOWED_MIME_TYPES.includes(mimeType as any)) {
+  const audioExtByName = /\.(mp3|wav|m4a|ogg|flac|webm|aac|opus|wma|amr|spx|oga)$/i.test(fileName);
+  if (!ALLOWED_MIME_TYPES.includes(mimeType as any) && !audioExtByName) {
     return {
       ok: false,
       status: 415,
@@ -755,7 +772,9 @@ export function validateUploadIntentMetadata(input: {
   }
 
   const inferredMimeType = inferMimeTypeFromFileName(fileName);
-  if (inferredMimeType && inferredMimeType !== mimeType) {
+  const bothAudioLike = inferredMimeType?.startsWith("audio/") &&
+    (mimeType.startsWith("audio/") || mimeType === "application/ogg" || mimeType === "video/ogg");
+  if (inferredMimeType && inferredMimeType !== mimeType && !bothAudioLike) {
     return {
       ok: false,
       status: 400,
@@ -1022,7 +1041,8 @@ export function createFilesRouter() {
         const fileName = sanitizeFileName(multerFile.originalname || "preview");
         const mimeType = normalizeUploadIntentMimeType(multerFile.mimetype, fileName) || multerFile.mimetype;
 
-        if (!ALLOWED_MIME_TYPES.includes(mimeType as any)) {
+        const audioExtMatch = /\.(mp3|wav|m4a|ogg|flac|webm|aac|opus|wma|amr|spx|oga)$/i.test(fileName);
+        if (!ALLOWED_MIME_TYPES.includes(mimeType as any) && !audioExtMatch) {
           return res.status(400).json({ error: `Unsupported file type: ${mimeType}` });
         }
 
@@ -1057,7 +1077,8 @@ export function createFilesRouter() {
       const fileName = sanitizeFileName(multerFile.originalname || "upload");
       const mimeType = normalizeUploadIntentMimeType(multerFile.mimetype, fileName) || multerFile.mimetype;
 
-      if (!ALLOWED_MIME_TYPES.includes(mimeType as any)) {
+      const audioExtMatch2 = /\.(mp3|wav|m4a|ogg|flac|webm|aac|opus|wma|amr|spx|oga)$/i.test(fileName);
+      if (!ALLOWED_MIME_TYPES.includes(mimeType as any) && !audioExtMatch2) {
         try { fsSync.unlinkSync(multerFile.path); } catch {}
         return res.status(400).json({ error: `Unsupported file type: ${mimeType}` });
       }
@@ -1345,11 +1366,14 @@ export function createFilesRouter() {
       }
 
       const inferredTypeFromName = inferMimeTypeFromFileName(fileName);
-      if (inferredTypeFromName && inferredTypeFromName !== safeMimeType) {
+      const bothAudioRelated = inferredTypeFromName?.startsWith("audio/") &&
+        (safeMimeType.startsWith("audio/") || safeMimeType === "application/ogg" || safeMimeType === "video/ogg");
+      if (inferredTypeFromName && inferredTypeFromName !== safeMimeType && !bothAudioRelated) {
         return res.status(400).json({ error: "File extension does not match mimeType" });
       }
 
-      if (!ALLOWED_MIME_TYPES.includes(safeMimeType as any)) {
+      const audioExtMatch3 = /\.(mp3|wav|m4a|ogg|flac|webm|aac|opus|wma|amr|spx|oga)$/i.test(fileName);
+      if (!ALLOWED_MIME_TYPES.includes(safeMimeType as any) && !audioExtMatch3) {
         return res.status(400).json({ error: `Unsupported file type: ${safeMimeType}` });
       }
 

@@ -18,6 +18,23 @@ export const ALLOWED_MIME_TYPES = [
   "image/bmp",
   "image/webp",
   "image/tiff",
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/wav",
+  "audio/wave",
+  "audio/x-wav",
+  "audio/ogg",
+  "audio/webm",
+  "audio/flac",
+  "audio/aac",
+  "audio/mp4",
+  "audio/x-m4a",
+  "audio/m4a",
+  "application/ogg",
+  "video/ogg",
+  "audio/opus",
+  "audio/amr",
+  "audio/x-ms-wma",
 ] as const;
 
 export const HTTP_HEADERS = {
@@ -50,7 +67,8 @@ export const MEMORY_INTENT_KEYWORDS = [
   "el pdf", "el excel", "el word", "la presentación",
   "según mi", "de acuerdo a mi", "basándote en mi",
   "usa mi", "revisa mi", "analiza mi", "lee mi",
-  "en mi archivo", "en mis documentos", "de mi archivo"
+  "en mi archivo", "en mis documentos", "de mi archivo",
+  "el audio", "mi audio", "el audio que", "transcribir", "transcribe", "transcripción"
 ] as const;
 
 export const FILE_UPLOAD_CONFIG = {
@@ -79,5 +97,22 @@ export const ALLOWED_EXTENSIONS: Record<string, string> = {
   "image/gif": ".gif",
   "image/bmp": ".bmp",
   "image/webp": ".webp",
-  "image/tiff": ".tiff"
+  "image/tiff": ".tiff",
+  "audio/mpeg": ".mp3",
+  "audio/mp3": ".mp3",
+  "audio/wav": ".wav",
+  "audio/wave": ".wav",
+  "audio/x-wav": ".wav",
+  "audio/ogg": ".ogg",
+  "audio/webm": ".webm",
+  "audio/flac": ".flac",
+  "audio/aac": ".aac",
+  "audio/mp4": ".m4a",
+  "audio/x-m4a": ".m4a",
+  "audio/m4a": ".m4a",
+  "application/ogg": ".ogg",
+  "video/ogg": ".ogg",
+  "audio/opus": ".opus",
+  "audio/amr": ".amr",
+  "audio/x-ms-wma": ".wma"
 } as const;

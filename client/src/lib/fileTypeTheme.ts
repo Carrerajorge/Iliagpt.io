@@ -1,12 +1,13 @@
-export type FileCategory = 
-  | "pdf" 
-  | "word" 
-  | "excel" 
-  | "ppt" 
-  | "image" 
-  | "text" 
-  | "code" 
-  | "archive" 
+export type FileCategory =
+  | "pdf"
+  | "word"
+  | "excel"
+  | "ppt"
+  | "image"
+  | "audio"
+  | "text"
+  | "code"
+  | "archive"
   | "unknown";
 
 export interface FileTypeTheme {
@@ -70,6 +71,16 @@ const fileThemes: Record<FileCategory, FileTypeTheme> = {
     gradientTo: "to-purple-700",
     icon: "IMG",
     label: "Image",
+  },
+  audio: {
+    category: "audio",
+    bgColor: "bg-violet-600",
+    textColor: "text-violet-600",
+    darkTextColor: "text-violet-400",
+    gradientFrom: "from-violet-500",
+    gradientTo: "to-fuchsia-600",
+    icon: "🎵",
+    label: "Audio",
   },
   text: {
     category: "text",
@@ -147,6 +158,19 @@ const extensionMap: Record<string, FileCategory> = {
   tif: "image",
   heic: "image",
   heif: "image",
+  // Audio
+  mp3: "audio",
+  wav: "audio",
+  ogg: "audio",
+  oga: "audio",
+  opus: "audio",
+  m4a: "audio",
+  aac: "audio",
+  flac: "audio",
+  wma: "audio",
+  webm: "audio",
+  amr: "audio",
+  spx: "audio",
   // Text
   txt: "text",
   md: "text",
@@ -213,6 +237,20 @@ const mimeTypeMap: Record<string, FileCategory> = {
   "image/bmp": "image",
   "image/tiff": "image",
   "image/x-icon": "image",
+  // Audio
+  "audio/mpeg": "audio",
+  "audio/mp3": "audio",
+  "audio/wav": "audio",
+  "audio/ogg": "audio",
+  "audio/webm": "audio",
+  "audio/flac": "audio",
+  "audio/aac": "audio",
+  "audio/mp4": "audio",
+  "audio/m4a": "audio",
+  "audio/x-m4a": "audio",
+  "audio/opus": "audio",
+  "audio/amr": "audio",
+  "application/ogg": "audio",
   // Text
   "text/plain": "text",
   "text/markdown": "text",
@@ -255,6 +293,7 @@ export function getFileCategory(fileName?: string, mimeType?: string): FileCateg
     if (lowerMime.includes("excel") || lowerMime.includes("spreadsheet")) return "excel";
     if (lowerMime.includes("powerpoint") || lowerMime.includes("presentation")) return "ppt";
     if (lowerMime.startsWith("image/")) return "image";
+    if (lowerMime.startsWith("audio/")) return "audio";
     if (lowerMime.startsWith("text/")) return "text";
   }
   

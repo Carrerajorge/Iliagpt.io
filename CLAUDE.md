@@ -159,3 +159,23 @@ Supports OpenAI, Anthropic, Google Gemini, xAI (Grok), DeepSeek, Cerebras, OpenR
 - **Security middleware**: Helmet, CSRF, rate limiting (Redis-backed), SSRF protection on web retrieval, prompt injection detection, DOMPurify output sanitization.
 - **Streaming**: SSE with 60s idle timeout, WebSocket fallback. Redis pub/sub for multi-instance coordination.
 - **CI** (`.github/workflows/ci.yml`): Node 22, runs `test:ci:chat-core` + `test:client` tests. 25min timeout.
+
+## REGLAS OBLIGATORIAS DE DEPLOY (SIEMPRE)
+
+### Al finalizar CUALQUIER tarea:
+1. git add -A
+2. git commit -m "descripción clara del cambio"
+3. git push origin main
+4. gh run watch --exit-status (esperar CI)
+5. Si CI falla: leer error, corregir, push de nuevo
+6. REPETIR hasta CI verde
+7. NUNCA dejar CI en rojo
+8. NUNCA crear branches ni PRs — todo directo a main
+
+### Antes de cada push verificar:
+- npm run lint (0 errores)
+- npm run check 2>&1 | grep "error TS" (0 errores en client/src/)
+- npm run test:ci:chat-core (tests pasan)
+
+### Si el contexto se llena: /compact y continuar
+### NO preguntar, trabajar autónomo

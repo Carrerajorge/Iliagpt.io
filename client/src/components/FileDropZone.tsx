@@ -26,12 +26,14 @@ interface DroppedFilePreview {
 
 const DEFAULT_ACCEPTED_TYPES = [
     'image/*',
+    'audio/*',
     'application/pdf',
     '.doc', '.docx',
     '.xls', '.xlsx',
     '.ppt', '.pptx',
     '.txt', '.md',
     '.csv', '.json',
+    '.mp3', '.wav', '.m4a', '.ogg', '.flac', '.webm', '.aac',
 ];
 
 const MAX_FILE_SIZE_MB = 500;
