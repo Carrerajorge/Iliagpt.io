@@ -6,55 +6,62 @@ type BuildOpenClawPreSeedScriptOptions = {
 export function buildOpenClawAutoConnectScript(): string {
   return `(function(){
 try{
-  var MAX_WAIT=25000;
-  var INTERVAL=300;
+  var MAX_WAIT=30000;
+  var INTERVAL=250;
   var start=Date.now();
   var done=false;
+  var connectAttempted=false;
   function tryConnect(){
     if(done)return;
     var el=document.querySelector("openclaw-app");
-    if(el&&typeof el.connect==="function"&&el.settings&&el.settings.gatewayUrl){
-      if(el.connected){
-        done=true;
-        console.log("[OC-AC] already connected");
-        return;
-      }
-      if(el.settings.token){
-        done=true;
-        console.log("[OC-AC] calling connect() directly, url=",el.settings.gatewayUrl);
-        el.connect();
-        return;
-      }
+    if(el&&el.connected){
+      done=true;
+      return;
     }
-    if(el&&el.settings&&!el.settings.token){
+    if(el&&typeof el.connect==="function"&&el.settings&&el.settings.gatewayUrl&&el.settings.token&&!connectAttempted){
+      connectAttempted=true;
+      el.connect();
+    }
+    if(!connectAttempted&&el){
       var SK="openclaw.control.settings.v1";
       var keys=Object.keys(localStorage);
       for(var i=0;i<keys.length;i++){
         if(keys[i].indexOf(SK)===0){
           try{
             var s=JSON.parse(localStorage.getItem(keys[i]));
-            if(s&&s.token&&s.gatewayUrl){
-              el.applySettings({...el.settings,gatewayUrl:s.gatewayUrl,token:s.token});
-              done=true;
-              console.log("[OC-AC] applied settings from localStorage, calling connect()");
-              setTimeout(function(){el.connect();},100);
-              return;
+            if(s&&s.token&&s.gatewayUrl&&typeof el.applySettings==="function"){
+              el.applySettings(Object.assign({},el.settings||{},{ gatewayUrl:s.gatewayUrl, token:s.token }));
+              connectAttempted=true;
+              setTimeout(function(){if(typeof el.connect==="function")el.connect();},150);
             }
-          }catch(e){}
+          }catch(e2){}
+          break;
         }
       }
     }
-    if(Date.now()-start<MAX_WAIT){setTimeout(tryConnect,INTERVAL);}
-    else{
-      console.warn("[OC-AC] timed out");
+    if(!done&&!connectAttempted){
       var btn=document.querySelector(".login-gate__connect");
-      if(btn)btn.click();
+      if(btn&&!btn.disabled){
+        var inputs=document.querySelectorAll(".login-gate input");
+        var hasUrl=false;var hasToken=false;
+        for(var k=0;k<inputs.length;k++){
+          if(inputs[k].value&&inputs[k].value.indexOf("ws")===0)hasUrl=true;
+          if(inputs[k].type==="password"&&inputs[k].value)hasToken=true;
+        }
+        if(hasUrl&&hasToken){
+          connectAttempted=true;
+          btn.click();
+        }
+      }
+    }
+    if(!done&&Date.now()-start<MAX_WAIT){
+      setTimeout(tryConnect,INTERVAL);
     }
   }
   if(document.readyState==="loading"){
-    document.addEventListener("DOMContentLoaded",function(){setTimeout(tryConnect,500);});
+    document.addEventListener("DOMContentLoaded",function(){setTimeout(tryConnect,300);});
   }else{
-    setTimeout(tryConnect,500);
+    setTimeout(tryConnect,300);
   }
 }catch(e){console.error("[OC-AC]",e)}
 })()`;
