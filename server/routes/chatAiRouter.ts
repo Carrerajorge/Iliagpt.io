@@ -7421,12 +7421,15 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
           // Convert resolved attachments to BatchAttachment format
           // storagePaths were already resolved earlier
+          const audioFormatsStream = ['mp3', 'wav', 'ogg', 'webm', 'm4a', 'flac', 'aac', 'mp4', 'opus', 'wma'];
           const batchAttachments: BatchAttachment[] = resolvedAttachments
             .filter((att: any) => {
               if (!(att.storagePath || att.content)) return false;
-              // Exclude image attachments — they are handled by the Vision pipeline below
-              const mime = (att.mimeType || att.type || "").toLowerCase();
+              const mime = (att.mimeType || att.type || "").toLowerCase().split(';')[0].trim();
               if (mime.startsWith("image/")) return false;
+              if (mime.startsWith("audio/")) return false;
+              const ext = (att.name || '').split('.').pop()?.toLowerCase() || '';
+              if (audioFormatsStream.includes(ext)) return false;
               return true;
             })
             .map((att: any) => ({
@@ -7609,7 +7612,153 @@ No uses markdown, emojis ni formatos especiales ya que tu respuesta será leída
 
       console.log(`[Stream] Vision: total imagePartsForVision=${imagePartsForVision.length}`);
 
-      const isModelVisionCapable = !effectiveModel?.includes("gpt-oss") && !effectiveModel?.includes("gemma");
+      // ── AUDIO MULTIMODAL SUPPORT ──────────────────────────────────
+      const audioPartsForMultimodal: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+      const audioFormatsMultimodal = ['mp3', 'wav', 'ogg', 'webm', 'm4a', 'flac', 'aac', 'mp4', 'opus', 'wma'];
+
+      if (resolvedAttachments.length > 0) {
+        for (const att of resolvedAttachments) {
+          const mime = (att.mimeType || att.type || "").toLowerCase().split(';')[0].trim();
+          const fileExt = (att.name || '').split('.').pop()?.toLowerCase() || '';
+          const isAudio = mime.startsWith("audio/") || audioFormatsMultimodal.includes(fileExt);
+          if (!isAudio) continue;
+
+          console.log(`[Stream] Audio multimodal: detected audio "${att.name}" (mime=${mime}, ext=${fileExt})`);
+
+          const storagePath = att.storagePath || "";
+          let audioBuffer: Buffer | null = null;
+
+          try {
+            const objStore = new ObjectStorageService();
+            audioBuffer = await objStore.getObjectEntityBuffer(storagePath);
+            console.log(`[Stream] Audio multimodal: loaded from storage "${att.name}" (${audioBuffer.length} bytes)`);
+          } catch (gcsErr: any) {
+            console.log(`[Stream] Audio multimodal: storage failed for "${att.name}": ${gcsErr?.message}`);
+          }
+
+          if (!audioBuffer) {
+            try {
+              const fs = await import("fs/promises");
+              const path = await import("path");
+              let filePath = storagePath;
+              const cwd = process.cwd();
+              if (filePath.startsWith("/objects/uploads/")) {
+                filePath = path.default.join(cwd, filePath.replace("/objects/", ""));
+              } else if (filePath.startsWith("/objects/")) {
+                filePath = path.default.join(cwd, filePath.replace("/objects/", ""));
+              } else if (!path.default.isAbsolute(filePath)) {
+                filePath = path.default.join(cwd, "uploads", filePath);
+              }
+              audioBuffer = await fs.readFile(filePath);
+              console.log(`[Stream] Audio multimodal: loaded from local "${att.name}" (${audioBuffer.length} bytes)`);
+            } catch (localErr: any) {
+              console.warn(`[Stream] Audio multimodal: failed to load "${att.name}":`, localErr?.message);
+            }
+          }
+
+          if (audioBuffer) {
+            const effectiveMime = mime.startsWith("audio/") ? mime : `audio/${fileExt === 'ogg' ? 'ogg' : fileExt === 'mp3' ? 'mpeg' : fileExt === 'm4a' ? 'mp4' : fileExt}`;
+            const base64 = audioBuffer.toString("base64");
+            const dataUrl = `data:${effectiveMime};base64,${base64}`;
+            audioPartsForMultimodal.push({ type: "image_url", image_url: { url: dataUrl } });
+            console.log(`[Stream] Audio multimodal: added "${att.name}" (${effectiveMime}, ${Math.round(base64.length / 1024)}KB base64)`);
+          } else {
+            console.error(`[Stream] Audio multimodal: FAILED to load "${att.name}" — audio will NOT be sent to LLM`);
+          }
+        }
+      }
+      console.log(`[Stream] Audio multimodal: total audioPartsForMultimodal=${audioPartsForMultimodal.length}`);
+
+      // Determine if model supports native audio multimodal (Gemini API supports audio inlineData)
+      const normalizedModelForAudio = (effectiveModel || '').toLowerCase();
+      const isGeminiNativeAudio = normalizedModelForAudio.startsWith('google/gemma') ||
+        normalizedModelForAudio.startsWith('gemma') ||
+        normalizedModelForAudio.startsWith('gemini') ||
+        /gemini/i.test(normalizedModelForAudio);
+      const isModelAudioMultimodal = isGeminiNativeAudio;
+
+      if (audioPartsForMultimodal.length > 0 && !isModelAudioMultimodal) {
+        console.log(`[Stream] Audio fallback: model ${effectiveModel} does not support native audio — transcribing with Whisper/Gemini`);
+        writeSse(res, "thinking", { step: "transcribe", message: `Transcribiendo audio…` });
+
+        let audioTranscriptionText = '';
+        for (const audioPart of audioPartsForMultimodal) {
+          try {
+            const dataUriMatch = audioPart.image_url.url.match(/^data:([^;]+);base64,(.+)$/);
+            if (dataUriMatch) {
+              const audioBuffer = Buffer.from(dataUriMatch[2], 'base64');
+              const batchProcessor = new DocumentBatchProcessor();
+              const fallbackResult = await batchProcessor.processBatch([{
+                name: 'audio_attachment',
+                mimeType: dataUriMatch[1],
+                storagePath: '',
+                content: audioBuffer.toString('base64'),
+              }]);
+              if (fallbackResult.unifiedContext) {
+                audioTranscriptionText += fallbackResult.unifiedContext + '\n';
+              }
+            }
+          } catch (e: any) {
+            console.warn(`[Stream] Audio fallback transcription failed:`, e?.message);
+          }
+        }
+
+        if (audioTranscriptionText.trim()) {
+          const audioContext = `\n\n[TRANSCRIPCIÓN DE AUDIO]\n${audioTranscriptionText.trim()}\n[FIN DE TRANSCRIPCIÓN]`;
+          for (let i = formattedMessages.length - 1; i >= 0; i--) {
+            if (formattedMessages[i].role === "user") {
+              const textContent = typeof formattedMessages[i].content === "string"
+                ? formattedMessages[i].content
+                : JSON.stringify(formattedMessages[i].content);
+              formattedMessages[i] = { role: "user", content: textContent + audioContext };
+              console.log(`[Stream] Audio fallback: injected transcription into user message[${i}]`);
+              break;
+            }
+          }
+        }
+        audioPartsForMultimodal.length = 0;
+      }
+
+      if (audioPartsForMultimodal.length > 0) {
+        for (let i = formattedMessages.length - 1; i >= 0; i--) {
+          if (formattedMessages[i].role === "user") {
+            const textContent = typeof formattedMessages[i].content === "string"
+              ? formattedMessages[i].content
+              : JSON.stringify(formattedMessages[i].content);
+
+            const existingParts = Array.isArray(formattedMessages[i].content)
+              ? (formattedMessages[i].content as any[])
+              : [];
+
+            if (existingParts.length > 0) {
+              formattedMessages[i] = {
+                role: "user",
+                content: [
+                  ...existingParts,
+                  ...audioPartsForMultimodal,
+                ] as any,
+              };
+            } else {
+              formattedMessages[i] = {
+                role: "user",
+                content: [
+                  ...audioPartsForMultimodal,
+                  { type: "text", text: textContent },
+                ] as any,
+              };
+            }
+            console.log(`[Stream] Audio multimodal: converted user message[${i}] to include ${audioPartsForMultimodal.length} audio part(s)`);
+            break;
+          }
+        }
+
+        if (latencyMode === 'fast') {
+          latencyMode = 'deep' as LatencyMode;
+          console.log(`[Stream] Audio multimodal: upgraded latency mode to 'deep' for audio processing`);
+        }
+      }
+
+      const isModelVisionCapable = !effectiveModel?.includes("gpt-oss");
 
       if (imagePartsForVision.length > 0 && !isModelVisionCapable) {
         const { batchOCR } = await import("../services/ocrService");

@@ -1764,7 +1764,9 @@ export function ChatInterface({
 
     if (lowerType === "image" || lowerMime.startsWith("image/")) return false;
 
-    if (lowerMime.startsWith("audio/")) return true;
+    if (lowerMime.startsWith("audio/")) return false;
+    const audioExtensions = [".mp3", ".wav", ".ogg", ".m4a", ".webm", ".flac", ".aac", ".mp4", ".opus", ".wma"];
+    if (audioExtensions.some(ext => lowerName.endsWith(ext))) return false;
 
     const docMimePatterns = [
       "pdf",
@@ -1782,7 +1784,7 @@ export function ChatInterface({
     ];
     if (docMimePatterns.some(p => lowerMime.includes(p))) return true;
 
-    const docExtensions = [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".txt", ".json", ".rtf", ".odt", ".ods", ".odp", ".mp3", ".wav", ".ogg", ".m4a", ".webm", ".flac", ".aac"];
+    const docExtensions = [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".txt", ".json", ".rtf", ".odt", ".ods", ".odp"];
     if (docExtensions.some(ext => lowerName.endsWith(ext))) return true;
 
     if (["pdf", "word", "excel", "ppt", "document"].includes(lowerType)) return true;
