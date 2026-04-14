@@ -3324,6 +3324,15 @@ export function ChatInterface({
           }
         }
 
+        const isAudio = file.type.startsWith("audio/") ||
+          /\.(mp3|wav|ogg|webm|m4a|flac|aac)$/i.test(file.name);
+        if (isAudio) {
+          return {
+            dataUrl: await readFileAsDataUrl(file),
+            previewStatus: "ready" as const,
+          };
+        }
+
         if (isPdfFile && file.size <= MAX_PDF_PREVIEW_BYTES) {
           return {
             dataUrl: await readFileAsDataUrl(file),

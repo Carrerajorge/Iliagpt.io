@@ -54,6 +54,7 @@ An experimental SuperOrchestrator provides distributed agent execution with DAG 
 - **Google Gemini 2.0 Flash**: Fallback audio transcription when Whisper/OpenAI is unavailable.
 - Supported formats: MP3, WAV, OGG, WebM, M4A, FLAC, AAC (max 25MB per file).
 - Audio files uploaded to chat are automatically transcribed and the text is sent to the selected AI model.
+- Audio attachments display as a minimalist inline player with waveform visualization, play/pause, seek, and duration (in composer.tsx `AudioAttachmentPlayer` component).
 
 ### Runtime Integration Modules
 - **OpenClaw Control UI**: For web browsing and internet access.

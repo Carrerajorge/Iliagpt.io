@@ -24,6 +24,9 @@ import {
   Sparkles,
   Clock,
   Link2,
+  Play,
+  Pause,
+  Mic,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -151,6 +154,143 @@ function formatFileSize(bytes: number): string {
   const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+function formatAudioDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function AudioAttachmentPlayer({
+  file,
+  onRemove,
+  index,
+}: {
+  file: { name: string; size: number; dataUrl?: string; status: string; localPath?: string };
+  onRemove: () => void;
+  index: number;
+}) {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const progressRef = useRef<HTMLDivElement>(null);
+
+  const audioSrc = useMemo(() => {
+    if (file.dataUrl) return file.dataUrl;
+    return null;
+  }, [file.dataUrl]);
+
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  const togglePlay = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!audioRef.current) return;
+    if (isPlaying) {
+      audioRef.current.pause();
+    } else {
+      audioRef.current.play().catch(() => {});
+    }
+  };
+
+  const handleSeek = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!progressRef.current || !audioRef.current || !duration) return;
+    const rect = progressRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const pct = Math.max(0, Math.min(1, x / rect.width));
+    audioRef.current.currentTime = pct * duration;
+    setCurrentTime(pct * duration);
+  };
+
+  const waveformBars = useMemo(() => {
+    const count = 28;
+    const seed = file.name.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+    return Array.from({ length: count }, (_, i) => {
+      const h = 20 + ((seed * (i + 1) * 7 + i * 13) % 60);
+      return h;
+    });
+  }, [file.name]);
+
+  return (
+    <div className="relative group" data-testid={`audio-attachment-${index}`}>
+      <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-muted/40 border border-border/50 hover:border-border/80 transition-all duration-200 min-w-[200px] max-w-[260px]">
+        <button
+          onClick={togglePlay}
+          disabled={!audioSrc || file.status !== "ready"}
+          className="shrink-0 w-8 h-8 rounded-full bg-[#A5A0FF] hover:bg-[#8B85FF] flex items-center justify-center transition-colors disabled:opacity-40"
+          data-testid={`button-play-audio-${index}`}
+        >
+          {file.status === "uploading" || file.status === "processing" ? (
+            <Loader2 className="h-3.5 w-3.5 text-white animate-spin" />
+          ) : isPlaying ? (
+            <Pause className="h-3.5 w-3.5 text-white fill-white" />
+          ) : (
+            <Play className="h-3.5 w-3.5 text-white fill-white ml-0.5" />
+          )}
+        </button>
+
+        <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+          <div
+            ref={progressRef}
+            className="flex items-end gap-[1.5px] h-[24px] cursor-pointer"
+            onClick={handleSeek}
+          >
+            {waveformBars.map((h, i) => {
+              const barProgress = (i / waveformBars.length) * 100;
+              const isActive = barProgress <= progress;
+              return (
+                <div
+                  key={i}
+                  className="flex-1 rounded-full transition-colors duration-150"
+                  style={{
+                    height: `${h}%`,
+                    minWidth: "2px",
+                    backgroundColor: isActive
+                      ? "rgb(165, 160, 255)"
+                      : "var(--border)",
+                  }}
+                />
+              );
+            })}
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-muted-foreground font-medium tabular-nums">
+              {duration > 0 ? formatAudioDuration(currentTime) : formatFileSize(file.size)}
+            </span>
+            {duration > 0 && (
+              <span className="text-[10px] text-muted-foreground/60 tabular-nums">
+                {formatAudioDuration(duration)}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <button
+          onClick={(e) => { e.stopPropagation(); onRemove(); }}
+          className="shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-muted-foreground/50 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all opacity-0 group-hover:opacity-100"
+          aria-label={`Remove audio ${file.name}`}
+          data-testid={`button-remove-audio-${index}`}
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+
+      {audioSrc && (
+        <audio
+          ref={audioRef}
+          src={audioSrc}
+          preload="metadata"
+          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+          onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+          onEnded={() => { setIsPlaying(false); setCurrentTime(0); }}
+          onPause={() => setIsPlaying(false)}
+          onPlay={() => setIsPlaying(true)}
+        />
+      )}
+    </div>
+  );
 }
 
 export function Composer({
@@ -440,6 +580,23 @@ export function Composer({
       );
     }
 
+    const isAudioFile = file.type?.startsWith("audio/") || file.mimeType?.startsWith("audio/") ||
+      /\.(mp3|wav|ogg|webm|m4a|flac|aac)$/i.test(file.name);
+    if (isAudioFile) {
+      return (
+        <div className={cn(
+          "flex items-center justify-center rounded-lg bg-gradient-to-br from-[#A5A0FF]/20 to-[#8B85FF]/10 border border-[#A5A0FF]/30 shadow-sm",
+          outerClass,
+        )}>
+          {(file.status === "uploading" || file.status === "processing" || file.previewStatus === "loading") ? (
+            <Loader2 className="h-4 w-4 animate-spin text-[#A5A0FF]" />
+          ) : (
+            <Mic className="h-5 w-5 text-[#A5A0FF]" />
+          )}
+        </div>
+      );
+    }
+
     if (file.previewData && (file.previewData.html || file.previewData.content)) {
       return (
         <div className={cn("overflow-hidden rounded-lg border border-border/80 bg-card shadow-sm", outerClass)}>
@@ -555,6 +712,8 @@ export function Composer({
         {uploadedFiles.map((file, index) => {
           const theme = getFileTheme(file.name, file.mimeType);
           const isImage = file.type?.startsWith("image/") || file.mimeType?.startsWith("image/");
+          const isAudio = file.type?.startsWith("audio/") || file.mimeType?.startsWith("audio/") ||
+            /\.(mp3|wav|ogg|webm|m4a|flac|aac)$/i.test(file.name);
 
           if (isImage && file.dataUrl) {
             return (
@@ -594,6 +753,16 @@ export function Composer({
             );
           }
 
+          if (isAudio) {
+            return (
+              <AudioAttachmentPlayer
+                key={file.id}
+                file={file}
+                onRemove={() => removeFile(index)}
+                index={index}
+              />
+            );
+          }
 
           return (
             <TooltipProvider key={file.id}>
