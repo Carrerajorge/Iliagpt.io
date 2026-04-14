@@ -4795,7 +4795,7 @@ export function createChatAiRouter(broadcastAgentUpdate: (runId: string, update:
         content: msg.content
       }));
 
-      const messagesWithSkill = skillSystemSection
+      let messagesWithSkill = skillSystemSection
         ? [{ role: "system" as const, content: skillSystemSection }, ...formattedMessages]
         : formattedMessages;
 

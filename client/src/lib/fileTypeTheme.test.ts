@@ -108,7 +108,7 @@ describe("getFileThemeByCategory", () => {
 
 describe("fileThemes", () => {
   it("has all categories defined", () => {
-    expect(Object.keys(fileThemes)).toHaveLength(9);
+    expect(Object.keys(fileThemes)).toHaveLength(10);
     expect(fileThemes.pdf).toBeDefined();
     expect(fileThemes.unknown).toBeDefined();
   });
