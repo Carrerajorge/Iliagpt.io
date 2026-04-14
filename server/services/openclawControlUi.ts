@@ -8,21 +8,55 @@ type BuildOpenClawPreSeedScriptOptions = {
  * The Control UI build does not support `autoConnect` natively — the pre-seed sets
  * the token + URL in localStorage, but the login gate still waits for the user to
  * click "Conectar".  This script observes the DOM and clicks it automatically.
+ *
+ * Uses both polling AND MutationObserver to catch the button as soon as it appears.
  */
 export function buildOpenClawAutoConnectScript(): string {
   return `(function(){
 try{
-  var MAX_WAIT=8000;
+  var MAX_WAIT=20000;
   var start=Date.now();
-  function tryClick(){
-    var btn=document.querySelector(".login-gate__connect");
-    if(btn){btn.click();return;}
-    if(Date.now()-start<MAX_WAIT){requestAnimationFrame(tryClick);}
+  var clicked=false;
+  function doClick(btn,source){
+    if(clicked)return;
+    clicked=true;
+    console.log("[OC-AutoConnect] Clicking connect via "+source);
+    btn.click();
+    setTimeout(function(){
+      if(document.querySelector(".login-gate__connect")){
+        console.log("[OC-AutoConnect] Button still visible after click, retrying...");
+        clicked=false;
+        tryClick();
+      }
+    },2000);
   }
+  function tryClick(){
+    if(clicked)return;
+    var btn=document.querySelector(".login-gate__connect");
+    if(btn){doClick(btn,"poll");return;}
+    var btns=document.querySelectorAll("button");
+    for(var i=0;i<btns.length;i++){
+      var txt=(btns[i].textContent||"").toLowerCase().trim();
+      if(txt==="conectar"||txt==="connect"||txt==="connect gateway"){
+        doClick(btns[i],"text-match");return;
+      }
+    }
+    if(Date.now()-start<MAX_WAIT){setTimeout(tryClick,200);}
+    else{console.warn("[OC-AutoConnect] Timed out waiting for connect button");}
+  }
+  var observer=new MutationObserver(function(){
+    if(clicked)return;
+    var btn=document.querySelector(".login-gate__connect");
+    if(btn){observer.disconnect();doClick(btn,"observer");}
+  });
   if(document.readyState==="loading"){
-    document.addEventListener("DOMContentLoaded",function(){requestAnimationFrame(tryClick);});
+    document.addEventListener("DOMContentLoaded",function(){
+      observer.observe(document.body||document.documentElement,{childList:true,subtree:true});
+      setTimeout(tryClick,100);
+    });
   }else{
-    requestAnimationFrame(tryClick);
+    observer.observe(document.body||document.documentElement,{childList:true,subtree:true});
+    setTimeout(tryClick,100);
   }
 }catch(e){console.error("[OC-AutoConnect]",e)}
 })()`;
@@ -89,8 +123,10 @@ try{
 
   function tryAutoConnect(){
     var tried=0;
-    var maxTries=40;
-    function attempt(){
+    var maxTries=80;
+    var connected=false;
+    function fillAndClick(){
+      if(connected)return;
       tried++;
       var inputs=document.querySelectorAll("input");
       var wsInput=null;
@@ -98,21 +134,22 @@ try{
         var v=inputs[k].value||inputs[k].placeholder||"";
         if(v.indexOf("ws")===0||v.indexOf("openclaw")>=0){wsInput=inputs[k];break;}
       }
-      if(!wsInput&&tried<maxTries){setTimeout(attempt,150);return;}
+      if(!wsInput&&tried<maxTries){setTimeout(fillAndClick,200);return;}
       var nativeInputValueSetter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,"value").set;
-      if(wsInput&&!wsInput.value){
+      if(wsInput){
         nativeInputValueSetter.call(wsInput,w);
         wsInput.dispatchEvent(new Event("input",{bubbles:true}));
+        wsInput.dispatchEvent(new Event("change",{bubbles:true}));
       }
       var tokenInputs=document.querySelectorAll("input[type='password'],input[type='text']");
       for(var m=0;m<tokenInputs.length;m++){
         var ti=tokenInputs[m];
         var ph=ti.getAttribute("placeholder")||"";
-        if(ph.indexOf("oken")>=0||ph.indexOf("TOKEN")>=0){
-          if(!ti.value&&tk){
-            nativeInputValueSetter.call(ti,tk);
-            ti.dispatchEvent(new Event("input",{bubbles:true}));
-          }
+        var label=(ti.closest("label")||ti.parentElement||{}).textContent||"";
+        if(ph.indexOf("oken")>=0||ph.indexOf("TOKEN")>=0||label.indexOf("oken")>=0){
+          nativeInputValueSetter.call(ti,tk);
+          ti.dispatchEvent(new Event("input",{bubbles:true}));
+          ti.dispatchEvent(new Event("change",{bubbles:true}));
           break;
         }
       }
@@ -123,17 +160,28 @@ try{
           var txt=(btns[b].textContent||"").toLowerCase().trim();
           if(txt==="conectar"||txt==="connect"||txt==="connect gateway"){connectBtn=btns[b];break;}
         }
+        if(!connectBtn){connectBtn=document.querySelector(".login-gate__connect");}
         if(connectBtn&&!connectBtn.disabled){
+          console.log("[OC-Pre] Auto-clicking connect button (attempt "+tried+")");
           connectBtn.click();
+          connected=true;
+          setTimeout(function(){
+            var stillLogin=document.querySelector(".login-gate__connect")||document.querySelector(".login-gate");
+            if(stillLogin){
+              console.log("[OC-Pre] Still on login gate after click, retrying...");
+              connected=false;
+              if(tried<maxTries)setTimeout(fillAndClick,500);
+            }
+          },3000);
         } else if(tried<maxTries){
-          setTimeout(attempt,200);
+          setTimeout(fillAndClick,250);
         }
-      },100);
+      },150);
     }
     if(document.readyState==="loading"){
-      document.addEventListener("DOMContentLoaded",function(){setTimeout(attempt,300);});
+      document.addEventListener("DOMContentLoaded",function(){setTimeout(fillAndClick,300);});
     } else {
-      setTimeout(attempt,300);
+      setTimeout(fillAndClick,300);
     }
   }
   tryAutoConnect();
