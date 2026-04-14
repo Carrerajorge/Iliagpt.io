@@ -6299,16 +6299,16 @@ export function ChatInterface({
         // For UI: include anything not in a terminal error state so the message shows files immediately.
         .filter((f: any) => f?.status !== "error")
         .map((f: any) => ({
-          type: (f.type.startsWith("image/") ? "image" : f.type.startsWith("audio/") ? "audio" : "document") as "image" | "audio" | "document",
+          type: (f.type.startsWith("image/") ? "image" : "document") as "image" | "document",
           name: f.name,
           documentType: (() => {
             if (f.type.startsWith("image/")) return undefined;
-            if (f.type.startsWith("audio/") || f.name.match(/\.(mp3|wav|m4a|ogg|flac|webm|aac)$/i)) return "audio";
+            if (f.type.startsWith("audio/") || f.name.match(/\.(mp3|wav|m4a|ogg|flac|webm|aac)$/i)) return "word";
             if (f.type.includes("pdf") || f.name.toLowerCase().endsWith(".pdf")) return "pdf";
             if (f.type.includes("sheet") || f.type.includes("excel") || f.type.includes("csv") || f.name.match(/\.(xlsx|xls|csv)$/i)) return "excel";
             if (f.type.includes("presentation") || f.type.includes("powerpoint") || f.name.match(/\.(pptx|ppt)$/i)) return "ppt";
-            return "word"; // default to word for text/docs
-          })() as "word" | "excel" | "ppt" | "pdf" | "audio",
+            return "word";
+          })() as "word" | "excel" | "ppt" | "pdf",
           mimeType: f.type,
           imageUrl: f.dataUrl,
           storagePath: f.storagePath,

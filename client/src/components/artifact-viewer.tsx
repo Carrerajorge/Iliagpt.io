@@ -76,6 +76,7 @@ function detectArtifactType(artifact: Artifact): ArtifactType {
 
   const categoryMap: Record<FileCategory, ArtifactType> = {
     image: "image",
+    audio: "unknown",
     word: "document",
     excel: "spreadsheet",
     ppt: "presentation",

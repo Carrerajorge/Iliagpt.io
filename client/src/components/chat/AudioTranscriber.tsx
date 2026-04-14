@@ -303,7 +303,8 @@ export function AudioTranscriber({ onSendToChat, className }: AudioTranscriberPr
         stride_length_s: 5,
       });
 
-      const chunks = result.chunks || [{ text: result.text, timestamp: [0, 0] }];
+      const output = Array.isArray(result) ? result[0] : result;
+      const chunks = (output as any).chunks || [{ text: (output as any).text, timestamp: [0, 0] }];
       const newSegments = chunks.map((c: any) => ({
         text: c.text.trim(),
         timestamp: c.timestamp?.[0] || 0,
