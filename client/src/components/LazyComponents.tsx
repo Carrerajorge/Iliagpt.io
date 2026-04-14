@@ -3,7 +3,7 @@
  * Dynamic imports for heavy components to reduce bundle
  */
 
-import React, { Suspense, lazy, ComponentType, ReactNode } from 'react';
+import React, { Suspense, lazy, ComponentType, ReactNode, useRef, useState, useEffect } from 'react';
 import { Loader2 } from 'lucide-react';
 
 // ============================================
@@ -63,6 +63,7 @@ interface LazyOptions {
     onError?: (error: Error) => void;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function lazyLoad<T extends ComponentType<any>>(
     importFn: () => Promise<{ default: T }>,
     options: LazyOptions = {}
@@ -150,6 +151,7 @@ const preloadedComponents = new Set<string>();
 export function preloadComponent(componentName: string) {
     if (preloadedComponents.has(componentName)) return;
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const importMap: Record<string, () => Promise<any>> = {
         SearchModal: () => import('@/components/modals/SearchModal'),
         SettingsModal: () => import('@/components/modals/SettingsModal'),
@@ -182,9 +184,11 @@ export function usePreloadOnHover(componentName: string) {
 
 interface ConditionalLazyProps {
     condition: boolean;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     component: React.LazyExoticComponent<any>;
     fallback?: ReactNode;
     loadingFallback?: ReactNode;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     props?: Record<string, any>;
 }
 
@@ -208,7 +212,6 @@ export function ConditionalLazy({
 // INTERSECTION OBSERVER LAZY LOADING
 // ============================================
 
-import { useRef, useState, useEffect } from 'react';
 
 export function LazyOnVisible({
     children,

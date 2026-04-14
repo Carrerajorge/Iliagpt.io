@@ -16,7 +16,6 @@
  */
 
 import type { AgenticStreamEvent } from '@/lib/agentic/agenticStreamParser';
-import { AgenticStreamParser } from '@/lib/agentic/agenticStreamParser';
 import type { AgentStep } from '@/stores/agent-store';
 import type { ThinkingMode } from './AgenticChatProvider';
 
@@ -387,7 +386,7 @@ export class ChatEnhancer {
     for (const event of events) {
       switch (event.type) {
         case 'tool_call_start': {
-          const id = event.toolCallId ?? `step_${stepIndex}`;
+          const id = event.id ?? `step_${stepIndex}`;
           if (!stepsMap.has(id)) {
             stepsMap.set(id, {
               stepIndex: stepIndex++,
@@ -400,7 +399,7 @@ export class ChatEnhancer {
         }
 
         case 'tool_call_end': {
-          const id = event.toolCallId ?? '';
+          const id = event.id ?? '';
           const existing = stepsMap.get(id);
           if (existing) {
             stepsMap.set(id, {
@@ -415,7 +414,7 @@ export class ChatEnhancer {
         }
 
         case 'tool_call_delta': {
-          const id = event.toolCallId ?? '';
+          const id = event.id ?? '';
           const existing = stepsMap.get(id);
           if (existing && existing.status === 'pending') {
             stepsMap.set(id, { ...existing, status: 'running' });
@@ -447,12 +446,7 @@ export class ChatEnhancer {
       const parsed: unknown = JSON.parse(rawData);
       if (typeof parsed !== 'object' || parsed === null) return null;
 
-      // Delegate to AgenticStreamParser if it provides a static parseEvent
-      if (typeof AgenticStreamParser.parseEvent === 'function') {
-        return AgenticStreamParser.parseEvent(parsed);
-      }
-
-      // Fallback: treat the raw object as an AgenticStreamEvent if it has `type`
+      // Treat the raw object as an AgenticStreamEvent if it has `type`
       const obj = parsed as Record<string, unknown>;
       if (typeof obj.type === 'string') {
         return obj as unknown as AgenticStreamEvent;

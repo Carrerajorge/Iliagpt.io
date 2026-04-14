@@ -183,8 +183,11 @@ export function TaskPanel() {
   const handleCancelTask = useCallback(
     (taskId: string) => {
       const task = backgroundTasks.find((t) => t.id === taskId);
-      if (task && typeof (task as { cancel?: () => void }).cancel === 'function') {
-        (task as { cancel: () => void }).cancel();
+      if (task) {
+        const taskWithCancel = task as unknown as { cancel?: () => void };
+        if (typeof taskWithCancel.cancel === 'function') {
+          taskWithCancel.cancel();
+        }
       }
     },
     [backgroundTasks]

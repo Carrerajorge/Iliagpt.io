@@ -207,7 +207,10 @@ export type {
 // These are re-exported so consumers only need one import path.
 // If you already import from the canonical path you can ignore these.
 
-export type { AgenticMessage, ToolCall, ParsedAgenticMessage } from '@/hooks/useAgenticChat';
+import { AgenticChatProvider as _AgenticChatProvider } from './AgenticChatProvider';
+
+export type { AgenticMessage, ToolCall } from '@/hooks/useAgenticChat';
+export type { ParsedAgenticMessage } from '@/lib/agentic/agenticStreamParser';
 export type { BackgroundTask } from '@/hooks/useBackgroundTasks';
 export type { AgenticStreamEvent, MessageNode, ToolCallStatus } from '@/lib/agentic/agenticStreamParser';
 
@@ -225,7 +228,7 @@ export type { AgenticStreamEvent, MessageNode, ToolCallStatus } from '@/lib/agen
  * console.log(guide.step1_wrapApp);
  */
 export function setupAgenticIntegration(): {
-  providerComponent: typeof AgenticChatProvider;
+  providerComponent: typeof _AgenticChatProvider;
   step1_wrapApp: string;
   step2_addRenderer: string;
   step3_addTaskPanel: string;
@@ -233,7 +236,7 @@ export function setupAgenticIntegration(): {
   step5_enhanceSend: string;
 } {
   return {
-    providerComponent: AgenticChatProvider,
+    providerComponent: _AgenticChatProvider,
 
     step1_wrapApp: `
 // In App.tsx (or your chat page):

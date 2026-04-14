@@ -25,6 +25,7 @@ interface FilePreviewModalProps {
 }
 
 export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [previewData, setPreviewData] = useState<any>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -84,9 +85,9 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
         blobUrlRef.current = url;
         setBlobUrl(url);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Preview fetch error:", err);
-      setError(err.message || "Error al cargar");
+      setError(err instanceof Error ? err.message : "Error al cargar");
     } finally {
       setLoading(false);
     }

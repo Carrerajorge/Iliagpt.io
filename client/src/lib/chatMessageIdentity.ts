@@ -16,9 +16,10 @@ type MessageLike = Partial<
 
 const DELIVERY_STATUS_PRIORITY: Record<NonNullable<Message["deliveryStatus"]>, number> = {
   error: 0,
-  sending: 1,
-  sent: 2,
-  delivered: 3,
+  queued: 1,
+  sending: 2,
+  sent: 3,
+  delivered: 4,
 };
 
 const TEMP_ID_PREFIXES = [

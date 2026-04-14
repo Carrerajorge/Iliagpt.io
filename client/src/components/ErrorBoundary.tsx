@@ -12,6 +12,7 @@ interface ErrorBoundaryProps {
     fallback?: ReactNode;
     onError?: (error: Error, errorInfo: ErrorInfo) => void;
     onReset?: () => void;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resetKeys?: any[];
     level?: 'page' | 'section' | 'component';
     name?: string;
@@ -99,7 +100,7 @@ interface ErrorFallbackProps {
     name?: string;
 }
 
-function ErrorFallback({ error, errorInfo, level, onReset, name }: ErrorFallbackProps) {
+function ErrorFallback({ error, errorInfo: _errorInfo, level, onReset, name }: ErrorFallbackProps) {
     const isProduction = process.env.NODE_ENV === 'production';
 
     if (level === 'page') {
@@ -259,21 +260,20 @@ export function ToolErrorBoundary({ children, toolName }: { children: ReactNode;
 // HOOK FOR FUNCTIONAL COMPONENTS
 // ============================================
 
-import { useState, useCallback } from 'react';
-
 export function useErrorHandler() {
-    const [error, setError] = useState<Error | null>(null);
+    const [error, setError] = React.useState<Error | null>(null);
 
-    const handleError = useCallback((error: Error) => {
+    const handleError = React.useCallback((error: Error) => {
         setError(error);
         console.error('Caught error:', error);
     }, []);
 
-    const clearError = useCallback(() => {
+    const clearError = React.useCallback(() => {
         setError(null);
     }, []);
 
-    const withErrorHandler = useCallback(<T extends (...args: any[]) => Promise<any>>(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const withErrorHandler = React.useCallback(<T extends (...args: any[]) => Promise<any>>(
         fn: T
     ) => {
         return async (...args: Parameters<T>): Promise<ReturnType<T> | undefined> => {
