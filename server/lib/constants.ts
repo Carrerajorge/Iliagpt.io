@@ -61,7 +61,8 @@ export const MEMORY_INTENT_KEYWORDS = [
   "el pdf", "el excel", "el word", "la presentación",
   "según mi", "de acuerdo a mi", "basándote en mi",
   "usa mi", "revisa mi", "analiza mi", "lee mi",
-  "en mi archivo", "en mis documentos", "de mi archivo"
+  "en mi archivo", "en mis documentos", "de mi archivo",
+  "el audio", "mi audio", "el audio que", "transcribir", "transcribe", "transcripción"
 ] as const;
 
 export const FILE_UPLOAD_CONFIG = {

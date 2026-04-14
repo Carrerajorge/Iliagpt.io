@@ -670,6 +670,8 @@ const UPLOAD_MIME_TYPE_ALIASES: Record<string, string> = {
   "application/vnd.pdf": "application/pdf",
   "image/pjpeg": "image/jpeg",
   "image/x-png": "image/png",
+  "application/ogg": "audio/ogg",
+  "video/ogg": "audio/ogg",
 };
 
 const KNOWN_NONSTRICT_MIME_TYPES = new Set([
@@ -765,7 +767,9 @@ export function validateUploadIntentMetadata(input: {
   }
 
   const inferredMimeType = inferMimeTypeFromFileName(fileName);
-  if (inferredMimeType && inferredMimeType !== mimeType) {
+  const bothAudioLike = inferredMimeType?.startsWith("audio/") &&
+    (mimeType.startsWith("audio/") || mimeType === "application/ogg" || mimeType === "video/ogg");
+  if (inferredMimeType && inferredMimeType !== mimeType && !bothAudioLike) {
     return {
       ok: false,
       status: 400,
@@ -1356,11 +1360,14 @@ export function createFilesRouter() {
       }
 
       const inferredTypeFromName = inferMimeTypeFromFileName(fileName);
-      if (inferredTypeFromName && inferredTypeFromName !== safeMimeType) {
+      const bothAudioRelated = inferredTypeFromName?.startsWith("audio/") &&
+        (safeMimeType.startsWith("audio/") || safeMimeType === "application/ogg" || safeMimeType === "video/ogg");
+      if (inferredTypeFromName && inferredTypeFromName !== safeMimeType && !bothAudioRelated) {
         return res.status(400).json({ error: "File extension does not match mimeType" });
       }
 
-      if (!ALLOWED_MIME_TYPES.includes(safeMimeType as any)) {
+      const audioExtMatch3 = /\.(mp3|wav|m4a|ogg|flac|webm|aac|opus|wma|amr|spx|oga|mp4)$/i.test(fileName);
+      if (!ALLOWED_MIME_TYPES.includes(safeMimeType as any) && !audioExtMatch3) {
         return res.status(400).json({ error: `Unsupported file type: ${safeMimeType}` });
       }
 

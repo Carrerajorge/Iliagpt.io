@@ -467,6 +467,14 @@ export function ChatInterface({
 }: ChatInterfaceProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const { settings } = useSettingsContext();
+
+  const customAgentId = useMemo(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("agent") || null;
+    } catch { return null; }
+  }, [chatId]);
+
   const {
     projects,
     getProject
@@ -1764,10 +1772,6 @@ export function ChatInterface({
 
     if (lowerType === "image" || lowerMime.startsWith("image/")) return false;
 
-    if (lowerMime.startsWith("audio/")) return false;
-    const audioExtensions = [".mp3", ".wav", ".ogg", ".m4a", ".webm", ".flac", ".aac", ".mp4", ".opus", ".wma"];
-    if (audioExtensions.some(ext => lowerName.endsWith(ext))) return false;
-
     const docMimePatterns = [
       "pdf",
       "word",
@@ -2292,6 +2296,7 @@ export function ChatInterface({
         provider: selectedProvider,
         model: selectedModel,
         latencyMode,
+        customAgentId: customAgentId || undefined,
       },
       buildFinalMessage: (fullContent, data, messageId) => ({
         ...buildAssistantMessage({
@@ -3324,15 +3329,6 @@ export function ChatInterface({
               previewStatus: "ready",
             };
           }
-        }
-
-        const isAudio = file.type.startsWith("audio/") ||
-          /\.(mp3|wav|ogg|webm|m4a|flac|aac)$/i.test(file.name);
-        if (isAudio) {
-          return {
-            dataUrl: await readFileAsDataUrl(file),
-            previewStatus: "ready" as const,
-          };
         }
 
         if (isPdfFile && file.size <= MAX_PDF_PREVIEW_BYTES) {
@@ -6299,10 +6295,11 @@ export function ChatInterface({
           name: f.name,
           documentType: (() => {
             if (f.type.startsWith("image/")) return undefined;
+            if (f.type.startsWith("audio/") || f.name.match(/\.(mp3|wav|m4a|ogg|flac|webm|aac)$/i)) return "word";
             if (f.type.includes("pdf") || f.name.toLowerCase().endsWith(".pdf")) return "pdf";
             if (f.type.includes("sheet") || f.type.includes("excel") || f.type.includes("csv") || f.name.match(/\.(xlsx|xls|csv)$/i)) return "excel";
             if (f.type.includes("presentation") || f.type.includes("powerpoint") || f.name.match(/\.(pptx|ppt)$/i)) return "ppt";
-            return "word"; // default to word for text/docs
+            return "word";
           })() as "word" | "excel" | "ppt" | "pdf",
           mimeType: f.type,
           imageUrl: f.dataUrl,
