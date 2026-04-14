@@ -1106,6 +1106,14 @@ rootObserver.observe(document.documentElement,{childList:true,subtree:true});
       );
       if (p4 !== js) { js = p4; patchCount++; }
 
+      // Patch 5: Force auto-connect in connectedCallback — after hw(this), schedule
+      // a fallback that calls connect() if the component is still disconnected after
+      // the config fetch + WebSocket handshake window.
+      const connectedCallbackOrig = 'connectedCallback(){super.connectedCallback(),this.onSlashAction=e=>';
+      const connectedCallbackPatched = 'connectedCallback(){super.connectedCallback(),setTimeout(()=>{if(!this.connected&&this.settings&&this.settings.gatewayUrl&&this.settings.token){this.connect()}},2500),setTimeout(()=>{if(!this.connected&&this.settings&&this.settings.gatewayUrl&&this.settings.token){this.connect()}},5000),this.onSlashAction=e=>';
+      const p5 = js.replace(connectedCallbackOrig, connectedCallbackPatched);
+      if (p5 !== js) { js = p5; patchCount++; }
+
       if (patchCount > 0) {
         log.info(`Patched OpenClaw UI bundle: ${patchCount} patches applied (all file types + fileName)`);
         patchedBundleCache[safeName] = js;
