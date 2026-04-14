@@ -9259,6 +9259,80 @@ Genera la presentación usando secciones Markdown con ##. Reglas estrictas:
               throw new Error('No storagePath or content provided for attachment');
             }
 
+            const audioFormats = ['mp3', 'wav', 'ogg', 'webm', 'm4a', 'flac', 'aac', 'mp4'];
+            const fileExt = filename.split('.').pop()?.toLowerCase() || '';
+            const attMime = (att.mimeType || att.type || '').toLowerCase().split(';')[0].trim();
+            const isAudioFile = audioFormats.includes(fileExt) || attMime.startsWith('audio/');
+
+            if (isAudioFile) {
+              console.log(`[Analyze] AUDIO DETECTED: ${filename} (ext=${fileExt}, mime=${attMime}) — routing to audio transcription`);
+              writeSse(res, "thinking", { step: "transcribe", message: `Transcribiendo audio: ${filename}…` });
+
+              const batchProcessor = new DocumentBatchProcessor();
+              const audioResult = await batchProcessor.processBatch([{
+                name: filename,
+                mimeType: attMime || `audio/${fileExt}`,
+                storagePath: att.storagePath || '',
+                content: undefined,
+              }]);
+
+              const transcribedText = audioResult.unifiedContext || audioResult.chunks.map(c => c.content).join('\n') || '';
+              if (!transcribedText || transcribedText.trim().length === 0) {
+                throw new Error('Audio transcription returned empty result');
+              }
+
+              const docModel = {
+                version: "1.0" as const,
+                documentMeta: {
+                  id: `audio_${Date.now()}`,
+                  fileName: filename,
+                  fileSize: buffer.length,
+                  documentType: 'text' as const,
+                  mimeType: attMime || `audio/${fileExt}`,
+                  pageCount: 1,
+                  wordCount: transcribedText.split(/\s+/).length,
+                  language: 'auto',
+                },
+                sections: [{
+                  id: `section_audio_${Date.now()}`,
+                  type: 'paragraph' as const,
+                  title: `Transcripción de ${filename}`,
+                  content: transcribedText,
+                  sourceRef: `audio:${filename}`,
+                }],
+                tables: [],
+                metrics: [],
+                anomalies: [],
+                insights: [],
+                sources: [],
+                sheets: [],
+                suggestedQuestions: [],
+                extractionDiagnostics: {
+                  extractedAt: new Date().toISOString(),
+                  durationMs: Date.now() - parseStartTime,
+                  parserUsed: 'audio-transcription',
+                  mimeTypeDetected: attMime || `audio/${fileExt}`,
+                },
+              };
+              documentModels.push(docModel);
+
+              const parseTimeMs = Date.now() - parseStartTime;
+              const tokensEstimate = Math.ceil(transcribedText.length / 4);
+
+              writeSse(res, "thinking", { step: "parse_done", message: `Audio transcrito (${transcribedText.split(/\s+/).length} palabras)` });
+
+              processingStats.push({
+                filename,
+                status: 'success',
+                bytesRead: buffer.length,
+                pagesProcessed: 1,
+                tokensExtracted: tokensEstimate,
+                parseTimeMs,
+                chunkCount: 1
+              });
+
+              console.log(`[Analyze] Audio transcribed ${filename}: ${transcribedText.split(/\s+/).length} words, ${tokensEstimate} tokens`);
+            } else {
             // Call normalizeDocument with a 30s timeout to prevent hanging on malformed documents
             const PARSE_TIMEOUT_MS = 30_000;
             const docModel = await Promise.race([
@@ -9270,7 +9344,7 @@ Genera la presentación usando secciones Markdown con ##. Reglas estrictas:
             documentModels.push(docModel);
 
             const parseTimeMs = Date.now() - parseStartTime;
-            const tokensEstimate = Math.ceil(buffer.length / 4); // Rough token estimate
+            const tokensEstimate = Math.ceil(buffer.length / 4);
 
             const docType = docModel.documentMeta.documentType;
             const rows = docModel.sheets?.[0]?.rowCount;
@@ -9292,6 +9366,7 @@ Genera la presentación usando secciones Markdown con ##. Reglas estrictas:
             });
 
             console.log(`[Analyze] Processed ${filename}: ${docModel.documentMeta.documentType}, ${docModel.tables.length} tables, ${docModel.metrics.length} metrics, ${docModel.anomalies.length} anomalies`);
+            }
 
           } catch (error: any) {
             const parseTimeMs = Date.now() - parseStartTime;
