@@ -48,11 +48,12 @@ class ClientLogger {
     return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[MIN_LOG_LEVEL];
   }
 
-  private formatMessage(level: LogLevel, message: string): string {
-    return `[${this.component}] ${message}`;
+  private formatMessage(_level: LogLevel, message: string | Record<string, unknown>): string {
+    const msg = typeof message === 'string' ? message : JSON.stringify(message);
+    return `[${this.component}] ${msg}`;
   }
 
-  debug(message: string, data?: unknown): void {
+  debug(message: string | Record<string, unknown>, data?: unknown): void {
     if (!this.shouldLog('debug')) return;
     if (data !== undefined) {
       console.debug(this.formatMessage('debug', message), data);
@@ -61,7 +62,7 @@ class ClientLogger {
     }
   }
 
-  info(message: string, data?: unknown): void {
+  info(message: string | Record<string, unknown>, data?: unknown): void {
     if (!this.shouldLog('info')) return;
     if (data !== undefined) {
       console.info(this.formatMessage('info', message), data);
@@ -70,7 +71,7 @@ class ClientLogger {
     }
   }
 
-  warn(message: string, data?: unknown): void {
+  warn(message: string | Record<string, unknown>, data?: unknown): void {
     if (!this.shouldLog('warn')) return;
     if (data !== undefined) {
       console.warn(this.formatMessage('warn', message), data);
@@ -79,7 +80,7 @@ class ClientLogger {
     }
   }
 
-  error(message: string, error?: unknown): void {
+  error(message: string | Record<string, unknown>, error?: unknown): void {
     if (!this.shouldLog('error')) return;
     if (error !== undefined) {
       console.error(this.formatMessage('error', message), error);

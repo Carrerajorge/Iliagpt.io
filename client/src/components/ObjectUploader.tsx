@@ -1,9 +1,9 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { FileUploadProgress } from "@/components/FileUploadProgress";
-import { getFileUploader, type UploadProgress, type ValidationResult } from "@/lib/fileUploader";
+import { getFileUploader, type UploadProgress } from "@/lib/fileUploader";
 import { cn } from "@/lib/utils";
 import { Upload } from "lucide-react";
 
@@ -28,7 +28,7 @@ interface UploadingFile {
 
 export function ObjectUploader({
   maxNumberOfFiles = 1,
-  maxFileSize: _maxFileSize,
+  // maxFileSize not used yet
   onComplete,
   onFileUploaded,
   buttonClassName,
@@ -37,7 +37,7 @@ export function ObjectUploader({
   const [showModal, setShowModal] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
-  const [_pendingFiles, _setPendingFiles] = useState<File[]>([]);
+  // pendingFiles state removed - not currently used
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploaderRef = useRef(getFileUploader());
   const dropZoneRef = useRef<HTMLDivElement>(null);
@@ -188,9 +188,7 @@ export function ObjectUploader({
     setUploadingFiles((prev) => prev.filter((f) => f.id !== fileId));
   }, []);
 
-  const _handleRemoveFile = useCallback((fileId: string) => {
-    setUploadingFiles((prev) => prev.filter((f) => f.id !== fileId));
-  }, []);
+  // handleRemoveFile removed - not currently used
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
