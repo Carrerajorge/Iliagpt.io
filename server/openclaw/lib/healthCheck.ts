@@ -1,4 +1,4 @@
-import { OPENCLAW_VERSION } from '../fusion/v2026_4_2';
+import { OPENCLAW_VERSION } from '../fusion/v2026_4_3';
 
 export interface OpenClawHealthStatus {
   status: 'healthy' | 'degraded' | 'unhealthy';
