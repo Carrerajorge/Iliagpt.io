@@ -1033,6 +1033,15 @@ rootObserver.observe(document.documentElement,{childList:true,subtree:true});
       }
     }
 
+    app.get("/api/openclaw/gateway-creds", (req: Request, res: Response) => {
+      const userId = getSecureUserId(req) || ((req as any).user?.id || (req as any).session?.passport?.user || "anon-" + (req.ip || "unknown"));
+      const token = generateGatewayToken(userId);
+      const proto = req.headers["x-forwarded-proto"] === "https" ? "wss:" : (req.protocol === "https" ? "wss:" : "ws:");
+      const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost:5000";
+      const wsUrl = `${proto}//${host}/openclaw-ws`;
+      res.json({ gatewayUrl: wsUrl, token });
+    });
+
     app.get("/openclaw-ui/__openclaw/control-ui-config.json", (req: Request, res: Response) => {
       res.json({ assistantName: "IliaGPT OpenClaw", assistantAvatar: null });
     });

@@ -29,7 +29,6 @@ function writeLastOptimizeAt(value: number): void {
   try {
     window.localStorage.setItem(OPENCLAW_OPTIMIZE_STORAGE_KEY, String(value));
   } catch {
-    // Ignore storage failures; optimization still ran.
   }
 }
 
@@ -98,7 +97,7 @@ export default function OpenClawPage() {
           <ChevronLeft className="h-4 w-4" />
           <span>IliaGPT</span>
         </button>
-        <span className="text-muted-foreground/50">›</span>
+        <span className="text-muted-foreground/50">&rsaquo;</span>
         <span className="text-sm font-medium">OpenClaw</span>
         <a
           href={OPENCLAW_RELEASE_URL}

@@ -3,28 +3,60 @@ type BuildOpenClawPreSeedScriptOptions = {
   gatewayPath?: string;
 };
 
-/**
- * Build a script that auto-clicks the Connect button once the Control UI renders.
- * The Control UI build does not support `autoConnect` natively — the pre-seed sets
- * the token + URL in localStorage, but the login gate still waits for the user to
- * click "Conectar".  This script observes the DOM and clicks it automatically.
- */
 export function buildOpenClawAutoConnectScript(): string {
   return `(function(){
 try{
-  var MAX_WAIT=8000;
+  var MAX_WAIT=25000;
+  var INTERVAL=300;
   var start=Date.now();
-  function tryClick(){
-    var btn=document.querySelector(".login-gate__connect");
-    if(btn){btn.click();return;}
-    if(Date.now()-start<MAX_WAIT){requestAnimationFrame(tryClick);}
+  var done=false;
+  function tryConnect(){
+    if(done)return;
+    var el=document.querySelector("openclaw-app");
+    if(el&&typeof el.connect==="function"&&el.settings&&el.settings.gatewayUrl){
+      if(el.connected){
+        done=true;
+        console.log("[OC-AC] already connected");
+        return;
+      }
+      if(el.settings.token){
+        done=true;
+        console.log("[OC-AC] calling connect() directly, url=",el.settings.gatewayUrl);
+        el.connect();
+        return;
+      }
+    }
+    if(el&&el.settings&&!el.settings.token){
+      var SK="openclaw.control.settings.v1";
+      var keys=Object.keys(localStorage);
+      for(var i=0;i<keys.length;i++){
+        if(keys[i].indexOf(SK)===0){
+          try{
+            var s=JSON.parse(localStorage.getItem(keys[i]));
+            if(s&&s.token&&s.gatewayUrl){
+              el.applySettings({...el.settings,gatewayUrl:s.gatewayUrl,token:s.token});
+              done=true;
+              console.log("[OC-AC] applied settings from localStorage, calling connect()");
+              setTimeout(function(){el.connect();},100);
+              return;
+            }
+          }catch(e){}
+        }
+      }
+    }
+    if(Date.now()-start<MAX_WAIT){setTimeout(tryConnect,INTERVAL);}
+    else{
+      console.warn("[OC-AC] timed out");
+      var btn=document.querySelector(".login-gate__connect");
+      if(btn)btn.click();
+    }
   }
   if(document.readyState==="loading"){
-    document.addEventListener("DOMContentLoaded",function(){requestAnimationFrame(tryClick);});
+    document.addEventListener("DOMContentLoaded",function(){setTimeout(tryConnect,500);});
   }else{
-    requestAnimationFrame(tryClick);
+    setTimeout(tryConnect,500);
   }
-}catch(e){console.error("[OC-AutoConnect]",e)}
+}catch(e){console.error("[OC-AC]",e)}
 })()`;
 }
 
@@ -36,7 +68,8 @@ export function buildOpenClawPreSeedScript({
 
   return `(function(){
 try{
-  var w=(location.protocol==="https:"?"wss:":"ws:")+"//"+location.host+"${normalizedGatewayPath}";
+  var proto=(location.protocol==="https:"?"wss:":"ws:");
+  var w=proto+"//"+location.host+"${normalizedGatewayPath}";
   var tk="${safeToken}";
   var SK="openclaw.control.settings.v1";
   var TK="openclaw.control.token.v1";
@@ -44,7 +77,8 @@ try{
     var raw=String(input||"").trim();
     if(!raw)return "default";
     try{
-      var parsed=new URL(raw,window.location.href);
+      var base=location.protocol+"//"+location.host+(location.pathname||"/");
+      var parsed=new URL(raw,base);
       var pathname=parsed.pathname==="/"
         ? ""
         : (parsed.pathname.replace(/\\/+$/,"")||parsed.pathname);
@@ -82,61 +116,7 @@ try{
   localStorage.setItem(SK,JSON.stringify(s));
   localStorage.setItem(TK+":"+gk,tk);
   localStorage.setItem(TK,tk);
-  try{
-    var hashVal="#gatewayUrl="+encodeURIComponent(w)+"&token="+encodeURIComponent(tk);
-    history.replaceState(null,"",hashVal);
-  }catch{}
-
-  function tryAutoConnect(){
-    var tried=0;
-    var maxTries=40;
-    function attempt(){
-      tried++;
-      var inputs=document.querySelectorAll("input");
-      var wsInput=null;
-      for(var k=0;k<inputs.length;k++){
-        var v=inputs[k].value||inputs[k].placeholder||"";
-        if(v.indexOf("ws")===0||v.indexOf("openclaw")>=0){wsInput=inputs[k];break;}
-      }
-      if(!wsInput&&tried<maxTries){setTimeout(attempt,150);return;}
-      var nativeInputValueSetter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,"value").set;
-      if(wsInput&&!wsInput.value){
-        nativeInputValueSetter.call(wsInput,w);
-        wsInput.dispatchEvent(new Event("input",{bubbles:true}));
-      }
-      var tokenInputs=document.querySelectorAll("input[type='password'],input[type='text']");
-      for(var m=0;m<tokenInputs.length;m++){
-        var ti=tokenInputs[m];
-        var ph=ti.getAttribute("placeholder")||"";
-        if(ph.indexOf("oken")>=0||ph.indexOf("TOKEN")>=0){
-          if(!ti.value&&tk){
-            nativeInputValueSetter.call(ti,tk);
-            ti.dispatchEvent(new Event("input",{bubbles:true}));
-          }
-          break;
-        }
-      }
-      setTimeout(function(){
-        var btns=document.querySelectorAll("button");
-        var connectBtn=null;
-        for(var b=0;b<btns.length;b++){
-          var txt=(btns[b].textContent||"").toLowerCase().trim();
-          if(txt==="conectar"||txt==="connect"||txt==="connect gateway"){connectBtn=btns[b];break;}
-        }
-        if(connectBtn&&!connectBtn.disabled){
-          connectBtn.click();
-        } else if(tried<maxTries){
-          setTimeout(attempt,200);
-        }
-      },100);
-    }
-    if(document.readyState==="loading"){
-      document.addEventListener("DOMContentLoaded",function(){setTimeout(attempt,300);});
-    } else {
-      setTimeout(attempt,300);
-    }
-  }
-  tryAutoConnect();
+  console.log("[OC-Pre] localStorage seeded for gateway:",w,"key:",gk,"token length:",tk.length);
 }catch(e){console.error("[OC-Pre]",e)}
 })()`;
 }
