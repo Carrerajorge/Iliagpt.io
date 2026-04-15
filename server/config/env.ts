@@ -56,7 +56,7 @@ const boolish = z
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-  PORT: z.string().transform(Number).default("5000"),
+  PORT: z.string().transform(Number).default("5050"),
 
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   DATABASE_READ_URL: z.string().optional(),

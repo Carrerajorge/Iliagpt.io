@@ -455,7 +455,7 @@ export function log(message: string, source = "express") {
   }
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
+  // Other ports are firewalled. Default to 5050 if not specified.
   const port = env.PORT;
 
   const finishServerStartup = async () => {
