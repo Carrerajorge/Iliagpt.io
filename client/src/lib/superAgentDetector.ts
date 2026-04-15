@@ -119,7 +119,7 @@ export function shouldUseSuperAgent(prompt: string): SuperAgentDetectionResult {
   for (const pattern of [...RESEARCH_PATTERNS_ES, ...RESEARCH_PATTERNS_EN]) {
     const match = prompt.match(pattern);
     if (match) {
-      const numberMatch = match.find(m => /^\d+$/.test(m));
+      const numberMatch = match!.find(m => /^\d+$/.test(m));
       const suggestedSources = numberMatch ? parseInt(numberMatch, 10) : undefined;
       
       if (suggestedSources && suggestedSources >= 5) {

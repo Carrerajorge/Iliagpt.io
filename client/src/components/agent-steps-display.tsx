@@ -472,6 +472,7 @@ function getDocumentIcon(category: FileCategory): React.ElementType {
     ppt: Presentation,
     pdf: FileText,
     image: ImageIcon,
+    audio: FileText,
     text: FileText,
     code: Code,
     archive: Database,

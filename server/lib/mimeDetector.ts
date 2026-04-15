@@ -62,6 +62,22 @@ const MIME_ALLOWLIST: string[] = [
   'image/svg+xml',
   'text/markdown',
   'application/zip',
+  'audio/mpeg',
+  'audio/mp3',
+  'audio/wav',
+  'audio/wave',
+  'audio/x-wav',
+  'audio/ogg',
+  'audio/webm',
+  'audio/flac',
+  'audio/aac',
+  'audio/mp4',
+  'audio/x-m4a',
+  'audio/m4a',
+  'audio/opus',
+  'audio/amr',
+  'application/ogg',
+  'video/ogg',
 ];
 
 const MIME_ALLOWLIST_PATTERNS: RegExp[] = [
@@ -69,6 +85,7 @@ const MIME_ALLOWLIST_PATTERNS: RegExp[] = [
   /^application\/vnd\.oasis\.opendocument\..*/,
   /^text\/.*/,
   /^image\/(png|jpeg|jpg|gif|webp|bmp|tiff|svg\+xml)$/,
+  /^audio\/.*/,
 ];
 
 const MIME_DENYLIST: string[] = [

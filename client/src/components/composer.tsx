@@ -54,7 +54,8 @@ import { FilePreviewSurface } from "@/components/FilePreviewSurface";
 import { useConnectedSources } from "@/hooks/use-connected-sources";
 import { useCommandHistory } from "@/hooks/use-command-history";
 import { VirtualComputer } from "@/components/virtual-computer";
-import { getFileTheme } from "@/lib/fileTypeTheme";
+import { getFileTheme, getFileCategory } from "@/lib/fileTypeTheme";
+import { AudioAttachmentPreview } from "@/components/chat/AudioAttachmentPreview";
 import type { FilePreviewData } from "@/lib/filePreviewTypes";
 import { useSettingsContext } from "@/contexts/SettingsContext";
 import "@/components/ui/glass-effects.css";
@@ -601,6 +602,23 @@ export function Composer({
       return (
         <div className={cn("overflow-hidden rounded-lg border border-border/80 bg-card shadow-sm", outerClass)}>
           <FilePreviewSurface preview={file.previewData} variant="thumbnail" />
+        </div>
+      );
+    }
+
+    // Audio files get animated waveform preview
+    const fileCategory = getFileCategory(file.name, file.mimeType || file.type);
+    if (fileCategory === "audio") {
+      const dims = size === "document" ? { w: 132, h: 84 }
+        : size === "drag" ? { w: 200, h: 80 }
+        : { w: 80, h: 48 };
+      return (
+        <div className={cn("overflow-hidden rounded-lg border border-violet-500/30 shadow-sm shadow-violet-500/10", outerClass)}>
+          <AudioAttachmentPreview
+            width={dims.w}
+            height={dims.h}
+            isUploading={file.status === "uploading" || file.status === "processing"}
+          />
         </div>
       );
     }

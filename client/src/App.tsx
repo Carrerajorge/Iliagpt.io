@@ -183,6 +183,9 @@ const OrchestrationDAGPage = lazyWithRetry(() => import("@/pages/agent/Orchestra
 const KnowledgeGraphPage = lazyWithRetry(() => import("@/pages/knowledge-graph"));
 const BackgroundAgentsPage = lazyWithRetry(() => import("@/pages/background-agents"));
 const MCPManagerPage = lazyWithRetry(() => import("@/pages/mcp-manager"));
+const AudioTranscriberPage = lazyWithRetry(() => import("@/pages/audio-transcriber"));
+const AgentsPage = lazyWithRetry(() => import("@/pages/agents"));
+const CreateAgentPage = lazyWithRetry(() => import("@/pages/create-agent"));
 
 const ProtectedProfilePage = requireAuth(ProfilePage);
 const ProtectedBillingPage = requireAuth(BillingPage);
@@ -375,6 +378,10 @@ function Router() {
             <Route path="/agent/replay/:runId" component={ProtectedRunReplayPage} />
             <Route path="/agent/dag/:runId" component={ProtectedOrchestrationDAGPage} />
             <Route path="/openclaw" component={OpenClawPage} />
+            <Route path="/audio-transcriber" component={AudioTranscriberPage} />
+            <Route path="/my-agents" component={AgentsPage} />
+            <Route path="/my-agents/create" component={CreateAgentPage} />
+            <Route path="/my-agents/:id/edit" component={CreateAgentPage} />
             <Route path="/about" component={AboutPage} />
             <Route path="/learn" component={LearnPage} />
             <Route path="/pricing" component={PricingPage} />

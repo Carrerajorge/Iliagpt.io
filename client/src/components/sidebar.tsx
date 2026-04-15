@@ -44,6 +44,7 @@ import {
   Share2,
   Plug,
   Lightbulb,
+  Sparkles,
 } from "lucide-react";
 import { IliaGPTLogo } from "@/components/iliagpt-logo";
 import { cn } from "@/lib/utils";
@@ -606,6 +607,12 @@ export function Sidebar({
             <Bot className="sidebar-tool-icon h-4 w-4 text-amber-500 pointer-events-none" />
           </span>
           <span className="pointer-events-none">GPTs</span>
+        </button>
+        <button onClick={() => setLocation("/my-agents")} data-tool-motion="agents" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-agents">
+          <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">
+            <Sparkles className="sidebar-tool-icon h-4 w-4 text-violet-500 pointer-events-none" />
+          </span>
+          <span className="pointer-events-none">Agentes</span>
         </button>
         <button onClick={() => setLocation("/openclaw")} data-tool-motion="openclaw" className="sidebar-tool-row flex items-center gap-3 px-2 py-1.5 rounded-md hover:bg-accent/60 active:bg-accent active:scale-[0.98] transition-all duration-75 text-sm text-foreground/80 hover:text-foreground cursor-pointer select-none" style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }} data-testid="button-openclaw">
           <span className="sidebar-tool-icon-wrap shrink-0 pointer-events-none">

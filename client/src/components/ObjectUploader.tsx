@@ -1,11 +1,11 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { FileUploadProgress } from "@/components/FileUploadProgress";
-import { getFileUploader, type UploadProgress, type ValidationResult } from "@/lib/fileUploader";
+import { getFileUploader, type UploadProgress } from "@/lib/fileUploader";
 import { cn } from "@/lib/utils";
-import { Upload, X, FileIcon } from "lucide-react";
+import { Upload } from "lucide-react";
 
 interface ObjectUploaderProps {
   maxNumberOfFiles?: number;
@@ -28,7 +28,7 @@ interface UploadingFile {
 
 export function ObjectUploader({
   maxNumberOfFiles = 1,
-  maxFileSize,
+  // maxFileSize not used yet
   onComplete,
   onFileUploaded,
   buttonClassName,
@@ -37,7 +37,7 @@ export function ObjectUploader({
   const [showModal, setShowModal] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
-  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  // pendingFiles state removed - not currently used
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploaderRef = useRef(getFileUploader());
   const dropZoneRef = useRef<HTMLDivElement>(null);
@@ -91,7 +91,8 @@ export function ObjectUploader({
 
         successfulResults.push({ storagePath: result.storagePath, name: uploadingFile.file.name });
         onFileUploaded?.(result.fileId, result.storagePath, uploadingFile.file.name);
-      } catch (error: any) {
+      } catch (error: unknown) {
+        const err = error as Error;
         setUploadingFiles((prev) =>
           prev.map((f) =>
             f.id === uploadingFile.id
@@ -100,7 +101,7 @@ export function ObjectUploader({
                   progress: {
                     ...f.progress,
                     phase: 'error',
-                    error: error.message || 'Error al subir el archivo',
+                    error: err.message || 'Error al subir el archivo',
                   },
                 }
               : f
@@ -163,7 +164,8 @@ export function ObjectUploader({
       );
 
       onFileUploaded?.(result.fileId, result.storagePath, fileToRetry.file.name);
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as Error;
       setUploadingFiles((prev) =>
         prev.map((f) =>
           f.id === fileId
@@ -172,7 +174,7 @@ export function ObjectUploader({
                 progress: {
                   ...f.progress,
                   phase: 'error',
-                  error: error.message || 'Error al subir el archivo',
+                  error: err.message || 'Error al subir el archivo',
                 },
               }
             : f
@@ -186,9 +188,7 @@ export function ObjectUploader({
     setUploadingFiles((prev) => prev.filter((f) => f.id !== fileId));
   }, []);
 
-  const handleRemoveFile = useCallback((fileId: string) => {
-    setUploadingFiles((prev) => prev.filter((f) => f.id !== fileId));
-  }, []);
+  // handleRemoveFile removed - not currently used
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();

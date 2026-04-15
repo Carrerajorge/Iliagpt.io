@@ -4,15 +4,10 @@
  */
 
 import React, { useCallback, useRef, useEffect, useMemo } from 'react';
-// @ts-ignore - react-window v2 types
+// @ts-expect-error - react-window v2 types
 import { VariableSizeList as List } from 'react-window';
-// @ts-ignore - types may not exist
+// @ts-expect-error - types may not exist
 import AutoSizer from 'react-virtualized-auto-sizer';
-
-interface ListChildComponentProps {
-    index: number;
-    style: React.CSSProperties;
-}
 import { Message } from '@/components/chat-interface/types';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
