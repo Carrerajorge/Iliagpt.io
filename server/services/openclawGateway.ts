@@ -699,9 +699,23 @@ async function handleMethod(client: GatewayClient, id: number | string, method: 
       reply(ws, id, { presences: [], version: 1 });
       break;
 
-    case "config.get":
-      reply(ws, id, await buildGatewayConfig(client.userId));
+    case "config.get": {
+      try {
+        reply(ws, id, await buildGatewayConfig(client.userId));
+      } catch (configErr) {
+        console.error("[OpenClaw Gateway] config.get failed, sending fallback config:", configErr);
+        reply(ws, id, {
+          version: VERSION,
+          model: { provider: "openrouter", model: "google/gemma-4-31b-it" },
+          catalog: { models: [], default: { provider: "openrouter", model: "google/gemma-4-31b-it" }, meta: { unified: true, refreshedAt: new Date().toISOString(), plan: "free", isAdmin: false, isPaid: false } },
+          providers: [],
+          commands: [],
+          quota: { unified: true, statusUrl: "/api/billing/status", upgradeUrl: "/workspace-settings?section=billing", snapshot: null },
+          desktopNativeMode: { enabled: true },
+        });
+      }
       break;
+    }
 
     case "config.schema":
       reply(ws, id, { schema: {} });
@@ -877,34 +891,59 @@ async function handleMethod(client: GatewayClient, id: number | string, method: 
     }
 
     case "sessions.list": {
-      const mainOverride = sessionModelOverrides.get("main");
-      const defaultCatalogModel = await getCatalogModelBySelection(mainOverride?.model, {
-        userId: client.userId,
-      });
-      const resolvedSessionModel = mainOverride?.model || defaultCatalogModel?.modelId || "google/gemma-4-31b-it";
-      const resolvedSessionProvider =
-        mainOverride?.provider || defaultCatalogModel?.gatewayProvider || "openrouter";
-      reply(ws, id, {
-        sessions: [
-          {
-            key: "main",
+      try {
+        const mainOverride = sessionModelOverrides.get("main");
+        const defaultCatalogModel = await getCatalogModelBySelection(mainOverride?.model, {
+          userId: client.userId,
+        });
+        const resolvedSessionModel = mainOverride?.model || defaultCatalogModel?.modelId || "google/gemma-4-31b-it";
+        const resolvedSessionProvider =
+          mainOverride?.provider || defaultCatalogModel?.gatewayProvider || "openrouter";
+        reply(ws, id, {
+          sessions: [
+            {
+              key: "main",
+              agentId: "main",
+              label: "main",
+              status: "idle",
+              model: resolvedSessionModel,
+              provider: resolvedSessionProvider,
+              modelProvider: resolvedSessionProvider,
+              createdAt: Date.now() - 60000,
+              updatedAt: Date.now(),
+            },
+          ],
+          defaults: {
+            model: defaultCatalogModel?.modelId || "google/gemma-4-31b-it",
+            provider: defaultCatalogModel?.gatewayProvider || "openrouter",
+            modelProvider: defaultCatalogModel?.gatewayProvider || "openrouter",
             agentId: "main",
-            label: "main",
-            status: "idle",
-            model: resolvedSessionModel,
-            provider: resolvedSessionProvider,
-            modelProvider: resolvedSessionProvider,
-            createdAt: Date.now() - 60000,
-            updatedAt: Date.now(),
           },
-        ],
-        defaults: {
-          model: defaultCatalogModel?.modelId || "google/gemma-4-31b-it",
-          provider: defaultCatalogModel?.gatewayProvider || "openrouter",
-          modelProvider: defaultCatalogModel?.gatewayProvider || "openrouter",
-          agentId: "main",
-        },
-      });
+        });
+      } catch (sessErr) {
+        console.error("[OpenClaw Gateway] sessions.list failed, sending fallback:", sessErr);
+        reply(ws, id, {
+          sessions: [
+            {
+              key: "main",
+              agentId: "main",
+              label: "main",
+              status: "idle",
+              model: "google/gemma-4-31b-it",
+              provider: "openrouter",
+              modelProvider: "openrouter",
+              createdAt: Date.now() - 60000,
+              updatedAt: Date.now(),
+            },
+          ],
+          defaults: {
+            model: "google/gemma-4-31b-it",
+            provider: "openrouter",
+            modelProvider: "openrouter",
+            agentId: "main",
+          },
+        });
+      }
       break;
     }
 
@@ -1553,9 +1592,15 @@ export function attachOpenClawGateway(httpServer: HttpServer) {
         const msg = JSON.parse(raw.toString());
         console.log(`[OpenClaw Gateway] Message from ${connId}: ${msg.method || msg.type || "unknown"}`);
         if (msg.type === "request" && msg.method && msg.id !== undefined) {
-          handleMethod(client, msg.id, msg.method, msg.params);
+          handleMethod(client, msg.id, msg.method, msg.params).catch((err) => {
+            console.error(`[OpenClaw Gateway] Unhandled error in ${msg.method}:`, err);
+            replyError(ws, msg.id, -32603, `Internal error: ${(err as Error)?.message || "unknown"}`);
+          });
         } else if (msg.method && msg.id !== undefined) {
-          handleMethod(client, msg.id, msg.method, msg.params);
+          handleMethod(client, msg.id, msg.method, msg.params).catch((err) => {
+            console.error(`[OpenClaw Gateway] Unhandled error in ${msg.method}:`, err);
+            replyError(ws, msg.id, -32603, `Internal error: ${(err as Error)?.message || "unknown"}`);
+          });
         }
       } catch (e) {
         console.error(`[OpenClaw Gateway] Parse error:`, e);
