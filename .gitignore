@@ -58,6 +58,7 @@ sandbox_workspace/.state/
 **/*.pyc
 **/*.pyo
 artifacts/
+!client/src/components/artifacts/
 .eslintcache
 cowork_test_suite/tests_capacidades/reports/
 cowork_test_suite/tests_capacidades/artifacts/
